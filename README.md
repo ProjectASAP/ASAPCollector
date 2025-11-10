@@ -10,9 +10,9 @@ Clone with submodules on first checkout so the embedded Telegraf tree is pulled
 automatically:
 
 ```bash
-git clone --recurse-submodules git@github.com:approx-telemetry/DataCollector.git
+git clone --recurse-submodules git@github.com:ProjectASAP/DataCollector.git
 # or
-git clone --recurse-submodules https://github.com/approx-telemetry/DataCollector.git
+git clone --recurse-submodules https://github.com/ProjectASAP/DataCollector.git
 ```
 
 If you have an existing clone, pull down the submodule once:
@@ -45,7 +45,7 @@ plugins remain in `telegraf-plugins/outputs/`.
    rule pointing to `../telegraf-plugins/outputs/gorilla_s3`, then run:
 
    ```bash
-   go get github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3
+   go get github.com/ProjectASAP/DataCollector/telegraf-plugins/outputs/gorilla_s3
    ```
 
 4. When upstream Telegraf updates are needed, pull them into the submodule:
