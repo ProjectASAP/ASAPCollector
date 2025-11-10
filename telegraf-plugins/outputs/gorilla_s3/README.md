@@ -19,30 +19,38 @@ Build & Integration
 2) Copy this folder into Telegraf under `plugins/outputs/gorilla_s3`.
 3) Register the plugin by adding the import in `plugins/outputs/all/all.go`:
 
+   ```go
    // in plugins/outputs/all/all.go
    import (
        _ "github.com/influxdata/telegraf/plugins/outputs/gorilla_s3"
    )
+   ```
 
    If you prefer to keep this plugin in a local checkout (for example
    `~/repos/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3`)
    instead of copying it into the Telegraf tree, point the import at that module
    path and add a `replace` directive in `telegraf/go.mod`, e.g.:
 
+   ```go
    import (
        _ "github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3"
    )
 
    replace github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3 => ../DataCollector/telegraf-plugins/outputs/gorilla_s3
+   ```
 
    Then add the dependency to Telegraf's `go.mod` (the local module already has
    its own `go.mod` file) so future builds resolve it automatically:
 
-       go get github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3
+   ```bash
+   go get github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3
+   ```
 
 4) Build Telegraf:
 
+   ```bash
    make telegraf
+   ```
 
 5) Configure in `telegraf.conf` (see sample below) and run your custom binary.
 
