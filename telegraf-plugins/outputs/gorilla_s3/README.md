@@ -28,18 +28,19 @@ This is a Telegraf output plugin that compresses numeric time series using **Gor
 
 ## 🏗️ Build & Integration
 
-1. **Clone the Telegraf repository**
+1. **Clone the DataCollector repository (with submodules)**
+
    ```bash
-   git clone https://github.com/influxdata/telegraf
+   git clone --recurse-submodules git@github.com:approx-telemetry/DataCollector.git
+   # or
+   git clone --recurse-submodules https://github.com/approx-telemetry/DataCollector.git
    ```
 
-2. **Copy this folder** into Telegraf under:
-   ```
-   plugins/outputs/gorilla_s3
-   ```
+   The vendored Telegraf checkout lives at `DataCollector/telegraf/`, while this
+   plugin stays under `DataCollector/telegraf-plugins/outputs/gorilla_s3/`.
 
-3. **Register the plugin** by adding the import in  
-   `plugins/outputs/all/all.go`:
+2. **Register the plugin** by adding the import in  
+   `telegraf/plugins/outputs/all/all.go` (inside the submodule):
 
    ```go
    // in plugins/outputs/all/all.go
@@ -48,27 +49,29 @@ This is a Telegraf output plugin that compresses numeric time series using **Gor
    )
    ```
 
-   **Alternatively**, if you want to keep it in a local repo (e.g.  
-   `~/repos/ProjectASAP/DataCollector/telegraf-plugins/outputs/gorilla_s3`),  
-   point the import to that module path and add a `replace` directive in `telegraf/go.mod`:
+3. **(Optional) Keep the plugin purely local**
+
+   If you prefer not to copy files into the submodule, point the import at the
+   DataCollector path and add a `replace` directive in `telegraf/go.mod`:
 
    ```go
    import (
-       _ "github.com/ProjectASAP/DataCollector/telegraf-plugins/outputs/gorilla_s3"
+       _ "github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3"
    )
 
-   replace github.com/ProjectASAP/DataCollector/telegraf-plugins/outputs/gorilla_s3 => ../DataCollector/telegraf-plugins/outputs/gorilla_s3
+   replace github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3 => ../DataCollector/telegraf-plugins/outputs/gorilla_s3
    ```
 
    Then add the dependency:
 
    ```bash
-   go get github.com/ProjectASAP/DataCollector/telegraf-plugins/outputs/gorilla_s3
+   go get github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3
    ```
 
-4. **Build Telegraf**
+4. **Build Telegraf from the submodule root**
 
    ```bash
+   cd telegraf
    make telegraf
    ```
 
