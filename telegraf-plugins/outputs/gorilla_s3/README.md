@@ -24,6 +24,22 @@ Build & Integration
        _ "github.com/influxdata/telegraf/plugins/outputs/gorilla_s3"
    )
 
+   If you prefer to keep this plugin in a local checkout (for example
+   `~/repos/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3`)
+   instead of copying it into the Telegraf tree, point the import at that module
+   path and add a `replace` directive in `telegraf/go.mod`, e.g.:
+
+   import (
+       _ "github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3"
+   )
+
+   replace github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3 => ../DataCollector/telegraf-plugins/outputs/gorilla_s3
+
+   Then add the dependency to Telegraf's `go.mod` (the local module already has
+   its own `go.mod` file) so future builds resolve it automatically:
+
+       go get github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3
+
 4) Build Telegraf:
 
    make telegraf
@@ -83,4 +99,3 @@ Limitations
 Runtime Telemetry (logs)
 - On each object upload, the plugin logs: key, number of series, total points, encoded bytes, estimated raw bytes, compression ratio, and S3 upload latency in milliseconds.
 - Example: gorilla_s3 uploaded key=prefix/batch-... series=12 points=15000 bytes=1048576 est_raw=2400000 ratio=0.4369 latency_ms=210
-
