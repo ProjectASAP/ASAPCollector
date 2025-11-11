@@ -54,12 +54,37 @@ class LatencyStats:
 
 
 @dataclass
+class ResourceStats:
+    total: float = 0.0
+    count: int = 0
+    max_value: float = 0.0
+
+    def add(self, value: float) -> None:
+        self.total += value
+        self.count += 1
+        if value > self.max_value:
+            self.max_value = value
+
+    def average(self) -> Optional[float]:
+        if self.count == 0:
+            return None
+        return self.total / self.count
+
+    def max(self) -> Optional[float]:
+        if self.count == 0:
+            return None
+        return self.max_value
+
+
+@dataclass
 class FileSummary:
     path: str
     agent_start: Optional[AgentSnapshot] = None
     agent_end: Optional[AgentSnapshot] = None
     gather_latency: LatencyStats = field(default_factory=LatencyStats)
     write_latency: LatencyStats = field(default_factory=LatencyStats)
+    cpu_usage: ResourceStats = field(default_factory=ResourceStats)
+    memory_rss: ResourceStats = field(default_factory=ResourceStats)
 
     def duration_seconds(self) -> Optional[float]:
         if not (self.agent_start and self.agent_end):
@@ -171,6 +196,17 @@ def summarize_file(path: str) -> FileSummary:
                 write_time = fields.get("write_time_ns")
                 if write_time is not None:
                     summary.write_latency.add(int(write_time))
+            elif measurement == "procstat":
+                cpu = fields.get("cpu_usage")
+                if cpu is not None:
+                    summary.cpu_usage.add(float(cpu))
+                rss = fields.get("memory_rss")
+                if rss is not None:
+                    summary.memory_rss.add(float(rss))
+            elif measurement == "internal_memstats":
+                rss = fields.get("heap_in_use_bytes")
+                if rss is not None:
+                    summary.memory_rss.add(float(rss))
     return summary
 
 
@@ -230,6 +266,17 @@ def main() -> None:
             f"samples: gather={summary.gather_latency.count}, "
             f"write={summary.write_latency.count}"
         )
+        if summary.cpu_usage.count:
+            avg_cpu = summary.cpu_usage.average()
+            max_cpu = summary.cpu_usage.max()
+            avg_rss = summary.memory_rss.average()
+            max_rss = summary.memory_rss.max()
+            print(
+                "Procstat: "
+                f"CPU avg={(avg_cpu or 0):.2f}% max={(max_cpu or 0):.2f}%; "
+                f"RSS avg={(avg_rss or 0) / 1e6:.2f} MB "
+                f"max={(max_rss or 0) / 1e6:.2f} MB"
+            )
 
 
 if __name__ == "__main__":

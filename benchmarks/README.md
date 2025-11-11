@@ -11,6 +11,7 @@ extremes of the DataCollector pipeline:
 | `max-throughput-prometheus-loop.conf` | Treat Telegraf like a Prometheus “bump in the wire”: scrape fake exporters, skip processing, and re-export via `outputs.prometheus_client`. | Good for validating scrape/flush throughput without S3 or file IO. |
 | `max-throughput-prometheus-client.conf` | Replace the scrape input with a raw socket listener and re-export via `prometheus_client`. | Use `send_firehose.py` to push arbitrary line protocol into tcp://localhost:8094. |
 | `max-throughput-null.conf` | Measure Telegraf’s internal pipeline limits by pairing the socket firehose with `outputs.discard`. | Ingest on tcp://localhost:8095 and drop immediately while logging internal metrics. |
+| `send_firehose_null.py` | Bench the generator itself by streaming to `/dev/null` via a local sink—no Telegraf involved. | Useful to understand the firehose’s ceiling before it hits Telegraf. |
 
 ## How to run
 
@@ -84,6 +85,15 @@ extremes of the DataCollector pipeline:
    # use --rate to throttle, or leave unset for best-effort firehose
    # example with custom measurement/tags:
    # python benchmarks/send_firehose.py --measurement bench --tags "source=gen01,region=west" --fields value,latency
+   # spawn multiple workers for more parallel writers:
+   # python benchmarks/send_firehose.py --processes 4 --rate 200000
+
+   To benchmark the generator alone (no Telegraf), run the helper that spins up
+   a local `/dev/null` sink:
+
+   ```bash
+   python benchmarks/send_firehose_null.py --port 19000
+   ```
    ```
    ```
 
@@ -98,3 +108,6 @@ finish, summarize Telegraf's internal throughput/latency with:
 ```bash
 python benchmarks/summarize_telegraf_metrics.py --results-dir benchmarks/results
 ```
+
+The summarizer now also reports CPU/RSS if the underlying `.lp` files include
+`procstat` metrics (as in `max-throughput-null.conf`).
