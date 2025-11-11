@@ -8,6 +8,9 @@ extremes of the DataCollector pipeline:
 | `max-throughput-gorilla-s3.conf` | Push the custom `gorilla_s3` output with huge batches to measure sustained write throughput and buffer backpressure. | Targets AWS S3. Replace the bucket/region and ensure credentials are available via the usual AWS provider chain. |
 | `low-latency-file.conf` | Keep end-to-end latency minimal and flush every 500 ms to a local file to validate fast acknowledgement paths. | Useful for debugging ingestion latency without touching remote services. |
 | `max-throughput-gorilla-local.conf` | Drive the gorilla encoder hard but persist the compressed `.gorilla` objects to disk for offline inspection. | No AWS dependency: set `local_dir` and omit bucket/region. |
+| `max-throughput-prometheus-loop.conf` | Treat Telegraf like a Prometheus “bump in the wire”: scrape fake exporters, skip processing, and re-export via `outputs.prometheus_client`. | Good for validating scrape/flush throughput without S3 or file IO. |
+| `max-throughput-prometheus-client.conf` | Replace the scrape input with a raw socket listener and re-export via `prometheus_client`. | Use `send_firehose.py` to push arbitrary line protocol into tcp://localhost:8094. |
+| `max-throughput-null.conf` | Measure Telegraf’s internal pipeline limits by pairing the socket firehose with `outputs.discard`. | Ingest on tcp://localhost:8095 and drop immediately while logging internal metrics. |
 
 ## How to run
 
@@ -42,12 +45,46 @@ extremes of the DataCollector pipeline:
      --pprof-addr localhost:6062
    ```
 
+   or
+
+   ```bash
+   ./telegraf \
+     --config ../benchmarks/max-throughput-prometheus-loop.conf \
+     --pprof-addr localhost:6063
+
+   or
+
+   ```bash
+   ./telegraf \
+     --config ../benchmarks/max-throughput-prometheus-client.conf \
+     --pprof-addr localhost:6063
+
+   or
+
+   ```bash
+   ./telegraf \
+     --config ../benchmarks/max-throughput-null.conf \
+     --pprof-addr localhost:6064
+   ```
+   ```
+
 3. Start the Fake Prometheus Exporter so the Prometheus input has something
    to scrape (or point the input at your own endpoints):
 
    ```bash
    cd ../FakePrometheusExporter
    python exporter_with_config.py --config exporter_config.yaml
+
+   For the socket_listener firehose (`max-throughput-prometheus-client.conf`),
+   run the bundled generator:
+
+   ```bash
+   python benchmarks/send_firehose.py              # default: localhost:8094
+   # use --port 8095 when driving max-throughput-null.conf
+   # use --rate to throttle, or leave unset for best-effort firehose
+   # example with custom measurement/tags:
+   # python benchmarks/send_firehose.py --measurement bench --tags "source=gen01,region=west" --fields value,latency
+   ```
    ```
 
 4. Watch `internal_*` metrics (exported in both configs) or attach to the
@@ -55,4 +92,9 @@ extremes of the DataCollector pipeline:
    http://localhost:6060/debug/pprof/profile?seconds=30`).
 
 Feel free to fork these configs per test run—keeping them under version
-control makes it easy to compare throughput/latency regressions.
+control makes it easy to compare throughput/latency regressions. When runs
+finish, summarize Telegraf's internal throughput/latency with:
+
+```bash
+python benchmarks/summarize_telegraf_metrics.py --results-dir benchmarks/results
+```
