@@ -31,42 +31,43 @@ This is a Telegraf output plugin that compresses numeric time series using **Gor
 1. **Clone the DataCollector repository (with submodules)**
 
    ```bash
-   git clone --recurse-submodules git@github.com:approx-telemetry/DataCollector.git
+   git clone --recurse-submodules git@github.com:ProjectASAP/DataCollector.git
    # or
-   git clone --recurse-submodules https://github.com/approx-telemetry/DataCollector.git
+   git clone --recurse-submodules https://github.com/ProjectASAP/DataCollector.git
    ```
 
    The vendored Telegraf checkout lives at `DataCollector/telegraf/`, while this
    plugin stays under `DataCollector/telegraf-plugins/outputs/gorilla_s3/`.
 
-2. **Register the plugin** by adding the import in  
-   `telegraf/plugins/outputs/all/all.go` (inside the submodule):
+2. **Register the plugin in your Telegraf tree.**  
+   The simplest way (and what this repo uses) is to add a tiny build-tagged file
+   under `telegraf/plugins/outputs/all/`:
 
    ```go
-   // in plugins/outputs/all/all.go
-   import (
-       _ "github.com/influxdata/telegraf/plugins/outputs/gorilla_s3"
-   )
+   // plugins/outputs/all/gorilla_s3.go
+   //go:build !custom || outputs || outputs.gorilla_s3
+
+   package all
+
+   import _ "github.com/ProjectASAP/DataCollector/telegraf-plugins/outputs/gorilla_s3"
    ```
 
-3. **(Optional) Keep the plugin purely local**
+   That mirrors the upstream pattern for built-in outputs, so any `make telegraf`
+   build automatically pulls the gorilla output in.
 
-   If you prefer not to copy files into the submodule, point the import at the
-   DataCollector path and add a `replace` directive in `telegraf/go.mod`:
+3. **Point Telegraf’s `go.mod` at the plugin code.**
+
+   From `DataCollector/telegraf/`, add a `require` and `replace`:
 
    ```go
-   import (
-       _ "github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3"
-   )
+   require github.com/ProjectASAP/DataCollector/telegraf-plugins/outputs/gorilla_s3 v0.0.0
 
-   replace github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3 => ../DataCollector/telegraf-plugins/outputs/gorilla_s3
+   replace github.com/ProjectASAP/DataCollector/telegraf-plugins/outputs/gorilla_s3 => ../telegraf-plugins/outputs/gorilla_s3
    ```
 
-   Then add the dependency:
-
-   ```bash
-   go get github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3
-   ```
+   Then run `go mod tidy` (or `go get` as before) so the dependency is wired up.
+   If your repository layout differs, adjust the module path and `replace`
+   target accordingly.
 
 4. **Build Telegraf from the submodule root**
 
@@ -94,6 +95,10 @@ This is a Telegraf output plugin that compresses numeric time series using **Gor
   # Optional object naming override (default: batch-<unix>-<rand>.gorilla)
   # object_name = ""
 
+  # Optional: persist Gorilla objects to a local directory (in addition to or
+  # instead of S3). Directories for any prefixes are created automatically.
+  # local_dir = "/tmp/gorilla-objects"
+
   # Optional: size and retry controls
   # max_object_bytes = 67108864     # Split batch into multiple objects (0 = no split)
   # multipart_threshold = 8388608   # Use multipart when >= this size (min 5MiB)
@@ -112,6 +117,7 @@ This is a Telegraf output plugin that compresses numeric time series using **Gor
 - **Data model:** Only numeric fields (`float`, `int`) are encoded. Non-numeric fields are ignored.  
 - **Histograms/summaries:** Not supported; consider extending or parallel output.  
 - **Object format:** Simple container with a header, per-series JSON metadata, and bit-packed payloads.
+- **Local testing:** Set `local_dir` to dump `.gorilla` objects on disk (with the same prefix+object name) and omit `bucket`/`region` if you don't want to talk to S3 at all.
 
 ---
 

@@ -7,6 +7,7 @@ extremes of the DataCollector pipeline:
 | --- | --- | --- |
 | `max-throughput-gorilla-s3.conf` | Push the custom `gorilla_s3` output with huge batches to measure sustained write throughput and buffer backpressure. | Targets AWS S3. Replace the bucket/region and ensure credentials are available via the usual AWS provider chain. |
 | `low-latency-file.conf` | Keep end-to-end latency minimal and flush every 500 ms to a local file to validate fast acknowledgement paths. | Useful for debugging ingestion latency without touching remote services. |
+| `max-throughput-gorilla-local.conf` | Drive the gorilla encoder hard but persist the compressed `.gorilla` objects to disk for offline inspection. | No AWS dependency: set `local_dir` and omit bucket/region. |
 
 ## How to run
 
@@ -33,12 +34,20 @@ extremes of the DataCollector pipeline:
      --pprof-addr localhost:6061
    ```
 
-3. Drive load into the HTTP listener (both configs expose it) using any
-   line-protocol generator. A quick smoke test:
+   or
 
    ```bash
-   curl -i -XPOST 'http://localhost:8080/telegraf' \
-     --data-binary 'bench,host=tester value=1 1710000000000000000'
+   ./telegraf \
+     --config ../benchmarks/max-throughput-gorilla-local.conf \
+     --pprof-addr localhost:6062
+   ```
+
+3. Start the Fake Prometheus Exporter so the Prometheus input has something
+   to scrape (or point the input at your own endpoints):
+
+   ```bash
+   cd ../FakePrometheusExporter
+   python exporter_with_config.py --config exporter_config.yaml
    ```
 
 4. Watch `internal_*` metrics (exported in both configs) or attach to the
