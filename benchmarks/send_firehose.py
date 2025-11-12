@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as mp
-import random
 import socket
 import sys
 import time
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8094
+DEFAULT_BATCH_SIZE = 5000
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,8 +37,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--fields",
-        default="value",
-        help='Comma-separated field names to emit random floats for (default: "value")',
+        default="value=1i",
+        help='Comma-separated field assignments, e.g. "value=1i,temp=42". Defaults to "value=1i".',
     )
     parser.add_argument(
         "--rate",
@@ -52,19 +52,37 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Number of worker processes to spawn (default: 1)",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help=f"Number of identical lines to send per socket write (default: {DEFAULT_BATCH_SIZE})",
+    )
     return parser.parse_args()
 
 
-def build_line(measurement: str, tags: str, field_names: list[str]) -> str:
-    ts = time.time_ns()
-    field_pairs = ",".join(f"{name}={random.random():.6f}" for name in field_names)
-    return f"{measurement},{tags} {field_pairs} {ts}\n"
+def build_line_template(
+    measurement: str, tags: str, field_assignments: list[str], timestamp: int
+) -> bytes:
+    field_pairs = ",".join(field_assignments)
+    line = f"{measurement},{tags} {field_pairs} {timestamp}\n"
+    return line.encode("utf-8")
 
 
 def run_worker(args: argparse.Namespace, worker_id: int) -> None:
-    field_names = [name.strip() for name in args.fields.split(",") if name.strip()]
-    if not field_names:
-        print("At least one field name is required.", file=sys.stderr)
+    if args.batch_size <= 0:
+        print("Batch size must be a positive integer.", file=sys.stderr)
+        return
+
+    field_assignments = [field.strip() for field in args.fields.split(",") if field.strip()]
+    if not field_assignments:
+        print("At least one field assignment is required.", file=sys.stderr)
+        return
+    if any("=" not in assignment for assignment in field_assignments):
+        print(
+            "Field assignments must include '=' (e.g. value=1i,temp=42).",
+            file=sys.stderr,
+        )
         return
 
     addr = (args.host, args.port)
@@ -75,13 +93,17 @@ def run_worker(args: argparse.Namespace, worker_id: int) -> None:
     start_time = time.time()
     next_report = start_time + 5
     throttle = args.rate > 0
-    interval = 1.0 / args.rate if throttle else 0.0
+    lines_per_send = args.batch_size
+    interval = lines_per_send / args.rate if throttle else 0.0
+
+    timestamp = time.time_ns()
+    template = build_line_template(args.measurement, args.tags, field_assignments, timestamp)
+    batch = template * args.batch_size
 
     try:
         while True:
-            line = build_line(args.measurement, args.tags, field_names)
-            sock.sendall(line.encode("utf-8"))
-            sent += 1
+            sock.sendall(batch)
+            sent += lines_per_send
 
             now = time.time()
             if now >= next_report:
