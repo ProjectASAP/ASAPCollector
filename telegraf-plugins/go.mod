@@ -25,6 +25,7 @@ require (
 	github.com/BurntSushi/toml v1.5.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.40.3
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/DataDog/sketches-go v1.4.1
 	github.com/IBM/nzgo/v12 v12.0.10
 	github.com/IBM/sarama v1.46.3
 	github.com/Masterminds/semver/v3 v3.4.0
@@ -32,7 +33,6 @@ require (
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/Mellanox/rdmamap v1.1.0
 	github.com/PaesslerAG/gval v1.2.4
-	github.com/aws/aws-sdk-go v1.44.263
 	github.com/SAP/go-hdb v1.14.9
 	github.com/aerospike/aerospike-client-go/v5 v5.11.0
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b
@@ -51,6 +51,7 @@ require (
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
 	github.com/awnumar/memguard v0.23.0
 	github.com/aws/aws-msk-iam-sasl-signer-go v1.0.4
+	github.com/aws/aws-sdk-go v1.44.263
 	github.com/aws/aws-sdk-go-v2 v1.39.5
 	github.com/aws/aws-sdk-go-v2/config v1.31.16
 	github.com/aws/aws-sdk-go-v2/credentials v1.18.20
@@ -305,7 +306,6 @@ require (
 	github.com/aristanetworks/glog v0.0.0-20191112221043-67e8567f59f3 // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/awnumar/memcall v0.4.0 // indirect
-	github.com/aws/aws-sdk-go v1.44.263 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.2 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.43 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.12 // indirect
