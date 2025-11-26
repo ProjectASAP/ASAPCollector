@@ -133,6 +133,10 @@ func (g *Gorilla) Push(acc telegraf.Accumulator) {
 	blockInterval := time.Duration(g.BlockInterval)
 
 	for idx, obj := range objects {
+		var ratio float64
+		if obj.rawBytes > 0 {
+			ratio = float64(len(obj.data)) / float64(obj.rawBytes)
+		}
 		fields := map[string]interface{}{
 			"series_count":        int64(obj.seriesCount),
 			"point_count":         int64(obj.points),
@@ -140,7 +144,7 @@ func (g *Gorilla) Push(acc telegraf.Accumulator) {
 			"compressed_bytes":    int64(len(obj.data)),
 		}
 		if obj.rawBytes > 0 {
-			fields["compression_ratio"] = float64(len(obj.data)) / float64(obj.rawBytes)
+			fields["compression_ratio"] = ratio
 		}
 		tags := map[string]string{
 			"object_index": strconv.Itoa(idx),
@@ -153,6 +157,17 @@ func (g *Gorilla) Push(acc telegraf.Accumulator) {
 
 		base := metric.New(g.Measurement, tags, fields, blockEnd)
 		acc.AddMetric(newGorillaBlockMetric(base, obj.data))
+		if g.Log != nil {
+			g.Log.Infof(
+				"gorilla aggregator block=%d series=%d points=%d raw_bytes=%d compressed_bytes=%d ratio=%.4f",
+				idx,
+				obj.seriesCount,
+				obj.points,
+				obj.rawBytes,
+				len(obj.data),
+				ratio,
+			)
+		}
 	}
 }
 
