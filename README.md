@@ -1,8 +1,8 @@
 # DataCollector
 
-This repository includes custom Telegraf output plugins (see `telegraf-plugins/`)
-and now vendors a full Telegraf checkout as a Git submodule under `telegraf/`
-so you can build everything in one place.
+This repository vendors a full Telegraf checkout as a Git submodule under
+`telegraf/` and carries the custom Gorilla aggregator/output directly inside
+that tree so you can build everything in one place.
 
 ## Cloning
 
@@ -22,8 +22,8 @@ cd DataCollector
 git submodule update --init --recursive
 ```
 
-After cloning, work inside `telegraf/` to build (e.g. `make telegraf`) while the
-plugins remain in `telegraf-plugins/outputs/`.
+After cloning, work inside `telegraf/` to build (e.g. `make telegraf`) with the
+custom Gorilla plugins already available under `telegraf/plugins/`.
 
 ## Working with the Telegraf submodule
 
@@ -40,15 +40,7 @@ plugins remain in `telegraf-plugins/outputs/`.
    make telegraf   # or `make test`
    ```
 
-3. To use the local `gorilla_s3` plugin without copying files, ensure that
-   `plugins/outputs/all/all.go` imports it and that `go.mod` has a `replace`
-   rule pointing to `../telegraf-plugins/outputs/gorilla_s3`, then run:
-
-   ```bash
-   go get github.com/ProjectASAP/DataCollector/telegraf-plugins/outputs/gorilla_s3
-   ```
-
-4. When upstream Telegraf updates are needed, pull them into the submodule:
+3. When upstream Telegraf updates are needed, pull them into the submodule:
 
    ```bash
    git submodule update --remote telegraf
