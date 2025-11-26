@@ -2,6 +2,7 @@ package gorilla
 
 import (
 	"bytes"
+	"math/bits"
 )
 
 // bitWriter packs bits into a byte buffer.
@@ -55,30 +56,14 @@ func leadingZeros64(x uint64) uint8 {
 	if x == 0 {
 		return 64
 	}
-	var n uint8
-	for i := 63; i >= 0; i-- {
-		if (x>>uint(i))&1 == 0 {
-			n++
-		} else {
-			break
-		}
-	}
-	return n
+	return uint8(bits.LeadingZeros64(x))
 }
 
 func trailingZeros64(x uint64) uint8 {
 	if x == 0 {
 		return 64
 	}
-	var n uint8
-	for i := 0; i < 64; i++ {
-		if (x>>uint(i))&1 == 0 {
-			n++
-		} else {
-			break
-		}
-	}
-	return n
+	return uint8(bits.TrailingZeros64(x))
 }
 
 func fitsInSignedBits(v int64, n uint8) bool {
