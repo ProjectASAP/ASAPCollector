@@ -1,4 +1,4 @@
-package gorilla_s3
+package gorilla
 
 import (
 	"math"
@@ -264,7 +264,7 @@ func TestRoundTripRandom(t *testing.T) {
 	}
 }
 
-// go test github.com/approx-telemetry/DataCollector/telegraf-plugins/outputs/gorilla_s3 -run TestEncodeSingleThreadThroughput -v
+// go test github.com/influxdata/telegraf/plugins/aggregators/gorilla -run TestEncodeSingleThreadThroughput -v
 
 func TestEncodeSingleThreadThroughput(t *testing.T) {
 	if testing.Short() {
