@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/influxdata/telegraf"
+	"github.com/influxdata/telegraf/config"
 	"github.com/influxdata/telegraf/plugins/outputs"
 )
 
@@ -34,11 +35,11 @@ type GorillaS3 struct {
 
 	LocalDir string `toml:"local_dir"`
 
-	MultipartThreshold int64         `toml:"multipart_threshold"`
-	MultipartPartBytes int64         `toml:"multipart_part_bytes"`
-	MaxRetries         int           `toml:"max_retries"`
-	RetryBackoff       time.Duration `toml:"retry_backoff"`
-	UploadTimeout      time.Duration `toml:"upload_timeout"`
+	MultipartThreshold int64           `toml:"multipart_threshold"`
+	MultipartPartBytes int64           `toml:"multipart_part_bytes"`
+	MaxRetries         int             `toml:"max_retries"`
+	RetryBackoff       config.Duration `toml:"retry_backoff"`
+	UploadTimeout      config.Duration `toml:"upload_timeout"`
 
 	BlockMeasurement string `toml:"block_measurement"`
 	PayloadField     string `toml:"payload_field"`
@@ -99,10 +100,10 @@ func (g *GorillaS3) Connect() error {
 		g.MaxRetries = 3
 	}
 	if g.RetryBackoff <= 0 {
-		g.RetryBackoff = time.Second
+		g.RetryBackoff = config.Duration(time.Second)
 	}
 	if g.UploadTimeout <= 0 {
-		g.UploadTimeout = 30 * time.Second
+		g.UploadTimeout = config.Duration(30 * time.Second)
 	}
 	return nil
 }
@@ -143,7 +144,9 @@ func (g *GorillaS3) Write(metrics []telegraf.Metric) error {
 
 		if g.s3 != nil {
 			start := time.Now()
-			if err := g.uploadWithRetry(key, payload); err != nil {
+			uploadTimeout := time.Duration(g.UploadTimeout)
+			retryBackoff := time.Duration(g.RetryBackoff)
+			if err := g.uploadWithRetry(key, payload, uploadTimeout, retryBackoff); err != nil {
 				return err
 			}
 			dur := time.Since(start)
@@ -217,10 +220,10 @@ func (g *GorillaS3) writeLocalFile(key string, data []byte) (string, error) {
 	return localPath, nil
 }
 
-func (g *GorillaS3) uploadWithRetry(key string, data []byte) error {
+func (g *GorillaS3) uploadWithRetry(key string, data []byte, timeout time.Duration, backoff time.Duration) error {
 	var lastErr error
 	for attempt := 0; attempt <= g.MaxRetries; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), g.UploadTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		err := g.uploadOnce(ctx, key, data)
 		cancel()
 		if err == nil {
@@ -233,7 +236,7 @@ func (g *GorillaS3) uploadWithRetry(key string, data []byte) error {
 			}
 		}
 		if attempt < g.MaxRetries {
-			time.Sleep(time.Duration(attempt+1) * g.RetryBackoff)
+			time.Sleep(time.Duration(attempt+1) * backoff)
 		}
 	}
 	return fmt.Errorf("upload failed after %d retries: %w", g.MaxRetries, lastErr)
