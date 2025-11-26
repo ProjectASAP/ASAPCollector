@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"sync"
 
 	"github.com/DataDog/sketches-go/ddsketch"
 	sketchpb "github.com/DataDog/sketches-go/ddsketch/pb/sketchpb"
@@ -32,6 +33,30 @@ type aggregate struct {
 	tags   map[string]string
 	fields map[string]*seriesData
 }
+
+type zeroPool struct {
+	pool sync.Pool
+}
+
+func newZeroPool() *zeroPool {
+	zp := &zeroPool{}
+	zp.pool.New = func() interface{} {
+		return &aggregate{
+			fields: make(map[string]*seriesData),
+		}
+	}
+	return zp
+}
+
+func (p *zeroPool) Get() *aggregate {
+	return p.pool.Get().(*aggregate)
+}
+
+func (p *zeroPool) Put(v *aggregate) {
+	p.pool.Put(v)
+}
+
+var aggregatePool = newZeroPool()
 
 type seriesData struct {
 	sketch *ddsketch.DDSketch
@@ -67,11 +92,7 @@ func (d *DDSketchAggregator) Add(m telegraf.Metric) {
 	id := m.HashID()
 	agg, ok := d.cache[id]
 	if !ok {
-		agg = &aggregate{
-			name:   m.Name(),
-			tags:   copyTags(m.Tags()),
-			fields: make(map[string]*seriesData),
-		}
+		agg = acquireAggregate(m.Name(), m.Tags())
 		d.cache[id] = agg
 	}
 
@@ -149,12 +170,35 @@ func (d *DDSketchAggregator) Push(acc telegraf.Accumulator) {
 }
 
 func (d *DDSketchAggregator) Reset() {
-	d.cache = make(map[uint64]*aggregate)
+	if d.cache == nil {
+		d.cache = make(map[uint64]*aggregate)
+		return
+	}
+	for id, agg := range d.cache {
+		releaseAggregate(agg)
+		delete(d.cache, id)
+	}
 }
 
 func serializeSketch(sk *ddsketch.DDSketch) ([]byte, error) {
 	var protoSketch *sketchpb.DDSketch = sk.ToProto()
 	return proto.Marshal(protoSketch)
+}
+
+func acquireAggregate(name string, tags map[string]string) *aggregate {
+	agg := aggregatePool.Get()
+	agg.name = name
+	agg.tags = copyTags(tags)
+	return agg
+}
+
+func releaseAggregate(agg *aggregate) {
+	for k := range agg.fields {
+		delete(agg.fields, k)
+	}
+	agg.name = ""
+	agg.tags = nil
+	aggregatePool.Put(agg)
 }
 
 func copyTags(tags map[string]string) map[string]string {
