@@ -2,14 +2,11 @@
 package countmin
 
 import (
-	"bytes"
 	_ "embed"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"hash"
 	"io"
-	"math"
 	"sort"
 	"strings"
 
@@ -25,9 +22,6 @@ var sampleConfig string
 const (
 	defaultRows    = 3
 	defaultColumns = 4096
-
-	countMinMagic   = 0x434d5331 // "CMS1"
-	countMinVersion = 1
 )
 
 type CountMinSketchAggregator struct {
@@ -48,7 +42,7 @@ type CountMinSketchAggregator struct {
 type aggregate struct {
 	measurement string
 	groupTags   map[string]string
-	sketches    map[string]*countMinSketch
+	sketches    map[string]*sketchutil.CountMinSketch
 }
 
 func (*CountMinSketchAggregator) SampleConfig() string {
@@ -112,7 +106,7 @@ func (c *CountMinSketchAggregator) Add(m telegraf.Metric) {
 		agg = &aggregate{
 			measurement: m.Name(),
 			groupTags:   copyTags(groupTags),
-			sketches:    make(map[string]*countMinSketch),
+			sketches:    make(map[string]*sketchutil.CountMinSketch),
 		}
 		c.cache[cacheKey] = agg
 	}
@@ -132,7 +126,7 @@ func (c *CountMinSketchAggregator) Add(m telegraf.Metric) {
 		if !ok {
 			derived := deriveSeed(c.Seed, agg.measurement, tagKey)
 			var err error
-			sk, err = newCountMinSketch(c.Rows, c.Columns, derived, c.TopK)
+			sk, err = sketchutil.NewCountMinSketch(c.Rows, c.Columns, derived, c.TopK)
 			if err != nil {
 				if c.Log != nil {
 					c.Log.Errorf("countmin: create sketch for %s/%s failed: %v", agg.measurement, tagKey, err)
@@ -204,115 +198,6 @@ func (c *CountMinSketchAggregator) effectiveTagKeys(all map[string]string) []str
 	return keys
 }
 
-type countMinSketch struct {
-	rows   int
-	cols   int
-	total  float64
-	table  []float32
-	salts  []uint64
-	hashes []hash.Hash64
-	topk   *sketchutil.TopKHeap
-}
-
-func newCountMinSketch(rows, cols int, seed uint64, topk int) (*countMinSketch, error) {
-	if rows <= 0 || cols <= 0 {
-		return nil, fmt.Errorf("countmin: invalid dimensions rows=%d cols=%d", rows, cols)
-	}
-	cms := &countMinSketch{
-		rows:   rows,
-		cols:   cols,
-		table:  make([]float32, rows*cols),
-		salts:  make([]uint64, rows),
-		hashes: make([]hash.Hash64, rows),
-		topk:   sketchutil.NewTopKHeap(topk),
-	}
-	for i := 0; i < rows; i++ {
-		cms.salts[i] = mixSeed(seed, uint64(i))
-		cms.hashes[i] = xxhash.New()
-	}
-	return cms, nil
-}
-
-func (c *countMinSketch) Insert(key string, weight float64) {
-	if weight == 0 {
-		return
-	}
-	estimate := math.MaxFloat64
-	for row := 0; row < c.rows; row++ {
-		h := c.hashes[row]
-		h.Reset()
-		var saltBuf [8]byte
-		binary.LittleEndian.PutUint64(saltBuf[:], c.salts[row])
-		h.Write(saltBuf[:])
-		io.WriteString(h, key)
-		idx := int(h.Sum64() % uint64(c.cols))
-		c.table[row*c.cols+idx] += float32(weight)
-		value := float64(c.table[row*c.cols+idx])
-		if value < estimate {
-			estimate = value
-		}
-	}
-	c.total += weight
-	if estimate == math.MaxFloat64 {
-		estimate = 0
-	}
-	if c.topk != nil {
-		c.topk.Update(key, estimate)
-	}
-}
-
-func (c *countMinSketch) Rows() int {
-	return c.rows
-}
-
-func (c *countMinSketch) Columns() int {
-	return c.cols
-}
-
-func (c *countMinSketch) Total() float64 {
-	return c.total
-}
-
-func (c *countMinSketch) TopKEntries() []sketchutil.TopKEntry {
-	if c.topk == nil {
-		return nil
-	}
-	return c.topk.Entries()
-}
-
-func (c *countMinSketch) MarshalBinary() ([]byte, error) {
-	buf := &bytes.Buffer{}
-	if err := binary.Write(buf, binary.BigEndian, uint32(countMinMagic)); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.BigEndian, uint16(countMinVersion)); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.BigEndian, uint16(c.rows)); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.BigEndian, uint32(c.cols)); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.BigEndian, c.total); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.BigEndian, uint16(len(c.salts))); err != nil {
-		return nil, err
-	}
-	for _, salt := range c.salts {
-		if err := binary.Write(buf, binary.BigEndian, salt); err != nil {
-			return nil, err
-		}
-	}
-	for _, v := range c.table {
-		if err := binary.Write(buf, binary.BigEndian, v); err != nil {
-			return nil, err
-		}
-	}
-	return buf.Bytes(), nil
-}
-
 func aggregateKey(measurement string, tags map[string]string) string {
 	if len(tags) == 0 {
 		return measurement
@@ -368,17 +253,6 @@ func deriveSeed(base uint64, parts ...string) uint64 {
 		io.WriteString(h, part)
 	}
 	return h.Sum64()
-}
-
-func mixSeed(base uint64, row uint64) uint64 {
-	const prime uint64 = 0x100000001b3
-	value := base ^ (row * prime)
-	value ^= value >> 33
-	value *= 0xff51afd7ed558ccd
-	value ^= value >> 33
-	value *= 0xc4ceb9fe1a85ec53
-	value ^= value >> 33
-	return value
 }
 
 func init() {
