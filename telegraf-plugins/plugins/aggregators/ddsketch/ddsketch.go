@@ -12,6 +12,7 @@ import (
 	sketchpb "github.com/DataDog/sketches-go/ddsketch/pb/sketchpb"
 	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/plugins/aggregators"
+	sketchutil "github.com/influxdata/telegraf/plugins/aggregators/sketchutil"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -97,7 +98,7 @@ func (d *DDSketchAggregator) Add(m telegraf.Metric) {
 	}
 
 	for _, field := range m.FieldList() {
-		value, ok := toFloat(field.Value)
+		value, ok := sketchutil.ToFloat(field.Value)
 		if !ok {
 			continue
 		}
@@ -207,37 +208,6 @@ func copyTags(tags map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
-}
-
-func toFloat(v interface{}) (float64, bool) {
-	switch value := v.(type) {
-	case float64:
-		return value, true
-	case float32:
-		return float64(value), true
-	case int64:
-		return float64(value), true
-	case int32:
-		return float64(value), true
-	case int16:
-		return float64(value), true
-	case int8:
-		return float64(value), true
-	case int:
-		return float64(value), true
-	case uint64:
-		return float64(value), true
-	case uint32:
-		return float64(value), true
-	case uint16:
-		return float64(value), true
-	case uint8:
-		return float64(value), true
-	case uint:
-		return float64(value), true
-	default:
-		return 0, false
-	}
 }
 
 func newDDSketchAggregator() telegraf.Aggregator {
