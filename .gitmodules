@@ -4,3 +4,6 @@
 [submodule "opentelemetry-collector"]
 	path = opentelemetry-collector
 	url = https://github.com/open-telemetry/opentelemetry-collector.git
+[submodule "opentelemetry-go"]
+	path = opentelemetry-go
+	url = https://github.com/open-telemetry/opentelemetry-go.git
