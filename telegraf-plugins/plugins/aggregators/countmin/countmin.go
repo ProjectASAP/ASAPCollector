@@ -5,9 +5,11 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"io"
+	"math"
 	"sort"
 	"strings"
 
@@ -35,6 +37,7 @@ type CountMinSketchAggregator struct {
 	Rows        int      `toml:"rows"`
 	Columns     int      `toml:"columns"`
 	Seed        uint64   `toml:"seed"`
+	TopK        int      `toml:"top_k"`
 
 	Log telegraf.Logger `toml:"-"`
 
@@ -64,6 +67,9 @@ func (c *CountMinSketchAggregator) Init() error {
 	}
 	if c.Seed == 0 {
 		c.Seed = 0x9e3779b185ebca87
+	}
+	if c.TopK < 0 {
+		return fmt.Errorf("countmin: top_k must be >= 0")
 	}
 	c.groupByKeys = make(map[string]struct{}, len(c.GroupBy))
 	for _, key := range c.GroupBy {
@@ -126,7 +132,7 @@ func (c *CountMinSketchAggregator) Add(m telegraf.Metric) {
 		if !ok {
 			derived := deriveSeed(c.Seed, agg.measurement, tagKey)
 			var err error
-			sk, err = newCountMinSketch(c.Rows, c.Columns, derived)
+			sk, err = newCountMinSketch(c.Rows, c.Columns, derived, c.TopK)
 			if err != nil {
 				if c.Log != nil {
 					c.Log.Errorf("countmin: create sketch for %s/%s failed: %v", agg.measurement, tagKey, err)
@@ -161,6 +167,13 @@ func (c *CountMinSketchAggregator) Push(acc telegraf.Accumulator) {
 				"columns":  int64(sketch.Columns()),
 				"count":    sketch.Total(),
 				"countmin": payload,
+			}
+			if top := sketch.TopKEntries(); len(top) > 0 {
+				if encoded, err := json.Marshal(top); err != nil {
+					acc.AddError(fmt.Errorf("countmin: serialize topk for %s/%s: %w", agg.measurement, tagKey, err))
+				} else {
+					fields["topk"] = encoded
+				}
 			}
 			tags := copyTags(agg.groupTags)
 			tags["source_measurement"] = agg.measurement
@@ -198,9 +211,10 @@ type countMinSketch struct {
 	table  []float32
 	salts  []uint64
 	hashes []hash.Hash64
+	topk   *sketchutil.TopKHeap
 }
 
-func newCountMinSketch(rows, cols int, seed uint64) (*countMinSketch, error) {
+func newCountMinSketch(rows, cols int, seed uint64, topk int) (*countMinSketch, error) {
 	if rows <= 0 || cols <= 0 {
 		return nil, fmt.Errorf("countmin: invalid dimensions rows=%d cols=%d", rows, cols)
 	}
@@ -210,6 +224,7 @@ func newCountMinSketch(rows, cols int, seed uint64) (*countMinSketch, error) {
 		table:  make([]float32, rows*cols),
 		salts:  make([]uint64, rows),
 		hashes: make([]hash.Hash64, rows),
+		topk:   sketchutil.NewTopKHeap(topk),
 	}
 	for i := 0; i < rows; i++ {
 		cms.salts[i] = mixSeed(seed, uint64(i))
@@ -222,6 +237,7 @@ func (c *countMinSketch) Insert(key string, weight float64) {
 	if weight == 0 {
 		return
 	}
+	estimate := math.MaxFloat64
 	for row := 0; row < c.rows; row++ {
 		h := c.hashes[row]
 		h.Reset()
@@ -231,8 +247,18 @@ func (c *countMinSketch) Insert(key string, weight float64) {
 		io.WriteString(h, key)
 		idx := int(h.Sum64() % uint64(c.cols))
 		c.table[row*c.cols+idx] += float32(weight)
+		value := float64(c.table[row*c.cols+idx])
+		if value < estimate {
+			estimate = value
+		}
 	}
 	c.total += weight
+	if estimate == math.MaxFloat64 {
+		estimate = 0
+	}
+	if c.topk != nil {
+		c.topk.Update(key, estimate)
+	}
 }
 
 func (c *countMinSketch) Rows() int {
@@ -245,6 +271,13 @@ func (c *countMinSketch) Columns() int {
 
 func (c *countMinSketch) Total() float64 {
 	return c.total
+}
+
+func (c *countMinSketch) TopKEntries() []sketchutil.TopKEntry {
+	if c.topk == nil {
+		return nil
+	}
+	return c.topk.Entries()
 }
 
 func (c *countMinSketch) MarshalBinary() ([]byte, error) {
