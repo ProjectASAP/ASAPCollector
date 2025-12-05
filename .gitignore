@@ -33,3 +33,6 @@ go.work.sum
 
 benchmarks/results/*
 benchmarks/__pycache__/*
+
+# Local checkouts
+opentelemetry-go
