@@ -5,7 +5,13 @@ package aggregate
 
 import (
 	"context"
+	"flag"
+	"fmt"
+	"math/rand"
+	"runtime"
+	"runtime/metrics"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -15,6 +21,13 @@ import (
 )
 
 const testDDSketchAccuracy = 0.01
+
+var (
+	ddsketchThroughputSeries    = flag.Int("ddsketch.test.throughput.series", 64, "Number of unique attribute sets for throughput simulation")
+	ddsketchThroughputScrapes   = flag.Int("ddsketch.test.throughput.scrapes", 200, "Number of scrape loops used in throughput simulation")
+	ddsketchThroughputIntervals = flag.Int("ddsketch.test.throughput.intervals", 5, "Number of consecutive collect intervals for throughput simulation")
+	ddsketchLatencyMeasurements = flag.Int("ddsketch.test.latency.measurements", 10000, "Number of individual measurements for latency sampling")
+)
 
 func TestDDSketchDelta(t *testing.T) {
 	c := new(clock)
@@ -27,16 +40,31 @@ func TestDDSketchDelta(t *testing.T) {
 		AggregationLimit: 3,
 	}.DDSketch(testDDSketchAccuracy, false, false)
 
+	aliceCheckout := attribute.NewSet(
+		userAlice,
+		adminTrue,
+		attribute.String("service", "checkout"),
+		attribute.String("region", "us-east-1"),
+		attribute.String("endpoint", "/cart/submit"),
+	)
+	bobInventory := attribute.NewSet(
+		userBob,
+		adminFalse,
+		attribute.String("service", "inventory"),
+		attribute.String("region", "eu-west-1"),
+		attribute.String("endpoint", "/stock/update"),
+	)
+
 	got := new(metricdata.Aggregation)
 
 	require.Equal(t, 0, comp(got))
 
 	record(meas, []arg[float64]{
-		{ctx, 2, alice},
-		{ctx, 10, bob},
-		{ctx, 2, alice},
-		{ctx, 2, alice},
-		{ctx, 10, bob},
+		{ctx, 2, aliceCheckout},
+		{ctx, 10, bobInventory},
+		{ctx, 2, aliceCheckout},
+		{ctx, 2, aliceCheckout},
+		{ctx, 10, bobInventory},
 	})
 	require.Equal(t, 2, comp(got))
 	agg := (*got).(metricdata.DDSketch[float64])
@@ -152,6 +180,210 @@ func TestDDSketchAggregationEquality(t *testing.T) {
 	metricdatatest.AssertAggregationsEqual(t, agg, agg)
 }
 
+func TestDDSketchInsertThroughput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping throughput simulation in short mode")
+	}
+
+	numSeries := *ddsketchThroughputSeries
+	scrapes := *ddsketchThroughputScrapes
+	if numSeries <= 0 || scrapes <= 0 {
+		t.Fatalf("invalid configuration numSeries=%d scrapes=%d", numSeries, scrapes)
+	}
+
+	ctx := context.Background()
+	builder := Builder[float64]{
+		Temporality:      metricdata.DeltaTemporality,
+		Filter:           attrFltr,
+		AggregationLimit: numSeries + 8,
+	}
+	meas, comp := builder.DDSketch(testDDSketchAccuracy, false, false)
+
+	attrSets := make([]attribute.Set, numSeries)
+	rnd := rand.New(rand.NewSource(42))
+	for i := range attrSets {
+		attrSets[i] = attribute.NewSet(
+			attribute.String("service", fmt.Sprintf("svc-%d", i%8)),
+			attribute.String("region", fmt.Sprintf("region-%d", i%4)),
+			attribute.String("instance", fmt.Sprintf("instance-%d", i)),
+			attribute.String("endpoint", fmt.Sprintf("/api/%d", rnd.Intn(32))),
+		)
+	}
+
+	totalPoints := numSeries * scrapes
+	if totalPoints == 0 {
+		t.Fatalf("no points to measure numSeries=%d scrapes=%d", numSeries, scrapes)
+	}
+
+	var startMem runtime.MemStats
+	runtime.ReadMemStats(&startMem)
+	cpuStart := sampleProcessCPUSeconds()
+
+	start := time.Now()
+	for i := 0; i < scrapes; i++ {
+		for j := 0; j < numSeries; j++ {
+			value := float64((i*97 + j) % 4096)
+			meas(ctx, value, attrSets[j])
+		}
+	}
+	duration := time.Since(start)
+
+	cpuSeconds := sampleProcessCPUSeconds() - cpuStart
+	var endMem runtime.MemStats
+	runtime.ReadMemStats(&endMem)
+
+	throughput := float64(totalPoints) / duration.Seconds()
+	avgLatency := duration / time.Duration(totalPoints)
+	heapDelta := int64(endMem.Alloc) - int64(startMem.Alloc)
+	objDelta := int64(endMem.HeapObjects) - int64(startMem.HeapObjects)
+
+	t.Logf(
+		"series=%d scrapes=%d points=%d duration=%s throughput=%.2f samples/s avg-latency=%s cpu=%.4fs heap-delta=%dB heap-objects=%d",
+		numSeries,
+		scrapes,
+		totalPoints,
+		duration,
+		throughput,
+		avgLatency,
+		cpuSeconds,
+		heapDelta,
+		objDelta,
+	)
+
+	got := new(metricdata.Aggregation)
+	comp(got)
+}
+
+func TestDDSketchThroughputMultiInterval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multi-interval throughput simulation in short mode")
+	}
+
+	numSeries := *ddsketchThroughputSeries
+	scrapes := *ddsketchThroughputScrapes
+	intervals := *ddsketchThroughputIntervals
+	if numSeries <= 0 || scrapes <= 0 || intervals <= 0 {
+		t.Fatalf("invalid configuration series=%d scrapes=%d intervals=%d", numSeries, scrapes, intervals)
+	}
+
+	ctx := context.Background()
+	meas, comp := Builder[float64]{
+		Temporality:      metricdata.DeltaTemporality,
+		Filter:           attrFltr,
+		AggregationLimit: numSeries + 8,
+	}.DDSketch(testDDSketchAccuracy, false, false)
+
+	attrSets := make([]attribute.Set, numSeries)
+	rnd := rand.New(rand.NewSource(42))
+	for i := range attrSets {
+		attrSets[i] = attribute.NewSet(
+			attribute.String("service", fmt.Sprintf("svc-%d", i%8)),
+			attribute.String("region", fmt.Sprintf("region-%d", i%4)),
+			attribute.String("instance", fmt.Sprintf("instance-%d", i)),
+			attribute.String("endpoint", fmt.Sprintf("/api/%d", rnd.Intn(32))),
+		)
+	}
+
+	pointsPerInterval := numSeries * scrapes
+	totalPoints := pointsPerInterval * intervals
+
+	var startMem runtime.MemStats
+	runtime.ReadMemStats(&startMem)
+	cpuStart := sampleProcessCPUSeconds()
+
+	totalDuration := time.Duration(0)
+	for interval := 0; interval < intervals; interval++ {
+		iterStart := time.Now()
+		for i := 0; i < scrapes; i++ {
+			for j := 0; j < numSeries; j++ {
+				value := float64((interval*scrapes*37 + i*97 + j) % 4096)
+				meas(ctx, value, attrSets[j])
+			}
+		}
+		iterDuration := time.Since(iterStart)
+		totalDuration += iterDuration
+
+		var agg metricdata.Aggregation
+		comp(&agg) // drain the interval into a DDSketch aggregation
+
+		t.Logf(
+			"interval=%d duration=%s throughput=%.2f samples/s",
+			interval,
+			iterDuration,
+			float64(pointsPerInterval)/iterDuration.Seconds(),
+		)
+	}
+
+	cpuSeconds := sampleProcessCPUSeconds() - cpuStart
+	var endMem runtime.MemStats
+	runtime.ReadMemStats(&endMem)
+
+	t.Logf(
+		"multi-interval summary series=%d scrapes/interval=%d intervals=%d points=%d total-duration=%s avg-throughput=%.2f samples/s cpu=%.4fs heap-delta=%dB heap-objects=%d",
+		numSeries,
+		scrapes,
+		intervals,
+		totalPoints,
+		totalDuration,
+		float64(totalPoints)/totalDuration.Seconds(),
+		cpuSeconds,
+		int64(endMem.Alloc)-int64(startMem.Alloc),
+		int64(endMem.HeapObjects)-int64(startMem.HeapObjects),
+	)
+}
+
+func TestDDSketchLatencyPerMeasurement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping latency sampling in short mode")
+	}
+
+	count := *ddsketchLatencyMeasurements
+	if count <= 0 {
+		t.Fatalf("invalid latency measurement count %d", count)
+	}
+
+	ctx := context.Background()
+	meas, _ := Builder[float64]{
+		Temporality:      metricdata.DeltaTemporality,
+		Filter:           attrFltr,
+		AggregationLimit: 4,
+	}.DDSketch(testDDSketchAccuracy, false, false)
+
+	attrs := attribute.NewSet(
+		attribute.String("service", "latency-analysis"),
+		attribute.String("region", "test"),
+		attribute.String("instance", "latency-node"),
+	)
+
+	var startMem runtime.MemStats
+	runtime.ReadMemStats(&startMem)
+	cpuStart := sampleProcessCPUSeconds()
+	start := time.Now()
+
+	for i := 0; i < count; i++ {
+		meas(ctx, float64(i%2048), attrs)
+	}
+
+	total := time.Since(start)
+	cpuSeconds := sampleProcessCPUSeconds() - cpuStart
+	var endMem runtime.MemStats
+	runtime.ReadMemStats(&endMem)
+
+	avgLatency := total / time.Duration(count)
+	throughput := float64(count) / total.Seconds()
+	memPerRecord := float64(endMem.TotalAlloc-startMem.TotalAlloc) / float64(count)
+
+	t.Logf(
+		"records=%d duration=%s avg-latency=%s throughput=%.2f records/s cpu=%.4fs mem/record=%.2fB",
+		count,
+		total,
+		avgLatency,
+		throughput,
+		cpuSeconds,
+		memPerRecord,
+	)
+}
+
 func record[N int64 | float64](meas Measure[N], inputs []arg[N]) {
 	for _, in := range inputs {
 		meas(in.ctx, in.value, in.attr)
@@ -180,4 +412,17 @@ func assertExtremaMissing[N int64 | float64](t *testing.T, extrema metricdata.Ex
 	t.Helper()
 	_, ok := extrema.Value()
 	require.False(t, ok, "expected extrema to be unset")
+}
+
+// duration captures wall-clock time (time.Since(start)), so it includes everything—actual work, time waiting on the scheduler, blocking syscalls, idle time. sampleProcessCPUSeconds reads the runtime’s /cpu/classes/total:cpu-seconds, which accumulates how much CPU time the process actually consumed. That excludes idle time: if the test is mostly waiting or preempted, wall time goes up but CPU seconds stay low. Comparing both tells you whether the workload is CPU-bound (values similar) or waiting/blocked (duration ≫ CPU seconds).
+func sampleProcessCPUSeconds() float64 {
+	samples := []metrics.Sample{
+		{Name: "/cpu/classes/total:cpu-seconds"},
+	}
+	metrics.Read(samples)
+	v := samples[0].Value
+	if v.Kind() == metrics.KindFloat64 {
+		return v.Float64()
+	}
+	return 0
 }
