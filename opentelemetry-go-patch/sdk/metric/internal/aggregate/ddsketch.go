@@ -99,6 +99,7 @@ func (d *ddSketchValues[N]) newSeries(attr attribute.Set, value N) *ddSketchSeri
 	return series
 }
 
+// Per time series, allocate a DDSketch and add the value to it.
 func (d *ddSketchValues[N]) measure(
 	ctx context.Context,
 	value N,
