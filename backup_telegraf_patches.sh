@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_TELEGRAF="${ROOT_DIR}/telegraf"
-DEST_DIR="${ROOT_DIR}/telegraf-plugins"
+DEST_DIR="${ROOT_DIR}/telegraf-patch"
 
 copy_path() {
 	local src="$1"
