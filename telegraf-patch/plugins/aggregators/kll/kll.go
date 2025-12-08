@@ -33,11 +33,14 @@ var sampleConfig string
 func (*KLL) SampleConfig() string { return sampleConfig; }
 
 func (kll *KLL) Init() error {
-	// TODO: sanitize inputs!
+	if kll.K < 2 { return fmt.Errorf("Invalid Argument. k must be >= 2 (k=%d)", kll.K); }
 
 	kll.cache = make(map[uint64]*metric);
 	kll.suffixes = make(map[float64]string);
-	for _, q := range kll.Quantiles { kll.suffixes[q] = fmt.Sprintf("_p%d", int(q * 100)); }
+	for _, q := range kll.Quantiles {
+		if q < 0 || q > 1 { return fmt.Errorf("Invalid Argument. Quantiles must be in [0, 1] (q=%f)", q); }
+		kll.suffixes[q] = fmt.Sprintf("_p%d", int(q * 100));
+	}
 
 	return nil;
 }
