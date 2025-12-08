@@ -36,3 +36,7 @@ benchmarks/__pycache__/*
 
 # Local checkouts
 opentelemetry-go
+
+# Telegraf artifacts
+config.toml
+out.json
