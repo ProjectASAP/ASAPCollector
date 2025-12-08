@@ -7,11 +7,12 @@ import (
 	"slices"
 	"github.com/influxdata/telegraf"
 	"github.com/influxdata/telegraf/plugins/aggregators"
+	"github.com/zzylol/go-kll"
 )
 
 type quantile struct {
 	seen []float64; // for debugging, save the seen values
-	sketch *Sketch;
+	sketch *kll.Sketch;
 }
 
 type metric struct {
@@ -32,28 +33,28 @@ type KLL struct {
 var sampleConfig string
 func (*KLL) SampleConfig() string { return sampleConfig; }
 
-func (kll *KLL) Init() error {
-	if kll.K < 2 { return fmt.Errorf("Invalid Argument. k must be >= 2 (k=%d)", kll.K); }
+func (k *KLL) Init() error {
+	if k.K < 2 { return fmt.Errorf("Invalid Argument. k must be >= 2 (k=%d)", k.K); }
 
-	kll.cache = make(map[uint64]*metric);
-	kll.suffixes = make(map[float64]string);
-	for _, q := range kll.Quantiles {
+	k.cache = make(map[uint64]*metric);
+	k.suffixes = make(map[float64]string);
+	for _, q := range k.Quantiles {
 		if q < 0 || q > 1 { return fmt.Errorf("Invalid Argument. Quantiles must be in [0, 1] (q=%f)", q); }
-		kll.suffixes[q] = fmt.Sprintf("_p%d", int(q * 100));
+		k.suffixes[q] = fmt.Sprintf("_p%d", int(q * 100));
 	}
 
 	return nil;
 }
 
 // for each numeric field in each metric, update the backing KLL sketch
-func (kll *KLL) Add(in telegraf.Metric) {
+func (k *KLL) Add(in telegraf.Metric) {
 	var id uint64 = in.HashID();
 
 	// get saved metric
-	m, ok := kll.cache[id];
+	m, ok := k.cache[id];
 	if !ok {
-		kll.cache[id] = &metric{name: in.Name(), fields: make(map[string]*quantile)};
-		m = kll.cache[id];
+		k.cache[id] = &metric{name: in.Name(), fields: make(map[string]*quantile)};
+		m = k.cache[id];
 	}
 
 	// for each field, get associated sketch
@@ -76,29 +77,29 @@ func (kll *KLL) Add(in telegraf.Metric) {
 		// get sketch
 		sketch, ok := m.fields[field.Key];
 		if !ok {
-			m.fields[field.Key] = &quantile{seen: nil, sketch: New(kll.K)};
-			if kll.WriteSeen { m.fields[field.Key].seen = make([]float64, 0); }
+			m.fields[field.Key] = &quantile{seen: nil, sketch: kll.New(k.K)};
+			if k.WriteSeen { m.fields[field.Key].seen = make([]float64, 0); }
 
 			sketch = m.fields[field.Key];
 		}
 
-		if kll.WriteSeen { sketch.seen = append(sketch.seen, val); }
+		if k.WriteSeen { sketch.seen = append(sketch.seen, val); }
 
 		sketch.sketch.Update(val);
 	}
 }
 
-func (kll *KLL) Push(acc telegraf.Accumulator) {
-	for _, m := range kll.cache {
+func (k *KLL) Push(acc telegraf.Accumulator) {
+	for _, m := range k.cache {
 		out := make(map[string]any);
 
 		fields := m.fields;
 		for name, sketch := range fields {
 			// get the desired quantile
 			cdf := sketch.sketch.CDF();
-			for q, str := range kll.suffixes { out[name + str] = cdf.Query(q); }
+			for q, str := range k.suffixes { out[name + str] = cdf.Query(q); }
 
-			if kll.WriteSeen {
+			if k.WriteSeen {
 				slices.Sort(sketch.seen)
 				out[name + "_seen"] = fmt.Sprintf("%v", sketch.seen);
 			}
@@ -108,11 +109,11 @@ func (kll *KLL) Push(acc telegraf.Accumulator) {
 	}
 }
 
-func (kll *KLL) Reset() {
-	for _, m := range kll.cache {
-		for k := range m.fields {
-			if kll.WriteSeen { clear(m.fields[k].seen); }
-			m.fields[k].sketch = New(kll.K);
+func (k *KLL) Reset() {
+	for _, m := range k.cache {
+		for key := range m.fields {
+			if k.WriteSeen { clear(m.fields[key].seen); }
+			m.fields[key].sketch = kll.New(k.K);
 		}
 	}
 }
