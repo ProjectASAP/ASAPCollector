@@ -29,10 +29,14 @@ go.work.sum
 
 # Editor/IDE
 # .idea/
-# .vscode/
+.vscode/
 
 benchmarks/results/*
 benchmarks/__pycache__/*
 
 # Local checkouts
 opentelemetry-go
+
+# Telegraf artifacts
+config.toml
+out.json

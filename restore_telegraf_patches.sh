@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_ROOT="${ROOT_DIR}/telegraf-plugins/plugins"
+SRC_ROOT="${ROOT_DIR}/telegraf-patch/plugins"
 DEST_ROOT="${ROOT_DIR}/telegraf/plugins"
 
 if [[ ! -d "${SRC_ROOT}" ]]; then
@@ -16,10 +16,9 @@ copied=0
 for path in "${SRC_ROOT}"/*; do
 	rel="$(basename "${path}")"
 	dest="${DEST_ROOT}/${rel}"
-	rm -rf "${dest}"
-	cp -R "${path}" "${dest}"
+	cp -R -T "${path}" "${dest}"
 	echo "Restored ${rel} into ${dest}"
 	copied=$((copied + 1))
 done
 
-echo "Restored ${copied} items from telegraf-plugins/plugins into telegraf/plugins/"
+echo "Restored ${copied} items from telegraf-patch/plugins into telegraf/plugins/"
