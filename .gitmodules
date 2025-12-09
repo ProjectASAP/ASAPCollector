@@ -1,9 +1,6 @@
 [submodule "telegraf"]
 	path = telegraf
 	url = https://github.com/influxdata/telegraf.git
-[submodule "opentelemetry-collector"]
-	path = opentelemetry-collector
-	url = https://github.com/open-telemetry/opentelemetry-collector.git
 [submodule "opentelemetry-go"]
 	path = opentelemetry-go
 	url = https://github.com/open-telemetry/opentelemetry-go.git
