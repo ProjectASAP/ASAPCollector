@@ -31,8 +31,8 @@ go.work.sum
 # .idea/
 .vscode/
 
-benchmarks/results/*
-benchmarks/__pycache__/*
+telegraf_benchmarks/results/*
+telegraf_benchmarks/__pycache__/*
 
 # Local checkouts
 opentelemetry-go
