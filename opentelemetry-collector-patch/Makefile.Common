@@ -1,0 +1,105 @@
+SHELL = /bin/bash
+# ALL_PKGS is the list of all packages where ALL_SRC files reside.
+ALL_PKGS := $(sort $(shell go list ./...))
+# COVER_PKGS is the list of packages to include in the coverage
+COVER_PKGS := $(shell go list ./... | tr "\n" ",")
+
+CURR_MOD := $(shell go list -m | tr '/' '-' )
+
+GOCMD?= go
+GOOS := $(shell $(GOCMD) env GOOS)
+GOARCH := $(shell $(GOCMD) env GOARCH)
+GOTEST_TIMEOUT?=240s
+# -race is not supported on windows arm64
+GOTEST_OPT?= -timeout $(GOTEST_TIMEOUT) $(if $(and $(filter windows,$(GOOS)), $(filter arm64,$(GOARCH))),, -race)
+GOFMT := $(shell $(GOCMD) env GOROOT)/bin/gofmt
+
+# SRC_ROOT is the top of the source tree.
+SRC_ROOT := $(shell git rev-parse --show-toplevel)
+
+TOOLS_MOD_DIR   := $(SRC_ROOT)/internal/tools
+TOOLS_MOD_FILE  := $(TOOLS_MOD_DIR)/go.mod
+GO_TOOL         := $(GOCMD) tool -modfile $(TOOLS_MOD_FILE)
+CHLOGGEN_CONFIG := .chloggen/config.yaml
+# no trailing slash
+JUNIT_OUT_DIR ?= $(TOOLS_MOD_DIR)/testresults
+
+.PHONY: test
+test:
+	$(GO_TOOL) gotestsum --packages="./..." -- $(GOTEST_OPT)
+
+.PHONY: test-with-cover
+test-with-cover:
+	mkdir -p $(PWD)/coverage/unit
+	$(GO_TOOL) gotestsum \
+		--packages="./..." -- \
+		$(GOTEST_OPT) -cover -covermode=atomic -coverpkg $(COVER_PKGS) -args -test.gocoverdir="$(PWD)/coverage/unit"
+
+.PHONY: test-with-junit
+test-with-junit:
+	mkdir -p $(JUNIT_OUT_DIR)
+	$(GO_TOOL) gotestsum \
+		--packages="./..." --junitfile $(JUNIT_OUT_DIR)/$(CURR_MOD)-junit.xml -- \
+		$(GOTEST_OPT) ./...
+
+.PHONY: benchmark
+benchmark:
+	MEMBENCH=yes $(GO_TOOL) gotestsum \
+		--packages="$(ALL_PKGS)" -- \
+		-bench=. -run=notests ./... | tee benchmark.txt
+
+.PHONY: fmt
+fmt: common/gofmt common/goimports common/gofumpt
+
+# `modernize' cannot be installed as a Go tool via `go get -tool'.
+#
+# See [1] for more details.
+#
+# [1]: https://github.com/golang/go/issues/73279
+.PHONY: modernize
+modernize:
+	$(GOCMD) run \
+		golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest \
+		-fix -test -v ./...
+
+.PHONY: tidy
+tidy:
+	rm -fr go.sum
+	$(GOCMD) mod tidy -compat=1.24.0
+
+.PHONY: lint
+lint:
+	$(GO_TOOL) golangci-lint run
+
+.PHONY: common/gofmt
+common/gofmt:
+	$(GOFMT) -w -s ./
+
+.PHONY: common/goimports
+common/goimports:
+	$(GO_TOOL) goimports -w -local go.opentelemetry.io/collector ./
+
+.PHONY: common/gofumpt
+common/gofumpt:
+	$(GO_TOOL) gofumpt -l -w -extra .
+
+.PHONY: vulncheck
+vulncheck:
+	$(GO_TOOL) govulncheck ./...
+
+.PHONY: generate
+generate:
+	$(GOCMD) generate ./...
+
+.PHONY: impi
+impi:
+	$(GO_TOOL) impi \
+		--local go.opentelemetry.io/collector \
+		--scheme stdThirdPartyLocal ./...
+
+.PHONY: moddownload
+moddownload:
+	$(GOCMD) mod download
+
+timebenchmark:
+	go test -bench=. -benchtime=1s ./...
