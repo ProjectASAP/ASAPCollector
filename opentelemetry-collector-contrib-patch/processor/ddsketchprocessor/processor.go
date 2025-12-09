@@ -5,13 +5,16 @@ package ddsketchprocessor
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/DataDog/sketches-go/ddsketch"
+	"github.com/DataDog/sketches-go/ddsketch/pb/sketchpb"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 type ddsketchProcessor struct {
@@ -49,22 +52,17 @@ type sketchSeries struct {
 	attrs  pcommon.Map
 	sketch *ddsketch.DDSketch
 	count  uint64
-	sum    float64
 	start  pcommon.Timestamp
 	end    pcommon.Timestamp
+	flags  pmetric.DataPointFlags
 }
 
 func (p *ddsketchProcessor) buildDDSketchMetric(src pmetric.Metric) (pmetric.Metric, bool) {
-	var series map[string]*sketchSeries
-	switch src.Type() {
-	case pmetric.MetricTypeSum:
-		series = p.consumeNumberDataPoints(src.Sum().DataPoints())
-	case pmetric.MetricTypeGauge:
-		series = p.consumeNumberDataPoints(src.Gauge().DataPoints())
-	default:
+	if src.Type() != pmetric.MetricTypeDDSketch {
 		return pmetric.Metric{}, false
 	}
 
+	series := p.consumeDDSketchDataPoints(src.DDSketch().DataPoints())
 	if len(series) == 0 {
 		return pmetric.Metric{}, false
 	}
@@ -73,102 +71,128 @@ func (p *ddsketchProcessor) buildDDSketchMetric(src pmetric.Metric) (pmetric.Met
 	out.SetName(src.Name() + p.cfg.MetricSuffix)
 	out.SetDescription("DDSketch summary for " + src.Name())
 	out.SetUnit(src.Unit())
-	summary := out.SetEmptySummary()
 
-	dps := summary.DataPoints()
+	dst := out.SetEmptyDDSketch()
+	dst.SetAggregationTemporality(src.DDSketch().AggregationTemporality())
+
+	dps := dst.DataPoints()
 	for _, s := range series {
-		if s.count == 0 {
+		if s.sketch == nil {
 			continue
 		}
+
+		payload, err := serializeDDSketch(s.sketch)
+		if err != nil {
+			if p.logger != nil {
+				p.logger.Error("failed to serialize DDSketch", zap.Error(err))
+			}
+			continue
+		}
+
 		dp := dps.AppendEmpty()
 		s.attrs.CopyTo(dp.Attributes())
-		dp.SetCount(s.count)
-		dp.SetSum(s.sum)
 		dp.SetStartTimestamp(s.start)
 		dp.SetTimestamp(s.end)
-		quantiles := dp.QuantileValues()
-		for _, q := range p.cfg.Quantiles {
-			v, err := s.sketch.GetValueAtQuantile(q)
-			if err != nil {
-				if p.logger != nil {
-					p.logger.Debug("failed to read quantile", zap.Float64("quantile", q), zap.Error(err))
-				}
-				continue
-			}
-			qv := quantiles.AppendEmpty()
-			qv.SetQuantile(q)
-			qv.SetValue(v)
-		}
+		dp.SetCount(s.count)
+		dp.SetEncoding(pmetric.DDSketchEncodingProto)
+		dp.SetSketch(payload)
+		dp.SetFlags(s.flags)
 	}
 
+	if dps.Len() == 0 {
+		return pmetric.Metric{}, false
+	}
 	return out, true
 }
 
-func (p *ddsketchProcessor) consumeNumberDataPoints(dps pmetric.NumberDataPointSlice) map[string]*sketchSeries {
+func (p *ddsketchProcessor) consumeDDSketchDataPoints(dps pmetric.DDSketchDataPointSlice) map[string]*sketchSeries {
 	if dps.Len() == 0 {
 		return nil
 	}
 	result := make(map[string]*sketchSeries)
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
-		value, ok := numberValue(dp)
-		if !ok {
+		sk, err := decodeDDSketchDataPoint(dp)
+		if err != nil {
+			if p.logger != nil {
+				p.logger.Error("failed to decode DDSketch payload", zap.Error(err))
+			}
 			continue
 		}
+
 		key := attributesKey(dp.Attributes())
 		series := result[key]
 		if series == nil {
-			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp(), p.cfg.RelativeAccuracy, p.logger)
-			if series == nil {
-				continue
-			}
+			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
 			result[key] = series
+		} else {
+			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
 		}
-		series.observe(value, dp.StartTimestamp(), dp.Timestamp())
+		series.merge(sk, dp, p.logger)
 	}
 	return result
 }
 
-func numberValue(dp pmetric.NumberDataPoint) (float64, bool) {
-	switch dp.ValueType() {
-	case pmetric.NumberDataPointValueTypeInt:
-		return float64(dp.IntValue()), true
-	case pmetric.NumberDataPointValueTypeDouble:
-		return dp.DoubleValue(), true
-	default:
-		return 0, false
+func decodeDDSketchDataPoint(dp pmetric.DDSketchDataPoint) (*ddsketch.DDSketch, error) {
+	if dp.Encoding() != pmetric.DDSketchEncodingProto {
+		return nil, fmt.Errorf("unsupported DDSketch encoding %v", dp.Encoding())
 	}
+
+	data := dp.Sketch()
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty DDSketch payload")
+	}
+
+	var pb sketchpb.DDSketch
+	if err := proto.Unmarshal(data, &pb); err != nil {
+		return nil, fmt.Errorf("unmarshal DDSketch: %w", err)
+	}
+
+	return ddsketch.FromProto(&pb)
 }
 
-func newSketchSeries(attrs pcommon.Map, start, ts pcommon.Timestamp, accuracy float64, logger *zap.Logger) *sketchSeries {
-	sk, err := ddsketch.NewDefaultDDSketch(accuracy)
-	if err != nil {
-		if logger != nil {
-			logger.Error("failed to allocate DDSketch", zap.Error(err))
-		}
-		return nil
-	}
+func newSketchSeries(attrs pcommon.Map, start, ts pcommon.Timestamp) *sketchSeries {
 	attrCopy := pcommon.NewMap()
 	attrs.CopyTo(attrCopy)
-	series := &sketchSeries{
-		attrs:  attrCopy,
-		sketch: sk,
-		start:  start,
-		end:    ts,
+	return &sketchSeries{
+		attrs: attrCopy,
+		start: start,
+		end:   ts,
 	}
-	return series
 }
 
-func (s *sketchSeries) observe(value float64, start, ts pcommon.Timestamp) {
-	_ = s.sketch.Add(value)
-	s.count++
-	s.sum += value
+func (s *sketchSeries) updateWindow(start, ts pcommon.Timestamp) {
 	if s.start == 0 || (start != 0 && start < s.start) {
 		s.start = start
 	}
 	if ts > s.end {
 		s.end = ts
 	}
+}
+
+func (s *sketchSeries) merge(sk *ddsketch.DDSketch, dp pmetric.DDSketchDataPoint, logger *zap.Logger) {
+	if sk == nil {
+		return
+	}
+	if s.sketch == nil {
+		s.sketch = sk
+	} else if err := s.sketch.MergeWith(sk); err != nil {
+		if logger != nil {
+			logger.Error("failed to merge DDSketch", zap.Error(err))
+		}
+		return
+	}
+
+	s.count += dp.Count()
+	s.flags |= dp.Flags()
+	s.updateWindow(dp.StartTimestamp(), dp.Timestamp())
+}
+
+func serializeDDSketch(sk *ddsketch.DDSketch) ([]byte, error) {
+	if sk == nil {
+		return nil, nil
+	}
+	return proto.Marshal(sk.ToProto())
 }
 
 func attributesKey(attrs pcommon.Map) string {
