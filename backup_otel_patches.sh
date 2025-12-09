@@ -5,3 +5,4 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 "${ROOT_DIR}/backup_otel_collector_contrib_patches.sh" "$@"
 "${ROOT_DIR}/backup_otel_client_patches.sh" "$@"
+"${ROOT_DIR}/backup_otel_proto_patches.sh" "$@"
