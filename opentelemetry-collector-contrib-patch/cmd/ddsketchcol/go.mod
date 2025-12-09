@@ -45,7 +45,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grafana/regexp v0.0.0-20240518133315-a468a5bfb3bc // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.2 // indirect
-	github.com/hashicorp/go-version v1.7.0 // indirect
+	github.com/hashicorp/go-version v1.8.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.1 // indirect
@@ -170,6 +170,8 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddsk
 replace github.com/open-telemetry/opentelemetry-collector-contrib => ../../..
 
 replace go.opentelemetry.io/collector => ../../../opentelemetry-collector
+
+replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
 
 replace go.opentelemetry.io/otel => ../../../opentelemetry-go
 
