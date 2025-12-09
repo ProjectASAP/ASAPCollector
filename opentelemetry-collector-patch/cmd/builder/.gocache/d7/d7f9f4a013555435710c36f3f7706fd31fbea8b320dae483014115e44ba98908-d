@@ -1,6 +1,0 @@
-./builders.go
-./connector.go
-./exporter.go
-./extension.go
-./processor.go
-./receiver.go

@@ -1,7 +1,0 @@
-./context.go
-./logs_request.go
-./metrics_request.go
-./profiles_request.go
-./requesttest.go
-./traces_request.go
-./version_check.go

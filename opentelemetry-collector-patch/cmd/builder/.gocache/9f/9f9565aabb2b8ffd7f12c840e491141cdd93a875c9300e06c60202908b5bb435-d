@@ -1,8 +1,0 @@
-./dense_directed_matrix.go
-./dense_undirected_matrix.go
-./directed.go
-./doc.go
-./simple.go
-./undirected.go
-./weighted_directed.go
-./weighted_undirected.go

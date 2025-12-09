@@ -1,7 +1,0 @@
-./client.go
-./clientinfohandler.go
-./compress_readcloser.go
-./compression.go
-./compressor.go
-./doc.go
-./server.go

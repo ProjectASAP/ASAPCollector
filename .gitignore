@@ -40,4 +40,4 @@ opentelemetry-go
 
 # Telegraf artifacts
 config.toml
-out.json
+out.json**/.gocache

@@ -1,5 +1,0 @@
-./logs_sizer.go
-./metrics_sizer.go
-./profiles_sizer.go
-./proto_delta_sizer.go
-./traces_sizer.go

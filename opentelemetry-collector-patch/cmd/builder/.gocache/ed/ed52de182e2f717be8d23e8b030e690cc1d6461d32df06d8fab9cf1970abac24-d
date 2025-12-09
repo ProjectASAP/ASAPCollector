@@ -1,6 +1,0 @@
-./common.go
-./log.go
-./metric.go
-./profile.go
-./resource.go
-./trace.go

@@ -1,8 +1,0 @@
-./config.go
-./factory.go
-./logger.go
-./logger_tee.go
-./metrics.go
-./resource.go
-./sdk.go
-./tracer.go

@@ -1,5 +1,0 @@
-./configtest.go
-./doc.go
-./nop_host.go
-./nop_telemetry.go
-./telemetry.go

@@ -1,5 +1,0 @@
-./logs.go
-./metrics.go
-./obsreport.go
-./processor.go
-./traces.go

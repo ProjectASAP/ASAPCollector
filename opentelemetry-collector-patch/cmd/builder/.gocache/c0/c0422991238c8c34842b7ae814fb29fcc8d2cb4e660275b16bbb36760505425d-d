@@ -1,7 +1,0 @@
-./config.go
-./countmin.go
-./doc.go
-./factory.go
-./sketchmetrics.go
-./topk.go
-./util.go

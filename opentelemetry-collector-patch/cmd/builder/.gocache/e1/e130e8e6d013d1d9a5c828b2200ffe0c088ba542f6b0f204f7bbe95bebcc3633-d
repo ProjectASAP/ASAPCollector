@@ -1,6 +1,0 @@
-./config.go
-./doc.go
-./encoder.go
-./factory.go
-./otlp.go
-./otlphttp.go
