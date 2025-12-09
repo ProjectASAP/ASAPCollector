@@ -1,9 +1,5 @@
 # DataCollector
 
-This repository vendors a full Telegraf checkout as a Git submodule under
-`telegraf/` and carries the custom Gorilla aggregator/output directly inside
-that tree so you can build everything in one place.
-
 ## Cloning
 
 Clone with submodules on first checkout so the embedded Telegraf tree is pulled
@@ -21,9 +17,6 @@ If you have an existing clone, pull down the submodule once:
 cd DataCollector
 git submodule update --init --recursive
 ```
-
-After cloning, work inside `telegraf/` to build (e.g. `make telegraf`) with the
-custom Gorilla plugins already available under `telegraf/plugins/`.
 
 ## Working with the Telegraf submodule
 
