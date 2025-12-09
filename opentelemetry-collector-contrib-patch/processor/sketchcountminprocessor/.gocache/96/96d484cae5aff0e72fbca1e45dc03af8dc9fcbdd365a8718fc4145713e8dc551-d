@@ -1,0 +1,7 @@
+./build_info.go
+./component.go
+./config.go
+./doc.go
+./host.go
+./identifiable.go
+./telemetry.go

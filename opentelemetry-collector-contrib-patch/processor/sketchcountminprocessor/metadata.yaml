@@ -1,0 +1,13 @@
+type: sketchmetrics
+
+status:
+  class: processor
+  stability:
+    alpha: [metrics]
+  distributions: [contrib]
+  codeowners:
+    active: []
+
+tests:
+  config:
+    measurement: countmin

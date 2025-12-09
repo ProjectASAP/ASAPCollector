@@ -1,0 +1,7 @@
+sketchmetrics/default:
+  measurement: "countmin"
+  rows: 3
+  columns: 4096
+  seed: 11400714819323198485
+  top_k: 5
+  drop_original: false

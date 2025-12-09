@@ -1,0 +1,5 @@
+./consumer.go
+./doc.go
+./logs.go
+./metrics.go
+./traces.go

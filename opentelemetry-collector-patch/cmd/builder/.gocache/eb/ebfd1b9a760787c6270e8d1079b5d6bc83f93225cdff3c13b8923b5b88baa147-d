@@ -1,0 +1,8 @@
+./config.go
+./config_json.go
+./config_yaml.go
+./generated_config.go
+./log.go
+./metric.go
+./resource.go
+./trace.go

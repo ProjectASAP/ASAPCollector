@@ -1,0 +1,7 @@
+./aggregate.go
+./doc.go
+./exponential_histogram.go
+./histogram.go
+./lastvalue.go
+./limit.go
+./sum.go

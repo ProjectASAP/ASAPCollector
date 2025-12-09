@@ -1,0 +1,9 @@
+./doc.go
+./edges.go
+./hiter_swiss.go
+./lines.go
+./lines_map.go
+./map.go
+./nodes.go
+./nodes_map.go
+./map.s

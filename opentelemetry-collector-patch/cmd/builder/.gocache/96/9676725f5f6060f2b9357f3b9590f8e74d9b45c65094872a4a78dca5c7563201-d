@@ -1,0 +1,4 @@
+./convert.go
+./core.go
+./encoder.go
+./gen.go

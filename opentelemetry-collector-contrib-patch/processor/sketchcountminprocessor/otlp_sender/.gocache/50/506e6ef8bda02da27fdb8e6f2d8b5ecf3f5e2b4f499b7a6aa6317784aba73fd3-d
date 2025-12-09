@@ -1,0 +1,7 @@
+./doc.go
+./drop.go
+./filter.go
+./hist.go
+./rand.go
+./reservoir.go
+./storage.go

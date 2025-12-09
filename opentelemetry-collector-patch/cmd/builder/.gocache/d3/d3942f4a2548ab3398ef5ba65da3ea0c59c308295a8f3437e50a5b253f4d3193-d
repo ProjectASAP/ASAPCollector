@@ -1,0 +1,9 @@
+./conf.go
+./confmap.go
+./decoder.go
+./encoder.go
+./expand.go
+./featuregates.go
+./marshaloption.go
+./merge.go
+./unmarshaloption.go

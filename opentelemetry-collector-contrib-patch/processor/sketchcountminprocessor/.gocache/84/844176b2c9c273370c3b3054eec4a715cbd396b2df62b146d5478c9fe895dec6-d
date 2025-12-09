@@ -1,0 +1,5 @@
+./consumer.go
+./doc.go
+./err.go
+./nop.go
+./sink.go

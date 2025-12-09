@@ -1,0 +1,25 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+
+processors:
+  sketchmetrics:
+    measurement: countmin
+    tag_keys: [method, status]
+    group_by: [service.name]
+    rows: 3
+    columns: 4096
+    top_k: 5
+    drop_original: false
+
+exporters:
+  debug:
+    verbosity: detailed  # emit full metric contents
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [sketchmetrics]
+      exporters: [debug]

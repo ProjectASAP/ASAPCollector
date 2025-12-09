@@ -1,0 +1,6 @@
+./entity.go
+./entity_attribute_map.go
+./entity_map.go
+./generated_entityref.go
+./generated_entityrefslice.go
+./resource_entities.go

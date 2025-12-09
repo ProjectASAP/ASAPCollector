@@ -1,0 +1,13 @@
+./encoding.go
+./generated_logrecord.go
+./generated_logrecordslice.go
+./generated_logs.go
+./generated_resourcelogs.go
+./generated_resourcelogsslice.go
+./generated_scopelogs.go
+./generated_scopelogsslice.go
+./json.go
+./log_record_flags.go
+./logs.go
+./pb.go
+./severity_number.go

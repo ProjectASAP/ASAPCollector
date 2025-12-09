@@ -1,0 +1,6 @@
+./clientcasfilereloader.go
+./configtls.go
+./curves_nofips.go
+./doc.go
+./tpm.go
+./tpm_open_linux.go

@@ -1,0 +1,9 @@
+./config.go
+./der.go
+./importablekey.go
+./keyfile.go
+./loadablekey.go
+./mso.go
+./sealedkey.go
+./signer.go
+./tpm.go
