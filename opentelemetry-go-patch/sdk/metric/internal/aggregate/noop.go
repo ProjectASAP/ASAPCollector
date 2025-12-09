@@ -47,21 +47,16 @@ func (n *noopAggregate[N]) measure(
 	n.series[fltrAttr.Equivalent()] = &noopSeries[N]{attrs: fltrAttr}
 }
 
-func (n *noopAggregate[N]) delta(
-	dest *metricdata.Aggregation, //nolint:gocritic // The pointer is needed for the ComputeAggregation interface
-) int {
+func (n *noopAggregate[N]) delta(dest *metricdata.Aggregation) int {
 	return n.collect(dest, metricdata.DeltaTemporality, true)
 }
 
-func (n *noopAggregate[N]) cumulative(
-	dest *metricdata.Aggregation, //nolint:gocritic // The pointer is needed for the ComputeAggregation interface
-) int {
+func (n *noopAggregate[N]) cumulative(dest *metricdata.Aggregation) int {
 	return n.collect(dest, metricdata.CumulativeTemporality, false)
 }
 
-// revive:disable-next-line:flag-parameter
 func (n *noopAggregate[N]) collect(
-	dest *metricdata.Aggregation, //nolint:gocritic // The pointer is needed for the ComputeAggregation interface
+	dest *metricdata.Aggregation,
 	temporality metricdata.Temporality,
 	resetSeries bool,
 ) int {

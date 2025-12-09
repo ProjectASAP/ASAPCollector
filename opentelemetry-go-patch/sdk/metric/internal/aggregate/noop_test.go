@@ -4,6 +4,7 @@
 package aggregate
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -18,25 +19,13 @@ import (
 )
 
 var (
-	noopThroughputSeries = flag.Int(
-		"noop.test.throughput.series",
-		64,
-		"Number of unique attribute sets for noop throughput simulation",
-	)
-	noopThroughputScrapes = flag.Int(
-		"noop.test.throughput.scrapes",
-		200,
-		"Number of scrape loops used in noop throughput simulation",
-	)
-	noopLatencyMeasurements = flag.Int(
-		"noop.test.latency.measurements",
-		10000,
-		"Number of noop measurements for latency sampling",
-	)
+	noopThroughputSeries    = flag.Int("noop.test.throughput.series", 64, "Number of unique attribute sets for noop throughput simulation")
+	noopThroughputScrapes   = flag.Int("noop.test.throughput.scrapes", 200, "Number of scrape loops used in noop throughput simulation")
+	noopLatencyMeasurements = flag.Int("noop.test.latency.measurements", 10000, "Number of noop measurements for latency sampling")
 )
 
 func TestNoopDelta(t *testing.T) {
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, comp := Builder[float64]{
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
@@ -75,7 +64,7 @@ func TestNoopDelta(t *testing.T) {
 }
 
 func TestNoopCumulative(t *testing.T) {
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, comp := Builder[int64]{
 		Temporality:      metricdata.CumulativeTemporality,
 		Filter:           attrFltr,
@@ -115,7 +104,7 @@ func TestNoopInsertThroughput(t *testing.T) {
 		t.Fatalf("invalid noop throughput configuration numSeries=%d scrapes=%d", numSeries, scrapes)
 	}
 
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, comp := Builder[float64]{
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
@@ -183,7 +172,7 @@ func TestNoopLatencyPerMeasurement(t *testing.T) {
 		t.Fatalf("invalid noop latency measurement count %d", count)
 	}
 
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, _ := Builder[float64]{
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
@@ -225,11 +214,7 @@ func TestNoopLatencyPerMeasurement(t *testing.T) {
 	)
 }
 
-func findSumDataPoint[N int64 | float64](
-	t *testing.T,
-	dps []metricdata.DataPoint[N],
-	attrs attribute.Set,
-) metricdata.DataPoint[N] {
+func findSumDataPoint[N int64 | float64](t *testing.T, dps []metricdata.DataPoint[N], attrs attribute.Set) metricdata.DataPoint[N] {
 	t.Helper()
 	for _, dp := range dps {
 		if dp.Attributes.Equals(&attrs) {
