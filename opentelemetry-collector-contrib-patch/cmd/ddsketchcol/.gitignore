@@ -1,0 +1,4 @@
+*.go
+go.sum
+go.mod
+ddsketchcol
