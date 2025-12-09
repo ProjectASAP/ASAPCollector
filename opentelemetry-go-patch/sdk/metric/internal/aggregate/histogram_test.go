@@ -25,21 +25,9 @@ var (
 	bounds   = []float64{1, 5}
 	noMinMax = false
 
-	histogramThroughputSeries = flag.Int(
-		"histogram.test.throughput.series",
-		64,
-		"Number of unique attribute sets for histogram throughput simulation",
-	)
-	histogramThroughputScrapes = flag.Int(
-		"histogram.test.throughput.scrapes",
-		200,
-		"Number of scrape loops for histogram throughput simulation",
-	)
-	histogramLatencyMeasurements = flag.Int(
-		"histogram.test.latency.measurements",
-		10000,
-		"Number of histogram measurements for latency sampling",
-	)
+	histogramThroughputSeries    = flag.Int("histogram.test.throughput.series", 64, "Number of unique attribute sets for histogram throughput simulation")
+	histogramThroughputScrapes   = flag.Int("histogram.test.throughput.scrapes", 200, "Number of scrape loops for histogram throughput simulation")
+	histogramLatencyMeasurements = flag.Int("histogram.test.latency.measurements", 10000, "Number of histogram measurements for latency sampling")
 )
 
 func TestHistogram(t *testing.T) {
@@ -503,7 +491,7 @@ func TestHistogramInsertThroughput(t *testing.T) {
 		t.Fatalf("invalid histogram throughput configuration numSeries=%d scrapes=%d", numSeries, scrapes)
 	}
 
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, comp := Builder[float64]{
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
@@ -575,7 +563,7 @@ func TestHistogramLatencyPerMeasurement(t *testing.T) {
 		t.Fatalf("invalid histogram latency measurement count %d", count)
 	}
 
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, _ := Builder[float64]{
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,

@@ -4,6 +4,7 @@
 package aggregate
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -22,33 +23,17 @@ import (
 const testDDSketchAccuracy = 0.01
 
 var (
-	ddsketchThroughputSeries = flag.Int(
-		"ddsketch.test.throughput.series",
-		64,
-		"Number of unique attribute sets for throughput simulation",
-	)
-	ddsketchThroughputScrapes = flag.Int(
-		"ddsketch.test.throughput.scrapes",
-		200,
-		"Number of scrape loops used in throughput simulation",
-	)
-	ddsketchThroughputIntervals = flag.Int(
-		"ddsketch.test.throughput.intervals",
-		5,
-		"Number of consecutive collect intervals for throughput simulation",
-	)
-	ddsketchLatencyMeasurements = flag.Int(
-		"ddsketch.test.latency.measurements",
-		10000,
-		"Number of individual measurements for latency sampling",
-	)
+	ddsketchThroughputSeries    = flag.Int("ddsketch.test.throughput.series", 64, "Number of unique attribute sets for throughput simulation")
+	ddsketchThroughputScrapes   = flag.Int("ddsketch.test.throughput.scrapes", 200, "Number of scrape loops used in throughput simulation")
+	ddsketchThroughputIntervals = flag.Int("ddsketch.test.throughput.intervals", 5, "Number of consecutive collect intervals for throughput simulation")
+	ddsketchLatencyMeasurements = flag.Int("ddsketch.test.latency.measurements", 10000, "Number of individual measurements for latency sampling")
 )
 
 func TestDDSketchDelta(t *testing.T) {
 	c := new(clock)
 	t.Cleanup(c.Register())
 
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, comp := Builder[float64]{
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
@@ -139,7 +124,7 @@ func TestDDSketchCumulativeNoMinMax(t *testing.T) {
 	c := new(clock)
 	t.Cleanup(c.Register())
 
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, comp := Builder[int64]{
 		Temporality:      metricdata.CumulativeTemporality,
 		Filter:           attrFltr,
@@ -206,7 +191,7 @@ func TestDDSketchInsertThroughput(t *testing.T) {
 		t.Fatalf("invalid configuration numSeries=%d scrapes=%d", numSeries, scrapes)
 	}
 
-	ctx := t.Context()
+	ctx := context.Background()
 	builder := Builder[float64]{
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
@@ -281,7 +266,7 @@ func TestDDSketchThroughputMultiInterval(t *testing.T) {
 		t.Fatalf("invalid configuration series=%d scrapes=%d intervals=%d", numSeries, scrapes, intervals)
 	}
 
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, comp := Builder[float64]{
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
@@ -357,7 +342,7 @@ func TestDDSketchLatencyPerMeasurement(t *testing.T) {
 		t.Fatalf("invalid latency measurement count %d", count)
 	}
 
-	ctx := t.Context()
+	ctx := context.Background()
 	meas, _ := Builder[float64]{
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
@@ -405,11 +390,7 @@ func record[N int64 | float64](meas Measure[N], inputs []arg[N]) {
 	}
 }
 
-func findDDSketchDP[N int64 | float64](
-	t *testing.T,
-	dps []metricdata.DDSketchDataPoint[N],
-	attrs attribute.Set,
-) metricdata.DDSketchDataPoint[N] {
+func findDDSketchDP[N int64 | float64](t *testing.T, dps []metricdata.DDSketchDataPoint[N], attrs attribute.Set) metricdata.DDSketchDataPoint[N] {
 	t.Helper()
 	for _, dp := range dps {
 		if dp.Attributes.Equals(&attrs) {
