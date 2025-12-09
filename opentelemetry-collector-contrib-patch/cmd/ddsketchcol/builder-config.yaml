@@ -1,0 +1,25 @@
+# cmd/ddsketchcol/builder-config.yaml
+dist:
+  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/ddsketchcol
+  name: ddsketchcol
+  description: Collector distribution including only the DDSketch processor
+  output_path: ./cmd/ddsketchcol
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.141.0
+    import: go.opentelemetry.io/collector/receiver/otlpreceiver
+
+processors:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddsketchprocessor v0.141.0
+    import: github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddsketchprocessor
+    path: ./processor/ddsketchprocessor
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.141.0
+    import: go.opentelemetry.io/collector/exporter/otlpexporter
+
+replaces:
+  - github.com/open-telemetry/opentelemetry-collector-contrib => ../../..
+  - go.opentelemetry.io/collector => ../../../opentelemetry-collector
+  - go.opentelemetry.io/otel => ../../../opentelemetry-go
+  - go.opentelemetry.io/proto/otlp => ../../../opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp
