@@ -17,3 +17,10 @@ service:
       receivers: [otlp]
       processors: [ddsketch]
       exporters: [debug]
+  telemetry:
+    metrics:
+      address: "0.0.0.0:8888"   # exposes Prometheus-format metrics here
+    logs:
+      level: info               # optional: adjust log level
+    resource:
+      service.name: ddsketchcol # tags the telemetry
