@@ -1,0 +1,19 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+processors:
+  ddsketch:
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [ddsketch]
+      exporters: [debug]
