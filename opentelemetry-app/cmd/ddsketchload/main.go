@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -23,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/stats"
 )
 
 type appConfig struct {
@@ -122,13 +124,14 @@ func parseFlags() appConfig {
 }
 
 func run(ctx context.Context, cfg appConfig) error {
-	mp, shutdown, err := buildMeterProvider(ctx, cfg)
+	tracker := &trafficTracker{}
+	mp, shutdown, err := buildMeterProvider(ctx, cfg, tracker)
 	if err != nil {
 		return err
 	}
 	defer shutdown()
 
-	go reportRuntimeStats(ctx, 5*time.Second)
+	go reportRuntimeStats(ctx, tracker, 5*time.Second)
 
 	meter := mp.Meter("ddsketch.load")
 
@@ -140,13 +143,16 @@ func run(ctx context.Context, cfg appConfig) error {
 	return nil
 }
 
-func buildMeterProvider(ctx context.Context, cfg appConfig) (*sdkmetric.MeterProvider, func(), error) {
+func buildMeterProvider(ctx context.Context, cfg appConfig, tracker *trafficTracker) (*sdkmetric.MeterProvider, func(), error) {
 	clientOpts := []otlpmetricgrpc.Option{
 		otlpmetricgrpc.WithEndpoint(cfg.endpoint),
 		otlpmetricgrpc.WithDialOption(grpc.WithBlock()),
 	}
 	if cfg.insecure {
 		clientOpts = append(clientOpts, otlpmetricgrpc.WithInsecure())
+	}
+	if tracker != nil {
+		clientOpts = append(clientOpts, otlpmetricgrpc.WithDialOption(grpc.WithStatsHandler(tracker)))
 	}
 
 	exp, err := otlpmetricgrpc.New(ctx, clientOpts...)
@@ -307,13 +313,14 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-func reportRuntimeStats(ctx context.Context, interval time.Duration) {
+func reportRuntimeStats(ctx context.Context, tracker *trafficTracker, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	var usage unix.Rusage
 	lastCPU := time.Duration(0)
 	lastWall := time.Now()
+	var lastBytesOut int64
 
 	for {
 		select {
@@ -340,15 +347,57 @@ func reportRuntimeStats(ctx context.Context, interval time.Duration) {
 				cpuPercent = 100 * float64(cpuElapsed) / float64(wallElapsed)
 			}
 
-			log.Printf("runtime stats: heap_alloc=%.2fMB rss≈%.2fMB goroutines=%d cpu=%.1f%%",
-				float64(mem.Alloc)/1024.0/1024.0,
-				float64(mem.Sys)/1024.0/1024.0,
-				runtime.NumGoroutine(),
-				cpuPercent,
-			)
+			var kbPerSec float64
+			if tracker != nil && wallElapsed > 0 {
+				bytesOut := atomic.LoadInt64(&tracker.totalOutBytes)
+				bytesDelta := bytesOut - lastBytesOut
+				kbPerSec = float64(bytesDelta) / 1024.0 / wallElapsed.Seconds()
+				lastBytesOut = bytesOut
+			}
+
+			if tracker != nil {
+				log.Printf("runtime stats: heap_alloc=%.2fMB rss≈%.2fMB goroutines=%d cpu=%.1f%% bandwidth_out=%.2f KB/s",
+					float64(mem.Alloc)/1024.0/1024.0,
+					float64(mem.Sys)/1024.0/1024.0,
+					runtime.NumGoroutine(),
+					cpuPercent,
+					kbPerSec,
+				)
+			} else {
+				log.Printf("runtime stats: heap_alloc=%.2fMB rss≈%.2fMB goroutines=%d cpu=%.1f%%",
+					float64(mem.Alloc)/1024.0/1024.0,
+					float64(mem.Sys)/1024.0/1024.0,
+					runtime.NumGoroutine(),
+					cpuPercent,
+				)
+			}
 
 			lastCPU = totalCPU
 			lastWall = wallNow
 		}
 	}
 }
+
+type trafficTracker struct {
+	totalOutBytes int64
+	totalInBytes  int64
+}
+
+func (t *trafficTracker) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.Context {
+	return ctx
+}
+
+func (t *trafficTracker) HandleRPC(ctx context.Context, s stats.RPCStats) {
+	switch stat := s.(type) {
+	case *stats.OutPayload:
+		atomic.AddInt64(&t.totalOutBytes, int64(stat.Length))
+	case *stats.InPayload:
+		atomic.AddInt64(&t.totalInBytes, int64(stat.Length))
+	}
+}
+
+func (t *trafficTracker) TagConn(ctx context.Context, info *stats.ConnTagInfo) context.Context {
+	return ctx
+}
+
+func (t *trafficTracker) HandleConn(context.Context, stats.ConnStats) {}
