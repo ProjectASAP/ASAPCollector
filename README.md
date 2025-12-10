@@ -38,3 +38,50 @@ git submodule update --init --recursive
    ```bash
    git submodule update --remote telegraf
    ```
+
+Code organization
+```
+telegraf/                     # upstream InfluxData Telegraf checkout
+telegraf-patch/               # tracked overlay of our custom Telegraf changes
+telegraf_benchmarks/          # local benchmark harness that uses the submodule
+backup_telegraf_patches.sh    # copies modified submodule files into telegraf-patch/
+restore_telegraf_patches.sh   # reapplies tracked patches back into telegraf/
+```
+
+Use the restore → edit → backup flow here as well:
+1. Run `./restore_telegraf_patches.sh` after cloning or resetting the submodule.
+2. Hack and test directly inside `telegraf/`.
+3. Run `./backup_telegraf_patches.sh` so the overlay captures every modified file
+   before committing.
+
+## Working with the OpenTelemetry submodule
+
+Code organization
+```
+opentelemetry-go/                       # upstream Go SDK submodule
+opentelemetry-collector/                # upstream collector core checkout
+opentelemetry-collector-contrib/        # upstream contrib components
+opentelemetry-proto/                    # upstream OTLP proto definitions
+
+opentelemetry-go-patch/                 # tracked overlay of our SDK changes
+opentelemetry-collector-patch/          # tracked overlay of collector-core tweaks
+opentelemetry-collector-contrib-patch/  # tracked overlay of contrib-only tweaks
+opentelemetry-proto-patch/              # tracked overlay of proto changes
+
+backup_otel_*.sh / restore_otel_*.sh    # helper scripts that sync overlays <-> submodules
+```
+
+Workflow
+
+1. After cloning (or whenever submodules are reset), run `./restore_otel_patches.sh`
+   from the repo root. This copies the tracked overlay files into their matching
+   submodules so our custom code is available locally.
+2. Make changes inside the actual submodule directories (for example,
+   `opentelemetry-collector/...`). Build, test, and iterate directly against the
+   upstream layout.
+3. Before committing, run `./backup_otel_patches.sh`. The script copies every
+   modified file reported by `git status` inside the submodules into the
+   corresponding `*-patch/` overlay, which is what we check in.
+4. Repeat the restore → edit → backup cycle whenever upstream commits are pulled
+   in via `git submodule update --remote` so that local patches are always
+   reapplied cleanly.
