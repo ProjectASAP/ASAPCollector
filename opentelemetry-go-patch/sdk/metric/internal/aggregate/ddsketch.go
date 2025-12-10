@@ -29,11 +29,9 @@ type ddSketchSeries[N int64 | float64] struct {
 	max   N
 }
 
-func (s *ddSketchSeries[N]) updateStats(value N, trackMinMax, trackSum bool) {
+// revive:disable-next-line:flag-parameter
+func (s *ddSketchSeries[N]) updateStats(value N, trackMinMax bool) {
 	s.count++
-	if trackSum {
-		s.sum += value
-	}
 	if !trackMinMax {
 		return
 	}
@@ -126,7 +124,10 @@ func (d *ddSketchValues[N]) measure(
 		otel.Handle(err)
 		return
 	}
-	series.updateStats(value, !d.noMinMax, !d.noSum)
+	series.updateStats(value, !d.noMinMax)
+	if !d.noSum {
+		series.sum += value
+	}
 	series.res.Offer(ctx, value, droppedAttr)
 }
 
