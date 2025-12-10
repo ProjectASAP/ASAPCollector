@@ -9,9 +9,11 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/signal"
+	"runtime"
 	"time"
 
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sys/unix"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -109,6 +111,11 @@ func parseFlags() appConfig {
 	cfg.resourceAttrs = append(cfg.resourceAttrs, semconv.ServiceName(cfg.serviceName))
 	cfg.additionalAttrs = []attribute.KeyValue{
 		attribute.String("app", "ddsketch-load"),
+		attribute.String("env", "development"),
+		attribute.String("region", "us-central1"),
+		attribute.String("zone", "us-central1-a"),
+		attribute.String("team", "telemetry"),
+		attribute.String("version", "v1"),
 	}
 
 	return cfg
@@ -120,6 +127,8 @@ func run(ctx context.Context, cfg appConfig) error {
 		return err
 	}
 	defer shutdown()
+
+	go reportRuntimeStats(ctx, 5*time.Second)
 
 	meter := mp.Meter("ddsketch.load")
 
@@ -296,4 +305,50 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func reportRuntimeStats(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	var usage unix.Rusage
+	lastCPU := time.Duration(0)
+	lastWall := time.Now()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			var mem runtime.MemStats
+			runtime.ReadMemStats(&mem)
+
+			if err := unix.Getrusage(unix.RUSAGE_SELF, &usage); err != nil {
+				log.Printf("runtime stats: getrusage failed: %v", err)
+				continue
+			}
+
+			cpuUser := time.Duration(usage.Utime.Sec)*time.Second + time.Duration(usage.Utime.Usec)*time.Microsecond
+			cpuSys := time.Duration(usage.Stime.Sec)*time.Second + time.Duration(usage.Stime.Usec)*time.Microsecond
+			totalCPU := cpuUser + cpuSys
+
+			wallNow := time.Now()
+			wallElapsed := wallNow.Sub(lastWall)
+			cpuElapsed := totalCPU - lastCPU
+			cpuPercent := 0.0
+			if wallElapsed > 0 {
+				cpuPercent = 100 * float64(cpuElapsed) / float64(wallElapsed)
+			}
+
+			log.Printf("runtime stats: heap_alloc=%.2fMB rss≈%.2fMB goroutines=%d cpu=%.1f%%",
+				float64(mem.Alloc)/1024.0/1024.0,
+				float64(mem.Sys)/1024.0/1024.0,
+				runtime.NumGoroutine(),
+				cpuPercent,
+			)
+
+			lastCPU = totalCPU
+			lastWall = wallNow
+		}
+	}
 }
