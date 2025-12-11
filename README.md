@@ -6,7 +6,7 @@
   <caption style="caption-side: top; text-align: center;"><strong>Example deployment options</strong></caption>
   <thead>
     <tr>
-      <th>Deployment stage</th>
+      <th>Deployment stage / Example pipeline</th>
       <th>Instrumentation</th>
       <th>Agent aggregation (optional)</th>
       <th>Gateway aggregation (optional)</th>
@@ -43,6 +43,37 @@
   </tbody>
 </table>
 
+<table>
+  <caption style="caption-side: top; text-align: center;"><strong>All Possible Deployment Combinations</strong></caption>
+  <thead>
+    <tr>
+      <th>Instrumentation</th>
+      <th>Local agent </th>
+      <th>Gateway (optional)</th>
+      <th>Backend storage</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+         &bull; Prometheus client libraries<br/>
+         &bull; OpenTelemetry SDK<br/>
+         &bull; Influx Line Protocol emitters<br/>
+      </td>
+      <td>
+        &bull; OpenTelemetry Collector (agent mode scraping)<br/>
+        &bull; Telegraf scraping Prometheus endpoints
+      </td>
+      <td>
+        OpenTelemetry Collector<br/>
+        <small>Routing, auth, tail-sampling, multi-backend fan-out</small>
+      </td>
+      <td>
+        Prometheus TSDB / Thanos / Mimir / InfluxDB / IOx / VictoriaMetrics / TimescaleDB / ClickHouse / BigQuery / OTLP sinks
+      </td>
+    </tr>
+  </tbody>
+</table>
 
 ## Cloning
 
