@@ -45,7 +45,6 @@ option go_package = "go.opentelemetry.io/proto/otlp/metrics/v1";
 //            ├── Sum
 //            ├── Histogram
 //            ├── ExponentialHistogram
-//            ├── DDSketch
 //            └── Summary
 //
 // The main difference between this message and collector protocol is that
@@ -114,7 +113,7 @@ message ScopeMetrics {
 //
 // - Metric is composed of a metadata and data.
 // - Metadata part contains a name, description, unit.
-// - Data is one of the possible types (Sum, Gauge, Histogram, DDSketch, Summary).
+// - Data is one of the possible types (Sum, Gauge, Histogram, Summary).
 // - DataPoint contains timestamps, attributes, and one of the possible value type
 //   fields.
 //
@@ -122,11 +121,11 @@ message ScopeMetrics {
 //  +------------+
 //  |name        |
 //  |description |
-//  |unit        |     +----------------------------------------------------+
-//  |data        |---> |Gauge, Sum, Histogram, DDSketch, Summary, ...        |
-//  +------------+     +----------------------------------------------------+
+//  |unit        |     +------------------------------------+
+//  |data        |---> |Gauge, Sum, Histogram, Summary, ... |
+//  +------------+     +------------------------------------+
 //
-//    Data [One of Gauge, Sum, Histogram, DDSketch, Summary, ...]
+//    Data [One of Gauge, Sum, Histogram, Summary, ...]
 //  +-----------+
 //  |...        |  // Metadata about the Data.
 //  |points     |--+
@@ -208,7 +207,6 @@ message Metric {
     Histogram histogram = 9;
     ExponentialHistogram exponential_histogram = 10;
     Summary summary = 11;
-    DDSketch ddsketch = 13;
   }
 
   // Additional metadata attributes that describe the metric. [Optional].
@@ -289,19 +287,6 @@ message Summary {
   // The time series data points.
   // Note: Multiple time series may be included (same timestamp, different attributes).
   repeated SummaryDataPoint data_points = 1;
-}
-
-// DDSketch represents the type of a metric encoded with the DataDog DDSketch data structure.
-// The DDSketch payload holds an approximation of the underlying value distribution and optional
-// extrema/sum tracking, similar to the Sum and Histogram aggregations.
-message DDSketch {
-  // The time series data points.
-  // Note: Multiple time series may be included (same timestamp, different attributes).
-  repeated DDSketchDataPoint data_points = 1;
-
-  // aggregation_temporality describes if the aggregator reports delta changes
-  // since last report time, or cumulative changes since a fixed start time.
-  AggregationTemporality aggregation_temporality = 2;
 }
 
 // AggregationTemporality defines how a metric aggregator reports aggregated
@@ -401,7 +386,9 @@ message NumberDataPoint {
   reserved 1;
 
   // The set of key/value pairs that uniquely identify the timeseries from
-  // where this point belongs. The list may be empty (may contain 0 elements).
+  // where this point belongs. The list MUST be omitted (or present but empty)
+  // whenever `series_id` is non-zero, and MUST be populated when `series_id`
+  // is zero so the receiver can mint a new entry.
   // Attribute keys MUST be unique (it is not allowed to have more than one
   // attribute with the same key).
   // The behavior of software that receives duplicated keys can be unpredictable.
@@ -434,6 +421,11 @@ message NumberDataPoint {
   // Flags that apply to this specific data point.  See DataPointFlags
   // for the available flags and their meaning.
   uint32 flags = 8;
+
+  // series_id references a collector-assigned series descriptor. Receivers MUST
+  // reject the point unless exactly one of (`series_id` != 0, `attributes` populated)
+  // is true.
+  uint64 series_id = 9;
 }
 
 // HistogramDataPoint is a single data point in a timeseries that describes the
@@ -450,7 +442,9 @@ message HistogramDataPoint {
   reserved 1;
 
   // The set of key/value pairs that uniquely identify the timeseries from
-  // where this point belongs. The list may be empty (may contain 0 elements).
+  // where this point belongs. The list MUST be omitted (or present but empty)
+  // whenever `series_id` is non-zero, and MUST be populated when `series_id`
+  // is zero so the receiver can mint a new entry.
   // Attribute keys MUST be unique (it is not allowed to have more than one
   // attribute with the same key).
   // The behavior of software that receives duplicated keys can be unpredictable.
@@ -526,6 +520,11 @@ message HistogramDataPoint {
 
   // max is the maximum value over (start_time, end_time].
   optional double max = 12;
+
+  // series_id references a collector-assigned series descriptor. Receivers MUST
+  // reject the point unless exactly one of (`series_id` != 0, `attributes` populated)
+  // is true.
+  uint64 series_id = 13;
 }
 
 // ExponentialHistogramDataPoint is a single data point in a timeseries that describes the
@@ -535,7 +534,9 @@ message HistogramDataPoint {
 //
 message ExponentialHistogramDataPoint {
   // The set of key/value pairs that uniquely identify the timeseries from
-  // where this point belongs. The list may be empty (may contain 0 elements).
+  // where this point belongs. The list MUST be omitted (or present but empty)
+  // whenever `series_id` is non-zero, and MUST be populated when `series_id`
+  // is zero so the receiver can mint a new entry.
   // Attribute keys MUST be unique (it is not allowed to have more than one
   // attribute with the same key).
   // The behavior of software that receives duplicated keys can be unpredictable.
@@ -643,6 +644,11 @@ message ExponentialHistogramDataPoint {
   // expressed using the standard exponential formula as well as values that
   // have been rounded to zero.
   double zero_threshold = 14;
+
+  // series_id references a collector-assigned series descriptor. Receivers MUST
+  // reject the point unless exactly one of (`series_id` != 0, `attributes` populated)
+  // is true.
+  uint64 series_id = 15;
 }
 
 // SummaryDataPoint is a single data point in a timeseries that describes the
@@ -652,7 +658,9 @@ message SummaryDataPoint {
   reserved 1;
 
   // The set of key/value pairs that uniquely identify the timeseries from
-  // where this point belongs. The list may be empty (may contain 0 elements).
+  // where this point belongs. The list MUST be omitted (or present but empty)
+  // whenever `series_id` is non-zero, and MUST be populated when `series_id`
+  // is zero so the receiver can mint a new entry.
   // Attribute keys MUST be unique (it is not allowed to have more than one
   // attribute with the same key).
   // The behavior of software that receives duplicated keys can be unpredictable.
@@ -710,78 +718,11 @@ message SummaryDataPoint {
   // Flags that apply to this specific data point.  See DataPointFlags
   // for the available flags and their meaning.
   uint32 flags = 8;
-}
 
-// DDSketchDataPoint is a single data point that encodes a distribution using the DDSketch format.
-message DDSketchDataPoint {
-  reserved 1;
-
-  // The set of key/value pairs that uniquely identify the timeseries from
-  // where this point belongs. The list may be empty (may contain 0 elements).
-  // Attribute keys MUST be unique (it is not allowed to have more than one
-  // attribute with the same key).
-  // The behavior of software that receives duplicated keys can be unpredictable.
-  repeated opentelemetry.proto.common.v1.KeyValue attributes = 9;
-
-  // StartTimeUnixNano is optional but strongly encouraged, see the
-  // the detailed comments above Metric.
-  //
-  // Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January
-  // 1970.
-  fixed64 start_time_unix_nano = 2;
-
-  // TimeUnixNano is required, see the detailed comments above Metric.
-  //
-  // Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January
-  // 1970.
-  fixed64 time_unix_nano = 3;
-
-  // Count is the number of measurements that were aggregated into this sketch.
-  fixed64 count = 4;
-
-  // Sum is the total of all measurements aggregated for this sketch.
-  // At most one of the fields in this oneof may be set at a time.
-  oneof sum {
-    double sum_as_double = 5;
-    sfixed64 sum_as_int = 12;
-  }
-
-  // Min is the minimum value over (start_time, end_time]. Optional.
-  // At most one of the fields in this oneof may be set at a time.
-  oneof min {
-    double min_as_double = 6;
-    sfixed64 min_as_int = 13;
-  }
-
-  // Max is the maximum value over (start_time, end_time]. Optional.
-  // At most one of the fields in this oneof may be set at a time.
-  oneof max {
-    double max_as_double = 7;
-    sfixed64 max_as_int = 14;
-  }
-
-  // Serialized DDSketch payload. The encoding is described by the encoding field.
-  bytes sketch = 8;
-
-  // Encoding that describes how the sketch bytes should be decoded.
-  DDSketchEncoding encoding = 10;
-
-  // (Optional) List of exemplars collected from
-  // measurements that were used to form the data point
-  repeated Exemplar exemplars = 11;
-
-  // Flags that apply to this specific data point.  See DataPointFlags
-  // for the available flags and their meaning.
-  uint32 flags = 15;
-}
-
-// DDSketchEncoding identifies how the DDSketch payload bytes are encoded.
-enum DDSketchEncoding {
-  DDSKETCH_ENCODING_UNSPECIFIED = 0;
-
-  // DDSKETCH_ENCODING_PROTO indicates the sketch bytes contain the serialized
-  // github.com/DataDog/sketches-go/ddsketch/pb/sketchpb.DDSketch message.
-  DDSKETCH_ENCODING_PROTO = 1;
+  // series_id references a collector-assigned series descriptor. Receivers MUST
+  // reject the point unless exactly one of (`series_id` != 0, `attributes` populated)
+  // is true.
+  uint64 series_id = 9;
 }
 
 // A representation of an exemplar, which is a sample input measurement.
