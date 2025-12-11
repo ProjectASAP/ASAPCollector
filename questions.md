@@ -2,3 +2,4 @@
 2. Batch processing support for otel, telegraf?
 3. potential throughput improvement?
 4. lossy or lossless delivery guarantees?
+5. Comparison with Kafka?
