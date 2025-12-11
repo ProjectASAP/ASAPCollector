@@ -140,11 +140,13 @@ func Sum[N int64 | float64](s metricdata.Sum[N]) (*mpb.Metric_Sum, error) {
 func DataPoints[N int64 | float64](dPts []metricdata.DataPoint[N]) []*mpb.NumberDataPoint {
 	out := make([]*mpb.NumberDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		ndp := &mpb.NumberDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 		}
 		switch v := any(dPt.Value).(type) {
 		case int64:
@@ -182,8 +184,9 @@ func HistogramDataPoints[N int64 | float64](dPts []metricdata.HistogramDataPoint
 	out := make([]*mpb.HistogramDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
 		sum := float64(dPt.Sum)
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		hdp := &mpb.HistogramDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
@@ -191,6 +194,7 @@ func HistogramDataPoints[N int64 | float64](dPts []metricdata.HistogramDataPoint
 			BucketCounts:      dPt.BucketCounts,
 			ExplicitBounds:    dPt.Bounds,
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 		}
 		if v, ok := dPt.Min.Value(); ok {
 			vF64 := float64(v)
@@ -230,8 +234,9 @@ func ExponentialHistogramDataPoints[N int64 | float64](
 	out := make([]*mpb.ExponentialHistogramDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
 		sum := float64(dPt.Sum)
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		ehdp := &mpb.ExponentialHistogramDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
@@ -239,6 +244,7 @@ func ExponentialHistogramDataPoints[N int64 | float64](
 			Scale:             dPt.Scale,
 			ZeroCount:         dPt.ZeroCount,
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 
 			Positive: ExponentialHistogramDataPointBuckets(dPt.PositiveBucket),
 			Negative: ExponentialHistogramDataPointBuckets(dPt.NegativeBucket),
@@ -299,14 +305,16 @@ func DDSketchDataPoints[N int64 | float64](
 			return nil, err
 		}
 
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.DDSketchDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 		}
 
 		switch v := any(dPt.Sum).(type) {
@@ -426,13 +434,15 @@ func Summary(s metricdata.Summary) *mpb.Metric_Summary {
 func SummaryDataPoints(dPts []metricdata.SummaryDataPoint) []*mpb.SummaryDataPoint {
 	out := make([]*mpb.SummaryDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		sdp := &mpb.SummaryDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
 			Sum:               dPt.Sum,
 			QuantileValues:    QuantileValues(dPt.QuantileValues),
+			SeriesId:          seriesID,
 		}
 		out = append(out, sdp)
 	}
@@ -451,4 +461,11 @@ func QuantileValues(quantiles []metricdata.QuantileValue) []*mpb.SummaryDataPoin
 		out = append(out, quantile)
 	}
 	return out
+}
+
+func seriesIdentity(attrs []*cpb.KeyValue, seriesID uint64) ([]*cpb.KeyValue, uint64) {
+	if seriesID == 0 {
+		return attrs, 0
+	}
+	return nil, seriesID
 }
