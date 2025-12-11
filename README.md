@@ -62,7 +62,8 @@
       </td>
       <td>
         &bull; OpenTelemetry Collector (agent mode scraping)<br/>
-        &bull; Telegraf scraping Prometheus endpoints
+        &bull; Telegraf scraping Prometheus endpoints<br/>
+        &bull; Kafka<br/>
       </td>
       <td>
         OpenTelemetry Collector<br/>
