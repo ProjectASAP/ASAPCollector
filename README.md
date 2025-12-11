@@ -1,5 +1,49 @@
 # DataCollector
 
+## Metrics Collection Pipeline Deployments
+
+<table>
+  <caption style="caption-side: top; text-align: center;"><strong>Example deployment options</strong></caption>
+  <thead>
+    <tr>
+      <th>Deployment stage</th>
+      <th>Instrumentation</th>
+      <th>Agent aggregation (optional)</th>
+      <th>Gateway aggregation (optional)</th>
+      <th>Backend databases / storage</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Prometheus scrape pipeline</td>
+      <td>Prometheus client libraries</td>
+      <td>OpenTelemetry Collector (agent mode scraping or Prometheus remote_write)</td>
+      <td>OpenTelemetry Collector (gateway mode for routing, batching, export fan-out)</td>
+      <td rowspan="3">
+        Prometheus TSDB / Thanos / Mimir<br/>
+        InfluxDB / IOx / VictoriaMetrics<br/>
+        TimescaleDB / ClickHouse / BigQuery / other OTLP-compatible sinks
+      </td>
+    </tr>
+    <tr>
+      <td>Telegraf + Influx pipeline</td>
+      <td>Influx Line Protocol emitters</td>
+      <td>Telegraf Agent (local metric/log aggregation)</td>
+      <td>
+        OpenTelemetry Collector<br/>
+        <small>(via ILP receiver if available, or via intermediary like Kafka/HTTP → OTLP)</small>
+      </td>
+    </tr>
+    <tr>
+      <td>Native OTLP pipeline</td>
+      <td>OpenTelemetry SDK (OTLP exporters)</td>
+      <td>OpenTelemetry Collector (sidecar or daemonset agent)</td>
+      <td>OpenTelemetry Collector (centralized gateway: auth, routing, tail-sampling)</td>
+    </tr>
+  </tbody>
+</table>
+
+
 ## Cloning
 
 Clone with submodules on first checkout so the embedded Telegraf tree is pulled
