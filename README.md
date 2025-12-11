@@ -3,7 +3,7 @@
 ## Metrics Collection Pipeline Deployments
 
 <table>
-  <caption style="caption-side: top; text-align: center;"><strong>Example deployment options</strong></caption>
+  <caption style="caption-side: top; text-align: center;"><strong>Table 1: Example deployment options</strong></caption>
   <thead>
     <tr>
       <th>Deployment stage / Example pipeline</th>
@@ -44,7 +44,7 @@
 </table>
 
 <table>
-  <caption style="caption-side: top; text-align: center;"><strong>All Possible Deployment Combinations</strong></caption>
+  <caption style="caption-side: top; text-align: center;"><strong>Table 2: All Possible Deployment Combinations</strong></caption>
   <thead>
     <tr>
       <th>Instrumentation</th>
