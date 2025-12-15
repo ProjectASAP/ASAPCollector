@@ -106,6 +106,7 @@ func (m *DDSketchDataPoint) GetMaxAsInt() int64 {
 // DDSketchDataPoint is a single data point that encodes a distribution using the DDSketch format.
 type DDSketchDataPoint struct {
 	Attributes        []KeyValue
+	SeriesID          uint64
 	StartTimeUnixNano uint64
 	TimeUnixNano      uint64
 	Count             uint64
@@ -245,6 +246,8 @@ func CopyDDSketchDataPoint(dest, src *DDSketchDataPoint) *DDSketchDataPoint {
 		dest = NewDDSketchDataPoint()
 	}
 	dest.Attributes = CopyKeyValueSlice(dest.Attributes, src.Attributes)
+
+	dest.SeriesID = src.SeriesID
 
 	dest.StartTimeUnixNano = src.StartTimeUnixNano
 
@@ -394,6 +397,10 @@ func (orig *DDSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		}
 		dest.WriteArrayEnd()
 	}
+	if orig.SeriesID != uint64(0) {
+		dest.WriteObjectField("seriesID")
+		dest.WriteUint64(orig.SeriesID)
+	}
 	if orig.StartTimeUnixNano != uint64(0) {
 		dest.WriteObjectField("startTimeUnixNano")
 		dest.WriteUint64(orig.StartTimeUnixNano)
@@ -467,6 +474,8 @@ func (orig *DDSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 				orig.Attributes[len(orig.Attributes)-1].UnmarshalJSON(iter)
 			}
 
+		case "seriesID", "series_id":
+			orig.SeriesID = iter.ReadUint64()
 		case "startTimeUnixNano", "start_time_unix_nano":
 			orig.StartTimeUnixNano = iter.ReadUint64()
 		case "timeUnixNano", "time_unix_nano":
@@ -572,6 +581,9 @@ func (orig *DDSketchDataPoint) SizeProto() int {
 		l = orig.Attributes[i].SizeProto()
 		n += 1 + proto.Sov(uint64(l)) + l
 	}
+	if orig.SeriesID != 0 {
+		n += 2 + proto.Sov(uint64(orig.SeriesID))
+	}
 	if orig.StartTimeUnixNano != 0 {
 		n += 9
 	}
@@ -635,6 +647,13 @@ func (orig *DDSketchDataPoint) MarshalProto(buf []byte) int {
 		pos = proto.EncodeVarint(buf, pos, uint64(l))
 		pos--
 		buf[pos] = 0x4a
+	}
+	if orig.SeriesID != 0 {
+		pos = proto.EncodeVarint(buf, pos, uint64(orig.SeriesID))
+		pos--
+		buf[pos] = 0x1
+		pos--
+		buf[pos] = 0x80
 	}
 	if orig.StartTimeUnixNano != 0 {
 		pos -= 8
@@ -754,6 +773,18 @@ func (orig *DDSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
+		case 16:
+			if wireType != proto.WireTypeVarint {
+				return fmt.Errorf("proto: wrong wireType = %d for field SeriesID", wireType)
+			}
+			var num uint64
+			num, pos, err = proto.ConsumeVarint(buf, pos)
+			if err != nil {
+				return err
+			}
+
+			orig.SeriesID = uint64(num)
 
 		case 2:
 			if wireType != proto.WireTypeI64 {
@@ -966,6 +997,7 @@ func (orig *DDSketchDataPoint) UnmarshalProto(buf []byte) error {
 func GenTestDDSketchDataPoint() *DDSketchDataPoint {
 	orig := NewDDSketchDataPoint()
 	orig.Attributes = []KeyValue{{}, *GenTestKeyValue()}
+	orig.SeriesID = uint64(13)
 	orig.StartTimeUnixNano = uint64(13)
 	orig.TimeUnixNano = uint64(13)
 	orig.Count = uint64(13)

@@ -37,6 +37,7 @@ type appConfig struct {
 	ddsketchAccuracy float64
 	ddsketchMetric   string
 	histogramMetric  string
+	rawMetric        string
 	requestsMetric   string
 	serviceName      string
 	latencyMean      float64
@@ -44,6 +45,10 @@ type appConfig struct {
 	metricUnit       string
 	resourceAttrs    []attribute.KeyValue
 	additionalAttrs  []attribute.KeyValue
+	enableDDSketch   bool
+	enableHistogram  bool
+	enableRawGauge   bool
+	enableCounter    bool
 }
 
 func defaultConfig() appConfig {
@@ -57,6 +62,7 @@ func defaultConfig() appConfig {
 		ddsketchAccuracy: 0.01,
 		ddsketchMetric:   "stress.ddsketch.latency",
 		histogramMetric:  "stress.histogram.latency",
+		rawMetric:        "stress.latency.raw",
 		requestsMetric:   "stress.requests.total",
 		serviceName:      "ddsketch-stress",
 		latencyMean:      250,
@@ -65,6 +71,10 @@ func defaultConfig() appConfig {
 		resourceAttrs: []attribute.KeyValue{
 			semconv.DeploymentEnvironmentName("development"),
 		},
+		enableDDSketch:  true,
+		enableHistogram: true,
+		enableRawGauge:  true,
+		enableCounter:   true,
 	}
 }
 
@@ -97,10 +107,15 @@ func parseFlags() appConfig {
 	flag.Float64Var(&cfg.ddsketchAccuracy, "ddsketch-accuracy", cfg.ddsketchAccuracy, "Relative accuracy for DDSketch aggregation (0 lets the SDK use its default)")
 	flag.StringVar(&cfg.ddsketchMetric, "ddsketch-metric", cfg.ddsketchMetric, "Metric name for the DDSketch-backed histogram")
 	flag.StringVar(&cfg.histogramMetric, "histogram-metric", cfg.histogramMetric, "Metric name for the comparison histogram (default SDK aggregation)")
+	flag.StringVar(&cfg.rawMetric, "raw-metric", cfg.rawMetric, "Metric name for the raw gauge samples")
 	flag.StringVar(&cfg.requestsMetric, "requests-metric", cfg.requestsMetric, "Metric name for the emitted request counter")
 	flag.StringVar(&cfg.serviceName, "service", cfg.serviceName, "Service.name resource attribute")
 	flag.Float64Var(&cfg.latencyMean, "latency-mean", cfg.latencyMean, "Mean latency in milliseconds for generated samples")
 	flag.Float64Var(&cfg.latencyStdDev, "latency-stddev", cfg.latencyStdDev, "Latency standard deviation in milliseconds")
+	flag.BoolVar(&cfg.enableDDSketch, "enable-ddsketch", cfg.enableDDSketch, "Emit the DDSketch histogram metric")
+	flag.BoolVar(&cfg.enableHistogram, "enable-histogram", cfg.enableHistogram, "Emit the baseline histogram metric")
+	flag.BoolVar(&cfg.enableRawGauge, "enable-raw", cfg.enableRawGauge, "Emit raw latency samples as a synchronous gauge")
+	flag.BoolVar(&cfg.enableCounter, "enable-counter", cfg.enableCounter, "Emit the synthetic request counter metric")
 	flag.Parse()
 
 	if cfg.workers <= 0 {
@@ -197,34 +212,59 @@ func buildMeterProvider(ctx context.Context, cfg appConfig, tracker *trafficTrac
 }
 
 func generateLoad(ctx context.Context, meter metric.Meter, cfg appConfig) error {
-	// Metrics emitted:
-	//   - cfg.ddsketchMetric: latency values aggregated with DDSketch via the view set in buildMeterProvider.
-	//   - cfg.histogramMetric: the same latency stream using the default SDK histogram for comparison.
-	//   - cfg.requestsMetric: a counter tracking how many synthetic requests (latency samples) each worker emits.
-	ddsketchHist, err := meter.Float64Histogram(
-		cfg.ddsketchMetric,
-		metric.WithUnit(cfg.metricUnit),
-		metric.WithDescription("Generated latency distribution using DDSketch aggregation"),
+	var (
+		ddsketchHist metric.Float64Histogram
+		rawHist      metric.Float64Histogram
+		rawGauge     metric.Float64Gauge
+		reqCounter   metric.Int64Counter
+		err          error
 	)
-	if err != nil {
-		return fmt.Errorf("create ddsketch histogram: %w", err)
+
+	if cfg.enableDDSketch {
+		ddsketchHist, err = meter.Float64Histogram(
+			cfg.ddsketchMetric,
+			metric.WithUnit(cfg.metricUnit),
+			metric.WithDescription("Generated latency distribution using DDSketch aggregation"),
+		)
+		if err != nil {
+			return fmt.Errorf("create ddsketch histogram: %w", err)
+		}
 	}
 
-	rawHist, err := meter.Float64Histogram(
-		cfg.histogramMetric,
-		metric.WithUnit(cfg.metricUnit),
-		metric.WithDescription("Baseline histogram using SDK defaults"),
-	)
-	if err != nil {
-		return fmt.Errorf("create histogram: %w", err)
+	if cfg.enableHistogram {
+		rawHist, err = meter.Float64Histogram(
+			cfg.histogramMetric,
+			metric.WithUnit(cfg.metricUnit),
+			metric.WithDescription("Baseline histogram using SDK defaults"),
+		)
+		if err != nil {
+			return fmt.Errorf("create histogram: %w", err)
+		}
 	}
 
-	reqCounter, err := meter.Int64Counter(
-		cfg.requestsMetric,
-		metric.WithDescription("Synthetic request counter to correlate with histograms"),
-	)
-	if err != nil {
-		return fmt.Errorf("create counter: %w", err)
+	if cfg.enableRawGauge {
+		rawGauge, err = meter.Float64Gauge(
+			cfg.rawMetric,
+			metric.WithUnit(cfg.metricUnit),
+			metric.WithDescription("Raw latency sample gauge for comparison"),
+		)
+		if err != nil {
+			return fmt.Errorf("create raw gauge: %w", err)
+		}
+	}
+
+	if cfg.enableCounter {
+		reqCounter, err = meter.Int64Counter(
+			cfg.requestsMetric,
+			metric.WithDescription("Synthetic request counter to correlate with histograms"),
+		)
+		if err != nil {
+			return fmt.Errorf("create counter: %w", err)
+		}
+	}
+
+	if ddsketchHist == nil && rawHist == nil && rawGauge == nil && reqCounter == nil {
+		return fmt.Errorf("no metrics enabled; enable at least one metric type")
 	}
 
 	perWorkerRate := cfg.ratePerWorker()
@@ -232,7 +272,7 @@ func generateLoad(ctx context.Context, meter metric.Meter, cfg appConfig) error 
 	for i := 0; i < cfg.workers; i++ {
 		workerID := i
 		g.Go(func() error {
-			return workerLoop(ctx, workerID, perWorkerRate, cfg, ddsketchHist, rawHist, reqCounter)
+			return workerLoop(ctx, workerID, perWorkerRate, cfg, ddsketchHist, rawHist, rawGauge, reqCounter)
 		})
 	}
 	return g.Wait()
@@ -245,6 +285,7 @@ func workerLoop(
 	cfg appConfig,
 	ddsketchHist metric.Float64Histogram,
 	rawHist metric.Float64Histogram,
+	rawGauge metric.Float64Gauge,
 	counter metric.Int64Counter,
 ) error {
 	var ticker *time.Ticker
@@ -278,9 +319,18 @@ func workerLoop(
 
 		value := sampleLatency(rnd, cfg.latencyMean, cfg.latencyStdDev)
 		opts := metric.WithAttributes(attrs...)
-		ddsketchHist.Record(ctx, value, opts)
-		rawHist.Record(ctx, value, opts)
-		counter.Add(ctx, 1, opts)
+		if ddsketchHist != nil {
+			ddsketchHist.Record(ctx, value, opts)
+		}
+		if rawHist != nil {
+			rawHist.Record(ctx, value, opts)
+		}
+		if rawGauge != nil {
+			rawGauge.Record(ctx, value, opts)
+		}
+		if counter != nil {
+			counter.Add(ctx, 1, opts)
+		}
 	}
 }
 

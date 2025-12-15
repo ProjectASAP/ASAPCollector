@@ -53,6 +53,17 @@ func (ms DDSketchDataPoint) Attributes() pcommon.Map {
 	return pcommon.Map(internal.NewMapWrapper(&ms.orig.Attributes, ms.state))
 }
 
+// SeriesID returns the seriesid associated with this DDSketchDataPoint.
+func (ms DDSketchDataPoint) SeriesID() uint64 {
+	return ms.orig.SeriesID
+}
+
+// SetSeriesID replaces the seriesid associated with this DDSketchDataPoint.
+func (ms DDSketchDataPoint) SetSeriesID(v uint64) {
+	ms.state.AssertMutable()
+	ms.orig.SeriesID = v
+}
+
 // StartTimestamp returns the starttimestamp associated with this DDSketchDataPoint.
 func (ms DDSketchDataPoint) StartTimestamp() pcommon.Timestamp {
 	return pcommon.Timestamp(ms.orig.StartTimeUnixNano)

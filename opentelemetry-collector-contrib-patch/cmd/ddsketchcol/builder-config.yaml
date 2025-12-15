@@ -282,7 +282,7 @@ providers:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/confmap/provider/googlesecretmanagerprovider v0.141.0
 
 replaces:
-  - github.com/open-telemetry/opentelemetry-collector-contrib => ../../..
+  - github.com/open-telemetry/opentelemetry-collector-contrib => ../../../opentelemetry-collector-contrib
   - go.opentelemetry.io/collector => ../../../opentelemetry-collector
   - go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
   - go.opentelemetry.io/otel => ../../../opentelemetry-go
