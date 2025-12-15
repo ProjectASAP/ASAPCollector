@@ -34,10 +34,12 @@ func New(nextConsumer consumer.Metrics, obsreport *receiverhelper.ObsReport) *Re
 // Export implements the service Export metrics func.
 func (r *Receiver) Export(ctx context.Context, req pmetricotlp.ExportRequest) (pmetricotlp.ExportResponse, error) {
 	md := req.Metrics()
-	r.cache.rehydrate(md)
+	assignments := r.cache.rehydrate(md)
+	resp := pmetricotlp.NewExportResponse()
+	populateSeriesAssignments(resp.SeriesAssignments(), assignments)
 	dataPointCount := md.DataPointCount()
 	if dataPointCount == 0 {
-		return pmetricotlp.NewExportResponse(), nil
+		return resp, nil
 	}
 
 	ctx = r.obsreport.StartMetricsOp(ctx)
@@ -51,8 +53,26 @@ func (r *Receiver) Export(ctx context.Context, req pmetricotlp.ExportRequest) (p
 	// NonPermanent errors will be converted to codes.Unavailable (equivalent to HTTP 503)
 	// Permanent errors will be converted to codes.InvalidArgument (equivalent to HTTP 400)
 	if err != nil {
-		return pmetricotlp.NewExportResponse(), errors.GetStatusFromError(err)
+		return resp, errors.GetStatusFromError(err)
 	}
 
-	return pmetricotlp.NewExportResponse(), nil
+	return resp, nil
+}
+
+func populateSeriesAssignments(dest pmetricotlp.SeriesAssignmentSlice, assignments []seriesAssignment) {
+	if len(assignments) == 0 {
+		return
+	}
+	dest.EnsureCapacity(len(assignments))
+	for _, assignment := range assignments {
+		item := dest.AppendEmpty()
+		item.SetResourceKey(assignment.resourceKey)
+		item.SetScopeKey(assignment.scopeKey)
+		item.SetMetricName(assignment.metricName)
+		item.SetMetricType(assignment.metricType)
+		if assignment.attributesFingerprint != "" {
+			item.SetAttributesFingerprint([]byte(assignment.attributesFingerprint))
+		}
+		item.SetSeriesID(assignment.seriesID)
+	}
 }

@@ -28,6 +28,28 @@ type seriesEntry struct {
 	registered bool
 }
 
+const (
+	metricTypeGaugeInt             = "gauge_int"
+	metricTypeGaugeDouble          = "gauge_double"
+	metricTypeSumInt               = "sum_int"
+	metricTypeSumDouble            = "sum_double"
+	metricTypeHistogram            = "histogram"
+	metricTypeExponentialHistogram = "exponential_histogram"
+	metricTypeSummary              = "summary"
+	metricTypeDDSketchInt          = "ddsketch_int"
+	metricTypeDDSketchDouble       = "ddsketch_double"
+)
+
+// Assignment mirrors the collector-provided series mapping.
+type Assignment struct {
+	ResourceKey           string
+	ScopeKey              string
+	MetricName            string
+	MetricType            string
+	AttributesFingerprint string
+	SeriesID              uint64
+}
+
 // NewDictionary constructs an empty dictionary.
 func NewDictionary() *Dictionary {
 	return &Dictionary{
@@ -52,6 +74,26 @@ func (d *Dictionary) Annotate(rm *metricdata.ResourceMetrics) {
 	}
 }
 
+// Apply registers the provided assignments in the dictionary.
+func (d *Dictionary) Apply(assignments []Assignment) {
+	if len(assignments) == 0 {
+		return
+	}
+	d.mu.Lock()
+	for _, asg := range assignments {
+		src, ok := d.sources[asg.ResourceKey]
+		if !ok {
+			src = &sourceState{
+				nextID:  1,
+				entries: make(map[string]*seriesEntry),
+			}
+			d.sources[asg.ResourceKey] = src
+		}
+		src.applyAssignment(descriptorKeyFromParts(asg.ScopeKey, asg.MetricType, asg.MetricName, asg.AttributesFingerprint), asg.SeriesID)
+	}
+	d.mu.Unlock()
+}
+
 func (d *Dictionary) getOrCreateSource(key string) *sourceState {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -69,37 +111,37 @@ func (d *Dictionary) getOrCreateSource(key string) *sourceState {
 func (d *Dictionary) annotateMetric(src *sourceState, scopeKey string, m *metricdata.Metrics) {
 	switch data := m.Data.(type) {
 	case metricdata.Gauge[int64]:
-		annotateNumberDataPoints(src, scopeKey, m.Name, "gauge_i64", data.DataPoints)
+		annotateNumberDataPoints(src, scopeKey, m.Name, metricTypeGaugeInt, data.DataPoints)
 		m.Data = data
 	case metricdata.Gauge[float64]:
-		annotateNumberDataPoints(src, scopeKey, m.Name, "gauge_f64", data.DataPoints)
+		annotateNumberDataPoints(src, scopeKey, m.Name, metricTypeGaugeDouble, data.DataPoints)
 		m.Data = data
 	case metricdata.Sum[int64]:
-		annotateNumberDataPoints(src, scopeKey, m.Name, "sum_i64", data.DataPoints)
+		annotateNumberDataPoints(src, scopeKey, m.Name, metricTypeSumInt, data.DataPoints)
 		m.Data = data
 	case metricdata.Sum[float64]:
-		annotateNumberDataPoints(src, scopeKey, m.Name, "sum_f64", data.DataPoints)
+		annotateNumberDataPoints(src, scopeKey, m.Name, metricTypeSumDouble, data.DataPoints)
 		m.Data = data
 	case metricdata.Histogram[int64]:
-		annotateHistogramDataPoints(src, scopeKey, m.Name, "histogram_i64", data.DataPoints)
+		annotateHistogramDataPoints(src, scopeKey, m.Name, metricTypeHistogram, data.DataPoints)
 		m.Data = data
 	case metricdata.Histogram[float64]:
-		annotateHistogramDataPoints(src, scopeKey, m.Name, "histogram_f64", data.DataPoints)
+		annotateHistogramDataPoints(src, scopeKey, m.Name, metricTypeHistogram, data.DataPoints)
 		m.Data = data
 	case metricdata.ExponentialHistogram[int64]:
-		annotateExponentialDataPoints(src, scopeKey, m.Name, "exphist_i64", data.DataPoints)
+		annotateExponentialDataPoints(src, scopeKey, m.Name, metricTypeExponentialHistogram, data.DataPoints)
 		m.Data = data
 	case metricdata.ExponentialHistogram[float64]:
-		annotateExponentialDataPoints(src, scopeKey, m.Name, "exphist_f64", data.DataPoints)
+		annotateExponentialDataPoints(src, scopeKey, m.Name, metricTypeExponentialHistogram, data.DataPoints)
 		m.Data = data
 	case metricdata.DDSketch[int64]:
-		annotateDDSketchDataPoints(src, scopeKey, m.Name, "ddsketch_i64", data.DataPoints)
+		annotateDDSketchDataPoints(src, scopeKey, m.Name, metricTypeDDSketchInt, data.DataPoints)
 		m.Data = data
 	case metricdata.DDSketch[float64]:
-		annotateDDSketchDataPoints(src, scopeKey, m.Name, "ddsketch_f64", data.DataPoints)
+		annotateDDSketchDataPoints(src, scopeKey, m.Name, metricTypeDDSketchDouble, data.DataPoints)
 		m.Data = data
 	case metricdata.Summary:
-		annotateSummaryDataPoints(src, scopeKey, m.Name, "summary", data.DataPoints)
+		annotateSummaryDataPoints(src, scopeKey, m.Name, metricTypeSummary, data.DataPoints)
 		m.Data = data
 	default:
 	}
@@ -168,6 +210,10 @@ func (s *sourceState) lookup(key string) *seriesEntry {
 }
 
 func descriptorKey(scopeKey, metricName, metricType string, attrs attribute.Set) string {
+	return descriptorKeyFromParts(scopeKey, metricType, metricName, attributesFingerprint(attrs))
+}
+
+func descriptorKeyFromParts(scopeKey, metricType, metricName, attrsFingerprint string) string {
 	builder := strings.Builder{}
 	builder.WriteString(scopeKey)
 	builder.WriteByte('|')
@@ -175,8 +221,26 @@ func descriptorKey(scopeKey, metricName, metricType string, attrs attribute.Set)
 	builder.WriteByte('|')
 	builder.WriteString(metricName)
 	builder.WriteByte('|')
-	appendAttributes(&builder, attrs)
+	builder.WriteString(attrsFingerprint)
 	return builder.String()
+}
+
+func (s *sourceState) applyAssignment(descriptor string, id uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries == nil {
+		s.entries = make(map[string]*seriesEntry)
+	}
+	entry, ok := s.entries[descriptor]
+	if !ok {
+		entry = &seriesEntry{}
+		s.entries[descriptor] = entry
+	}
+	entry.id = id
+	entry.registered = true
+	if id >= s.nextID {
+		s.nextID = id + 1
+	}
 }
 
 func resourceKey(res *resource.Resource) string {
@@ -207,17 +271,7 @@ func resSchema(res *resource.Resource) string {
 }
 
 func appendAttributes(builder *strings.Builder, attrs attribute.Set) {
-	iter := attrs.Iter()
-	if iter.Len() == 0 {
-		return
-	}
-	for iter.Next() {
-		kv := iter.Attribute()
-		builder.WriteString(string(kv.Key))
-		builder.WriteByte('=')
-		builder.WriteString(kv.Value.Emit())
-		builder.WriteByte('|')
-	}
+	builder.WriteString(attributesFingerprint(attrs))
 }
 
 func appendAttributeSlice(builder *strings.Builder, attrs []attribute.KeyValue) {
@@ -233,4 +287,30 @@ func appendAttributeSlice(builder *strings.Builder, attrs []attribute.KeyValue) 
 		builder.WriteString(kv.Value.Emit())
 		builder.WriteByte('|')
 	}
+}
+
+func attributesFingerprint(attrs attribute.Set) string {
+	iter := attrs.Iter()
+	if iter.Len() == 0 {
+		return ""
+	}
+	pairs := make([]attribute.KeyValue, 0, iter.Len())
+	for iter.Next() {
+		kv := iter.Attribute()
+		pairs = append(pairs, kv)
+	}
+	slices.SortFunc(pairs, func(a, b attribute.KeyValue) int {
+		if c := strings.Compare(string(a.Key), string(b.Key)); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Value.Emit(), b.Value.Emit())
+	})
+	builder := strings.Builder{}
+	for _, kv := range pairs {
+		builder.WriteString(string(kv.Key))
+		builder.WriteByte('=')
+		builder.WriteString(kv.Value.Emit())
+		builder.WriteByte('|')
+	}
+	return builder.String()
 }
