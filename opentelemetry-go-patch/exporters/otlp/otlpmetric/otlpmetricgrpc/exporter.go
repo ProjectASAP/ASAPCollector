@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sync"
 
+	colmetricpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	metricpb "go.opentelemetry.io/proto/otlp/metrics/v1"
 
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc/internal/oconf"
@@ -24,7 +25,7 @@ type Exporter struct {
 	// Ensure synchronous access to the client across all functionality.
 	clientMu sync.Mutex
 	client   interface {
-		UploadMetrics(context.Context, *metricpb.ResourceMetrics) error
+		UploadMetrics(context.Context, *metricpb.ResourceMetrics) (*colmetricpb.ExportMetricsServiceResponse, error)
 		Shutdown(context.Context) error
 	}
 
@@ -80,8 +81,11 @@ func (e *Exporter) Export(ctx context.Context, rm *metricdata.ResourceMetrics) e
 	otlpRm, err := transform.ResourceMetrics(rm)
 	// Best effort upload of transformable metrics.
 	e.clientMu.Lock()
-	upErr := e.client.UploadMetrics(ctx, otlpRm)
+	resp, upErr := e.client.UploadMetrics(ctx, otlpRm)
 	e.clientMu.Unlock()
+	if resp != nil {
+		applySeriesAssignments(e.seriesState, resp)
+	}
 	if upErr != nil {
 		if err == nil {
 			return fmt.Errorf("failed to upload metrics: %w", upErr)
@@ -133,8 +137,8 @@ func (shutdownClient) err(ctx context.Context) error {
 	return errShutdown
 }
 
-func (c shutdownClient) UploadMetrics(ctx context.Context, _ *metricpb.ResourceMetrics) error {
-	return c.err(ctx)
+func (c shutdownClient) UploadMetrics(ctx context.Context, _ *metricpb.ResourceMetrics) (*colmetricpb.ExportMetricsServiceResponse, error) {
+	return nil, c.err(ctx)
 }
 
 func (c shutdownClient) Shutdown(ctx context.Context) error {
@@ -161,4 +165,22 @@ func New(ctx context.Context, options ...Option) (*Exporter, error) {
 		return nil, err
 	}
 	return newExporter(c, cfg)
+}
+
+func applySeriesAssignments(dict *series.Dictionary, resp *colmetricpb.ExportMetricsServiceResponse) {
+	if resp == nil || len(resp.SeriesAssignments) == 0 {
+		return
+	}
+	assignments := make([]series.Assignment, 0, len(resp.SeriesAssignments))
+	for _, asg := range resp.SeriesAssignments {
+		assignments = append(assignments, series.Assignment{
+			ResourceKey:           asg.GetResourceKey(),
+			ScopeKey:              asg.GetScopeKey(),
+			MetricName:            asg.GetMetricName(),
+			MetricType:            asg.GetMetricType(),
+			AttributesFingerprint: string(asg.GetAttributesFingerprint()),
+			SeriesID:              asg.GetSeriesId(),
+		})
+	}
+	dict.Apply(assignments)
 }
