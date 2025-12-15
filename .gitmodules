@@ -4,9 +4,12 @@
 [submodule "opentelemetry-go"]
 	path = opentelemetry-go
 	url = https://github.com/open-telemetry/opentelemetry-go.git
-[submodule "opentelemetry-collector-contrib"]
-	path = opentelemetry-collector-contrib
-	url = https://github.com/open-telemetry/opentelemetry-collector-contrib.git
 [submodule "opentelemetry-proto"]
 	path = opentelemetry-proto
 	url = git@github.com:open-telemetry/opentelemetry-proto.git
+[submodule "opentelemetry-collector"]
+	path = opentelemetry-collector
+	url = https://github.com/open-telemetry/opentelemetry-collector.git
+[submodule "opentelemetry-collector-contrib"]
+	path = opentelemetry-collector-contrib
+	url = https://github.com/open-telemetry/opentelemetry-collector-contrib.git
