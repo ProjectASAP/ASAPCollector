@@ -115,7 +115,7 @@ git submodule update --init --recursive
    git submodule update --remote telegraf
    ```
 
-Code organization
+#### Code organization
 ```
 telegraf/                     # upstream InfluxData Telegraf checkout
 telegraf-patch/               # tracked overlay of our custom Telegraf changes
@@ -132,7 +132,7 @@ Use the restore → edit → backup flow here as well:
 
 ## Working with the OpenTelemetry submodule
 
-Code organization
+#### Code organization
 ```
 opentelemetry-go/                       # upstream Go SDK submodule
 opentelemetry-collector/                # upstream collector core checkout
@@ -147,7 +147,7 @@ opentelemetry-proto-patch/              # tracked overlay of proto changes
 backup_otel_*.sh / restore_otel_*.sh    # helper scripts that sync overlays <-> submodules
 ```
 
-Workflow
+#### Workflow
 
 1. After cloning (or whenever submodules are reset), run `./restore_otel_patches.sh`
    from the repo root. This copies the tracked overlay files into their matching
