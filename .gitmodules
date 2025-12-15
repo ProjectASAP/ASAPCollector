@@ -1,6 +1,7 @@
 [submodule "telegraf"]
 	path = telegraf
 	url = https://github.com/influxdata/telegraf.git
+	branch = release-1.37
 [submodule "opentelemetry-go"]
 	path = opentelemetry-go
 	url = https://github.com/open-telemetry/opentelemetry-go.git
