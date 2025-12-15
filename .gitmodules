@@ -10,6 +10,7 @@
 [submodule "opentelemetry-collector"]
 	path = opentelemetry-collector
 	url = https://github.com/open-telemetry/opentelemetry-collector.git
+	branch = release/v0.142.x
 [submodule "opentelemetry-collector-contrib"]
 	path = opentelemetry-collector-contrib
 	url = https://github.com/open-telemetry/opentelemetry-collector-contrib.git
