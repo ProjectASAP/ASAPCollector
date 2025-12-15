@@ -13,12 +13,12 @@ import (
 
 // Dictionary maintains per-resource mappings of metric descriptors to stable series IDs.
 type Dictionary struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	sources map[string]*sourceState
 }
 
 type sourceState struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	nextID  uint64
 	entries map[string]*seriesEntry
 }
