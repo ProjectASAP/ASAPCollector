@@ -108,7 +108,7 @@ func (c *client) UploadMetrics(ctx context.Context, protoMetrics *metricpb.Resou
 	select {
 	case <-ctx.Done():
 		// Do not upload if the context is already expired.
-		return ctx.Err()
+		return nil, ctx.Err()
 	default:
 	}
 

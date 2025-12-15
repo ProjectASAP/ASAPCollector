@@ -198,7 +198,7 @@ EOF
 ### Collector-contrib (opentelemetry-collector-contrib)
 Install OTel-Builder:
 ```bash
-go install go.opentelemetry.io/collector/cmd/builder@latest
+go install go.opentelemetry.io/collector/cmd/builder@v0.141.0
 ```
 
 DDSketch processor example:
