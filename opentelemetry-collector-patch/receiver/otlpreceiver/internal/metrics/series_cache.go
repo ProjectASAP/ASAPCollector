@@ -154,14 +154,14 @@ func (sc *seriesCache) rehydrateMetricLocked(src *seriesSource, resourceKey, sco
 	}
 }
 
-func (sc *seriesCache) rehydrateNumberDataPointsLocked(src *seriesSource, resourceKey, scopeKey, metricName string, metricType string, dps pmetric.NumberDataPointSlice, assignments *[]seriesAssignment, now time.Time) {
+func (sc *seriesCache) rehydrateNumberDataPointsLocked(src *seriesSource, resourceKey, scopeKey, metricName, metricType string, dps pmetric.NumberDataPointSlice, assignments *[]seriesAssignment, now time.Time) {
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
 		sc.rehydrateDataPointLocked(src, resourceKey, scopeKey, metricName, metricType, dp, assignments, now)
 	}
 }
 
-func (sc *seriesCache) rehydrateDataPointLocked(src *seriesSource, resourceKey, scopeKey, metricName string, metricType string, dp seriesDataPoint, assignments *[]seriesAssignment, now time.Time) {
+func (sc *seriesCache) rehydrateDataPointLocked(src *seriesSource, resourceKey, scopeKey, metricName, metricType string, dp seriesDataPoint, assignments *[]seriesAssignment, now time.Time) {
 	attrs := dp.Attributes()
 	seriesID := dp.SeriesID()
 	if attrs.Len() > 0 {

@@ -161,3 +161,69 @@ Workflow
 4. Repeat the restore → edit → backup cycle whenever upstream commits are pulled
    in via `git submodule update --remote` so that local patches are always
    reapplied cleanly.
+
+## Build and Test Cheat Sheet
+
+### opentelemetry-proto
+```bash
+cd opentelemetry-proto
+make gen-go
+```
+
+// Create a module descriptor in opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp if not exists. 
+```bash
+cat <<'EOF' > opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp/go.mod
+module go.opentelemetry.io/proto/otlp
+
+go 1.24
+EOF
+```
+
+### Collector core (opentelemetry-collector)
+1. Regenerate protobuf + pdata after touching proto specs:
+   ```bash
+   cd opentelemetry-collector
+   make genproto
+   make genpdata
+   ```
+2. Build the opentelemetry-collector binary:
+   ```bash
+   make otelcol
+   ```
+3. Run Go tests:
+   ```bash
+   go test ./... -count=1
+   ```
+
+### Collector-contrib (opentelemetry-collector-contrib)
+Install OTel-Builder:
+```bash
+go install go.opentelemetry.io/collector/cmd/builder@latest
+```
+
+DDSketch processor example:
+```bash
+cd DataCollector/opentelemetry-collector-contrib
+builder --config ./cmd/ddsketchcol/builder-config.yaml
+```
+
+### Go SDK / exporters (opentelemetry-go)
+1. Format and tidy after edits:
+   ```bash
+   gofmt -w ./...
+   go mod tidy
+   ```
+2. Run tests (ensure this repo is loaded as the module root):
+   ```bash
+   go test ./...
+   ```
+3. To mirror changes into the tracked overlay, copy updated files into
+   `opentelemetry-go-patch/` before committing.
+
+### opentelemetry-app
+```bash
+cd opentelemetry-app
+go build ./cmd/ddsketchload    # produces ./ddsketchload
+# or to run in-place:
+go run ./cmd/ddsketchload
+```
