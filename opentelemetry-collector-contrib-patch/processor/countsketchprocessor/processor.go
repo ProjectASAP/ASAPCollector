@@ -31,8 +31,15 @@ type countSketchProcessor struct {
 }
 
 func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *countSketchProcessor {
-	rowS, _ := promsketch.NewCountSketchWithEstimates(cfg.Epsilon, cfg.Delta)
-	colS, _ := promsketch.NewCountSketchWithEstimates(cfg.Epsilon, cfg.Delta)
+	rowS, errRow := promsketch.NewCountSketchWithEstimates(cfg.Epsilon, cfg.Delta)
+    if errRow != nil {
+        logger.Error("Failed to init row sketch", zap.Error(errRow))
+    }
+    
+    colS, errCol := promsketch.NewCountSketchWithEstimates(cfg.Epsilon, cfg.Delta)
+    if errCol != nil {
+        logger.Error("Failed to init col sketch", zap.Error(errCol))
+    }
 
 	return &countSketchProcessor{
 		logger:       logger,
@@ -64,6 +71,10 @@ func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
 func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
+
+	if p.rowSketch == nil || p.colSketch == nil {
+        return md, nil 
+    }
 
 	rm := md.ResourceMetrics()
 	for i := 0; i < rm.Len(); i++ {
@@ -127,8 +138,17 @@ func sumPoints(dps pmetric.NumberDataPointSlice) float64 {
 func (p *countSketchProcessor) startWindowLoop() {
 	defer func() {
 		p.mutex.Lock()
-		p.rowSketch.FreeCountSketch()
-		p.colSketch.FreeCountSketch()
+
+		if p.rowSketch != nil {
+            p.rowSketch.FreeCountSketch()
+            p.rowSketch = nil 
+        }
+
+        if p.colSketch != nil {
+            p.colSketch.FreeCountSketch()
+            p.colSketch = nil
+        }
+
 		p.mutex.Unlock()
 	}()
 
@@ -154,8 +174,13 @@ func (p *countSketchProcessor) flushSketches() {
 	// 	zap.Float64("Using_Config_Epsilon", p.config.Epsilon),
 	// )
 
-	p.rowSketch.FreeCountSketch()
-	p.colSketch.FreeCountSketch()
+	if p.rowSketch != nil {
+		p.rowSketch.FreeCountSketch()
+	}
+
+	if p.colSketch != nil {
+		p.colSketch.FreeCountSketch()
+	}
 
 	var err error
 	p.rowSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
