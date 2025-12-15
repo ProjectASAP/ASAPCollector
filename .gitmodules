@@ -13,3 +13,4 @@
 [submodule "opentelemetry-collector-contrib"]
 	path = opentelemetry-collector-contrib
 	url = https://github.com/open-telemetry/opentelemetry-collector-contrib.git
+	branch = release/v0.141.0
