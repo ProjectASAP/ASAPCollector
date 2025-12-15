@@ -191,6 +191,8 @@ func genTestFailingUnmarshalProtoValuesDDSketchDataPoint() map[string][]byte {
 		"invalid_field":                     {0x02},
 		"Attributes/wrong_wire_type":        {0x4c},
 		"Attributes/missing_value":          {0x4a},
+		"SeriesID/wrong_wire_type":          {0x84, 0x1},
+		"SeriesID/missing_value":            {0x80, 0x1},
 		"StartTimeUnixNano/wrong_wire_type": {0x14},
 		"StartTimeUnixNano/missing_value":   {0x11},
 		"TimeUnixNano/wrong_wire_type":      {0x1c},
@@ -230,6 +232,7 @@ func genTestEncodingValuesDDSketchDataPoint() map[string]*DDSketchDataPoint {
 	return map[string]*DDSketchDataPoint{
 		"empty":                  NewDDSketchDataPoint(),
 		"Attributes/test":        {Attributes: []KeyValue{{}, *GenTestKeyValue()}},
+		"SeriesID/test":          {SeriesID: uint64(13)},
 		"StartTimeUnixNano/test": {StartTimeUnixNano: uint64(13)},
 		"TimeUnixNano/test":      {TimeUnixNano: uint64(13)},
 		"Count/test":             {Count: uint64(13)},

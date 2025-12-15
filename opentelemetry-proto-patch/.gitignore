@@ -1,0 +1,29 @@
+# IntelliJ IDEA
+.idea
+*.iml
+
+# VS Code
+.vscode
+.classpath
+.project
+.settings/
+
+# OS X
+.DS_Store
+
+# Emacs
+*~
+\#*\#
+
+# Vim
+.swp
+
+# Generated code
+/gen/
+!/gen/go/
+!/gen/go/go.opentelemetry.io/
+!/gen/go/go.opentelemetry.io/proto/
+!/gen/go/go.opentelemetry.io/proto/otlp/
+!/gen/go/go.opentelemetry.io/proto/otlp/go.mod
+
+node_modules

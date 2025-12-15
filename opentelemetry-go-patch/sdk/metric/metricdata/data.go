@@ -76,6 +76,9 @@ type DataPoint[N int64 | float64] struct {
 	// Attributes is the set of key value pairs that uniquely identify the
 	// timeseries.
 	Attributes attribute.Set
+	// SeriesID is the collector-assigned identifier for this series. When non-zero
+	// exporters may omit Attributes from the wire payload and send only SeriesID.
+	SeriesID uint64
 	// StartTime is when the timeseries was started. (optional)
 	StartTime time.Time `json:",omitempty"`
 	// Time is the time when the timeseries was recorded. (optional)
@@ -104,6 +107,9 @@ type HistogramDataPoint[N int64 | float64] struct {
 	// Attributes is the set of key value pairs that uniquely identify the
 	// timeseries.
 	Attributes attribute.Set
+	// SeriesID is the collector-assigned identifier for this series. When non-zero
+	// exporters may omit Attributes from the wire payload and send only SeriesID.
+	SeriesID uint64
 	// StartTime is when the timeseries was started.
 	StartTime time.Time
 	// Time is the time when the timeseries was recorded.
@@ -145,6 +151,9 @@ type ExponentialHistogramDataPoint[N int64 | float64] struct {
 	// Attributes is the set of key value pairs that uniquely identify the
 	// timeseries.
 	Attributes attribute.Set
+	// SeriesID is the collector-assigned identifier for this series. When non-zero
+	// exporters may omit Attributes from the wire payload and send only SeriesID.
+	SeriesID uint64
 	// StartTime is when the timeseries was started.
 	StartTime time.Time
 	// Time is the time when the timeseries was recorded.
@@ -266,6 +275,9 @@ type SummaryDataPoint struct {
 	// Attributes is the set of key value pairs that uniquely identify the
 	// timeseries.
 	Attributes attribute.Set
+	// SeriesID is the collector-assigned identifier for this series. When non-zero
+	// exporters may omit Attributes from the wire payload and send only SeriesID.
+	SeriesID uint64
 
 	// StartTime is when the timeseries was started.
 	StartTime time.Time
@@ -322,6 +334,9 @@ type DDSketchDataPoint[N int64 | float64] struct {
 	// Attributes is the set of key value pairs that uniquely identify the
 	// timeseries.
 	Attributes attribute.Set
+	// SeriesID is the collector-assigned identifier for this series. When non-zero
+	// exporters may omit Attributes from the wire payload and send only SeriesID.
+	SeriesID uint64
 
 	// StartTime is when the timeseries was started.
 	StartTime time.Time

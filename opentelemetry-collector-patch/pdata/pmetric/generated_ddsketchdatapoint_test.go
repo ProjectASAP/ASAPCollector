@@ -49,6 +49,16 @@ func TestDDSketchDataPoint_Attributes(t *testing.T) {
 	assert.Equal(t, pcommon.Map(internal.GenTestMapWrapper()), ms.Attributes())
 }
 
+func TestDDSketchDataPoint_SeriesID(t *testing.T) {
+	ms := NewDDSketchDataPoint()
+	assert.Equal(t, uint64(0), ms.SeriesID())
+	ms.SetSeriesID(uint64(13))
+	assert.Equal(t, uint64(13), ms.SeriesID())
+	sharedState := internal.NewState()
+	sharedState.MarkReadOnly()
+	assert.Panics(t, func() { newDDSketchDataPoint(internal.NewDDSketchDataPoint(), sharedState).SetSeriesID(uint64(13)) })
+}
+
 func TestDDSketchDataPoint_StartTimestamp(t *testing.T) {
 	ms := NewDDSketchDataPoint()
 	assert.Equal(t, pcommon.Timestamp(0), ms.StartTimestamp())

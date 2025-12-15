@@ -388,6 +388,11 @@ var numberDataPoint = &messageStruct{
 			protoType:   proto.TypeMessage,
 			returnSlice: mapStruct,
 		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   9,
+			protoType: proto.TypeUint64,
+		},
 		&TypedField{
 			fieldName:       "StartTimestamp",
 			originFieldName: "StartTimeUnixNano",
@@ -455,6 +460,11 @@ var histogramDataPoint = &messageStruct{
 			protoID:     9,
 			protoType:   proto.TypeMessage,
 			returnSlice: mapStruct,
+		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   13,
+			protoType: proto.TypeUint64,
 		},
 		&TypedField{
 			fieldName:       "StartTimestamp",
@@ -539,6 +549,11 @@ var exponentialHistogramDataPoint = &messageStruct{
 			protoID:     1,
 			protoType:   proto.TypeMessage,
 			returnSlice: mapStruct,
+		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   15,
+			protoType: proto.TypeUint64,
 		},
 		&TypedField{
 			fieldName:       "StartTimestamp",
@@ -653,6 +668,11 @@ var ddsketchDataPoint = &messageStruct{
 			protoID:     9,
 			protoType:   proto.TypeMessage,
 			returnSlice: mapStruct,
+		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   16,
+			protoType: proto.TypeUint64,
 		},
 		&TypedField{
 			fieldName:       "StartTimestamp",
@@ -774,6 +794,11 @@ var summaryDataPoint = &messageStruct{
 			protoID:     7,
 			protoType:   proto.TypeMessage,
 			returnSlice: mapStruct,
+		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   9,
+			protoType: proto.TypeUint64,
 		},
 		&TypedField{
 			fieldName:       "StartTimestamp",
