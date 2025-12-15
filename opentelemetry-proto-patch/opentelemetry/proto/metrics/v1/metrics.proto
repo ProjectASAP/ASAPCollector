@@ -207,6 +207,7 @@ message Metric {
     Sum sum = 7;
     Histogram histogram = 9;
     ExponentialHistogram exponential_histogram = 10;
+    DDSketch ddsketch = 13;
     Summary summary = 11;
   }
 
@@ -269,6 +270,17 @@ message ExponentialHistogram {
   // The time series data points.
   // Note: Multiple time series may be included (same timestamp, different attributes).
   repeated ExponentialHistogramDataPoint data_points = 1;
+
+  // aggregation_temporality describes if the aggregator reports delta changes
+  // since last report time, or cumulative changes since a fixed start time.
+  AggregationTemporality aggregation_temporality = 2;
+}
+
+// DDSketch represents the type of a metric that encodes measurements using DDSketch buckets.
+message DDSketch {
+  // The time series data points.
+  // Note: Multiple time series may be included (same timestamp, different attributes).
+  repeated DDSketchDataPoint data_points = 1;
 
   // aggregation_temporality describes if the aggregator reports delta changes
   // since last report time, or cumulative changes since a fixed start time.
