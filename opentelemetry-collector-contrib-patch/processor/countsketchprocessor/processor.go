@@ -2,6 +2,7 @@ package countsketchprocessor
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/froot-netsys/promsketch"
@@ -9,99 +10,91 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pmetric"
-	// "go.opentelemetry.io/collector/pdata/pcommon"
 	"go.uber.org/zap"
 )
 
 type countSketchProcessor struct {
-	logger       *zap.Logger
-	next         consumer.Metrics
-	
-	rowSketch    *promsketch.CountSketch // Tracks Metric Names (Rows)
-	colSketch    *promsketch.CountSketch // Tracks Host Names (Columns)
-	
+	logger *zap.Logger
+	next   consumer.Metrics
+
+	config *Config
+
+	// To prevent race conditions between 
+	// processMetrics (Write) and flushSketches (Reset)
+	mutex sync.Mutex
+
+	rowSketch *promsketch.CountSketch // Tracks Metric Names
+	colSketch *promsketch.CountSketch // Tracks Host Names
+
 	windowTicker *time.Ticker
 	doneCh       chan struct{}
 }
 
-func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) (*countSketchProcessor) {
-	duration := cfg.WindowSize
-
-	// Epsilon = 0.01 (1% error), Delta = 0.99 (99% confidence)
+func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *countSketchProcessor {
 	rowS, _ := promsketch.NewCountSketchWithEstimates(cfg.Epsilon, cfg.Delta)
 	colS, _ := promsketch.NewCountSketchWithEstimates(cfg.Epsilon, cfg.Delta)
 
 	return &countSketchProcessor{
 		logger:       logger,
 		next:         next,
+		config:       cfg,
 		rowSketch:    rowS,
 		colSketch:    colS,
-		windowTicker: time.NewTicker(duration),
+		windowTicker: time.NewTicker(cfg.WindowSize),
 		doneCh:       make(chan struct{}),
 	}
 }
 
 func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) error {
-	p.logger.Info("Starting Count Sketch Window Loop...")
+	p.logger.Info("Starting Count Sketch Processor",
+		zap.Float64("epsilon", p.config.Epsilon),
+		zap.Float64("delta", p.config.Delta),
+		zap.Duration("window", p.config.WindowSize),
+	)
+	
 	go p.startWindowLoop()
 	return nil
 }
 
 func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
 	close(p.doneCh)
-
-	p.rowSketch.FreeCountSketch()
-	p.colSketch.FreeCountSketch()
 	return nil
 }
 
 func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
 	rm := md.ResourceMetrics()
-	
 	for i := 0; i < rm.Len(); i++ {
 		resourceMetric := rm.At(i)
-		
-		// Extract Hostname
+
 		hostKey := "unknown-host"
+		// TODO: Might need to change the key based on the input
 		if v, ok := resourceMetric.Resource().Attributes().Get("host.name"); ok {
 			hostKey = v.Str()
-		} 
-
-		// p.logger.Info("Batch Size", zap.Int("Metrics Count", metrics.Len()))
+		}
 
 		sms := resourceMetric.ScopeMetrics()
 		for j := 0; j < sms.Len(); j++ {
 			metrics := sms.At(j).Metrics()
+
 			for k := 0; k < metrics.Len(); k++ {
 				metric := metrics.At(k)
-				
-				// ROW KEY: Metric Name
+
 				rowKey := metric.Name()
-				
-				// Sum all data points
+
 				var value float64
+
 				switch metric.Type() {
 				case pmetric.MetricTypeGauge:
 					dps := metric.Gauge().DataPoints()
-
-					p.logger.Info("DataPoints Count", 
-						zap.Int("DPs inside this metric", dps.Len()), // Will print 10
-					)
-
-					for l := 0; l < dps.Len(); l++ {
-						value += getVal(dps.At(l))
-
-						p.logger.Info("         >>> DataPoint Value <<<", 
-                            zap.Any("value", getVal(dps.At(l))),
-						)
-					}
-
+					value = sumPoints(dps)
+				
 				case pmetric.MetricTypeSum:
 					dps := metric.Sum().DataPoints()
-					for l := 0; l < dps.Len(); l++ {
-						value += getVal(dps.At(l))
-					}
-
+					value = sumPoints(dps)
+					
 				case pmetric.MetricTypeHistogram:
 					dps := metric.Histogram().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
@@ -118,15 +111,27 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 	return md, p.next.ConsumeMetrics(ctx, md)
 }
 
-func getVal(dp pmetric.NumberDataPoint) float64 {
-	if dp.ValueType() == pmetric.NumberDataPointValueTypeInt {
-		return float64(dp.IntValue())
+func sumPoints(dps pmetric.NumberDataPointSlice) float64 {
+	var total float64
+	for i := 0; i < dps.Len(); i++ {
+		dp := dps.At(i)
+		if dp.ValueType() == pmetric.NumberDataPointValueTypeInt {
+			total += float64(dp.IntValue())
+		} else {
+			total += dp.DoubleValue()
+		}
 	}
-	
-	return dp.DoubleValue()
+	return total
 }
 
 func (p *countSketchProcessor) startWindowLoop() {
+	defer func() {
+		p.mutex.Lock()
+		p.rowSketch.FreeCountSketch()
+		p.colSketch.FreeCountSketch()
+		p.mutex.Unlock()
+	}()
+
 	for {
 		select {
 		case <-p.doneCh:
@@ -139,15 +144,27 @@ func (p *countSketchProcessor) startWindowLoop() {
 }
 
 func (p *countSketchProcessor) flushSketches() {
-	hostVal := p.colSketch.EstimateStringCount("host-A")
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
 
-	p.logger.Info("Flushing Count Sketches...", 
-		zap.Int64("Estimated_Host-A_Count", hostVal),
-	)
+	// hostVal := p.colSketch.EstimateStringCount("host-A")
+
+	// p.logger.Info("WINDOW FLUSH",
+	// 	zap.Int64("Estimated_Host-A_Sum", hostVal),
+	// 	zap.Float64("Using_Config_Epsilon", p.config.Epsilon),
+	// )
 
 	p.rowSketch.FreeCountSketch()
 	p.colSketch.FreeCountSketch()
 
-	p.rowSketch, _ = promsketch.NewCountSketchWithEstimates(0.01, 0.99)
-	p.colSketch, _ = promsketch.NewCountSketchWithEstimates(0.01, 0.99)
+	var err error
+	p.rowSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
+	if err != nil {
+		p.logger.Error("Failed to reset row sketch", zap.Error(err))
+	}
+	
+	p.colSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
+	if err != nil {
+		p.logger.Error("Failed to reset col sketch", zap.Error(err))
+	}
 }
