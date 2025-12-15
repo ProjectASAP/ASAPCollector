@@ -38,6 +38,9 @@ func newSeriesCache(ttl time.Duration) *seriesCache {
 	}
 }
 
+// rehydrate ensures every data point has attributes populated, either by
+// storing newly seen (series_id, attributes) pairs or by copying cached
+// attributes back onto ID-only points before the batch is consumed.
 func (sc *seriesCache) rehydrate(md pmetric.Metrics) {
 	if sc == nil {
 		return
