@@ -1,0 +1,30 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  countmin:
+    metric_name: "cms_sketch_output"
+    rows: 5
+    columns: 1000
+    seed: 1
+    group_by: ["service.name", "method"]
+
+  batch:
+    send_batch_size: 1000
+    timeout: 1s
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [countmin, batch]
+      exporters: [debug]
