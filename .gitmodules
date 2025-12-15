@@ -7,7 +7,7 @@
 	url = https://github.com/open-telemetry/opentelemetry-go.git
 [submodule "opentelemetry-proto"]
 	path = opentelemetry-proto
-	url = git@github.com:open-telemetry/opentelemetry-proto.git
+	url = https://github.com/open-telemetry/opentelemetry-proto.git
 [submodule "opentelemetry-collector"]
 	path = opentelemetry-collector
 	url = https://github.com/open-telemetry/opentelemetry-collector.git
