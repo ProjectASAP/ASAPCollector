@@ -15,3 +15,5 @@ Two convenience scripts demonstrate typical configurations:
 ```
 
 Both scripts accept the standard `GOFLAGS`/`OTEL_EXPORTER_OTLP_ENDPOINT` env overrides because they just call `go run ./cmd/fakemetricload`.
+
+The `--rate-per-series` flag (used in the scripts) defines how many samples per second each distinct series should emit. Total throughput is roughly `rate-per-series × series`.
