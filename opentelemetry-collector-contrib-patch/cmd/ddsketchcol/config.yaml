@@ -8,15 +8,15 @@ processors:
   ddsketch:
 
 exporters:
-  debug:
-    verbosity: detailed
+  prometheus:
+    endpoint: 0.0.0.0:8889
 
 service:
   pipelines:
     metrics:
       receivers: [otlp]
       processors: [ddsketch]
-      exporters: [debug]
+      exporters: [prometheus]
   telemetry:
     metrics:
       level: basic               # basic/normal/detailed
