@@ -7,11 +7,11 @@ go run ./cmd/fakemetricload \
   --distribution-std 40 \
   --distribution-zipf-s 1.1 \
   --series 4 \
+  --rate-per-series 25000 \
   --enable-counter=false \
   --export-interval 10s \
   --raw-export-interval 100ms \
   --endpoint localhost:4317 \
   --insecure \
   --ddsketch-accuracy 0.01 \
-  --rate 100000 \
   --workers 4
