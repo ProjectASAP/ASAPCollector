@@ -6,6 +6,7 @@ package ddsketchprocessor
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -67,6 +68,13 @@ func (p *ddsketchProcessor) buildDDSketchMetric(src pmetric.Metric) (pmetric.Met
 		return pmetric.Metric{}, false
 	}
 
+	if p.cfg.EmitDDSketch {
+		return p.buildMergedSketchMetric(src, series)
+	}
+	return p.buildQuantileMetric(src, series)
+}
+
+func (p *ddsketchProcessor) buildMergedSketchMetric(src pmetric.Metric, series map[string]*sketchSeries) (pmetric.Metric, bool) {
 	out := pmetric.NewMetric()
 	out.SetName(src.Name() + p.cfg.MetricSuffix)
 	out.SetDescription("DDSketch summary for " + src.Name())
@@ -99,6 +107,38 @@ func (p *ddsketchProcessor) buildDDSketchMetric(src pmetric.Metric) (pmetric.Met
 		dp.SetFlags(s.flags)
 	}
 
+	if dps.Len() == 0 {
+		return pmetric.Metric{}, false
+	}
+	return out, true
+}
+
+func (p *ddsketchProcessor) buildQuantileMetric(src pmetric.Metric, series map[string]*sketchSeries) (pmetric.Metric, bool) {
+	out := pmetric.NewMetric()
+	out.SetName(src.Name() + p.cfg.MetricSuffix)
+	out.SetDescription("DDSketch quantiles for " + src.Name())
+	out.SetUnit(src.Unit())
+
+	dst := out.SetEmptyGauge()
+	dps := dst.DataPoints()
+	for _, s := range series {
+		if s.sketch == nil {
+			continue
+		}
+		for _, q := range p.cfg.Quantiles {
+			val := s.sketch.GetValueAtQuantile(q)
+			if math.IsNaN(val) {
+				continue
+			}
+			dp := dps.AppendEmpty()
+			s.attrs.CopyTo(dp.Attributes())
+			dp.Attributes().PutDouble("ddsketch.quantile", q)
+			dp.SetStartTimestamp(s.start)
+			dp.SetTimestamp(s.end)
+			dp.SetDoubleValue(val)
+			dp.SetFlags(s.flags)
+		}
+	}
 	if dps.Len() == 0 {
 		return pmetric.Metric{}, false
 	}
