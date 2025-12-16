@@ -223,7 +223,7 @@ builder --config ./cmd/ddsketchcol/builder-config.yaml
 ### opentelemetry-app
 ```bash
 cd opentelemetry-app
-go build ./cmd/ddsketchload    # produces ./ddsketchload
+go build ./cmd/fakemetricload    # produces ./fakemetricload
 # or to run in-place:
-go run ./cmd/ddsketchload
+go run ./cmd/fakemetricload
 ```
