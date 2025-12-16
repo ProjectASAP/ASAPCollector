@@ -84,7 +84,11 @@ func (p *ddsketchProcessor) buildMergedSketchMetric(src pmetric.Metric, series m
 	out.SetUnit(src.Unit())
 
 	dst := out.SetEmptyDDSketch()
-	dst.SetAggregationTemporality(src.DDSketch().AggregationTemporality())
+	if src.Type() == pmetric.MetricTypeDDSketch {
+		dst.SetAggregationTemporality(src.DDSketch().AggregationTemporality())
+	} else {
+		dst.SetAggregationTemporality(pmetric.AggregationTemporalityUnspecified)
+	}
 
 	dps := dst.DataPoints()
 	for _, s := range series {
