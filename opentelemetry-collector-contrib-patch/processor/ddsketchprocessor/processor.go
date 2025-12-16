@@ -42,7 +42,7 @@ func (p *ddsketchProcessor) processScopeMetrics(sm pmetric.ScopeMetrics) {
 	originalLen := metrics.Len()
 	for i := 0; i < originalLen; i++ {
 		metric := metrics.At(i)
-		if newMetric, ok := p.buildDDSketchMetric(metric); ok {
+		if newMetric, ok := p.buildMetric(metric); ok {
 			newMetric.CopyTo(metrics.AppendEmpty())
 		}
 	}
@@ -57,23 +57,38 @@ type sketchSeries struct {
 	flags  pmetric.DataPointFlags
 }
 
-func (p *ddsketchProcessor) buildDDSketchMetric(src pmetric.Metric) (pmetric.Metric, bool) {
-	if src.Type() != pmetric.MetricTypeDDSketch {
+func (p *ddsketchProcessor) buildMetric(src pmetric.Metric) (pmetric.Metric, bool) {
+	var series map[string]*sketchSeries
+	switch src.Type() {
+	case pmetric.MetricTypeDDSketch:
+		series = p.consumeDDSketchDataPoints(src.DDSketch().DataPoints())
+	case pmetric.MetricTypeGauge:
+		series = p.consumeGaugeDataPoints(src.Gauge().DataPoints())
+	default:
 		return pmetric.Metric{}, false
 	}
-
-	series := p.consumeDDSketchDataPoints(src.DDSketch().DataPoints())
 	if len(series) == 0 {
 		return pmetric.Metric{}, false
 	}
 
+	if p.cfg.EmitDDSketch {
+		return p.buildMergedSketchMetric(src, series)
+	}
+	return p.buildQuantileMetric(src, series)
+}
+
+func (p *ddsketchProcessor) buildMergedSketchMetric(src pmetric.Metric, series map[string]*sketchSeries) (pmetric.Metric, bool) {
 	out := pmetric.NewMetric()
 	out.SetName(src.Name() + p.cfg.MetricSuffix)
 	out.SetDescription("DDSketch summary for " + src.Name())
 	out.SetUnit(src.Unit())
 
 	dst := out.SetEmptyDDSketch()
-	dst.SetAggregationTemporality(src.DDSketch().AggregationTemporality())
+	if src.Type() == pmetric.MetricTypeDDSketch {
+		dst.SetAggregationTemporality(src.DDSketch().AggregationTemporality())
+	} else {
+		dst.SetAggregationTemporality(pmetric.AggregationTemporalityUnspecified)
+	}
 
 	dps := dst.DataPoints()
 	for _, s := range series {
@@ -105,6 +120,41 @@ func (p *ddsketchProcessor) buildDDSketchMetric(src pmetric.Metric) (pmetric.Met
 	return out, true
 }
 
+func (p *ddsketchProcessor) buildQuantileMetric(src pmetric.Metric, series map[string]*sketchSeries) (pmetric.Metric, bool) {
+	out := pmetric.NewMetric()
+	out.SetName(src.Name() + p.cfg.MetricSuffix)
+	out.SetDescription("DDSketch quantiles for " + src.Name())
+	out.SetUnit(src.Unit())
+
+	dst := out.SetEmptyGauge()
+	dps := dst.DataPoints()
+	for _, s := range series {
+		if s.sketch == nil {
+			continue
+		}
+		for _, q := range p.cfg.Quantiles {
+			val, err := s.sketch.GetValueAtQuantile(q)
+			if err != nil {
+				if p.logger != nil {
+					p.logger.Error("failed to evaluate DDSketch quantile", zap.Float64("quantile", q), zap.Error(err))
+				}
+				continue
+			}
+			dp := dps.AppendEmpty()
+			s.attrs.CopyTo(dp.Attributes())
+			dp.Attributes().PutDouble("ddsketch.quantile", q)
+			dp.SetStartTimestamp(s.start)
+			dp.SetTimestamp(s.end)
+			dp.SetDoubleValue(val)
+			dp.SetFlags(s.flags)
+		}
+	}
+	if dps.Len() == 0 {
+		return pmetric.Metric{}, false
+	}
+	return out, true
+}
+
 func (p *ddsketchProcessor) consumeDDSketchDataPoints(dps pmetric.DDSketchDataPointSlice) map[string]*sketchSeries {
 	if dps.Len() == 0 {
 		return nil
@@ -129,6 +179,45 @@ func (p *ddsketchProcessor) consumeDDSketchDataPoints(dps pmetric.DDSketchDataPo
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
 		}
 		series.merge(sk, dp, p.logger)
+	}
+	return result
+}
+
+func (p *ddsketchProcessor) consumeGaugeDataPoints(dps pmetric.NumberDataPointSlice) map[string]*sketchSeries {
+	if dps.Len() == 0 {
+		return nil
+	}
+	result := make(map[string]*sketchSeries)
+	for i := 0; i < dps.Len(); i++ {
+		dp := dps.At(i)
+		key := attributesKey(dp.Attributes())
+		series := result[key]
+		if series == nil {
+			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
+			result[key] = series
+		} else {
+			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
+		}
+		sk, err := p.ensureSketch(series)
+		if err != nil {
+			if p.logger != nil {
+				p.logger.Error("failed to create DDSketch for gauge", zap.Error(err))
+			}
+			continue
+		}
+		switch dp.ValueType() {
+		case pmetric.NumberDataPointValueTypeDouble:
+			sk.Add(dp.DoubleValue())
+		case pmetric.NumberDataPointValueTypeInt:
+			sk.Add(float64(dp.IntValue()))
+		default:
+			if p.logger != nil {
+				p.logger.Error("unsupported gauge data point type", zap.Any("type", dp.ValueType()))
+			}
+			continue
+		}
+		series.count++
+		series.flags |= dp.Flags()
 	}
 	return result
 }
@@ -186,6 +275,18 @@ func (s *sketchSeries) merge(sk *ddsketch.DDSketch, dp pmetric.DDSketchDataPoint
 	s.count += dp.Count()
 	s.flags |= dp.Flags()
 	s.updateWindow(dp.StartTimestamp(), dp.Timestamp())
+}
+
+func (p *ddsketchProcessor) ensureSketch(s *sketchSeries) (*ddsketch.DDSketch, error) {
+	if s.sketch != nil {
+		return s.sketch, nil
+	}
+	sk, err := ddsketch.NewDefaultDDSketch(p.cfg.RelativeAccuracy)
+	if err != nil {
+		return nil, err
+	}
+	s.sketch = sk
+	return sk, nil
 }
 
 func serializeDDSketch(sk *ddsketch.DDSketch) ([]byte, error) {
