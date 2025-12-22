@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 	"fmt"
+	"sync"
 
 	// "github.com/approx-telemetry/sketchlib-go/KLL"
 	KLL "github.com/zzylol/go-kll"
@@ -16,11 +17,14 @@ import (
 type Sketch struct {
 	seen []float64 // for debugging, save the seen values
 	sketch *KLL.Sketch
+
+	mu sync.Mutex
 }
 
 type KLLSketch struct {
 	cfg *Config
 	sketches map[string]*Sketch
+	mu sync.RWMutex
 
 	logger *zap.Logger
 }
@@ -74,11 +78,31 @@ func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pme
 	// output sketch
  	scope := md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty()
 	scope.Scope().SetName("otelcol/kllprocessor")
-
 	now := pcommon.NewTimestampFromTime(time.Now())
 
+	type snapshot struct {
+		key string
+		sketch *Sketch
+	}
+
+	// based off countmin sketch impl; make local copy (by reference) to avoid expensive global lock
+	items := make([]snapshot, 0, len(kll.sketches))
+	kll.mu.RLock()
 	for name, sketch := range kll.sketches {
-		if sketch.sketch.GetSize() == 0 { continue }
+		items = append(items, snapshot{key: name, sketch: sketch})
+	}
+	kll.mu.RUnlock()
+
+	for _, item := range items {
+		name := item.key
+		sketch := item.sketch
+
+		sketch.mu.Lock()
+		if sketch.sketch.GetSize() == 0 {
+			sketch.mu.Unlock()
+			continue
+		}
+
 		cdf := sketch.sketch.CDF();
 
 		// add in each quantile
@@ -88,9 +112,7 @@ func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pme
 
 			dp := metric.SetEmptyGauge().DataPoints().AppendEmpty()
 			dp.SetTimestamp(now)
-			// dp.SetIntValue(int64(sketch.sketch.GetSize()) + 10)
 			dp.SetDoubleValue(cdf.Query(q))
-			// dp.SetDoubleValue(q)
 		}
 
 		if kll.cfg.WriteSeen {
@@ -103,23 +125,33 @@ func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pme
 			// can also do as a slice, but this is a bit easier
 			dp.Attributes().PutStr("seen", fmt.Sprintf("%v", sketch.seen))
 		}
+
+		sketch.mu.Unlock()
 	}
 
 	return md, nil
 }
 
 func (kll *KLLSketch) addPoint(name string, val float64) {
-	// add sketch if this is new metric
+	kll.mu.RLock()
 	sketch, ok := kll.sketches[name]
-	if !ok {
+	kll.mu.RUnlock()
+
+	if !ok { // add sketch if this is new metric
+		kll.mu.Lock()
+
 		kll.sketches[name] = &Sketch{ sketch: KLL.New(kll.cfg.K), seen: nil }
 		sketch = kll.sketches[name]
 
 		if kll.cfg.WriteSeen { sketch.seen = make([]float64, 0) }
+
+		kll.mu.Unlock()
 	}
 
+	sketch.mu.Lock()
 	// update backing sketch
 	sketch.sketch.Update(val)
 	if kll.cfg.WriteSeen { sketch.seen = append(sketch.seen, val) }
+	sketch.mu.Unlock()
 }
 
