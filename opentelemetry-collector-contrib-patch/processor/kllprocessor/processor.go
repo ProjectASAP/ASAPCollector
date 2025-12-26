@@ -21,7 +21,7 @@ type Sketch struct {
 	mu sync.Mutex
 }
 
-type KLLSketch struct {
+type KLLSketches struct {
 	cfg *Config
 	sketches map[string]*Sketch
 	mu sync.RWMutex
@@ -29,14 +29,14 @@ type KLLSketch struct {
 	logger *zap.Logger
 }
 
-func newProcessor(cfg *Config, logger *zap.Logger) *KLLSketch {
-	return &KLLSketch{
+func newProcessor(cfg *Config, logger *zap.Logger) *KLLSketches {
+	return &KLLSketches{
 		cfg: cfg, logger: logger,
 		sketches: make(map[string]*Sketch),
 	}
 }
 
-func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
+func (klls *KLLSketches) processMetrics(_ context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	// see here: https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/metrics/v1/metrics.proto#L28
 	// or: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/data-model.md
 	// for description of how md is structured
@@ -57,10 +57,10 @@ func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pme
 					// according to above, gauge DataPoints should only report a single (most recently sampled) value
 					dps := metric.Gauge().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
-						if kll.cfg.ReadAsInt {
-							kll.addPoint(metric.Name(), float64(dps.At(l).IntValue()))
+						if klls.cfg.ReadAsInt {
+							klls.addPoint(metric.Name(), float64(dps.At(l).IntValue()))
 						} else {
-							kll.addPoint(metric.Name(), dps.At(l).DoubleValue())
+							klls.addPoint(metric.Name(), dps.At(l).DoubleValue())
 						}
 					}
 				}
@@ -68,10 +68,8 @@ func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pme
 		}
 	}
 
-	// TODO: maybe output seen value as log?
-
 	// remove all prev values
-	if kll.cfg.DropOriginal {
+	if klls.cfg.DropOriginal {
 		md.ResourceMetrics().RemoveIf(func(pmetric.ResourceMetrics) bool { return true });
 	}
 
@@ -86,12 +84,12 @@ func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pme
 	}
 
 	// based off countmin sketch impl; make local copy (by reference) to avoid expensive global lock
-	items := make([]snapshot, 0, len(kll.sketches))
-	kll.mu.RLock()
-	for name, sketch := range kll.sketches {
+	items := make([]snapshot, 0, len(klls.sketches))
+	klls.mu.RLock()
+	for name, sketch := range klls.sketches {
 		items = append(items, snapshot{key: name, sketch: sketch})
 	}
-	kll.mu.RUnlock()
+	klls.mu.RUnlock()
 
 	for _, item := range items {
 		name := item.key
@@ -106,7 +104,7 @@ func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pme
 		cdf := sketch.sketch.CDF();
 
 		// add in each quantile
-		for q, str := range kll.cfg.suffixes {
+		for q, str := range klls.cfg.suffixes {
 			metric := scope.Metrics().AppendEmpty()
 			metric.SetName(name + str);
 
@@ -115,7 +113,7 @@ func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pme
 			dp.SetDoubleValue(cdf.Query(q))
 		}
 
-		if kll.cfg.WriteSeen {
+		if klls.cfg.WriteSeen {
 			slices.Sort(sketch.seen)
 			metric := scope.Metrics().AppendEmpty()
 			metric.SetName(name + "_seen")
@@ -132,26 +130,26 @@ func (kll *KLLSketch) processMetrics(_ context.Context, md pmetric.Metrics) (pme
 	return md, nil
 }
 
-func (kll *KLLSketch) addPoint(name string, val float64) {
-	kll.mu.RLock()
-	sketch, ok := kll.sketches[name]
-	kll.mu.RUnlock()
+func (klls *KLLSketches) addPoint(name string, val float64) {
+	klls.mu.RLock()
+	sketch, ok := klls.sketches[name]
+	klls.mu.RUnlock()
 
 	if !ok { // add sketch if this is new metric
-		kll.mu.Lock()
+		klls.mu.Lock()
 
-		kll.sketches[name] = &Sketch{ sketch: KLL.New(kll.cfg.K), seen: nil }
-		sketch = kll.sketches[name]
+		klls.sketches[name] = &Sketch{ sketch: KLL.New(klls.cfg.K), seen: nil }
+		sketch = klls.sketches[name]
 
-		if kll.cfg.WriteSeen { sketch.seen = make([]float64, 0) }
+		if klls.cfg.WriteSeen { sketch.seen = make([]float64, 0) }
 
-		kll.mu.Unlock()
+		klls.mu.Unlock()
 	}
 
 	sketch.mu.Lock()
 	// update backing sketch
 	sketch.sketch.Update(val)
-	if kll.cfg.WriteSeen { sketch.seen = append(sketch.seen, val) }
+	if klls.cfg.WriteSeen { sketch.seen = append(sketch.seen, val) }
 	sketch.mu.Unlock()
 }
 
