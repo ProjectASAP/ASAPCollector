@@ -5,24 +5,25 @@ package countminsketchprocessor
 
 import (
 	"fmt"
-	"time"
 
 	"go.opentelemetry.io/collector/component"
 )
 
+// Config defines configuration for the countmin processor.
 type Config struct {
-	MetricName string   `mapstructure:"metric_name"`
-	GroupBy    []string `mapstructure:"group_by"`
+	// MetricName is the name of the output metric containing the sketch.
+	// THIS IS REQUIRED so that factory.go and processor.go do not error.
+	MetricName string `mapstructure:"metric_name"`
 
-	// CMS Parameters
+	// GroupBy defines attributes used to split sketches.
+	GroupBy []string `mapstructure:"group_by"`
+
+	// Count-Min sketch parameters.
 	Rows    int   `mapstructure:"rows"`
 	Columns int   `mapstructure:"columns"`
 	Seed    int64 `mapstructure:"seed"`
 
 	DropOriginal bool `mapstructure:"drop_original"`
-
-	// NEW: The time window to accumulate data before emitting a sketch
-	WindowInterval time.Duration `mapstructure:"window_interval"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -33,10 +34,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Rows <= 0 || c.Columns <= 0 {
 		return fmt.Errorf("rows and columns must be positive")
-	}
-	// Default to 10s
-	if c.WindowInterval <= 0 {
-		c.WindowInterval = 10 * time.Second
 	}
 	return nil
 }

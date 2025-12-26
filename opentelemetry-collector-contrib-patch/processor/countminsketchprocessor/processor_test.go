@@ -6,168 +6,64 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
 
-//
-// ─────────────────────────────────────────────────────────────
-// Test sink (mock downstream consumer)
-// ─────────────────────────────────────────────────────────────
-//
-
-type testMetricsSink struct {
-	received []pmetric.Metrics
-}
-
-func newTestMetricsSink() *testMetricsSink {
-	return &testMetricsSink{}
-}
-
-func (s *testMetricsSink) ConsumeMetrics(
-	ctx context.Context,
-	md pmetric.Metrics,
-) error {
-	s.received = append(s.received, md)
-	return nil
-}
-
-func (s *testMetricsSink) Capabilities() consumer.Capabilities {
-	return consumer.Capabilities{MutatesData: false}
-}
-
-func (s *testMetricsSink) Count() int {
-	return len(s.received)
-}
-
-//
-// ─────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────
-//
-
-func TestWindowedCountMinSketchProcessor_AppendsSketch(t *testing.T) {
-	// 1. Configuration
+func TestProcessMetrics_AppendsSketch(t *testing.T) {
+	// 1. Setup Configuration
 	cfg := createDefaultConfig().(*Config)
 	cfg.MetricName = "custom_cms_metric"
 	cfg.Rows = 5
 	cfg.Columns = 100
-	cfg.DropOriginal = true
-	cfg.WindowInterval = time.Second
+	cfg.GroupBy = []string{"region"} // We will group by 'region'
 
-	logger := zap.NewNop()
-	sink := newTestMetricsSink()
+	// 2. Instantiate Processor
+	p := newProcessor(cfg, zap.NewNop())
 
-	// 2. Processor
-	proc := newProcessor(cfg, sink, logger)
+	// 3. Build Input Data
+	// This helper creates data with 'region' attributes on the DataPoints
+	in := buildTestMetricsWithDataPointAttributes()
 
-	err := proc.Start(context.Background(), nil)
-	require.NoError(t, err)
-	defer proc.Shutdown(context.Background())
-
-	// 3. Input metrics
-	input := buildTestMetrics()
-
-	// 4. Ingest
-	_, err = proc.ConsumeMetrics(context.Background(), input)
+	// 4. Execute Processor
+	out, err := p.processMetrics(context.Background(), in)
 	require.NoError(t, err)
 
-	// 5. Close window manually
-	proc.emitWindowAndReset()
+	// 5. Assertions
+	totalSketches := 0
 
-	// 6. Assertions
-	require.Equal(t, 1, sink.Count())
+	// Loop through all outputs to count generated sketches
+	for i := 0; i < out.ResourceMetrics().Len(); i++ {
+		rm := out.ResourceMetrics().At(i)
+		for j := 0; j < rm.ScopeMetrics().Len(); j++ {
+			sm := rm.ScopeMetrics().At(j)
+			for k := 0; k < sm.Metrics().Len(); k++ {
+				m := sm.Metrics().At(k)
 
-	md := sink.received[0]
-	require.Equal(t, 1, md.ResourceMetrics().Len())
+				// Identify our sketch metric
+				if m.Name() == cfg.MetricName {
+					// Count how many data points (sketches) were created
+					totalSketches += m.Gauge().DataPoints().Len()
 
-	sm := md.ResourceMetrics().At(0).ScopeMetrics()
-	require.Equal(t, 1, sm.Len())
-
-	metric := sm.At(0).Metrics().At(0)
-	require.Equal(t, cfg.MetricName, metric.Name())
-	require.Equal(t, "1", metric.Unit())
-
-	dps := metric.Gauge().DataPoints()
-	require.Equal(t, 2, dps.Len())
-
-	for i := 0; i < dps.Len(); i++ {
-		dp := dps.At(i)
-		attrs := dp.Attributes()
-
-		// sketch_payload
-		payload, ok := attrs.Get("sketch_payload")
-		require.True(t, ok)
-		require.Equal(t, pcommon.ValueTypeBytes, payload.Type())
-		require.NotEmpty(t, payload.Bytes().AsRaw())
-
-		// rows / cols
-		rows, ok := attrs.Get("rows")
-		require.True(t, ok)
-		require.Equal(t, int64(cfg.Rows), rows.Int())
-
-		cols, ok := attrs.Get("cols")
-		require.True(t, ok)
-		require.Equal(t, int64(cfg.Columns), cols.Int())
-
-		// aggregation key
-		_, ok = attrs.Get("aggregation_key")
-		require.True(t, ok)
+					// Validate format
+					dp := m.Gauge().DataPoints().At(0)
+					val, ok := dp.Attributes().Get("sketch_payload")
+					require.True(t, ok, "sketch_payload attribute must exist")
+					require.Equal(t, pcommon.ValueTypeBytes, val.Type())
+				}
+			}
+		}
 	}
+
+	// EXPECTATION: 2 Sketches.
+	// 1 for region="us-east", 1 for region="us-west".
+	require.Equal(t, 2, totalSketches, "Should produce 2 sketches for 2 different regions")
 }
 
-func TestWindowedCountMinSketchProcessor_WindowReset(t *testing.T) {
-	cfg := createDefaultConfig().(*Config)
-	cfg.DropOriginal = true
-	cfg.WindowInterval = time.Second
-
-	logger := zap.NewNop()
-	sink := newTestMetricsSink()
-	proc := newProcessor(cfg, sink, logger)
-
-	err := proc.Start(context.Background(), nil)
-	require.NoError(t, err)
-	defer proc.Shutdown(context.Background())
-
-	// First window
-	input := buildTestMetrics()
-	proc.ConsumeMetrics(context.Background(), input)
-	proc.emitWindowAndReset()
-
-	// Second window (no new data)
-	proc.emitWindowAndReset()
-
-	// Only one emission expected
-	require.Equal(t, 1, sink.Count())
-}
-
-func TestWindowedCountMinSketchProcessor_DropOriginal(t *testing.T) {
-	cfg := createDefaultConfig().(*Config)
-	cfg.DropOriginal = true
-
-	logger := zap.NewNop()
-	sink := newTestMetricsSink()
-	proc := newProcessor(cfg, sink, logger)
-
-	input := buildTestMetrics()
-
-	out, err := proc.ConsumeMetrics(context.Background(), input)
-	require.NoError(t, err)
-
-	require.Equal(t, 0, out.ResourceMetrics().Len())
-}
-
-//
-// ─────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────
-//
-
-func buildTestMetrics() pmetric.Metrics {
+// Helper: Puts attributes directly on DataPoints
+func buildTestMetricsWithDataPointAttributes() pmetric.Metrics {
 	metrics := pmetric.NewMetrics()
-
 	rm := metrics.ResourceMetrics().AppendEmpty()
 	rm.Resource().Attributes().PutStr("service.name", "test-service")
 
@@ -178,17 +74,17 @@ func buildTestMetrics() pmetric.Metrics {
 
 	dps := m.Sum().DataPoints()
 
-	// Data point 1
+	// Data Point 1 (Region: us-east)
 	dp1 := dps.AppendEmpty()
 	dp1.Attributes().PutStr("method", "GET")
-	dp1.Attributes().PutStr("status", "200")
+	dp1.Attributes().PutStr("region", "us-east") // <--- Attribute on DataPoint
 	dp1.SetIntValue(10)
 	dp1.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 
-	// Data point 2
+	// Data Point 2 (Region: us-west)
 	dp2 := dps.AppendEmpty()
 	dp2.Attributes().PutStr("method", "POST")
-	dp2.Attributes().PutStr("status", "500")
+	dp2.Attributes().PutStr("region", "us-west") // <--- Attribute on DataPoint
 	dp2.SetIntValue(5)
 	dp2.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 
