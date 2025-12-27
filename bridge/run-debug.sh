@@ -7,7 +7,10 @@
 # script assumes we're in source directory
 cd "$(dirname "$0")" || exit 1
 
+# clear outputs
+rm -rf out 2> /dev/null
 mkdir out 2> /dev/null
+
 otelOut="out/otel-out"
 telegrafOut="out/telegraf-out"
 telemetrygenOut="out/telemetrygen-out"
@@ -33,7 +36,16 @@ if (! kill -0 "$otelPid" 2> /dev/null) || (! kill -0 "$telegrafPid" 2> /dev/null
 fi
 
 # total metrics = rate * duration
-(telemetrygen metrics --otlp-insecure --otlp-endpoint="localhost:4317" --rate 5 --duration 1s --workers 1 --unique-timeseries |& cat) > "$telemetrygenOut"
+(telemetrygen metrics \
+    --otlp-insecure \
+    --otlp-endpoint="localhost:4317" \
+    --rate 5 \
+    --duration 1s \
+    --workers 1 \
+    --unique-timeseries \
+|& cat) > "$telemetrygenOut"
 
 kill "$otelPid"
 kill "$telegrafPid"
+
+echo "Finished."
