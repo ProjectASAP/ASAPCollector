@@ -3,7 +3,7 @@
 help() {
     echo "Benchmark the OTEL - Telegraf pipeline"
     echo "Flags:"
-    echo "  -c 40000                          num metrics to send per second"
+    echo "  -c 40000                          num metrics to send per second, 0 for unbounded"
     echo "  -d 30                             duration in seconds"
     echo "  -w 10                             num workers"
     echo "  -o ./configs/otel-bench.yaml      path to otel config file"
@@ -103,6 +103,8 @@ echo "=================================="
 echo
 echo "Running..."
 
+start_time=$(date +"%s.%3N")
+
 # total metrics = rate * duration * workers
 (telemetrygen metrics \
     --otlp-insecure \
@@ -116,6 +118,13 @@ echo "Running..."
 kill "$otelPid"
 kill "$telegrafPid"
 
+# TODO: telemetrygen seems to take 10% longer than given duration
+# TODO: warn if telegraf duration is less than expected; likely not enough rotation archives in conf
+
+end_time=$(date +"%s.%3N")
+diff=$(bc <<< "$end_time - $start_time")
+echo "DURATION: $diff"
+
 # otel stats (from opentelemetry-collector-contrib-patch/processor/kllprocessor/kll_bench.sh)
 otelSent=$(grep "metrics generated" "$telemetrygenOut" | awk '{sum+=$NF} END {print sum+0}' | tr -d '"')
 if [ "$otelSent" -eq 0 ]; then otelMps=0; else otelMps=$((otelSent / duration)); fi
@@ -126,4 +135,35 @@ echo
 
 # telegraf stats
 py=$(command -v python || command -v python3)
-"$py" ../telegraf_benchmarks/summarize_telegraf_metrics.py --results-dir out
+stats=$("$py" ../telegraf_benchmarks/summarize_telegraf_metrics.py --results-dir out)
+echo -e "$stats"
+values=$(echo -e "$stats" |
+    # get the sum window, total gathered, written, and dropped values
+    awk -F " " \
+        -v window=0 -v gathered=0 -v written=0 -v dropped=0 \
+        '/Window:/ {gsub(",", "", $0); window+=$2; gathered+=$5; written+=$7; dropped+=$9}
+        END {print window, gathered, written, dropped}' | \
+    tail -n 1)
+# shellcheck disable=SC2206
+values=($values)
+
+window="${values[0]}"
+gathered="${values[1]}"
+written="${values[2]}"
+dropped="${values[3]}"
+
+if (( $(bc <<< "$window == 0") )); then
+    window=1
+fi
+
+gathered_s=$(bc <<< "$gathered/$window")
+written_s=$(bc <<< "$written/$window")
+
+echo "============ SUMMARY ============="
+echo "Duration:     $window"
+echo "Dropped:      $dropped"
+echo
+echo "OTEL in/out:  $otelSent ($otelMps/s)"
+echo "Telegraf in:  $gathered ($gathered_s/s)"
+echo "Telegraf out: $written ($written_s/s)"
+echo "=================================="
