@@ -18,7 +18,7 @@ _workers=(10)
 _otelPath=("./configs/otel-bench.yaml")
 _telegrafPath=("./configs/telegraf-bench.conf")
 
-while getopts :c:d:o:t:w flag; do
+while getopts :c:d:o:t:w: flag; do
     case $flag in
         c) _count+=("$OPTARG");;
         d) _duration+=("$OPTARG");;

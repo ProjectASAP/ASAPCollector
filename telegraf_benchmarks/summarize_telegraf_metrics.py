@@ -19,7 +19,7 @@ import glob
 import math
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple, List
 
 
 @dataclass
@@ -172,27 +172,51 @@ def parse_line(line: str) -> Optional[Tuple[str, Dict[str, float], int]]:
 
 def summarize_file(path: str) -> FileSummary:
     summary = FileSummary(path=path)
+
+    # start, end
+    gathered = [-1, 0]
+    written = [-1, 0]
+    dropped = [-1, 0]
+    start_time = -1
+    end_time = 0
+
+    # given input value x, update the start/end values of arr
+    def addToRange(arr: List[int], x: Optional[float], t: int) -> None:
+        if x == None:
+            return
+
+        nonlocal start_time, end_time
+        if arr[0] == -1:
+            arr[0] = x
+        arr[1] = x
+
+        if start_time == -1:
+            start_time = t
+        end_time = t
+
     with open(path, "r", encoding="utf-8") as handle:
         for raw_line in handle:
             parsed = parse_line(raw_line)
             if not parsed:
                 continue
             measurement, fields, timestamp = parsed
-            if measurement == "internal_agent":
-                snapshot = AgentSnapshot(
-                    timestamp=timestamp,
-                    gathered=int(fields.get("metrics_gathered", 0)),
-                    written=int(fields.get("metrics_written", 0)),
-                    dropped=int(fields.get("metrics_dropped", 0)),
-                )
-                if summary.agent_start is None:
-                    summary.agent_start = snapshot
-                summary.agent_end = snapshot
-            elif measurement == "internal_gather":
+
+            # parse_line only retrieves numeric values; this is string so need separate handling
+            isInternal = "alias=INTERNAL" in raw_line
+
+            # handle contains stats for both the internal/procstat plugin and the actual metrics we process
+            # we expect internal/procstat plugin to be marked with alias=INTERNAL
+            # so ignore any such lines for the gather/write stats
+            if not isInternal and measurement == "internal_gather":
+                addToRange(gathered, fields.get("metrics_gathered"), timestamp)
+
                 gather_time = fields.get("gather_time_ns")
                 if gather_time is not None:
                     summary.gather_latency.add(int(gather_time))
-            elif measurement == "internal_write":
+            elif not isInternal and measurement == "internal_write":
+                addToRange(written, fields.get("metrics_written"), timestamp)
+                addToRange(dropped, fields.get("metrics_dropped"), timestamp)
+
                 write_time = fields.get("write_time_ns")
                 if write_time is not None:
                     summary.write_latency.add(int(write_time))
@@ -207,6 +231,9 @@ def summarize_file(path: str) -> FileSummary:
                 rss = fields.get("heap_in_use_bytes")
                 if rss is not None:
                     summary.memory_rss.add(float(rss))
+    
+    summary.agent_start = AgentSnapshot(start_time, gathered[0], written[0], dropped[0])
+    summary.agent_end = AgentSnapshot(end_time, gathered[1], written[1], dropped[1])
     return summary
 
 
