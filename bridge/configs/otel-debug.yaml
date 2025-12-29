@@ -7,10 +7,6 @@ receivers:
 processors:
   # ...
 
-  batch:
-    send_batch_size: 5000
-    timeout: 200ms
-
 exporters:
   otlp/out: # https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/otlpexporter/README.md
     endpoint: 0.0.0.0:4318
@@ -23,5 +19,5 @@ service:
   pipelines:
     metrics:
       receivers: [otlp/in]
-      processors: [batch]
+      processors: []
       exporters: [otlp/out]
