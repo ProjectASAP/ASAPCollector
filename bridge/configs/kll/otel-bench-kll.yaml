@@ -25,13 +25,10 @@ exporters:
       insecure: true
     # if compression is enabled, make sure you have the respective library installed
     compression: none
-  file:
-    path: out/otel-debug.json
-    format: json
 
 service:
   pipelines:
     metrics:
       receivers: [otlp/in]
       processors: [KLL, batch]
-      exporters: [otlp/out, file]
+      exporters: [otlp/out]
