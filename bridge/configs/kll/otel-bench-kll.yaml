@@ -1,0 +1,37 @@
+receivers:
+  otlp/in:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  KLL:
+    k: 256
+    write_seen: false
+    quantiles: 
+      - 0.5
+      - 0.99
+    drop_original: false
+    is_int: false
+
+  batch:
+    send_batch_size: 5000
+    timeout: 200ms
+
+exporters:
+  otlp/out: # https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/otlpexporter/README.md
+    endpoint: 0.0.0.0:4318
+    tls:
+      insecure: true
+    # if compression is enabled, make sure you have the respective library installed
+    compression: none
+  file:
+    path: out/otel-debug.json
+    format: json
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp/in]
+      processors: [KLL, batch]
+      exporters: [otlp/out, file]

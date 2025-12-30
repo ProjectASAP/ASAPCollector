@@ -10,8 +10,11 @@ exporters:
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.142.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllprocessor v0.0.0
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.142.0
 
+# current path is bridge/bin/otel
 replaces:
+  - github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllprocessor => ../../../opentelemetry-collector-contrib/processor/kllprocessor
