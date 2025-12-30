@@ -33,10 +33,10 @@ count="${_count[-1]}"
 otelPath="${_otelPath[-1]}"
 telegrafPath="${_telegrafPath[-1]}"
 
-# shellcheck disable=SC2164
-absSrc=$( (cd "$(dirname "$0")"; pwd) )
 
 # otel and telegraf path are relative to script location, but if user provides a path we want that to be relative to where they are
+# shellcheck disable=SC2164
+absSrc=$( (cd "$(dirname "$0")"; pwd) )
 # shellcheck disable=SC2164
 if [[ "${#_otelPath[@]}" -eq 1 ]]; then otelPath="$absSrc/$otelPath"
 else otelPath="$(cd -- "$(dirname -- "$otelPath")"; pwd)/$(basename -- "$otelPath")"
