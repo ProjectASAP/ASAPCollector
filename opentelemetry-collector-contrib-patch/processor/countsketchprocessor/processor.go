@@ -113,6 +113,13 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 					}
 				}
 
+				// For Debugging
+				// p.logger.Info("Sketch Update",
+				// 	zap.String("host", hostKey),
+				// 	zap.String("metric", rowKey),
+				// 	zap.Float64("value", value),
+				// )
+
 				p.rowSketch.UpdateString(rowKey, value)
 				p.colSketch.UpdateString(hostKey, value)
 			}
