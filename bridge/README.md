@@ -9,9 +9,15 @@ Communication between OTEL and Telegraf is dona via gRPC and the OTLP protocol. 
 # or
 ./run-benchmark.sh
 ```
+
+### Example: KLL
+```bash
+./build.sh
+./run-benchmark.sh -o configs/kll/otel-bench-kll.yaml
+```
 # Directory Structure
 1. `build.sh`: Build OTEL and Telegraf. OTEL plugins are derived from `configs/otel-build.yaml` and Telegraf plugins are any that are used in the `configs/` directory.
-2. `run-debug.sh`: Pipes in a very small number of metrics (5 by default) to the pipeline with no processors. Telegraf will write what it receives to `out/telegraf-debug.json`.
+2. `run-debug.sh`: Pipes in a very small number of metrics (5 by default) to the pipeline with no processors. See `out/otel-debug.json` and `out/telegraf-debug.json` for the respective exported values.
     - This is meant to be used for manual verification (i.e. insert your processors into the respective config files and check output).
     - Uses `configs/otel-debug.yaml` and `configs/telegraf-debug.conf` by default.
     - See `./run.debug.sh -h` for options.
