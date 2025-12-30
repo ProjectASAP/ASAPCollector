@@ -37,8 +37,15 @@ echo
 
 # build Telegraf
 echo "Building Telegraf..."
+# get all subdirectories in configs
+mapfile -t configDirs < <(find "$(pwd)/configs" -type d)
+configStr=""
+for i in "${configDirs[@]}"; do
+    configStr="${configStr} --config-dir $i"
+done
+
 cd ../telegraf || exit 1
-(make build_tools && ./tools/custom_builder/custom_builder --config-dir ../bridge/configs) || {
+(make build_tools && eval "./tools/custom_builder/custom_builder $configStr") || {
     echo -e "\nCould not build Telegraf, exiting..."
     exit 1
 }
