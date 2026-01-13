@@ -126,7 +126,7 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 		}
 	}
 
-	return md, p.next.ConsumeMetrics(ctx, md)
+	return md, nil
 }
 
 func sumPoints(dps pmetric.NumberDataPointSlice) float64 {
