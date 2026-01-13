@@ -5,7 +5,10 @@ receivers:
         endpoint: 0.0.0.0:4317
 
 processors:
-  countsketch: 
+  countsketch:
+    epsilon: 0.01
+    delta: 0.99
+    window_size: 5s 
 
 exporters:
   debug:

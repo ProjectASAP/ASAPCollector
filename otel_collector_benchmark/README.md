@@ -15,19 +15,19 @@ Benchmarks were run on the following system:
 - **Memory**: 440 GB total, 424 GB available
 - **Architecture**: x86_64
 
-### Benchmark Results
+## Benchmark Results
 
-#### NOP Processor Benchmark
-
-The NOP (No-Operation) processor serves as a baseline for measuring collector overhead without any processing logic.
-
-**Test Configuration:**
+**Common Test Configuration:**
 - Duration: 60 seconds per scenario
 - Load rates: 10,000, 20,000, 30,000, 40,000, 50,000 MPS (Metrics Per Second)
 - Workers: 10
 - Hosts per worker: 10
 - Metrics per host: 10
 - Distribution: Zipf (s=1.1, v=1.0, max=500, mean=250)
+
+### NOP Processor Benchmark
+
+The NOP (No-Operation) processor serves as a baseline for measuring collector overhead without any processing logic.
 
 **Results Summary:**
 
@@ -40,27 +40,54 @@ The NOP (No-Operation) processor serves as a baseline for measuring collector ov
 | 50,000 MPS  | 49,990 MPS        | 99.98%       | 20.59%  | 38.26 MB    | 0%        | 1.63 ms     | 2.11 ms     | 2.56 ms     |
 
 **Key Observations:**
-- **Throughput Scaling**: The load generator successfully achieves target rates with >99.8% accuracy across all scenarios (using microsecond-precision intervals), demonstrating proper interval calculation and system capability
-- **CPU Usage**: CPU consumption scales linearly with throughput (~0.4% per 10k MPS), reaching 20.59% at 50k MPS, indicating efficient processing
-- **Memory Stability**: Memory usage remains remarkably stable (36-39 MB) regardless of load, showing minimal memory overhead and no memory leaks
-- **Zero Data Loss**: Perfect reliability with 0% data loss across all test scenarios, confirming robust metric processing pipeline
-- **Consistent Latency**: Query latency remains consistently low (< 3ms) across all load rates, with P99 latency staying under 2.9ms, indicating excellent responsiveness
-- **Zipf Distribution Handling**: The collector successfully handles Zipf-distributed metric patterns (s=1.1, v=1.0) without performance degradation
-- **Linear Scaling**: The system demonstrates linear scaling characteristics, with CPU usage increasing proportionally to throughput without hitting bottlenecks up to 50k MPS
+- **Throughput Scaling**: >99.8% accuracy across all scenarios (using microsecond-precision intervals)
+- **CPU Usage**: Linear scaling (~0.4% per 10k MPS), reaching 20.59% at 50k MPS
+- **Memory**: Stable 36-39 MB across all loads
+- **Zero Data Loss**: 0% data loss across all scenarios
+- **Latency**: Consistently < 3ms (P99 < 2.9ms)
+
+### CountSketch Processor Benchmark
+
+The CountSketch processor aggregates metrics into Count-Min Sketch data structures for frequency estimation and heavy hitter detection.
+
+**Processor Configuration:**
+- epsilon: 0.01, delta: 0.99, window_size: 5s
+
+**Results Summary:**
+
+| Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss | Avg Latency | P95 Latency | P99 Latency |
+|------------|-------------------|--------------|---------|-------------|-----------|-------------|-------------|-------------|
+| 10,000 MPS  | 10,000 MPS        | 100.00%      | 13.11%  | 33.91 MB    | -100%*    | 1.93 ms     | 2.79 ms     | 2.97 ms     |
+| 20,000 MPS  | 19,996 MPS        | 99.98%       | 23.51%  | 34.23 MB    | -100%*    | 1.88 ms     | 2.72 ms     | 2.96 ms     |
+| 30,000 MPS  | 29,998 MPS        | 99.99%       | 33.18%  | 34.17 MB    | -100%*    | 1.77 ms     | 2.66 ms     | 2.90 ms     |
+| 40,000 MPS  | 39,998 MPS        | 99.99%       | 43.24%  | 33.92 MB    | -100%*    | 1.81 ms     | 2.54 ms     | 2.77 ms     |
+| 50,000 MPS  | 49,993 MPS        | 99.99%       | 54.24%  | 35.24 MB    | -100%*    | 1.76 ms     | 2.54 ms     | 2.77 ms     |
+
+*Note: The negative "data loss" rate is expected behavior - the processor forwards original metrics while also processing them, resulting in metrics sent being double metrics received.
+
+**Key Observations:**
+- **Throughput Scaling**: >99.9% accuracy, matching NOP performance
+- **CPU Usage**: 13-54% (2.5x higher than NOP due to sketch computation)
+- **Memory**: 33-35 MB (similar to NOP)
+- **Latency**: < 3ms despite additional processing
+
+**Running Benchmarks:**
+```bash
+# NOP Processor
+cd opentelemetry-collector-contrib-patch/cmd/nopcol
+./bench.sh
+
+# CountSketch Processor
+cd opentelemetry-collector-contrib-patch/cmd/countsketchcol
+./bench.sh
+```
 
 **Generated Files:**
+Results are saved to `otel_collector_benchmark/benchmark_results/{processor}/`:
 - `resource_*.csv`: CPU and memory usage over time (sampled every second)
 - `memory_*.csv`: Memory usage from Prometheus metrics
 - `latency_*.csv`: Query latency measurements for telemetry endpoint
 - `loadgen_*.log`: Load generator output logs
-
-**Running the Benchmark:**
-```bash
-cd opentelemetry-collector-contrib-patch/cmd/nopcol
-./bench.sh
-```
-
-Results are saved to `otel_collector_benchmark/benchmark_results/nopcol/`.
 
 ## Features
 * **Native OTLP/gRPC:** Sends standard `pdata` metrics directly to port 4317.
