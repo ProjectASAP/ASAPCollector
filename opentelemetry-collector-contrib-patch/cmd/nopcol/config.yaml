@@ -22,7 +22,7 @@ service:
                 port: 8888
   
   pipelines:
-    traces:
+    metrics:
       receivers: [otlp]
       processors: [nop] 
       exporters: [debug]
