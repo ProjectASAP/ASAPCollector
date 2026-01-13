@@ -18,6 +18,10 @@ type Config struct {
 
 	// WindowSize is the time duration for each sketch window (e.g. "10s", "1m")
 	WindowSize time.Duration `mapstructure:"window_size"`
+
+	// DropOriginal controls whether to drop original metrics and only emit sketches.
+	// When true, original metrics are not forwarded, only sketch outputs are emitted.
+	DropOriginal bool `mapstructure:"drop_original"`
 }
 
 var _ component.Config = (*Config)(nil)

@@ -277,7 +277,4 @@ providers:
 # === REPLACES  ===
 replaces:
   # 1. Mapping Processor
-  - github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor => /mnt/78D8516BD8512920/GARUDA_ACE/FROOT-LAB/asap-internal/DataCollector/opentelemetry-collector-contrib/processor/countminsketchprocessor
-
-  # 2. Mapping Library CMS
-  - github.com/approx-telemetry/sketchlib-go => /mnt/78D8516BD8512920/GARUDA_ACE/FROOT-LAB/asap-internal/sketchlib-go
+  - github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor => ../../processor/countminsketchprocessor
