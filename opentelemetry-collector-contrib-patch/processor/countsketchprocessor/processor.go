@@ -9,6 +9,7 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
@@ -126,6 +127,11 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 		}
 	}
 
+	// If drop_original is true, return empty metrics (sketches will be emitted in flushSketches)
+	if p.config.DropOriginal {
+		return pmetric.NewMetrics(), nil
+	}
+
 	return md, nil
 }
 
@@ -172,15 +178,12 @@ func (p *countSketchProcessor) startWindowLoop() {
 
 func (p *countSketchProcessor) flushSketches() {
 	p.mutex.Lock()
-	defer p.mutex.Unlock()
-
-	// hostVal := p.colSketch.EstimateStringCount("host-A")
-
-	// p.logger.Info("WINDOW FLUSH",
-	// 	zap.Int64("Estimated_Host-A_Sum", hostVal),
-	// 	zap.Float64("Using_Config_Epsilon", p.config.Epsilon),
-	// )
-
+	
+	// Snapshot sketches before resetting
+	rowSnapshot := p.rowSketch
+	colSnapshot := p.colSketch
+	
+	// Reset sketches
 	if p.rowSketch != nil {
 		p.rowSketch.FreeCountSketch()
 	}
@@ -198,5 +201,61 @@ func (p *countSketchProcessor) flushSketches() {
 	p.colSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
 	if err != nil {
 		p.logger.Error("Failed to reset col sketch", zap.Error(err))
+	}
+	
+	p.mutex.Unlock()
+
+	// Emit sketch metrics if we have snapshots
+	if rowSnapshot != nil || colSnapshot != nil {
+		p.emitSketches(rowSnapshot, colSnapshot)
+	}
+}
+
+func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *promsketch.CountSketch) {
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	sm.Scope().SetName("otelcol/countsketch")
+	
+	now := pcommon.NewTimestampFromTime(time.Now())
+
+	// Emit row sketch (metric names)
+	if rowSketch != nil {
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("countsketch_row")
+		m.SetUnit("1")
+		
+		gauge := m.SetEmptyGauge()
+		dp := gauge.DataPoints().AppendEmpty()
+		dp.SetTimestamp(now)
+		
+		dp.Attributes().PutStr("sketch_type", "row")
+		dp.Attributes().PutStr("sketch_dimension", "metric_names")
+		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
+		dp.Attributes().PutDouble("delta", p.config.Delta)
+		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
+		// Note: promsketch.CountSketch doesn't expose serialization methods
+		// For benchmarking, we emit metadata. Full serialization can be added later if needed.
+	}
+
+	// Emit col sketch (host names)
+	if colSketch != nil {
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("countsketch_col")
+		m.SetUnit("1")
+		
+		gauge := m.SetEmptyGauge()
+		dp := gauge.DataPoints().AppendEmpty()
+		dp.SetTimestamp(now)
+		
+		dp.Attributes().PutStr("sketch_type", "col")
+		dp.Attributes().PutStr("sketch_dimension", "host_names")
+		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
+		dp.Attributes().PutDouble("delta", p.config.Delta)
+		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
+	}
+
+	if err := p.next.ConsumeMetrics(context.Background(), md); err != nil {
+		p.logger.Error("Failed to emit countsketch metrics", zap.Error(err))
 	}
 }

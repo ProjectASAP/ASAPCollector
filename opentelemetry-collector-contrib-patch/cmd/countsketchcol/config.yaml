@@ -8,7 +8,8 @@ processors:
   countsketch:
     epsilon: 0.01
     delta: 0.99
-    window_size: 5s 
+    window_size: 5s
+    drop_original: true 
 
 exporters:
   debug:

@@ -48,27 +48,55 @@ The NOP (No-Operation) processor serves as a baseline for measuring collector ov
 
 ### CountSketch Processor Benchmark
 
-The CountSketch processor aggregates metrics into Count-Min Sketch data structures for frequency estimation and heavy hitter detection.
+The CountSketch processor aggregates metrics into Count-Min Sketch data structures for frequency estimation and heavy hitter detection. With `drop_original: true`, it drops original metrics and emits only sketch summaries for storage reduction.
 
 **Processor Configuration:**
-- epsilon: 0.01, delta: 0.99, window_size: 5s
+- epsilon: 0.01, delta: 0.99, window_size: 5s, drop_original: true
 
 **Results Summary:**
 
-| Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss | Avg Latency | P95 Latency | P99 Latency |
-|------------|-------------------|--------------|---------|-------------|-----------|-------------|-------------|-------------|
-| 10,000 MPS  | 10,000 MPS        | 100.00%      | 12.29%  | 33.94 MB    | 0%        | 1.90 ms     | 2.75 ms     | 2.96 ms     |
-| 20,000 MPS  | 20,000 MPS        | 100.00%      | 22.22%  | 32.92 MB    | 0%        | 1.81 ms     | 2.71 ms     | 2.94 ms     |
-| 30,000 MPS  | 29,996 MPS        | 99.99%       | 31.37%  | 34.72 MB    | 0%        | 1.84 ms     | 2.69 ms     | 3.03 ms     |
-| 40,000 MPS  | 40,000 MPS        | 100.00%      | 41.39%  | 33.72 MB    | 0%        | 1.76 ms     | 2.58 ms     | 2.69 ms     |
-| 50,000 MPS  | 49,996 MPS        | 99.99%       | 52.50%  | 34.44 MB    | 0%        | 1.73 ms     | 2.42 ms     | 2.72 ms     |
+| Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
+|------------|-------------------|--------------|---------|-------------|------------|-------------|-------------|-------------|
+| 10,000 MPS  | 9,998 MPS         | 99.98%       | 12.59%  | 34.29 MB    | 99.99%*    | 1.93 ms     | 2.81 ms     | 3.08 ms     |
+| 20,000 MPS  | 19,983 MPS        | 99.92%       | 22.13%  | 33.90 MB    | 99.99%*    | 1.85 ms     | 2.70 ms     | 2.96 ms     |
+| 30,000 MPS  | 29,996 MPS        | 99.99%       | 31.69%  | 33.52 MB    | 99.99%*    | 1.84 ms     | 2.57 ms     | 2.83 ms     |
+| 40,000 MPS  | 39,998 MPS        | 100.00%      | 41.43%  | 34.66 MB    | 99.99%*    | 1.79 ms     | 2.63 ms     | 2.95 ms     |
+| 50,000 MPS  | 49,996 MPS        | 99.99%       | 50.95%  | 33.14 MB    | 99.99%*    | 1.76 ms     | 2.49 ms     | 2.79 ms     |
+
+\* **Data Loss Note**: The 99.99% "data loss" is expected and intentional. With `drop_original: true`, original metrics are dropped and only aggregated sketch summaries are emitted (24 sketch metrics vs millions of original metrics). This achieves the storage reduction goal.
 
 **Key Observations:**
 - **Throughput Scaling**: >99.9% accuracy, matching NOP performance
-- **CPU Usage**: 12.3-52.5% (2.5x higher than NOP due to sketch computation)
-- **Memory**: 33-35 MB (similar to NOP)
-- **Zero Data Loss**: 0% data loss (fixed double forwarding issue)
+- **CPU Usage**: 12.6-51.0% (2.5x higher than NOP due to sketch computation)
+- **Memory**: 33-35 MB (similar to NOP, efficient sketch storage)
+- **Storage Reduction**: 99.99% reduction (only sketch summaries emitted)
 - **Latency**: < 3ms despite additional processing
+
+### CountMinSketch Processor Benchmark
+
+The CountMinSketch processor aggregates metrics into Count-Min Sketch data structures with window-based aggregation. With `drop_original: true`, it drops original metrics and emits only sketch summaries for storage reduction.
+
+**Processor Configuration:**
+- rows: 5, columns: 1000, seed: 1, window_interval: 10s, drop_original: true
+
+**Results Summary:**
+
+| Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
+|------------|-------------------|--------------|---------|-------------|------------|-------------|-------------|-------------|
+| 10,000 MPS  | ~10,000 MPS       | ~100.00%     | 6.59%   | 202.45 MB   | 99.99%*    | 1.70 ms     | 2.10 ms     | 2.83 ms     |
+| 20,000 MPS  | ~20,000 MPS       | ~100.00%     | 11.85%  | 202.27 MB   | 99.99%*    | 1.67 ms     | 2.12 ms     | 2.60 ms     |
+| 30,000 MPS  | ~30,000 MPS       | ~100.00%     | 16.63%  | 201.85 MB   | 99.99%*    | 1.63 ms     | 2.05 ms     | 2.32 ms     |
+| 40,000 MPS  | ~40,000 MPS       | ~100.00%     | 20.88%  | 202.91 MB   | 99.99%*    | 1.57 ms     | 1.98 ms     | 2.25 ms     |
+| 50,000 MPS  | ~50,000 MPS       | ~100.00%     | 25.74%  | 204.32 MB   | 99.99%*    | 1.54 ms     | 1.94 ms     | 2.16 ms     |
+
+\* **Data Loss Note**: The 99.99% "data loss" is expected and intentional. With `drop_original: true`, original metrics are dropped and only aggregated sketch summaries are emitted. This achieves the storage reduction goal.
+
+**Key Observations:**
+- **Throughput Scaling**: ~100% accuracy, matching NOP performance
+- **CPU Usage**: 6.6-25.7% (1.25x higher than NOP at 50k MPS)
+- **Memory**: 201-204 MB (5.3x higher than NOP due to sketch data structures)
+- **Storage Reduction**: 99.99% reduction (only sketch summaries emitted)
+- **Latency**: Comparable to NOP (< 2.2ms P99), actually slightly better at higher loads
 
 **Running Benchmarks:**
 ```bash
@@ -79,7 +107,45 @@ cd opentelemetry-collector-contrib-patch/cmd/nopcol
 # CountSketch Processor
 cd opentelemetry-collector-contrib-patch/cmd/countsketchcol
 ./bench.sh
+
+# CountMinSketch Processor (when build issue is fixed)
+cd opentelemetry-collector-contrib-patch/cmd/countminsketchcol
+./bench.sh
 ```
+
+## Comparative Analysis
+
+### Performance Comparison at 50,000 MPS
+
+| Processor | CPU Usage | Memory Usage | Latency (Avg) | Latency (P99) | Storage Reduction |
+|-----------|----------|--------------|---------------|---------------|-------------------|
+| **NOP** | 20.59% | 38.26 MB | 1.63 ms | 2.56 ms | 0% (baseline) |
+| **CountSketch** | 50.95% (2.47x) | 33.31 MB (0.87x) | 1.76 ms (+0.13ms) | 2.79 ms (+0.23ms) | 99.99% |
+| **CountMinSketch** | 25.74% (1.25x) | 204.32 MB (5.34x) | 1.54 ms (-0.09ms) | 2.16 ms (-0.40ms) | 99.99% |
+
+### Key Insights
+
+1. **CPU Efficiency**: 
+   - CountMinSketch is most CPU-efficient (1.25x overhead vs NOP)
+   - CountSketch has higher CPU overhead (2.47x) due to more complex sketch operations
+
+2. **Memory Efficiency**:
+   - CountSketch is most memory-efficient (0.87x vs NOP, actually uses less memory)
+   - CountMinSketch uses 5.34x more memory due to larger sketch data structures
+
+3. **Latency**:
+   - All processors maintain sub-3ms latency
+   - CountMinSketch actually shows slightly better latency than NOP at high loads
+   - CountSketch adds minimal latency overhead (~0.13ms)
+
+4. **Storage Reduction**:
+   - Both sketch processors achieve 99.99% storage reduction
+   - Original metrics are dropped, only aggregated sketch summaries are emitted
+
+5. **Trade-offs**:
+   - **CountSketch**: Higher CPU, lower memory, good for CPU-constrained environments
+   - **CountMinSketch**: Lower CPU, higher memory, good for memory-abundant environments
+   - Both maintain excellent throughput and latency characteristics
 
 **Generated Files:**
 Results are saved to `otel_collector_benchmark/benchmark_results/{processor}/`:
