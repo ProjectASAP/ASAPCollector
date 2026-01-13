@@ -57,18 +57,17 @@ The CountSketch processor aggregates metrics into Count-Min Sketch data structur
 
 | Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss | Avg Latency | P95 Latency | P99 Latency |
 |------------|-------------------|--------------|---------|-------------|-----------|-------------|-------------|-------------|
-| 10,000 MPS  | 10,000 MPS        | 100.00%      | 13.11%  | 33.91 MB    | -100%*    | 1.93 ms     | 2.79 ms     | 2.97 ms     |
-| 20,000 MPS  | 19,996 MPS        | 99.98%       | 23.51%  | 34.23 MB    | -100%*    | 1.88 ms     | 2.72 ms     | 2.96 ms     |
-| 30,000 MPS  | 29,998 MPS        | 99.99%       | 33.18%  | 34.17 MB    | -100%*    | 1.77 ms     | 2.66 ms     | 2.90 ms     |
-| 40,000 MPS  | 39,998 MPS        | 99.99%       | 43.24%  | 33.92 MB    | -100%*    | 1.81 ms     | 2.54 ms     | 2.77 ms     |
-| 50,000 MPS  | 49,993 MPS        | 99.99%       | 54.24%  | 35.24 MB    | -100%*    | 1.76 ms     | 2.54 ms     | 2.77 ms     |
-
-*Note: The negative "data loss" rate is expected behavior - the processor forwards original metrics while also processing them, resulting in metrics sent being double metrics received.
+| 10,000 MPS  | 10,000 MPS        | 100.00%      | 12.29%  | 33.94 MB    | 0%        | 1.90 ms     | 2.75 ms     | 2.96 ms     |
+| 20,000 MPS  | 20,000 MPS        | 100.00%      | 22.22%  | 32.92 MB    | 0%        | 1.81 ms     | 2.71 ms     | 2.94 ms     |
+| 30,000 MPS  | 29,996 MPS        | 99.99%       | 31.37%  | 34.72 MB    | 0%        | 1.84 ms     | 2.69 ms     | 3.03 ms     |
+| 40,000 MPS  | 40,000 MPS        | 100.00%      | 41.39%  | 33.72 MB    | 0%        | 1.76 ms     | 2.58 ms     | 2.69 ms     |
+| 50,000 MPS  | 49,996 MPS        | 99.99%       | 52.50%  | 34.44 MB    | 0%        | 1.73 ms     | 2.42 ms     | 2.72 ms     |
 
 **Key Observations:**
 - **Throughput Scaling**: >99.9% accuracy, matching NOP performance
-- **CPU Usage**: 13-54% (2.5x higher than NOP due to sketch computation)
+- **CPU Usage**: 12.3-52.5% (2.5x higher than NOP due to sketch computation)
 - **Memory**: 33-35 MB (similar to NOP)
+- **Zero Data Loss**: 0% data loss (fixed double forwarding issue)
 - **Latency**: < 3ms despite additional processing
 
 **Running Benchmarks:**
