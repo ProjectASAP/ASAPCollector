@@ -59,14 +59,6 @@ telemetrygen metrics \
 
 **Duration:** 30s per scenario | **Query URL:** `http://localhost:8888/metrics`
 
-Siap. Berikut **tabel README yang sudah di-update** menggunakan **data benchmark terbaru** yang kamu berikan, dengan konteks **Binary: `countminsketchcol`**, **Duration 60s**, **Window 10s**.
-
----
-
-### Benchmark Results (API Version – `countminsketchcol`)
-
-**Duration:** 60s per scenario | **Window:** 10s | **Query URL:** `http://localhost:8888/metrics`
-
 | Target Rate (MPS) | Actual Throughput (MPS) | Avg CPU Usage | Peak RAM Usage | Latency Avg (ms) | Latency P95 (ms) | Latency P99 (ms) |
 | :---------------- | :---------------------- | :------------ | :------------- | :--------------- | :--------------- | :--------------- |
 | **10,000**        | 30,409                  | 416.16%       | 207.37 MB      | 0.79             | 1.24             | -                |
