@@ -1,196 +1,230 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package countminsketchprocessor
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
 
-//
-// ─────────────────────────────────────────────────────────────
-// Test sink (mock downstream consumer)
-// ─────────────────────────────────────────────────────────────
-//
-
-type testMetricsSink struct {
-	received []pmetric.Metrics
+// mockConsumer captures metrics emitted by the processor
+type mockConsumer struct {
+	mu      sync.Mutex
+	metrics []pmetric.Metrics
 }
 
-func newTestMetricsSink() *testMetricsSink {
-	return &testMetricsSink{}
-}
-
-func (s *testMetricsSink) ConsumeMetrics(
-	ctx context.Context,
-	md pmetric.Metrics,
-) error {
-	s.received = append(s.received, md)
-	return nil
-}
-
-func (s *testMetricsSink) Capabilities() consumer.Capabilities {
+func (m *mockConsumer) Capabilities() consumer.Capabilities {
 	return consumer.Capabilities{MutatesData: false}
 }
 
-func (s *testMetricsSink) Count() int {
-	return len(s.received)
+func (m *mockConsumer) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.metrics = append(m.metrics, md)
+	return nil
 }
 
-//
-// ─────────────────────────────────────────────────────────────
-// Tests
-// ─────────────────────────────────────────────────────────────
-//
+func (m *mockConsumer) getMetrics() []pmetric.Metrics {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Copy slice to ensure thread safety during read
+	return append([]pmetric.Metrics{}, m.metrics...)
+}
 
-func TestWindowedCountMinSketchProcessor_AppendsSketch(t *testing.T) {
-	// 1. Configuration
-	cfg := createDefaultConfig().(*Config)
-	cfg.MetricName = "custom_cms_metric"
-	cfg.Rows = 5
-	cfg.Columns = 100
-	cfg.DropOriginal = true
-	cfg.WindowInterval = time.Second
+func (m *mockConsumer) reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.metrics = nil
+}
 
-	logger := zap.NewNop()
-	sink := newTestMetricsSink()
+// 1. Test Configuration Validation
+func TestConfig_Validate(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         *Config
+		expectError bool
+	}{
+		{
+			name: "valid config",
+			cfg: &Config{
+				MetricName:     "cms_test",
+				Rows:           5,
+				Columns:        1024,
+				WindowInterval: 10 * time.Second,
+			},
+			expectError: false,
+		},
+		{
+			name: "missing metric name",
+			cfg: &Config{
+				MetricName: "",
+				Rows:       5,
+				Columns:    1024,
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid dimension",
+			cfg: &Config{
+				MetricName: "cms",
+				Rows:       0,
+				Columns:    1024,
+			},
+			expectError: true,
+		},
+	}
 
-	// 2. Processor
-	proc := newProcessor(cfg, sink, logger)
-
-	err := proc.Start(context.Background(), nil)
-	require.NoError(t, err)
-	defer proc.Shutdown(context.Background())
-
-	// 3. Input metrics
-	input := buildTestMetrics()
-
-	// 4. Ingest
-	_, err = proc.ConsumeMetrics(context.Background(), input)
-	require.NoError(t, err)
-
-	// 5. Close window manually
-	proc.emitWindowAndReset()
-
-	// 6. Assertions
-	require.Equal(t, 1, sink.Count())
-
-	md := sink.received[0]
-	require.Equal(t, 1, md.ResourceMetrics().Len())
-
-	sm := md.ResourceMetrics().At(0).ScopeMetrics()
-	require.Equal(t, 1, sm.Len())
-
-	metric := sm.At(0).Metrics().At(0)
-	require.Equal(t, cfg.MetricName, metric.Name())
-	require.Equal(t, "1", metric.Unit())
-
-	dps := metric.Gauge().DataPoints()
-	require.Equal(t, 2, dps.Len())
-
-	for i := 0; i < dps.Len(); i++ {
-		dp := dps.At(i)
-		attrs := dp.Attributes()
-
-		// sketch_payload
-		payload, ok := attrs.Get("sketch_payload")
-		require.True(t, ok)
-		require.Equal(t, pcommon.ValueTypeBytes, payload.Type())
-		require.NotEmpty(t, payload.Bytes().AsRaw())
-
-		// rows / cols
-		rows, ok := attrs.Get("rows")
-		require.True(t, ok)
-		require.Equal(t, int64(cfg.Rows), rows.Int())
-
-		cols, ok := attrs.Get("cols")
-		require.True(t, ok)
-		require.Equal(t, int64(cfg.Columns), cols.Int())
-
-		// aggregation key
-		_, ok = attrs.Get("aggregation_key")
-		require.True(t, ok)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
 	}
 }
 
-func TestWindowedCountMinSketchProcessor_WindowReset(t *testing.T) {
-	cfg := createDefaultConfig().(*Config)
-	cfg.DropOriginal = true
-	cfg.WindowInterval = time.Second
+// 2. Main Test: Tumbling Window & Reset Logic Correctness
+func TestProcessor_TumblingWindow_Correctness(t *testing.T) {
+	// Setup
+	// Use a short interval for testing (200ms)
+	windowDuration := 200 * time.Millisecond
+	cfg := &Config{
+		MetricName:     "cms_output",
+		Rows:           5,
+		Columns:        128,
+		DropOriginal:   true,
+		WindowInterval: windowDuration,
+	}
 
+	sink := &mockConsumer{}
 	logger := zap.NewNop()
-	sink := newTestMetricsSink()
-	proc := newProcessor(cfg, sink, logger)
 
-	err := proc.Start(context.Background(), nil)
+	// Initialize Processor
+	proc := newProcessor(cfg, sink, logger)
+	err := proc.Start(context.Background(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	defer proc.Shutdown(context.Background())
 
-	// First window
-	input := buildTestMetrics()
-	proc.ConsumeMetrics(context.Background(), input)
-	proc.emitWindowAndReset()
+	// ==========================================
+	// WINDOW 1: Send 5 Data Points
+	// ==========================================
+	md1 := generateMetrics("service_A", 5)
 
-	// Second window (no new data)
-	proc.emitWindowAndReset()
-
-	// Only one emission expected
-	require.Equal(t, 1, sink.Count())
-}
-
-func TestWindowedCountMinSketchProcessor_DropOriginal(t *testing.T) {
-	cfg := createDefaultConfig().(*Config)
-	cfg.DropOriginal = true
-
-	logger := zap.NewNop()
-	sink := newTestMetricsSink()
-	proc := newProcessor(cfg, sink, logger)
-
-	input := buildTestMetrics()
-
-	out, err := proc.ConsumeMetrics(context.Background(), input)
+	// FIX: Capture 2 return values (_, err) because the processor implementation returns (Metrics, error)
+	_, err = proc.ConsumeMetrics(context.Background(), md1)
 	require.NoError(t, err)
 
-	require.Equal(t, 0, out.ResourceMetrics().Len())
+	// Wait for window to expire + buffer
+	time.Sleep(windowDuration + 100*time.Millisecond)
+
+	// Verify Window 1 Output
+	batches1 := sink.getMetrics()
+	require.Len(t, batches1, 1, "Should emit exactly 1 batch for Window 1")
+
+	dps1 := getAllDataPoints(batches1[0])
+	require.Len(t, dps1, 1, "Should have 1 sketch metric")
+
+	// Check Sample Count
+	count1, ok := dps1[0].Attributes().Get("sample_count")
+	require.True(t, ok)
+	assert.Equal(t, int64(5), count1.Int(), "Window 1 should have 5 samples")
+
+	// ==========================================
+	// WINDOW 2: Send 3 Data Points
+	// (Test Correctness: Is the counter reset back to 0?)
+	// ==========================================
+
+	sink.reset() // Clear sink for easier assertion
+
+	md2 := generateMetrics("service_A", 3)
+
+	// FIX: Capture 2 return values (_, err)
+	_, err = proc.ConsumeMetrics(context.Background(), md2)
+	require.NoError(t, err)
+
+	// Wait for window expiration
+	time.Sleep(windowDuration + 100*time.Millisecond)
+
+	// Verify Window 2 Output
+	batches2 := sink.getMetrics()
+	require.Len(t, batches2, 1, "Should emit exactly 1 batch for Window 2")
+
+	dps2 := getAllDataPoints(batches2[0])
+	require.Len(t, dps2, 1)
+
+	count2, _ := dps2[0].Attributes().Get("sample_count")
+
+	// === CRITICAL ASSERTION ===
+	// If the cumulative bug exists, the result will be 8 (5+3).
+	// If correct, the result must be 3.
+	assert.Equal(t, int64(3), count2.Int(), "Window 2 FAILED TO RESET! Value should be 3, not cumulative.")
+
+	// ==========================================
+	// 3. Verify Binary Payload (Gob Decode)
+	// ==========================================
+	payloadVal, ok := dps2[0].Attributes().Get("sketch_payload")
+	require.True(t, ok, "Sketch payload must exist in attributes")
+
+	rawBytes := payloadVal.Bytes().AsRaw()
+	require.NotEmpty(t, rawBytes)
+
+	// Attempt to decode back to struct
+	var snapshot countMinSketchSnapshot
+	dec := gob.NewDecoder(bytes.NewReader(rawBytes))
+	err = dec.Decode(&snapshot)
+
+	assert.NoError(t, err, "Payload must be a valid GOB format")
+	assert.Equal(t, 5, snapshot.Rows)
+	assert.Equal(t, 128, snapshot.Cols)
 }
 
-//
-// ─────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────
-//
-
-func buildTestMetrics() pmetric.Metrics {
-	metrics := pmetric.NewMetrics()
-
-	rm := metrics.ResourceMetrics().AppendEmpty()
-	rm.Resource().Attributes().PutStr("service.name", "test-service")
-
+// Helpers to generate dummy metrics
+func generateMetrics(serviceName string, count int) pmetric.Metrics {
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
 	sm := rm.ScopeMetrics().AppendEmpty()
-	m := sm.Metrics().AppendEmpty()
-	m.SetName("http_requests_total")
-	m.SetEmptySum().SetIsMonotonic(true)
 
-	dps := m.Sum().DataPoints()
+	for i := 0; i < count; i++ {
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("http_requests_total")
+		m.SetEmptyGauge()
+		dp := m.Gauge().DataPoints().AppendEmpty()
+		dp.SetIntValue(1)
+		dp.Attributes().PutStr("service.name", serviceName)
+	}
+	return md
+}
 
-	// Data point 1
-	dp1 := dps.AppendEmpty()
-	dp1.Attributes().PutStr("method", "GET")
-	dp1.Attributes().PutStr("status", "200")
-	dp1.SetIntValue(10)
-	dp1.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
-
-	// Data point 2
-	dp2 := dps.AppendEmpty()
-	dp2.Attributes().PutStr("method", "POST")
-	dp2.Attributes().PutStr("status", "500")
-	dp2.SetIntValue(5)
-	dp2.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
-
-	return metrics
+func getAllDataPoints(md pmetric.Metrics) []pmetric.NumberDataPoint {
+	var dps []pmetric.NumberDataPoint
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				m := ms.At(k)
+				pts := m.Gauge().DataPoints()
+				for l := 0; l < pts.Len(); l++ {
+					dps = append(dps, pts.At(l))
+				}
+			}
+		}
+	}
+	return dps
 }
