@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countminsketchcol]
+# Usage: ./bench.sh [nopcol|countsketchcol|countminsketchcol|kll]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTRIB_PATCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -10,17 +10,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol]"
+    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol|kll]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countminsketchcol)
+    nopcol|countsketchcol|countminsketchcol|kll)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countminsketchcol"
+        echo "Valid options: nopcol, countsketchcol, countminsketchcol, kll"
         exit 1
         ;;
 esac
@@ -28,14 +28,21 @@ esac
 # Set processor-specific variables
 PROCESSOR_DIR="$SCRIPT_DIR/$PROCESSOR"
 BUILDER_BIN="$HOME/go/bin/builder"
-BUILDER_CONFIG="$PROCESSOR_DIR/builder-config.yaml"
-COLLECTOR_BIN="$PROCESSOR_DIR/dist/$PROCESSOR"
-CONFIG_FILE="$PROCESSOR_DIR/config.yaml"
+
+# Handle different config file names
+if [ "$PROCESSOR" = "kll" ]; then
+    BUILDER_CONFIG="$PROCESSOR_DIR/build-config.yaml"
+    CONFIG_FILE="$PROCESSOR_DIR/config-bench.yaml"
+    COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+else
+    BUILDER_CONFIG="$PROCESSOR_DIR/builder-config.yaml"
+    CONFIG_FILE="$PROCESSOR_DIR/config.yaml"
+    COLLECTOR_BIN="$PROCESSOR_DIR/dist/$PROCESSOR"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+fi
 RESULT_DIR="$WORKSPACE_DIR/otel_collector_benchmark/benchmark_results/$PROCESSOR"
 LOAD_GEN_DIR="$WORKSPACE_DIR/otel_collector_benchmark"
-
-# Telemetry endpoint for metrics
-TELEMETRY_URL="http://localhost:8888/metrics"
 
 # Duration for each test
 DURATION_SEC=60
@@ -57,6 +64,9 @@ case "$PROCESSOR" in
         ;;
     countminsketchcol)
         PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR"
+        ;;
+    kll)
+        PROCESSOR_NAME="KLL PROCESSOR"
         ;;
 esac
 

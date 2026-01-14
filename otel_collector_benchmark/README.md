@@ -37,12 +37,12 @@ The NOP (No-Operation) processor serves as a baseline for measuring collector ov
 | 20,000 MPS  | 19,988 MPS        | 99.94%       | 9.12%   | 37.92 MB    | 0%        | 1.72 ms     | 2.30 ms     | 2.98 ms     |
 | 30,000 MPS  | 29,990 MPS        | 99.97%       | 12.97%  | 38.42 MB    | 0%        | 1.64 ms     | 2.27 ms     | 2.81 ms     |
 | 40,000 MPS  | 40,000 MPS        | 100.00%      | 16.67%  | 38.33 MB    | 0%        | 1.64 ms     | 2.10 ms     | 2.69 ms     |
-| 50,000 MPS  | 49,990 MPS        | 99.98%       | 20.59%  | 38.26 MB    | 0%        | 1.63 ms     | 2.11 ms     | 2.56 ms     |
+| 50,000 MPS  | 49,983 MPS        | 99.97%       | 20.82%  | 37.85 MB    | 0%        | 1.63 ms     | 2.33 ms     | 2.86 ms     |
 
 **Key Observations:**
 - **Throughput Scaling**: >99.8% accuracy across all scenarios (using microsecond-precision intervals)
-- **CPU Usage**: Linear scaling (~0.4% per 10k MPS), reaching 20.59% at 50k MPS
-- **Memory**: Stable 36-39 MB across all loads
+- **CPU Usage**: Linear scaling (~0.4% per 10k MPS), reaching 20.82% at 50k MPS
+- **Memory**: Stable 37-39 MB across all loads
 - **Zero Data Loss**: 0% data loss across all scenarios
 - **Latency**: Consistently < 3ms (P99 < 2.9ms)
 
@@ -61,13 +61,13 @@ The CountSketch processor aggregates metrics into Count-Min Sketch data structur
 | 20,000 MPS  | 19,983 MPS        | 99.92%       | 22.13%  | 33.90 MB    | 99.99%*    | 1.85 ms     | 2.70 ms     | 2.96 ms     |
 | 30,000 MPS  | 29,996 MPS        | 99.99%       | 31.69%  | 33.52 MB    | 99.99%*    | 1.84 ms     | 2.57 ms     | 2.83 ms     |
 | 40,000 MPS  | 39,998 MPS        | 100.00%      | 41.43%  | 34.66 MB    | 99.99%*    | 1.79 ms     | 2.63 ms     | 2.95 ms     |
-| 50,000 MPS  | 49,996 MPS        | 99.99%       | 50.95%  | 33.14 MB    | 99.99%*    | 1.76 ms     | 2.49 ms     | 2.79 ms     |
+| 50,000 MPS  | 49,988 MPS        | 99.98%       | 53.50%  | 34.27 MB    | 99.99%*    | 1.76 ms     | 2.54 ms     | 2.96 ms     |
 
 \* **Data Loss Note**: The 99.99% "data loss" is expected and intentional. With `drop_original: true`, original metrics are dropped and only aggregated sketch summaries are emitted (24 sketch metrics vs millions of original metrics). This achieves the storage reduction goal.
 
 **Key Observations:**
 - **Throughput Scaling**: >99.9% accuracy, matching NOP performance
-- **CPU Usage**: 12.6-51.0% (2.5x higher than NOP due to sketch computation)
+- **CPU Usage**: 12.5-53.5% (2.6x higher than NOP due to sketch computation)
 - **Memory**: 33-35 MB (similar to NOP, efficient sketch storage)
 - **Storage Reduction**: 99.99% reduction (only sketch summaries emitted)
 - **Latency**: < 3ms despite additional processing
@@ -87,16 +87,43 @@ The CountMinSketch processor aggregates metrics into Count-Min Sketch data struc
 | 20,000 MPS  | ~20,000 MPS       | ~100.00%     | 11.85%  | 202.27 MB   | 99.99%*    | 1.67 ms     | 2.12 ms     | 2.60 ms     |
 | 30,000 MPS  | ~30,000 MPS       | ~100.00%     | 16.63%  | 201.85 MB   | 99.99%*    | 1.63 ms     | 2.05 ms     | 2.32 ms     |
 | 40,000 MPS  | ~40,000 MPS       | ~100.00%     | 20.88%  | 202.91 MB   | 99.99%*    | 1.57 ms     | 1.98 ms     | 2.25 ms     |
-| 50,000 MPS  | ~50,000 MPS       | ~100.00%     | 25.74%  | 204.32 MB   | 99.99%*    | 1.54 ms     | 1.94 ms     | 2.16 ms     |
+| 50,000 MPS  | 49,985 MPS        | 99.97%       | 25.26%  | 204.3 MB    | 99.99%*    | 1.55 ms     | 1.95 ms     | 2.53 ms     |
 
 \* **Data Loss Note**: The 99.99% "data loss" is expected and intentional. With `drop_original: true`, original metrics are dropped and only aggregated sketch summaries are emitted. This achieves the storage reduction goal.
 
 **Key Observations:**
-- **Throughput Scaling**: ~100% accuracy, matching NOP performance
-- **CPU Usage**: 6.6-25.7% (1.25x higher than NOP at 50k MPS)
-- **Memory**: 201-204 MB (5.3x higher than NOP due to sketch data structures)
+- **Throughput Scaling**: >99.9% accuracy, matching NOP performance
+- **CPU Usage**: 6.4-25.3% (1.21x higher than NOP at 50k MPS)
+- **Memory**: 201-204 MB (5.4x higher than NOP due to sketch data structures)
 - **Storage Reduction**: 99.99% reduction (only sketch summaries emitted)
-- **Latency**: Comparable to NOP (< 2.2ms P99), actually slightly better at higher loads
+- **Latency**: Comparable to NOP (< 2.6ms P99), actually slightly better at higher loads
+
+### KLL Processor Benchmark
+
+The KLL (K-LL) processor aggregates metrics using the K-LL sketch algorithm for quantile estimation. It provides approximate quantile calculations with configurable precision.
+
+**Processor Configuration:**
+- k: 256, quantiles: [0.5, 0.99], drop_original: true
+
+**Results Summary:**
+
+| Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
+|------------|-------------------|--------------|---------|-------------|------------|-------------|-------------|-------------|
+| 10,000 MPS  | 9,983 MPS         | 99.83%       | 11.13%  | 38.18 MB    | 99.99%*    | ~1.6 ms     | ~2.1 ms     | ~2.7 ms     |
+| 20,000 MPS  | 20,000 MPS        | 100.00%      | 20.87%  | 38.01 MB    | 99.99%*    | ~1.6 ms     | ~2.0 ms     | ~2.6 ms     |
+| 30,000 MPS  | 30,000 MPS        | 100.00%      | 31.66%  | 38.45 MB    | 99.99%*    | ~1.6 ms     | ~2.0 ms     | ~2.5 ms     |
+| 40,000 MPS  | 40,000 MPS        | 100.00%      | 42.40%  | 38.95 MB    | 99.99%*    | 1.56 ms     | 2.32 ms     | 2.67 ms     |
+| 50,000 MPS  | 50,000 MPS        | 100.00%      | 52.49%  | 38.40 MB    | 99.99%*    | 1.51 ms     | 2.07 ms     | 2.50 ms     |
+
+\* **Data Loss Note**: The 99.99% "data loss" is expected and intentional. With `drop_original: true`, original metrics are dropped and only aggregated quantile summaries are emitted. This achieves the storage reduction goal.
+
+**Key Observations:**
+- **Throughput Scaling**: >99.9% accuracy, matching NOP performance
+- **CPU Usage**: 11.1-52.5% (2.5x higher than NOP at 50k MPS, similar to CountSketch)
+- **Memory**: 38-39 MB (similar to NOP, efficient sketch storage)
+- **Storage Reduction**: 99.99% reduction (only quantile summaries emitted)
+- **Latency**: Sub-3ms (P99 < 2.7ms) across all loads
+- **Quantile Estimation**: Provides approximate quantiles (0.5, 0.99) with configurable precision
 
 **Running Benchmarks:**
 ```bash
@@ -111,6 +138,9 @@ cd opentelemetry-collector-contrib-patch/cmd
 
 # CountMinSketch Processor
 ./bench.sh countminsketchcol
+
+# KLL Processor
+./bench.sh kll
 ```
 
 **Note:** All processors use the centralized benchmark script located at `opentelemetry-collector-contrib-patch/cmd/bench.sh`. If you need to build processors that use private modules, ensure `GOPRIVATE` and `GONOSUMDB` environment variables are set appropriately before running the benchmark script.
@@ -121,33 +151,38 @@ cd opentelemetry-collector-contrib-patch/cmd
 
 | Processor | CPU Usage | Memory Usage | Latency (Avg) | Latency (P99) | Storage Reduction |
 |-----------|----------|--------------|---------------|---------------|-------------------|
-| **NOP** | 20.59% | 38.26 MB | 1.63 ms | 2.56 ms | 0% (baseline) |
-| **CountSketch** | 50.95% (2.47x) | 33.31 MB (0.87x) | 1.76 ms (+0.13ms) | 2.79 ms (+0.23ms) | 99.99% |
-| **CountMinSketch** | 25.74% (1.25x) | 204.32 MB (5.34x) | 1.54 ms (-0.09ms) | 2.16 ms (-0.40ms) | 99.99% |
+| **NOP** | 20.82% | 37.85 MB | 1.63 ms | 2.86 ms | 0% (baseline) |
+| **CountSketch** | 53.50% (2.57x) | 34.27 MB (0.91x) | 1.76 ms (+0.13ms) | 2.96 ms (+0.10ms) | 99.99% |
+| **CountMinSketch** | 25.26% (1.21x) | 204.3 MB (5.40x) | 1.55 ms (-0.08ms) | 2.53 ms (-0.33ms) | 99.99% |
+| **KLL** | 52.49% (2.52x) | 38.40 MB (1.01x) | 1.51 ms (-0.12ms) | 2.50 ms (-0.36ms) | 99.99% |
 
 ### Key Insights
 
 1. **CPU Efficiency**: 
-   - CountMinSketch is most CPU-efficient (1.25x overhead vs NOP)
-   - CountSketch has higher CPU overhead (2.47x) due to more complex sketch operations
+   - CountMinSketch is most CPU-efficient (1.21x overhead vs NOP)
+   - CountSketch and KLL have similar CPU overhead (~2.5-2.6x) due to more complex sketch operations
+   - KLL provides quantile estimation with similar CPU cost to CountSketch
 
 2. **Memory Efficiency**:
-   - CountSketch is most memory-efficient (0.87x vs NOP, actually uses less memory)
-   - CountMinSketch uses 5.34x more memory due to larger sketch data structures
+   - CountSketch is most memory-efficient (0.91x vs NOP)
+   - KLL uses similar memory to NOP (1.01x), making it very memory-efficient for quantile estimation
+   - CountMinSketch uses 5.40x more memory due to larger sketch data structures
 
 3. **Latency**:
-   - All processors maintain sub-3ms latency
-   - CountMinSketch actually shows slightly better latency than NOP at high loads
+   - All processors maintain sub-3ms latency (P99 < 2.96ms)
+   - KLL and CountMinSketch show slightly better latency than NOP at high loads
    - CountSketch adds minimal latency overhead (~0.13ms)
 
 4. **Storage Reduction**:
-   - Both sketch processors achieve 99.99% storage reduction
-   - Original metrics are dropped, only aggregated sketch summaries are emitted
+   - CountSketch, CountMinSketch, and KLL all achieve 99.99% storage reduction
+   - Original metrics are dropped, only aggregated sketch/quantile summaries are emitted
+   - All three processors provide significant storage savings while maintaining query capabilities
 
 5. **Trade-offs**:
-   - **CountSketch**: Higher CPU, lower memory, good for CPU-constrained environments
-   - **CountMinSketch**: Lower CPU, higher memory, good for memory-abundant environments
-   - Both maintain excellent throughput and latency characteristics
+   - **CountSketch**: Higher CPU (2.57x), lower memory (0.91x), good for CPU-constrained environments
+   - **CountMinSketch**: Lower CPU (1.21x), higher memory (5.40x), good for memory-abundant environments
+   - **KLL**: Higher CPU (2.52x), similar memory (1.01x), provides quantile estimation with excellent latency
+   - All processors maintain excellent throughput and latency characteristics while achieving 99.99% storage reduction
 
 **Generated Files:**
 Results are saved to `otel_collector_benchmark/benchmark_results/{processor}/`:
