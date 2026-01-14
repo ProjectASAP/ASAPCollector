@@ -12,7 +12,9 @@ import (
 	"sync"
 	"time"
 
-	cms "github.com/approx-telemetry/sketchlib-go/CountMinSketch"
+	// Import library baru
+	"github.com/approx-telemetry/sketchlib-go/common"
+	cms "github.com/approx-telemetry/sketchlib-go/sketches/CountMinSketch"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -27,20 +29,17 @@ import (
 // ─────────────────────────────────────────────────────────────
 //
 
-// windowSketch represents the Count-Min Sketch state
-// for a single aggregation key within ONE tumbling window.
 type windowSketch struct {
 	cms         *cms.CountMinSketch
-	mu          sync.Mutex // Fine-grained lock per sketch
+	mu          sync.Mutex
 	sampleCount uint64
 }
 
-// countMinSketchSnapshot is a serializable DTO
-// used to export CMS state via OTLP.
+// countMinSketchSnapshot is a serializable DTO.
+// NOTE: Seed field is removed as new lib manages seeds internally.
 type countMinSketchSnapshot struct {
 	Rows  int
 	Cols  int
-	Seed1 []uint32
 	Count [][]float64
 	Sum   [][]float64
 	Sum2  [][]float64
@@ -54,20 +53,15 @@ type countMinSketchSnapshot struct {
 // ─────────────────────────────────────────────────────────────
 //
 
-// windowedCountMinSketchProcessor implements a
-// processing-time tumbling window CMS processor.
 type windowedCountMinSketchProcessor struct {
 	cfg    *Config
 	logger *zap.Logger
 
-	// Downstream consumer for emitting aggregated metrics
 	nextConsumer consumer.Metrics
 
-	// Active sketches for the CURRENT window only
 	activeWindowSketches map[string]*windowSketch
 	mu                   sync.RWMutex
 
-	// Window lifecycle control
 	ticker *time.Ticker
 	done   chan struct{}
 }
@@ -97,7 +91,7 @@ func (p *windowedCountMinSketchProcessor) Start(
 	host component.Host,
 ) error {
 	p.logger.Info(
-		"Starting windowed Count-Min Sketch processor",
+		"Starting windowed Count-Min Sketch processor (New API)",
 		zap.Duration("window_interval", p.cfg.WindowInterval),
 	)
 
@@ -183,23 +177,20 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 ) {
 	aggregationKey := buildAggregationKey(metricName, dp.Attributes())
 
-	// Fast path: read lock
+	// 1. Dapatkan Lock Read
 	p.mu.RLock()
 	ws, exists := p.activeWindowSketches[aggregationKey]
 	p.mu.RUnlock()
 
-	// Create sketch if needed
+	// 2. Init Sketch jika belum ada
 	if !exists {
 		p.mu.Lock()
 		ws, exists = p.activeWindowSketches[aggregationKey]
 		if !exists {
-			seed := uint32(p.cfg.Seed)
-			seeds := []uint32{seed, seed + 1, seed + 2, seed + 3, seed + 4}
-
+			// Using new API constructor (without seed)
 			newCMS, err := cms.NewCountMinSketch(
 				p.cfg.Rows,
 				p.cfg.Columns,
-				seeds,
 			)
 			if err != nil {
 				p.logger.Error("Failed to create CMS", zap.Error(err))
@@ -207,25 +198,29 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 				return
 			}
 
-			ws = &windowSketch{cms: &newCMS}
+			ws = &windowSketch{cms: newCMS}
 			p.activeWindowSketches[aggregationKey] = ws
 		}
 		p.mu.Unlock()
 	}
 
-	// Update sketch (fine-grained lock)
+	// 3. Update Sketch
 	ws.mu.Lock()
+	defer ws.mu.Unlock()
 
-	value := dp.DoubleValue()
-	if dp.ValueType() == pmetric.NumberDataPointValueTypeInt {
-		value = float64(dp.IntValue())
-	}
-
+	// GENERATE SKETCH INPUT
+	// We convert the attributes into string keys, then convert them to SketchInput.
+	// SketchInput will calculate the hash using xxhash internally.
 	flowKey := encodeAttributesAsKey(dp.Attributes())
-	ws.cms.CMProcessing(flowKey, value)
-	ws.sampleCount++
+	input := common.FromString(flowKey)
 
-	ws.mu.Unlock()
+	// INSERT INTO SKETCH
+	// New API: InsertWithHash(hash uint64)
+	// Note: the library currently performs frequency increment (+1).
+	// Value metric (float/int) is currently not used as a weight.
+	ws.cms.InsertWithHash(input.Hash)
+
+	ws.sampleCount++
 }
 
 //
@@ -294,7 +289,6 @@ func serializeCMS(
 	snapshot := countMinSketchSnapshot{
 		Rows:  s.Rows,
 		Cols:  s.Cols,
-		Seed1: s.Seed1,
 		Count: s.Count,
 		Sum:   s.Sum,
 		Sum2:  s.Sum2,

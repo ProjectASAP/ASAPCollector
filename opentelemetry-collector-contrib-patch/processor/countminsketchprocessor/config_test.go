@@ -12,7 +12,6 @@ func TestConfigValidate(t *testing.T) {
 		MetricName: "countmin_sketch",
 		Rows:       5,
 		Columns:    1000,
-		Seed:       1,
 	}
 	assert.NoError(t, cfg.Validate())
 

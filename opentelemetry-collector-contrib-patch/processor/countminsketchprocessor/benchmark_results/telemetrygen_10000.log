@@ -1,0 +1,802 @@
+2026-01-14T19:07:46.792+0700	INFO	metrics/metrics.go:34	starting the metrics generator with configuration	{"config": {"WorkerCount":10,"Rate":10000,"TotalDuration":60000000000,"ReportingInterval":1000000000,"SkipSettingGRPCLogger":false,"CustomEndpoint":"localhost:4317","Insecure":true,"InsecureSkipVerify":false,"UseHTTP":false,"HTTPPath":"/v1/metrics","Headers":{},"ResourceAttributes":{},"ServiceName":"telemetrygen","TelemetryAttributes":{},"CaFile":"","ClientAuth":{"Enabled":false,"ClientCertFile":"","ClientKeyFile":""},"AllowExportFailures":false,"LoadSize":0,"NumMetrics":1,"MetricName":"gen","MetricType":"Gauge","AggregationTemporality":1,"SpanID":"","TraceID":"","EnforceUniqueTimeseries":false,"UniqueTimelimit":1000000000}}
+2026-01-14T19:07:46.792+0700	INFO	metrics/metrics.go:58	generation of metrics is limited	{"per-second": 10000}
+2026-01-14T19:07:46.792+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.792+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #1] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.792+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #2] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #3] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.792+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.793+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #4] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.793+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #5] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #6] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.793+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #7] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.793+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #8] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.794+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #9] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	metrics/metrics.go:139	starting gRPC exporter
+2026-01-14T19:07:46.794+0700	INFO	grpclog/component.go:69	[core] original dial target is: "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Channel created for target "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #10] parsed dial target is: resolver.Target{URL:url.URL{Scheme:"dns", Opaque:"", User:(*url.Userinfo)(nil), Host:"", Path:"/localhost:4317", RawPath:"", OmitHost:false, ForceQuery:false, RawQuery:"", Fragment:"", RawFragment:""}}	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Channel authority set to "localhost:4317"	{"grpc_log": true}
+2026-01-14T19:07:46.794+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Channel exiting idle mode	{"grpc_log": true}
+2026-01-14T19:07:46.824+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:46.825+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:46.825+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc000151560] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:46.825+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.826+0700	INFO	channelz/trace.go:200	[core] [Channel #10 SubChannel #11] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:46.826+0700	INFO	channelz/trace.go:200	[core] [Channel #10 SubChannel #11] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.826+0700	INFO	channelz/trace.go:200	[core] [Channel #10 SubChannel #11] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:46.827+0700	INFO	channelz/trace.go:200	[core] [Channel #10 SubChannel #11] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:46.827+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc000151560] SubConn 0xc00010f180 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:46.827+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:46.967+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:46.967+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0003a0000] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0004f6090] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	channelz/trace.go:200	[core] [Channel #8 SubChannel #14] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	channelz/trace.go:200	[core] [Channel #1 SubChannel #13] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	channelz/trace.go:200	[core] [Channel #8 SubChannel #14] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	channelz/trace.go:200	[core] [Channel #8 SubChannel #14] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:46.968+0700	INFO	channelz/trace.go:200	[core] [Channel #1 SubChannel #13] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.969+0700	INFO	channelz/trace.go:200	[core] [Channel #1 SubChannel #13] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:46.969+0700	INFO	channelz/trace.go:200	[core] [Channel #8 SubChannel #14] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:46.969+0700	INFO	channelz/trace.go:200	[core] [Channel #1 SubChannel #13] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:46.969+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0004f6090] SubConn 0xc0005162d0 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:46.969+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0003a0000] SubConn 0xc000516410 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:46.969+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:46.969+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:46.977+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:46.977+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:46.978+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc00027f950] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:46.978+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.978+0700	INFO	channelz/trace.go:200	[core] [Channel #2 SubChannel #17] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:46.978+0700	INFO	channelz/trace.go:200	[core] [Channel #2 SubChannel #17] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.978+0700	INFO	channelz/trace.go:200	[core] [Channel #2 SubChannel #17] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:46.978+0700	INFO	channelz/trace.go:200	[core] [Channel #2 SubChannel #17] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:46.978+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc00027f950] SubConn 0xc00054d630 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:46.978+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:46.984+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:46.985+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:46.986+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0004982d0] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:46.987+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.987+0700	INFO	channelz/trace.go:200	[core] [Channel #7 SubChannel #19] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:46.987+0700	INFO	channelz/trace.go:200	[core] [Channel #7 SubChannel #19] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:46.989+0700	INFO	channelz/trace.go:200	[core] [Channel #7 SubChannel #19] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:46.992+0700	INFO	channelz/trace.go:200	[core] [Channel #7 SubChannel #19] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:46.992+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0004982d0] SubConn 0xc0002793b0 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:46.992+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.134+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:47.134+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:47.134+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0004983f0] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:47.135+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.135+0700	INFO	channelz/trace.go:200	[core] [Channel #4 SubChannel #21] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:47.135+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:47.135+0700	INFO	channelz/trace.go:200	[core] [Channel #4 SubChannel #21] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.135+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:47.135+0700	INFO	channelz/trace.go:200	[core] [Channel #4 SubChannel #21] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:47.135+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0005fa090] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:47.136+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.136+0700	INFO	channelz/trace.go:200	[core] [Channel #9 SubChannel #23] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:47.136+0700	INFO	channelz/trace.go:200	[core] [Channel #4 SubChannel #21] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.136+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0004983f0] SubConn 0xc000698af0 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:47.136+0700	INFO	channelz/trace.go:200	[core] [Channel #9 SubChannel #23] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.137+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.137+0700	INFO	channelz/trace.go:200	[core] [Channel #9 SubChannel #23] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:47.139+0700	INFO	channelz/trace.go:200	[core] [Channel #9 SubChannel #23] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.139+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0005fa090] SubConn 0xc000586190 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:47.139+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.142+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:47.143+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:47.143+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc000498870] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:47.143+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.143+0700	INFO	channelz/trace.go:200	[core] [Channel #5 SubChannel #25] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:47.143+0700	INFO	channelz/trace.go:200	[core] [Channel #5 SubChannel #25] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.143+0700	INFO	channelz/trace.go:200	[core] [Channel #5 SubChannel #25] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:47.144+0700	INFO	channelz/trace.go:200	[core] [Channel #5 SubChannel #25] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.144+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc000498870] SubConn 0xc000512c80 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:47.145+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.153+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:47.153+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:47.153+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0004ca120] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:47.153+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.153+0700	INFO	channelz/trace.go:200	[core] [Channel #3 SubChannel #27] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:47.154+0700	INFO	channelz/trace.go:200	[core] [Channel #3 SubChannel #27] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.154+0700	INFO	channelz/trace.go:200	[core] [Channel #3 SubChannel #27] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:47.155+0700	INFO	channelz/trace.go:200	[core] [Channel #3 SubChannel #27] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.156+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc0004ca120] SubConn 0xc000648410 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:47.156+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.298+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Resolver state updated: {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+} (resolver returned new addresses)	{"grpc_log": true}
+2026-01-14T19:07:47.299+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Channel switches to new LB policy "pick_first"	{"grpc_log": true}
+2026-01-14T19:07:47.300+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc00071a090] Received new config {
+  "shuffleAddressList": false
+}, resolver state {
+  "Addresses": [
+    {
+      "Addr": "127.0.0.1:4317",
+      "ServerName": "",
+      "Attributes": null,
+      "BalancerAttributes": null,
+      "Metadata": null
+    }
+  ],
+  "Endpoints": [
+    {
+      "Addresses": [
+        {
+          "Addr": "127.0.0.1:4317",
+          "ServerName": "",
+          "Attributes": null,
+          "BalancerAttributes": null,
+          "Metadata": null
+        }
+      ],
+      "Attributes": null
+    }
+  ],
+  "ServiceConfig": null,
+  "Attributes": null
+}	{"grpc_log": true}
+2026-01-14T19:07:47.300+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Channel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.300+0700	INFO	channelz/trace.go:200	[core] [Channel #6 SubChannel #29] Subchannel created	{"grpc_log": true}
+2026-01-14T19:07:47.300+0700	INFO	channelz/trace.go:200	[core] [Channel #6 SubChannel #29] Subchannel Connectivity change to CONNECTING	{"grpc_log": true}
+2026-01-14T19:07:47.300+0700	INFO	channelz/trace.go:200	[core] [Channel #6 SubChannel #29] Subchannel picks a new address "127.0.0.1:4317" to connect	{"grpc_log": true}
+2026-01-14T19:07:47.301+0700	INFO	channelz/trace.go:200	[core] [Channel #6 SubChannel #29] Subchannel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:07:47.301+0700	INFO	grpclog/prefix_logger.go:42	[pick-first-leaf-lb] [pick-first-leaf-lb 0xc00071a090] SubConn 0xc000516190 reported connectivity state READY and the health listener is disabled. Transitioning SubConn to READY.	{"grpc_log": true}
+2026-01-14T19:07:47.302+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Channel Connectivity change to READY	{"grpc_log": true}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 5, "metrics": 179135}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 2, "metrics": 179432}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 9, "metrics": 180125}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 3, "metrics": 179557}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 7, "metrics": 179657}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 1, "metrics": 179881}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 8, "metrics": 179509}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 0, "metrics": 179864}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 4, "metrics": 179482}
+2026-01-14T19:08:46.795+0700	INFO	metrics/worker.go:233	metrics generated	{"worker": 6, "metrics": 179611}
+2026-01-14T19:08:46.795+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 9}
+2026-01-14T19:08:46.795+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.795+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.795+0700	INFO	channelz/trace.go:200	[core] [Channel #10] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	channelz/trace.go:200	[core] [Channel #10 SubChannel #11] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	channelz/trace.go:200	[core] [Channel #10 SubChannel #11] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4008] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4008] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	channelz/trace.go:200	[core] [Channel #10] Channel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 8}
+2026-01-14T19:08:46.796+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	channelz/trace.go:200	[core] [Channel #9] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	channelz/trace.go:200	[core] [Channel #9 SubChannel #23] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	channelz/trace.go:200	[core] [Channel #9 SubChannel #23] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4908] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4908] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	channelz/trace.go:200	[core] [Channel #9] Channel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.796+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 7}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #8] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #8 SubChannel #14] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #8 SubChannel #14] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc000120008] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc000120008] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #8] Channel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 6}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #7] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #7 SubChannel #19] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #7 SubChannel #19] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc000120248] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc000120248] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.797+0700	INFO	channelz/trace.go:200	[core] [Channel #7] Channel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 5}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #6] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #6 SubChannel #29] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #6 SubChannel #29] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4fc8] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4fc8] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #6] Channel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 4}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #5] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #5 SubChannel #25] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #5 SubChannel #25] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4b48] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4b48] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.798+0700	INFO	channelz/trace.go:200	[core] [Channel #5] Channel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 3}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #4] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #4 SubChannel #21] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #4 SubChannel #21] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e46c8] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e46c8] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #4] Channel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 2}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #3] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #3 SubChannel #27] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	channelz/trace.go:200	[core] [Channel #3 SubChannel #27] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4d88] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.799+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4d88] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #3] Channel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 1}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #2] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #2 SubChannel #17] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #2 SubChannel #17] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4488] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4488] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #2] Channel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	metrics/metrics.go:97	stopping the exporter	{"worker": 0}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Channel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Closing the name resolver	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #1] ccBalancerWrapper: closing	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #1 SubChannel #13] Subchannel Connectivity change to SHUTDOWN	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	channelz/trace.go:200	[core] [Channel #1 SubChannel #13] Subchannel deleted	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4248] Closing: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.800+0700	INFO	grpclog/prefix_logger.go:42	[transport] [client-transport 0xc0003e4248] loopyWriter exiting with error: rpc error: code = Canceled desc = grpc: the client connection is closing	{"grpc_log": true}
+2026-01-14T19:08:46.801+0700	INFO	channelz/trace.go:200	[core] [Channel #1] Channel deleted	{"grpc_log": true}
