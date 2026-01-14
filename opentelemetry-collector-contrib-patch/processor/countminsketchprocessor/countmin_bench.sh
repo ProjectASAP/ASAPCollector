@@ -11,7 +11,6 @@ SAMPLE_METRIC_NAME="cms_bench_result"
 SAMPLE_FILE_PREFIX="samples"
 
 # MATCH THIS WITH config-bench.yaml "window_interval"
-# Penting: Harus sama dengan YAML agar analisis akurat
 WINDOW_SEC=10
 
 # MATCH THIS WITH config-bench.yaml "prometheus" exporter port
