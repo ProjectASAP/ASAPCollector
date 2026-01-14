@@ -100,18 +100,20 @@ The CountMinSketch processor aggregates metrics into Count-Min Sketch data struc
 
 **Running Benchmarks:**
 ```bash
+# Run benchmarks from the cmd directory
+cd opentelemetry-collector-contrib-patch/cmd
+
 # NOP Processor
-cd opentelemetry-collector-contrib-patch/cmd/nopcol
-./bench.sh
+./bench.sh nopcol
 
 # CountSketch Processor
-cd opentelemetry-collector-contrib-patch/cmd/countsketchcol
-./bench.sh
+./bench.sh countsketchcol
 
-# CountMinSketch Processor (when build issue is fixed)
-cd opentelemetry-collector-contrib-patch/cmd/countminsketchcol
-./bench.sh
+# CountMinSketch Processor
+./bench.sh countminsketchcol
 ```
+
+**Note:** All processors use the centralized benchmark script located at `opentelemetry-collector-contrib-patch/cmd/bench.sh`. If you need to build processors that use private modules, ensure `GOPRIVATE` and `GONOSUMDB` environment variables are set appropriately before running the benchmark script.
 
 ## Comparative Analysis
 

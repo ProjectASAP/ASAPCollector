@@ -1,14 +1,37 @@
 #!/bin/bash
 
+# Centralized benchmark script for OpenTelemetry Collector processors
+# Usage: ./bench.sh [nopcol|countsketchcol|countminsketchcol]
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONTRIB_PATCH_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CONTRIB_PATCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 
+# Processor selection
+PROCESSOR="${1:-}"
+if [ -z "$PROCESSOR" ]; then
+    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol]"
+    exit 1
+fi
+
+# Validate processor name
+case "$PROCESSOR" in
+    nopcol|countsketchcol|countminsketchcol)
+        ;;
+    *)
+        echo "Error: Invalid processor '$PROCESSOR'"
+        echo "Valid options: nopcol, countsketchcol, countminsketchcol"
+        exit 1
+        ;;
+esac
+
+# Set processor-specific variables
+PROCESSOR_DIR="$SCRIPT_DIR/$PROCESSOR"
 BUILDER_BIN="$HOME/go/bin/builder"
-BUILDER_CONFIG="$SCRIPT_DIR/builder-config.yaml"
-COLLECTOR_BIN="$SCRIPT_DIR/dist/nopcol"
-CONFIG_FILE="$SCRIPT_DIR/config.yaml"
-RESULT_DIR="$WORKSPACE_DIR/otel_collector_benchmark/benchmark_results/nopcol"
+BUILDER_CONFIG="$PROCESSOR_DIR/builder-config.yaml"
+COLLECTOR_BIN="$PROCESSOR_DIR/dist/$PROCESSOR"
+CONFIG_FILE="$PROCESSOR_DIR/config.yaml"
+RESULT_DIR="$WORKSPACE_DIR/otel_collector_benchmark/benchmark_results/$PROCESSOR"
 LOAD_GEN_DIR="$WORKSPACE_DIR/otel_collector_benchmark"
 
 # Telemetry endpoint for metrics
@@ -23,7 +46,19 @@ WORKERS=10
 HOSTS=10
 METRICS=10
 RATES=(10000 20000 30000 40000 50000)
-# =================================================
+
+# Processor display names
+case "$PROCESSOR" in
+    nopcol)
+        PROCESSOR_NAME="NOP PROCESSOR"
+        ;;
+    countsketchcol)
+        PROCESSOR_NAME="COUNTSKETCH PROCESSOR"
+        ;;
+    countminsketchcol)
+        PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR"
+        ;;
+esac
 
 # Force international number format (prevents math errors)
 export LC_NUMERIC=C
@@ -32,7 +67,7 @@ mkdir -p "$RESULT_DIR"
 BIN_NAME=$(basename "$COLLECTOR_BIN")
 
 echo "=========================================================="
-echo "   NOP PROCESSOR BENCHMARK (Zipf Distribution)"
+echo "   $PROCESSOR_NAME BENCHMARK (Zipf Distribution)"
 echo "=========================================================="
 echo " Builder      : $BUILDER_BIN"
 echo " Binary       : $COLLECTOR_BIN"
@@ -49,10 +84,16 @@ echo ">>> Building collector..."
 cd "$CONTRIB_PATCH_DIR"
 $BUILDER_BIN --config "$BUILDER_CONFIG"
 if [ $? -ne 0 ]; then
-    echo "[ERROR] Build failed!"
-    exit 1
+    echo "[WARNING] Build failed, checking for existing binary..."
+    if [ -f "$COLLECTOR_BIN" ]; then
+        echo ">>> Using existing binary: $COLLECTOR_BIN"
+    else
+        echo "[ERROR] Build failed and no existing binary found!"
+        exit 1
+    fi
+else
+    echo ">>> Build successful!"
 fi
-echo ">>> Build successful!"
 
 # --- CLEANUP FUNCTION ---
 cleanup() {
@@ -67,9 +108,11 @@ cleanup() {
 }
 trap cleanup SIGINT
 
-# Ensure clean state - kill collector by full path
+# Ensure clean state - kill collector by full path and free port
 pkill -f "$COLLECTOR_BIN" 2>/dev/null
-sleep 2
+# Also kill any process using port 8888
+lsof -ti:8888 | xargs kill -9 2>/dev/null
+sleep 3
 
 # --- HELPER FUNCTIONS ---
 
