@@ -18,4 +18,3 @@ retract (
 )
 
 replace go.opentelemetry.io/proto/otlp => ../opentelemetry-proto/gen/go
-
