@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	// Import library baru
 	"github.com/approx-telemetry/sketchlib-go/common"
 	cms "github.com/approx-telemetry/sketchlib-go/sketches/CountMinSketch"
 
@@ -177,12 +176,10 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 ) {
 	aggregationKey := buildAggregationKey(metricName, dp.Attributes())
 
-	// 1. Dapatkan Lock Read
 	p.mu.RLock()
 	ws, exists := p.activeWindowSketches[aggregationKey]
 	p.mu.RUnlock()
 
-	// 2. Init Sketch jika belum ada
 	if !exists {
 		p.mu.Lock()
 		ws, exists = p.activeWindowSketches[aggregationKey]
@@ -204,7 +201,6 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 		p.mu.Unlock()
 	}
 
-	// 3. Update Sketch
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
