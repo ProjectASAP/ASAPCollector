@@ -15,13 +15,12 @@ type Config struct {
 	GroupBy    []string `mapstructure:"group_by"`
 
 	// CMS Parameters
-	Rows    int   `mapstructure:"rows"`
-	Columns int   `mapstructure:"columns"`
-	Seed    int64 `mapstructure:"seed"`
+	Rows    int `mapstructure:"rows"`
+	Columns int `mapstructure:"columns"`
 
 	DropOriginal bool `mapstructure:"drop_original"`
 
-	// NEW: The time window to accumulate data before emitting a sketch
+	// The time window to accumulate data before emitting a sketch
 	WindowInterval time.Duration `mapstructure:"window_interval"`
 }
 

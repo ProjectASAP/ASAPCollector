@@ -3,12 +3,16 @@
 # ================= CONFIGURATION =================
 BASE_PATH="../../cmd/countminsketchcol"
 COLLECTOR_BIN="$BASE_PATH/countminsketchcol"
-CONFIG_FILE="$BASE_PATH/config-bench.yaml" # Ensure this points to your bench config
+CONFIG_FILE="$BASE_PATH/config-bench.yaml" 
 RESULT_DIR="./benchmark_results"
 
 # MATCH THIS WITH config-bench.yaml "metric_name"
 SAMPLE_METRIC_NAME="cms_bench_result"
 SAMPLE_FILE_PREFIX="samples"
+
+# MATCH THIS WITH config-bench.yaml "window_interval"
+# Penting: Harus sama dengan YAML agar analisis akurat
+WINDOW_SEC=10
 
 # MATCH THIS WITH config-bench.yaml "prometheus" exporter port
 QUERY_URL="http://localhost:9000/metrics" 
@@ -22,23 +26,19 @@ WORKERS=10
 RATES=(10000 20000 30000 40000 50000)
 # =================================================
 
-# Force international number format (prevents math errors)
 export LC_NUMERIC=C
-
 mkdir -p $RESULT_DIR
 BIN_NAME=$(basename "$COLLECTOR_BIN")
 
 echo "=========================================================="
-echo "   CountMinSketch BENCHMARK    "
+echo "   CountMinSketch BENCHMARK (New API Version) "
 echo "=========================================================="
 echo " Binary   : $BIN_NAME"
 echo " Duration : $DURATION per scenario"
+echo " Window   : ${WINDOW_SEC}s"
 echo " Rates    : ${RATES[*]}"
-echo " Query URL: $QUERY_URL"
-echo " Metric   : $SAMPLE_METRIC_NAME"
 echo "=========================================================="
 
-# --- CLEANUP FUNCTION ---
 cleanup() {
     echo ""
     echo "Stopping all background processes..."
@@ -72,7 +72,7 @@ for RATE in "${RATES[@]}"; do
     fi
     echo "    -> Collector PID: $COLLECTOR_PID"
 
-    # 2. START RESOURCE MONITOR (Background)
+    # 2. START RESOURCE MONITOR
     METRICS_FILE="$RESULT_DIR/resource_${RATE}mps.csv"
     echo "timestamp,cpu_percent,memory_mb" > $METRICS_FILE
 
@@ -92,7 +92,7 @@ for RATE in "${RATES[@]}"; do
     ) &
     MONITOR_PID=$!
 
-    # 3. START LATENCY TEST (Background)
+    # 3. START LATENCY TEST
     LATENCY_FILE="$RESULT_DIR/latency_${RATE}mps.csv"
     echo "timestamp,latency_ms,http_code" > $LATENCY_FILE
     
@@ -110,16 +110,13 @@ for RATE in "${RATES[@]}"; do
     ) &
     LATENCY_PID=$!
 
-    # 4. START SAMPLE COUNT SCRAPER (Background)
-    # This captures the 'sample_count' attribute from the exposed metric
+    # 4. START SAMPLE COUNT SCRAPER
     SAMPLE_FILE="$RESULT_DIR/${SAMPLE_FILE_PREFIX}_${RATE}mps.csv"
     echo "timestamp,sample_count" > $SAMPLE_FILE
 
     (
         END_TIME=$(( $(date +%s) + DURATION_SEC ))
         while [ $(date +%s) -lt $END_TIME ]; do
-            # Fetch metrics, find the specific metric line
-            # Regex extracts the number inside sample_count="..."
             curl -s "$QUERY_URL" \
             | grep "$SAMPLE_METRIC_NAME" \
             | grep -o 'sample_count="[0-9]*"' \
@@ -130,7 +127,7 @@ for RATE in "${RATES[@]}"; do
     ) &
     SAMPLE_PID=$!
 
-    # 5. START LOAD GENERATOR (Foreground)
+    # 5. START LOAD GENERATOR
     LOG_FILE="$RESULT_DIR/telemetrygen_${RATE}.log"
     echo "    -> Generating Load & Measuring Latency..."
     
@@ -176,28 +173,8 @@ for RATE in "${RATES[@]}"; do
     rm sorted_lat.tmp
     read LAT_AVG LAT_P95 LAT_P99 LAT_COUNT <<< "$LATENCY_STATS"
 
-    # D. Sample Count (Max found in the window)
+    # D. Sample Count Stats
     MAX_SAMPLE_COUNT=$(awk -F',' 'NR>1 {if ($2>max) max=$2} END {print max+0}' $SAMPLE_FILE)
-
-    # --- NEW: E. Concurrent Sketches (Fragmentation Check) ---
-    # This logic counts how many unique lines appear for the same timestamp
-    CONCURRENT_SKETCHES_STATS=$(awk -F',' 'NR>1 {
-        count[$1]++  
-    } 
-    END {
-        max_conc = 0
-        sum_conc = 0
-        ticks = 0
-        for (t in count) {
-            if (count[t] > max_conc) max_conc = count[t]
-            sum_conc += count[t]
-            ticks++
-        }
-        if (ticks == 0) printf "0 0"
-        else printf "%d %.1f", max_conc, sum_conc/ticks
-    }' $SAMPLE_FILE)
-    
-    read MAX_CONC_SKETCHES AVG_CONC_SKETCHES <<< "$CONCURRENT_SKETCHES_STATS"
 
     # 8. PRINT SUMMARY
     echo "    --------------------------------------------------"
@@ -211,60 +188,46 @@ for RATE in "${RATES[@]}"; do
     echo "    Query Latency (Avg): ${LAT_AVG} ms"
     echo "    Query Latency (P95): ${LAT_P95} ms"
     echo "    Total Queries      : ${LAT_COUNT}"
-    echo "    -----------------"
-    echo "    Max Sketch Count   : ${MAX_SAMPLE_COUNT}"
-    echo "    Active Sketches (Avg)   : ${AVG_CONC_SKETCHES}" 
-    echo "    Active Sketches (Peak)  : ${MAX_CONC_SKETCHES}"
     echo "    --------------------------------------------------"
    
-    # --- NEW: F. Per-Window Breakdown ---
+    # --- F. Per-Window Breakdown (UPDATED FOR TUMBLING WINDOW) ---
     echo "    [Windowed Throughput Analysis]"
     
-    # 1. Sum concurrent sketches (handle fragmentation) & 2. Bucket by 10s
-    awk -F',' -v window=10 -v duration=60 '
+    # Logic Update:
+    # 1. Processor emits 'sample_count' which is ABSOLUTE count for that window (reset to 0 each time).
+    # 2. Prometheus exporter holds the value (Gauge) until next update.
+    # 3. We take the MAX value seen in each 10s bucket as the true count for that window.
+    # 4. We DO NOT subtract previous window, because the counter is not cumulative.
+
+    awk -F',' -v window=$WINDOW_SEC -v duration=$DURATION_SEC '
     {
-        # Skip header
         if (NR==1) next
-        
-        # Initialize start time
         if (min_ts == 0 || $1 < min_ts) min_ts = $1
         
-        # Sum all sketch counts for this specific timestamp
+        # Handle fragmentation: sum all concurrent sketches for this exact timestamp first
         sum_by_ts[$1] += $2
     }
     END {
-        # 1. Find the Peak Value for each 10s Window (Accumulated Total)
-        # We loop through all observed timestamps
+        # 1. Bucket by Window
         for (ts in sum_by_ts) {
             rel_time = ts - min_ts
             w_idx = int(rel_time / window)
             
-            # Keep the highest accumulated value seen in this window
-            if (sum_by_ts[ts] > window_accum_max[w_idx]) {
-                window_accum_max[w_idx] = sum_by_ts[ts]
+            # Since it is a Gauge that holds value, the Max value seen in the window 
+            # represents the final count emitted by the processor for that window.
+            if (sum_by_ts[ts] > window_max[w_idx]) {
+                window_max[w_idx] = sum_by_ts[ts]
             }
         }
 
-        # 2. Calculate Delta and Print
-        # Loop strictly for the expected number of windows (Duration / Window)
+        # 2. Print Absolute Values (No Delta Calculation)
         total_windows = int(duration / window)
-        previous_max = 0
         
         for (i = 0; i < total_windows; i++) {
-            current_max = window_accum_max[i]
+            val = window_max[i]
+            if (val == 0) val = "N/A (Wait)"
             
-            # If current window has no data (0), just use previous max to keep delta 0
-            if (current_max == 0) current_max = previous_max
-
-            # DELTA CALCULATION:
-            # The count for THIS window is (End of This Window) - (End of Last Window)
-            exact_count = current_max - previous_max
-            
-            # Print
-            printf "    Window %d (%02ds - %02ds): %d metrics\n", i+1, i*window, (i+1)*window, exact_count
-            
-            # Update previous tracker
-            previous_max = current_max
+            printf "    Window %d (%02ds - %02ds): %s metrics\n", i+1, i*window, (i+1)*window, val
         }
     }' "$SAMPLE_FILE" | sort -k 2
 
