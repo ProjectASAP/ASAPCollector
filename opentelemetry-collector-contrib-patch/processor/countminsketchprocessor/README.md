@@ -57,7 +57,7 @@ telemetrygen metrics \
 
 ### Benchmark Results (API Version)
 
-**Duration:** 30s per scenario | **Query URL:** `http://localhost:8888/metrics`
+**Duration:** 60s per scenario | **Window:** 10s | **Query URL:** `http://localhost:8888/metrics`
 
 | Target Rate (MPS) | Actual Throughput (MPS) | Avg CPU Usage | Peak RAM Usage | Latency Avg (ms) | Latency P95 (ms) | Latency P99 (ms) |
 | :---------------- | :---------------------- | :------------ | :------------- | :--------------- | :--------------- | :--------------- |

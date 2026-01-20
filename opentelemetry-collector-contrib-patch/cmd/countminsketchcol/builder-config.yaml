@@ -3,7 +3,7 @@ dist:
   name: countminsketchcol
   description: Custom Collector with CountMin Sketch Processor
   version: 0.116.0
-  output_path: ./cmd/countminsketchcol
+  output_path: ./cmd/countminsketchcol/dist
 
 extensions:
   - gomod: go.opentelemetry.io/collector/extension/zpagesextension v0.141.0
@@ -277,4 +277,7 @@ providers:
 # === REPLACES  ===
 replaces:
   # 1. Mapping Processor
-  - github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor => /mnt/78D8516BD8512920/GARUDA_ACE/FROOT-LAB/asap-internal/DataCollector/opentelemetry-collector-contrib/processor/countminsketchprocessor
+  # - github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor => /mnt/78D8516BD8512920/GARUDA_ACE/FROOT-LAB/asap-internal/DataCollector/opentelemetry-collector-contrib/processor/countminsketchprocessor
+  - github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor => ../../processor/countminsketchprocessor
+  # 2. Sketch Library (private module)
+  - github.com/approx-telemetry/sketchlib-go => ../../../sketchlib-go

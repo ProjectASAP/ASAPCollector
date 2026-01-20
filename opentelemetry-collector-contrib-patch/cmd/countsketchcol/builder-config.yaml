@@ -14,5 +14,5 @@ receivers:
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.141.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddsketchprocessor v0.0.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchprocessor v0.0.1
     path: ./processor/countsketchprocessor
