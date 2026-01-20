@@ -201,6 +201,7 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 		p.mu.Unlock()
 	}
 
+	// Update Sketch
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
