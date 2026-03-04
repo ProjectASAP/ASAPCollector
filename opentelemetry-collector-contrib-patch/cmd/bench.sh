@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countminsketchcol|kll]
+# Usage: ./bench.sh [nopcol|countsketchcol|countminsketchcol|kll|ddsketchcol-batch|ddsketchcol-window]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTRIB_PATCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -10,17 +10,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol|kll]"
+    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol|kll|ddsketchcol]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countminsketchcol|kll)
+    nopcol|countsketchcol|countminsketchcol|kll|ddsketchcol-batch|ddsketchcol-window)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countminsketchcol, kll"
+        echo "Valid options: nopcol, countsketchcol, countminsketchcol, kll, ddsketchcol-batch, ddsketchcol-window"
         exit 1
         ;;
 esac
@@ -35,6 +35,17 @@ if [ "$PROCESSOR" = "kll" ]; then
     CONFIG_FILE="$PROCESSOR_DIR/config-bench.yaml"
     COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"
     TELEMETRY_URL="http://localhost:8888/metrics"
+elif [ "$PROCESSOR" = "ddsketchcol-batch" ] || [ "$PROCESSOR" = "ddsketchcol-window" ]; then
+    DD_DIR="$SCRIPT_DIR/ddsketchcol"
+    BUILDER_CONFIG="$DD_DIR/builder-config.yaml"
+    # Builder outputs ./cmd/ddsketchcol/ddsketchcol (see builder-config.yaml)
+    COLLECTOR_BIN="$DD_DIR/ddsketchcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    if [ "$PROCESSOR" = "ddsketchcol-batch" ]; then
+        CONFIG_FILE="$DD_DIR/config.yaml"
+    else
+        CONFIG_FILE="$DD_DIR/config-window.yaml"
+    fi
 else
     BUILDER_CONFIG="$PROCESSOR_DIR/builder-config.yaml"
     CONFIG_FILE="$PROCESSOR_DIR/config.yaml"
@@ -67,6 +78,12 @@ case "$PROCESSOR" in
         ;;
     kll)
         PROCESSOR_NAME="KLL PROCESSOR"
+        ;;
+    ddsketchcol-batch)
+        PROCESSOR_NAME="DDSKETCH PROCESSOR (batch mode)"
+        ;;
+    ddsketchcol-window)
+        PROCESSOR_NAME="DDSKETCH PROCESSOR (window mode)"
         ;;
 esac
 
@@ -276,6 +293,33 @@ for RATE in "${RATES[@]}"; do
 
     echo "    -> Test finished. Analyzing..."
 
+    # For ddsketch benchmarks, perform a quick correctness check on emitted quantiles
+    if [[ "$PROCESSOR" == ddsketchcol* ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
+            if [ -z "$PROM_OUTPUT" ]; then
+                echo "    [SKETCH CHECK] FAIL — no output on port 8889"
+            else
+                P50=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.5"/ && !/^#/{print $NF; exit}')
+                P90=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.9"/ && !/^#/{print $NF; exit}')
+                P99=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.99"/ && !/^#/{print $NF; exit}')
+                if [ -z "$P50" ] || [ -z "$P90" ] || [ -z "$P99" ]; then
+                    echo "    [SKETCH CHECK] FAIL — quantile metrics missing (p50=$P50 p90=$P90 p99=$P99)"
+                else
+                    awk -v p50="$P50" -v p90="$P90" -v p99="$P99" 'BEGIN {
+                        ok = (p50 <= p90) && (p90 <= p99) && (p50 >= 0.99) && (p99 <= 507)
+                        if (ok)
+                            printf "    [SKETCH CHECK] PASS  p50=%.2f  p90=%.2f  p99=%.2f\n", p50, p90, p99
+                        else
+                            printf "    [SKETCH CHECK] FAIL  p50=%.2f  p90=%.2f  p99=%.2f  (monotonicity or bounds violated)\n", p50, p90, p99
+                    }'
+                fi
+            fi
+        else
+            echo "    [SKETCH CHECK] SKIPPED — curl not available"
+        fi
+    fi
+
     # RECORD END METRICS (for delta calculations)
     CPU_END=$(get_metric_value "otelcol_process_cpu_seconds_total" "$TELEMETRY_URL")
     RECEIVER_END=$(get_metric_value "otelcol_receiver_accepted_metric_points_total" "$TELEMETRY_URL")
@@ -304,13 +348,21 @@ for RATE in "${RATES[@]}"; do
     
     if [ "$METRICS_RECEIVED" == "" ] || [ "$METRICS_RECEIVED" == "0" ]; then
         ACTUAL_MPS=0
-        LOSS_RATE="0"
+        THROUGHPUT_LABEL="Data Loss Rate"
+        THROUGHPUT_RESULT="N/A"
     else
         ACTUAL_MPS=$(echo "scale=0; $METRICS_RECEIVED / $DURATION_SEC" | bc)
-        if [ "$METRICS_RECEIVED" -gt 0 ]; then
-            LOSS_RATE=$(echo "scale=4; (($METRICS_RECEIVED - $METRICS_SENT) / $METRICS_RECEIVED) * 100" | bc)
+        if awk "BEGIN{exit !($METRICS_SENT > $METRICS_RECEIVED)}"; then
+            # Expansion processor (e.g. ddsketch batch appends quantile metrics)
+            RATIO=$(echo "scale=2; $METRICS_SENT / $METRICS_RECEIVED" | bc)
+            THROUGHPUT_LABEL="Output/Input Ratio"
+            THROUGHPUT_RESULT="${RATIO}x (expansion)"
+        elif [ "$METRICS_RECEIVED" -gt 0 ]; then
+            THROUGHPUT_LABEL="Data Loss Rate"
+            THROUGHPUT_RESULT=$(echo "scale=4; (($METRICS_RECEIVED - $METRICS_SENT) / $METRICS_RECEIVED) * 100" | bc)"%"
         else
-            LOSS_RATE="0"
+            THROUGHPUT_LABEL="Data Loss Rate"
+            THROUGHPUT_RESULT="0%"
         fi
     fi
 
@@ -349,7 +401,7 @@ for RATE in "${RATES[@]}"; do
     echo "    Metrics Received   : ${METRICS_RECEIVED}"
     echo "    Metrics Sent       : ${METRICS_SENT}"
     echo "    Actual Throughput  : ${ACTUAL_MPS} MPS"
-    echo "    Data Loss Rate     : ${LOSS_RATE}%"
+    echo "    ${THROUGHPUT_LABEL}  : ${THROUGHPUT_RESULT}"
     echo "    -----------------"
     echo "    Query Latency (Avg): ${LAT_AVG} ms"
     echo "    Query Latency (P95): ${LAT_P95} ms"

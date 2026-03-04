@@ -125,6 +125,37 @@ The KLL (K-LL) processor aggregates metrics using the K-LL sketch algorithm for 
 - **Latency**: Sub-3ms (P99 < 2.7ms) across all loads
 - **Quantile Estimation**: Provides approximate quantiles (0.5, 0.99) with configurable precision
 
+### DDSketch Processor Benchmark
+
+The DDSketch processor aggregates metrics into DDSketch data structures for approximate quantile estimation. It supports two modes:
+
+- `batch`: per-batch aggregation and flush; the processor keeps the original gauge series and appends quantile metrics.
+- `window`: tumbling-window aggregation with a configurable `window_duration`; the processor turns many raw samples into a small number of quantile metrics per series per window.
+
+In both modes, the collector receives standard OTLP Gauge metrics from this load generator, builds/merges DDSketches per series, and emits quantile gauges with a `ddsketch_quantile` label (`0.5`, `0.9`, `0.99`). The benchmark now also runs a basic **correctness check** after each scenario by scraping the Prometheus exporter on port `8889` and verifying:
+
+- Quantile metrics exist.
+- Monotonicity: `p50 <= p90 <= p99`.
+- Bounds: all quantiles fall within `[0.99, 507]`, matching the Zipf generator’s effective range and DDSketch’s configured relative accuracy.
+
+**Processor Configuration (window mode example):**
+- mode: `window`
+- window_duration: `10s` (for the benchmark; `60s` is a common production value)
+- relative_accuracy: `0.01`
+- emit_ddsketch: `false`
+- quantiles: `[0.5, 0.9, 0.99]`
+
+**Results Summary (window mode, 10s window):**
+
+| Target Rate | Actual Throughput | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
+|------------|-------------------|---------|-------------|-----------|-------------|-------------|-------------|
+| 10,000 MPS | 19,983 MPS        | 32.7%   | 218.9 MB    | ~99%      | 1.27 ms     | 1.83 ms     | 1.94 ms     |
+| 20,000 MPS | 39,991 MPS        | 17.2%   | 215.2 MB    | 99.24%    | 1.18 ms     | 1.66 ms     | 1.77 ms     |
+
+\* **Data Loss Note:** As with the other sketch processors, this “data loss” is expected. For each host/metric series, millions of raw samples per minute are compressed into a handful of quantile metrics per window.
+
+Batch mode shows the complementary behavior: it keeps the originals and appends quantile metrics, so the exporter sends roughly 4× as many points as the receiver accepts (one original + three quantiles per sample). For that mode the script reports an **Output/Input Ratio** instead of a loss percentage.
+
 **Running Benchmarks:**
 ```bash
 # Run benchmarks from the cmd directory
@@ -141,6 +172,12 @@ cd opentelemetry-collector-contrib-patch/cmd
 
 # KLL Processor
 ./bench.sh kll
+
+# DDSketch Processor (batch mode)
+./bench.sh ddsketchcol-batch
+
+# DDSketch Processor (window mode)
+./bench.sh ddsketchcol-window
 ```
 
 **Note:** All processors use the centralized benchmark script located at `opentelemetry-collector-contrib-patch/cmd/bench.sh`. If you need to build processors that use private modules, ensure `GOPRIVATE` and `GONOSUMDB` environment variables are set appropriately before running the benchmark script.

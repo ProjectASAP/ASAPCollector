@@ -6,7 +6,9 @@ import (
 
 	"github.com/DataDog/sketches-go/ddsketch"
 	"github.com/DataDog/sketches-go/ddsketch/pb/sketchpb"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
@@ -15,10 +17,14 @@ import (
 
 func TestProcessorAddsDDSketchMetric(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
-	proc := newProcessor(cfg, zap.NewNop())
+	// Use a minimal processor instance that only exercises batch aggregation.
+	proc := &ddsketchProcessor{
+		cfg:    cfg,
+		logger: zap.NewNop(),
+	}
 
 	metrics := buildDDSketchMetrics(t)
-	out, err := proc.processMetrics(context.Background(), metrics)
+	out, err := proc.processBatch(context.Background(), metrics)
 	require.NoError(t, err)
 
 	rm := out.ResourceMetrics()
@@ -42,6 +48,136 @@ func TestProcessorAddsDDSketchMetric(t *testing.T) {
 
 	merged := decodeSketch(t, dp.Sketch())
 	require.InEpsilon(t, 12, merged.GetCount(), 1e-9)
+}
+
+func TestBatchModeGaugeInput(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeBatch
+	cfg.EmitDDSketch = false
+	cfg.MetricSuffix = "_quantile"
+	cfg.Quantiles = []float64{0.5}
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	metric := sm.Metrics().AppendEmpty()
+	metric.SetName("latency")
+	metric.SetUnit("ms")
+	g := metric.SetEmptyGauge()
+	dp := g.DataPoints().AppendEmpty()
+	dp.SetStartTimestamp(1)
+	dp.SetTimestamp(2)
+	dp.SetDoubleValue(10)
+
+	err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+
+	rms := out[0].ResourceMetrics()
+	require.Equal(t, 1, rms.Len())
+	sms := rms.At(0).ScopeMetrics()
+	require.Equal(t, 1, sms.Len())
+	ms := sms.At(0).Metrics()
+	require.Equal(t, 2, ms.Len())
+
+	// Second metric should be the quantile output.
+	outMetric := ms.At(1)
+	assert.Equal(t, "latency_quantile", outMetric.Name())
+	assert.Equal(t, pmetric.MetricTypeGauge, outMetric.Type())
+}
+
+func TestWindowModeGaugeInput(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.EmitDDSketch = false
+	cfg.MetricSuffix = "_quantile"
+	cfg.Quantiles = []float64{0.5}
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	metric := sm.Metrics().AppendEmpty()
+	metric.SetName("latency")
+	metric.SetUnit("ms")
+	g := metric.SetEmptyGauge()
+	dp := g.DataPoints().AppendEmpty()
+	dp.SetStartTimestamp(1)
+	dp.SetTimestamp(2)
+	dp.SetDoubleValue(10)
+
+	// Window mode should not forward immediately.
+	err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+	assert.Len(t, sink.AllMetrics(), 0)
+
+	// Force a flush and verify output.
+	err = proc.flushWindow(context.Background())
+	require.NoError(t, err)
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+	rms := out[0].ResourceMetrics()
+	require.Equal(t, 1, rms.Len())
+	sms := rms.At(0).ScopeMetrics()
+	require.Equal(t, 1, sms.Len())
+	ms := sms.At(0).Metrics()
+	require.Equal(t, 1, ms.Len())
+	outMetric := ms.At(0)
+	assert.Equal(t, "latency_quantile", outMetric.Name())
+	assert.Equal(t, pmetric.MetricTypeGauge, outMetric.Type())
+}
+
+func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.EmitDDSketch = true
+	cfg.MetricSuffix = "_ddsketch"
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	// First batch
+	md1 := buildDDSketchMetrics(t)
+	err := proc.ConsumeMetrics(context.Background(), md1)
+	require.NoError(t, err)
+
+	// Second batch with the same attributes
+	md2 := buildDDSketchMetrics(t)
+	err = proc.ConsumeMetrics(context.Background(), md2)
+	require.NoError(t, err)
+
+	// Flush and verify that sketches from both batches were merged.
+	err = proc.flushWindow(context.Background())
+	require.NoError(t, err)
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+	rms := out[0].ResourceMetrics()
+	require.Equal(t, 1, rms.Len())
+	sms := rms.At(0).ScopeMetrics()
+	require.Equal(t, 1, sms.Len())
+	ms := sms.At(0).Metrics()
+	require.Equal(t, 1, ms.Len())
+
+	sketchMetric := ms.At(0)
+	assert.Equal(t, "request_latency_ddsketch", sketchMetric.Name())
+	require.Equal(t, pmetric.MetricTypeDDSketch, sketchMetric.Type())
+
+	dps := sketchMetric.DDSketch().DataPoints()
+	require.Equal(t, 1, dps.Len())
+	dp := dps.At(0)
+	merged := decodeSketch(t, dp.Sketch())
+
+	// Original test used total count of 12; with two batches it should be ~24.
+	require.InEpsilon(t, 24, merged.GetCount(), 1e-9)
 }
 
 func buildDDSketchMetrics(t *testing.T) pmetric.Metrics {
