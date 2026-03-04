@@ -172,6 +172,7 @@ make gen-go
 
 // Create a module descriptor in opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp if not exists. 
 ```bash
+cd DataCollector/
 cat <<'EOF' > opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp/go.mod
 module go.opentelemetry.io/proto/otlp
 
