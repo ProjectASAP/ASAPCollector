@@ -10,7 +10,7 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol|kll|ddsketchcol]"
+    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol|kll|ddsketchcol-batch|ddsketchcol-window]"
     exit 1
 fi
 
