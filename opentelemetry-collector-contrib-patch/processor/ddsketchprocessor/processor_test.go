@@ -171,6 +171,10 @@ func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
 	assert.Equal(t, "request_latency_ddsketch", sketchMetric.Name())
 	require.Equal(t, pmetric.MetricTypeDDSketch, sketchMetric.Type())
 
+	// The output temporality must match the input temporality (Delta) so that
+	// a regression in window-mode flush does not silently change it.
+	assert.Equal(t, pmetric.AggregationTemporalityDelta, sketchMetric.DDSketch().AggregationTemporality())
+
 	dps := sketchMetric.DDSketch().DataPoints()
 	require.Equal(t, 1, dps.Len())
 	dp := dps.At(0)

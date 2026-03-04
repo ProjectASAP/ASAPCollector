@@ -44,10 +44,11 @@ type scopeWindow struct {
 }
 
 type metricWindow struct {
-	name        string
-	description string
-	unit        string
-	series      map[string]*sketchSeries // attr key -> aggregated series
+	name         string
+	description  string
+	unit         string
+	temporality  pmetric.AggregationTemporality // preserved from DDSketch inputs; Unspecified for others
+	series       map[string]*sketchSeries       // attr key -> aggregated series
 }
 
 func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *ddsketchProcessor {
@@ -544,6 +545,7 @@ func (p *ddsketchProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetri
 
 func (p *ddsketchProcessor) accumulateDDSketchMetric(sw *scopeWindow, metric pmetric.Metric) {
 	mw := p.getOrCreateMetricWindow(sw, metric)
+	mw.temporality = metric.DDSketch().AggregationTemporality()
 
 	dps := metric.DDSketch().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
@@ -605,6 +607,9 @@ func (p *ddsketchProcessor) flushWindow(ctx context.Context) error {
 					ok        bool
 				)
 				if p.cfg.EmitDDSketch {
+					// Seed the tmp metric as a DDSketch so that buildMergedSketchMetric
+					// can recover the preserved AggregationTemporality from window accumulation.
+					tmp.SetEmptyDDSketch().SetAggregationTemporality(mw.temporality)
 					outMetric, ok = p.buildMergedSketchMetric(tmp, mw.series)
 				} else {
 					outMetric, ok = p.buildQuantileMetric(tmp, mw.series)
