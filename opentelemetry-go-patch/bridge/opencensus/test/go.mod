@@ -4,10 +4,10 @@ go 1.24.0
 
 require (
 	go.opencensus.io v0.24.0
-	go.opentelemetry.io/otel v1.38.0
+	go.opentelemetry.io/otel v1.41.0
 	go.opentelemetry.io/otel/bridge/opencensus v1.38.0
 	go.opentelemetry.io/otel/sdk v1.38.0
-	go.opentelemetry.io/otel/trace v1.38.0
+	go.opentelemetry.io/otel/trace v1.41.0
 )
 
 require (
