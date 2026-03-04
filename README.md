@@ -76,6 +76,31 @@
   </tbody>
 </table>
 
+## Initial Setup
+
+After cloning, run the one-time setup script to install Go, the OCB builder,
+initialise submodules, and apply all patch overlays:
+
+```bash
+./setup.sh
+```
+
+If Go is already managed externally (e.g. via `asdf`, `mise`, or a system
+package):
+
+```bash
+./setup.sh --no-go
+```
+
+The script is safe to re-run: each step is skipped when already satisfied.
+
+| Flag | Effect |
+|---|---|
+| `--no-go` | Skip Go download/installation |
+| `--no-patches` | Skip applying patch overlays to submodules |
+
+---
+
 ## Cloning
 
 Clone with submodules on first checkout so the embedded Telegraf tree is pulled
@@ -170,15 +195,6 @@ cd opentelemetry-proto
 make gen-go
 ```
 
-// Create a module descriptor in opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp if not exists. 
-```bash
-cd DataCollector/
-cat <<'EOF' > opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp/go.mod
-module go.opentelemetry.io/proto/otlp
-
-go 1.24
-EOF
-```
 
 ### Collector core (opentelemetry-collector)
 1. Regenerate protobuf + pdata after touching proto specs:
@@ -196,15 +212,49 @@ EOF
    go test ./... -count=1
    ```
 
-### Collector-contrib (opentelemetry-collector-contrib)
-Install OTel-Builder:
+### Collector-contrib distributions (opentelemetry-collector-contrib-patch)
+
+> **Important:** The OCB builder version must match the distribution target version.
+> The `ddsketchcol` distribution targets v0.141.0, so OCB v0.141.0 is required.
+> Using a newer builder (e.g. v0.147.0) injects incompatible runtime sub-modules.
+
+Patches must be applied to the submodules before building because the custom
+DDSketch types (in `opentelemetry-collector-patch/pdata/`) are not committed
+directly to the submodules.
+
+#### Quick build (recommended)
+
+Use the provided script from the repo root — it handles patch application and
+builder version automatically:
+
 ```bash
-go install go.opentelemetry.io/collector/cmd/builder@v0.141.0
+./build_ddsketchcol.sh
 ```
 
-DDSketch processor example:
+To skip re-applying patches if they were already applied:
+
 ```bash
-cd DataCollector/opentelemetry-collector-contrib
+./build_ddsketchcol.sh --skip-patches
+```
+
+The binary is written to:
+```
+opentelemetry-collector-contrib-patch/cmd/ddsketchcol/ddsketchcol
+```
+
+#### Manual build steps
+
+```bash
+# 1. Apply patches to submodules
+./restore_otel_collector_patches.sh
+./restore_otel_collector_contrib_patches.sh
+./restore_otel_proto_patches.sh
+
+# 2. Install the matching OCB builder version
+go install go.opentelemetry.io/collector/cmd/builder@v0.141.0
+
+# 3. Build
+cd opentelemetry-collector-contrib-patch
 builder --config ./cmd/ddsketchcol/builder-config.yaml
 ```
 
