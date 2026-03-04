@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 
 	colmetricpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -168,19 +169,75 @@ func New(ctx context.Context, options ...Option) (*Exporter, error) {
 }
 
 func applySeriesAssignments(dict *series.Dictionary, resp *colmetricpb.ExportMetricsServiceResponse) {
-	if resp == nil || len(resp.SeriesAssignments) == 0 {
+	if resp == nil {
 		return
 	}
-	assignments := make([]series.Assignment, 0, len(resp.SeriesAssignments))
-	for _, asg := range resp.SeriesAssignments {
+
+	// Keep compatibility with both patched and upstream OTLP proto responses:
+	// series_assignments only exists in patched proto builds.
+	getSeries := reflect.ValueOf(resp).MethodByName("GetSeriesAssignments")
+	if !getSeries.IsValid() {
+		return
+	}
+	res := getSeries.Call(nil)
+	if len(res) != 1 || res[0].Kind() != reflect.Slice || res[0].Len() == 0 {
+		return
+	}
+
+	assignments := make([]series.Assignment, 0, res[0].Len())
+	for i := 0; i < res[0].Len(); i++ {
+		asg := res[0].Index(i)
+		if asg.Kind() == reflect.Pointer && asg.IsNil() {
+			continue
+		}
 		assignments = append(assignments, series.Assignment{
-			ResourceKey:           asg.GetResourceKey(),
-			ScopeKey:              asg.GetScopeKey(),
-			MetricName:            asg.GetMetricName(),
-			MetricType:            asg.GetMetricType(),
-			AttributesFingerprint: string(asg.GetAttributesFingerprint()),
-			SeriesID:              asg.GetSeriesId(),
+			ResourceKey:           callStringMethod(asg, "GetResourceKey"),
+			ScopeKey:              callStringMethod(asg, "GetScopeKey"),
+			MetricName:            callStringMethod(asg, "GetMetricName"),
+			MetricType:            callStringMethod(asg, "GetMetricType"),
+			AttributesFingerprint: string(callBytesMethod(asg, "GetAttributesFingerprint")),
+			SeriesID:              callUint64Method(asg, "GetSeriesId"),
 		})
 	}
 	dict.Apply(assignments)
+}
+
+func callStringMethod(v reflect.Value, name string) string {
+	m := v.MethodByName(name)
+	if !m.IsValid() {
+		return ""
+	}
+	res := m.Call(nil)
+	if len(res) != 1 || res[0].Kind() != reflect.String {
+		return ""
+	}
+	return res[0].String()
+}
+
+func callBytesMethod(v reflect.Value, name string) []byte {
+	m := v.MethodByName(name)
+	if !m.IsValid() {
+		return nil
+	}
+	res := m.Call(nil)
+	if len(res) != 1 {
+		return nil
+	}
+	b, ok := res[0].Interface().([]byte)
+	if !ok {
+		return nil
+	}
+	return b
+}
+
+func callUint64Method(v reflect.Value, name string) uint64 {
+	m := v.MethodByName(name)
+	if !m.IsValid() {
+		return 0
+	}
+	res := m.Call(nil)
+	if len(res) != 1 || res[0].Kind() != reflect.Uint64 {
+		return 0
+	}
+	return res[0].Uint()
 }
