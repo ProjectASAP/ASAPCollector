@@ -69,7 +69,6 @@ replace (
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp => ../../../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetrichttp
 	go.opentelemetry.io/otel/sdk => ../../../opentelemetry-go/sdk
 	go.opentelemetry.io/otel/sdk/metric => ../../../opentelemetry-go/sdk/metric
-	go.opentelemetry.io/proto/otlp => ../../../opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp
 )
 
 // IMPORTANT NOTE: Do not add replace statements to this go.mod. This will break go install.
