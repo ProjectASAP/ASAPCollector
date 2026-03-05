@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]
+# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTRIB_PATCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -10,17 +10,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]"
+    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window)
+    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countminsketchcol, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window"
+        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window"
         exit 1
         ;;
 esac
@@ -44,6 +44,16 @@ elif [ "$PROCESSOR" = "kll-batch" ] || [ "$PROCESSOR" = "kll-window" ]; then
         CONFIG_FILE="$KLL_DIR/config.yaml"
     else
         CONFIG_FILE="$KLL_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "countsketchcol-batch" ] || [ "$PROCESSOR" = "countsketchcol-window" ]; then
+    CS_DIR="$SCRIPT_DIR/countsketchcol"
+    BUILDER_CONFIG="$CS_DIR/builder-config.yaml"
+    COLLECTOR_BIN="$CS_DIR/dist/countsketchcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    if [ "$PROCESSOR" = "countsketchcol-batch" ]; then
+        CONFIG_FILE="$CS_DIR/config-batch.yaml"
+    else
+        CONFIG_FILE="$CS_DIR/config-window.yaml"
     fi
 elif [ "$PROCESSOR" = "ddsketchcol-batch" ] || [ "$PROCESSOR" = "ddsketchcol-window" ]; then
     DD_DIR="$SCRIPT_DIR/ddsketchcol"
@@ -82,6 +92,12 @@ case "$PROCESSOR" in
         ;;
     countsketchcol)
         PROCESSOR_NAME="COUNTSKETCH PROCESSOR"
+        ;;
+    countsketchcol-batch)
+        PROCESSOR_NAME="COUNTSKETCH PROCESSOR (batch mode)"
+        ;;
+    countsketchcol-window)
+        PROCESSOR_NAME="COUNTSKETCH PROCESSOR (window mode)"
         ;;
     countminsketchcol)
         PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR"
@@ -362,6 +378,7 @@ for RATE in "${RATES[@]}"; do
             echo "    [KLL CHECK] SKIPPED — curl not available"
         fi
     fi
+
 
     # RECORD END METRICS (for delta calculations)
     CPU_END=$(get_metric_value "otelcol_process_cpu_seconds_total" "$TELEMETRY_URL")

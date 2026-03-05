@@ -48,29 +48,39 @@ The NOP (No-Operation) processor serves as a baseline for measuring collector ov
 
 ### CountSketch Processor Benchmark
 
-The CountSketch processor aggregates metrics into Count-Min Sketch data structures for frequency estimation and heavy hitter detection. With `drop_original: true`, it drops original metrics and emits only sketch summaries for storage reduction.
+The CountSketch processor aggregates metrics into Count Sketch data structures for frequency estimation and heavy hitter detection. It now supports two modes:
 
-**Processor Configuration:**
-- epsilon: 0.01, delta: 0.99, window_size: 5s, drop_original: true
+- **`batch`**: per-batch aggregation and flush; the processor keeps (or drops) original metrics based on `drop_original` and emits CountSketch summary metadata per batch.
+- **`window`**: tumbling-window aggregation over a configurable `window_size`; the processor emits one summary for each window and drops raw metrics to achieve storage reduction.
 
-**Results Summary:**
+**Processor Configuration (batch):** mode: `batch`, epsilon: 0.01, delta: 0.99, drop_original: false  
+**Processor Configuration (window):** mode: `window`, window_size: 5s, epsilon: 0.01, delta: 0.99, drop_original: true
+
+**Results Summary (batch mode):**
+
+| Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Output/Input Ratio | Avg Latency | P95 Latency | P99 Latency |
+|------------|-------------------|--------------|---------|-------------|--------------------|-------------|-------------|-------------|
+| 10,000 MPS  | 9,983 MPS         | 99.83%       | 44.00%  | 37.44 MB    | 1.02x (expansion)  | 1.72 ms     | 2.42 ms     | 2.77 ms     |
+| 20,000 MPS  | 20,000 MPS        | 100.00%      | 94.00%  | 36.27 MB    | 1.01x (expansion)  | 1.73 ms     | 2.59 ms     | 2.84 ms     |
+| 30,000 MPS  | 30,000 MPS        | 100.00%      | 140.00% | 38.00 MB    | 1.01x (expansion)  | 1.73 ms     | 2.62 ms     | 3.00 ms     |
+| 40,000 MPS  | 40,000 MPS        | 100.00%      | 185.00% | 36.89 MB    | 1.01x (expansion)  | 1.76 ms     | 2.61 ms     | 3.00 ms     |
+| 50,000 MPS  | 50,000 MPS        | 100.00%      | 221.00% | 36.86 MB    | 1.01x (expansion)  | 1.73 ms     | 2.48 ms     | 2.90 ms     |
+
+**Results Summary (window mode, 5s window):**
 
 | Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
 |------------|-------------------|--------------|---------|-------------|------------|-------------|-------------|-------------|
-| 10,000 MPS  | 9,998 MPS         | 99.98%       | 12.59%  | 34.29 MB    | 99.99%*    | 1.93 ms     | 2.81 ms     | 3.08 ms     |
-| 20,000 MPS  | 19,983 MPS        | 99.92%       | 22.13%  | 33.90 MB    | 99.99%*    | 1.85 ms     | 2.70 ms     | 2.96 ms     |
-| 30,000 MPS  | 29,996 MPS        | 99.99%       | 31.69%  | 33.52 MB    | 99.99%*    | 1.84 ms     | 2.57 ms     | 2.83 ms     |
-| 40,000 MPS  | 39,998 MPS        | 100.00%      | 41.43%  | 34.66 MB    | 99.99%*    | 1.79 ms     | 2.63 ms     | 2.95 ms     |
-| 50,000 MPS  | 49,988 MPS        | 99.98%       | 53.50%  | 34.27 MB    | 99.99%*    | 1.76 ms     | 2.54 ms     | 2.96 ms     |
+| 10,000 MPS  | 9,983 MPS         | 99.83%       | 13.00%  | 35.55 MB    | 99.99%*    | 1.91 ms     | 2.81 ms     | 2.94 ms     |
+| 20,000 MPS  | 20,000 MPS        | 100.00%      | 24.00%  | 35.91 MB    | 99.99%*    | 1.88 ms     | 2.65 ms     | 3.08 ms     |
+| 30,000 MPS  | 30,000 MPS        | 100.00%      | 34.00%  | 35.68 MB    | 99.99%*    | 1.92 ms     | 2.76 ms     | 3.10 ms     |
+| 40,000 MPS  | 39,991 MPS        | 99.98%       | 44.00%  | 35.16 MB    | 99.99%*    | 1.90 ms     | 2.65 ms     | 2.79 ms     |
+| 50,000 MPS  | 49,986 MPS        | 99.97%       | 55.00%  | 34.80 MB    | 99.99%*    | 1.79 ms     | 2.59 ms     | 3.02 ms     |
 
-\* **Data Loss Note**: The 99.99% "data loss" is expected and intentional. With `drop_original: true`, original metrics are dropped and only aggregated sketch summaries are emitted (24 sketch metrics vs millions of original metrics). This achieves the storage reduction goal.
+\* **Data Loss Note**: In window mode, the vast majority of raw metrics are intentionally dropped; each window produces a small number of CountSketch summary metrics.
 
 **Key Observations:**
-- **Throughput Scaling**: >99.9% accuracy, matching NOP performance
-- **CPU Usage**: 12.5-53.5% (2.6x higher than NOP due to sketch computation)
-- **Memory**: 33-35 MB (similar to NOP, efficient sketch storage)
-- **Storage Reduction**: 99.99% reduction (only sketch summaries emitted)
-- **Latency**: < 3ms despite additional processing
+- **Batch mode**: Near-1:1 output/input ratio (1.01–1.02x); suitable when you need both raw metrics and periodic sketch summaries.
+- **Window mode**: ~99.99% storage reduction; CPU remains moderate (≤55% at 50k MPS) with sub-3ms P99 latency.
 
 ### CountMinSketch Processor Benchmark
 
@@ -178,6 +188,12 @@ cd opentelemetry-collector-contrib-patch/cmd
 # CountSketch Processor
 ./bench.sh countsketchcol
 
+# CountSketch Processor (batch mode)
+./bench.sh countsketchcol-batch
+
+# CountSketch Processor (window mode)
+./bench.sh countsketchcol-window
+
 # CountMinSketch Processor
 ./bench.sh countminsketchcol
 
@@ -206,7 +222,8 @@ cd opentelemetry-collector-contrib-patch/cmd
 | Processor | CPU Usage | Memory Usage | Latency (Avg) | Latency (P99) | Storage Reduction / Ratio |
 |-----------|----------|--------------|---------------|---------------|---------------------------|
 | **NOP** | 20.82% | 37.85 MB | 1.63 ms | 2.86 ms | 0% (baseline) |
-| **CountSketch** | 53.50% (2.57x) | 34.27 MB (0.91x) | 1.76 ms (+0.13ms) | 2.96 ms (+0.10ms) | 99.99% |
+| **CountSketch (batch)** | 221.00% (10.62x) | 36.86 MB (0.97x) | 1.73 ms (+0.10ms) | 2.90 ms (+0.04ms) | 1.01x (expansion) |
+| **CountSketch (window)** | 55.00% (2.64x) | 34.80 MB (0.92x) | 1.79 ms (+0.16ms) | 3.02 ms (+0.16ms) | 99.99% |
 | **CountMinSketch** | 25.26% (1.21x) | 204.3 MB (5.40x) | 1.55 ms (-0.08ms) | 2.53 ms (-0.33ms) | 99.99% |
 | **KLL (batch)** | 46.00% (2.21x) | 44.02 MB (1.16x) | 1.48 ms (-0.15ms) | 2.63 ms (-0.23ms) | 1.30x (expansion) |
 | **KLL (window)** | 26.00% (1.25x) | 55.18 MB (1.46x) | 1.41 ms (-0.22ms) | 2.47 ms (-0.39ms) | 99.39% |
@@ -216,26 +233,26 @@ cd opentelemetry-collector-contrib-patch/cmd
 
 1. **CPU Efficiency**: 
    - CountMinSketch is most CPU-efficient (1.21x overhead vs NOP)
-   - CountSketch and KLL have similar CPU overhead (~2.5-2.6x) due to more complex sketch operations
-   - KLL provides quantile estimation with similar CPU cost to CountSketch
+   - CountSketch **window** and KLL **window** have moderate CPU overhead (2.6x and 1.25x respectively) with strong storage reduction
+   - CountSketch **batch** trades significantly higher CPU for keeping raw metrics plus sketch summaries
 
 2. **Memory Efficiency**:
-   - CountSketch is most memory-efficient (0.91x vs NOP)
-   - KLL uses similar memory to NOP (1.01x), making it very memory-efficient for quantile estimation
+   - CountSketch (both modes) is slightly more memory-efficient than NOP (~0.9–0.97x)
+   - KLL uses similar memory to NOP (1.0–1.5x), making it very memory-efficient for quantile estimation
    - CountMinSketch uses 5.40x more memory due to larger sketch data structures
 
 3. **Latency**:
-   - All processors maintain sub-3ms latency (P99 < 2.96ms)
+   - All processors maintain sub-3ms latency (P99 < 3.1ms)
    - KLL and CountMinSketch show slightly better latency than NOP at high loads
-   - CountSketch adds minimal latency overhead (~0.13ms)
+   - CountSketch batch/window add small additional latency but stay within tight SLOs
 
 4. **Storage Reduction**:
-   - CountSketch, CountMinSketch, and KLL all achieve 99.99% storage reduction
-   - Original metrics are dropped, only aggregated sketch/quantile summaries are emitted
-   - All three processors provide significant storage savings while maintaining query capabilities
+   - CountSketch (window), CountMinSketch, and KLL (window/legacy) all achieve ~99.99% storage reduction
+   - Batch modes (KLL, CountSketch) expand the stream slightly to add quantile or sketch metadata while keeping originals
 
 5. **Trade-offs**:
-   - **CountSketch**: Higher CPU (2.57x), lower memory (0.91x), good for CPU-constrained environments
+   - **CountSketch (batch)**: Very high CPU but minimal storage overhead; best when raw metrics and sketch summaries are both required.
+   - **CountSketch (window)**: Moderate CPU, low memory, and 99.99% reduction; good for heavy-hitter style analytics with strict storage budgets.
    - **CountMinSketch**: Lower CPU (1.21x), higher memory (5.40x), good for memory-abundant environments
    - **KLL (batch)**: Expansion mode (~1.30x output); quantiles appended to each batch; CPU 2.21x at 50k MPS
    - **KLL (window)**: Lower CPU (1.25x at 50k MPS), moderate memory; quantiles emitted per window; 99%+ storage reduction

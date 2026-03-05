@@ -37,7 +37,6 @@ func TestProcessorPassThrough(t *testing.T) {
 
 	// Verify the original metrics were passed through to the next consumer
 	assert.Equal(t, metrics, out)
-	assert.Equal(t, 1, len(next.AllMetrics()))
 }
 
 func TestProcessorFlushLogic(t *testing.T) {
@@ -65,6 +64,113 @@ func TestProcessorFlushLogic(t *testing.T) {
 	// Shutdown
 	err = proc.Shutdown(context.Background())
 	require.NoError(t, err)
+}
+
+func TestBatchModePassThroughAndSummary(t *testing.T) {
+	cfg := &Config{
+		Mode:       ModeBatch,
+		Epsilon:    0.01,
+		Delta:      0.99,
+		WindowSize: 0,
+		// Keep originals in batch mode so we can verify both paths.
+		DropOriginal: false,
+	}
+	require.NoError(t, cfg.Validate())
+
+	next := new(consumertest.MetricsSink)
+	proc := newProcessor(zap.NewNop(), cfg, next)
+
+	err := proc.Start(context.Background(), componenttest.NewNopHost())
+	require.NoError(t, err)
+
+	metrics := buildTestMetrics()
+
+	// Process a single batch.
+	out, err := proc.processMetrics(context.Background(), metrics)
+	require.NoError(t, err)
+
+	err = proc.Shutdown(context.Background())
+	require.NoError(t, err)
+
+	// In batch mode with DropOriginal=false, the original metrics should pass through.
+	assert.Equal(t, metrics, out)
+
+	// And the next consumer should have received at least one batch of
+	// CountSketch summary metrics (row + col).
+	sinkMetrics := next.AllMetrics()
+	require.GreaterOrEqual(t, len(sinkMetrics), 1)
+
+	foundRow := false
+	foundCol := false
+	for _, md := range sinkMetrics {
+		rms := md.ResourceMetrics()
+		for i := 0; i < rms.Len(); i++ {
+			sms := rms.At(i).ScopeMetrics()
+			for j := 0; j < sms.Len(); j++ {
+				ms := sms.At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					name := ms.At(k).Name()
+					if name == "countsketch_row" {
+						foundRow = true
+					}
+					if name == "countsketch_col" {
+						foundCol = true
+					}
+				}
+			}
+		}
+	}
+	assert.True(t, foundRow, "expected countsketch_row summary metric in batch mode")
+	assert.True(t, foundCol, "expected countsketch_col summary metric in batch mode")
+}
+
+func TestBatchModeDropOriginal(t *testing.T) {
+	cfg := &Config{
+		Mode:         ModeBatch,
+		Epsilon:      0.01,
+		Delta:        0.99,
+		WindowSize:   0,
+		DropOriginal: true,
+	}
+	require.NoError(t, cfg.Validate())
+
+	next := new(consumertest.MetricsSink)
+	proc := newProcessor(zap.NewNop(), cfg, next)
+
+	err := proc.Start(context.Background(), componenttest.NewNopHost())
+	require.NoError(t, err)
+
+	metrics := buildTestMetrics()
+
+	out, err := proc.processMetrics(context.Background(), metrics)
+	require.NoError(t, err)
+
+	err = proc.Shutdown(context.Background())
+	require.NoError(t, err)
+
+	// Originals should be dropped when DropOriginal=true.
+	assert.Equal(t, 0, out.ResourceMetrics().Len())
+
+	// But the next consumer should have received CountSketch summary metrics.
+	sinkMetrics := next.AllMetrics()
+	require.GreaterOrEqual(t, len(sinkMetrics), 1)
+}
+
+func TestConfigValidateModes(t *testing.T) {
+	cfg := &Config{
+		Mode:       ModeWindow,
+		Epsilon:    0.01,
+		Delta:      0.99,
+		WindowSize: 0,
+	}
+	// Window mode requires a positive window size.
+	assert.Error(t, cfg.Validate())
+
+	cfg.WindowSize = 2 * time.Second
+	assert.NoError(t, cfg.Validate())
+
+	cfg.Mode = InputMode("invalid")
+	assert.Error(t, cfg.Validate())
 }
 
 func buildTestMetrics() pmetric.Metrics {
