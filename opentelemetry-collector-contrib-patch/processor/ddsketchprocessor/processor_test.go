@@ -170,6 +170,8 @@ func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
 	sketchMetric := ms.At(0)
 	assert.Equal(t, "request_latency_ddsketch", sketchMetric.Name())
 	require.Equal(t, pmetric.MetricTypeDDSketch, sketchMetric.Type())
+	assert.Equal(t, pmetric.AggregationTemporalityDelta, sketchMetric.DDSketch().AggregationTemporality(),
+		"window mode must preserve AggregationTemporality from DDSketch inputs")
 
 	dps := sketchMetric.DDSketch().DataPoints()
 	require.Equal(t, 1, dps.Len())

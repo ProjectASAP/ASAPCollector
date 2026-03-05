@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	KLL "github.com/zzylol/go-kll"
@@ -20,10 +21,11 @@ type kllProcessor struct {
 	logger       *zap.Logger
 	nextConsumer consumer.Metrics
 
-	mu          sync.Mutex
-	windowStore map[string]*resourceWindow
-	stopCh      chan struct{}
-	doneCh      chan struct{}
+	mu            sync.Mutex
+	windowStore   map[string]*resourceWindow
+	stopCh        chan struct{}
+	doneCh        chan struct{}
+	windowStarted atomic.Bool // true once the window goroutine is running
 }
 
 type resourceWindow struct {
@@ -68,6 +70,7 @@ func (p *kllProcessor) Start(ctx context.Context, _ component.Host) error {
 		return nil
 	}
 	ticker := time.NewTicker(p.cfg.WindowDuration)
+	p.windowStarted.Store(true)
 	go func() {
 		defer func() {
 			ticker.Stop()
@@ -90,7 +93,7 @@ func (p *kllProcessor) Start(ctx context.Context, _ component.Host) error {
 }
 
 func (p *kllProcessor) Shutdown(ctx context.Context) error {
-	if p.cfg.Mode != ModeWindow {
+	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
 		return nil
 	}
 	close(p.stopCh)

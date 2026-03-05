@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DataDog/sketches-go/ddsketch"
@@ -27,10 +28,11 @@ type ddsketchProcessor struct {
 	nextConsumer consumer.Metrics
 
 	// window mode state
-	mu          sync.Mutex
-	windowStore map[string]*resourceWindow // keyed by resource attributes
-	stopCh      chan struct{}
-	doneCh      chan struct{}
+	mu             sync.Mutex
+	windowStore    map[string]*resourceWindow // keyed by resource attributes
+	stopCh         chan struct{}
+	doneCh         chan struct{}
+	windowStarted  atomic.Bool // true once the window goroutine is running
 }
 
 type resourceWindow struct {
@@ -48,6 +50,9 @@ type metricWindow struct {
 	description string
 	unit        string
 	series      map[string]*sketchSeries // attr key -> aggregated series
+	// temporality captures AggregationTemporality from DDSketch inputs so that
+	// flushWindow can preserve it on emitted DDSketch metrics.
+	temporality pmetric.AggregationTemporality
 }
 
 func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *ddsketchProcessor {
@@ -73,6 +78,7 @@ func (p *ddsketchProcessor) Start(ctx context.Context, _ component.Host) error {
 	}
 
 	ticker := time.NewTicker(p.cfg.WindowDuration)
+	p.windowStarted.Store(true)
 
 	go func() {
 		defer func() {
@@ -102,8 +108,9 @@ func (p *ddsketchProcessor) Start(ctx context.Context, _ component.Host) error {
 
 // Shutdown implements processor.Metrics.
 func (p *ddsketchProcessor) Shutdown(ctx context.Context) error {
-	// If window mode was never enabled, nothing to do.
-	if p.cfg.Mode != ModeWindow {
+	// Only wait if the window goroutine was actually started; avoids blocking
+	// forever when Start was never called.
+	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
 		return nil
 	}
 
@@ -545,6 +552,11 @@ func (p *ddsketchProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetri
 func (p *ddsketchProcessor) accumulateDDSketchMetric(sw *scopeWindow, metric pmetric.Metric) {
 	mw := p.getOrCreateMetricWindow(sw, metric)
 
+	// Preserve the original temporality; take the first non-Unspecified value seen.
+	if mw.temporality == pmetric.AggregationTemporalityUnspecified {
+		mw.temporality = metric.DDSketch().AggregationTemporality()
+	}
+
 	dps := metric.DDSketch().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
@@ -599,6 +611,11 @@ func (p *ddsketchProcessor) flushWindow(ctx context.Context) error {
 				tmp.SetName(mw.name)
 				tmp.SetDescription(mw.description)
 				tmp.SetUnit(mw.unit)
+				// Restore temporality on the template so buildMergedSketchMetric
+				// can propagate it to the emitted DDSketch metric.
+				if p.cfg.EmitDDSketch {
+					tmp.SetEmptyDDSketch().SetAggregationTemporality(mw.temporality)
+				}
 
 				var (
 					outMetric pmetric.Metric

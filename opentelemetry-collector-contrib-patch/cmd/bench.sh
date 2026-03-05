@@ -167,10 +167,12 @@ cleanup() {
 }
 trap cleanup SIGINT
 
-# Ensure clean state - kill collector by full path and free port
+# Ensure clean state - kill collector by full path and free ports
 pkill -f "$COLLECTOR_BIN" 2>/dev/null
-# Also kill any process using port 8888
+# Free port 8888 (collector telemetry) and 8889 (Prometheus exporter used by
+# correctness checks) to avoid reading stale metrics from a previous run.
 lsof -ti:8888 | xargs kill -9 2>/dev/null
+lsof -ti:8889 | xargs kill -9 2>/dev/null
 sleep 3
 
 # --- HELPER FUNCTIONS ---
@@ -379,6 +381,26 @@ for RATE in "${RATES[@]}"; do
         fi
     fi
 
+    # For CountSketch benchmarks, verify that countsketch_row and countsketch_col
+    # metadata metrics are present on the Prometheus endpoint.
+    if [[ "$PROCESSOR" == countsketchcol-batch ]] || [[ "$PROCESSOR" == countsketchcol-window ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
+            if [ -z "$PROM_OUTPUT" ]; then
+                echo "    [CS CHECK] FAIL — no output on port 8889"
+            else
+                ROW=$(echo "$PROM_OUTPUT" | awk '/^countsketch_row/ && !/^#/{found=1; exit} END{print found+0}')
+                COL=$(echo "$PROM_OUTPUT" | awk '/^countsketch_col/ && !/^#/{found=1; exit} END{print found+0}')
+                if [ "$ROW" = "1" ] && [ "$COL" = "1" ]; then
+                    echo "    [CS CHECK] PASS  countsketch_row and countsketch_col present"
+                else
+                    echo "    [CS CHECK] FAIL  missing metrics (row=$ROW col=$COL)"
+                fi
+            fi
+        else
+            echo "    [CS CHECK] SKIPPED — curl not available"
+        fi
+    fi
 
     # RECORD END METRICS (for delta calculations)
     CPU_END=$(get_metric_value "otelcol_process_cpu_seconds_total" "$TELEMETRY_URL")
