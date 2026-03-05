@@ -20,6 +20,8 @@ type countSketchProcessor struct {
 
 	config *Config
 
+	mode InputMode
+
 	// To prevent race conditions between 
 	// processMetrics (Write) and flushSketches (Reset)
 	mutex sync.Mutex
@@ -32,6 +34,12 @@ type countSketchProcessor struct {
 }
 
 func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *countSketchProcessor {
+	mode := cfg.Mode
+	if mode == "" {
+		// Preserve legacy behavior when mode is not set explicitly.
+		mode = ModeWindow
+	}
+
 	rowS, errRow := promsketch.NewCountSketchWithEstimates(cfg.Epsilon, cfg.Delta)
     if errRow != nil {
         logger.Error("Failed to init row sketch", zap.Error(errRow))
@@ -43,12 +51,16 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
     }
 
 	return &countSketchProcessor{
-		logger:       logger,
-		next:         next,
-		config:       cfg,
-		rowSketch:    rowS,
-		colSketch:    colS,
-		windowTicker: time.NewTicker(cfg.WindowSize),
+		logger: logger,
+		next:   next,
+		config: cfg,
+		mode:   mode,
+
+		rowSketch: rowS,
+		colSketch: colS,
+
+		// windowTicker is created lazily in Start when mode == window.
+		windowTicker: nil,
 		doneCh:       make(chan struct{}),
 	}
 }
@@ -58,9 +70,19 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 		zap.Float64("epsilon", p.config.Epsilon),
 		zap.Float64("delta", p.config.Delta),
 		zap.Duration("window", p.config.WindowSize),
+		zap.String("mode", string(p.mode)),
 	)
-	
-	go p.startWindowLoop()
+
+	// In batch mode we flush per ConsumeMetrics call and do not need a ticker.
+	if p.mode == ModeBatch {
+		return nil
+	}
+
+	// Window mode: start background window loop.
+	if p.config.WindowSize > 0 {
+		p.windowTicker = time.NewTicker(p.config.WindowSize)
+		go p.startWindowLoop()
+	}
 	return nil
 }
 
@@ -71,11 +93,11 @@ func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
 
 func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	p.mutex.Lock()
-	defer p.mutex.Unlock()
 
 	if p.rowSketch == nil || p.colSketch == nil {
-        return md, nil 
-    }
+		p.mutex.Unlock()
+		return md, nil
+	}
 
 	rm := md.ResourceMetrics()
 	for i := 0; i < rm.Len(); i++ {
@@ -102,11 +124,11 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 				case pmetric.MetricTypeGauge:
 					dps := metric.Gauge().DataPoints()
 					value = sumPoints(dps)
-				
+
 				case pmetric.MetricTypeSum:
 					dps := metric.Sum().DataPoints()
 					value = sumPoints(dps)
-					
+
 				case pmetric.MetricTypeHistogram:
 					dps := metric.Histogram().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
@@ -125,6 +147,13 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 				p.colSketch.UpdateString(hostKey, value)
 			}
 		}
+	}
+
+	p.mutex.Unlock()
+
+	// In batch mode, flush immediately after processing this batch.
+	if p.mode == ModeBatch {
+		p.flushBatch()
 	}
 
 	// If drop_original is true, return empty metrics (sketches will be emitted in flushSketches)
@@ -173,6 +202,42 @@ func (p *countSketchProcessor) startWindowLoop() {
 		case <-p.windowTicker.C:
 			p.flushSketches()
 		}
+	}
+}
+
+// flushBatch snapshots the current sketches, resets them, and emits summary
+// metrics immediately. It is used when the processor runs in batch mode.
+func (p *countSketchProcessor) flushBatch() {
+	p.mutex.Lock()
+
+	// Snapshot sketches before resetting.
+	rowSnapshot := p.rowSketch
+	colSnapshot := p.colSketch
+
+	// Reset sketches for the next batch.
+	if p.rowSketch != nil {
+		p.rowSketch.FreeCountSketch()
+	}
+	if p.colSketch != nil {
+		p.colSketch.FreeCountSketch()
+	}
+
+	var err error
+	p.rowSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
+	if err != nil {
+		p.logger.Error("Failed to reset row sketch", zap.Error(err))
+	}
+
+	p.colSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
+	if err != nil {
+		p.logger.Error("Failed to reset col sketch", zap.Error(err))
+	}
+
+	p.mutex.Unlock()
+
+	// Emit sketch metrics if we have snapshots.
+	if rowSnapshot != nil || colSnapshot != nil {
+		p.emitSketches(rowSnapshot, colSnapshot)
 	}
 }
 

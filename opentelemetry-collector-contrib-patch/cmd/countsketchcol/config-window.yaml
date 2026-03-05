@@ -1,0 +1,39 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  countsketch:
+    mode: window
+    epsilon: 0.01
+    delta: 0.99
+    window_size: 5s
+    drop_original: true
+
+  batch:
+    send_batch_size: 5000
+    timeout: 200ms
+
+exporters:
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [countsketch, batch]
+      exporters: [debug]
+
+
