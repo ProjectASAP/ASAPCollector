@@ -100,30 +100,41 @@ The CountMinSketch processor aggregates metrics into Count-Min Sketch data struc
 
 ### KLL Processor Benchmark
 
-The KLL (K-LL) processor aggregates metrics using the K-LL sketch algorithm for quantile estimation. It provides approximate quantile calculations with configurable precision.
+The KLL (K-LL) processor aggregates metrics using the K-LL sketch algorithm for quantile estimation. It supports two modes (aligned with DDSketch):
 
-**Processor Configuration:**
-- k: 256, quantiles: [0.5, 0.99], drop_original: true
+- **`batch`**: per-batch aggregation and flush; the processor keeps the original gauge series and appends quantile metrics (e.g. `_p50`, `_p90`, `_p99`).
+- **`window`**: tumbling-window aggregation with a configurable `window_duration`; the processor accumulates raw samples per series and emits only quantile metrics at each window boundary.
 
-**Results Summary:**
+The benchmark runs a **correctness check** after each scenario (scrape port 8889): quantile metrics exist, monotonicity `p50 <= p90 <= p99`, and values within `[0.99, 507]` (Zipf range).
+
+**Processor Configuration (batch):** mode: `batch`, k: 256, quantiles: [0.5, 0.9, 0.99], drop_original: false  
+**Processor Configuration (window):** mode: `window`, window_duration: 10s, k: 256, quantiles: [0.5, 0.9, 0.99]
+
+**Results Summary (batch mode):**
+
+| Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Output/Input Ratio | Avg Latency | P95 Latency | P99 Latency |
+|------------|-------------------|--------------|---------|-------------|--------------------|-------------|-------------|-------------|
+| 10,000 MPS  | 9,991 MPS         | 99.91%       | 10.00%  | 42.36 MB    | 1.30x (expansion)  | 1.50 ms     | 2.01 ms     | 2.45 ms     |
+| 20,000 MPS  | 20,000 MPS        | 100.00%      | 19.00%  | 43.04 MB    | 1.30x (expansion)  | 1.55 ms     | 2.12 ms     | 2.67 ms     |
+| 30,000 MPS  | 30,000 MPS        | 100.00%      | 28.00%  | 43.51 MB    | 1.30x (expansion)  | 1.51 ms     | 2.09 ms     | 2.65 ms     |
+| 40,000 MPS  | 39,983 MPS        | 99.96%       | 38.00%  | 44.14 MB    | 1.30x (expansion)  | 1.54 ms     | 2.17 ms     | 2.74 ms     |
+| 50,000 MPS  | 49,983 MPS        | 99.97%       | 46.00%  | 44.02 MB    | 1.30x (expansion)  | 1.48 ms     | 1.94 ms     | 2.63 ms     |
+
+**Results Summary (window mode, 10s window):**
 
 | Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
 |------------|-------------------|--------------|---------|-------------|------------|-------------|-------------|-------------|
-| 10,000 MPS  | 9,983 MPS         | 99.83%       | 11.13%  | 38.18 MB    | 99.99%*    | ~1.6 ms     | ~2.1 ms     | ~2.7 ms     |
-| 20,000 MPS  | 20,000 MPS        | 100.00%      | 20.87%  | 38.01 MB    | 99.99%*    | ~1.6 ms     | ~2.0 ms     | ~2.6 ms     |
-| 30,000 MPS  | 30,000 MPS        | 100.00%      | 31.66%  | 38.45 MB    | 99.99%*    | ~1.6 ms     | ~2.0 ms     | ~2.5 ms     |
-| 40,000 MPS  | 40,000 MPS        | 100.00%      | 42.40%  | 38.95 MB    | 99.99%*    | 1.56 ms     | 2.32 ms     | 2.67 ms     |
-| 50,000 MPS  | 50,000 MPS        | 100.00%      | 52.49%  | 38.40 MB    | 99.99%*    | 1.51 ms     | 2.07 ms     | 2.50 ms     |
+| 10,000 MPS  | 9,998 MPS         | 99.98%       | 6.00%   | 47.92 MB    | 97.00%*    | 1.47 ms     | 1.85 ms     | 2.15 ms     |
+| 20,000 MPS  | 20,000 MPS        | 100.00%      | 11.00%  | 49.30 MB    | 98.50%*    | 1.45 ms     | 1.89 ms     | 2.50 ms     |
+| 30,000 MPS  | 29,996 MPS        | 99.99%       | 16.00%  | 53.34 MB    | 98.99%*    | 1.41 ms     | 1.82 ms     | 2.13 ms     |
+| 40,000 MPS  | 39,983 MPS        | 99.96%       | 21.00%  | 56.69 MB    | 99.24%*    | 1.44 ms     | 1.92 ms     | 2.37 ms     |
+| 50,000 MPS  | 49,983 MPS        | 99.97%       | 26.00%  | 55.18 MB    | 99.39%*    | 1.41 ms     | 1.83 ms     | 2.47 ms     |
 
-\* **Data Loss Note**: The 99.99% "data loss" is expected and intentional. With `drop_original: true`, original metrics are dropped and only aggregated quantile summaries are emitted. This achieves the storage reduction goal.
+\* **Data Loss Note**: Expected in window mode: raw samples are compressed into quantile metrics per window.
 
 **Key Observations:**
-- **Throughput Scaling**: >99.9% accuracy, matching NOP performance
-- **CPU Usage**: 11.1-52.5% (2.5x higher than NOP at 50k MPS, similar to CountSketch)
-- **Memory**: 38-39 MB (similar to NOP, efficient sketch storage)
-- **Storage Reduction**: 99.99% reduction (only quantile summaries emitted)
-- **Latency**: Sub-3ms (P99 < 2.7ms) across all loads
-- **Quantile Estimation**: Provides approximate quantiles (0.5, 0.99) with configurable precision
+- **Batch mode**: Output/input ratio ~1.30x (one original + three quantiles per series); throughput and latency similar to other sketch processors.
+- **Window mode**: High “data loss” by design; lower CPU (6–26%) and moderate memory (48–57 MB); correctness check (p50 ≤ p90 ≤ p99, bounds) passes for all rates.
 
 ### DDSketch Processor Benchmark
 
@@ -170,8 +181,14 @@ cd opentelemetry-collector-contrib-patch/cmd
 # CountMinSketch Processor
 ./bench.sh countminsketchcol
 
-# KLL Processor
+# KLL Processor (legacy single config)
 ./bench.sh kll
+
+# KLL Processor (batch mode)
+./bench.sh kll-batch
+
+# KLL Processor (window mode)
+./bench.sh kll-window
 
 # DDSketch Processor (batch mode)
 ./bench.sh ddsketchcol-batch
@@ -186,12 +203,14 @@ cd opentelemetry-collector-contrib-patch/cmd
 
 ### Performance Comparison at 50,000 MPS
 
-| Processor | CPU Usage | Memory Usage | Latency (Avg) | Latency (P99) | Storage Reduction |
-|-----------|----------|--------------|---------------|---------------|-------------------|
+| Processor | CPU Usage | Memory Usage | Latency (Avg) | Latency (P99) | Storage Reduction / Ratio |
+|-----------|----------|--------------|---------------|---------------|---------------------------|
 | **NOP** | 20.82% | 37.85 MB | 1.63 ms | 2.86 ms | 0% (baseline) |
 | **CountSketch** | 53.50% (2.57x) | 34.27 MB (0.91x) | 1.76 ms (+0.13ms) | 2.96 ms (+0.10ms) | 99.99% |
 | **CountMinSketch** | 25.26% (1.21x) | 204.3 MB (5.40x) | 1.55 ms (-0.08ms) | 2.53 ms (-0.33ms) | 99.99% |
-| **KLL** | 52.49% (2.52x) | 38.40 MB (1.01x) | 1.51 ms (-0.12ms) | 2.50 ms (-0.36ms) | 99.99% |
+| **KLL (batch)** | 46.00% (2.21x) | 44.02 MB (1.16x) | 1.48 ms (-0.15ms) | 2.63 ms (-0.23ms) | 1.30x (expansion) |
+| **KLL (window)** | 26.00% (1.25x) | 55.18 MB (1.46x) | 1.41 ms (-0.22ms) | 2.47 ms (-0.39ms) | 99.39% |
+| **KLL** (legacy) | 52.49% (2.52x) | 38.40 MB (1.01x) | 1.51 ms (-0.12ms) | 2.50 ms (-0.36ms) | 99.99% |
 
 ### Key Insights
 
@@ -218,8 +237,10 @@ cd opentelemetry-collector-contrib-patch/cmd
 5. **Trade-offs**:
    - **CountSketch**: Higher CPU (2.57x), lower memory (0.91x), good for CPU-constrained environments
    - **CountMinSketch**: Lower CPU (1.21x), higher memory (5.40x), good for memory-abundant environments
-   - **KLL**: Higher CPU (2.52x), similar memory (1.01x), provides quantile estimation with excellent latency
-   - All processors maintain excellent throughput and latency characteristics while achieving 99.99% storage reduction
+   - **KLL (batch)**: Expansion mode (~1.30x output); quantiles appended to each batch; CPU 2.21x at 50k MPS
+   - **KLL (window)**: Lower CPU (1.25x at 50k MPS), moderate memory; quantiles emitted per window; 99%+ storage reduction
+   - **KLL** (legacy): Higher CPU (2.52x), similar memory (1.01x), provides quantile estimation with excellent latency
+   - All processors maintain excellent throughput and latency characteristics
 
 **Generated Files:**
 Results are saved to `otel_collector_benchmark/benchmark_results/{processor}/`:

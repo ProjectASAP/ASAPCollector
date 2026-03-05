@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countminsketchcol|kll|ddsketchcol-batch|ddsketchcol-window]
+# Usage: ./bench.sh [nopcol|countsketchcol|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTRIB_PATCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -10,17 +10,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol|kll|ddsketchcol-batch|ddsketchcol-window]"
+    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countminsketchcol|kll|ddsketchcol-batch|ddsketchcol-window)
+    nopcol|countsketchcol|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countminsketchcol, kll, ddsketchcol-batch, ddsketchcol-window"
+        echo "Valid options: nopcol, countsketchcol, countminsketchcol, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window"
         exit 1
         ;;
 esac
@@ -35,6 +35,16 @@ if [ "$PROCESSOR" = "kll" ]; then
     CONFIG_FILE="$PROCESSOR_DIR/config-bench.yaml"
     COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"
     TELEMETRY_URL="http://localhost:8888/metrics"
+elif [ "$PROCESSOR" = "kll-batch" ] || [ "$PROCESSOR" = "kll-window" ]; then
+    KLL_DIR="$SCRIPT_DIR/kll"
+    BUILDER_CONFIG="$KLL_DIR/build-config.yaml"
+    COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    if [ "$PROCESSOR" = "kll-batch" ]; then
+        CONFIG_FILE="$KLL_DIR/config.yaml"
+    else
+        CONFIG_FILE="$KLL_DIR/config-window.yaml"
+    fi
 elif [ "$PROCESSOR" = "ddsketchcol-batch" ] || [ "$PROCESSOR" = "ddsketchcol-window" ]; then
     DD_DIR="$SCRIPT_DIR/ddsketchcol"
     BUILDER_CONFIG="$DD_DIR/builder-config.yaml"
@@ -78,6 +88,12 @@ case "$PROCESSOR" in
         ;;
     kll)
         PROCESSOR_NAME="KLL PROCESSOR"
+        ;;
+    kll-batch)
+        PROCESSOR_NAME="KLL PROCESSOR (batch mode)"
+        ;;
+    kll-window)
+        PROCESSOR_NAME="KLL PROCESSOR (window mode)"
         ;;
     ddsketchcol-batch)
         PROCESSOR_NAME="DDSKETCH PROCESSOR (batch mode)"
@@ -317,6 +333,33 @@ for RATE in "${RATES[@]}"; do
             fi
         else
             echo "    [SKETCH CHECK] SKIPPED — curl not available"
+        fi
+    fi
+
+    # For KLL benchmarks, perform correctness check on emitted quantiles (_p50, _p90, _p99)
+    if [[ "$PROCESSOR" == kll-batch ]] || [[ "$PROCESSOR" == kll-window ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
+            if [ -z "$PROM_OUTPUT" ]; then
+                echo "    [KLL CHECK] FAIL — no output on port 8889"
+            else
+                P50=$(echo "$PROM_OUTPUT" | awk '/_p50[^0-9]/ && !/^#/{print $NF; exit}')
+                P90=$(echo "$PROM_OUTPUT" | awk '/_p90[^0-9]/ && !/^#/{print $NF; exit}')
+                P99=$(echo "$PROM_OUTPUT" | awk '/_p99[^0-9]/ && !/^#/{print $NF; exit}')
+                if [ -z "$P50" ] || [ -z "$P90" ] || [ -z "$P99" ]; then
+                    echo "    [KLL CHECK] FAIL — quantile metrics missing (p50=$P50 p90=$P90 p99=$P99)"
+                else
+                    awk -v p50="$P50" -v p90="$P90" -v p99="$P99" 'BEGIN {
+                        ok = (p50 <= p90) && (p90 <= p99) && (p50 >= 0.99) && (p99 <= 507)
+                        if (ok)
+                            printf "    [KLL CHECK] PASS  p50=%.2f  p90=%.2f  p99=%.2f\n", p50, p90, p99
+                        else
+                            printf "    [KLL CHECK] FAIL  p50=%.2f  p90=%.2f  p99=%.2f  (monotonicity or bounds violated)\n", p50, p90, p99
+                    }'
+                fi
+            fi
+        else
+            echo "    [KLL CHECK] SKIPPED — curl not available"
         fi
     fi
 
