@@ -8,11 +8,18 @@ require (
 )
 
 require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/collector/consumer v1.48.0 // indirect
+	go.opentelemetry.io/collector/consumer v1.53.0 // indirect
+	go.opentelemetry.io/collector/consumer/consumertest v0.147.0 // indirect
+	go.opentelemetry.io/collector/consumer/xconsumer v0.147.0 // indirect
+	go.opentelemetry.io/collector/pdata/pprofile v0.147.0 // indirect
 	go.opentelemetry.io/collector/pipeline v1.48.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 require (
@@ -22,8 +29,8 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/zzylol/go-kll v0.0.1
-	go.opentelemetry.io/collector/featuregate v1.48.0 // indirect
-	go.opentelemetry.io/collector/pdata v1.48.0 // indirect
+	go.opentelemetry.io/collector/featuregate v1.53.0 // indirect
+	go.opentelemetry.io/collector/pdata v1.53.0 // indirect
 	go.opentelemetry.io/collector/processor v1.48.0
 	go.opentelemetry.io/collector/processor/processorhelper v0.142.0
 	go.opentelemetry.io/otel v1.39.0 // indirect
