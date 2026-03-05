@@ -53,6 +53,8 @@ The CountSketch processor aggregates metrics into Count Sketch data structures f
 - **`batch`**: per-batch aggregation and flush; the processor keeps (or drops) original metrics based on `drop_original` and emits CountSketch summary metadata per batch.
 - **`window`**: tumbling-window aggregation over a configurable `window_size`; the processor emits one summary for each window and drops raw metrics to achieve storage reduction.
 
+After each CountSketch benchmark scenario, the central `bench.sh` script also runs a **basic CountSketch correctness check** by scraping the Prometheus exporter on port `8889` and verifying that both `countsketch_row` and `countsketch_col` metadata metrics are present; if either metric is missing, the scenario is flagged as a failure.
+
 **Processor Configuration (batch):** mode: `batch`, epsilon: 0.01, delta: 0.99, drop_original: false  
 **Processor Configuration (window):** mode: `window`, window_size: 5s, epsilon: 0.01, delta: 0.99, drop_original: true
 
@@ -159,6 +161,8 @@ In both modes, the collector receives standard OTLP Gauge metrics from this load
 - Monotonicity: `p50 <= p90 <= p99`.
 - Bounds: all quantiles fall within `[0.99, 507]`, matching the Zipf generator’s effective range and DDSketch’s configured relative accuracy.
 
+**Status:** At present, only a **partial window-mode table** (10k and 20k MPS) is recorded below for DDSketch; batch-mode and higher-rate window-mode rows will be added once those runs are captured.
+
 **Processor Configuration (window mode example):**
 - mode: `window`
 - window_duration: `10s` (for the benchmark; `60s` is a common production value)
@@ -166,7 +170,7 @@ In both modes, the collector receives standard OTLP Gauge metrics from this load
 - emit_ddsketch: `false`
 - quantiles: `[0.5, 0.9, 0.99]`
 
-**Results Summary (window mode, 10s window):**
+**Results Summary (window mode, 10s window — partial):**
 
 | Target Rate | Actual Throughput | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
 |------------|-------------------|---------|-------------|-----------|-------------|-------------|-------------|
@@ -218,6 +222,8 @@ cd opentelemetry-collector-contrib-patch/cmd
 ## Comparative Analysis
 
 ### Performance Comparison at 50,000 MPS
+
+**Note:** DDSketch 50k MPS results will be added to this table once dedicated runs are captured; until then, only the other sketch processors are compared here.
 
 | Processor | CPU Usage | Memory Usage | Latency (Avg) | Latency (P99) | Storage Reduction / Ratio |
 |-----------|----------|--------------|---------------|---------------|---------------------------|
