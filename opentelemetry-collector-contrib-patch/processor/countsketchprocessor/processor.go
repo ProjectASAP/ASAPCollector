@@ -3,6 +3,7 @@ package countsketchprocessor
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/froot-netsys/promsketch"
@@ -29,8 +30,9 @@ type countSketchProcessor struct {
 	rowSketch *promsketch.CountSketch // Tracks Metric Names
 	colSketch *promsketch.CountSketch // Tracks Host Names
 
-	windowTicker *time.Ticker
-	doneCh       chan struct{}
+	stopCh        chan struct{}
+	doneCh        chan struct{}
+	windowStarted atomic.Bool // true once the window goroutine is running
 }
 
 func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *countSketchProcessor {
@@ -58,10 +60,8 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 
 		rowSketch: rowS,
 		colSketch: colS,
-
-		// windowTicker is created lazily in Start when mode == window.
-		windowTicker: nil,
-		doneCh:       make(chan struct{}),
+		stopCh:   make(chan struct{}),
+		doneCh:   make(chan struct{}),
 	}
 }
 
@@ -78,17 +78,34 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 		return nil
 	}
 
-	// Window mode: start background window loop.
-	if p.config.WindowSize > 0 {
-		p.windowTicker = time.NewTicker(p.config.WindowSize)
-		go p.startWindowLoop()
+	// Window mode: start background window loop if a positive window is configured.
+	if p.config.WindowSize <= 0 {
+		return nil
 	}
+
+	ticker := time.NewTicker(p.config.WindowSize)
+	p.windowStarted.Store(true)
+	go p.startWindowLoop(ctx, ticker)
+
 	return nil
 }
 
 func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
-	close(p.doneCh)
-	return nil
+	// Only wait if the window goroutine was actually started; avoids blocking
+	// forever when Start was never called.
+	if p.mode != ModeWindow || !p.windowStarted.Load() {
+		return nil
+	}
+
+	// Signal the goroutine and wait for it to finish (or context cancellation).
+	close(p.stopCh)
+
+	select {
+	case <-p.doneCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
@@ -177,8 +194,10 @@ func sumPoints(dps pmetric.NumberDataPointSlice) float64 {
 	return total
 }
 
-func (p *countSketchProcessor) startWindowLoop() {
+func (p *countSketchProcessor) startWindowLoop(ctx context.Context, ticker *time.Ticker) {
 	defer func() {
+		ticker.Stop()
+
 		p.mutex.Lock()
 
 		if p.rowSketch != nil {
@@ -192,14 +211,20 @@ func (p *countSketchProcessor) startWindowLoop() {
         }
 
 		p.mutex.Unlock()
+
+		close(p.doneCh)
 	}()
 
 	for {
 		select {
-		case <-p.doneCh:
+		case <-ctx.Done():
+			p.flushSketches()
+			return
+		case <-p.stopCh:
+			p.flushSketches()
 			return
 
-		case <-p.windowTicker.C:
+		case <-ticker.C:
 			p.flushSketches()
 		}
 	}

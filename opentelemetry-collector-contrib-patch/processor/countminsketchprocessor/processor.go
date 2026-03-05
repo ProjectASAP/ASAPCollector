@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/approx-telemetry/sketchlib-go/common"
@@ -61,8 +62,9 @@ type windowedCountMinSketchProcessor struct {
 	activeWindowSketches map[string]*windowSketch
 	mu                   sync.RWMutex
 
-	ticker *time.Ticker
-	done   chan struct{}
+	stopCh        chan struct{}
+	doneCh        chan struct{}
+	windowStarted atomic.Bool
 }
 
 func newProcessor(
@@ -75,7 +77,8 @@ func newProcessor(
 		logger:               logger,
 		nextConsumer:         next,
 		activeWindowSketches: make(map[string]*windowSketch),
-		done:                 make(chan struct{}),
+		stopCh:               make(chan struct{}),
+		doneCh:               make(chan struct{}),
 	}
 }
 
@@ -90,19 +93,40 @@ func (p *windowedCountMinSketchProcessor) Start(
 	host component.Host,
 ) error {
 	p.logger.Info(
-		"Starting windowed Count-Min Sketch processor (New API)",
+		"Starting Count-Min Sketch processor",
+		zap.String("mode", string(p.cfg.Mode)),
 		zap.Duration("window_interval", p.cfg.WindowInterval),
 	)
 
-	p.ticker = time.NewTicker(p.cfg.WindowInterval)
+	// Batch mode does not require a background ticker; we flush per-batch.
+	if p.cfg.Mode != ModeWindow {
+		return nil
+	}
+
+	// Window mode: start background window loop if a positive window is configured.
+	if p.cfg.WindowInterval <= 0 {
+		return nil
+	}
+
+	ticker := time.NewTicker(p.cfg.WindowInterval)
+	p.windowStarted.Store(true)
 
 	go func() {
+		defer func() {
+			ticker.Stop()
+			close(p.doneCh)
+		}()
+
 		for {
 			select {
-			case <-p.ticker.C:
+			case <-ctx.Done():
 				p.emitWindowAndReset()
-			case <-p.done:
 				return
+			case <-p.stopCh:
+				p.emitWindowAndReset()
+				return
+			case <-ticker.C:
+				p.emitWindowAndReset()
 			}
 		}
 	}()
@@ -113,11 +137,21 @@ func (p *windowedCountMinSketchProcessor) Start(
 func (p *windowedCountMinSketchProcessor) Shutdown(
 	ctx context.Context,
 ) error {
-	if p.ticker != nil {
-		p.ticker.Stop()
+	// Only wait if the window goroutine was actually started; avoids blocking
+	// forever when Start was never called.
+	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
+		return nil
 	}
-	close(p.done)
-	return nil
+
+	// Signal the goroutine and wait for it to finish (or context cancellation).
+	close(p.stopCh)
+
+	select {
+	case <-p.doneCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (p *windowedCountMinSketchProcessor) Capabilities() consumer.Capabilities {
@@ -135,6 +169,25 @@ func (p *windowedCountMinSketchProcessor) ConsumeMetrics(
 	md pmetric.Metrics,
 ) (pmetric.Metrics, error) {
 
+	switch p.cfg.Mode {
+	case ModeBatch:
+		return p.consumeBatch(md), nil
+	case ModeWindow:
+		p.accumulateIntoWindow(md)
+		if !p.cfg.DropOriginal {
+			return md, nil
+		}
+		return pmetric.NewMetrics(), nil
+	default:
+		if p.logger != nil {
+			p.logger.Error("countminsketchprocessor: unknown mode, dropping metrics", zap.Any("mode", p.cfg.Mode))
+		}
+		return pmetric.NewMetrics(), nil
+	}
+}
+
+// accumulateIntoWindow ingests metrics into the active window sketches (window mode).
+func (p *windowedCountMinSketchProcessor) accumulateIntoWindow(md pmetric.Metrics) {
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
@@ -145,12 +198,31 @@ func (p *windowedCountMinSketchProcessor) ConsumeMetrics(
 			}
 		}
 	}
+}
 
-	if !p.cfg.DropOriginal {
-		return md, nil
+// consumeBatch aggregates a single batch into sketches and returns output metrics
+// according to DropOriginal semantics (batch mode).
+func (p *windowedCountMinSketchProcessor) consumeBatch(md pmetric.Metrics) pmetric.Metrics {
+	// Reuse the window-style accumulation for this batch, then reset.
+	p.accumulateIntoWindow(md)
+
+	sketches := p.buildWindowMetricsAndReset()
+	if sketches.ResourceMetrics().Len() == 0 {
+		if p.cfg.DropOriginal {
+			return pmetric.NewMetrics()
+		}
+		return md
 	}
 
-	return pmetric.NewMetrics(), nil
+	if p.cfg.DropOriginal {
+		return sketches
+	}
+
+	// Expansion mode: keep originals and append sketch summaries.
+	out := pmetric.NewMetrics()
+	md.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
+	sketches.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
+	return out
 }
 
 func (p *windowedCountMinSketchProcessor) ingestMetric(
@@ -226,11 +298,13 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 // ─────────────────────────────────────────────────────────────
 //
 
-func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
+// buildWindowMetricsAndReset snapshots the current window sketches, resets the
+// state, and returns a Metrics payload containing sketch summaries.
+func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 	p.mu.Lock()
 	if len(p.activeWindowSketches) == 0 {
 		p.mu.Unlock()
-		return
+		return pmetric.NewMetrics()
 	}
 
 	// Snapshot and reset
@@ -266,6 +340,15 @@ func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
 		}
 
 		dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
+	}
+
+	return md
+}
+
+func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
+	md := p.buildWindowMetricsAndReset()
+	if md.ResourceMetrics().Len() == 0 {
+		return
 	}
 
 	if err := p.nextConsumer.ConsumeMetrics(context.Background(), md); err != nil {

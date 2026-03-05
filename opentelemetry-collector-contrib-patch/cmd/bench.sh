@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]
+# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTRIB_PATCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -10,17 +10,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]"
+    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window)
+    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window"
+        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window"
         exit 1
         ;;
 esac
@@ -54,6 +54,16 @@ elif [ "$PROCESSOR" = "countsketchcol-batch" ] || [ "$PROCESSOR" = "countsketchc
         CONFIG_FILE="$CS_DIR/config-batch.yaml"
     else
         CONFIG_FILE="$CS_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "countminsketchcol-batch" ] || [ "$PROCESSOR" = "countminsketchcol-window" ]; then
+    CM_DIR="$SCRIPT_DIR/countminsketchcol"
+    BUILDER_CONFIG="$CM_DIR/builder-config.yaml"
+    COLLECTOR_BIN="$CM_DIR/dist/countminsketchcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    if [ "$PROCESSOR" = "countminsketchcol-batch" ]; then
+        CONFIG_FILE="$CM_DIR/config-batch.yaml"
+    else
+        CONFIG_FILE="$CM_DIR/config-window.yaml"
     fi
 elif [ "$PROCESSOR" = "ddsketchcol-batch" ] || [ "$PROCESSOR" = "ddsketchcol-window" ]; then
     DD_DIR="$SCRIPT_DIR/ddsketchcol"
@@ -99,8 +109,11 @@ case "$PROCESSOR" in
     countsketchcol-window)
         PROCESSOR_NAME="COUNTSKETCH PROCESSOR (window mode)"
         ;;
-    countminsketchcol)
-        PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR"
+    countminsketchcol-batch)
+        PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR (batch mode)"
+        ;;
+    countminsketchcol-window)
+        PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR (window mode)"
         ;;
     kll)
         PROCESSOR_NAME="KLL PROCESSOR"
@@ -399,6 +412,26 @@ for RATE in "${RATES[@]}"; do
             fi
         else
             echo "    [CS CHECK] SKIPPED — curl not available"
+        fi
+    fi
+
+    # For CountMinSketch benchmarks, verify that countmin_sketch metrics are present
+    # on the Prometheus endpoint.
+    if [[ "$PROCESSOR" == countminsketchcol-batch ]] || [[ "$PROCESSOR" == countminsketchcol-window ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
+            if [ -z "$PROM_OUTPUT" ]; then
+                echo "    [CMS CHECK] FAIL — no output on port 8889"
+            else
+                CMS=$(echo "$PROM_OUTPUT" | awk '/^countmin_sketch/ && !/^#/{found=1; exit} END{print found+0}')
+                if [ "$CMS" = "1" ]; then
+                    echo "    [CMS CHECK] PASS  countmin_sketch metrics present"
+                else
+                    echo "    [CMS CHECK] FAIL  missing countmin_sketch metrics"
+                fi
+            fi
+        else
+            echo "    [CMS CHECK] SKIPPED — curl not available"
         fi
     fi
 

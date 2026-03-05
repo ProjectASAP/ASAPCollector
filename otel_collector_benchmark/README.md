@@ -86,12 +86,20 @@ After each CountSketch benchmark scenario, the central `bench.sh` script also ru
 
 ### CountMinSketch Processor Benchmark
 
-The CountMinSketch processor aggregates metrics into Count-Min Sketch data structures with window-based aggregation. With `drop_original: true`, it drops original metrics and emits only sketch summaries for storage reduction.
+The CountMinSketch processor aggregates metrics into Count-Min Sketch data structures for approximate frequency estimation. It now supports:
 
-**Processor Configuration:**
-- rows: 5, columns: 1000, seed: 1, window_interval: 10s, drop_original: true
+- **`batch`**: per-batch aggregation and flush; the processor keeps (or drops) original metrics based on `drop_original` and emits a sketch metric per batch.
+- **`window`**: tumbling-window aggregation over a configurable `window_interval`; the processor emits one sketch per window and typically drops raw metrics to achieve storage reduction.
 
-**Results Summary:**
+**Processor Configuration (batch example):**
+- mode: `batch`, metric_name: `countmin_sketch`, rows: 5, columns: 2000, group_by: `[]`, drop_original: false
+
+> **Note:** Batch-mode benchmarks for CountMinSketch have not yet been captured in this environment because the private `github.com/approx-telemetry/sketchlib-go` module is not accessible without GitHub credentials. Once runs are available, they should be added here using the same format as the CountSketch and KLL batch-mode tables (including an Output/Input Ratio column).
+
+**Processor Configuration (window example):**
+- mode: `window`, metric_name: `countmin_sketch`, rows: 5, columns: 1000, window_interval: 10s, drop_original: true
+
+**Results Summary (window mode, 10s window — legacy run):**
 
 | Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
 |------------|-------------------|--------------|---------|-------------|------------|-------------|-------------|-------------|
@@ -103,7 +111,7 @@ The CountMinSketch processor aggregates metrics into Count-Min Sketch data struc
 
 \* **Data Loss Note**: The 99.99% "data loss" is expected and intentional. With `drop_original: true`, original metrics are dropped and only aggregated sketch summaries are emitted. This achieves the storage reduction goal.
 
-**Key Observations:**
+**Key Observations (window mode):**
 - **Throughput Scaling**: >99.9% accuracy, matching NOP performance
 - **CPU Usage**: 6.4-25.3% (1.21x higher than NOP at 50k MPS)
 - **Memory**: 201-204 MB (5.4x higher than NOP due to sketch data structures)
@@ -198,8 +206,9 @@ cd opentelemetry-collector-contrib-patch/cmd
 # CountSketch Processor (window mode)
 ./bench.sh countsketchcol-window
 
-# CountMinSketch Processor
-./bench.sh countminsketchcol
+# CountMinSketch Processor (batch/window)
+./bench.sh countminsketchcol-batch
+./bench.sh countminsketchcol-window
 
 # KLL Processor (legacy single config)
 ./bench.sh kll
