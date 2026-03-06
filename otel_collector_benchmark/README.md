@@ -169,7 +169,11 @@ In both modes, the collector receives standard OTLP Gauge metrics from this load
 - Monotonicity: `p50 <= p90 <= p99`.
 - Bounds: all quantiles fall within `[0.99, 507]`, matching the Zipf generator’s effective range and DDSketch’s configured relative accuracy.
 
-**Status:** At present, only a **partial window-mode table** (10k and 20k MPS) is recorded below for DDSketch; batch-mode and higher-rate window-mode rows will be added once those runs are captured.
+**Processor Configuration (batch mode example):**
+- mode: `batch`
+- relative_accuracy: `0.01`
+- emit_ddsketch: `false`
+- quantiles: `[0.5, 0.9, 0.99]`
 
 **Processor Configuration (window mode example):**
 - mode: `window`
@@ -178,12 +182,27 @@ In both modes, the collector receives standard OTLP Gauge metrics from this load
 - emit_ddsketch: `false`
 - quantiles: `[0.5, 0.9, 0.99]`
 
-**Results Summary (window mode, 10s window — partial):**
+**Results Summary (batch mode):**
 
-| Target Rate | Actual Throughput | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
-|------------|-------------------|---------|-------------|-----------|-------------|-------------|-------------|
-| 10,000 MPS | 19,983 MPS        | 32.7%   | 218.9 MB    | ~99%      | 1.27 ms     | 1.83 ms     | 1.94 ms     |
-| 20,000 MPS | 39,991 MPS        | 17.2%   | 215.2 MB    | 99.24%    | 1.18 ms     | 1.66 ms     | 1.77 ms     |
+| Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Output/Input Ratio | Avg Latency | P95 Latency | P99 Latency |
+|------------|-------------------|--------------|---------|-------------|--------------------|-------------|-------------|-------------|
+| 10,000 MPS | 10,000 MPS        | 100.00%      | 16.98%  | 207.05 MB   | 4.00x (expansion)  | 1.48 ms     | 1.94 ms     | 2.05 ms     |
+| 20,000 MPS | 19,983 MPS        | 99.92%       | 31.63%  | 208.21 MB   | 4.00x (expansion)  | 1.47 ms     | 1.96 ms     | 2.24 ms     |
+| 30,000 MPS | 29,996 MPS        | 99.99%       | 46.39%  | 206.72 MB   | 4.00x (expansion)  | 1.49 ms     | 1.86 ms     | 2.01 ms     |
+| 40,000 MPS | 40,000 MPS        | 100.00%      | 61.40%  | 208.91 MB   | 4.00x (expansion)  | 1.45 ms     | 1.86 ms     | 2.37 ms     |
+| 50,000 MPS | 50,000 MPS        | 100.00%      | 78.38%  | 206.22 MB   | 4.00x (expansion)  | 1.44 ms     | 1.79 ms     | 1.98 ms     |
+
+**Results Summary (window mode, 10s window):**
+
+| Target Rate | Actual Throughput | Throughput % | Avg CPU | Peak Memory | Data Loss* | Avg Latency | P95 Latency | P99 Latency |
+|------------|-------------------|--------------|---------|-------------|------------|-------------|-------------|-------------|
+| 10,000 MPS | 9,998 MPS         | 99.98%       | 5.43%   | 202.71 MB   | 96.99%*    | 1.47 ms     | 1.91 ms     | 2.16 ms     |
+| 20,000 MPS | 19,993 MPS        | 99.97%       | 9.98%   | 203.16 MB   | 98.49%*    | 1.43 ms     | 1.85 ms     | 1.96 ms     |
+| 30,000 MPS | 29,998 MPS        | 99.99%       | 13.87%  | 208.19 MB   | 98.99%*    | 1.42 ms     | 1.81 ms     | 2.13 ms     |
+| 40,000 MPS | 39,995 MPS        | 99.99%       | 17.86%  | 205.61 MB   | 99.24%*    | 1.39 ms     | 1.78 ms     | 1.94 ms     |
+| 50,000 MPS | 49,996 MPS        | 99.99%       | 21.61%  | 208.42 MB   | 99.39%*    | 1.40 ms     | 1.80 ms     | 2.00 ms     |
+
+**Throughput note:** Actual throughput can exceed the target rate because the load generator sends metrics in batches; the collector may receive bursts that average to a higher MPS over the measurement window.
 
 \* **Data Loss Note:** As with the other sketch processors, this “data loss” is expected. For each host/metric series, millions of raw samples per minute are compressed into a handful of quantile metrics per window.
 
@@ -226,13 +245,34 @@ cd opentelemetry-collector-contrib-patch/cmd
 ./bench.sh ddsketchcol-window
 ```
 
-**Note:** All processors use the centralized benchmark script located at `opentelemetry-collector-contrib-patch/cmd/bench.sh`. If you need to build processors that use private modules, ensure `GOPRIVATE` and `GONOSUMDB` environment variables are set appropriately before running the benchmark script.
+**Note:** All processors use the centralized benchmark script located at `opentelemetry-collector-contrib-patch/cmd/bench.sh`.
+
+### Building with private modules (CountMinSketch)
+
+The CountMinSketch processor depends on the private module `github.com/approx-telemetry/sketchlib-go`. To build and run CountMinSketch benchmarks (`countminsketchcol-batch`, `countminsketchcol-window`), you must have access to that repository and configure Go to fetch it:
+
+1. **Set Go environment variables** so the private module is not proxied via the public checksum database:
+   ```bash
+   export GOPRIVATE="github.com/approx-telemetry/*"
+   export GONOSUMDB="github.com/approx-telemetry/*"
+   ```
+
+2. **Authenticate with GitHub** so `go mod download` can fetch the private module. For example:
+   - Use SSH for GitHub: `git config --global url."git@github.com:".insteadOf "https://github.com/"`
+   - Or use a personal access token: `git config --global url."https://YOUR_TOKEN@github.com/".insteadOf "https://github.com/"`
+
+3. Run the benchmark as usual; the builder will resolve the private dependency when building the CountMinSketch collector:
+   ```bash
+   cd opentelemetry-collector-contrib-patch/cmd
+   ./bench.sh countminsketchcol-batch
+   ./bench.sh countminsketchcol-window
+   ```
+
+Once the build succeeds, you can capture batch-mode results and add them to the CountMinSketch section using the same table format as CountSketch and KLL (including the Output/Input Ratio column).
 
 ## Comparative Analysis
 
 ### Performance Comparison at 50,000 MPS
-
-**Note:** DDSketch 50k MPS results will be added to this table once dedicated runs are captured; until then, only the other sketch processors are compared here.
 
 | Processor | CPU Usage | Memory Usage | Latency (Avg) | Latency (P99) | Storage Reduction / Ratio |
 |-----------|----------|--------------|---------------|---------------|---------------------------|
@@ -240,6 +280,8 @@ cd opentelemetry-collector-contrib-patch/cmd
 | **CountSketch (batch)** | 221.00% (10.62x) | 36.86 MB (0.97x) | 1.73 ms (+0.10ms) | 2.90 ms (+0.04ms) | 1.01x (expansion) |
 | **CountSketch (window)** | 55.00% (2.64x) | 34.80 MB (0.92x) | 1.79 ms (+0.16ms) | 3.02 ms (+0.16ms) | 99.99% |
 | **CountMinSketch** | 25.26% (1.21x) | 204.3 MB (5.40x) | 1.55 ms (-0.08ms) | 2.53 ms (-0.33ms) | 99.99% |
+| **DDSketch (batch)** | 78.38% (3.76x) | 206.22 MB (5.45x) | 1.44 ms (-0.19ms) | 1.98 ms (-0.88ms) | 4.00x (expansion) |
+| **DDSketch (window)** | 21.61% (1.04x) | 208.42 MB (5.51x) | 1.40 ms (-0.23ms) | 2.00 ms (-0.86ms) | 99.39% |
 | **KLL (batch)** | 46.00% (2.21x) | 44.02 MB (1.16x) | 1.48 ms (-0.15ms) | 2.63 ms (-0.23ms) | 1.30x (expansion) |
 | **KLL (window)** | 26.00% (1.25x) | 55.18 MB (1.46x) | 1.41 ms (-0.22ms) | 2.47 ms (-0.39ms) | 99.39% |
 | **KLL** (legacy) | 52.49% (2.52x) | 38.40 MB (1.01x) | 1.51 ms (-0.12ms) | 2.50 ms (-0.36ms) | 99.99% |

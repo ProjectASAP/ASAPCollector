@@ -16,6 +16,8 @@ processors:
     timeout: 200ms
 
 exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
   debug:
     verbosity: basic
 
@@ -33,6 +35,6 @@ service:
     metrics:
       receivers: [otlp]
       processors: [countsketch, batch]
-      exporters: [debug]
+      exporters: [prometheus, debug]
 
 

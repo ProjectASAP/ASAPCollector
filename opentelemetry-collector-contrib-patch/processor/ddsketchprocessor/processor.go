@@ -78,9 +78,9 @@ func (p *ddsketchProcessor) Start(ctx context.Context, _ component.Host) error {
 	}
 
 	ticker := time.NewTicker(p.cfg.WindowDuration)
-	p.windowStarted.Store(true)
 
 	go func() {
+		p.windowStarted.Store(true) // set only after goroutine is running so Shutdown never waits on doneCh before it is closed
 		defer func() {
 			ticker.Stop()
 			close(p.doneCh)
