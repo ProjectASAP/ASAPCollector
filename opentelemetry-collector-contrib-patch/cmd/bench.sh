@@ -212,6 +212,7 @@ get_memory_mb() {
 }
 
 # --- MAIN LOOP ---
+CORRECTNESS_FAILED=0
 for RATE in "${RATES[@]}"; do
     echo ""
     echo ">>> [SCENARIO] Testing Target Load: ${RATE} MPS"
@@ -346,20 +347,24 @@ for RATE in "${RATES[@]}"; do
             PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
             if [ -z "$PROM_OUTPUT" ]; then
                 echo "    [SKETCH CHECK] FAIL — no output on port 8889"
+                CORRECTNESS_FAILED=1
             else
                 P50=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.5"/ && !/^#/{print $NF; exit}')
                 P90=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.9"/ && !/^#/{print $NF; exit}')
                 P99=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.99"/ && !/^#/{print $NF; exit}')
                 if [ -z "$P50" ] || [ -z "$P90" ] || [ -z "$P99" ]; then
                     echo "    [SKETCH CHECK] FAIL — quantile metrics missing (p50=$P50 p90=$P90 p99=$P99)"
+                    CORRECTNESS_FAILED=1
                 else
-                    awk -v p50="$P50" -v p90="$P90" -v p99="$P99" 'BEGIN {
+                    SKETCH_MSG=$(awk -v p50="$P50" -v p90="$P90" -v p99="$P99" 'BEGIN {
                         ok = (p50 <= p90) && (p90 <= p99) && (p50 >= 0.99) && (p99 <= 507)
                         if (ok)
                             printf "    [SKETCH CHECK] PASS  p50=%.2f  p90=%.2f  p99=%.2f\n", p50, p90, p99
                         else
                             printf "    [SKETCH CHECK] FAIL  p50=%.2f  p90=%.2f  p99=%.2f  (monotonicity or bounds violated)\n", p50, p90, p99
-                    }'
+                    }')
+                    echo "$SKETCH_MSG"
+                    echo "$SKETCH_MSG" | grep -q "FAIL" && CORRECTNESS_FAILED=1
                 fi
             fi
         else
@@ -373,20 +378,24 @@ for RATE in "${RATES[@]}"; do
             PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
             if [ -z "$PROM_OUTPUT" ]; then
                 echo "    [KLL CHECK] FAIL — no output on port 8889"
+                CORRECTNESS_FAILED=1
             else
                 P50=$(echo "$PROM_OUTPUT" | awk '/_p50[^0-9]/ && !/^#/{print $NF; exit}')
                 P90=$(echo "$PROM_OUTPUT" | awk '/_p90[^0-9]/ && !/^#/{print $NF; exit}')
                 P99=$(echo "$PROM_OUTPUT" | awk '/_p99[^0-9]/ && !/^#/{print $NF; exit}')
                 if [ -z "$P50" ] || [ -z "$P90" ] || [ -z "$P99" ]; then
                     echo "    [KLL CHECK] FAIL — quantile metrics missing (p50=$P50 p90=$P90 p99=$P99)"
+                    CORRECTNESS_FAILED=1
                 else
-                    awk -v p50="$P50" -v p90="$P90" -v p99="$P99" 'BEGIN {
+                    KLL_MSG=$(awk -v p50="$P50" -v p90="$P90" -v p99="$P99" 'BEGIN {
                         ok = (p50 <= p90) && (p90 <= p99) && (p50 >= 0.99) && (p99 <= 507)
                         if (ok)
                             printf "    [KLL CHECK] PASS  p50=%.2f  p90=%.2f  p99=%.2f\n", p50, p90, p99
                         else
                             printf "    [KLL CHECK] FAIL  p50=%.2f  p90=%.2f  p99=%.2f  (monotonicity or bounds violated)\n", p50, p90, p99
-                    }'
+                    }')
+                    echo "$KLL_MSG"
+                    echo "$KLL_MSG" | grep -q "FAIL" && CORRECTNESS_FAILED=1
                 fi
             fi
         else
@@ -401,6 +410,7 @@ for RATE in "${RATES[@]}"; do
             PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
             if [ -z "$PROM_OUTPUT" ]; then
                 echo "    [CS CHECK] FAIL — no output on port 8889"
+                CORRECTNESS_FAILED=1
             else
                 ROW=$(echo "$PROM_OUTPUT" | awk '/^countsketch_row/ && !/^#/{found=1; exit} END{print found+0}')
                 COL=$(echo "$PROM_OUTPUT" | awk '/^countsketch_col/ && !/^#/{found=1; exit} END{print found+0}')
@@ -408,6 +418,7 @@ for RATE in "${RATES[@]}"; do
                     echo "    [CS CHECK] PASS  countsketch_row and countsketch_col present"
                 else
                     echo "    [CS CHECK] FAIL  missing metrics (row=$ROW col=$COL)"
+                    CORRECTNESS_FAILED=1
                 fi
             fi
         else
@@ -422,12 +433,14 @@ for RATE in "${RATES[@]}"; do
             PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
             if [ -z "$PROM_OUTPUT" ]; then
                 echo "    [CMS CHECK] FAIL — no output on port 8889"
+                CORRECTNESS_FAILED=1
             else
                 CMS=$(echo "$PROM_OUTPUT" | awk '/^countmin_sketch/ && !/^#/{found=1; exit} END{print found+0}')
                 if [ "$CMS" = "1" ]; then
                     echo "    [CMS CHECK] PASS  countmin_sketch metrics present"
                 else
                     echo "    [CMS CHECK] FAIL  missing countmin_sketch metrics"
+                    CORRECTNESS_FAILED=1
                 fi
             fi
         else
@@ -532,3 +545,7 @@ echo ""
 echo "=========================================================="
 echo "All benchmarks completed. Results in $RESULT_DIR"
 echo "=========================================================="
+if [ "${CORRECTNESS_FAILED:-0}" = "1" ]; then
+    echo "One or more correctness checks failed. Exiting with code 1."
+    exit 1
+fi
