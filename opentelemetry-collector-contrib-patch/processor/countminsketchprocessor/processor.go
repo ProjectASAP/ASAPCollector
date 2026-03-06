@@ -320,6 +320,17 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 	now := pcommon.NewTimestampFromTime(time.Now())
 
 	for aggregationKey, ws := range windowSnapshot {
+		ws.mu.Lock()
+		rows := ws.cms.Rows
+		cols := ws.cms.Cols
+		sampleCount := ws.sampleCount
+		payload, err := serializeCMS(ws.cms)
+		ws.mu.Unlock()
+		if err != nil {
+			p.logger.Error("Failed to serialize CMS", zap.Error(err))
+			continue
+		}
+
 		m := sm.Metrics().AppendEmpty()
 		m.SetName(p.cfg.MetricName)
 		m.SetUnit("1")
@@ -329,16 +340,9 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 		dp.SetTimestamp(now)
 
 		dp.Attributes().PutStr("aggregation_key", aggregationKey)
-		dp.Attributes().PutInt("rows", int64(ws.cms.Rows))
-		dp.Attributes().PutInt("cols", int64(ws.cms.Cols))
-		dp.Attributes().PutInt("sample_count", int64(ws.sampleCount))
-
-		payload, err := serializeCMS(ws.cms)
-		if err != nil {
-			p.logger.Error("Failed to serialize CMS", zap.Error(err))
-			continue
-		}
-
+		dp.Attributes().PutInt("rows", int64(rows))
+		dp.Attributes().PutInt("cols", int64(cols))
+		dp.Attributes().PutInt("sample_count", int64(sampleCount))
 		dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
 	}
 

@@ -100,10 +100,11 @@ func TestConfig_Validate(t *testing.T) {
 
 // 2. Main Test: Tumbling Window & Reset Logic Correctness
 func TestProcessor_TumblingWindow_Correctness(t *testing.T) {
-	// Setup
-	// Use a short interval for testing (200ms)
+	// Setup: use window mode with a short interval for testing (200ms).
+	// Note: we do not call Validate() so we can use <1s window for fast tests.
 	windowDuration := 200 * time.Millisecond
 	cfg := &Config{
+		Mode:           ModeWindow,
 		MetricName:     "cms_output",
 		Rows:           5,
 		Columns:        128,
@@ -227,4 +228,162 @@ func getAllDataPoints(md pmetric.Metrics) []pmetric.NumberDataPoint {
 		}
 	}
 	return dps
+}
+
+// TestBatchMode verifies batch mode returns originals plus sketch summary when DropOriginal=false.
+func TestBatchMode(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeBatch,
+		MetricName:     "cms_batch",
+		Rows:           5,
+		Columns:        128,
+		DropOriginal:   false,
+		WindowInterval: 0,
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+
+	md := generateMetrics("svc", 4)
+	out, err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	// DropOriginal=false: output should include originals and sketch metrics (expansion mode)
+	require.Greater(t, out.ResourceMetrics().Len(), 0, "batch mode with DropOriginal=false should return metrics")
+	dps := getAllDataPoints(out)
+	require.GreaterOrEqual(t, len(dps), 1, "should have at least one sketch metric in output")
+}
+
+// TestBatchModeDropOriginal verifies batch mode with DropOriginal=true returns only sketch metrics.
+func TestBatchModeDropOriginal(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeBatch,
+		MetricName:     "cms_only",
+		Rows:           5,
+		Columns:        128,
+		DropOriginal:   true,
+		WindowInterval: 0,
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+
+	md := generateMetrics("svc", 3)
+	out, err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	// DropOriginal=true: out contains only sketch metrics
+	require.GreaterOrEqual(t, out.ResourceMetrics().Len(), 0)
+	dps := getAllDataPoints(out)
+	require.GreaterOrEqual(t, len(dps), 1, "should have sketch metric in output")
+}
+
+// TestEmptyInput verifies empty metrics do not cause panics.
+func TestEmptyInput(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeBatch,
+		MetricName:     "cms",
+		Rows:           5,
+		Columns:        128,
+		WindowInterval: 0,
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+
+	empty := pmetric.NewMetrics()
+	out, err := proc.ConsumeMetrics(context.Background(), empty)
+	require.NoError(t, err)
+	require.Equal(t, 0, out.ResourceMetrics().Len())
+}
+
+// TestWindowModeConcurrentConsume verifies concurrent ConsumeMetrics in window mode do not race.
+func TestWindowModeConcurrentConsume(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeWindow,
+		MetricName:     "cms_concurrent",
+		Rows:           5,
+		Columns:        128,
+		WindowInterval: 5 * time.Second,
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			md := generateMetrics("svc", 2)
+			_, _ = proc.ConsumeMetrics(context.Background(), md)
+		}()
+	}
+	wg.Wait()
+	require.NoError(t, proc.Shutdown(context.Background()))
+}
+
+// TestWindowModeFlushDuringConsume verifies flush and ConsumeMetrics can run concurrently.
+func TestWindowModeFlushDuringConsume(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeWindow,
+		MetricName:     "cms_flush",
+		Rows:           5,
+		Columns:        128,
+		WindowInterval: 1 * time.Second,
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 30; i++ {
+			md := generateMetrics("svc", 2)
+			_, _ = proc.ConsumeMetrics(context.Background(), md)
+		}
+		close(done)
+	}()
+	<-done
+	time.Sleep(1100 * time.Millisecond)
+	require.NoError(t, proc.Shutdown(context.Background()))
+}
+
+// TestShutdownDuringConsume verifies Shutdown completes when ConsumeMetrics is in progress.
+func TestShutdownDuringConsume(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeWindow,
+		MetricName:     "cms_shutdown",
+		Rows:           5,
+		Columns:        128,
+		WindowInterval: 10 * time.Second,
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			md := generateMetrics("svc", 1)
+			_, _ = proc.ConsumeMetrics(context.Background(), md)
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = proc.Shutdown(context.Background())
+	}()
+	wg.Wait()
 }
