@@ -2,10 +2,12 @@ package kllprocessor
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
@@ -208,5 +210,165 @@ func TestConfigValidate(t *testing.T) {
 
 	cfg.Quantiles = []float64{0.5, 0.99}
 	assert.NoError(t, cfg.Validate())
+}
+
+// TestEmptyInput verifies that empty metrics do not cause panics and produce no output in window mode.
+func TestEmptyInput(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.WindowDuration = 60 * 60 * 24
+	cfg.Quantiles = []float64{0.5}
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	empty := pmetric.NewMetrics()
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), empty))
+	assert.Len(t, sink.AllMetrics(), 0)
+
+	require.NoError(t, proc.flushWindow(context.Background()))
+	assert.Len(t, sink.AllMetrics(), 0)
+}
+
+// TestEmptyResourceMetrics verifies ResourceMetrics with zero ScopeMetrics is handled in batch mode.
+func TestEmptyResourceMetrics(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeBatch
+	cfg.Quantiles = []float64{0.5}
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := pmetric.NewMetrics()
+	md.ResourceMetrics().AppendEmpty()
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+	require.Len(t, sink.AllMetrics(), 1)
+}
+
+// TestMixedIntDoubleGauge verifies both Int and Double gauge datapoints are accepted when ReadAsInt is true.
+func TestMixedIntDoubleGauge(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeBatch
+	cfg.Quantiles = []float64{0.5}
+	cfg.ReadAsInt = true
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("mixed")
+	m.SetUnit("ms")
+	g := m.SetEmptyGauge()
+	g.DataPoints().AppendEmpty().SetIntValue(10)
+	g.DataPoints().AppendEmpty().SetIntValue(20)
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+	p50 := getQuantileFromOutput(t, out[0], "mixed_p50")
+	require.NotNil(t, p50)
+	assert.GreaterOrEqual(t, *p50, 9.0)
+	assert.LessOrEqual(t, *p50, 21.0)
+}
+
+// TestWindowModeConcurrentConsume verifies concurrent ConsumeMetrics calls in window mode do not race.
+func TestWindowModeConcurrentConsume(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.WindowDuration = 60 * 60 * 24
+	cfg.Quantiles = []float64{0.5}
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			md := pmetric.NewMetrics()
+			rm := md.ResourceMetrics().AppendEmpty()
+			sm := rm.ScopeMetrics().AppendEmpty()
+			m := sm.Metrics().AppendEmpty()
+			m.SetName("latency")
+			m.SetEmptyGauge().DataPoints().AppendEmpty().SetDoubleValue(10)
+			_ = proc.ConsumeMetrics(context.Background(), md)
+		}()
+	}
+	wg.Wait()
+
+	require.NoError(t, proc.flushWindow(context.Background()))
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+}
+
+// TestWindowModeFlushDuringConsume verifies flush and ConsumeMetrics can run concurrently without race.
+func TestWindowModeFlushDuringConsume(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.WindowDuration = 1 // 1ns ticker for rapid flushes
+	cfg.Quantiles = []float64{0.5}
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+	defer func() { _ = proc.Shutdown(context.Background()) }()
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 50; i++ {
+			md := pmetric.NewMetrics()
+			rm := md.ResourceMetrics().AppendEmpty()
+			sm := rm.ScopeMetrics().AppendEmpty()
+			m := sm.Metrics().AppendEmpty()
+			m.SetName("latency")
+			m.SetEmptyGauge().DataPoints().AppendEmpty().SetDoubleValue(float64(i))
+			_ = proc.ConsumeMetrics(context.Background(), md)
+		}
+		close(done)
+	}()
+	<-done
+}
+
+// TestShutdownDuringConsume verifies Shutdown completes even when ConsumeMetrics is in progress.
+func TestShutdownDuringConsume(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.WindowDuration = 60 * 60 * 24
+	cfg.Quantiles = []float64{0.5}
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			md := pmetric.NewMetrics()
+			rm := md.ResourceMetrics().AppendEmpty()
+			sm := rm.ScopeMetrics().AppendEmpty()
+			m := sm.Metrics().AppendEmpty()
+			m.SetName("x")
+			m.SetEmptyGauge().DataPoints().AppendEmpty().SetDoubleValue(float64(i))
+			_ = proc.ConsumeMetrics(context.Background(), md)
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = proc.Shutdown(context.Background())
+	}()
+	wg.Wait()
 }
 

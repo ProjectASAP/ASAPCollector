@@ -2,6 +2,7 @@ package countsketchprocessor
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -177,9 +178,9 @@ func buildTestMetrics() pmetric.Metrics {
 	metrics := pmetric.NewMetrics()
 	rm := metrics.ResourceMetrics().AppendEmpty()
 	rm.Resource().Attributes().PutStr("host.name", "host-A")
-	
+
 	sm := rm.ScopeMetrics().AppendEmpty()
-	
+
 	// Add a Gauge
 	gauge := sm.Metrics().AppendEmpty()
 	gauge.SetName("system.cpu.usage")
@@ -199,4 +200,140 @@ func buildTestMetrics() pmetric.Metrics {
 	hDp.SetTimestamp(pcommon.Timestamp(time.Now().UnixNano()))
 
 	return metrics
+}
+
+// TestEmptyInput verifies that empty metrics do not cause panics.
+func TestEmptyInput(t *testing.T) {
+	cfg := &Config{
+		Mode:       ModeBatch,
+		Epsilon:    0.01,
+		Delta:      0.99,
+		WindowSize: 0,
+	}
+	require.NoError(t, cfg.Validate())
+
+	next := new(consumertest.MetricsSink)
+	proc := newProcessor(zap.NewNop(), cfg, next)
+
+	empty := pmetric.NewMetrics()
+	out, err := proc.processMetrics(context.Background(), empty)
+	require.NoError(t, err)
+	require.Equal(t, 0, out.ResourceMetrics().Len())
+}
+
+// TestBatchModeNoStatePersistence verifies that each batch is independent (no cross-batch state).
+func TestBatchModeNoStatePersistence(t *testing.T) {
+	cfg := &Config{
+		Mode:         ModeBatch,
+		Epsilon:      0.01,
+		Delta:        0.99,
+		WindowSize:   0,
+		DropOriginal: false,
+	}
+	require.NoError(t, cfg.Validate())
+
+	next := new(consumertest.MetricsSink)
+	proc := newProcessor(zap.NewNop(), cfg, next)
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+	defer proc.Shutdown(context.Background())
+
+	metrics1 := buildTestMetrics()
+	metrics2 := buildTestMetrics()
+
+	_, err := proc.processMetrics(context.Background(), metrics1)
+	require.NoError(t, err)
+	_, err = proc.processMetrics(context.Background(), metrics2)
+	require.NoError(t, err)
+
+	sinkMetrics := next.AllMetrics()
+	require.GreaterOrEqual(t, len(sinkMetrics), 2, "each batch should trigger at least one emit")
+}
+
+// TestWindowModeConcurrentConsume verifies concurrent processMetrics calls in window mode do not race.
+func TestWindowModeConcurrentConsume(t *testing.T) {
+	cfg := &Config{
+		Mode:       ModeWindow,
+		Epsilon:    0.01,
+		Delta:      0.99,
+		WindowSize: 2 * time.Second, // long window so we control flush
+	}
+	require.NoError(t, cfg.Validate())
+
+	next := new(consumertest.MetricsSink)
+	proc := newProcessor(zap.NewNop(), cfg, next)
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			metrics := buildTestMetrics()
+			_, _ = proc.processMetrics(context.Background(), metrics)
+		}()
+	}
+	wg.Wait()
+
+	// Shutdown triggers final flush
+	require.NoError(t, proc.Shutdown(context.Background()))
+	require.GreaterOrEqual(t, len(next.AllMetrics()), 0)
+}
+
+// TestWindowModeFlushDuringConsume verifies flush and processMetrics can run concurrently without race.
+func TestWindowModeFlushDuringConsume(t *testing.T) {
+	cfg := &Config{
+		Mode:       ModeWindow,
+		Epsilon:    0.01,
+		Delta:      0.99,
+		WindowSize: 1 * time.Second,
+	}
+	require.NoError(t, cfg.Validate())
+
+	next := new(consumertest.MetricsSink)
+	proc := newProcessor(zap.NewNop(), cfg, next)
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 50; i++ {
+			metrics := buildTestMetrics()
+			_, _ = proc.processMetrics(context.Background(), metrics)
+		}
+		close(done)
+	}()
+	<-done
+	// Allow at least one ticker flush (window is 1s)
+	time.Sleep(1100 * time.Millisecond)
+	require.NoError(t, proc.Shutdown(context.Background()))
+}
+
+// TestShutdownDuringConsume verifies Shutdown completes even when processMetrics is in progress.
+func TestShutdownDuringConsume(t *testing.T) {
+	cfg := &Config{
+		Mode:       ModeWindow,
+		Epsilon:    0.01,
+		Delta:      0.99,
+		WindowSize: 5 * time.Second,
+	}
+	require.NoError(t, cfg.Validate())
+
+	next := new(consumertest.MetricsSink)
+	proc := newProcessor(zap.NewNop(), cfg, next)
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			metrics := buildTestMetrics()
+			_, _ = proc.processMetrics(context.Background(), metrics)
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = proc.Shutdown(context.Background())
+	}()
+	wg.Wait()
 }

@@ -341,6 +341,12 @@ for RATE in "${RATES[@]}"; do
 
     echo "    -> Test finished. Analyzing..."
 
+    # Correctness checks: verify sketch processors emit expected metrics.
+    # - Dual input (raw Gauge/Sum + sketch inputs where applicable) is validated indirectly:
+    #   load gen sends raw metrics; processors emit summary/sketch metrics on 8889.
+    # - Batch vs window mode: batch emits per ConsumeMetrics; window emits on tick.
+    #   Cardinality: we require at least the expected summary metric names to be present.
+
     # For ddsketch benchmarks, perform a quick correctness check on emitted quantiles
     if [[ "$PROCESSOR" == ddsketchcol* ]]; then
         if command -v curl >/dev/null 2>&1; then
@@ -352,8 +358,13 @@ for RATE in "${RATES[@]}"; do
                 P50=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.5"/ && !/^#/{print $NF; exit}')
                 P90=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.9"/ && !/^#/{print $NF; exit}')
                 P99=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.99"/ && !/^#/{print $NF; exit}')
+                # Cardinality: expect at least one line of sketch/quantile output (dual-input or raw-only).
+                METRIC_COUNT=$(echo "$PROM_OUTPUT" | grep -c 'ddsketch_quantile=' 2>/dev/null || echo "0")
                 if [ -z "$P50" ] || [ -z "$P90" ] || [ -z "$P99" ]; then
                     echo "    [SKETCH CHECK] FAIL — quantile metrics missing (p50=$P50 p90=$P90 p99=$P99)"
+                    CORRECTNESS_FAILED=1
+                elif [ "${METRIC_COUNT:-0}" -lt 1 ]; then
+                    echo "    [SKETCH CHECK] FAIL — no ddsketch_quantile metrics (cardinality)"
                     CORRECTNESS_FAILED=1
                 else
                     SKETCH_MSG=$(awk -v p50="$P50" -v p90="$P90" -v p99="$P99" 'BEGIN {

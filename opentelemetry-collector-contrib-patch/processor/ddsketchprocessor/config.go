@@ -76,10 +76,10 @@ func (cfg *Config) validate() error {
 		if len(cfg.Quantiles) == 0 {
 			return fmt.Errorf("at least one quantile must be configured")
 		}
-		for _, q := range cfg.Quantiles {
-			if q < 0 || q > 1 {
-				return fmt.Errorf("quantiles must be within [0,1], got %v", q)
-			}
+	}
+	for _, q := range cfg.Quantiles {
+		if q < 0 || q > 1 {
+			return fmt.Errorf("quantiles must be within [0,1], got %v", q)
 		}
 	}
 	return nil
