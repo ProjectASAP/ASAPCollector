@@ -3,12 +3,12 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllpr
 go 1.25.4
 
 require (
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.48.0
 	go.opentelemetry.io/collector/component/componenttest v0.142.0
 	go.opentelemetry.io/collector/consumer v1.48.0
 	go.opentelemetry.io/collector/consumer/consumertest v0.142.0
-// github.com/approx-telemetry/sketchlib-go v0.0.0-20251210141108-c7166ba019c2
 )
 
 require (
@@ -33,7 +33,6 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
-	github.com/zzylol/go-kll v0.0.1
 	go.opentelemetry.io/collector/featuregate v1.48.0 // indirect
 	go.opentelemetry.io/collector/pdata v1.48.0
 	go.opentelemetry.io/collector/processor v1.48.0

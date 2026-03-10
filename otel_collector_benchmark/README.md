@@ -94,7 +94,7 @@ The CountMinSketch processor aggregates metrics into Count-Min Sketch data struc
 **Processor Configuration (batch example):**
 - mode: `batch`, metric_name: `countmin_sketch`, rows: 5, columns: 2000, transmit_sketch: `true`, group_by: `[]`, drop_original: false
 
-> **Note:** Batch-mode benchmarks for CountMinSketch have not yet been captured in this environment because the private `github.com/approx-telemetry/sketchlib-go` module is not accessible without GitHub credentials. Once runs are available, they should be added here using the same format as the CountSketch and KLL batch-mode tables (including an Output/Input Ratio column).
+> **Note:** Batch-mode benchmarks for CountMinSketch have not yet been captured in this environment. Once runs are available, they should be added here using the same format as the CountSketch and KLL batch-mode tables (including an Output/Input Ratio column).
 
 **Processor Configuration (window example):**
 - mode: `window`, metric_name: `countmin_sketch`, rows: 5, columns: 1000, transmit_sketch: `true`, window_interval: 10s, drop_original: true
@@ -247,21 +247,22 @@ cd opentelemetry-collector-contrib-patch/cmd
 
 **Note:** All processors use the centralized benchmark script located at `opentelemetry-collector-contrib-patch/cmd/bench.sh`.
 
-### Building with private modules (CountMinSketch)
+### Building CountMinSketch
 
-The CountMinSketch processor depends on the private module `github.com/approx-telemetry/sketchlib-go`. To build and run CountMinSketch benchmarks (`countminsketchcol-batch`, `countminsketchcol-window`), you must have access to that repository and configure Go to fetch it:
+The CountMinSketch processor depends on `github.com/ProjectASAP/sketchlib-go`. To build and run CountMinSketch benchmarks (`countminsketchcol-batch`, `countminsketchcol-window`), make that module available to Go, for example with a local replace to `../sketchlib-go`:
 
-1. **Set Go environment variables** so the private module is not proxied via the public checksum database:
+1. **Set Go environment variables** so the module can be fetched directly when you are not using a local replace:
    ```bash
-   export GOPRIVATE="github.com/approx-telemetry/*"
-   export GONOSUMDB="github.com/approx-telemetry/*"
+   export GOPRIVATE="github.com/ProjectASAP/*"
+   export GONOSUMDB="github.com/ProjectASAP/*"
    ```
 
-2. **Authenticate with GitHub** so `go mod download` can fetch the private module. For example:
-   - Use SSH for GitHub: `git config --global url."git@github.com:".insteadOf "https://github.com/"`
-   - Or use a personal access token: `git config --global url."https://YOUR_TOKEN@github.com/".insteadOf "https://github.com/"`
+2. **Point the module to the local checkout** if you want an offline build in this workspace:
+   ```bash
+   go mod edit -replace=github.com/ProjectASAP/sketchlib-go=../sketchlib-go
+   ```
 
-3. Run the benchmark as usual; the builder will resolve the private dependency when building the CountMinSketch collector:
+3. Run the benchmark as usual:
    ```bash
    cd opentelemetry-collector-contrib-patch/cmd
    ./bench.sh countminsketchcol-batch
