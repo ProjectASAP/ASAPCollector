@@ -23,16 +23,17 @@ func NewFactory() processor.Factory {
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		Epsilon: 0.01,
-		Delta: 0.99,
-		WindowSize: 5 * time.Second,
+		Epsilon:        0.01,
+		Delta:          0.99,
+		WindowSize:     5 * time.Second,
+		TransmitSketch: false,
 	}
 }
 
 func createMetricsProcessor(
-	ctx context.Context, 
-	set processor.Settings, 
-	cfg component.Config, 
+	ctx context.Context,
+	set processor.Settings,
+	cfg component.Config,
 	next consumer.Metrics,
 ) (processor.Metrics, error) {
 	proc := newProcessor(set.Logger, cfg.(*Config), next)
@@ -42,7 +43,7 @@ func createMetricsProcessor(
 		set,
 		cfg,
 		next,
-		proc.processMetrics, 
+		proc.processMetrics,
 		processorhelper.WithStart(proc.Start),
 		processorhelper.WithShutdown(proc.Shutdown),
 		processorhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
