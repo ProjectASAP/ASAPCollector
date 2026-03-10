@@ -3,7 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/count
 go 1.24.0
 
 require (
-	github.com/approx-telemetry/sketchlib-go v0.0.0-20260113151541-f4156184b05d
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.47.0
 	go.opentelemetry.io/collector/component/componenttest v0.141.0
