@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	KLL "github.com/zzylol/go-kll"
+	kll "github.com/ProjectASAP/sketchlib-go/sketches/KLL"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -49,7 +49,7 @@ type metricWindow struct {
 
 type kllSeries struct {
 	attrs  pcommon.Map
-	sketch *KLL.Sketch
+	sketch *kll.KLLSketch
 }
 
 func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *kllProcessor {
@@ -131,7 +131,7 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 		name   string
 		unit   string
 		attrs  pcommon.Map
-		sketch *KLL.Sketch
+		sketch *kll.KLLSketch
 	}
 	batched := make(map[string]*batchSeries) // key = metricName + "::" + attributesKey(attrs)
 
@@ -164,11 +164,13 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 							name:   metric.Name(),
 							unit:   metric.Unit(),
 							attrs:  attrCopy,
-							sketch: KLL.New(p.cfg.K),
+							sketch: newKLLSketch(p.cfg.K),
 						}
 						batched[key] = bs
 					}
-					bs.sketch.Update(val)
+					if bs.sketch != nil {
+						bs.sketch.Insert(val)
+					}
 				}
 			}
 		}
@@ -183,7 +185,7 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 	now := pcommon.NewTimestampFromTime(time.Now())
 
 	for _, bs := range batched {
-		if bs.sketch.GetSize() == 0 {
+		if bs.sketch == nil || bs.sketch.GetSize() == 0 {
 			continue
 		}
 		if p.cfg.TransmitSketch {
@@ -304,7 +306,7 @@ func (p *kllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 			dp.Attributes().CopyTo(attrCopy)
 			series = &kllSeries{
 				attrs:  attrCopy,
-				sketch: KLL.New(p.cfg.K),
+				sketch: newKLLSketch(p.cfg.K),
 			}
 			mw.series[attrKey] = series
 		}
@@ -314,7 +316,9 @@ func (p *kllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 		} else {
 			val = dp.DoubleValue()
 		}
-		series.sketch.Update(val)
+		if series.sketch != nil {
+			series.sketch.Insert(val)
+		}
 	}
 }
 
@@ -430,7 +434,7 @@ func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pme
 	return m
 }
 
-func appendKLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *KLL.Sketch, ts pcommon.Timestamp, k int) error {
+func appendKLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *kll.KLLSketch, ts pcommon.Timestamp, k int) error {
 	payload, err := serializeKLLSketch(sketch, k)
 	if err != nil {
 		return err
@@ -445,7 +449,7 @@ func appendKLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *
 	return nil
 }
 
-func serializeKLLSketch(sketch *KLL.Sketch, k int) ([]byte, error) {
+func serializeKLLSketch(sketch *kll.KLLSketch, k int) ([]byte, error) {
 	if sketch == nil {
 		return nil, nil
 	}
@@ -469,4 +473,12 @@ func (p *kllProcessor) sketchMetricName(base string) string {
 		return base + p.cfg.MetricSuffix
 	}
 	return base + "_kll"
+}
+
+func newKLLSketch(k int) *kll.KLLSketch {
+	sketch, err := kll.NewKLLSketch(k)
+	if err != nil {
+		return nil
+	}
+	return sketch
 }

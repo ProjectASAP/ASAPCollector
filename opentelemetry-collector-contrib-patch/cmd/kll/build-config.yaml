@@ -17,4 +17,4 @@ receivers:
 
 replaces:
   - github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllprocessor => ./processor/kllprocessor
-#  - github.com/approx-telemetry/sketchlib-go => ../sketchlib-go
+#  - github.com/ProjectASAP/sketchlib-go => ../sketchlib-go
