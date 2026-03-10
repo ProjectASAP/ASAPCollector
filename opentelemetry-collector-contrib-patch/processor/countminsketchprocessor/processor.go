@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/approx-telemetry/sketchlib-go/common"
-	cms "github.com/approx-telemetry/sketchlib-go/sketches/CountMinSketch"
+	"github.com/ProjectASAP/sketchlib-go/common"
+	cms "github.com/ProjectASAP/sketchlib-go/sketches/CountMinSketch"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -343,7 +343,11 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 		dp.Attributes().PutInt("rows", int64(rows))
 		dp.Attributes().PutInt("cols", int64(cols))
 		dp.Attributes().PutInt("sample_count", int64(sampleCount))
-		dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
+		if p.cfg.TransmitSketch {
+			dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
+		} else {
+			dp.SetDoubleValue(float64(sampleCount))
+		}
 	}
 
 	return md

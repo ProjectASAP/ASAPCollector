@@ -2,11 +2,12 @@ package countsketchprocessor
 
 import (
 	"context"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/froot-netsys/promsketch"
+	countsketch "github.com/ProjectASAP/sketchlib-go/sketches/CountSketch"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -23,16 +24,39 @@ type countSketchProcessor struct {
 
 	mode InputMode
 
-	// To prevent race conditions between 
+	// To prevent race conditions between
 	// processMetrics (Write) and flushSketches (Reset)
 	mutex sync.Mutex
 
-	rowSketch *promsketch.CountSketch // Tracks Metric Names
-	colSketch *promsketch.CountSketch // Tracks Host Names
+	rowSketch *countsketch.CountSketch // Tracks Metric Names
+	colSketch *countsketch.CountSketch // Tracks Host Names
 
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool // true once the window goroutine is running
+}
+
+func newConfiguredCountSketch(cfg *Config) (*countsketch.CountSketch, error) {
+	rows := int(math.Ceil(math.Log(1 / cfg.Delta)))
+	if rows < 1 {
+		rows = 1
+	}
+
+	cols := int(math.Ceil(1 / (cfg.Epsilon * cfg.Epsilon)))
+	if cols < 2 {
+		cols = 2
+	}
+	cols = nextPowerOfTwo(cols)
+
+	return countsketch.NewCountSketch(rows, cols)
+}
+
+func nextPowerOfTwo(n int) int {
+	p := 1
+	for p < n {
+		p <<= 1
+	}
+	return p
 }
 
 func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *countSketchProcessor {
@@ -42,15 +66,15 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 		mode = ModeWindow
 	}
 
-	rowS, errRow := promsketch.NewCountSketchWithEstimates(cfg.Epsilon, cfg.Delta)
-    if errRow != nil {
-        logger.Error("Failed to init row sketch", zap.Error(errRow))
-    }
-    
-    colS, errCol := promsketch.NewCountSketchWithEstimates(cfg.Epsilon, cfg.Delta)
-    if errCol != nil {
-        logger.Error("Failed to init col sketch", zap.Error(errCol))
-    }
+	rowS, errRow := newConfiguredCountSketch(cfg)
+	if errRow != nil {
+		logger.Error("Failed to init row sketch", zap.Error(errRow))
+	}
+
+	colS, errCol := newConfiguredCountSketch(cfg)
+	if errCol != nil {
+		logger.Error("Failed to init col sketch", zap.Error(errCol))
+	}
 
 	return &countSketchProcessor{
 		logger: logger,
@@ -60,8 +84,8 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 
 		rowSketch: rowS,
 		colSketch: colS,
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
 	}
 }
 
@@ -72,6 +96,9 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 		zap.Duration("window", p.config.WindowSize),
 		zap.String("mode", string(p.mode)),
 	)
+	if p.config.TransmitSketch {
+		p.logger.Warn("countsketchprocessor: transmit_sketch=true is not yet backed by a serialized sketch payload; emitting metric-form summaries")
+	}
 
 	// In batch mode we flush per ConsumeMetrics call and do not need a ticker.
 	if p.mode == ModeBatch {
@@ -199,16 +226,8 @@ func (p *countSketchProcessor) startWindowLoop(ctx context.Context, ticker *time
 		ticker.Stop()
 
 		p.mutex.Lock()
-
-		if p.rowSketch != nil {
-            p.rowSketch.FreeCountSketch()
-            p.rowSketch = nil 
-        }
-
-        if p.colSketch != nil {
-            p.colSketch.FreeCountSketch()
-            p.colSketch = nil
-        }
+		p.rowSketch = nil
+		p.colSketch = nil
 
 		p.mutex.Unlock()
 
@@ -240,20 +259,13 @@ func (p *countSketchProcessor) flushBatch() {
 	colSnapshot := p.colSketch
 
 	// Reset sketches for the next batch.
-	if p.rowSketch != nil {
-		p.rowSketch.FreeCountSketch()
-	}
-	if p.colSketch != nil {
-		p.colSketch.FreeCountSketch()
-	}
-
 	var err error
-	p.rowSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
+	p.rowSketch, err = newConfiguredCountSketch(p.config)
 	if err != nil {
 		p.logger.Error("Failed to reset row sketch", zap.Error(err))
 	}
 
-	p.colSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
+	p.colSketch, err = newConfiguredCountSketch(p.config)
 	if err != nil {
 		p.logger.Error("Failed to reset col sketch", zap.Error(err))
 	}
@@ -268,31 +280,23 @@ func (p *countSketchProcessor) flushBatch() {
 
 func (p *countSketchProcessor) flushSketches() {
 	p.mutex.Lock()
-	
+
 	// Snapshot sketches before resetting
 	rowSnapshot := p.rowSketch
 	colSnapshot := p.colSketch
-	
+
 	// Reset sketches
-	if p.rowSketch != nil {
-		p.rowSketch.FreeCountSketch()
-	}
-
-	if p.colSketch != nil {
-		p.colSketch.FreeCountSketch()
-	}
-
 	var err error
-	p.rowSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
+	p.rowSketch, err = newConfiguredCountSketch(p.config)
 	if err != nil {
 		p.logger.Error("Failed to reset row sketch", zap.Error(err))
 	}
-	
-	p.colSketch, err = promsketch.NewCountSketchWithEstimates(p.config.Epsilon, p.config.Delta)
+
+	p.colSketch, err = newConfiguredCountSketch(p.config)
 	if err != nil {
 		p.logger.Error("Failed to reset col sketch", zap.Error(err))
 	}
-	
+
 	p.mutex.Unlock()
 
 	// Emit sketch metrics if we have snapshots
@@ -301,12 +305,12 @@ func (p *countSketchProcessor) flushSketches() {
 	}
 }
 
-func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *promsketch.CountSketch) {
+func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *countsketch.CountSketch) {
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()
 	sm := rm.ScopeMetrics().AppendEmpty()
 	sm.Scope().SetName("otelcol/countsketch")
-	
+
 	now := pcommon.NewTimestampFromTime(time.Now())
 
 	// Emit row sketch (metric names)
@@ -314,17 +318,17 @@ func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *promsketch.Cou
 		m := sm.Metrics().AppendEmpty()
 		m.SetName("countsketch_row")
 		m.SetUnit("1")
-		
+
 		gauge := m.SetEmptyGauge()
 		dp := gauge.DataPoints().AppendEmpty()
 		dp.SetTimestamp(now)
-		
+
 		dp.Attributes().PutStr("sketch_type", "row")
 		dp.Attributes().PutStr("sketch_dimension", "metric_names")
 		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
 		dp.Attributes().PutDouble("delta", p.config.Delta)
 		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
-		// Note: promsketch.CountSketch doesn't expose serialization methods
+		// Note: sketchlib-go CountSketch doesn't expose serialization methods
 		// For benchmarking, we emit metadata. Full serialization can be added later if needed.
 	}
 
@@ -333,11 +337,11 @@ func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *promsketch.Cou
 		m := sm.Metrics().AppendEmpty()
 		m.SetName("countsketch_col")
 		m.SetUnit("1")
-		
+
 		gauge := m.SetEmptyGauge()
 		dp := gauge.DataPoints().AppendEmpty()
 		dp.SetTimestamp(now)
-		
+
 		dp.Attributes().PutStr("sketch_type", "col")
 		dp.Attributes().PutStr("sketch_dimension", "host_names")
 		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
