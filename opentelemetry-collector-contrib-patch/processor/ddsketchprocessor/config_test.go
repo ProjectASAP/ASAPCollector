@@ -30,4 +30,24 @@ func TestConfigValidate(t *testing.T) {
 	if err := cfg.validate(); err == nil {
 		t.Fatalf("expected error when emit_ddsketch=false and no quantiles configured")
 	}
+
+	// mode-specific validation
+	cfg = createDefaultConfig().(*Config)
+	cfg.Mode = InputMode("unknown")
+	if err := cfg.validate(); err == nil {
+		t.Fatalf("expected error for unknown mode")
+	}
+
+	cfg = createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.WindowDuration = 0
+	if err := cfg.validate(); err == nil {
+		t.Fatalf("expected error for zero window_duration in window mode")
+	}
+
+	cfg = createDefaultConfig().(*Config)
+	cfg.Mode = ""
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("expected default mode batch to be valid, got: %v", err)
+	}
 }

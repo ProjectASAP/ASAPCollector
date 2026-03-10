@@ -1,3 +1,7 @@
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260310010833-de171ee6c9b6 h1:anSE7TddfEuUZpFnWqLmAAcitRtaAJC8nbSXtRlbF2I=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260310010833-de171ee6c9b6/go.mod h1:LOMYBMAKPj5785R5e6zkO6uNIiGkNsU526pJ5uOPD5o=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8 h1:tfkndjVr2ZNdccmet+WE8JT0Ydi6H//uQ3OeEIVbHMc=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8/go.mod h1:ByHMqQtfdPiCHazEQvV09JaX9hbuiLVVxCamhynpdcU=
 github.com/approx-telemetry/sketchlib-go v0.0.0-20260113151541-f4156184b05d h1:KsMZghGBTCaWTkPItb7EOI5Cl66UBMixMGKay5fSTHk=
 github.com/approx-telemetry/sketchlib-go v0.0.0-20260113151541-f4156184b05d/go.mod h1:r1HYGtdAAAff2b1WI6LWkKT9CPPB3qEazA69S9ceTsE=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

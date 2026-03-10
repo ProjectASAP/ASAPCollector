@@ -3,11 +3,12 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/count
 go 1.24.0
 
 require (
-	github.com/approx-telemetry/sketchlib-go v0.0.0-20260113151541-f4156184b05d
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.47.0
 	go.opentelemetry.io/collector/component/componenttest v0.141.0
 	go.opentelemetry.io/collector/consumer v1.47.0
+	go.opentelemetry.io/collector/consumer/consumertest v0.141.0
 	go.opentelemetry.io/collector/pdata v1.47.0
 	go.opentelemetry.io/collector/processor v1.47.0
 	go.opentelemetry.io/collector/processor/processorhelper v0.141.0
@@ -30,7 +31,9 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/prometheus v0.307.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+	go.opentelemetry.io/collector/consumer/xconsumer v0.141.0 // indirect
 	go.opentelemetry.io/collector/featuregate v1.47.0 // indirect
+	go.opentelemetry.io/collector/pdata/pprofile v0.141.0 // indirect
 	go.opentelemetry.io/collector/pipeline v1.47.0 // indirect
 	go.opentelemetry.io/otel v1.38.0 // indirect
 	go.opentelemetry.io/otel/metric v1.38.0 // indirect
