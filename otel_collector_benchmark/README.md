@@ -249,7 +249,7 @@ cd opentelemetry-collector-contrib-patch/cmd
 
 ### Building CountMinSketch
 
-The CountMinSketch processor depends on `github.com/ProjectASAP/sketchlib-go`. To build and run CountMinSketch benchmarks (`countminsketchcol-batch`, `countminsketchcol-window`), make that module available to Go, for example with a local replace to `/mydata/sketchlib-go`:
+The CountMinSketch processor depends on `github.com/ProjectASAP/sketchlib-go`. To build and run CountMinSketch benchmarks (`countminsketchcol-batch`, `countminsketchcol-window`), make that module available to Go, for example with a local replace to `../sketchlib-go`:
 
 1. **Set Go environment variables** so the module can be fetched directly when you are not using a local replace:
    ```bash
@@ -259,7 +259,7 @@ The CountMinSketch processor depends on `github.com/ProjectASAP/sketchlib-go`. T
 
 2. **Point the module to the local checkout** if you want an offline build in this workspace:
    ```bash
-   go mod edit -replace=github.com/ProjectASAP/sketchlib-go=/mydata/sketchlib-go
+   go mod edit -replace=github.com/ProjectASAP/sketchlib-go=../sketchlib-go
    ```
 
 3. Run the benchmark as usual:
