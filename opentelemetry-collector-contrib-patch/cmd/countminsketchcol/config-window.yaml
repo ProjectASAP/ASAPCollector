@@ -12,6 +12,7 @@ processors:
     metric_name: "countmin_sketch"
     rows: 5
     columns: 2000
+    transmit_sketch: true
     group_by: []
     drop_original: true
     window_interval: 10s
@@ -39,4 +40,3 @@ service:
       level: info
     resource:
       service.name: countminsketchcol-window
-

@@ -10,6 +10,7 @@ processors:
     mode: window
     window_duration: 10s
     k: 256
+    transmit_sketch: false
     quantiles: [0.5, 0.9, 0.99]
 
 exporters:
