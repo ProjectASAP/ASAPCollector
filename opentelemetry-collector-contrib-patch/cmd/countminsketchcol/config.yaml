@@ -11,6 +11,7 @@ processors:
     metric_name: "cms_sketch_output"
     rows: 5
     columns: 2000
+    transmit_sketch: true
     group_by: ["service.name", "method"]
     drop_original: true  # Do not forward the raw data, only the sketch
     window_interval: 10s # NEW: Aggregate 10s of data into 1 Sketch

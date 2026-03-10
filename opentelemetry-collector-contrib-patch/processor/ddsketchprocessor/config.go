@@ -35,9 +35,9 @@ type Config struct {
 	Quantiles []float64 `mapstructure:"quantiles"`
 	// MetricSuffix is appended to the original metric name for generated sketches.
 	MetricSuffix string `mapstructure:"metric_suffix"`
-	// EmitDDSketch controls whether merged sketches are output as DDSketch payloads (true)
+	// TransmitSketch controls whether merged sketches are output as DDSketch payloads (true)
 	// or converted into gauge metrics at the configured quantiles (false).
-	EmitDDSketch bool `mapstructure:"emit_ddsketch"`
+	TransmitSketch bool `mapstructure:"transmit_sketch"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -49,7 +49,7 @@ func createDefaultConfig() component.Config {
 		RelativeAccuracy: 0.01,
 		Quantiles:        []float64{0.5, 0.9, 0.99},
 		MetricSuffix:     "_ddsketch",
-		EmitDDSketch:     true,
+		TransmitSketch:   true,
 	}
 }
 
@@ -72,7 +72,7 @@ func (cfg *Config) validate() error {
 	if cfg.RelativeAccuracy <= 0 || cfg.RelativeAccuracy >= 1 {
 		return fmt.Errorf("relative_accuracy must be within (0,1), got %v", cfg.RelativeAccuracy)
 	}
-	if !cfg.EmitDDSketch {
+	if !cfg.TransmitSketch {
 		if len(cfg.Quantiles) == 0 {
 			return fmt.Errorf("at least one quantile must be configured")
 		}

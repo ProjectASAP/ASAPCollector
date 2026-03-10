@@ -16,6 +16,7 @@ func createDefaultConfig() component.Config {
 		WindowDuration: 60 * time.Second,
 		K:              256,
 		Quantiles:      []float64{0.5, 0.99},
+		TransmitSketch: false,
 		WriteSeen:      false,
 		DropOriginal:   true,
 		ReadAsInt:      false,
@@ -46,4 +47,3 @@ func createMetricsProcessor(
 	_ = ctx
 	return newProcessor(oCfg, set.Logger, next), nil
 }
-

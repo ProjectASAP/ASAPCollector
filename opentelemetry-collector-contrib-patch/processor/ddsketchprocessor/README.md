@@ -36,11 +36,11 @@ of quantile gauges (p50, p90, p99, …) per series every `window_duration`.
 | ------------------- | --------------------------------------------------------------------------- | ---------------- |
 | `mode`              | Output timing: `"batch"` (per-batch flush) or `"window"` (tumbling window).| `"batch"`        |
 | `relative_accuracy` | DDSketch relative accuracy parameter.                                      | `0.01`           |
-| `quantiles`         | Quantiles to emit when `emit_ddsketch` is `false`.                         | `[0.5, 0.9, 0.99]` |
+| `quantiles`         | Quantiles to emit when `transmit_sketch` is `false`.                       | `[0.5, 0.9, 0.99]` |
 | `metric_suffix`     | Suffix for generated metrics (applied to either DDSketch or quantile outputs). | `_ddsketch`  |
-| `emit_ddsketch`     | If `true`, emit DDSketch payload metrics; if `false`, emit quantile gauges.| `true`           |
+| `transmit_sketch`   | If `true`, emit DDSketch payload metrics; if `false`, emit quantile gauges.| `true`           |
 
-When `emit_ddsketch: false`, at least one quantile must be configured and each
+When `transmit_sketch: false`, at least one quantile must be configured and each
 quantile must be in the \[0,1] range.
 
 ### Window-specific fields
@@ -58,7 +58,7 @@ ignored.
 processors:
   ddsketch:
     mode: batch
-    emit_ddsketch: true
+    transmit_sketch: true
     metric_suffix: "_merged"
 ```
 
@@ -68,7 +68,7 @@ processors:
 processors:
   ddsketch:
     mode: batch
-    emit_ddsketch: false
+    transmit_sketch: false
     relative_accuracy: 0.01
     quantiles: [0.5, 0.9, 0.99]
     metric_suffix: "_quantile"
@@ -87,7 +87,7 @@ processors:
     mode: window
     window_duration: 60s
     relative_accuracy: 0.01
-    emit_ddsketch: false
+    transmit_sketch: false
     quantiles: [0.5, 0.9, 0.99]
     metric_suffix: "_quantile"
 ```
@@ -100,8 +100,8 @@ In this mode:
   and attribute set, accumulating values into DDSketches over each
   `window_duration`.
 - At each window boundary it flushes the aggregated sketches as either:
-  - DDSketch metrics, if `emit_ddsketch: true`, or
-  - quantile gauge metrics, if `emit_ddsketch: false`.
+  - DDSketch metrics, if `transmit_sketch: true`, or
+  - quantile gauge metrics, if `transmit_sketch: false`.
 
 ## Input types
 
@@ -154,4 +154,3 @@ processor turns many raw samples into a single sketch/quantile output per
 series per window, the reported "data loss rate" will be close to 100%—this is
 expected and matches the behavior of other sketch-based processors in this
 repository.
-

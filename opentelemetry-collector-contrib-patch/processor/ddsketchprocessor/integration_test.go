@@ -10,8 +10,8 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer/consumertest"
-	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/processor"
 )
 
 // TestIntegrationFactoryCreateMetrics verifies the processor can be created via the factory.
@@ -39,7 +39,7 @@ func TestIntegrationPipelineBatchMode(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.Mode = ModeBatch
-	cfg.EmitDDSketch = false
+	cfg.TransmitSketch = false
 	cfg.Quantiles = []float64{0.5}
 	require.NoError(t, cfg.validate())
 
@@ -76,7 +76,7 @@ func TestIntegrationPipelineWindowMode(t *testing.T) {
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 24 * time.Hour
-	cfg.EmitDDSketch = false
+	cfg.TransmitSketch = false
 	cfg.Quantiles = []float64{0.5}
 	require.NoError(t, cfg.validate())
 

@@ -18,14 +18,15 @@ const (
 )
 
 type Config struct {
-	Mode            InputMode     `mapstructure:"mode"`
-	WindowDuration  time.Duration `mapstructure:"window_duration"`
-	K               int           `mapstructure:"k"`
-	Quantiles       []float64     `mapstructure:"quantiles"`
-	WriteSeen       bool          `mapstructure:"write_seen"`
-	DropOriginal    bool          `mapstructure:"drop_original"`
-	ReadAsInt       bool          `mapstructure:"is_int"` // gauge has separate int and double fields, we default to double
-	MetricSuffix    string        `mapstructure:"metric_suffix"`
+	Mode           InputMode     `mapstructure:"mode"`
+	WindowDuration time.Duration `mapstructure:"window_duration"`
+	K              int           `mapstructure:"k"`
+	Quantiles      []float64     `mapstructure:"quantiles"`
+	TransmitSketch bool          `mapstructure:"transmit_sketch"`
+	WriteSeen      bool          `mapstructure:"write_seen"`
+	DropOriginal   bool          `mapstructure:"drop_original"`
+	ReadAsInt      bool          `mapstructure:"is_int"` // gauge has separate int and double fields, we default to double
+	MetricSuffix   string        `mapstructure:"metric_suffix"`
 
 	suffixes map[float64]string // suffix to attach to output quantiles, e.g. _p50, _p99, ...
 }
@@ -45,6 +46,9 @@ func (c *Config) Validate() error {
 	}
 	if c.K < 2 {
 		return fmt.Errorf("invalid argument: k must be >= 2 (k=%d)", c.K)
+	}
+	if !c.TransmitSketch && len(c.Quantiles) == 0 {
+		return fmt.Errorf("at least one quantile must be configured when transmit_sketch=false")
 	}
 	c.suffixes = make(map[float64]string)
 	for _, q := range c.Quantiles {
