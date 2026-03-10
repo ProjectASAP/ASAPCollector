@@ -12,6 +12,7 @@ processors:
     metric_name: "countmin_sketch"
     rows: 5
     columns: 2000
+    transmit_sketch: true
     group_by: []
     drop_original: false
 
@@ -38,4 +39,3 @@ service:
       level: info
     resource:
       service.name: countminsketchcol-batch
-

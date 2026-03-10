@@ -55,7 +55,7 @@ func TestProcessorAddsDDSketchMetric(t *testing.T) {
 func TestBatchModeGaugeInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeBatch
-	cfg.EmitDDSketch = false
+	cfg.TransmitSketch = false
 	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 
@@ -96,7 +96,7 @@ func TestBatchModeGaugeInput(t *testing.T) {
 func TestWindowModeGaugeInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeWindow
-	cfg.EmitDDSketch = false
+	cfg.TransmitSketch = false
 	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 
@@ -140,7 +140,7 @@ func TestWindowModeGaugeInput(t *testing.T) {
 func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeWindow
-	cfg.EmitDDSketch = true
+	cfg.TransmitSketch = true
 	cfg.MetricSuffix = "_ddsketch"
 
 	sink := new(consumertest.MetricsSink)
@@ -239,7 +239,7 @@ func decodeSketch(t *testing.T, payload []byte) *ddsketch.DDSketch {
 func TestBatchModeDualInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeBatch
-	cfg.EmitDDSketch = true
+	cfg.TransmitSketch = true
 	cfg.MetricSuffix = "_ddsketch"
 
 	proc := &ddsketchProcessor{cfg: cfg, logger: zap.NewNop()}
@@ -294,7 +294,7 @@ func TestBatchModeDualInput(t *testing.T) {
 func TestWindowModeDualInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeWindow
-	cfg.EmitDDSketch = true
+	cfg.TransmitSketch = true
 	cfg.MetricSuffix = "_ddsketch"
 	cfg.WindowDuration = 60 * 60 * 24 // large so ticker doesn't fire
 
@@ -369,7 +369,7 @@ func TestEmptyResourceMetrics(t *testing.T) {
 func TestBatchModeNoStatePersistence(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeBatch
-	cfg.EmitDDSketch = false
+	cfg.TransmitSketch = false
 	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 
@@ -424,7 +424,7 @@ func getQuantileFromOutput(t *testing.T, md pmetric.Metrics, namePrefix string) 
 func TestMixedIntDoubleGauge(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeBatch
-	cfg.EmitDDSketch = false
+	cfg.TransmitSketch = false
 	cfg.Quantiles = []float64{0.5}
 	cfg.MetricSuffix = "_quantile"
 
@@ -454,7 +454,7 @@ func TestMixedIntDoubleGauge(t *testing.T) {
 func TestWindowModeConcurrentConsume(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeWindow
-	cfg.EmitDDSketch = true
+	cfg.TransmitSketch = true
 	cfg.WindowDuration = 60 * 60 * 24
 	sink := new(consumertest.MetricsSink)
 	proc := newProcessor(cfg, zap.NewNop(), sink)
@@ -483,7 +483,7 @@ func TestWindowModeFlushDuringConsume(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 1 // 1ns ticker for rapid flushes
-	cfg.EmitDDSketch = true
+	cfg.TransmitSketch = true
 	sink := new(consumertest.MetricsSink)
 	proc := newProcessor(cfg, zap.NewNop(), sink)
 	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))

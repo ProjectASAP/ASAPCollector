@@ -1,7 +1,9 @@
 package kllprocessor
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"sync"
 	"testing"
 
@@ -60,6 +62,57 @@ func TestBatchModeGaugeInput(t *testing.T) {
 		}
 	}
 	assert.True(t, foundQuantile, "expected quantile metric latency_p50")
+}
+
+func TestBatchModeTransmitSketch(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeBatch
+	cfg.TransmitSketch = true
+	cfg.Quantiles = nil
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	metric := sm.Metrics().AppendEmpty()
+	metric.SetName("latency")
+	metric.SetUnit("ms")
+	dp := metric.SetEmptyGauge().DataPoints().AppendEmpty()
+	dp.Attributes().PutStr("route", "/api")
+	dp.SetDoubleValue(10)
+
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+
+	var found bool
+	rms := out[0].ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				m := ms.At(k)
+				if m.Name() != "latency_kll" {
+					continue
+				}
+				found = true
+				require.Equal(t, 1, m.Gauge().DataPoints().Len())
+				outDP := m.Gauge().DataPoints().At(0)
+				payload, ok := outDP.Attributes().Get("kll.sketch_payload")
+				require.True(t, ok)
+				var snapshot kllSketchSnapshot
+				require.NoError(t, gob.NewDecoder(bytes.NewReader(payload.Bytes().AsRaw())).Decode(&snapshot))
+				assert.Equal(t, cfg.K, snapshot.K)
+				assert.Equal(t, 1, snapshot.Count)
+			}
+		}
+	}
+	assert.True(t, found, "expected serialized sketch metric")
 }
 
 func TestBatchModeNoStatePersistence(t *testing.T) {
@@ -210,6 +263,13 @@ func TestConfigValidate(t *testing.T) {
 
 	cfg.Quantiles = []float64{0.5, 0.99}
 	assert.NoError(t, cfg.Validate())
+
+	cfg.TransmitSketch = true
+	cfg.Quantiles = nil
+	assert.NoError(t, cfg.Validate())
+
+	cfg.TransmitSketch = false
+	assert.Error(t, cfg.Validate())
 }
 
 // TestEmptyInput verifies that empty metrics do not cause panics and produce no output in window mode.
@@ -371,4 +431,3 @@ func TestShutdownDuringConsume(t *testing.T) {
 	}()
 	wg.Wait()
 }
-

@@ -92,12 +92,12 @@ The CountMinSketch processor aggregates metrics into Count-Min Sketch data struc
 - **`window`**: tumbling-window aggregation over a configurable `window_interval`; the processor emits one sketch per window and typically drops raw metrics to achieve storage reduction.
 
 **Processor Configuration (batch example):**
-- mode: `batch`, metric_name: `countmin_sketch`, rows: 5, columns: 2000, group_by: `[]`, drop_original: false
+- mode: `batch`, metric_name: `countmin_sketch`, rows: 5, columns: 2000, transmit_sketch: `true`, group_by: `[]`, drop_original: false
 
 > **Note:** Batch-mode benchmarks for CountMinSketch have not yet been captured in this environment because the private `github.com/approx-telemetry/sketchlib-go` module is not accessible without GitHub credentials. Once runs are available, they should be added here using the same format as the CountSketch and KLL batch-mode tables (including an Output/Input Ratio column).
 
 **Processor Configuration (window example):**
-- mode: `window`, metric_name: `countmin_sketch`, rows: 5, columns: 1000, window_interval: 10s, drop_original: true
+- mode: `window`, metric_name: `countmin_sketch`, rows: 5, columns: 1000, transmit_sketch: `true`, window_interval: 10s, drop_original: true
 
 **Results Summary (window mode, 10s window — legacy run):**
 
@@ -127,8 +127,8 @@ The KLL (K-LL) processor aggregates metrics using the K-LL sketch algorithm for 
 
 The benchmark runs a **correctness check** after each scenario (scrape port 8889): quantile metrics exist, monotonicity `p50 <= p90 <= p99`, and values within `[0.99, 507]` (Zipf range).
 
-**Processor Configuration (batch):** mode: `batch`, k: 256, quantiles: [0.5, 0.9, 0.99], drop_original: false  
-**Processor Configuration (window):** mode: `window`, window_duration: 10s, k: 256, quantiles: [0.5, 0.9, 0.99]
+**Processor Configuration (batch):** mode: `batch`, k: 256, transmit_sketch: `false`, quantiles: [0.5, 0.9, 0.99], drop_original: false  
+**Processor Configuration (window):** mode: `window`, window_duration: 10s, k: 256, transmit_sketch: `false`, quantiles: [0.5, 0.9, 0.99]
 
 **Results Summary (batch mode):**
 
@@ -172,14 +172,14 @@ In both modes, the collector receives standard OTLP Gauge metrics from this load
 **Processor Configuration (batch mode example):**
 - mode: `batch`
 - relative_accuracy: `0.01`
-- emit_ddsketch: `false`
+- transmit_sketch: `false`
 - quantiles: `[0.5, 0.9, 0.99]`
 
 **Processor Configuration (window mode example):**
 - mode: `window`
 - window_duration: `10s` (for the benchmark; `60s` is a common production value)
 - relative_accuracy: `0.01`
-- emit_ddsketch: `false`
+- transmit_sketch: `false`
 - quantiles: `[0.5, 0.9, 0.99]`
 
 **Results Summary (batch mode):**

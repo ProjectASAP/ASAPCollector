@@ -1,7 +1,9 @@
 package kllprocessor
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"sort"
 	"strings"
 	"sync"
@@ -184,6 +186,13 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 		if bs.sketch.GetSize() == 0 {
 			continue
 		}
+		if p.cfg.TransmitSketch {
+			m := findOrCreateGaugeMetric(scope.Metrics(), p.sketchMetricName(bs.name), bs.unit)
+			if err := appendKLLSketchDataPoint(m, bs.attrs, bs.sketch, now, p.cfg.K); err != nil && p.logger != nil {
+				p.logger.Error("kllprocessor: failed to serialize sketch", zap.Error(err))
+			}
+			continue
+		}
 		cdf := bs.sketch.CDF()
 		for _, q := range p.cfg.Quantiles {
 			suffix, ok := p.cfg.suffixes[q]
@@ -191,22 +200,7 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 				continue
 			}
 			metricName := bs.name + suffix
-			ms := scope.Metrics()
-			var m pmetric.Metric
-			var found bool
-			for idx := 0; idx < ms.Len(); idx++ {
-				if ms.At(idx).Name() == metricName {
-					m = ms.At(idx)
-					found = true
-					break
-				}
-			}
-			if !found {
-				m = scope.Metrics().AppendEmpty()
-				m.SetName(metricName)
-				m.SetUnit(bs.unit)
-				m.SetEmptyGauge()
-			}
+			m := findOrCreateGaugeMetric(scope.Metrics(), metricName, bs.unit)
 			dp := m.Gauge().DataPoints().AppendEmpty()
 			bs.attrs.CopyTo(dp.Attributes())
 			dp.SetTimestamp(now)
@@ -291,7 +285,7 @@ func (p *kllProcessor) getOrCreateMetricWindow(sw *scopeWindow, metric pmetric.M
 			name:        name,
 			description: metric.Description(),
 			unit:        metric.Unit(),
-			series:     make(map[string]*kllSeries),
+			series:      make(map[string]*kllSeries),
 		}
 		sw.metrics[name] = mw
 	}
@@ -345,6 +339,30 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 			sw.scope.CopyTo(sm.Scope())
 			dstMetrics := sm.Metrics()
 			for _, mw := range sw.metrics {
+				if p.cfg.TransmitSketch {
+					now := pcommon.NewTimestampFromTime(time.Now())
+					var (
+						m       pmetric.Metric
+						created bool
+					)
+					for _, series := range mw.series {
+						if series.sketch == nil || series.sketch.GetSize() == 0 {
+							continue
+						}
+						if !created {
+							m = dstMetrics.AppendEmpty()
+							m.SetName(p.sketchMetricName(mw.name))
+							m.SetDescription(mw.description)
+							m.SetUnit(mw.unit)
+							m.SetEmptyGauge()
+							created = true
+						}
+						if err := appendKLLSketchDataPoint(m, series.attrs, series.sketch, now, p.cfg.K); err != nil && p.logger != nil {
+							p.logger.Error("kllprocessor: failed to serialize sketch", zap.Error(err))
+						}
+					}
+					continue
+				}
 				for _, q := range p.cfg.Quantiles {
 					suffix, ok := p.cfg.suffixes[q]
 					if !ok {
@@ -391,4 +409,64 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 		return nil
 	}
 	return p.nextConsumer.ConsumeMetrics(ctx, out)
+}
+
+type kllSketchSnapshot struct {
+	K          int
+	Compactors [][]float64
+	Count      int
+}
+
+func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pmetric.Metric {
+	for idx := 0; idx < metrics.Len(); idx++ {
+		if metrics.At(idx).Name() == name {
+			return metrics.At(idx)
+		}
+	}
+	m := metrics.AppendEmpty()
+	m.SetName(name)
+	m.SetUnit(unit)
+	m.SetEmptyGauge()
+	return m
+}
+
+func appendKLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *KLL.Sketch, ts pcommon.Timestamp, k int) error {
+	payload, err := serializeKLLSketch(sketch, k)
+	if err != nil {
+		return err
+	}
+	dp := metric.Gauge().DataPoints().AppendEmpty()
+	attrs.CopyTo(dp.Attributes())
+	dp.Attributes().PutInt("kll.k", int64(k))
+	dp.Attributes().PutInt("kll.count", int64(sketch.Count()))
+	dp.Attributes().PutEmptyBytes("kll.sketch_payload").FromRaw(payload)
+	dp.SetTimestamp(ts)
+	dp.SetDoubleValue(float64(sketch.Count()))
+	return nil
+}
+
+func serializeKLLSketch(sketch *KLL.Sketch, k int) ([]byte, error) {
+	if sketch == nil {
+		return nil, nil
+	}
+	snapshot := kllSketchSnapshot{
+		K:          k,
+		Compactors: make([][]float64, len(sketch.Compactors)),
+		Count:      sketch.Count(),
+	}
+	for i, compactor := range sketch.Compactors {
+		snapshot.Compactors[i] = append([]float64(nil), compactor...)
+	}
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(snapshot); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (p *kllProcessor) sketchMetricName(base string) string {
+	if p.cfg.MetricSuffix != "" {
+		return base + p.cfg.MetricSuffix
+	}
+	return base + "_kll"
 }
