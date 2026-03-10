@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countminsketchcol|kll]
+# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTRIB_PATCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -10,17 +10,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countminsketchcol|kll]"
+    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countminsketchcol|kll)
+    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countminsketchcol, kll"
+        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window"
         exit 1
         ;;
 esac
@@ -35,6 +35,47 @@ if [ "$PROCESSOR" = "kll" ]; then
     CONFIG_FILE="$PROCESSOR_DIR/config-bench.yaml"
     COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"
     TELEMETRY_URL="http://localhost:8888/metrics"
+elif [ "$PROCESSOR" = "kll-batch" ] || [ "$PROCESSOR" = "kll-window" ]; then
+    KLL_DIR="$SCRIPT_DIR/kll"
+    BUILDER_CONFIG="$KLL_DIR/build-config.yaml"
+    COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    if [ "$PROCESSOR" = "kll-batch" ]; then
+        CONFIG_FILE="$KLL_DIR/config.yaml"
+    else
+        CONFIG_FILE="$KLL_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "countsketchcol-batch" ] || [ "$PROCESSOR" = "countsketchcol-window" ]; then
+    CS_DIR="$SCRIPT_DIR/countsketchcol"
+    BUILDER_CONFIG="$CS_DIR/builder-config.yaml"
+    COLLECTOR_BIN="$CS_DIR/dist/countsketchcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    if [ "$PROCESSOR" = "countsketchcol-batch" ]; then
+        CONFIG_FILE="$CS_DIR/config-batch.yaml"
+    else
+        CONFIG_FILE="$CS_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "countminsketchcol-batch" ] || [ "$PROCESSOR" = "countminsketchcol-window" ]; then
+    CM_DIR="$SCRIPT_DIR/countminsketchcol"
+    BUILDER_CONFIG="$CM_DIR/builder-config.yaml"
+    COLLECTOR_BIN="$CM_DIR/dist/countminsketchcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    if [ "$PROCESSOR" = "countminsketchcol-batch" ]; then
+        CONFIG_FILE="$CM_DIR/config-batch.yaml"
+    else
+        CONFIG_FILE="$CM_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "ddsketchcol-batch" ] || [ "$PROCESSOR" = "ddsketchcol-window" ]; then
+    DD_DIR="$SCRIPT_DIR/ddsketchcol"
+    BUILDER_CONFIG="$DD_DIR/builder-config.yaml"
+    # Builder outputs ./cmd/ddsketchcol/ddsketchcol (see builder-config.yaml)
+    COLLECTOR_BIN="$DD_DIR/ddsketchcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    if [ "$PROCESSOR" = "ddsketchcol-batch" ]; then
+        CONFIG_FILE="$DD_DIR/config.yaml"
+    else
+        CONFIG_FILE="$DD_DIR/config-window.yaml"
+    fi
 else
     BUILDER_CONFIG="$PROCESSOR_DIR/builder-config.yaml"
     CONFIG_FILE="$PROCESSOR_DIR/config.yaml"
@@ -62,11 +103,32 @@ case "$PROCESSOR" in
     countsketchcol)
         PROCESSOR_NAME="COUNTSKETCH PROCESSOR"
         ;;
-    countminsketchcol)
-        PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR"
+    countsketchcol-batch)
+        PROCESSOR_NAME="COUNTSKETCH PROCESSOR (batch mode)"
+        ;;
+    countsketchcol-window)
+        PROCESSOR_NAME="COUNTSKETCH PROCESSOR (window mode)"
+        ;;
+    countminsketchcol-batch)
+        PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR (batch mode)"
+        ;;
+    countminsketchcol-window)
+        PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR (window mode)"
         ;;
     kll)
         PROCESSOR_NAME="KLL PROCESSOR"
+        ;;
+    kll-batch)
+        PROCESSOR_NAME="KLL PROCESSOR (batch mode)"
+        ;;
+    kll-window)
+        PROCESSOR_NAME="KLL PROCESSOR (window mode)"
+        ;;
+    ddsketchcol-batch)
+        PROCESSOR_NAME="DDSKETCH PROCESSOR (batch mode)"
+        ;;
+    ddsketchcol-window)
+        PROCESSOR_NAME="DDSKETCH PROCESSOR (window mode)"
         ;;
 esac
 
@@ -118,10 +180,12 @@ cleanup() {
 }
 trap cleanup SIGINT
 
-# Ensure clean state - kill collector by full path and free port
+# Ensure clean state - kill collector by full path and free ports
 pkill -f "$COLLECTOR_BIN" 2>/dev/null
-# Also kill any process using port 8888
+# Free port 8888 (collector telemetry) and 8889 (Prometheus exporter used by
+# correctness checks) to avoid reading stale metrics from a previous run.
 lsof -ti:8888 | xargs kill -9 2>/dev/null
+lsof -ti:8889 | xargs kill -9 2>/dev/null
 sleep 3
 
 # --- HELPER FUNCTIONS ---
@@ -148,6 +212,7 @@ get_memory_mb() {
 }
 
 # --- MAIN LOOP ---
+CORRECTNESS_FAILED=0
 for RATE in "${RATES[@]}"; do
     echo ""
     echo ">>> [SCENARIO] Testing Target Load: ${RATE} MPS"
@@ -276,6 +341,124 @@ for RATE in "${RATES[@]}"; do
 
     echo "    -> Test finished. Analyzing..."
 
+    # Correctness checks: verify sketch processors emit expected metrics.
+    # - Dual input (raw Gauge/Sum + sketch inputs where applicable) is validated indirectly:
+    #   load gen sends raw metrics; processors emit summary/sketch metrics on 8889.
+    # - Batch vs window mode: batch emits per ConsumeMetrics; window emits on tick.
+    #   Cardinality: we require at least the expected summary metric names to be present.
+
+    # For ddsketch benchmarks, perform a quick correctness check on emitted quantiles
+    if [[ "$PROCESSOR" == ddsketchcol* ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
+            if [ -z "$PROM_OUTPUT" ]; then
+                echo "    [SKETCH CHECK] FAIL — no output on port 8889"
+                CORRECTNESS_FAILED=1
+            else
+                P50=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.5"/ && !/^#/{print $NF; exit}')
+                P90=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.9"/ && !/^#/{print $NF; exit}')
+                P99=$(echo "$PROM_OUTPUT" | awk '/ddsketch_quantile="0.99"/ && !/^#/{print $NF; exit}')
+                # Cardinality: expect at least one line of sketch/quantile output (dual-input or raw-only).
+                METRIC_COUNT=$(echo "$PROM_OUTPUT" | grep -c 'ddsketch_quantile=' 2>/dev/null || echo "0")
+                if [ -z "$P50" ] || [ -z "$P90" ] || [ -z "$P99" ]; then
+                    echo "    [SKETCH CHECK] FAIL — quantile metrics missing (p50=$P50 p90=$P90 p99=$P99)"
+                    CORRECTNESS_FAILED=1
+                elif [ "${METRIC_COUNT:-0}" -lt 1 ]; then
+                    echo "    [SKETCH CHECK] FAIL — no ddsketch_quantile metrics (cardinality)"
+                    CORRECTNESS_FAILED=1
+                else
+                    SKETCH_MSG=$(awk -v p50="$P50" -v p90="$P90" -v p99="$P99" 'BEGIN {
+                        ok = (p50 <= p90) && (p90 <= p99) && (p50 >= 0.99) && (p99 <= 507)
+                        if (ok)
+                            printf "    [SKETCH CHECK] PASS  p50=%.2f  p90=%.2f  p99=%.2f\n", p50, p90, p99
+                        else
+                            printf "    [SKETCH CHECK] FAIL  p50=%.2f  p90=%.2f  p99=%.2f  (monotonicity or bounds violated)\n", p50, p90, p99
+                    }')
+                    echo "$SKETCH_MSG"
+                    echo "$SKETCH_MSG" | grep -q "FAIL" && CORRECTNESS_FAILED=1
+                fi
+            fi
+        else
+            echo "    [SKETCH CHECK] SKIPPED — curl not available"
+        fi
+    fi
+
+    # For KLL benchmarks, perform correctness check on emitted quantiles (_p50, _p90, _p99)
+    if [[ "$PROCESSOR" == kll-batch ]] || [[ "$PROCESSOR" == kll-window ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
+            if [ -z "$PROM_OUTPUT" ]; then
+                echo "    [KLL CHECK] FAIL — no output on port 8889"
+                CORRECTNESS_FAILED=1
+            else
+                P50=$(echo "$PROM_OUTPUT" | awk '/_p50[^0-9]/ && !/^#/{print $NF; exit}')
+                P90=$(echo "$PROM_OUTPUT" | awk '/_p90[^0-9]/ && !/^#/{print $NF; exit}')
+                P99=$(echo "$PROM_OUTPUT" | awk '/_p99[^0-9]/ && !/^#/{print $NF; exit}')
+                if [ -z "$P50" ] || [ -z "$P90" ] || [ -z "$P99" ]; then
+                    echo "    [KLL CHECK] FAIL — quantile metrics missing (p50=$P50 p90=$P90 p99=$P99)"
+                    CORRECTNESS_FAILED=1
+                else
+                    KLL_MSG=$(awk -v p50="$P50" -v p90="$P90" -v p99="$P99" 'BEGIN {
+                        ok = (p50 <= p90) && (p90 <= p99) && (p50 >= 0.99) && (p99 <= 507)
+                        if (ok)
+                            printf "    [KLL CHECK] PASS  p50=%.2f  p90=%.2f  p99=%.2f\n", p50, p90, p99
+                        else
+                            printf "    [KLL CHECK] FAIL  p50=%.2f  p90=%.2f  p99=%.2f  (monotonicity or bounds violated)\n", p50, p90, p99
+                    }')
+                    echo "$KLL_MSG"
+                    echo "$KLL_MSG" | grep -q "FAIL" && CORRECTNESS_FAILED=1
+                fi
+            fi
+        else
+            echo "    [KLL CHECK] SKIPPED — curl not available"
+        fi
+    fi
+
+    # For CountSketch benchmarks, verify that countsketch_row and countsketch_col
+    # metadata metrics are present on the Prometheus endpoint.
+    if [[ "$PROCESSOR" == countsketchcol-batch ]] || [[ "$PROCESSOR" == countsketchcol-window ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
+            if [ -z "$PROM_OUTPUT" ]; then
+                echo "    [CS CHECK] FAIL — no output on port 8889"
+                CORRECTNESS_FAILED=1
+            else
+                ROW=$(echo "$PROM_OUTPUT" | awk '/^countsketch_row/ && !/^#/{found=1; exit} END{print found+0}')
+                COL=$(echo "$PROM_OUTPUT" | awk '/^countsketch_col/ && !/^#/{found=1; exit} END{print found+0}')
+                if [ "$ROW" = "1" ] && [ "$COL" = "1" ]; then
+                    echo "    [CS CHECK] PASS  countsketch_row and countsketch_col present"
+                else
+                    echo "    [CS CHECK] FAIL  missing metrics (row=$ROW col=$COL)"
+                    CORRECTNESS_FAILED=1
+                fi
+            fi
+        else
+            echo "    [CS CHECK] SKIPPED — curl not available"
+        fi
+    fi
+
+    # For CountMinSketch benchmarks, verify that countmin_sketch metrics are present
+    # on the Prometheus endpoint.
+    if [[ "$PROCESSOR" == countminsketchcol-batch ]] || [[ "$PROCESSOR" == countminsketchcol-window ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
+            if [ -z "$PROM_OUTPUT" ]; then
+                echo "    [CMS CHECK] FAIL — no output on port 8889"
+                CORRECTNESS_FAILED=1
+            else
+                CMS=$(echo "$PROM_OUTPUT" | awk '/^countmin_sketch/ && !/^#/{found=1; exit} END{print found+0}')
+                if [ "$CMS" = "1" ]; then
+                    echo "    [CMS CHECK] PASS  countmin_sketch metrics present"
+                else
+                    echo "    [CMS CHECK] FAIL  missing countmin_sketch metrics"
+                    CORRECTNESS_FAILED=1
+                fi
+            fi
+        else
+            echo "    [CMS CHECK] SKIPPED — curl not available"
+        fi
+    fi
+
     # RECORD END METRICS (for delta calculations)
     CPU_END=$(get_metric_value "otelcol_process_cpu_seconds_total" "$TELEMETRY_URL")
     RECEIVER_END=$(get_metric_value "otelcol_receiver_accepted_metric_points_total" "$TELEMETRY_URL")
@@ -304,13 +487,21 @@ for RATE in "${RATES[@]}"; do
     
     if [ "$METRICS_RECEIVED" == "" ] || [ "$METRICS_RECEIVED" == "0" ]; then
         ACTUAL_MPS=0
-        LOSS_RATE="0"
+        THROUGHPUT_LABEL="Data Loss Rate"
+        THROUGHPUT_RESULT="N/A"
     else
         ACTUAL_MPS=$(echo "scale=0; $METRICS_RECEIVED / $DURATION_SEC" | bc)
-        if [ "$METRICS_RECEIVED" -gt 0 ]; then
-            LOSS_RATE=$(echo "scale=4; (($METRICS_RECEIVED - $METRICS_SENT) / $METRICS_RECEIVED) * 100" | bc)
+        if awk "BEGIN{exit !($METRICS_SENT > $METRICS_RECEIVED)}"; then
+            # Expansion processor (e.g. ddsketch batch appends quantile metrics)
+            RATIO=$(echo "scale=2; $METRICS_SENT / $METRICS_RECEIVED" | bc)
+            THROUGHPUT_LABEL="Output/Input Ratio"
+            THROUGHPUT_RESULT="${RATIO}x (expansion)"
+        elif [ "$METRICS_RECEIVED" -gt 0 ]; then
+            THROUGHPUT_LABEL="Data Loss Rate"
+            THROUGHPUT_RESULT=$(echo "scale=4; (($METRICS_RECEIVED - $METRICS_SENT) / $METRICS_RECEIVED) * 100" | bc)"%"
         else
-            LOSS_RATE="0"
+            THROUGHPUT_LABEL="Data Loss Rate"
+            THROUGHPUT_RESULT="0%"
         fi
     fi
 
@@ -349,7 +540,7 @@ for RATE in "${RATES[@]}"; do
     echo "    Metrics Received   : ${METRICS_RECEIVED}"
     echo "    Metrics Sent       : ${METRICS_SENT}"
     echo "    Actual Throughput  : ${ACTUAL_MPS} MPS"
-    echo "    Data Loss Rate     : ${LOSS_RATE}%"
+    echo "    ${THROUGHPUT_LABEL}  : ${THROUGHPUT_RESULT}"
     echo "    -----------------"
     echo "    Query Latency (Avg): ${LAT_AVG} ms"
     echo "    Query Latency (P95): ${LAT_P95} ms"
@@ -365,3 +556,7 @@ echo ""
 echo "=========================================================="
 echo "All benchmarks completed. Results in $RESULT_DIR"
 echo "=========================================================="
+if [ "${CORRECTNESS_FAILED:-0}" = "1" ]; then
+    echo "One or more correctness checks failed. Exiting with code 1."
+    exit 1
+fi
