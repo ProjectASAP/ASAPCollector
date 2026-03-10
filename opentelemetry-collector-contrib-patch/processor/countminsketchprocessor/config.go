@@ -33,7 +33,8 @@ type Config struct {
 	Rows    int `mapstructure:"rows"`
 	Columns int `mapstructure:"columns"`
 
-	DropOriginal bool `mapstructure:"drop_original"`
+	TransmitSketch bool `mapstructure:"transmit_sketch"`
+	DropOriginal   bool `mapstructure:"drop_original"`
 
 	// The time window to accumulate data before emitting a sketch (window mode only).
 	WindowInterval time.Duration `mapstructure:"window_interval"`

@@ -35,6 +35,12 @@ type Config struct {
 	// Used only when Mode = "window".
 	WindowSize time.Duration `mapstructure:"window_size"`
 
+	// TransmitSketch reserves the shared sketch-output toggle used by the other
+	// sketch processors. CountSketch currently continues to emit metric-form
+	// summaries in both modes because the underlying library does not expose a
+	// serializable OTLP payload in this code path.
+	TransmitSketch bool `mapstructure:"transmit_sketch"`
+
 	// DropOriginal controls whether to drop original metrics and only emit sketches.
 	// When true, original metrics are not forwarded, only sketch outputs are emitted.
 	DropOriginal bool `mapstructure:"drop_original"`

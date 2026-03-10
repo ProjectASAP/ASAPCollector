@@ -62,6 +62,7 @@ func TestConfig_Validate(t *testing.T) {
 				MetricName:     "cms_test",
 				Rows:           5,
 				Columns:        1024,
+				TransmitSketch: true,
 				WindowInterval: 10 * time.Second,
 			},
 			expectError: false,
@@ -109,6 +110,7 @@ func TestProcessor_TumblingWindow_Correctness(t *testing.T) {
 		Rows:           5,
 		Columns:        128,
 		DropOriginal:   true,
+		TransmitSketch: true,
 		WindowInterval: windowDuration,
 	}
 
@@ -238,6 +240,7 @@ func TestBatchMode(t *testing.T) {
 		Rows:           5,
 		Columns:        128,
 		DropOriginal:   false,
+		TransmitSketch: true,
 		WindowInterval: 0,
 	}
 	require.NoError(t, cfg.Validate())
@@ -263,6 +266,7 @@ func TestBatchModeDropOriginal(t *testing.T) {
 		Rows:           5,
 		Columns:        128,
 		DropOriginal:   true,
+		TransmitSketch: true,
 		WindowInterval: 0,
 	}
 	require.NoError(t, cfg.Validate())
@@ -278,6 +282,30 @@ func TestBatchModeDropOriginal(t *testing.T) {
 	require.GreaterOrEqual(t, out.ResourceMetrics().Len(), 0)
 	dps := getAllDataPoints(out)
 	require.GreaterOrEqual(t, len(dps), 1, "should have sketch metric in output")
+}
+
+func TestBatchModeQueryMetricsWhenTransmitSketchDisabled(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeBatch,
+		MetricName:     "cms_queries",
+		Rows:           5,
+		Columns:        128,
+		TransmitSketch: false,
+		DropOriginal:   true,
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+
+	out, err := proc.ConsumeMetrics(context.Background(), generateMetrics("svc", 3))
+	require.NoError(t, err)
+
+	dps := getAllDataPoints(out)
+	require.Len(t, dps, 1)
+	assert.Equal(t, 3.0, dps[0].DoubleValue())
+	_, hasPayload := dps[0].Attributes().Get("sketch_payload")
+	assert.False(t, hasPayload)
 }
 
 // TestEmptyInput verifies empty metrics do not cause panics.
