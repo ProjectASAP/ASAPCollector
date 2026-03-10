@@ -28,11 +28,11 @@ type ddsketchProcessor struct {
 	nextConsumer consumer.Metrics
 
 	// window mode state
-	mu             sync.Mutex
-	windowStore    map[string]*resourceWindow // keyed by resource attributes
-	stopCh         chan struct{}
-	doneCh         chan struct{}
-	windowStarted  atomic.Bool // true once the window goroutine is running
+	mu            sync.Mutex
+	windowStore   map[string]*resourceWindow // keyed by resource attributes
+	stopCh        chan struct{}
+	doneCh        chan struct{}
+	windowStarted atomic.Bool // true once the window goroutine is running
 }
 
 type resourceWindow struct {
@@ -191,7 +191,7 @@ func (p *ddsketchProcessor) buildMetric(src pmetric.Metric) (pmetric.Metric, boo
 		return pmetric.Metric{}, false
 	}
 
-	if p.cfg.EmitDDSketch {
+	if p.cfg.TransmitSketch {
 		return p.buildMergedSketchMetric(src, series)
 	}
 	return p.buildQuantileMetric(src, series)
@@ -613,7 +613,7 @@ func (p *ddsketchProcessor) flushWindow(ctx context.Context) error {
 				tmp.SetUnit(mw.unit)
 				// Restore temporality on the template so buildMergedSketchMetric
 				// can propagate it to the emitted DDSketch metric.
-				if p.cfg.EmitDDSketch {
+				if p.cfg.TransmitSketch {
 					tmp.SetEmptyDDSketch().SetAggregationTemporality(mw.temporality)
 				}
 
@@ -621,7 +621,7 @@ func (p *ddsketchProcessor) flushWindow(ctx context.Context) error {
 					outMetric pmetric.Metric
 					ok        bool
 				)
-				if p.cfg.EmitDDSketch {
+				if p.cfg.TransmitSketch {
 					outMetric, ok = p.buildMergedSketchMetric(tmp, mw.series)
 				} else {
 					outMetric, ok = p.buildQuantileMetric(tmp, mw.series)
