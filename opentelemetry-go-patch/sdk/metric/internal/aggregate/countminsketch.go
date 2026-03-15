@@ -31,17 +31,22 @@ type countMinSketchSnapshot struct {
 
 type countMinSketchSeries[N int64 | float64] struct {
 	attrs       attribute.Set
+	seriesID    uint64
 	sketch      *cms.CountMinSketch
 	sampleCount uint64
+
+	measuredSince bool
+	idleCycles    uint8
 }
 
 type countMinSketchValues[N int64 | float64] struct {
 	rows int
 	cols int
 
-	limit    limiter[countMinSketchSeries[N]]
-	values   map[attribute.Distinct]*countMinSketchSeries[N]
-	valuesMu sync.Mutex
+	limit      limiter[countMinSketchSeries[N]]
+	values     map[attribute.Distinct]*countMinSketchSeries[N]
+	valuesMu   sync.Mutex
+	seriesPool sync.Pool
 }
 
 func newCountMinSketchValues[N int64 | float64](rows, cols, limit int) *countMinSketchValues[N] {
@@ -51,24 +56,34 @@ func newCountMinSketchValues[N int64 | float64](rows, cols, limit int) *countMin
 	if cols <= 0 {
 		cols = 2048
 	}
-	return &countMinSketchValues[N]{
+	v := &countMinSketchValues[N]{
 		rows:   rows,
 		cols:   cols,
 		limit:  newLimiter[countMinSketchSeries[N]](limit),
 		values: make(map[attribute.Distinct]*countMinSketchSeries[N]),
 	}
+	v.seriesPool.New = func() any { return new(countMinSketchSeries[N]) }
+	return v
 }
 
 func (d *countMinSketchValues[N]) newSeries(attr attribute.Set) *countMinSketchSeries[N] {
-	sk, err := cms.NewCountMinSketch(d.rows, d.cols)
-	if err != nil {
-		otel.Handle(err)
-		return nil
+	series := d.seriesPool.Get().(*countMinSketchSeries[N])
+	if series.sketch != nil {
+		series.sketch.Reset() // reuse Count/Sum/Sum2 rows and L1/L2 arrays
+	} else {
+		sk, err := cms.NewCountMinSketch(d.rows, d.cols)
+		if err != nil {
+			otel.Handle(err)
+			return nil
+		}
+		series.sketch = sk
 	}
-	return &countMinSketchSeries[N]{
-		attrs:  attr,
-		sketch: sk,
-	}
+	series.attrs = attr
+	series.seriesID = 0
+	series.sampleCount = 0
+	series.measuredSince = true
+	series.idleCycles = 0
+	return series
 }
 
 func (d *countMinSketchValues[N]) measure(
@@ -93,6 +108,7 @@ func (d *countMinSketchValues[N]) measure(
 		}
 	}
 
+	series.measuredSince = true
 	key := fltrAttr.Encoded(attribute.DefaultEncoder())
 	input := common.FromString(key)
 	series.sketch.InsertWithHash(input.Hash)
@@ -145,6 +161,15 @@ func (d *countMinSketchAgg[N]) delta(
 	}
 
 	dPts = dPts[:i]
+
+	for _, series := range d.values {
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.sampleCount = 0
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 	clear(d.values)
 	d.start = t
 
@@ -168,7 +193,18 @@ func (d *countMinSketchAgg[N]) cumulative(
 	dPts := reset(data.DataPoints, n, n)
 
 	var i int
-	for _, series := range d.values {
+	var toEvict []attribute.Distinct
+	for key, series := range d.values {
+		if !series.measuredSince {
+			series.idleCycles++
+			if series.idleCycles >= maxIdleCycles {
+				toEvict = append(toEvict, key)
+			}
+			continue
+		}
+		series.measuredSince = false
+		series.idleCycles = 0
+
 		if series.sampleCount == 0 {
 			continue
 		}
@@ -177,6 +213,17 @@ func (d *countMinSketchAgg[N]) cumulative(
 		}
 	}
 	dPts = dPts[:i]
+
+	for _, key := range toEvict {
+		series := d.values[key]
+		delete(d.values, key)
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.sampleCount = 0
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 
 	data.DataPoints = dPts
 	*dest = data
@@ -195,7 +242,13 @@ func (d *countMinSketchAgg[N]) exportDataPoint(
 	}
 
 	dp := dest
-	dp.Attributes = series.attrs
+	if series.seriesID != 0 {
+		dp.SeriesID = series.seriesID
+	} else {
+		dp.Attributes = series.attrs
+		dp.SeriesIDSink = &series.seriesID
+		dp.AttrsClearer = &series.attrs
+	}
 	dp.StartTime = d.start
 	dp.Time = t
 	dp.SampleCount = series.sampleCount
