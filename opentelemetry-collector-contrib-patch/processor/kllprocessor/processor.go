@@ -18,6 +18,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// builderPool recycles strings.Builder instances to avoid per-call heap
+// allocations in the hot attributesKey path.
+var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
+
+// bufPool recycles bytes.Buffer instances used during KLL sketch serialization.
+var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
 type kllProcessor struct {
 	cfg          *Config
 	logger       *zap.Logger
@@ -28,6 +35,11 @@ type kllProcessor struct {
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool // true once the window goroutine is running
+
+	// seriesPool recycles kllSeries structs (and their underlying KLL sketch
+	// compactor arrays) across window flushes to reduce GC pressure in
+	// high-cardinality deployments.
+	seriesPool sync.Pool
 }
 
 type resourceWindow struct {
@@ -53,7 +65,7 @@ type kllSeries struct {
 }
 
 func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *kllProcessor {
-	return &kllProcessor{
+	p := &kllProcessor{
 		cfg:          cfg,
 		logger:       logger,
 		nextConsumer: next,
@@ -61,6 +73,8 @@ func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *kllPr
 		stopCh:       make(chan struct{}),
 		doneCh:       make(chan struct{}),
 	}
+	p.seriesPool.New = func() any { return new(kllSeries) }
+	return p
 }
 
 func (p *kllProcessor) Capabilities() consumer.Capabilities {
@@ -233,7 +247,8 @@ func attributesKey(attrs pcommon.Map) string {
 		return true
 	})
 	sort.Strings(keys)
-	var b strings.Builder
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
 	for _, k := range keys {
 		v, ok := attrs.Get(k)
 		if !ok {
@@ -244,7 +259,9 @@ func attributesKey(attrs pcommon.Map) string {
 		b.WriteString(v.AsString())
 		b.WriteByte(';')
 	}
-	return b.String()
+	s := b.String()
+	builderPool.Put(b)
+	return s
 }
 
 func (p *kllProcessor) accumulateIntoWindow(md pmetric.Metrics) {
@@ -320,10 +337,9 @@ func (p *kllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 		if series == nil {
 			attrCopy := pcommon.NewMap()
 			dp.Attributes().CopyTo(attrCopy)
-			series = &kllSeries{
-				attrs:  attrCopy,
-				sketch: newKLLSketch(p.cfg.K),
-			}
+			series = p.seriesPool.Get().(*kllSeries)
+			series.attrs = attrCopy
+			series.sketch = newKLLSketch(p.cfg.K)
 			mw.series[attrKey] = series
 		}
 		var val float64
@@ -350,10 +366,9 @@ func (p *kllProcessor) accumulateKLLSketchMetric(sw *scopeWindow, metric pmetric
 		if series == nil {
 			attrCopy := pcommon.NewMap()
 			dp.Attributes().CopyTo(attrCopy)
-			series = &kllSeries{
-				attrs:  attrCopy,
-				sketch: newKLLSketch(p.cfg.K),
-			}
+			series = p.seriesPool.Get().(*kllSeries)
+			series.attrs = attrCopy
+			series.sketch = newKLLSketch(p.cfg.K)
 			mw.series[attrKey] = series
 		}
 		if series.sketch != nil && len(dp.Sketch()) > 0 {
@@ -396,6 +411,8 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 					)
 					for _, series := range mw.series {
 						if series.sketch == nil || series.sketch.GetSize() == 0 {
+							series.attrs = pcommon.Map{}
+							p.seriesPool.Put(series)
 							continue
 						}
 						if !created {
@@ -409,6 +426,8 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 						if err := appendKLLSketchDataPoint(m, series.attrs, series.sketch, now, p.cfg.K); err != nil && p.logger != nil {
 							p.logger.Error("kllprocessor: failed to serialize sketch", zap.Error(err))
 						}
+						series.attrs = pcommon.Map{}
+						p.seriesPool.Put(series)
 					}
 					continue
 				}
@@ -449,6 +468,11 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 						dp.SetTimestamp(now)
 						dp.SetDoubleValue(d.val)
 					}
+				}
+				// Return series to pool after all quantiles have been processed.
+				for _, series := range mw.series {
+					series.attrs = pcommon.Map{}
+					p.seriesPool.Put(series)
 				}
 			}
 		}
@@ -506,11 +530,19 @@ func serializeKLLSketch(sketch *kll.KLLSketch, k int) ([]byte, error) {
 	for i, compactor := range sketch.Compactors {
 		snapshot.Compactors[i] = append([]float64(nil), compactor...)
 	}
-	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(snapshot); err != nil {
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	err := gob.NewEncoder(buf).Encode(snapshot)
+	var out []byte
+	if err == nil {
+		out = make([]byte, buf.Len())
+		copy(out, buf.Bytes())
+	}
+	bufPool.Put(buf)
+	if err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return out, nil
 }
 
 func (p *kllProcessor) sketchMetricName(base string) string {
