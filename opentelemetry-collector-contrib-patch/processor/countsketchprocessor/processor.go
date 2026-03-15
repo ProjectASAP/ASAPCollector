@@ -178,6 +178,11 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 					for l := 0; l < dps.Len(); l++ {
 						value += float64(dps.At(l).Count())
 					}
+
+				case pmetric.MetricTypeCountSketch:
+					// Pre-aggregated path: each dp represents one series window.
+					// Count each dp as one observation for the row/col frequency sketches.
+					value += float64(metric.CountSketch().DataPoints().Len())
 				}
 
 				// For Debugging

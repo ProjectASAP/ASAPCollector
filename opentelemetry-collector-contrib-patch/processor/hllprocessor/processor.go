@@ -16,6 +16,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// mergeSketchBytes deserializes a serialized HLL sketch and merges it into dst.
+// Returns dst unchanged (with an error) if deserialization fails.
+func mergeSketchBytes(dst *hll.HyperLogLog, payload []byte) error {
+	src, err := hll.DeserializeHyperLogLogFromBytes(payload)
+	if err != nil {
+		return err
+	}
+	return dst.Merge(src)
+}
+
 type hllProcessor struct {
 	cfg          *Config
 	logger       *zap.Logger
@@ -123,8 +133,8 @@ func (p *hllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) e
 	}
 }
 
-// processBatch aggregates gauge data points within a batch into HLL sketches and
-// appends a cardinality gauge metric to the resource metrics slice.
+// processBatch aggregates gauge and HLLSketch data points within a batch into
+// HLL sketches and appends a cardinality gauge metric to the resource metrics slice.
 func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 	type batchSeries struct {
 		name   string
@@ -134,6 +144,24 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 	}
 	batched := make(map[string]*batchSeries)
 
+	getOrCreate := func(name, unit string, attrs pcommon.Map) *batchSeries {
+		attrKey := attributesKey(attrs)
+		key := name + "::" + attrKey
+		bs := batched[key]
+		if bs == nil {
+			attrCopy := pcommon.NewMap()
+			attrs.CopyTo(attrCopy)
+			bs = &batchSeries{
+				name:   name,
+				unit:   unit,
+				attrs:  attrCopy,
+				sketch: hll.NewHyperLogLog(),
+			}
+			batched[key] = bs
+		}
+		return bs
+	}
+
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
@@ -141,28 +169,25 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 			metrics := sms.At(j).Metrics()
 			for k := 0; k < metrics.Len(); k++ {
 				metric := metrics.At(k)
-				if metric.Type() != pmetric.MetricTypeGauge {
-					continue
-				}
-				dps := metric.Gauge().DataPoints()
-				for l := 0; l < dps.Len(); l++ {
-					dp := dps.At(l)
-					val := dp.DoubleValue()
-					attrKey := attributesKey(dp.Attributes())
-					key := metric.Name() + "::" + attrKey
-					bs := batched[key]
-					if bs == nil {
-						attrCopy := pcommon.NewMap()
-						dp.Attributes().CopyTo(attrCopy)
-						bs = &batchSeries{
-							name:   metric.Name(),
-							unit:   metric.Unit(),
-							attrs:  attrCopy,
-							sketch: hll.NewHyperLogLog(),
-						}
-						batched[key] = bs
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					dps := metric.Gauge().DataPoints()
+					for l := 0; l < dps.Len(); l++ {
+						dp := dps.At(l)
+						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
+						bs.sketch.Insert(dp.DoubleValue())
 					}
-					bs.sketch.Insert(val)
+				case pmetric.MetricTypeHLLSketch:
+					dps := metric.HLLSketch().DataPoints()
+					for l := 0; l < dps.Len(); l++ {
+						dp := dps.At(l)
+						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
+						if payload := dp.Sketch(); len(payload) > 0 {
+							if err := mergeSketchBytes(bs.sketch, payload); err != nil && p.logger != nil {
+								p.logger.Error("hllprocessor: failed to deserialize HLLSketch data point", zap.Error(err))
+							}
+						}
+					}
 				}
 			}
 		}
@@ -254,10 +279,12 @@ func (p *hllProcessor) accumulateIntoWindow(md pmetric.Metrics) {
 			metrics := sm.Metrics()
 			for k := 0; k < metrics.Len(); k++ {
 				metric := metrics.At(k)
-				if metric.Type() != pmetric.MetricTypeGauge {
-					continue
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					p.accumulateGaugeMetric(sw, metric)
+				case pmetric.MetricTypeHLLSketch:
+					p.accumulateHLLSketchMetric(sw, metric)
 				}
-				p.accumulateGaugeMetric(sw, metric)
 			}
 		}
 	}
@@ -295,6 +322,32 @@ func (p *hllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 			mw.series[attrKey] = series
 		}
 		series.sketch.Insert(dp.DoubleValue())
+	}
+}
+
+// accumulateHLLSketchMetric merges pre-aggregated HLLSketch data points (from
+// the SDK pre-aggregation path) into the window store.
+func (p *hllProcessor) accumulateHLLSketchMetric(sw *scopeWindow, metric pmetric.Metric) {
+	mw := p.getOrCreateMetricWindow(sw, metric)
+	dps := metric.HLLSketch().DataPoints()
+	for l := 0; l < dps.Len(); l++ {
+		dp := dps.At(l)
+		attrKey := attributesKey(dp.Attributes())
+		series := mw.series[attrKey]
+		if series == nil {
+			attrCopy := pcommon.NewMap()
+			dp.Attributes().CopyTo(attrCopy)
+			series = &hllSeries{
+				attrs:  attrCopy,
+				sketch: hll.NewHyperLogLog(),
+			}
+			mw.series[attrKey] = series
+		}
+		if payload := dp.Sketch(); len(payload) > 0 {
+			if err := mergeSketchBytes(series.sketch, payload); err != nil && p.logger != nil {
+				p.logger.Error("hllprocessor: failed to merge HLLSketch data point", zap.Error(err))
+			}
+		}
 	}
 }
 

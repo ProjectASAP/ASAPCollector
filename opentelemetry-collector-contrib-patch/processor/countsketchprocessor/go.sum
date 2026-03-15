@@ -1,5 +1,3 @@
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260310010833-de171ee6c9b6 h1:anSE7TddfEuUZpFnWqLmAAcitRtaAJC8nbSXtRlbF2I=
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260310010833-de171ee6c9b6/go.mod h1:LOMYBMAKPj5785R5e6zkO6uNIiGkNsU526pJ5uOPD5o=
 github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8 h1:tfkndjVr2ZNdccmet+WE8JT0Ydi6H//uQ3OeEIVbHMc=
 github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8/go.mod h1:ByHMqQtfdPiCHazEQvV09JaX9hbuiLVVxCamhynpdcU=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
@@ -69,8 +67,6 @@ go.opentelemetry.io/collector/featuregate v1.47.0 h1:LuJnDngViDzPKds5QOGxVYNL1QC
 go.opentelemetry.io/collector/featuregate v1.47.0/go.mod h1:d0tiRzVYrytB6LkcYgz2ESFTv7OktRPQe0QEQcPt1L4=
 go.opentelemetry.io/collector/internal/testutil v0.141.0 h1:/rUGApojPtUPMN3rFfApNgEjAt03rCGt2qxNxGGs/4A=
 go.opentelemetry.io/collector/internal/testutil v0.141.0/go.mod h1:YAD9EAkwh/l5asZNbEBEUCqEjoL1OKMjAMoPjPqH76c=
-go.opentelemetry.io/collector/pdata v1.47.0 h1:4Mk0mo2RlKCUPomV8ISm+Yx/STFtuSn88yjiCePHkGA=
-go.opentelemetry.io/collector/pdata v1.47.0/go.mod h1:yMdjdWZBNA8wLFCQXOCLb0RfcpZOxp7exH+bN7udWO0=
 go.opentelemetry.io/collector/pdata/pprofile v0.141.0 h1:15lbbHKzPIG4aVT6hsJO7XZLvMrGll+i36es/FEgn7c=
 go.opentelemetry.io/collector/pdata/pprofile v0.141.0/go.mod h1:gUtWKniP3O0jXYVDISp1y3dCbYFIyglFw6B8ATyrrWs=
 go.opentelemetry.io/collector/pdata/testdata v0.141.0 h1:AfjNbZ/DUSr0aiP4H+z7pqrzTuBQFaT6oca0zaJ3gCA=

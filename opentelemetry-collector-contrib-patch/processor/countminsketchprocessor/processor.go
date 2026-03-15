@@ -239,6 +239,52 @@ func (p *windowedCountMinSketchProcessor) ingestMetric(
 		for i := 0; i < dps.Len(); i++ {
 			p.updateWindowSketch(metric.Name(), dps.At(i))
 		}
+	case pmetric.MetricTypeCountMinSketch:
+		// Pre-aggregated path: deserialize and merge each incoming sketch into
+		// the corresponding per-aggregation-key window sketch.
+		dps := metric.CountMinSketch().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			if len(dp.Sketch()) == 0 {
+				continue
+			}
+			incoming, err := deserializeCMS(dp.Sketch())
+			if err != nil {
+				p.logger.Error("countminsketchprocessor: failed to deserialize CountMinSketch dp", zap.Error(err))
+				continue
+			}
+			aggregationKey := buildAggregationKey(metric.Name(), dp.Attributes())
+			p.mergeWindowSketch(aggregationKey, incoming)
+		}
+	}
+}
+
+// mergeWindowSketch merges an incoming pre-aggregated CMS into the per-key window store.
+func (p *windowedCountMinSketchProcessor) mergeWindowSketch(aggregationKey string, incoming *cms.CountMinSketch) {
+	p.mu.RLock()
+	ws, exists := p.activeWindowSketches[aggregationKey]
+	p.mu.RUnlock()
+
+	if !exists {
+		p.mu.Lock()
+		ws, exists = p.activeWindowSketches[aggregationKey]
+		if !exists {
+			newCMS, err := cms.NewCountMinSketch(incoming.Rows, incoming.Cols)
+			if err != nil {
+				p.logger.Error("Failed to create CMS for merge", zap.Error(err))
+				p.mu.Unlock()
+				return
+			}
+			ws = &windowSketch{cms: newCMS}
+			p.activeWindowSketches[aggregationKey] = ws
+		}
+		p.mu.Unlock()
+	}
+
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if err := ws.cms.Merge(incoming); err != nil {
+		p.logger.Error("Failed to merge CMS", zap.Error(err))
 	}
 }
 
@@ -390,6 +436,31 @@ func serializeCMS(
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// deserializeCMS reconstructs a CountMinSketch from the gob-encoded snapshot
+// format used by both the SDK aggregate and this processor's serializeCMS.
+func deserializeCMS(data []byte) (*cms.CountMinSketch, error) {
+	var snap countMinSketchSnapshot
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&snap); err != nil {
+		return nil, err
+	}
+	s, err := cms.NewCountMinSketch(snap.Rows, snap.Cols)
+	if err != nil {
+		return nil, err
+	}
+	for r := 0; r < snap.Rows && r < len(snap.Count); r++ {
+		for c := 0; c < snap.Cols && c < len(snap.Count[r]); c++ {
+			s.Count[r][c] = snap.Count[r][c]
+			s.Sum[r][c] = snap.Sum[r][c]
+			s.Sum2[r][c] = snap.Sum2[r][c]
+		}
+	}
+	for r := 0; r < snap.Rows && r < len(snap.L1); r++ {
+		s.L1[r] = snap.L1[r]
+		s.L2[r] = snap.L2[r]
+	}
+	return s, nil
 }
 
 func buildAggregationKey(
