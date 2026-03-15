@@ -315,18 +315,24 @@ func main() {
 		log.Fatalf("failed to create OTLP exporter: %v", err)
 	}
 
-	// View overrides aggregation for the benchmark instrument.
-	view := sdkmetric.NewView(
-		sdkmetric.Instrument{Name: "benchmark.latency"},
-		sdkmetric.Stream{Aggregation: agg},
-	)
-
-	provider := sdkmetric.NewMeterProvider(
+	// View overrides aggregation for sketch types. Baseline skips the view so
+	// the Float64Gauge uses its natural LastValue aggregation — no nil-aggregation
+	// side-effect that would suppress reporting.
+	providerOpts := []sdkmetric.Option{
 		sdkmetric.WithReader(
 			sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(*interval)),
 		),
-		sdkmetric.WithView(view),
-	)
+	}
+	if agg != nil {
+		providerOpts = append(providerOpts, sdkmetric.WithView(
+			sdkmetric.NewView(
+				sdkmetric.Instrument{Name: "benchmark.latency"},
+				sdkmetric.Stream{Aggregation: agg},
+			),
+		))
+	}
+
+	provider := sdkmetric.NewMeterProvider(providerOpts...)
 	defer func() {
 		shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutCancel()
