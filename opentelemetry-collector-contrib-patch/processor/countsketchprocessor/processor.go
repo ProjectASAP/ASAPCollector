@@ -31,6 +31,10 @@ type countSketchProcessor struct {
 	rowSketch *countsketch.CountSketch // Tracks Metric Names
 	colSketch *countsketch.CountSketch // Tracks Host Names
 
+	// sketchPool recycles CountSketch objects across flushes via Reset(),
+	// avoiding re-allocation of the underlying hash/count arrays every window.
+	sketchPool sync.Pool
+
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool // true once the window goroutine is running
@@ -76,7 +80,7 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 		logger.Error("Failed to init col sketch", zap.Error(errCol))
 	}
 
-	return &countSketchProcessor{
+	p := &countSketchProcessor{
 		logger: logger,
 		next:   next,
 		config: cfg,
@@ -87,6 +91,10 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 		stopCh:    make(chan struct{}),
 		doneCh:    make(chan struct{}),
 	}
+	// New returns nil so Get() returns nil when pool is empty;
+	// callers allocate fresh sketches in that case.
+	p.sketchPool.New = func() any { return (*countsketch.CountSketch)(nil) }
+	return p
 }
 
 func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) error {
@@ -263,23 +271,40 @@ func (p *countSketchProcessor) flushBatch() {
 	rowSnapshot := p.rowSketch
 	colSnapshot := p.colSketch
 
-	// Reset sketches for the next batch.
+	// Get reusable sketches from pool, or allocate fresh ones.
 	var err error
-	p.rowSketch, err = newConfiguredCountSketch(p.config)
-	if err != nil {
-		p.logger.Error("Failed to reset row sketch", zap.Error(err))
+	rowNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
+	if rowNext == nil {
+		rowNext, err = newConfiguredCountSketch(p.config)
+		if err != nil {
+			p.logger.Error("Failed to reset row sketch", zap.Error(err))
+		}
 	}
-
-	p.colSketch, err = newConfiguredCountSketch(p.config)
-	if err != nil {
-		p.logger.Error("Failed to reset col sketch", zap.Error(err))
+	colNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
+	if colNext == nil {
+		colNext, err = newConfiguredCountSketch(p.config)
+		if err != nil {
+			p.logger.Error("Failed to reset col sketch", zap.Error(err))
+		}
 	}
+	p.rowSketch = rowNext
+	p.colSketch = colNext
 
 	p.mutex.Unlock()
 
 	// Emit sketch metrics if we have snapshots.
 	if rowSnapshot != nil || colSnapshot != nil {
 		p.emitSketches(rowSnapshot, colSnapshot)
+	}
+
+	// Return old sketches to pool after emission.
+	if rowSnapshot != nil {
+		rowSnapshot.Reset()
+		p.sketchPool.Put(rowSnapshot)
+	}
+	if colSnapshot != nil {
+		colSnapshot.Reset()
+		p.sketchPool.Put(colSnapshot)
 	}
 }
 
@@ -290,23 +315,40 @@ func (p *countSketchProcessor) flushSketches() {
 	rowSnapshot := p.rowSketch
 	colSnapshot := p.colSketch
 
-	// Reset sketches
+	// Get reusable sketches from pool, or allocate fresh ones.
 	var err error
-	p.rowSketch, err = newConfiguredCountSketch(p.config)
-	if err != nil {
-		p.logger.Error("Failed to reset row sketch", zap.Error(err))
+	rowNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
+	if rowNext == nil {
+		rowNext, err = newConfiguredCountSketch(p.config)
+		if err != nil {
+			p.logger.Error("Failed to reset row sketch", zap.Error(err))
+		}
 	}
-
-	p.colSketch, err = newConfiguredCountSketch(p.config)
-	if err != nil {
-		p.logger.Error("Failed to reset col sketch", zap.Error(err))
+	colNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
+	if colNext == nil {
+		colNext, err = newConfiguredCountSketch(p.config)
+		if err != nil {
+			p.logger.Error("Failed to reset col sketch", zap.Error(err))
+		}
 	}
+	p.rowSketch = rowNext
+	p.colSketch = colNext
 
 	p.mutex.Unlock()
 
 	// Emit sketch metrics if we have snapshots
 	if rowSnapshot != nil || colSnapshot != nil {
 		p.emitSketches(rowSnapshot, colSnapshot)
+	}
+
+	// Return old sketches to pool after emission.
+	if rowSnapshot != nil {
+		rowSnapshot.Reset()
+		p.sketchPool.Put(rowSnapshot)
+	}
+	if colSnapshot != nil {
+		colSnapshot.Reset()
+		p.sketchPool.Put(colSnapshot)
 	}
 }
 
