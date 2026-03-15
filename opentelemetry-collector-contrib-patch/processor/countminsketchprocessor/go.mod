@@ -48,6 +48,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
+replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
+
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest => ../../pkg/pdatatest
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil => ../../pkg/pdatautil

@@ -1,6 +1,6 @@
 # DataCollector — Implementation Progress
 
-_Last updated: 2026-03-14_
+_Last updated: 2026-03-14 (SDK pre-aggregation update)_
 
 ---
 
@@ -15,13 +15,71 @@ over streaming metric data without storing every raw data point.
 
 ## Sketch Processors — Status Matrix
 
-| Processor | Sketch Algorithm | Query | Batch | Window | SDK gauge path | Bench script | Proto definition |
-|-----------|-----------------|-------|-------|--------|----------------|--------------|------------------|
-| `ddsketchprocessor` | DDSketch (DataDog) | Quantiles | ✅ | ✅ | ✅ (pre-aggregated) | ✅ | ✅ |
-| `kllprocessor` | KLL (Karnin–Lang–Liberty) | Quantiles | ✅ | ✅ | ✅ (gauge path) | ✅ | ✅ |
-| `countsketchprocessor` | CountSketch | Frequency / heavy hitters | ✅ | ✅ | ✅ (gauge path) | ✅ | ✅ |
-| `countminsketchprocessor` | Count-Min Sketch | Frequency estimation | ✅ | ✅ | ✅ (gauge path) | ✅ | ✅ |
-| `hllprocessor` | HyperLogLog | **Cardinality** | ✅ | ✅ | ✅ (gauge path) | ✅ | ✅ (proto only) |
+| Processor | Sketch Algorithm | Query | Batch | Window | SDK delivery | Bench script | Proto definition |
+|-----------|-----------------|-------|-------|--------|--------------|--------------|------------------|
+| `ddsketchprocessor` | DDSketch (DataDog) | Quantiles | ✅ | ✅ | ✅ **pre-aggregated** (SDK histogram) | ✅ | ✅ |
+| `kllprocessor` | KLL (Karnin–Lang–Liberty) | Quantiles | ✅ | ✅ | ✅ **pre-aggregated** (SDK histogram) | ✅ | ✅ |
+| `countsketchprocessor` | CountSketch | Frequency / heavy hitters | ✅ | ✅ | ✅ **pre-aggregated** (SDK histogram) | ✅ | ✅ |
+| `countminsketchprocessor` | Count-Min Sketch | Frequency estimation | ✅ | ✅ | ✅ **pre-aggregated** (SDK histogram) | ✅ | ✅ |
+| `hllprocessor` | HyperLogLog | **Cardinality** | ✅ | ✅ | ✅ **pre-aggregated** (SDK histogram) | ✅ | ✅ (proto only) |
+
+---
+
+## Completed (2026-03-14, update 2) — SDK pre-aggregation for all sketch types
+
+All sketch processors now use the **SDK pre-aggregation path** (`sdkSketch` delivery):
+the SDK builds the sketch before export and ships it as a typed metric data point
+(`KLLSketch`, `CountSketch`, `CountMinSketch`, `HLLSketch`).
+The collector-side processor deserializes the incoming sketch bytes and merges them
+into its own per-series or per-window sketch, then emits the aggregated result.
+
+Previously only DDSketch used this path; the others used `sdkGauge` (raw `LastValue`).
+
+### `fakemetricload/main.go` — delivery mode change
+
+| Sketch | Before | After |
+|--------|--------|-------|
+| `ddsketch` | `sdkSketch` + `AggregationDDSketch` | unchanged |
+| `kll` | `sdkGauge` + `AggregationKLLSketch` | **`sdkSketch`** + `AggregationKLLSketch` |
+| `countsketch` | `sdkGauge` + `AggregationCountSketch` | **`sdkSketch`** + `AggregationCountSketch` |
+| `countminsketch` | `sdkGauge` + `AggregationCountMinSketch` | **`sdkSketch`** + `AggregationCountMinSketch` |
+| `hll` | `sdkGauge` + `AggregationLastValue` | **`sdkSketch`** + `AggregationHLLSketch` |
+
+### Processor changes
+
+**`kllprocessor/processor.go`**
+- Handles `MetricTypeKLLSketch` in both batch and window modes.
+- Deserializes incoming sketch bytes with `kll.DeserializeKLLSketchFromBytes` and
+  merges into the per-series `*kll.KLLSketch` via `Merge`. Quantile output unchanged.
+- Added `replace go.opentelemetry.io/collector/pdata` in `go.mod`.
+
+**`countsketchprocessor/processor.go`**
+- Handles `MetricTypeCountSketch` in `processMetrics`.
+- Each incoming CountSketch dp counts as one observation (value = dp count) for the
+  row (metric-name) and col (host-name) frequency sketches.
+- Added `replace go.opentelemetry.io/collector/pdata` in `go.mod`.
+
+**`countminsketchprocessor/processor.go`**
+- Handles `MetricTypeCountMinSketch` in `ingestMetric`.
+- Added `deserializeCMS` (decodes the gob snapshot format shared by SDK and processor)
+  and `mergeWindowSketch` (merges incoming CMS into the per-aggregation-key window CMS).
+- Added `replace go.opentelemetry.io/collector/pdata` in `go.mod`.
+
+**`hllprocessor/processor.go`**
+- Handles `MetricTypeHLLSketch` in both batch and window modes (added alongside the
+  existing `MetricTypeGauge` path which remains for backward compatibility).
+- Deserializes with `hll.DeserializeHyperLogLogFromBytes` via a `mergeSketchBytes`
+  helper and merges into the per-series `*hll.HyperLogLog`.
+- Added `replace go.opentelemetry.io/collector/pdata` in `go.mod`.
+
+### Serialization compatibility
+
+| Sketch | SDK serialization | Processor deserialization |
+|--------|-------------------|--------------------------|
+| KLL | `kll.SerializeToBytes()` (sketchlib-go canonical) | `kll.DeserializeKLLSketchFromBytes` |
+| CountSketch | `cs.SerializeToBytes()` (sketchlib-go canonical) | `cs.DeserializeCountSketchFromBytes` |
+| CountMinSketch | custom gob of `countMinSketchSnapshot{Rows,Cols,Count,Sum,Sum2,L1,L2}` | `deserializeCMS` (same snapshot struct) |
+| HLL | `hll.SerializeToBytes()` (sketchlib-go canonical) | `hll.DeserializeHyperLogLogFromBytes` |
 
 ---
 

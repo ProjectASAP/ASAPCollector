@@ -125,7 +125,8 @@ func (p *kllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) e
 	}
 }
 
-// processBatch builds per-batch KLL sketches from gauge data points, appends quantile metrics to md (raw inputs preserved).
+// processBatch builds per-batch KLL sketches from gauge and KLLSketch data points,
+// appends quantile metrics to md (raw inputs preserved).
 func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 	type batchSeries struct {
 		name   string
@@ -135,6 +136,18 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 	}
 	batched := make(map[string]*batchSeries) // key = metricName + "::" + attributesKey(attrs)
 
+	getOrCreate := func(name, unit string, attrs pcommon.Map) *batchSeries {
+		key := name + "::" + attributesKey(attrs)
+		bs := batched[key]
+		if bs == nil {
+			attrCopy := pcommon.NewMap()
+			attrs.CopyTo(attrCopy)
+			bs = &batchSeries{name: name, unit: unit, attrs: attrCopy, sketch: newKLLSketch(p.cfg.K)}
+			batched[key] = bs
+		}
+		return bs
+	}
+
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
@@ -142,34 +155,35 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 			metrics := sms.At(j).Metrics()
 			for k := 0; k < metrics.Len(); k++ {
 				metric := metrics.At(k)
-				if metric.Type() != pmetric.MetricTypeGauge {
-					continue
-				}
-				dps := metric.Gauge().DataPoints()
-				for l := 0; l < dps.Len(); l++ {
-					dp := dps.At(l)
-					var val float64
-					if p.cfg.ReadAsInt {
-						val = float64(dp.IntValue())
-					} else {
-						val = dp.DoubleValue()
-					}
-					attrKey := attributesKey(dp.Attributes())
-					key := metric.Name() + "::" + attrKey
-					bs := batched[key]
-					if bs == nil {
-						attrCopy := pcommon.NewMap()
-						dp.Attributes().CopyTo(attrCopy)
-						bs = &batchSeries{
-							name:   metric.Name(),
-							unit:   metric.Unit(),
-							attrs:  attrCopy,
-							sketch: newKLLSketch(p.cfg.K),
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					dps := metric.Gauge().DataPoints()
+					for l := 0; l < dps.Len(); l++ {
+						dp := dps.At(l)
+						var val float64
+						if p.cfg.ReadAsInt {
+							val = float64(dp.IntValue())
+						} else {
+							val = dp.DoubleValue()
 						}
-						batched[key] = bs
+						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
+						if bs.sketch != nil {
+							bs.sketch.Insert(val)
+						}
 					}
-					if bs.sketch != nil {
-						bs.sketch.Insert(val)
+				case pmetric.MetricTypeKLLSketch:
+					dps := metric.KLLSketch().DataPoints()
+					for l := 0; l < dps.Len(); l++ {
+						dp := dps.At(l)
+						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
+						if bs.sketch != nil && len(dp.Sketch()) > 0 {
+							incoming, err := kll.DeserializeKLLSketchFromBytes(dp.Sketch())
+							if err == nil {
+								_ = bs.sketch.Merge(incoming)
+							} else if p.logger != nil {
+								p.logger.Error("kllprocessor: failed to deserialize KLLSketch dp", zap.Error(err))
+							}
+						}
 					}
 				}
 			}
@@ -270,10 +284,12 @@ func (p *kllProcessor) accumulateIntoWindow(md pmetric.Metrics) {
 			metrics := sm.Metrics()
 			for k := 0; k < metrics.Len(); k++ {
 				metric := metrics.At(k)
-				if metric.Type() != pmetric.MetricTypeGauge {
-					continue
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					p.accumulateGaugeMetric(sw, metric)
+				case pmetric.MetricTypeKLLSketch:
+					p.accumulateKLLSketchMetric(sw, metric)
 				}
-				p.accumulateGaugeMetric(sw, metric)
 			}
 		}
 	}
@@ -318,6 +334,35 @@ func (p *kllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 		}
 		if series.sketch != nil {
 			series.sketch.Insert(val)
+		}
+	}
+}
+
+// accumulateKLLSketchMetric merges pre-aggregated KLLSketch data points (from the
+// SDK pre-aggregation path) into the window store.
+func (p *kllProcessor) accumulateKLLSketchMetric(sw *scopeWindow, metric pmetric.Metric) {
+	mw := p.getOrCreateMetricWindow(sw, metric)
+	dps := metric.KLLSketch().DataPoints()
+	for l := 0; l < dps.Len(); l++ {
+		dp := dps.At(l)
+		attrKey := attributesKey(dp.Attributes())
+		series := mw.series[attrKey]
+		if series == nil {
+			attrCopy := pcommon.NewMap()
+			dp.Attributes().CopyTo(attrCopy)
+			series = &kllSeries{
+				attrs:  attrCopy,
+				sketch: newKLLSketch(p.cfg.K),
+			}
+			mw.series[attrKey] = series
+		}
+		if series.sketch != nil && len(dp.Sketch()) > 0 {
+			incoming, err := kll.DeserializeKLLSketchFromBytes(dp.Sketch())
+			if err == nil {
+				_ = series.sketch.Merge(incoming)
+			} else if p.logger != nil {
+				p.logger.Error("kllprocessor: failed to merge KLLSketch dp", zap.Error(err))
+			}
 		}
 	}
 }

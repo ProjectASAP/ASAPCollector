@@ -10,6 +10,10 @@ processors:
     transmit_sketch: false
     drop_original: true
 
+  batch:
+    send_batch_size: 5000
+    timeout: 200ms
+
 exporters:
   nop:
 
