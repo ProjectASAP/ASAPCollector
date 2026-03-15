@@ -1,0 +1,27 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package pmetric // import "go.opentelemetry.io/collector/pdata/pmetric"
+
+import "go.opentelemetry.io/collector/pdata/internal"
+
+// HLLSketchEncoding identifies how the HLL sketch payload bytes are encoded.
+type HLLSketchEncoding int32
+
+const (
+	// HLLSketchEncodingUnspecified indicates the encoding is not specified.
+	HLLSketchEncodingUnspecified = HLLSketchEncoding(internal.HLLSketchEncoding_HLL_SKETCH_ENCODING_UNSPECIFIED)
+	// HLLSketchEncodingBinary indicates the payload is binary-encoded (SerializeToBytes).
+	HLLSketchEncodingBinary = HLLSketchEncoding(internal.HLLSketchEncoding_HLL_SKETCH_ENCODING_BINARY)
+)
+
+// String returns the string representation of the HLLSketchEncoding.
+func (e HLLSketchEncoding) String() string {
+	switch e {
+	case HLLSketchEncodingUnspecified:
+		return "Unspecified"
+	case HLLSketchEncodingBinary:
+		return "Binary"
+	}
+	return ""
+}

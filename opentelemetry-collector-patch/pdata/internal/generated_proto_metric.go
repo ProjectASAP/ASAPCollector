@@ -76,6 +76,50 @@ func (m *Metric) GetDDSketch() *DDSketch {
 	return nil
 }
 
+type Metric_KLLSketch struct {
+	KLLSketch *KLLSketch
+}
+
+func (m *Metric) GetKLLSketch() *KLLSketch {
+	if v, ok := m.GetData().(*Metric_KLLSketch); ok {
+		return v.KLLSketch
+	}
+	return nil
+}
+
+type Metric_CountSketch struct {
+	CountSketch *CountSketch
+}
+
+func (m *Metric) GetCountSketch() *CountSketch {
+	if v, ok := m.GetData().(*Metric_CountSketch); ok {
+		return v.CountSketch
+	}
+	return nil
+}
+
+type Metric_CountMinSketch struct {
+	CountMinSketch *CountMinSketch
+}
+
+func (m *Metric) GetCountMinSketch() *CountMinSketch {
+	if v, ok := m.GetData().(*Metric_CountMinSketch); ok {
+		return v.CountMinSketch
+	}
+	return nil
+}
+
+type Metric_HLLSketch struct {
+	HLLSketch *HLLSketch
+}
+
+func (m *Metric) GetHLLSketch() *HLLSketch {
+	if v, ok := m.GetData().(*Metric_HLLSketch); ok {
+		return v.HLLSketch
+	}
+	return nil
+}
+
 type Metric_Summary struct {
 	Summary *Summary
 }
@@ -134,6 +178,30 @@ var (
 		},
 	}
 
+	ProtoPoolMetric_KLLSketch = sync.Pool{
+		New: func() any {
+			return &Metric_KLLSketch{}
+		},
+	}
+
+	ProtoPoolMetric_CountSketch = sync.Pool{
+		New: func() any {
+			return &Metric_CountSketch{}
+		},
+	}
+
+	ProtoPoolMetric_CountMinSketch = sync.Pool{
+		New: func() any {
+			return &Metric_CountMinSketch{}
+		},
+	}
+
+	ProtoPoolMetric_HLLSketch = sync.Pool{
+		New: func() any {
+			return &Metric_HLLSketch{}
+		},
+	}
+
 	ProtoPoolMetric_Summary = sync.Pool{
 		New: func() any {
 			return &Metric_Summary{}
@@ -179,6 +247,22 @@ func DeleteMetric(orig *Metric, nullable bool) {
 		DeleteDDSketch(ov.DDSketch, true)
 		ov.DDSketch = nil
 		ProtoPoolMetric_DDSketch.Put(ov)
+	case *Metric_KLLSketch:
+		DeleteKLLSketch(ov.KLLSketch, true)
+		ov.KLLSketch = nil
+		ProtoPoolMetric_KLLSketch.Put(ov)
+	case *Metric_CountSketch:
+		DeleteCountSketch(ov.CountSketch, true)
+		ov.CountSketch = nil
+		ProtoPoolMetric_CountSketch.Put(ov)
+	case *Metric_CountMinSketch:
+		DeleteCountMinSketch(ov.CountMinSketch, true)
+		ov.CountMinSketch = nil
+		ProtoPoolMetric_CountMinSketch.Put(ov)
+	case *Metric_HLLSketch:
+		DeleteHLLSketch(ov.HLLSketch, true)
+		ov.HLLSketch = nil
+		ProtoPoolMetric_HLLSketch.Put(ov)
 	case *Metric_Summary:
 		DeleteSummary(ov.Summary, true)
 		ov.Summary = nil
@@ -268,6 +352,50 @@ func CopyMetric(dest, src *Metric) *Metric {
 		}
 		ov.DDSketch = NewDDSketch()
 		CopyDDSketch(ov.DDSketch, t.DDSketch)
+		dest.Data = ov
+
+	case *Metric_KLLSketch:
+		var ov *Metric_KLLSketch
+		if !UseProtoPooling.IsEnabled() {
+			ov = &Metric_KLLSketch{}
+		} else {
+			ov = ProtoPoolMetric_KLLSketch.Get().(*Metric_KLLSketch)
+		}
+		ov.KLLSketch = NewKLLSketch()
+		CopyKLLSketch(ov.KLLSketch, t.KLLSketch)
+		dest.Data = ov
+
+	case *Metric_CountSketch:
+		var ov *Metric_CountSketch
+		if !UseProtoPooling.IsEnabled() {
+			ov = &Metric_CountSketch{}
+		} else {
+			ov = ProtoPoolMetric_CountSketch.Get().(*Metric_CountSketch)
+		}
+		ov.CountSketch = NewCountSketch()
+		CopyCountSketch(ov.CountSketch, t.CountSketch)
+		dest.Data = ov
+
+	case *Metric_CountMinSketch:
+		var ov *Metric_CountMinSketch
+		if !UseProtoPooling.IsEnabled() {
+			ov = &Metric_CountMinSketch{}
+		} else {
+			ov = ProtoPoolMetric_CountMinSketch.Get().(*Metric_CountMinSketch)
+		}
+		ov.CountMinSketch = NewCountMinSketch()
+		CopyCountMinSketch(ov.CountMinSketch, t.CountMinSketch)
+		dest.Data = ov
+
+	case *Metric_HLLSketch:
+		var ov *Metric_HLLSketch
+		if !UseProtoPooling.IsEnabled() {
+			ov = &Metric_HLLSketch{}
+		} else {
+			ov = ProtoPoolMetric_HLLSketch.Get().(*Metric_HLLSketch)
+		}
+		ov.HLLSketch = NewHLLSketch()
+		CopyHLLSketch(ov.HLLSketch, t.HLLSketch)
 		dest.Data = ov
 
 	case *Metric_Summary:
@@ -382,6 +510,26 @@ func (orig *Metric) MarshalJSON(dest *json.Stream) {
 			dest.WriteObjectField("dDSketch")
 			orig.DDSketch.MarshalJSON(dest)
 		}
+	case *Metric_KLLSketch:
+		if orig.KLLSketch != nil {
+			dest.WriteObjectField("kLLSketch")
+			orig.KLLSketch.MarshalJSON(dest)
+		}
+	case *Metric_CountSketch:
+		if orig.CountSketch != nil {
+			dest.WriteObjectField("countSketch")
+			orig.CountSketch.MarshalJSON(dest)
+		}
+	case *Metric_CountMinSketch:
+		if orig.CountMinSketch != nil {
+			dest.WriteObjectField("countMinSketch")
+			orig.CountMinSketch.MarshalJSON(dest)
+		}
+	case *Metric_HLLSketch:
+		if orig.HLLSketch != nil {
+			dest.WriteObjectField("hLLSketch")
+			orig.HLLSketch.MarshalJSON(dest)
+		}
 	case *Metric_Summary:
 		if orig.Summary != nil {
 			dest.WriteObjectField("summary")
@@ -477,6 +625,58 @@ func (orig *Metric) UnmarshalJSON(iter *json.Iterator) {
 				orig.Data = ov
 			}
 
+		case "kLLSketch", "kll_sketch":
+			{
+				var ov *Metric_KLLSketch
+				if !UseProtoPooling.IsEnabled() {
+					ov = &Metric_KLLSketch{}
+				} else {
+					ov = ProtoPoolMetric_KLLSketch.Get().(*Metric_KLLSketch)
+				}
+				ov.KLLSketch = NewKLLSketch()
+				ov.KLLSketch.UnmarshalJSON(iter)
+				orig.Data = ov
+			}
+
+		case "countSketch", "count_sketch":
+			{
+				var ov *Metric_CountSketch
+				if !UseProtoPooling.IsEnabled() {
+					ov = &Metric_CountSketch{}
+				} else {
+					ov = ProtoPoolMetric_CountSketch.Get().(*Metric_CountSketch)
+				}
+				ov.CountSketch = NewCountSketch()
+				ov.CountSketch.UnmarshalJSON(iter)
+				orig.Data = ov
+			}
+
+		case "countMinSketch", "count_min_sketch":
+			{
+				var ov *Metric_CountMinSketch
+				if !UseProtoPooling.IsEnabled() {
+					ov = &Metric_CountMinSketch{}
+				} else {
+					ov = ProtoPoolMetric_CountMinSketch.Get().(*Metric_CountMinSketch)
+				}
+				ov.CountMinSketch = NewCountMinSketch()
+				ov.CountMinSketch.UnmarshalJSON(iter)
+				orig.Data = ov
+			}
+
+		case "hLLSketch", "hll_sketch":
+			{
+				var ov *Metric_HLLSketch
+				if !UseProtoPooling.IsEnabled() {
+					ov = &Metric_HLLSketch{}
+				} else {
+					ov = ProtoPoolMetric_HLLSketch.Get().(*Metric_HLLSketch)
+				}
+				ov.HLLSketch = NewHLLSketch()
+				ov.HLLSketch.UnmarshalJSON(iter)
+				orig.Data = ov
+			}
+
 		case "summary":
 			{
 				var ov *Metric_Summary
@@ -546,6 +746,26 @@ func (orig *Metric) SizeProto() int {
 		if orig.DDSketch != nil {
 			l = orig.DDSketch.SizeProto()
 			n += 1 + proto.Sov(uint64(l)) + l
+		}
+	case *Metric_KLLSketch:
+		if orig.KLLSketch != nil {
+			l = orig.KLLSketch.SizeProto()
+			n += 1 + proto.Sov(uint64(l)) + l
+		}
+	case *Metric_CountSketch:
+		if orig.CountSketch != nil {
+			l = orig.CountSketch.SizeProto()
+			n += 1 + proto.Sov(uint64(l)) + l
+		}
+	case *Metric_CountMinSketch:
+		if orig.CountMinSketch != nil {
+			l = orig.CountMinSketch.SizeProto()
+			n += 2 + proto.Sov(uint64(l)) + l
+		}
+	case *Metric_HLLSketch:
+		if orig.HLLSketch != nil {
+			l = orig.HLLSketch.SizeProto()
+			n += 2 + proto.Sov(uint64(l)) + l
 		}
 	case *Metric_Summary:
 		if orig.Summary != nil {
@@ -628,6 +848,40 @@ func (orig *Metric) MarshalProto(buf []byte) int {
 			pos = proto.EncodeVarint(buf, pos, uint64(l))
 			pos--
 			buf[pos] = 0x6a
+		}
+	case *Metric_KLLSketch:
+		if orig.KLLSketch != nil {
+			l = orig.KLLSketch.MarshalProto(buf[:pos])
+			pos -= l
+			pos = proto.EncodeVarint(buf, pos, uint64(l))
+			pos--
+			buf[pos] = 0x72
+		}
+	case *Metric_CountSketch:
+		if orig.CountSketch != nil {
+			l = orig.CountSketch.MarshalProto(buf[:pos])
+			pos -= l
+			pos = proto.EncodeVarint(buf, pos, uint64(l))
+			pos--
+			buf[pos] = 0x7a
+		}
+	case *Metric_CountMinSketch:
+		if orig.CountMinSketch != nil {
+			l = orig.CountMinSketch.MarshalProto(buf[:pos])
+			pos -= l
+			pos = proto.EncodeVarint(buf, pos, uint64(l))
+			pos -= 2
+			buf[pos] = 0x82
+			buf[pos+1] = 0x01
+		}
+	case *Metric_HLLSketch:
+		if orig.HLLSketch != nil {
+			l = orig.HLLSketch.MarshalProto(buf[:pos])
+			pos -= l
+			pos = proto.EncodeVarint(buf, pos, uint64(l))
+			pos -= 2
+			buf[pos] = 0x8a
+			buf[pos+1] = 0x01
 		}
 	case *Metric_Summary:
 		if orig.Summary != nil {
@@ -809,6 +1063,98 @@ func (orig *Metric) UnmarshalProto(buf []byte) error {
 			}
 			ov.DDSketch = NewDDSketch()
 			err = ov.DDSketch.UnmarshalProto(buf[startPos:pos])
+			if err != nil {
+				return err
+			}
+			orig.Data = ov
+
+		case 14:
+			if wireType != proto.WireTypeLen {
+				return fmt.Errorf("proto: wrong wireType = %d for field KLLSketch", wireType)
+			}
+			var length int
+			length, pos, err = proto.ConsumeLen(buf, pos)
+			if err != nil {
+				return err
+			}
+			startPos := pos - length
+			var ov *Metric_KLLSketch
+			if !UseProtoPooling.IsEnabled() {
+				ov = &Metric_KLLSketch{}
+			} else {
+				ov = ProtoPoolMetric_KLLSketch.Get().(*Metric_KLLSketch)
+			}
+			ov.KLLSketch = NewKLLSketch()
+			err = ov.KLLSketch.UnmarshalProto(buf[startPos:pos])
+			if err != nil {
+				return err
+			}
+			orig.Data = ov
+
+		case 15:
+			if wireType != proto.WireTypeLen {
+				return fmt.Errorf("proto: wrong wireType = %d for field CountSketch", wireType)
+			}
+			var length int
+			length, pos, err = proto.ConsumeLen(buf, pos)
+			if err != nil {
+				return err
+			}
+			startPos := pos - length
+			var ov *Metric_CountSketch
+			if !UseProtoPooling.IsEnabled() {
+				ov = &Metric_CountSketch{}
+			} else {
+				ov = ProtoPoolMetric_CountSketch.Get().(*Metric_CountSketch)
+			}
+			ov.CountSketch = NewCountSketch()
+			err = ov.CountSketch.UnmarshalProto(buf[startPos:pos])
+			if err != nil {
+				return err
+			}
+			orig.Data = ov
+
+		case 16:
+			if wireType != proto.WireTypeLen {
+				return fmt.Errorf("proto: wrong wireType = %d for field CountMinSketch", wireType)
+			}
+			var length int
+			length, pos, err = proto.ConsumeLen(buf, pos)
+			if err != nil {
+				return err
+			}
+			startPos := pos - length
+			var ov *Metric_CountMinSketch
+			if !UseProtoPooling.IsEnabled() {
+				ov = &Metric_CountMinSketch{}
+			} else {
+				ov = ProtoPoolMetric_CountMinSketch.Get().(*Metric_CountMinSketch)
+			}
+			ov.CountMinSketch = NewCountMinSketch()
+			err = ov.CountMinSketch.UnmarshalProto(buf[startPos:pos])
+			if err != nil {
+				return err
+			}
+			orig.Data = ov
+
+		case 17:
+			if wireType != proto.WireTypeLen {
+				return fmt.Errorf("proto: wrong wireType = %d for field HLLSketch", wireType)
+			}
+			var length int
+			length, pos, err = proto.ConsumeLen(buf, pos)
+			if err != nil {
+				return err
+			}
+			startPos := pos - length
+			var ov *Metric_HLLSketch
+			if !UseProtoPooling.IsEnabled() {
+				ov = &Metric_HLLSketch{}
+			} else {
+				ov = ProtoPoolMetric_HLLSketch.Get().(*Metric_HLLSketch)
+			}
+			ov.HLLSketch = NewHLLSketch()
+			err = ov.HLLSketch.UnmarshalProto(buf[startPos:pos])
 			if err != nil {
 				return err
 			}

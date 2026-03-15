@@ -1,7 +1,12 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]
+# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window]
+#
+# SDK variants (*-sdk-*) use fakemetricload (opentelemetry-app/cmd/fakemetricload) as the
+# load generator instead of otel_collector_benchmark. For ddsketch-sdk the OTel SDK
+# pre-aggregates measurements into DDSketch before export; for kll/countsketch/countminsketch/hll
+# the SDK emits gauge values which the collector processor then aggregates.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTRIB_PATCH_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -10,17 +15,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window]"
+    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window)
+    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window"
+        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window, ddsketchcol-sdk-batch, ddsketchcol-sdk-window, kll-sdk-batch, kll-sdk-window, countsketchcol-sdk-batch, countsketchcol-sdk-window, countminsketchcol-sdk-batch, countminsketchcol-sdk-window, hllcol-batch, hllcol-window, hllcol-sdk-batch, hllcol-sdk-window"
         exit 1
         ;;
 esac
@@ -28,6 +33,10 @@ esac
 # Set processor-specific variables
 PROCESSOR_DIR="$SCRIPT_DIR/$PROCESSOR"
 BUILDER_BIN="$HOME/go/bin/builder"
+
+# Default load generator mode: "pdata" uses otel_collector_benchmark; "sdk" uses fakemetricload.
+LOAD_GEN_MODE="pdata"
+SDK_SKETCH_TYPE=""
 
 # Handle different config file names
 if [ "$PROCESSOR" = "kll" ]; then
@@ -76,6 +85,80 @@ elif [ "$PROCESSOR" = "ddsketchcol-batch" ] || [ "$PROCESSOR" = "ddsketchcol-win
     else
         CONFIG_FILE="$DD_DIR/config-window.yaml"
     fi
+elif [ "$PROCESSOR" = "ddsketchcol-sdk-batch" ] || [ "$PROCESSOR" = "ddsketchcol-sdk-window" ]; then
+    # SDK path: OTel SDK pre-aggregates into DDSketch before export.
+    # Reuses the same collector binary and config as ddsketchcol-batch/window.
+    DD_DIR="$SCRIPT_DIR/ddsketchcol"
+    BUILDER_CONFIG="$DD_DIR/builder-config.yaml"
+    COLLECTOR_BIN="$DD_DIR/ddsketchcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    LOAD_GEN_MODE="sdk"
+    SDK_SKETCH_TYPE="ddsketch"
+    if [ "$PROCESSOR" = "ddsketchcol-sdk-batch" ]; then
+        CONFIG_FILE="$DD_DIR/config.yaml"
+    else
+        CONFIG_FILE="$DD_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "kll-sdk-batch" ] || [ "$PROCESSOR" = "kll-sdk-window" ]; then
+    # SDK path: OTel SDK emits gauge values; KLL processor aggregates at collector.
+    KLL_DIR="$SCRIPT_DIR/kll"
+    BUILDER_CONFIG="$KLL_DIR/build-config.yaml"
+    COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    LOAD_GEN_MODE="sdk"
+    SDK_SKETCH_TYPE="kll"
+    if [ "$PROCESSOR" = "kll-sdk-batch" ]; then
+        CONFIG_FILE="$KLL_DIR/config.yaml"
+    else
+        CONFIG_FILE="$KLL_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "countsketchcol-sdk-batch" ] || [ "$PROCESSOR" = "countsketchcol-sdk-window" ]; then
+    CS_DIR="$SCRIPT_DIR/countsketchcol"
+    BUILDER_CONFIG="$CS_DIR/builder-config.yaml"
+    COLLECTOR_BIN="$CS_DIR/dist/countsketchcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    LOAD_GEN_MODE="sdk"
+    SDK_SKETCH_TYPE="countsketch"
+    if [ "$PROCESSOR" = "countsketchcol-sdk-batch" ]; then
+        CONFIG_FILE="$CS_DIR/config-batch.yaml"
+    else
+        CONFIG_FILE="$CS_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "countminsketchcol-sdk-batch" ] || [ "$PROCESSOR" = "countminsketchcol-sdk-window" ]; then
+    CM_DIR="$SCRIPT_DIR/countminsketchcol"
+    BUILDER_CONFIG="$CM_DIR/builder-config.yaml"
+    COLLECTOR_BIN="$CM_DIR/dist/countminsketchcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    LOAD_GEN_MODE="sdk"
+    SDK_SKETCH_TYPE="countminsketch"
+    if [ "$PROCESSOR" = "countminsketchcol-sdk-batch" ]; then
+        CONFIG_FILE="$CM_DIR/config-batch.yaml"
+    else
+        CONFIG_FILE="$CM_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "hllcol-batch" ] || [ "$PROCESSOR" = "hllcol-window" ]; then
+    HLL_DIR="$SCRIPT_DIR/hllcol"
+    BUILDER_CONFIG="$HLL_DIR/build-config.yaml"
+    COLLECTOR_BIN="$CONTRIB_PATCH_DIR/HLL"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    if [ "$PROCESSOR" = "hllcol-batch" ]; then
+        CONFIG_FILE="$HLL_DIR/config-bench.yaml"
+    else
+        CONFIG_FILE="$HLL_DIR/config-window.yaml"
+    fi
+elif [ "$PROCESSOR" = "hllcol-sdk-batch" ] || [ "$PROCESSOR" = "hllcol-sdk-window" ]; then
+    # SDK path: OTel SDK emits gauge values; HLL processor aggregates at collector.
+    HLL_DIR="$SCRIPT_DIR/hllcol"
+    BUILDER_CONFIG="$HLL_DIR/build-config.yaml"
+    COLLECTOR_BIN="$CONTRIB_PATCH_DIR/HLL"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    LOAD_GEN_MODE="sdk"
+    SDK_SKETCH_TYPE="hll"
+    if [ "$PROCESSOR" = "hllcol-sdk-batch" ]; then
+        CONFIG_FILE="$HLL_DIR/config-bench.yaml"
+    else
+        CONFIG_FILE="$HLL_DIR/config-window.yaml"
+    fi
 else
     BUILDER_CONFIG="$PROCESSOR_DIR/builder-config.yaml"
     CONFIG_FILE="$PROCESSOR_DIR/config.yaml"
@@ -84,6 +167,7 @@ else
 fi
 RESULT_DIR="$WORKSPACE_DIR/otel_collector_benchmark/benchmark_results/$PROCESSOR"
 LOAD_GEN_DIR="$WORKSPACE_DIR/otel_collector_benchmark"
+FAKEMETRICLOAD_DIR="$WORKSPACE_DIR/opentelemetry-app"
 
 # Duration for each test
 DURATION_SEC=60
@@ -129,6 +213,42 @@ case "$PROCESSOR" in
         ;;
     ddsketchcol-window)
         PROCESSOR_NAME="DDSKETCH PROCESSOR (window mode)"
+        ;;
+    ddsketchcol-sdk-batch)
+        PROCESSOR_NAME="DDSKETCH PROCESSOR (batch mode, SDK pre-aggregation)"
+        ;;
+    ddsketchcol-sdk-window)
+        PROCESSOR_NAME="DDSKETCH PROCESSOR (window mode, SDK pre-aggregation)"
+        ;;
+    kll-sdk-batch)
+        PROCESSOR_NAME="KLL PROCESSOR (batch mode, SDK gauge path)"
+        ;;
+    kll-sdk-window)
+        PROCESSOR_NAME="KLL PROCESSOR (window mode, SDK gauge path)"
+        ;;
+    countsketchcol-sdk-batch)
+        PROCESSOR_NAME="COUNTSKETCH PROCESSOR (batch mode, SDK gauge path)"
+        ;;
+    countsketchcol-sdk-window)
+        PROCESSOR_NAME="COUNTSKETCH PROCESSOR (window mode, SDK gauge path)"
+        ;;
+    countminsketchcol-sdk-batch)
+        PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR (batch mode, SDK gauge path)"
+        ;;
+    countminsketchcol-sdk-window)
+        PROCESSOR_NAME="COUNTMIN SKETCH PROCESSOR (window mode, SDK gauge path)"
+        ;;
+    hllcol-batch)
+        PROCESSOR_NAME="HLL PROCESSOR (batch mode)"
+        ;;
+    hllcol-window)
+        PROCESSOR_NAME="HLL PROCESSOR (window mode)"
+        ;;
+    hllcol-sdk-batch)
+        PROCESSOR_NAME="HLL PROCESSOR (batch mode, SDK gauge path)"
+        ;;
+    hllcol-sdk-window)
+        PROCESSOR_NAME="HLL PROCESSOR (window mode, SDK gauge path)"
         ;;
 esac
 
@@ -324,16 +444,32 @@ for RATE in "${RATES[@]}"; do
         INTERVAL_DISPLAY="${INTERVAL_US}us"
     fi
     echo "    -> Calculated interval: ${INTERVAL_DISPLAY} (${TOTAL_METRICS_PER_BATCH} metrics/batch @ ${RATE} MPS)"
-    
-    cd "$LOAD_GEN_DIR"
-    go run main.go \
-        --endpoint="localhost:4317" \
-        --workers=$WORKERS \
-        --hosts=$HOSTS \
-        --metrics=$METRICS \
-        --interval=$INTERVAL \
-        --duration=$DURATION \
-        --type=gauge > "$LOG_FILE" 2>&1 &
+
+    if [ "$LOAD_GEN_MODE" = "sdk" ]; then
+        # SDK path: uses fakemetricload which instruments via the OTel SDK.
+        # For ddsketch the SDK pre-aggregates into DDSketch before export.
+        # For kll/countsketch/countminsketch/hll the SDK emits gauge data points
+        # which the collector-side processor then aggregates into sketches.
+        cd "$FAKEMETRICLOAD_DIR"
+        go run ./cmd/fakemetricload \
+            --endpoint="localhost:4317" \
+            --sketch-type="$SDK_SKETCH_TYPE" \
+            --workers=$WORKERS \
+            --hosts=$HOSTS \
+            --metrics=$METRICS \
+            --interval=$INTERVAL \
+            --duration=$DURATION > "$LOG_FILE" 2>&1 &
+    else
+        cd "$LOAD_GEN_DIR"
+        go run main.go \
+            --endpoint="localhost:4317" \
+            --workers=$WORKERS \
+            --hosts=$HOSTS \
+            --metrics=$METRICS \
+            --interval=$INTERVAL \
+            --duration=$DURATION \
+            --type=gauge > "$LOG_FILE" 2>&1 &
+    fi
     LOAD_GEN_PID=$!
     
     # Wait for load generator to finish
@@ -384,7 +520,8 @@ for RATE in "${RATES[@]}"; do
     fi
 
     # For KLL benchmarks, perform correctness check on emitted quantiles (_p50, _p90, _p99)
-    if [[ "$PROCESSOR" == kll-batch ]] || [[ "$PROCESSOR" == kll-window ]]; then
+    if [[ "$PROCESSOR" == kll-batch ]] || [[ "$PROCESSOR" == kll-window ]] || \
+       [[ "$PROCESSOR" == kll-sdk-batch ]] || [[ "$PROCESSOR" == kll-sdk-window ]]; then
         if command -v curl >/dev/null 2>&1; then
             PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
             if [ -z "$PROM_OUTPUT" ]; then
@@ -416,7 +553,8 @@ for RATE in "${RATES[@]}"; do
 
     # For CountSketch benchmarks, verify that countsketch_row and countsketch_col
     # metadata metrics are present on the Prometheus endpoint.
-    if [[ "$PROCESSOR" == countsketchcol-batch ]] || [[ "$PROCESSOR" == countsketchcol-window ]]; then
+    if [[ "$PROCESSOR" == countsketchcol-batch ]] || [[ "$PROCESSOR" == countsketchcol-window ]] || \
+       [[ "$PROCESSOR" == countsketchcol-sdk-batch ]] || [[ "$PROCESSOR" == countsketchcol-sdk-window ]]; then
         if command -v curl >/dev/null 2>&1; then
             PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
             if [ -z "$PROM_OUTPUT" ]; then
@@ -439,7 +577,8 @@ for RATE in "${RATES[@]}"; do
 
     # For CountMinSketch benchmarks, verify that countmin_sketch metrics are present
     # on the Prometheus endpoint.
-    if [[ "$PROCESSOR" == countminsketchcol-batch ]] || [[ "$PROCESSOR" == countminsketchcol-window ]]; then
+    if [[ "$PROCESSOR" == countminsketchcol-batch ]] || [[ "$PROCESSOR" == countminsketchcol-window ]] || \
+       [[ "$PROCESSOR" == countminsketchcol-sdk-batch ]] || [[ "$PROCESSOR" == countminsketchcol-sdk-window ]]; then
         if command -v curl >/dev/null 2>&1; then
             PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
             if [ -z "$PROM_OUTPUT" ]; then
@@ -456,6 +595,29 @@ for RATE in "${RATES[@]}"; do
             fi
         else
             echo "    [CMS CHECK] SKIPPED — curl not available"
+        fi
+    fi
+
+    # For HLL benchmarks, verify that hll_cardinality metrics are present
+    # on the Prometheus endpoint.
+    if [[ "$PROCESSOR" == hllcol-batch ]] || [[ "$PROCESSOR" == hllcol-window ]] || \
+       [[ "$PROCESSOR" == hllcol-sdk-batch ]] || [[ "$PROCESSOR" == hllcol-sdk-window ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
+            if [ -z "$PROM_OUTPUT" ]; then
+                echo "    [HLL CHECK] FAIL — no output on port 8889"
+                CORRECTNESS_FAILED=1
+            else
+                HLL=$(echo "$PROM_OUTPUT" | awk '/_hll_cardinality/ && !/^#/{found=1; exit} END{print found+0}')
+                if [ "$HLL" = "1" ]; then
+                    echo "    [HLL CHECK] PASS  hll_cardinality metrics present"
+                else
+                    echo "    [HLL CHECK] FAIL  missing hll_cardinality metrics"
+                    CORRECTNESS_FAILED=1
+                fi
+            fi
+        else
+            echo "    [HLL CHECK] SKIPPED — curl not available"
         fi
     fi
 

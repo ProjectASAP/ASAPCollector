@@ -20,6 +20,20 @@ type Datatypes interface {
 		metricdata.DDSketch[int64] |
 		metricdata.DDSketchDataPoint[float64] |
 		metricdata.DDSketchDataPoint[int64] |
+		metricdata.KLLSketch[float64] |
+		metricdata.KLLSketch[int64] |
+		metricdata.KLLSketchDataPoint[float64] |
+		metricdata.KLLSketchDataPoint[int64] |
+		metricdata.CountSketch[float64] |
+		metricdata.CountSketch[int64] |
+		metricdata.CountSketchDataPoint[float64] |
+		metricdata.CountSketchDataPoint[int64] |
+		metricdata.CountMinSketch[float64] |
+		metricdata.CountMinSketch[int64] |
+		metricdata.CountMinSketchDataPoint[float64] |
+		metricdata.CountMinSketchDataPoint[int64] |
+		metricdata.HLLSketch |
+		metricdata.HLLSketchDataPoint |
 		metricdata.Gauge[float64] |
 		metricdata.Gauge[int64] |
 		metricdata.Histogram[float64] |
@@ -171,6 +185,34 @@ func AssertEqual[T Datatypes](t TestingT, expected, actual T, opts ...Option) bo
 		r = equalDDSketchDataPoint(e, aIface.(metricdata.DDSketchDataPoint[int64]), cfg)
 	case metricdata.DDSketchDataPoint[float64]:
 		r = equalDDSketchDataPoint(e, aIface.(metricdata.DDSketchDataPoint[float64]), cfg)
+	case metricdata.KLLSketch[int64]:
+		r = equalKLLSketch(e, aIface.(metricdata.KLLSketch[int64]), cfg)
+	case metricdata.KLLSketch[float64]:
+		r = equalKLLSketch(e, aIface.(metricdata.KLLSketch[float64]), cfg)
+	case metricdata.KLLSketchDataPoint[int64]:
+		r = equalKLLSketchDataPoint(e, aIface.(metricdata.KLLSketchDataPoint[int64]), cfg)
+	case metricdata.KLLSketchDataPoint[float64]:
+		r = equalKLLSketchDataPoint(e, aIface.(metricdata.KLLSketchDataPoint[float64]), cfg)
+	case metricdata.CountSketch[int64]:
+		r = equalCountSketch(e, aIface.(metricdata.CountSketch[int64]), cfg)
+	case metricdata.CountSketch[float64]:
+		r = equalCountSketch(e, aIface.(metricdata.CountSketch[float64]), cfg)
+	case metricdata.CountSketchDataPoint[int64]:
+		r = equalCountSketchDataPoint(e, aIface.(metricdata.CountSketchDataPoint[int64]), cfg)
+	case metricdata.CountSketchDataPoint[float64]:
+		r = equalCountSketchDataPoint(e, aIface.(metricdata.CountSketchDataPoint[float64]), cfg)
+	case metricdata.CountMinSketch[int64]:
+		r = equalCountMinSketch(e, aIface.(metricdata.CountMinSketch[int64]), cfg)
+	case metricdata.CountMinSketch[float64]:
+		r = equalCountMinSketch(e, aIface.(metricdata.CountMinSketch[float64]), cfg)
+	case metricdata.CountMinSketchDataPoint[int64]:
+		r = equalCountMinSketchDataPoint(e, aIface.(metricdata.CountMinSketchDataPoint[int64]), cfg)
+	case metricdata.CountMinSketchDataPoint[float64]:
+		r = equalCountMinSketchDataPoint(e, aIface.(metricdata.CountMinSketchDataPoint[float64]), cfg)
+	case metricdata.HLLSketch:
+		r = equalHLLSketch(e, aIface.(metricdata.HLLSketch), cfg)
+	case metricdata.HLLSketchDataPoint:
+		r = equalHLLSketchDataPoint(e, aIface.(metricdata.HLLSketchDataPoint), cfg)
 	case metricdata.ExponentialHistogram[float64]:
 		r = equalExponentialHistograms(e, aIface.(metricdata.ExponentialHistogram[float64]), cfg)
 	case metricdata.ExponentialHistogram[int64]:
@@ -239,6 +281,34 @@ func AssertHasAttributes[T Datatypes](t TestingT, actual T, attrs ...attribute.K
 		reasons = hasAttributesDDSketchDataPoint(e, attrs...)
 	case metricdata.DDSketchDataPoint[float64]:
 		reasons = hasAttributesDDSketchDataPoint(e, attrs...)
+	case metricdata.KLLSketch[int64]:
+		reasons = hasAttributesKLLSketch(e, attrs...)
+	case metricdata.KLLSketch[float64]:
+		reasons = hasAttributesKLLSketch(e, attrs...)
+	case metricdata.KLLSketchDataPoint[int64]:
+		reasons = hasAttributesKLLSketchDataPoint(e, attrs...)
+	case metricdata.KLLSketchDataPoint[float64]:
+		reasons = hasAttributesKLLSketchDataPoint(e, attrs...)
+	case metricdata.CountSketch[int64]:
+		reasons = hasAttributesCountSketch(e, attrs...)
+	case metricdata.CountSketch[float64]:
+		reasons = hasAttributesCountSketch(e, attrs...)
+	case metricdata.CountSketchDataPoint[int64]:
+		reasons = hasAttributesCountSketchDataPoint(e, attrs...)
+	case metricdata.CountSketchDataPoint[float64]:
+		reasons = hasAttributesCountSketchDataPoint(e, attrs...)
+	case metricdata.CountMinSketch[int64]:
+		reasons = hasAttributesCountMinSketch(e, attrs...)
+	case metricdata.CountMinSketch[float64]:
+		reasons = hasAttributesCountMinSketch(e, attrs...)
+	case metricdata.CountMinSketchDataPoint[int64]:
+		reasons = hasAttributesCountMinSketchDataPoint(e, attrs...)
+	case metricdata.CountMinSketchDataPoint[float64]:
+		reasons = hasAttributesCountMinSketchDataPoint(e, attrs...)
+	case metricdata.HLLSketch:
+		reasons = hasAttributesHLLSketch(e, attrs...)
+	case metricdata.HLLSketchDataPoint:
+		reasons = hasAttributesHLLSketchDataPoint(e, attrs...)
 	case metricdata.Sum[int64]:
 		reasons = hasAttributesSum(e, attrs...)
 	case metricdata.Sum[float64]:

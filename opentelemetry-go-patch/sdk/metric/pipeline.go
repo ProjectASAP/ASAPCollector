@@ -537,6 +537,14 @@ func (i *inserter[N]) aggregateFunc(
 			noSum = true
 		}
 		meas, comp = b.DDSketch(a.RelativeAccuracy, a.NoMinMax, noSum)
+	case AggregationKLLSketch:
+		meas, comp = b.KLLSketch(a.K)
+	case AggregationCountSketch:
+		meas, comp = b.CountSketch(a.Rows, a.Cols, a.Epsilon, a.Delta, a.Dimension)
+	case AggregationCountMinSketch:
+		meas, comp = b.CountMinSketch(a.Rows, a.Cols)
+	case AggregationHLLSketch:
+		meas, comp = b.HLLSketch()
 
 	default:
 		err = errUnknownAggregation
@@ -548,20 +556,26 @@ func (i *inserter[N]) aggregateFunc(
 // isAggregatorCompatible checks if the aggregation can be used by the instrument.
 // Current compatibility:
 //
-// | Instrument Kind          | Drop | LastValue | Sum | Histogram | Exponential Histogram | DDSketch |
-// |--------------------------|------|-----------|-----|-----------|-----------------------|---------|
-// | Counter                  | ✓    |           | ✓   | ✓         | ✓                     | ✓       |
-// | UpDownCounter            | ✓    |           | ✓   | ✓         | ✓                     | ✓       |
-// | Histogram                | ✓    |           | ✓   | ✓         | ✓                     | ✓       |
-// | Gauge                    | ✓    | ✓         |     | ✓         | ✓                     | ✓       |
-// | Observable Counter       | ✓    |           | ✓   | ✓         | ✓                     | ✓       |
-// | Observable UpDownCounter | ✓    |           | ✓   | ✓         | ✓                     | ✓       |
-// | Observable Gauge         | ✓    | ✓         |     | ✓         | ✓                     | ✓       |.
+// | Instrument Kind          | Drop | LastValue | Sum | Histogram | Exponential Histogram | DDSketch | KLL | CountSketch | CountMinSketch | HLL |
+// |--------------------------|------|-----------|-----|-----------|-----------------------|----------|-----|-------------|----------------|-----|
+// | Counter                  | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
+// | UpDownCounter            | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
+// | Histogram                | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
+// | Gauge                    | ✓    | ✓         |     | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
+// | Observable Counter       | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
+// | Observable UpDownCounter | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
+// | Observable Gauge         | ✓    | ✓         |     | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |.
 func isAggregatorCompatible(kind InstrumentKind, agg Aggregation) error {
 	switch agg.(type) {
 	case AggregationDefault:
 		return nil
-	case AggregationExplicitBucketHistogram, AggregationBase2ExponentialHistogram, AggregationDDSketch:
+	case AggregationExplicitBucketHistogram,
+		AggregationBase2ExponentialHistogram,
+		AggregationDDSketch,
+		AggregationKLLSketch,
+		AggregationCountSketch,
+		AggregationCountMinSketch,
+		AggregationHLLSketch:
 		switch kind {
 		case InstrumentKindCounter,
 			InstrumentKindUpDownCounter,

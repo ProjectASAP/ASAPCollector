@@ -163,6 +163,50 @@ func (b Builder[N]) DDSketch(relativeAccuracy float64, noMinMax, noSum bool) (Me
 	}
 }
 
+// KLLSketch returns a KLL sketch aggregate function input and output.
+func (b Builder[N]) KLLSketch(k int) (Measure[N], ComputeAggregation) {
+	agg := newKLLSketch[N](k, false, b.AggregationLimit)
+	switch b.Temporality {
+	case metricdata.DeltaTemporality:
+		return b.filter(agg.measure), agg.delta
+	default:
+		return b.filter(agg.measure), agg.cumulative
+	}
+}
+
+// CountSketch returns a CountSketch aggregate function input and output.
+func (b Builder[N]) CountSketch(rows, cols int, epsilon, delta float64, dimension string) (Measure[N], ComputeAggregation) {
+	agg := newCountSketchAgg[N](rows, cols, epsilon, delta, dimension, b.AggregationLimit)
+	switch b.Temporality {
+	case metricdata.DeltaTemporality:
+		return b.filter(agg.measure), agg.delta
+	default:
+		return b.filter(agg.measure), agg.cumulative
+	}
+}
+
+// CountMinSketch returns a Count-Min Sketch aggregate function input and output.
+func (b Builder[N]) CountMinSketch(rows, cols int) (Measure[N], ComputeAggregation) {
+	agg := newCountMinSketchAgg[N](rows, cols, b.AggregationLimit)
+	switch b.Temporality {
+	case metricdata.DeltaTemporality:
+		return b.filter(agg.measure), agg.delta
+	default:
+		return b.filter(agg.measure), agg.cumulative
+	}
+}
+
+// HLLSketch returns a HyperLogLog sketch aggregate function input and output.
+func (b Builder[N]) HLLSketch() (Measure[N], ComputeAggregation) {
+	agg := newHLLSketch[N](b.AggregationLimit)
+	switch b.Temporality {
+	case metricdata.DeltaTemporality:
+		return b.filter(agg.measure), agg.delta
+	default:
+		return b.filter(agg.measure), agg.cumulative
+	}
+}
+
 // Noop returns an aggregate that records attribute cardinailty but performs no aggregation.
 func (b Builder[N]) Noop() (Measure[N], ComputeAggregation) {
 	agg := newNoopAggregate[N](b.AggregationLimit)

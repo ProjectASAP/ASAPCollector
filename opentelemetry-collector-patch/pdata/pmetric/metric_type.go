@@ -15,6 +15,10 @@ const (
 	MetricTypeExponentialHistogram
 	MetricTypeDDSketch
 	MetricTypeSummary
+	MetricTypeKLLSketch
+	MetricTypeCountSketch
+	MetricTypeCountMinSketch
+	MetricTypeHLLSketch
 )
 
 // String returns the string representation of the MetricType.
@@ -34,6 +38,14 @@ func (mdt MetricType) String() string {
 		return "DDSketch"
 	case MetricTypeSummary:
 		return "Summary"
+	case MetricTypeKLLSketch:
+		return "KLLSketch"
+	case MetricTypeCountSketch:
+		return "CountSketch"
+	case MetricTypeCountMinSketch:
+		return "CountMinSketch"
+	case MetricTypeHLLSketch:
+		return "HLLSketch"
 	}
 	return ""
 }
