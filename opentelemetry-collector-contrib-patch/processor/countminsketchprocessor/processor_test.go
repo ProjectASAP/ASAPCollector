@@ -4,12 +4,12 @@
 package countminsketchprocessor
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"sync"
 	"testing"
 	"time"
+
+	cms "github.com/ProjectASAP/sketchlib-go/sketches/CountMinSketch"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -186,14 +186,11 @@ func TestProcessor_TumblingWindow_Correctness(t *testing.T) {
 	rawBytes := payloadVal.Bytes().AsRaw()
 	require.NotEmpty(t, rawBytes)
 
-	// Attempt to decode back to struct
-	var snapshot countMinSketchSnapshot
-	dec := gob.NewDecoder(bytes.NewReader(rawBytes))
-	err = dec.Decode(&snapshot)
-
-	assert.NoError(t, err, "Payload must be a valid GOB format")
-	assert.Equal(t, 5, snapshot.Rows)
-	assert.Equal(t, 128, snapshot.Cols)
+	// Attempt to decode back to sketch
+	sketch, decErr := cms.DeserializeCountMinSketchFromBytes(rawBytes)
+	assert.NoError(t, decErr, "Payload must be a valid serialized CMS")
+	assert.Equal(t, 5, sketch.Rows)
+	assert.Equal(t, 128, sketch.Cols)
 }
 
 // Helpers to generate dummy metrics

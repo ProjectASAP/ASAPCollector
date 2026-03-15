@@ -53,3 +53,5 @@ require (
 )
 
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
+
+replace github.com/ProjectASAP/sketchlib-go => /mydata/sketchlib-go

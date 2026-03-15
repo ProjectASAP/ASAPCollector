@@ -1,12 +1,11 @@
 package kllprocessor
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"sync"
 	"testing"
 
+	kll "github.com/ProjectASAP/sketchlib-go/sketches/KLL"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -105,10 +104,9 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 				outDP := m.Gauge().DataPoints().At(0)
 				payload, ok := outDP.Attributes().Get("kll.sketch_payload")
 				require.True(t, ok)
-				var snapshot kllSketchSnapshot
-				require.NoError(t, gob.NewDecoder(bytes.NewReader(payload.Bytes().AsRaw())).Decode(&snapshot))
-				assert.Equal(t, cfg.K, snapshot.K)
-				assert.Equal(t, 1, snapshot.Count)
+				sketch, err := kll.DeserializeKLLSketchFromBytes(payload.Bytes().AsRaw())
+				require.NoError(t, err)
+				assert.Equal(t, 1, sketch.Count())
 			}
 		}
 	}

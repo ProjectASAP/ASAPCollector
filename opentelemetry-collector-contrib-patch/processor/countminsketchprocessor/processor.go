@@ -4,9 +4,7 @@
 package countminsketchprocessor
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"sort"
 	"strings"
 	"sync"
@@ -27,8 +25,6 @@ import (
 // encodeAttributesAsKey path (called on every data point).
 var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
 
-// bufPool recycles bytes.Buffer instances used during CMS serialization.
-var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 
 //
 // ─────────────────────────────────────────────────────────────
@@ -40,18 +36,6 @@ type windowSketch struct {
 	cms         *cms.CountMinSketch
 	mu          sync.Mutex
 	sampleCount uint64
-}
-
-// countMinSketchSnapshot is a serializable DTO.
-// NOTE: Seed field is removed as new lib manages seeds internally.
-type countMinSketchSnapshot struct {
-	Rows  int
-	Cols  int
-	Count [][]float64
-	Sum   [][]float64
-	Sum2  [][]float64
-	L1    []float64
-	L2    []float64
 }
 
 //
@@ -439,58 +423,12 @@ func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
 // ─────────────────────────────────────────────────────────────
 //
 
-func serializeCMS(
-	s *cms.CountMinSketch,
-) ([]byte, error) {
-
-	snapshot := countMinSketchSnapshot{
-		Rows:  s.Rows,
-		Cols:  s.Cols,
-		Count: s.Count,
-		Sum:   s.Sum,
-		Sum2:  s.Sum2,
-		L1:    s.L1,
-		L2:    s.L2,
-	}
-
-	buf := bufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	err := gob.NewEncoder(buf).Encode(snapshot)
-	var out []byte
-	if err == nil {
-		out = make([]byte, buf.Len())
-		copy(out, buf.Bytes())
-	}
-	bufPool.Put(buf)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+func serializeCMS(s *cms.CountMinSketch) ([]byte, error) {
+	return s.SerializeToBytes()
 }
 
-// deserializeCMS reconstructs a CountMinSketch from the gob-encoded snapshot
-// format used by both the SDK aggregate and this processor's serializeCMS.
 func deserializeCMS(data []byte) (*cms.CountMinSketch, error) {
-	var snap countMinSketchSnapshot
-	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&snap); err != nil {
-		return nil, err
-	}
-	s, err := cms.NewCountMinSketch(snap.Rows, snap.Cols)
-	if err != nil {
-		return nil, err
-	}
-	for r := 0; r < snap.Rows && r < len(snap.Count); r++ {
-		for c := 0; c < snap.Cols && c < len(snap.Count[r]); c++ {
-			s.Count[r][c] = snap.Count[r][c]
-			s.Sum[r][c] = snap.Sum[r][c]
-			s.Sum2[r][c] = snap.Sum2[r][c]
-		}
-	}
-	for r := 0; r < snap.Rows && r < len(snap.L1); r++ {
-		s.L1[r] = snap.L1[r]
-		s.L2[r] = snap.L2[r]
-	}
-	return s, nil
+	return cms.DeserializeCountMinSketchFromBytes(data)
 }
 
 func buildAggregationKey(
