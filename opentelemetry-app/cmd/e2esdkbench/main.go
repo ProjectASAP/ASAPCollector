@@ -34,7 +34,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -43,7 +42,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"google.golang.org/grpc"
-	grpcstats "google.golang.org/grpc/stats"
 )
 
 // ---------------------------------------------------------------------------
@@ -80,33 +78,29 @@ var (
 )
 
 // ---------------------------------------------------------------------------
-// gRPC stats handler – counts wire bytes sent/received by the SDK.
-// Implements google.golang.org/grpc/stats.Handler.
+// Loopback bandwidth reader.
+// Reads TX bytes for the loopback interface from /proc/net/dev.
+// Bandwidth is measured externally (shell script) as a delta over the run.
+// The Go benchmark emits the PID so the shell can track /proc/<pid>/status too.
 // ---------------------------------------------------------------------------
 
-type grpcBytesCounter struct {
-	sent atomic.Int64
-	recv atomic.Int64
-}
-
-func (c *grpcBytesCounter) TagRPC(ctx context.Context, _ *grpcstats.RPCTagInfo) context.Context {
-	return ctx
-}
-
-func (c *grpcBytesCounter) HandleRPC(_ context.Context, s grpcstats.RPCStats) {
-	switch st := s.(type) {
-	case *grpcstats.OutPayload:
-		c.sent.Add(int64(st.WireLength))
-	case *grpcstats.InPayload:
-		c.recv.Add(int64(st.WireLength))
+func loLoTXBytes() int64 {
+	data, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return 0
 	}
+	for _, line := range strings.Split(string(data), "\n") {
+		// Format: "  lo:  rx_bytes ... tx_bytes ..."
+		// Fields: iface rx_bytes rx_packets ... tx_bytes tx_packets ...
+		// tx_bytes is field 9 (0-indexed after stripping "lo:")
+		f := strings.Fields(line)
+		if len(f) >= 10 && strings.TrimSuffix(f[0], ":") == "lo" {
+			v, _ := strconv.ParseInt(f[9], 10, 64)
+			return v
+		}
+	}
+	return 0
 }
-
-func (c *grpcBytesCounter) TagConn(ctx context.Context, _ *grpcstats.ConnTagInfo) context.Context {
-	return ctx
-}
-
-func (c *grpcBytesCounter) HandleConn(_ context.Context, _ grpcstats.ConnStats) {}
 
 // ---------------------------------------------------------------------------
 // Time-series sample
@@ -199,11 +193,14 @@ func runWorker(ctx context.Context, id int, inst interface{}, mode string, wg *s
 // Resource sampler – polls memory every sampleSec seconds.
 // ---------------------------------------------------------------------------
 
-func resourceSampler(ctx context.Context, counter *grpcBytesCounter, samples *[]sample, mu *sync.Mutex) {
+// resourceSampler polls memory + loopback TX bytes every sampleSec seconds.
+// Bandwidth is measured via /proc/net/dev loopback TX delta — this works for
+// all metric types (sketch and non-sketch) without relying on gRPC internals.
+func resourceSampler(ctx context.Context, samples *[]sample, mu *sync.Mutex) {
 	ticker := time.NewTicker(time.Duration(*sampleSec) * time.Second)
 	defer ticker.Stop()
 
-	prevSent := int64(0)
+	prevTX := loLoTXBytes()
 	prevTime := time.Now()
 
 	for {
@@ -214,18 +211,18 @@ func resourceSampler(ctx context.Context, counter *grpcBytesCounter, samples *[]
 			var ms runtime.MemStats
 			runtime.ReadMemStats(&ms)
 
-			curSent := counter.sent.Load()
+			curTX := loLoTXBytes()
 			elapsed := now.Sub(prevTime).Seconds()
 			bps := 0.0
 			if elapsed > 0 {
-				bps = float64(curSent-prevSent) / elapsed
+				bps = float64(curTX-prevTX) / elapsed
 			}
-			prevSent = curSent
+			prevTX = curTX
 			prevTime = now
 
 			s := sample{
 				Timestamp:    now.Unix(),
-				BytesSentCum: curSent,
+				BytesSentCum: curTX,
 				BandwidthBps: bps,
 				HeapAllocMB:  float64(ms.HeapAlloc) / (1024 * 1024),
 				HeapSysMB:    float64(ms.HeapSys) / (1024 * 1024),
@@ -274,9 +271,6 @@ func main() {
 	fmt.Printf("Output dir: %s\n", *outputDir)
 	fmt.Println()
 
-	// --- gRPC byte counter ---
-	counter := &grpcBytesCounter{}
-
 	// --- Choose sketch aggregation ---
 	// baseline: Float64Gauge with default LastValue aggregation — raw samples, no sketching.
 	// All sketch types: Float64Histogram with the sketch aggregation view (sdkSketch mode).
@@ -294,21 +288,25 @@ func main() {
 	case "hll":
 		agg = sdkmetric.AggregationHLLSketch{}
 	case "baseline":
-		// Raw gauge: SDK emits one float64 per series per export window (LastValue).
-		// Collector receives and drops raw data points — no sketch computation anywhere.
-		useHistogram = false
+		// Raw ExplicitBucketHistogram: same instrument/export path as sketch types but
+		// with standard bucket aggregation — no sketch computation anywhere.
+		// An explicit view is required (same as other modes) to ensure the aggregation
+		// is registered for the "benchmark.latency" instrument and exported via OTLP.
+		useHistogram = true
+		agg = sdkmetric.AggregationExplicitBucketHistogram{
+			Boundaries: []float64{0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000},
+			NoMinMax:   false,
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *duration+10*time.Second)
 	defer cancel()
 
-	// --- OTLP exporter with byte-counting stats handler ---
-	// MaxCallSendMsgSize raised to 64 MiB: sketch payloads (CountSketch, CountMinSketch, HLL)
-	// can exceed the default 4 MiB limit at high series counts / export rates.
+	// MaxCallSendMsgSize raised to 64 MiB: sketch payloads (CountSketch, CountMinSketch,
+	// HLL) exceed the default 4 MiB gRPC limit at high series counts / export rates.
 	exp, err := otlpmetricgrpc.New(ctx,
 		otlpmetricgrpc.WithEndpoint(*endpoint),
 		otlpmetricgrpc.WithInsecure(),
-		otlpmetricgrpc.WithDialOption(grpc.WithStatsHandler(counter)),
 		otlpmetricgrpc.WithDialOption(grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(64*1024*1024))),
 	)
 	if err != nil {
@@ -372,11 +370,14 @@ func main() {
 	runCtx, runCancel := context.WithTimeout(context.Background(), *duration)
 	defer runCancel()
 
+	// Record loopback TX bytes before run starts (bandwidth baseline).
+	loTXStart := loLoTXBytes()
+
 	// Start sampler in background.
 	samplerDone := make(chan struct{})
 	go func() {
 		defer close(samplerDone)
-		resourceSampler(runCtx, counter, &samples, &mu)
+		resourceSampler(runCtx, &samples, &mu)
 	}()
 
 	// --- Record CPU at start ---
@@ -414,7 +415,8 @@ func main() {
 	_ = flushCtx
 
 	// --- Compute summary ---
-	totalSent := counter.sent.Load()
+	loTXEnd := loLoTXBytes()
+	totalSent := loTXEnd - loTXStart // loopback TX delta = bytes sent during the run
 	cpuUserDeltaMs := cpuUserEnd - cpuUserStart
 	cpuSysDeltaMs := cpuSysEnd - cpuSysStart
 	wallMs := wallElapsed.Seconds() * 1000
