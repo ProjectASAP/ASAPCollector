@@ -1,9 +1,7 @@
 package kllprocessor
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"sort"
 	"strings"
 	"sync"
@@ -22,8 +20,6 @@ import (
 // allocations in the hot attributesKey path.
 var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
 
-// bufPool recycles bytes.Buffer instances used during KLL sketch serialization.
-var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 
 type kllProcessor struct {
 	cfg          *Config
@@ -339,7 +335,11 @@ func (p *kllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 			dp.Attributes().CopyTo(attrCopy)
 			series = p.seriesPool.Get().(*kllSeries)
 			series.attrs = attrCopy
-			series.sketch = newKLLSketch(p.cfg.K)
+			if series.sketch != nil {
+				series.sketch.Reset()
+			} else {
+				series.sketch = newKLLSketch(p.cfg.K)
+			}
 			mw.series[attrKey] = series
 		}
 		var val float64
@@ -368,7 +368,11 @@ func (p *kllProcessor) accumulateKLLSketchMetric(sw *scopeWindow, metric pmetric
 			dp.Attributes().CopyTo(attrCopy)
 			series = p.seriesPool.Get().(*kllSeries)
 			series.attrs = attrCopy
-			series.sketch = newKLLSketch(p.cfg.K)
+			if series.sketch != nil {
+				series.sketch.Reset()
+			} else {
+				series.sketch = newKLLSketch(p.cfg.K)
+			}
 			mw.series[attrKey] = series
 		}
 		if series.sketch != nil && len(dp.Sketch()) > 0 {
@@ -484,12 +488,6 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 	return p.nextConsumer.ConsumeMetrics(ctx, out)
 }
 
-type kllSketchSnapshot struct {
-	K          int
-	Compactors [][]float64
-	Count      int
-}
-
 func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pmetric.Metric {
 	for idx := 0; idx < metrics.Len(); idx++ {
 		if metrics.At(idx).Name() == name {
@@ -504,7 +502,7 @@ func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pme
 }
 
 func appendKLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *kll.KLLSketch, ts pcommon.Timestamp, k int) error {
-	payload, err := serializeKLLSketch(sketch, k)
+	payload, err := serializeKLLSketch(sketch)
 	if err != nil {
 		return err
 	}
@@ -518,31 +516,11 @@ func appendKLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *
 	return nil
 }
 
-func serializeKLLSketch(sketch *kll.KLLSketch, k int) ([]byte, error) {
+func serializeKLLSketch(sketch *kll.KLLSketch) ([]byte, error) {
 	if sketch == nil {
 		return nil, nil
 	}
-	snapshot := kllSketchSnapshot{
-		K:          k,
-		Compactors: make([][]float64, len(sketch.Compactors)),
-		Count:      sketch.Count(),
-	}
-	for i, compactor := range sketch.Compactors {
-		snapshot.Compactors[i] = append([]float64(nil), compactor...)
-	}
-	buf := bufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	err := gob.NewEncoder(buf).Encode(snapshot)
-	var out []byte
-	if err == nil {
-		out = make([]byte, buf.Len())
-		copy(out, buf.Bytes())
-	}
-	bufPool.Put(buf)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+	return sketch.SerializeToBytes()
 }
 
 func (p *kllProcessor) sketchMetricName(base string) string {
