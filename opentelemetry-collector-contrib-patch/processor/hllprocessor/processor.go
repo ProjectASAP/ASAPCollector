@@ -16,6 +16,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// builderPool recycles strings.Builder instances to avoid per-call heap
+// allocations in the hot attributesKey path.
+var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
+
 // mergeSketchBytes deserializes a serialized HLL sketch and merges it into dst.
 // Returns dst unchanged (with an error) if deserialization fails.
 func mergeSketchBytes(dst *hll.HyperLogLog, payload []byte) error {
@@ -36,6 +40,11 @@ type hllProcessor struct {
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool
+
+	// seriesPool recycles hllSeries structs (and their underlying HLL sketch
+	// register arrays) across window flushes to reduce GC pressure in
+	// high-cardinality deployments.
+	seriesPool sync.Pool
 }
 
 type resourceWindow struct {
@@ -61,7 +70,7 @@ type hllSeries struct {
 }
 
 func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *hllProcessor {
-	return &hllProcessor{
+	p := &hllProcessor{
 		cfg:          cfg,
 		logger:       logger,
 		nextConsumer: next,
@@ -69,6 +78,8 @@ func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *hllPr
 		stopCh:       make(chan struct{}),
 		doneCh:       make(chan struct{}),
 	}
+	p.seriesPool.New = func() any { return new(hllSeries) }
+	return p
 }
 
 func (p *hllProcessor) Capabilities() consumer.Capabilities {
@@ -228,7 +239,8 @@ func attributesKey(attrs pcommon.Map) string {
 		return true
 	})
 	sort.Strings(keys)
-	var b strings.Builder
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
 	for _, k := range keys {
 		v, ok := attrs.Get(k)
 		if !ok {
@@ -239,7 +251,9 @@ func attributesKey(attrs pcommon.Map) string {
 		b.WriteString(v.AsString())
 		b.WriteByte(';')
 	}
-	return b.String()
+	s := b.String()
+	builderPool.Put(b)
+	return s
 }
 
 func (p *hllProcessor) accumulateIntoWindow(md pmetric.Metrics) {
@@ -315,9 +329,12 @@ func (p *hllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 		if series == nil {
 			attrCopy := pcommon.NewMap()
 			dp.Attributes().CopyTo(attrCopy)
-			series = &hllSeries{
-				attrs:  attrCopy,
-				sketch: hll.NewHyperLogLog(),
+			series = p.seriesPool.Get().(*hllSeries)
+			series.attrs = attrCopy
+			if series.sketch != nil {
+				series.sketch.Reset()
+			} else {
+				series.sketch = hll.NewHyperLogLog()
 			}
 			mw.series[attrKey] = series
 		}
@@ -337,9 +354,12 @@ func (p *hllProcessor) accumulateHLLSketchMetric(sw *scopeWindow, metric pmetric
 		if series == nil {
 			attrCopy := pcommon.NewMap()
 			dp.Attributes().CopyTo(attrCopy)
-			series = &hllSeries{
-				attrs:  attrCopy,
-				sketch: hll.NewHyperLogLog(),
+			series = p.seriesPool.Get().(*hllSeries)
+			series.attrs = attrCopy
+			if series.sketch != nil {
+				series.sketch.Reset()
+			} else {
+				series.sketch = hll.NewHyperLogLog()
 			}
 			mw.series[attrKey] = series
 		}
@@ -382,6 +402,8 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 					)
 					for _, series := range mw.series {
 						if series.sketch == nil {
+							series.attrs = pcommon.Map{}
+							p.seriesPool.Put(series)
 							continue
 						}
 						if !created {
@@ -395,6 +417,8 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 						if err := appendHLLSketchDataPoint(m, series.attrs, series.sketch, now); err != nil && p.logger != nil {
 							p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
 						}
+						series.attrs = pcommon.Map{}
+						p.seriesPool.Put(series)
 					}
 					continue
 				}
@@ -406,12 +430,16 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 				}
 				for _, series := range mw.series {
 					if series.sketch == nil {
+						series.attrs = pcommon.Map{}
+						p.seriesPool.Put(series)
 						continue
 					}
 					dps = append(dps, struct {
 						attrs pcommon.Map
 						val   float64
 					}{series.attrs, float64(series.sketch.Estimate())})
+					series.attrs = pcommon.Map{}
+					p.seriesPool.Put(series)
 				}
 				if len(dps) == 0 {
 					continue
