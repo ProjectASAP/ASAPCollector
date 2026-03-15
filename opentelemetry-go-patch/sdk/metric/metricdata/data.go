@@ -337,6 +337,13 @@ type DDSketchDataPoint[N int64 | float64] struct {
 	// SeriesID is the collector-assigned identifier for this series. When non-zero
 	// exporters may omit Attributes from the wire payload and send only SeriesID.
 	SeriesID uint64
+	// SeriesIDSink, when non-nil, receives the collector-assigned series ID on
+	// first registration. Internal use only; not transmitted on the wire.
+	SeriesIDSink *uint64
+	// AttrsClearer, when non-nil, is zeroed after series ID registration to
+	// release the attribute.Set stored in the originating series struct.
+	// Internal use only; not transmitted on the wire.
+	AttrsClearer *attribute.Set
 
 	// StartTime is when the timeseries was started.
 	StartTime time.Time
@@ -391,6 +398,13 @@ type KLLSketchDataPoint[N int64 | float64] struct {
 	// SeriesID is the collector-assigned identifier for this series. When non-zero
 	// exporters may omit Attributes from the wire payload and send only SeriesID.
 	SeriesID uint64
+	// SeriesIDSink, when non-nil, receives the collector-assigned series ID on
+	// first registration. Internal use only; not transmitted on the wire.
+	SeriesIDSink *uint64
+	// AttrsClearer, when non-nil, is zeroed after series ID registration to
+	// release the attribute.Set stored in the originating series struct.
+	// Internal use only; not transmitted on the wire.
+	AttrsClearer *attribute.Set
 
 	// StartTime is when the timeseries was started.
 	StartTime time.Time
@@ -441,6 +455,13 @@ type CountSketchDataPoint[N int64 | float64] struct {
 	// SeriesID is the collector-assigned identifier for this series. When non-zero
 	// exporters may omit Attributes from the wire payload and send only SeriesID.
 	SeriesID uint64
+	// SeriesIDSink, when non-nil, receives the collector-assigned series ID on
+	// first registration. Internal use only; not transmitted on the wire.
+	SeriesIDSink *uint64
+	// AttrsClearer, when non-nil, is zeroed after series ID registration to
+	// release the attribute.Set stored in the originating series struct.
+	// Internal use only; not transmitted on the wire.
+	AttrsClearer *attribute.Set
 
 	// StartTime is when the timeseries was started.
 	StartTime time.Time
@@ -488,6 +509,13 @@ type CountMinSketchDataPoint[N int64 | float64] struct {
 	// SeriesID is the collector-assigned identifier for this series. When non-zero
 	// exporters may omit Attributes from the wire payload and send only SeriesID.
 	SeriesID uint64
+	// SeriesIDSink, when non-nil, receives the collector-assigned series ID on
+	// first registration. Internal use only; not transmitted on the wire.
+	SeriesIDSink *uint64
+	// AttrsClearer, when non-nil, is zeroed after series ID registration to
+	// release the attribute.Set stored in the originating series struct.
+	// Internal use only; not transmitted on the wire.
+	AttrsClearer *attribute.Set
 
 	// StartTime is when the timeseries was started.
 	StartTime time.Time
@@ -535,6 +563,13 @@ type HLLSketchDataPoint struct {
 	// SeriesID is the collector-assigned identifier for this series. When non-zero
 	// exporters may omit Attributes from the wire payload and send only SeriesID.
 	SeriesID uint64
+	// SeriesIDSink, when non-nil, receives the collector-assigned series ID on
+	// first registration. Internal use only; not transmitted on the wire.
+	SeriesIDSink *uint64
+	// AttrsClearer, when non-nil, is zeroed after series ID registration to
+	// release the attribute.Set stored in the originating series struct.
+	// Internal use only; not transmitted on the wire.
+	AttrsClearer *attribute.Set
 
 	// StartTime is when the timeseries was started.
 	StartTime time.Time

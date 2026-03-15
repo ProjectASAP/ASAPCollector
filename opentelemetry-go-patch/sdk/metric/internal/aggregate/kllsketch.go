@@ -18,48 +18,65 @@ import (
 const defaultKLLK = 200
 
 type kllSketchSeries[N int64 | float64] struct {
-	attrs  attribute.Set
-	sketch *kll.KLLSketch
+	attrs    attribute.Set
+	seriesID uint64
+	sketch   *kll.KLLSketch
 
 	count uint64
 	sum   float64
 	min   float64
 	max   float64
 	first bool
+
+	measuredSince bool
+	idleCycles    uint8
 }
 
 type kllSketchValues[N int64 | float64] struct {
-	k      int
+	k       int
 	noStats bool
 
-	limit    limiter[kllSketchSeries[N]]
-	values   map[attribute.Distinct]*kllSketchSeries[N]
-	valuesMu sync.Mutex
+	limit      limiter[kllSketchSeries[N]]
+	values     map[attribute.Distinct]*kllSketchSeries[N]
+	valuesMu   sync.Mutex
+	seriesPool sync.Pool
 }
 
 func newKLLSketchValues[N int64 | float64](k int, noStats bool, limit int) *kllSketchValues[N] {
 	if k <= 0 {
 		k = defaultKLLK
 	}
-	return &kllSketchValues[N]{
+	v := &kllSketchValues[N]{
 		k:       k,
 		noStats: noStats,
 		limit:   newLimiter[kllSketchSeries[N]](limit),
 		values:  make(map[attribute.Distinct]*kllSketchSeries[N]),
 	}
+	v.seriesPool.New = func() any { return new(kllSketchSeries[N]) }
+	return v
 }
 
-func (d *kllSketchValues[N]) newSeries(attr attribute.Set, value N) *kllSketchSeries[N] {
-	sk, err := kll.NewKLLSketch(d.k)
-	if err != nil {
-		otel.Handle(err)
-		return nil
+func (d *kllSketchValues[N]) newSeries(attr attribute.Set) *kllSketchSeries[N] {
+	series := d.seriesPool.Get().(*kllSketchSeries[N])
+	if series.sketch != nil {
+		series.sketch.Reset() // reuse compactor arrays
+	} else {
+		sk, err := kll.NewKLLSketch(d.k)
+		if err != nil {
+			otel.Handle(err)
+			return nil
+		}
+		series.sketch = sk
 	}
-	series := &kllSketchSeries[N]{
-		attrs:  attr,
-		sketch: sk,
-		first:  true,
-	}
+	series.attrs = attr
+	series.seriesID = 0
+	series.count = 0
+	series.sum = 0
+	series.min = 0
+	series.max = 0
+	series.first = true
+	series.measuredSince = true
+	series.idleCycles = 0
 	return series
 }
 
@@ -77,7 +94,7 @@ func (d *kllSketchValues[N]) measure(
 		fltrAttr = d.limit.Attributes(fltrAttr, d.values)
 		series, ok = d.values[fltrAttr.Equivalent()]
 		if !ok {
-			series = d.newSeries(fltrAttr, value)
+			series = d.newSeries(fltrAttr)
 			if series == nil {
 				return
 			}
@@ -87,6 +104,7 @@ func (d *kllSketchValues[N]) measure(
 
 	series.sketch.Insert(float64(value))
 	series.count++
+	series.measuredSince = true
 	fv := float64(value)
 	series.sum += fv
 	if series.first {
@@ -149,6 +167,19 @@ func (d *kllSketch[N]) delta(
 	}
 
 	dPts = dPts[:i]
+
+	for _, series := range d.values {
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.count = 0
+		series.sum = 0
+		series.min = 0
+		series.max = 0
+		series.first = false
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 	clear(d.values)
 	d.start = t
 
@@ -172,7 +203,18 @@ func (d *kllSketch[N]) cumulative(
 	dPts := reset(data.DataPoints, n, n)
 
 	var i int
-	for _, series := range d.values {
+	var toEvict []attribute.Distinct
+	for key, series := range d.values {
+		if !series.measuredSince {
+			series.idleCycles++
+			if series.idleCycles >= maxIdleCycles {
+				toEvict = append(toEvict, key)
+			}
+			continue
+		}
+		series.measuredSince = false
+		series.idleCycles = 0
+
 		if series.count == 0 {
 			continue
 		}
@@ -181,6 +223,21 @@ func (d *kllSketch[N]) cumulative(
 		}
 	}
 	dPts = dPts[:i]
+
+	for _, key := range toEvict {
+		series := d.values[key]
+		delete(d.values, key)
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.count = 0
+		series.sum = 0
+		series.min = 0
+		series.max = 0
+		series.first = false
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 
 	data.DataPoints = dPts
 	*dest = data
@@ -199,7 +256,13 @@ func (d *kllSketch[N]) exportDataPoint(
 	}
 
 	dp := dest
-	dp.Attributes = series.attrs
+	if series.seriesID != 0 {
+		dp.SeriesID = series.seriesID
+	} else {
+		dp.Attributes = series.attrs
+		dp.SeriesIDSink = &series.seriesID
+		dp.AttrsClearer = &series.attrs
+	}
 	dp.StartTime = d.start
 	dp.Time = t
 	dp.Count = series.count
