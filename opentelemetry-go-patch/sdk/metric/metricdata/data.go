@@ -362,3 +362,194 @@ type DDSketchDataPoint[N int64 | float64] struct {
 	// Exemplars is the sampled Exemplars collected during the timeseries.
 	Exemplars []Exemplar[N] `json:",omitempty"`
 }
+
+// KLLSketch represents distributions encoded as KLL sketch payloads.
+type KLLSketch[N int64 | float64] struct {
+	// DataPoints are the individual aggregated measurements with unique
+	// attributes.
+	DataPoints []KLLSketchDataPoint[N]
+	// Temporality describes if the aggregation is reported as the change from the
+	// last report time, or the cumulative changes since a fixed start time.
+	Temporality Temporality
+}
+
+func (KLLSketch[N]) privateAggregation() {}
+
+// KLLSketchEncoding identifies the serialization format used by a KLL sketch.
+type KLLSketchEncoding string
+
+const (
+	// KLLSketchEncodingGob indicates the sketch bytes are gob-encoded.
+	KLLSketchEncodingGob KLLSketchEncoding = "kll_sketch_gob"
+)
+
+// KLLSketchDataPoint is a single data point in a KLLSketch timeseries.
+type KLLSketchDataPoint[N int64 | float64] struct {
+	// Attributes is the set of key value pairs that uniquely identify the
+	// timeseries.
+	Attributes attribute.Set
+	// SeriesID is the collector-assigned identifier for this series. When non-zero
+	// exporters may omit Attributes from the wire payload and send only SeriesID.
+	SeriesID uint64
+
+	// StartTime is when the timeseries was started.
+	StartTime time.Time
+	// Time is the time when the timeseries was recorded.
+	Time time.Time
+
+	// Count is the number of updates recorded in this sketch.
+	Count uint64
+
+	// Sum is the sum of values recorded.
+	Sum float64
+	// Min is the minimum value recorded.
+	Min float64
+	// Max is the maximum value recorded.
+	Max float64
+
+	// Sketch is the serialized KLL sketch payload.
+	Sketch []byte
+	// Encoding is the format used in Sketch.
+	Encoding KLLSketchEncoding
+}
+
+// CountSketch represents frequency estimations encoded as CountSketch payloads.
+type CountSketch[N int64 | float64] struct {
+	// DataPoints are the individual aggregated measurements with unique
+	// attributes.
+	DataPoints []CountSketchDataPoint[N]
+	// Temporality describes if the aggregation is reported as the change from the
+	// last report time, or the cumulative changes since a fixed start time.
+	Temporality Temporality
+}
+
+func (CountSketch[N]) privateAggregation() {}
+
+// CountSketchEncoding identifies the serialization format used by a CountSketch.
+type CountSketchEncoding string
+
+const (
+	// CountSketchEncodingGob indicates the sketch bytes are gob-encoded.
+	CountSketchEncodingGob CountSketchEncoding = "count_sketch_gob"
+)
+
+// CountSketchDataPoint is a single data point in a CountSketch timeseries.
+type CountSketchDataPoint[N int64 | float64] struct {
+	// Attributes is the set of key value pairs that uniquely identify the
+	// timeseries.
+	Attributes attribute.Set
+	// SeriesID is the collector-assigned identifier for this series. When non-zero
+	// exporters may omit Attributes from the wire payload and send only SeriesID.
+	SeriesID uint64
+
+	// StartTime is when the timeseries was started.
+	StartTime time.Time
+	// Time is the time when the timeseries was recorded.
+	Time time.Time
+
+	// Dimension is the tracked dimension (e.g. "row").
+	Dimension string
+	// Epsilon is the error bound parameter.
+	Epsilon float64
+	// Delta is the failure probability parameter.
+	Delta float64
+
+	// Sketch is the serialized CountSketch payload.
+	Sketch []byte
+	// Encoding is the format used in Sketch.
+	Encoding CountSketchEncoding
+}
+
+// CountMinSketch represents frequency estimations encoded as Count-Min Sketch payloads.
+type CountMinSketch[N int64 | float64] struct {
+	// DataPoints are the individual aggregated measurements with unique
+	// attributes.
+	DataPoints []CountMinSketchDataPoint[N]
+	// Temporality describes if the aggregation is reported as the change from the
+	// last report time, or the cumulative changes since a fixed start time.
+	Temporality Temporality
+}
+
+func (CountMinSketch[N]) privateAggregation() {}
+
+// CountMinSketchEncoding identifies the serialization format used by a Count-Min Sketch.
+type CountMinSketchEncoding string
+
+const (
+	// CountMinSketchEncodingGob indicates the sketch bytes are gob-encoded.
+	CountMinSketchEncodingGob CountMinSketchEncoding = "count_min_sketch_gob"
+)
+
+// CountMinSketchDataPoint is a single data point in a CountMinSketch timeseries.
+type CountMinSketchDataPoint[N int64 | float64] struct {
+	// Attributes is the set of key value pairs that uniquely identify the
+	// timeseries.
+	Attributes attribute.Set
+	// SeriesID is the collector-assigned identifier for this series. When non-zero
+	// exporters may omit Attributes from the wire payload and send only SeriesID.
+	SeriesID uint64
+
+	// StartTime is when the timeseries was started.
+	StartTime time.Time
+	// Time is the time when the timeseries was recorded.
+	Time time.Time
+
+	// SampleCount is the total number of items observed.
+	SampleCount uint64
+	// Rows is the number of hash functions (rows) in the sketch.
+	Rows int32
+	// Cols is the number of buckets (columns) per row.
+	Cols int32
+
+	// Sketch is the serialized Count-Min Sketch payload.
+	Sketch []byte
+	// Encoding is the format used in Sketch.
+	Encoding CountMinSketchEncoding
+}
+
+// HLLSketch represents cardinality estimations encoded as HyperLogLog sketch payloads.
+type HLLSketch struct {
+	// DataPoints are the individual aggregated measurements with unique
+	// attributes.
+	DataPoints []HLLSketchDataPoint
+	// Temporality describes if the aggregation is reported as the change from the
+	// last report time, or the cumulative changes since a fixed start time.
+	Temporality Temporality
+}
+
+func (HLLSketch) privateAggregation() {}
+
+// HLLSketchEncoding identifies the serialization format used by a HyperLogLog sketch.
+type HLLSketchEncoding string
+
+const (
+	// HLLSketchEncodingBinary indicates the sketch bytes are binary-encoded (SerializeToBytes).
+	HLLSketchEncodingBinary HLLSketchEncoding = "hll_sketch_binary"
+)
+
+// HLLSketchDataPoint is a single data point in a HLLSketch timeseries.
+type HLLSketchDataPoint struct {
+	// Attributes is the set of key value pairs that uniquely identify the
+	// timeseries.
+	Attributes attribute.Set
+	// SeriesID is the collector-assigned identifier for this series. When non-zero
+	// exporters may omit Attributes from the wire payload and send only SeriesID.
+	SeriesID uint64
+
+	// StartTime is when the timeseries was started.
+	StartTime time.Time
+	// Time is the time when the timeseries was recorded.
+	Time time.Time
+
+	// Count is the number of items observed.
+	Count uint64
+	// Cardinality is the estimated distinct count.
+	Cardinality uint64
+	// Precision is the HLL precision parameter (e.g. 14).
+	Precision uint32
+
+	// Sketch is the serialized HLL sketch payload.
+	Sketch []byte
+	// Encoding is the format used in Sketch.
+	Encoding HLLSketchEncoding
+}

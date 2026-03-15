@@ -15,9 +15,13 @@ import (
 )
 
 var (
-	errUnknownAggregation = errors.New("unknown aggregation")
-	errUnknownTemporality = errors.New("unknown temporality")
-	errUnknownDDSketchEncoding = errors.New("unknown ddsketch encoding")
+	errUnknownAggregation           = errors.New("unknown aggregation")
+	errUnknownTemporality           = errors.New("unknown temporality")
+	errUnknownDDSketchEncoding      = errors.New("unknown ddsketch encoding")
+	errUnknownKLLSketchEncoding     = errors.New("unknown kll sketch encoding")
+	errUnknownCountSketchEncoding   = errors.New("unknown countsketch encoding")
+	errUnknownCountMinSketchEncoding = errors.New("unknown countminsketch encoding")
+	errUnknownHLLSketchEncoding     = errors.New("unknown hll sketch encoding")
 )
 
 type errMetric struct {

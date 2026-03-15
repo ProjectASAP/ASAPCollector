@@ -105,6 +105,20 @@ func metric(m metricdata.Metrics) (*mpb.Metric, error) {
 		out.Data, err = DDSketch(a)
 	case metricdata.Summary:
 		out.Data = Summary(a)
+	case metricdata.KLLSketch[int64]:
+		out.Data, err = KLLSketch(a)
+	case metricdata.KLLSketch[float64]:
+		out.Data, err = KLLSketch(a)
+	case metricdata.CountSketch[int64]:
+		out.Data, err = CountSketch(a)
+	case metricdata.CountSketch[float64]:
+		out.Data, err = CountSketch(a)
+	case metricdata.CountMinSketch[int64]:
+		out.Data, err = CountMinSketch(a)
+	case metricdata.CountMinSketch[float64]:
+		out.Data, err = CountMinSketch(a)
+	case metricdata.HLLSketch:
+		out.Data, err = HLLSketch(a)
 	default:
 		return out, fmt.Errorf("%w: %T", errUnknownAggregation, a)
 	}
@@ -468,4 +482,233 @@ func seriesIdentity(attrs []*cpb.KeyValue, seriesID uint64) ([]*cpb.KeyValue, ui
 		return attrs, 0
 	}
 	return nil, seriesID
+}
+
+// KLLSketch returns an OTLP Metric_Kllsketch generated from k. An error is
+// returned if the temporality of k is unknown.
+func KLLSketch[N int64 | float64](k metricdata.KLLSketch[N]) (*mpb.Metric_Kllsketch, error) {
+	t, err := Temporality(k.Temporality)
+	if err != nil {
+		return nil, err
+	}
+	dPts, err := KLLSketchDataPoints(k.DataPoints)
+	if err != nil {
+		return nil, err
+	}
+	return &mpb.Metric_Kllsketch{
+		Kllsketch: &mpb.KLLSketch{
+			AggregationTemporality: t,
+			DataPoints:             dPts,
+		},
+	}, nil
+}
+
+// KLLSketchDataPoints returns a slice of OTLP KLLSketchDataPoint generated from dPts.
+func KLLSketchDataPoints[N int64 | float64](
+	dPts []metricdata.KLLSketchDataPoint[N],
+) ([]*mpb.KLLSketchDataPoint, error) {
+	out := make([]*mpb.KLLSketchDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		encoding, err := KLLSketchEncodingValue(dPt.Encoding)
+		if err != nil {
+			return nil, err
+		}
+
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
+		dp := &mpb.KLLSketchDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+			Count:             dPt.Count,
+			Sum:               dPt.Sum,
+			Min:               dPt.Min,
+			Max:               dPt.Max,
+			Sketch:            dPt.Sketch,
+			Encoding:          encoding,
+			SeriesId:          seriesID,
+		}
+		out = append(out, dp)
+	}
+	return out, nil
+}
+
+// KLLSketchEncodingValue returns an OTLP KLLSketchEncoding generated from enc.
+func KLLSketchEncodingValue(enc metricdata.KLLSketchEncoding) (mpb.KLLSketchEncoding, error) {
+	switch enc {
+	case metricdata.KLLSketchEncodingGob:
+		return mpb.KLLSketchEncoding_KLL_SKETCH_ENCODING_GOB, nil
+	default:
+		return mpb.KLLSketchEncoding_KLL_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownKLLSketchEncoding, enc)
+	}
+}
+
+// CountSketch returns an OTLP Metric_Countsketch generated from c. An error is
+// returned if the temporality of c is unknown.
+func CountSketch[N int64 | float64](c metricdata.CountSketch[N]) (*mpb.Metric_Countsketch, error) {
+	t, err := Temporality(c.Temporality)
+	if err != nil {
+		return nil, err
+	}
+	dPts, err := CountSketchDataPoints(c.DataPoints)
+	if err != nil {
+		return nil, err
+	}
+	return &mpb.Metric_Countsketch{
+		Countsketch: &mpb.CountSketch{
+			AggregationTemporality: t,
+			DataPoints:             dPts,
+		},
+	}, nil
+}
+
+// CountSketchDataPoints returns a slice of OTLP CountSketchDataPoint generated from dPts.
+func CountSketchDataPoints[N int64 | float64](
+	dPts []metricdata.CountSketchDataPoint[N],
+) ([]*mpb.CountSketchDataPoint, error) {
+	out := make([]*mpb.CountSketchDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		encoding, err := CountSketchEncodingValue(dPt.Encoding)
+		if err != nil {
+			return nil, err
+		}
+
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
+		dp := &mpb.CountSketchDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+			Sketch:            dPt.Sketch,
+			Encoding:          encoding,
+			Dimension:         dPt.Dimension,
+			Epsilon:           dPt.Epsilon,
+			Delta:             dPt.Delta,
+			SeriesId:          seriesID,
+		}
+		out = append(out, dp)
+	}
+	return out, nil
+}
+
+// CountSketchEncodingValue returns an OTLP CountSketchEncoding generated from enc.
+func CountSketchEncodingValue(enc metricdata.CountSketchEncoding) (mpb.CountSketchEncoding, error) {
+	switch enc {
+	case metricdata.CountSketchEncodingGob:
+		return mpb.CountSketchEncoding_COUNT_SKETCH_ENCODING_GOB, nil
+	default:
+		return mpb.CountSketchEncoding_COUNT_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownCountSketchEncoding, enc)
+	}
+}
+
+// CountMinSketch returns an OTLP Metric_Countminsketch generated from c. An error is
+// returned if the temporality of c is unknown.
+func CountMinSketch[N int64 | float64](c metricdata.CountMinSketch[N]) (*mpb.Metric_Countminsketch, error) {
+	t, err := Temporality(c.Temporality)
+	if err != nil {
+		return nil, err
+	}
+	dPts, err := CountMinSketchDataPoints(c.DataPoints)
+	if err != nil {
+		return nil, err
+	}
+	return &mpb.Metric_Countminsketch{
+		Countminsketch: &mpb.CountMinSketch{
+			AggregationTemporality: t,
+			DataPoints:             dPts,
+		},
+	}, nil
+}
+
+// CountMinSketchDataPoints returns a slice of OTLP CountMinSketchDataPoint generated from dPts.
+func CountMinSketchDataPoints[N int64 | float64](
+	dPts []metricdata.CountMinSketchDataPoint[N],
+) ([]*mpb.CountMinSketchDataPoint, error) {
+	out := make([]*mpb.CountMinSketchDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		encoding, err := CountMinSketchEncodingValue(dPt.Encoding)
+		if err != nil {
+			return nil, err
+		}
+
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
+		dp := &mpb.CountMinSketchDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+			SampleCount:       dPt.SampleCount,
+			Sketch:            dPt.Sketch,
+			Encoding:          encoding,
+			Rows:              dPt.Rows,
+			Cols:              dPt.Cols,
+			SeriesId:          seriesID,
+		}
+		out = append(out, dp)
+	}
+	return out, nil
+}
+
+// CountMinSketchEncodingValue returns an OTLP CountMinSketchEncoding generated from enc.
+func CountMinSketchEncodingValue(enc metricdata.CountMinSketchEncoding) (mpb.CountMinSketchEncoding, error) {
+	switch enc {
+	case metricdata.CountMinSketchEncodingGob:
+		return mpb.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_GOB, nil
+	default:
+		return mpb.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownCountMinSketchEncoding, enc)
+	}
+}
+
+// HLLSketch returns an OTLP Metric_Hllsketch generated from h. An error is
+// returned if the temporality of h is unknown.
+func HLLSketch(h metricdata.HLLSketch) (*mpb.Metric_Hllsketch, error) {
+	t, err := Temporality(h.Temporality)
+	if err != nil {
+		return nil, err
+	}
+	dPts, err := HLLSketchDataPoints(h.DataPoints)
+	if err != nil {
+		return nil, err
+	}
+	return &mpb.Metric_Hllsketch{
+		Hllsketch: &mpb.HLLSketch{
+			AggregationTemporality: t,
+			DataPoints:             dPts,
+		},
+	}, nil
+}
+
+// HLLSketchDataPoints returns a slice of OTLP HLLSketchDataPoint generated from dPts.
+func HLLSketchDataPoints(
+	dPts []metricdata.HLLSketchDataPoint,
+) ([]*mpb.HLLSketchDataPoint, error) {
+	out := make([]*mpb.HLLSketchDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		encoding, err := HLLSketchEncodingValue(dPt.Encoding)
+		if err != nil {
+			return nil, err
+		}
+
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
+		dp := &mpb.HLLSketchDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+			Count:             dPt.Count,
+			Cardinality:       dPt.Cardinality,
+			Sketch:            dPt.Sketch,
+			Encoding:          encoding,
+			Precision:         dPt.Precision,
+			SeriesId:          seriesID,
+		}
+		out = append(out, dp)
+	}
+	return out, nil
+}
+
+// HLLSketchEncodingValue returns an OTLP HLLSketchEncoding generated from enc.
+func HLLSketchEncodingValue(enc metricdata.HLLSketchEncoding) (mpb.HLLSketchEncoding, error) {
+	switch enc {
+	case metricdata.HLLSketchEncodingBinary:
+		return mpb.HLLSketchEncoding_HLL_SKETCH_ENCODING_BINARY, nil
+	default:
+		return mpb.HLLSketchEncoding_HLL_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownHLLSketchEncoding, enc)
+	}
 }

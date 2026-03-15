@@ -212,3 +212,96 @@ func (a AggregationDDSketch) err() error {
 	}
 	return nil
 }
+
+// AggregationKLLSketch summarizes recorded measurements as a KLL sketch.
+type AggregationKLLSketch struct {
+	// K controls the sketch compaction parameter. When zero, a default value is
+	// used.
+	K int
+}
+
+var _ Aggregation = AggregationKLLSketch{}
+
+var errKLLSketch = fmt.Errorf("%w: kll sketch", errAgg)
+
+func (a AggregationKLLSketch) copy() Aggregation { return a }
+
+func (a AggregationKLLSketch) err() error {
+	if a.K < 0 {
+		return fmt.Errorf("%w: k %d must be greater than or equal to zero", errKLLSketch, a.K)
+	}
+	return nil
+}
+
+// AggregationCountSketch summarizes recorded measurements as a CountSketch.
+type AggregationCountSketch struct {
+	// Rows is the number of hash functions used by the sketch. When zero, a
+	// default value is used.
+	Rows int
+	// Cols is the number of buckets per row. When zero, a default value is used.
+	Cols int
+	// Epsilon is the configured accuracy parameter to report alongside the
+	// serialized sketch. When zero, it is omitted from validation.
+	Epsilon float64
+	// Delta is the configured failure probability parameter to report alongside
+	// the serialized sketch. When zero, it is omitted from validation.
+	Delta float64
+	// Dimension describes the sketched dimension.
+	Dimension string
+}
+
+var _ Aggregation = AggregationCountSketch{}
+
+var errCountSketch = fmt.Errorf("%w: count sketch", errAgg)
+
+func (a AggregationCountSketch) copy() Aggregation { return a }
+
+func (a AggregationCountSketch) err() error {
+	if a.Rows < 0 {
+		return fmt.Errorf("%w: rows %d must be greater than or equal to zero", errCountSketch, a.Rows)
+	}
+	if a.Cols < 0 {
+		return fmt.Errorf("%w: cols %d must be greater than or equal to zero", errCountSketch, a.Cols)
+	}
+	if a.Epsilon != 0 && (a.Epsilon <= 0 || a.Epsilon >= 1) {
+		return fmt.Errorf("%w: epsilon %v must be in (0,1)", errCountSketch, a.Epsilon)
+	}
+	if a.Delta != 0 && (a.Delta <= 0 || a.Delta >= 1) {
+		return fmt.Errorf("%w: delta %v must be in (0,1)", errCountSketch, a.Delta)
+	}
+	return nil
+}
+
+// AggregationCountMinSketch summarizes recorded measurements as a Count-Min Sketch.
+type AggregationCountMinSketch struct {
+	// Rows is the number of hash functions used by the sketch. When zero, a
+	// default value is used.
+	Rows int
+	// Cols is the number of buckets per row. When zero, a default value is used.
+	Cols int
+}
+
+var _ Aggregation = AggregationCountMinSketch{}
+
+var errCountMinSketch = fmt.Errorf("%w: count-min sketch", errAgg)
+
+func (a AggregationCountMinSketch) copy() Aggregation { return a }
+
+func (a AggregationCountMinSketch) err() error {
+	if a.Rows < 0 {
+		return fmt.Errorf("%w: rows %d must be greater than or equal to zero", errCountMinSketch, a.Rows)
+	}
+	if a.Cols < 0 {
+		return fmt.Errorf("%w: cols %d must be greater than or equal to zero", errCountMinSketch, a.Cols)
+	}
+	return nil
+}
+
+// AggregationHLLSketch summarizes recorded measurements as a HyperLogLog sketch.
+type AggregationHLLSketch struct{}
+
+var _ Aggregation = AggregationHLLSketch{}
+
+func (a AggregationHLLSketch) copy() Aggregation { return a }
+
+func (AggregationHLLSketch) err() error { return nil }

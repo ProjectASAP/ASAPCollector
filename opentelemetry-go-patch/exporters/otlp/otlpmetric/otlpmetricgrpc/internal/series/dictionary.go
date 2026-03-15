@@ -38,6 +38,13 @@ const (
 	metricTypeSummary              = "summary"
 	metricTypeDDSketchInt          = "ddsketch_int"
 	metricTypeDDSketchDouble       = "ddsketch_double"
+	metricTypeKLLSketchInt         = "kllsketch_int"
+	metricTypeKLLSketchDouble      = "kllsketch_double"
+	metricTypeCountSketchInt       = "countsketch_int"
+	metricTypeCountSketchDouble    = "countsketch_double"
+	metricTypeCountMinSketchInt    = "countminsketch_int"
+	metricTypeCountMinSketchDouble = "countminsketch_double"
+	metricTypeHLLSketch            = "hllsketch"
 )
 
 // Assignment mirrors the collector-provided series mapping.
@@ -140,6 +147,27 @@ func (d *Dictionary) annotateMetric(src *sourceState, scopeKey string, m *metric
 	case metricdata.DDSketch[float64]:
 		annotateDDSketchDataPoints(src, scopeKey, m.Name, metricTypeDDSketchDouble, data.DataPoints)
 		m.Data = data
+	case metricdata.KLLSketch[int64]:
+		annotateKLLSketchDataPoints(src, scopeKey, m.Name, metricTypeKLLSketchInt, data.DataPoints)
+		m.Data = data
+	case metricdata.KLLSketch[float64]:
+		annotateKLLSketchDataPoints(src, scopeKey, m.Name, metricTypeKLLSketchDouble, data.DataPoints)
+		m.Data = data
+	case metricdata.CountSketch[int64]:
+		annotateCountSketchDataPoints(src, scopeKey, m.Name, metricTypeCountSketchInt, data.DataPoints)
+		m.Data = data
+	case metricdata.CountSketch[float64]:
+		annotateCountSketchDataPoints(src, scopeKey, m.Name, metricTypeCountSketchDouble, data.DataPoints)
+		m.Data = data
+	case metricdata.CountMinSketch[int64]:
+		annotateCountMinSketchDataPoints(src, scopeKey, m.Name, metricTypeCountMinSketchInt, data.DataPoints)
+		m.Data = data
+	case metricdata.CountMinSketch[float64]:
+		annotateCountMinSketchDataPoints(src, scopeKey, m.Name, metricTypeCountMinSketchDouble, data.DataPoints)
+		m.Data = data
+	case metricdata.HLLSketch:
+		annotateHLLSketchDataPoints(src, scopeKey, m.Name, metricTypeHLLSketch, data.DataPoints)
+		m.Data = data
 	case metricdata.Summary:
 		annotateSummaryDataPoints(src, scopeKey, m.Name, metricTypeSummary, data.DataPoints)
 		m.Data = data
@@ -176,6 +204,34 @@ func annotateSummaryDataPoints(src *sourceState, scopeKey, metricName, metricTyp
 }
 
 func annotateDDSketchDataPoints[N int64 | float64](src *sourceState, scopeKey, metricName, metricType string, dps []metricdata.DDSketchDataPoint[N]) {
+	for i := range dps {
+		dp := &dps[i]
+		assignSeriesID(src, scopeKey, metricName, metricType, &dp.SeriesID, &dp.Attributes)
+	}
+}
+
+func annotateKLLSketchDataPoints[N int64 | float64](src *sourceState, scopeKey, metricName, metricType string, dps []metricdata.KLLSketchDataPoint[N]) {
+	for i := range dps {
+		dp := &dps[i]
+		assignSeriesID(src, scopeKey, metricName, metricType, &dp.SeriesID, &dp.Attributes)
+	}
+}
+
+func annotateCountSketchDataPoints[N int64 | float64](src *sourceState, scopeKey, metricName, metricType string, dps []metricdata.CountSketchDataPoint[N]) {
+	for i := range dps {
+		dp := &dps[i]
+		assignSeriesID(src, scopeKey, metricName, metricType, &dp.SeriesID, &dp.Attributes)
+	}
+}
+
+func annotateCountMinSketchDataPoints[N int64 | float64](src *sourceState, scopeKey, metricName, metricType string, dps []metricdata.CountMinSketchDataPoint[N]) {
+	for i := range dps {
+		dp := &dps[i]
+		assignSeriesID(src, scopeKey, metricName, metricType, &dp.SeriesID, &dp.Attributes)
+	}
+}
+
+func annotateHLLSketchDataPoints(src *sourceState, scopeKey, metricName, metricType string, dps []metricdata.HLLSketchDataPoint) {
 	for i := range dps {
 		dp := &dps[i]
 		assignSeriesID(src, scopeKey, metricName, metricType, &dp.SeriesID, &dp.Attributes)

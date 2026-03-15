@@ -98,6 +98,14 @@ func (ms Metric) Type() MetricType {
 		return MetricTypeDDSketch
 	case *internal.Metric_Summary:
 		return MetricTypeSummary
+	case *internal.Metric_KLLSketch:
+		return MetricTypeKLLSketch
+	case *internal.Metric_CountSketch:
+		return MetricTypeCountSketch
+	case *internal.Metric_CountMinSketch:
+		return MetricTypeCountMinSketch
+	case *internal.Metric_HLLSketch:
+		return MetricTypeHLLSketch
 	}
 	return MetricTypeEmpty
 }
@@ -292,6 +300,134 @@ func (ms Metric) SetEmptySummary() Summary {
 	ov.Summary = internal.NewSummary()
 	ms.orig.Data = ov
 	return newSummary(ov.Summary, ms.state)
+}
+
+// KLLSketch returns the kllsketch associated with this Metric.
+//
+// Calling this function when Type() != MetricTypeKLLSketch returns an invalid
+// zero-initialized instance of KLLSketch. Note that using such KLLSketch instance can cause panic.
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) KLLSketch() KLLSketch {
+	v, ok := ms.orig.GetData().(*internal.Metric_KLLSketch)
+	if !ok {
+		return KLLSketch{}
+	}
+	return newKLLSketch(v.KLLSketch, ms.state)
+}
+
+// SetEmptyKLLSketch sets an empty kllsketch to this Metric.
+//
+// After this, Type() function will return MetricTypeKLLSketch".
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) SetEmptyKLLSketch() KLLSketch {
+	ms.state.AssertMutable()
+	var ov *internal.Metric_KLLSketch
+	if !internal.UseProtoPooling.IsEnabled() {
+		ov = &internal.Metric_KLLSketch{}
+	} else {
+		ov = internal.ProtoPoolMetric_KLLSketch.Get().(*internal.Metric_KLLSketch)
+	}
+	ov.KLLSketch = internal.NewKLLSketch()
+	ms.orig.Data = ov
+	return newKLLSketch(ov.KLLSketch, ms.state)
+}
+
+// CountSketch returns the countsketch associated with this Metric.
+//
+// Calling this function when Type() != MetricTypeCountSketch returns an invalid
+// zero-initialized instance of CountSketch. Note that using such CountSketch instance can cause panic.
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) CountSketch() CountSketch {
+	v, ok := ms.orig.GetData().(*internal.Metric_CountSketch)
+	if !ok {
+		return CountSketch{}
+	}
+	return newCountSketch(v.CountSketch, ms.state)
+}
+
+// SetEmptyCountSketch sets an empty countsketch to this Metric.
+//
+// After this, Type() function will return MetricTypeCountSketch".
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) SetEmptyCountSketch() CountSketch {
+	ms.state.AssertMutable()
+	var ov *internal.Metric_CountSketch
+	if !internal.UseProtoPooling.IsEnabled() {
+		ov = &internal.Metric_CountSketch{}
+	} else {
+		ov = internal.ProtoPoolMetric_CountSketch.Get().(*internal.Metric_CountSketch)
+	}
+	ov.CountSketch = internal.NewCountSketch()
+	ms.orig.Data = ov
+	return newCountSketch(ov.CountSketch, ms.state)
+}
+
+// CountMinSketch returns the countminsketch associated with this Metric.
+//
+// Calling this function when Type() != MetricTypeCountMinSketch returns an invalid
+// zero-initialized instance of CountMinSketch. Note that using such CountMinSketch instance can cause panic.
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) CountMinSketch() CountMinSketch {
+	v, ok := ms.orig.GetData().(*internal.Metric_CountMinSketch)
+	if !ok {
+		return CountMinSketch{}
+	}
+	return newCountMinSketch(v.CountMinSketch, ms.state)
+}
+
+// SetEmptyCountMinSketch sets an empty countminsketch to this Metric.
+//
+// After this, Type() function will return MetricTypeCountMinSketch".
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) SetEmptyCountMinSketch() CountMinSketch {
+	ms.state.AssertMutable()
+	var ov *internal.Metric_CountMinSketch
+	if !internal.UseProtoPooling.IsEnabled() {
+		ov = &internal.Metric_CountMinSketch{}
+	} else {
+		ov = internal.ProtoPoolMetric_CountMinSketch.Get().(*internal.Metric_CountMinSketch)
+	}
+	ov.CountMinSketch = internal.NewCountMinSketch()
+	ms.orig.Data = ov
+	return newCountMinSketch(ov.CountMinSketch, ms.state)
+}
+
+// HLLSketch returns the hllsketch associated with this Metric.
+//
+// Calling this function when Type() != MetricTypeHLLSketch returns an invalid
+// zero-initialized instance of HLLSketch. Note that using such HLLSketch instance can cause panic.
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) HLLSketch() HLLSketch {
+	v, ok := ms.orig.GetData().(*internal.Metric_HLLSketch)
+	if !ok {
+		return HLLSketch{}
+	}
+	return newHLLSketch(v.HLLSketch, ms.state)
+}
+
+// SetEmptyHLLSketch sets an empty hllsketch to this Metric.
+//
+// After this, Type() function will return MetricTypeHLLSketch".
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) SetEmptyHLLSketch() HLLSketch {
+	ms.state.AssertMutable()
+	var ov *internal.Metric_HLLSketch
+	if !internal.UseProtoPooling.IsEnabled() {
+		ov = &internal.Metric_HLLSketch{}
+	} else {
+		ov = internal.ProtoPoolMetric_HLLSketch.Get().(*internal.Metric_HLLSketch)
+	}
+	ov.HLLSketch = internal.NewHLLSketch()
+	ms.orig.Data = ov
+	return newHLLSketch(ov.HLLSketch, ms.state)
 }
 
 // Metadata returns the Metadata associated with this Metric.

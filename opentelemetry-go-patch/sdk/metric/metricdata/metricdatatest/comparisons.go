@@ -163,6 +163,48 @@ func equalAggregations(a, b metricdata.Aggregation, cfg config) (reasons []strin
 			reasons = append(reasons, "DDSketch[float64] not equal:")
 			reasons = append(reasons, r...)
 		}
+	case metricdata.KLLSketch[int64]:
+		r := equalKLLSketch(v, b.(metricdata.KLLSketch[int64]), cfg)
+		if len(r) > 0 {
+			reasons = append(reasons, "KLLSketch[int64] not equal:")
+			reasons = append(reasons, r...)
+		}
+	case metricdata.KLLSketch[float64]:
+		r := equalKLLSketch(v, b.(metricdata.KLLSketch[float64]), cfg)
+		if len(r) > 0 {
+			reasons = append(reasons, "KLLSketch[float64] not equal:")
+			reasons = append(reasons, r...)
+		}
+	case metricdata.CountSketch[int64]:
+		r := equalCountSketch(v, b.(metricdata.CountSketch[int64]), cfg)
+		if len(r) > 0 {
+			reasons = append(reasons, "CountSketch[int64] not equal:")
+			reasons = append(reasons, r...)
+		}
+	case metricdata.CountSketch[float64]:
+		r := equalCountSketch(v, b.(metricdata.CountSketch[float64]), cfg)
+		if len(r) > 0 {
+			reasons = append(reasons, "CountSketch[float64] not equal:")
+			reasons = append(reasons, r...)
+		}
+	case metricdata.CountMinSketch[int64]:
+		r := equalCountMinSketch(v, b.(metricdata.CountMinSketch[int64]), cfg)
+		if len(r) > 0 {
+			reasons = append(reasons, "CountMinSketch[int64] not equal:")
+			reasons = append(reasons, r...)
+		}
+	case metricdata.CountMinSketch[float64]:
+		r := equalCountMinSketch(v, b.(metricdata.CountMinSketch[float64]), cfg)
+		if len(r) > 0 {
+			reasons = append(reasons, "CountMinSketch[float64] not equal:")
+			reasons = append(reasons, r...)
+		}
+	case metricdata.HLLSketch:
+		r := equalHLLSketch(v, b.(metricdata.HLLSketch), cfg)
+		if len(r) > 0 {
+			reasons = append(reasons, "HLLSketch not equal:")
+			reasons = append(reasons, r...)
+		}
 	default:
 		reasons = append(reasons, fmt.Sprintf("Aggregation of unknown types %T", a))
 	}
@@ -579,6 +621,221 @@ func equalDDSketchDataPoint[N int64 | float64](a, b metricdata.DDSketchDataPoint
 	return reasons
 }
 
+func equalKLLSketch[N int64 | float64](a, b metricdata.KLLSketch[N], cfg config) (reasons []string) {
+	if a.Temporality != b.Temporality {
+		reasons = append(reasons, notEqualStr("Temporality", a.Temporality, b.Temporality))
+	}
+	r := compareDiff(diffSlices(
+		a.DataPoints,
+		b.DataPoints,
+		func(a, b metricdata.KLLSketchDataPoint[N]) bool {
+			return len(equalKLLSketchDataPoint(a, b, cfg)) == 0
+		},
+	))
+	if r != "" {
+		reasons = append(reasons, "KLLSketch DataPoints not equal:\n"+r)
+	}
+	return reasons
+}
+
+func equalKLLSketchDataPoint[N int64 | float64](a, b metricdata.KLLSketchDataPoint[N], cfg config) (reasons []string) {
+	if !a.Attributes.Equals(&b.Attributes) {
+		reasons = append(reasons, notEqualStr(
+			"Attributes",
+			a.Attributes.Encoded(attribute.DefaultEncoder()),
+			b.Attributes.Encoded(attribute.DefaultEncoder()),
+		))
+	}
+	if !cfg.ignoreTimestamp {
+		if !a.StartTime.Equal(b.StartTime) {
+			reasons = append(reasons, notEqualStr("StartTime", a.StartTime.UnixNano(), b.StartTime.UnixNano()))
+		}
+		if !a.Time.Equal(b.Time) {
+			reasons = append(reasons, notEqualStr("Time", a.Time.UnixNano(), b.Time.UnixNano()))
+		}
+	}
+	if !cfg.ignoreValue {
+		if a.Count != b.Count {
+			reasons = append(reasons, notEqualStr("Count", a.Count, b.Count))
+		}
+		if a.Sum != b.Sum {
+			reasons = append(reasons, notEqualStr("Sum", a.Sum, b.Sum))
+		}
+		if a.Min != b.Min {
+			reasons = append(reasons, notEqualStr("Min", a.Min, b.Min))
+		}
+		if a.Max != b.Max {
+			reasons = append(reasons, notEqualStr("Max", a.Max, b.Max))
+		}
+	}
+	if a.Encoding != b.Encoding {
+		reasons = append(reasons, notEqualStr("Encoding", a.Encoding, b.Encoding))
+	}
+	if !bytes.Equal(a.Sketch, b.Sketch) && !cfg.ignoreValue {
+		reasons = append(reasons, notEqualStr("Sketch", a.Sketch, b.Sketch))
+	}
+	return reasons
+}
+
+func equalCountSketch[N int64 | float64](a, b metricdata.CountSketch[N], cfg config) (reasons []string) {
+	if a.Temporality != b.Temporality {
+		reasons = append(reasons, notEqualStr("Temporality", a.Temporality, b.Temporality))
+	}
+	r := compareDiff(diffSlices(
+		a.DataPoints,
+		b.DataPoints,
+		func(a, b metricdata.CountSketchDataPoint[N]) bool {
+			return len(equalCountSketchDataPoint(a, b, cfg)) == 0
+		},
+	))
+	if r != "" {
+		reasons = append(reasons, "CountSketch DataPoints not equal:\n"+r)
+	}
+	return reasons
+}
+
+func equalCountSketchDataPoint[N int64 | float64](a, b metricdata.CountSketchDataPoint[N], cfg config) (reasons []string) {
+	if !a.Attributes.Equals(&b.Attributes) {
+		reasons = append(reasons, notEqualStr(
+			"Attributes",
+			a.Attributes.Encoded(attribute.DefaultEncoder()),
+			b.Attributes.Encoded(attribute.DefaultEncoder()),
+		))
+	}
+	if !cfg.ignoreTimestamp {
+		if !a.StartTime.Equal(b.StartTime) {
+			reasons = append(reasons, notEqualStr("StartTime", a.StartTime.UnixNano(), b.StartTime.UnixNano()))
+		}
+		if !a.Time.Equal(b.Time) {
+			reasons = append(reasons, notEqualStr("Time", a.Time.UnixNano(), b.Time.UnixNano()))
+		}
+	}
+	if !cfg.ignoreValue {
+		if a.Dimension != b.Dimension {
+			reasons = append(reasons, notEqualStr("Dimension", a.Dimension, b.Dimension))
+		}
+		if a.Epsilon != b.Epsilon {
+			reasons = append(reasons, notEqualStr("Epsilon", a.Epsilon, b.Epsilon))
+		}
+		if a.Delta != b.Delta {
+			reasons = append(reasons, notEqualStr("Delta", a.Delta, b.Delta))
+		}
+	}
+	if a.Encoding != b.Encoding {
+		reasons = append(reasons, notEqualStr("Encoding", a.Encoding, b.Encoding))
+	}
+	if !bytes.Equal(a.Sketch, b.Sketch) && !cfg.ignoreValue {
+		reasons = append(reasons, notEqualStr("Sketch", a.Sketch, b.Sketch))
+	}
+	return reasons
+}
+
+func equalCountMinSketch[N int64 | float64](a, b metricdata.CountMinSketch[N], cfg config) (reasons []string) {
+	if a.Temporality != b.Temporality {
+		reasons = append(reasons, notEqualStr("Temporality", a.Temporality, b.Temporality))
+	}
+	r := compareDiff(diffSlices(
+		a.DataPoints,
+		b.DataPoints,
+		func(a, b metricdata.CountMinSketchDataPoint[N]) bool {
+			return len(equalCountMinSketchDataPoint(a, b, cfg)) == 0
+		},
+	))
+	if r != "" {
+		reasons = append(reasons, "CountMinSketch DataPoints not equal:\n"+r)
+	}
+	return reasons
+}
+
+func equalCountMinSketchDataPoint[N int64 | float64](a, b metricdata.CountMinSketchDataPoint[N], cfg config) (reasons []string) {
+	if !a.Attributes.Equals(&b.Attributes) {
+		reasons = append(reasons, notEqualStr(
+			"Attributes",
+			a.Attributes.Encoded(attribute.DefaultEncoder()),
+			b.Attributes.Encoded(attribute.DefaultEncoder()),
+		))
+	}
+	if !cfg.ignoreTimestamp {
+		if !a.StartTime.Equal(b.StartTime) {
+			reasons = append(reasons, notEqualStr("StartTime", a.StartTime.UnixNano(), b.StartTime.UnixNano()))
+		}
+		if !a.Time.Equal(b.Time) {
+			reasons = append(reasons, notEqualStr("Time", a.Time.UnixNano(), b.Time.UnixNano()))
+		}
+	}
+	if !cfg.ignoreValue {
+		if a.SampleCount != b.SampleCount {
+			reasons = append(reasons, notEqualStr("SampleCount", a.SampleCount, b.SampleCount))
+		}
+		if a.Rows != b.Rows {
+			reasons = append(reasons, notEqualStr("Rows", a.Rows, b.Rows))
+		}
+		if a.Cols != b.Cols {
+			reasons = append(reasons, notEqualStr("Cols", a.Cols, b.Cols))
+		}
+	}
+	if a.Encoding != b.Encoding {
+		reasons = append(reasons, notEqualStr("Encoding", a.Encoding, b.Encoding))
+	}
+	if !bytes.Equal(a.Sketch, b.Sketch) && !cfg.ignoreValue {
+		reasons = append(reasons, notEqualStr("Sketch", a.Sketch, b.Sketch))
+	}
+	return reasons
+}
+
+func equalHLLSketch(a, b metricdata.HLLSketch, cfg config) (reasons []string) {
+	if a.Temporality != b.Temporality {
+		reasons = append(reasons, notEqualStr("Temporality", a.Temporality, b.Temporality))
+	}
+	r := compareDiff(diffSlices(
+		a.DataPoints,
+		b.DataPoints,
+		func(a, b metricdata.HLLSketchDataPoint) bool {
+			return len(equalHLLSketchDataPoint(a, b, cfg)) == 0
+		},
+	))
+	if r != "" {
+		reasons = append(reasons, "HLLSketch DataPoints not equal:\n"+r)
+	}
+	return reasons
+}
+
+func equalHLLSketchDataPoint(a, b metricdata.HLLSketchDataPoint, cfg config) (reasons []string) {
+	if !a.Attributes.Equals(&b.Attributes) {
+		reasons = append(reasons, notEqualStr(
+			"Attributes",
+			a.Attributes.Encoded(attribute.DefaultEncoder()),
+			b.Attributes.Encoded(attribute.DefaultEncoder()),
+		))
+	}
+	if !cfg.ignoreTimestamp {
+		if !a.StartTime.Equal(b.StartTime) {
+			reasons = append(reasons, notEqualStr("StartTime", a.StartTime.UnixNano(), b.StartTime.UnixNano()))
+		}
+		if !a.Time.Equal(b.Time) {
+			reasons = append(reasons, notEqualStr("Time", a.Time.UnixNano(), b.Time.UnixNano()))
+		}
+	}
+	if !cfg.ignoreValue {
+		if a.Count != b.Count {
+			reasons = append(reasons, notEqualStr("Count", a.Count, b.Count))
+		}
+		if a.Cardinality != b.Cardinality {
+			reasons = append(reasons, notEqualStr("Cardinality", a.Cardinality, b.Cardinality))
+		}
+		if a.Precision != b.Precision {
+			reasons = append(reasons, notEqualStr("Precision", a.Precision, b.Precision))
+		}
+	}
+	if a.Encoding != b.Encoding {
+		reasons = append(reasons, notEqualStr("Encoding", a.Encoding, b.Encoding))
+	}
+	if !bytes.Equal(a.Sketch, b.Sketch) && !cfg.ignoreValue {
+		reasons = append(reasons, notEqualStr("Sketch", a.Sketch, b.Sketch))
+	}
+	return reasons
+}
+
 func notEqualStr(prefix string, expected, actual any) string {
 	return fmt.Sprintf("%s not equal:\nexpected: %v\nactual: %v", prefix, expected, actual)
 }
@@ -881,6 +1138,130 @@ func hasAttributesDDSketch[N int64 | float64](
 	return reasons
 }
 
+func hasAttributesKLLSketchDataPoint[N int64 | float64](
+	dp metricdata.KLLSketchDataPoint[N],
+	attrs ...attribute.KeyValue,
+) (reasons []string) {
+	for _, attr := range attrs {
+		val, ok := dp.Attributes.Value(attr.Key)
+		if !ok {
+			reasons = append(reasons, missingAttrStr(string(attr.Key)))
+			continue
+		}
+		if val != attr.Value {
+			reasons = append(reasons, notEqualStr(string(attr.Key), attr.Value.Emit(), val.Emit()))
+		}
+	}
+	return reasons
+}
+
+func hasAttributesKLLSketch[N int64 | float64](
+	agg metricdata.KLLSketch[N],
+	attrs ...attribute.KeyValue,
+) (reasons []string) {
+	for n, dp := range agg.DataPoints {
+		reas := hasAttributesKLLSketchDataPoint(dp, attrs...)
+		if len(reas) > 0 {
+			reasons = append(reasons, fmt.Sprintf("kll sketch datapoint %d attributes:\n", n))
+			reasons = append(reasons, reas...)
+		}
+	}
+	return reasons
+}
+
+func hasAttributesCountSketchDataPoint[N int64 | float64](
+	dp metricdata.CountSketchDataPoint[N],
+	attrs ...attribute.KeyValue,
+) (reasons []string) {
+	for _, attr := range attrs {
+		val, ok := dp.Attributes.Value(attr.Key)
+		if !ok {
+			reasons = append(reasons, missingAttrStr(string(attr.Key)))
+			continue
+		}
+		if val != attr.Value {
+			reasons = append(reasons, notEqualStr(string(attr.Key), attr.Value.Emit(), val.Emit()))
+		}
+	}
+	return reasons
+}
+
+func hasAttributesCountSketch[N int64 | float64](
+	agg metricdata.CountSketch[N],
+	attrs ...attribute.KeyValue,
+) (reasons []string) {
+	for n, dp := range agg.DataPoints {
+		reas := hasAttributesCountSketchDataPoint(dp, attrs...)
+		if len(reas) > 0 {
+			reasons = append(reasons, fmt.Sprintf("count sketch datapoint %d attributes:\n", n))
+			reasons = append(reasons, reas...)
+		}
+	}
+	return reasons
+}
+
+func hasAttributesCountMinSketchDataPoint[N int64 | float64](
+	dp metricdata.CountMinSketchDataPoint[N],
+	attrs ...attribute.KeyValue,
+) (reasons []string) {
+	for _, attr := range attrs {
+		val, ok := dp.Attributes.Value(attr.Key)
+		if !ok {
+			reasons = append(reasons, missingAttrStr(string(attr.Key)))
+			continue
+		}
+		if val != attr.Value {
+			reasons = append(reasons, notEqualStr(string(attr.Key), attr.Value.Emit(), val.Emit()))
+		}
+	}
+	return reasons
+}
+
+func hasAttributesCountMinSketch[N int64 | float64](
+	agg metricdata.CountMinSketch[N],
+	attrs ...attribute.KeyValue,
+) (reasons []string) {
+	for n, dp := range agg.DataPoints {
+		reas := hasAttributesCountMinSketchDataPoint(dp, attrs...)
+		if len(reas) > 0 {
+			reasons = append(reasons, fmt.Sprintf("count-min sketch datapoint %d attributes:\n", n))
+			reasons = append(reasons, reas...)
+		}
+	}
+	return reasons
+}
+
+func hasAttributesHLLSketchDataPoint(
+	dp metricdata.HLLSketchDataPoint,
+	attrs ...attribute.KeyValue,
+) (reasons []string) {
+	for _, attr := range attrs {
+		val, ok := dp.Attributes.Value(attr.Key)
+		if !ok {
+			reasons = append(reasons, missingAttrStr(string(attr.Key)))
+			continue
+		}
+		if val != attr.Value {
+			reasons = append(reasons, notEqualStr(string(attr.Key), attr.Value.Emit(), val.Emit()))
+		}
+	}
+	return reasons
+}
+
+func hasAttributesHLLSketch(
+	agg metricdata.HLLSketch,
+	attrs ...attribute.KeyValue,
+) (reasons []string) {
+	for n, dp := range agg.DataPoints {
+		reas := hasAttributesHLLSketchDataPoint(dp, attrs...)
+		if len(reas) > 0 {
+			reasons = append(reasons, fmt.Sprintf("hll sketch datapoint %d attributes:\n", n))
+			reasons = append(reasons, reas...)
+		}
+	}
+	return reasons
+}
+
 func hasAttributesAggregation(agg metricdata.Aggregation, attrs ...attribute.KeyValue) (reasons []string) {
 	switch agg := agg.(type) {
 	case metricdata.Gauge[int64]:
@@ -905,6 +1286,20 @@ func hasAttributesAggregation(agg metricdata.Aggregation, attrs ...attribute.Key
 		reasons = hasAttributesDDSketch(agg, attrs...)
 	case metricdata.DDSketch[float64]:
 		reasons = hasAttributesDDSketch(agg, attrs...)
+	case metricdata.KLLSketch[int64]:
+		reasons = hasAttributesKLLSketch(agg, attrs...)
+	case metricdata.KLLSketch[float64]:
+		reasons = hasAttributesKLLSketch(agg, attrs...)
+	case metricdata.CountSketch[int64]:
+		reasons = hasAttributesCountSketch(agg, attrs...)
+	case metricdata.CountSketch[float64]:
+		reasons = hasAttributesCountSketch(agg, attrs...)
+	case metricdata.CountMinSketch[int64]:
+		reasons = hasAttributesCountMinSketch(agg, attrs...)
+	case metricdata.CountMinSketch[float64]:
+		reasons = hasAttributesCountMinSketch(agg, attrs...)
+	case metricdata.HLLSketch:
+		reasons = hasAttributesHLLSketch(agg, attrs...)
 	default:
 		reasons = []string{fmt.Sprintf("unknown aggregation %T", agg)}
 	}

@@ -1,0 +1,19 @@
+dist:
+  module: HLL
+  name: HLL
+  output_path: .
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/nopexporter v0.141.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.142.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.142.0
+
+processors:
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.141.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllprocessor v0.0.0
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.141.0
+
+replaces:
+  - github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllprocessor => ./processor/hllprocessor

@@ -1,0 +1,244 @@
+package hllprocessor
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/consumer/consumertest"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.uber.org/zap"
+)
+
+func makeGaugeMetrics(name string, values []float64) pmetric.Metrics {
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	metric := sm.Metrics().AppendEmpty()
+	metric.SetName(name)
+	metric.SetUnit("1")
+	g := metric.SetEmptyGauge()
+	for _, v := range values {
+		dp := g.DataPoints().AppendEmpty()
+		dp.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+		dp.SetDoubleValue(v)
+	}
+	return md
+}
+
+// TestBatchModeCardinalityOutput verifies that the batch processor emits one
+// cardinality gauge metric per input series with the expected suffix.
+func TestBatchModeCardinalityOutput(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeBatch
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	// Insert 5 distinct values.
+	md := makeGaugeMetrics("requests", []float64{1, 2, 3, 4, 5})
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+
+	var foundCardinality bool
+	for i := 0; i < out[0].ResourceMetrics().Len(); i++ {
+		sms := out[0].ResourceMetrics().At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			if sms.At(j).Scope().Name() == "otelcol/hllprocessor" {
+				ms := sms.At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					if ms.At(k).Name() == "requests_hll_cardinality" {
+						foundCardinality = true
+						assert.Equal(t, pmetric.MetricTypeGauge, ms.At(k).Type())
+						require.Equal(t, 1, ms.At(k).Gauge().DataPoints().Len())
+						// HLL estimate for 5 distinct values — allow generous tolerance.
+						est := ms.At(k).Gauge().DataPoints().At(0).DoubleValue()
+						assert.True(t, est >= 1 && est <= 20,
+							"cardinality estimate %v out of expected range [1, 20]", est)
+					}
+				}
+			}
+		}
+	}
+	assert.True(t, foundCardinality, "expected metric requests_hll_cardinality")
+}
+
+// TestBatchModeTransmitSketch verifies that transmit_sketch=true embeds the
+// HLL payload in gauge data point attributes.
+func TestBatchModeTransmitSketch(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeBatch
+	cfg.TransmitSketch = true
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := makeGaugeMetrics("latency", []float64{10, 20, 30})
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+
+	var foundSketch bool
+	for i := 0; i < out[0].ResourceMetrics().Len(); i++ {
+		sms := out[0].ResourceMetrics().At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			if sms.At(j).Scope().Name() == "otelcol/hllprocessor" {
+				ms := sms.At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					if ms.At(k).Name() == "latency_hll_cardinality" {
+						foundSketch = true
+						dps := ms.At(k).Gauge().DataPoints()
+						require.Equal(t, 1, dps.Len())
+						dp := dps.At(0)
+						_, ok := dp.Attributes().Get("hll.sketch_payload")
+						assert.True(t, ok, "expected hll.sketch_payload attribute")
+						_, ok = dp.Attributes().Get("hll.cardinality")
+						assert.True(t, ok, "expected hll.cardinality attribute")
+					}
+				}
+			}
+		}
+	}
+	assert.True(t, foundSketch, "expected metric latency_hll_cardinality with sketch payload")
+}
+
+// TestBatchModeMetricSuffix verifies that a custom metric_suffix is applied.
+func TestBatchModeMetricSuffix(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeBatch
+	cfg.MetricSuffix = "_card"
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := makeGaugeMetrics("events", []float64{1, 2})
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+
+	var found bool
+	for i := 0; i < out[0].ResourceMetrics().Len(); i++ {
+		sms := out[0].ResourceMetrics().At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				if ms.At(k).Name() == "events_card" {
+					found = true
+				}
+			}
+		}
+	}
+	assert.True(t, found, "expected metric events_card")
+}
+
+// TestWindowModeFlush verifies that the window processor emits output only
+// after flushWindow is called, not on every ConsumeMetrics.
+func TestWindowModeFlush(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.WindowDuration = 10 * time.Minute // large enough to not auto-fire
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := makeGaugeMetrics("sessions", []float64{1, 2, 3})
+	// Window mode: ConsumeMetrics should NOT forward to next consumer.
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+	assert.Len(t, sink.AllMetrics(), 0, "window mode must not forward until flush")
+
+	// Manually flush.
+	require.NoError(t, proc.flushWindow(context.Background()))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+
+	var foundCardinality bool
+	for i := 0; i < out[0].ResourceMetrics().Len(); i++ {
+		sms := out[0].ResourceMetrics().At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				if ms.At(k).Name() == "sessions_hll_cardinality" {
+					foundCardinality = true
+				}
+			}
+		}
+	}
+	assert.True(t, foundCardinality, "expected sessions_hll_cardinality after flush")
+}
+
+// TestWindowModeMergesAcrossBatches verifies that multiple ConsumeMetrics calls
+// within a window are merged into a single HLL before flush.
+func TestWindowModeMergesAcrossBatches(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.WindowDuration = 10 * time.Minute
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	// Two batches with overlapping values.
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), makeGaugeMetrics("hits", []float64{1, 2, 3})))
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), makeGaugeMetrics("hits", []float64{3, 4, 5})))
+
+	require.NoError(t, proc.flushWindow(context.Background()))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+
+	var est float64
+	for i := 0; i < out[0].ResourceMetrics().Len(); i++ {
+		sms := out[0].ResourceMetrics().At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				if ms.At(k).Name() == "hits_hll_cardinality" {
+					dps := ms.At(k).Gauge().DataPoints()
+					if dps.Len() > 0 {
+						est = dps.At(0).DoubleValue()
+					}
+				}
+			}
+		}
+	}
+	// 5 distinct values across two batches; HLL estimate should be >= 1.
+	assert.True(t, est >= 1, "expected merged cardinality estimate >= 1, got %v", est)
+}
+
+// TestWindowModeRaceFree verifies that concurrent ConsumeMetrics calls don't
+// race under -race.
+func TestWindowModeRaceFree(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeWindow
+	cfg.WindowDuration = 10 * time.Minute
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			md := makeGaugeMetrics("concurrent", []float64{float64(id), float64(id + 1)})
+			_ = proc.ConsumeMetrics(context.Background(), md)
+		}(i)
+	}
+	wg.Wait()
+	_ = proc.flushWindow(context.Background())
+}
