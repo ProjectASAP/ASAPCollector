@@ -19,14 +19,18 @@ import (
 const defaultDDSketchRelativeAccuracy = 0.01
 
 type ddSketchSeries[N int64 | float64] struct {
-	attrs  attribute.Set
-	res    FilteredExemplarReservoir[N]
-	sketch *ddsketch.DDSketch
+	attrs    attribute.Set
+	seriesID uint64
+	res      FilteredExemplarReservoir[N]
+	sketch   *ddsketch.DDSketch
 
 	count uint64
 	sum   N
 	min   N
 	max   N
+
+	measuredSince bool
+	idleCycles    uint8
 }
 
 // revive:disable-next-line:flag-parameter
@@ -53,10 +57,11 @@ type ddSketchValues[N int64 | float64] struct {
 	noMinMax bool
 	noSum    bool
 
-	newRes   func(attribute.Set) FilteredExemplarReservoir[N]
-	limit    limiter[ddSketchSeries[N]]
-	values   map[attribute.Distinct]*ddSketchSeries[N]
-	valuesMu sync.Mutex
+	newRes     func(attribute.Set) FilteredExemplarReservoir[N]
+	limit      limiter[ddSketchSeries[N]]
+	values     map[attribute.Distinct]*ddSketchSeries[N]
+	valuesMu   sync.Mutex
+	seriesPool sync.Pool
 }
 
 func newDDSketchValues[N int64 | float64](
@@ -69,7 +74,7 @@ func newDDSketchValues[N int64 | float64](
 	if accuracy <= 0 || accuracy >= 1 {
 		accuracy = defaultDDSketchRelativeAccuracy
 	}
-	return &ddSketchValues[N]{
+	v := &ddSketchValues[N]{
 		accuracy: accuracy,
 		noMinMax: noMinMax,
 		noSum:    noSum,
@@ -77,22 +82,35 @@ func newDDSketchValues[N int64 | float64](
 		limit:    newLimiter[ddSketchSeries[N]](limit),
 		values:   make(map[attribute.Distinct]*ddSketchSeries[N]),
 	}
+	v.seriesPool.New = func() any { return new(ddSketchSeries[N]) }
+	return v
 }
 
 func (d *ddSketchValues[N]) newSeries(attr attribute.Set, value N) *ddSketchSeries[N] {
-	sk, err := ddsketch.NewDefaultDDSketch(d.accuracy)
-	if err != nil {
-		otel.Handle(err)
-		return nil
+	series := d.seriesPool.Get().(*ddSketchSeries[N])
+	if series.sketch != nil {
+		series.sketch.Clear() // reuse internal bucket storage
+	} else {
+		sk, err := ddsketch.NewDefaultDDSketch(d.accuracy)
+		if err != nil {
+			otel.Handle(err)
+			return nil
+		}
+		series.sketch = sk
 	}
-	series := &ddSketchSeries[N]{
-		attrs:  attr,
-		sketch: sk,
-		res:    d.newRes(attr),
-	}
+	series.attrs = attr
+	series.seriesID = 0
+	series.res = d.newRes(attr) // attr-dependent, always recreate
+	series.count = 0
+	series.sum = 0
+	series.measuredSince = true
+	series.idleCycles = 0
 	if !d.noMinMax {
 		series.min = value
 		series.max = value
+	} else {
+		series.min = 0
+		series.max = 0
 	}
 	return series
 }
@@ -128,6 +146,7 @@ func (d *ddSketchValues[N]) measure(
 	if !d.noSum {
 		series.sum += value
 	}
+	series.measuredSince = true
 	series.res.Offer(ctx, value, droppedAttr)
 }
 
@@ -184,6 +203,19 @@ func (d *ddSketch[N]) delta(
 
 	// Trim to the number of exported points (in case any were skipped).
 	dPts = dPts[:i]
+
+	for _, series := range d.values {
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.res = nil // release exemplar reservoir (attr-dependent)
+		series.count = 0
+		series.sum = 0
+		series.min = 0
+		series.max = 0
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 	clear(d.values)
 	d.start = t
 
@@ -207,7 +239,18 @@ func (d *ddSketch[N]) cumulative(
 	dPts := reset(data.DataPoints, n, n)
 
 	var i int
-	for _, series := range d.values {
+	var toEvict []attribute.Distinct
+	for key, series := range d.values {
+		if !series.measuredSince {
+			series.idleCycles++
+			if series.idleCycles >= maxIdleCycles {
+				toEvict = append(toEvict, key)
+			}
+			continue
+		}
+		series.measuredSince = false
+		series.idleCycles = 0
+
 		if series.count == 0 {
 			continue
 		}
@@ -216,6 +259,21 @@ func (d *ddSketch[N]) cumulative(
 		}
 	}
 	dPts = dPts[:i]
+
+	for _, key := range toEvict {
+		series := d.values[key]
+		delete(d.values, key)
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.res = nil
+		series.count = 0
+		series.sum = 0
+		series.min = 0
+		series.max = 0
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 
 	data.DataPoints = dPts
 	*dest = data
@@ -234,7 +292,13 @@ func (d *ddSketch[N]) exportDataPoint(
 	}
 
 	dp := dest
-	dp.Attributes = series.attrs
+	if series.seriesID != 0 {
+		dp.SeriesID = series.seriesID
+	} else {
+		dp.Attributes = series.attrs
+		dp.SeriesIDSink = &series.seriesID
+		dp.AttrsClearer = &series.attrs
+	}
 	dp.StartTime = d.start
 	dp.Time = t
 	dp.Count = series.count

@@ -22,10 +22,14 @@ const (
 
 type countSketchSeries[N int64 | float64] struct {
 	attrs     attribute.Set
+	seriesID  uint64
 	sketch    *countsketch.CountSketch
 	dimension string
 	epsilon   float64
 	delta     float64
+
+	measuredSince bool
+	idleCycles    uint8
 }
 
 type countSketchValues[N int64 | float64] struct {
@@ -35,9 +39,10 @@ type countSketchValues[N int64 | float64] struct {
 	delta     float64
 	dimension string
 
-	limit    limiter[countSketchSeries[N]]
-	values   map[attribute.Distinct]*countSketchSeries[N]
-	valuesMu sync.Mutex
+	limit      limiter[countSketchSeries[N]]
+	values     map[attribute.Distinct]*countSketchSeries[N]
+	valuesMu   sync.Mutex
+	seriesPool sync.Pool
 }
 
 func newCountSketchValues[N int64 | float64](rows, cols int, epsilon, delta float64, dimension string, limit int) *countSketchValues[N] {
@@ -47,7 +52,7 @@ func newCountSketchValues[N int64 | float64](rows, cols int, epsilon, delta floa
 	if cols <= 0 {
 		cols = defaultCountSketchCols
 	}
-	return &countSketchValues[N]{
+	v := &countSketchValues[N]{
 		rows:      rows,
 		cols:      cols,
 		epsilon:   epsilon,
@@ -56,21 +61,30 @@ func newCountSketchValues[N int64 | float64](rows, cols int, epsilon, delta floa
 		limit:     newLimiter[countSketchSeries[N]](limit),
 		values:    make(map[attribute.Distinct]*countSketchSeries[N]),
 	}
+	v.seriesPool.New = func() any { return new(countSketchSeries[N]) }
+	return v
 }
 
 func (d *countSketchValues[N]) newSeries(attr attribute.Set) *countSketchSeries[N] {
-	sk, err := countsketch.NewCountSketch(d.rows, d.cols)
-	if err != nil {
-		otel.Handle(err)
-		return nil
+	series := d.seriesPool.Get().(*countSketchSeries[N])
+	if series.sketch != nil {
+		series.sketch.Reset() // reuse Count rows and L2 backing arrays
+	} else {
+		sk, err := countsketch.NewCountSketch(d.rows, d.cols)
+		if err != nil {
+			otel.Handle(err)
+			return nil
+		}
+		series.sketch = sk
 	}
-	return &countSketchSeries[N]{
-		attrs:     attr,
-		sketch:    sk,
-		dimension: d.dimension,
-		epsilon:   d.epsilon,
-		delta:     d.delta,
-	}
+	series.attrs = attr
+	series.seriesID = 0
+	series.dimension = d.dimension
+	series.epsilon = d.epsilon
+	series.delta = d.delta
+	series.measuredSince = true
+	series.idleCycles = 0
+	return series
 }
 
 func (d *countSketchValues[N]) measure(
@@ -95,6 +109,7 @@ func (d *countSketchValues[N]) measure(
 		}
 	}
 
+	series.measuredSince = true
 	// Use attribute set as the tracked key
 	key := fltrAttr.Encoded(attribute.DefaultEncoder())
 	series.sketch.UpdateString(key, float64(value))
@@ -143,6 +158,17 @@ func (d *countSketchAgg[N]) delta(
 	}
 
 	dPts = dPts[:i]
+
+	for _, series := range d.values {
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.dimension = ""
+		series.epsilon = 0
+		series.delta = 0
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 	clear(d.values)
 	d.start = t
 
@@ -166,12 +192,36 @@ func (d *countSketchAgg[N]) cumulative(
 	dPts := reset(data.DataPoints, n, n)
 
 	var i int
-	for _, series := range d.values {
+	var toEvict []attribute.Distinct
+	for key, series := range d.values {
+		if !series.measuredSince {
+			series.idleCycles++
+			if series.idleCycles >= maxIdleCycles {
+				toEvict = append(toEvict, key)
+			}
+			continue
+		}
+		series.measuredSince = false
+		series.idleCycles = 0
+
 		if d.exportDataPoint(series, t, &dPts[i]) {
 			i++
 		}
 	}
 	dPts = dPts[:i]
+
+	for _, key := range toEvict {
+		series := d.values[key]
+		delete(d.values, key)
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.dimension = ""
+		series.epsilon = 0
+		series.delta = 0
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 
 	data.DataPoints = dPts
 	*dest = data
@@ -190,7 +240,13 @@ func (d *countSketchAgg[N]) exportDataPoint(
 	}
 
 	dp := dest
-	dp.Attributes = series.attrs
+	if series.seriesID != 0 {
+		dp.SeriesID = series.seriesID
+	} else {
+		dp.Attributes = series.attrs
+		dp.SeriesIDSink = &series.seriesID
+		dp.AttrsClearer = &series.attrs
+	}
 	dp.StartTime = d.start
 	dp.Time = t
 	dp.Dimension = series.dimension

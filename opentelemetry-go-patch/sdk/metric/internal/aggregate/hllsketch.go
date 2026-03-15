@@ -15,23 +15,42 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
+// maxIdleCycles is the number of consecutive cumulative export cycles during
+// which a series receives no new measurements before it is evicted from the
+// aggregator. Delta series are always evicted after every export.
+const maxIdleCycles = 3
+
 type hllSketchSeries struct {
-	attrs  attribute.Set
+	attrs    attribute.Set
+	seriesID uint64
+
 	sketch *hll.HyperLogLog
 	count  uint64
+
+	// measuredSince is set to true in measure() and cleared after each
+	// cumulative export. It drives idle detection.
+	measuredSince bool
+	// idleCycles counts consecutive cumulative exports with no new measurements.
+	idleCycles uint8
 }
 
 type hllSketchValues[N int64 | float64] struct {
 	limit    limiter[hllSketchSeries]
 	values   map[attribute.Distinct]*hllSketchSeries
 	valuesMu sync.Mutex
+
+	// seriesPool recycles hllSketchSeries structs to reduce GC pressure in
+	// high-churn (delta) and idle-eviction (cumulative) scenarios.
+	seriesPool sync.Pool
 }
 
 func newHLLSketchValues[N int64 | float64](limit int) *hllSketchValues[N] {
-	return &hllSketchValues[N]{
+	v := &hllSketchValues[N]{
 		limit:  newLimiter[hllSketchSeries](limit),
 		values: make(map[attribute.Distinct]*hllSketchSeries),
 	}
+	v.seriesPool.New = func() any { return new(hllSketchSeries) }
+	return v
 }
 
 func (d *hllSketchValues[N]) measure(
@@ -48,16 +67,24 @@ func (d *hllSketchValues[N]) measure(
 		fltrAttr = d.limit.Attributes(fltrAttr, d.values)
 		series, ok = d.values[fltrAttr.Equivalent()]
 		if !ok {
-			series = &hllSketchSeries{
-				attrs:  fltrAttr,
-				sketch: hll.NewHyperLogLog(),
+			series = d.seriesPool.Get().(*hllSketchSeries)
+			if series.sketch != nil {
+				series.sketch.Reset() // reuse register array
+			} else {
+				series.sketch = hll.NewHyperLogLog()
 			}
+			series.attrs = fltrAttr
+			series.seriesID = 0
+			series.count = 0
+			series.measuredSince = true
+			series.idleCycles = 0
 			d.values[fltrAttr.Equivalent()] = series
 		}
 	}
 
 	series.sketch.Insert(float64(value))
 	series.count++
+	series.measuredSince = true
 }
 
 type hllSketch[N int64 | float64] struct {
@@ -106,6 +133,18 @@ func (d *hllSketch[N]) delta(
 	}
 
 	dPts = dPts[:i]
+
+	// Return series structs to the pool before clearing the map.
+	// The sketch is kept alive inside the struct so Reset() can reuse its
+	// register array on the next measure() call.
+	for _, series := range d.values {
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.count = 0
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 	clear(d.values)
 	d.start = t
 
@@ -129,7 +168,18 @@ func (d *hllSketch[N]) cumulative(
 	dPts := reset(data.DataPoints, n, n)
 
 	var i int
-	for _, series := range d.values {
+	var toEvict []attribute.Distinct
+	for key, series := range d.values {
+		if !series.measuredSince {
+			series.idleCycles++
+			if series.idleCycles >= maxIdleCycles {
+				toEvict = append(toEvict, key)
+			}
+			continue
+		}
+		series.measuredSince = false
+		series.idleCycles = 0
+
 		if series.count == 0 {
 			continue
 		}
@@ -138,6 +188,18 @@ func (d *hllSketch[N]) cumulative(
 		}
 	}
 	dPts = dPts[:i]
+
+	// Evict idle series and return their structs (with sketches) to the pool.
+	for _, key := range toEvict {
+		series := d.values[key]
+		delete(d.values, key)
+		series.attrs = attribute.Set{}
+		series.seriesID = 0
+		series.count = 0
+		series.measuredSince = false
+		series.idleCycles = 0
+		d.seriesPool.Put(series)
+	}
 
 	data.DataPoints = dPts
 	*dest = data
@@ -158,7 +220,13 @@ func (d *hllSketch[N]) exportDataPoint(
 	cardinality := uint64(series.sketch.Estimate())
 
 	dp := dest
-	dp.Attributes = series.attrs
+	if series.seriesID != 0 {
+		dp.SeriesID = series.seriesID
+	} else {
+		dp.Attributes = series.attrs
+		dp.SeriesIDSink = &series.seriesID
+		dp.AttrsClearer = &series.attrs
+	}
 	dp.StartTime = d.start
 	dp.Time = t
 	dp.Count = series.count
