@@ -23,6 +23,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// builderPool recycles strings.Builder instances used in the hot
+// encodeAttributesAsKey path (called on every data point).
+var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
+
+// bufPool recycles bytes.Buffer instances used during CMS serialization.
+var bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
 //
 // ─────────────────────────────────────────────────────────────
 // Window-level state
@@ -65,6 +72,10 @@ type windowedCountMinSketchProcessor struct {
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool
+
+	// windowSketchPool recycles windowSketch structs (and their underlying CMS
+	// arrays via Reset()) across window flushes to reduce GC pressure.
+	windowSketchPool sync.Pool
 }
 
 func newProcessor(
@@ -72,7 +83,7 @@ func newProcessor(
 	next consumer.Metrics,
 	logger *zap.Logger,
 ) *windowedCountMinSketchProcessor {
-	return &windowedCountMinSketchProcessor{
+	p := &windowedCountMinSketchProcessor{
 		cfg:                  cfg,
 		logger:               logger,
 		nextConsumer:         next,
@@ -80,6 +91,8 @@ func newProcessor(
 		stopCh:               make(chan struct{}),
 		doneCh:               make(chan struct{}),
 	}
+	p.windowSketchPool.New = func() any { return new(windowSketch) }
+	return p
 }
 
 //
@@ -269,13 +282,20 @@ func (p *windowedCountMinSketchProcessor) mergeWindowSketch(aggregationKey strin
 		p.mu.Lock()
 		ws, exists = p.activeWindowSketches[aggregationKey]
 		if !exists {
-			newCMS, err := cms.NewCountMinSketch(incoming.Rows, incoming.Cols)
-			if err != nil {
-				p.logger.Error("Failed to create CMS for merge", zap.Error(err))
-				p.mu.Unlock()
-				return
+			ws = p.windowSketchPool.Get().(*windowSketch)
+			if ws.cms != nil && ws.cms.Rows == incoming.Rows && ws.cms.Cols == incoming.Cols {
+				ws.cms.Reset()
+			} else {
+				newCMS, err := cms.NewCountMinSketch(incoming.Rows, incoming.Cols)
+				if err != nil {
+					p.logger.Error("Failed to create CMS for merge", zap.Error(err))
+					p.windowSketchPool.Put(ws)
+					p.mu.Unlock()
+					return
+				}
+				ws.cms = newCMS
 			}
-			ws = &windowSketch{cms: newCMS}
+			ws.sampleCount = 0
 			p.activeWindowSketches[aggregationKey] = ws
 		}
 		p.mu.Unlock()
@@ -302,18 +322,20 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 		p.mu.Lock()
 		ws, exists = p.activeWindowSketches[aggregationKey]
 		if !exists {
-			// Using new API constructor (without seed)
-			newCMS, err := cms.NewCountMinSketch(
-				p.cfg.Rows,
-				p.cfg.Columns,
-			)
-			if err != nil {
-				p.logger.Error("Failed to create CMS", zap.Error(err))
-				p.mu.Unlock()
-				return
+			ws = p.windowSketchPool.Get().(*windowSketch)
+			if ws.cms != nil && ws.cms.Rows == p.cfg.Rows && ws.cms.Cols == p.cfg.Columns {
+				ws.cms.Reset()
+			} else {
+				newCMS, err := cms.NewCountMinSketch(p.cfg.Rows, p.cfg.Columns)
+				if err != nil {
+					p.logger.Error("Failed to create CMS", zap.Error(err))
+					p.windowSketchPool.Put(ws)
+					p.mu.Unlock()
+					return
+				}
+				ws.cms = newCMS
 			}
-
-			ws = &windowSketch{cms: newCMS}
+			ws.sampleCount = 0
 			p.activeWindowSketches[aggregationKey] = ws
 		}
 		p.mu.Unlock()
@@ -372,6 +394,7 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 		sampleCount := ws.sampleCount
 		payload, err := serializeCMS(ws.cms)
 		ws.mu.Unlock()
+		p.windowSketchPool.Put(ws)
 		if err != nil {
 			p.logger.Error("Failed to serialize CMS", zap.Error(err))
 			continue
@@ -430,12 +453,19 @@ func serializeCMS(
 		L2:    s.L2,
 	}
 
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(snapshot); err != nil {
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	err := gob.NewEncoder(buf).Encode(snapshot)
+	var out []byte
+	if err == nil {
+		out = make([]byte, buf.Len())
+		copy(out, buf.Bytes())
+	}
+	bufPool.Put(buf)
+	if err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return out, nil
 }
 
 // deserializeCMS reconstructs a CountMinSketch from the gob-encoded snapshot
@@ -480,7 +510,8 @@ func encodeAttributesAsKey(
 	})
 	sort.Strings(keys)
 
-	var sb strings.Builder
+	sb := builderPool.Get().(*strings.Builder)
+	sb.Reset()
 	for _, k := range keys {
 		v, _ := attrs.Get(k)
 		sb.WriteString(k)
@@ -488,5 +519,7 @@ func encodeAttributesAsKey(
 		sb.WriteString(v.AsString())
 		sb.WriteString(";")
 	}
-	return sb.String()
+	s := sb.String()
+	builderPool.Put(sb)
+	return s
 }
