@@ -40,3 +40,6 @@ opentelemetry-go
 # Telegraf artifacts
 config.toml
 out.json
+
+# Sketch processor binaries
+opentelemetry-collector-contrib-patch/HLL
