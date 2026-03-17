@@ -52,7 +52,7 @@ var (
 	endpoint              = flag.String("endpoint", "localhost:4317", "OTLP gRPC endpoint of the collector")
 	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|countsketch|countminsketch|hll|baseline")
 	seriesCount           = flag.Int("series", 1000, "Total number of distinct time series")
-	samplesPerSecPerSeries = flag.Float64("samples-per-sec-per-series", 50.0, "Samples per second per series (controls export interval)")
+	samplesPerSecPerSeries = flag.Float64("samples-per-sec-per-series", 50.0, "Samples per second per series (controls worker record rate)")
 	workers               = flag.Int("workers", 10, "Number of worker goroutines (internal parallelism)")
 	duration              = flag.Duration("duration", 60*time.Second, "Benchmark run duration")
 	rateLabel             = flag.Int("rate-label", 0, "Nominal MPS rate for output file naming (0 = auto-calculated)")
@@ -250,7 +250,10 @@ func main() {
 	}
 
 	totalSeries := *seriesCount
-	interval := time.Duration(float64(time.Second) / *samplesPerSecPerSeries)
+	// workerInterval controls how often each worker records a sample per series.
+	workerInterval := time.Duration(float64(time.Second) / *samplesPerSecPerSeries)
+	// readerInterval controls how often the SDK exports to the collector. This is decoupled from workerInterval to allow high sample rates with a lower export frequency, which is more realistic for sketch use-cases and reduces gRPC overhead in the benchmark.
+	readerInterval := time.Second
 	nominalMPS := *rateLabel
 	if nominalMPS == 0 {
 		nominalMPS = int(float64(totalSeries) * *samplesPerSecPerSeries)
@@ -262,7 +265,8 @@ func main() {
 	fmt.Printf("Series:     %d\n", totalSeries)
 	fmt.Printf("Rate:       %.2f samples/s/series  → ~%.0f data-points/s to collector\n",
 		*samplesPerSecPerSeries, float64(totalSeries)**samplesPerSecPerSeries)
-	fmt.Printf("Interval:   %v\n", interval)
+	fmt.Printf("Worker interval: %v\n", workerInterval)
+	fmt.Printf("Reader interval: %v\n", readerInterval)
 	fmt.Printf("Duration:   %v\n", *duration)
 	fmt.Printf("Output dir: %s\n", *outputDir)
 	fmt.Println()
@@ -284,15 +288,10 @@ func main() {
 	case "hll":
 		agg = sdkmetric.AggregationHLLSketch{}
 	case "baseline":
-		// Raw ExplicitBucketHistogram: same instrument/export path as sketch types but
-		// with standard bucket aggregation — no sketch computation anywhere.
-		// An explicit view is required (same as other modes) to ensure the aggregation
-		// is registered for the "benchmark.latency" instrument and exported via OTLP.
-		useHistogram = true
-		agg = sdkmetric.AggregationExplicitBucketHistogram{
-			Boundaries: []float64{0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000},
-			NoMinMax:   false,
-		}
+		// Float64Gauge with default LastValue aggregation — one raw sample per series
+		// per export interval, no aggregation or sketch computation anywhere.
+		// No view override needed; the gauge's natural LastValue aggregation is used.
+		useHistogram = false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *duration+10*time.Second)
@@ -314,7 +313,7 @@ func main() {
 	// side-effect that would suppress reporting.
 	providerOpts := []sdkmetric.Option{
 		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(interval)),
+			sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(readerInterval)),
 		),
 	}
 	if agg != nil {
@@ -402,7 +401,7 @@ func main() {
 		} else {
 			inst = gaugeInst
 		}
-		go runWorker(runCtx, w, start, end, interval, inst, &wg)
+		go runWorker(runCtx, w, start, end, workerInterval, inst, &wg)
 	}
 
 	// Wait for run duration.
