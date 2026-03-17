@@ -10,8 +10,9 @@
 #
 # Usage:
 #   ./bench_sdk_e2e.sh [--sketch <type|all>] [--duration <Ns>] [--output-dir <path>]
-#                      [--workers N] [--hosts N] [--metrics N]
-#                      [--rates "10000 20000 30000 40000 50000"]
+#                      [--series N] [--rates "10000 20000 30000 40000 50000"]
+#
+# samples-per-sec-per-series is derived as: rate / series
 #
 # Sketch types: ddsketch | kll | countsketch | countminsketch | hll | all
 #
@@ -37,9 +38,7 @@ CMD_DIR="$CONTRIB_PATCH_DIR/cmd"
 SKETCH_ARG="all"
 DURATION_FLAG="60s"
 OUTPUT_DIR="$(cd "$SCRIPT_DIR" && pwd)/benchmark_results/sdk_e2e"
-WORKERS=10
-HOSTS=10
-METRICS=10
+SERIES=1000
 RATES_ARG="10000 20000 30000 40000 50000"
 
 # ---------------------------------------------------------------------------
@@ -50,9 +49,7 @@ while [[ $# -gt 0 ]]; do
         --sketch)      SKETCH_ARG="$2";    shift 2 ;;
         --duration)    DURATION_FLAG="$2"; shift 2 ;;
         --output-dir)  OUTPUT_DIR="$(cd "$(dirname "$2")" 2>/dev/null && pwd)/$(basename "$2")"; shift 2 ;;
-        --workers)     WORKERS="$2";       shift 2 ;;
-        --hosts)       HOSTS="$2";         shift 2 ;;
-        --metrics)     METRICS="$2";       shift 2 ;;
+        --series)      SERIES="$2";        shift 2 ;;
         --rates)       RATES_ARG="$2";     shift 2 ;;
         -h|--help)
             head -30 "$0" | grep "^#" | sed 's/^# \{0,1\}//'
@@ -277,27 +274,21 @@ run_sketch_bench() {
         COL_RES_CSV="$sketch_dir/col_${RATE}mps_resource.csv"
         start_col_monitor "$COLLECTOR_PID" "$COL_RES_CSV"
 
-        # --- Calculate SDK export interval to hit target rate ---
-        # Rate = (workers * hosts * metrics) / interval_sec
-        TOTAL_PER_BATCH=$(( WORKERS * HOSTS * METRICS ))
-        INTERVAL_US=$(echo "scale=0; ($TOTAL_PER_BATCH * 1000000) / $RATE" | bc)
-        [[ "$INTERVAL_US" -lt 1 ]] && INTERVAL_US=1
-        SDK_INTERVAL="${INTERVAL_US}us"
+        # --- Calculate samples-per-sec-per-series to hit target rate ---
+        # samples_per_sec_per_series = rate / series
+        SAMPLES_PER_SEC=$(echo "scale=6; $RATE / $SERIES" | bc)
 
         # --- Run SDK Go benchmark ---
         SDK_OUTDIR="$sketch_dir"
-        echo "  -> Running SDK benchmark (interval=$SDK_INTERVAL, duration=$DURATION_FLAG)..."
+        echo "  -> Running SDK benchmark (series=$SERIES, samples/s/series=$SAMPLES_PER_SEC, duration=$DURATION_FLAG)..."
         cd "$APP_DIR"
         GONOSUMDB="github.com/ProjectASAP/*" GOPRIVATE="github.com/ProjectASAP/*" \
             go run ./cmd/e2esdkbench \
                 --sketch-type="$sketch" \
                 --endpoint="localhost:4317" \
-                --workers="$WORKERS" \
-                --hosts="$HOSTS" \
-                --metrics="$METRICS" \
-                --interval="$SDK_INTERVAL" \
+                --series="$SERIES" \
+                --samples-per-sec-per-series="$SAMPLES_PER_SEC" \
                 --duration="$DURATION_FLAG" \
-                --rate-label="$RATE" \
                 --output-dir="$SDK_OUTDIR" \
             2>&1 | tee "$sketch_dir/sdk_${RATE}mps.log"
         SDK_EXIT=${PIPESTATUS[0]}

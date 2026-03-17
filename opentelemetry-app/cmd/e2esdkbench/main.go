@@ -14,9 +14,9 @@
 //	go run ./cmd/e2esdkbench \
 //	  --sketch-type=ddsketch \
 //	  --endpoint=localhost:4317 \
-//	  --workers=10 --hosts=10 --metrics=10 \
-//	  --interval=20ms --duration=60s \
-//	  --rate-label=10000 \
+//	  --series=1000 --samples-per-sec-per-series=50 \
+//	  --duration=60s \
+//	  --rate-label=50000 \
 //	  --output-dir=/tmp/e2e_bench
 package main
 
@@ -49,16 +49,15 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	endpoint   = flag.String("endpoint", "localhost:4317", "OTLP gRPC endpoint of the collector")
-	sketchArg  = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|countsketch|countminsketch|hll|baseline")
-	workers    = flag.Int("workers", 10, "Number of worker goroutines")
-	hosts      = flag.Int("hosts", 10, "Simulated hosts per worker")
-	metrics    = flag.Int("metrics", 10, "Metrics per host")
-	interval   = flag.Duration("interval", 20*time.Millisecond, "SDK export interval (controls data-points/sec sent to collector)")
-	duration   = flag.Duration("duration", 60*time.Second, "Benchmark run duration")
-	rateLabel  = flag.Int("rate-label", 0, "Nominal MPS rate for output file naming (0 = auto-calculated)")
-	outputDir  = flag.String("output-dir", ".", "Directory to write CSV and JSON result files")
-	sampleSec  = flag.Int("sample-interval-sec", 1, "Resource sampling interval in seconds")
+	endpoint              = flag.String("endpoint", "localhost:4317", "OTLP gRPC endpoint of the collector")
+	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|countsketch|countminsketch|hll|baseline")
+	seriesCount           = flag.Int("series", 1000, "Total number of distinct time series")
+	samplesPerSecPerSeries = flag.Float64("samples-per-sec-per-series", 50.0, "Samples per second per series (controls export interval)")
+	workers               = flag.Int("workers", 10, "Number of worker goroutines (internal parallelism)")
+	duration              = flag.Duration("duration", 60*time.Second, "Benchmark run duration")
+	rateLabel             = flag.Int("rate-label", 0, "Nominal MPS rate for output file naming (0 = auto-calculated)")
+	outputDir             = flag.String("output-dir", ".", "Directory to write CSV and JSON result files")
+	sampleSec             = flag.Int("sample-interval-sec", 1, "Resource sampling interval in seconds")
 
 	// DDSketch
 	ddsketchAccuracy = flag.Float64("ddsketch-accuracy", 0.01, "DDSketch relative accuracy (0,1)")
@@ -156,14 +155,14 @@ func generateZipfValue(zipf *rand.Zipf) float64 {
 	return float64(zipf.Uint64()+1) * scaleFactor
 }
 
-func runWorker(ctx context.Context, id int, inst interface{}, mode string, wg *sync.WaitGroup) {
+func runWorker(ctx context.Context, id, seriesStart, seriesEnd int, interval time.Duration, inst interface{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	src := rand.NewSource(time.Now().UnixNano() + int64(id))
 	rng := rand.New(src)
 	zipf := rand.NewZipf(rng, *zipfS, *zipfV, *zipfMax)
 
-	ticker := time.NewTicker(*interval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -171,18 +170,14 @@ func runWorker(ctx context.Context, id int, inst interface{}, mode string, wg *s
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for h := 0; h < *hosts; h++ {
-				hostAttr := attribute.String("host.name", fmt.Sprintf("worker-%d-host-%02d", id, h))
-				for m := 0; m < *metrics; m++ {
-					metricAttr := attribute.String("metric.name", fmt.Sprintf("metric.%03d", m))
-					attrs := metric.WithAttributes(hostAttr, metricAttr)
-					v := generateZipfValue(zipf)
-					switch instr := inst.(type) {
-					case metric.Float64Histogram:
-						instr.Record(ctx, v, attrs)
-					case metric.Float64Gauge:
-						instr.Record(ctx, v, attrs)
-					}
+			for s := seriesStart; s < seriesEnd; s++ {
+				attrs := metric.WithAttributes(attribute.String("series.id", fmt.Sprintf("%06d", s)))
+				v := generateZipfValue(zipf)
+				switch instr := inst.(type) {
+				case metric.Float64Histogram:
+					instr.Record(ctx, v, attrs)
+				case metric.Float64Gauge:
+					instr.Record(ctx, v, attrs)
 				}
 			}
 		}
@@ -254,19 +249,20 @@ func main() {
 		log.Fatalf("cannot create output-dir %s: %v", *outputDir, err)
 	}
 
-	totalSeries := *workers * *hosts * *metrics
+	totalSeries := *seriesCount
+	interval := time.Duration(float64(time.Second) / *samplesPerSecPerSeries)
 	nominalMPS := *rateLabel
 	if nominalMPS == 0 {
-		nominalMPS = int(float64(totalSeries) / interval.Seconds())
+		nominalMPS = int(float64(totalSeries) * *samplesPerSecPerSeries)
 	}
 
 	fmt.Printf("=== e2e SDK Benchmark ===\n")
 	fmt.Printf("Sketch:     %s\n", strings.ToUpper(mode))
 	fmt.Printf("Endpoint:   %s\n", *endpoint)
-	fmt.Printf("Series:     %d workers × %d hosts × %d metrics = %d total\n",
-		*workers, *hosts, *metrics, totalSeries)
-	fmt.Printf("Interval:   %v  → ~%.0f data-points/s to collector\n",
-		*interval, float64(totalSeries)/interval.Seconds())
+	fmt.Printf("Series:     %d\n", totalSeries)
+	fmt.Printf("Rate:       %.2f samples/s/series  → ~%.0f data-points/s to collector\n",
+		*samplesPerSecPerSeries, float64(totalSeries)**samplesPerSecPerSeries)
+	fmt.Printf("Interval:   %v\n", interval)
 	fmt.Printf("Duration:   %v\n", *duration)
 	fmt.Printf("Output dir: %s\n", *outputDir)
 	fmt.Println()
@@ -318,7 +314,7 @@ func main() {
 	// side-effect that would suppress reporting.
 	providerOpts := []sdkmetric.Option{
 		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(*interval)),
+			sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(interval)),
 		),
 	}
 	if agg != nil {
@@ -385,8 +381,20 @@ func main() {
 	cpuUserStart, cpuSysStart := getRusage()
 
 	// --- Spawn load workers ---
+	// Distribute series evenly across workers.
+	numWorkers := *workers
+	if numWorkers > totalSeries {
+		numWorkers = totalSeries
+	}
+	seriesPerWorker := (totalSeries + numWorkers - 1) / numWorkers
+
 	var wg sync.WaitGroup
-	for w := 0; w < *workers; w++ {
+	for w := 0; w < numWorkers; w++ {
+		start := w * seriesPerWorker
+		end := start + seriesPerWorker
+		if end > totalSeries {
+			end = totalSeries
+		}
 		wg.Add(1)
 		var inst interface{}
 		if useHistogram {
@@ -394,7 +402,7 @@ func main() {
 		} else {
 			inst = gaugeInst
 		}
-		go runWorker(runCtx, w, inst, mode, &wg)
+		go runWorker(runCtx, w, start, end, interval, inst, &wg)
 	}
 
 	// Wait for run duration.
