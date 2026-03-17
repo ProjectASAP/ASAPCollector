@@ -207,17 +207,6 @@ func (b Builder[N]) HLLSketch() (Measure[N], ComputeAggregation) {
 	}
 }
 
-// Noop returns an aggregate that records attribute cardinailty but performs no aggregation.
-func (b Builder[N]) Noop() (Measure[N], ComputeAggregation) {
-	agg := newNoopAggregate[N](b.AggregationLimit)
-	switch b.Temporality {
-	case metricdata.DeltaTemporality:
-		return b.filter(agg.measure), agg.delta
-	default:
-		return b.filter(agg.measure), agg.cumulative
-	}
-}
-
 // reset ensures s has capacity and sets it length. If the capacity of s too
 // small, a new slice is returned with the specified capacity and length.
 func reset[T any](s []T, length, capacity int) []T {
