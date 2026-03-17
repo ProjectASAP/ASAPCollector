@@ -3,21 +3,10 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
 
 processors:
-  KLL:
-    k: 256
-    transmit_sketch: false
-    write_seen: false
-    quantiles: 
-      - 0.5
-      - 0.99
-    drop_original: true
-    is_int: false
-  
-  batch:
-    send_batch_size: 5000
-    timeout: 200ms
+  nop:
 
 exporters:
   nop:
@@ -31,9 +20,9 @@ service:
               prometheus:
                 host: '0.0.0.0'
                 port: 8888
-  
+
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [KLL, batch] 
+      processors: [nop]
       exporters: [nop]

@@ -6,6 +6,7 @@ dist:
 exporters:
   - gomod: go.opentelemetry.io/collector/exporter/nopexporter v0.141.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.142.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.142.0
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.141.0
@@ -16,4 +17,5 @@ receivers:
 
 replaces:
   - github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllprocessor => ./processor/kllprocessor
+  - go.opentelemetry.io/collector/pdata => ../opentelemetry-collector/pdata
 #  - github.com/ProjectASAP/sketchlib-go => ../sketchlib-go

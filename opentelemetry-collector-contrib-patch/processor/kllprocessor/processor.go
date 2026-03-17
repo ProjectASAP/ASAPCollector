@@ -2,45 +2,162 @@ package kllprocessor
 
 import (
 	"context"
-	"fmt"
-	"slices"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	kll "github.com/ProjectASAP/sketchlib-go/sketches/KLL"
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
 
-type Sketch struct {
-	seen   []float64 // for debugging, save the seen values
+// builderPool recycles strings.Builder instances to avoid per-call heap
+// allocations in the hot attributesKey path.
+var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
+
+
+type kllProcessor struct {
+	cfg          *Config
+	logger       *zap.Logger
+	nextConsumer consumer.Metrics
+
+	mu            sync.Mutex
+	windowStore   map[string]*resourceWindow
+	stopCh        chan struct{}
+	doneCh        chan struct{}
+	windowStarted atomic.Bool // true once the window goroutine is running
+
+	// seriesPool recycles kllSeries structs (and their underlying KLL sketch
+	// compactor arrays) across window flushes to reduce GC pressure in
+	// high-cardinality deployments.
+	seriesPool sync.Pool
+}
+
+type resourceWindow struct {
+	resource pcommon.Resource
+	scopes   map[string]*scopeWindow
+}
+
+type scopeWindow struct {
+	scope   pcommon.InstrumentationScope
+	metrics map[string]*metricWindow
+}
+
+type metricWindow struct {
+	name        string
+	description string
+	unit        string
+	series      map[string]*kllSeries
+}
+
+type kllSeries struct {
+	attrs  pcommon.Map
 	sketch *kll.KLLSketch
-
-	mu sync.Mutex
 }
 
-type KLLSketches struct {
-	cfg      *Config
-	sketches map[string]*Sketch
-	mu       sync.RWMutex
-
-	logger *zap.Logger
+func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *kllProcessor {
+	p := &kllProcessor{
+		cfg:          cfg,
+		logger:       logger,
+		nextConsumer: next,
+		windowStore:  make(map[string]*resourceWindow),
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
+	}
+	p.seriesPool.New = func() any { return new(kllSeries) }
+	return p
 }
 
-func newProcessor(cfg *Config, logger *zap.Logger) *KLLSketches {
-	return &KLLSketches{
-		cfg: cfg, logger: logger,
-		sketches: make(map[string]*Sketch),
+func (p *kllProcessor) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: true}
+}
+
+func (p *kllProcessor) Start(ctx context.Context, _ component.Host) error {
+	if p.cfg.Mode != ModeWindow {
+		return nil
+	}
+	ticker := time.NewTicker(p.cfg.WindowDuration)
+	p.windowStarted.Store(true)
+	go func() {
+		defer func() {
+			ticker.Stop()
+			close(p.doneCh)
+		}()
+		for {
+			select {
+			case <-ctx.Done():
+				_ = p.flushWindow(context.Background())
+				return
+			case <-p.stopCh:
+				_ = p.flushWindow(context.Background())
+				return
+			case <-ticker.C:
+				_ = p.flushWindow(context.Background())
+			}
+		}
+	}()
+	return nil
+}
+
+func (p *kllProcessor) Shutdown(ctx context.Context) error {
+	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
+		return nil
+	}
+	close(p.stopCh)
+	select {
+	case <-p.doneCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
-func (klls *KLLSketches) processMetrics(_ context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
-	// see here: https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/metrics/v1/metrics.proto#L28
-	// or: https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/data-model.md
-	// for description of how md is structured
+func (p *kllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	switch p.cfg.Mode {
+	case ModeBatch:
+		if err := p.processBatch(md); err != nil {
+			return err
+		}
+		return p.nextConsumer.ConsumeMetrics(ctx, md)
+	case ModeWindow:
+		p.accumulateIntoWindow(md)
+		return nil
+	default:
+		if p.logger != nil {
+			p.logger.Error("kllprocessor: unknown mode, dropping metrics", zap.Any("mode", p.cfg.Mode))
+		}
+		return nil
+	}
+}
 
-	// intake metrics
+// processBatch builds per-batch KLL sketches from gauge and KLLSketch data points,
+// appends quantile metrics to md (raw inputs preserved).
+func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
+	type batchSeries struct {
+		name   string
+		unit   string
+		attrs  pcommon.Map
+		sketch *kll.KLLSketch
+	}
+	batched := make(map[string]*batchSeries) // key = metricName + "::" + attributesKey(attrs)
+
+	getOrCreate := func(name, unit string, attrs pcommon.Map) *batchSeries {
+		key := name + "::" + attributesKey(attrs)
+		bs := batched[key]
+		if bs == nil {
+			attrCopy := pcommon.NewMap()
+			attrs.CopyTo(attrCopy)
+			bs = &batchSeries{name: name, unit: unit, attrs: attrCopy, sketch: newKLLSketch(p.cfg.K)}
+			batched[key] = bs
+		}
+		return bs
+	}
+
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
@@ -48,18 +165,34 @@ func (klls *KLLSketches) processMetrics(_ context.Context, md pmetric.Metrics) (
 			metrics := sms.At(j).Metrics()
 			for k := 0; k < metrics.Len(); k++ {
 				metric := metrics.At(k)
-
-				// gauge is a point in time
-				// https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/metrics/v1/metrics.proto#L232
-				if metric.Type() == pmetric.MetricTypeGauge {
-					// https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/data-model.md#gauge
-					// according to above, gauge DataPoints should only report a single (most recently sampled) value
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
 					dps := metric.Gauge().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
-						if klls.cfg.ReadAsInt {
-							klls.addPoint(metric.Name(), float64(dps.At(l).IntValue()))
+						dp := dps.At(l)
+						var val float64
+						if p.cfg.ReadAsInt {
+							val = float64(dp.IntValue())
 						} else {
-							klls.addPoint(metric.Name(), dps.At(l).DoubleValue())
+							val = dp.DoubleValue()
+						}
+						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
+						if bs.sketch != nil {
+							bs.sketch.Insert(val)
+						}
+					}
+				case pmetric.MetricTypeKLLSketch:
+					dps := metric.KLLSketch().DataPoints()
+					for l := 0; l < dps.Len(); l++ {
+						dp := dps.At(l)
+						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
+						if bs.sketch != nil && len(dp.Sketch()) > 0 {
+							incoming, err := kll.DeserializeKLLSketchFromBytes(dp.Sketch())
+							if err == nil {
+								_ = bs.sketch.Merge(incoming)
+							} else if p.logger != nil {
+								p.logger.Error("kllprocessor: failed to deserialize KLLSketch dp", zap.Error(err))
+							}
 						}
 					}
 				}
@@ -67,113 +200,334 @@ func (klls *KLLSketches) processMetrics(_ context.Context, md pmetric.Metrics) (
 		}
 	}
 
-	// remove all prev values
-	if klls.cfg.DropOriginal {
-		md.ResourceMetrics().RemoveIf(func(pmetric.ResourceMetrics) bool { return true })
+	if len(batched) == 0 {
+		return nil
 	}
 
-	// output sketch
 	scope := md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty()
 	scope.Scope().SetName("otelcol/kllprocessor")
 	now := pcommon.NewTimestampFromTime(time.Now())
 
-	type snapshot struct {
-		key    string
-		sketch *Sketch
-	}
-
-	// based off countmin sketch impl; make local copy (by reference) to avoid expensive global lock
-	items := make([]snapshot, 0, len(klls.sketches))
-	klls.mu.RLock()
-	for name, sketch := range klls.sketches {
-		items = append(items, snapshot{key: name, sketch: sketch})
-	}
-	klls.mu.RUnlock()
-
-	for _, item := range items {
-		name := item.key
-		sketch := item.sketch
-
-		sketch.mu.Lock()
-		if sketch.sketch == nil || sketch.sketch.GetSize() == 0 {
-			sketch.mu.Unlock()
+	for _, bs := range batched {
+		if bs.sketch == nil || bs.sketch.GetSize() == 0 {
 			continue
 		}
-
-		// Emit KLLSketch metric type with serialized sketch payload
-		sketchBytes, serErr := sketch.sketch.SerializeToBytes()
-		if serErr != nil {
-			klls.logger.Error("Failed to serialize KLL sketch", zap.Error(serErr), zap.String("metric", name))
-		} else {
-			metric := scope.Metrics().AppendEmpty()
-			metric.SetName(name)
-
-			kllMetric := metric.SetEmptyKLLSketch()
-			kllMetric.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
-			dp := kllMetric.DataPoints().AppendEmpty()
-			dp.SetTimestamp(now)
-			dp.SetCount(uint64(sketch.sketch.GetSize()))
-			dp.SetSketch(sketchBytes)
-			dp.SetEncoding(pmetric.KLLSketchEncodingGob)
-		}
-
-		// Also emit quantile gauges if configured
-		if len(klls.cfg.suffixes) > 0 {
-			cdf := sketch.sketch.CDF()
-			for q, str := range klls.cfg.suffixes {
-				metric := scope.Metrics().AppendEmpty()
-				metric.SetName(name + str)
-
-				dp := metric.SetEmptyGauge().DataPoints().AppendEmpty()
-				dp.SetTimestamp(now)
-				dp.SetDoubleValue(cdf.Query(q))
+		if p.cfg.TransmitSketch {
+			m := findOrCreateGaugeMetric(scope.Metrics(), p.sketchMetricName(bs.name), bs.unit)
+			if err := appendKLLSketchDataPoint(m, bs.attrs, bs.sketch, now, p.cfg.K); err != nil && p.logger != nil {
+				p.logger.Error("kllprocessor: failed to serialize sketch", zap.Error(err))
 			}
+			continue
 		}
-
-		if klls.cfg.WriteSeen {
-			slices.Sort(sketch.seen)
-			metric := scope.Metrics().AppendEmpty()
-			metric.SetName(name + "_seen")
-
-			dp := metric.SetEmptyGauge().DataPoints().AppendEmpty()
+		cdf := bs.sketch.CDF()
+		for _, q := range p.cfg.Quantiles {
+			suffix, ok := p.cfg.suffixes[q]
+			if !ok {
+				continue
+			}
+			metricName := bs.name + suffix
+			m := findOrCreateGaugeMetric(scope.Metrics(), metricName, bs.unit)
+			dp := m.Gauge().DataPoints().AppendEmpty()
+			bs.attrs.CopyTo(dp.Attributes())
 			dp.SetTimestamp(now)
-			// can also do as a slice, but this is a bit easier
-			dp.Attributes().PutStr("seen", fmt.Sprintf("%v", sketch.seen))
+			dp.SetDoubleValue(cdf.Query(q))
 		}
-
-		sketch.mu.Unlock()
 	}
-
-	return md, nil
+	return nil
 }
 
-func (klls *KLLSketches) addPoint(name string, val float64) {
-	klls.mu.RLock()
-	sketch, ok := klls.sketches[name]
-	klls.mu.RUnlock()
-
-	if !ok { // add sketch if this is new metric
-		klls.mu.Lock()
-
-		klls.sketches[name] = &Sketch{sketch: newKLLSketch(klls.cfg.K), seen: nil}
-		sketch = klls.sketches[name]
-
-		if klls.cfg.WriteSeen {
-			sketch.seen = make([]float64, 0)
+func attributesKey(attrs pcommon.Map) string {
+	keys := make([]string, 0, attrs.Len())
+	attrs.Range(func(k string, _ pcommon.Value) bool {
+		keys = append(keys, k)
+		return true
+	})
+	sort.Strings(keys)
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	for _, k := range keys {
+		v, ok := attrs.Get(k)
+		if !ok {
+			continue
 		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(v.AsString())
+		b.WriteByte(';')
+	}
+	s := b.String()
+	builderPool.Put(b)
+	return s
+}
 
-		klls.mu.Unlock()
+func (p *kllProcessor) accumulateIntoWindow(md pmetric.Metrics) {
+	rms := md.ResourceMetrics()
+	if rms.Len() == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for i := 0; i < rms.Len(); i++ {
+		rm := rms.At(i)
+		resKey := attributesKey(rm.Resource().Attributes())
+		rw, ok := p.windowStore[resKey]
+		if !ok {
+			rw = &resourceWindow{
+				resource: pcommon.NewResource(),
+				scopes:   make(map[string]*scopeWindow),
+			}
+			rm.Resource().CopyTo(rw.resource)
+			p.windowStore[resKey] = rw
+		}
+		sms := rm.ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			sm := sms.At(j)
+			scope := sm.Scope()
+			scopeKey := scope.Name() + ":" + scope.Version()
+			sw, ok := rw.scopes[scopeKey]
+			if !ok {
+				sw = &scopeWindow{
+					scope:   pcommon.NewInstrumentationScope(),
+					metrics: make(map[string]*metricWindow),
+				}
+				scope.CopyTo(sw.scope)
+				rw.scopes[scopeKey] = sw
+			}
+			metrics := sm.Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				metric := metrics.At(k)
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
+					p.accumulateGaugeMetric(sw, metric)
+				case pmetric.MetricTypeKLLSketch:
+					p.accumulateKLLSketchMetric(sw, metric)
+				}
+			}
+		}
+	}
+}
+
+func (p *kllProcessor) getOrCreateMetricWindow(sw *scopeWindow, metric pmetric.Metric) *metricWindow {
+	name := metric.Name()
+	mw, ok := sw.metrics[name]
+	if !ok {
+		mw = &metricWindow{
+			name:        name,
+			description: metric.Description(),
+			unit:        metric.Unit(),
+			series:      make(map[string]*kllSeries),
+		}
+		sw.metrics[name] = mw
+	}
+	return mw
+}
+
+func (p *kllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Metric) {
+	mw := p.getOrCreateMetricWindow(sw, metric)
+	dps := metric.Gauge().DataPoints()
+	for l := 0; l < dps.Len(); l++ {
+		dp := dps.At(l)
+		attrKey := attributesKey(dp.Attributes())
+		series := mw.series[attrKey]
+		if series == nil {
+			attrCopy := pcommon.NewMap()
+			dp.Attributes().CopyTo(attrCopy)
+			series = p.seriesPool.Get().(*kllSeries)
+			series.attrs = attrCopy
+			if series.sketch != nil {
+				series.sketch.Reset()
+			} else {
+				series.sketch = newKLLSketch(p.cfg.K)
+			}
+			mw.series[attrKey] = series
+		}
+		var val float64
+		if p.cfg.ReadAsInt {
+			val = float64(dp.IntValue())
+		} else {
+			val = dp.DoubleValue()
+		}
+		if series.sketch != nil {
+			series.sketch.Insert(val)
+		}
+	}
+}
+
+// accumulateKLLSketchMetric merges pre-aggregated KLLSketch data points (from the
+// SDK pre-aggregation path) into the window store.
+func (p *kllProcessor) accumulateKLLSketchMetric(sw *scopeWindow, metric pmetric.Metric) {
+	mw := p.getOrCreateMetricWindow(sw, metric)
+	dps := metric.KLLSketch().DataPoints()
+	for l := 0; l < dps.Len(); l++ {
+		dp := dps.At(l)
+		attrKey := attributesKey(dp.Attributes())
+		series := mw.series[attrKey]
+		if series == nil {
+			attrCopy := pcommon.NewMap()
+			dp.Attributes().CopyTo(attrCopy)
+			series = p.seriesPool.Get().(*kllSeries)
+			series.attrs = attrCopy
+			if series.sketch != nil {
+				series.sketch.Reset()
+			} else {
+				series.sketch = newKLLSketch(p.cfg.K)
+			}
+			mw.series[attrKey] = series
+		}
+		if series.sketch != nil && len(dp.Sketch()) > 0 {
+			incoming, err := kll.DeserializeKLLSketchFromBytes(dp.Sketch())
+			if err == nil {
+				_ = series.sketch.Merge(incoming)
+			} else if p.logger != nil {
+				p.logger.Error("kllprocessor: failed to merge KLLSketch dp", zap.Error(err))
+			}
+		}
+	}
+}
+
+func (p *kllProcessor) flushWindow(ctx context.Context) error {
+	p.mu.Lock()
+	if len(p.windowStore) == 0 {
+		p.mu.Unlock()
+		return nil
+	}
+	snapshot := p.windowStore
+	p.windowStore = make(map[string]*resourceWindow)
+	p.mu.Unlock()
+
+	out := pmetric.NewMetrics()
+	rms := out.ResourceMetrics()
+	for _, rw := range snapshot {
+		rm := rms.AppendEmpty()
+		rw.resource.CopyTo(rm.Resource())
+		sms := rm.ScopeMetrics()
+		for _, sw := range rw.scopes {
+			sm := sms.AppendEmpty()
+			sw.scope.CopyTo(sm.Scope())
+			dstMetrics := sm.Metrics()
+			for _, mw := range sw.metrics {
+				if p.cfg.TransmitSketch {
+					now := pcommon.NewTimestampFromTime(time.Now())
+					var (
+						m       pmetric.Metric
+						created bool
+					)
+					for _, series := range mw.series {
+						if series.sketch == nil || series.sketch.GetSize() == 0 {
+							series.attrs = pcommon.Map{}
+							p.seriesPool.Put(series)
+							continue
+						}
+						if !created {
+							m = dstMetrics.AppendEmpty()
+							m.SetName(p.sketchMetricName(mw.name))
+							m.SetDescription(mw.description)
+							m.SetUnit(mw.unit)
+							m.SetEmptyGauge()
+							created = true
+						}
+						if err := appendKLLSketchDataPoint(m, series.attrs, series.sketch, now, p.cfg.K); err != nil && p.logger != nil {
+							p.logger.Error("kllprocessor: failed to serialize sketch", zap.Error(err))
+						}
+						series.attrs = pcommon.Map{}
+						p.seriesPool.Put(series)
+					}
+					continue
+				}
+				for _, q := range p.cfg.Quantiles {
+					suffix, ok := p.cfg.suffixes[q]
+					if !ok {
+						continue
+					}
+					metricName := mw.name + suffix
+					if p.cfg.MetricSuffix != "" {
+						metricName = mw.name + p.cfg.MetricSuffix + suffix
+					}
+					now := pcommon.NewTimestampFromTime(time.Now())
+					var dps []struct {
+						attrs pcommon.Map
+						val   float64
+					}
+					for _, series := range mw.series {
+						if series.sketch == nil || series.sketch.GetSize() == 0 {
+							continue
+						}
+						dps = append(dps, struct {
+							attrs pcommon.Map
+							val   float64
+						}{series.attrs, series.sketch.CDF().Query(q)})
+					}
+					if len(dps) == 0 {
+						continue
+					}
+					m := dstMetrics.AppendEmpty()
+					m.SetName(metricName)
+					m.SetDescription(mw.description)
+					m.SetUnit(mw.unit)
+					g := m.SetEmptyGauge()
+					for _, d := range dps {
+						dp := g.DataPoints().AppendEmpty()
+						d.attrs.CopyTo(dp.Attributes())
+						dp.SetTimestamp(now)
+						dp.SetDoubleValue(d.val)
+					}
+				}
+				// Return series to pool after all quantiles have been processed.
+				for _, series := range mw.series {
+					series.attrs = pcommon.Map{}
+					p.seriesPool.Put(series)
+				}
+			}
+		}
 	}
 
-	sketch.mu.Lock()
-	// update backing sketch
-	if sketch.sketch != nil {
-		sketch.sketch.Insert(val)
+	if out.ResourceMetrics().Len() == 0 {
+		return nil
 	}
-	if klls.cfg.WriteSeen {
-		sketch.seen = append(sketch.seen, val)
+	return p.nextConsumer.ConsumeMetrics(ctx, out)
+}
+
+func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pmetric.Metric {
+	for idx := 0; idx < metrics.Len(); idx++ {
+		if metrics.At(idx).Name() == name {
+			return metrics.At(idx)
+		}
 	}
-	sketch.mu.Unlock()
+	m := metrics.AppendEmpty()
+	m.SetName(name)
+	m.SetUnit(unit)
+	m.SetEmptyGauge()
+	return m
+}
+
+func appendKLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *kll.KLLSketch, ts pcommon.Timestamp, k int) error {
+	payload, err := serializeKLLSketch(sketch)
+	if err != nil {
+		return err
+	}
+	dp := metric.Gauge().DataPoints().AppendEmpty()
+	attrs.CopyTo(dp.Attributes())
+	dp.Attributes().PutInt("kll.k", int64(k))
+	dp.Attributes().PutInt("kll.count", int64(sketch.Count()))
+	dp.Attributes().PutEmptyBytes("kll.sketch_payload").FromRaw(payload)
+	dp.SetTimestamp(ts)
+	dp.SetDoubleValue(float64(sketch.Count()))
+	return nil
+}
+
+func serializeKLLSketch(sketch *kll.KLLSketch) ([]byte, error) {
+	if sketch == nil {
+		return nil, nil
+	}
+	return sketch.SerializeToBytes()
+}
+
+func (p *kllProcessor) sketchMetricName(base string) string {
+	if p.cfg.MetricSuffix != "" {
+		return base + p.cfg.MetricSuffix
+	}
+	return base + "_kll"
 }
 
 func newKLLSketch(k int) *kll.KLLSketch {
