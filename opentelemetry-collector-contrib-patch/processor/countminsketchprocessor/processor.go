@@ -4,12 +4,11 @@
 package countminsketchprocessor
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ProjectASAP/sketchlib-go/common"
@@ -22,6 +21,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// builderPool recycles strings.Builder instances used in the hot
+// encodeAttributesAsKey path (called on every data point).
+var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
+
+
 //
 // ─────────────────────────────────────────────────────────────
 // Window-level state
@@ -32,18 +36,6 @@ type windowSketch struct {
 	cms         *cms.CountMinSketch
 	mu          sync.Mutex
 	sampleCount uint64
-}
-
-// countMinSketchSnapshot is a serializable DTO.
-// NOTE: Seed field is removed as new lib manages seeds internally.
-type countMinSketchSnapshot struct {
-	Rows  int
-	Cols  int
-	Count [][]float64
-	Sum   [][]float64
-	Sum2  [][]float64
-	L1    []float64
-	L2    []float64
 }
 
 //
@@ -61,8 +53,13 @@ type windowedCountMinSketchProcessor struct {
 	activeWindowSketches map[string]*windowSketch
 	mu                   sync.RWMutex
 
-	ticker *time.Ticker
-	done   chan struct{}
+	stopCh        chan struct{}
+	doneCh        chan struct{}
+	windowStarted atomic.Bool
+
+	// windowSketchPool recycles windowSketch structs (and their underlying CMS
+	// arrays via Reset()) across window flushes to reduce GC pressure.
+	windowSketchPool sync.Pool
 }
 
 func newProcessor(
@@ -70,13 +67,16 @@ func newProcessor(
 	next consumer.Metrics,
 	logger *zap.Logger,
 ) *windowedCountMinSketchProcessor {
-	return &windowedCountMinSketchProcessor{
+	p := &windowedCountMinSketchProcessor{
 		cfg:                  cfg,
 		logger:               logger,
 		nextConsumer:         next,
 		activeWindowSketches: make(map[string]*windowSketch),
-		done:                 make(chan struct{}),
+		stopCh:               make(chan struct{}),
+		doneCh:               make(chan struct{}),
 	}
+	p.windowSketchPool.New = func() any { return new(windowSketch) }
+	return p
 }
 
 //
@@ -90,19 +90,40 @@ func (p *windowedCountMinSketchProcessor) Start(
 	host component.Host,
 ) error {
 	p.logger.Info(
-		"Starting windowed Count-Min Sketch processor (New API)",
+		"Starting Count-Min Sketch processor",
+		zap.String("mode", string(p.cfg.Mode)),
 		zap.Duration("window_interval", p.cfg.WindowInterval),
 	)
 
-	p.ticker = time.NewTicker(p.cfg.WindowInterval)
+	// Batch mode does not require a background ticker; we flush per-batch.
+	if p.cfg.Mode != ModeWindow {
+		return nil
+	}
+
+	// Window mode: start background window loop if a positive window is configured.
+	if p.cfg.WindowInterval <= 0 {
+		return nil
+	}
+
+	ticker := time.NewTicker(p.cfg.WindowInterval)
+	p.windowStarted.Store(true)
 
 	go func() {
+		defer func() {
+			ticker.Stop()
+			close(p.doneCh)
+		}()
+
 		for {
 			select {
-			case <-p.ticker.C:
+			case <-ctx.Done():
 				p.emitWindowAndReset()
-			case <-p.done:
 				return
+			case <-p.stopCh:
+				p.emitWindowAndReset()
+				return
+			case <-ticker.C:
+				p.emitWindowAndReset()
 			}
 		}
 	}()
@@ -113,11 +134,21 @@ func (p *windowedCountMinSketchProcessor) Start(
 func (p *windowedCountMinSketchProcessor) Shutdown(
 	ctx context.Context,
 ) error {
-	if p.ticker != nil {
-		p.ticker.Stop()
+	// Only wait if the window goroutine was actually started; avoids blocking
+	// forever when Start was never called.
+	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
+		return nil
 	}
-	close(p.done)
-	return nil
+
+	// Signal the goroutine and wait for it to finish (or context cancellation).
+	close(p.stopCh)
+
+	select {
+	case <-p.doneCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (p *windowedCountMinSketchProcessor) Capabilities() consumer.Capabilities {
@@ -135,6 +166,25 @@ func (p *windowedCountMinSketchProcessor) ConsumeMetrics(
 	md pmetric.Metrics,
 ) (pmetric.Metrics, error) {
 
+	switch p.cfg.Mode {
+	case ModeBatch:
+		return p.consumeBatch(md), nil
+	case ModeWindow:
+		p.accumulateIntoWindow(md)
+		if !p.cfg.DropOriginal {
+			return md, nil
+		}
+		return pmetric.NewMetrics(), nil
+	default:
+		if p.logger != nil {
+			p.logger.Error("countminsketchprocessor: unknown mode, dropping metrics", zap.Any("mode", p.cfg.Mode))
+		}
+		return pmetric.NewMetrics(), nil
+	}
+}
+
+// accumulateIntoWindow ingests metrics into the active window sketches (window mode).
+func (p *windowedCountMinSketchProcessor) accumulateIntoWindow(md pmetric.Metrics) {
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
@@ -145,12 +195,31 @@ func (p *windowedCountMinSketchProcessor) ConsumeMetrics(
 			}
 		}
 	}
+}
 
-	if !p.cfg.DropOriginal {
-		return md, nil
+// consumeBatch aggregates a single batch into sketches and returns output metrics
+// according to DropOriginal semantics (batch mode).
+func (p *windowedCountMinSketchProcessor) consumeBatch(md pmetric.Metrics) pmetric.Metrics {
+	// Reuse the window-style accumulation for this batch, then reset.
+	p.accumulateIntoWindow(md)
+
+	sketches := p.buildWindowMetricsAndReset()
+	if sketches.ResourceMetrics().Len() == 0 {
+		if p.cfg.DropOriginal {
+			return pmetric.NewMetrics()
+		}
+		return md
 	}
 
-	return pmetric.NewMetrics(), nil
+	if p.cfg.DropOriginal {
+		return sketches
+	}
+
+	// Expansion mode: keep originals and append sketch summaries.
+	out := pmetric.NewMetrics()
+	md.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
+	sketches.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
+	return out
 }
 
 func (p *windowedCountMinSketchProcessor) ingestMetric(
@@ -167,6 +236,59 @@ func (p *windowedCountMinSketchProcessor) ingestMetric(
 		for i := 0; i < dps.Len(); i++ {
 			p.updateWindowSketch(metric.Name(), dps.At(i))
 		}
+	case pmetric.MetricTypeCountMinSketch:
+		// Pre-aggregated path: deserialize and merge each incoming sketch into
+		// the corresponding per-aggregation-key window sketch.
+		dps := metric.CountMinSketch().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			if len(dp.Sketch()) == 0 {
+				continue
+			}
+			incoming, err := deserializeCMS(dp.Sketch())
+			if err != nil {
+				p.logger.Error("countminsketchprocessor: failed to deserialize CountMinSketch dp", zap.Error(err))
+				continue
+			}
+			aggregationKey := buildAggregationKey(metric.Name(), dp.Attributes())
+			p.mergeWindowSketch(aggregationKey, incoming)
+		}
+	}
+}
+
+// mergeWindowSketch merges an incoming pre-aggregated CMS into the per-key window store.
+func (p *windowedCountMinSketchProcessor) mergeWindowSketch(aggregationKey string, incoming *cms.CountMinSketch) {
+	p.mu.RLock()
+	ws, exists := p.activeWindowSketches[aggregationKey]
+	p.mu.RUnlock()
+
+	if !exists {
+		p.mu.Lock()
+		ws, exists = p.activeWindowSketches[aggregationKey]
+		if !exists {
+			ws = p.windowSketchPool.Get().(*windowSketch)
+			if ws.cms != nil && ws.cms.Rows == incoming.Rows && ws.cms.Cols == incoming.Cols {
+				ws.cms.Reset()
+			} else {
+				newCMS, err := cms.NewCountMinSketch(incoming.Rows, incoming.Cols)
+				if err != nil {
+					p.logger.Error("Failed to create CMS for merge", zap.Error(err))
+					p.windowSketchPool.Put(ws)
+					p.mu.Unlock()
+					return
+				}
+				ws.cms = newCMS
+			}
+			ws.sampleCount = 0
+			p.activeWindowSketches[aggregationKey] = ws
+		}
+		p.mu.Unlock()
+	}
+
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if err := ws.cms.Merge(incoming); err != nil {
+		p.logger.Error("Failed to merge CMS", zap.Error(err))
 	}
 }
 
@@ -184,18 +306,20 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 		p.mu.Lock()
 		ws, exists = p.activeWindowSketches[aggregationKey]
 		if !exists {
-			// Using new API constructor (without seed)
-			newCMS, err := cms.NewCountMinSketch(
-				p.cfg.Rows,
-				p.cfg.Columns,
-			)
-			if err != nil {
-				p.logger.Error("Failed to create CMS", zap.Error(err))
-				p.mu.Unlock()
-				return
+			ws = p.windowSketchPool.Get().(*windowSketch)
+			if ws.cms != nil && ws.cms.Rows == p.cfg.Rows && ws.cms.Cols == p.cfg.Columns {
+				ws.cms.Reset()
+			} else {
+				newCMS, err := cms.NewCountMinSketch(p.cfg.Rows, p.cfg.Columns)
+				if err != nil {
+					p.logger.Error("Failed to create CMS", zap.Error(err))
+					p.windowSketchPool.Put(ws)
+					p.mu.Unlock()
+					return
+				}
+				ws.cms = newCMS
 			}
-
-			ws = &windowSketch{cms: newCMS}
+			ws.sampleCount = 0
 			p.activeWindowSketches[aggregationKey] = ws
 		}
 		p.mu.Unlock()
@@ -226,11 +350,13 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 // ─────────────────────────────────────────────────────────────
 //
 
-func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
+// buildWindowMetricsAndReset snapshots the current window sketches, resets the
+// state, and returns a Metrics payload containing sketch summaries.
+func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 	p.mu.Lock()
 	if len(p.activeWindowSketches) == 0 {
 		p.mu.Unlock()
-		return
+		return pmetric.NewMetrics()
 	}
 
 	// Snapshot and reset
@@ -246,26 +372,44 @@ func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
 	now := pcommon.NewTimestampFromTime(time.Now())
 
 	for aggregationKey, ws := range windowSnapshot {
-		m := sm.Metrics().AppendEmpty()
-		m.SetName(p.cfg.MetricName)
-		m.SetUnit("1")
-
+		ws.mu.Lock()
+		rows := ws.cms.Rows
+		cols := ws.cms.Cols
+		sampleCount := ws.sampleCount
 		payload, err := serializeCMS(ws.cms)
+		ws.mu.Unlock()
+		p.windowSketchPool.Put(ws)
 		if err != nil {
 			p.logger.Error("Failed to serialize CMS", zap.Error(err))
 			continue
 		}
 
-		cmsMetric := m.SetEmptyCountMinSketch()
-		cmsMetric.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
-		dp := cmsMetric.DataPoints().AppendEmpty()
+		m := sm.Metrics().AppendEmpty()
+		m.SetName(p.cfg.MetricName)
+		m.SetUnit("1")
+
+		gauge := m.SetEmptyGauge()
+		dp := gauge.DataPoints().AppendEmpty()
 		dp.SetTimestamp(now)
+
 		dp.Attributes().PutStr("aggregation_key", aggregationKey)
-		dp.SetSampleCount(ws.sampleCount)
-		dp.SetRows(int32(ws.cms.Rows))
-		dp.SetCols(int32(ws.cms.Cols))
-		dp.SetSketch(payload)
-		dp.SetEncoding(pmetric.CountMinSketchEncodingGob)
+		dp.Attributes().PutInt("rows", int64(rows))
+		dp.Attributes().PutInt("cols", int64(cols))
+		dp.Attributes().PutInt("sample_count", int64(sampleCount))
+		if p.cfg.TransmitSketch {
+			dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
+		} else {
+			dp.SetDoubleValue(float64(sampleCount))
+		}
+	}
+
+	return md
+}
+
+func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
+	md := p.buildWindowMetricsAndReset()
+	if md.ResourceMetrics().Len() == 0 {
+		return
 	}
 
 	if err := p.nextConsumer.ConsumeMetrics(context.Background(), md); err != nil {
@@ -279,26 +423,12 @@ func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
 // ─────────────────────────────────────────────────────────────
 //
 
-func serializeCMS(
-	s *cms.CountMinSketch,
-) ([]byte, error) {
+func serializeCMS(s *cms.CountMinSketch) ([]byte, error) {
+	return s.SerializeToBytes()
+}
 
-	snapshot := countMinSketchSnapshot{
-		Rows:  s.Rows,
-		Cols:  s.Cols,
-		Count: s.Count,
-		Sum:   s.Sum,
-		Sum2:  s.Sum2,
-		L1:    s.L1,
-		L2:    s.L2,
-	}
-
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(snapshot); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+func deserializeCMS(data []byte) (*cms.CountMinSketch, error) {
+	return cms.DeserializeCountMinSketchFromBytes(data)
 }
 
 func buildAggregationKey(
@@ -318,7 +448,8 @@ func encodeAttributesAsKey(
 	})
 	sort.Strings(keys)
 
-	var sb strings.Builder
+	sb := builderPool.Get().(*strings.Builder)
+	sb.Reset()
 	for _, k := range keys {
 		v, _ := attrs.Get(k)
 		sb.WriteString(k)
@@ -326,5 +457,7 @@ func encodeAttributesAsKey(
 		sb.WriteString(v.AsString())
 		sb.WriteString(";")
 	}
-	return sb.String()
+	s := sb.String()
+	builderPool.Put(sb)
+	return s
 }

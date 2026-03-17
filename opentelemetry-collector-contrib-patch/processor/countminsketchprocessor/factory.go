@@ -28,6 +28,7 @@ func createDefaultConfig() component.Config {
 		MetricName:     "countmin_sketch",
 		Rows:           5,
 		Columns:        1024, // Power of two required by new lib
+		TransmitSketch: true,
 		DropOriginal:   false,
 		GroupBy:        []string{},
 		WindowInterval: 10 * time.Second,
