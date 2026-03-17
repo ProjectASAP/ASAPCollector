@@ -68,7 +68,7 @@ DURATION_SEC=$(echo "$DURATION_FLAG" | sed 's/[^0-9]//g')
 
 # Expand "all" to every sketch type
 if [[ "$SKETCH_ARG" == "all" ]]; then
-    SKETCH_TYPES=("baseline" "ddsketch" "kll" "countsketch" "countminsketch" "hll")
+    SKETCH_TYPES=("baseline" "ddsketch" "kll" "hll")
 else
     IFS=',' read -ra SKETCH_TYPES <<< "$SKETCH_ARG"
 fi
