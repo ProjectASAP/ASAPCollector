@@ -11,7 +11,6 @@ processors:
     metric_name: "cms_bench_result" # Matches the script's grep logic
     rows: 5
     columns: 2000                   # Wider matrix for high-cardinality random data
-    transmit_sketch: true
     group_by: []                    # Empty = 1 Global Sketch (Tests Hash/Lock speed)
     
     # CRITICAL: Logic triggers

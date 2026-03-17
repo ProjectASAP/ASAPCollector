@@ -6,7 +6,6 @@ receivers:
 
 processors:
   countsketch:
-    transmit_sketch: false
     epsilon: 0.01
     delta: 0.99
     window_size: 5s
