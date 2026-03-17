@@ -155,7 +155,7 @@ func generateZipfValue(zipf *rand.Zipf) float64 {
 	return float64(zipf.Uint64()+1) * scaleFactor
 }
 
-func runWorker(ctx context.Context, id, seriesStart, seriesEnd int, interval time.Duration, inst interface{}, wg *sync.WaitGroup) {
+func runWorker(ctx context.Context, id, seriesStart, seriesEnd int, interval time.Duration, inst metric.Float64Gauge, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	src := rand.NewSource(time.Now().UnixNano() + int64(id))
@@ -172,13 +172,7 @@ func runWorker(ctx context.Context, id, seriesStart, seriesEnd int, interval tim
 		case <-ticker.C:
 			for s := seriesStart; s < seriesEnd; s++ {
 				attrs := metric.WithAttributes(attribute.String("series.id", fmt.Sprintf("%06d", s)))
-				v := generateZipfValue(zipf)
-				switch instr := inst.(type) {
-				case metric.Float64Histogram:
-					instr.Record(ctx, v, attrs)
-				case metric.Float64Gauge:
-					instr.Record(ctx, v, attrs)
-				}
+				inst.Record(ctx, generateZipfValue(zipf), attrs)
 			}
 		}
 	}
@@ -272,10 +266,10 @@ func main() {
 	fmt.Println()
 
 	// --- Choose sketch aggregation ---
-	// baseline: Float64Gauge with default LastValue aggregation — raw samples, no sketching.
-	// All sketch types: Float64Histogram with the sketch aggregation view (sdkSketch mode).
+	// All modes use Float64Gauge. Sketch types attach a view to override the
+	// default LastValue aggregation with the sketch aggregation. Baseline uses
+	// no view — the gauge's natural LastValue aggregation sends raw samples.
 	var agg sdkmetric.Aggregation
-	useHistogram := true // true → Float64Histogram (sdkSketch); false → Float64Gauge (baseline)
 	switch mode {
 	case "ddsketch":
 		agg = sdkmetric.AggregationDDSketch{RelativeAccuracy: *ddsketchAccuracy}
@@ -283,11 +277,6 @@ func main() {
 		agg = sdkmetric.AggregationKLLSketch{K: *kllK}
 	case "hll":
 		agg = sdkmetric.AggregationHLLSketch{}
-	case "baseline":
-		// Float64Gauge with default LastValue aggregation — one raw sample per series
-		// per export interval, no aggregation or sketch computation anywhere.
-		// No view override needed; the gauge's natural LastValue aggregation is used.
-		useHistogram = false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *duration+10*time.Second)
@@ -333,25 +322,12 @@ func main() {
 	meter := provider.Meter("e2esdkbench")
 
 	// --- Instrument creation ---
-	var histInst metric.Float64Histogram
-	var gaugeInst metric.Float64Gauge
-
-	if useHistogram {
-		histInst, err = meter.Float64Histogram("benchmark.latency",
-			metric.WithDescription("Benchmark latency (sketch aggregation)"),
-			metric.WithUnit("ms"),
-		)
-		if err != nil {
-			log.Fatalf("failed to create histogram: %v", err)
-		}
-	} else {
-		gaugeInst, err = meter.Float64Gauge("benchmark.latency",
-			metric.WithDescription("Benchmark latency (gauge)"),
-			metric.WithUnit("ms"),
-		)
-		if err != nil {
-			log.Fatalf("failed to create gauge: %v", err)
-		}
+	gaugeInst, err := meter.Float64Gauge("benchmark.latency",
+		metric.WithDescription("Benchmark latency"),
+		metric.WithUnit("ms"),
+	)
+	if err != nil {
+		log.Fatalf("failed to create gauge: %v", err)
 	}
 
 	// --- Resource sampling setup ---
@@ -391,13 +367,7 @@ func main() {
 			end = totalSeries
 		}
 		wg.Add(1)
-		var inst interface{}
-		if useHistogram {
-			inst = histInst
-		} else {
-			inst = gaugeInst
-		}
-		go runWorker(runCtx, w, start, end, workerInterval, inst, &wg)
+		go runWorker(runCtx, w, start, end, workerInterval, gaugeInst, &wg)
 	}
 
 	// Wait for run duration.
