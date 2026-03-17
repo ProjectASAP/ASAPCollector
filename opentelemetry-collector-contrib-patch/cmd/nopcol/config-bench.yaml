@@ -8,13 +8,8 @@ receivers:
 processors:
   nop:
 
-  batch:
-    send_batch_size: 5000
-    timeout: 200ms
-
 exporters:
-  debug:
-    verbosity: basic
+  nop:
 
 service:
   telemetry:
@@ -29,5 +24,5 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [nop, batch]
-      exporters: [debug]
+      processors: [nop]
+      exporters: [nop]
