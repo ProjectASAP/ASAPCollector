@@ -85,27 +85,27 @@ resolve_collector() {
     case "$sketch" in
         ddsketch)
             COLLECTOR_BIN="$CMD_DIR/ddsketchcol/ddsketchcol"
-            COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config.yaml"
+            COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-window.yaml"
             COLLECTOR_BUILD_CFG="$CMD_DIR/ddsketchcol/builder-config.yaml"
             ;;
         kll)
             COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"
-            COLLECTOR_CONFIG="$CMD_DIR/kll/config.yaml"
+            COLLECTOR_CONFIG="$CMD_DIR/kll/config-window.yaml"
             COLLECTOR_BUILD_CFG="$CMD_DIR/kll/build-config.yaml"
             ;;
         countsketch)
             COLLECTOR_BIN="$CMD_DIR/countsketchcol/dist/countsketchcol"
-            COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-batch.yaml"
+            COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-window.yaml"
             COLLECTOR_BUILD_CFG="$CMD_DIR/countsketchcol/builder-config.yaml"
             ;;
         countminsketch)
             COLLECTOR_BIN="$CMD_DIR/countminsketchcol/dist/countminsketchcol"
-            COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-batch.yaml"
+            COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-window.yaml"
             COLLECTOR_BUILD_CFG="$CMD_DIR/countminsketchcol/builder-config.yaml"
             ;;
         hll)
             COLLECTOR_BIN="$CONTRIB_PATCH_DIR/HLL"
-            COLLECTOR_CONFIG="$CMD_DIR/hllcol/config-bench.yaml"
+            COLLECTOR_CONFIG="$CMD_DIR/hllcol/config-window.yaml"
             COLLECTOR_BUILD_CFG="$CMD_DIR/hllcol/build-config.yaml"
             ;;
         baseline)
