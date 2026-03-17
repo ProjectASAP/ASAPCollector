@@ -3,6 +3,7 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
 
 processors:
   countsketch:
@@ -10,18 +11,12 @@ processors:
     mode: window
     epsilon: 0.01
     delta: 0.99
-    window_size: 5s
-    drop_original: true
-
-  batch:
-    send_batch_size: 5000
-    timeout: 200ms
+    window_size: 10s
+    drop_original: false
 
 exporters:
   prometheus:
     endpoint: 0.0.0.0:8889
-  debug:
-    verbosity: basic
 
 service:
   telemetry:
@@ -36,6 +31,5 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [countsketch, batch]
-      exporters: [prometheus, debug]
-
+      processors: [countsketch]
+      exporters: [prometheus]
