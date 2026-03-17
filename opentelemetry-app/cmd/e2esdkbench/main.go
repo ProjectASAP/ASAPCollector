@@ -246,8 +246,13 @@ func main() {
 	totalSeries := *seriesCount
 	// workerInterval controls how often each worker records a sample per series.
 	workerInterval := time.Duration(float64(time.Second) / *samplesPerSecPerSeries)
-	// readerInterval controls how often the SDK exports to the collector. This is decoupled from workerInterval to allow high sample rates with a lower export frequency, which is more realistic for sketch use-cases and reduces gRPC overhead in the benchmark.
-	readerInterval := time.Second
+	// readerInterval controls how often the SDK exports to the collector.
+	// Sketch types export every 1s so each sketch aggregates a full second of samples.
+	// Baseline exports at the worker rate so every raw sample is sent individually.
+	readerInterval := workerInterval
+	if mode != "baseline" {
+		readerInterval = time.Second
+	}
 	nominalMPS := *rateLabel
 	if nominalMPS == 0 {
 		nominalMPS = int(float64(totalSeries) * *samplesPerSecPerSeries)
