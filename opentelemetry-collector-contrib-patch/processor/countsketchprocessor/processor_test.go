@@ -178,9 +178,9 @@ func buildTestMetrics() pmetric.Metrics {
 	metrics := pmetric.NewMetrics()
 	rm := metrics.ResourceMetrics().AppendEmpty()
 	rm.Resource().Attributes().PutStr("host.name", "host-A")
-
+	
 	sm := rm.ScopeMetrics().AppendEmpty()
-
+	
 	// Add a Gauge
 	gauge := sm.Metrics().AppendEmpty()
 	gauge.SetName("system.cpu.usage")

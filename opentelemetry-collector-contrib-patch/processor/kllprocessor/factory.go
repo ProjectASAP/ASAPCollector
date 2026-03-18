@@ -3,24 +3,20 @@ package kllprocessor
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/processor"
+	"go.opentelemetry.io/collector/processor/processorhelper"
 )
 
 func createDefaultConfig() component.Config {
-	return &Config{
-		Mode:           ModeBatch,
-		WindowDuration: 60 * time.Second,
-		K:              256,
-		Quantiles:      []float64{0.5, 0.99},
-		TransmitSketch: false,
-		WriteSeen:      false,
-		DropOriginal:   true,
-		ReadAsInt:      false,
-		MetricSuffix:   "",
+	return &Config {
+		K: 256,
+		Quantiles: []float64{0.5, 0.99},
+		WriteSeen: false,
+		DropOriginal: true,
+		ReadAsInt: false,
 	}
 }
 
@@ -41,9 +37,20 @@ func createMetricsProcessor(
 	if !ok {
 		return nil, fmt.Errorf("configuration parsed is not of type *kllprocessor.Config")
 	}
+
 	if err := oCfg.Validate(); err != nil {
 		return nil, err
 	}
-	_ = ctx
-	return newProcessor(oCfg, set.Logger, next), nil
+
+	proc := newProcessor(oCfg, set.Logger)
+
+	return processorhelper.NewMetrics(
+		ctx,
+		set,
+		cfg,
+		next,
+		proc.processMetrics,
+		processorhelper.WithCapabilities(consumer.Capabilities{MutatesData: true}),
+	)
 }
+
