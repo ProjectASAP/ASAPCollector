@@ -18,4 +18,3 @@ receivers:
 replaces:
   - github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllprocessor => ./processor/kllprocessor
   - go.opentelemetry.io/collector/pdata => ../opentelemetry-collector/pdata
-  - github.com/ProjectASAP/sketchlib-go => /mydata/sketchlib-go
