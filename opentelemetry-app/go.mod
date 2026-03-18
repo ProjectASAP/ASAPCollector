@@ -12,7 +12,7 @@ require (
 
 require (
 	github.com/DataDog/sketches-go v1.4.1 // indirect
-	github.com/ProjectASAP/sketchlib-go v0.0.0 // indirect
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260316040945-49890c71f035 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -39,7 +39,6 @@ require (
 )
 
 replace (
-	github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go
 	go.opentelemetry.io/otel => ../opentelemetry-go
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc => ../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetricgrpc
 	go.opentelemetry.io/otel/metric => ../opentelemetry-go/metric

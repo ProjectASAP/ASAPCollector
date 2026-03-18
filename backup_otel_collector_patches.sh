@@ -10,9 +10,8 @@ copy_path() {
 	local dest="$2"
 
 	if [[ -d "${src}" ]]; then
-		rm -rf "${dest}"
-		mkdir -p "$(dirname "${dest}")"
-		cp -R "${src}" "${dest}"
+		mkdir -p "${dest}"
+		cp -R "${src}/." "${dest}/"
 		echo "Copied directory: ${dest}"
 	elif [[ -f "${src}" ]]; then
 		mkdir -p "$(dirname "${dest}")"

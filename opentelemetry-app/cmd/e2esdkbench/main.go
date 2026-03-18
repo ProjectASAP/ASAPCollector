@@ -50,7 +50,7 @@ import (
 
 var (
 	endpoint              = flag.String("endpoint", "localhost:4317", "OTLP gRPC endpoint of the collector")
-	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|countminsketch|hll|baseline")
+	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|hll")
 	seriesCount           = flag.Int("series", 1000, "Total number of distinct time series")
 	samplesPerSecPerSeries = flag.Float64("samples-per-sec-per-series", 50.0, "Samples per second per series (controls worker record rate)")
 	workers               = flag.Int("workers", 10, "Number of worker goroutines (internal parallelism)")
@@ -69,6 +69,8 @@ var (
 	// CountMinSketch
 	cmsRows = flag.Int("countmin-rows", 5, "CountMinSketch rows")
 	cmsCols = flag.Int("countmin-cols", 2000, "CountMinSketch columns")
+	// Series aggregation
+	seriesPerSketch = flag.Int("series-per-sketch", 1, "Number of series aggregated into one sketch (1=per-series, 0=all-in-one)")
 	// Zipf
 	zipfS    = flag.Float64("zipf-s", 1.1, "Zipf s parameter (> 1)")
 	zipfV    = flag.Float64("zipf-v", 1.0, "Zipf v parameter (>= 1)")
@@ -120,6 +122,7 @@ type sample struct {
 
 type summary struct {
 	SketchType       string  `json:"sketch_type"`
+	SeriesPerSketch  int     `json:"series_per_sketch"`
 	RateLabelMPS     int     `json:"rate_label_mps"`
 	DurationSec      float64 `json:"duration_sec"`
 	TotalBytesSent   int64   `json:"total_bytes_sent"`
@@ -155,7 +158,7 @@ func generateZipfValue(zipf *rand.Zipf) float64 {
 	return float64(zipf.Uint64()+1) * scaleFactor
 }
 
-func runWorker(ctx context.Context, id, seriesStart, seriesEnd int, interval time.Duration, inst metric.Float64Gauge, wg *sync.WaitGroup) {
+func runWorker(ctx context.Context, id, seriesStart, seriesEnd, seriesPerSketch, totalSeries int, interval time.Duration, inst metric.Float64Gauge, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	src := rand.NewSource(time.Now().UnixNano() + int64(id))
@@ -171,8 +174,19 @@ func runWorker(ctx context.Context, id, seriesStart, seriesEnd int, interval tim
 			return
 		case <-ticker.C:
 			for s := seriesStart; s < seriesEnd; s++ {
-				attrs := metric.WithAttributes(attribute.String("series.id", fmt.Sprintf("%06d", s)))
-				inst.Record(ctx, generateZipfValue(zipf), attrs)
+				v := generateZipfValue(zipf)
+				switch {
+				case seriesPerSketch <= 0 || seriesPerSketch >= totalSeries:
+					// All series collapse into one sketch — no attribute.
+					inst.Record(ctx, v)
+				case seriesPerSketch == 1:
+					// One sketch per series (fine-grained, existing behavior).
+					inst.Record(ctx, v, metric.WithAttributes(attribute.String("series.id", fmt.Sprintf("%06d", s))))
+				default:
+					// Multiple series share a sketch, grouped by group.id.
+					groupID := s / seriesPerSketch
+					inst.Record(ctx, v, metric.WithAttributes(attribute.String("group.id", fmt.Sprintf("%06d", groupID))))
+				}
 			}
 		}
 	}
@@ -236,7 +250,7 @@ func main() {
 	switch mode {
 	case "ddsketch", "kll", "hll", "baseline":
 	default:
-		log.Fatalf("invalid --sketch-type %q; valid: ddsketch|kll|hll|baseline", mode)
+		log.Fatalf("invalid --sketch-type %q; valid: ddsketch|kll|hll", mode)
 	}
 
 	if err := os.MkdirAll(*outputDir, 0o755); err != nil {
@@ -246,28 +260,36 @@ func main() {
 	totalSeries := *seriesCount
 	// workerInterval controls how often each worker records a sample per series.
 	workerInterval := time.Duration(float64(time.Second) / *samplesPerSecPerSeries)
-	// readerInterval controls how often the SDK exports to the collector.
-	// Sketch types export every 1s so each sketch aggregates a full second of samples.
-	// Baseline exports at the worker rate so every raw sample is sent individually.
-	readerInterval := workerInterval
-	if mode != "baseline" {
-		readerInterval = time.Second
+	// readerInterval: sketch types export every 1s so each sketch aggregates a full second of samples.
+	// Raw baseline exports at the worker rate so every sample is sent individually.
+	readerInterval := time.Second
+	if mode == "baseline" {
+		readerInterval = workerInterval
 	}
 	nominalMPS := *rateLabel
 	if nominalMPS == 0 {
 		nominalMPS = int(float64(totalSeries) * *samplesPerSecPerSeries)
 	}
 
+	// Compute number of distinct sketches exported per interval.
+	numSketches := totalSeries
+	if *seriesPerSketch <= 0 || *seriesPerSketch >= totalSeries {
+		numSketches = 1
+	} else if *seriesPerSketch > 1 {
+		numSketches = (totalSeries + *seriesPerSketch - 1) / *seriesPerSketch
+	}
+
 	fmt.Printf("=== e2e SDK Benchmark ===\n")
-	fmt.Printf("Sketch:     %s\n", strings.ToUpper(mode))
-	fmt.Printf("Endpoint:   %s\n", *endpoint)
-	fmt.Printf("Series:     %d\n", totalSeries)
-	fmt.Printf("Rate:       %.2f samples/s/series  → ~%.0f data-points/s to collector\n",
+	fmt.Printf("Sketch:           %s\n", strings.ToUpper(mode))
+	fmt.Printf("Endpoint:         %s\n", *endpoint)
+	fmt.Printf("Series:           %d\n", totalSeries)
+	fmt.Printf("Series-per-sketch:%d  → %d distinct sketch(es) per export\n", *seriesPerSketch, numSketches)
+	fmt.Printf("Rate:             %.2f samples/s/series  → ~%.0f data-points/s to collector\n",
 		*samplesPerSecPerSeries, float64(totalSeries)**samplesPerSecPerSeries)
-	fmt.Printf("Worker interval: %v\n", workerInterval)
-	fmt.Printf("Reader interval: %v\n", readerInterval)
-	fmt.Printf("Duration:   %v\n", *duration)
-	fmt.Printf("Output dir: %s\n", *outputDir)
+	fmt.Printf("Worker interval:  %v\n", workerInterval)
+	fmt.Printf("Reader interval:  %v\n", readerInterval)
+	fmt.Printf("Duration:         %v\n", *duration)
+	fmt.Printf("Output dir:       %s\n", *outputDir)
 	fmt.Println()
 
 	// --- Choose sketch aggregation ---
@@ -372,7 +394,7 @@ func main() {
 			end = totalSeries
 		}
 		wg.Add(1)
-		go runWorker(runCtx, w, start, end, workerInterval, gaugeInst, &wg)
+		go runWorker(runCtx, w, start, end, *seriesPerSketch, totalSeries, workerInterval, gaugeInst, &wg)
 	}
 
 	// Wait for run duration.
@@ -428,6 +450,7 @@ func main() {
 
 	result := summary{
 		SketchType:       mode,
+		SeriesPerSketch:  *seriesPerSketch,
 		RateLabelMPS:     nominalMPS,
 		DurationSec:      wallElapsed.Seconds(),
 		TotalBytesSent:   totalSent,
@@ -441,7 +464,14 @@ func main() {
 	}
 
 	// --- Write time-series CSV ---
-	fileBase := fmt.Sprintf("%s_%dmps", mode, nominalMPS)
+	// When series-per-sketch != 1, embed the group size in the filename so
+	// parallel runs (grp1, grp10, grp100, …) don't overwrite each other.
+	var fileBase string
+	if *seriesPerSketch == 1 {
+		fileBase = fmt.Sprintf("%s_%dmps", mode, nominalMPS)
+	} else {
+		fileBase = fmt.Sprintf("%s_grp%d_%dmps", mode, *seriesPerSketch, nominalMPS)
+	}
 	csvPath := filepath.Join(*outputDir, fileBase+"_timeseries.csv")
 	if err := writeTimeseriesCSV(csvPath, samples); err != nil {
 		log.Printf("warning: could not write CSV: %v", err)
