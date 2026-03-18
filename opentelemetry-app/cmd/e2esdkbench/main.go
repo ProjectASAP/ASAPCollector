@@ -50,7 +50,7 @@ import (
 
 var (
 	endpoint              = flag.String("endpoint", "localhost:4317", "OTLP gRPC endpoint of the collector")
-	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|countminsketch|hll|baseline")
+	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|hll")
 	seriesCount           = flag.Int("series", 1000, "Total number of distinct time series")
 	samplesPerSecPerSeries = flag.Float64("samples-per-sec-per-series", 50.0, "Samples per second per series (controls worker record rate)")
 	workers               = flag.Int("workers", 10, "Number of worker goroutines (internal parallelism)")
@@ -250,7 +250,7 @@ func main() {
 	switch mode {
 	case "ddsketch", "kll", "hll", "baseline":
 	default:
-		log.Fatalf("invalid --sketch-type %q; valid: ddsketch|kll|hll|baseline", mode)
+		log.Fatalf("invalid --sketch-type %q; valid: ddsketch|kll|hll", mode)
 	}
 
 	if err := os.MkdirAll(*outputDir, 0o755); err != nil {
@@ -260,12 +260,11 @@ func main() {
 	totalSeries := *seriesCount
 	// workerInterval controls how often each worker records a sample per series.
 	workerInterval := time.Duration(float64(time.Second) / *samplesPerSecPerSeries)
-	// readerInterval controls how often the SDK exports to the collector.
-	// Sketch types export every 1s so each sketch aggregates a full second of samples.
-	// Baseline exports at the worker rate so every raw sample is sent individually.
-	readerInterval := workerInterval
-	if mode != "baseline" {
-		readerInterval = time.Second
+	// readerInterval: sketch types export every 1s so each sketch aggregates a full second of samples.
+	// Raw baseline exports at the worker rate so every sample is sent individually.
+	readerInterval := time.Second
+	if mode == "baseline" {
+		readerInterval = workerInterval
 	}
 	nominalMPS := *rateLabel
 	if nominalMPS == 0 {

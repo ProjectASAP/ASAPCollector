@@ -75,8 +75,8 @@ done
 DURATION_SEC=$(echo "$DURATION_FLAG" | sed 's/[^0-9]//g')
 [[ -z "$DURATION_SEC" ]] && DURATION_SEC=60
 
-# Parse groups array
-read -ra GROUPS <<< "$GROUPS_ARG"
+# Parse groups array (avoid GROUPS — bash read-only special variable for user group IDs)
+read -ra SWEEP_GROUPS <<< "$GROUPS_ARG"
 
 # Samples per second per series derived from rate / series
 SAMPLES_PER_SEC=$(echo "scale=6; $RATE / $SERIES" | bc)
@@ -306,7 +306,7 @@ PYEOF
     fi
 
     # Sketch group rows
-    for grp in "${GROUPS[@]}"; do
+    for grp in "${SWEEP_GROUPS[@]}"; do
         local sketch_dir="$OUTPUT_DIR/$SKETCH_ARG"
         local json_file col_csv_file
         if [[ "$grp" -eq 1 ]]; then
@@ -401,7 +401,7 @@ echo "=================================================================="
 echo "  SERIES AGGREGATION SDK BENCHMARK"
 echo "  Sketch:   $SKETCH_ARG"
 echo "  Rate:     $RATE MPS  |  Series: $SERIES  |  Duration: $DURATION_FLAG"
-echo "  Groups:   ${GROUPS[*]}  (series-per-sketch values)"
+echo "  Groups:   ${SWEEP_GROUPS[*]}  (series-per-sketch values)"
 echo "  Collector: nopcol (no-op receive + forward to /dev/null)"
 echo "  Output:   $OUTPUT_DIR"
 echo "=================================================================="
@@ -435,7 +435,7 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "=================================================================="
-echo "  SKETCH GROUP SWEEP – $SKETCH_ARG (series-per-sketch in: ${GROUPS[*]})"
+echo "  SKETCH GROUP SWEEP – $SKETCH_ARG (series-per-sketch in: ${SWEEP_GROUPS[*]})"
 echo "=================================================================="
 
 SKETCH_DIR="$OUTPUT_DIR/$SKETCH_ARG"
@@ -452,7 +452,7 @@ if [[ -f "$BASELINE_JSON" ]]; then
     print_row "baseline" 1 "$BASELINE_JSON" "$BASELINE_COL_CSV" "$BASELINE_BYTES"
 fi
 
-for GRP in "${GROUPS[@]}"; do
+for GRP in "${SWEEP_GROUPS[@]}"; do
     echo ""
     echo "  >> series-per-sketch: $GRP  (→ ~$((SERIES / (GRP > 0 ? GRP : SERIES) + (GRP > 0 && SERIES % GRP != 0 ? 1 : 0))) sketch(es) per export)"
 
