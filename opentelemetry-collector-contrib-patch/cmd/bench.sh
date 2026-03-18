@@ -274,8 +274,7 @@ echo "=========================================================="
 echo ""
 echo ">>> Building collector..."
 cd "$CONTRIB_PATCH_DIR"
-# GONOSUMDB/GOPRIVATE required for github.com/ProjectASAP/sketchlib-go (private repo not in sum.golang.org)
-GONOSUMDB="github.com/ProjectASAP/*" GOPRIVATE="github.com/ProjectASAP/*" $BUILDER_BIN --config "$BUILDER_CONFIG"
+$BUILDER_BIN --config "$BUILDER_CONFIG"
 if [ $? -ne 0 ]; then
     echo "[WARNING] Build failed, checking for existing binary..."
     if [ -f "$COLLECTOR_BIN" ]; then

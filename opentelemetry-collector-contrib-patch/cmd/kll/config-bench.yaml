@@ -7,7 +7,6 @@ receivers:
 processors:
   KLL:
     k: 256
-    transmit_sketch: false
     write_seen: false
     quantiles: 
       - 0.5

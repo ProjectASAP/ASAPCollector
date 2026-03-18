@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/processor"
+	"go.opentelemetry.io/collector/processor/processorhelper"
 )
 
 // NewFactory creates a new DDSketch processor factory.
@@ -35,6 +36,14 @@ func createMetricsProcessor(
 		return nil, err
 	}
 
-	_ = ctx // currently unused
-	return newProcessor(pcfg, set.Logger, next), nil
+	proc := newProcessor(pcfg, set.Logger)
+
+	return processorhelper.NewMetrics(
+		ctx,
+		set,
+		cfg,
+		next,
+		proc.processMetrics,
+		processorhelper.WithCapabilities(consumer.Capabilities{MutatesData: true}),
+	)
 }
