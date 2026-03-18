@@ -209,6 +209,10 @@ message Metric {
     ExponentialHistogram exponential_histogram = 10;
     DDSketch ddsketch = 13;
     Summary summary = 11;
+    KLLSketch kllsketch = 14;
+    CountSketch countsketch = 15;
+    CountMinSketch countminsketch = 16;
+    HLLSketch hllsketch = 17;
   }
 
   // Additional metadata attributes that describe the metric. [Optional].
@@ -379,6 +383,127 @@ enum DDSketchEncoding {
   // DDSKETCH_ENCODING_PROTO indicates the sketch bytes contain the serialized
   // github.com/DataDog/sketches-go/ddsketch/pb/sketchpb.DDSketch message.
   DDSKETCH_ENCODING_PROTO = 1;
+}
+
+// KLLSketch represents the type of a metric that encodes measurements using the KLL quantile sketch.
+message KLLSketch {
+  // The time series data points.
+  repeated KLLSketchDataPoint data_points = 1;
+
+  // aggregation_temporality describes if the aggregator reports delta changes
+  // since last report time, or cumulative changes since a fixed start time.
+  AggregationTemporality aggregation_temporality = 2;
+}
+
+// KLLSketchDataPoint is a single data point that encodes a distribution using the KLL sketch format.
+message KLLSketchDataPoint {
+  repeated opentelemetry.proto.common.v1.KeyValue attributes = 1;
+  fixed64 start_time_unix_nano = 2;
+  fixed64 time_unix_nano = 3;
+  fixed64 count = 4;
+  double sum = 5;
+  double min = 6;
+  double max = 7;
+  bytes sketch = 8;
+  KLLSketchEncoding encoding = 9;
+  uint32 flags = 10;
+  uint64 series_id = 11;
+}
+
+// KLLSketchEncoding identifies how the KLL sketch payload bytes are encoded.
+enum KLLSketchEncoding {
+  KLL_SKETCH_ENCODING_UNSPECIFIED = 0;
+  KLL_SKETCH_ENCODING_GOB = 1;
+}
+
+// CountSketch represents the type of a metric that encodes frequency estimations using CountSketch.
+message CountSketch {
+  // The time series data points.
+  repeated CountSketchDataPoint data_points = 1;
+
+  // aggregation_temporality describes if the aggregator reports delta changes
+  // since last report time, or cumulative changes since a fixed start time.
+  AggregationTemporality aggregation_temporality = 2;
+}
+
+// CountSketchDataPoint is a single data point encoding frequency estimations.
+message CountSketchDataPoint {
+  repeated opentelemetry.proto.common.v1.KeyValue attributes = 1;
+  fixed64 start_time_unix_nano = 2;
+  fixed64 time_unix_nano = 3;
+  bytes sketch = 4;
+  CountSketchEncoding encoding = 5;
+  string dimension = 6;
+  double epsilon = 7;
+  double delta = 8;
+  uint32 flags = 9;
+  uint64 series_id = 10;
+}
+
+// CountSketchEncoding identifies how the CountSketch payload bytes are encoded.
+enum CountSketchEncoding {
+  COUNT_SKETCH_ENCODING_UNSPECIFIED = 0;
+  COUNT_SKETCH_ENCODING_GOB = 1;
+}
+
+// CountMinSketch represents the type of a metric encoding frequency estimations using CountMinSketch.
+message CountMinSketch {
+  // The time series data points.
+  repeated CountMinSketchDataPoint data_points = 1;
+
+  // aggregation_temporality describes if the aggregator reports delta changes
+  // since last report time, or cumulative changes since a fixed start time.
+  AggregationTemporality aggregation_temporality = 2;
+}
+
+// CountMinSketchDataPoint is a single data point encoding frequency estimations.
+message CountMinSketchDataPoint {
+  repeated opentelemetry.proto.common.v1.KeyValue attributes = 1;
+  fixed64 start_time_unix_nano = 2;
+  fixed64 time_unix_nano = 3;
+  uint64 sample_count = 4;
+  bytes sketch = 5;
+  CountMinSketchEncoding encoding = 6;
+  int32 rows = 7;
+  int32 cols = 8;
+  uint32 flags = 9;
+  uint64 series_id = 10;
+}
+
+// CountMinSketchEncoding identifies how the CountMinSketch payload bytes are encoded.
+enum CountMinSketchEncoding {
+  COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED = 0;
+  COUNT_MIN_SKETCH_ENCODING_GOB = 1;
+}
+
+// HLLSketch represents the type of a metric that encodes cardinality estimations using HyperLogLog.
+message HLLSketch {
+  // The time series data points.
+  repeated HLLSketchDataPoint data_points = 1;
+
+  // aggregation_temporality describes if the aggregator reports delta changes
+  // since last report time, or cumulative changes since a fixed start time.
+  AggregationTemporality aggregation_temporality = 2;
+}
+
+// HLLSketchDataPoint is a single data point encoding cardinality estimations.
+message HLLSketchDataPoint {
+  repeated opentelemetry.proto.common.v1.KeyValue attributes = 1;
+  fixed64 start_time_unix_nano = 2;
+  fixed64 time_unix_nano = 3;
+  uint64 count = 4;
+  uint64 cardinality = 5;
+  bytes sketch = 6;
+  HLLSketchEncoding encoding = 7;
+  uint32 precision = 8;
+  uint32 flags = 9;
+  uint64 series_id = 10;
+}
+
+// HLLSketchEncoding identifies how the HLL sketch payload bytes are encoded.
+enum HLLSketchEncoding {
+  HLL_SKETCH_ENCODING_UNSPECIFIED = 0;
+  HLL_SKETCH_ENCODING_BINARY = 1;
 }
 
 // AggregationTemporality defines how a metric aggregator reports aggregated
