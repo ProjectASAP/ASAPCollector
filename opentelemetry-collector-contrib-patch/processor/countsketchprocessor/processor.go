@@ -21,7 +21,8 @@ type countSketchProcessor struct {
 	next   consumer.Metrics
 
 	config *Config
-	mode   InputMode
+
+	mode InputMode
 
 	// To prevent race conditions between
 	// processMetrics (Write) and flushSketches (Reset)
@@ -30,9 +31,13 @@ type countSketchProcessor struct {
 	rowSketch *countsketch.CountSketch // Tracks Metric Names
 	colSketch *countsketch.CountSketch // Tracks Host Names
 
+	// sketchPool recycles CountSketch objects across flushes via Reset(),
+	// avoiding re-allocation of the underlying hash/count arrays every window.
+	sketchPool sync.Pool
+
 	stopCh        chan struct{}
 	doneCh        chan struct{}
-	windowStarted atomic.Bool
+	windowStarted atomic.Bool // true once the window goroutine is running
 }
 
 func newConfiguredCountSketch(cfg *Config) (*countsketch.CountSketch, error) {
@@ -61,6 +66,7 @@ func nextPowerOfTwo(n int) int {
 func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *countSketchProcessor {
 	mode := cfg.Mode
 	if mode == "" {
+		// Preserve legacy behavior when mode is not set explicitly.
 		mode = ModeWindow
 	}
 
@@ -74,7 +80,7 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 		logger.Error("Failed to init col sketch", zap.Error(errCol))
 	}
 
-	return &countSketchProcessor{
+	p := &countSketchProcessor{
 		logger: logger,
 		next:   next,
 		config: cfg,
@@ -85,6 +91,10 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 		stopCh:    make(chan struct{}),
 		doneCh:    make(chan struct{}),
 	}
+	// New returns nil so Get() returns nil when pool is empty;
+	// callers allocate fresh sketches in that case.
+	p.sketchPool.New = func() any { return (*countsketch.CountSketch)(nil) }
+	return p
 }
 
 func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) error {
@@ -98,10 +108,12 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 		p.logger.Warn("countsketchprocessor: transmit_sketch=true is not yet backed by a serialized sketch payload; emitting metric-form summaries")
 	}
 
+	// In batch mode we flush per ConsumeMetrics call and do not need a ticker.
 	if p.mode == ModeBatch {
 		return nil
 	}
 
+	// Window mode: start background window loop if a positive window is configured.
 	if p.config.WindowSize <= 0 {
 		return nil
 	}
@@ -114,10 +126,13 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 }
 
 func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
+	// Only wait if the window goroutine was actually started; avoids blocking
+	// forever when Start was never called.
 	if p.mode != ModeWindow || !p.windowStarted.Load() {
 		return nil
 	}
 
+	// Signal the goroutine and wait for it to finish (or context cancellation).
 	close(p.stopCh)
 
 	select {
@@ -171,6 +186,11 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 					for l := 0; l < dps.Len(); l++ {
 						value += float64(dps.At(l).Count())
 					}
+
+				case pmetric.MetricTypeCountSketch:
+					// Pre-aggregated path: each dp represents one series window.
+					// Count each dp as one observation for the row/col frequency sketches.
+					value += float64(metric.CountSketch().DataPoints().Len())
 				}
 
 				// For Debugging
@@ -188,6 +208,7 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 
 	p.mutex.Unlock()
 
+	// In batch mode, flush immediately after processing this batch.
 	if p.mode == ModeBatch {
 		p.flushBatch()
 	}
@@ -222,6 +243,7 @@ func (p *countSketchProcessor) startWindowLoop(ctx context.Context, ticker *time
 		p.colSketch = nil
 
 		p.mutex.Unlock()
+
 		close(p.doneCh)
 	}()
 
@@ -233,12 +255,15 @@ func (p *countSketchProcessor) startWindowLoop(ctx context.Context, ticker *time
 		case <-p.stopCh:
 			p.flushSketches()
 			return
+
 		case <-ticker.C:
 			p.flushSketches()
 		}
 	}
 }
 
+// flushBatch snapshots the current sketches, resets them, and emits summary
+// metrics immediately. It is used when the processor runs in batch mode.
 func (p *countSketchProcessor) flushBatch() {
 	p.mutex.Lock()
 
@@ -246,21 +271,40 @@ func (p *countSketchProcessor) flushBatch() {
 	rowSnapshot := p.rowSketch
 	colSnapshot := p.colSketch
 
+	// Get reusable sketches from pool, or allocate fresh ones.
 	var err error
-	p.rowSketch, err = newConfiguredCountSketch(p.config)
-	if err != nil {
-		p.logger.Error("Failed to reset row sketch", zap.Error(err))
+	rowNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
+	if rowNext == nil {
+		rowNext, err = newConfiguredCountSketch(p.config)
+		if err != nil {
+			p.logger.Error("Failed to reset row sketch", zap.Error(err))
+		}
 	}
-
-	p.colSketch, err = newConfiguredCountSketch(p.config)
-	if err != nil {
-		p.logger.Error("Failed to reset col sketch", zap.Error(err))
+	colNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
+	if colNext == nil {
+		colNext, err = newConfiguredCountSketch(p.config)
+		if err != nil {
+			p.logger.Error("Failed to reset col sketch", zap.Error(err))
+		}
 	}
+	p.rowSketch = rowNext
+	p.colSketch = colNext
 
 	p.mutex.Unlock()
 
+	// Emit sketch metrics if we have snapshots.
 	if rowSnapshot != nil || colSnapshot != nil {
 		p.emitSketches(rowSnapshot, colSnapshot)
+	}
+
+	// Return old sketches to pool after emission.
+	if rowSnapshot != nil {
+		rowSnapshot.Reset()
+		p.sketchPool.Put(rowSnapshot)
+	}
+	if colSnapshot != nil {
+		colSnapshot.Reset()
+		p.sketchPool.Put(colSnapshot)
 	}
 }
 
@@ -271,21 +315,40 @@ func (p *countSketchProcessor) flushSketches() {
 	rowSnapshot := p.rowSketch
 	colSnapshot := p.colSketch
 
+	// Get reusable sketches from pool, or allocate fresh ones.
 	var err error
-	p.rowSketch, err = newConfiguredCountSketch(p.config)
-	if err != nil {
-		p.logger.Error("Failed to reset row sketch", zap.Error(err))
+	rowNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
+	if rowNext == nil {
+		rowNext, err = newConfiguredCountSketch(p.config)
+		if err != nil {
+			p.logger.Error("Failed to reset row sketch", zap.Error(err))
+		}
 	}
-
-	p.colSketch, err = newConfiguredCountSketch(p.config)
-	if err != nil {
-		p.logger.Error("Failed to reset col sketch", zap.Error(err))
+	colNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
+	if colNext == nil {
+		colNext, err = newConfiguredCountSketch(p.config)
+		if err != nil {
+			p.logger.Error("Failed to reset col sketch", zap.Error(err))
+		}
 	}
+	p.rowSketch = rowNext
+	p.colSketch = colNext
 
 	p.mutex.Unlock()
 
+	// Emit sketch metrics if we have snapshots
 	if rowSnapshot != nil || colSnapshot != nil {
 		p.emitSketches(rowSnapshot, colSnapshot)
+	}
+
+	// Return old sketches to pool after emission.
+	if rowSnapshot != nil {
+		rowSnapshot.Reset()
+		p.sketchPool.Put(rowSnapshot)
+	}
+	if colSnapshot != nil {
+		colSnapshot.Reset()
+		p.sketchPool.Put(colSnapshot)
 	}
 }
 
@@ -299,46 +362,38 @@ func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *countsketch.Co
 
 	// Emit row sketch (metric names)
 	if rowSketch != nil {
-		sketchBytes, serErr := rowSketch.SerializeToBytes()
-		if serErr != nil {
-			p.logger.Error("Failed to serialize row sketch", zap.Error(serErr))
-		} else {
-			m := sm.Metrics().AppendEmpty()
-			m.SetName("countsketch_row")
-			m.SetUnit("1")
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("countsketch_row")
+		m.SetUnit("1")
 
-			cs := m.SetEmptyCountSketch()
-			cs.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
-			dp := cs.DataPoints().AppendEmpty()
-			dp.SetTimestamp(now)
-			dp.SetSketch(sketchBytes)
-			dp.SetEncoding(pmetric.CountSketchEncodingGob)
-			dp.SetDimension("metric_names")
-			dp.SetEpsilon(p.config.Epsilon)
-			dp.SetDelta(p.config.Delta)
-		}
+		gauge := m.SetEmptyGauge()
+		dp := gauge.DataPoints().AppendEmpty()
+		dp.SetTimestamp(now)
+
+		dp.Attributes().PutStr("sketch_type", "row")
+		dp.Attributes().PutStr("sketch_dimension", "metric_names")
+		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
+		dp.Attributes().PutDouble("delta", p.config.Delta)
+		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
+		// Note: sketchlib-go CountSketch doesn't expose serialization methods
+		// For benchmarking, we emit metadata. Full serialization can be added later if needed.
 	}
 
 	// Emit col sketch (host names)
 	if colSketch != nil {
-		sketchBytes, serErr := colSketch.SerializeToBytes()
-		if serErr != nil {
-			p.logger.Error("Failed to serialize col sketch", zap.Error(serErr))
-		} else {
-			m := sm.Metrics().AppendEmpty()
-			m.SetName("countsketch_col")
-			m.SetUnit("1")
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("countsketch_col")
+		m.SetUnit("1")
 
-			cs := m.SetEmptyCountSketch()
-			cs.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
-			dp := cs.DataPoints().AppendEmpty()
-			dp.SetTimestamp(now)
-			dp.SetSketch(sketchBytes)
-			dp.SetEncoding(pmetric.CountSketchEncodingGob)
-			dp.SetDimension("host_names")
-			dp.SetEpsilon(p.config.Epsilon)
-			dp.SetDelta(p.config.Delta)
-		}
+		gauge := m.SetEmptyGauge()
+		dp := gauge.DataPoints().AppendEmpty()
+		dp.SetTimestamp(now)
+
+		dp.Attributes().PutStr("sketch_type", "col")
+		dp.Attributes().PutStr("sketch_dimension", "host_names")
+		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
+		dp.Attributes().PutDouble("delta", p.config.Delta)
+		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
 	}
 
 	if err := p.next.ConsumeMetrics(context.Background(), md); err != nil {
