@@ -1,5 +1,7 @@
 github.com/DataDog/sketches-go v1.4.1 h1:j5G6as+9FASM2qC36lvpvQAj9qsv/jUs3FtO8CwZNAY=
 github.com/DataDog/sketches-go v1.4.1/go.mod h1:xJIXldczJyyjnbDop7ZZcLxJdV3+7Kra7H1KMgpgkLk=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260316040945-49890c71f035 h1:aLrGKic2Q7KJJmfTzqB3fSvjjW2KfRvY5BDcRvYI2zE=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260316040945-49890c71f035/go.mod h1:Nzyu+hI1KUBmgeyhSlmUnTp5LvI/EwD8VuoZyNQoEZs=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
