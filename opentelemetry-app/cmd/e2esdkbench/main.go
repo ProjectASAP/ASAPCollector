@@ -49,8 +49,9 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
+	configPath            = flag.String("config", "", "Path to YAML pipeline config file; when set, overrides sketch/series/interval flags")
 	endpoint              = flag.String("endpoint", "localhost:4317", "OTLP gRPC endpoint of the collector")
-	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|hll")
+	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|hll|countsketch|countminsketch|baseline")
 	seriesCount           = flag.Int("series", 1000, "Total number of distinct time series")
 	samplesPerSecPerSeries = flag.Float64("samples-per-sec-per-series", 50.0, "Samples per second per series (controls worker record rate)")
 	workers               = flag.Int("workers", 10, "Number of worker goroutines (internal parallelism)")
@@ -246,11 +247,53 @@ func resourceSampler(ctx context.Context, samples *[]sample, mu *sync.Mutex) {
 func main() {
 	flag.Parse()
 
+	// --- Config file: when --config is set, load YAML and propagate into flags ---
+	var pipelineCfg *sdkmetric.PipelineConfig
+	if *configPath != "" {
+		var err error
+		pipelineCfg, err = sdkmetric.LoadPipelineConfig(*configPath)
+		if err != nil {
+			log.Fatalf("failed to load config: %v", err)
+		}
+		*sketchArg = pipelineCfg.Sketch.Type
+		*endpoint = pipelineCfg.Exporter.Endpoint
+		if pipelineCfg.Load.Series > 0 {
+			*seriesCount = pipelineCfg.Load.Series
+		}
+		if pipelineCfg.Load.SamplesPerSecPerSeries > 0 {
+			*samplesPerSecPerSeries = pipelineCfg.Load.SamplesPerSecPerSeries
+		}
+		if pipelineCfg.Load.Workers > 0 {
+			*workers = pipelineCfg.Load.Workers
+		}
+		if pipelineCfg.Load.Duration > 0 {
+			*duration = pipelineCfg.Load.Duration
+		}
+		if pipelineCfg.Load.Distribution.S > 0 {
+			*zipfS = pipelineCfg.Load.Distribution.S
+		}
+		if pipelineCfg.Load.Distribution.V > 0 {
+			*zipfV = pipelineCfg.Load.Distribution.V
+		}
+		if pipelineCfg.Load.Distribution.Max > 0 {
+			*zipfMax = pipelineCfg.Load.Distribution.Max
+		}
+		if pipelineCfg.Load.Distribution.Mean > 0 {
+			*zipfMean = pipelineCfg.Load.Distribution.Mean
+		}
+		if pipelineCfg.Sketch.DDSketch.RelativeAccuracy > 0 {
+			*ddsketchAccuracy = pipelineCfg.Sketch.DDSketch.RelativeAccuracy
+		}
+		if pipelineCfg.Sketch.KLL.K > 0 {
+			*kllK = pipelineCfg.Sketch.KLL.K
+		}
+	}
+
 	mode := strings.ToLower(*sketchArg)
 	switch mode {
-	case "ddsketch", "kll", "hll", "baseline":
+	case "ddsketch", "kll", "hll", "countsketch", "countminsketch", "baseline":
 	default:
-		log.Fatalf("invalid --sketch-type %q; valid: ddsketch|kll|hll", mode)
+		log.Fatalf("invalid --sketch-type %q; valid: ddsketch|kll|hll|countsketch|countminsketch|baseline", mode)
 	}
 
 	if err := os.MkdirAll(*outputDir, 0o755); err != nil {
@@ -304,6 +347,11 @@ func main() {
 		agg = sdkmetric.AggregationKLLSketch{K: *kllK}
 	case "hll":
 		agg = sdkmetric.AggregationHLLSketch{}
+	case "countsketch":
+		agg = sdkmetric.AggregationCountSketch{Epsilon: *csEpsilon, Delta: *csDelta}
+	case "countminsketch":
+		agg = sdkmetric.AggregationCountMinSketch{Rows: *cmsRows, Cols: *cmsCols}
+	// "baseline": agg stays nil — Float64Gauge uses default LastValue aggregation.
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *duration+10*time.Second)
@@ -320,15 +368,20 @@ func main() {
 		log.Fatalf("failed to create OTLP exporter: %v", err)
 	}
 
-	// View overrides aggregation for sketch types. Baseline skips the view so
-	// the Float64Gauge uses its natural LastValue aggregation — no nil-aggregation
-	// side-effect that would suppress reporting.
+	// Build provider options. When a config file was loaded, use its views so
+	// that transmit_sketch semantics (SDK-side vs collector-side aggregation)
+	// are driven by the config rather than hardcoded flag logic. Otherwise fall
+	// back to the existing flag-driven view construction.
 	providerOpts := []sdkmetric.Option{
 		sdkmetric.WithReader(
 			sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(readerInterval)),
 		),
 	}
-	if agg != nil {
+	if pipelineCfg != nil {
+		for _, v := range pipelineCfg.ToViews() {
+			providerOpts = append(providerOpts, sdkmetric.WithView(v))
+		}
+	} else if agg != nil {
 		providerOpts = append(providerOpts, sdkmetric.WithView(
 			sdkmetric.NewView(
 				sdkmetric.Instrument{Name: "benchmark.latency"},
