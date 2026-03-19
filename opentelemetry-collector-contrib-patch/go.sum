@@ -26,6 +26,7 @@ github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERo
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8 h1:tfkndjVr2ZNdccmet+WE8JT0Ydi6H//uQ3OeEIVbHMc=
 github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8/go.mod h1:ByHMqQtfdPiCHazEQvV09JaX9hbuiLVVxCamhynpdcU=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260316040945-49890c71f035/go.mod h1:Nzyu+hI1KUBmgeyhSlmUnTp5LvI/EwD8VuoZyNQoEZs=
 github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b h1:mimo19zliBX/vSQ6PWWSL9lK8qwHozUj03+zLoEB8O0=
 github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b/go.mod h1:fvzegU4vN3H1qMT+8wDmzjAcDONcgo2/SZ/TyfdUOFs=
 github.com/armon/go-metrics v0.4.1 h1:hR91U9KYmb6bLBYLQjyM+3j+rcd/UhE+G78SFnF8gJA=
