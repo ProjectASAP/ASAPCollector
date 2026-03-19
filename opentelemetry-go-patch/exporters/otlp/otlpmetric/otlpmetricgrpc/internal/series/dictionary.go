@@ -261,7 +261,11 @@ func annotateDDSketchDataPoints[N int64 | float64](src *sourceState, scopeKey, m
 			*dp.SeriesIDSink = dp.SeriesID
 			dp.SeriesIDSink = nil
 		}
-		if dp.AttrsClearer != nil {
+		// Only clear attrs once the collector has confirmed the series (SeriesID
+		// assigned). Until then, attrs must survive in the aggregator so they are
+		// re-sent on subsequent export cycles and forwarded through any
+		// intermediate collector hops (agent → gateway).
+		if dp.AttrsClearer != nil && dp.SeriesID != 0 {
 			*dp.AttrsClearer = attribute.Set{}
 			dp.AttrsClearer = nil
 		}
@@ -276,7 +280,7 @@ func annotateKLLSketchDataPoints[N int64 | float64](src *sourceState, scopeKey, 
 			*dp.SeriesIDSink = dp.SeriesID
 			dp.SeriesIDSink = nil
 		}
-		if dp.AttrsClearer != nil {
+		if dp.AttrsClearer != nil && dp.SeriesID != 0 {
 			*dp.AttrsClearer = attribute.Set{}
 			dp.AttrsClearer = nil
 		}
@@ -291,7 +295,7 @@ func annotateCountSketchDataPoints[N int64 | float64](src *sourceState, scopeKey
 			*dp.SeriesIDSink = dp.SeriesID
 			dp.SeriesIDSink = nil
 		}
-		if dp.AttrsClearer != nil {
+		if dp.AttrsClearer != nil && dp.SeriesID != 0 {
 			*dp.AttrsClearer = attribute.Set{}
 			dp.AttrsClearer = nil
 		}
@@ -306,7 +310,7 @@ func annotateCountMinSketchDataPoints[N int64 | float64](src *sourceState, scope
 			*dp.SeriesIDSink = dp.SeriesID
 			dp.SeriesIDSink = nil
 		}
-		if dp.AttrsClearer != nil {
+		if dp.AttrsClearer != nil && dp.SeriesID != 0 {
 			*dp.AttrsClearer = attribute.Set{}
 			dp.AttrsClearer = nil
 		}
@@ -321,7 +325,7 @@ func annotateHLLSketchDataPoints(src *sourceState, scopeKey, metricName, metricT
 			*dp.SeriesIDSink = dp.SeriesID
 			dp.SeriesIDSink = nil
 		}
-		if dp.AttrsClearer != nil {
+		if dp.AttrsClearer != nil && dp.SeriesID != 0 {
 			*dp.AttrsClearer = attribute.Set{}
 			dp.AttrsClearer = nil
 		}
@@ -335,12 +339,16 @@ func assignSeriesID(src *sourceState, scopeKey, metricName, metricType string, g
 	}
 	key := descriptorKey(scopeKey, metricName, metricType, *attrs)
 	entry := src.lookup(key, gen)
-	*seriesID = entry.id
-	if entry.registered {
-		*attrs = attribute.Set{}
+	if !entry.registered {
+		// Not yet confirmed by the collector: send full attrs, keep seriesID=0
+		// so the transform serialises attributes instead of a series ID.
+		// The collector will assign a canonical ID and return it in
+		// SeriesAssignments; Apply() will then mark the entry registered.
 		return
 	}
-	entry.registered = true
+	// Collector-confirmed: switch to ID-only mode and suppress attrs.
+	*seriesID = entry.id
+	*attrs = attribute.Set{}
 }
 
 func (s *sourceState) lookup(key string, gen uint64) *seriesEntry {
