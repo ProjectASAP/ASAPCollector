@@ -24,7 +24,7 @@ var (
 	metrics    = flag.Int("metrics", 10, "Metrics per host")
 	interval   = flag.Duration("interval", 10*time.Second, "SDK export interval — controls data points/sec to collector")
 	duration   = flag.Duration("duration", 60*time.Second, "Run duration (0 = forever)")
-	sketchArg  = flag.String("sketch-type", "ddsketch", "Sketch aggregation: ddsketch|kll|countsketch|countminsketch|hll")
+	sketchArg  = flag.String("sketch-type", "ddsketch", "Sketch aggregation: ddsketch|kll|countsketch|countminsketch|hll|baseline")
 
 	// How many Zipf values to record per series per export window.
 	// For ddsketch this controls sketch richness; for others only the last value is kept (gauge).
@@ -128,9 +128,9 @@ func main() {
 
 	mode := strings.ToLower(*sketchArg)
 	switch mode {
-	case "ddsketch", "kll", "countsketch", "countminsketch", "hll":
+	case "ddsketch", "kll", "countsketch", "countminsketch", "hll", "baseline":
 	default:
-		log.Fatalf("invalid sketch-type %q — valid: ddsketch|kll|countsketch|countminsketch|hll", mode)
+		log.Fatalf("invalid sketch-type %q — valid: ddsketch|kll|countsketch|countminsketch|hll|baseline", mode)
 	}
 	if *zipfS <= 1.0 {
 		log.Fatalf("zipf-s must be > 1.0, got %.2f", *zipfS)
@@ -189,6 +189,10 @@ func main() {
 		// to DDSketch. The collector receives HLLSketch-typed data points.
 		delivery = sdkSketch
 		agg = sdkmetric.AggregationHLLSketch{}
+	case "baseline":
+		// Baseline: no sketch aggregation. SDK emits raw Float64Gauge (LastValue)
+		// observations; the collector-side processor performs any aggregation.
+		delivery = sdkGauge
 	}
 
 	exp, err := otlpmetricgrpc.New(ctx,

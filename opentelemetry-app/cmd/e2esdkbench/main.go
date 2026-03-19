@@ -51,7 +51,7 @@ import (
 var (
 	configPath            = flag.String("config", "", "Path to YAML pipeline config file; when set, overrides sketch/series/interval flags")
 	endpoint              = flag.String("endpoint", "localhost:4317", "OTLP gRPC endpoint of the collector")
-	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|hll")
+	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|hll|countsketch|countminsketch|baseline")
 	seriesCount           = flag.Int("series", 1000, "Total number of distinct time series")
 	samplesPerSecPerSeries = flag.Float64("samples-per-sec-per-series", 50.0, "Samples per second per series (controls worker record rate)")
 	workers               = flag.Int("workers", 10, "Number of worker goroutines (internal parallelism)")
@@ -291,9 +291,9 @@ func main() {
 
 	mode := strings.ToLower(*sketchArg)
 	switch mode {
-	case "ddsketch", "kll", "hll", "baseline":
+	case "ddsketch", "kll", "hll", "countsketch", "countminsketch", "baseline":
 	default:
-		log.Fatalf("invalid --sketch-type %q; valid: ddsketch|kll|hll", mode)
+		log.Fatalf("invalid --sketch-type %q; valid: ddsketch|kll|hll|countsketch|countminsketch|baseline", mode)
 	}
 
 	if err := os.MkdirAll(*outputDir, 0o755); err != nil {
@@ -347,6 +347,11 @@ func main() {
 		agg = sdkmetric.AggregationKLLSketch{K: *kllK}
 	case "hll":
 		agg = sdkmetric.AggregationHLLSketch{}
+	case "countsketch":
+		agg = sdkmetric.AggregationCountSketch{Epsilon: *csEpsilon, Delta: *csDelta}
+	case "countminsketch":
+		agg = sdkmetric.AggregationCountMinSketch{Rows: *cmsRows, Cols: *cmsCols}
+	// "baseline": agg stays nil — Float64Gauge uses default LastValue aggregation.
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *duration+10*time.Second)
