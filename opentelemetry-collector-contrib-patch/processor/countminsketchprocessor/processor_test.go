@@ -412,3 +412,98 @@ func TestShutdownDuringConsume(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// TestAggregateBy verifies that two series sharing the same aggregate_by label values
+// are merged into a single sketch output data point.
+func TestAggregateBy(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeBatch,
+		MetricName:     "cms_agg",
+		Rows:           5,
+		Columns:        128,
+		TransmitSketch: true,
+		DropOriginal:   true,
+		AggregateBy:    []string{"service.name"},
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+
+	// Two data points: same service.name but different host labels.
+	// With aggregate_by=["service.name"] they should collapse to one sketch.
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("http_requests_total")
+	m.SetEmptyGauge()
+
+	dp1 := m.Gauge().DataPoints().AppendEmpty()
+	dp1.SetIntValue(1)
+	dp1.Attributes().PutStr("service.name", "frontend")
+	dp1.Attributes().PutStr("host", "host-A")
+
+	dp2 := m.Gauge().DataPoints().AppendEmpty()
+	dp2.SetIntValue(1)
+	dp2.Attributes().PutStr("service.name", "frontend")
+	dp2.Attributes().PutStr("host", "host-B")
+
+	out, err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	dps := getAllDataPoints(out)
+	// Both data points share service.name="frontend" → merged into exactly one sketch.
+	assert.Len(t, dps, 1, "two series with same aggregate_by key should produce one output data point")
+
+	// Output attribute should carry only the aggregate_by label.
+	svcVal, ok := dps[0].Attributes().Get("service.name")
+	assert.True(t, ok)
+	assert.Equal(t, "frontend", svcVal.Str())
+	_, hasHost := dps[0].Attributes().Get("host")
+	assert.False(t, hasHost, "non-aggregate_by labels should be dropped from output")
+}
+
+// TestLabelMatchers verifies that data points not matching label_matchers are excluded.
+func TestLabelMatchers(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeBatch,
+		MetricName:     "cms_filtered",
+		Rows:           5,
+		Columns:        128,
+		TransmitSketch: false,
+		DropOriginal:   true,
+		LabelMatchers:  []LabelMatcher{{Key: "env", Value: "prod"}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("http_requests_total")
+	m.SetEmptyGauge()
+
+	// This point matches the matcher.
+	dpProd := m.Gauge().DataPoints().AppendEmpty()
+	dpProd.SetIntValue(1)
+	dpProd.Attributes().PutStr("env", "prod")
+
+	// This point does not match.
+	dpDev := m.Gauge().DataPoints().AppendEmpty()
+	dpDev.SetIntValue(1)
+	dpDev.Attributes().PutStr("env", "dev")
+
+	out, err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	dps := getAllDataPoints(out)
+	require.Len(t, dps, 1)
+	// sample_count should reflect only the 1 matching point.
+	count, ok := dps[0].Attributes().Get("sample_count")
+	require.True(t, ok)
+	assert.Equal(t, int64(1), count.Int())
+}
