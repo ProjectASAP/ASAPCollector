@@ -156,16 +156,13 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 	batched := make(map[string]*batchSeries)
 
 	getOrCreate := func(name, unit string, attrs pcommon.Map) *batchSeries {
-		attrKey := attributesKey(attrs)
-		key := name + "::" + attrKey
+		key := name + "::" + p.seriesKey(attrs)
 		bs := batched[key]
 		if bs == nil {
-			attrCopy := pcommon.NewMap()
-			attrs.CopyTo(attrCopy)
 			bs = &batchSeries{
 				name:   name,
 				unit:   unit,
-				attrs:  attrCopy,
+				attrs:  p.seriesAttrs(attrs),
 				sketch: hll.NewHyperLogLog(),
 			}
 			batched[key] = bs
@@ -185,6 +182,9 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 					dps := metric.Gauge().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
 						dp := dps.At(l)
+						if !p.matchesMatchers(dp.Attributes()) {
+							continue
+						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
 						bs.sketch.Insert(dp.DoubleValue())
 					}
@@ -192,6 +192,9 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 					dps := metric.HLLSketch().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
 						dp := dps.At(l)
+						if !p.matchesMatchers(dp.Attributes()) {
+							continue
+						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
 						if payload := dp.Sketch(); len(payload) > 0 {
 							if err := mergeSketchBytes(bs.sketch, payload); err != nil && p.logger != nil {
@@ -254,6 +257,58 @@ func attributesKey(attrs pcommon.Map) string {
 	s := b.String()
 	builderPool.Put(b)
 	return s
+}
+
+// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
+func (p *hllProcessor) matchesMatchers(attrs pcommon.Map) bool {
+	for _, m := range p.cfg.LabelMatchers {
+		v, ok := attrs.Get(m.Key)
+		if !ok || v.AsString() != m.Value {
+			return false
+		}
+	}
+	return true
+}
+
+// seriesKey returns the map key used to locate a series in the window/batch store.
+// When AggregateBy is configured, only those label values form the key (cross-series
+// aggregation). Otherwise the full attribute set is used (per-series, default).
+func (p *hllProcessor) seriesKey(attrs pcommon.Map) string {
+	if len(p.cfg.AggregateBy) == 0 {
+		return attributesKey(attrs)
+	}
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	for _, k := range p.cfg.AggregateBy { // already sorted by Validate
+		v, ok := attrs.Get(k)
+		if !ok {
+			continue
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(v.AsString())
+		b.WriteByte(';')
+	}
+	key := b.String()
+	builderPool.Put(b)
+	return key
+}
+
+// seriesAttrs returns the attribute map to store on a new series entry.
+// When AggregateBy is configured, only those labels are included in the output.
+// Otherwise a full copy of attrs is returned.
+func (p *hllProcessor) seriesAttrs(attrs pcommon.Map) pcommon.Map {
+	out := pcommon.NewMap()
+	if len(p.cfg.AggregateBy) == 0 {
+		attrs.CopyTo(out)
+		return out
+	}
+	for _, k := range p.cfg.AggregateBy {
+		if v, ok := attrs.Get(k); ok {
+			out.PutStr(k, v.AsString())
+		}
+	}
+	return out
 }
 
 func (p *hllProcessor) accumulateIntoWindow(md pmetric.Metrics) {
@@ -324,13 +379,14 @@ func (p *hllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 	dps := metric.Gauge().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		attrKey := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		attrKey := p.seriesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
-			attrCopy := pcommon.NewMap()
-			dp.Attributes().CopyTo(attrCopy)
 			series = p.seriesPool.Get().(*hllSeries)
-			series.attrs = attrCopy
+			series.attrs = p.seriesAttrs(dp.Attributes())
 			if series.sketch != nil {
 				series.sketch.Reset()
 			} else {
@@ -349,13 +405,14 @@ func (p *hllProcessor) accumulateHLLSketchMetric(sw *scopeWindow, metric pmetric
 	dps := metric.HLLSketch().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		attrKey := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		attrKey := p.seriesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
-			attrCopy := pcommon.NewMap()
-			dp.Attributes().CopyTo(attrCopy)
 			series = p.seriesPool.Get().(*hllSeries)
-			series.attrs = attrCopy
+			series.attrs = p.seriesAttrs(dp.Attributes())
 			if series.sketch != nil {
 				series.sketch.Reset()
 			} else {
