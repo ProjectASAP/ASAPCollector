@@ -34,6 +34,7 @@ var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
 
 type windowSketch struct {
 	cms         *cms.CountMinSketch
+	attrs       pcommon.Map // output attributes for this sketch group
 	mu          sync.Mutex
 	sampleCount uint64
 }
@@ -92,7 +93,7 @@ func (p *windowedCountMinSketchProcessor) Start(
 	p.logger.Info(
 		"Starting Count-Min Sketch processor",
 		zap.String("mode", string(p.cfg.Mode)),
-		zap.Duration("window_interval", p.cfg.WindowInterval),
+		zap.Duration("window_duration", p.cfg.WindowDuration),
 	)
 
 	// Batch mode does not require a background ticker; we flush per-batch.
@@ -101,11 +102,11 @@ func (p *windowedCountMinSketchProcessor) Start(
 	}
 
 	// Window mode: start background window loop if a positive window is configured.
-	if p.cfg.WindowInterval <= 0 {
+	if p.cfg.WindowDuration <= 0 {
 		return nil
 	}
 
-	ticker := time.NewTicker(p.cfg.WindowInterval)
+	ticker := time.NewTicker(p.cfg.WindowDuration)
 	p.windowStarted.Store(true)
 
 	go func() {
@@ -229,12 +230,20 @@ func (p *windowedCountMinSketchProcessor) ingestMetric(
 	case pmetric.MetricTypeGauge:
 		dps := metric.Gauge().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
-			p.updateWindowSketch(metric.Name(), dps.At(i))
+			dp := dps.At(i)
+			if !p.matchesMatchers(dp.Attributes()) {
+				continue
+			}
+			p.updateWindowSketch(metric.Name(), dp)
 		}
 	case pmetric.MetricTypeSum:
 		dps := metric.Sum().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
-			p.updateWindowSketch(metric.Name(), dps.At(i))
+			dp := dps.At(i)
+			if !p.matchesMatchers(dp.Attributes()) {
+				continue
+			}
+			p.updateWindowSketch(metric.Name(), dp)
 		}
 	case pmetric.MetricTypeCountMinSketch:
 		// Pre-aggregated path: deserialize and merge each incoming sketch into
@@ -242,6 +251,9 @@ func (p *windowedCountMinSketchProcessor) ingestMetric(
 		dps := metric.CountMinSketch().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
+			if !p.matchesMatchers(dp.Attributes()) {
+				continue
+			}
 			if len(dp.Sketch()) == 0 {
 				continue
 			}
@@ -250,14 +262,72 @@ func (p *windowedCountMinSketchProcessor) ingestMetric(
 				p.logger.Error("countminsketchprocessor: failed to deserialize CountMinSketch dp", zap.Error(err))
 				continue
 			}
-			aggregationKey := buildAggregationKey(metric.Name(), dp.Attributes())
-			p.mergeWindowSketch(aggregationKey, incoming)
+			aggregationKey := p.seriesKey(metric.Name(), dp.Attributes())
+			p.mergeWindowSketch(aggregationKey, dp.Attributes(), incoming)
 		}
 	}
 }
 
+// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
+func (p *windowedCountMinSketchProcessor) matchesMatchers(attrs pcommon.Map) bool {
+	for _, m := range p.cfg.LabelMatchers {
+		v, ok := attrs.Get(m.Key)
+		if !ok || v.AsString() != m.Value {
+			return false
+		}
+	}
+	return true
+}
+
+// seriesKey returns the map key used to locate a series in the window store.
+// When AggregateBy is configured, only those label values form the key (cross-series
+// aggregation). Otherwise the full attribute set is used (per-series, default).
+func (p *windowedCountMinSketchProcessor) seriesKey(metricName string, attrs pcommon.Map) string {
+	return metricName + "::" + p.encodeKey(attrs)
+}
+
+// encodeKey builds a stable string from the labels that form the grouping key.
+// When AggregateBy is set, only those keys are used; otherwise all attributes.
+func (p *windowedCountMinSketchProcessor) encodeKey(attrs pcommon.Map) string {
+	if len(p.cfg.AggregateBy) > 0 {
+		sb := builderPool.Get().(*strings.Builder)
+		sb.Reset()
+		for _, k := range p.cfg.AggregateBy { // already sorted by Validate
+			v, ok := attrs.Get(k)
+			if !ok {
+				continue
+			}
+			sb.WriteString(k)
+			sb.WriteString("=")
+			sb.WriteString(v.AsString())
+			sb.WriteString(";")
+		}
+		s := sb.String()
+		builderPool.Put(sb)
+		return s
+	}
+	return encodeAttributesAsKey(attrs)
+}
+
+// seriesAttrs returns the attribute map to store on a new sketch group.
+// When AggregateBy is configured, only those labels are included in the output.
+// Otherwise a full copy of attrs is returned.
+func (p *windowedCountMinSketchProcessor) seriesAttrs(attrs pcommon.Map) pcommon.Map {
+	out := pcommon.NewMap()
+	if len(p.cfg.AggregateBy) > 0 {
+		for _, k := range p.cfg.AggregateBy {
+			if v, ok := attrs.Get(k); ok {
+				out.PutStr(k, v.AsString())
+			}
+		}
+		return out
+	}
+	attrs.CopyTo(out)
+	return out
+}
+
 // mergeWindowSketch merges an incoming pre-aggregated CMS into the per-key window store.
-func (p *windowedCountMinSketchProcessor) mergeWindowSketch(aggregationKey string, incoming *cms.CountMinSketch) {
+func (p *windowedCountMinSketchProcessor) mergeWindowSketch(aggregationKey string, attrs pcommon.Map, incoming *cms.CountMinSketch) {
 	p.mu.RLock()
 	ws, exists := p.activeWindowSketches[aggregationKey]
 	p.mu.RUnlock()
@@ -279,6 +349,7 @@ func (p *windowedCountMinSketchProcessor) mergeWindowSketch(aggregationKey strin
 				}
 				ws.cms = newCMS
 			}
+			ws.attrs = p.seriesAttrs(attrs)
 			ws.sampleCount = 0
 			p.activeWindowSketches[aggregationKey] = ws
 		}
@@ -296,7 +367,7 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 	metricName string,
 	dp pmetric.NumberDataPoint,
 ) {
-	aggregationKey := buildAggregationKey(metricName, dp.Attributes())
+	aggregationKey := p.seriesKey(metricName, dp.Attributes())
 
 	p.mu.RLock()
 	ws, exists := p.activeWindowSketches[aggregationKey]
@@ -319,6 +390,7 @@ func (p *windowedCountMinSketchProcessor) updateWindowSketch(
 				}
 				ws.cms = newCMS
 			}
+			ws.attrs = p.seriesAttrs(dp.Attributes())
 			ws.sampleCount = 0
 			p.activeWindowSketches[aggregationKey] = ws
 		}
@@ -371,11 +443,12 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 
 	now := pcommon.NewTimestampFromTime(time.Now())
 
-	for aggregationKey, ws := range windowSnapshot {
+	for _, ws := range windowSnapshot {
 		ws.mu.Lock()
 		rows := ws.cms.Rows
 		cols := ws.cms.Cols
 		sampleCount := ws.sampleCount
+		outputAttrs := ws.attrs
 		payload, err := serializeCMS(ws.cms)
 		ws.mu.Unlock()
 		p.windowSketchPool.Put(ws)
@@ -392,7 +465,7 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 		dp := gauge.DataPoints().AppendEmpty()
 		dp.SetTimestamp(now)
 
-		dp.Attributes().PutStr("aggregation_key", aggregationKey)
+		outputAttrs.CopyTo(dp.Attributes())
 		dp.Attributes().PutInt("rows", int64(rows))
 		dp.Attributes().PutInt("cols", int64(cols))
 		dp.Attributes().PutInt("sample_count", int64(sampleCount))

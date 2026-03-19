@@ -25,7 +25,7 @@ func createDefaultConfig() component.Config {
 	return &Config{
 		Epsilon:        0.01,
 		Delta:          0.99,
-		WindowSize:     5 * time.Second,
+		WindowDuration: 5 * time.Second,
 		TransmitSketch: false,
 	}
 }

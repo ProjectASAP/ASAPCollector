@@ -99,7 +99,7 @@ type PipelineInstrument struct {
 	GroupBy []string `yaml:"group_by"`
 
 	// SeriesPerSketch controls how many distinct label-value combinations are
-	// collapsed into a single sketch:
+	// collapsed into a single sketch. For benchmark use only.
 	//   1 → one sketch per series (fine-grained, default)
 	//   0 → all series collapsed into one sketch (coarsest)
 	//   N → every N series share one sketch (matrix grouping)
