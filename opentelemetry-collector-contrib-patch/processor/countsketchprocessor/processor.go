@@ -67,7 +67,7 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 	mode := cfg.Mode
 	if mode == "" {
 		// Preserve legacy behavior when mode is not set explicitly.
-		mode = ModeWindow
+		mode = ModeBatch
 	}
 
 	rowS, errRow := newConfiguredCountSketch(cfg)
@@ -101,7 +101,7 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 	p.logger.Info("Starting Count Sketch Processor",
 		zap.Float64("epsilon", p.config.Epsilon),
 		zap.Float64("delta", p.config.Delta),
-		zap.Duration("window", p.config.WindowSize),
+		zap.Duration("window", p.config.WindowDuration),
 		zap.String("mode", string(p.mode)),
 	)
 	if p.config.TransmitSketch {
@@ -114,11 +114,11 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 	}
 
 	// Window mode: start background window loop if a positive window is configured.
-	if p.config.WindowSize <= 0 {
+	if p.config.WindowDuration <= 0 {
 		return nil
 	}
 
-	ticker := time.NewTicker(p.config.WindowSize)
+	ticker := time.NewTicker(p.config.WindowDuration)
 	p.windowStarted.Store(true)
 	go p.startWindowLoop(ctx, ticker)
 
@@ -141,6 +141,17 @@ func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
+func (p *countSketchProcessor) matchesMatchers(attrs pcommon.Map) bool {
+	for _, m := range p.config.LabelMatchers {
+		v, ok := attrs.Get(m.Key)
+		if !ok || v.AsString() != m.Value {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
@@ -175,11 +186,11 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 				switch metric.Type() {
 				case pmetric.MetricTypeGauge:
 					dps := metric.Gauge().DataPoints()
-					value = sumPoints(dps)
+					value = p.sumMatchingPoints(dps)
 
 				case pmetric.MetricTypeSum:
 					dps := metric.Sum().DataPoints()
-					value = sumPoints(dps)
+					value = p.sumMatchingPoints(dps)
 
 				case pmetric.MetricTypeHistogram:
 					dps := metric.Histogram().DataPoints()
@@ -192,13 +203,6 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 					// Count each dp as one observation for the row/col frequency sketches.
 					value += float64(metric.CountSketch().DataPoints().Len())
 				}
-
-				// For Debugging
-				// p.logger.Info("Sketch Update",
-				// 	zap.String("host", hostKey),
-				// 	zap.String("metric", rowKey),
-				// 	zap.Float64("value", value),
-				// )
 
 				p.rowSketch.UpdateString(rowKey, value)
 				p.colSketch.UpdateString(hostKey, value)
@@ -219,6 +223,23 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 	}
 
 	return md, nil
+}
+
+// sumMatchingPoints sums data point values, applying label_matchers filtering.
+func (p *countSketchProcessor) sumMatchingPoints(dps pmetric.NumberDataPointSlice) float64 {
+	var total float64
+	for i := 0; i < dps.Len(); i++ {
+		dp := dps.At(i)
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		if dp.ValueType() == pmetric.NumberDataPointValueTypeInt {
+			total += float64(dp.IntValue())
+		} else {
+			total += dp.DoubleValue()
+		}
+	}
+	return total
 }
 
 func sumPoints(dps pmetric.NumberDataPointSlice) float64 {
@@ -374,7 +395,7 @@ func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *countsketch.Co
 		dp.Attributes().PutStr("sketch_dimension", "metric_names")
 		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
 		dp.Attributes().PutDouble("delta", p.config.Delta)
-		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
+		dp.Attributes().PutInt("window_duration_seconds", int64(p.config.WindowDuration.Seconds()))
 		// Note: sketchlib-go CountSketch doesn't expose serialization methods
 		// For benchmarking, we emit metadata. Full serialization can be added later if needed.
 	}
@@ -393,7 +414,7 @@ func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *countsketch.Co
 		dp.Attributes().PutStr("sketch_dimension", "host_names")
 		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
 		dp.Attributes().PutDouble("delta", p.config.Delta)
-		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
+		dp.Attributes().PutInt("window_duration_seconds", int64(p.config.WindowDuration.Seconds()))
 	}
 
 	if err := p.next.ConsumeMetrics(context.Background(), md); err != nil {
