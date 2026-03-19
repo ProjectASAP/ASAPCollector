@@ -2,6 +2,7 @@ package kllprocessor
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -17,6 +18,13 @@ const (
 	ModeWindow InputMode = "window"
 )
 
+// LabelMatcher specifies an exact label key=value filter.
+// A data point matches only if the named label exists and its string value equals Value.
+type LabelMatcher struct {
+	Key   string `mapstructure:"key"`
+	Value string `mapstructure:"value"`
+}
+
 type Config struct {
 	Mode           InputMode     `mapstructure:"mode"`
 	WindowDuration time.Duration `mapstructure:"window_duration"`
@@ -27,6 +35,17 @@ type Config struct {
 	DropOriginal   bool          `mapstructure:"drop_original"`
 	ReadAsInt      bool          `mapstructure:"is_int"` // gauge has separate int and double fields, we default to double
 	MetricSuffix   string        `mapstructure:"metric_suffix"`
+
+	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
+	// All data points sharing the same values for these labels are merged into one sketch.
+	// The output data point carries only these labels.
+	// Empty (default) preserves per-series behavior: each distinct attribute set → own sketch.
+	AggregateBy []string `mapstructure:"aggregate_by"`
+
+	// LabelMatchers filters which data points to include before aggregation.
+	// A data point is included only if ALL matchers are satisfied (exact match).
+	// Empty (default) = include all data points.
+	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
 
 	suffixes map[float64]string // suffix to attach to output quantiles, e.g. _p50, _p99, ...
 }
@@ -57,5 +76,7 @@ func (c *Config) Validate() error {
 		}
 		c.suffixes[q] = fmt.Sprintf("_p%d", int(q*100))
 	}
+	// Sort AggregateBy so seriesKey always produces a consistent ordering.
+	sort.Strings(c.AggregateBy)
 	return nil
 }
