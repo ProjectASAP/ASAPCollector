@@ -63,7 +63,7 @@ func TestConfig_Validate(t *testing.T) {
 				Rows:           5,
 				Columns:        1024,
 				TransmitSketch: true,
-				WindowInterval: 10 * time.Second,
+				WindowDuration: 10 * time.Second,
 			},
 			expectError: false,
 		},
@@ -111,7 +111,7 @@ func TestProcessor_TumblingWindow_Correctness(t *testing.T) {
 		Columns:        128,
 		DropOriginal:   true,
 		TransmitSketch: true,
-		WindowInterval: windowDuration,
+		WindowDuration: windowDuration,
 	}
 
 	sink := &mockConsumer{}
@@ -238,7 +238,7 @@ func TestBatchMode(t *testing.T) {
 		Columns:        128,
 		DropOriginal:   false,
 		TransmitSketch: true,
-		WindowInterval: 0,
+		WindowDuration: 0,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -264,7 +264,7 @@ func TestBatchModeDropOriginal(t *testing.T) {
 		Columns:        128,
 		DropOriginal:   true,
 		TransmitSketch: true,
-		WindowInterval: 0,
+		WindowDuration: 0,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -312,7 +312,7 @@ func TestEmptyInput(t *testing.T) {
 		MetricName:     "cms",
 		Rows:           5,
 		Columns:        128,
-		WindowInterval: 0,
+		WindowDuration: 0,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -332,7 +332,7 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 		MetricName:     "cms_concurrent",
 		Rows:           5,
 		Columns:        128,
-		WindowInterval: 5 * time.Second,
+		WindowDuration: 5 * time.Second,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -360,7 +360,7 @@ func TestWindowModeFlushDuringConsume(t *testing.T) {
 		MetricName:     "cms_flush",
 		Rows:           5,
 		Columns:        128,
-		WindowInterval: 1 * time.Second,
+		WindowDuration: 1 * time.Second,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -388,7 +388,7 @@ func TestShutdownDuringConsume(t *testing.T) {
 		MetricName:     "cms_shutdown",
 		Rows:           5,
 		Columns:        128,
-		WindowInterval: 10 * time.Second,
+		WindowDuration: 10 * time.Second,
 	}
 	require.NoError(t, cfg.Validate())
 
