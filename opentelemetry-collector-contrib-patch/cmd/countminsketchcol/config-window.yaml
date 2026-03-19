@@ -16,7 +16,7 @@ processors:
     transmit_sketch: true
     group_by: []
     drop_original: true
-    window_interval: 10s
+    window_duration: 10s
 
 exporters:
   prometheus:
