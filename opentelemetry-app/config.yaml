@@ -1,0 +1,137 @@
+# SDK pipeline configuration — base template (DDSketch, transmit_sketch: true)
+#
+# transmit_sketch: true  → SDK pre-aggregates into a sketch payload; the
+#                          collector receives a single compressed data point
+#                          per series per export window (sdkSketch mode).
+# transmit_sketch: false → SDK emits raw Float64Gauge values; the collector-
+#                          side processor (kllprocessor, hllprocessor, …)
+#                          performs aggregation (sdkGauge mode).
+
+# ---------------------------------------------------------------------------
+# Exporter
+# ---------------------------------------------------------------------------
+exporter:
+  endpoint: localhost:4317
+  insecure: true
+  # Raise gRPC send limit for large sketch payloads (CountSketch, HLL at high
+  # series counts can exceed the default 4 MiB limit).
+  max_send_msg_size_mb: 64
+
+# ---------------------------------------------------------------------------
+# Reader (SDK export interval)
+# ---------------------------------------------------------------------------
+reader:
+  interval: 1s
+
+# ---------------------------------------------------------------------------
+# Sketch
+# ---------------------------------------------------------------------------
+sketch:
+  # Sketch type: ddsketch | kll | hll | countsketch | countminsketch | baseline
+  # "baseline" disables sketch aggregation — raw LastValue gauges are sent.
+  type: ddsketch
+
+  # Whether the SDK performs the aggregation before export.
+  # true  → SDK attaches an Aggregation View to the instrument; the collector
+  #         receives sketch-typed data points (DDSketchDataPoint, etc.).
+  # false → SDK records raw gauge observations; the collector processor
+  #         (e.g. kllprocessor, hllprocessor) aggregates the stream.
+  transmit_sketch: true
+
+  # --- DDSketch parameters (used when type: ddsketch) ---
+  ddsketch:
+    relative_accuracy: 0.01   # target relative error; 0 uses SDK default
+    no_min_max: false
+
+  # --- KLL parameters (used when type: kll) ---
+  kll:
+    k: 256                    # compaction parameter; 0 uses SDK default (>= 2)
+
+  # --- HLL parameters (used when type: hll) ---
+  hll: {}                     # HyperLogLog has no tunable parameters
+
+  # --- CountSketch parameters (used when type: countsketch) ---
+  countsketch:
+    rows: 5                   # number of hash functions
+    cols: 2000                # buckets per row
+    epsilon: 0.01             # accuracy parameter (0,1)
+    delta:   0.99             # failure probability (0,1)
+    dimension: ""             # free-form label describing the sketched dimension
+
+  # --- CountMinSketch parameters (used when type: countminsketch) ---
+  countminsketch:
+    rows: 5
+    cols: 2000
+
+# ---------------------------------------------------------------------------
+# Instruments — what to aggregate and along which label dimensions
+# ---------------------------------------------------------------------------
+instruments:
+  - name: benchmark.latency
+    description: Benchmark latency measurement
+    unit: ms
+
+    # OTel instrument kind used when transmit_sketch: true.
+    # "histogram" → Float64Histogram with a sketch Aggregation View.
+    # "gauge"     → Float64Gauge (also used when transmit_sketch: false).
+    instrument_kind: histogram
+
+    # Attribute keys that form the grouping dimension.
+    # One sketch (or gauge) is produced per unique combination of these values.
+    group_by:
+      - host.name
+      - service.name
+
+    # How many distinct label-value combinations are collapsed into one sketch.
+    # 1 → one sketch per series (finest granularity, existing per-series behavior)
+    # 0 → all series collapsed into a single sketch (coarsest)
+    # N → every N consecutive series share one sketch (e.g. for matrix aggregation)
+    series_per_sketch: 1
+
+# ---------------------------------------------------------------------------
+# ASAPQuery controller integration
+# Mirrors the ControllerConfig schema in asap-planner-rs/src/config/input.rs
+# so the same file (or a shared section) can be fed to asap-planner-rs.
+# ---------------------------------------------------------------------------
+asap_query:
+  metrics:
+    - metric: benchmark.latency
+      labels:
+        - host.name
+        - service.name
+
+  query_groups:
+    - id: 1
+      queries:
+        - "quantile_over_time(0.99, benchmark_latency[5m])"
+      repetition_delay: 5000   # milliseconds
+      controller_options:
+        accuracy_sla: 0.01
+        latency_sla: 100.0
+
+  # Optional per-sketch-type parameter overrides consumed by asap-planner-rs.
+  # These shadow the top-level sketch.* params when asap-planner-rs is driving
+  # sketch selection.
+  sketch_parameters:
+    DatasketchesKLL:
+      K: 256
+    CountMinSketch:
+      depth: 5
+      width: 2000
+
+# ---------------------------------------------------------------------------
+# Load generation (fakemetricload / e2esdkbench)
+# ---------------------------------------------------------------------------
+load:
+  workers: 10
+  series: 1000
+  samples_per_sec_per_series: 50.0
+  duration: 60s
+
+  # Synthetic data distribution
+  distribution:
+    type: zipf
+    s: 1.1      # shape parameter (must be > 1)
+    v: 1.0      # shift parameter (must be >= 1)
+    max: 500    # upper bound of integer range
+    mean: 250.0 # target mean used for value scaling
