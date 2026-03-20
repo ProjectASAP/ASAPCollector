@@ -63,7 +63,7 @@ func TestConfig_Validate(t *testing.T) {
 				Rows:           5,
 				Columns:        1024,
 				TransmitSketch: true,
-				WindowInterval: 10 * time.Second,
+				WindowDuration: 10 * time.Second,
 			},
 			expectError: false,
 		},
@@ -111,7 +111,7 @@ func TestProcessor_TumblingWindow_Correctness(t *testing.T) {
 		Columns:        128,
 		DropOriginal:   true,
 		TransmitSketch: true,
-		WindowInterval: windowDuration,
+		WindowDuration: windowDuration,
 	}
 
 	sink := &mockConsumer{}
@@ -238,7 +238,7 @@ func TestBatchMode(t *testing.T) {
 		Columns:        128,
 		DropOriginal:   false,
 		TransmitSketch: true,
-		WindowInterval: 0,
+		WindowDuration: 0,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -264,7 +264,7 @@ func TestBatchModeDropOriginal(t *testing.T) {
 		Columns:        128,
 		DropOriginal:   true,
 		TransmitSketch: true,
-		WindowInterval: 0,
+		WindowDuration: 0,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -305,125 +305,6 @@ func TestBatchModeQueryMetricsWhenTransmitSketchDisabled(t *testing.T) {
 	assert.False(t, hasPayload)
 }
 
-// TestGroupByPartitioning verifies that group_by creates separate sketches per
-// unique label combination rather than aggregating all series into one sketch.
-func TestGroupByPartitioning(t *testing.T) {
-	cfg := &Config{
-		Mode:           ModeBatch,
-		MetricName:     "cms_grouped",
-		GroupBy:        []string{"service.name"},
-		Rows:           5,
-		Columns:        128,
-		TransmitSketch: false,
-		DropOriginal:   true,
-	}
-	require.NoError(t, cfg.Validate())
-
-	sink := &mockConsumer{}
-	proc := newProcessor(cfg, sink, zap.NewNop())
-
-	// Two different service.name values → two different aggregation keys.
-	md := pmetric.NewMetrics()
-	rm := md.ResourceMetrics().AppendEmpty()
-	sm := rm.ScopeMetrics().AppendEmpty()
-	for _, svc := range []string{"svc-A", "svc-B"} {
-		m := sm.Metrics().AppendEmpty()
-		m.SetName("http_requests_total")
-		m.SetEmptyGauge()
-		dp := m.Gauge().DataPoints().AppendEmpty()
-		dp.SetIntValue(1)
-		dp.Attributes().PutStr("service.name", svc)
-	}
-
-	out, err := proc.ConsumeMetrics(context.Background(), md)
-	require.NoError(t, err)
-
-	// Collect all aggregation_key values from the output.
-	aggKeys := map[string]bool{}
-	rms := out.ResourceMetrics()
-	for i := 0; i < rms.Len(); i++ {
-		sms := rms.At(i).ScopeMetrics()
-		for j := 0; j < sms.Len(); j++ {
-			ms := sms.At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				dps := ms.At(k).Gauge().DataPoints()
-				for l := 0; l < dps.Len(); l++ {
-					if v, ok := dps.At(l).Attributes().Get("aggregation_key"); ok {
-						aggKeys[v.Str()] = true
-					}
-				}
-			}
-		}
-	}
-
-	// Two services → two separate aggregation keys.
-	assert.Len(t, aggKeys, 2, "expected one sketch per service.name value")
-
-	// Without group_by the two series would collapse into one key because
-	// service.name is the only attribute — verify the keys differ.
-	var keys []string
-	for k := range aggKeys {
-		keys = append(keys, k)
-	}
-	assert.NotEqual(t, keys[0], keys[1])
-}
-
-// TestGroupByCollapsesSeries verifies that when group_by is set, series that
-// share the same group_by values are merged into a single sketch even when
-// other attributes differ.
-func TestGroupByCollapsesSeries(t *testing.T) {
-	cfg := &Config{
-		Mode:           ModeBatch,
-		MetricName:     "cms_collapsed",
-		GroupBy:        []string{"region"},
-		Rows:           5,
-		Columns:        128,
-		TransmitSketch: false,
-		DropOriginal:   true,
-	}
-	require.NoError(t, cfg.Validate())
-
-	sink := &mockConsumer{}
-	proc := newProcessor(cfg, sink, zap.NewNop())
-
-	// Two data points with the same region but different pod labels.
-	md := pmetric.NewMetrics()
-	rm := md.ResourceMetrics().AppendEmpty()
-	sm := rm.ScopeMetrics().AppendEmpty()
-	for _, pod := range []string{"pod-1", "pod-2"} {
-		m := sm.Metrics().AppendEmpty()
-		m.SetName("cpu_usage")
-		m.SetEmptyGauge()
-		dp := m.Gauge().DataPoints().AppendEmpty()
-		dp.SetDoubleValue(0.5)
-		dp.Attributes().PutStr("region", "us-east-1")
-		dp.Attributes().PutStr("pod", pod)
-	}
-
-	out, err := proc.ConsumeMetrics(context.Background(), md)
-	require.NoError(t, err)
-
-	aggKeys := map[string]bool{}
-	rms := out.ResourceMetrics()
-	for i := 0; i < rms.Len(); i++ {
-		sms := rms.At(i).ScopeMetrics()
-		for j := 0; j < sms.Len(); j++ {
-			ms := sms.At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				dps := ms.At(k).Gauge().DataPoints()
-				for l := 0; l < dps.Len(); l++ {
-					if v, ok := dps.At(l).Attributes().Get("aggregation_key"); ok {
-						aggKeys[v.Str()] = true
-					}
-				}
-			}
-		}
-	}
-
-	// Both pods share region=us-east-1 → collapsed into a single sketch.
-	assert.Len(t, aggKeys, 1, "expected both pods to collapse into one sketch by region")
-}
-
 // TestEmptyInput verifies empty metrics do not cause panics.
 func TestEmptyInput(t *testing.T) {
 	cfg := &Config{
@@ -431,7 +312,7 @@ func TestEmptyInput(t *testing.T) {
 		MetricName:     "cms",
 		Rows:           5,
 		Columns:        128,
-		WindowInterval: 0,
+		WindowDuration: 0,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -451,7 +332,7 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 		MetricName:     "cms_concurrent",
 		Rows:           5,
 		Columns:        128,
-		WindowInterval: 5 * time.Second,
+		WindowDuration: 5 * time.Second,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -479,7 +360,7 @@ func TestWindowModeFlushDuringConsume(t *testing.T) {
 		MetricName:     "cms_flush",
 		Rows:           5,
 		Columns:        128,
-		WindowInterval: 1 * time.Second,
+		WindowDuration: 1 * time.Second,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -507,7 +388,7 @@ func TestShutdownDuringConsume(t *testing.T) {
 		MetricName:     "cms_shutdown",
 		Rows:           5,
 		Columns:        128,
-		WindowInterval: 10 * time.Second,
+		WindowDuration: 10 * time.Second,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -530,4 +411,99 @@ func TestShutdownDuringConsume(t *testing.T) {
 		_ = proc.Shutdown(context.Background())
 	}()
 	wg.Wait()
+}
+
+// TestAggregateBy verifies that two series sharing the same aggregate_by label values
+// are merged into a single sketch output data point.
+func TestAggregateBy(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeBatch,
+		MetricName:     "cms_agg",
+		Rows:           5,
+		Columns:        128,
+		TransmitSketch: true,
+		DropOriginal:   true,
+		AggregateBy:    []string{"service.name"},
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+
+	// Two data points: same service.name but different host labels.
+	// With aggregate_by=["service.name"] they should collapse to one sketch.
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("http_requests_total")
+	m.SetEmptyGauge()
+
+	dp1 := m.Gauge().DataPoints().AppendEmpty()
+	dp1.SetIntValue(1)
+	dp1.Attributes().PutStr("service.name", "frontend")
+	dp1.Attributes().PutStr("host", "host-A")
+
+	dp2 := m.Gauge().DataPoints().AppendEmpty()
+	dp2.SetIntValue(1)
+	dp2.Attributes().PutStr("service.name", "frontend")
+	dp2.Attributes().PutStr("host", "host-B")
+
+	out, err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	dps := getAllDataPoints(out)
+	// Both data points share service.name="frontend" → merged into exactly one sketch.
+	assert.Len(t, dps, 1, "two series with same aggregate_by key should produce one output data point")
+
+	// Output attribute should carry only the aggregate_by label.
+	svcVal, ok := dps[0].Attributes().Get("service.name")
+	assert.True(t, ok)
+	assert.Equal(t, "frontend", svcVal.Str())
+	_, hasHost := dps[0].Attributes().Get("host")
+	assert.False(t, hasHost, "non-aggregate_by labels should be dropped from output")
+}
+
+// TestLabelMatchers verifies that data points not matching label_matchers are excluded.
+func TestLabelMatchers(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeBatch,
+		MetricName:     "cms_filtered",
+		Rows:           5,
+		Columns:        128,
+		TransmitSketch: false,
+		DropOriginal:   true,
+		LabelMatchers:  []LabelMatcher{{Key: "env", Value: "prod"}},
+	}
+	require.NoError(t, cfg.Validate())
+
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName("http_requests_total")
+	m.SetEmptyGauge()
+
+	// This point matches the matcher.
+	dpProd := m.Gauge().DataPoints().AppendEmpty()
+	dpProd.SetIntValue(1)
+	dpProd.Attributes().PutStr("env", "prod")
+
+	// This point does not match.
+	dpDev := m.Gauge().DataPoints().AppendEmpty()
+	dpDev.SetIntValue(1)
+	dpDev.Attributes().PutStr("env", "dev")
+
+	out, err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	dps := getAllDataPoints(out)
+	require.Len(t, dps, 1)
+	// sample_count should reflect only the 1 matching point.
+	count, ok := dps[0].Attributes().Get("sample_count")
+	require.True(t, ok)
+	assert.Equal(t, int64(1), count.Int())
 }
