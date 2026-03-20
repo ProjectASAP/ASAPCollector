@@ -321,6 +321,9 @@ func (p *ddsketchProcessor) consumeDDSketchDataPoints(dps pmetric.DDSketchDataPo
 	result := make(map[string]*sketchSeries)
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
 		sk, err := decodeDDSketchDataPoint(dp)
 		if err != nil {
 			if p.logger != nil {
@@ -329,10 +332,10 @@ func (p *ddsketchProcessor) consumeDDSketchDataPoints(dps pmetric.DDSketchDataPo
 			continue
 		}
 
-		key := attributesKey(dp.Attributes())
+		key := p.seriesKey(dp.Attributes())
 		series := result[key]
 		if series == nil {
-			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
+			series = p.newSeriesFrom(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
 			result[key] = series
 		} else {
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
@@ -349,10 +352,13 @@ func (p *ddsketchProcessor) consumeGaugeDataPoints(dps pmetric.NumberDataPointSl
 	result := make(map[string]*sketchSeries)
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
-		key := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		key := p.seriesKey(dp.Attributes())
 		series := result[key]
 		if series == nil {
-			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
+			series = p.newSeriesFrom(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
 			result[key] = series
 		} else {
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
@@ -538,6 +544,64 @@ func attributesKey(attrs pcommon.Map) string {
 	return b.String()
 }
 
+// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
+func (p *ddsketchProcessor) matchesMatchers(attrs pcommon.Map) bool {
+	for _, m := range p.cfg.LabelMatchers {
+		v, ok := attrs.Get(m.Key)
+		if !ok || v.AsString() != m.Value {
+			return false
+		}
+	}
+	return true
+}
+
+// seriesKey returns the map key used to locate a series in the window/batch store.
+// When AggregateBy is configured, only those label values form the key (cross-series
+// aggregation). Otherwise the full attribute set is used (per-series, default).
+func (p *ddsketchProcessor) seriesKey(attrs pcommon.Map) string {
+	if len(p.cfg.AggregateBy) == 0 {
+		return attributesKey(attrs)
+	}
+	b := strings.Builder{}
+	for _, k := range p.cfg.AggregateBy { // already sorted by validate
+		v, ok := attrs.Get(k)
+		if !ok {
+			continue
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(v.AsString())
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+// seriesAttrs builds the attribute map to store on a new series entry.
+// When AggregateBy is configured, only those labels are included in the output.
+// Otherwise a full copy of attrs is returned.
+func (p *ddsketchProcessor) seriesAttrs(attrs pcommon.Map) pcommon.Map {
+	out := pcommon.NewMap()
+	if len(p.cfg.AggregateBy) == 0 {
+		attrs.CopyTo(out)
+		return out
+	}
+	for _, k := range p.cfg.AggregateBy {
+		if v, ok := attrs.Get(k); ok {
+			out.PutStr(k, v.AsString())
+		}
+	}
+	return out
+}
+
+// newSeriesFrom creates a sketchSeries with the appropriate attribute set for this processor.
+func (p *ddsketchProcessor) newSeriesFrom(attrs pcommon.Map, start, ts pcommon.Timestamp) *sketchSeries {
+	return &sketchSeries{
+		attrs: p.seriesAttrs(attrs),
+		start: start,
+		end:   ts,
+	}
+}
+
 // accumulateIntoWindow aggregates incoming samples into sketches across a tumbling window.
 func (p *ddsketchProcessor) accumulateIntoWindow(md pmetric.Metrics) {
 	rms := md.ResourceMetrics()
@@ -616,10 +680,13 @@ func (p *ddsketchProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetri
 	dps := metric.Gauge().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		attrKey := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		attrKey := p.seriesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
-			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
+			series = p.newSeriesFrom(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
 			mw.series[attrKey] = series
 		} else {
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
@@ -661,10 +728,13 @@ func (p *ddsketchProcessor) accumulateDDSketchMetric(sw *scopeWindow, metric pme
 	dps := metric.DDSketch().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		attrKey := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		attrKey := p.seriesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
-			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
+			series = p.newSeriesFrom(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
 			mw.series[attrKey] = series
 		} else {
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())

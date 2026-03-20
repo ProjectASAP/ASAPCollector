@@ -2,6 +2,7 @@ package hllprocessor
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -17,6 +18,13 @@ const (
 	ModeWindow InputMode = "window"
 )
 
+// LabelMatcher specifies an exact label key=value filter.
+// A data point matches only if the named label exists and its string value equals Value.
+type LabelMatcher struct {
+	Key   string `mapstructure:"key"`
+	Value string `mapstructure:"value"`
+}
+
 // Config configures the HLL cardinality-estimation processor.
 // The processor ingests Gauge metrics and outputs the estimated cardinality
 // of distinct float64 values seen per series using HyperLogLog (precision=14).
@@ -28,6 +36,17 @@ type Config struct {
 	TransmitSketch bool   `mapstructure:"transmit_sketch"`
 	DropOriginal   bool   `mapstructure:"drop_original"`
 	MetricSuffix   string `mapstructure:"metric_suffix"`
+
+	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
+	// All data points sharing the same values for these labels are merged into one sketch.
+	// The output data point carries only these labels.
+	// Empty (default) preserves per-series behavior: each distinct attribute set → own sketch.
+	AggregateBy []string `mapstructure:"aggregate_by"`
+
+	// LabelMatchers filters which data points to include before aggregation.
+	// A data point is included only if ALL matchers are satisfied (exact match).
+	// Empty (default) = include all data points.
+	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
 
 	// DeltaTransmission enables sparse delta encoding: only registers that
 	// increased since the last snapshot are transmitted (max semantics).
@@ -48,5 +67,7 @@ func (c *Config) Validate() error {
 	if c.Mode == ModeWindow && c.WindowDuration <= 0 {
 		return fmt.Errorf("window_duration must be > 0 in window mode, got %v", c.WindowDuration)
 	}
+	// Sort AggregateBy so seriesKey always produces a consistent ordering.
+	sort.Strings(c.AggregateBy)
 	return nil
 }
