@@ -5,6 +5,7 @@ package ddsketchprocessor
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -19,6 +20,13 @@ const (
 	ModeBatch  InputMode = "batch"
 	ModeWindow InputMode = "window"
 )
+
+// LabelMatcher specifies an exact label key=value filter.
+// A data point matches only if the named label exists and its string value equals Value.
+type LabelMatcher struct {
+	Key   string `mapstructure:"key"`
+	Value string `mapstructure:"value"`
+}
 
 // Config holds processor configuration.
 type Config struct {
@@ -38,6 +46,17 @@ type Config struct {
 	// TransmitSketch controls whether merged sketches are output as DDSketch payloads (true)
 	// or converted into gauge metrics at the configured quantiles (false).
 	TransmitSketch bool `mapstructure:"transmit_sketch"`
+
+	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
+	// All data points sharing the same values for these labels are merged into one sketch.
+	// The output data point carries only these labels.
+	// Empty (default) preserves per-series behavior: each distinct attribute set → own sketch.
+	AggregateBy []string `mapstructure:"aggregate_by"`
+
+	// LabelMatchers filters which data points to include before aggregation.
+	// A data point is included only if ALL matchers are satisfied (exact match).
+	// Empty (default) = include all data points.
+	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
 
 	// DeltaTransmission enables sparse delta encoding: only buckets that
 	// changed by at least DeltaThreshold counts since the last snapshot are
@@ -81,6 +100,9 @@ func (cfg *Config) validate() error {
 	if cfg.RelativeAccuracy <= 0 || cfg.RelativeAccuracy >= 1 {
 		return fmt.Errorf("relative_accuracy must be within (0,1), got %v", cfg.RelativeAccuracy)
 	}
+	// Sort AggregateBy so seriesKey always produces a consistent ordering.
+	sort.Strings(cfg.AggregateBy)
+
 	if cfg.DeltaTransmission && cfg.DeltaThreshold == 0 {
 		cfg.DeltaThreshold = 1
 	}
