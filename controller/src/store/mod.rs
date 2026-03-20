@@ -1,0 +1,193 @@
+use std::collections::HashMap;
+use std::sync::RwLock;
+use chrono::{DateTime, Utc};
+
+use crate::types::CollectionPlan;
+
+#[derive(Debug)]
+pub struct PlanStore {
+    inner: RwLock<StoreInner>,
+}
+
+#[derive(Debug, Default)]
+struct StoreInner {
+    entries: HashMap<String, Entry>,
+}
+
+#[derive(Debug, Clone)]
+struct Entry {
+    current:    CollectionPlan,
+    previous:   Option<CollectionPlan>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("plan not found for metric {0:?}")]
+    NotFound(String),
+    #[error("no previous plan for metric {0:?}")]
+    NoPrevious(String),
+}
+
+impl PlanStore {
+    pub fn new() -> Self {
+        Self { inner: RwLock::new(StoreInner::default()) }
+    }
+
+    pub fn set(&self, metric: impl Into<String>, plan: CollectionPlan) {
+        let metric = metric.into();
+        let mut inner = self.inner.write().unwrap();
+        match inner.entries.get_mut(&metric) {
+            None => {
+                inner.entries.insert(metric, Entry {
+                    current: plan, previous: None, updated_at: Utc::now(),
+                });
+            }
+            Some(e) => {
+                let prev = e.current.clone();
+                e.previous   = Some(prev);
+                e.current    = plan;
+                e.updated_at = Utc::now();
+            }
+        }
+    }
+
+    pub fn get(&self, metric: &str) -> Result<CollectionPlan, StoreError> {
+        self.inner.read().unwrap()
+            .entries.get(metric)
+            .map(|e| e.current.clone())
+            .ok_or_else(|| StoreError::NotFound(metric.to_string()))
+    }
+
+    pub fn rollback(&self, metric: &str) -> Result<CollectionPlan, StoreError> {
+        let mut inner = self.inner.write().unwrap();
+        let e = inner.entries.get_mut(metric)
+            .ok_or_else(|| StoreError::NotFound(metric.to_string()))?;
+
+        let prev = e.previous.take()
+            .ok_or_else(|| StoreError::NoPrevious(metric.to_string()))?;
+        e.current    = prev.clone();
+        e.updated_at = Utc::now();
+        Ok(prev)
+    }
+
+    pub fn metrics(&self) -> Vec<String> {
+        self.inner.read().unwrap().entries.keys().cloned().collect()
+    }
+
+    pub fn expired(&self, now: DateTime<Utc>) -> Vec<String> {
+        self.inner.read().unwrap()
+            .entries.iter()
+            .filter(|(_, e)| e.current.valid_until < now)
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use crate::types::*;
+
+    fn make_plan(valid_secs: i64) -> CollectionPlan {
+        let valid_until = Utc::now() + chrono::Duration::seconds(valid_secs);
+        CollectionPlan {
+            agent_config: AgentCollectorConfig {
+                output_mode: OutputMode::Sketch,
+                sketch_type: SketchType::DDSketch,
+                sketch_params: Default::default(),
+                aggregate_by: vec![],
+                label_matchers: vec![],
+                window_duration: None,
+                mode: ProcessorMode::Batch,
+                transmit_sketch: true,
+                drop_original: true,
+            },
+            gateway_config: GatewayCollectorConfig { passthrough: true },
+            backend_config: BackendCollectorConfig {
+                merge_sketch_type: SketchType::DDSketch,
+                group_by: vec![],
+            },
+            precompute:  vec![],
+            valid_until,
+        }
+    }
+
+    #[test]
+    fn set_and_get() {
+        let s = PlanStore::new();
+        let plan = make_plan(600);
+        s.set("latency", plan.clone());
+        let got = s.get("latency").unwrap();
+        assert_eq!(got.valid_until, plan.valid_until);
+    }
+
+    #[test]
+    fn get_not_found() {
+        let s = PlanStore::new();
+        assert!(matches!(s.get("missing"), Err(StoreError::NotFound(_))));
+    }
+
+    #[test]
+    fn rollback() {
+        let s = PlanStore::new();
+        let p1 = make_plan(100);
+        let p2 = make_plan(200);
+        s.set("m", p1.clone());
+        s.set("m", p2.clone());
+        let rolled = s.rollback("m").unwrap();
+        assert_eq!(rolled.valid_until, p1.valid_until);
+        // After rollback, Get should return p1.
+        assert_eq!(s.get("m").unwrap().valid_until, p1.valid_until);
+    }
+
+    #[test]
+    fn rollback_no_previous() {
+        let s = PlanStore::new();
+        s.set("m", make_plan(600));
+        assert!(matches!(s.rollback("m"), Err(StoreError::NoPrevious(_))));
+    }
+
+    #[test]
+    fn rollback_not_found() {
+        let s = PlanStore::new();
+        assert!(matches!(s.rollback("x"), Err(StoreError::NotFound(_))));
+    }
+
+    #[test]
+    fn metrics_list() {
+        let s = PlanStore::new();
+        s.set("a", make_plan(600));
+        s.set("b", make_plan(600));
+        let mut m = s.metrics();
+        m.sort();
+        assert_eq!(m, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn expired() {
+        let s = PlanStore::new();
+        s.set("old",    make_plan(-1));  // already expired
+        s.set("active", make_plan(600));
+        let exp = s.expired(Utc::now());
+        assert_eq!(exp, vec!["old"]);
+    }
+
+    #[test]
+    fn concurrent_access() {
+        use std::sync::Arc;
+        let s = Arc::new(PlanStore::new());
+        s.set("m", make_plan(600));
+
+        let handles: Vec<_> = (0..8).map(|_| {
+            let s = Arc::clone(&s);
+            std::thread::spawn(move || {
+                for _ in 0..100 { let _ = s.get("m"); }
+            })
+        }).collect();
+        for h in handles { h.join().unwrap(); }
+    }
+}
