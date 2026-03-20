@@ -20,7 +20,7 @@ func TestIntegrationFactoryCreateMetrics(t *testing.T) {
 	cfg.Mode = ModeBatch
 	cfg.Epsilon = 0.01
 	cfg.Delta = 0.99
-	cfg.WindowDuration = 0
+	cfg.WindowSize = 0
 	require.NoError(t, cfg.Validate())
 
 	sink := new(consumertest.MetricsSink)
@@ -42,7 +42,7 @@ func TestIntegrationPipelineBatchMode(t *testing.T) {
 	cfg.Mode = ModeBatch
 	cfg.Epsilon = 0.01
 	cfg.Delta = 0.99
-	cfg.WindowDuration = 0
+	cfg.WindowSize = 0
 	cfg.DropOriginal = false
 	require.NoError(t, cfg.Validate())
 
@@ -75,7 +75,7 @@ func TestIntegrationPipelineWindowMode(t *testing.T) {
 	cfg.Mode = ModeWindow
 	cfg.Epsilon = 0.01
 	cfg.Delta = 0.99
-	cfg.WindowDuration = 2 * time.Second
+	cfg.WindowSize = 2 * time.Second
 	require.NoError(t, cfg.Validate())
 
 	sink := new(consumertest.MetricsSink)

@@ -11,7 +11,7 @@ processors:
     mode: window
     epsilon: 0.01
     delta: 0.99
-    window_duration: 10s
+    window_size: 10s
     drop_original: false
 
 exporters:

@@ -2,7 +2,6 @@ package countsketchprocessor
 
 import (
 	"fmt"
-	"sort"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -10,7 +9,7 @@ import (
 
 // InputMode controls when the processor flushes its CountSketch output.
 // - "batch": per-batch summary flush (no background window ticker)
-// - "window": tumbling window flush driven by WindowDuration.
+// - "window": tumbling window flush driven by WindowSize.
 type InputMode string
 
 const (
@@ -18,18 +17,19 @@ const (
 	ModeWindow InputMode = "window"
 )
 
-// LabelMatcher specifies an exact label key=value filter.
-// A data point matches only if the named label exists and its string value equals Value.
-type LabelMatcher struct {
-	Key   string `mapstructure:"key"`
-	Value string `mapstructure:"value"`
-}
-
 type Config struct {
 	// Mode controls when this processor flushes CountSketch output.
 	//   - "batch": per-batch aggregation/flush
 	//   - "window": accumulate across a tumbling time window before flushing
 	Mode InputMode `mapstructure:"mode"`
+
+	// GroupBy lists attribute keys used to partition sketches.
+	//   - Empty (default): all data is aggregated into a single global sketch.
+	//   - Non-empty: one sketch per unique combination of the listed attribute
+	//     values (checked in data-point attributes first, then resource attributes).
+	// Combined with Mode="window" this gives the full matrix mode: each cell
+	// in the [partition × time-window] matrix is an independent sketch.
+	GroupBy []string `mapstructure:"group_by"`
 
 	// Epsilon: The acceptable error rate (e.g., 0.01 for 1% error).
 	// Lower epsilon = Larger sketch = More memory.
@@ -39,39 +39,35 @@ type Config struct {
 	// Lower delta = More hash functions = More CPU.
 	Delta float64 `mapstructure:"delta"`
 
-	// WindowDuration is the time duration for each sketch window (e.g. "10s", "1m").
+	// WindowSize is the time duration for each sketch window (e.g. "10s", "1m").
 	// Used only when Mode = "window".
-	WindowDuration time.Duration `mapstructure:"window_duration"`
+	WindowSize time.Duration `mapstructure:"window_size"`
 
-	// TransmitSketch reserves the shared sketch-output toggle used by the other
-	// sketch processors. CountSketch currently continues to emit metric-form
-	// summaries in both modes because the underlying library does not expose a
-	// serializable OTLP payload in this code path.
+	// TransmitSketch enables sketch-payload emission (proto-serialized CountSketch).
+	// When false, only metric-form summaries are emitted.
 	TransmitSketch bool `mapstructure:"transmit_sketch"`
 
 	// DropOriginal controls whether to drop original metrics and only emit sketches.
 	// When true, original metrics are not forwarded, only sketch outputs are emitted.
 	DropOriginal bool `mapstructure:"drop_original"`
 
-	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
-	// All data points sharing the same values for these labels are merged into one sketch.
-	// The output data point carries only these labels.
-	// Empty (default) preserves per-series behavior: each distinct attribute set → own sketch.
-	AggregateBy []string `mapstructure:"aggregate_by"`
+	// DeltaTransmission enables sparse delta encoding: only cells that changed
+	// by at least DeltaThreshold since the last snapshot are transmitted.
+	// Requires TransmitSketch=true; has no effect in batch mode.
+	DeltaTransmission bool `mapstructure:"delta_transmission"`
 
-	// LabelMatchers filters which data points to include before aggregation.
-	// A data point is included only if ALL matchers are satisfied (exact match).
-	// Empty (default) = include all data points.
-	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
+	// DeltaThreshold is the minimum absolute cell change required to include a
+	// cell in the delta payload. Defaults to 1.0 when DeltaTransmission=true.
+	DeltaThreshold float64 `mapstructure:"delta_threshold"`
 }
 
 var _ component.Config = (*Config)(nil)
 
 func (c *Config) Validate() error {
-	// Default to batch mode.
+	// Default to window mode for backwards compatibility.
 	switch c.Mode {
 	case "":
-		c.Mode = ModeBatch
+		c.Mode = ModeWindow
 	case ModeBatch, ModeWindow:
 	default:
 		return fmt.Errorf("invalid mode %q, must be %q or %q", c.Mode, ModeBatch, ModeWindow)
@@ -85,19 +81,22 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("delta must be between 0 and 1 (exclusive), got %f", c.Delta)
 	}
 
-	// WindowDuration validation applies only in window mode.
+	// WindowSize validation applies only in window mode.
 	if c.Mode == ModeWindow {
-		if c.WindowDuration <= 0 {
-			return fmt.Errorf("window_duration must be positive: %s", c.WindowDuration)
+		if c.WindowSize <= 0 {
+			return fmt.Errorf("window_size must be positive: %s", c.WindowSize)
 		}
 		// Prevents users from setting minute values like "1ms".
-		if c.WindowDuration < 1*time.Second {
-			return fmt.Errorf("window_duration is too small: %s (minimum is 1s)", c.WindowDuration)
+		if c.WindowSize < 1*time.Second {
+			return fmt.Errorf("window_size is too small: %s (minimum is 1s)", c.WindowSize)
 		}
 	}
 
-	// Sort AggregateBy so seriesKey always produces a consistent ordering.
-	sort.Strings(c.AggregateBy)
+	if c.DeltaTransmission {
+		if c.DeltaThreshold <= 0 {
+			c.DeltaThreshold = 1.0
+		}
+	}
 
 	return nil
 }

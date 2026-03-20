@@ -31,7 +31,7 @@ func createDefaultConfig() component.Config {
 		TransmitSketch: true,
 		DropOriginal:   false,
 		GroupBy:        []string{},
-		WindowDuration: 10 * time.Second,
+		WindowInterval: 10 * time.Second,
 	}
 }
 

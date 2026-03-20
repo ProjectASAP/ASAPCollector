@@ -10,7 +10,7 @@ RESULT_DIR="./benchmark_results"
 SAMPLE_METRIC_NAME="cms_bench_result"
 SAMPLE_FILE_PREFIX="samples"
 
-# MATCH THIS WITH config-bench.yaml "window_duration"
+# MATCH THIS WITH config-bench.yaml "window_interval"
 WINDOW_SEC=10
 
 # MATCH THIS WITH config-bench.yaml "prometheus" exporter port

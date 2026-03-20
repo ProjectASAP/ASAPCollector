@@ -5,7 +5,6 @@ package countminsketchprocessor
 
 import (
 	"fmt"
-	"sort"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -13,20 +12,13 @@ import (
 
 // InputMode controls when the processor flushes its CountMinSketch output.
 // - "batch": per-batch summary flush (no background window ticker)
-// - "window": tumbling window flush driven by WindowDuration.
+// - "window": tumbling window flush driven by WindowInterval.
 type InputMode string
 
 const (
 	ModeBatch  InputMode = "batch"
 	ModeWindow InputMode = "window"
 )
-
-// LabelMatcher specifies an exact label key=value filter.
-// A data point matches only if the named label exists and its string value equals Value.
-type LabelMatcher struct {
-	Key   string `mapstructure:"key"`
-	Value string `mapstructure:"value"`
-}
 
 type Config struct {
 	// Mode controls when this processor flushes CountMinSketch output.
@@ -44,28 +36,26 @@ type Config struct {
 	TransmitSketch bool `mapstructure:"transmit_sketch"`
 	DropOriginal   bool `mapstructure:"drop_original"`
 
-	// WindowDuration is the time window to accumulate data before emitting a sketch (window mode only).
-	WindowDuration time.Duration `mapstructure:"window_duration"`
+	// The time window to accumulate data before emitting a sketch (window mode only).
+	WindowInterval time.Duration `mapstructure:"window_interval"`
 
-	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
-	// All data points sharing the same values for these labels are merged into one sketch.
-	// The output data point carries only these labels.
-	// Empty (default) preserves per-series behavior: each distinct attribute set → own sketch.
-	AggregateBy []string `mapstructure:"aggregate_by"`
+	// DeltaTransmission enables sparse delta encoding: only cells that changed
+	// by at least DeltaThreshold since the last snapshot are transmitted.
+	// Requires TransmitSketch=true; has no effect in batch mode.
+	DeltaTransmission bool `mapstructure:"delta_transmission"`
 
-	// LabelMatchers filters which data points to include before aggregation.
-	// A data point is included only if ALL matchers are satisfied (exact match).
-	// Empty (default) = include all data points.
-	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
+	// DeltaThreshold is the minimum absolute cell change required to include a
+	// cell in the delta payload. Defaults to 1.0 when DeltaTransmission=true.
+	DeltaThreshold float64 `mapstructure:"delta_threshold"`
 }
 
 var _ component.Config = (*Config)(nil)
 
 func (c *Config) Validate() error {
-	// Default to batch mode.
+	// Default to window mode for backwards compatibility.
 	switch c.Mode {
 	case "":
-		c.Mode = ModeBatch
+		c.Mode = ModeWindow
 	case ModeBatch, ModeWindow:
 	default:
 		return fmt.Errorf("invalid mode %q, must be %q or %q", c.Mode, ModeBatch, ModeWindow)
@@ -78,19 +68,22 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("rows and columns must be positive")
 	}
 
-	// WindowDuration is only relevant in window mode.
+	// WindowInterval is only relevant in window mode.
 	if c.Mode == ModeWindow {
-		if c.WindowDuration <= 0 {
+		if c.WindowInterval <= 0 {
 			// Default to 10s for backwards compatibility.
-			c.WindowDuration = 10 * time.Second
+			c.WindowInterval = 10 * time.Second
 		}
-		if c.WindowDuration < 1*time.Second {
-			return fmt.Errorf("window_duration is too small: %s (minimum is 1s)", c.WindowDuration)
+		if c.WindowInterval < 1*time.Second {
+			return fmt.Errorf("window_interval is too small: %s (minimum is 1s)", c.WindowInterval)
 		}
 	}
 
-	// Sort AggregateBy so seriesKey always produces a consistent ordering.
-	sort.Strings(c.AggregateBy)
+	if c.DeltaTransmission {
+		if c.DeltaThreshold <= 0 {
+			c.DeltaThreshold = 1.0
+		}
+	}
 
 	return nil
 }
