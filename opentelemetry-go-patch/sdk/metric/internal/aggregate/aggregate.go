@@ -163,6 +163,19 @@ func (b Builder[N]) DDSketch(relativeAccuracy float64, noMinMax, noSum bool) (Me
 	}
 }
 
+// Noop returns a no-op aggregate function input and output that tracks
+// attribute sets but always emits zero-valued data points. Used when
+// transmit_sketch is false or no aggregation is needed.
+func (b Builder[N]) Noop() (Measure[N], ComputeAggregation) {
+	agg := newNoopAggregate[N](b.AggregationLimit)
+	switch b.Temporality {
+	case metricdata.DeltaTemporality:
+		return b.filter(agg.measure), agg.delta
+	default:
+		return b.filter(agg.measure), agg.cumulative
+	}
+}
+
 // KLLSketch returns a KLL sketch aggregate function input and output.
 func (b Builder[N]) KLLSketch(k int) (Measure[N], ComputeAggregation) {
 	agg := newKLLSketch[N](k, false, b.AggregationLimit)
@@ -175,8 +188,10 @@ func (b Builder[N]) KLLSketch(k int) (Measure[N], ComputeAggregation) {
 }
 
 // CountSketch returns a CountSketch aggregate function input and output.
-func (b Builder[N]) CountSketch(rows, cols int, epsilon, delta float64, dimension string) (Measure[N], ComputeAggregation) {
-	agg := newCountSketchAgg[N](rows, cols, epsilon, delta, dimension, b.AggregationLimit)
+// deltaTransmission enables sparse delta encoding for cumulative exports;
+// deltaThreshold is the minimum absolute cell change to include in a delta.
+func (b Builder[N]) CountSketch(rows, cols int, epsilon, delta float64, dimension string, deltaTransmission bool, deltaThreshold float64) (Measure[N], ComputeAggregation) {
+	agg := newCountSketchAgg[N](rows, cols, epsilon, delta, dimension, b.AggregationLimit, deltaTransmission, deltaThreshold)
 	switch b.Temporality {
 	case metricdata.DeltaTemporality:
 		return b.filter(agg.measure), agg.delta
@@ -186,8 +201,10 @@ func (b Builder[N]) CountSketch(rows, cols int, epsilon, delta float64, dimensio
 }
 
 // CountMinSketch returns a Count-Min Sketch aggregate function input and output.
-func (b Builder[N]) CountMinSketch(rows, cols int) (Measure[N], ComputeAggregation) {
-	agg := newCountMinSketchAgg[N](rows, cols, b.AggregationLimit)
+// deltaTransmission enables sparse delta encoding for cumulative exports;
+// deltaThreshold is the minimum absolute cell change to include in a delta.
+func (b Builder[N]) CountMinSketch(rows, cols int, deltaTransmission bool, deltaThreshold float64) (Measure[N], ComputeAggregation) {
+	agg := newCountMinSketchAgg[N](rows, cols, b.AggregationLimit, deltaTransmission, deltaThreshold)
 	switch b.Temporality {
 	case metricdata.DeltaTemporality:
 		return b.filter(agg.measure), agg.delta
@@ -197,8 +214,9 @@ func (b Builder[N]) CountMinSketch(rows, cols int) (Measure[N], ComputeAggregati
 }
 
 // HLLSketch returns a HyperLogLog sketch aggregate function input and output.
-func (b Builder[N]) HLLSketch() (Measure[N], ComputeAggregation) {
-	agg := newHLLSketch[N](b.AggregationLimit)
+// deltaTransmission enables sparse delta encoding for cumulative exports.
+func (b Builder[N]) HLLSketch(deltaTransmission bool) (Measure[N], ComputeAggregation) {
+	agg := newHLLSketch[N](b.AggregationLimit, deltaTransmission)
 	switch b.Temporality {
 	case metricdata.DeltaTemporality:
 		return b.filter(agg.measure), agg.delta
