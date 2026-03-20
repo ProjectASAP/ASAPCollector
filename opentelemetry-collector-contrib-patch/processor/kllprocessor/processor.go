@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // builderPool recycles strings.Builder instances to avoid per-call heap
@@ -520,7 +521,11 @@ func serializeKLLSketch(sketch *kll.KLLSketch) ([]byte, error) {
 	if sketch == nil {
 		return nil, nil
 	}
-	return sketch.SerializeToBytes()
+	env, err := sketch.SerializePortable()
+	if err != nil {
+		return nil, err
+	}
+	return proto.Marshal(env)
 }
 
 func (p *kllProcessor) sketchMetricName(base string) string {

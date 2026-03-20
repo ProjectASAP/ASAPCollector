@@ -13,12 +13,12 @@ import (
 
 	"github.com/ProjectASAP/sketchlib-go/common"
 	cms "github.com/ProjectASAP/sketchlib-go/sketches/CountMinSketch"
-
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // builderPool recycles strings.Builder instances used in the hot
@@ -424,7 +424,11 @@ func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
 //
 
 func serializeCMS(s *cms.CountMinSketch) ([]byte, error) {
-	return s.SerializeToBytes()
+	env, err := s.SerializePortable()
+	if err != nil {
+		return nil, err
+	}
+	return proto.Marshal(env)
 }
 
 func deserializeCMS(data []byte) (*cms.CountMinSketch, error) {

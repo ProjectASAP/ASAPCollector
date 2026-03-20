@@ -1,0 +1,31 @@
+# OTLP Protobuf, Pathway 1: raw metrics
+# DataCollector forwards raw metrics via standard OTLP to ASAPQuery OTLP receiver
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 5000
+
+exporters:
+  otlphttp:
+    endpoint: http://localhost:4318
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp]
+  telemetry:
+    metrics:
+      level: basic
+    logs:
+      level: info
+    resource:
+      service.name: kllcol-otlp-pathway1

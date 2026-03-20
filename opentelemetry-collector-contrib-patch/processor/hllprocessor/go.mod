@@ -58,7 +58,7 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl => ..
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden => ../../pkg/golden
 
-replace github.com/ProjectASAP/sketchlib-go => /mydata/sketchlib-go
+replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
 
 retract (
 	v0.76.2

@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // builderPool recycles strings.Builder instances to avoid per-call heap
@@ -481,7 +482,11 @@ func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pme
 // appendHLLSketchDataPoint serializes the HLL sketch and embeds it in a gauge
 // data point attribute. The cardinality estimate is also stored for convenience.
 func appendHLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *hll.HyperLogLog, ts pcommon.Timestamp) error {
-	payload, err := sketch.SerializeToBytes()
+	env, err := sketch.SerializePortable()
+	if err != nil {
+		return err
+	}
+	payload, err := proto.Marshal(env)
 	if err != nil {
 		return err
 	}
