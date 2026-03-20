@@ -443,8 +443,11 @@ func (CountSketch[N]) privateAggregation() {}
 type CountSketchEncoding string
 
 const (
-	// CountSketchEncodingGob indicates the sketch bytes are gob-encoded.
+	// CountSketchEncodingGob indicates the sketch bytes are gob-encoded (full state).
 	CountSketchEncodingGob CountSketchEncoding = "count_sketch_gob"
+	// CountSketchEncodingDelta indicates the sketch bytes are a proto-serialized
+	// sparse delta (only cells that changed since the last snapshot).
+	CountSketchEncodingDelta CountSketchEncoding = "count_sketch_delta"
 )
 
 // CountSketchDataPoint is a single data point in a CountSketch timeseries.
@@ -497,8 +500,11 @@ func (CountMinSketch[N]) privateAggregation() {}
 type CountMinSketchEncoding string
 
 const (
-	// CountMinSketchEncodingGob indicates the sketch bytes are gob-encoded.
+	// CountMinSketchEncodingGob indicates the sketch bytes are gob-encoded (full state).
 	CountMinSketchEncodingGob CountMinSketchEncoding = "count_min_sketch_gob"
+	// CountMinSketchEncodingDelta indicates the sketch bytes are a proto-serialized
+	// sparse delta (only cells that changed since the last snapshot).
+	CountMinSketchEncodingDelta CountMinSketchEncoding = "count_min_sketch_delta"
 )
 
 // CountMinSketchDataPoint is a single data point in a CountMinSketch timeseries.
@@ -553,6 +559,9 @@ type HLLSketchEncoding string
 const (
 	// HLLSketchEncodingBinary indicates the sketch bytes are binary-encoded (SerializeToBytes).
 	HLLSketchEncodingBinary HLLSketchEncoding = "hll_sketch_binary"
+	// HLLSketchEncodingDelta indicates the sketch bytes are a proto-serialized
+	// sparse register delta (only registers that increased since the last snapshot).
+	HLLSketchEncodingDelta HLLSketchEncoding = "hll_sketch_delta"
 )
 
 // HLLSketchDataPoint is a single data point in a HLLSketch timeseries.

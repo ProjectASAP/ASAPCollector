@@ -1406,7 +1406,135 @@ adding the new fields there propagates automatically to storage and rollback.
 
 ---
 
-## 14. References
+## 14. SDK-to-Collector Delta Transmission
+
+Phases 1–13 address delta transmission **within the collector pipeline** (window-mode
+processors sending sparse diffs to downstream processors or the backend).  This section
+covers the complementary problem: reducing the bandwidth of the **SDK → collector** hop
+by having application-side aggregators send sparse deltas over OTLP instead of full
+sketch payloads on every export cycle.
+
+### 14.1 Motivation and Scope
+
+The SDK exports sketch data via OTLP to the local collector agent every *reader interval*
+(default 10 s–60 s).  For large deployments with many series and wide sketches (e.g. a
+4 × 2048 CMS), each export can be tens of kilobytes per metric.  With `CumulativeTemporality`
+the sketch grows monotonically; consecutive exports differ by only a sparse set of cells.
+Sending only those changed cells dramatically reduces per-export payload size.
+
+**Scope:**
+- Applies to `CumulativeTemporality` exports only.  `DeltaTemporality` resets the sketch
+  each export (independent windows); sparse delta between independent windows is not useful.
+- Supported sketch types: **CountMinSketch**, **CountSketch**, **HLLSketch**.
+- Not applicable to DDSketch or KLLSketch (different internal structures; no `ComputeDelta`
+  functions provided by sketchlib-go).
+
+### 14.2 Architecture
+
+```
+Application process                    Collector agent
+┌────────────────────────────────┐     ┌───────────────────────────────┐
+│  SDK Metric Reader (cumulative) │     │  OTLP Receiver                │
+│                                │     │        ↓                      │
+│  hllSketchValues               │     │  countsketch/countminsketch    │
+│    snapshots map[key]*HLL ──── │OTLP─►  processor (existing)         │
+│    delta() → HLLDelta proto    │     │        ↓                      │
+│                                │     │  Exporter → Backend            │
+│  countMinSketchValues          │     └───────────────────────────────┘
+│    snapshots map[key]*CMS      │
+│    delta() → CountMinDelta     │
+│                                │
+│  countSketchValues             │
+│    snapshots map[key]*CS       │
+│    delta() → CountSketchDelta  │
+└────────────────────────────────┘
+```
+
+The SDK aggregator maintains a **snapshot** of the last-exported sketch state per
+attribute series.  On each cumulative export cycle:
+
+1. **No snapshot yet** (first export or series evicted): serialize full sketch,
+   `encoding = "xxx_binary"` or `"xxx_gob"`, save snapshot clone.
+2. **Snapshot exists**: call `sketchlib-go ComputeDelta(snapshot, current)`,
+   `encoding = "xxx_delta"`, update snapshot clone.
+
+The receiver reconstructs the current state by calling `ApplyDelta` on its own copy.
+
+### 14.3 Configuration
+
+Delta transmission is opt-in via the `AggregationXxx` struct fields populated by
+`PipelineConfig.ToAggregation()`.  No new YAML keys are needed beyond what the
+controller already sets.
+
+| Aggregation type | Field | Effect |
+|---|---|---|
+| `AggregationCountSketch` | `DeltaTransmission bool` | Enable sparse CS delta |
+| `AggregationCountSketch` | `DeltaThreshold float64` | Min cell change (default 1.0) |
+| `AggregationCountMinSketch` | `DeltaTransmission bool` | Enable sparse CMS delta |
+| `AggregationCountMinSketch` | `DeltaThreshold float64` | Min cell change (default 1.0) |
+| `AggregationHLLSketch` | `DeltaTransmission bool` | Enable sparse HLL register delta |
+
+HLL has no threshold because `ComputeRegisterDelta` always includes all increased
+registers (HLL registers are monotone: they never decrease).
+
+### 14.4 Encoding Wire Values
+
+New encoding constants are added to `sdk/metric/metricdata/data.go`:
+
+| Constant | Value | Sketch type |
+|---|---|---|
+| `HLLSketchEncodingDelta` | `"hll_sketch_delta"` | HyperLogLog |
+| `CountMinSketchEncodingDelta` | `"count_min_sketch_delta"` | Count-Min Sketch |
+| `CountSketchEncodingDelta` | `"count_sketch_delta"` | Count Sketch |
+
+These are carried in the `Encoding` field of each data point and forwarded by the
+OTLP exporter as an attribute on the OTLP metric data point so the receiver knows
+how to interpret `Sketch` bytes.
+
+### 14.5 Implementation Files
+
+| File | Change |
+|---|---|
+| `sdk/metric/metricdata/data.go` | Add `HLLSketchEncodingDelta`, `CountMinSketchEncodingDelta`, `CountSketchEncodingDelta` |
+| `sdk/metric/aggregation.go` | Add `DeltaTransmission bool` + `DeltaThreshold float64` to `AggregationCountSketch`, `AggregationCountMinSketch`, `AggregationHLLSketch` |
+| `sdk/metric/pipeline.go` | Pass new fields to `b.CountSketch(...)`, `b.CountMinSketch(...)`, `b.HLLSketch(...)` |
+| `sdk/metric/internal/aggregate/aggregate.go` | Update `Builder.CountSketch`, `CountMinSketch`, `HLLSketch` signatures; add `Builder.Noop()` |
+| `sdk/metric/internal/aggregate/hllsketch.go` | Add `snapshots map`, `payloadFor` helper; delta encoding in `cumulative()` |
+| `sdk/metric/internal/aggregate/countminsketch.go` | Add `snapshots map`, `payloadFor` helper; delta encoding in `cumulative()` |
+| `sdk/metric/internal/aggregate/countsketch.go` | Add `snapshots map`, `payloadFor` helper; delta encoding in `cumulative()` |
+| `sdk/metric/go.mod` | Add `replace github.com/ProjectASAP/sketchlib-go => /tmp/sketchlib-go` |
+
+### 14.6 Snapshot Lifecycle
+
+- **Creation**: on first successful export of a series, a deep clone is stored in the
+  `snapshots` map (keyed by `attribute.Distinct`).
+- **Update**: after each cumulative export cycle, the snapshot is replaced with a fresh
+  clone of the current sketch state.
+- **Eviction**: when a series is idle for `maxIdleCycles` consecutive exports it is
+  evicted from `values`; its snapshot is also removed from `snapshots` at the same time
+  to prevent memory leaks.
+- **Thread safety**: `snapshotsMu sync.Mutex` guards the `snapshots` map independently
+  of `valuesMu` so snapshot updates do not block concurrent `measure()` calls.
+
+### 14.7 Interaction with Collector-Side Delta Transmission (Phases 1–7)
+
+The two delta layers are orthogonal and can be enabled simultaneously:
+
+```
+SDK (cumulative, delta payload) → OTLP → Collector OTLP receiver
+  → countsketchprocessor (window mode, delta_transmission=true)
+  → Backend
+```
+
+The collector processor does not need to reconstruct the full sketch from deltas before
+re-computing its own delta; it treats each incoming `CountSketch` data point as an
+observation and counts it as `1.0` sample (existing `MetricTypeCountSketch` path in
+`ingestMetric`).  The sketch payload bytes are forwarded as-is through the processor
+output `sketch_payload` attribute.
+
+---
+
+## 15. References
 
 - Zhang, Chen, Liu. *OctoSketch: Enabling Real-Time, Continuous Network Monitoring over Multiple Cores.* USENIX NSDI 2024. https://www.usenix.org/system/files/nsdi24-zhang-yinda.pdf
 - OctoSketch source code. https://github.com/Froot-NetSys/OctoSketch
