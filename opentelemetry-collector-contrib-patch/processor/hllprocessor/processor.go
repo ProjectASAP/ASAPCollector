@@ -45,6 +45,11 @@ type hllProcessor struct {
 	// register arrays) across window flushes to reduce GC pressure in
 	// high-cardinality deployments.
 	seriesPool sync.Pool
+
+	// snapshots maps "<metricName>::<attrKey>" → cloned HLL, updated each flush.
+	// Used to compute register deltas when cfg.DeltaTransmission=true.
+	snapshots   map[string]*hll.HyperLogLog
+	snapshotsMu sync.Mutex
 }
 
 type resourceWindow struct {
@@ -75,6 +80,7 @@ func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *hllPr
 		logger:       logger,
 		nextConsumer: next,
 		windowStore:  make(map[string]*resourceWindow),
+		snapshots:    make(map[string]*hll.HyperLogLog),
 		stopCh:       make(chan struct{}),
 		doneCh:       make(chan struct{}),
 	}
@@ -156,13 +162,16 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 	batched := make(map[string]*batchSeries)
 
 	getOrCreate := func(name, unit string, attrs pcommon.Map) *batchSeries {
-		key := name + "::" + p.seriesKey(attrs)
+		attrKey := attributesKey(attrs)
+		key := name + "::" + attrKey
 		bs := batched[key]
 		if bs == nil {
+			attrCopy := pcommon.NewMap()
+			attrs.CopyTo(attrCopy)
 			bs = &batchSeries{
 				name:   name,
 				unit:   unit,
-				attrs:  p.seriesAttrs(attrs),
+				attrs:  attrCopy,
 				sketch: hll.NewHyperLogLog(),
 			}
 			batched[key] = bs
@@ -182,19 +191,13 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 					dps := metric.Gauge().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
 						dp := dps.At(l)
-						if !p.matchesMatchers(dp.Attributes()) {
-							continue
-						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
-						bs.sketch.Insert(dp.DoubleValue())
+						bs.sketch.InsertValue(dp.DoubleValue())
 					}
 				case pmetric.MetricTypeHLLSketch:
 					dps := metric.HLLSketch().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
 						dp := dps.At(l)
-						if !p.matchesMatchers(dp.Attributes()) {
-							continue
-						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
 						if payload := dp.Sketch(); len(payload) > 0 {
 							if err := mergeSketchBytes(bs.sketch, payload); err != nil && p.logger != nil {
@@ -229,7 +232,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 			dp := m.Gauge().DataPoints().AppendEmpty()
 			bs.attrs.CopyTo(dp.Attributes())
 			dp.SetTimestamp(now)
-			dp.SetDoubleValue(float64(bs.sketch.Estimate()))
+			dp.SetDoubleValue(float64(bs.sketch.EstimateCardinality()))
 		}
 	}
 	return nil
@@ -257,58 +260,6 @@ func attributesKey(attrs pcommon.Map) string {
 	s := b.String()
 	builderPool.Put(b)
 	return s
-}
-
-// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
-func (p *hllProcessor) matchesMatchers(attrs pcommon.Map) bool {
-	for _, m := range p.cfg.LabelMatchers {
-		v, ok := attrs.Get(m.Key)
-		if !ok || v.AsString() != m.Value {
-			return false
-		}
-	}
-	return true
-}
-
-// seriesKey returns the map key used to locate a series in the window/batch store.
-// When AggregateBy is configured, only those label values form the key (cross-series
-// aggregation). Otherwise the full attribute set is used (per-series, default).
-func (p *hllProcessor) seriesKey(attrs pcommon.Map) string {
-	if len(p.cfg.AggregateBy) == 0 {
-		return attributesKey(attrs)
-	}
-	b := builderPool.Get().(*strings.Builder)
-	b.Reset()
-	for _, k := range p.cfg.AggregateBy { // already sorted by Validate
-		v, ok := attrs.Get(k)
-		if !ok {
-			continue
-		}
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(v.AsString())
-		b.WriteByte(';')
-	}
-	key := b.String()
-	builderPool.Put(b)
-	return key
-}
-
-// seriesAttrs returns the attribute map to store on a new series entry.
-// When AggregateBy is configured, only those labels are included in the output.
-// Otherwise a full copy of attrs is returned.
-func (p *hllProcessor) seriesAttrs(attrs pcommon.Map) pcommon.Map {
-	out := pcommon.NewMap()
-	if len(p.cfg.AggregateBy) == 0 {
-		attrs.CopyTo(out)
-		return out
-	}
-	for _, k := range p.cfg.AggregateBy {
-		if v, ok := attrs.Get(k); ok {
-			out.PutStr(k, v.AsString())
-		}
-	}
-	return out
 }
 
 func (p *hllProcessor) accumulateIntoWindow(md pmetric.Metrics) {
@@ -379,14 +330,13 @@ func (p *hllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 	dps := metric.Gauge().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		if !p.matchesMatchers(dp.Attributes()) {
-			continue
-		}
-		attrKey := p.seriesKey(dp.Attributes())
+		attrKey := attributesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
+			attrCopy := pcommon.NewMap()
+			dp.Attributes().CopyTo(attrCopy)
 			series = p.seriesPool.Get().(*hllSeries)
-			series.attrs = p.seriesAttrs(dp.Attributes())
+			series.attrs = attrCopy
 			if series.sketch != nil {
 				series.sketch.Reset()
 			} else {
@@ -394,7 +344,7 @@ func (p *hllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 			}
 			mw.series[attrKey] = series
 		}
-		series.sketch.Insert(dp.DoubleValue())
+		series.sketch.InsertValue(dp.DoubleValue())
 	}
 }
 
@@ -405,14 +355,13 @@ func (p *hllProcessor) accumulateHLLSketchMetric(sw *scopeWindow, metric pmetric
 	dps := metric.HLLSketch().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		if !p.matchesMatchers(dp.Attributes()) {
-			continue
-		}
-		attrKey := p.seriesKey(dp.Attributes())
+		attrKey := attributesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
+			attrCopy := pcommon.NewMap()
+			dp.Attributes().CopyTo(attrCopy)
 			series = p.seriesPool.Get().(*hllSeries)
-			series.attrs = p.seriesAttrs(dp.Attributes())
+			series.attrs = attrCopy
 			if series.sketch != nil {
 				series.sketch.Reset()
 			} else {
@@ -457,7 +406,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 						m       pmetric.Metric
 						created bool
 					)
-					for _, series := range mw.series {
+					for attrKey, series := range mw.series {
 						if series.sketch == nil {
 							series.attrs = pcommon.Map{}
 							p.seriesPool.Put(series)
@@ -471,8 +420,30 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 							m.SetEmptyGauge()
 							created = true
 						}
-						if err := appendHLLSketchDataPoint(m, series.attrs, series.sketch, now); err != nil && p.logger != nil {
-							p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
+
+						var appErr error
+						if p.cfg.DeltaTransmission {
+							snapKey := metricName + "::" + attrKey
+							p.snapshotsMu.Lock()
+							snap, hasSnap := p.snapshots[snapKey]
+							p.snapshotsMu.Unlock()
+
+							if hasSnap {
+								appErr = appendHLLDeltaDataPoint(m, series.attrs, snap, series.sketch, now)
+							} else {
+								appErr = appendHLLSketchDataPoint(m, series.attrs, series.sketch, now)
+							}
+
+							newSnap := cloneHLL(series.sketch)
+							p.snapshotsMu.Lock()
+							p.snapshots[snapKey] = newSnap
+							p.snapshotsMu.Unlock()
+						} else {
+							appErr = appendHLLSketchDataPoint(m, series.attrs, series.sketch, now)
+						}
+
+						if appErr != nil && p.logger != nil {
+							p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(appErr))
 						}
 						series.attrs = pcommon.Map{}
 						p.seriesPool.Put(series)
@@ -494,7 +465,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 					dps = append(dps, struct {
 						attrs pcommon.Map
 						val   float64
-					}{series.attrs, float64(series.sketch.Estimate())})
+					}{series.attrs, float64(series.sketch.EstimateCardinality())})
 					series.attrs = pcommon.Map{}
 					p.seriesPool.Put(series)
 				}
@@ -545,11 +516,42 @@ func appendHLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *
 	dp := metric.Gauge().DataPoints().AppendEmpty()
 	attrs.CopyTo(dp.Attributes())
 	dp.Attributes().PutInt("hll.precision", hll.HLLPrecision)
-	dp.Attributes().PutInt("hll.cardinality", int64(sketch.Estimate()))
+	dp.Attributes().PutInt("hll.cardinality", int64(sketch.EstimateCardinality()))
 	dp.Attributes().PutEmptyBytes("hll.sketch_payload").FromRaw(payload)
 	dp.SetTimestamp(ts)
-	dp.SetDoubleValue(float64(sketch.Estimate()))
+	dp.SetDoubleValue(float64(sketch.EstimateCardinality()))
 	return nil
+}
+
+// appendHLLDeltaDataPoint computes a register delta between snapshot and current,
+// then embeds the proto-marshalled HLLDelta payload in a gauge data point.
+func appendHLLDeltaDataPoint(metric pmetric.Metric, attrs pcommon.Map, snapshot, current *hll.HyperLogLog, ts pcommon.Timestamp) error {
+	payload, err := hll.ComputeRegisterDelta(snapshot, current)
+	if err != nil {
+		return err
+	}
+	dp := metric.Gauge().DataPoints().AppendEmpty()
+	attrs.CopyTo(dp.Attributes())
+	dp.Attributes().PutInt("hll.precision", hll.HLLPrecision)
+	dp.Attributes().PutInt("hll.cardinality", int64(current.EstimateCardinality()))
+	dp.Attributes().PutStr("hll.encoding", "proto_delta")
+	dp.Attributes().PutEmptyBytes("hll.sketch_payload").FromRaw(payload)
+	dp.SetTimestamp(ts)
+	dp.SetDoubleValue(float64(current.EstimateCardinality()))
+	return nil
+}
+
+// cloneHLL returns a deep copy of h suitable for use as a delta snapshot.
+func cloneHLL(h *hll.HyperLogLog) *hll.HyperLogLog {
+	data, err := h.SerializeToBytes()
+	if err != nil {
+		return nil
+	}
+	clone, err := hll.DeserializeHyperLogLogFromBytes(data)
+	if err != nil {
+		return nil
+	}
+	return clone
 }
 
 func (p *hllProcessor) cardinalityMetricName(base string) string {

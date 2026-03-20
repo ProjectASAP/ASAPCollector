@@ -68,7 +68,7 @@ func TestIntegrationPipelineWindowMode(t *testing.T) {
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.Mode = ModeWindow
 	cfg.MetricName = "cms_window"
-	cfg.WindowDuration = 2 * time.Second
+	cfg.WindowInterval = 2 * time.Second
 	require.NoError(t, cfg.Validate())
 
 	sink := new(consumertest.MetricsSink)

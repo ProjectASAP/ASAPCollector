@@ -3,6 +3,8 @@ package countsketchprocessor
 import (
 	"context"
 	"math"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,28 +18,34 @@ import (
 	"go.uber.org/zap"
 )
 
+// builderPool recycles strings.Builder instances used in buildPartitionKey.
+var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
+
+type windowSketch struct {
+	cs          *countsketch.CountSketch
+	mu          sync.Mutex
+	sampleCount uint64
+}
+
 type countSketchProcessor struct {
 	logger *zap.Logger
 	next   consumer.Metrics
-
 	config *Config
+	mode   InputMode
 
-	mode InputMode
+	mu                   sync.RWMutex
+	activeWindowSketches map[string]*windowSketch
 
-	// To prevent race conditions between
-	// processMetrics (Write) and flushSketches (Reset)
-	mutex sync.Mutex
+	windowSketchPool sync.Pool
 
-	rowSketch *countsketch.CountSketch // Tracks Metric Names
-	colSketch *countsketch.CountSketch // Tracks Host Names
-
-	// sketchPool recycles CountSketch objects across flushes via Reset(),
-	// avoiding re-allocation of the underlying hash/count arrays every window.
-	sketchPool sync.Pool
+	// snapshots holds one CS clone per partition key, updated every window
+	// flush. Used to compute sparse delta payloads when DeltaTransmission=true.
+	snapshots   map[string]*countsketch.CountSketch
+	snapshotsMu sync.Mutex
 
 	stopCh        chan struct{}
 	doneCh        chan struct{}
-	windowStarted atomic.Bool // true once the window goroutine is running
+	windowStarted atomic.Bool
 }
 
 func newConfiguredCountSketch(cfg *Config) (*countsketch.CountSketch, error) {
@@ -66,34 +74,20 @@ func nextPowerOfTwo(n int) int {
 func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *countSketchProcessor {
 	mode := cfg.Mode
 	if mode == "" {
-		// Preserve legacy behavior when mode is not set explicitly.
-		mode = ModeBatch
-	}
-
-	rowS, errRow := newConfiguredCountSketch(cfg)
-	if errRow != nil {
-		logger.Error("Failed to init row sketch", zap.Error(errRow))
-	}
-
-	colS, errCol := newConfiguredCountSketch(cfg)
-	if errCol != nil {
-		logger.Error("Failed to init col sketch", zap.Error(errCol))
+		mode = ModeWindow
 	}
 
 	p := &countSketchProcessor{
-		logger: logger,
-		next:   next,
-		config: cfg,
-		mode:   mode,
-
-		rowSketch: rowS,
-		colSketch: colS,
-		stopCh:    make(chan struct{}),
-		doneCh:    make(chan struct{}),
+		logger:               logger,
+		next:                 next,
+		config:               cfg,
+		mode:                 mode,
+		activeWindowSketches: make(map[string]*windowSketch),
+		snapshots:            make(map[string]*countsketch.CountSketch),
+		stopCh:               make(chan struct{}),
+		doneCh:               make(chan struct{}),
 	}
-	// New returns nil so Get() returns nil when pool is empty;
-	// callers allocate fresh sketches in that case.
-	p.sketchPool.New = func() any { return (*countsketch.CountSketch)(nil) }
+	p.windowSketchPool.New = func() any { return new(windowSketch) }
 	return p
 }
 
@@ -101,24 +95,23 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 	p.logger.Info("Starting Count Sketch Processor",
 		zap.Float64("epsilon", p.config.Epsilon),
 		zap.Float64("delta", p.config.Delta),
-		zap.Duration("window", p.config.WindowDuration),
+		zap.Duration("window", p.config.WindowSize),
 		zap.String("mode", string(p.mode)),
+		zap.Strings("group_by", p.config.GroupBy),
 	)
 	if p.config.TransmitSketch {
 		p.logger.Warn("countsketchprocessor: transmit_sketch=true is not yet backed by a serialized sketch payload; emitting metric-form summaries")
 	}
 
-	// In batch mode we flush per ConsumeMetrics call and do not need a ticker.
 	if p.mode == ModeBatch {
 		return nil
 	}
 
-	// Window mode: start background window loop if a positive window is configured.
-	if p.config.WindowDuration <= 0 {
+	if p.config.WindowSize <= 0 {
 		return nil
 	}
 
-	ticker := time.NewTicker(p.config.WindowDuration)
+	ticker := time.NewTicker(p.config.WindowSize)
 	p.windowStarted.Store(true)
 	go p.startWindowLoop(ctx, ticker)
 
@@ -126,13 +119,10 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 }
 
 func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
-	// Only wait if the window goroutine was actually started; avoids blocking
-	// forever when Start was never called.
 	if p.mode != ModeWindow || !p.windowStarted.Load() {
 		return nil
 	}
 
-	// Signal the goroutine and wait for it to finish (or context cancellation).
 	close(p.stopCh)
 
 	select {
@@ -143,237 +133,166 @@ func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
 	}
 }
 
-// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
-func (p *countSketchProcessor) matchesMatchers(attrs pcommon.Map) bool {
-	for _, m := range p.config.LabelMatchers {
-		v, ok := attrs.Get(m.Key)
-		if !ok || v.AsString() != m.Value {
-			return false
+func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
+	switch p.mode {
+	case ModeBatch:
+		return p.consumeBatch(md), nil
+	case ModeWindow:
+		p.accumulateIntoWindow(md)
+		if !p.config.DropOriginal {
+			return md, nil
 		}
+		return pmetric.NewMetrics(), nil
+	default:
+		p.logger.Error("countsketchprocessor: unknown mode, dropping metrics", zap.Any("mode", p.mode))
+		return pmetric.NewMetrics(), nil
 	}
-	return true
 }
 
-func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
-	p.mutex.Lock()
-
-	if p.rowSketch == nil || p.colSketch == nil {
-		p.mutex.Unlock()
-		return md, nil
-	}
-
-	rm := md.ResourceMetrics()
-	for i := 0; i < rm.Len(); i++ {
-		resourceMetric := rm.At(i)
-
-		hostKey := "unknown-host"
-		// TODO: Might need to change the key based on the input
-		if v, ok := resourceMetric.Resource().Attributes().Get("host.name"); ok {
-			hostKey = v.Str()
-		}
-
-		sms := resourceMetric.ScopeMetrics()
+func (p *countSketchProcessor) accumulateIntoWindow(md pmetric.Metrics) {
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		rm := rms.At(i)
+		resourceAttrs := rm.Resource().Attributes()
+		sms := rm.ScopeMetrics()
 		for j := 0; j < sms.Len(); j++ {
 			metrics := sms.At(j).Metrics()
-
 			for k := 0; k < metrics.Len(); k++ {
-				metric := metrics.At(k)
-
-				rowKey := metric.Name()
-
-				var value float64
-
-				switch metric.Type() {
-				case pmetric.MetricTypeGauge:
-					dps := metric.Gauge().DataPoints()
-					value = p.sumMatchingPoints(dps)
-
-				case pmetric.MetricTypeSum:
-					dps := metric.Sum().DataPoints()
-					value = p.sumMatchingPoints(dps)
-
-				case pmetric.MetricTypeHistogram:
-					dps := metric.Histogram().DataPoints()
-					for l := 0; l < dps.Len(); l++ {
-						value += float64(dps.At(l).Count())
-					}
-
-				case pmetric.MetricTypeCountSketch:
-					// Pre-aggregated path: each dp represents one series window.
-					// Count each dp as one observation for the row/col frequency sketches.
-					value += float64(metric.CountSketch().DataPoints().Len())
-				}
-
-				p.rowSketch.UpdateString(rowKey, value)
-				p.colSketch.UpdateString(hostKey, value)
+				p.ingestMetric(resourceAttrs, metrics.At(k))
 			}
 		}
 	}
+}
 
-	p.mutex.Unlock()
+func (p *countSketchProcessor) consumeBatch(md pmetric.Metrics) pmetric.Metrics {
+	p.accumulateIntoWindow(md)
 
-	// In batch mode, flush immediately after processing this batch.
-	if p.mode == ModeBatch {
-		p.flushBatch()
+	sketches := p.buildWindowMetricsAndReset()
+	if sketches.ResourceMetrics().Len() == 0 {
+		if p.config.DropOriginal {
+			return pmetric.NewMetrics()
+		}
+		return md
 	}
 
-	// If drop_original is true, return empty metrics (sketches will be emitted in flushSketches)
 	if p.config.DropOriginal {
-		return pmetric.NewMetrics(), nil
+		return sketches
 	}
 
-	return md, nil
+	// Expansion mode: keep originals and append sketch summaries.
+	out := pmetric.NewMetrics()
+	md.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
+	sketches.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
+	return out
 }
 
-// sumMatchingPoints sums data point values, applying label_matchers filtering.
-func (p *countSketchProcessor) sumMatchingPoints(dps pmetric.NumberDataPointSlice) float64 {
-	var total float64
-	for i := 0; i < dps.Len(); i++ {
-		dp := dps.At(i)
-		if !p.matchesMatchers(dp.Attributes()) {
-			continue
+func (p *countSketchProcessor) ingestMetric(resourceAttrs pcommon.Map, metric pmetric.Metric) {
+	metricName := metric.Name()
+	switch metric.Type() {
+	case pmetric.MetricTypeGauge:
+		dps := metric.Gauge().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.GroupBy)
+			p.updateWindowSketch(pk, metricName, dpValue(dp))
 		}
-		if dp.ValueType() == pmetric.NumberDataPointValueTypeInt {
-			total += float64(dp.IntValue())
-		} else {
-			total += dp.DoubleValue()
+	case pmetric.MetricTypeSum:
+		dps := metric.Sum().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.GroupBy)
+			p.updateWindowSketch(pk, metricName, dpValue(dp))
+		}
+	case pmetric.MetricTypeHistogram:
+		dps := metric.Histogram().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.GroupBy)
+			p.updateWindowSketch(pk, metricName, float64(dp.Count()))
+		}
+	case pmetric.MetricTypeCountSketch:
+		// Pre-aggregated path: count each dp as one observation.
+		dps := metric.CountSketch().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.GroupBy)
+			p.updateWindowSketch(pk, metricName, 1.0)
 		}
 	}
-	return total
 }
 
-func sumPoints(dps pmetric.NumberDataPointSlice) float64 {
-	var total float64
-	for i := 0; i < dps.Len(); i++ {
-		dp := dps.At(i)
-		if dp.ValueType() == pmetric.NumberDataPointValueTypeInt {
-			total += float64(dp.IntValue())
-		} else {
-			total += dp.DoubleValue()
-		}
+func dpValue(dp pmetric.NumberDataPoint) float64 {
+	if dp.ValueType() == pmetric.NumberDataPointValueTypeInt {
+		return float64(dp.IntValue())
 	}
-	return total
+	return dp.DoubleValue()
+}
+
+func (p *countSketchProcessor) updateWindowSketch(partitionKey, itemKey string, value float64) {
+	p.mu.RLock()
+	ws, exists := p.activeWindowSketches[partitionKey]
+	p.mu.RUnlock()
+
+	if !exists {
+		p.mu.Lock()
+		ws, exists = p.activeWindowSketches[partitionKey]
+		if !exists {
+			ws = p.windowSketchPool.Get().(*windowSketch)
+			if ws.cs != nil {
+				ws.cs.Reset()
+			} else {
+				cs, err := newConfiguredCountSketch(p.config)
+				if err != nil {
+					p.logger.Error("Failed to create CountSketch", zap.Error(err))
+					p.windowSketchPool.Put(ws)
+					p.mu.Unlock()
+					return
+				}
+				ws.cs = cs
+			}
+			ws.sampleCount = 0
+			p.activeWindowSketches[partitionKey] = ws
+		}
+		p.mu.Unlock()
+	}
+
+	ws.mu.Lock()
+	ws.cs.UpdateString(itemKey, value)
+	ws.sampleCount++
+	ws.mu.Unlock()
 }
 
 func (p *countSketchProcessor) startWindowLoop(ctx context.Context, ticker *time.Ticker) {
 	defer func() {
 		ticker.Stop()
-
-		p.mutex.Lock()
-		p.rowSketch = nil
-		p.colSketch = nil
-
-		p.mutex.Unlock()
-
 		close(p.doneCh)
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			p.flushSketches()
+			p.emitWindowAndReset()
 			return
 		case <-p.stopCh:
-			p.flushSketches()
+			p.emitWindowAndReset()
 			return
-
 		case <-ticker.C:
-			p.flushSketches()
+			p.emitWindowAndReset()
 		}
 	}
 }
 
-// flushBatch snapshots the current sketches, resets them, and emits summary
-// metrics immediately. It is used when the processor runs in batch mode.
-func (p *countSketchProcessor) flushBatch() {
-	p.mutex.Lock()
-
-	// Snapshot sketches before resetting.
-	rowSnapshot := p.rowSketch
-	colSnapshot := p.colSketch
-
-	// Get reusable sketches from pool, or allocate fresh ones.
-	var err error
-	rowNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
-	if rowNext == nil {
-		rowNext, err = newConfiguredCountSketch(p.config)
-		if err != nil {
-			p.logger.Error("Failed to reset row sketch", zap.Error(err))
-		}
-	}
-	colNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
-	if colNext == nil {
-		colNext, err = newConfiguredCountSketch(p.config)
-		if err != nil {
-			p.logger.Error("Failed to reset col sketch", zap.Error(err))
-		}
-	}
-	p.rowSketch = rowNext
-	p.colSketch = colNext
-
-	p.mutex.Unlock()
-
-	// Emit sketch metrics if we have snapshots.
-	if rowSnapshot != nil || colSnapshot != nil {
-		p.emitSketches(rowSnapshot, colSnapshot)
+func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
+	p.mu.Lock()
+	if len(p.activeWindowSketches) == 0 {
+		p.mu.Unlock()
+		return pmetric.NewMetrics()
 	}
 
-	// Return old sketches to pool after emission.
-	if rowSnapshot != nil {
-		rowSnapshot.Reset()
-		p.sketchPool.Put(rowSnapshot)
-	}
-	if colSnapshot != nil {
-		colSnapshot.Reset()
-		p.sketchPool.Put(colSnapshot)
-	}
-}
+	snapshot := p.activeWindowSketches
+	p.activeWindowSketches = make(map[string]*windowSketch)
+	p.mu.Unlock()
 
-func (p *countSketchProcessor) flushSketches() {
-	p.mutex.Lock()
-
-	// Snapshot sketches before resetting
-	rowSnapshot := p.rowSketch
-	colSnapshot := p.colSketch
-
-	// Get reusable sketches from pool, or allocate fresh ones.
-	var err error
-	rowNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
-	if rowNext == nil {
-		rowNext, err = newConfiguredCountSketch(p.config)
-		if err != nil {
-			p.logger.Error("Failed to reset row sketch", zap.Error(err))
-		}
-	}
-	colNext, _ := p.sketchPool.Get().(*countsketch.CountSketch)
-	if colNext == nil {
-		colNext, err = newConfiguredCountSketch(p.config)
-		if err != nil {
-			p.logger.Error("Failed to reset col sketch", zap.Error(err))
-		}
-	}
-	p.rowSketch = rowNext
-	p.colSketch = colNext
-
-	p.mutex.Unlock()
-
-	// Emit sketch metrics if we have snapshots
-	if rowSnapshot != nil || colSnapshot != nil {
-		p.emitSketches(rowSnapshot, colSnapshot)
-	}
-
-	// Return old sketches to pool after emission.
-	if rowSnapshot != nil {
-		rowSnapshot.Reset()
-		p.sketchPool.Put(rowSnapshot)
-	}
-	if colSnapshot != nil {
-		colSnapshot.Reset()
-		p.sketchPool.Put(colSnapshot)
-	}
-}
-
-func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *countsketch.CountSketch) {
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()
 	sm := rm.ScopeMetrics().AppendEmpty()
@@ -381,43 +300,125 @@ func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *countsketch.Co
 
 	now := pcommon.NewTimestampFromTime(time.Now())
 
-	// Emit row sketch (metric names)
-	if rowSketch != nil {
+	for partitionKey, ws := range snapshot {
+		ws.mu.Lock()
+		sampleCount := ws.sampleCount
+
+		var payload []byte
+		var encoding string
+		var serErr error
+
+		if p.config.TransmitSketch && ws.cs != nil {
+			if p.config.DeltaTransmission {
+				p.snapshotsMu.Lock()
+				snap, hasSnap := p.snapshots[partitionKey]
+				p.snapshotsMu.Unlock()
+
+				if hasSnap {
+					payload, serErr = countsketch.ComputeDelta(snap, ws.cs, p.config.DeltaThreshold)
+					encoding = "proto_delta"
+				} else {
+					payload, serErr = ws.cs.SerializeToBytes()
+					encoding = "proto_full"
+				}
+
+				newSnap := cloneCS(ws.cs)
+				p.snapshotsMu.Lock()
+				p.snapshots[partitionKey] = newSnap
+				p.snapshotsMu.Unlock()
+			} else {
+				payload, serErr = ws.cs.SerializeToBytes()
+				encoding = "proto_full"
+			}
+		}
+
+		ws.mu.Unlock()
+
+		if ws.cs != nil {
+			ws.cs.Reset()
+		}
+		p.windowSketchPool.Put(ws)
+
+		if p.config.TransmitSketch && serErr != nil {
+			p.logger.Error("Failed to serialize CountSketch", zap.Error(serErr))
+			continue
+		}
+
 		m := sm.Metrics().AppendEmpty()
-		m.SetName("countsketch_row")
+		m.SetName("countsketch_partition")
 		m.SetUnit("1")
 
 		gauge := m.SetEmptyGauge()
 		dp := gauge.DataPoints().AppendEmpty()
 		dp.SetTimestamp(now)
-
-		dp.Attributes().PutStr("sketch_type", "row")
-		dp.Attributes().PutStr("sketch_dimension", "metric_names")
+		dp.Attributes().PutStr("partition_key", partitionKey)
+		dp.Attributes().PutInt("sample_count", int64(sampleCount))
 		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
 		dp.Attributes().PutDouble("delta", p.config.Delta)
-		dp.Attributes().PutInt("window_duration_seconds", int64(p.config.WindowDuration.Seconds()))
-		// Note: sketchlib-go CountSketch doesn't expose serialization methods
-		// For benchmarking, we emit metadata. Full serialization can be added later if needed.
+		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
+		if p.config.TransmitSketch {
+			dp.Attributes().PutStr("encoding", encoding)
+			dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
+		}
+		dp.SetDoubleValue(float64(sampleCount))
 	}
 
-	// Emit col sketch (host names)
-	if colSketch != nil {
-		m := sm.Metrics().AppendEmpty()
-		m.SetName("countsketch_col")
-		m.SetUnit("1")
+	return md
+}
 
-		gauge := m.SetEmptyGauge()
-		dp := gauge.DataPoints().AppendEmpty()
-		dp.SetTimestamp(now)
-
-		dp.Attributes().PutStr("sketch_type", "col")
-		dp.Attributes().PutStr("sketch_dimension", "host_names")
-		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
-		dp.Attributes().PutDouble("delta", p.config.Delta)
-		dp.Attributes().PutInt("window_duration_seconds", int64(p.config.WindowDuration.Seconds()))
+func (p *countSketchProcessor) emitWindowAndReset() {
+	md := p.buildWindowMetricsAndReset()
+	if md.ResourceMetrics().Len() == 0 {
+		return
 	}
 
 	if err := p.next.ConsumeMetrics(context.Background(), md); err != nil {
-		p.logger.Error("Failed to emit countsketch metrics", zap.Error(err))
+		p.logger.Error("Failed to emit countsketch partition metrics", zap.Error(err))
 	}
+}
+
+// buildPartitionKey encodes selected attributes as a stable partition key.
+// Each key is looked up in dpAttrs first, then resourceAttrs as a fallback.
+// Returns "global" when groupBy is empty (single undivided partition).
+func buildPartitionKey(resourceAttrs, dpAttrs pcommon.Map, groupBy []string) string {
+	if len(groupBy) == 0 {
+		return "global"
+	}
+
+	keys := make([]string, len(groupBy))
+	copy(keys, groupBy)
+	sort.Strings(keys)
+
+	sb := builderPool.Get().(*strings.Builder)
+	sb.Reset()
+	for _, k := range keys {
+		var val pcommon.Value
+		var ok bool
+		val, ok = dpAttrs.Get(k)
+		if !ok {
+			val, ok = resourceAttrs.Get(k)
+		}
+		if ok {
+			sb.WriteString(k)
+			sb.WriteString("=")
+			sb.WriteString(val.AsString())
+			sb.WriteString(";")
+		}
+	}
+	s := sb.String()
+	builderPool.Put(sb)
+	return s
+}
+
+// cloneCS returns a deep copy of cs suitable for use as a delta snapshot.
+func cloneCS(cs *countsketch.CountSketch) *countsketch.CountSketch {
+	data, err := cs.SerializeToBytes()
+	if err != nil {
+		return nil
+	}
+	clone, err := countsketch.DeserializeCountSketchFromBytes(data)
+	if err != nil {
+		return nil
+	}
+	return clone
 }

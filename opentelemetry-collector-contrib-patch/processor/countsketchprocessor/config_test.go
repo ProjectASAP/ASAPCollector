@@ -25,10 +25,9 @@ func TestConfigValidate(t *testing.T) {
 	}
 	cfg.Delta = 0.99 // Reset to valid
 
-	// Test Invalid WindowDuration (must be >= 1s in window mode)
-	cfg.Mode = ModeWindow
-	cfg.WindowDuration = 500 * time.Millisecond
+	// Test Invalid WindowSize (must be >= 1s)
+	cfg.WindowSize = 500 * time.Millisecond
 	if err := cfg.Validate(); err == nil {
-		t.Fatalf("expected error for invalid window duration (too small)")
+		t.Fatalf("expected error for invalid window size (too small)")
 	}
 }

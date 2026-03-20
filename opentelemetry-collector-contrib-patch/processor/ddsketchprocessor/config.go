@@ -5,7 +5,6 @@ package ddsketchprocessor
 
 import (
 	"fmt"
-	"sort"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -20,13 +19,6 @@ const (
 	ModeBatch  InputMode = "batch"
 	ModeWindow InputMode = "window"
 )
-
-// LabelMatcher specifies an exact label key=value filter.
-// A data point matches only if the named label exists and its string value equals Value.
-type LabelMatcher struct {
-	Key   string `mapstructure:"key"`
-	Value string `mapstructure:"value"`
-}
 
 // Config holds processor configuration.
 type Config struct {
@@ -47,16 +39,14 @@ type Config struct {
 	// or converted into gauge metrics at the configured quantiles (false).
 	TransmitSketch bool `mapstructure:"transmit_sketch"`
 
-	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
-	// All data points sharing the same values for these labels are merged into one sketch.
-	// The output data point carries only these labels.
-	// Empty (default) preserves per-series behavior: each distinct attribute set → own sketch.
-	AggregateBy []string `mapstructure:"aggregate_by"`
+	// DeltaTransmission enables sparse delta encoding: only buckets that
+	// changed by at least DeltaThreshold counts since the last snapshot are
+	// transmitted. Requires TransmitSketch=true.
+	DeltaTransmission bool `mapstructure:"delta_transmission"`
 
-	// LabelMatchers filters which data points to include before aggregation.
-	// A data point is included only if ALL matchers are satisfied (exact match).
-	// Empty (default) = include all data points.
-	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
+	// DeltaThreshold is the minimum bucket count increase required to include
+	// a bucket in the delta payload. Defaults to 1 when DeltaTransmission=true.
+	DeltaThreshold uint64 `mapstructure:"delta_threshold"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -91,6 +81,10 @@ func (cfg *Config) validate() error {
 	if cfg.RelativeAccuracy <= 0 || cfg.RelativeAccuracy >= 1 {
 		return fmt.Errorf("relative_accuracy must be within (0,1), got %v", cfg.RelativeAccuracy)
 	}
+	if cfg.DeltaTransmission && cfg.DeltaThreshold == 0 {
+		cfg.DeltaThreshold = 1
+	}
+
 	if !cfg.TransmitSketch {
 		if len(cfg.Quantiles) == 0 {
 			return fmt.Errorf("at least one quantile must be configured")
@@ -101,7 +95,5 @@ func (cfg *Config) validate() error {
 			return fmt.Errorf("quantiles must be within [0,1], got %v", q)
 		}
 	}
-	// Sort AggregateBy so seriesKey always produces a consistent ordering.
-	sort.Strings(cfg.AggregateBy)
 	return nil
 }
