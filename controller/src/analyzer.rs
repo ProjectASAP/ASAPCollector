@@ -1,0 +1,258 @@
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+use anyhow::{anyhow, Context};
+use serde::{Deserialize, Serialize};
+
+use crate::types::{AggType, QueryWorkload};
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// JSON-friendly representation of a query workload submitted by callers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuerySpec {
+    pub metric_name:    String,
+    #[serde(default)]
+    pub label_filters:  HashMap<String, String>,
+    #[serde(default)]
+    pub group_by_labels: Vec<String>,
+    pub aggregations:   Vec<String>,
+    pub time_window:    String,
+    pub repeat_every:   Option<String>,
+    pub accuracy_sla:   f64,
+    pub latency_sla:    Option<String>,
+}
+
+pub struct Analyzer;
+
+impl Analyzer {
+    pub fn new() -> Self { Self }
+
+    pub fn analyze(&self, spec: QuerySpec) -> anyhow::Result<QueryWorkload> {
+        if spec.metric_name.trim().is_empty() {
+            return Err(anyhow!("metric_name is required"));
+        }
+        if spec.aggregations.is_empty() {
+            return Err(anyhow!("at least one aggregation is required"));
+        }
+        if !(0.0..=1.0).contains(&spec.accuracy_sla) {
+            return Err(anyhow!("accuracy_sla must be in [0,1], got {}", spec.accuracy_sla));
+        }
+
+        let aggs = parse_agg_types(&spec.aggregations)?;
+
+        let time_window = parse_duration(&spec.time_window)
+            .with_context(|| format!("invalid time_window {:?}", spec.time_window))?;
+        if time_window.is_zero() {
+            return Err(anyhow!("time_window must be positive"));
+        }
+
+        let repeat_every = spec.repeat_every.as_deref()
+            .map(parse_duration)
+            .transpose()
+            .with_context(|| "invalid repeat_every")?;
+
+        let latency_sla = spec.latency_sla.as_deref()
+            .map(parse_duration)
+            .transpose()
+            .with_context(|| "invalid latency_sla")?;
+
+        // Merge group_by_labels and label_filter keys, deduplicating while
+        // preserving the group_by_labels order first.
+        let filter_keys: Vec<String> = spec.label_filters.keys().cloned().collect();
+        let dims = dedup_dims(&spec.group_by_labels, &filter_keys);
+
+        Ok(QueryWorkload {
+            metric_name:    spec.metric_name,
+            label_filters:  spec.label_filters,
+            group_by_labels: dims,
+            aggregations:   aggs,
+            time_window,
+            repeat_every,
+            accuracy_sla:   spec.accuracy_sla,
+            latency_sla,
+        })
+    }
+}
+
+// ── Duration helpers (used by other modules) ──────────────────────────────────
+
+/// Parses duration strings like "5m", "1h", "30s", "1h30m", "1h5m30s".
+pub fn parse_duration(s: &str) -> anyhow::Result<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(anyhow!("empty duration string"));
+    }
+    let mut total_secs: u64 = 0;
+    let mut current_num = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_digit() {
+            current_num.push(ch);
+        } else {
+            let n: u64 = current_num.parse()
+                .map_err(|_| anyhow!("invalid number in duration {:?}", s))?;
+            current_num.clear();
+            match ch {
+                'h' => total_secs += n * 3600,
+                'm' => total_secs += n * 60,
+                's' => total_secs += n,
+                _ => return Err(anyhow!("unknown unit {:?} in duration {:?}", ch, s)),
+            }
+        }
+    }
+    if !current_num.is_empty() {
+        return Err(anyhow!("trailing digits without unit in {:?}", s));
+    }
+    Ok(Duration::from_secs(total_secs))
+}
+
+/// Formats a Duration as a compact string: "5m", "1h30m", "30s".
+pub fn format_duration(d: Duration) -> String {
+    let s = d.as_secs();
+    let h = s / 3600;
+    let m = (s % 3600) / 60;
+    let sec = s % 60;
+    let mut out = String::new();
+    if h   > 0 { out.push_str(&format!("{}h", h)); }
+    if m   > 0 { out.push_str(&format!("{}m", m)); }
+    if sec > 0 || out.is_empty() { out.push_str(&format!("{}s", sec)); }
+    out
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+fn parse_agg_types(raw: &[String]) -> anyhow::Result<Vec<AggType>> {
+    raw.iter().map(|s| match s.to_lowercase().trim() {
+        "quantile"    => Ok(AggType::Quantile),
+        "cardinality" => Ok(AggType::Cardinality),
+        "frequency"   => Ok(AggType::Frequency),
+        other => Err(anyhow!(
+            "unknown aggregation type {:?} (want: quantile, cardinality, frequency)", other
+        )),
+    }).collect()
+}
+
+fn dedup_dims(a: &[String], b: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out  = Vec::new();
+    for v in a.iter().chain(b.iter()) {
+        if seen.insert(v.clone()) { out.push(v.clone()); }
+    }
+    out
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn basic_spec() -> QuerySpec {
+        QuerySpec {
+            metric_name:    "request_latency".into(),
+            label_filters:  [("service".into(), "web".into())].into(),
+            group_by_labels: vec!["host.name".into()],
+            aggregations:   vec!["quantile".into()],
+            time_window:    "5m".into(),
+            repeat_every:   Some("1m".into()),
+            accuracy_sla:   0.01,
+            latency_sla:    Some("10m".into()),
+        }
+    }
+
+    #[test]
+    fn valid_spec() {
+        let w = Analyzer::new().analyze(basic_spec()).unwrap();
+        assert_eq!(w.metric_name, "request_latency");
+        assert_eq!(w.accuracy_sla, 0.01);
+        assert_eq!(w.time_window,    Duration::from_secs(300));
+        assert_eq!(w.repeat_every,   Some(Duration::from_secs(60)));
+        assert_eq!(w.latency_sla,    Some(Duration::from_secs(600)));
+        assert_eq!(w.aggregations,   vec![AggType::Quantile]);
+    }
+
+    #[test]
+    fn dimension_merge_dedup() {
+        let mut spec = basic_spec();
+        spec.label_filters   = [("service".into(), "api".into()),
+                                 ("host.name".into(), "h1".into())].into();
+        spec.group_by_labels = vec!["host.name".into(), "region".into()];
+        let w = Analyzer::new().analyze(spec).unwrap();
+        for dim in &["host.name", "region", "service"] {
+            assert!(w.group_by_labels.contains(&dim.to_string()), "missing {dim}");
+        }
+        // host.name must appear exactly once after dedup
+        assert_eq!(
+            w.group_by_labels.iter().filter(|d| d.as_str() == "host.name").count(), 1
+        );
+    }
+
+    #[test]
+    fn multiple_aggregations() {
+        let mut spec = basic_spec();
+        spec.aggregations = vec!["cardinality".into(), "frequency".into()];
+        let w = Analyzer::new().analyze(spec).unwrap();
+        assert_eq!(w.aggregations, vec![AggType::Cardinality, AggType::Frequency]);
+    }
+
+    #[test]
+    fn missing_metric_name() {
+        let mut spec = basic_spec();
+        spec.metric_name = "".into();
+        assert!(Analyzer::new().analyze(spec).is_err());
+    }
+
+    #[test]
+    fn missing_aggregations() {
+        let mut spec = basic_spec();
+        spec.aggregations = vec![];
+        assert!(Analyzer::new().analyze(spec).is_err());
+    }
+
+    #[test]
+    fn invalid_aggregation_type() {
+        let mut spec = basic_spec();
+        spec.aggregations = vec!["histogram".into()];
+        assert!(Analyzer::new().analyze(spec).is_err());
+    }
+
+    #[test]
+    fn invalid_duration() {
+        let mut spec = basic_spec();
+        spec.time_window = "not-a-duration".into();
+        assert!(Analyzer::new().analyze(spec).is_err());
+    }
+
+    #[test]
+    fn invalid_accuracy_sla() {
+        for bad in &[-0.1f64, 1.5] {
+            let mut spec = basic_spec();
+            spec.accuracy_sla = *bad;
+            assert!(Analyzer::new().analyze(spec).is_err(),
+                "expected error for accuracy_sla={bad}");
+        }
+    }
+
+    #[test]
+    fn parse_duration_formats() {
+        assert_eq!(parse_duration("30s").unwrap(),    Duration::from_secs(30));
+        assert_eq!(parse_duration("5m").unwrap(),     Duration::from_secs(300));
+        assert_eq!(parse_duration("1h").unwrap(),     Duration::from_secs(3600));
+        assert_eq!(parse_duration("1h30m").unwrap(),  Duration::from_secs(5400));
+        assert_eq!(parse_duration("1h5m30s").unwrap(),Duration::from_secs(3930));
+    }
+
+    #[test]
+    fn format_duration_roundtrip() {
+        for secs in [30u64, 300, 3600, 5400, 3930] {
+            let d = Duration::from_secs(secs);
+            let s = format_duration(d);
+            let parsed = parse_duration(&s).unwrap();
+            assert_eq!(parsed, d, "roundtrip failed for {secs}s → {s:?}");
+        }
+    }
+
+    #[test]
+    fn trailing_digits_error() {
+        assert!(parse_duration("5").is_err());
+    }
+}
