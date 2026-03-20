@@ -74,7 +74,7 @@ func nextPowerOfTwo(n int) int {
 func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *countSketchProcessor {
 	mode := cfg.Mode
 	if mode == "" {
-		mode = ModeWindow
+		mode = ModeBatch
 	}
 
 	p := &countSketchProcessor{
@@ -95,23 +95,20 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 	p.logger.Info("Starting Count Sketch Processor",
 		zap.Float64("epsilon", p.config.Epsilon),
 		zap.Float64("delta", p.config.Delta),
-		zap.Duration("window", p.config.WindowSize),
+		zap.Duration("window_duration", p.config.WindowDuration),
 		zap.String("mode", string(p.mode)),
-		zap.Strings("group_by", p.config.GroupBy),
+		zap.Strings("aggregate_by", p.config.AggregateBy),
 	)
-	if p.config.TransmitSketch {
-		p.logger.Warn("countsketchprocessor: transmit_sketch=true is not yet backed by a serialized sketch payload; emitting metric-form summaries")
-	}
 
 	if p.mode == ModeBatch {
 		return nil
 	}
 
-	if p.config.WindowSize <= 0 {
+	if p.config.WindowDuration <= 0 {
 		return nil
 	}
 
-	ticker := time.NewTicker(p.config.WindowSize)
+	ticker := time.NewTicker(p.config.WindowDuration)
 	p.windowStarted.Store(true)
 	go p.startWindowLoop(ctx, ticker)
 
@@ -186,6 +183,17 @@ func (p *countSketchProcessor) consumeBatch(md pmetric.Metrics) pmetric.Metrics 
 	return out
 }
 
+// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
+func (p *countSketchProcessor) matchesMatchers(attrs pcommon.Map) bool {
+	for _, m := range p.config.LabelMatchers {
+		v, ok := attrs.Get(m.Key)
+		if !ok || v.AsString() != m.Value {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *countSketchProcessor) ingestMetric(resourceAttrs pcommon.Map, metric pmetric.Metric) {
 	metricName := metric.Name()
 	switch metric.Type() {
@@ -193,21 +201,30 @@ func (p *countSketchProcessor) ingestMetric(resourceAttrs pcommon.Map, metric pm
 		dps := metric.Gauge().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
-			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.GroupBy)
+			if !p.matchesMatchers(dp.Attributes()) {
+				continue
+			}
+			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.AggregateBy)
 			p.updateWindowSketch(pk, metricName, dpValue(dp))
 		}
 	case pmetric.MetricTypeSum:
 		dps := metric.Sum().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
-			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.GroupBy)
+			if !p.matchesMatchers(dp.Attributes()) {
+				continue
+			}
+			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.AggregateBy)
 			p.updateWindowSketch(pk, metricName, dpValue(dp))
 		}
 	case pmetric.MetricTypeHistogram:
 		dps := metric.Histogram().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
-			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.GroupBy)
+			if !p.matchesMatchers(dp.Attributes()) {
+				continue
+			}
+			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.AggregateBy)
 			p.updateWindowSketch(pk, metricName, float64(dp.Count()))
 		}
 	case pmetric.MetricTypeCountSketch:
@@ -215,7 +232,10 @@ func (p *countSketchProcessor) ingestMetric(resourceAttrs pcommon.Map, metric pm
 		dps := metric.CountSketch().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
-			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.GroupBy)
+			if !p.matchesMatchers(dp.Attributes()) {
+				continue
+			}
+			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.AggregateBy)
 			p.updateWindowSketch(pk, metricName, 1.0)
 		}
 	}
@@ -355,7 +375,7 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 		dp.Attributes().PutInt("sample_count", int64(sampleCount))
 		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
 		dp.Attributes().PutDouble("delta", p.config.Delta)
-		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
+		dp.Attributes().PutInt("window_duration_seconds", int64(p.config.WindowDuration.Seconds()))
 		if p.config.TransmitSketch {
 			dp.Attributes().PutStr("encoding", encoding)
 			dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
@@ -379,14 +399,14 @@ func (p *countSketchProcessor) emitWindowAndReset() {
 
 // buildPartitionKey encodes selected attributes as a stable partition key.
 // Each key is looked up in dpAttrs first, then resourceAttrs as a fallback.
-// Returns "global" when groupBy is empty (single undivided partition).
-func buildPartitionKey(resourceAttrs, dpAttrs pcommon.Map, groupBy []string) string {
-	if len(groupBy) == 0 {
+// Returns "global" when aggregateBy is empty (single undivided partition).
+func buildPartitionKey(resourceAttrs, dpAttrs pcommon.Map, aggregateBy []string) string {
+	if len(aggregateBy) == 0 {
 		return "global"
 	}
 
-	keys := make([]string, len(groupBy))
-	copy(keys, groupBy)
+	keys := make([]string, len(aggregateBy))
+	copy(keys, aggregateBy)
 	sort.Strings(keys)
 
 	sb := builderPool.Get().(*strings.Builder)
