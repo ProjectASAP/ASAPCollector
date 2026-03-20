@@ -146,8 +146,9 @@ mod tests {
             aggregations:   vec![AggType::Quantile],
             time_window:    Duration::from_secs(300),
             repeat_every,
-            accuracy_sla:   0.01,
+            accuracy_sla:         0.01,
             latency_sla,
+            sketch_type_override: None,
         }
     }
 

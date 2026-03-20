@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 // ── Enumerations ──────────────────────────────────────────────────────────────
 
@@ -21,7 +22,8 @@ impl std::fmt::Display for AggType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SketchType {
     DDSketch,
     KLL,
@@ -67,14 +69,17 @@ impl std::fmt::Display for ProcessorMode {
 
 #[derive(Debug, Clone)]
 pub struct QueryWorkload {
-    pub metric_name:    String,
-    pub label_filters:  HashMap<String, String>,
+    pub metric_name:     String,
+    pub label_filters:   HashMap<String, String>,
     pub group_by_labels: Vec<String>,
-    pub aggregations:   Vec<AggType>,
-    pub time_window:    Duration,
-    pub repeat_every:   Option<Duration>,
-    pub accuracy_sla:   f64,
-    pub latency_sla:    Option<Duration>,
+    pub aggregations:    Vec<AggType>,
+    pub time_window:     Duration,
+    pub repeat_every:    Option<Duration>,
+    pub accuracy_sla:    f64,
+    pub latency_sla:     Option<Duration>,
+    /// When set, the planner must use this sketch type instead of running
+    /// the cost model. Allows pinning for collectors that support a subset.
+    pub sketch_type_override: Option<SketchType>,
 }
 
 #[derive(Debug, Clone, Default)]
