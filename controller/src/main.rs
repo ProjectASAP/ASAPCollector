@@ -74,6 +74,7 @@ async fn main() {
         .route("/api/v1/plan/:metric",            get(handle_get_plan))
         .route("/api/v1/plan/:metric/rollback",   post(handle_rollback))
         .route("/api/v1/agents",                  get(handle_agents))
+        .route("/api/v1/config/:metric",          get(handle_get_config))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&api_addr).await.unwrap();
@@ -144,6 +145,26 @@ async fn handle_rollback(
 
 async fn handle_agents(State(st): State<AppState>) -> impl IntoResponse {
     Json(st.opamp.connected_agents().await)
+}
+
+/// Returns a complete OTel collector YAML for the named metric's current plan.
+/// Collectors can use this with the HTTP config provider:
+///   --config=http://controller:8080/api/v1/config/<metric>
+async fn handle_get_config(
+    State(st): State<AppState>,
+    Path(metric): Path<String>,
+) -> impl IntoResponse {
+    match st.store.get(&metric) {
+        Ok(plan) => match generate_agent_config(&plan.agent_config, &st.opamp_endpoint) {
+            Ok(yaml) => (
+                StatusCode::OK,
+                [("content-type", "application/yaml")],
+                yaml,
+            ).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        },
+        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
 }
 
 fn short_hash(s: &str) -> String {

@@ -124,8 +124,9 @@ mod tests {
             aggregations:   aggs,
             time_window:    Duration::from_secs(300),
             repeat_every:   None,
-            accuracy_sla:   0.01,
-            latency_sla:    None,
+            accuracy_sla:         0.01,
+            latency_sla:          None,
+            sketch_type_override: None,
         }
     }
 

@@ -120,6 +120,19 @@ impl CostModelPlanner {
     }
 
     pub fn plan(&self, w: &QueryWorkload) -> CollectionPlan {
+        // If a specific sketch type is pinned, use it directly.
+        if let Some(st) = &w.sketch_type_override {
+            let params = default_sketch_params(st, w.accuracy_sla);
+            let (mode, window_duration) = select_window_strategy(w);
+            let mut plan = self.inner.plan(w);
+            plan.agent_config.sketch_type            = st.clone();
+            plan.agent_config.sketch_params          = params;
+            plan.agent_config.mode                   = mode;
+            plan.agent_config.window_duration        = window_duration;
+            plan.backend_config.merge_sketch_type    = st.clone();
+            return plan;
+        }
+
         let candidates = candidates_for_workload(w);
 
         // Start with the rule-based plan as the baseline.
@@ -183,8 +196,9 @@ mod tests {
             aggregations:   aggs,
             time_window:    Duration::from_secs(300),
             repeat_every:   None,
-            accuracy_sla:   0.01,
-            latency_sla:    None,
+            accuracy_sla:         0.01,
+            latency_sla:          None,
+            sketch_type_override: None,
         }
     }
 

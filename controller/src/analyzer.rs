@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{AggType, QueryWorkload};
+use crate::types::{AggType, QueryWorkload, SketchType};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -20,6 +20,9 @@ pub struct QuerySpec {
     pub repeat_every:   Option<String>,
     pub accuracy_sla:   f64,
     pub latency_sla:    Option<String>,
+    /// Optional: pin a specific sketch type, bypassing the cost-model planner.
+    /// Useful when the target collector supports only a subset of sketches.
+    pub sketch_type:    Option<SketchType>,
 }
 
 pub struct Analyzer;
@@ -62,14 +65,15 @@ impl Analyzer {
         let dims = dedup_dims(&spec.group_by_labels, &filter_keys);
 
         Ok(QueryWorkload {
-            metric_name:    spec.metric_name,
-            label_filters:  spec.label_filters,
-            group_by_labels: dims,
-            aggregations:   aggs,
+            metric_name:          spec.metric_name,
+            label_filters:        spec.label_filters,
+            group_by_labels:      dims,
+            aggregations:         aggs,
             time_window,
             repeat_every,
-            accuracy_sla:   spec.accuracy_sla,
+            accuracy_sla:         spec.accuracy_sla,
             latency_sla,
+            sketch_type_override: spec.sketch_type,
         })
     }
 }
@@ -156,6 +160,7 @@ mod tests {
             repeat_every:   Some("1m".into()),
             accuracy_sla:   0.01,
             latency_sla:    Some("10m".into()),
+            sketch_type:    None,
         }
     }
 
