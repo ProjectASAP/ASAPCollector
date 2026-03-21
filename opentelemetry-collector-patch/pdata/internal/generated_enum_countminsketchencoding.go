@@ -8,7 +8,7 @@ package internal
 
 const (
 	CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED = CountMinSketchEncoding(0)
-	CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_GOB         = CountMinSketchEncoding(1)
+	CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_PROTO       = CountMinSketchEncoding(1)
 	CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_DELTA       = CountMinSketchEncoding(2)
 )
 
@@ -17,12 +17,12 @@ type CountMinSketchEncoding int32
 
 var CountMinSketchEncoding_name = map[int32]string{
 	0: "COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED",
-	1: "COUNT_MIN_SKETCH_ENCODING_GOB",
+	1: "COUNT_MIN_SKETCH_ENCODING_PROTO",
 	2: "COUNT_MIN_SKETCH_ENCODING_DELTA",
 }
 
 var CountMinSketchEncoding_value = map[string]int32{
 	"COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED": 0,
-	"COUNT_MIN_SKETCH_ENCODING_GOB":         1,
+	"COUNT_MIN_SKETCH_ENCODING_PROTO":       1,
 	"COUNT_MIN_SKETCH_ENCODING_DELTA":       2,
 }
