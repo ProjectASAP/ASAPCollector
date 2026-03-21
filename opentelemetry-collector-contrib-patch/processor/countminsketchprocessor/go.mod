@@ -52,6 +52,8 @@ require (
 
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
 
+replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
+
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest => ../../pkg/pdatatest
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil => ../../pkg/pdatautil

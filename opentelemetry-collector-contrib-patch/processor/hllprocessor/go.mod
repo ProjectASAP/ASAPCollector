@@ -48,6 +48,8 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest 
 
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
 
+replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
+
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil => ../../pkg/pdatautil
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal => ../../internal/coreinternal
