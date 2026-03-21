@@ -478,7 +478,12 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 			p.snapshotsMu.Unlock()
 
 			if hasSnap {
-				payload, err = cms.ComputeDelta(snap, ws.cms, p.cfg.DeltaThreshold)
+				deltaMsg, deltaErr := cms.ComputeDelta(snap, ws.cms, p.cfg.DeltaThreshold)
+				if deltaErr == nil {
+					payload, err = cms.SerializeDelta(deltaMsg)
+				} else {
+					err = deltaErr
+				}
 				encoding = "proto_delta"
 			} else {
 				// First window for this partition — send full sketch.
@@ -563,9 +568,11 @@ func (p *windowedCountMinSketchProcessor) inboundDecodeCMS(aggregationKey string
 		if reconstructed == nil {
 			return nil, nil
 		}
-		if err := cms.ApplyDelta(reconstructed, payload); err != nil {
+		deltaMsg, err := cms.DeserializeDelta(payload)
+		if err != nil {
 			return nil, err
 		}
+		cms.ApplyDelta(reconstructed, deltaMsg)
 		p.inboundMu.Lock()
 		p.inboundSnapshots[aggregationKey] = cloneCMS(reconstructed)
 		p.inboundMu.Unlock()

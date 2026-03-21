@@ -264,7 +264,11 @@ func (d *countMinSketchValues[N]) payloadFor(key attribute.Distinct, sketch *cms
 	var err error
 
 	if hasSnap && snap != nil {
-		payload, err = cms.ComputeDelta(snap, sketch, d.deltaThreshold)
+		var deltaMsg *cms.Delta
+		deltaMsg, err = cms.ComputeDelta(snap, sketch, d.deltaThreshold)
+		if err == nil {
+			payload, err = cms.SerializeDelta(deltaMsg)
+		}
 		enc = metricdata.CountMinSketchEncodingDelta
 	} else {
 		payload, err = serializeCMSketch(sketch)

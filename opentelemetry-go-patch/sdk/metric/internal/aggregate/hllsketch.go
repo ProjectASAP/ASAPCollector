@@ -248,7 +248,8 @@ func (d *hllSketchValues[N]) payloadFor(key attribute.Distinct, sketch *hll.Hype
 	var err error
 
 	if hasSnap && snap != nil {
-		payload, err = hll.ComputeRegisterDelta(snap, sketch)
+		deltaMsg := hll.ComputeRegisterDelta(snap, sketch)
+		payload, err = hll.SerializeRegisterDelta(deltaMsg)
 		enc = metricdata.HLLSketchEncodingDelta
 	} else {
 		payload, err = sketch.SerializeProtoBytes()

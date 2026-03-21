@@ -45,9 +45,11 @@ func (p *hllProcessor) inboundMergeHLL(seriesKey string, dp pmetric.HLLSketchDat
 		if reconstructed == nil {
 			return nil
 		}
-		if err := hll.ApplyRegisterDelta(reconstructed, payload); err != nil {
+		deltaMsg, err := hll.DeserializeRegisterDelta(payload)
+		if err != nil {
 			return err
 		}
+		hll.ApplyRegisterDelta(reconstructed, deltaMsg)
 		// Update inbound snapshot to the reconstructed current state.
 		p.inboundMu.Lock()
 		p.inboundSnapshots[seriesKey] = cloneHLL(reconstructed)
@@ -632,7 +634,8 @@ func appendHLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *
 // appendHLLDeltaDataPoint computes a register delta between snapshot and current,
 // then embeds the proto-marshalled HLLDelta payload in a gauge data point.
 func appendHLLDeltaDataPoint(metric pmetric.Metric, attrs pcommon.Map, snapshot, current *hll.HyperLogLog, ts pcommon.Timestamp) error {
-	payload, err := hll.ComputeRegisterDelta(snapshot, current)
+	deltaMsg := hll.ComputeRegisterDelta(snapshot, current)
+	payload, err := hll.SerializeRegisterDelta(deltaMsg)
 	if err != nil {
 		return err
 	}

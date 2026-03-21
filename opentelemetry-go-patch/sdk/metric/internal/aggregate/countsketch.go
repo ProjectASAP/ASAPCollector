@@ -274,7 +274,11 @@ func (d *countSketchValues[N]) payloadFor(key attribute.Distinct, sketch *counts
 	var err error
 
 	if hasSnap && snap != nil {
-		payload, err = countsketch.ComputeDelta(snap, sketch, d.deltaThreshold)
+		var deltaMsg *countsketch.Delta
+		deltaMsg, err = countsketch.ComputeDelta(snap, sketch, d.deltaThreshold)
+		if err == nil {
+			payload, err = countsketch.SerializeDelta(deltaMsg)
+		}
 		enc = metricdata.CountSketchEncodingDelta
 	} else {
 		payload, err = sketch.SerializeProtoBytes()
