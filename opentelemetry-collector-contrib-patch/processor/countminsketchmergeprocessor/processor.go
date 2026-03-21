@@ -111,7 +111,7 @@ func (p *countMinSketchMergeProcessor) mergeDataPoint(dp pmetric.NumberDataPoint
 		}
 	default:
 		// proto_full or no encoding: deserialize and replace
-		sketch, err := cms.DeserializeCountMinSketchFromBytes(payload)
+		sketch, err := cms.DeserializeCountMinSketchFromProtoBytes(payload)
 		if err != nil {
 			p.logger.Error("countminsketchmergeprocessor: failed to deserialize full sketch", zap.Error(err))
 			return

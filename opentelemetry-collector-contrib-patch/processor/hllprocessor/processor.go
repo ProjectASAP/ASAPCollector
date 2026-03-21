@@ -54,8 +54,8 @@ func (p *hllProcessor) inboundMergeHLL(seriesKey string, dp pmetric.HLLSketchDat
 		p.inboundMu.Unlock()
 		return dst.Merge(reconstructed)
 
-	default: // HLLSketchEncodingBinary or unspecified
-		src, err := hll.DeserializeHyperLogLogFromBytes(payload)
+	default: // HLLSketchEncodingProto or unspecified
+		src, err := hll.DeserializeHyperLogLogFromProtoBytes(payload)
 		if err != nil {
 			return err
 		}
@@ -70,7 +70,7 @@ func (p *hllProcessor) inboundMergeHLL(seriesKey string, dp pmetric.HLLSketchDat
 // mergeSketchBytes deserializes a serialized HLL sketch and merges it into dst.
 // Returns dst unchanged (with an error) if deserialization fails.
 func mergeSketchBytes(dst *hll.HyperLogLog, payload []byte) error {
-	src, err := hll.DeserializeHyperLogLogFromBytes(payload)
+	src, err := hll.DeserializeHyperLogLogFromProtoBytes(payload)
 	if err != nil {
 		return err
 	}
@@ -615,7 +615,7 @@ func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pme
 // appendHLLSketchDataPoint serializes the HLL sketch and embeds it in a gauge
 // data point attribute. The cardinality estimate is also stored for convenience.
 func appendHLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *hll.HyperLogLog, ts pcommon.Timestamp) error {
-	payload, err := sketch.SerializeToBytes()
+	payload, err := sketch.SerializeProtoBytes()
 	if err != nil {
 		return err
 	}
@@ -649,11 +649,11 @@ func appendHLLDeltaDataPoint(metric pmetric.Metric, attrs pcommon.Map, snapshot,
 
 // cloneHLL returns a deep copy of h suitable for use as a delta snapshot.
 func cloneHLL(h *hll.HyperLogLog) *hll.HyperLogLog {
-	data, err := h.SerializeToBytes()
+	data, err := h.SerializeProtoBytes()
 	if err != nil {
 		return nil
 	}
-	clone, err := hll.DeserializeHyperLogLogFromBytes(data)
+	clone, err := hll.DeserializeHyperLogLogFromProtoBytes(data)
 	if err != nil {
 		return nil
 	}
