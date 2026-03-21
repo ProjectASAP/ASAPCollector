@@ -57,6 +57,15 @@ type Config struct {
 	// A data point is included only if ALL matchers are satisfied (exact match).
 	// Empty (default) = include all data points.
 	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
+
+	// DeltaTransmission enables sparse delta encoding: only cells that changed
+	// by at least DeltaThreshold since the last snapshot are transmitted.
+	// Requires TransmitSketch=true; has no effect in batch mode.
+	DeltaTransmission bool `mapstructure:"delta_transmission"`
+
+	// DeltaThreshold is the minimum absolute cell change required to include a
+	// cell in the delta payload. Defaults to 1.0 when DeltaTransmission=true.
+	DeltaThreshold float64 `mapstructure:"delta_threshold"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -91,6 +100,12 @@ func (c *Config) Validate() error {
 
 	// Sort AggregateBy so seriesKey always produces a consistent ordering.
 	sort.Strings(c.AggregateBy)
+
+	if c.DeltaTransmission {
+		if c.DeltaThreshold <= 0 {
+			c.DeltaThreshold = 1.0
+		}
+	}
 
 	return nil
 }

@@ -195,6 +195,14 @@ type AggregationDDSketch struct {
 	RelativeAccuracy float64
 	// NoMinMax indicates whether to not record minima and maxima.
 	NoMinMax bool
+	// DeltaTransmission enables sparse delta encoding in the cumulative export
+	// path: only buckets that changed by at least DeltaThreshold counts since
+	// the previous snapshot are included in the payload.
+	DeltaTransmission bool
+	// DeltaThreshold is the minimum absolute bucket count change required to
+	// include a bucket in a delta payload. Defaults to 1 when DeltaTransmission
+	// is true and DeltaThreshold is 0.
+	DeltaThreshold uint64
 }
 
 var _ Aggregation = AggregationDDSketch{}
@@ -248,6 +256,13 @@ type AggregationCountSketch struct {
 	Delta float64
 	// Dimension describes the sketched dimension.
 	Dimension string
+	// DeltaTransmission enables sparse delta encoding for cumulative exports.
+	// When true, only cells that changed since the last export are transmitted.
+	// Has no effect for delta-temporality exports (those reset every interval).
+	DeltaTransmission bool
+	// DeltaThreshold is the minimum absolute cell change required to include a
+	// cell in a delta payload. Defaults to 1.0 when DeltaTransmission is true.
+	DeltaThreshold float64
 }
 
 var _ Aggregation = AggregationCountSketch{}
@@ -279,6 +294,13 @@ type AggregationCountMinSketch struct {
 	Rows int
 	// Cols is the number of buckets per row. When zero, a default value is used.
 	Cols int
+	// DeltaTransmission enables sparse delta encoding for cumulative exports.
+	// When true, only cells that changed since the last export are transmitted.
+	// Has no effect for delta-temporality exports (those reset every interval).
+	DeltaTransmission bool
+	// DeltaThreshold is the minimum absolute cell change required to include a
+	// cell in a delta payload. Defaults to 1.0 when DeltaTransmission is true.
+	DeltaThreshold float64
 }
 
 var _ Aggregation = AggregationCountMinSketch{}
@@ -298,7 +320,13 @@ func (a AggregationCountMinSketch) err() error {
 }
 
 // AggregationHLLSketch summarizes recorded measurements as a HyperLogLog sketch.
-type AggregationHLLSketch struct{}
+type AggregationHLLSketch struct {
+	// DeltaTransmission enables sparse delta encoding for cumulative exports.
+	// When true, only registers that increased since the last export are transmitted
+	// (HLL uses max semantics so registers never decrease).
+	// Has no effect for delta-temporality exports (those reset every interval).
+	DeltaTransmission bool
+}
 
 var _ Aggregation = AggregationHLLSketch{}
 

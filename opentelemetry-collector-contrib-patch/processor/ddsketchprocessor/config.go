@@ -57,6 +57,15 @@ type Config struct {
 	// A data point is included only if ALL matchers are satisfied (exact match).
 	// Empty (default) = include all data points.
 	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
+
+	// DeltaTransmission enables sparse delta encoding: only buckets that
+	// changed by at least DeltaThreshold counts since the last snapshot are
+	// transmitted. Requires TransmitSketch=true.
+	DeltaTransmission bool `mapstructure:"delta_transmission"`
+
+	// DeltaThreshold is the minimum bucket count increase required to include
+	// a bucket in the delta payload. Defaults to 1 when DeltaTransmission=true.
+	DeltaThreshold uint64 `mapstructure:"delta_threshold"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -91,6 +100,13 @@ func (cfg *Config) validate() error {
 	if cfg.RelativeAccuracy <= 0 || cfg.RelativeAccuracy >= 1 {
 		return fmt.Errorf("relative_accuracy must be within (0,1), got %v", cfg.RelativeAccuracy)
 	}
+	// Sort AggregateBy so seriesKey always produces a consistent ordering.
+	sort.Strings(cfg.AggregateBy)
+
+	if cfg.DeltaTransmission && cfg.DeltaThreshold == 0 {
+		cfg.DeltaThreshold = 1
+	}
+
 	if !cfg.TransmitSketch {
 		if len(cfg.Quantiles) == 0 {
 			return fmt.Errorf("at least one quantile must be configured")
@@ -101,7 +117,5 @@ func (cfg *Config) validate() error {
 			return fmt.Errorf("quantiles must be within [0,1], got %v", q)
 		}
 	}
-	// Sort AggregateBy so seriesKey always produces a consistent ordering.
-	sort.Strings(cfg.AggregateBy)
 	return nil
 }

@@ -43,10 +43,8 @@ type Config struct {
 	// Used only when Mode = "window".
 	WindowDuration time.Duration `mapstructure:"window_duration"`
 
-	// TransmitSketch reserves the shared sketch-output toggle used by the other
-	// sketch processors. CountSketch currently continues to emit metric-form
-	// summaries in both modes because the underlying library does not expose a
-	// serializable OTLP payload in this code path.
+	// TransmitSketch enables sketch-payload emission (proto-serialized CountSketch).
+	// When false, only metric-form summaries are emitted.
 	TransmitSketch bool `mapstructure:"transmit_sketch"`
 
 	// DropOriginal controls whether to drop original metrics and only emit sketches.
@@ -56,13 +54,22 @@ type Config struct {
 	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
 	// All data points sharing the same values for these labels are merged into one sketch.
 	// The output data point carries only these labels.
-	// Empty (default) preserves per-series behavior: each distinct attribute set → own sketch.
+	// Empty (default): one global sketch (all series merged).
 	AggregateBy []string `mapstructure:"aggregate_by"`
 
 	// LabelMatchers filters which data points to include before aggregation.
 	// A data point is included only if ALL matchers are satisfied (exact match).
 	// Empty (default) = include all data points.
 	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
+
+	// DeltaTransmission enables sparse delta encoding: only cells that changed
+	// by at least DeltaThreshold since the last snapshot are transmitted.
+	// Requires TransmitSketch=true; has no effect in batch mode.
+	DeltaTransmission bool `mapstructure:"delta_transmission"`
+
+	// DeltaThreshold is the minimum absolute cell change required to include a
+	// cell in the delta payload. Defaults to 1.0 when DeltaTransmission=true.
+	DeltaThreshold float64 `mapstructure:"delta_threshold"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -96,8 +103,14 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Sort AggregateBy so seriesKey always produces a consistent ordering.
+	// Sort AggregateBy so buildPartitionKey always produces a consistent ordering.
 	sort.Strings(c.AggregateBy)
+
+	if c.DeltaTransmission {
+		if c.DeltaThreshold <= 0 {
+			c.DeltaThreshold = 1.0
+		}
+	}
 
 	return nil
 }

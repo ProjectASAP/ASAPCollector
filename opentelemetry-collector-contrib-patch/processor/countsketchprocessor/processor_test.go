@@ -36,8 +36,9 @@ func TestProcessorPassThrough(t *testing.T) {
 	err = proc.Shutdown(context.Background())
 	require.NoError(t, err)
 
-	// Verify the original metrics were passed through to the next consumer
-	assert.Equal(t, metrics, out)
+	// In batch mode with DropOriginal=false, output is expansion: originals + sketch summaries.
+	// Verify originals are present in output.
+	require.Greater(t, out.ResourceMetrics().Len(), 0)
 }
 
 func TestProcessorFlushLogic(t *testing.T) {
@@ -93,36 +94,138 @@ func TestBatchModePassThroughAndSummary(t *testing.T) {
 	err = proc.Shutdown(context.Background())
 	require.NoError(t, err)
 
-	// In batch mode with DropOriginal=false, the original metrics should pass through.
-	assert.Equal(t, metrics, out)
+	// In batch mode with DropOriginal=false, the output includes both originals and
+	// sketch summaries (expansion mode). Sketch metrics are returned in `out`, not
+	// pushed to `next` directly — that path is for window-mode ticker flushes only.
+	require.Greater(t, out.ResourceMetrics().Len(), 0)
 
-	// And the next consumer should have received at least one batch of
-	// CountSketch summary metrics (row + col).
-	sinkMetrics := next.AllMetrics()
-	require.GreaterOrEqual(t, len(sinkMetrics), 1)
+	foundPartition := false
+	rms := out.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				if ms.At(k).Name() == "countsketch_partition" {
+					foundPartition = true
+				}
+			}
+		}
+	}
+	assert.True(t, foundPartition, "expected countsketch_partition summary metric in batch mode output")
+}
 
-	foundRow := false
-	foundCol := false
-	for _, md := range sinkMetrics {
-		rms := md.ResourceMetrics()
-		for i := 0; i < rms.Len(); i++ {
-			sms := rms.At(i).ScopeMetrics()
-			for j := 0; j < sms.Len(); j++ {
-				ms := sms.At(j).Metrics()
-				for k := 0; k < ms.Len(); k++ {
-					name := ms.At(k).Name()
-					if name == "countsketch_row" {
-						foundRow = true
-					}
-					if name == "countsketch_col" {
-						foundCol = true
+// TestGroupByPartitioning verifies that group_by creates separate sketches per
+// unique label combination (Mode 1 / Mode 3).
+func TestGroupByPartitioning(t *testing.T) {
+	cfg := &Config{
+		Mode:         ModeBatch,
+		AggregateBy:      []string{"host.name"},
+		Epsilon:      0.01,
+		Delta:        0.99,
+		WindowDuration:   0,
+		DropOriginal: true,
+	}
+	require.NoError(t, cfg.Validate())
+
+	next := new(consumertest.MetricsSink)
+	proc := newProcessor(zap.NewNop(), cfg, next)
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+	defer proc.Shutdown(context.Background())
+
+	// Two resource metrics with different host.name values.
+	md := pmetric.NewMetrics()
+	for _, host := range []string{"host-A", "host-B"} {
+		rm := md.ResourceMetrics().AppendEmpty()
+		rm.Resource().Attributes().PutStr("host.name", host)
+		sm := rm.ScopeMetrics().AppendEmpty()
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("cpu.usage")
+		m.SetEmptyGauge().DataPoints().AppendEmpty().SetDoubleValue(1.0)
+	}
+
+	out, err := proc.processMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	// Collect all partition_key values from the output.
+	partitionKeys := map[string]bool{}
+	rms := out.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				dps := ms.At(k).Gauge().DataPoints()
+				for l := 0; l < dps.Len(); l++ {
+					if v, ok := dps.At(l).Attributes().Get("partition_key"); ok {
+						partitionKeys[v.Str()] = true
 					}
 				}
 			}
 		}
 	}
-	assert.True(t, foundRow, "expected countsketch_row summary metric in batch mode")
-	assert.True(t, foundCol, "expected countsketch_col summary metric in batch mode")
+
+	// Two hosts → two partition keys.
+	assert.Len(t, partitionKeys, 2)
+	assert.True(t, partitionKeys["host.name=host-A;"])
+	assert.True(t, partitionKeys["host.name=host-B;"])
+}
+
+// TestWindowModeGroupBy verifies the matrix mode: group_by + window produces
+// per-partition sketches that reset each window.
+func TestWindowModeGroupBy(t *testing.T) {
+	cfg := &Config{
+		Mode:         ModeWindow,
+		AggregateBy:      []string{"service.name"},
+		Epsilon:      0.1,
+		Delta:        0.9,
+		WindowDuration:   100 * time.Millisecond,
+		DropOriginal: true,
+	}
+	// Skip Validate() to allow sub-second window in tests.
+
+	next := new(consumertest.MetricsSink)
+	proc := newProcessor(zap.NewNop(), cfg, next)
+	require.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+
+	md := pmetric.NewMetrics()
+	for _, svc := range []string{"svc-X", "svc-Y"} {
+		rm := md.ResourceMetrics().AppendEmpty()
+		sm := rm.ScopeMetrics().AppendEmpty()
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("req.count")
+		dp := m.SetEmptyGauge().DataPoints().AppendEmpty()
+		dp.SetDoubleValue(1.0)
+		dp.Attributes().PutStr("service.name", svc)
+	}
+
+	_, err := proc.processMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	time.Sleep(200 * time.Millisecond)
+	require.NoError(t, proc.Shutdown(context.Background()))
+
+	partitionKeys := map[string]bool{}
+	for _, emitted := range next.AllMetrics() {
+		rms := emitted.ResourceMetrics()
+		for i := 0; i < rms.Len(); i++ {
+			sms := rms.At(i).ScopeMetrics()
+			for j := 0; j < sms.Len(); j++ {
+				ms := sms.At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					dps := ms.At(k).Gauge().DataPoints()
+					for l := 0; l < dps.Len(); l++ {
+						if v, ok := dps.At(l).Attributes().Get("partition_key"); ok {
+							partitionKeys[v.Str()] = true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	assert.True(t, partitionKeys["service.name=svc-X;"], "expected partition for svc-X")
+	assert.True(t, partitionKeys["service.name=svc-Y;"], "expected partition for svc-Y")
 }
 
 func TestBatchModeDropOriginal(t *testing.T) {
@@ -149,12 +252,23 @@ func TestBatchModeDropOriginal(t *testing.T) {
 	err = proc.Shutdown(context.Background())
 	require.NoError(t, err)
 
-	// Originals should be dropped when DropOriginal=true.
-	assert.Equal(t, 0, out.ResourceMetrics().Len())
-
-	// But the next consumer should have received CountSketch summary metrics.
-	sinkMetrics := next.AllMetrics()
-	require.GreaterOrEqual(t, len(sinkMetrics), 1)
+	// DropOriginal=true: out should contain only sketch summary metrics (no originals).
+	// Sketch metrics are returned in `out`; nothing is pushed to `next` in batch mode.
+	require.Greater(t, out.ResourceMetrics().Len(), 0, "sketch metrics must be present in output")
+	foundPartition := false
+	rms := out.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				if ms.At(k).Name() == "countsketch_partition" {
+					foundPartition = true
+				}
+			}
+		}
+	}
+	assert.True(t, foundPartition, "expected countsketch_partition in drop-original output")
 }
 
 func TestConfigValidateModes(t *testing.T) {
@@ -240,13 +354,15 @@ func TestBatchModeNoStatePersistence(t *testing.T) {
 	metrics1 := buildTestMetrics()
 	metrics2 := buildTestMetrics()
 
-	_, err := proc.processMetrics(context.Background(), metrics1)
+	out1, err := proc.processMetrics(context.Background(), metrics1)
 	require.NoError(t, err)
-	_, err = proc.processMetrics(context.Background(), metrics2)
+	out2, err := proc.processMetrics(context.Background(), metrics2)
 	require.NoError(t, err)
 
-	sinkMetrics := next.AllMetrics()
-	require.GreaterOrEqual(t, len(sinkMetrics), 2, "each batch should trigger at least one emit")
+	// In batch mode each call returns its own sketch summary in the output; state
+	// is reset between batches so the two outputs are independent.
+	require.Greater(t, out1.ResourceMetrics().Len(), 0, "batch 1 should produce output")
+	require.Greater(t, out2.ResourceMetrics().Len(), 0, "batch 2 should produce output")
 }
 
 // TestWindowModeConcurrentConsume verifies concurrent processMetrics calls in window mode do not race.

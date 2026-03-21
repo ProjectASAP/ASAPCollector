@@ -4,9 +4,7 @@
 package aggregate // import "go.opentelemetry.io/otel/sdk/metric/internal/aggregate"
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"sync"
 	"time"
 
@@ -17,17 +15,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
-
-// countMinSketchSnapshot is the serialization DTO.
-type countMinSketchSnapshot struct {
-	Rows  int
-	Cols  int
-	Count [][]float64
-	Sum   [][]float64
-	Sum2  [][]float64
-	L1    []float64
-	L2    []float64
-}
 
 type countMinSketchSeries[N int64 | float64] struct {
 	attrs       attribute.Set
@@ -47,20 +34,35 @@ type countMinSketchValues[N int64 | float64] struct {
 	values     map[attribute.Distinct]*countMinSketchSeries[N]
 	valuesMu   sync.Mutex
 	seriesPool sync.Pool
+
+	// deltaTransmission enables sparse delta encoding for cumulative exports.
+	deltaTransmission bool
+	// deltaThreshold is the minimum absolute cell change to include in a delta.
+	deltaThreshold float64
+	// snapshots holds a clone of the last-exported CMS per series, keyed by
+	// attribute.Distinct. Used to compute sparse cell deltas.
+	snapshots   map[attribute.Distinct]*cms.CountMinSketch
+	snapshotsMu sync.Mutex
 }
 
-func newCountMinSketchValues[N int64 | float64](rows, cols, limit int) *countMinSketchValues[N] {
+func newCountMinSketchValues[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64) *countMinSketchValues[N] {
 	if rows <= 0 {
 		rows = 4
 	}
 	if cols <= 0 {
 		cols = 2048
 	}
+	if deltaTransmission && deltaThreshold <= 0 {
+		deltaThreshold = 1.0
+	}
 	v := &countMinSketchValues[N]{
-		rows:   rows,
-		cols:   cols,
-		limit:  newLimiter[countMinSketchSeries[N]](limit),
-		values: make(map[attribute.Distinct]*countMinSketchSeries[N]),
+		rows:              rows,
+		cols:              cols,
+		limit:             newLimiter[countMinSketchSeries[N]](limit),
+		values:            make(map[attribute.Distinct]*countMinSketchSeries[N]),
+		deltaTransmission: deltaTransmission,
+		deltaThreshold:    deltaThreshold,
+		snapshots:         make(map[attribute.Distinct]*cms.CountMinSketch),
 	}
 	v.seriesPool.New = func() any { return new(countMinSketchSeries[N]) }
 	return v
@@ -120,9 +122,9 @@ type countMinSketchAgg[N int64 | float64] struct {
 	start time.Time
 }
 
-func newCountMinSketchAgg[N int64 | float64](rows, cols, limit int) *countMinSketchAgg[N] {
+func newCountMinSketchAgg[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64) *countMinSketchAgg[N] {
 	return &countMinSketchAgg[N]{
-		countMinSketchValues: newCountMinSketchValues[N](rows, cols, limit),
+		countMinSketchValues: newCountMinSketchValues[N](rows, cols, limit, deltaTransmission, deltaThreshold),
 		start:                now(),
 	}
 }
@@ -155,7 +157,12 @@ func (d *countMinSketchAgg[N]) delta(
 		if series.sampleCount == 0 {
 			continue
 		}
-		if d.exportDataPoint(series, t, &dPts[i]) {
+		sketchBytes, enc, err := d.fullPayload(series.sketch)
+		if err != nil {
+			otel.Handle(err)
+			continue
+		}
+		if d.exportDataPoint(series, t, sketchBytes, enc, &dPts[i]) {
 			i++
 		}
 	}
@@ -208,7 +215,13 @@ func (d *countMinSketchAgg[N]) cumulative(
 		if series.sampleCount == 0 {
 			continue
 		}
-		if d.exportDataPoint(series, t, &dPts[i]) {
+
+		sketchBytes, enc, err := d.payloadFor(key, series.sketch)
+		if err != nil {
+			otel.Handle(err)
+			continue
+		}
+		if d.exportDataPoint(series, t, sketchBytes, enc, &dPts[i]) {
 			i++
 		}
 	}
@@ -217,6 +230,9 @@ func (d *countMinSketchAgg[N]) cumulative(
 	for _, key := range toEvict {
 		series := d.values[key]
 		delete(d.values, key)
+		d.snapshotsMu.Lock()
+		delete(d.snapshots, key)
+		d.snapshotsMu.Unlock()
 		series.attrs = attribute.Set{}
 		series.seriesID = 0
 		series.sampleCount = 0
@@ -230,17 +246,59 @@ func (d *countMinSketchAgg[N]) cumulative(
 	return len(dPts)
 }
 
+// payloadFor returns the sketch payload bytes and encoding for one cumulative
+// export cycle. If deltaTransmission is enabled and a prior snapshot exists,
+// it computes a sparse cell delta; otherwise it returns the full gob payload
+// and saves a new snapshot.
+func (d *countMinSketchValues[N]) payloadFor(key attribute.Distinct, sketch *cms.CountMinSketch) ([]byte, metricdata.CountMinSketchEncoding, error) {
+	if !d.deltaTransmission {
+		return d.fullPayload(sketch)
+	}
+
+	d.snapshotsMu.Lock()
+	snap, hasSnap := d.snapshots[key]
+	d.snapshotsMu.Unlock()
+
+	var payload []byte
+	var enc metricdata.CountMinSketchEncoding
+	var err error
+
+	if hasSnap && snap != nil {
+		var deltaMsg *cms.Delta
+		deltaMsg, err = cms.ComputeDelta(snap, sketch, d.deltaThreshold)
+		if err == nil {
+			payload, err = cms.SerializeDelta(deltaMsg)
+		}
+		enc = metricdata.CountMinSketchEncodingDelta
+	} else {
+		payload, err = serializeCMSketch(sketch)
+		enc = metricdata.CountMinSketchEncodingProto
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	newSnap := cloneCMSketch(sketch)
+	d.snapshotsMu.Lock()
+	d.snapshots[key] = newSnap
+	d.snapshotsMu.Unlock()
+
+	return payload, enc, nil
+}
+
+// fullPayload returns a full proto serialization of sketch.
+func (d *countMinSketchValues[N]) fullPayload(sketch *cms.CountMinSketch) ([]byte, metricdata.CountMinSketchEncoding, error) {
+	b, err := serializeCMSketch(sketch)
+	return b, metricdata.CountMinSketchEncodingProto, err
+}
+
 func (d *countMinSketchAgg[N]) exportDataPoint(
 	series *countMinSketchSeries[N],
 	t time.Time,
+	sketchBytes []byte,
+	encoding metricdata.CountMinSketchEncoding,
 	dest *metricdata.CountMinSketchDataPoint[N],
 ) bool {
-	sketchBytes, err := serializeCMSketch(series.sketch)
-	if err != nil {
-		otel.Handle(err)
-		return false
-	}
-
 	dp := dest
 	if series.seriesID != 0 {
 		dp.SeriesID = series.seriesID
@@ -254,25 +312,24 @@ func (d *countMinSketchAgg[N]) exportDataPoint(
 	dp.SampleCount = series.sampleCount
 	dp.Rows = int32(series.sketch.Rows)
 	dp.Cols = int32(series.sketch.Cols)
-	dp.Encoding = metricdata.CountMinSketchEncodingGob
+	dp.Encoding = encoding
 	dp.Sketch = sketchBytes
 	return true
 }
 
 func serializeCMSketch(s *cms.CountMinSketch) ([]byte, error) {
-	snap := countMinSketchSnapshot{
-		Rows:  s.Rows,
-		Cols:  s.Cols,
-		Count: s.Count,
-		Sum:   s.Sum,
-		Sum2:  s.Sum2,
-		L1:    s.L1,
-		L2:    s.L2,
+	return s.SerializeProtoBytes()
+}
+
+// cloneCMSketch returns a deep copy of src suitable for use as a delta snapshot.
+func cloneCMSketch(src *cms.CountMinSketch) *cms.CountMinSketch {
+	data, err := src.SerializeProtoBytes()
+	if err != nil {
+		return nil
 	}
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(snap); err != nil {
-		return nil, err
+	clone, err := cms.DeserializeCountMinSketchFromProtoBytes(data)
+	if err != nil {
+		return nil
 	}
-	return buf.Bytes(), nil
+	return clone
 }

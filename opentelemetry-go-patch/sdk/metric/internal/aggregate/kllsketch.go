@@ -249,7 +249,7 @@ func (d *kllSketch[N]) exportDataPoint(
 	t time.Time,
 	dest *metricdata.KLLSketchDataPoint[N],
 ) bool {
-	bytes, err := series.sketch.SerializeToBytes()
+	sketchBytes, err := series.sketch.SerializeProtoBytes()
 	if err != nil {
 		otel.Handle(err)
 		return false
@@ -269,7 +269,7 @@ func (d *kllSketch[N]) exportDataPoint(
 	dp.Sum = series.sum
 	dp.Min = series.min
 	dp.Max = series.max
-	dp.Encoding = metricdata.KLLSketchEncodingGob
-	dp.Sketch = bytes
+	dp.Encoding = metricdata.KLLSketchEncodingProto
+	dp.Sketch = sketchBytes
 	return true
 }
