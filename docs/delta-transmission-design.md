@@ -1425,9 +1425,8 @@ Sending only those changed cells dramatically reduces per-export payload size.
 **Scope:**
 - Applies to `CumulativeTemporality` exports only.  `DeltaTemporality` resets the sketch
   each export (independent windows); sparse delta between independent windows is not useful.
-- Supported sketch types: **CountMinSketch**, **CountSketch**, **HLLSketch**.
-- Not applicable to DDSketch or KLLSketch (different internal structures; no `ComputeDelta`
-  functions provided by sketchlib-go).
+- Supported sketch types: **CountMinSketch**, **CountSketch**, **HLLSketch**, **DDSketch**.
+- Not applicable to **KLLSketch** (random compaction — not additively mergeable).
 
 ### 14.2 Architecture
 
@@ -1479,30 +1478,61 @@ registers (HLL registers are monotone: they never decrease).
 
 ### 14.4 Encoding Wire Values
 
-New encoding constants are added to `sdk/metric/metricdata/data.go`:
+New encoding constants are added across the stack:
+
+**SDK (`sdk/metric/metricdata/data.go`):**
 
 | Constant | Value | Sketch type |
 |---|---|---|
 | `HLLSketchEncodingDelta` | `"hll_sketch_delta"` | HyperLogLog |
 | `CountMinSketchEncodingDelta` | `"count_min_sketch_delta"` | Count-Min Sketch |
 | `CountSketchEncodingDelta` | `"count_sketch_delta"` | Count Sketch |
+| `DDSketchEncodingProtoDelta` | `"ddsketch_proto_delta"` | DDSketch |
 
-These are carried in the `Encoding` field of each data point and forwarded by the
-OTLP exporter as an attribute on the OTLP metric data point so the receiver knows
-how to interpret `Sketch` bytes.
+**Proto (`opentelemetry/proto/metrics/v1/metrics.proto`):**
+
+| Enum value | Integer | Sketch type |
+|---|---|---|
+| `HLL_SKETCH_ENCODING_DELTA` | 2 | HyperLogLog |
+| `COUNT_MIN_SKETCH_ENCODING_DELTA` | 2 | Count-Min Sketch |
+| `COUNT_SKETCH_ENCODING_DELTA` | 2 | Count Sketch |
+| `DDSKETCH_ENCODING_PROTO_DELTA` | 2 | DDSketch |
+
+These are carried in the `Encoding` field of each pmetric data point so the
+collector processor knows how to interpret `Sketch` bytes.
 
 ### 14.5 Implementation Files
 
+**SDK aggregators (opentelemetry-go-patch):**
+
 | File | Change |
 |---|---|
-| `sdk/metric/metricdata/data.go` | Add `HLLSketchEncodingDelta`, `CountMinSketchEncodingDelta`, `CountSketchEncodingDelta` |
-| `sdk/metric/aggregation.go` | Add `DeltaTransmission bool` + `DeltaThreshold float64` to `AggregationCountSketch`, `AggregationCountMinSketch`, `AggregationHLLSketch` |
-| `sdk/metric/pipeline.go` | Pass new fields to `b.CountSketch(...)`, `b.CountMinSketch(...)`, `b.HLLSketch(...)` |
-| `sdk/metric/internal/aggregate/aggregate.go` | Update `Builder.CountSketch`, `CountMinSketch`, `HLLSketch` signatures; add `Builder.Noop()` |
-| `sdk/metric/internal/aggregate/hllsketch.go` | Add `snapshots map`, `payloadFor` helper; delta encoding in `cumulative()` |
-| `sdk/metric/internal/aggregate/countminsketch.go` | Add `snapshots map`, `payloadFor` helper; delta encoding in `cumulative()` |
-| `sdk/metric/internal/aggregate/countsketch.go` | Add `snapshots map`, `payloadFor` helper; delta encoding in `cumulative()` |
+| `sdk/metric/metricdata/data.go` | Add `HLLSketchEncodingDelta`, `CountMinSketchEncodingDelta`, `CountSketchEncodingDelta`, `DDSketchEncodingProtoDelta` |
+| `sdk/metric/aggregation.go` | Add `DeltaTransmission`/`DeltaThreshold` to `AggregationCountSketch`, `AggregationCountMinSketch`, `AggregationDDSketch`; add `DeltaTransmission` to `AggregationHLLSketch` |
+| `sdk/metric/pipeline.go` | Pass new fields to all four Builder sketch methods |
+| `sdk/metric/internal/aggregate/aggregate.go` | Update `Builder.CountSketch`, `CountMinSketch`, `HLLSketch`, `DDSketch` signatures; add `Builder.Noop()` |
+| `sdk/metric/internal/aggregate/hllsketch.go` | `snapshots map`, `payloadFor`, `cloneHLL`; delta encoding in `cumulative()` |
+| `sdk/metric/internal/aggregate/countminsketch.go` | `snapshots map`, `payloadFor`, `cloneCMSketch`; delta encoding in `cumulative()` |
+| `sdk/metric/internal/aggregate/countsketch.go` | `snapshots map`, `payloadFor`, `cloneCSSketch`; delta encoding in `cumulative()` |
+| `sdk/metric/internal/aggregate/ddsketch.go` | `snapshots map`, `payloadFor`, `ddSketchDeltaPayload`, `ddStoreDelta`, `ddStoreToMap`; delta encoding in `cumulative()` |
 | `sdk/metric/go.mod` | Add `replace github.com/ProjectASAP/sketchlib-go => /tmp/sketchlib-go` |
+
+**Wire format (opentelemetry-proto-patch and opentelemetry-collector-patch):**
+
+| File | Change |
+|---|---|
+| `opentelemetry/proto/metrics/v1/metrics.proto` | Add delta enum values to all four encoding enums |
+| `pdata/internal/generated_enum_*.go` (×4) | Add delta enum constant and map entries |
+| `pdata/pmetric/*_encoding.go` (×4) | Add exported delta constant and `String()` case |
+
+**Collector inbound reconstruction (opentelemetry-collector-contrib-patch):**
+
+| Processor | Change |
+|---|---|
+| `hllprocessor` | `inboundSnapshots map[string]*hll.HyperLogLog`; `inboundMergeHLL` helper; applies `hll.ApplyRegisterDelta` on delta payloads in both `processBatch` and `accumulateHLLSketchMetric` |
+| `ddsketchprocessor` | `inboundSnapshots map[string][]byte`; `decodeDDSketchDataPoint` converted to method; `applyDDSketchDelta`/`applyDDStore` helpers; reconstructs from proto delta before merging |
+| `countminsketchprocessor` | `inboundSnapshots map[string]*cms.CountMinSketch`; `inboundDecodeCMS` helper; applies `cms.ApplyDelta` on delta payloads |
+| `countsketchprocessor` | Not applicable — inbound CountSketch data points are treated as raw samples (count = 1.0), not merged sketch payloads |
 
 ### 14.6 Snapshot Lifecycle
 
@@ -1521,20 +1551,268 @@ how to interpret `Sketch` bytes.
 The two delta layers are orthogonal and can be enabled simultaneously:
 
 ```
-SDK (cumulative, delta payload) → OTLP → Collector OTLP receiver
-  → countsketchprocessor (window mode, delta_transmission=true)
-  → Backend
+SDK (cumulative, delta payload) → OTLP → Collector agent
+  ↓ inboundMergeHLL / decodeDDSketchDataPoint / inboundDecodeCMS
+  Collector reconstructs current full sketch from delta
+  ↓ flushWindow (window mode, delta_transmission=true)
+  Collector emits its own delta to Backend
 ```
 
-The collector processor does not need to reconstruct the full sketch from deltas before
-re-computing its own delta; it treats each incoming `CountSketch` data point as an
-observation and counts it as `1.0` sample (existing `MetricTypeCountSketch` path in
-`ingestMetric`).  The sketch payload bytes are forwarded as-is through the processor
-output `sketch_payload` attribute.
+The collector processor first **reconstructs** the current full sketch from the
+SDK-originated delta (via `inboundSnapshots`), then applies it to the running window
+sketch normally.  On flush, the processor computes its own outbound delta against the
+last flushed snapshot.  The two snapshot maps (`inboundSnapshots` for SDK→collector
+and `snapshots` for collector→backend) are independent.
 
 ---
 
-## 15. References
+## 16. Controller-Driven Sketch Sizing and Delta Window Configuration
+
+The controller is responsible for determining not just *which* sketch to use, but *how
+large* to make it and *what window interval* to use for delta transmission.  These
+decisions are tightly coupled: the right sketch dimensions depend on the expected
+cardinality and rate, and the right window duration determines both sketch fill and
+delta sparsity.
+
+---
+
+### 16.1 Why the Controller Must Own Sketch Sizing
+
+Sketch parameters set by a human operator are almost always wrong:
+
+| Parameter | Too small | Too large |
+|---|---|---|
+| CMS `cols` | High collision rate → poor accuracy | Wasted memory and bandwidth |
+| CMS `rows` | Higher failure probability | Negligible — rows are cheap |
+| CS `cols` | Signed-error collisions | Wasted memory |
+| HLL `precision` | Cardinality error > 5% | Wasted memory (registers double per +1 bit) |
+| DD `relativeAccuracy` | Quantile error too large | Sketch grows unboundedly for high-cardinality streams |
+| `window_duration` | Sketches flush before they fill → high amortized overhead | Latency too high; fill rate approaches 100% → no delta benefit |
+
+The controller has the data to make these decisions correctly: it observes the actual
+cardinality, insertion rate, and sketch fill rate from running agents, and can converge
+on the right parameters via a feedback loop.
+
+---
+
+### 16.2 Inputs to the Sizing Model
+
+The planner collects the following signals (from the monitor scraper and plan metadata):
+
+| Signal | Source | Used for |
+|---|---|---|
+| `cardinality_estimate` | HLL output metric | Determines CMS cols, CS cols, HLL precision |
+| `insertion_rate_per_sec` | Rate of gauge/sum data points | Determines window fill time |
+| `sketch_fill_rate` | `otelcol_delta_fill_rate` (new) | Validates window_duration choice |
+| `sketch_size_bytes` | `otelcol_sketch_size_bytes` | Validates rows × cols against memory budget |
+| `bandwidth_bytes_per_sec` | Exporter telemetry | Validates delta payload size against quota |
+| `accuracy_target` | Query specification | Lower bound on accuracy |
+
+---
+
+### 16.3 Sketch Parameter Sizing Rules
+
+#### 16.3.1 CountMinSketch
+
+Given cardinality `N` and error target `ε`:
+
+```
+cols = ⌈e / ε⌉            # e ≈ 2.718 — classic CMS bound
+rows = ⌈ln(1/δ_failure)⌉  # δ_failure from config (default 0.01)
+```
+
+With delta transmission, effective transmitted size = `rows × cols × fill_rate × 8 bytes`.
+The planner should compute:
+
+```rust
+fn cms_params(cardinality: f64, epsilon: f64, delta_failure: f64) -> (usize, usize) {
+    let cols = (std::f64::consts::E / epsilon).ceil() as usize;
+    let rows = (1.0 / delta_failure).ln().ceil() as usize;
+    (rows.max(2), cols.max(4))
+}
+```
+
+**Controller rule:** re-compute `cols` whenever `cardinality_estimate` changes by more
+than 50%.  Hysteresis prevents oscillation; only increase `cols` automatically (decreasing
+risks losing accumulated state).
+
+#### 16.3.2 CountSketch
+
+CS columns must be a power of two (for hashing):
+
+```
+cols = nextPowerOfTwo(⌈1 / ε²⌉)
+rows = ⌈ln(1/δ_failure)⌉
+```
+
+CS is signed so it handles negative counts; `cols` can often be smaller than CMS for
+the same accuracy.
+
+#### 16.3.3 HyperLogLog
+
+HLL precision `p` controls the number of registers `m = 2^p` and the standard error
+`σ ≈ 1.04 / √m`:
+
+```
+p = ⌈log₂((1.04 / σ_target)²)⌉    # minimum p satisfying σ ≤ σ_target
+p = clamp(p, 4, 18)                 # practical limits
+```
+
+With delta transmission, transmitted bytes ≈ `(non-zero changed registers) × 2 bytes`
+rather than `m` bytes.  HLL register deltas are typically very sparse early in a window.
+
+#### 16.3.4 DDSketch
+
+DDSketch accuracy is set by `relative_accuracy` (γ):
+
+```
+relative_accuracy = target_quantile_error / 2
+```
+
+There is no explicit dimension to size — DDSketch grows dynamically.  The planner
+should set `relative_accuracy` from the query's `quantile_error` field and leave it
+fixed.  Delta transmission for DDSketch uses the `DeltaThreshold` parameter to suppress
+noisy bucket changes.
+
+---
+
+### 16.4 Delta Window Duration Selection
+
+The window duration `W` governs how much data accumulates before a flush.  It controls
+three things simultaneously:
+
+| Effect of increasing W | Consequence |
+|---|---|
+| More data per window | Sketch fill rate increases → delta gets larger |
+| Fewer flushes per unit time | Amortized flush overhead falls |
+| Higher output latency | Downstream consumers see fresher data less often |
+
+**Target fill rate:** the planner targets a fill rate `f*` (default 5%).  Given an
+insertion rate `r` (items/sec) and sketch size `S` (cells), it estimates:
+
+```
+W_target = (f* × S) / r
+```
+
+For example: CMS with `rows=5, cols=1024` → `S = 5120 cells`; at `r = 100 items/sec`
+and `f* = 0.05`:
+
+```
+W_target = 0.05 × 5120 / 100 = 2.56 s   → round up to 5 s minimum
+```
+
+At `r = 5 items/sec`:
+
+```
+W_target = 0.05 × 5120 / 5 = 51.2 s   → round to 60 s
+```
+
+The planner bounds `W` in `[W_min, W_max]` (defaults 5 s – 300 s).
+
+**Controller rule in `cost_model.rs`:**
+
+```rust
+fn target_window_duration(
+    insertion_rate: f64,   // items/sec observed
+    sketch_cells: usize,   // rows × cols
+    target_fill: f64,      // default 0.05
+    w_min: Duration,
+    w_max: Duration,
+) -> Duration {
+    let w_secs = (target_fill * sketch_cells as f64) / insertion_rate.max(1.0);
+    Duration::from_secs_f64(w_secs.clamp(w_min.as_secs_f64(), w_max.as_secs_f64()))
+}
+```
+
+---
+
+### 16.5 Joint Sizing and Window Co-Optimization
+
+Sketch size and window duration interact: a larger sketch at the same fill rate requires
+a longer window; a shorter window at the same cardinality requires a smaller sketch for
+the fill rate to remain bounded.
+
+The planner iterates:
+
+```
+1. Start with accuracy_target → compute minimum (rows, cols).
+2. Compute W_target from (rows × cols) and insertion_rate.
+3. If W_target < W_min: increase cols until W_target ≥ W_min, check accuracy still met.
+4. If W_target > W_max: decrease cols (up to accuracy lower bound) or raise W_max.
+5. Compute effective_bandwidth = (rows × cols × fill_rate × 8) / W_target.
+6. If effective_bandwidth > quota: try a different sketch type (§13.2).
+```
+
+This co-optimization produces a (sketch_type, rows, cols, window_duration,
+delta_threshold) tuple that simultaneously satisfies accuracy, latency, and bandwidth
+constraints.
+
+---
+
+### 16.6 New `AgentCollectorConfig` Fields for Sizing
+
+Extending §13.1, the full set of controller-managed fields in `AgentCollectorConfig`:
+
+```rust
+pub struct AgentCollectorConfig {
+    // Sketch selection
+    pub sketch_type:         SketchType,   // CMS | CS | HLL | DDSketch | KLL
+
+    // Sketch dimensions (controller-computed)
+    pub rows:                Option<u32>,  // CMS / CS rows
+    pub cols:                Option<u32>,  // CMS / CS cols
+    pub precision:           Option<u32>,  // HLL precision p (registers = 2^p)
+    pub relative_accuracy:   Option<f64>,  // DDSketch γ
+    pub k:                   Option<u32>,  // KLL k parameter
+
+    // Window configuration (controller-computed)
+    pub window_duration_secs: u64,         // flush interval W
+
+    // Delta transmission (controller-computed)
+    pub delta_transmission:  bool,
+    pub delta_threshold:     f64,          // min |Δcell| to transmit; default 1.0
+    pub delta_target_fill:   f64,          // target fill rate for W selection; default 0.05
+    pub delta_max_threshold: f64,          // ceiling for monitor-driven threshold raises
+
+    // Passthrough
+    pub transmit_sketch:     bool,
+    pub drop_original:       bool,
+}
+```
+
+---
+
+### 16.7 Feedback Loop: Sizing Corrections
+
+After deployment, the monitor verifies sizing assumptions:
+
+| Observed condition | Controller action |
+|---|---|
+| `fill_rate > delta_target_fill × 2` | Increase `delta_threshold` (§13.5) or increase `window_duration` |
+| `fill_rate < delta_target_fill / 4` | Decrease `window_duration` (reduce latency) |
+| `cardinality_estimate` changed >50% | Re-run sizing; update `cols`/`precision` |
+| `sketch_size_bytes > memory_budget` | Reduce `cols` (accept slightly higher error) |
+| Accuracy violation (quantile error out of spec) | Increase `cols` or switch sketch type |
+
+All corrections flow through `PlanStore` (versioned, rollback-able) and are distributed
+via OpAMP — exactly the same path as delta threshold adjustments in §13.5.
+
+---
+
+### 16.8 Summary of Sizing Integration
+
+| Decision | Where computed | Input signals |
+|---|---|---|
+| `rows`, `cols` (CMS/CS) | `cost_model.rs` → `cms_params` / `cs_params` | `accuracy_target`, `cardinality_estimate` |
+| `precision` (HLL) | `cost_model.rs` → `hll_params` | `accuracy_target` (σ_target) |
+| `relative_accuracy` (DD) | Directly from query spec | `quantile_error` |
+| `window_duration` | `target_window_duration` | `insertion_rate`, sketch size, `target_fill` |
+| `delta_threshold` | Monitor feedback loop | `fill_rate`, `delta_target_fill` |
+| Sketch type selection | Full cost model (§13.2) | All of the above + `bandwidth_quota` |
+
+---
+
+## 17. References
 
 - Zhang, Chen, Liu. *OctoSketch: Enabling Real-Time, Continuous Network Monitoring over Multiple Cores.* USENIX NSDI 2024. https://www.usenix.org/system/files/nsdi24-zhang-yinda.pdf
 - OctoSketch source code. https://github.com/Froot-NetSys/OctoSketch

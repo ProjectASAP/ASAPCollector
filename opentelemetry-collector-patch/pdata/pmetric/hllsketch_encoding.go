@@ -13,6 +13,8 @@ const (
 	HLLSketchEncodingUnspecified = HLLSketchEncoding(internal.HLLSketchEncoding_HLL_SKETCH_ENCODING_UNSPECIFIED)
 	// HLLSketchEncodingBinary indicates the payload is binary-encoded (SerializeToBytes).
 	HLLSketchEncodingBinary = HLLSketchEncoding(internal.HLLSketchEncoding_HLL_SKETCH_ENCODING_BINARY)
+	// HLLSketchEncodingDelta indicates the payload is delta-encoded.
+	HLLSketchEncodingDelta = HLLSketchEncoding(internal.HLLSketchEncoding_HLL_SKETCH_ENCODING_DELTA)
 )
 
 // String returns the string representation of the HLLSketchEncoding.
@@ -22,6 +24,8 @@ func (e HLLSketchEncoding) String() string {
 		return "Unspecified"
 	case HLLSketchEncodingBinary:
 		return "Binary"
+	case HLLSketchEncodingDelta:
+		return "Delta"
 	}
 	return ""
 }

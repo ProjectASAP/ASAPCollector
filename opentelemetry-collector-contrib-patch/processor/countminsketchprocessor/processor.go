@@ -60,6 +60,12 @@ type windowedCountMinSketchProcessor struct {
 	snapshots   map[string]*cms.CountMinSketch
 	snapshotsMu sync.Mutex
 
+	// inboundSnapshots tracks the last reconstructed full CMS per aggregation key
+	// received from upstream. Used to apply sparse deltas from SDK-originated
+	// CountMinSketchEncodingDelta payloads.
+	inboundMu        sync.Mutex
+	inboundSnapshots map[string]*cms.CountMinSketch
+
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool
@@ -80,6 +86,7 @@ func newProcessor(
 		nextConsumer:         next,
 		activeWindowSketches: make(map[string]*windowSketch),
 		snapshots:            make(map[string]*cms.CountMinSketch),
+		inboundSnapshots:     make(map[string]*cms.CountMinSketch),
 		stopCh:               make(chan struct{}),
 		doneCh:               make(chan struct{}),
 	}
@@ -253,8 +260,8 @@ func (p *windowedCountMinSketchProcessor) ingestMetric(
 			p.updateWindowSketch(metric.Name(), dp)
 		}
 	case pmetric.MetricTypeCountMinSketch:
-		// Pre-aggregated path: deserialize and merge each incoming sketch into
-		// the corresponding per-aggregation-key window sketch.
+		// Pre-aggregated path: deserialize (or reconstruct from delta) and merge
+		// each incoming sketch into the per-aggregation-key window sketch.
 		dps := metric.CountMinSketch().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
@@ -264,12 +271,15 @@ func (p *windowedCountMinSketchProcessor) ingestMetric(
 			if len(dp.Sketch()) == 0 {
 				continue
 			}
-			incoming, err := deserializeCMS(dp.Sketch())
+			aggregationKey := p.seriesKey(metric.Name(), dp.Attributes())
+			incoming, err := p.inboundDecodeCMS(aggregationKey, dp)
 			if err != nil {
-				p.logger.Error("countminsketchprocessor: failed to deserialize CountMinSketch dp", zap.Error(err))
+				p.logger.Error("countminsketchprocessor: failed to decode inbound CountMinSketch", zap.Error(err))
 				continue
 			}
-			aggregationKey := p.seriesKey(metric.Name(), dp.Attributes())
+			if incoming == nil {
+				continue // delta with no snapshot yet
+			}
 			p.mergeWindowSketch(aggregationKey, dp.Attributes(), incoming)
 		}
 	}
@@ -533,6 +543,45 @@ func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
 // Helpers
 // ─────────────────────────────────────────────────────────────
 //
+
+// inboundDecodeCMS decodes an incoming CountMinSketch data point, handling both
+// full (Gob-encoded) and sparse-delta payloads. For delta payloads it applies
+// the delta onto the last stored snapshot to reconstruct the current full state.
+// Returns (nil, nil) when a delta arrives before any full snapshot.
+func (p *windowedCountMinSketchProcessor) inboundDecodeCMS(aggregationKey string, dp pmetric.CountMinSketchDataPoint) (*cms.CountMinSketch, error) {
+	payload := dp.Sketch()
+
+	switch dp.Encoding() {
+	case pmetric.CountMinSketchEncodingDelta:
+		p.inboundMu.Lock()
+		snap, hasSnap := p.inboundSnapshots[aggregationKey]
+		p.inboundMu.Unlock()
+		if !hasSnap || snap == nil {
+			return nil, nil
+		}
+		reconstructed := cloneCMS(snap)
+		if reconstructed == nil {
+			return nil, nil
+		}
+		if err := cms.ApplyDelta(reconstructed, payload); err != nil {
+			return nil, err
+		}
+		p.inboundMu.Lock()
+		p.inboundSnapshots[aggregationKey] = cloneCMS(reconstructed)
+		p.inboundMu.Unlock()
+		return reconstructed, nil
+
+	default: // CountMinSketchEncodingGob or unspecified
+		decoded, err := deserializeCMS(payload)
+		if err != nil {
+			return nil, err
+		}
+		p.inboundMu.Lock()
+		p.inboundSnapshots[aggregationKey] = cloneCMS(decoded)
+		p.inboundMu.Unlock()
+		return decoded, nil
+	}
+}
 
 func serializeCMS(s *cms.CountMinSketch) ([]byte, error) {
 	return s.SerializeToBytes()

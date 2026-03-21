@@ -13,6 +13,8 @@ const (
 	CountSketchEncodingUnspecified = CountSketchEncoding(internal.CountSketchEncoding_COUNT_SKETCH_ENCODING_UNSPECIFIED)
 	// CountSketchEncodingGob indicates the payload is gob-encoded.
 	CountSketchEncodingGob = CountSketchEncoding(internal.CountSketchEncoding_COUNT_SKETCH_ENCODING_GOB)
+	// CountSketchEncodingDelta indicates the payload is delta-encoded.
+	CountSketchEncodingDelta = CountSketchEncoding(internal.CountSketchEncoding_COUNT_SKETCH_ENCODING_DELTA)
 )
 
 // String returns the string representation of the CountSketchEncoding.
@@ -22,6 +24,8 @@ func (e CountSketchEncoding) String() string {
 		return "Unspecified"
 	case CountSketchEncodingGob:
 		return "Gob"
+	case CountSketchEncodingDelta:
+		return "Delta"
 	}
 	return ""
 }

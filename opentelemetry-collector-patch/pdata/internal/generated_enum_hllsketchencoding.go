@@ -9,6 +9,7 @@ package internal
 const (
 	HLLSketchEncoding_HLL_SKETCH_ENCODING_UNSPECIFIED = HLLSketchEncoding(0)
 	HLLSketchEncoding_HLL_SKETCH_ENCODING_BINARY      = HLLSketchEncoding(1)
+	HLLSketchEncoding_HLL_SKETCH_ENCODING_DELTA       = HLLSketchEncoding(2)
 )
 
 // HLLSketchEncoding identifies how the HLL sketch payload bytes are encoded.
@@ -17,9 +18,11 @@ type HLLSketchEncoding int32
 var HLLSketchEncoding_name = map[int32]string{
 	0: "HLL_SKETCH_ENCODING_UNSPECIFIED",
 	1: "HLL_SKETCH_ENCODING_BINARY",
+	2: "HLL_SKETCH_ENCODING_DELTA",
 }
 
 var HLLSketchEncoding_value = map[string]int32{
 	"HLL_SKETCH_ENCODING_UNSPECIFIED": 0,
 	"HLL_SKETCH_ENCODING_BINARY":      1,
+	"HLL_SKETCH_ENCODING_DELTA":       2,
 }

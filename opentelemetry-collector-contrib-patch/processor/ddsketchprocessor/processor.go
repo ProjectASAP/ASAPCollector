@@ -39,6 +39,12 @@ type ddsketchProcessor struct {
 	// cfg.DeltaTransmission=true.
 	snapshotsMu sync.Mutex
 	snapshots   map[string][]byte // proto-marshalled sketchpb.DDSketch
+
+	// inboundSnapshots tracks the last full proto payload per series key received
+	// from upstream. Used to reconstruct the current sketch when upstream sends
+	// DDSketchEncodingProtoDelta payloads.
+	inboundMu        sync.Mutex
+	inboundSnapshots map[string][]byte // proto-marshalled sketchpb.DDSketch
 }
 
 type resourceWindow struct {
@@ -63,13 +69,14 @@ type metricWindow struct {
 
 func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *ddsketchProcessor {
 	return &ddsketchProcessor{
-		cfg:          cfg,
-		logger:       logger,
-		nextConsumer: next,
-		windowStore:  make(map[string]*resourceWindow),
-		snapshots:    make(map[string][]byte),
-		stopCh:       make(chan struct{}),
-		doneCh:       make(chan struct{}),
+		cfg:              cfg,
+		logger:           logger,
+		nextConsumer:     next,
+		windowStore:      make(map[string]*resourceWindow),
+		snapshots:        make(map[string][]byte),
+		inboundSnapshots: make(map[string][]byte),
+		stopCh:           make(chan struct{}),
+		doneCh:           make(chan struct{}),
 	}
 }
 
@@ -324,12 +331,16 @@ func (p *ddsketchProcessor) consumeDDSketchDataPoints(dps pmetric.DDSketchDataPo
 		if !p.matchesMatchers(dp.Attributes()) {
 			continue
 		}
-		sk, err := decodeDDSketchDataPoint(dp)
+		attrKey := attributesKey(dp.Attributes())
+		sk, err := p.decodeDDSketchDataPoint(attrKey, dp)
 		if err != nil {
 			if p.logger != nil {
 				p.logger.Error("failed to decode DDSketch payload", zap.Error(err))
 			}
 			continue
+		}
+		if sk == nil {
+			continue // delta with no snapshot yet
 		}
 
 		key := p.seriesKey(dp.Attributes())
@@ -387,22 +398,60 @@ func (p *ddsketchProcessor) consumeGaugeDataPoints(dps pmetric.NumberDataPointSl
 	return result
 }
 
-func decodeDDSketchDataPoint(dp pmetric.DDSketchDataPoint) (*ddsketch.DDSketch, error) {
-	if dp.Encoding() != pmetric.DDSketchEncodingProto {
-		return nil, fmt.Errorf("unsupported DDSketch encoding %v", dp.Encoding())
-	}
-
+func (p *ddsketchProcessor) decodeDDSketchDataPoint(seriesKey string, dp pmetric.DDSketchDataPoint) (*ddsketch.DDSketch, error) {
 	data := dp.Sketch()
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty DDSketch payload")
 	}
 
-	var pb sketchpb.DDSketch
-	if err := proto.Unmarshal(data, &pb); err != nil {
-		return nil, fmt.Errorf("unmarshal DDSketch: %w", err)
-	}
+	switch dp.Encoding() {
+	case pmetric.DDSketchEncodingProtoDelta:
+		p.inboundMu.Lock()
+		snapPayload, hasSnap := p.inboundSnapshots[seriesKey]
+		p.inboundMu.Unlock()
+		if !hasSnap || snapPayload == nil {
+			// No snapshot to apply delta against; skip this data point.
+			return nil, nil
+		}
+		// Reconstruct: unmarshal snapshot, apply delta bucket counts.
+		var snapPb sketchpb.DDSketch
+		if err := proto.Unmarshal(snapPayload, &snapPb); err != nil {
+			return nil, fmt.Errorf("unmarshal DDSketch snapshot: %w", err)
+		}
+		var deltaPb sketchpb.DDSketch
+		if err := proto.Unmarshal(data, &deltaPb); err != nil {
+			return nil, fmt.Errorf("unmarshal DDSketch delta: %w", err)
+		}
+		reconstructed := applyDDSketchDelta(&snapPb, &deltaPb)
+		reconstructedBytes, err := proto.Marshal(reconstructed)
+		if err != nil {
+			return nil, fmt.Errorf("marshal reconstructed DDSketch: %w", err)
+		}
+		p.inboundMu.Lock()
+		if p.inboundSnapshots == nil {
+			p.inboundSnapshots = make(map[string][]byte)
+		}
+		p.inboundSnapshots[seriesKey] = reconstructedBytes
+		p.inboundMu.Unlock()
+		return ddsketch.FromProto(reconstructed)
 
-	return ddsketch.FromProto(&pb)
+	default: // DDSketchEncodingProto or unspecified
+		if dp.Encoding() != pmetric.DDSketchEncodingProto && dp.Encoding() != pmetric.DDSketchEncodingUnspecified {
+			return nil, fmt.Errorf("unsupported DDSketch encoding %v", dp.Encoding())
+		}
+		var pb sketchpb.DDSketch
+		if err := proto.Unmarshal(data, &pb); err != nil {
+			return nil, fmt.Errorf("unmarshal DDSketch: %w", err)
+		}
+		// Store full snapshot for future delta reconstruction.
+		p.inboundMu.Lock()
+		if p.inboundSnapshots == nil {
+			p.inboundSnapshots = make(map[string][]byte)
+		}
+		p.inboundSnapshots[seriesKey] = data
+		p.inboundMu.Unlock()
+		return ddsketch.FromProto(&pb)
+	}
 }
 
 func newSketchSeries(attrs pcommon.Map, start, ts pcommon.Timestamp) *sketchSeries {
@@ -500,6 +549,35 @@ func storeDelta(snap, curr *sketchpb.Store, threshold float64) *sketchpb.Store {
 		if delta >= threshold || delta <= -threshold {
 			out.BinCounts[idx] = delta
 		}
+	}
+	if len(out.BinCounts) == 0 {
+		return nil
+	}
+	return out
+}
+
+// applyDDSketchDelta reconstructs a full DDSketch proto from a snapshot and a
+// sparse delta (produced by computeDDSketchDelta / ddSketchDeltaPayload).
+func applyDDSketchDelta(snap, delta *sketchpb.DDSketch) *sketchpb.DDSketch {
+	out := &sketchpb.DDSketch{
+		Mapping:   snap.Mapping,
+		ZeroCount: snap.ZeroCount + delta.ZeroCount,
+	}
+	out.PositiveValues = applyDDStore(snap.PositiveValues, delta.PositiveValues)
+	out.NegativeValues = applyDDStore(snap.NegativeValues, delta.NegativeValues)
+	return out
+}
+
+// applyDDStore adds delta bucket counts onto snapshot bucket counts.
+func applyDDStore(snap, delta *sketchpb.Store) *sketchpb.Store {
+	base := storeToMap(snap)   // existing helper in the file
+	changes := storeToMap(delta)
+	out := &sketchpb.Store{BinCounts: make(map[int32]float64)}
+	for idx, cnt := range base {
+		out.BinCounts[idx] = cnt
+	}
+	for idx, d := range changes {
+		out.BinCounts[idx] += d
 	}
 	if len(out.BinCounts) == 0 {
 		return nil
@@ -740,12 +818,15 @@ func (p *ddsketchProcessor) accumulateDDSketchMetric(sw *scopeWindow, metric pme
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
 		}
 
-		sk, err := decodeDDSketchDataPoint(dp)
+		sk, err := p.decodeDDSketchDataPoint(mw.name+"::"+attributesKey(dp.Attributes()), dp)
 		if err != nil {
 			if p.logger != nil {
 				p.logger.Error("failed to decode DDSketch payload in window mode", zap.Error(err))
 			}
 			continue
+		}
+		if sk == nil {
+			continue // delta with no snapshot yet
 		}
 
 		series.merge(sk, dp, p.logger)
