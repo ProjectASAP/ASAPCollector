@@ -4,9 +4,7 @@
 package aggregate // import "go.opentelemetry.io/otel/sdk/metric/internal/aggregate"
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	"sync"
 	"time"
 
@@ -17,17 +15,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
-
-// countMinSketchSnapshot is the serialization DTO.
-type countMinSketchSnapshot struct {
-	Rows  int
-	Cols  int
-	Count [][]float64
-	Sum   [][]float64
-	Sum2  [][]float64
-	L1    []float64
-	L2    []float64
-}
 
 type countMinSketchSeries[N int64 | float64] struct {
 	attrs       attribute.Set
@@ -281,7 +268,7 @@ func (d *countMinSketchValues[N]) payloadFor(key attribute.Distinct, sketch *cms
 		enc = metricdata.CountMinSketchEncodingDelta
 	} else {
 		payload, err = serializeCMSketch(sketch)
-		enc = metricdata.CountMinSketchEncodingGob
+		enc = metricdata.CountMinSketchEncodingProto
 	}
 	if err != nil {
 		return nil, "", err
@@ -295,10 +282,10 @@ func (d *countMinSketchValues[N]) payloadFor(key attribute.Distinct, sketch *cms
 	return payload, enc, nil
 }
 
-// fullPayload returns a full gob serialization of sketch.
+// fullPayload returns a full proto serialization of sketch.
 func (d *countMinSketchValues[N]) fullPayload(sketch *cms.CountMinSketch) ([]byte, metricdata.CountMinSketchEncoding, error) {
 	b, err := serializeCMSketch(sketch)
-	return b, metricdata.CountMinSketchEncodingGob, err
+	return b, metricdata.CountMinSketchEncodingProto, err
 }
 
 func (d *countMinSketchAgg[N]) exportDataPoint(
@@ -327,30 +314,16 @@ func (d *countMinSketchAgg[N]) exportDataPoint(
 }
 
 func serializeCMSketch(s *cms.CountMinSketch) ([]byte, error) {
-	snap := countMinSketchSnapshot{
-		Rows:  s.Rows,
-		Cols:  s.Cols,
-		Count: s.Count,
-		Sum:   s.Sum,
-		Sum2:  s.Sum2,
-		L1:    s.L1,
-		L2:    s.L2,
-	}
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(snap); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return s.SerializeProtoBytes()
 }
 
 // cloneCMSketch returns a deep copy of src suitable for use as a delta snapshot.
 func cloneCMSketch(src *cms.CountMinSketch) *cms.CountMinSketch {
-	data, err := src.SerializeToBytes()
+	data, err := src.SerializeProtoBytes()
 	if err != nil {
 		return nil
 	}
-	clone, err := cms.DeserializeCountMinSketchFromBytes(data)
+	clone, err := cms.DeserializeCountMinSketchFromProtoBytes(data)
 	if err != nil {
 		return nil
 	}
