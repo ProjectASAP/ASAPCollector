@@ -574,9 +574,9 @@ DeltaThreshold    float64       `mapstructure:"delta_threshold"`    // default: 
 
 **Processor state additions:**
 ```go
-snapshotMu  sync.RWMutex
-snapshots   map[string]*cms.CountMinSketch  // one snapshot per partition key
-                                            // (cs processor uses *cs.CountSketch)
+snapshotsMu  sync.Mutex
+snapshots    map[string]*cms.CountMinSketch  // one snapshot per partition key
+                                             // (cs processor uses *cs.CountSketch)
 ```
 
 **Flush path change (per partition key):**
@@ -592,7 +592,7 @@ new:      if DeltaTransmission:
 ```
 
 The three aggregation modes (Mode 1 / Mode 2 / Mode 3) are already handled by the existing
-`GroupBy` and `WindowSize` config fields and the partition map. Delta transmission is orthogonal
+`GroupBy` and `WindowDuration` config fields and the partition map. Delta transmission is orthogonal
 — it changes only the serialization format of each partition's flush output.
 
 **Backward compatibility:** `encoding=proto_delta` attribute on emitted data points distinguishes
@@ -610,7 +610,7 @@ deltas. This is the mirror of Phase 3.
 
 **Per-partition accumulator state:**
 ```go
-accMu        sync.RWMutex
+accMu        sync.Mutex
 accumulators map[string]*cms.CountMinSketch  // keyed by (partition_key, window_start_ms)
 ```
 
@@ -1160,9 +1160,9 @@ if the heavy bucket list is sparse-transmitted (not recommended — transmit in 
 
 | File | Current state | Change |
 |------|--------------|--------|
-| `countminsketchprocessor/config.go` | Has `TransmitSketch`, `GroupBy`, `WindowSize` | Add `DeltaTransmission bool`, `DeltaThreshold float64` |
+| `countminsketchprocessor/config.go` | Has `TransmitSketch`, `GroupBy`, `WindowDuration`, `AggregateBy`, `LabelMatchers` | Add `DeltaTransmission bool`, `DeltaThreshold float64` |
 | `countminsketchprocessor/processor.go` | Full sketch via `SerializeToBytes`; partition map + window timer already present | Add `snapshots map[string]*cms.CountMinSketch`; change flush to call `ComputeDelta` when enabled |
-| `countsketchprocessor/config.go` | Has `TransmitSketch`, `GroupBy`, `WindowSize` | Same additions as CMS |
+| `countsketchprocessor/config.go` | Has `TransmitSketch`, `GroupBy`, `WindowDuration`, `AggregateBy`, `LabelMatchers` | Same additions as CMS |
 | `countsketchprocessor/processor.go` | No serialization yet | Same flush change as CMS; gated on Phase 1 proto support |
 | `opentelemetry-go/.../hllsketch.go` | Has `delta()` (full register array) | Add `snapshots map[string]*hll.HyperLogLog`; call `ComputeRegisterDelta` instead of full serialize |
 | `opentelemetry-go/.../countminsketch.go` | Has `delta()` (full sketch) | Optional: wire sparse delta here for SDK-side sending |
@@ -1224,7 +1224,7 @@ bandwidth = sketch.bytes_per_series_sec × (num_aggregate_dimensions + 1)
 With delta transmission enabled, the effective bandwidth is multiplied by the expected fill rate:
 
 ```
-effective_bandwidth = full_bandwidth × fill_rate(window_size, data_density)
+effective_bandwidth = full_bandwidth × fill_rate(window_duration, data_density)
 ```
 
 `fill_rate` depends on how many sketch cells change per window. At typical telemetry densities:
@@ -1282,7 +1282,7 @@ processors:
   countminsketch:
     epsilon: 0.01
     delta: 0.99
-    window_size: 30s
+    window_duration: 30s
     group_by: ["region", "service"]
     transmit_sketch: true
     drop_original: true
@@ -1472,9 +1472,13 @@ controller already sets.
 | `AggregationCountMinSketch` | `DeltaTransmission bool` | Enable sparse CMS delta |
 | `AggregationCountMinSketch` | `DeltaThreshold float64` | Min cell change (default 1.0) |
 | `AggregationHLLSketch` | `DeltaTransmission bool` | Enable sparse HLL register delta |
+| `AggregationDDSketch` | `DeltaTransmission bool` | Enable sparse DDSketch bucket delta |
+| `AggregationDDSketch` | `DeltaThreshold uint64` | Min bucket count change (default 1) |
 
 HLL has no threshold because `ComputeRegisterDelta` always includes all increased
 registers (HLL registers are monotone: they never decrease).
+DDSketch `DeltaThreshold` applies to bucket count deltas; min/max scalars are always
+transmitted losslessly when changed.
 
 ### 14.4 Encoding Wire Values
 
@@ -1515,7 +1519,7 @@ collector processor knows how to interpret `Sketch` bytes.
 | `sdk/metric/internal/aggregate/countminsketch.go` | `snapshots map`, `payloadFor`, `cloneCMSketch`; delta encoding in `cumulative()` |
 | `sdk/metric/internal/aggregate/countsketch.go` | `snapshots map`, `payloadFor`, `cloneCSSketch`; delta encoding in `cumulative()` |
 | `sdk/metric/internal/aggregate/ddsketch.go` | `snapshots map`, `payloadFor`, `ddSketchDeltaPayload`, `ddStoreDelta`, `ddStoreToMap`; delta encoding in `cumulative()` |
-| `sdk/metric/go.mod` | Add `replace github.com/ProjectASAP/sketchlib-go => /tmp/sketchlib-go` |
+| `sdk/metric/go.mod` | Pin `github.com/ProjectASAP/sketchlib-go` to pseudo-version `v0.0.0-20260320220729-3ba826ceb054` from `add-delta-transmission` branch |
 
 **Wire format (opentelemetry-proto-patch and opentelemetry-collector-patch):**
 
