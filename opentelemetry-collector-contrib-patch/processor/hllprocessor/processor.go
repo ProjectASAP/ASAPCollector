@@ -21,7 +21,7 @@ import (
 var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
 
 // inboundMergeHLL merges a received HLLSketch data point into dst.
-// For HLLSketchEncodingBinary payloads the sketch bytes are deserialized and
+// For HLLSketchEncodingProto payloads the sketch bytes are deserialized and
 // merged directly. For HLLSketchEncodingDelta payloads the register delta is
 // applied to the last known snapshot to reconstruct the current full state,
 // which is then merged into dst. The inbound snapshot is updated on each call.
