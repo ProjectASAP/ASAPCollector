@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::RwLock;
-use chrono::{DateTime, Utc};
 
 use crate::types::CollectionPlan;
 
@@ -16,8 +16,8 @@ struct StoreInner {
 
 #[derive(Debug, Clone)]
 struct Entry {
-    current:    CollectionPlan,
-    previous:   Option<CollectionPlan>,
+    current: CollectionPlan,
+    previous: Option<CollectionPlan>,
     updated_at: DateTime<Utc>,
 }
 
@@ -31,7 +31,9 @@ pub enum StoreError {
 
 impl PlanStore {
     pub fn new() -> Self {
-        Self { inner: RwLock::new(StoreInner::default()) }
+        Self {
+            inner: RwLock::new(StoreInner::default()),
+        }
     }
 
     pub fn set(&self, metric: impl Into<String>, plan: CollectionPlan) {
@@ -39,34 +41,46 @@ impl PlanStore {
         let mut inner = self.inner.write().unwrap();
         match inner.entries.get_mut(&metric) {
             None => {
-                inner.entries.insert(metric, Entry {
-                    current: plan, previous: None, updated_at: Utc::now(),
-                });
+                inner.entries.insert(
+                    metric,
+                    Entry {
+                        current: plan,
+                        previous: None,
+                        updated_at: Utc::now(),
+                    },
+                );
             }
             Some(e) => {
                 let prev = e.current.clone();
-                e.previous   = Some(prev);
-                e.current    = plan;
+                e.previous = Some(prev);
+                e.current = plan;
                 e.updated_at = Utc::now();
             }
         }
     }
 
     pub fn get(&self, metric: &str) -> Result<CollectionPlan, StoreError> {
-        self.inner.read().unwrap()
-            .entries.get(metric)
+        self.inner
+            .read()
+            .unwrap()
+            .entries
+            .get(metric)
             .map(|e| e.current.clone())
             .ok_or_else(|| StoreError::NotFound(metric.to_string()))
     }
 
     pub fn rollback(&self, metric: &str) -> Result<CollectionPlan, StoreError> {
         let mut inner = self.inner.write().unwrap();
-        let e = inner.entries.get_mut(metric)
+        let e = inner
+            .entries
+            .get_mut(metric)
             .ok_or_else(|| StoreError::NotFound(metric.to_string()))?;
 
-        let prev = e.previous.take()
+        let prev = e
+            .previous
+            .take()
             .ok_or_else(|| StoreError::NoPrevious(metric.to_string()))?;
-        e.current    = prev.clone();
+        e.current = prev.clone();
         e.updated_at = Utc::now();
         Ok(prev)
     }
@@ -76,8 +90,11 @@ impl PlanStore {
     }
 
     pub fn expired(&self, now: DateTime<Utc>) -> Vec<String> {
-        self.inner.read().unwrap()
-            .entries.iter()
+        self.inner
+            .read()
+            .unwrap()
+            .entries
+            .iter()
             .filter(|(_, e)| e.current.valid_until < now)
             .map(|(k, _)| k.clone())
             .collect()
@@ -89,8 +106,8 @@ impl PlanStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use crate::types::*;
+    use std::time::Duration;
 
     fn make_plan(valid_secs: i64) -> CollectionPlan {
         let valid_until = Utc::now() + chrono::Duration::seconds(valid_secs);
@@ -103,6 +120,7 @@ mod tests {
                 label_matchers: vec![],
                 window_duration: None,
                 mode: ProcessorMode::Batch,
+                enable_self_monitoring: true,
                 transmit_sketch: true,
                 drop_original: true,
             },
@@ -111,7 +129,7 @@ mod tests {
                 merge_sketch_type: SketchType::DDSketch,
                 group_by: vec![],
             },
-            precompute:  vec![],
+            precompute: vec![],
             valid_until,
         }
     }
@@ -170,7 +188,7 @@ mod tests {
     #[test]
     fn expired() {
         let s = PlanStore::new();
-        s.set("old",    make_plan(-1));  // already expired
+        s.set("old", make_plan(-1)); // already expired
         s.set("active", make_plan(600));
         let exp = s.expired(Utc::now());
         assert_eq!(exp, vec!["old"]);
@@ -182,12 +200,18 @@ mod tests {
         let s = Arc::new(PlanStore::new());
         s.set("m", make_plan(600));
 
-        let handles: Vec<_> = (0..8).map(|_| {
-            let s = Arc::clone(&s);
-            std::thread::spawn(move || {
-                for _ in 0..100 { let _ = s.get("m"); }
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let s = Arc::clone(&s);
+                std::thread::spawn(move || {
+                    for _ in 0..100 {
+                        let _ = s.get("m");
+                    }
+                })
             })
-        }).collect();
-        for h in handles { h.join().unwrap(); }
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }

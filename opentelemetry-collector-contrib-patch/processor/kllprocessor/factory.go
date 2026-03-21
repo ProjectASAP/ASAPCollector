@@ -12,15 +12,16 @@ import (
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		Mode:           ModeBatch,
-		WindowDuration: 60 * time.Second,
-		K:              256,
-		Quantiles:      []float64{0.5, 0.99},
-		TransmitSketch: false,
-		WriteSeen:      false,
-		DropOriginal:   true,
-		ReadAsInt:      false,
-		MetricSuffix:   "",
+		Mode:                 ModeBatch,
+		WindowDuration:       60 * time.Second,
+		K:                    256,
+		Quantiles:            []float64{0.5, 0.99},
+		TransmitSketch:       false,
+		WriteSeen:            false,
+		DropOriginal:         true,
+		ReadAsInt:            false,
+		MetricSuffix:         "",
+		EnableSelfMonitoring: true,
 	}
 }
 
@@ -46,6 +47,8 @@ func createMetricsProcessor(
 	}
 	_ = ctx
 	proc := newProcessor(oCfg, set.Logger, next)
-	proc.enableSelfMonitoring(set.TelemetrySettings, set.ID.String())
+	if oCfg.EnableSelfMonitoring {
+		proc.enableSelfMonitoring(set.TelemetrySettings, set.ID.String())
+	}
 	return proc, nil
 }

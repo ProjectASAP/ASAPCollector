@@ -9,6 +9,7 @@ processors:
   HLL:
     mode: batch
     transmit_sketch: false
+    enable_self_monitoring: true
     drop_original: false
 
 exporters:

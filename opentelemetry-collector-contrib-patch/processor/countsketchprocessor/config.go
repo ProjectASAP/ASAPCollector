@@ -51,6 +51,9 @@ type Config struct {
 	// When true, original metrics are not forwarded, only sketch outputs are emitted.
 	DropOriginal bool `mapstructure:"drop_original"`
 
+	// EnableSelfMonitoring controls whether processor self-monitoring metrics are emitted.
+	EnableSelfMonitoring bool `mapstructure:"enable_self_monitoring"`
+
 	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
 	// All data points sharing the same values for these labels are merged into one sketch.
 	// The output data point carries only these labels.

@@ -6,8 +6,9 @@
 //   - CPU:        process user+system time from syscall.Getrusage, delta over the run.
 //
 // Output
-//   --output-dir/<sketch>_<rate>mps_timeseries.csv  – per-second samples
-//   --output-dir/<sketch>_<rate>mps_summary.json    – final summary (also printed to stdout)
+//
+//	--output-dir/<sketch>_<rate>mps_timeseries.csv  – per-second samples
+//	--output-dir/<sketch>_<rate>mps_summary.json    – final summary (also printed to stdout)
 //
 // Usage:
 //
@@ -49,16 +50,16 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	configPath            = flag.String("config", "", "Path to YAML pipeline config file; when set, overrides sketch/series/interval flags")
-	endpoint              = flag.String("endpoint", "localhost:4317", "OTLP gRPC endpoint of the collector")
-	sketchArg             = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|hll|countsketch|countminsketch|baseline")
-	seriesCount           = flag.Int("series", 1000, "Total number of distinct time series")
+	configPath             = flag.String("config", "", "Path to YAML pipeline config file; when set, overrides sketch/series/interval flags")
+	endpoint               = flag.String("endpoint", "localhost:4317", "OTLP gRPC endpoint of the collector")
+	sketchArg              = flag.String("sketch-type", "ddsketch", "Sketch type: ddsketch|kll|hll|countsketch|countminsketch|baseline")
+	seriesCount            = flag.Int("series", 1000, "Total number of distinct time series")
 	samplesPerSecPerSeries = flag.Float64("samples-per-sec-per-series", 50.0, "Samples per second per series (controls worker record rate)")
-	workers               = flag.Int("workers", 10, "Number of worker goroutines (internal parallelism)")
-	duration              = flag.Duration("duration", 60*time.Second, "Benchmark run duration")
-	rateLabel             = flag.Int("rate-label", 0, "Nominal MPS rate for output file naming (0 = auto-calculated)")
-	outputDir             = flag.String("output-dir", ".", "Directory to write CSV and JSON result files")
-	sampleSec             = flag.Int("sample-interval-sec", 1, "Resource sampling interval in seconds")
+	workers                = flag.Int("workers", 10, "Number of worker goroutines (internal parallelism)")
+	duration               = flag.Duration("duration", 60*time.Second, "Benchmark run duration")
+	rateLabel              = flag.Int("rate-label", 0, "Nominal MPS rate for output file naming (0 = auto-calculated)")
+	outputDir              = flag.String("output-dir", ".", "Directory to write CSV and JSON result files")
+	sampleSec              = flag.Int("sample-interval-sec", 1, "Resource sampling interval in seconds")
 
 	// DDSketch
 	ddsketchAccuracy = flag.Float64("ddsketch-accuracy", 0.01, "DDSketch relative accuracy (0,1)")
@@ -351,7 +352,7 @@ func main() {
 		agg = sdkmetric.AggregationCountSketch{Epsilon: *csEpsilon, Delta: *csDelta}
 	case "countminsketch":
 		agg = sdkmetric.AggregationCountMinSketch{Rows: *cmsRows, Cols: *cmsCols}
-	// "baseline": agg stays nil — Float64Gauge uses default LastValue aggregation.
+		// "baseline": agg stays nil — Float64Gauge uses default LastValue aggregation.
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *duration+10*time.Second)
@@ -374,7 +375,15 @@ func main() {
 	// back to the existing flag-driven view construction.
 	providerOpts := []sdkmetric.Option{
 		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(readerInterval)),
+			func() sdkmetric.Reader {
+				readerOpts := []sdkmetric.PeriodicReaderOption{
+					sdkmetric.WithInterval(readerInterval),
+				}
+				if pipelineCfg != nil && pipelineCfg.Reader.EnableSelfMonitoring {
+					readerOpts = append(readerOpts, sdkmetric.WithSelfMonitoring(true))
+				}
+				return sdkmetric.NewPeriodicReader(exp, readerOpts...)
+			}(),
 		),
 	}
 	if pipelineCfg != nil {

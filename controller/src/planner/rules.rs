@@ -1,5 +1,5 @@
-use std::time::Duration;
 use chrono::Utc;
+use std::time::Duration;
 
 use crate::types::*;
 
@@ -11,7 +11,9 @@ pub struct RulesPlanner {
 
 impl RulesPlanner {
     pub fn new() -> Self {
-        Self { valid_for: DEFAULT_VALID_FOR }
+        Self {
+            valid_for: DEFAULT_VALID_FOR,
+        }
     }
 
     pub fn plan(&self, w: &QueryWorkload) -> CollectionPlan {
@@ -22,7 +24,9 @@ impl RulesPlanner {
         let mut aggregate_by = w.group_by_labels.clone();
         aggregate_by.sort();
 
-        let mut label_matchers: Vec<String> = w.label_filters.iter()
+        let mut label_matchers: Vec<String> = w
+            .label_filters
+            .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect();
         label_matchers.sort();
@@ -30,27 +34,27 @@ impl RulesPlanner {
         let backend_sketch = sketch_type.clone();
         let group_by = aggregate_by.clone();
 
-        let valid_until = Utc::now()
-            + chrono::Duration::seconds(self.valid_for.as_secs() as i64);
+        let valid_until = Utc::now() + chrono::Duration::seconds(self.valid_for.as_secs() as i64);
 
         CollectionPlan {
             agent_config: AgentCollectorConfig {
-                output_mode:     OutputMode::Sketch,
+                output_mode: OutputMode::Sketch,
                 sketch_type,
                 sketch_params,
                 aggregate_by,
                 label_matchers,
                 window_duration,
                 mode,
+                enable_self_monitoring: true,
                 transmit_sketch: true,
-                drop_original:   true,
+                drop_original: true,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
                 merge_sketch_type: backend_sketch,
                 group_by,
             },
-            precompute:  vec![],
+            precompute: vec![],
             valid_until,
         }
     }
@@ -63,9 +67,9 @@ impl RulesPlanner {
 fn select_sketch_type(aggs: &[AggType]) -> SketchType {
     for agg in aggs {
         match agg {
-            AggType::Quantile    => return SketchType::DDSketch,
+            AggType::Quantile => return SketchType::DDSketch,
             AggType::Cardinality => return SketchType::HLL,
-            AggType::Frequency   => return SketchType::CountSketch,
+            AggType::Frequency => return SketchType::CountSketch,
         }
     }
     SketchType::DDSketch
@@ -73,7 +77,11 @@ fn select_sketch_type(aggs: &[AggType]) -> SketchType {
 
 /// Returns type-appropriate default parameters for the given accuracy SLA.
 pub fn default_sketch_params(st: &SketchType, accuracy_sla: f64) -> SketchParams {
-    let acc = if accuracy_sla <= 0.0 { 0.01 } else { accuracy_sla };
+    let acc = if accuracy_sla <= 0.0 {
+        0.01
+    } else {
+        accuracy_sla
+    };
     match st {
         SketchType::DDSketch => SketchParams {
             relative_accuracy: acc,
@@ -82,16 +90,25 @@ pub fn default_sketch_params(st: &SketchType, accuracy_sla: f64) -> SketchParams
         },
         SketchType::KLL => {
             let k = ((1.0 / acc) as u32).max(32);
-            SketchParams { k, quantiles: vec![0.5, 0.9, 0.99], ..Default::default() }
+            SketchParams {
+                k,
+                quantiles: vec![0.5, 0.9, 0.99],
+                ..Default::default()
+            }
         }
         SketchType::HLL => {
             // precision = log2(registers); higher → lower error.
             let precision = if acc > 0.02 { 10u32 } else { 14u32 };
-            SketchParams { precision, ..Default::default() }
+            SketchParams {
+                precision,
+                ..Default::default()
+            }
         }
-        SketchType::CountSketch | SketchType::CountMinSketch => {
-            SketchParams { rows: 5, cols: 2048, ..Default::default() }
-        }
+        SketchType::CountSketch | SketchType::CountMinSketch => SketchParams {
+            rows: 5,
+            cols: 2048,
+            ..Default::default()
+        },
     }
 }
 
@@ -103,9 +120,9 @@ pub fn default_sketch_params(st: &SketchType, accuracy_sla: f64) -> SketchParams
 ///       otherwise → batch mode (gateway/backend merges on query).
 pub fn select_window_strategy(w: &QueryWorkload) -> (ProcessorMode, Option<Duration>) {
     match w.latency_sla {
-        None                                  => (ProcessorMode::Window, Some(w.time_window)),
-        Some(ls) if ls >= w.time_window       => (ProcessorMode::Window, Some(w.time_window)),
-        _                                     => (ProcessorMode::Batch,  None),
+        None => (ProcessorMode::Window, Some(w.time_window)),
+        Some(ls) if ls >= w.time_window => (ProcessorMode::Window, Some(w.time_window)),
+        _ => (ProcessorMode::Batch, None),
     }
 }
 
@@ -118,14 +135,14 @@ mod tests {
 
     fn workload(aggs: Vec<AggType>) -> QueryWorkload {
         QueryWorkload {
-            metric_name:    "test".into(),
-            label_filters:  HashMap::new(),
+            metric_name: "test".into(),
+            label_filters: HashMap::new(),
             group_by_labels: vec![],
-            aggregations:   aggs,
-            time_window:    Duration::from_secs(300),
-            repeat_every:   None,
-            accuracy_sla:         0.01,
-            latency_sla:          None,
+            aggregations: aggs,
+            time_window: Duration::from_secs(300),
+            repeat_every: None,
+            accuracy_sla: 0.01,
+            latency_sla: None,
             sketch_type_override: None,
         }
     }
@@ -150,9 +167,13 @@ mod tests {
 
     #[test]
     fn quantile_priority_wins() {
-        let plan = RulesPlanner::new().plan(&workload(vec![AggType::Quantile, AggType::Cardinality]));
-        assert_eq!(plan.agent_config.sketch_type, SketchType::DDSketch,
-            "quantile should take priority over cardinality");
+        let plan =
+            RulesPlanner::new().plan(&workload(vec![AggType::Quantile, AggType::Cardinality]));
+        assert_eq!(
+            plan.agent_config.sketch_type,
+            SketchType::DDSketch,
+            "quantile should take priority over cardinality"
+        );
     }
 
     #[test]
@@ -161,7 +182,10 @@ mod tests {
         w.latency_sla = Some(Duration::from_secs(600)); // 10m >= 5m
         let plan = RulesPlanner::new().plan(&w);
         assert_eq!(plan.agent_config.mode, ProcessorMode::Window);
-        assert_eq!(plan.agent_config.window_duration, Some(Duration::from_secs(300)));
+        assert_eq!(
+            plan.agent_config.window_duration,
+            Some(Duration::from_secs(300))
+        );
     }
 
     #[test]
@@ -186,14 +210,20 @@ mod tests {
         let mut w = workload(vec![AggType::Quantile]);
         w.group_by_labels = vec!["zone".into(), "host.name".into(), "service".into()];
         let plan = RulesPlanner::new().plan(&w);
-        assert_eq!(plan.agent_config.aggregate_by,
-            vec!["host.name", "service", "zone"]);
+        assert_eq!(
+            plan.agent_config.aggregate_by,
+            vec!["host.name", "service", "zone"]
+        );
     }
 
     #[test]
     fn label_matchers_from_filters() {
         let mut w = workload(vec![AggType::Quantile]);
-        w.label_filters = [("env".into(), "prod".into()), ("service".into(), "web".into())].into();
+        w.label_filters = [
+            ("env".into(), "prod".into()),
+            ("service".into(), "web".into()),
+        ]
+        .into();
         let plan = RulesPlanner::new().plan(&w);
         assert_eq!(plan.agent_config.label_matchers.len(), 2);
     }
@@ -211,20 +241,28 @@ mod tests {
         let mut w = workload(vec![AggType::Cardinality]);
         w.accuracy_sla = 0.03;
         let plan = RulesPlanner::new().plan(&w);
-        assert_eq!(plan.agent_config.sketch_params.precision, 10,
-            "coarse SLA should use lower precision");
+        assert_eq!(
+            plan.agent_config.sketch_params.precision, 10,
+            "coarse SLA should use lower precision"
+        );
     }
 
     #[test]
     fn valid_until_in_future() {
         let plan = RulesPlanner::new().plan(&workload(vec![AggType::Quantile]));
-        assert!(plan.valid_until > Utc::now(), "valid_until should be in the future");
+        assert!(
+            plan.valid_until > Utc::now(),
+            "valid_until should be in the future"
+        );
     }
 
     #[test]
     fn backend_config_matches_sketch_type() {
         let plan = RulesPlanner::new().plan(&workload(vec![AggType::Quantile]));
-        assert_eq!(plan.backend_config.merge_sketch_type, plan.agent_config.sketch_type);
+        assert_eq!(
+            plan.backend_config.merge_sketch_type,
+            plan.agent_config.sketch_type
+        );
     }
 
     #[test]

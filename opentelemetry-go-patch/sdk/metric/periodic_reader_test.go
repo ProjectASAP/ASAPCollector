@@ -509,9 +509,6 @@ func TestPeriodicReaderCollect(t *testing.T) {
 }
 
 func TestPeriodicReaderInstrumentation(t *testing.T) {
-	// Enable SDK observability.
-	t.Setenv("OTEL_GO_X_OBSERVABILITY", "true")
-
 	// Set up a global MeterProvider to collect the instrumentation metrics.
 	// The PeriodicReader's instrumentation emits metrics to the global MeterProvider.
 	orig := otel.GetMeterProvider()
@@ -532,7 +529,7 @@ func TestPeriodicReaderInstrumentation(t *testing.T) {
 		},
 	}
 
-	periodicReader := NewPeriodicReader(exp)
+	periodicReader := NewPeriodicReader(exp, WithSelfMonitoring(true))
 	t.Cleanup(func() { _ = periodicReader.Shutdown(t.Context()) })
 	periodicReader.register(testSDKProducer{})
 
@@ -592,9 +589,6 @@ func TestPeriodicReaderInstrumentation(t *testing.T) {
 }
 
 func TestPeriodicReaderInstrumentationError(t *testing.T) {
-	// Enable SDK observability.
-	t.Setenv("OTEL_GO_X_OBSERVABILITY", "true")
-
 	// Set up a MeterProvider that returns errors when creating instruments.
 	// This simulates the error path in NewPeriodicReader where observ.NewInstrumentation fails.
 	orig := otel.GetMeterProvider()
@@ -611,7 +605,7 @@ func TestPeriodicReaderInstrumentationError(t *testing.T) {
 
 	// Create a periodic reader - this should trigger the error path
 	exp := &fnExporter{}
-	periodicReader := NewPeriodicReader(exp)
+	periodicReader := NewPeriodicReader(exp, WithSelfMonitoring(true))
 	t.Cleanup(func() { _ = periodicReader.Shutdown(t.Context()) })
 
 	// Verify that the error was handled via otel.Handle()
@@ -841,7 +835,11 @@ func BenchmarkPeriodicReaderInstrumentation(b *testing.B) {
 			},
 		}
 
-		r := NewPeriodicReader(exp)
+		var opts []PeriodicReaderOption
+		if withInstrumentationMP {
+			opts = append(opts, WithSelfMonitoring(true))
+		}
+		r := NewPeriodicReader(exp, opts...)
 		// Register with producer using metricdatatest patterns for realistic benchmark data
 		r.register(createMetricDataTestProducer())
 		b.Cleanup(func() {
@@ -869,12 +867,10 @@ func BenchmarkPeriodicReaderInstrumentation(b *testing.B) {
 	}
 
 	b.Run("NoObservability", func(b *testing.B) {
-		b.Setenv("OTEL_GO_X_OBSERVABILITY", "false")
 		run(b, false)
 	})
 
 	b.Run("Observability", func(b *testing.B) {
-		b.Setenv("OTEL_GO_X_OBSERVABILITY", "true")
 		run(b, true)
 	})
 }
