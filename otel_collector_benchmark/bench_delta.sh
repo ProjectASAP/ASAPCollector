@@ -61,6 +61,27 @@ OUTPUT_DIR="$(cd "$SCRIPT_DIR" && pwd)/benchmark_results/delta"
 SERIES=1000
 RATES_ARG="10000 50000"
 
+resolve_output_dir() {
+    local path="$1"
+    if [[ "$path" = /* ]]; then
+        printf '%s\n' "$path"
+    else
+        printf '%s/%s\n' "$PWD" "$path"
+    fi
+}
+
+normalize_mode() {
+    case "$1" in
+        sdk|sdkSketch)   printf 'sdkSketch\n' ;;
+        batch|colBatch)  printf 'colBatch\n' ;;
+        window|colWindow) printf 'colWindow\n' ;;
+        *)
+            echo "Unknown mode: $1" >&2
+            exit 1
+            ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
@@ -69,7 +90,7 @@ while [[ $# -gt 0 ]]; do
         --sketch)     SKETCH_ARG="$2";    shift 2 ;;
         --mode)       MODE_ARG="$2";      shift 2 ;;
         --duration)   DURATION_FLAG="$2"; shift 2 ;;
-        --output-dir) OUTPUT_DIR="$(cd "$(dirname "$2")" 2>/dev/null && pwd)/$(basename "$2")"; shift 2 ;;
+        --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         --series)     SERIES="$2";        shift 2 ;;
         --rates)      RATES_ARG="$2";     shift 2 ;;
         -h|--help)
@@ -83,6 +104,7 @@ done
 
 DURATION_SEC=$(echo "$DURATION_FLAG" | sed 's/[^0-9]//g')
 [[ -z "$DURATION_SEC" ]] && DURATION_SEC=60
+OUTPUT_DIR="$(resolve_output_dir "$OUTPUT_DIR")"
 
 # Expand "all"
 if [[ "$SKETCH_ARG" == "all" ]]; then
@@ -94,7 +116,11 @@ fi
 if [[ "$MODE_ARG" == "all" ]]; then
     AGG_MODES=("sdkSketch" "colBatch" "colWindow")
 else
-    IFS=',' read -ra AGG_MODES <<< "$MODE_ARG"
+    IFS=',' read -ra MODE_TOKENS <<< "$MODE_ARG"
+    AGG_MODES=()
+    for mode in "${MODE_TOKENS[@]}"; do
+        AGG_MODES+=("$(normalize_mode "$mode")")
+    done
 fi
 
 read -ra RATES <<< "$RATES_ARG"
@@ -108,7 +134,7 @@ sketch_supports_delta() {
     case "$sketch" in
         kll)                          return 1 ;;
         hll)
-            # HLL delta is only meaningful in window mode (processor comment).
+            # HLL delta requires the processor's window-mode snapshot path.
             [[ "$mode" == "colWindow" || "$mode" == "sdkSketch" ]] && return 0 || return 1 ;;
         ddsketch|countsketch|countminsketch) return 0 ;;
         *) return 1 ;;
@@ -127,27 +153,40 @@ resolve_collector() {
             COLLECTOR_BUILD_CFG="$CMD_DIR/ddsketchcol/builder-config.yaml"
             if [[ "$delta" == "on" ]]; then
                 case "$mode" in
-                    colBatch)   COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-batch-delta.yaml" ;;
-                    colWindow|sdkSketch) COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-window-delta.yaml" ;;
+                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-batch-delta.yaml" ;;
+                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-window-delta.yaml" ;;
                 esac
             else
-                COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-window.yaml"
+                case "$mode" in
+                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-batch-full.yaml" ;;
+                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-window-full.yaml" ;;
+                esac
             fi
             ;;
         kll)
             COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"
             COLLECTOR_BUILD_CFG="$CMD_DIR/kll/build-config.yaml"
-            COLLECTOR_CONFIG="$CMD_DIR/kll/config-window.yaml"
+            case "$mode" in
+                sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/kll/config-batch-full.yaml" ;;
+                colWindow) COLLECTOR_CONFIG="$CMD_DIR/kll/config-window-full.yaml" ;;
+            esac
             ;;
         hll)
             COLLECTOR_BIN="$CONTRIB_PATCH_DIR/HLL"
             COLLECTOR_BUILD_CFG="$CMD_DIR/hllcol/build-config.yaml"
             if [[ "$delta" == "on" ]]; then
-                COLLECTOR_CONFIG="$CMD_DIR/hllcol/config-window-delta.yaml"
-            elif [[ "$mode" == "colBatch" ]]; then
-                COLLECTOR_CONFIG="$CMD_DIR/hllcol/config-batch.yaml"
+                case "$mode" in
+                    sdkSketch|colWindow) COLLECTOR_CONFIG="$CMD_DIR/hllcol/config-window-delta.yaml" ;;
+                    *)
+                        echo "[ERROR] Delta not supported for $sketch/$mode"
+                        exit 1
+                        ;;
+                esac
             else
-                COLLECTOR_CONFIG="$CMD_DIR/hllcol/config-window.yaml"
+                case "$mode" in
+                    sdkSketch|colWindow) COLLECTOR_CONFIG="$CMD_DIR/hllcol/config-window-full.yaml" ;;
+                    colBatch) COLLECTOR_CONFIG="$CMD_DIR/hllcol/config-batch.yaml" ;;
+                esac
             fi
             ;;
         countsketch)
@@ -155,13 +194,13 @@ resolve_collector() {
             COLLECTOR_BUILD_CFG="$CMD_DIR/countsketchcol/builder-config.yaml"
             if [[ "$delta" == "on" ]]; then
                 case "$mode" in
-                    colBatch)   COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-batch-delta.yaml" ;;
-                    colWindow|sdkSketch) COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-window-delta.yaml" ;;
+                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-batch-delta.yaml" ;;
+                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-window-delta.yaml" ;;
                 esac
             else
                 case "$mode" in
-                    colBatch)   COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-batch.yaml" ;;
-                    colWindow|sdkSketch) COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-window.yaml" ;;
+                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-batch-full.yaml" ;;
+                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/countsketchcol/config-window-full.yaml" ;;
                 esac
             fi
             ;;
@@ -170,13 +209,13 @@ resolve_collector() {
             COLLECTOR_BUILD_CFG="$CMD_DIR/countminsketchcol/builder-config.yaml"
             if [[ "$delta" == "on" ]]; then
                 case "$mode" in
-                    colBatch)   COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-batch-delta.yaml" ;;
-                    colWindow|sdkSketch) COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-window-delta.yaml" ;;
+                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-batch-delta.yaml" ;;
+                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-window-delta.yaml" ;;
                 esac
             else
                 case "$mode" in
-                    colBatch)   COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-batch.yaml" ;;
-                    colWindow|sdkSketch) COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-window.yaml" ;;
+                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-batch.yaml" ;;
+                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/countminsketchcol/config-window.yaml" ;;
                 esac
             fi
             ;;
@@ -188,6 +227,11 @@ resolve_collector() {
         *)
             echo "[ERROR] Unknown sketch: $sketch"; exit 1 ;;
     esac
+
+    if [[ -z "${COLLECTOR_CONFIG:-}" || ! -f "$COLLECTOR_CONFIG" ]]; then
+        echo "[ERROR] No collector config available for sketch=$sketch mode=$mode delta=$delta"
+        exit 1
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -195,7 +239,11 @@ resolve_collector() {
 # ---------------------------------------------------------------------------
 build_collector() {
     local sketch="$1"
-    resolve_collector "$sketch" "sdkSketch" "off"
+    local probe_mode="sdkSketch"
+    if [[ "$sketch" == "hll" ]]; then
+        probe_mode="colBatch"
+    fi
+    resolve_collector "$sketch" "$probe_mode" "off"
     if [[ -f "$COLLECTOR_BIN" && "${BUILD_ALWAYS:-0}" != "1" ]]; then
         echo "  -> Using existing: $COLLECTOR_BIN"
         return
