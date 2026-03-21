@@ -38,6 +38,7 @@ func createMetricsProcessor(
 	next consumer.Metrics,
 ) (processor.Metrics, error) {
 	proc := newProcessor(set.Logger, cfg.(*Config), next)
+	proc.enableSelfMonitoring(set.TelemetrySettings, set.ID.String())
 
 	return processorhelper.NewMetrics(
 		ctx,

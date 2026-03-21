@@ -36,5 +36,7 @@ func createMetricsProcessor(
 	}
 
 	_ = ctx // currently unused
-	return newProcessor(pcfg, set.Logger, next), nil
+	proc := newProcessor(pcfg, set.Logger, next)
+	proc.enableSelfMonitoring(set.TelemetrySettings, set.ID.String())
+	return proc, nil
 }

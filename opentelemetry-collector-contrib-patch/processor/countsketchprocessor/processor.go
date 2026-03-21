@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
 )
 
@@ -28,10 +29,11 @@ type windowSketch struct {
 }
 
 type countSketchProcessor struct {
-	logger *zap.Logger
-	next   consumer.Metrics
-	config *Config
-	mode   InputMode
+	logger  *zap.Logger
+	next    consumer.Metrics
+	config  *Config
+	mode    InputMode
+	monitor *selfmonitor.Monitor
 
 	mu                   sync.RWMutex
 	activeWindowSketches map[string]*windowSketch
@@ -123,6 +125,8 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 }
 
 func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
+	defer p.shutdownMonitor()
+
 	if p.mode != ModeWindow || !p.windowStarted.Load() {
 		return nil
 	}
@@ -138,12 +142,17 @@ func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
 }
 
 func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
+	p.recordInput(ctx, md)
+
 	switch p.mode {
 	case ModeBatch:
-		return p.consumeBatch(md), nil
+		out := p.consumeBatch(md)
+		p.recordOutput(ctx, out)
+		return out, nil
 	case ModeWindow:
 		p.accumulateIntoWindow(md)
 		if !p.config.DropOriginal {
+			p.recordOutput(ctx, md)
 			return md, nil
 		}
 		return pmetric.NewMetrics(), nil
@@ -418,9 +427,45 @@ func (p *countSketchProcessor) emitWindowAndReset() {
 		return
 	}
 
+	p.recordOutput(context.Background(), md)
 	if err := p.next.ConsumeMetrics(context.Background(), md); err != nil {
 		p.logger.Error("Failed to emit countsketch partition metrics", zap.Error(err))
 	}
+}
+
+func (p *countSketchProcessor) enableSelfMonitoring(settings component.TelemetrySettings, processorID string) {
+	monitor, err := selfmonitor.New(settings, processorID, typeStr.String(), p.activeSeriesCount)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("countsketchprocessor: failed to initialize self-monitoring", zap.Error(err))
+		}
+		return
+	}
+	p.monitor = monitor
+}
+
+func (p *countSketchProcessor) shutdownMonitor() {
+	if p.monitor != nil {
+		p.monitor.Shutdown()
+	}
+}
+
+func (p *countSketchProcessor) recordInput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordInput(ctx, md)
+	}
+}
+
+func (p *countSketchProcessor) recordOutput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordOutput(ctx, md)
+	}
+}
+
+func (p *countSketchProcessor) activeSeriesCount() int64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return int64(len(p.activeWindowSketches))
 }
 
 // buildPartitionKey encodes selected attributes as a stable partition key.

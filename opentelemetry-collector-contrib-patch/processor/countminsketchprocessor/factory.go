@@ -52,6 +52,7 @@ func createMetricsProcessor(
 
 	// Pass 'next' to the constructor manually as requested
 	proc := newProcessor(oCfg, next, set.Logger)
+	proc.enableSelfMonitoring(set.TelemetrySettings, set.ID.String())
 
 	return processorhelper.NewMetrics(
 		ctx,
