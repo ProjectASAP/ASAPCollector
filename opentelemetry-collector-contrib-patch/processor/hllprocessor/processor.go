@@ -20,6 +20,53 @@ import (
 // allocations in the hot attributesKey path.
 var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
 
+// inboundMergeHLL merges a received HLLSketch data point into dst.
+// For HLLSketchEncodingBinary payloads the sketch bytes are deserialized and
+// merged directly. For HLLSketchEncodingDelta payloads the register delta is
+// applied to the last known snapshot to reconstruct the current full state,
+// which is then merged into dst. The inbound snapshot is updated on each call.
+func (p *hllProcessor) inboundMergeHLL(seriesKey string, dp pmetric.HLLSketchDataPoint, dst *hll.HyperLogLog) error {
+	payload := dp.Sketch()
+	if len(payload) == 0 {
+		return nil
+	}
+
+	switch dp.Encoding() {
+	case pmetric.HLLSketchEncodingDelta:
+		p.inboundMu.Lock()
+		snap, hasSnap := p.inboundSnapshots[seriesKey]
+		p.inboundMu.Unlock()
+		if !hasSnap || snap == nil {
+			// No snapshot to apply delta against; skip.
+			return nil
+		}
+		// Clone the snapshot and apply the delta to get the current full state.
+		reconstructed := cloneHLL(snap)
+		if reconstructed == nil {
+			return nil
+		}
+		if err := hll.ApplyRegisterDelta(reconstructed, payload); err != nil {
+			return err
+		}
+		// Update inbound snapshot to the reconstructed current state.
+		p.inboundMu.Lock()
+		p.inboundSnapshots[seriesKey] = cloneHLL(reconstructed)
+		p.inboundMu.Unlock()
+		return dst.Merge(reconstructed)
+
+	default: // HLLSketchEncodingBinary or unspecified
+		src, err := hll.DeserializeHyperLogLogFromBytes(payload)
+		if err != nil {
+			return err
+		}
+		// Store full snapshot for future delta reconstruction.
+		p.inboundMu.Lock()
+		p.inboundSnapshots[seriesKey] = cloneHLL(src)
+		p.inboundMu.Unlock()
+		return dst.Merge(src)
+	}
+}
+
 // mergeSketchBytes deserializes a serialized HLL sketch and merges it into dst.
 // Returns dst unchanged (with an error) if deserialization fails.
 func mergeSketchBytes(dst *hll.HyperLogLog, payload []byte) error {
@@ -50,6 +97,12 @@ type hllProcessor struct {
 	// Used to compute register deltas when cfg.DeltaTransmission=true.
 	snapshots   map[string]*hll.HyperLogLog
 	snapshotsMu sync.Mutex
+
+	// inboundSnapshots tracks the last reconstructed full HLL per series key
+	// received from upstream (e.g., SDK). Used to apply register deltas when
+	// the upstream sends HLLSketchEncodingDelta payloads.
+	inboundMu        sync.Mutex
+	inboundSnapshots map[string]*hll.HyperLogLog
 }
 
 type resourceWindow struct {
@@ -79,9 +132,10 @@ func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *hllPr
 		cfg:          cfg,
 		logger:       logger,
 		nextConsumer: next,
-		windowStore:  make(map[string]*resourceWindow),
-		snapshots:    make(map[string]*hll.HyperLogLog),
-		stopCh:       make(chan struct{}),
+		windowStore:      make(map[string]*resourceWindow),
+		snapshots:        make(map[string]*hll.HyperLogLog),
+		inboundSnapshots: make(map[string]*hll.HyperLogLog),
+		stopCh:           make(chan struct{}),
 		doneCh:       make(chan struct{}),
 	}
 	p.seriesPool.New = func() any { return new(hllSeries) }
@@ -202,10 +256,9 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 							continue
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
-						if payload := dp.Sketch(); len(payload) > 0 {
-							if err := mergeSketchBytes(bs.sketch, payload); err != nil && p.logger != nil {
-								p.logger.Error("hllprocessor: failed to deserialize HLLSketch data point", zap.Error(err))
-							}
+						inboundKey := metric.Name() + "::" + p.seriesKey(dp.Attributes())
+						if err := p.inboundMergeHLL(inboundKey, dp, bs.sketch); err != nil && p.logger != nil {
+							p.logger.Error("hllprocessor: failed to merge inbound HLLSketch", zap.Error(err))
 						}
 					}
 				}
@@ -426,10 +479,9 @@ func (p *hllProcessor) accumulateHLLSketchMetric(sw *scopeWindow, metric pmetric
 			}
 			mw.series[attrKey] = series
 		}
-		if payload := dp.Sketch(); len(payload) > 0 {
-			if err := mergeSketchBytes(series.sketch, payload); err != nil && p.logger != nil {
-				p.logger.Error("hllprocessor: failed to merge HLLSketch data point", zap.Error(err))
-			}
+		inboundKey := mw.name + "::" + attrKey
+		if err := p.inboundMergeHLL(inboundKey, dp, series.sketch); err != nil && p.logger != nil {
+			p.logger.Error("hllprocessor: failed to merge inbound HLLSketch", zap.Error(err))
 		}
 	}
 }

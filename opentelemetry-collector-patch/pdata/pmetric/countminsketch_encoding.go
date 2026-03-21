@@ -13,6 +13,8 @@ const (
 	CountMinSketchEncodingUnspecified = CountMinSketchEncoding(internal.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED)
 	// CountMinSketchEncodingGob indicates the payload is gob-encoded.
 	CountMinSketchEncodingGob = CountMinSketchEncoding(internal.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_GOB)
+	// CountMinSketchEncodingDelta indicates the payload is delta-encoded.
+	CountMinSketchEncodingDelta = CountMinSketchEncoding(internal.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_DELTA)
 )
 
 // String returns the string representation of the CountMinSketchEncoding.
@@ -22,6 +24,8 @@ func (e CountMinSketchEncoding) String() string {
 		return "Unspecified"
 	case CountMinSketchEncodingGob:
 		return "Gob"
+	case CountMinSketchEncodingDelta:
+		return "Delta"
 	}
 	return ""
 }

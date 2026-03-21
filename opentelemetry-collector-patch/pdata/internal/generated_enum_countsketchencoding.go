@@ -9,6 +9,7 @@ package internal
 const (
 	CountSketchEncoding_COUNT_SKETCH_ENCODING_UNSPECIFIED = CountSketchEncoding(0)
 	CountSketchEncoding_COUNT_SKETCH_ENCODING_GOB         = CountSketchEncoding(1)
+	CountSketchEncoding_COUNT_SKETCH_ENCODING_DELTA       = CountSketchEncoding(2)
 )
 
 // CountSketchEncoding identifies how the CountSketch payload bytes are encoded.
@@ -17,9 +18,11 @@ type CountSketchEncoding int32
 var CountSketchEncoding_name = map[int32]string{
 	0: "COUNT_SKETCH_ENCODING_UNSPECIFIED",
 	1: "COUNT_SKETCH_ENCODING_GOB",
+	2: "COUNT_SKETCH_ENCODING_DELTA",
 }
 
 var CountSketchEncoding_value = map[string]int32{
 	"COUNT_SKETCH_ENCODING_UNSPECIFIED": 0,
 	"COUNT_SKETCH_ENCODING_GOB":         1,
+	"COUNT_SKETCH_ENCODING_DELTA":       2,
 }
