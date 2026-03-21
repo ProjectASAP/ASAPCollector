@@ -25,13 +25,14 @@ func NewFactory() processor.Factory {
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		MetricName:     "countmin_sketch",
-		Rows:           5,
-		Columns:        1024, // Power of two required by new lib
-		TransmitSketch: true,
-		DropOriginal:   false,
-		GroupBy:        []string{},
-		WindowDuration: 10 * time.Second,
+		MetricName:           "countmin_sketch",
+		Rows:                 5,
+		Columns:              1024, // Power of two required by new lib
+		EnableSelfMonitoring: true,
+		TransmitSketch:       true,
+		DropOriginal:         false,
+		GroupBy:              []string{},
+		WindowDuration:       10 * time.Second,
 	}
 }
 
@@ -52,6 +53,9 @@ func createMetricsProcessor(
 
 	// Pass 'next' to the constructor manually as requested
 	proc := newProcessor(oCfg, next, set.Logger)
+	if oCfg.EnableSelfMonitoring {
+		proc.enableSelfMonitoring(set.TelemetrySettings, set.ID.String())
+	}
 
 	return processorhelper.NewMetrics(
 		ctx,

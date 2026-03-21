@@ -23,11 +23,12 @@ func NewFactory() processor.Factory {
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		AggregateBy:    []string{},
-		Epsilon:        0.01,
-		Delta:          0.99,
-		WindowDuration: 5 * time.Second,
-		TransmitSketch: false,
+		AggregateBy:          []string{},
+		Epsilon:              0.01,
+		Delta:                0.99,
+		WindowDuration:       5 * time.Second,
+		TransmitSketch:       false,
+		EnableSelfMonitoring: true,
 	}
 }
 
@@ -38,6 +39,9 @@ func createMetricsProcessor(
 	next consumer.Metrics,
 ) (processor.Metrics, error) {
 	proc := newProcessor(set.Logger, cfg.(*Config), next)
+	if cfg.(*Config).EnableSelfMonitoring {
+		proc.enableSelfMonitoring(set.TelemetrySettings, set.ID.String())
+	}
 
 	return processorhelper.NewMetrics(
 		ctx,

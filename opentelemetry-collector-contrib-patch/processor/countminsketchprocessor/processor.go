@@ -18,13 +18,13 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
 )
 
 // builderPool recycles strings.Builder instances used in the hot
 // encodeAttributesAsKey path (called on every data point).
 var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
-
 
 //
 // ─────────────────────────────────────────────────────────────
@@ -50,6 +50,7 @@ type windowedCountMinSketchProcessor struct {
 	logger *zap.Logger
 
 	nextConsumer consumer.Metrics
+	monitor      *selfmonitor.Monitor
 
 	activeWindowSketches map[string]*windowSketch
 	mu                   sync.RWMutex
@@ -149,6 +150,8 @@ func (p *windowedCountMinSketchProcessor) Start(
 func (p *windowedCountMinSketchProcessor) Shutdown(
 	ctx context.Context,
 ) error {
+	defer p.shutdownMonitor()
+
 	// Only wait if the window goroutine was actually started; avoids blocking
 	// forever when Start was never called.
 	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
@@ -180,13 +183,17 @@ func (p *windowedCountMinSketchProcessor) ConsumeMetrics(
 	ctx context.Context,
 	md pmetric.Metrics,
 ) (pmetric.Metrics, error) {
+	p.recordInput(ctx, md)
 
 	switch p.cfg.Mode {
 	case ModeBatch:
-		return p.consumeBatch(md), nil
+		out := p.consumeBatch(md)
+		p.recordOutput(ctx, out)
+		return out, nil
 	case ModeWindow:
 		p.accumulateIntoWindow(md)
 		if !p.cfg.DropOriginal {
+			p.recordOutput(ctx, md)
 			return md, nil
 		}
 		return pmetric.NewMetrics(), nil
@@ -538,9 +545,45 @@ func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
 		return
 	}
 
+	p.recordOutput(context.Background(), md)
 	if err := p.nextConsumer.ConsumeMetrics(context.Background(), md); err != nil {
 		p.logger.Error("Failed to emit windowed CMS", zap.Error(err))
 	}
+}
+
+func (p *windowedCountMinSketchProcessor) enableSelfMonitoring(settings component.TelemetrySettings, processorID string) {
+	monitor, err := selfmonitor.New(settings, processorID, "countmin", p.activeSeriesCount)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("countminsketchprocessor: failed to initialize self-monitoring", zap.Error(err))
+		}
+		return
+	}
+	p.monitor = monitor
+}
+
+func (p *windowedCountMinSketchProcessor) shutdownMonitor() {
+	if p.monitor != nil {
+		p.monitor.Shutdown()
+	}
+}
+
+func (p *windowedCountMinSketchProcessor) recordInput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordInput(ctx, md)
+	}
+}
+
+func (p *windowedCountMinSketchProcessor) recordOutput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordOutput(ctx, md)
+	}
+}
+
+func (p *windowedCountMinSketchProcessor) activeSeriesCount() int64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return int64(len(p.activeWindowSketches))
 }
 
 //
