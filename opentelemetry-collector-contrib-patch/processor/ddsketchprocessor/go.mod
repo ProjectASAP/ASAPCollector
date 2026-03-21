@@ -46,6 +46,6 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden => 
 
 // Use patched collector core (and pdata with DDSketch support) from this repo.
 // Paths are relative to opentelemetry-collector-contrib/processor/ddsketchprocessor.
-replace go.opentelemetry.io/collector => ../../../opentelemetry-collector
-
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
+
+replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor

@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
 )
 
@@ -20,11 +21,11 @@ import (
 // allocations in the hot attributesKey path.
 var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
 
-
 type kllProcessor struct {
 	cfg          *Config
 	logger       *zap.Logger
 	nextConsumer consumer.Metrics
+	monitor      *selfmonitor.Monitor
 
 	mu            sync.Mutex
 	windowStore   map[string]*resourceWindow
@@ -105,6 +106,8 @@ func (p *kllProcessor) Start(ctx context.Context, _ component.Host) error {
 }
 
 func (p *kllProcessor) Shutdown(ctx context.Context) error {
+	defer p.shutdownMonitor()
+
 	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
 		return nil
 	}
@@ -118,11 +121,14 @@ func (p *kllProcessor) Shutdown(ctx context.Context) error {
 }
 
 func (p *kllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	p.recordInput(ctx, md)
+
 	switch p.cfg.Mode {
 	case ModeBatch:
 		if err := p.processBatch(md); err != nil {
 			return err
 		}
+		p.recordOutput(ctx, md)
 		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	case ModeWindow:
 		p.accumulateIntoWindow(md)
@@ -543,7 +549,52 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 	if out.ResourceMetrics().Len() == 0 {
 		return nil
 	}
+	p.recordOutput(ctx, out)
 	return p.nextConsumer.ConsumeMetrics(ctx, out)
+}
+
+func (p *kllProcessor) enableSelfMonitoring(settings component.TelemetrySettings, processorID string) {
+	monitor, err := selfmonitor.New(settings, processorID, "KLL", p.activeSeriesCount)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("kllprocessor: failed to initialize self-monitoring", zap.Error(err))
+		}
+		return
+	}
+	p.monitor = monitor
+}
+
+func (p *kllProcessor) shutdownMonitor() {
+	if p.monitor != nil {
+		p.monitor.Shutdown()
+	}
+}
+
+func (p *kllProcessor) recordInput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordInput(ctx, md)
+	}
+}
+
+func (p *kllProcessor) recordOutput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordOutput(ctx, md)
+	}
+}
+
+func (p *kllProcessor) activeSeriesCount() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var total int64
+	for _, rw := range p.windowStore {
+		for _, sw := range rw.scopes {
+			for _, mw := range sw.metrics {
+				total += int64(len(mw.series))
+			}
+		}
+	}
+	return total
 }
 
 func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pmetric.Metric {

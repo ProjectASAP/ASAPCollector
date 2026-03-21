@@ -38,6 +38,7 @@ sketch:
     no_min_max: true
 reader:
   interval: 2s
+  enable_self_monitoring: true
 instruments:
   - name: my.metric
     unit: ms
@@ -52,6 +53,7 @@ instruments:
 	assert.InDelta(t, 0.02, cfg.Sketch.DDSketch.RelativeAccuracy, 1e-9)
 	assert.True(t, cfg.Sketch.DDSketch.NoMinMax)
 	assert.Equal(t, 2*time.Second, cfg.Reader.Interval)
+	assert.True(t, cfg.Reader.EnableSelfMonitoring)
 	require.Len(t, cfg.Instruments, 1)
 	assert.Equal(t, "my.metric", cfg.Instruments[0].Name)
 	assert.Equal(t, []string{"host.name"}, cfg.Instruments[0].GroupBy)
@@ -182,8 +184,8 @@ func TestToAggregation(t *testing.T) {
 		wantType Aggregation
 	}{
 		{
-			name: "ddsketch",
-			yaml: `sketch: {type: ddsketch, ddsketch: {relative_accuracy: 0.02}}`,
+			name:     "ddsketch",
+			yaml:     `sketch: {type: ddsketch, ddsketch: {relative_accuracy: 0.02}}`,
 			wantType: AggregationDDSketch{RelativeAccuracy: 0.02},
 		},
 		{
@@ -197,8 +199,8 @@ func TestToAggregation(t *testing.T) {
 			wantType: AggregationHLLSketch{},
 		},
 		{
-			name: "countsketch",
-			yaml: `sketch: {type: countsketch, countsketch: {rows: 3, cols: 500, epsilon: 0.1, delta: 0.9}}`,
+			name:     "countsketch",
+			yaml:     `sketch: {type: countsketch, countsketch: {rows: 3, cols: 500, epsilon: 0.1, delta: 0.9}}`,
 			wantType: AggregationCountSketch{Rows: 3, Cols: 500, Epsilon: 0.1, Delta: 0.9},
 		},
 		{

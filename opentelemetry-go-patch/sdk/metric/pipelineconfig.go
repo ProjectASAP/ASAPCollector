@@ -16,12 +16,12 @@ import (
 // reader interval, sketch type and transmit mode, instrument definitions, an
 // ASAPQuery controller block, and load-generation parameters.
 type PipelineConfig struct {
-	Exporter    PipelineExporterConfig  `yaml:"exporter"`
-	Reader      PipelineReaderConfig    `yaml:"reader"`
-	Sketch      PipelineSketchConfig    `yaml:"sketch"`
-	Instruments []PipelineInstrument    `yaml:"instruments"`
-	ASAPQuery   *PipelineASAPQuery      `yaml:"asap_query,omitempty"`
-	Load        PipelineLoadConfig      `yaml:"load"`
+	Exporter    PipelineExporterConfig `yaml:"exporter"`
+	Reader      PipelineReaderConfig   `yaml:"reader"`
+	Sketch      PipelineSketchConfig   `yaml:"sketch"`
+	Instruments []PipelineInstrument   `yaml:"instruments"`
+	ASAPQuery   *PipelineASAPQuery     `yaml:"asap_query,omitempty"`
+	Load        PipelineLoadConfig     `yaml:"load"`
 }
 
 // PipelineExporterConfig holds the OTLP gRPC exporter settings.
@@ -33,7 +33,8 @@ type PipelineExporterConfig struct {
 
 // PipelineReaderConfig controls the SDK periodic export interval.
 type PipelineReaderConfig struct {
-	Interval time.Duration `yaml:"interval"`
+	Interval             time.Duration `yaml:"interval"`
+	EnableSelfMonitoring bool          `yaml:"enable_self_monitoring"`
 }
 
 // PipelineSketchConfig selects the sketch type and whether the SDK or the
@@ -51,9 +52,9 @@ type PipelineSketchConfig struct {
 	TransmitSketch bool `yaml:"transmit_sketch"`
 
 	DDSketch       PipelineDDSketchParams       `yaml:"ddsketch"`
-	KLL            PipelineKLLParams             `yaml:"kll"`
-	CountSketch    PipelineCountSketchParams     `yaml:"countsketch"`
-	CountMinSketch PipelineCountMinSketchParams  `yaml:"countminsketch"`
+	KLL            PipelineKLLParams            `yaml:"kll"`
+	CountSketch    PipelineCountSketchParams    `yaml:"countsketch"`
+	CountMinSketch PipelineCountMinSketchParams `yaml:"countminsketch"`
 	// HLL has no tunable parameters; its presence in the YAML is informational.
 }
 
@@ -109,9 +110,9 @@ type PipelineInstrument struct {
 // PipelineASAPQuery mirrors the ControllerConfig schema from asap-planner-rs
 // so that the same YAML block can be consumed by asap-planner-rs directly.
 type PipelineASAPQuery struct {
-	Metrics          []PipelineASAPMetric       `yaml:"metrics"`
-	QueryGroups      []PipelineASAPQueryGroup   `yaml:"query_groups"`
-	SketchParameters map[string]any             `yaml:"sketch_parameters,omitempty"`
+	Metrics          []PipelineASAPMetric     `yaml:"metrics"`
+	QueryGroups      []PipelineASAPQueryGroup `yaml:"query_groups"`
+	SketchParameters map[string]any           `yaml:"sketch_parameters,omitempty"`
 }
 
 // PipelineASAPMetric names a metric and its label dimensions for the planner.
@@ -122,10 +123,10 @@ type PipelineASAPMetric struct {
 
 // PipelineASAPQueryGroup is a group of related queries sharing SLA targets.
 type PipelineASAPQueryGroup struct {
-	ID                *uint32                     `yaml:"id,omitempty"`
-	Queries           []string                    `yaml:"queries"`
-	RepetitionDelay   uint64                      `yaml:"repetition_delay"`
-	ControllerOptions PipelineASAPControllerOpts  `yaml:"controller_options"`
+	ID                *uint32                    `yaml:"id,omitempty"`
+	Queries           []string                   `yaml:"queries"`
+	RepetitionDelay   uint64                     `yaml:"repetition_delay"`
+	ControllerOptions PipelineASAPControllerOpts `yaml:"controller_options"`
 }
 
 // PipelineASAPControllerOpts carries the accuracy and latency SLA targets.
@@ -137,10 +138,10 @@ type PipelineASAPControllerOpts struct {
 // PipelineLoadConfig holds load-generation parameters for fakemetricload and
 // e2esdkbench.
 type PipelineLoadConfig struct {
-	Workers                int                      `yaml:"workers"`
-	Series                 int                      `yaml:"series"`
-	SamplesPerSecPerSeries float64                  `yaml:"samples_per_sec_per_series"`
-	Duration               time.Duration            `yaml:"duration"`
+	Workers                int                        `yaml:"workers"`
+	Series                 int                        `yaml:"series"`
+	SamplesPerSecPerSeries float64                    `yaml:"samples_per_sec_per_series"`
+	Duration               time.Duration              `yaml:"duration"`
 	Distribution           PipelineDistributionConfig `yaml:"distribution"`
 }
 

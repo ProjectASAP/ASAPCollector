@@ -53,3 +53,5 @@ require (
 )
 
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
+
+replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor

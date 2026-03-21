@@ -26,15 +26,16 @@ type LabelMatcher struct {
 }
 
 type Config struct {
-	Mode           InputMode     `mapstructure:"mode"`
-	WindowDuration time.Duration `mapstructure:"window_duration"`
-	K              int           `mapstructure:"k"`
-	Quantiles      []float64     `mapstructure:"quantiles"`
-	TransmitSketch bool          `mapstructure:"transmit_sketch"`
-	WriteSeen      bool          `mapstructure:"write_seen"`
-	DropOriginal   bool          `mapstructure:"drop_original"`
-	ReadAsInt      bool          `mapstructure:"is_int"` // gauge has separate int and double fields, we default to double
-	MetricSuffix   string        `mapstructure:"metric_suffix"`
+	Mode                 InputMode     `mapstructure:"mode"`
+	WindowDuration       time.Duration `mapstructure:"window_duration"`
+	K                    int           `mapstructure:"k"`
+	Quantiles            []float64     `mapstructure:"quantiles"`
+	TransmitSketch       bool          `mapstructure:"transmit_sketch"`
+	WriteSeen            bool          `mapstructure:"write_seen"`
+	DropOriginal         bool          `mapstructure:"drop_original"`
+	ReadAsInt            bool          `mapstructure:"is_int"` // gauge has separate int and double fields, we default to double
+	MetricSuffix         string        `mapstructure:"metric_suffix"`
+	EnableSelfMonitoring bool          `mapstructure:"enable_self_monitoring"`
 
 	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
 	// All data points sharing the same values for these labels are merged into one sketch.

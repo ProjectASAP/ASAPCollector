@@ -208,7 +208,15 @@ func main() {
 	// from the resolved flag values.
 	providerOpts := []sdkmetric.Option{
 		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(*interval)),
+			func() sdkmetric.Reader {
+				readerOpts := []sdkmetric.PeriodicReaderOption{
+					sdkmetric.WithInterval(*interval),
+				}
+				if pipelineCfg != nil && pipelineCfg.Reader.EnableSelfMonitoring {
+					readerOpts = append(readerOpts, sdkmetric.WithSelfMonitoring(true))
+				}
+				return sdkmetric.NewPeriodicReader(exp, readerOpts...)
+			}(),
 		),
 	}
 	if pipelineCfg != nil {

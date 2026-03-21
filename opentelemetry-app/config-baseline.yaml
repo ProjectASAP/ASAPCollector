@@ -17,6 +17,7 @@ reader:
   # For baseline, match the worker record interval so every sample is exported
   # individually (no SDK-side accumulation between export ticks).
   interval: 20ms    # ~50 samples/s/series at default load settings
+  enable_self_monitoring: true
 
 sketch:
   type: baseline

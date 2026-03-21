@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
@@ -26,6 +27,7 @@ type ddsketchProcessor struct {
 	cfg          *Config
 	logger       *zap.Logger
 	nextConsumer consumer.Metrics
+	monitor      *selfmonitor.Monitor
 
 	// window mode state
 	mu            sync.Mutex
@@ -122,6 +124,8 @@ func (p *ddsketchProcessor) Start(ctx context.Context, _ component.Host) error {
 
 // Shutdown implements processor.Metrics.
 func (p *ddsketchProcessor) Shutdown(ctx context.Context) error {
+	defer p.shutdownMonitor()
+
 	// Only wait if the window goroutine was actually started; avoids blocking
 	// forever when Start was never called.
 	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
@@ -141,11 +145,14 @@ func (p *ddsketchProcessor) Shutdown(ctx context.Context) error {
 
 // ConsumeMetrics implements processor.Metrics.
 func (p *ddsketchProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	p.recordInput(ctx, md)
+
 	switch p.cfg.Mode {
 	case ModeBatch:
 		if _, err := p.processBatch(ctx, md); err != nil {
 			return err
 		}
+		p.recordOutput(ctx, md)
 		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	case ModeWindow:
 		p.accumulateIntoWindow(md)
@@ -570,7 +577,7 @@ func applyDDSketchDelta(snap, delta *sketchpb.DDSketch) *sketchpb.DDSketch {
 
 // applyDDStore adds delta bucket counts onto snapshot bucket counts.
 func applyDDStore(snap, delta *sketchpb.Store) *sketchpb.Store {
-	base := storeToMap(snap)   // existing helper in the file
+	base := storeToMap(snap) // existing helper in the file
 	changes := storeToMap(delta)
 	out := &sketchpb.Store{BinCounts: make(map[int32]float64)}
 	for idx, cnt := range base {
@@ -889,5 +896,50 @@ func (p *ddsketchProcessor) flushWindow(ctx context.Context) error {
 	if out.ResourceMetrics().Len() == 0 {
 		return nil
 	}
+	p.recordOutput(ctx, out)
 	return p.nextConsumer.ConsumeMetrics(ctx, out)
+}
+
+func (p *ddsketchProcessor) enableSelfMonitoring(settings component.TelemetrySettings, processorID string) {
+	monitor, err := selfmonitor.New(settings, processorID, Type.String(), p.activeSeriesCount)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("ddsketchprocessor: failed to initialize self-monitoring", zap.Error(err))
+		}
+		return
+	}
+	p.monitor = monitor
+}
+
+func (p *ddsketchProcessor) shutdownMonitor() {
+	if p.monitor != nil {
+		p.monitor.Shutdown()
+	}
+}
+
+func (p *ddsketchProcessor) recordInput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordInput(ctx, md)
+	}
+}
+
+func (p *ddsketchProcessor) recordOutput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordOutput(ctx, md)
+	}
+}
+
+func (p *ddsketchProcessor) activeSeriesCount() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var total int64
+	for _, rw := range p.windowStore {
+		for _, sw := range rw.scopes {
+			for _, mw := range sw.metrics {
+				total += int64(len(mw.series))
+			}
+		}
+	}
+	return total
 }

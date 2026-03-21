@@ -41,8 +41,9 @@ type Config struct {
 	Rows    int `mapstructure:"rows"`
 	Columns int `mapstructure:"columns"`
 
-	TransmitSketch bool `mapstructure:"transmit_sketch"`
-	DropOriginal   bool `mapstructure:"drop_original"`
+	EnableSelfMonitoring bool `mapstructure:"enable_self_monitoring"`
+	TransmitSketch       bool `mapstructure:"transmit_sketch"`
+	DropOriginal         bool `mapstructure:"drop_original"`
 
 	// WindowDuration is the time window to accumulate data before emitting a sketch (window mode only).
 	WindowDuration time.Duration `mapstructure:"window_duration"`
