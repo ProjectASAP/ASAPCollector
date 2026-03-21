@@ -823,23 +823,33 @@ func benchDD(mode string, deltaOn bool) sketchResult {
 			if err != nil {
 				log.Fatalf("DD ComputeDelta: %v", err)
 			}
-			transmitBytes = dBytes
-			totalDeltaBytes += len(dBytes)
-			deltaCount++
-			encoding = "delta"
 
-			// Receiver reconstructs by applying the delta onto its last known state.
-			// NOTE (batch+delta): ComputeDelta only emits positive bucket-count changes
-			// (Δcount ≥ threshold); bucket *decreases* between independent batch
-			// windows are silently omitted. In batch mode each window builds an
-			// independent sketch so decreases are common, causing correct_recon=false.
-			// This is by design — delta transmission is primarily useful in window
-			// (accumulation) mode where bucket counts are monotonically non-decreasing.
-			reconSnap := recvSnap.Clone()
-			if err := dd.ApplyDelta(reconSnap, transmitBytes); err != nil {
-				log.Fatalf("DD ApplyDelta: %v", err)
+			// Size-based fallback: send full when delta >= full.
+			// DDSketch full payloads are already compact; when the delta is larger
+			// (e.g. many buckets changed) the full is a better choice.
+			if len(dBytes) < len(fullBytes) {
+				transmitBytes = dBytes
+				totalDeltaBytes += len(dBytes)
+				deltaCount++
+				encoding = "delta"
+
+				// Receiver reconstructs by applying the bidirectional delta onto
+				// its last known state. The new ComputeDelta includes both increases
+				// and decreases, so correct_recon=true in all modes.
+				reconSnap := recvSnap.Clone()
+				if err := dd.ApplyDelta(reconSnap, transmitBytes); err != nil {
+					log.Fatalf("DD ApplyDelta: %v", err)
+				}
+				reconSketch = reconSnap
+			} else {
+				// Delta is larger than full — fall back to full transmission.
+				transmitBytes = fullBytes
+				encoding = "full"
+				reconSketch, err = dd.DeserializeDDSketchFromBytes(transmitBytes)
+				if err != nil {
+					log.Fatalf("DD Deserialize (fallback): %v", err)
+				}
 			}
-			reconSketch = reconSnap
 		} else {
 			transmitBytes = fullBytes
 			encoding = "full"

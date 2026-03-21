@@ -39,6 +39,7 @@ require (
 )
 
 replace (
+	github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go
 	go.opentelemetry.io/otel => ../opentelemetry-go
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc => ../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetricgrpc
 	go.opentelemetry.io/otel/metric => ../opentelemetry-go/metric
