@@ -251,8 +251,8 @@ func (d *hllSketchValues[N]) payloadFor(key attribute.Distinct, sketch *hll.Hype
 		payload, err = hll.ComputeRegisterDelta(snap, sketch)
 		enc = metricdata.HLLSketchEncodingDelta
 	} else {
-		payload, err = sketch.SerializeToBytes()
-		enc = metricdata.HLLSketchEncodingBinary
+		payload, err = sketch.SerializeProtoBytes()
+		enc = metricdata.HLLSketchEncodingProto
 	}
 	if err != nil {
 		return nil, "", err
@@ -267,10 +267,10 @@ func (d *hllSketchValues[N]) payloadFor(key attribute.Distinct, sketch *hll.Hype
 	return payload, enc, nil
 }
 
-// fullPayload returns a full binary serialization of sketch.
+// fullPayload returns a full proto serialization of sketch.
 func (d *hllSketchValues[N]) fullPayload(sketch *hll.HyperLogLog) ([]byte, metricdata.HLLSketchEncoding, error) {
-	b, err := sketch.SerializeToBytes()
-	return b, metricdata.HLLSketchEncodingBinary, err
+	b, err := sketch.SerializeProtoBytes()
+	return b, metricdata.HLLSketchEncodingProto, err
 }
 
 func (d *hllSketch[N]) exportDataPoint(
@@ -302,11 +302,11 @@ func (d *hllSketch[N]) exportDataPoint(
 
 // cloneHLL returns a deep copy of src suitable for use as a delta snapshot.
 func cloneHLL(src *hll.HyperLogLog) *hll.HyperLogLog {
-	data, err := src.SerializeToBytes()
+	data, err := src.SerializeProtoBytes()
 	if err != nil {
 		return nil
 	}
-	clone, err := hll.DeserializeHyperLogLogFromBytes(data)
+	clone, err := hll.DeserializeHyperLogLogFromProtoBytes(data)
 	if err != nil {
 		return nil
 	}

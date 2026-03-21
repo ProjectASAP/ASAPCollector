@@ -277,8 +277,8 @@ func (d *countSketchValues[N]) payloadFor(key attribute.Distinct, sketch *counts
 		payload, err = countsketch.ComputeDelta(snap, sketch, d.deltaThreshold)
 		enc = metricdata.CountSketchEncodingDelta
 	} else {
-		payload, err = sketch.SerializeToBytes()
-		enc = metricdata.CountSketchEncodingGob
+		payload, err = sketch.SerializeProtoBytes()
+		enc = metricdata.CountSketchEncodingProto
 	}
 	if err != nil {
 		return nil, "", err
@@ -294,8 +294,8 @@ func (d *countSketchValues[N]) payloadFor(key attribute.Distinct, sketch *counts
 
 // fullPayload returns a full proto serialization of sketch.
 func (d *countSketchValues[N]) fullPayload(sketch *countsketch.CountSketch) ([]byte, metricdata.CountSketchEncoding, error) {
-	b, err := sketch.SerializeToBytes()
-	return b, metricdata.CountSketchEncodingGob, err
+	b, err := sketch.SerializeProtoBytes()
+	return b, metricdata.CountSketchEncodingProto, err
 }
 
 func (d *countSketchAgg[N]) exportDataPoint(
@@ -325,11 +325,11 @@ func (d *countSketchAgg[N]) exportDataPoint(
 
 // cloneCSSketch returns a deep copy of src suitable for use as a delta snapshot.
 func cloneCSSketch(src *countsketch.CountSketch) *countsketch.CountSketch {
-	data, err := src.SerializeToBytes()
+	data, err := src.SerializeProtoBytes()
 	if err != nil {
 		return nil
 	}
-	clone, err := countsketch.DeserializeCountSketchFromBytes(data)
+	clone, err := countsketch.DeserializeCountSketchFromProtoBytes(data)
 	if err != nil {
 		return nil
 	}
