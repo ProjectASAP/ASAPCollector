@@ -36,25 +36,31 @@ type Monitor struct {
 	inputPoints  metric.Int64Counter
 	outputPoints metric.Int64Counter
 
-	inputBandwidth  metric.Float64ObservableGauge
-	outputBandwidth metric.Float64ObservableGauge
-	cpuUserTime     metric.Float64ObservableCounter
-	cpuSysTime      metric.Float64ObservableCounter
-	rssMemory       metric.Int64ObservableGauge
-	heapAlloc       metric.Int64ObservableGauge
-	heapSys         metric.Int64ObservableGauge
-	goroutines      metric.Int64ObservableGauge
-	activeSeries    metric.Int64ObservableGauge
+	inputBandwidth   metric.Float64ObservableGauge
+	outputBandwidth  metric.Float64ObservableGauge
+	inputThroughput  metric.Float64ObservableGauge
+	outputThroughput metric.Float64ObservableGauge
+	cpuUserTime      metric.Float64ObservableCounter
+	cpuSysTime       metric.Float64ObservableCounter
+	rssMemory        metric.Int64ObservableGauge
+	heapAlloc        metric.Int64ObservableGauge
+	heapSys          metric.Int64ObservableGauge
+	goroutines       metric.Int64ObservableGauge
+	activeSeries     metric.Int64ObservableGauge
 
 	reg metric.Registration
 
-	totalInputBytes  atomic.Int64
-	totalOutputBytes atomic.Int64
+	totalInputBytes   atomic.Int64
+	totalOutputBytes  atomic.Int64
+	totalInputPoints  atomic.Int64
+	totalOutputPoints atomic.Int64
 
-	bandwidthMu     sync.Mutex
-	lastSample      time.Time
-	lastInputBytes  int64
-	lastOutputBytes int64
+	rateMu           sync.Mutex
+	lastSample       time.Time
+	lastInputBytes   int64
+	lastOutputBytes  int64
+	lastInputPoints  int64
+	lastOutputPoints int64
 
 	activeSeriesFn ActiveSeriesFunc
 }
@@ -116,6 +122,20 @@ func New(settings component.TelemetrySettings, processorID, processorType string
 	); err != nil {
 		return nil, err
 	}
+	if m.inputThroughput, err = meter.Float64ObservableGauge(
+		"otelcol_datacollector_processor_input_throughput",
+		metric.WithDescription("Estimated processor input throughput."),
+		metric.WithUnit("{datapoint}/s"),
+	); err != nil {
+		return nil, err
+	}
+	if m.outputThroughput, err = meter.Float64ObservableGauge(
+		"otelcol_datacollector_processor_output_throughput",
+		metric.WithDescription("Estimated processor output throughput."),
+		metric.WithUnit("{datapoint}/s"),
+	); err != nil {
+		return nil, err
+	}
 	if m.cpuUserTime, err = meter.Float64ObservableCounter(
 		"otelcol_datacollector_processor_process_cpu_user_time",
 		metric.WithDescription("Process user CPU time observed by the processor."),
@@ -169,6 +189,8 @@ func New(settings component.TelemetrySettings, processorID, processorType string
 	m.reg, err = meter.RegisterCallback(m.observe,
 		m.inputBandwidth,
 		m.outputBandwidth,
+		m.inputThroughput,
+		m.outputThroughput,
 		m.cpuUserTime,
 		m.cpuSysTime,
 		m.rssMemory,
@@ -213,12 +235,14 @@ func (m *Monitor) record(ctx context.Context, md pmetric.Metrics, input bool) {
 		m.inputBytes.Add(ctx, size, m.addOpt)
 		m.inputPoints.Add(ctx, points, m.addOpt)
 		m.totalInputBytes.Add(size)
+		m.totalInputPoints.Add(points)
 		return
 	}
 
 	m.outputBytes.Add(ctx, size, m.addOpt)
 	m.outputPoints.Add(ctx, points, m.addOpt)
 	m.totalOutputBytes.Add(size)
+	m.totalOutputPoints.Add(points)
 }
 
 func (m *Monitor) observe(_ context.Context, obs metric.Observer) error {
@@ -227,7 +251,9 @@ func (m *Monitor) observe(_ context.Context, obs metric.Observer) error {
 
 	inputBytes := m.totalInputBytes.Load()
 	outputBytes := m.totalOutputBytes.Load()
-	inputBps, outputBps := m.sampleBandwidth(inputBytes, outputBytes)
+	inputPoints := m.totalInputPoints.Load()
+	outputPoints := m.totalOutputPoints.Load()
+	inputBps, outputBps, inputPps, outputPps := m.sampleRates(inputBytes, outputBytes, inputPoints, outputPoints)
 	userCPU, sysCPU := processCPUTime()
 	activeSeries := int64(0)
 	if m.activeSeriesFn != nil {
@@ -236,6 +262,8 @@ func (m *Monitor) observe(_ context.Context, obs metric.Observer) error {
 
 	obs.ObserveFloat64(m.inputBandwidth, inputBps, m.obsOpt)
 	obs.ObserveFloat64(m.outputBandwidth, outputBps, m.obsOpt)
+	obs.ObserveFloat64(m.inputThroughput, inputPps, m.obsOpt)
+	obs.ObserveFloat64(m.outputThroughput, outputPps, m.obsOpt)
 	obs.ObserveFloat64(m.cpuUserTime, userCPU, m.obsOpt)
 	obs.ObserveFloat64(m.cpuSysTime, sysCPU, m.obsOpt)
 	obs.ObserveInt64(m.rssMemory, processRSSBytes(), m.obsOpt)
@@ -246,30 +274,36 @@ func (m *Monitor) observe(_ context.Context, obs metric.Observer) error {
 	return nil
 }
 
-func (m *Monitor) sampleBandwidth(inputBytes, outputBytes int64) (float64, float64) {
+func (m *Monitor) sampleRates(inputBytes, outputBytes, inputPoints, outputPoints int64) (float64, float64, float64, float64) {
 	now := time.Now()
 
-	m.bandwidthMu.Lock()
-	defer m.bandwidthMu.Unlock()
+	m.rateMu.Lock()
+	defer m.rateMu.Unlock()
 
 	if m.lastSample.IsZero() {
 		m.lastSample = now
 		m.lastInputBytes = inputBytes
 		m.lastOutputBytes = outputBytes
-		return 0, 0
+		m.lastInputPoints = inputPoints
+		m.lastOutputPoints = outputPoints
+		return 0, 0, 0, 0
 	}
 
 	elapsed := now.Sub(m.lastSample).Seconds()
 	if elapsed <= 0 {
-		return 0, 0
+		return 0, 0, 0, 0
 	}
 
 	inputBps := float64(inputBytes-m.lastInputBytes) / elapsed
 	outputBps := float64(outputBytes-m.lastOutputBytes) / elapsed
+	inputPps := float64(inputPoints-m.lastInputPoints) / elapsed
+	outputPps := float64(outputPoints-m.lastOutputPoints) / elapsed
 	m.lastSample = now
 	m.lastInputBytes = inputBytes
 	m.lastOutputBytes = outputBytes
-	return inputBps, outputBps
+	m.lastInputPoints = inputPoints
+	m.lastOutputPoints = outputPoints
+	return inputBps, outputBps, inputPps, outputPps
 }
 
 func processCPUTime() (float64, float64) {
