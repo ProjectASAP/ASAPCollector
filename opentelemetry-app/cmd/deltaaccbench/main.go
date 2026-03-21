@@ -756,6 +756,15 @@ func hllRegistersEqual(a, b *hll.HyperLogLog) bool {
 // ---------------------------------------------------------------------------
 
 func benchDD(mode string, deltaOn bool) sketchResult {
+	// DDSketch SerializeToBytes already omits empty buckets — the dense store
+	// only spans [min_occupied_index, max_occupied_index].  In batch mode each
+	// window is an independent sketch from scratch, so the "full" is already as
+	// compact as any delta could be.  Delta is only meaningful in window
+	// (accumulation) mode where the full sketch grows over time.
+	if mode == "batch" {
+		deltaOn = false
+	}
+
 	rng := rand.New(rand.NewSource(42))
 	result := sketchResult{
 		SketchType:   "dd",
@@ -1211,16 +1220,21 @@ func main() {
 				}
 
 			case "dd":
-				fmt.Printf("Running DD   mode=%-6s delta=off ...\n", mode)
+				fmt.Printf("Running DD   mode=%-6s delta=N/A ...\n", mode)
 				r := benchDD(mode, false)
 				allResults = append(allResults, r)
 				fmt.Printf("  avg_full=%.0fB  mean_rel_err=%.4f%%\n", r.AvgFullBytes, r.AvgMeanRelErr*100)
 
-				fmt.Printf("Running DD   mode=%-6s delta=on  ...\n", mode)
-				r2 := benchDD(mode, true)
-				allResults = append(allResults, r2)
-				fmt.Printf("  avg_delta=%.0fB  compression=%.2fx  mean_rel_err=%.4f%%\n",
-					r2.AvgDeltaBytes, r2.CompressionRatio, r2.AvgMeanRelErr*100)
+				if mode == "window" {
+					// Batch full is already maximally compact (dense array omits
+					// empty buckets beyond the occupied range); delta only helps
+					// in window mode where the accumulated sketch grows over time.
+					fmt.Printf("Running DD   mode=%-6s delta=on  ...\n", mode)
+					r2 := benchDD(mode, true)
+					allResults = append(allResults, r2)
+					fmt.Printf("  avg_delta=%.0fB  compression=%.2fx  mean_rel_err=%.4f%%\n",
+						r2.AvgDeltaBytes, r2.CompressionRatio, r2.AvgMeanRelErr*100)
+				}
 
 			case "kll":
 				fmt.Printf("Running KLL  mode=%-6s delta=N/A ...\n", mode)
