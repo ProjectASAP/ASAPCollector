@@ -11,8 +11,8 @@ type KLLSketchEncoding int32
 const (
 	// KLLSketchEncodingUnspecified indicates the encoding is not specified.
 	KLLSketchEncodingUnspecified = KLLSketchEncoding(internal.KLLSketchEncoding_KLL_SKETCH_ENCODING_UNSPECIFIED)
-	// KLLSketchEncodingGob indicates the payload is gob-encoded.
-	KLLSketchEncodingGob = KLLSketchEncoding(internal.KLLSketchEncoding_KLL_SKETCH_ENCODING_GOB)
+	// KLLSketchEncodingProto indicates the payload is proto-encoded.
+	KLLSketchEncodingProto = KLLSketchEncoding(internal.KLLSketchEncoding_KLL_SKETCH_ENCODING_PROTO)
 )
 
 // String returns the string representation of the KLLSketchEncoding.
@@ -20,8 +20,8 @@ func (e KLLSketchEncoding) String() string {
 	switch e {
 	case KLLSketchEncodingUnspecified:
 		return "Unspecified"
-	case KLLSketchEncodingGob:
-		return "Gob"
+	case KLLSketchEncodingProto:
+		return "Proto"
 	}
 	return ""
 }
