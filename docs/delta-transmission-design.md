@@ -1532,7 +1532,7 @@ collector processor knows how to interpret `Sketch` bytes.
 | `hllprocessor` | `inboundSnapshots map[string]*hll.HyperLogLog`; `inboundMergeHLL` helper; applies `hll.ApplyRegisterDelta` on delta payloads in both `processBatch` and `accumulateHLLSketchMetric` |
 | `ddsketchprocessor` | `inboundSnapshots map[string][]byte`; `decodeDDSketchDataPoint` converted to method; `applyDDSketchDelta`/`applyDDStore` helpers; reconstructs from proto delta before merging |
 | `countminsketchprocessor` | `inboundSnapshots map[string]*cms.CountMinSketch`; `inboundDecodeCMS` helper; applies `cms.ApplyDelta` on delta payloads |
-| `countsketchprocessor` | Not applicable — inbound CountSketch data points are treated as raw samples (count = 1.0), not merged sketch payloads |
+| `countsketchprocessor` | `inboundSnapshots map[string]*countsketch.CountSketch`; `inboundDecodeCS` helper; applies `countsketch.ApplyDelta` on delta payloads; `mergeWindowCS` merges reconstructed sketch into window; falls back to raw sample (1.0) only when `Sketch()` is empty |
 
 ### 14.6 Snapshot Lifecycle
 
