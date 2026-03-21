@@ -47,6 +47,11 @@ type Config struct {
 	// A data point is included only if ALL matchers are satisfied (exact match).
 	// Empty (default) = include all data points.
 	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
+
+	// DeltaTransmission enables sparse delta encoding: only registers that
+	// increased since the last snapshot are transmitted (max semantics).
+	// Requires TransmitSketch=true; has no effect in batch mode.
+	DeltaTransmission bool `mapstructure:"delta_transmission"`
 }
 
 var _ component.Config = (*Config)(nil)

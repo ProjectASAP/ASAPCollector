@@ -42,12 +42,21 @@ type hllSketchValues[N int64 | float64] struct {
 	// seriesPool recycles hllSketchSeries structs to reduce GC pressure in
 	// high-churn (delta) and idle-eviction (cumulative) scenarios.
 	seriesPool sync.Pool
+
+	// deltaTransmission enables sparse delta encoding for cumulative exports.
+	deltaTransmission bool
+	// snapshots holds a clone of the last-exported HLL per series, keyed by
+	// attribute.Distinct. Used to compute sparse register deltas.
+	snapshots   map[attribute.Distinct]*hll.HyperLogLog
+	snapshotsMu sync.Mutex
 }
 
-func newHLLSketchValues[N int64 | float64](limit int) *hllSketchValues[N] {
+func newHLLSketchValues[N int64 | float64](limit int, deltaTransmission bool) *hllSketchValues[N] {
 	v := &hllSketchValues[N]{
-		limit:  newLimiter[hllSketchSeries](limit),
-		values: make(map[attribute.Distinct]*hllSketchSeries),
+		limit:             newLimiter[hllSketchSeries](limit),
+		values:            make(map[attribute.Distinct]*hllSketchSeries),
+		deltaTransmission: deltaTransmission,
+		snapshots:         make(map[attribute.Distinct]*hll.HyperLogLog),
 	}
 	v.seriesPool.New = func() any { return new(hllSketchSeries) }
 	return v
@@ -82,7 +91,7 @@ func (d *hllSketchValues[N]) measure(
 		}
 	}
 
-	series.sketch.Insert(float64(value))
+	series.sketch.InsertValue(float64(value))
 	series.count++
 	series.measuredSince = true
 }
@@ -92,9 +101,9 @@ type hllSketch[N int64 | float64] struct {
 	start time.Time
 }
 
-func newHLLSketch[N int64 | float64](limit int) *hllSketch[N] {
+func newHLLSketch[N int64 | float64](limit int, deltaTransmission bool) *hllSketch[N] {
 	return &hllSketch[N]{
-		hllSketchValues: newHLLSketchValues[N](limit),
+		hllSketchValues: newHLLSketchValues[N](limit, deltaTransmission),
 		start:           now(),
 	}
 }
@@ -127,7 +136,12 @@ func (d *hllSketch[N]) delta(
 		if series.count == 0 {
 			continue
 		}
-		if d.exportDataPoint(series, t, &dPts[i]) {
+		payload, enc, err := d.fullPayload(series.sketch)
+		if err != nil {
+			otel.Handle(err)
+			continue
+		}
+		if d.exportDataPoint(series, t, payload, enc, &dPts[i]) {
 			i++
 		}
 	}
@@ -183,7 +197,13 @@ func (d *hllSketch[N]) cumulative(
 		if series.count == 0 {
 			continue
 		}
-		if d.exportDataPoint(series, t, &dPts[i]) {
+
+		payload, enc, err := d.payloadFor(key, series.sketch)
+		if err != nil {
+			otel.Handle(err)
+			continue
+		}
+		if d.exportDataPoint(series, t, payload, enc, &dPts[i]) {
 			i++
 		}
 	}
@@ -193,6 +213,10 @@ func (d *hllSketch[N]) cumulative(
 	for _, key := range toEvict {
 		series := d.values[key]
 		delete(d.values, key)
+		// Also drop the snapshot for evicted series.
+		d.snapshotsMu.Lock()
+		delete(d.snapshots, key)
+		d.snapshotsMu.Unlock()
 		series.attrs = attribute.Set{}
 		series.seriesID = 0
 		series.count = 0
@@ -206,18 +230,58 @@ func (d *hllSketch[N]) cumulative(
 	return len(dPts)
 }
 
+// payloadFor returns the sketch payload bytes and encoding for one cumulative
+// export cycle. If deltaTransmission is enabled and a prior snapshot exists,
+// it computes a sparse register delta; otherwise it returns the full binary
+// payload and saves a new snapshot.
+func (d *hllSketchValues[N]) payloadFor(key attribute.Distinct, sketch *hll.HyperLogLog) ([]byte, metricdata.HLLSketchEncoding, error) {
+	if !d.deltaTransmission {
+		return d.fullPayload(sketch)
+	}
+
+	d.snapshotsMu.Lock()
+	snap, hasSnap := d.snapshots[key]
+	d.snapshotsMu.Unlock()
+
+	var payload []byte
+	var enc metricdata.HLLSketchEncoding
+	var err error
+
+	if hasSnap && snap != nil {
+		deltaMsg := hll.ComputeRegisterDelta(snap, sketch)
+		payload, err = hll.SerializeRegisterDelta(deltaMsg)
+		enc = metricdata.HLLSketchEncodingDelta
+	} else {
+		payload, err = sketch.SerializeProtoBytes()
+		enc = metricdata.HLLSketchEncodingProto
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Save updated snapshot (clone current state).
+	newSnap := cloneHLL(sketch)
+	d.snapshotsMu.Lock()
+	d.snapshots[key] = newSnap
+	d.snapshotsMu.Unlock()
+
+	return payload, enc, nil
+}
+
+// fullPayload returns a full proto serialization of sketch.
+func (d *hllSketchValues[N]) fullPayload(sketch *hll.HyperLogLog) ([]byte, metricdata.HLLSketchEncoding, error) {
+	b, err := sketch.SerializeProtoBytes()
+	return b, metricdata.HLLSketchEncodingProto, err
+}
+
 func (d *hllSketch[N]) exportDataPoint(
 	series *hllSketchSeries,
 	t time.Time,
+	payload []byte,
+	encoding metricdata.HLLSketchEncoding,
 	dest *metricdata.HLLSketchDataPoint,
 ) bool {
-	bytes, err := series.sketch.SerializeToBytes()
-	if err != nil {
-		otel.Handle(err)
-		return false
-	}
-
-	cardinality := uint64(series.sketch.Estimate())
+	cardinality := uint64(series.sketch.EstimateCardinality())
 
 	dp := dest
 	if series.seriesID != 0 {
@@ -232,7 +296,20 @@ func (d *hllSketch[N]) exportDataPoint(
 	dp.Count = series.count
 	dp.Cardinality = cardinality
 	dp.Precision = hll.HLLPrecision
-	dp.Encoding = metricdata.HLLSketchEncodingBinary
-	dp.Sketch = bytes
+	dp.Encoding = encoding
+	dp.Sketch = payload
 	return true
+}
+
+// cloneHLL returns a deep copy of src suitable for use as a delta snapshot.
+func cloneHLL(src *hll.HyperLogLog) *hll.HyperLogLog {
+	data, err := src.SerializeProtoBytes()
+	if err != nil {
+		return nil
+	}
+	clone, err := hll.DeserializeHyperLogLogFromProtoBytes(data)
+	if err != nil {
+		return nil
+	}
+	return clone
 }

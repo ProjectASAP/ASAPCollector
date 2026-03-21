@@ -8,7 +8,7 @@ package internal
 
 const (
 	KLLSketchEncoding_KLL_SKETCH_ENCODING_UNSPECIFIED = KLLSketchEncoding(0)
-	KLLSketchEncoding_KLL_SKETCH_ENCODING_GOB         = KLLSketchEncoding(1)
+	KLLSketchEncoding_KLL_SKETCH_ENCODING_PROTO       = KLLSketchEncoding(1)
 )
 
 // KLLSketchEncoding identifies how the KLL sketch payload bytes are encoded.
@@ -16,10 +16,10 @@ type KLLSketchEncoding int32
 
 var KLLSketchEncoding_name = map[int32]string{
 	0: "KLL_SKETCH_ENCODING_UNSPECIFIED",
-	1: "KLL_SKETCH_ENCODING_GOB",
+	1: "KLL_SKETCH_ENCODING_PROTO",
 }
 
 var KLLSketchEncoding_value = map[string]int32{
 	"KLL_SKETCH_ENCODING_UNSPECIFIED": 0,
-	"KLL_SKETCH_ENCODING_GOB":         1,
+	"KLL_SKETCH_ENCODING_PROTO":       1,
 }

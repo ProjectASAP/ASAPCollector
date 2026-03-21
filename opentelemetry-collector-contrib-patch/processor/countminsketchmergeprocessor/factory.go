@@ -1,34 +1,30 @@
-package countsketchprocessor
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package countminsketchmergeprocessor
 
 import (
 	"context"
-	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processorhelper"
+	"go.uber.org/zap"
 )
 
-var typeStr = component.MustNewType("countsketch")
+var typeStr = component.MustNewType("countminsketchmerge")
 
 func NewFactory() processor.Factory {
 	return processor.NewFactory(
 		typeStr,
 		createDefaultConfig,
-
 		processor.WithMetrics(createMetricsProcessor, component.StabilityLevelDevelopment),
 	)
 }
 
 func createDefaultConfig() component.Config {
-	return &Config{
-		AggregateBy:    []string{},
-		Epsilon:        0.01,
-		Delta:          0.99,
-		WindowDuration: 5 * time.Second,
-		TransmitSketch: false,
-	}
+	return &Config{}
 }
 
 func createMetricsProcessor(
@@ -37,16 +33,16 @@ func createMetricsProcessor(
 	cfg component.Config,
 	next consumer.Metrics,
 ) (processor.Metrics, error) {
-	proc := newProcessor(set.Logger, cfg.(*Config), next)
-
-	return processorhelper.NewMetrics(
-		ctx,
-		set,
-		cfg,
-		next,
-		proc.processMetrics,
-		processorhelper.WithStart(proc.Start),
-		processorhelper.WithShutdown(proc.Shutdown),
-		processorhelper.WithCapabilities(consumer.Capabilities{MutatesData: true}),
+	c := cfg.(*Config)
+	logger := set.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	p := newProcessor(c, logger, next)
+	return processorhelper.NewMetrics(ctx, set, cfg, next,
+		p.processMetrics,
+		processorhelper.WithStart(p.Start),
+		processorhelper.WithShutdown(p.Shutdown),
+		processorhelper.WithCapabilities(p.Capabilities()),
 	)
 }

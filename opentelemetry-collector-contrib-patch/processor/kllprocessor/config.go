@@ -47,6 +47,11 @@ type Config struct {
 	// Empty (default) = include all data points.
 	LabelMatchers []LabelMatcher `mapstructure:"label_matchers"`
 
+	// DeltaTransmission must not be set to true for KLL: KLL uses random
+	// compaction and is not additively mergeable. Validate() returns an error
+	// if this is set.
+	DeltaTransmission bool `mapstructure:"delta_transmission"`
+
 	suffixes map[float64]string // suffix to attach to output quantiles, e.g. _p50, _p99, ...
 }
 
@@ -78,5 +83,11 @@ func (c *Config) Validate() error {
 	}
 	// Sort AggregateBy so seriesKey always produces a consistent ordering.
 	sort.Strings(c.AggregateBy)
+
+	// KLL uses random compaction so sketches are not linearly mergeable.
+	// Delta transmission (sparse additive encoding) is not defined for KLL.
+	if c.DeltaTransmission {
+		return fmt.Errorf("delta_transmission is not supported for KLL sketches: KLL uses random compaction and is not additively mergeable")
+	}
 	return nil
 }

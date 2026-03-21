@@ -7,8 +7,9 @@
 package internal
 
 const (
-	DDSketchEncoding_DDSKETCH_ENCODING_UNSPECIFIED = DDSketchEncoding(0)
-	DDSketchEncoding_DDSKETCH_ENCODING_PROTO       = DDSketchEncoding(1)
+	DDSketchEncoding_DDSKETCH_ENCODING_UNSPECIFIED  = DDSketchEncoding(0)
+	DDSketchEncoding_DDSKETCH_ENCODING_PROTO        = DDSketchEncoding(1)
+	DDSketchEncoding_DDSKETCH_ENCODING_PROTO_DELTA  = DDSketchEncoding(2)
 )
 
 // DDSketchEncoding identifies how the DDSketch payload bytes are encoded.
@@ -17,9 +18,11 @@ type DDSketchEncoding int32
 var DDSketchEncoding_name = map[int32]string{
 	0: "DDSKETCH_ENCODING_UNSPECIFIED",
 	1: "DDSKETCH_ENCODING_PROTO",
+	2: "DDSKETCH_ENCODING_PROTO_DELTA",
 }
 
 var DDSketchEncoding_value = map[string]int32{
 	"DDSKETCH_ENCODING_UNSPECIFIED": 0,
 	"DDSKETCH_ENCODING_PROTO":       1,
+	"DDSKETCH_ENCODING_PROTO_DELTA": 2,
 }

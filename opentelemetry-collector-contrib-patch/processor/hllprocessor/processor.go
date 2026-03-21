@@ -20,10 +20,59 @@ import (
 // allocations in the hot attributesKey path.
 var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
 
+// inboundMergeHLL merges a received HLLSketch data point into dst.
+// For HLLSketchEncodingProto payloads the sketch bytes are deserialized and
+// merged directly. For HLLSketchEncodingDelta payloads the register delta is
+// applied to the last known snapshot to reconstruct the current full state,
+// which is then merged into dst. The inbound snapshot is updated on each call.
+func (p *hllProcessor) inboundMergeHLL(seriesKey string, dp pmetric.HLLSketchDataPoint, dst *hll.HyperLogLog) error {
+	payload := dp.Sketch()
+	if len(payload) == 0 {
+		return nil
+	}
+
+	switch dp.Encoding() {
+	case pmetric.HLLSketchEncodingDelta:
+		p.inboundMu.Lock()
+		snap, hasSnap := p.inboundSnapshots[seriesKey]
+		p.inboundMu.Unlock()
+		if !hasSnap || snap == nil {
+			// No snapshot to apply delta against; skip.
+			return nil
+		}
+		// Clone the snapshot and apply the delta to get the current full state.
+		reconstructed := cloneHLL(snap)
+		if reconstructed == nil {
+			return nil
+		}
+		deltaMsg, err := hll.DeserializeRegisterDelta(payload)
+		if err != nil {
+			return err
+		}
+		hll.ApplyRegisterDelta(reconstructed, deltaMsg)
+		// Update inbound snapshot to the reconstructed current state.
+		p.inboundMu.Lock()
+		p.inboundSnapshots[seriesKey] = cloneHLL(reconstructed)
+		p.inboundMu.Unlock()
+		return dst.Merge(reconstructed)
+
+	default: // HLLSketchEncodingProto or unspecified
+		src, err := hll.DeserializeHyperLogLogFromProtoBytes(payload)
+		if err != nil {
+			return err
+		}
+		// Store full snapshot for future delta reconstruction.
+		p.inboundMu.Lock()
+		p.inboundSnapshots[seriesKey] = cloneHLL(src)
+		p.inboundMu.Unlock()
+		return dst.Merge(src)
+	}
+}
+
 // mergeSketchBytes deserializes a serialized HLL sketch and merges it into dst.
 // Returns dst unchanged (with an error) if deserialization fails.
 func mergeSketchBytes(dst *hll.HyperLogLog, payload []byte) error {
-	src, err := hll.DeserializeHyperLogLogFromBytes(payload)
+	src, err := hll.DeserializeHyperLogLogFromProtoBytes(payload)
 	if err != nil {
 		return err
 	}
@@ -45,6 +94,17 @@ type hllProcessor struct {
 	// register arrays) across window flushes to reduce GC pressure in
 	// high-cardinality deployments.
 	seriesPool sync.Pool
+
+	// snapshots maps "<metricName>::<attrKey>" → cloned HLL, updated each flush.
+	// Used to compute register deltas when cfg.DeltaTransmission=true.
+	snapshots   map[string]*hll.HyperLogLog
+	snapshotsMu sync.Mutex
+
+	// inboundSnapshots tracks the last reconstructed full HLL per series key
+	// received from upstream (e.g., SDK). Used to apply register deltas when
+	// the upstream sends HLLSketchEncodingDelta payloads.
+	inboundMu        sync.Mutex
+	inboundSnapshots map[string]*hll.HyperLogLog
 }
 
 type resourceWindow struct {
@@ -74,8 +134,10 @@ func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *hllPr
 		cfg:          cfg,
 		logger:       logger,
 		nextConsumer: next,
-		windowStore:  make(map[string]*resourceWindow),
-		stopCh:       make(chan struct{}),
+		windowStore:      make(map[string]*resourceWindow),
+		snapshots:        make(map[string]*hll.HyperLogLog),
+		inboundSnapshots: make(map[string]*hll.HyperLogLog),
+		stopCh:           make(chan struct{}),
 		doneCh:       make(chan struct{}),
 	}
 	p.seriesPool.New = func() any { return new(hllSeries) }
@@ -186,7 +248,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 							continue
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
-						bs.sketch.Insert(dp.DoubleValue())
+						bs.sketch.InsertValue(dp.DoubleValue())
 					}
 				case pmetric.MetricTypeHLLSketch:
 					dps := metric.HLLSketch().DataPoints()
@@ -196,10 +258,9 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 							continue
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
-						if payload := dp.Sketch(); len(payload) > 0 {
-							if err := mergeSketchBytes(bs.sketch, payload); err != nil && p.logger != nil {
-								p.logger.Error("hllprocessor: failed to deserialize HLLSketch data point", zap.Error(err))
-							}
+						inboundKey := metric.Name() + "::" + p.seriesKey(dp.Attributes())
+						if err := p.inboundMergeHLL(inboundKey, dp, bs.sketch); err != nil && p.logger != nil {
+							p.logger.Error("hllprocessor: failed to merge inbound HLLSketch", zap.Error(err))
 						}
 					}
 				}
@@ -229,7 +290,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 			dp := m.Gauge().DataPoints().AppendEmpty()
 			bs.attrs.CopyTo(dp.Attributes())
 			dp.SetTimestamp(now)
-			dp.SetDoubleValue(float64(bs.sketch.Estimate()))
+			dp.SetDoubleValue(float64(bs.sketch.EstimateCardinality()))
 		}
 	}
 	return nil
@@ -394,7 +455,7 @@ func (p *hllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 			}
 			mw.series[attrKey] = series
 		}
-		series.sketch.Insert(dp.DoubleValue())
+		series.sketch.InsertValue(dp.DoubleValue())
 	}
 }
 
@@ -420,10 +481,9 @@ func (p *hllProcessor) accumulateHLLSketchMetric(sw *scopeWindow, metric pmetric
 			}
 			mw.series[attrKey] = series
 		}
-		if payload := dp.Sketch(); len(payload) > 0 {
-			if err := mergeSketchBytes(series.sketch, payload); err != nil && p.logger != nil {
-				p.logger.Error("hllprocessor: failed to merge HLLSketch data point", zap.Error(err))
-			}
+		inboundKey := mw.name + "::" + attrKey
+		if err := p.inboundMergeHLL(inboundKey, dp, series.sketch); err != nil && p.logger != nil {
+			p.logger.Error("hllprocessor: failed to merge inbound HLLSketch", zap.Error(err))
 		}
 	}
 }
@@ -471,7 +531,26 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 							m.SetEmptyGauge()
 							created = true
 						}
-						if err := appendHLLSketchDataPoint(m, series.attrs, series.sketch, now); err != nil && p.logger != nil {
+						snapKey := mw.name + "::" + p.seriesKey(series.attrs)
+						if p.cfg.DeltaTransmission {
+							p.snapshotsMu.Lock()
+							snap, hasSnap := p.snapshots[snapKey]
+							p.snapshotsMu.Unlock()
+
+							var appErr error
+							if hasSnap && snap != nil {
+								appErr = appendHLLDeltaDataPoint(m, series.attrs, snap, series.sketch, now)
+							} else {
+								appErr = appendHLLSketchDataPoint(m, series.attrs, series.sketch, now)
+							}
+							if appErr != nil && p.logger != nil {
+								p.logger.Error("hllprocessor: failed to emit sketch", zap.Error(appErr))
+							}
+							newSnap := cloneHLL(series.sketch)
+							p.snapshotsMu.Lock()
+							p.snapshots[snapKey] = newSnap
+							p.snapshotsMu.Unlock()
+						} else if err := appendHLLSketchDataPoint(m, series.attrs, series.sketch, now); err != nil && p.logger != nil {
 							p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
 						}
 						series.attrs = pcommon.Map{}
@@ -494,7 +573,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 					dps = append(dps, struct {
 						attrs pcommon.Map
 						val   float64
-					}{series.attrs, float64(series.sketch.Estimate())})
+					}{series.attrs, float64(series.sketch.EstimateCardinality())})
 					series.attrs = pcommon.Map{}
 					p.seriesPool.Put(series)
 				}
@@ -538,18 +617,50 @@ func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pme
 // appendHLLSketchDataPoint serializes the HLL sketch and embeds it in a gauge
 // data point attribute. The cardinality estimate is also stored for convenience.
 func appendHLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *hll.HyperLogLog, ts pcommon.Timestamp) error {
-	payload, err := sketch.SerializeToBytes()
+	payload, err := sketch.SerializeProtoBytes()
 	if err != nil {
 		return err
 	}
 	dp := metric.Gauge().DataPoints().AppendEmpty()
 	attrs.CopyTo(dp.Attributes())
 	dp.Attributes().PutInt("hll.precision", hll.HLLPrecision)
-	dp.Attributes().PutInt("hll.cardinality", int64(sketch.Estimate()))
+	dp.Attributes().PutInt("hll.cardinality", int64(sketch.EstimateCardinality()))
 	dp.Attributes().PutEmptyBytes("hll.sketch_payload").FromRaw(payload)
 	dp.SetTimestamp(ts)
-	dp.SetDoubleValue(float64(sketch.Estimate()))
+	dp.SetDoubleValue(float64(sketch.EstimateCardinality()))
 	return nil
+}
+
+// appendHLLDeltaDataPoint computes a register delta between snapshot and current,
+// then embeds the proto-marshalled HLLDelta payload in a gauge data point.
+func appendHLLDeltaDataPoint(metric pmetric.Metric, attrs pcommon.Map, snapshot, current *hll.HyperLogLog, ts pcommon.Timestamp) error {
+	deltaMsg := hll.ComputeRegisterDelta(snapshot, current)
+	payload, err := hll.SerializeRegisterDelta(deltaMsg)
+	if err != nil {
+		return err
+	}
+	dp := metric.Gauge().DataPoints().AppendEmpty()
+	attrs.CopyTo(dp.Attributes())
+	dp.Attributes().PutInt("hll.precision", hll.HLLPrecision)
+	dp.Attributes().PutInt("hll.cardinality", int64(current.EstimateCardinality()))
+	dp.Attributes().PutStr("hll.encoding", "proto_delta")
+	dp.Attributes().PutEmptyBytes("hll.sketch_payload").FromRaw(payload)
+	dp.SetTimestamp(ts)
+	dp.SetDoubleValue(float64(current.EstimateCardinality()))
+	return nil
+}
+
+// cloneHLL returns a deep copy of h suitable for use as a delta snapshot.
+func cloneHLL(h *hll.HyperLogLog) *hll.HyperLogLog {
+	data, err := h.SerializeProtoBytes()
+	if err != nil {
+		return nil
+	}
+	clone, err := hll.DeserializeHyperLogLogFromProtoBytes(data)
+	if err != nil {
+		return nil
+	}
+	return clone
 }
 
 func (p *hllProcessor) cardinalityMetricName(base string) string {
