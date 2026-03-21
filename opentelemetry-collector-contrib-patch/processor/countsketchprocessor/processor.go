@@ -43,6 +43,12 @@ type countSketchProcessor struct {
 	snapshots   map[string]*countsketch.CountSketch
 	snapshotsMu sync.Mutex
 
+	// inboundSnapshots tracks the last reconstructed full CS per series key
+	// received from upstream. Used to apply sparse deltas when upstream sends
+	// CountSketchEncodingDelta payloads.
+	inboundMu        sync.Mutex
+	inboundSnapshots map[string]*countsketch.CountSketch
+
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool
@@ -84,6 +90,7 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 		mode:                 mode,
 		activeWindowSketches: make(map[string]*windowSketch),
 		snapshots:            make(map[string]*countsketch.CountSketch),
+		inboundSnapshots:     make(map[string]*countsketch.CountSketch),
 		stopCh:               make(chan struct{}),
 		doneCh:               make(chan struct{}),
 	}
@@ -228,7 +235,8 @@ func (p *countSketchProcessor) ingestMetric(resourceAttrs pcommon.Map, metric pm
 			p.updateWindowSketch(pk, metricName, float64(dp.Count()))
 		}
 	case pmetric.MetricTypeCountSketch:
-		// Pre-aggregated path: count each dp as one observation.
+		// Pre-aggregated path: deserialize (or reconstruct from delta) the incoming
+		// CountSketch and merge it into the running window sketch.
 		dps := metric.CountSketch().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
 			dp := dps.At(i)
@@ -236,7 +244,20 @@ func (p *countSketchProcessor) ingestMetric(resourceAttrs pcommon.Map, metric pm
 				continue
 			}
 			pk := buildPartitionKey(resourceAttrs, dp.Attributes(), p.config.AggregateBy)
-			p.updateWindowSketch(pk, metricName, 1.0)
+			if len(dp.Sketch()) == 0 {
+				// No sketch payload — treat as a raw sample (backwards compat).
+				p.updateWindowSketch(pk, metricName, 1.0)
+				continue
+			}
+			incoming, err := p.inboundDecodeCS(pk, dp)
+			if err != nil {
+				p.logger.Error("countsketchprocessor: failed to decode inbound CountSketch", zap.Error(err))
+				continue
+			}
+			if incoming == nil {
+				continue // delta arrived before any full snapshot
+			}
+			p.mergeWindowCS(pk, incoming)
 		}
 	}
 }
@@ -428,6 +449,83 @@ func buildPartitionKey(resourceAttrs, dpAttrs pcommon.Map, aggregateBy []string)
 	s := sb.String()
 	builderPool.Put(sb)
 	return s
+}
+
+// inboundDecodeCS decodes an incoming CountSketch data point, handling both full
+// (Gob-encoded) and sparse-delta payloads. For delta payloads it applies the delta
+// onto the last stored inbound snapshot to reconstruct the current full state.
+// Returns (nil, nil) when a delta arrives before any full snapshot.
+func (p *countSketchProcessor) inboundDecodeCS(partitionKey string, dp pmetric.CountSketchDataPoint) (*countsketch.CountSketch, error) {
+	payload := dp.Sketch()
+
+	switch dp.Encoding() {
+	case pmetric.CountSketchEncodingDelta:
+		p.inboundMu.Lock()
+		snap, hasSnap := p.inboundSnapshots[partitionKey]
+		p.inboundMu.Unlock()
+		if !hasSnap || snap == nil {
+			return nil, nil
+		}
+		reconstructed := cloneCS(snap)
+		if reconstructed == nil {
+			return nil, nil
+		}
+		if err := countsketch.ApplyDelta(reconstructed, payload); err != nil {
+			return nil, err
+		}
+		p.inboundMu.Lock()
+		p.inboundSnapshots[partitionKey] = cloneCS(reconstructed)
+		p.inboundMu.Unlock()
+		return reconstructed, nil
+
+	default: // CountSketchEncodingGob or unspecified
+		decoded, err := countsketch.DeserializeCountSketchFromBytes(payload)
+		if err != nil {
+			return nil, err
+		}
+		p.inboundMu.Lock()
+		p.inboundSnapshots[partitionKey] = cloneCS(decoded)
+		p.inboundMu.Unlock()
+		return decoded, nil
+	}
+}
+
+// mergeWindowCS merges an incoming pre-aggregated CountSketch into the per-key
+// window store, creating the window sketch if it does not yet exist.
+func (p *countSketchProcessor) mergeWindowCS(partitionKey string, incoming *countsketch.CountSketch) {
+	p.mu.RLock()
+	ws, exists := p.activeWindowSketches[partitionKey]
+	p.mu.RUnlock()
+
+	if !exists {
+		p.mu.Lock()
+		ws, exists = p.activeWindowSketches[partitionKey]
+		if !exists {
+			ws = p.windowSketchPool.Get().(*windowSketch)
+			if ws.cs != nil {
+				ws.cs.Reset()
+			} else {
+				cs, err := newConfiguredCountSketch(p.config)
+				if err != nil {
+					p.logger.Error("countsketchprocessor: failed to create CS for merge", zap.Error(err))
+					p.windowSketchPool.Put(ws)
+					p.mu.Unlock()
+					return
+				}
+				ws.cs = cs
+			}
+			ws.sampleCount = 0
+			p.activeWindowSketches[partitionKey] = ws
+		}
+		p.mu.Unlock()
+	}
+
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if err := ws.cs.Merge(incoming); err != nil {
+		p.logger.Error("countsketchprocessor: failed to merge CountSketch", zap.Error(err))
+	}
+	ws.sampleCount++
 }
 
 // cloneCS returns a deep copy of cs suitable for use as a delta snapshot.
