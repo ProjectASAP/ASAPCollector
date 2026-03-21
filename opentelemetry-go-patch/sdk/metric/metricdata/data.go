@@ -327,6 +327,10 @@ const (
 	// DDSketchEncodingProto indicates the sketch bytes are encoded as the
 	// serialization of github.com/DataDog/sketches-go/ddsketch/pb/sketchpb.DDSketch.
 	DDSketchEncodingProto DDSketchEncoding = "ddsketch_proto"
+	// DDSketchEncodingProtoDelta indicates a sparse delta payload: only buckets
+	// whose count changed by at least DeltaThreshold since the previous export
+	// are included. Encoded as sketchpb.DDSketch proto.
+	DDSketchEncodingProtoDelta DDSketchEncoding = "ddsketch_proto_delta"
 )
 
 // DDSketchDataPoint is a single data point in a DDSketch timeseries.

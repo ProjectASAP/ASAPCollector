@@ -153,8 +153,10 @@ func (b Builder[N]) ExponentialBucketHistogram(
 }
 
 // DDSketch returns a DDSketch aggregate function input and output.
-func (b Builder[N]) DDSketch(relativeAccuracy float64, noMinMax, noSum bool) (Measure[N], ComputeAggregation) {
-	agg := newDDSketch[N](relativeAccuracy, noMinMax, noSum, b.AggregationLimit, b.resFunc())
+// deltaTransmission enables sparse delta encoding for cumulative exports;
+// deltaThreshold is the minimum absolute bucket count change to include in a delta.
+func (b Builder[N]) DDSketch(relativeAccuracy float64, noMinMax, noSum bool, deltaTransmission bool, deltaThreshold uint64) (Measure[N], ComputeAggregation) {
+	agg := newDDSketch[N](relativeAccuracy, noMinMax, noSum, b.AggregationLimit, b.resFunc(), deltaTransmission, deltaThreshold)
 	switch b.Temporality {
 	case metricdata.DeltaTemporality:
 		return b.filter(agg.measure), agg.delta
