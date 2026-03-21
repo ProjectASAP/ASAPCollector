@@ -26,9 +26,10 @@ const (
 
 // periodicReaderConfig contains configuration options for a PeriodicReader.
 type periodicReaderConfig struct {
-	interval  time.Duration
-	timeout   time.Duration
-	producers []Producer
+	interval       time.Duration
+	timeout        time.Duration
+	selfMonitoring bool
+	producers      []Producer
 }
 
 // newPeriodicReaderConfig returns a periodicReaderConfig configured with
@@ -96,6 +97,15 @@ func WithInterval(d time.Duration) PeriodicReaderOption {
 	})
 }
 
+// WithSelfMonitoring configures whether the PeriodicReader emits its
+// self-monitoring metrics.
+func WithSelfMonitoring(enabled bool) PeriodicReaderOption {
+	return periodicReaderOptionFunc(func(conf periodicReaderConfig) periodicReaderConfig {
+		conf.selfMonitoring = enabled
+		return conf
+	})
+}
+
 // NewPeriodicReader returns a Reader that collects and exports metric data to
 // the exporter at a defined interval. By default, the returned Reader will
 // collect and export data every 60 seconds, and will cancel any attempts that
@@ -128,13 +138,16 @@ func NewPeriodicReader(exporter Exporter, options ...PeriodicReaderOption) *Peri
 		r.run(ctx, conf.interval)
 	}()
 
-	var err error
-	r.inst, err = observ.NewInstrumentation(
-		semconv.OTelComponentTypePeriodicMetricReader.Value.AsString(),
-		nextPeriodicReaderID(),
-	)
-	if err != nil {
-		otel.Handle(err)
+	if conf.selfMonitoring {
+		var err error
+		r.inst, err = observ.NewConfiguredInstrumentation(
+			true,
+			semconv.OTelComponentTypePeriodicMetricReader.Value.AsString(),
+			nextPeriodicReaderID(),
+		)
+		if err != nil {
+			otel.Handle(err)
+		}
 	}
 
 	return r

@@ -33,9 +33,10 @@ type Config struct {
 	WindowDuration time.Duration `mapstructure:"window_duration"`
 	// TransmitSketch embeds the serialized HLL registers in a gauge attribute
 	// instead of emitting only the cardinality estimate.
-	TransmitSketch bool   `mapstructure:"transmit_sketch"`
-	DropOriginal   bool   `mapstructure:"drop_original"`
-	MetricSuffix   string `mapstructure:"metric_suffix"`
+	TransmitSketch       bool   `mapstructure:"transmit_sketch"`
+	DropOriginal         bool   `mapstructure:"drop_original"`
+	MetricSuffix         string `mapstructure:"metric_suffix"`
+	EnableSelfMonitoring bool   `mapstructure:"enable_self_monitoring"`
 
 	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
 	// All data points sharing the same values for these labels are merged into one sketch.

@@ -97,6 +97,20 @@ func NewInstrumentation(componentType string, id int64) (*Instrumentation, error
 		return nil, nil
 	}
 
+	return newInstrumentation(componentType, id)
+}
+
+// NewConfiguredInstrumentation returns instrumentation for a metric reader
+// with an explicit enable switch controlled by caller configuration.
+func NewConfiguredInstrumentation(enabled bool, componentType string, id int64) (*Instrumentation, error) {
+	if !enabled {
+		return nil, nil
+	}
+
+	return newInstrumentation(componentType, id)
+}
+
+func newInstrumentation(componentType string, id int64) (*Instrumentation, error) {
 	i := &Instrumentation{
 		attrs: []attribute.KeyValue{
 			semconv.OTelComponentName(ComponentName(componentType, id)),

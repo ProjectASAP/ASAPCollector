@@ -70,17 +70,14 @@ func TestNewInstrumentationObservabilityErrors(t *testing.T) {
 	mp := &errMeterProvider{err: assert.AnError}
 	otel.SetMeterProvider(mp)
 
-	t.Setenv("OTEL_GO_X_OBSERVABILITY", "true")
-
-	_, err := observ.NewInstrumentation(ComponentType, ID)
+	_, err := observ.NewConfiguredInstrumentation(true, ComponentType, ID)
 	require.ErrorIs(t, err, assert.AnError, "new instrument errors should be joined")
 
 	assert.ErrorContains(t, err, "collection duration metric")
 }
 
 func TestNewInstrumentationObservabilityDisabled(t *testing.T) {
-	// Do not set OTEL_GO_X_OBSERVABILITY.
-	got, err := observ.NewInstrumentation(ComponentType, ID)
+	got, err := observ.NewConfiguredInstrumentation(false, ComponentType, ID)
 	assert.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -90,8 +87,6 @@ func TestNewInstrumentationObservabilityDisabled(t *testing.T) {
 func setup(t *testing.T) (*observ.Instrumentation, func() metricdata.ScopeMetrics) {
 	t.Helper()
 
-	t.Setenv("OTEL_GO_X_OBSERVABILITY", "true")
-
 	original := otel.GetMeterProvider()
 	t.Cleanup(func() { otel.SetMeterProvider(original) })
 
@@ -99,7 +94,7 @@ func setup(t *testing.T) (*observ.Instrumentation, func() metricdata.ScopeMetric
 	mp := metric.NewMeterProvider(metric.WithReader(r))
 	otel.SetMeterProvider(mp)
 
-	inst, err := observ.NewInstrumentation(ComponentType, ID)
+	inst, err := observ.NewConfiguredInstrumentation(true, ComponentType, ID)
 	require.NoError(t, err)
 	require.NotNil(t, inst)
 
@@ -219,7 +214,6 @@ func TestComponentName(t *testing.T) {
 
 func setupBench(b *testing.B) *observ.Instrumentation {
 	b.Helper()
-	b.Setenv("OTEL_GO_X_OBSERVABILITY", "true")
 
 	// Set up a proper MeterProvider for benchmarks
 	original := otel.GetMeterProvider()
@@ -229,7 +223,7 @@ func setupBench(b *testing.B) *observ.Instrumentation {
 	mp := metric.NewMeterProvider(metric.WithReader(r))
 	otel.SetMeterProvider(mp)
 
-	inst, err := observ.NewInstrumentation(ComponentType, ID)
+	inst, err := observ.NewConfiguredInstrumentation(true, ComponentType, ID)
 	if err != nil {
 		b.Fatalf("failed to create instrumentation: %v", err)
 	}

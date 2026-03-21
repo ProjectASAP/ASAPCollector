@@ -43,6 +43,8 @@ type Config struct {
 	Quantiles []float64 `mapstructure:"quantiles"`
 	// MetricSuffix is appended to the original metric name for generated sketches.
 	MetricSuffix string `mapstructure:"metric_suffix"`
+	// EnableSelfMonitoring controls whether processor self-monitoring metrics are emitted.
+	EnableSelfMonitoring bool `mapstructure:"enable_self_monitoring"`
 	// TransmitSketch controls whether merged sketches are output as DDSketch payloads (true)
 	// or converted into gauge metrics at the configured quantiles (false).
 	TransmitSketch bool `mapstructure:"transmit_sketch"`
@@ -72,12 +74,13 @@ var _ component.Config = (*Config)(nil)
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		Mode:             ModeBatch,
-		WindowDuration:   60 * time.Second,
-		RelativeAccuracy: 0.01,
-		Quantiles:        []float64{0.5, 0.9, 0.99},
-		MetricSuffix:     "_ddsketch",
-		TransmitSketch:   true,
+		Mode:                 ModeBatch,
+		WindowDuration:       60 * time.Second,
+		RelativeAccuracy:     0.01,
+		Quantiles:            []float64{0.5, 0.9, 0.99},
+		MetricSuffix:         "_ddsketch",
+		EnableSelfMonitoring: true,
+		TransmitSketch:       true,
 	}
 }
 

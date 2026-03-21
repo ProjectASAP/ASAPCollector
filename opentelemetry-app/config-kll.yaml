@@ -10,6 +10,7 @@ exporter:
 
 reader:
   interval: 1s
+  enable_self_monitoring: true
 
 sketch:
   type: kll

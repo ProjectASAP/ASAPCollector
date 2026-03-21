@@ -67,6 +67,11 @@ Controls which side of the pipeline performs sketch aggregation:
   The collector-side processor (e.g. `kllprocessor`, `hllprocessor`) performs the
   aggregation. Used for the `baseline` type and for collector-driven sketch modes.
 
+### `reader.enable_self_monitoring`
+
+- **`true`** — enables SDK periodic-reader self-monitoring metrics.
+- **`false`** — disables SDK periodic-reader self-monitoring metrics.
+
 ### Config schema
 
 ```yaml
@@ -77,6 +82,7 @@ exporter:
 
 reader:
   interval: 1s               # SDK export interval
+  enable_self_monitoring: true
 
 sketch:
   type: ddsketch             # ddsketch | kll | hll | countsketch | countminsketch | baseline
