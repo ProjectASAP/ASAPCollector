@@ -571,7 +571,7 @@ func (p *windowedCountMinSketchProcessor) inboundDecodeCMS(aggregationKey string
 		p.inboundMu.Unlock()
 		return reconstructed, nil
 
-	default: // CountMinSketchEncodingGob or unspecified
+	default: // CountMinSketchEncodingProto or unspecified
 		decoded, err := deserializeCMS(payload)
 		if err != nil {
 			return nil, err
@@ -584,21 +584,21 @@ func (p *windowedCountMinSketchProcessor) inboundDecodeCMS(aggregationKey string
 }
 
 func serializeCMS(s *cms.CountMinSketch) ([]byte, error) {
-	return s.SerializeToBytes()
+	return s.SerializeProtoBytes()
 }
 
 func deserializeCMS(data []byte) (*cms.CountMinSketch, error) {
-	return cms.DeserializeCountMinSketchFromBytes(data)
+	return cms.DeserializeCountMinSketchFromProtoBytes(data)
 }
 
 // cloneCMS returns a deep copy of s suitable for use as a delta snapshot.
 // It serializes and deserializes to ensure full independence from the original.
 func cloneCMS(s *cms.CountMinSketch) *cms.CountMinSketch {
-	data, err := s.SerializeToBytes()
+	data, err := s.SerializeProtoBytes()
 	if err != nil {
 		return nil
 	}
-	clone, err := cms.DeserializeCountMinSketchFromBytes(data)
+	clone, err := cms.DeserializeCountMinSketchFromProtoBytes(data)
 	if err != nil {
 		return nil
 	}

@@ -3,7 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/count
 go 1.25.5
 
 require (
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260320220729-3ba826ceb054
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260321021603-cddd774cb224
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.47.0
 	go.opentelemetry.io/collector/component/componenttest v0.141.0
@@ -51,4 +51,3 @@ require (
 )
 
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
-

@@ -359,7 +359,7 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 					payload, serErr = countsketch.ComputeDelta(snap, ws.cs, p.config.DeltaThreshold)
 					encoding = "proto_delta"
 				} else {
-					payload, serErr = ws.cs.SerializeToBytes()
+					payload, serErr = ws.cs.SerializeProtoBytes()
 					encoding = "proto_full"
 				}
 
@@ -368,7 +368,7 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 				p.snapshots[partitionKey] = newSnap
 				p.snapshotsMu.Unlock()
 			} else {
-				payload, serErr = ws.cs.SerializeToBytes()
+				payload, serErr = ws.cs.SerializeProtoBytes()
 				encoding = "proto_full"
 			}
 		}
@@ -478,8 +478,8 @@ func (p *countSketchProcessor) inboundDecodeCS(partitionKey string, dp pmetric.C
 		p.inboundMu.Unlock()
 		return reconstructed, nil
 
-	default: // CountSketchEncodingGob or unspecified
-		decoded, err := countsketch.DeserializeCountSketchFromBytes(payload)
+	default: // CountSketchEncodingProto or unspecified
+		decoded, err := countsketch.DeserializeCountSketchFromProtoBytes(payload)
 		if err != nil {
 			return nil, err
 		}
@@ -530,11 +530,11 @@ func (p *countSketchProcessor) mergeWindowCS(partitionKey string, incoming *coun
 
 // cloneCS returns a deep copy of cs suitable for use as a delta snapshot.
 func cloneCS(cs *countsketch.CountSketch) *countsketch.CountSketch {
-	data, err := cs.SerializeToBytes()
+	data, err := cs.SerializeProtoBytes()
 	if err != nil {
 		return nil
 	}
-	clone, err := countsketch.DeserializeCountSketchFromBytes(data)
+	clone, err := countsketch.DeserializeCountSketchFromProtoBytes(data)
 	if err != nil {
 		return nil
 	}
