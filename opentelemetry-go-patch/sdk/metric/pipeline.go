@@ -542,7 +542,7 @@ func (i *inserter[N]) aggregateFunc(
 		case InstrumentKindUpDownCounter, InstrumentKindObservableUpDownCounter, InstrumentKindObservableGauge, InstrumentKindGauge:
 			noSum = true
 		}
-		meas, comp = b.DDSketch(a.RelativeAccuracy, a.NoMinMax, noSum)
+		meas, comp = b.DDSketch(a.RelativeAccuracy, a.NoMinMax, noSum, a.DeltaTransmission, a.DeltaThreshold)
 	case AggregationKLLSketch:
 		meas, comp = b.KLLSketch(a.K)
 	case AggregationCountSketch:

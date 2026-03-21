@@ -195,6 +195,14 @@ type AggregationDDSketch struct {
 	RelativeAccuracy float64
 	// NoMinMax indicates whether to not record minima and maxima.
 	NoMinMax bool
+	// DeltaTransmission enables sparse delta encoding in the cumulative export
+	// path: only buckets that changed by at least DeltaThreshold counts since
+	// the previous snapshot are included in the payload.
+	DeltaTransmission bool
+	// DeltaThreshold is the minimum absolute bucket count change required to
+	// include a bucket in a delta payload. Defaults to 1 when DeltaTransmission
+	// is true and DeltaThreshold is 0.
+	DeltaThreshold uint64
 }
 
 var _ Aggregation = AggregationDDSketch{}
