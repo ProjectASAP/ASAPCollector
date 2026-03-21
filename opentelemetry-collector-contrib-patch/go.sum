@@ -30,6 +30,8 @@ github.com/ProjectASAP/sketchlib-go v0.0.0-20260320220729-3ba826ceb054 h1:HYCqQ0
 github.com/ProjectASAP/sketchlib-go v0.0.0-20260320220729-3ba826ceb054/go.mod h1:VmV0RYT6+rXpb1gVxTG3Z17sttm0nfj7RuesrL1oDTI=
 github.com/ProjectASAP/sketchlib-go v0.0.0-20260321021603-cddd774cb224 h1:mYN1NJLRp9elj4RoLqlHMcoZeQxI7jPNqnxbxxS7wBw=
 github.com/ProjectASAP/sketchlib-go v0.0.0-20260321021603-cddd774cb224/go.mod h1:VmV0RYT6+rXpb1gVxTG3Z17sttm0nfj7RuesrL1oDTI=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260321023259-ecebc36fb5aa h1:nRWz+s995NYgaRI6a7YHu2lnfGhyzn3Sn8uDFbuNEO0=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260321023259-ecebc36fb5aa/go.mod h1:VmV0RYT6+rXpb1gVxTG3Z17sttm0nfj7RuesrL1oDTI=
 github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b h1:mimo19zliBX/vSQ6PWWSL9lK8qwHozUj03+zLoEB8O0=
 github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b/go.mod h1:fvzegU4vN3H1qMT+8wDmzjAcDONcgo2/SZ/TyfdUOFs=
 github.com/armon/go-metrics v0.4.1 h1:hR91U9KYmb6bLBYLQjyM+3j+rcd/UhE+G78SFnF8gJA=

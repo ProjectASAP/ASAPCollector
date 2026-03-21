@@ -356,7 +356,12 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 				p.snapshotsMu.Unlock()
 
 				if hasSnap {
-					payload, serErr = countsketch.ComputeDelta(snap, ws.cs, p.config.DeltaThreshold)
+					deltaMsg, deltaErr := countsketch.ComputeDelta(snap, ws.cs, p.config.DeltaThreshold)
+					if deltaErr == nil {
+						payload, serErr = countsketch.SerializeDelta(deltaMsg)
+					} else {
+						serErr = deltaErr
+					}
 					encoding = "proto_delta"
 				} else {
 					payload, serErr = ws.cs.SerializeProtoBytes()
@@ -470,9 +475,11 @@ func (p *countSketchProcessor) inboundDecodeCS(partitionKey string, dp pmetric.C
 		if reconstructed == nil {
 			return nil, nil
 		}
-		if err := countsketch.ApplyDelta(reconstructed, payload); err != nil {
+		deltaMsg, err := countsketch.DeserializeDelta(payload)
+		if err != nil {
 			return nil, err
 		}
+		countsketch.ApplyDelta(reconstructed, deltaMsg)
 		p.inboundMu.Lock()
 		p.inboundSnapshots[partitionKey] = cloneCS(reconstructed)
 		p.inboundMu.Unlock()
