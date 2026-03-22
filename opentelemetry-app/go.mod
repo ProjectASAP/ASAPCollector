@@ -3,6 +3,8 @@ module github.com/approx-telemetry/opentelemetry-app
 go 1.24.0
 
 require (
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260321024028-d20a9f9151b5
+	github.com/cespare/xxhash/v2 v2.3.0
 	go.opentelemetry.io/otel v1.41.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.38.0
 	go.opentelemetry.io/otel/metric v1.41.0
@@ -12,19 +14,17 @@ require (
 
 require (
 	github.com/DataDog/sketches-go v1.4.1 // indirect
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260316040945-49890c71f035 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
-	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/prometheus v0.307.1 // indirect
-	github.com/zeebo/xxh3 v1.0.2 // indirect
+	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/sdk v1.41.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
@@ -39,6 +39,7 @@ require (
 )
 
 replace (
+	github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go
 	go.opentelemetry.io/otel => ../opentelemetry-go
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc => ../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetricgrpc
 	go.opentelemetry.io/otel/metric => ../opentelemetry-go/metric
