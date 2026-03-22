@@ -1,0 +1,36 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+processors:
+  ddsketch:
+    mode: batch
+    relative_accuracy: 0.01
+    transmit_sketch: true
+    metric_suffix: "_ddsketch"
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [ddsketch]
+      exporters: [prometheus]
+  telemetry:
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+    logs:
+      level: info
+    resource:
+      service.name: ddsketchcol-batch-full
