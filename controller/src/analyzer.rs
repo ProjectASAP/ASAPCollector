@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{AggType, QueryWorkload, SketchType};
+use crate::types::{AggType, QueryWorkload, SketchType, WorkloadCharacteristics};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -23,6 +23,12 @@ pub struct QuerySpec {
     /// Optional: pin a specific sketch type, bypassing the cost-model planner.
     /// Useful when the target collector supports only a subset of sketches.
     pub sketch_type:    Option<SketchType>,
+    /// Observable data-stream characteristics used for delta transmission
+    /// decisions and raw-vs-sketch bandwidth comparison.
+    /// Omit to use conservative defaults (1 000 series, 100 Hz, 100 B/sample,
+    /// Zipf distribution, no memory budget).
+    #[serde(default)]
+    pub workload:       WorkloadCharacteristics,
 }
 
 pub struct Analyzer;
@@ -161,6 +167,7 @@ mod tests {
             accuracy_sla:   0.01,
             latency_sla:    Some("10m".into()),
             sketch_type:    None,
+            workload:       Default::default(),
         }
     }
 

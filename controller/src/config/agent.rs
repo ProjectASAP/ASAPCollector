@@ -96,6 +96,15 @@ fn build_processor_block(cfg: &AgentCollectorConfig) -> Value {
         m.insert("label_matchers".into(), seq_of_strings(&cfg.label_matchers));
     }
 
+    // Delta transmission fields (emitted for all sketch types that support it).
+    if cfg.delta_transmission {
+        m.insert("delta_transmission".into(), Value::Bool(true));
+        m.insert(
+            "delta_threshold".into(),
+            Value::Number(cfg.delta_threshold.into()),
+        );
+    }
+
     // Sketch-type-specific params.
     let p = &cfg.sketch_params;
     match &cfg.sketch_type {
@@ -172,6 +181,8 @@ mod tests {
             enable_self_monitoring: true,
             transmit_sketch: true,
             drop_original: true,
+            delta_transmission: false,
+            delta_threshold: 0.0,
         }
     }
 
@@ -246,6 +257,8 @@ mod tests {
             enable_self_monitoring: true,
             transmit_sketch: true,
             drop_original: true,
+            delta_transmission: false,
+            delta_threshold: 0.0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(yaml.contains("hll:"), "YAML should contain 'hll:'\n{yaml}");
@@ -272,6 +285,8 @@ mod tests {
             enable_self_monitoring: true,
             transmit_sketch: true,
             drop_original: true,
+            delta_transmission: false,
+            delta_threshold: 0.0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
@@ -323,6 +338,36 @@ mod tests {
         assert!(
             yaml.contains("- prometheus"),
             "pipeline exporters should list prometheus\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn delta_fields_present_when_enabled() {
+        let mut cfg = ddsketch_cfg();
+        cfg.delta_transmission = true;
+        cfg.delta_threshold = 1.0;
+        let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
+        assert!(
+            yaml.contains("delta_transmission: true"),
+            "YAML should contain delta_transmission: true\n{yaml}"
+        );
+        assert!(
+            yaml.contains("delta_threshold"),
+            "YAML should contain delta_threshold\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn delta_fields_absent_when_disabled() {
+        let cfg = ddsketch_cfg(); // delta_transmission: false by default
+        let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
+        assert!(
+            !yaml.contains("delta_transmission"),
+            "YAML must not contain delta_transmission when disabled\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("delta_threshold"),
+            "YAML must not contain delta_threshold when disabled\n{yaml}"
         );
     }
 }
