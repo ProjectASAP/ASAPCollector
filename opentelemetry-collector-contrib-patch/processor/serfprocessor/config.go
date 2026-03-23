@@ -38,12 +38,20 @@ type Config struct {
 	// DropOriginal controls whether incoming metrics are forwarded downstream.
 	DropOriginal bool `mapstructure:"drop_original"`
 
-	// MaxDiff is the maximum allowed absolute error for lossy Serf XOR compression.
-	// A value of 0.0 disables approximation (lossless XOR, equivalent to Gorilla).
+	// Compression selects the Serf encoding algorithm:
+	//   "xor" (default) — SerfXOR: FindAppLong + Gorilla-style XOR bit encoding.
+	//   "qt"            — SerfQt: quantization delta + ZigZag/Elias-Gamma coding.
+	Compression string `mapstructure:"compression"`
+
+	// MaxDiff is the maximum allowed absolute error (used by both xor and qt modes).
+	// For xor: widens the approximation search window.
+	// For qt: sets the quantization step size (step = 2·maxDiff).
+	// A value of 0.0 in xor mode disables approximation (lossless, equivalent to Gorilla).
 	MaxDiff float64 `mapstructure:"max_diff"`
 
 	// AdjustDigit is an integer offset added to each float64 value before XOR
 	// encoding to align decimal digits and improve compression. 0 = no adjustment.
+	// Only used in xor mode.
 	AdjustDigit int64 `mapstructure:"adjust_digit"`
 
 	// S3 holds S3 upload configuration.
@@ -59,6 +67,12 @@ var _ component.Config = (*Config)(nil)
 func (c *Config) Validate() error {
 	if c.WindowInterval <= 0 {
 		c.WindowInterval = 10 * time.Minute
+	}
+	if c.Compression == "" {
+		c.Compression = "xor"
+	}
+	if c.Compression != "xor" && c.Compression != "qt" {
+		return fmt.Errorf("compression must be \"xor\" or \"qt\", got %q", c.Compression)
 	}
 	if c.S3.Bucket == "" && c.LocalDir == "" {
 		return fmt.Errorf("at least one of s3.bucket or local_dir must be configured")

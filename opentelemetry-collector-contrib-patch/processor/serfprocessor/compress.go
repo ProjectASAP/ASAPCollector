@@ -30,6 +30,7 @@ type serfObject struct {
 func buildObjects(
 	series map[seriesKey]*seriesBuffer,
 	maxObjectBytes int64,
+	compression string,
 	maxDiff float64,
 	adjustDigit int64,
 ) ([]serfObject, error) {
@@ -51,7 +52,7 @@ func buildObjects(
 			continue
 		}
 		firstTS, firstValBits, tsBits, tsBitsLen, valBits, valBitsLen :=
-			sortAndEncode(buf.points, maxDiff, adjustDigit)
+			sortAndEncode(buf.points, compression, maxDiff, adjustDigit)
 
 		meta := seriesMeta{
 			MetricName: key.metricName,

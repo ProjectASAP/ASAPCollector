@@ -73,6 +73,7 @@ func (p *serfProcessor) Start(ctx context.Context, host component.Host) error {
 	}
 
 	p.logger.Info("Starting Serf processor",
+		zap.String("compression", p.cfg.Compression),
 		zap.Duration("window_interval", p.cfg.WindowInterval),
 		zap.Float64("max_diff", p.cfg.MaxDiff),
 		zap.Int64("adjust_digit", p.cfg.AdjustDigit),
@@ -199,7 +200,7 @@ func (p *serfProcessor) flushWindow() {
 	p.blockEnd = time.Time{}
 	p.mu.Unlock()
 
-	objects, err := buildObjects(snapshot, p.cfg.MaxObjectBytes, p.cfg.MaxDiff, p.cfg.AdjustDigit)
+	objects, err := buildObjects(snapshot, p.cfg.MaxObjectBytes, p.cfg.Compression, p.cfg.MaxDiff, p.cfg.AdjustDigit)
 	if err != nil {
 		p.logger.Error("serf: build objects failed", zap.Error(err))
 		return

@@ -327,11 +327,74 @@ func (e *serfValueEncoder) bytes() ([]byte, uint32) {
 }
 
 // ----------------------------------------------------------------------------
+// SerfQt encoder: quantization delta + ZigZag + Elias Gamma coding.
+//
+// For each value v, compute:
+//   q = round((v - prevValue) / (2 * maxDiff))
+//   recoverValue = prevValue + 2 * maxDiff * q
+// Encode q via ZigZag then Elias Gamma.  prevValue starts at 2.0 (matching C++).
+//
+// ZigZag:      n → (n<<1) ^ (n>>63)   — maps signed ints to non-negative
+// Elias Gamma: n → write floor(log2(n)) zero bits, then n in floor(log2(n))+1 bits
+//              Encoding call: EliasGamma(ZigZag(q) + 1) to ensure value >= 1.
+// ----------------------------------------------------------------------------
+
+type serfQtValueEncoder struct {
+	bw        *bitWriter
+	prevValue float64
+	maxDiff   float64 // effective: maxDiff * 0.999 (matching C++ constructor)
+	step      float64 // 2 * effectiveMaxDiff
+}
+
+func newSerfQtValEncoder(maxDiff float64) *serfQtValueEncoder {
+	eff := maxDiff * 0.999
+	return &serfQtValueEncoder{
+		bw:        newBitWriter(),
+		prevValue: 2.0, // C++ initialises pre_value_ = 2
+		maxDiff:   eff,
+		step:      2 * eff,
+	}
+}
+
+func (e *serfQtValueEncoder) push(v float64) {
+	var q int64
+	if e.step > 0 {
+		q = int64(math.Round((v - e.prevValue) / e.step))
+	}
+	recoverValue := e.prevValue + e.step*float64(q)
+	zigzag := uint64((q << 1) ^ (q >> 63)) // ZigZag encode
+	eliasGammaEncode(zigzag+1, e.bw)       // +1 so value >= 1 for Elias Gamma
+	e.prevValue = recoverValue
+}
+
+// eliasGammaEncode writes n (n >= 1) using Elias Gamma coding.
+// Format: floor(log2(n)) zero bits, then n in floor(log2(n))+1 bits.
+func eliasGammaEncode(n uint64, bw *bitWriter) {
+	if n == 0 {
+		n = 1
+	}
+	k := bits.Len64(n) - 1 // floor(log2(n))
+	// Write k zero bits
+	for i := 0; i < k; i++ {
+		bw.writeBit(0)
+	}
+	// Write n in k+1 bits
+	bw.writeBits(n, uint8(k+1))
+}
+
+func (e *serfQtValueEncoder) bytes() ([]byte, uint32) {
+	b := e.bw.bytes()
+	return b, uint32(len(b) * 8)
+}
+
+// ----------------------------------------------------------------------------
 // sortAndEncode: sort by timestamp then encode both streams.
+// compression selects "xor" or "qt".
 // ----------------------------------------------------------------------------
 
 func sortAndEncode(
 	pts []point,
+	compression string,
 	maxDiff float64,
 	adjustDigit int64,
 ) (firstTS int64, firstValBits uint64, tsBits []byte, tsBitsLen uint32, valBits []byte, valBitsLen uint32) {
@@ -342,16 +405,29 @@ func sortAndEncode(
 
 	firstTS = pts[0].ts
 	tsEnc := newTsEncoder()
-	valEnc := newSerfValEncoder(maxDiff, adjustDigit)
 
 	for _, p := range pts {
 		tsEnc.push(p.ts)
-		valEnc.push(p.v)
 	}
-
-	firstValBits = valEnc.firstValBits
-
 	tsBits, tsBitsLen = tsEnc.bytes()
-	valBits, valBitsLen = valEnc.bytes()
+
+	if compression == "qt" {
+		qtEnc := newSerfQtValEncoder(maxDiff)
+		for _, p := range pts {
+			qtEnc.push(p.v)
+		}
+		// firstValBits stores math.Float64bits(2.0) — the initial prevValue — so
+		// a decoder knows the starting reference without extra metadata.
+		firstValBits = math.Float64bits(2.0)
+		valBits, valBitsLen = qtEnc.bytes()
+	} else {
+		// Default: SerfXOR
+		valEnc := newSerfValEncoder(maxDiff, adjustDigit)
+		for _, p := range pts {
+			valEnc.push(p.v)
+		}
+		firstValBits = valEnc.firstValBits
+		valBits, valBitsLen = valEnc.bytes()
+	}
 	return
 }
