@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window]
+# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol]
 #
 # SDK variants (*-sdk-*) use fakemetricload (opentelemetry-app/cmd/fakemetricload) as the
 # load generator instead of otel_collector_benchmark. For ddsketch-sdk the OTel SDK
@@ -15,17 +15,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window]"
+    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window)
+    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window, ddsketchcol-sdk-batch, ddsketchcol-sdk-window, kll-sdk-batch, kll-sdk-window, countsketchcol-sdk-batch, countsketchcol-sdk-window, countminsketchcol-sdk-batch, countminsketchcol-sdk-window, hllcol-batch, hllcol-window, hllcol-sdk-batch, hllcol-sdk-window"
+        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window, ddsketchcol-sdk-batch, ddsketchcol-sdk-window, kll-sdk-batch, kll-sdk-window, countsketchcol-sdk-batch, countsketchcol-sdk-window, countminsketchcol-sdk-batch, countminsketchcol-sdk-window, hllcol-batch, hllcol-window, hllcol-sdk-batch, hllcol-sdk-window, gorillacol, serfcol"
         exit 1
         ;;
 esac
@@ -249,6 +249,12 @@ case "$PROCESSOR" in
         ;;
     hllcol-sdk-window)
         PROCESSOR_NAME="HLL PROCESSOR (window mode, SDK gauge path)"
+        ;;
+    gorillacol)
+        PROCESSOR_NAME="GORILLA COMPRESSION PROCESSOR"
+        ;;
+    serfcol)
+        PROCESSOR_NAME="SERF XOR COMPRESSION PROCESSOR"
         ;;
 esac
 
