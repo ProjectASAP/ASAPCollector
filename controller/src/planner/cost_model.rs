@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use super::delta_cost_model::decide_delta;
 use super::rules::{default_sketch_params, select_window_strategy, RulesPlanner};
 use crate::types::*;
 
@@ -15,6 +16,11 @@ pub struct SketchCosts {
     pub cpu_micros_per_sample: f64,
     pub base_memory_bytes: f64,
     pub relative_error_at_default: f64,
+}
+
+/// Public accessor used by `apply_delta_decision` to retrieve the cost table.
+pub fn benchmark_table_pub() -> HashMap<SketchType, SketchCosts> {
+    benchmark_table()
 }
 
 fn benchmark_table() -> HashMap<SketchType, SketchCosts> {
@@ -140,7 +146,27 @@ impl CostModelPlanner {
         }
     }
 
-    pub fn plan(&self, w: &QueryWorkload) -> CollectionPlan {
+    /// Produces a [`CollectionPlan`] optimised for the given query workload
+    /// and data characteristics.
+    ///
+    /// `wc` drives the delta transmission decision: fill rate, flush rate,
+    /// CPU / memory overhead, and raw vs. sketch bandwidth comparison.
+    /// Pass `None` to use conservative defaults (1 000 series, 100 Hz,
+    /// 100 B/sample, Zipf distribution, no memory budget).
+    pub fn plan(
+        &self,
+        w: &QueryWorkload,
+        wc: Option<&WorkloadCharacteristics>,
+    ) -> CollectionPlan {
+        let default_wc;
+        let wc = match wc {
+            Some(c) => c,
+            None => {
+                default_wc = WorkloadCharacteristics::default();
+                &default_wc
+            }
+        };
+
         // If a specific sketch type is pinned, use it directly.
         if let Some(st) = &w.sketch_type_override {
             let params = default_sketch_params(st, w.accuracy_sla);
@@ -151,6 +177,7 @@ impl CostModelPlanner {
             plan.agent_config.mode = mode;
             plan.agent_config.window_duration = window_duration;
             plan.backend_config.merge_sketch_type = st.clone();
+            apply_delta_decision(&mut plan, w, wc);
             return plan;
         }
 
@@ -185,8 +212,38 @@ impl CostModelPlanner {
             }
         }
 
+        apply_delta_decision(&mut best_plan, w, wc);
         best_plan
     }
+}
+
+/// Runs the delta cost model and writes the decision into the plan.
+///
+/// Also propagates `delta_transmission` and `delta_threshold` into
+/// `agent_config` so the YAML generator can emit the right fields.
+fn apply_delta_decision(plan: &mut CollectionPlan, w: &QueryWorkload, wc: &WorkloadCharacteristics) {
+    let table = super::cost_model::benchmark_table_pub();
+    let bytes_per_series_per_sec = table
+        .get(&plan.agent_config.sketch_type)
+        .map(|c| c.bytes_per_series_per_sec)
+        .unwrap_or(200.0);
+
+    let (decision, summary) = decide_delta(plan, w, wc, bytes_per_series_per_sec);
+
+    // Propagate into agent config.
+    match &decision {
+        DeltaDecision::UseDelta { threshold, .. } => {
+            plan.agent_config.delta_transmission = true;
+            plan.agent_config.delta_threshold = *threshold;
+        }
+        _ => {
+            plan.agent_config.delta_transmission = false;
+            plan.agent_config.delta_threshold = 0.0;
+        }
+    }
+
+    plan.delta_decision = decision;
+    plan.transmission_cost_summary = summary;
 }
 
 /// Returns all sketch types that are semantically valid for the workload's
@@ -244,6 +301,8 @@ mod tests {
                 enable_self_monitoring: true,
                 transmit_sketch: true,
                 drop_original: true,
+                delta_transmission: false,
+                delta_threshold: 0.0,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -252,6 +311,8 @@ mod tests {
             },
             precompute: vec![],
             valid_until: Utc::now(),
+            delta_decision: DeltaDecision::default(),
+            transmission_cost_summary: TransmissionCostSummary::default(),
         }
     }
 
@@ -332,7 +393,7 @@ mod tests {
                 accuracy_sla: sla,
                 ..workload(vec![agg])
             };
-            let plan = pl.plan(&w);
+            let plan = pl.plan(&w, None);
             let s = score(&plan, &w);
             assert!(
                 s.meets_sla,
@@ -348,7 +409,7 @@ mod tests {
             accuracy_sla: 0.02,
             ..workload(vec![AggType::Cardinality])
         };
-        let plan = CostModelPlanner::new().plan(&w);
+        let plan = CostModelPlanner::new().plan(&w, None);
         assert_eq!(
             plan.agent_config.sketch_type,
             SketchType::HLL,
@@ -358,7 +419,7 @@ mod tests {
 
     #[test]
     fn cost_model_valid_until_in_future() {
-        let plan = CostModelPlanner::new().plan(&workload(vec![AggType::Quantile]));
+        let plan = CostModelPlanner::new().plan(&workload(vec![AggType::Quantile]), None);
         assert!(plan.valid_until > Utc::now());
     }
 }

@@ -2,10 +2,20 @@
 # e2e_test.sh — End-to-end integration test: controller + ddsketchcol + e2esdkbench
 #
 # Usage:
-#   ./scripts/e2e_test.sh [--sketch ddsketch|kll|hll|countsketch|countminsketch]
-#                         [--series 500]
-#                         [--duration 30s]
-#                         [--skip-build]
+#   ./tests/otel_controller_e2e_test.sh
+#       [--sketch ddsketch|kll|hll|countsketch|countminsketch]
+#       [--series 500]
+#       [--rate 50]          # samples-per-sec-per-series sent by e2esdkbench
+#       [--duration 30s]
+#       [--distribution zipf|uniform|bursty]
+#       [--memory-budget-mb N]   # optional agent memory budget in MiB
+#       [--skip-build]
+#
+# The test now submits a WorkloadCharacteristics alongside the plan request so
+# the controller can make a delta transmission decision.  It then verifies that:
+#   • The plan response contains delta_decision and transmission_costs.
+#   • The generated collector YAML contains delta_transmission when delta is used.
+#   • e2esdkbench successfully delivers metrics through the collector.
 #
 # Prerequisites (must already be on PATH or built):
 #   - cargo          (Rust toolchain)
@@ -23,18 +33,31 @@ E2EBENCH_DIR="${ROOT}/opentelemetry-app"
 # ── Defaults ──────────────────────────────────────────────────────────────────
 SKETCH="ddsketch"
 SERIES=500
+SAMPLES_PER_SEC=50
 BENCH_DURATION="30s"
+DISTRIBUTION="zipf"
+MEMORY_BUDGET_MB=""
 SKIP_BUILD=false
 
 for arg in "$@"; do
   case "$arg" in
-    --sketch=*)       SKETCH="${arg#*=}" ;;
-    --series=*)       SERIES="${arg#*=}" ;;
-    --duration=*)     BENCH_DURATION="${arg#*=}" ;;
-    --skip-build)     SKIP_BUILD=true ;;
+    --sketch=*)            SKETCH="${arg#*=}" ;;
+    --series=*)            SERIES="${arg#*=}" ;;
+    --rate=*)              SAMPLES_PER_SEC="${arg#*=}" ;;
+    --duration=*)          BENCH_DURATION="${arg#*=}" ;;
+    --distribution=*)      DISTRIBUTION="${arg#*=}" ;;
+    --memory-budget-mb=*)  MEMORY_BUDGET_MB="${arg#*=}" ;;
+    --skip-build)          SKIP_BUILD=true ;;
     *) echo "Unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
+
+# Build the optional memory_budget field for the JSON body.
+if [[ -n "$MEMORY_BUDGET_MB" ]]; then
+  MEMORY_BUDGET_JSON="$(( MEMORY_BUDGET_MB * 1024 * 1024 ))"
+else
+  MEMORY_BUDGET_JSON="null"
+fi
 
 CONTROLLER_API="http://localhost:8080"
 CONTROLLER_OPAMP="ws://localhost:4320/v1/opamp"
@@ -117,26 +140,66 @@ for i in $(seq 1 20); do
 done
 echo ""
 
-# ── Step 3: Submit a plan ─────────────────────────────────────────────────────
-echo "==> [Step 3] Submitting plan for metric '${METRIC_NAME}' (sketch=${SKETCH})..."
+# ── Step 3: Submit a plan with WorkloadCharacteristics ───────────────────────
+echo "==> [Step 3] Submitting plan (sketch=${SKETCH}, series=${SERIES}, rate=${SAMPLES_PER_SEC}Hz, dist=${DISTRIBUTION})..."
 PLAN_RESP=$(curl -sf -X POST "${CONTROLLER_API}/api/v1/plan" \
   -H "Content-Type: application/json" \
   -d "{
-    \"metric_name\": \"${METRIC_NAME}\",
-    \"aggregations\": [\"quantile\"],
-    \"time_window\": \"5m\",
-    \"accuracy_sla\": 0.01,
-    \"repeat_every\": \"1m\",
-    \"latency_sla\": \"10m\",
-    \"sketch_type\": \"ddsketch\"
+    \"metric_name\":    \"${METRIC_NAME}\",
+    \"aggregations\":   [\"quantile\"],
+    \"time_window\":    \"5m\",
+    \"accuracy_sla\":   0.01,
+    \"repeat_every\":   \"1m\",
+    \"latency_sla\":    \"10m\",
+    \"sketch_type\":    \"ddsketch\",
+    \"workload\": {
+      \"series_count\":               ${SERIES},
+      \"samples_per_sec_per_series\": ${SAMPLES_PER_SEC},
+      \"bytes_per_raw_sample\":       100,
+      \"data_distribution\":          \"${DISTRIBUTION}\",
+      \"memory_budget_bytes\":        ${MEMORY_BUDGET_JSON}
+    }
   }")
-echo "    Plan response: $PLAN_RESP"
-CHOSEN_SKETCH=$(echo "$PLAN_RESP" | grep -o '"sketch_type":"[^"]*"' | cut -d'"' -f4)
+echo "    Plan response:"
+echo "$PLAN_RESP" | jq . 2>/dev/null || echo "$PLAN_RESP"
+
+CHOSEN_SKETCH=$(echo "$PLAN_RESP" | jq -r '.sketch_type // empty' 2>/dev/null \
+  || echo "$PLAN_RESP" | grep -o '"sketch_type":"[^"]*"' | cut -d'"' -f4)
 echo "    Chosen sketch: ${CHOSEN_SKETCH}"
 if [[ "$CHOSEN_SKETCH" != "ddsketch" ]]; then
   echo "ERROR: ddsketchcol only supports 'ddsketch' processor; planner chose '${CHOSEN_SKETCH}'." >&2
   echo "       Tighten accuracy_sla (e.g. 0.01) so only DDSketch meets the SLA." >&2
   exit 1
+fi
+
+# ── Step 3a: Verify delta_decision and transmission_costs are present ─────────
+echo ""
+echo "==> [Step 3a] Verifying delta_decision in plan response..."
+DELTA_MODE=$(echo "$PLAN_RESP" | jq -r '.delta_decision.mode // empty' 2>/dev/null || true)
+FILL_RATE=$(echo "$PLAN_RESP"  | jq -r '.transmission_costs.estimated_fill_rate // empty' 2>/dev/null || true)
+FULL_BW=$(echo "$PLAN_RESP"    | jq -r '.transmission_costs.sketch_full_bytes_per_sec // empty' 2>/dev/null || true)
+DELTA_BW=$(echo "$PLAN_RESP"   | jq -r '.transmission_costs.sketch_delta_bytes_per_sec // empty' 2>/dev/null || true)
+RAW_BW=$(echo "$PLAN_RESP"     | jq -r '.transmission_costs.raw_bytes_per_sec // empty' 2>/dev/null || true)
+
+if [[ -z "$DELTA_MODE" ]]; then
+  echo "ERROR: plan response missing delta_decision field." >&2
+  echo "       Expected fields: delta_decision, transmission_costs" >&2
+  exit 1
+fi
+
+echo "    delta_decision.mode         = ${DELTA_MODE}"
+echo "    estimated_fill_rate         = ${FILL_RATE}"
+echo "    raw_bytes_per_sec           = ${RAW_BW}"
+echo "    sketch_full_bytes_per_sec   = ${FULL_BW}"
+echo "    sketch_delta_bytes_per_sec  = ${DELTA_BW}"
+
+# Save delta mode for YAML check below.
+EXPECTS_DELTA=false
+if [[ "$DELTA_MODE" == "use_delta" ]]; then
+  EXPECTS_DELTA=true
+  echo "    [OK] Controller decided: use_delta"
+else
+  echo "    [OK] Controller decided: ${DELTA_MODE} (full sketch or raw)"
 fi
 echo ""
 
@@ -156,6 +219,27 @@ for section in "receivers:" "processors:" "exporters:" "service:"; do
   fi
 done
 echo "    YAML looks valid (has receivers, processors, exporters, service)"
+
+# ── Step 4a: Verify delta_transmission in YAML matches the plan decision ──────
+echo ""
+echo "==> [Step 4a] Checking delta_transmission field in generated YAML..."
+YAML_HAS_DELTA=false
+if grep -q "delta_transmission: true" "${OUTPUT_DIR}/collector-config.yaml"; then
+  YAML_HAS_DELTA=true
+fi
+
+if [[ "$EXPECTS_DELTA" == true && "$YAML_HAS_DELTA" == true ]]; then
+  YAML_THRESHOLD=$(grep "delta_threshold" "${OUTPUT_DIR}/collector-config.yaml" | awk '{print $2}' || echo "?")
+  echo "    [OK] delta_transmission: true  (threshold: ${YAML_THRESHOLD})"
+elif [[ "$EXPECTS_DELTA" == false && "$YAML_HAS_DELTA" == false ]]; then
+  echo "    [OK] delta_transmission absent (full-sketch or raw mode)"
+elif [[ "$EXPECTS_DELTA" == true && "$YAML_HAS_DELTA" == false ]]; then
+  echo "ERROR: plan decided use_delta but YAML does not contain delta_transmission: true" >&2
+  cat "${OUTPUT_DIR}/collector-config.yaml" >&2
+  exit 1
+else
+  echo "    [WARN] YAML has delta_transmission: true but plan decided ${DELTA_MODE}"
+fi
 echo ""
 
 # ── Step 5: Start the collector with the HTTP config provider ─────────────────
@@ -181,13 +265,13 @@ done
 echo ""
 
 # ── Step 6: Run e2esdkbench ───────────────────────────────────────────────────
-echo "==> [Step 6] Running e2esdkbench (sketch=${SKETCH}, series=${SERIES}, duration=${BENCH_DURATION})..."
+echo "==> [Step 6] Running e2esdkbench (sketch=${SKETCH}, series=${SERIES}, rate=${SAMPLES_PER_SEC}Hz, duration=${BENCH_DURATION})..."
 pushd "$E2EBENCH_DIR" > /dev/null
 go run ./cmd/e2esdkbench \
   --sketch-type="$SKETCH" \
   --endpoint="$COLLECTOR_OTLP" \
   --series="$SERIES" \
-  --samples-per-sec-per-series=50 \
+  --samples-per-sec-per-series="$SAMPLES_PER_SEC" \
   --duration="$BENCH_DURATION" \
   --output-dir="$OUTPUT_DIR"
 popd > /dev/null
@@ -229,9 +313,16 @@ fi
 
 echo ""
 echo "==> Logs saved to: ${OUTPUT_DIR}/"
-echo "    controller.log      — controller stdout/stderr"
-echo "    collector.log       — ddsketchcol stdout/stderr"
+echo "    controller.log        — controller stdout/stderr"
+echo "    collector.log         — ddsketchcol stdout/stderr"
 echo "    collector-config.yaml — config fetched from controller"
-echo "    ${SKETCH}_*_summary.json — e2esdkbench summary"
+echo "    ${SKETCH}_*_summary.json — e2esdkbench bandwidth / CPU / memory summary"
+echo ""
+echo "==> Delta decision summary:"
+echo "    mode            = ${DELTA_MODE}"
+echo "    fill_rate       = ${FILL_RATE}"
+echo "    raw_bw          = ${RAW_BW} B/s"
+echo "    sketch_full_bw  = ${FULL_BW} B/s"
+echo "    sketch_delta_bw = ${DELTA_BW} B/s"
 echo ""
 echo "==> [PASS] End-to-end test completed."
