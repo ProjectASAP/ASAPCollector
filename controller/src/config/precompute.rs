@@ -184,6 +184,8 @@ mod tests {
                 enable_self_monitoring: true,
                 transmit_sketch: true,
                 drop_original: true,
+                delta_transmission: false,
+                delta_threshold: 0.0,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -192,6 +194,8 @@ mod tests {
             },
             precompute: vec![],
             valid_until: chrono::Utc::now(),
+            delta_decision: DeltaDecision::default(),
+            transmission_cost_summary: TransmissionCostSummary::default(),
         }
     }
 

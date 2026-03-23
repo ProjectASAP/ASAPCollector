@@ -48,6 +48,10 @@ impl RulesPlanner {
                 enable_self_monitoring: true,
                 transmit_sketch: true,
                 drop_original: true,
+                // Delta fields are left as disabled defaults here; the
+                // CostModelPlanner overwrites them via decide_delta().
+                delta_transmission: false,
+                delta_threshold: 0.0,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -56,6 +60,8 @@ impl RulesPlanner {
             },
             precompute: vec![],
             valid_until,
+            delta_decision: DeltaDecision::default(),
+            transmission_cost_summary: TransmissionCostSummary::default(),
         }
     }
 }

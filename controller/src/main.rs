@@ -88,12 +88,13 @@ async fn handle_plan(
     State(st): State<AppState>,
     Json(spec): Json<QuerySpec>,
 ) -> impl IntoResponse {
+    let wc = spec.workload.clone();
     let workload = match st.analyzer.analyze(spec) {
         Ok(w)  => w,
         Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
     };
 
-    let mut plan = st.planner.plan(&workload);
+    let mut plan = st.planner.plan(&workload, Some(&wc));
     plan.precompute = build_precompute_jobs(&workload, &plan, "backend:4317");
     st.store.set(&workload.metric_name, plan.clone());
 
@@ -103,14 +104,25 @@ async fn handle_plan(
     }
 
     let agents = st.opamp.connected_agents().await;
+    let cost = &plan.transmission_cost_summary;
     (StatusCode::OK, Json(json!({
-        "metric":            workload.metric_name,
-        "sketch_type":       plan.agent_config.sketch_type.to_string(),
-        "mode":              plan.agent_config.mode.to_string(),
-        "aggregate_by":      plan.agent_config.aggregate_by,
-        "valid_until":       plan.valid_until,
-        "agents_notified":   agents.len(),
-        "precompute_jobs":   plan.precompute.len(),
+        "metric":              workload.metric_name,
+        "sketch_type":         plan.agent_config.sketch_type.to_string(),
+        "mode":                plan.agent_config.mode.to_string(),
+        "aggregate_by":        plan.agent_config.aggregate_by,
+        "valid_until":         plan.valid_until,
+        "agents_notified":     agents.len(),
+        "precompute_jobs":     plan.precompute.len(),
+        "delta_decision":      plan.delta_decision,
+        "transmission_costs": {
+            "raw_bytes_per_sec":                   cost.raw_bytes_per_sec,
+            "sketch_full_bytes_per_sec":            cost.sketch_full_bytes_per_sec,
+            "sketch_delta_bytes_per_sec":           cost.sketch_delta_bytes_per_sec,
+            "delta_cpu_overhead_micros_per_sample": cost.delta_cpu_overhead_micros_per_sample,
+            "delta_memory_overhead_bytes":          cost.delta_memory_overhead_bytes,
+            "estimated_fill_rate":                  cost.estimated_fill_rate,
+            "flush_rate_hz":                        cost.flush_rate_hz,
+        },
     }))).into_response()
 }
 
