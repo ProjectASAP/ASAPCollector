@@ -180,7 +180,7 @@ func TestProcessor_TumblingWindow_Correctness(t *testing.T) {
 	// ==========================================
 	// 3. Verify Binary Payload (Gob Decode)
 	// ==========================================
-	payloadVal, ok := dps2[0].Attributes().Get("sketch_payload")
+	payloadVal, ok := dps2[0].Attributes().Get("cms.sketch_payload")
 	require.True(t, ok, "Sketch payload must exist in attributes")
 
 	rawBytes := payloadVal.Bytes().AsRaw()
@@ -301,7 +301,7 @@ func TestBatchModeQueryMetricsWhenTransmitSketchDisabled(t *testing.T) {
 	dps := getAllDataPoints(out)
 	require.Len(t, dps, 1)
 	assert.Equal(t, 3.0, dps[0].DoubleValue())
-	_, hasPayload := dps[0].Attributes().Get("sketch_payload")
+	_, hasPayload := dps[0].Attributes().Get("cms.sketch_payload")
 	assert.False(t, hasPayload)
 }
 

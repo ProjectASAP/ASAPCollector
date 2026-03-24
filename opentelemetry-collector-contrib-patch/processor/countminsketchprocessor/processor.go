@@ -165,6 +165,29 @@ func (p *windowedCountMinSketchProcessor) ConsumeMetrics(
 	ctx context.Context,
 	md pmetric.Metrics,
 ) (pmetric.Metrics, error) {
+	rmCount := md.ResourceMetrics().Len()
+	dpCount := 0
+	for i := 0; i < rmCount; i++ {
+		for j := 0; j < md.ResourceMetrics().At(i).ScopeMetrics().Len(); j++ {
+			metrics := md.ResourceMetrics().At(i).ScopeMetrics().At(j).Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				m := metrics.At(k)
+				switch m.Type() {
+				case pmetric.MetricTypeGauge:
+					dpCount += m.Gauge().DataPoints().Len()
+				case pmetric.MetricTypeSum:
+					dpCount += m.Sum().DataPoints().Len()
+				case pmetric.MetricTypeCountMinSketch:
+					dpCount += m.CountMinSketch().DataPoints().Len()
+				default:
+					// ignore
+				}
+			}
+		}
+	}
+	if p.logger != nil {
+		p.logger.Debug("CountMinSketch processor received data", zap.Int("resource_metrics", rmCount), zap.Int("data_points", dpCount))
+	}
 
 	switch p.cfg.Mode {
 	case ModeBatch:
@@ -208,10 +231,12 @@ func (p *windowedCountMinSketchProcessor) consumeBatch(md pmetric.Metrics) pmetr
 		if p.cfg.DropOriginal {
 			return pmetric.NewMetrics()
 		}
+		p.logBatchOutput("batch passthrough (no sketches)", md)
 		return md
 	}
 
 	if p.cfg.DropOriginal {
+		p.logBatchOutput("batch output", sketches)
 		return sketches
 	}
 
@@ -219,6 +244,7 @@ func (p *windowedCountMinSketchProcessor) consumeBatch(md pmetric.Metrics) pmetr
 	out := pmetric.NewMetrics()
 	md.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
 	sketches.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
+	p.logBatchOutput("batch output (expansion)", out)
 	return out
 }
 
@@ -397,7 +423,7 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 		dp.Attributes().PutInt("cols", int64(cols))
 		dp.Attributes().PutInt("sample_count", int64(sampleCount))
 		if p.cfg.TransmitSketch {
-			dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
+			dp.Attributes().PutEmptyBytes("cms.sketch_payload").FromRaw(payload)
 		} else {
 			dp.SetDoubleValue(float64(sampleCount))
 		}
@@ -411,7 +437,9 @@ func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
 	if md.ResourceMetrics().Len() == 0 {
 		return
 	}
-
+	if p.logger != nil {
+		p.logBatchOutput("window flush", md)
+	}
 	if err := p.nextConsumer.ConsumeMetrics(context.Background(), md); err != nil {
 		p.logger.Error("Failed to emit windowed CMS", zap.Error(err))
 	}
@@ -422,6 +450,25 @@ func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
 // Helpers
 // ─────────────────────────────────────────────────────────────
 //
+
+func (p *windowedCountMinSketchProcessor) logBatchOutput(kind string, md pmetric.Metrics) {
+	rmCount := md.ResourceMetrics().Len()
+	dpCount := 0
+	for i := 0; i < rmCount; i++ {
+		for j := 0; j < md.ResourceMetrics().At(i).ScopeMetrics().Len(); j++ {
+			metrics := md.ResourceMetrics().At(i).ScopeMetrics().At(j).Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				m := metrics.At(k)
+				if m.Type() == pmetric.MetricTypeGauge {
+					dpCount += m.Gauge().DataPoints().Len()
+				}
+			}
+		}
+	}
+	if p.logger != nil {
+		p.logger.Debug("CountMinSketch processor sending "+kind, zap.Int("resource_metrics", rmCount), zap.Int("data_points", dpCount))
+	}
+}
 
 func serializeCMS(s *cms.CountMinSketch) ([]byte, error) {
 	env, err := s.SerializePortable()

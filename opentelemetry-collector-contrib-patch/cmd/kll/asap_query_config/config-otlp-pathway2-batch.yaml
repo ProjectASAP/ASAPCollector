@@ -1,25 +1,25 @@
-# OTLP Protobuf, Pathway 2: sketch payloads
-# DataCollector builds KLL sketches and exports via OTLP to ASAPQuery
+# OTLP Pathway 2 - Batch mode - Local testing
 receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: 0.0.0.0:53217
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: 0.0.0.0:53218
 
 processors:
   KLL:
-    mode: window
-    window_duration: 60s
+    mode: batch
     k: 256
     transmit_sketch: true
+    quantiles: [0.5, 0.9, 0.99]
     drop_original: true
 
 exporters:
   otlphttp:
     endpoint: http://localhost:4318
-
+    encoding: proto
+    compression: gzip
 service:
   pipelines:
     metrics:
@@ -30,6 +30,6 @@ service:
     metrics:
       level: basic
     logs:
-      level: info
+      level: debug
     resource:
-      service.name: kllcol-otlp-pathway2
+      service.name: kllcol-otlp-pathway2-local

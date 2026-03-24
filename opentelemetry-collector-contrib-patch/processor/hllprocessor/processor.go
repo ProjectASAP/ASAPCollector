@@ -128,10 +128,18 @@ func (p *hllProcessor) Shutdown(ctx context.Context) error {
 }
 
 func (p *hllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	rmCount, dpCount := p.countMetrics(md)
+	if p.logger != nil {
+		p.logger.Debug("HLL processor received data", zap.Int("resource_metrics", rmCount), zap.Int("data_points", dpCount))
+	}
 	switch p.cfg.Mode {
 	case ModeBatch:
 		if err := p.processBatch(md); err != nil {
 			return err
+		}
+		if p.logger != nil {
+			outRm, outDp := p.countMetrics(md)
+			p.logger.Debug("HLL processor sending batch output", zap.Int("resource_metrics", outRm), zap.Int("data_points", outDp))
 		}
 		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	case ModeWindow:
@@ -231,6 +239,31 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 		}
 	}
 	return nil
+}
+
+func (p *hllProcessor) countMetrics(md pmetric.Metrics) (resourceMetrics int, dataPoints int) {
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		resourceMetrics++
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			metrics := sms.At(j).Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				m := metrics.At(k)
+				switch m.Type() {
+				case pmetric.MetricTypeGauge:
+					dataPoints += m.Gauge().DataPoints().Len()
+				case pmetric.MetricTypeSum:
+					dataPoints += m.Sum().DataPoints().Len()
+				case pmetric.MetricTypeHLLSketch:
+					dataPoints += m.HLLSketch().DataPoints().Len()
+				default:
+					// ignore
+				}
+			}
+		}
+	}
+	return resourceMetrics, dataPoints
 }
 
 func attributesKey(attrs pcommon.Map) string {
@@ -462,6 +495,10 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 
 	if out.ResourceMetrics().Len() == 0 {
 		return nil
+	}
+	if p.logger != nil {
+		outRm, outDp := p.countMetrics(out)
+		p.logger.Debug("HLL processor sending window flush", zap.Int("resource_metrics", outRm), zap.Int("data_points", outDp))
 	}
 	return p.nextConsumer.ConsumeMetrics(ctx, out)
 }

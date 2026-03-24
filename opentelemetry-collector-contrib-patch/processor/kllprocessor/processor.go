@@ -119,12 +119,44 @@ func (p *kllProcessor) Shutdown(ctx context.Context) error {
 }
 
 func (p *kllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	rmCount := md.ResourceMetrics().Len()
+	dpCount := 0
+	for i := 0; i < rmCount; i++ {
+		for j := 0; j < md.ResourceMetrics().At(i).ScopeMetrics().Len(); j++ {
+			metrics := md.ResourceMetrics().At(i).ScopeMetrics().At(j).Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				m := metrics.At(k)
+				switch m.Type() {
+				case pmetric.MetricTypeGauge:
+					dpCount += m.Gauge().DataPoints().Len()
+				case pmetric.MetricTypeKLLSketch:
+					dpCount += m.KLLSketch().DataPoints().Len()
+				default:
+					// ignore
+				}
+			}
+		}
+	}
+	if p.logger != nil {
+		p.logger.Debug("KLL processor received data", zap.Int("resource_metrics", rmCount), zap.Int("data_points", dpCount))
+	}
 	switch p.cfg.Mode {
 	case ModeBatch:
 		if err := p.processBatch(md); err != nil {
 			return err
 		}
-		return p.nextConsumer.ConsumeMetrics(ctx, md)
+		if p.logger != nil {
+			p.logger.Debug("KLL processor sending batch output")
+		}
+		out := md
+		if p.cfg.DropOriginal {
+			var ok bool
+			out, ok = p.batchOutputOnly(md)
+			if !ok {
+				return nil
+			}
+		}
+		return p.nextConsumer.ConsumeMetrics(ctx, out)
 	case ModeWindow:
 		p.accumulateIntoWindow(md)
 		return nil
@@ -205,7 +237,9 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 		return nil
 	}
 
-	scope := md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty()
+	// Append a new ResourceMetrics for our output (processBatch mutates md in place).
+	outputRm := md.ResourceMetrics().AppendEmpty()
+	scope := outputRm.ScopeMetrics().AppendEmpty()
 	scope.Scope().SetName("otelcol/kllprocessor")
 	now := pcommon.NewTimestampFromTime(time.Now())
 
@@ -235,6 +269,41 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 		}
 	}
 	return nil
+}
+
+// batchOutputOnly builds a new pmetric.Metrics containing only the KLL output
+// (quantiles or sketches) from processBatch, with resource copied from the first
+// input ResourceMetrics. Returns (metrics, true) if there is output to forward,
+// or (empty metrics, false) if not.
+func (p *kllProcessor) batchOutputOnly(md pmetric.Metrics) (pmetric.Metrics, bool) {
+	rms := md.ResourceMetrics()
+	if rms.Len() < 2 {
+		// Need at least 1 input rm + 1 output rm (appended by processBatch)
+		return pmetric.NewMetrics(), false
+	}
+	firstRm := rms.At(0)
+	outputRm := rms.At(rms.Len() - 1)
+
+	// Check if output has any data points
+	dpCount := 0
+	for j := 0; j < outputRm.ScopeMetrics().Len(); j++ {
+		for k := 0; k < outputRm.ScopeMetrics().At(j).Metrics().Len(); k++ {
+			m := outputRm.ScopeMetrics().At(j).Metrics().At(k)
+			if m.Type() == pmetric.MetricTypeGauge {
+				dpCount += m.Gauge().DataPoints().Len()
+			}
+		}
+	}
+	if dpCount == 0 {
+		return pmetric.NewMetrics(), false
+	}
+
+	// Build result with only output. Copy output rm and set resource from first input.
+	out := pmetric.NewMetrics()
+	dstRm := out.ResourceMetrics().AppendEmpty()
+	outputRm.CopyTo(dstRm)
+	firstRm.Resource().CopyTo(dstRm.Resource())
+	return out, true
 }
 
 func attributesKey(attrs pcommon.Map) string {
@@ -485,6 +554,22 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 
 	if out.ResourceMetrics().Len() == 0 {
 		return nil
+	}
+	outRmCount := out.ResourceMetrics().Len()
+	outDpCount := 0
+	for i := 0; i < outRmCount; i++ {
+		for j := 0; j < out.ResourceMetrics().At(i).ScopeMetrics().Len(); j++ {
+			metrics := out.ResourceMetrics().At(i).ScopeMetrics().At(j).Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				m := metrics.At(k)
+				if m.Type() == pmetric.MetricTypeGauge {
+					outDpCount += m.Gauge().DataPoints().Len()
+				}
+			}
+		}
+	}
+	if p.logger != nil {
+		p.logger.Debug("KLL processor sending window flush", zap.Int("resource_metrics", outRmCount), zap.Int("data_points", outDpCount))
 	}
 	return p.nextConsumer.ConsumeMetrics(ctx, out)
 }

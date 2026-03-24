@@ -1,12 +1,11 @@
-# OTLP Protobuf, Pathway 1: raw metrics
-# DataCollector forwards raw metrics via standard OTLP to ASAPQuery OTLP receiver
+# OTLP Pathway 1 - Local testing
 receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: 0.0.0.0:53217
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: 0.0.0.0:53218
 
 processors:
   batch:
@@ -15,7 +14,8 @@ processors:
 exporters:
   otlphttp:
     endpoint: http://localhost:4318
-
+    encoding: proto
+    compression: gzip
 service:
   pipelines:
     metrics:
@@ -23,9 +23,7 @@ service:
       processors: [batch]
       exporters: [otlphttp]
   telemetry:
-    metrics:
-      level: basic
     logs:
-      level: info
+      level: debug
     resource:
-      service.name: kllcol-otlp-pathway1
+      service.name: countminsketchcol-pathway1-local

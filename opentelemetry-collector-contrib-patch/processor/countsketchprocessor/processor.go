@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 type countSketchProcessor struct {
@@ -104,10 +105,6 @@ func (p *countSketchProcessor) Start(ctx context.Context, host component.Host) e
 		zap.Duration("window", p.config.WindowSize),
 		zap.String("mode", string(p.mode)),
 	)
-	if p.config.TransmitSketch {
-		p.logger.Warn("countsketchprocessor: transmit_sketch=true is not yet backed by a serialized sketch payload; emitting metric-form summaries")
-	}
-
 	// In batch mode we flush per ConsumeMetrics call and do not need a ticker.
 	if p.mode == ModeBatch {
 		return nil
@@ -143,7 +140,39 @@ func (p *countSketchProcessor) Shutdown(ctx context.Context) error {
 	}
 }
 
+func (p *countSketchProcessor) countMetrics(md pmetric.Metrics) (resourceMetrics int, dataPoints int) {
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		resourceMetrics++
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			metrics := sms.At(j).Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				m := metrics.At(k)
+				switch m.Type() {
+				case pmetric.MetricTypeGauge:
+					dataPoints += m.Gauge().DataPoints().Len()
+				case pmetric.MetricTypeSum:
+					dataPoints += m.Sum().DataPoints().Len()
+				case pmetric.MetricTypeHistogram:
+					dataPoints += m.Histogram().DataPoints().Len()
+				case pmetric.MetricTypeCountSketch:
+					dataPoints += m.CountSketch().DataPoints().Len()
+				default:
+					// ignore
+				}
+			}
+		}
+	}
+	return resourceMetrics, dataPoints
+}
+
 func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
+	rmCount, dpCount := p.countMetrics(md)
+	if p.logger != nil {
+		p.logger.Debug("CountSketch processor received data", zap.Int("resource_metrics", rmCount), zap.Int("data_points", dpCount))
+	}
+
 	p.mutex.Lock()
 
 	if p.rowSketch == nil || p.colSketch == nil {
@@ -218,6 +247,9 @@ func (p *countSketchProcessor) processMetrics(ctx context.Context, md pmetric.Me
 		return pmetric.NewMetrics(), nil
 	}
 
+	if p.logger != nil {
+		p.logger.Debug("CountSketch processor sending passthrough (originals)", zap.Int("resource_metrics", rmCount), zap.Int("data_points", dpCount))
+	}
 	return md, nil
 }
 
@@ -375,8 +407,14 @@ func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *countsketch.Co
 		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
 		dp.Attributes().PutDouble("delta", p.config.Delta)
 		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
-		// Note: sketchlib-go CountSketch doesn't expose serialization methods
-		// For benchmarking, we emit metadata. Full serialization can be added later if needed.
+		if p.config.TransmitSketch {
+			if payload, err := serializeCountSketch(rowSketch); err == nil && len(payload) > 0 {
+				dp.Attributes().PutEmptyBytes("countsketch.sketch_payload").FromRaw(payload)
+			} else if err != nil {
+				p.logger.Error("Failed to serialize row CountSketch", zap.Error(err))
+			}
+		}
+		dp.SetDoubleValue(0)
 	}
 
 	// Emit col sketch (host names)
@@ -394,9 +432,32 @@ func (p *countSketchProcessor) emitSketches(rowSketch, colSketch *countsketch.Co
 		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
 		dp.Attributes().PutDouble("delta", p.config.Delta)
 		dp.Attributes().PutInt("window_size_seconds", int64(p.config.WindowSize.Seconds()))
+		if p.config.TransmitSketch {
+			if payload, err := serializeCountSketch(colSketch); err == nil && len(payload) > 0 {
+				dp.Attributes().PutEmptyBytes("countsketch.sketch_payload").FromRaw(payload)
+			} else if err != nil {
+				p.logger.Error("Failed to serialize col CountSketch", zap.Error(err))
+			}
+		}
+		dp.SetDoubleValue(0)
 	}
 
+	if p.logger != nil {
+		rmCount, dpCount := p.countMetrics(md)
+		p.logger.Debug("CountSketch processor sending sketch output", zap.Int("resource_metrics", rmCount), zap.Int("data_points", dpCount))
+	}
 	if err := p.next.ConsumeMetrics(context.Background(), md); err != nil {
 		p.logger.Error("Failed to emit countsketch metrics", zap.Error(err))
 	}
+}
+
+func serializeCountSketch(s *countsketch.CountSketch) ([]byte, error) {
+	if s == nil {
+		return nil, nil
+	}
+	env, err := s.SerializePortable()
+	if err != nil {
+		return nil, err
+	}
+	return proto.Marshal(env)
 }
