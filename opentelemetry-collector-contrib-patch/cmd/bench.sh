@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window]
+# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol|serfcol-qt|serfcol-1e2|serfcol-1e4|serfcol-qt-1e2|serfcol-qt-1e4|serfcol-adj|serf-transmission-xor|serf-transmission-qt]
 #
 # SDK variants (*-sdk-*) use fakemetricload (opentelemetry-app/cmd/fakemetricload) as the
 # load generator instead of otel_collector_benchmark. For ddsketch-sdk the OTel SDK
@@ -15,17 +15,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window]"
+    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol|serfcol-qt|serfcol-1e2|serfcol-1e4|serfcol-qt-1e2|serfcol-qt-1e4|serfcol-adj|serf-transmission-xor|serf-transmission-qt]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window)
+    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol|serfcol-qt|serfcol-1e2|serfcol-1e4|serfcol-qt-1e2|serfcol-qt-1e4|serfcol-adj|serf-transmission-xor|serf-transmission-qt)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window, ddsketchcol-sdk-batch, ddsketchcol-sdk-window, kll-sdk-batch, kll-sdk-window, countsketchcol-sdk-batch, countsketchcol-sdk-window, countminsketchcol-sdk-batch, countminsketchcol-sdk-window, hllcol-batch, hllcol-window, hllcol-sdk-batch, hllcol-sdk-window"
+        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window, ddsketchcol-sdk-batch, ddsketchcol-sdk-window, kll-sdk-batch, kll-sdk-window, countsketchcol-sdk-batch, countsketchcol-sdk-window, countminsketchcol-sdk-batch, countminsketchcol-sdk-window, hllcol-batch, hllcol-window, hllcol-sdk-batch, hllcol-sdk-window, gorillacol, serfcol, serfcol-qt, serfcol-1e2, serfcol-1e4, serfcol-qt-1e2, serfcol-qt-1e4, serfcol-adj, serf-transmission-xor, serf-transmission-qt"
         exit 1
         ;;
 esac
@@ -159,6 +159,64 @@ elif [ "$PROCESSOR" = "hllcol-sdk-batch" ] || [ "$PROCESSOR" = "hllcol-sdk-windo
     else
         CONFIG_FILE="$HLL_DIR/config-window.yaml"
     fi
+elif [ "$PROCESSOR" = "serfcol-qt" ]; then
+    SERF_DIR="$SCRIPT_DIR/serfcol"
+    BUILDER_CONFIG="$SERF_DIR/builder-config.yaml"
+    CONFIG_FILE="$SERF_DIR/config-qt.yaml"
+    COLLECTOR_BIN="$SERF_DIR/dist/serfcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+elif [ "$PROCESSOR" = "serfcol-1e2" ]; then
+    SERF_DIR="$SCRIPT_DIR/serfcol"
+    BUILDER_CONFIG="$SERF_DIR/builder-config.yaml"
+    CONFIG_FILE="$SERF_DIR/config-1e2.yaml"
+    COLLECTOR_BIN="$SERF_DIR/dist/serfcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+elif [ "$PROCESSOR" = "serfcol-1e4" ]; then
+    SERF_DIR="$SCRIPT_DIR/serfcol"
+    BUILDER_CONFIG="$SERF_DIR/builder-config.yaml"
+    CONFIG_FILE="$SERF_DIR/config-1e4.yaml"
+    COLLECTOR_BIN="$SERF_DIR/dist/serfcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+elif [ "$PROCESSOR" = "serfcol-qt-1e2" ]; then
+    SERF_DIR="$SCRIPT_DIR/serfcol"
+    BUILDER_CONFIG="$SERF_DIR/builder-config.yaml"
+    CONFIG_FILE="$SERF_DIR/config-qt-1e2.yaml"
+    COLLECTOR_BIN="$SERF_DIR/dist/serfcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+elif [ "$PROCESSOR" = "serfcol-qt-1e4" ]; then
+    SERF_DIR="$SCRIPT_DIR/serfcol"
+    BUILDER_CONFIG="$SERF_DIR/builder-config.yaml"
+    CONFIG_FILE="$SERF_DIR/config-qt-1e4.yaml"
+    COLLECTOR_BIN="$SERF_DIR/dist/serfcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+elif [ "$PROCESSOR" = "serfcol-adj" ]; then
+    SERF_DIR="$SCRIPT_DIR/serfcol"
+    BUILDER_CONFIG="$SERF_DIR/builder-config.yaml"
+    CONFIG_FILE="$SERF_DIR/config-adj.yaml"
+    COLLECTOR_BIN="$SERF_DIR/dist/serfcol"
+    TELEMETRY_URL="http://localhost:8888/metrics"
+elif [ "$PROCESSOR" = "serf-transmission-xor" ] || [ "$PROCESSOR" = "serf-transmission-qt" ]; then
+    SERF_AGENT_DIR="$SCRIPT_DIR/serfagentcol"
+    SERF_BACKEND_DIR="$SCRIPT_DIR/serfbackendcol"
+    AGENT_BUILDER_CONFIG="$SERF_AGENT_DIR/builder-config.yaml"
+    BACKEND_BUILDER_CONFIG="$SERF_BACKEND_DIR/builder-config.yaml"
+    if [ "$PROCESSOR" = "serf-transmission-qt" ]; then
+        AGENT_CONFIG_FILE="$SERF_AGENT_DIR/config-qt.yaml"
+        BACKEND_CONFIG_FILE="$SERF_BACKEND_DIR/config-qt.yaml"
+    else
+        AGENT_CONFIG_FILE="$SERF_AGENT_DIR/config.yaml"
+        BACKEND_CONFIG_FILE="$SERF_BACKEND_DIR/config.yaml"
+    fi
+    AGENT_BIN="$SERF_AGENT_DIR/dist/serfagentcol"
+    BACKEND_BIN="$SERF_BACKEND_DIR/dist/serfbackendcol"
+    # For the transmission mode, COLLECTOR_BIN points to the agent (for pkill/port management).
+    COLLECTOR_BIN="$AGENT_BIN"
+    CONFIG_FILE="$AGENT_CONFIG_FILE"
+    BUILDER_CONFIG="$AGENT_BUILDER_CONFIG"
+    # Agent telemetry on 8888; backend telemetry on 8890.
+    TELEMETRY_URL="http://localhost:8888/metrics"
+    BACKEND_TELEMETRY_URL="http://localhost:8890/metrics"
+    SERF_TRANSMISSION_MODE=1
 else
     BUILDER_CONFIG="$PROCESSOR_DIR/builder-config.yaml"
     CONFIG_FILE="$PROCESSOR_DIR/config.yaml"
@@ -250,6 +308,36 @@ case "$PROCESSOR" in
     hllcol-sdk-window)
         PROCESSOR_NAME="HLL PROCESSOR (window mode, SDK gauge path)"
         ;;
+    gorillacol)
+        PROCESSOR_NAME="GORILLA COMPRESSION PROCESSOR"
+        ;;
+    serfcol)
+        PROCESSOR_NAME="SERF XOR COMPRESSION PROCESSOR"
+        ;;
+    serfcol-qt)
+        PROCESSOR_NAME="SERF QT COMPRESSION PROCESSOR"
+        ;;
+    serfcol-1e2)
+        PROCESSOR_NAME="SERF XOR COMPRESSION (max_diff=1e-2, loose)"
+        ;;
+    serfcol-1e4)
+        PROCESSOR_NAME="SERF XOR COMPRESSION (max_diff=1e-4, tight)"
+        ;;
+    serfcol-qt-1e2)
+        PROCESSOR_NAME="SERF QT COMPRESSION (max_diff=1e-2, loose)"
+        ;;
+    serfcol-qt-1e4)
+        PROCESSOR_NAME="SERF QT COMPRESSION (max_diff=1e-4, tight)"
+        ;;
+    serfcol-adj)
+        PROCESSOR_NAME="SERF XOR COMPRESSION (adjust_digit=100)"
+        ;;
+    serf-transmission-xor)
+        PROCESSOR_NAME="SERF XOR TRANSMISSION (agent compress + backend decompress)"
+        ;;
+    serf-transmission-qt)
+        PROCESSOR_NAME="SERF QT TRANSMISSION (agent compress + backend decompress)"
+        ;;
 esac
 
 # Force international number format (prevents math errors)
@@ -288,14 +376,37 @@ else
     echo ">>> Build successful!"
 fi
 
+# For transmission mode, also build the backend collector.
+if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+    echo ""
+    echo ">>> Building backend collector..."
+    cd "$CONTRIB_PATCH_DIR"
+    GONOSUMDB="github.com/ProjectASAP/*" GOPRIVATE="github.com/ProjectASAP/*" $BUILDER_BIN --config "$BACKEND_BUILDER_CONFIG"
+    if [ $? -ne 0 ]; then
+        echo "[WARNING] Backend build failed, checking for existing binary..."
+        if [ -f "$BACKEND_BIN" ]; then
+            echo ">>> Using existing backend binary: $BACKEND_BIN"
+        else
+            echo "[ERROR] Backend build failed and no existing binary found!"
+            exit 1
+        fi
+    else
+        echo ">>> Backend build successful!"
+    fi
+fi
+
 # --- CLEANUP FUNCTION ---
 cleanup() {
     echo ""
     echo "Stopping all background processes..."
     # Kill collector by full path to avoid killing this script
     pkill -f "$COLLECTOR_BIN" 2>/dev/null
+    if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+        pkill -f "$BACKEND_BIN" 2>/dev/null
+    fi
     kill $MONITOR_PID 2>/dev/null
     kill $MEMORY_MONITOR_PID 2>/dev/null
+    kill $BACKEND_MEMORY_MONITOR_PID 2>/dev/null
     kill $LOAD_GEN_PID 2>/dev/null
     exit
 }
@@ -303,10 +414,18 @@ trap cleanup SIGINT
 
 # Ensure clean state - kill collector by full path and free ports
 pkill -f "$COLLECTOR_BIN" 2>/dev/null
+if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+    pkill -f "$BACKEND_BIN" 2>/dev/null
+fi
 # Free port 8888 (collector telemetry) and 8889 (Prometheus exporter used by
 # correctness checks) to avoid reading stale metrics from a previous run.
 lsof -ti:8888 | xargs kill -9 2>/dev/null
 lsof -ti:8889 | xargs kill -9 2>/dev/null
+if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+    lsof -ti:8890 | xargs kill -9 2>/dev/null
+    lsof -ti:8891 | xargs kill -9 2>/dev/null
+    lsof -ti:9000 | xargs kill -9 2>/dev/null
+fi
 sleep 3
 
 # --- HELPER FUNCTIONS ---
@@ -340,8 +459,15 @@ for RATE in "${RATES[@]}"; do
     
     # START COLLECTOR
     cd "$CONTRIB_PATCH_DIR"
-    $COLLECTOR_BIN --config "$CONFIG_FILE" > /dev/null 2>&1 &
-    
+    if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+        # Transmission mode: start backend first, then agent.
+        $BACKEND_BIN --config "$BACKEND_CONFIG_FILE" > /dev/null 2>&1 &
+        sleep 2
+        $COLLECTOR_BIN --config "$CONFIG_FILE" > /dev/null 2>&1 &
+    else
+        $COLLECTOR_BIN --config "$CONFIG_FILE" > /dev/null 2>&1 &
+    fi
+
     echo "    -> Warming up collector (5s)..."
     sleep 5
 
@@ -351,18 +477,37 @@ for RATE in "${RATES[@]}"; do
         exit 1
     fi
     echo "    -> Collector PID: $COLLECTOR_PID"
+    if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+        BACKEND_PID=$(pgrep -f "$BACKEND_BIN" | head -n 1)
+        if [ -z "$BACKEND_PID" ]; then
+            echo "    [ERROR] Backend collector failed to start."
+            pkill -f "$COLLECTOR_BIN" 2>/dev/null
+            exit 1
+        fi
+        echo "    -> Backend PID: $BACKEND_PID"
+    fi
 
     # RECORD START METRICS (for delta calculations)
     CPU_START=$(get_metric_value "otelcol_process_cpu_seconds_total" "$TELEMETRY_URL")
     RECEIVER_START=$(get_metric_value "otelcol_receiver_accepted_metric_points_total" "$TELEMETRY_URL")
     EXPORTER_START=$(get_metric_value "otelcol_exporter_sent_metric_points_total" "$TELEMETRY_URL")
-    
+
     # Set defaults if metrics not available yet
     [ -z "$CPU_START" ] && CPU_START=0
     [ -z "$RECEIVER_START" ] && RECEIVER_START=0
     [ -z "$EXPORTER_START" ] && EXPORTER_START=0
-    
-    echo "    -> Start metrics recorded (CPU: $CPU_START, Receiver: $RECEIVER_START, Exporter: $EXPORTER_START)"
+
+    if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+        BYTES_SENT_START=$(get_metric_value "serf_exporter_bytes_sent_bytes_total" "$TELEMETRY_URL")
+        BYTES_RECV_START=$(get_metric_value "serf_receiver_bytes_received_bytes_total" "$BACKEND_TELEMETRY_URL")
+        BACKEND_RECV_START=$(get_metric_value "otelcol_receiver_accepted_metric_points_total" "$BACKEND_TELEMETRY_URL")
+        [ -z "$BYTES_SENT_START" ] && BYTES_SENT_START=0
+        [ -z "$BYTES_RECV_START" ] && BYTES_RECV_START=0
+        [ -z "$BACKEND_RECV_START" ] && BACKEND_RECV_START=0
+        echo "    -> Start metrics recorded (CPU: $CPU_START, Receiver: $RECEIVER_START, BytesSent: $BYTES_SENT_START)"
+    else
+        echo "    -> Start metrics recorded (CPU: $CPU_START, Receiver: $RECEIVER_START, Exporter: $EXPORTER_START)"
+    fi
 
     # START RESOURCE MONITOR (Background - using ps for CPU sampling)
     METRICS_FILE="$RESULT_DIR/resource_${RATE}mps.csv"
@@ -397,6 +542,23 @@ for RATE in "${RATES[@]}"; do
         done
     ) &
     MEMORY_MONITOR_PID=$!
+
+    # For transmission mode, also monitor backend memory.
+    if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+        BACKEND_MEMORY_FILE="$RESULT_DIR/backend_memory_${RATE}mps.csv"
+        echo "timestamp,memory_mb" > "$BACKEND_MEMORY_FILE"
+        BACKEND_CPU_START=$(get_metric_value "otelcol_process_cpu_seconds_total" "$BACKEND_TELEMETRY_URL")
+        [ -z "$BACKEND_CPU_START" ] && BACKEND_CPU_START=0
+        (
+            END_TIME=$(( $(date +%s) + DURATION_SEC ))
+            while [ $(date +%s) -lt $END_TIME ]; do
+                MEM_MB=$(get_memory_mb "$BACKEND_TELEMETRY_URL")
+                echo "$(date +%s),$MEM_MB" >> "$BACKEND_MEMORY_FILE"
+                sleep 1
+            done
+        ) &
+        BACKEND_MEMORY_MONITOR_PID=$!
+    fi
 
     # START LATENCY TEST (Background)
     LATENCY_FILE="$RESULT_DIR/latency_${RATE}mps.csv"
@@ -626,17 +788,34 @@ for RATE in "${RATES[@]}"; do
     CPU_END=$(get_metric_value "otelcol_process_cpu_seconds_total" "$TELEMETRY_URL")
     RECEIVER_END=$(get_metric_value "otelcol_receiver_accepted_metric_points_total" "$TELEMETRY_URL")
     EXPORTER_END=$(get_metric_value "otelcol_exporter_sent_metric_points_total" "$TELEMETRY_URL")
-    
+
     [ -z "$CPU_END" ] && CPU_END=0
     [ -z "$RECEIVER_END" ] && RECEIVER_END=0
     [ -z "$EXPORTER_END" ] && EXPORTER_END=0
 
+    if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+        BYTES_SENT_END=$(get_metric_value "serf_exporter_bytes_sent_bytes_total" "$TELEMETRY_URL")
+        BYTES_RECV_END=$(get_metric_value "serf_receiver_bytes_received_bytes_total" "$BACKEND_TELEMETRY_URL")
+        BACKEND_CPU_END=$(get_metric_value "otelcol_process_cpu_seconds_total" "$BACKEND_TELEMETRY_URL")
+        BACKEND_RECV_END=$(get_metric_value "otelcol_receiver_accepted_metric_points_total" "$BACKEND_TELEMETRY_URL")
+        [ -z "$BYTES_SENT_END" ] && BYTES_SENT_END=0
+        [ -z "$BYTES_RECV_END" ] && BYTES_RECV_END=0
+        [ -z "$BACKEND_CPU_END" ] && BACKEND_CPU_END=0
+        [ -z "$BACKEND_RECV_START" ] && BACKEND_RECV_START=0
+        [ -z "$BACKEND_RECV_END" ] && BACKEND_RECV_END=0
+    fi
+
     # STOP EVERYTHING
     kill $MONITOR_PID 2>/dev/null
     kill $MEMORY_MONITOR_PID 2>/dev/null
+    kill $BACKEND_MEMORY_MONITOR_PID 2>/dev/null
     kill $LATENCY_PID 2>/dev/null
     kill $COLLECTOR_PID 2>/dev/null
     wait $COLLECTOR_PID 2>/dev/null
+    if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+        kill $BACKEND_PID 2>/dev/null
+        wait $BACKEND_PID 2>/dev/null
+    fi
 
     # CALCULATE RESULTS
     
@@ -704,6 +883,23 @@ for RATE in "${RATES[@]}"; do
     echo "    Metrics Sent       : ${METRICS_SENT}"
     echo "    Actual Throughput  : ${ACTUAL_MPS} MPS"
     echo "    ${THROUGHPUT_LABEL}  : ${THROUGHPUT_RESULT}"
+    if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
+        BYTES_SENT_DELTA=$(echo "$BYTES_SENT_END - $BYTES_SENT_START" | bc)
+        BYTES_RECV_DELTA=$(echo "$BYTES_RECV_END - $BYTES_RECV_START" | bc)
+        BACKEND_CPU_DELTA=$(echo "scale=4; $BACKEND_CPU_END - ${BACKEND_CPU_START:-0}" | bc)
+        BACKEND_RECV_DELTA=$(echo "$BACKEND_RECV_END - $BACKEND_RECV_START" | bc)
+        BACKEND_CPU_PERCENT=$(echo "scale=2; ($BACKEND_CPU_DELTA / $DURATION_SEC) * 100" | bc)
+        BACKEND_MPS=$(echo "scale=0; $BACKEND_RECV_DELTA / $DURATION_SEC" | bc)
+        BW_BPS=$(echo "scale=0; $BYTES_SENT_DELTA / $DURATION_SEC" | bc)
+        BW_KBPS=$(echo "scale=2; $BYTES_SENT_DELTA / ($DURATION_SEC * 1024)" | bc)
+        echo "    -----------------"
+        echo "    [TRANSMISSION METRICS]"
+        echo "    Compressed Bytes   : ${BYTES_SENT_DELTA} B  (${BW_KBPS} KB/s)"
+        echo "    Bytes Received     : ${BYTES_RECV_DELTA} B"
+        echo "    Backend Points In  : ${BACKEND_RECV_DELTA}"
+        echo "    Backend Throughput : ${BACKEND_MPS} MPS"
+        echo "    Backend CPU        : ${BACKEND_CPU_DELTA}s total, ${BACKEND_CPU_PERCENT}% avg"
+    fi
     echo "    -----------------"
     echo "    Query Latency (Avg): ${LAT_AVG} ms"
     echo "    Query Latency (P95): ${LAT_P95} ms"
