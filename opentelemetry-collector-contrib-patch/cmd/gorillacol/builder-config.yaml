@@ -1,8 +1,8 @@
 dist:
-  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/countsketchcol
-  name: countsketchcol
-  description: Collector distribution including the CountSketch Processor
-  output_path: ./cmd/countsketchcol/dist
+  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/gorillacol
+  name: gorillacol
+  description: Collector distribution including the Gorilla time-series compression processor
+  output_path: ./cmd/gorillacol/dist
   version: 0.141.0-dev
 
 exporters:
@@ -15,9 +15,8 @@ receivers:
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.141.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchprocessor v0.0.1
-    path: ./processor/countsketchprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/gorillaprocessor v0.141.0
+    path: ./processor/gorillaprocessor
 
 replaces:
   - go.opentelemetry.io/collector/pdata => ../../../../opentelemetry-collector/pdata
-  - go.opentelemetry.io/collector/processor => ../../../../opentelemetry-collector/processor
