@@ -1,0 +1,36 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
+
+processors:
+  batch:
+    send_batch_size: 5000
+    timeout: 200ms
+
+exporters:
+  serfhttp:
+    endpoint: "http://localhost:9000/serf"
+    compression: qt
+    max_diff: 1.0e-3
+    window_interval: 10s
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [serfhttp, debug]
