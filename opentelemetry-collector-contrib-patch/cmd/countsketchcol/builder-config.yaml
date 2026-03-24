@@ -20,3 +20,4 @@ processors:
 
 replaces:
   - go.opentelemetry.io/collector/pdata => ../../../../opentelemetry-collector/pdata
+  - go.opentelemetry.io/collector/processor => ../../../../opentelemetry-collector/processor

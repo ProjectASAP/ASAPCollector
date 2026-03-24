@@ -18,3 +18,4 @@ receivers:
 replaces:
   - github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllprocessor => ./processor/hllprocessor
   - go.opentelemetry.io/collector/pdata => ../opentelemetry-collector/pdata
+  - go.opentelemetry.io/collector/processor => ../opentelemetry-collector/processor
