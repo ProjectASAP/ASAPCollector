@@ -3,7 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllpr
 go 1.24.0
 
 require (
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260310013347-2c5db0c75da8
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260321024028-d20a9f9151b5
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.47.0
 	go.opentelemetry.io/collector/consumer v1.47.0
@@ -40,13 +40,15 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest => ../../pkg/pdatatest
 
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
+
+replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatautil => ../../pkg/pdatautil
 
@@ -57,8 +59,6 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/internal/filte
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl => ../../pkg/ottl
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden => ../../pkg/golden
-
-// replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
 
 retract (
 	v0.76.2
