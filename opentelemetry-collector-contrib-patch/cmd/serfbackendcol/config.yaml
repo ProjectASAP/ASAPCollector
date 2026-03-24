@@ -1,0 +1,32 @@
+receivers:
+  serfhttp:
+    endpoint: "0.0.0.0:9000"
+    compression: xor
+    max_diff: 1.0e-3
+
+processors:
+  batch:
+    send_batch_size: 5000
+    timeout: 200ms
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8891
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890
+
+  pipelines:
+    metrics:
+      receivers: [serfhttp]
+      processors: [batch]
+      exporters: [prometheus, debug]

@@ -24,14 +24,8 @@ github.com/Code-Hex/go-generics-cache v1.5.1 h1:6vhZGc5M7Y/YD8cIUcY8kcuQLB4cHR7U
 github.com/Code-Hex/go-generics-cache v1.5.1/go.mod h1:qxcC9kRVrct9rHeiYpFWSoW1vxyillCVzX13KZG8dl4=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260316040945-49890c71f035 h1:aLrGKic2Q7KJJmfTzqB3fSvjjW2KfRvY5BDcRvYI2zE=
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260316040945-49890c71f035/go.mod h1:Nzyu+hI1KUBmgeyhSlmUnTp5LvI/EwD8VuoZyNQoEZs=
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260320220729-3ba826ceb054 h1:HYCqQ0IEu/hDk5UOi4AHF5yuNb/DX3jD8x2PtO4bApQ=
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260320220729-3ba826ceb054/go.mod h1:VmV0RYT6+rXpb1gVxTG3Z17sttm0nfj7RuesrL1oDTI=
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260321021603-cddd774cb224 h1:mYN1NJLRp9elj4RoLqlHMcoZeQxI7jPNqnxbxxS7wBw=
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260321021603-cddd774cb224/go.mod h1:VmV0RYT6+rXpb1gVxTG3Z17sttm0nfj7RuesrL1oDTI=
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260321023259-ecebc36fb5aa h1:nRWz+s995NYgaRI6a7YHu2lnfGhyzn3Sn8uDFbuNEO0=
-github.com/ProjectASAP/sketchlib-go v0.0.0-20260321023259-ecebc36fb5aa/go.mod h1:VmV0RYT6+rXpb1gVxTG3Z17sttm0nfj7RuesrL1oDTI=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260321024028-d20a9f9151b5 h1:e1If3BxB2QRDt/57ho0PoxxIwouEvuaojy8m9u21IC0=
+github.com/ProjectASAP/sketchlib-go v0.0.0-20260321024028-d20a9f9151b5/go.mod h1:VmV0RYT6+rXpb1gVxTG3Z17sttm0nfj7RuesrL1oDTI=
 github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b h1:mimo19zliBX/vSQ6PWWSL9lK8qwHozUj03+zLoEB8O0=
 github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b/go.mod h1:fvzegU4vN3H1qMT+8wDmzjAcDONcgo2/SZ/TyfdUOFs=
 github.com/armon/go-metrics v0.4.1 h1:hR91U9KYmb6bLBYLQjyM+3j+rcd/UhE+G78SFnF8gJA=
@@ -539,8 +533,6 @@ go.opentelemetry.io/collector/pipeline v1.48.0 h1:E4zyQ7+4FTGvdGS4pruUnItuyRTGhN
 go.opentelemetry.io/collector/pipeline v1.48.0/go.mod h1:xUrAqiebzYbrgxyoXSkk6/Y3oi5Sy3im2iCA51LwUAI=
 go.opentelemetry.io/collector/pipeline/xpipeline v0.142.0 h1:/Sj6qgwWUJtGmxiq6k1AqauxXjJYzRIJxQtUamAApPI=
 go.opentelemetry.io/collector/pipeline/xpipeline v0.142.0/go.mod h1:wDQUlMZLs57CNTfmoxQgiw+mwoqj8ZUChmwI6Ck6KCs=
-go.opentelemetry.io/collector/processor v1.48.0 h1:3Kttw79mnrf463QKJGoGZzFfiNzQuMWK0p2nHuvOhaQ=
-go.opentelemetry.io/collector/processor v1.48.0/go.mod h1:A3OsW6ga+a48J1mrnVNH5L5kB0v+n9nVFlmOQB5/Jwk=
 go.opentelemetry.io/collector/processor/batchprocessor v0.141.0 h1:tm2NRcrAETazsFU0F9Gs7N+FHG8GoG4pyEvljJG459c=
 go.opentelemetry.io/collector/processor/batchprocessor v0.141.0/go.mod h1:lKwRWLBU8BcouHvxf8xkCkhMFJ6lxaWXwLMjr1bC+3o=
 go.opentelemetry.io/collector/processor/processortest v0.141.0 h1:HY/o+CkKTU2Db96TfugwfMKkRFcaJb2vxPUHluS5/F8=
@@ -677,8 +669,7 @@ google.golang.org/genproto/googleapis/rpc v0.0.0-20251022142026-3a174f9686a8 h1:
 google.golang.org/genproto/googleapis/rpc v0.0.0-20251022142026-3a174f9686a8/go.mod h1:7i2o+ce6H/6BluujYR+kqX3GKH+dChPTQU19wjRPiGk=
 google.golang.org/grpc v1.77.0 h1:wVVY6/8cGA6vvffn+wWK5ToddbgdU3d8MNENr4evgXM=
 google.golang.org/grpc v1.77.0/go.mod h1:z0BY1iVj0q8E1uSQCjL9cppRj+gnZjzDnzV0dHhrNig=
-google.golang.org/protobuf v1.36.10 h1:AYd7cD/uASjIL6Q9LiTjz8JLcrh/88q5UObnmY3aOOE=
-google.golang.org/protobuf v1.36.10/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
+google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
 google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=

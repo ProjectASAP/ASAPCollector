@@ -1,0 +1,20 @@
+dist:
+  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/serfbackendcol
+  name: serfbackendcol
+  description: Backend collector that decompresses Serf-compressed metrics and exports to Prometheus
+  output_path: ./cmd/serfbackendcol/dist
+  version: 0.141.0-dev
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.141.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.141.0
+
+receivers:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/serfreceiver v0.141.0
+    path: ./receiver/serfreceiver
+
+processors:
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.141.0
+
+replaces:
+  - go.opentelemetry.io/collector/pdata => ../../../../opentelemetry-collector/pdata

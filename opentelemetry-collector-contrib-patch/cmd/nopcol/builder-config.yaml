@@ -15,3 +15,6 @@ processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.141.0
   - gomod: github.com/approx-telemetry/DataCollector/nop_processor v0.0.1
     path: ./processor/nopprocessor
+
+replaces:
+  - go.opentelemetry.io/collector/processor => ../../../../opentelemetry-collector/processor
