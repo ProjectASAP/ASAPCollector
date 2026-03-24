@@ -1,0 +1,35 @@
+# OTLP Pathway 2 - Batch mode - Local testing
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:53217
+      http:
+        endpoint: 0.0.0.0:53218
+
+processors:
+  countsketch:
+    mode: batch
+    epsilon: 0.01
+    delta: 0.99
+    transmit_sketch: true
+    drop_original: true
+
+exporters:
+  otlphttp:
+    endpoint: http://localhost:4318
+    encoding: proto
+    compression: gzip
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [countsketch]
+      exporters: [otlphttp]
+  telemetry:
+    metrics:
+      level: basic
+    logs:
+      level: debug
+    resource:
+      service.name: countsketchcol-otlp-pathway2-local
