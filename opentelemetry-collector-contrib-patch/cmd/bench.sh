@@ -498,8 +498,8 @@ for RATE in "${RATES[@]}"; do
     [ -z "$EXPORTER_START" ] && EXPORTER_START=0
 
     if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
-        BYTES_SENT_START=$(get_metric_value "serf_exporter_bytes_sent_total" "$TELEMETRY_URL")
-        BYTES_RECV_START=$(get_metric_value "serf_receiver_bytes_received_total" "$BACKEND_TELEMETRY_URL")
+        BYTES_SENT_START=$(get_metric_value "serf_exporter_bytes_sent_bytes_total" "$TELEMETRY_URL")
+        BYTES_RECV_START=$(get_metric_value "serf_receiver_bytes_received_bytes_total" "$BACKEND_TELEMETRY_URL")
         BACKEND_RECV_START=$(get_metric_value "otelcol_receiver_accepted_metric_points_total" "$BACKEND_TELEMETRY_URL")
         [ -z "$BYTES_SENT_START" ] && BYTES_SENT_START=0
         [ -z "$BYTES_RECV_START" ] && BYTES_RECV_START=0
@@ -794,8 +794,8 @@ for RATE in "${RATES[@]}"; do
     [ -z "$EXPORTER_END" ] && EXPORTER_END=0
 
     if [ "${SERF_TRANSMISSION_MODE:-0}" = "1" ]; then
-        BYTES_SENT_END=$(get_metric_value "serf_exporter_bytes_sent_total" "$TELEMETRY_URL")
-        BYTES_RECV_END=$(get_metric_value "serf_receiver_bytes_received_total" "$BACKEND_TELEMETRY_URL")
+        BYTES_SENT_END=$(get_metric_value "serf_exporter_bytes_sent_bytes_total" "$TELEMETRY_URL")
+        BYTES_RECV_END=$(get_metric_value "serf_receiver_bytes_received_bytes_total" "$BACKEND_TELEMETRY_URL")
         BACKEND_CPU_END=$(get_metric_value "otelcol_process_cpu_seconds_total" "$BACKEND_TELEMETRY_URL")
         BACKEND_RECV_END=$(get_metric_value "otelcol_receiver_accepted_metric_points_total" "$BACKEND_TELEMETRY_URL")
         [ -z "$BYTES_SENT_END" ] && BYTES_SENT_END=0
