@@ -1,0 +1,43 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
+
+processors:
+  serf:
+    compression: qt
+    window_interval: 10s
+    # Looser error bound (paper sweep value: 1e-2).
+    # Qt step = 2 * 1e-2 * 0.999 ≈ 0.01998. Larger step → fewer quantization
+    # levels → shorter Elias Gamma codes → better compression.
+    max_diff: 1.0e-2
+    drop_original: false
+    local_dir: /tmp/serf-qt-bench-1e2
+
+  batch:
+    send_batch_size: 5000
+    timeout: 200ms
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [serf, batch]
+      exporters: [prometheus, debug]
