@@ -513,7 +513,10 @@ func (i *inserter[N]) aggregateFunc(
 	case AggregationExplicitBucketHistogram:
 		var noSum bool
 		switch kind {
-		case InstrumentKindUpDownCounter, InstrumentKindObservableUpDownCounter, InstrumentKindObservableGauge, InstrumentKindGauge:
+		case InstrumentKindUpDownCounter,
+			InstrumentKindObservableUpDownCounter,
+			InstrumentKindObservableGauge,
+			InstrumentKindGauge:
 			// The sum should not be collected for any instrument that can make
 			// negative measurements:
 			// https://github.com/open-telemetry/opentelemetry-specification/blob/v1.21.0/specification/metrics/sdk.md#histogram-aggregations
@@ -523,7 +526,10 @@ func (i *inserter[N]) aggregateFunc(
 	case AggregationBase2ExponentialHistogram:
 		var noSum bool
 		switch kind {
-		case InstrumentKindUpDownCounter, InstrumentKindObservableUpDownCounter, InstrumentKindObservableGauge, InstrumentKindGauge:
+		case InstrumentKindUpDownCounter,
+			InstrumentKindObservableUpDownCounter,
+			InstrumentKindObservableGauge,
+			InstrumentKindGauge:
 			// The sum should not be collected for any instrument that can make
 			// negative measurements:
 			// https://github.com/open-telemetry/opentelemetry-specification/blob/v1.21.0/specification/metrics/sdk.md#histogram-aggregations
@@ -536,15 +542,15 @@ func (i *inserter[N]) aggregateFunc(
 		case InstrumentKindUpDownCounter, InstrumentKindObservableUpDownCounter, InstrumentKindObservableGauge, InstrumentKindGauge:
 			noSum = true
 		}
-		meas, comp = b.DDSketch(a.RelativeAccuracy, a.NoMinMax, noSum)
+		meas, comp = b.DDSketch(a.RelativeAccuracy, a.NoMinMax, noSum, a.DeltaTransmission, a.DeltaThreshold)
 	case AggregationKLLSketch:
 		meas, comp = b.KLLSketch(a.K)
 	case AggregationCountSketch:
-		meas, comp = b.CountSketch(a.Rows, a.Cols, a.Epsilon, a.Delta, a.Dimension)
+		meas, comp = b.CountSketch(a.Rows, a.Cols, a.Epsilon, a.Delta, a.Dimension, a.DeltaTransmission, a.DeltaThreshold)
 	case AggregationCountMinSketch:
-		meas, comp = b.CountMinSketch(a.Rows, a.Cols)
+		meas, comp = b.CountMinSketch(a.Rows, a.Cols, a.DeltaTransmission, a.DeltaThreshold)
 	case AggregationHLLSketch:
-		meas, comp = b.HLLSketch()
+		meas, comp = b.HLLSketch(a.DeltaTransmission)
 
 	default:
 		err = errUnknownAggregation
@@ -556,15 +562,15 @@ func (i *inserter[N]) aggregateFunc(
 // isAggregatorCompatible checks if the aggregation can be used by the instrument.
 // Current compatibility:
 //
-// | Instrument Kind          | Drop | LastValue | Sum | Histogram | Exponential Histogram | DDSketch | KLL | CountSketch | CountMinSketch | HLL |
-// |--------------------------|------|-----------|-----|-----------|-----------------------|----------|-----|-------------|----------------|-----|
-// | Counter                  | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
-// | UpDownCounter            | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
-// | Histogram                | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
-// | Gauge                    | ✓    | ✓         |     | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
-// | Observable Counter       | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
-// | Observable UpDownCounter | ✓    |           | ✓   | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |
-// | Observable Gauge         | ✓    | ✓         |     | ✓         | ✓                     | ✓        | ✓   | ✓           | ✓              | ✓   |.
+// | Instrument Kind          | Drop | LastValue | Sum | Histogram | Exponential Histogram |
+// |--------------------------|------|-----------|-----|-----------|-----------------------|
+// | Counter                  | ✓    |           | ✓   | ✓         | ✓                     |
+// | UpDownCounter            | ✓    |           | ✓   | ✓         | ✓                     |
+// | Histogram                | ✓    |           | ✓   | ✓         | ✓                     |
+// | Gauge                    | ✓    | ✓         |     | ✓         | ✓                     |
+// | Observable Counter       | ✓    |           | ✓   | ✓         | ✓                     |
+// | Observable UpDownCounter | ✓    |           | ✓   | ✓         | ✓                     |
+// | Observable Gauge         | ✓    | ✓         |     | ✓         | ✓                     |.
 func isAggregatorCompatible(kind InstrumentKind, agg Aggregation) error {
 	switch agg.(type) {
 	case AggregationDefault:
@@ -590,7 +596,11 @@ func isAggregatorCompatible(kind InstrumentKind, agg Aggregation) error {
 		}
 	case AggregationSum:
 		switch kind {
-		case InstrumentKindObservableCounter, InstrumentKindObservableUpDownCounter, InstrumentKindCounter, InstrumentKindHistogram, InstrumentKindUpDownCounter:
+		case InstrumentKindObservableCounter,
+			InstrumentKindObservableUpDownCounter,
+			InstrumentKindCounter,
+			InstrumentKindHistogram,
+			InstrumentKindUpDownCounter:
 			return nil
 		default:
 			// TODO: review need for aggregation check after

@@ -3,6 +3,7 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
       http:
         endpoint: 0.0.0.0:4318
 
@@ -15,7 +16,7 @@ processors:
     transmit_sketch: true
     group_by: []
     drop_original: true
-    window_interval: 10s
+    window_duration: 10s
 
 exporters:
   prometheus:

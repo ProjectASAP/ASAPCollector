@@ -1,0 +1,59 @@
+# SDK pipeline configuration — DDSketch, transmit_sketch: true
+#
+# SDK pre-aggregates values into a DDSketch before each export tick.
+# The collector receives DDSketch-typed data points and can either
+# re-emit quantile gauges (transmit_sketch: false on collector side) or
+# forward the raw sketch payload downstream (transmit_sketch: true).
+
+exporter:
+  endpoint: localhost:4317
+  insecure: true
+  max_send_msg_size_mb: 64
+
+reader:
+  interval: 1s
+  enable_self_monitoring: true
+
+sketch:
+  type: ddsketch
+  transmit_sketch: true
+  ddsketch:
+    relative_accuracy: 0.01
+    no_min_max: false
+
+instruments:
+  - name: benchmark.latency
+    description: Benchmark latency measurement
+    unit: ms
+    instrument_kind: histogram
+    group_by:
+      - host.name
+      - service.name
+    series_per_sketch: 1
+
+asap_query:
+  metrics:
+    - metric: benchmark.latency
+      labels:
+        - host.name
+        - service.name
+  query_groups:
+    - id: 1
+      queries:
+        - "quantile_over_time(0.99, benchmark_latency[5m])"
+      repetition_delay: 5000
+      controller_options:
+        accuracy_sla: 0.01
+        latency_sla: 100.0
+
+load:
+  workers: 10
+  series: 1000
+  samples_per_sec_per_series: 50.0
+  duration: 60s
+  distribution:
+    type: zipf
+    s: 1.1
+    v: 1.0
+    max: 500
+    mean: 250.0

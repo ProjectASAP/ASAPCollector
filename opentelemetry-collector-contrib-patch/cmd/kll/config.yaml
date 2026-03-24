@@ -10,6 +10,7 @@ processors:
     mode: batch
     k: 256
     transmit_sketch: false
+    enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
     drop_original: false
 

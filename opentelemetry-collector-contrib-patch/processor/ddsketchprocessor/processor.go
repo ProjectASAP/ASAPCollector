@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
@@ -26,6 +27,7 @@ type ddsketchProcessor struct {
 	cfg          *Config
 	logger       *zap.Logger
 	nextConsumer consumer.Metrics
+	monitor      *selfmonitor.Monitor
 
 	// window mode state
 	mu            sync.Mutex
@@ -33,6 +35,18 @@ type ddsketchProcessor struct {
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool // true once the window goroutine is running
+
+	// snapshots maps "<metricName>::<attrKey>" → proto-serialized snapshot,
+	// updated each flush. Used to compute delta payloads when
+	// cfg.DeltaTransmission=true.
+	snapshotsMu sync.Mutex
+	snapshots   map[string][]byte // proto-marshalled sketchpb.DDSketch
+
+	// inboundSnapshots tracks the last full proto payload per series key received
+	// from upstream. Used to reconstruct the current sketch when upstream sends
+	// DDSketchEncodingProtoDelta payloads.
+	inboundMu        sync.Mutex
+	inboundSnapshots map[string][]byte // proto-marshalled sketchpb.DDSketch
 }
 
 type resourceWindow struct {
@@ -57,12 +71,14 @@ type metricWindow struct {
 
 func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *ddsketchProcessor {
 	return &ddsketchProcessor{
-		cfg:          cfg,
-		logger:       logger,
-		nextConsumer: next,
-		windowStore:  make(map[string]*resourceWindow),
-		stopCh:       make(chan struct{}),
-		doneCh:       make(chan struct{}),
+		cfg:              cfg,
+		logger:           logger,
+		nextConsumer:     next,
+		windowStore:      make(map[string]*resourceWindow),
+		snapshots:        make(map[string][]byte),
+		inboundSnapshots: make(map[string][]byte),
+		stopCh:           make(chan struct{}),
+		doneCh:           make(chan struct{}),
 	}
 }
 
@@ -108,6 +124,8 @@ func (p *ddsketchProcessor) Start(ctx context.Context, _ component.Host) error {
 
 // Shutdown implements processor.Metrics.
 func (p *ddsketchProcessor) Shutdown(ctx context.Context) error {
+	defer p.shutdownMonitor()
+
 	// Only wait if the window goroutine was actually started; avoids blocking
 	// forever when Start was never called.
 	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
@@ -127,11 +145,14 @@ func (p *ddsketchProcessor) Shutdown(ctx context.Context) error {
 
 // ConsumeMetrics implements processor.Metrics.
 func (p *ddsketchProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	p.recordInput(ctx, md)
+
 	switch p.cfg.Mode {
 	case ModeBatch:
 		if _, err := p.processBatch(ctx, md); err != nil {
 			return err
 		}
+		p.recordOutput(ctx, md)
 		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	case ModeWindow:
 		p.accumulateIntoWindow(md)
@@ -211,12 +232,41 @@ func (p *ddsketchProcessor) buildMergedSketchMetric(src pmetric.Metric, series m
 	}
 
 	dps := dst.DataPoints()
-	for _, s := range series {
+	for attrKey, s := range series {
 		if s.sketch == nil {
 			continue
 		}
 
-		payload, err := serializeDDSketch(s.sketch)
+		var payload []byte
+		var err error
+		var encoding string
+
+		if p.cfg.DeltaTransmission {
+			snapKey := src.Name() + "::" + attrKey
+			p.snapshotsMu.Lock()
+			snapPayload, hasSnap := p.snapshots[snapKey]
+			p.snapshotsMu.Unlock()
+
+			if hasSnap {
+				payload, err = computeDDSketchDelta(snapPayload, s.sketch, p.cfg.DeltaThreshold)
+				encoding = "proto_delta"
+			} else {
+				payload, err = serializeDDSketch(s.sketch)
+				encoding = "proto_full"
+			}
+
+			// Update snapshot.
+			newSnap, snapErr := serializeDDSketch(s.sketch)
+			if snapErr == nil {
+				p.snapshotsMu.Lock()
+				p.snapshots[snapKey] = newSnap
+				p.snapshotsMu.Unlock()
+			}
+		} else {
+			payload, err = serializeDDSketch(s.sketch)
+			encoding = "proto_full"
+		}
+
 		if err != nil {
 			if p.logger != nil {
 				p.logger.Error("failed to serialize DDSketch", zap.Error(err))
@@ -232,6 +282,9 @@ func (p *ddsketchProcessor) buildMergedSketchMetric(src pmetric.Metric, series m
 		dp.SetEncoding(pmetric.DDSketchEncodingProto)
 		dp.SetSketch(payload)
 		dp.SetFlags(s.flags)
+		if p.cfg.DeltaTransmission {
+			dp.Attributes().PutStr("ddsketch.encoding", encoding)
+		}
 	}
 
 	if dps.Len() == 0 {
@@ -282,18 +335,25 @@ func (p *ddsketchProcessor) consumeDDSketchDataPoints(dps pmetric.DDSketchDataPo
 	result := make(map[string]*sketchSeries)
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
-		sk, err := decodeDDSketchDataPoint(dp)
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		attrKey := attributesKey(dp.Attributes())
+		sk, err := p.decodeDDSketchDataPoint(attrKey, dp)
 		if err != nil {
 			if p.logger != nil {
 				p.logger.Error("failed to decode DDSketch payload", zap.Error(err))
 			}
 			continue
 		}
+		if sk == nil {
+			continue // delta with no snapshot yet
+		}
 
-		key := attributesKey(dp.Attributes())
+		key := p.seriesKey(dp.Attributes())
 		series := result[key]
 		if series == nil {
-			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
+			series = p.newSeriesFrom(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
 			result[key] = series
 		} else {
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
@@ -310,10 +370,13 @@ func (p *ddsketchProcessor) consumeGaugeDataPoints(dps pmetric.NumberDataPointSl
 	result := make(map[string]*sketchSeries)
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
-		key := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		key := p.seriesKey(dp.Attributes())
 		series := result[key]
 		if series == nil {
-			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
+			series = p.newSeriesFrom(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
 			result[key] = series
 		} else {
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
@@ -342,22 +405,60 @@ func (p *ddsketchProcessor) consumeGaugeDataPoints(dps pmetric.NumberDataPointSl
 	return result
 }
 
-func decodeDDSketchDataPoint(dp pmetric.DDSketchDataPoint) (*ddsketch.DDSketch, error) {
-	if dp.Encoding() != pmetric.DDSketchEncodingProto {
-		return nil, fmt.Errorf("unsupported DDSketch encoding %v", dp.Encoding())
-	}
-
+func (p *ddsketchProcessor) decodeDDSketchDataPoint(seriesKey string, dp pmetric.DDSketchDataPoint) (*ddsketch.DDSketch, error) {
 	data := dp.Sketch()
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty DDSketch payload")
 	}
 
-	var pb sketchpb.DDSketch
-	if err := proto.Unmarshal(data, &pb); err != nil {
-		return nil, fmt.Errorf("unmarshal DDSketch: %w", err)
-	}
+	switch dp.Encoding() {
+	case pmetric.DDSketchEncodingProtoDelta:
+		p.inboundMu.Lock()
+		snapPayload, hasSnap := p.inboundSnapshots[seriesKey]
+		p.inboundMu.Unlock()
+		if !hasSnap || snapPayload == nil {
+			// No snapshot to apply delta against; skip this data point.
+			return nil, nil
+		}
+		// Reconstruct: unmarshal snapshot, apply delta bucket counts.
+		var snapPb sketchpb.DDSketch
+		if err := proto.Unmarshal(snapPayload, &snapPb); err != nil {
+			return nil, fmt.Errorf("unmarshal DDSketch snapshot: %w", err)
+		}
+		var deltaPb sketchpb.DDSketch
+		if err := proto.Unmarshal(data, &deltaPb); err != nil {
+			return nil, fmt.Errorf("unmarshal DDSketch delta: %w", err)
+		}
+		reconstructed := applyDDSketchDelta(&snapPb, &deltaPb)
+		reconstructedBytes, err := proto.Marshal(reconstructed)
+		if err != nil {
+			return nil, fmt.Errorf("marshal reconstructed DDSketch: %w", err)
+		}
+		p.inboundMu.Lock()
+		if p.inboundSnapshots == nil {
+			p.inboundSnapshots = make(map[string][]byte)
+		}
+		p.inboundSnapshots[seriesKey] = reconstructedBytes
+		p.inboundMu.Unlock()
+		return ddsketch.FromProto(reconstructed)
 
-	return ddsketch.FromProto(&pb)
+	default: // DDSketchEncodingProto or unspecified
+		if dp.Encoding() != pmetric.DDSketchEncodingProto && dp.Encoding() != pmetric.DDSketchEncodingUnspecified {
+			return nil, fmt.Errorf("unsupported DDSketch encoding %v", dp.Encoding())
+		}
+		var pb sketchpb.DDSketch
+		if err := proto.Unmarshal(data, &pb); err != nil {
+			return nil, fmt.Errorf("unmarshal DDSketch: %w", err)
+		}
+		// Store full snapshot for future delta reconstruction.
+		p.inboundMu.Lock()
+		if p.inboundSnapshots == nil {
+			p.inboundSnapshots = make(map[string][]byte)
+		}
+		p.inboundSnapshots[seriesKey] = data
+		p.inboundMu.Unlock()
+		return ddsketch.FromProto(&pb)
+	}
 }
 
 func newSketchSeries(attrs pcommon.Map, start, ts pcommon.Timestamp) *sketchSeries {
@@ -416,6 +517,97 @@ func serializeDDSketch(sk *ddsketch.DDSketch) ([]byte, error) {
 	return proto.Marshal(sk.ToProto())
 }
 
+// computeDDSketchDelta computes a sparse delta between a snapshot proto payload
+// and the current sketch. Buckets are included when |Δcount| ≥ threshold.
+// Returns proto-marshalled sketchpb.DDSketch bytes with only changed buckets.
+func computeDDSketchDelta(snapPayload []byte, current *ddsketch.DDSketch, threshold uint64) ([]byte, error) {
+	var snap sketchpb.DDSketch
+	if err := proto.Unmarshal(snapPayload, &snap); err != nil {
+		// Can't parse snapshot; fall back to full serialization.
+		return serializeDDSketch(current)
+	}
+
+	curr := current.ToProto()
+	delta := &sketchpb.DDSketch{
+		Mapping:   curr.Mapping,
+		ZeroCount: curr.ZeroCount - snap.ZeroCount,
+	}
+
+	// Compute sparse delta for positive/negative bucket stores.
+	delta.PositiveValues = storeDelta(snap.PositiveValues, curr.PositiveValues, float64(threshold))
+	delta.NegativeValues = storeDelta(snap.NegativeValues, curr.NegativeValues, float64(threshold))
+
+	return proto.Marshal(delta)
+}
+
+// storeDelta returns a sparse Store containing only buckets where |Δcount| ≥ threshold.
+func storeDelta(snap, curr *sketchpb.Store, threshold float64) *sketchpb.Store {
+	if curr == nil {
+		return nil
+	}
+
+	// Merge contiguous encoding into a single map for easy diffing.
+	snapCounts := storeToMap(snap)
+	currCounts := storeToMap(curr)
+
+	out := &sketchpb.Store{BinCounts: make(map[int32]float64)}
+	for idx, cnt := range currCounts {
+		delta := cnt - snapCounts[idx]
+		if delta >= threshold || delta <= -threshold {
+			out.BinCounts[idx] = delta
+		}
+	}
+	if len(out.BinCounts) == 0 {
+		return nil
+	}
+	return out
+}
+
+// applyDDSketchDelta reconstructs a full DDSketch proto from a snapshot and a
+// sparse delta (produced by computeDDSketchDelta / ddSketchDeltaPayload).
+func applyDDSketchDelta(snap, delta *sketchpb.DDSketch) *sketchpb.DDSketch {
+	out := &sketchpb.DDSketch{
+		Mapping:   snap.Mapping,
+		ZeroCount: snap.ZeroCount + delta.ZeroCount,
+	}
+	out.PositiveValues = applyDDStore(snap.PositiveValues, delta.PositiveValues)
+	out.NegativeValues = applyDDStore(snap.NegativeValues, delta.NegativeValues)
+	return out
+}
+
+// applyDDStore adds delta bucket counts onto snapshot bucket counts.
+func applyDDStore(snap, delta *sketchpb.Store) *sketchpb.Store {
+	base := storeToMap(snap) // existing helper in the file
+	changes := storeToMap(delta)
+	out := &sketchpb.Store{BinCounts: make(map[int32]float64)}
+	for idx, cnt := range base {
+		out.BinCounts[idx] = cnt
+	}
+	for idx, d := range changes {
+		out.BinCounts[idx] += d
+	}
+	if len(out.BinCounts) == 0 {
+		return nil
+	}
+	return out
+}
+
+// storeToMap converts a sketchpb.Store into a flat index→count map.
+func storeToMap(s *sketchpb.Store) map[int32]float64 {
+	m := make(map[int32]float64)
+	if s == nil {
+		return m
+	}
+	for idx, cnt := range s.BinCounts {
+		m[idx] += cnt
+	}
+	for i, cnt := range s.ContiguousBinCounts {
+		idx := s.ContiguousBinIndexOffset + int32(i)
+		m[idx] += cnt
+	}
+	return m
+}
+
 func attributesKey(attrs pcommon.Map) string {
 	keys := make([]string, 0, attrs.Len())
 	attrs.Range(func(k string, _ pcommon.Value) bool {
@@ -435,6 +627,64 @@ func attributesKey(attrs pcommon.Map) string {
 		b.WriteByte(';')
 	}
 	return b.String()
+}
+
+// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
+func (p *ddsketchProcessor) matchesMatchers(attrs pcommon.Map) bool {
+	for _, m := range p.cfg.LabelMatchers {
+		v, ok := attrs.Get(m.Key)
+		if !ok || v.AsString() != m.Value {
+			return false
+		}
+	}
+	return true
+}
+
+// seriesKey returns the map key used to locate a series in the window/batch store.
+// When AggregateBy is configured, only those label values form the key (cross-series
+// aggregation). Otherwise the full attribute set is used (per-series, default).
+func (p *ddsketchProcessor) seriesKey(attrs pcommon.Map) string {
+	if len(p.cfg.AggregateBy) == 0 {
+		return attributesKey(attrs)
+	}
+	b := strings.Builder{}
+	for _, k := range p.cfg.AggregateBy { // already sorted by validate
+		v, ok := attrs.Get(k)
+		if !ok {
+			continue
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(v.AsString())
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+// seriesAttrs builds the attribute map to store on a new series entry.
+// When AggregateBy is configured, only those labels are included in the output.
+// Otherwise a full copy of attrs is returned.
+func (p *ddsketchProcessor) seriesAttrs(attrs pcommon.Map) pcommon.Map {
+	out := pcommon.NewMap()
+	if len(p.cfg.AggregateBy) == 0 {
+		attrs.CopyTo(out)
+		return out
+	}
+	for _, k := range p.cfg.AggregateBy {
+		if v, ok := attrs.Get(k); ok {
+			out.PutStr(k, v.AsString())
+		}
+	}
+	return out
+}
+
+// newSeriesFrom creates a sketchSeries with the appropriate attribute set for this processor.
+func (p *ddsketchProcessor) newSeriesFrom(attrs pcommon.Map, start, ts pcommon.Timestamp) *sketchSeries {
+	return &sketchSeries{
+		attrs: p.seriesAttrs(attrs),
+		start: start,
+		end:   ts,
+	}
 }
 
 // accumulateIntoWindow aggregates incoming samples into sketches across a tumbling window.
@@ -515,10 +765,13 @@ func (p *ddsketchProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetri
 	dps := metric.Gauge().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		attrKey := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		attrKey := p.seriesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
-			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
+			series = p.newSeriesFrom(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
 			mw.series[attrKey] = series
 		} else {
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
@@ -560,21 +813,27 @@ func (p *ddsketchProcessor) accumulateDDSketchMetric(sw *scopeWindow, metric pme
 	dps := metric.DDSketch().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		attrKey := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		attrKey := p.seriesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
-			series = newSketchSeries(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
+			series = p.newSeriesFrom(dp.Attributes(), dp.StartTimestamp(), dp.Timestamp())
 			mw.series[attrKey] = series
 		} else {
 			series.updateWindow(dp.StartTimestamp(), dp.Timestamp())
 		}
 
-		sk, err := decodeDDSketchDataPoint(dp)
+		sk, err := p.decodeDDSketchDataPoint(mw.name+"::"+attributesKey(dp.Attributes()), dp)
 		if err != nil {
 			if p.logger != nil {
 				p.logger.Error("failed to decode DDSketch payload in window mode", zap.Error(err))
 			}
 			continue
+		}
+		if sk == nil {
+			continue // delta with no snapshot yet
 		}
 
 		series.merge(sk, dp, p.logger)
@@ -637,5 +896,50 @@ func (p *ddsketchProcessor) flushWindow(ctx context.Context) error {
 	if out.ResourceMetrics().Len() == 0 {
 		return nil
 	}
+	p.recordOutput(ctx, out)
 	return p.nextConsumer.ConsumeMetrics(ctx, out)
+}
+
+func (p *ddsketchProcessor) enableSelfMonitoring(settings component.TelemetrySettings, processorID string) {
+	monitor, err := selfmonitor.New(settings, processorID, Type.String(), p.activeSeriesCount)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("ddsketchprocessor: failed to initialize self-monitoring", zap.Error(err))
+		}
+		return
+	}
+	p.monitor = monitor
+}
+
+func (p *ddsketchProcessor) shutdownMonitor() {
+	if p.monitor != nil {
+		p.monitor.Shutdown()
+	}
+}
+
+func (p *ddsketchProcessor) recordInput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordInput(ctx, md)
+	}
+}
+
+func (p *ddsketchProcessor) recordOutput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordOutput(ctx, md)
+	}
+}
+
+func (p *ddsketchProcessor) activeSeriesCount() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var total int64
+	for _, rw := range p.windowStore {
+		for _, sw := range rw.scopes {
+			for _, mw := range sw.metrics {
+				total += int64(len(mw.series))
+			}
+		}
+	}
+	return total
 }

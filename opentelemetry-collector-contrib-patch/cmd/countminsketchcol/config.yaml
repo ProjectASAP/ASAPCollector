@@ -12,9 +12,10 @@ processors:
     rows: 5
     columns: 2000
     transmit_sketch: true
+    enable_self_monitoring: true
     group_by: ["service.name", "method"]
     drop_original: true  # Do not forward the raw data, only the sketch
-    window_interval: 10s # NEW: Aggregate 10s of data into 1 Sketch
+    window_duration: 10s # Aggregate 10s of data into 1 Sketch
 
   batch:
     send_batch_size: 5000 

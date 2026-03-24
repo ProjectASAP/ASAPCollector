@@ -383,6 +383,7 @@ enum DDSketchEncoding {
   // DDSKETCH_ENCODING_PROTO indicates the sketch bytes contain the serialized
   // github.com/DataDog/sketches-go/ddsketch/pb/sketchpb.DDSketch message.
   DDSKETCH_ENCODING_PROTO = 1;
+  DDSKETCH_ENCODING_PROTO_DELTA = 2;
 }
 
 // KLLSketch represents the type of a metric that encodes measurements using the KLL quantile sketch.
@@ -413,7 +414,7 @@ message KLLSketchDataPoint {
 // KLLSketchEncoding identifies how the KLL sketch payload bytes are encoded.
 enum KLLSketchEncoding {
   KLL_SKETCH_ENCODING_UNSPECIFIED = 0;
-  KLL_SKETCH_ENCODING_GOB = 1;
+  KLL_SKETCH_ENCODING_PROTO = 1;
 }
 
 // CountSketch represents the type of a metric that encodes frequency estimations using CountSketch.
@@ -443,7 +444,8 @@ message CountSketchDataPoint {
 // CountSketchEncoding identifies how the CountSketch payload bytes are encoded.
 enum CountSketchEncoding {
   COUNT_SKETCH_ENCODING_UNSPECIFIED = 0;
-  COUNT_SKETCH_ENCODING_GOB = 1;
+  COUNT_SKETCH_ENCODING_PROTO = 1;
+  COUNT_SKETCH_ENCODING_DELTA = 2;
 }
 
 // CountMinSketch represents the type of a metric encoding frequency estimations using CountMinSketch.
@@ -473,7 +475,8 @@ message CountMinSketchDataPoint {
 // CountMinSketchEncoding identifies how the CountMinSketch payload bytes are encoded.
 enum CountMinSketchEncoding {
   COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED = 0;
-  COUNT_MIN_SKETCH_ENCODING_GOB = 1;
+  COUNT_MIN_SKETCH_ENCODING_PROTO = 1;
+  COUNT_MIN_SKETCH_ENCODING_DELTA = 2;
 }
 
 // HLLSketch represents the type of a metric that encodes cardinality estimations using HyperLogLog.
@@ -503,7 +506,8 @@ message HLLSketchDataPoint {
 // HLLSketchEncoding identifies how the HLL sketch payload bytes are encoded.
 enum HLLSketchEncoding {
   HLL_SKETCH_ENCODING_UNSPECIFIED = 0;
-  HLL_SKETCH_ENCODING_BINARY = 1;
+  HLL_SKETCH_ENCODING_PROTO = 1;
+  HLL_SKETCH_ENCODING_DELTA = 2;
 }
 
 // AggregationTemporality defines how a metric aggregator reports aggregated

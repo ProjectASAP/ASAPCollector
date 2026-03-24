@@ -1,0 +1,63 @@
+# SDK pipeline configuration — CountMinSketch, transmit_sketch: true
+#
+# SDK pre-aggregates into a CountMinSketch (frequency estimation).
+# The collector's countminsketchprocessor handles the sketch payload.
+# Note: large payloads at high series counts may require max_send_msg_size_mb
+# above the default 4 MiB gRPC limit.
+
+exporter:
+  endpoint: localhost:4317
+  insecure: true
+  max_send_msg_size_mb: 64
+
+reader:
+  interval: 1s
+  enable_self_monitoring: true
+
+sketch:
+  type: countminsketch
+  transmit_sketch: true
+  countminsketch:
+    rows: 5
+    cols: 2000
+
+instruments:
+  - name: benchmark.latency
+    description: Benchmark latency measurement
+    unit: ms
+    instrument_kind: histogram
+    group_by:
+      - host.name
+      - service.name
+    series_per_sketch: 1
+
+asap_query:
+  metrics:
+    - metric: benchmark.latency
+      labels:
+        - host.name
+        - service.name
+  query_groups:
+    - id: 1
+      queries:
+        - "frequency_over_time(benchmark_latency[5m])"
+      repetition_delay: 5000
+      controller_options:
+        accuracy_sla: 0.01
+        latency_sla: 100.0
+  sketch_parameters:
+    CountMinSketch:
+      depth: 5
+      width: 2000
+
+load:
+  workers: 10
+  series: 1000
+  samples_per_sec_per_series: 50.0
+  duration: 60s
+  distribution:
+    type: zipf
+    s: 1.1
+    v: 1.0
+    max: 500
+    mean: 250.0

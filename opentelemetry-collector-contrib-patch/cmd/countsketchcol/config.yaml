@@ -7,9 +7,10 @@ receivers:
 processors:
   countsketch:
     transmit_sketch: false
+    enable_self_monitoring: true
     epsilon: 0.01
     delta: 0.99
-    window_size: 5s
+    window_duration: 5s
     drop_original: true 
 
 exporters:

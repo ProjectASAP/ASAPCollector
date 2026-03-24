@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DataDog/sketches-go/ddsketch"
+	"github.com/DataDog/sketches-go/ddsketch/pb/sketchpb"
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/otel"
@@ -57,6 +58,15 @@ type ddSketchValues[N int64 | float64] struct {
 	noMinMax bool
 	noSum    bool
 
+	// deltaTransmission enables sparse delta encoding for cumulative exports.
+	deltaTransmission bool
+	// deltaThreshold is the minimum absolute bucket count change to include.
+	deltaThreshold uint64
+	// snapshots holds the proto-serialized snapshot of the last exported sketch
+	// per series, keyed by attribute.Distinct. Used only when deltaTransmission=true.
+	snapshots   map[attribute.Distinct][]byte
+	snapshotsMu sync.Mutex
+
 	newRes     func(attribute.Set) FilteredExemplarReservoir[N]
 	limit      limiter[ddSketchSeries[N]]
 	values     map[attribute.Distinct]*ddSketchSeries[N]
@@ -70,17 +80,25 @@ func newDDSketchValues[N int64 | float64](
 	noSum bool,
 	limit int,
 	r func(attribute.Set) FilteredExemplarReservoir[N],
+	deltaTransmission bool,
+	deltaThreshold uint64,
 ) *ddSketchValues[N] {
 	if accuracy <= 0 || accuracy >= 1 {
 		accuracy = defaultDDSketchRelativeAccuracy
 	}
+	if deltaTransmission && deltaThreshold == 0 {
+		deltaThreshold = 1
+	}
 	v := &ddSketchValues[N]{
-		accuracy: accuracy,
-		noMinMax: noMinMax,
-		noSum:    noSum,
-		newRes:   r,
-		limit:    newLimiter[ddSketchSeries[N]](limit),
-		values:   make(map[attribute.Distinct]*ddSketchSeries[N]),
+		accuracy:          accuracy,
+		noMinMax:          noMinMax,
+		noSum:             noSum,
+		deltaTransmission: deltaTransmission,
+		deltaThreshold:    deltaThreshold,
+		snapshots:         make(map[attribute.Distinct][]byte),
+		newRes:            r,
+		limit:             newLimiter[ddSketchSeries[N]](limit),
+		values:            make(map[attribute.Distinct]*ddSketchSeries[N]),
 	}
 	v.seriesPool.New = func() any { return new(ddSketchSeries[N]) }
 	return v
@@ -161,9 +179,11 @@ func newDDSketch[N int64 | float64](
 	noSum bool,
 	limit int,
 	r func(attribute.Set) FilteredExemplarReservoir[N],
+	deltaTransmission bool,
+	deltaThreshold uint64,
 ) *ddSketch[N] {
 	return &ddSketch[N]{
-		ddSketchValues: newDDSketchValues[N](accuracy, noMinMax, noSum, limit, r),
+		ddSketchValues: newDDSketchValues[N](accuracy, noMinMax, noSum, limit, r, deltaTransmission, deltaThreshold),
 		start:          now(),
 	}
 }
@@ -196,7 +216,7 @@ func (d *ddSketch[N]) delta(
 		if series.count == 0 {
 			continue
 		}
-		if d.exportDataPoint(series, t, &dPts[i]) {
+		if d.exportDataPoint(series, metricdata.DDSketchEncodingProto, nil, t, &dPts[i]) {
 			i++
 		}
 	}
@@ -254,7 +274,13 @@ func (d *ddSketch[N]) cumulative(
 		if series.count == 0 {
 			continue
 		}
-		if d.exportDataPoint(series, t, &dPts[i]) {
+
+		payload, encoding, err := d.payloadFor(key, series.sketch)
+		if err != nil {
+			otel.Handle(err)
+			continue
+		}
+		if d.exportDataPoint(series, encoding, payload, t, &dPts[i]) {
 			i++
 		}
 	}
@@ -263,6 +289,10 @@ func (d *ddSketch[N]) cumulative(
 	for _, key := range toEvict {
 		series := d.values[key]
 		delete(d.values, key)
+		// Also evict the snapshot to avoid a memory leak.
+		d.snapshotsMu.Lock()
+		delete(d.snapshots, key)
+		d.snapshotsMu.Unlock()
 		series.attrs = attribute.Set{}
 		series.seriesID = 0
 		series.res = nil
@@ -280,15 +310,65 @@ func (d *ddSketch[N]) cumulative(
 	return len(dPts)
 }
 
+// payloadFor returns the serialized payload and encoding for a cumulative export.
+// If deltaTransmission is enabled and a prior snapshot exists, it returns a
+// sparse delta; otherwise it returns the full proto payload.
+func (d *ddSketchValues[N]) payloadFor(key attribute.Distinct, sketch *ddsketch.DDSketch) ([]byte, metricdata.DDSketchEncoding, error) {
+	fullPayload, err := serializeDDSketch(sketch)
+	if err != nil {
+		return nil, metricdata.DDSketchEncodingProto, err
+	}
+
+	if !d.deltaTransmission {
+		return fullPayload, metricdata.DDSketchEncodingProto, nil
+	}
+
+	d.snapshotsMu.Lock()
+	snapPayload, hasSnap := d.snapshots[key]
+	d.snapshotsMu.Unlock()
+
+	var (
+		payload  []byte
+		encoding metricdata.DDSketchEncoding
+	)
+	if hasSnap && snapPayload != nil {
+		deltaPayload, deltaErr := ddSketchDeltaPayload(snapPayload, sketch, d.deltaThreshold)
+		if deltaErr != nil {
+			// Fall back to full on error.
+			payload = fullPayload
+			encoding = metricdata.DDSketchEncodingProto
+		} else {
+			payload = deltaPayload
+			encoding = metricdata.DDSketchEncodingProtoDelta
+		}
+	} else {
+		payload = fullPayload
+		encoding = metricdata.DDSketchEncodingProto
+	}
+
+	// Update snapshot with the current full payload.
+	d.snapshotsMu.Lock()
+	d.snapshots[key] = fullPayload
+	d.snapshotsMu.Unlock()
+
+	return payload, encoding, nil
+}
+
 func (d *ddSketch[N]) exportDataPoint(
 	series *ddSketchSeries[N],
+	encoding metricdata.DDSketchEncoding,
+	payload []byte,
 	t time.Time,
 	dest *metricdata.DDSketchDataPoint[N],
 ) bool {
-	bytes, err := serializeDDSketch(series.sketch)
-	if err != nil {
-		otel.Handle(err)
-		return false
+	// In delta() path payload is nil — serialize inline.
+	if payload == nil {
+		var err error
+		payload, err = serializeDDSketch(series.sketch)
+		if err != nil {
+			otel.Handle(err)
+			return false
+		}
 	}
 
 	dp := dest
@@ -309,8 +389,8 @@ func (d *ddSketch[N]) exportDataPoint(
 		dp.Min = metricdata.NewExtrema(series.min)
 		dp.Max = metricdata.NewExtrema(series.max)
 	}
-	dp.Encoding = metricdata.DDSketchEncodingProto
-	dp.Sketch = bytes
+	dp.Encoding = encoding
+	dp.Sketch = payload
 	collectExemplars(&dp.Exemplars, series.res.Collect)
 	return true
 }
@@ -320,4 +400,60 @@ func serializeDDSketch(sk *ddsketch.DDSketch) ([]byte, error) {
 		return nil, nil
 	}
 	return proto.Marshal(sk.ToProto())
+}
+
+// ddSketchDeltaPayload computes a sparse delta between a proto-serialized
+// snapshot and the current sketch. Only buckets whose count changed by at
+// least threshold are included.
+func ddSketchDeltaPayload(snapPayload []byte, current *ddsketch.DDSketch, threshold uint64) ([]byte, error) {
+	var snap sketchpb.DDSketch
+	if err := proto.Unmarshal(snapPayload, &snap); err != nil {
+		return serializeDDSketch(current)
+	}
+
+	curr := current.ToProto()
+	delta := &sketchpb.DDSketch{
+		Mapping:   curr.Mapping,
+		ZeroCount: curr.ZeroCount - snap.ZeroCount,
+	}
+	delta.PositiveValues = ddStoreDelta(snap.PositiveValues, curr.PositiveValues, float64(threshold))
+	delta.NegativeValues = ddStoreDelta(snap.NegativeValues, curr.NegativeValues, float64(threshold))
+	return proto.Marshal(delta)
+}
+
+// ddStoreDelta returns a sparse Store with only buckets where |Δcount| ≥ threshold.
+func ddStoreDelta(snap, curr *sketchpb.Store, threshold float64) *sketchpb.Store {
+	if curr == nil {
+		return nil
+	}
+	snapCounts := ddStoreToMap(snap)
+	currCounts := ddStoreToMap(curr)
+
+	out := &sketchpb.Store{BinCounts: make(map[int32]float64)}
+	for idx, cnt := range currCounts {
+		d := cnt - snapCounts[idx]
+		if d >= threshold || d <= -threshold {
+			out.BinCounts[idx] = d
+		}
+	}
+	if len(out.BinCounts) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ddStoreToMap converts a sketchpb.Store into a flat index→count map.
+func ddStoreToMap(s *sketchpb.Store) map[int32]float64 {
+	m := make(map[int32]float64)
+	if s == nil {
+		return m
+	}
+	for idx, cnt := range s.BinCounts {
+		m[idx] += cnt
+	}
+	for i, cnt := range s.ContiguousBinCounts {
+		idx := s.ContiguousBinIndexOffset + int32(i)
+		m[idx] += cnt
+	}
+	return m
 }

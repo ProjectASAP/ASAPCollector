@@ -1,0 +1,61 @@
+# SDK pipeline configuration — Baseline (raw gauge, no sketch aggregation)
+#
+# transmit_sketch: false — SDK emits raw Float64Gauge (LastValue) observations.
+# The collector-side sketch processor (kllprocessor, hllprocessor, etc.) is
+# responsible for aggregation. Use this when you want the collector to own
+# the sketch type and parameters rather than the SDK.
+#
+# This is also the reference "uncompressed" baseline for bandwidth and CPU
+# benchmarking against sketch modes.
+
+exporter:
+  endpoint: localhost:4317
+  insecure: true
+  max_send_msg_size_mb: 64
+
+reader:
+  # For baseline, match the worker record interval so every sample is exported
+  # individually (no SDK-side accumulation between export ticks).
+  interval: 20ms    # ~50 samples/s/series at default load settings
+  enable_self_monitoring: true
+
+sketch:
+  type: baseline
+  transmit_sketch: false
+
+instruments:
+  - name: benchmark.latency
+    description: Benchmark latency measurement
+    unit: ms
+    instrument_kind: gauge    # raw LastValue — no aggregation view applied
+    group_by:
+      - host.name
+      - service.name
+    series_per_sketch: 1      # not meaningful for baseline; kept for schema consistency
+
+asap_query:
+  metrics:
+    - metric: benchmark.latency
+      labels:
+        - host.name
+        - service.name
+  query_groups:
+    - id: 1
+      queries:
+        - "quantile_over_time(0.99, benchmark_latency[5m])"
+      repetition_delay: 5000
+      controller_options:
+        accuracy_sla: 0.01
+        latency_sla: 100.0
+
+load:
+  workers: 10
+  series: 1000
+  samples_per_sec_per_series: 50.0
+  duration: 60s
+  distribution:
+    type: zipf
+    s: 1.1
+    v: 1.0
+    max: 500
+    mean: 250.0
