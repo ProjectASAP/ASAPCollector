@@ -199,15 +199,123 @@ for each value (including first):
 
 ---
 
+## Parameter tuning
+
+### 1. `max_diff` — primary accuracy / compression trade-off
+
+The single most impactful parameter. Controls the maximum allowed absolute
+error between an original and a recovered value.
+
+| Value | Character | Paper finding |
+|---|---|---|
+| `1e-2` | Loose | ~10 % better compression ratio than baseline; ~10× coarser error |
+| **`1e-3`** | **Default** | **Paper benchmark default; good balance for sensor data** |
+| `1e-4` | Tight | ~30–40 % worse compression ratio; 10× finer error than default |
+
+The error bound is **hard-guaranteed**: for XOR, `FindAppLong` picks only
+bit-patterns within `[v-maxDiff, v+maxDiff]`; for Qt,
+`|recoverValue - v| ≤ maxDiff * 0.999 < maxDiff`.
+
+### 2. `adjust_digit` — domain-specific integer offset (XOR only)
+
+For SerfXOR, `FindAppLong` searches for a float whose bits maximise common
+leading zeros with the previous stored value. If your metric values cluster
+around a large integer (e.g. stock prices near $245, GPS latitude near 355°),
+setting `adjust_digit` to that integer shifts the values toward zero before
+the search, where consecutive mantissa bits naturally share more common prefix.
+
+The paper uses per-dataset values taken from `Perf_expr_config.hpp`:
+
+| Dataset | `adjust_digit` | Notes |
+|---|---|---|
+| Air-pressure, Trajectories | `0` | Values already near zero |
+| Wind speed | `8` | Small shift |
+| Smart-grid | `4` | |
+| IR / Motor / Dew-point temp | `109` | Temperatures in °C + offset |
+| Basel temperature | `80` | |
+| Basel wind | `126` | |
+| PM10 dust | `256` | |
+| Stocks (USA) | `245` | ~$245 mean price |
+| City temperature | `355` | GPS-derived column near 355 |
+
+**Safe default: `0`** — FindAppLong still works, just misses 5–20 %
+compression ratio for data far from zero.
+
+**How to choose**: round the mean of your metric series to the nearest
+integer. For the synthetic Zipf load generator (values near 0–1) `0` is
+correct.
+
+### 3. `window_interval` — flush cadence
+
+Our implementation uses a tumbling time window rather than the paper's
+fixed block size of **1000 values**. Longer windows accumulate more points,
+giving the encoder more context for delta-of-delta timestamps and XOR
+alignment, at the cost of higher end-to-end latency before blocks are
+written or transmitted.
+
+| `window_interval` | Approximate block size at 10 k MPS | Notes |
+|---|---|---|
+| `5s` | ~50 k points | Low latency, smaller blocks |
+| **`10s`** | **~100 k points** | **Benchmark default** |
+| `30s` | ~300 k points | Better compression, high latency |
+
+The paper's C++ benchmark uses fixed blocks of 50 values at a time across
+multiple blocks (effectively a streaming model). Our time-based window is
+more natural for the OTel pipeline and gives larger blocks, which generally
+improves compression ratio.
+
+### 4. Adaptive leading/trailing table — implementation gap
+
+The C++ `SerfXORCompressor` (and `NetSerfXORCompressor`) tracks the
+distribution of leading/trailing zero counts across a window of values and
+periodically calls `PostOfficeSolver::InitRoundAndRepresentation()` to
+rebalance the 3-bit codes toward the actual histogram. If the new assignment
+improves the per-bit efficiency, updated tables are written into the
+bitstream; the decoder reads them and switches.
+
+**Our Go implementation** uses the fixed tables from the C++ constructor
+defaults (the `serfLeadingRound` / `serfTrailingRepresentation` arrays) and
+never adapts them. For synthetic load-gen data with uniformly random floats
+this has negligible impact. For real sensor data with a specific distribution
+of XOR patterns you can lose 5–15 % compression ratio.
+
+Adding adaptive tables would require:
+1. Accumulating `[64]int` lead and trail histograms during encoding.
+2. At each window flush, running the post-office assignment algorithm and
+   embedding the new table in the bitstream before the encoded values.
+3. Updating the decoder to read the optional table update flag before each
+   block boundary.
+
+### 5. Qt `0.999` safety factor — hardcoded, not a knob
+
+The Qt encoder uses `effective_step = 2 * maxDiff * 0.999` so that the
+worst-case quantization error `(step/2 = 0.999 * maxDiff)` is strictly
+below `maxDiff`, maintaining the paper's error guarantee even with IEEE 754
+rounding. The C++ 32-bit variant uses `0.97` for extra margin. This value
+is intentionally hardcoded and should not be changed.
+
+---
+
 ## Benchmark targets
 
 ```bash
 cd opentelemetry-collector-contrib-patch
 
 # Mode 1 — Local archival benchmarks
-./cmd/bench.sh gorillacol              # Gorilla XOR baseline
+./cmd/bench.sh gorillacol              # Gorilla XOR baseline (lossless)
 ./cmd/bench.sh serfcol                 # Serf XOR  (max_diff=1e-3, adjust_digit=0)
 ./cmd/bench.sh serfcol-qt              # Serf Qt   (max_diff=1e-3)
+
+# max_diff parameter sweep (XOR)
+./cmd/bench.sh serfcol-1e2             # Serf XOR  max_diff=1e-2 (loose)
+./cmd/bench.sh serfcol-1e4             # Serf XOR  max_diff=1e-4 (tight)
+
+# max_diff parameter sweep (Qt)
+./cmd/bench.sh serfcol-qt-1e2          # Serf Qt   max_diff=1e-2 (loose)
+./cmd/bench.sh serfcol-qt-1e4          # Serf Qt   max_diff=1e-4 (tight)
+
+# adjust_digit example (XOR, adjust_digit=100, for metrics ~80–120)
+./cmd/bench.sh serfcol-adj
 
 # Mode 2 — Transmission benchmarks (agent compress → network → backend decompress)
 ./cmd/bench.sh serf-transmission-xor   # Serf XOR transmission pipeline
