@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
@@ -21,11 +22,11 @@ import (
 // allocations in the hot attributesKey path.
 var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
 
-
 type kllProcessor struct {
 	cfg          *Config
 	logger       *zap.Logger
 	nextConsumer consumer.Metrics
+	monitor      *selfmonitor.Monitor
 
 	mu            sync.Mutex
 	windowStore   map[string]*resourceWindow
@@ -106,6 +107,8 @@ func (p *kllProcessor) Start(ctx context.Context, _ component.Host) error {
 }
 
 func (p *kllProcessor) Shutdown(ctx context.Context) error {
+	defer p.shutdownMonitor()
+
 	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
 		return nil
 	}
@@ -119,44 +122,15 @@ func (p *kllProcessor) Shutdown(ctx context.Context) error {
 }
 
 func (p *kllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
-	rmCount := md.ResourceMetrics().Len()
-	dpCount := 0
-	for i := 0; i < rmCount; i++ {
-		for j := 0; j < md.ResourceMetrics().At(i).ScopeMetrics().Len(); j++ {
-			metrics := md.ResourceMetrics().At(i).ScopeMetrics().At(j).Metrics()
-			for k := 0; k < metrics.Len(); k++ {
-				m := metrics.At(k)
-				switch m.Type() {
-				case pmetric.MetricTypeGauge:
-					dpCount += m.Gauge().DataPoints().Len()
-				case pmetric.MetricTypeKLLSketch:
-					dpCount += m.KLLSketch().DataPoints().Len()
-				default:
-					// ignore
-				}
-			}
-		}
-	}
-	if p.logger != nil {
-		p.logger.Debug("KLL processor received data", zap.Int("resource_metrics", rmCount), zap.Int("data_points", dpCount))
-	}
+	p.recordInput(ctx, md)
+
 	switch p.cfg.Mode {
 	case ModeBatch:
 		if err := p.processBatch(md); err != nil {
 			return err
 		}
-		if p.logger != nil {
-			p.logger.Debug("KLL processor sending batch output")
-		}
-		out := md
-		if p.cfg.DropOriginal {
-			var ok bool
-			out, ok = p.batchOutputOnly(md)
-			if !ok {
-				return nil
-			}
-		}
-		return p.nextConsumer.ConsumeMetrics(ctx, out)
+		p.recordOutput(ctx, md)
+		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	case ModeWindow:
 		p.accumulateIntoWindow(md)
 		return nil
@@ -180,12 +154,10 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 	batched := make(map[string]*batchSeries) // key = metricName + "::" + attributesKey(attrs)
 
 	getOrCreate := func(name, unit string, attrs pcommon.Map) *batchSeries {
-		key := name + "::" + attributesKey(attrs)
+		key := name + "::" + p.seriesKey(attrs)
 		bs := batched[key]
 		if bs == nil {
-			attrCopy := pcommon.NewMap()
-			attrs.CopyTo(attrCopy)
-			bs = &batchSeries{name: name, unit: unit, attrs: attrCopy, sketch: newKLLSketch(p.cfg.K)}
+			bs = &batchSeries{name: name, unit: unit, attrs: p.seriesAttrs(attrs), sketch: newKLLSketch(p.cfg.K)}
 			batched[key] = bs
 		}
 		return bs
@@ -203,6 +175,9 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 					dps := metric.Gauge().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
 						dp := dps.At(l)
+						if !p.matchesMatchers(dp.Attributes()) {
+							continue
+						}
 						var val float64
 						if p.cfg.ReadAsInt {
 							val = float64(dp.IntValue())
@@ -218,6 +193,9 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 					dps := metric.KLLSketch().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
 						dp := dps.At(l)
+						if !p.matchesMatchers(dp.Attributes()) {
+							continue
+						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
 						if bs.sketch != nil && len(dp.Sketch()) > 0 {
 							incoming, err := kll.DeserializeKLLSketchFromBytes(dp.Sketch())
@@ -237,9 +215,7 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 		return nil
 	}
 
-	// Append a new ResourceMetrics for our output (processBatch mutates md in place).
-	outputRm := md.ResourceMetrics().AppendEmpty()
-	scope := outputRm.ScopeMetrics().AppendEmpty()
+	scope := md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty()
 	scope.Scope().SetName("otelcol/kllprocessor")
 	now := pcommon.NewTimestampFromTime(time.Now())
 
@@ -271,41 +247,6 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 	return nil
 }
 
-// batchOutputOnly builds a new pmetric.Metrics containing only the KLL output
-// (quantiles or sketches) from processBatch, with resource copied from the first
-// input ResourceMetrics. Returns (metrics, true) if there is output to forward,
-// or (empty metrics, false) if not.
-func (p *kllProcessor) batchOutputOnly(md pmetric.Metrics) (pmetric.Metrics, bool) {
-	rms := md.ResourceMetrics()
-	if rms.Len() < 2 {
-		// Need at least 1 input rm + 1 output rm (appended by processBatch)
-		return pmetric.NewMetrics(), false
-	}
-	firstRm := rms.At(0)
-	outputRm := rms.At(rms.Len() - 1)
-
-	// Check if output has any data points
-	dpCount := 0
-	for j := 0; j < outputRm.ScopeMetrics().Len(); j++ {
-		for k := 0; k < outputRm.ScopeMetrics().At(j).Metrics().Len(); k++ {
-			m := outputRm.ScopeMetrics().At(j).Metrics().At(k)
-			if m.Type() == pmetric.MetricTypeGauge {
-				dpCount += m.Gauge().DataPoints().Len()
-			}
-		}
-	}
-	if dpCount == 0 {
-		return pmetric.NewMetrics(), false
-	}
-
-	// Build result with only output. Copy output rm and set resource from first input.
-	out := pmetric.NewMetrics()
-	dstRm := out.ResourceMetrics().AppendEmpty()
-	outputRm.CopyTo(dstRm)
-	firstRm.Resource().CopyTo(dstRm.Resource())
-	return out, true
-}
-
 func attributesKey(attrs pcommon.Map) string {
 	keys := make([]string, 0, attrs.Len())
 	attrs.Range(func(k string, _ pcommon.Value) bool {
@@ -328,6 +269,58 @@ func attributesKey(attrs pcommon.Map) string {
 	s := b.String()
 	builderPool.Put(b)
 	return s
+}
+
+// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
+func (p *kllProcessor) matchesMatchers(attrs pcommon.Map) bool {
+	for _, m := range p.cfg.LabelMatchers {
+		v, ok := attrs.Get(m.Key)
+		if !ok || v.AsString() != m.Value {
+			return false
+		}
+	}
+	return true
+}
+
+// seriesKey returns the map key used to locate a series in the window/batch store.
+// When AggregateBy is configured, only those label values form the key (cross-series
+// aggregation). Otherwise the full attribute set is used (per-series, default).
+func (p *kllProcessor) seriesKey(attrs pcommon.Map) string {
+	if len(p.cfg.AggregateBy) == 0 {
+		return attributesKey(attrs)
+	}
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	for _, k := range p.cfg.AggregateBy { // already sorted by Validate
+		v, ok := attrs.Get(k)
+		if !ok {
+			continue
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(v.AsString())
+		b.WriteByte(';')
+	}
+	key := b.String()
+	builderPool.Put(b)
+	return key
+}
+
+// seriesAttrs returns the attribute map to store on a new series entry.
+// When AggregateBy is configured, only those labels are included in the output.
+// Otherwise a full copy of attrs is returned.
+func (p *kllProcessor) seriesAttrs(attrs pcommon.Map) pcommon.Map {
+	out := pcommon.NewMap()
+	if len(p.cfg.AggregateBy) == 0 {
+		attrs.CopyTo(out)
+		return out
+	}
+	for _, k := range p.cfg.AggregateBy {
+		if v, ok := attrs.Get(k); ok {
+			out.PutStr(k, v.AsString())
+		}
+	}
+	return out
 }
 
 func (p *kllProcessor) accumulateIntoWindow(md pmetric.Metrics) {
@@ -398,13 +391,14 @@ func (p *kllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 	dps := metric.Gauge().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		attrKey := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		attrKey := p.seriesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
-			attrCopy := pcommon.NewMap()
-			dp.Attributes().CopyTo(attrCopy)
 			series = p.seriesPool.Get().(*kllSeries)
-			series.attrs = attrCopy
+			series.attrs = p.seriesAttrs(dp.Attributes())
 			if series.sketch != nil {
 				series.sketch.Reset()
 			} else {
@@ -431,13 +425,14 @@ func (p *kllProcessor) accumulateKLLSketchMetric(sw *scopeWindow, metric pmetric
 	dps := metric.KLLSketch().DataPoints()
 	for l := 0; l < dps.Len(); l++ {
 		dp := dps.At(l)
-		attrKey := attributesKey(dp.Attributes())
+		if !p.matchesMatchers(dp.Attributes()) {
+			continue
+		}
+		attrKey := p.seriesKey(dp.Attributes())
 		series := mw.series[attrKey]
 		if series == nil {
-			attrCopy := pcommon.NewMap()
-			dp.Attributes().CopyTo(attrCopy)
 			series = p.seriesPool.Get().(*kllSeries)
-			series.attrs = attrCopy
+			series.attrs = p.seriesAttrs(dp.Attributes())
 			if series.sketch != nil {
 				series.sketch.Reset()
 			} else {
@@ -555,23 +550,52 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 	if out.ResourceMetrics().Len() == 0 {
 		return nil
 	}
-	outRmCount := out.ResourceMetrics().Len()
-	outDpCount := 0
-	for i := 0; i < outRmCount; i++ {
-		for j := 0; j < out.ResourceMetrics().At(i).ScopeMetrics().Len(); j++ {
-			metrics := out.ResourceMetrics().At(i).ScopeMetrics().At(j).Metrics()
-			for k := 0; k < metrics.Len(); k++ {
-				m := metrics.At(k)
-				if m.Type() == pmetric.MetricTypeGauge {
-					outDpCount += m.Gauge().DataPoints().Len()
-				}
+	p.recordOutput(ctx, out)
+	return p.nextConsumer.ConsumeMetrics(ctx, out)
+}
+
+func (p *kllProcessor) enableSelfMonitoring(settings component.TelemetrySettings, processorID string) {
+	monitor, err := selfmonitor.New(settings, processorID, "KLL", p.activeSeriesCount)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warn("kllprocessor: failed to initialize self-monitoring", zap.Error(err))
+		}
+		return
+	}
+	p.monitor = monitor
+}
+
+func (p *kllProcessor) shutdownMonitor() {
+	if p.monitor != nil {
+		p.monitor.Shutdown()
+	}
+}
+
+func (p *kllProcessor) recordInput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordInput(ctx, md)
+	}
+}
+
+func (p *kllProcessor) recordOutput(ctx context.Context, md pmetric.Metrics) {
+	if p.monitor != nil {
+		p.monitor.RecordOutput(ctx, md)
+	}
+}
+
+func (p *kllProcessor) activeSeriesCount() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var total int64
+	for _, rw := range p.windowStore {
+		for _, sw := range rw.scopes {
+			for _, mw := range sw.metrics {
+				total += int64(len(mw.series))
 			}
 		}
 	}
-	if p.logger != nil {
-		p.logger.Debug("KLL processor sending window flush", zap.Int("resource_metrics", outRmCount), zap.Int("data_points", outDpCount))
-	}
-	return p.nextConsumer.ConsumeMetrics(ctx, out)
+	return total
 }
 
 func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pmetric.Metric {
