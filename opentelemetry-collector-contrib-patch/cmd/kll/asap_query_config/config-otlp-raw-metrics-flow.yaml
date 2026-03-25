@@ -1,4 +1,4 @@
-# OTLP Pathway 1 - Local testing
+# OTLP Raw Metrics Flow - Local testing
 receivers:
   otlp:
     protocols:
@@ -28,4 +28,4 @@ service:
     logs:
       level: info
     resource:
-      service.name: kllcol-otlp-pathway1-local
+      service.name: kllcol-otlp-raw-metrics-flow-local

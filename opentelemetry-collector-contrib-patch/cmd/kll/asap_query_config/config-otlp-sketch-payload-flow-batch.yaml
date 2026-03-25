@@ -1,4 +1,4 @@
-# OTLP Pathway 2 - Batch mode - Local testing
+# OTLP Sketch Payload Flow - Batch mode - Local testing
 receivers:
   otlp:
     protocols:
@@ -32,4 +32,4 @@ service:
     logs:
       level: debug
     resource:
-      service.name: kllcol-otlp-pathway2-local
+      service.name: kllcol-otlp-sketch-payload-flow-local
