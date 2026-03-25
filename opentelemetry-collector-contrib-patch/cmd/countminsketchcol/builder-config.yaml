@@ -281,3 +281,4 @@ replaces:
   - github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor => ../../../processor/countminsketchprocessor
   - go.opentelemetry.io/collector/pdata => ../../../../opentelemetry-collector/pdata
   # - github.com/ProjectASAP/sketchlib-go => ../../../../../sketchlib-go
+  - go.opentelemetry.io/collector/processor => ../../../../opentelemetry-collector/processor
