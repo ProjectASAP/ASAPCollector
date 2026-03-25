@@ -68,6 +68,7 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = true
 	cfg.Quantiles = nil
+	cfg.DropOriginal = true
 	require.NoError(t, cfg.Validate())
 
 	sink := new(consumertest.MetricsSink)
@@ -290,10 +291,12 @@ func TestEmptyInput(t *testing.T) {
 }
 
 // TestEmptyResourceMetrics verifies ResourceMetrics with zero ScopeMetrics is handled in batch mode.
+// Uses DropOriginal=false to test passthrough when there is no data to aggregate.
 func TestEmptyResourceMetrics(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeBatch
 	cfg.Quantiles = []float64{0.5}
+	cfg.DropOriginal = false
 	require.NoError(t, cfg.Validate())
 
 	sink := new(consumertest.MetricsSink)

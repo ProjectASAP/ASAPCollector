@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // builderPool recycles strings.Builder instances to avoid per-call heap
@@ -197,7 +198,7 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
 						if bs.sketch != nil && len(dp.Sketch()) > 0 {
-							incoming, err := kll.DeserializeKLLSketchFromProtoBytes(dp.Sketch())
+							incoming, err := kll.DeserializeKLLSketchFromBytes(dp.Sketch())
 							if err == nil {
 								_ = bs.sketch.Merge(incoming)
 							} else if p.logger != nil {
@@ -440,7 +441,7 @@ func (p *kllProcessor) accumulateKLLSketchMetric(sw *scopeWindow, metric pmetric
 			mw.series[attrKey] = series
 		}
 		if series.sketch != nil && len(dp.Sketch()) > 0 {
-			incoming, err := kll.DeserializeKLLSketchFromProtoBytes(dp.Sketch())
+			incoming, err := kll.DeserializeKLLSketchFromBytes(dp.Sketch())
 			if err == nil {
 				_ = series.sketch.Merge(incoming)
 			} else if p.logger != nil {
@@ -629,7 +630,11 @@ func serializeKLLSketch(sketch *kll.KLLSketch) ([]byte, error) {
 	if sketch == nil {
 		return nil, nil
 	}
-	return sketch.SerializeProtoBytes()
+	env, err := sketch.SerializePortable()
+	if err != nil {
+		return nil, err
+	}
+	return proto.Marshal(env)
 }
 
 func (p *kllProcessor) sketchMetricName(base string) string {
