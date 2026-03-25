@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // builderPool recycles strings.Builder instances used in the hot
@@ -634,11 +635,15 @@ func (p *windowedCountMinSketchProcessor) inboundDecodeCMS(aggregationKey string
 }
 
 func serializeCMS(s *cms.CountMinSketch) ([]byte, error) {
-	return s.SerializeProtoBytes()
+	env, err := s.SerializePortable()
+	if err != nil {
+		return nil, err
+	}
+	return proto.Marshal(env)
 }
 
 func deserializeCMS(data []byte) (*cms.CountMinSketch, error) {
-	return cms.DeserializeCountMinSketchFromProtoBytes(data)
+	return cms.DeserializeCountMinSketchFromBytes(data)
 }
 
 // cloneCMS returns a deep copy of s suitable for use as a delta snapshot.
@@ -648,7 +653,7 @@ func cloneCMS(s *cms.CountMinSketch) *cms.CountMinSketch {
 	if err != nil {
 		return nil
 	}
-	clone, err := cms.DeserializeCountMinSketchFromProtoBytes(data)
+	clone, err := cms.DeserializeCountMinSketchFromBytes(data)
 	if err != nil {
 		return nil
 	}
