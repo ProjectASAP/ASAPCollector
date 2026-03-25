@@ -1,4 +1,4 @@
-# OTLP Pathway 2 - Batch mode - Local testing
+# OTLP Raw Metrics Flow - Local testing
 receivers:
   otlp:
     protocols:
@@ -8,14 +8,8 @@ receivers:
         endpoint: 0.0.0.0:53218
 
 processors:
-  countmin:
-    mode: batch
-    metric_name: "cms_sketch"
-    rows: 5
-    columns: 2000
-    transmit_sketch: true
-    group_by: []
-    drop_original: true
+  batch:
+    send_batch_size: 5000
 
 exporters:
   otlphttp:
@@ -26,10 +20,10 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [countmin]
+      processors: [batch]
       exporters: [otlphttp]
   telemetry:
     logs:
       level: debug
     resource:
-      service.name: countminsketchcol-pathway2-batch-local
+      service.name: countminsketchcol-raw-metrics-flow-local

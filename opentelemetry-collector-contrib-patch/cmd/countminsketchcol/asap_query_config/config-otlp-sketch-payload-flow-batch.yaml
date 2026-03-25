@@ -1,4 +1,4 @@
-# OTLP Pathway 2 - Window mode - Local testing 
+# OTLP Sketch Payload Flow - Batch mode - Local testing
 receivers:
   otlp:
     protocols:
@@ -9,14 +9,13 @@ receivers:
 
 processors:
   countmin:
-    mode: window
+    mode: batch
     metric_name: "cms_sketch"
     rows: 5
     columns: 2000
     transmit_sketch: true
     group_by: []
     drop_original: true
-    window_interval: 60s
 
 exporters:
   otlphttp:
@@ -30,9 +29,7 @@ service:
       processors: [countmin]
       exporters: [otlphttp]
   telemetry:
-    metrics:
-      level: basic
     logs:
       level: debug
     resource:
-      service.name: countminsketchcol-otlp-pathway2-local
+      service.name: countminsketchcol-sketch-payload-flow-batch-local
