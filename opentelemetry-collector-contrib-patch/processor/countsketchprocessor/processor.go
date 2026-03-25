@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 // builderPool recycles strings.Builder instances used in buildPartitionKey.
@@ -373,7 +374,7 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 					}
 					encoding = "proto_delta"
 				} else {
-					payload, serErr = ws.cs.SerializeProtoBytes()
+					payload, serErr = serializeCountSketch(ws.cs)
 					encoding = "proto_full"
 				}
 
@@ -382,7 +383,7 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 				p.snapshots[partitionKey] = newSnap
 				p.snapshotsMu.Unlock()
 			} else {
-				payload, serErr = ws.cs.SerializeProtoBytes()
+				payload, serErr = serializeCountSketch(ws.cs)
 				encoding = "proto_full"
 			}
 		}
@@ -531,7 +532,7 @@ func (p *countSketchProcessor) inboundDecodeCS(partitionKey string, dp pmetric.C
 		return reconstructed, nil
 
 	default: // CountSketchEncodingProto or unspecified
-		decoded, err := countsketch.DeserializeCountSketchFromProtoBytes(payload)
+		decoded, err := countsketch.DeserializeCountSketchFromBytes(payload)
 		if err != nil {
 			return nil, err
 		}
@@ -578,6 +579,17 @@ func (p *countSketchProcessor) mergeWindowCS(partitionKey string, incoming *coun
 		p.logger.Error("countsketchprocessor: failed to merge CountSketch", zap.Error(err))
 	}
 	ws.sampleCount++
+}
+
+func serializeCountSketch(s *countsketch.CountSketch) ([]byte, error) {
+	if s == nil {
+		return nil, nil
+	}
+	env, err := s.SerializePortable()
+	if err != nil {
+		return nil, err
+	}
+	return proto.Marshal(env)
 }
 
 // cloneCS returns a deep copy of cs suitable for use as a delta snapshot.

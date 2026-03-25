@@ -1,0 +1,29 @@
+# OTLP Raw Metrics Flow - Local testing
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:53217
+      http:
+        endpoint: 0.0.0.0:53218
+
+processors:
+  batch:
+    send_batch_size: 5000
+
+exporters:
+  otlphttp:
+    endpoint: http://localhost:4318
+    encoding: proto
+    compression: gzip
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp]
+  telemetry:
+    logs:
+      level: debug
+    resource:
+      service.name: countsketchcol-raw-metrics-flow-local
