@@ -1,4 +1,4 @@
-# OTLP Pathway 1 - Local testing
+# OTLP Raw Metrics Flow - Local testing
 receivers:
   otlp:
     protocols:
@@ -26,4 +26,4 @@ service:
     logs:
       level: debug
     resource:
-      service.name: countsketchcol-pathway1-local
+      service.name: countsketchcol-raw-metrics-flow-local
