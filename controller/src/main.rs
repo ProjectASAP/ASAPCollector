@@ -23,7 +23,7 @@ use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
-use planner::{CostModelPlanner, OnlineMetricsStore, init_online_store};
+use planner::{CostModelPlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
 use store::PlanStore;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
@@ -149,6 +149,7 @@ async fn main() {
     // ── HTTP API ──────────────────────────────────────────────────────────────
     let app = Router::new()
         .route("/api/v1/plan",                    post(handle_plan))
+        .route("/api/v1/plan/pareto",             post(handle_pareto))
         .route("/api/v1/plan/:metric",            get(handle_get_plan))
         .route("/api/v1/plan/:metric/rollback",   post(handle_rollback))
         .route("/api/v1/agents",                  get(handle_agents))
@@ -220,6 +221,54 @@ async fn handle_plan(
             "estimated_fill_rate":                  cost.estimated_fill_rate,
             "flush_rate_hz":                        cost.flush_rate_hz,
         },
+    }))).into_response()
+}
+
+/// Request body for `POST /api/v1/plan/pareto`.
+#[derive(serde::Deserialize)]
+struct ParetoRequest {
+    #[serde(flatten)]
+    spec:    QuerySpec,
+    #[serde(default)]
+    weights: ObjectiveWeights,
+}
+
+/// Returns the Pareto frontier of collection plans for the given workload.
+/// Each point is annotated with bandwidth, CPU, memory and accuracy objectives.
+/// The caller can specify `weights` to get the frontier sorted by their
+/// preferred trade-off.
+async fn handle_pareto(
+    State(st): State<AppState>,
+    Json(req): Json<ParetoRequest>,
+) -> impl IntoResponse {
+    let wc = req.spec.workload.clone();
+    let workload = match st.analyzer.analyze(req.spec) {
+        Ok(w)  => w,
+        Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
+    };
+
+    let frontier = pareto_frontier(&workload, &wc, req.weights, Some(&st.online_store));
+
+    if frontier.is_empty() {
+        return (StatusCode::UNPROCESSABLE_ENTITY,
+            "no sketch meets the accuracy SLA for the given workload").into_response();
+    }
+
+    let best = select_best(&frontier, req.weights)
+        .map(|p| p.sketch_type.to_string());
+
+    let points: Vec<serde_json::Value> = frontier.iter().map(|p| json!({
+        "sketch_type":             p.sketch_type.to_string(),
+        "bandwidth_bytes_per_sec": p.bandwidth_bytes_per_sec,
+        "cpu_micros_per_sample":   p.cpu_micros_per_sample,
+        "memory_bytes":            p.memory_bytes,
+        "estimated_error":         p.estimated_error,
+    })).collect();
+
+    (StatusCode::OK, Json(json!({
+        "metric":   workload.metric_name,
+        "frontier": points,
+        "best":     best,
     }))).into_response()
 }
 
