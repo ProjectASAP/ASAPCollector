@@ -3,6 +3,7 @@ mod config;
 mod monitor;
 mod opamp;
 mod planner;
+mod query_parser;
 mod store;
 mod types;
 

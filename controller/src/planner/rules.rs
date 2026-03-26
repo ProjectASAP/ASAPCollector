@@ -17,8 +17,14 @@ impl RulesPlanner {
     }
 
     pub fn plan(&self, w: &QueryWorkload) -> CollectionPlan {
+        // When exact computation is required (RSI, MACD, stateful indicators),
+        // skip sketch selection and return a raw-passthrough plan.
+        if w.exact_required {
+            return self.raw_passthrough_plan(w);
+        }
+
         let sketch_type = select_sketch_type(&w.aggregations);
-        let sketch_params = default_sketch_params(&sketch_type, w.accuracy_sla);
+        let sketch_params = default_sketch_params_with_quantiles(&sketch_type, w.accuracy_sla, &w.quantiles);
         let (mode, window_duration) = select_window_strategy(w);
 
         let mut aggregate_by = w.group_by_labels.clone();
@@ -64,6 +70,46 @@ impl RulesPlanner {
             transmission_cost_summary: TransmissionCostSummary::default(),
         }
     }
+
+    /// Returns a raw-passthrough plan for queries that require exact per-sample
+    /// computation (RSI, MACD, stochastic oscillator, etc.).
+    fn raw_passthrough_plan(&self, w: &QueryWorkload) -> CollectionPlan {
+        let valid_until = Utc::now()
+            + chrono::Duration::seconds(self.valid_for.as_secs() as i64);
+
+        let mut label_matchers: Vec<String> = w
+            .label_filters
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        label_matchers.sort();
+
+        CollectionPlan {
+            agent_config: AgentCollectorConfig {
+                output_mode:          OutputMode::Raw,
+                sketch_type:          SketchType::DDSketch, // unused for raw mode
+                sketch_params:        SketchParams::default(),
+                aggregate_by:         vec![],
+                label_matchers,
+                window_duration:      None,
+                mode:                 ProcessorMode::Batch,
+                enable_self_monitoring: true,
+                transmit_sketch:      false,
+                drop_original:        false,
+                delta_transmission:   false,
+                delta_threshold:      0.0,
+            },
+            gateway_config: GatewayCollectorConfig { passthrough: true },
+            backend_config: BackendCollectorConfig {
+                merge_sketch_type: SketchType::DDSketch,
+                group_by:          vec![],
+            },
+            precompute:               vec![],
+            valid_until,
+            delta_decision:           DeltaDecision::default(),
+            transmission_cost_summary: TransmissionCostSummary::default(),
+        }
+    }
 }
 
 // ── Sketch selection ──────────────────────────────────────────────────────────
@@ -83,32 +129,35 @@ fn select_sketch_type(aggs: &[AggType]) -> SketchType {
 
 /// Returns type-appropriate default parameters for the given accuracy SLA.
 pub fn default_sketch_params(st: &SketchType, accuracy_sla: f64) -> SketchParams {
-    let acc = if accuracy_sla <= 0.0 {
-        0.01
+    default_sketch_params_with_quantiles(st, accuracy_sla, &[])
+}
+
+/// Like [`default_sketch_params`] but seeds the quantiles list from the
+/// query-parsed φ values when non-empty; falls back to [0.5, 0.9, 0.99].
+pub fn default_sketch_params_with_quantiles(
+    st: &SketchType,
+    accuracy_sla: f64,
+    query_quantiles: &[f64],
+) -> SketchParams {
+    let acc = if accuracy_sla <= 0.0 { 0.01 } else { accuracy_sla };
+    let quantiles: Vec<f64> = if !query_quantiles.is_empty() {
+        query_quantiles.to_vec()
     } else {
-        accuracy_sla
+        vec![0.5, 0.9, 0.99]
     };
     match st {
         SketchType::DDSketch => SketchParams {
             relative_accuracy: acc,
-            quantiles: vec![0.5, 0.9, 0.99],
+            quantiles,
             ..Default::default()
         },
         SketchType::KLL => {
             let k = ((1.0 / acc) as u32).max(32);
-            SketchParams {
-                k,
-                quantiles: vec![0.5, 0.9, 0.99],
-                ..Default::default()
-            }
+            SketchParams { k, quantiles, ..Default::default() }
         }
         SketchType::HLL => {
-            // precision = log2(registers); higher → lower error.
             let precision = if acc > 0.02 { 10u32 } else { 14u32 };
-            SketchParams {
-                precision,
-                ..Default::default()
-            }
+            SketchParams { precision, ..Default::default() }
         }
         SketchType::CountSketch | SketchType::CountMinSketch => SketchParams {
             rows: 5,
@@ -150,6 +199,8 @@ mod tests {
             accuracy_sla: 0.01,
             latency_sla: None,
             sketch_type_override: None,
+            exact_required: false,
+            quantiles: vec![],
         }
     }
 
