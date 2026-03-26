@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::delta_cost_model::decide_delta;
+use super::online_cost_model;
 use super::rules::{default_sketch_params, select_window_strategy, RulesPlanner};
 use crate::types::*;
 
@@ -85,6 +86,34 @@ pub struct PlanScore {
     pub meets_sla: bool,
 }
 
+/// Estimates resource costs for a given plan + workload using the provided cost table.
+pub fn score_with(plan: &CollectionPlan, w: &QueryWorkload, table: &HashMap<SketchType, SketchCosts>) -> PlanScore {
+    let st = &plan.agent_config.sketch_type;
+    let Some(&costs) = table.get(st) else {
+        return PlanScore {
+            bandwidth_bytes_per_sec: f64::MAX,
+            cpu_micros_per_sample: f64::MAX,
+            memory_bytes: f64::MAX,
+            estimated_error: 1.0,
+            meets_sla: false,
+        };
+    };
+
+    let dim_multiplier = (plan.agent_config.aggregate_by.len() + 1) as f64;
+    let bandwidth = costs.bytes_per_series_per_sec * dim_multiplier;
+    let memory = costs.base_memory_bytes * dim_multiplier;
+    let err = estimate_error(st, &plan.agent_config.sketch_params, costs);
+    let sla = if w.accuracy_sla <= 0.0 { 0.01 } else { w.accuracy_sla };
+
+    PlanScore {
+        bandwidth_bytes_per_sec: bandwidth,
+        cpu_micros_per_sample: costs.cpu_micros_per_sample,
+        memory_bytes: memory,
+        estimated_error: err,
+        meets_sla: err <= sla,
+    }
+}
+
 /// Estimates resource costs for a given plan + workload.
 pub fn score(plan: &CollectionPlan, w: &QueryWorkload) -> PlanScore {
     let table = benchmark_table();
@@ -135,14 +164,31 @@ fn estimate_error(st: &SketchType, p: &SketchParams, costs: SketchCosts) -> f64 
 
 /// Extends the rule-based planner by scoring all valid sketch candidates and
 /// choosing the one with the lowest bandwidth that still meets the AccuracySLA.
+///
+/// When an [`OnlineMetricsStore`] is attached (via [`CostModelPlanner::with_online_store`])
+/// the planner blends live EMA observations into the cost table used for scoring,
+/// so that real-world behaviour gradually supersedes the static benchmark defaults.
 pub struct CostModelPlanner {
-    inner: RulesPlanner,
+    inner:        RulesPlanner,
+    online_store: Option<online_cost_model::OnlineMetricsStore>,
 }
 
 impl CostModelPlanner {
     pub fn new() -> Self {
-        Self {
-            inner: RulesPlanner::new(),
+        Self { inner: RulesPlanner::new(), online_store: None }
+    }
+
+    /// Attach a live EMA store so scoring uses blended benchmark + observed costs.
+    pub fn with_online_store(mut self, store: online_cost_model::OnlineMetricsStore) -> Self {
+        self.online_store = Some(store);
+        self
+    }
+
+    /// Returns the effective cost table: online-blended when available, benchmark otherwise.
+    fn cost_table(&self) -> HashMap<SketchType, SketchCosts> {
+        match &self.online_store {
+            Some(s) => online_cost_model::effective_table(s),
+            None    => benchmark_table_pub(),
         }
     }
 
@@ -167,6 +213,8 @@ impl CostModelPlanner {
             }
         };
 
+        let table = self.cost_table();
+
         // If a specific sketch type is pinned, use it directly.
         if let Some(st) = &w.sketch_type_override {
             let params = default_sketch_params(st, w.accuracy_sla);
@@ -177,7 +225,7 @@ impl CostModelPlanner {
             plan.agent_config.mode = mode;
             plan.agent_config.window_duration = window_duration;
             plan.backend_config.merge_sketch_type = st.clone();
-            apply_delta_decision(&mut plan, w, wc);
+            apply_delta_decision_with(&mut plan, w, wc, &table);
             return plan;
         }
 
@@ -186,7 +234,7 @@ impl CostModelPlanner {
         // Start with the rule-based plan as the baseline.
         let baseline = self.inner.plan(w);
         let mut best_plan = baseline;
-        let mut best_score = score(&best_plan, w);
+        let mut best_score = score_with(&best_plan, w, &table);
 
         for st in candidates {
             let params = default_sketch_params(&st, w.accuracy_sla);
@@ -199,7 +247,7 @@ impl CostModelPlanner {
             trial.agent_config.window_duration = window_duration;
             trial.backend_config.merge_sketch_type = st;
 
-            let s = score(&trial, w);
+            let s = score_with(&trial, w, &table);
             if !s.meets_sla {
                 continue;
             }
@@ -212,17 +260,18 @@ impl CostModelPlanner {
             }
         }
 
-        apply_delta_decision(&mut best_plan, w, wc);
+        apply_delta_decision_with(&mut best_plan, w, wc, &table);
         best_plan
     }
 }
 
-/// Runs the delta cost model and writes the decision into the plan.
-///
-/// Also propagates `delta_transmission` and `delta_threshold` into
-/// `agent_config` so the YAML generator can emit the right fields.
-fn apply_delta_decision(plan: &mut CollectionPlan, w: &QueryWorkload, wc: &WorkloadCharacteristics) {
-    let table = super::cost_model::benchmark_table_pub();
+/// Runs the delta cost model and writes the decision into the plan using a provided cost table.
+fn apply_delta_decision_with(
+    plan:  &mut CollectionPlan,
+    w:     &QueryWorkload,
+    wc:    &WorkloadCharacteristics,
+    table: &HashMap<SketchType, SketchCosts>,
+) {
     let bytes_per_series_per_sec = table
         .get(&plan.agent_config.sketch_type)
         .map(|c| c.bytes_per_series_per_sec)
