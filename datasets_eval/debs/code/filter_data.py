@@ -44,6 +44,7 @@ def main() -> None:
             chunksize=args.chunksize,
             dtype=object,
             low_memory=False,
+            index_col=False,
         ):
             if "Last" not in chunk.columns or "Trading time" not in chunk.columns:
                 raise SystemExit(f"missing Last or Trading time column in {path}")
@@ -60,7 +61,7 @@ def main() -> None:
             )
             first_write = False
         if not any_row:
-            hdr = pd.read_csv(path, comment="#", nrows=0)
+            hdr = pd.read_csv(path, comment="#", nrows=0, index_col=False)
             hdr.to_csv(out, index=False)
 
 

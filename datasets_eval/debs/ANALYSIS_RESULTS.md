@@ -22,9 +22,11 @@ Inter-arrival gaps (ms) on globally sorted `Date` + `Trading time` events per fi
 | debs2022-gc-trading-day-13-11-21.csv | 0 | 0 | 0 | 0 | 0 | 0 |
 | debs2022-gc-trading-day-14-11-21.csv | — | — | — | — | — | — |
 
-**Why day 13 is all zeros:** That file still has thousands of rows with `Trading time`, but after parsing to UTC milliseconds **every row shares the same timestamp** (`unique_ms == 1` in a check). Sorted consecutive gaps are therefore **all 0 ms**, so min / max / mean / median / p95 / p99 are **0**.
+**Why day 13 is all zeros (current pipeline):** With **`Date` + `Trading time`** only, that partial-day file collapses to **one distinct millisecond** for all last-trade times, so sorted gaps are **all 0 ms**.
 
-**Why day 14 is NaN:** There are **no** rows with both `Date` and `Trading time` populated, so the frequency script has **no timestamps** → empty inter-arrival list → **NaN** summary fields in the CSV.
+**Why day 14 is NaN (current pipeline):** No usable **`Trading time`** rows → no timestamps → **NaN** in the frequency summary.
+
+**Earlier “first commit” pipeline (`Date` + `Time`, Unix-epoch tumbling):** That treated **generic row time** for **all** updates, so days **13–14** still had spread-out **`Time`** values and showed **non-degenerate** frequency/window stats. Those numbers were **reasonable for full-feed / throughput** views; they are **not** the same event clock as **last-trade** (`Trading time`) used for query alignment today. Both are “correct” for their respective definitions.
 
 ### 1.2 Cardinality — global (`summaries/cardinality_overall.csv`)
 
@@ -39,9 +41,13 @@ Inter-arrival gaps (ms) on globally sorted `Date` + `Trading time` events per fi
 
 Each full day has about **5493–5499** symbols, **3** exchanges, **2** sectypes; `symbol_exchange_sectype` matches symbol count (one sectype per symbol in practice).
 
-### 1.4 Window summary — pivoted (`summaries/window_summary_pivoted.csv`)
+### 1.4 Window summaries (`summaries/`)
 
-Samples per tumbling window (last-trade events only). Main trading days (08–12) show large `avg_samples_*`; day **13** collapses to a single window with 5268 samples; day **14** has no windows.
+- **`window_summary.csv`** — long form: one row per (file, window_size), sorted by **window_size** then file.
+- **`window_summary_by_window_size.csv`** — **grouped by `window_size`**: aggregates across all CSVs in the run (`sum_total_windows`, means of per-file stats where windows exist, etc.). This matches a **group-by on window size** across the corpus.
+- **`window_summary_pivoted.csv`** — one row per **file**, wide columns `metric_windowSize` (handy per-day comparison, **not** a window-size group-by).
+
+Excerpt below is from the **wide-by-file** file. Samples per tumbling window (last-trade events only). Main trading days (08–12) show large `avg_samples_*`; day **13** collapses to a single window with 5268 samples; day **14** has no windows.
 
 | file | total_windows_1min | avg_samples_1min | max_samples_1min | total_windows_5min | avg_samples_5min | max_samples_5min |
 |------|-------------------|------------------|------------------|--------------------|------------------|------------------|
@@ -112,7 +118,7 @@ Larger medians/means than the full-feed view: one **per-symbol** stream is no lo
 | sectype | 6 |
 | symbol_exchange_sectype | 12 |
 
-**Note:** Per-file symbol counts in the generated `cardinality_summary.csv` for `data_filtered` look **suspiciously low** (e.g. 2 symbols per day) versus millions of rows—likely a **column-alignment or parsing issue** when reading filtered CSVs with fixed `usecols` positions. Treat these cardinality numbers as **unverified** until re-run after validating the first-row header matches raw DEBS layout. Global triple count **12** is more plausible than “2 symbols per file” for the whole corpus.
+**Update (fix):** Those values came from **corrupted `data_filtered/`** files: Zenodo rows have **40** CSV fields for **39** header columns, and pandas defaulted to using **`ID` as the row index**, so written CSVs had **`SecType` in the `ID` column**. [`filter_data.py`](code/filter_data.py) and [`utils.py`](code/utils.py) now use **`index_col=False`**. **Re-run** `python3 filter_data.py` to regenerate `data_filtered/`, then re-run `analyze_cardinality.py --dataset data_filtered` (and other analyses). Expect **symbol / OTLP triple counts on the same order as the full feed** (~5.5k symbols per main trading day).
 
 ### 2.3 Window summary — pivoted (excerpt)
 

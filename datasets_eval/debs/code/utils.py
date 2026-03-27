@@ -87,6 +87,7 @@ def iter_csv_chunks(
         usecols=list(BASE_USECOLS),
         names=list(BASE_COLS),
         header=0,
+        index_col=False,
         dtype={"ID": "string", "SecType": "string", "Date": "string", "Time": "string"},
         chunksize=chunksize,
         low_memory=False,
@@ -103,6 +104,7 @@ def iter_csv_chunks_trading_ts(
         usecols=list(TRADING_TS_USECOLS),
         names=list(TRADING_TS_NAMES),
         header=0,
+        index_col=False,
         dtype={"Date": "string", "Trading time": "string"},
         chunksize=chunksize,
         low_memory=False,
@@ -266,3 +268,45 @@ def pivot_window_summary_rows(sum_rows: list[dict]) -> list[dict]:
         r = by_file[fn]
         out.append({k: r.get(k, "") for k in field_order})
     return out
+
+
+def group_window_summary_by_size(sum_rows: list[dict]) -> list[dict]:
+    if not sum_rows:
+        return []
+    df = pd.DataFrame(sum_rows)
+    for c in ("total_windows", "avg_samples", "min_samples", "max_samples", "std_samples"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    out: list[dict] = []
+    for w in WINDOW_LABELS:
+        sub = df[df["window_size"].astype(str) == w]
+        if sub.empty:
+            continue
+        nz = sub[sub["total_windows"] > 0]
+        out.append(
+            {
+                "window_size": w,
+                "file_count": int(len(sub)),
+                "files_with_windows": int(len(nz)),
+                "sum_total_windows": int(sub["total_windows"].sum()),
+                "mean_avg_samples": float(nz["avg_samples"].mean())
+                if len(nz) > 0
+                else float("nan"),
+                "min_min_samples": float(sub["min_samples"].min()),
+                "max_max_samples": float(sub["max_samples"].max()),
+                "mean_std_samples": float(nz["std_samples"].mean())
+                if len(nz) > 0
+                else float("nan"),
+            }
+        )
+    return out
+
+
+def window_summary_sorted_long(sum_rows: list[dict]) -> list[dict]:
+    if not sum_rows:
+        return []
+    order = {w: i for i, w in enumerate(WINDOW_LABELS)}
+
+    def key(r: dict) -> tuple[int, str]:
+        return (order.get(str(r["window_size"]), 99), str(r["file"]))
+
+    return sorted(sum_rows, key=key)

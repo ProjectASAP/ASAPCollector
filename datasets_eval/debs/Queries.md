@@ -17,6 +17,7 @@
 
 - The CSV column **`Trading date`** is **empty** in every file here. For event dates, use **`Date`** (trading day of the file) together with **`Trading time`** for last-trade timestamps, matching the challenge’s CEST wall-clock intent.
 - The generic **`Time`** column is **not** the same as **`Trading time`**: many **last-trade** rows have **`Trading time`** set and **`Time`** empty. For **price / query ground truth**, do **not** substitute **`Time`** for **`Trading time`**.
+- **Pandas `read_csv`:** Data rows have **40** comma-separated fields while the header names **39** columns (trailing comma in the source). Without **`index_col=False`**, pandas treats the first field (`ID`) as the **row index** and **shifts every column**, corrupting `ID`/`SecType`/etc. All tooling under [`code/`](code/) uses **`index_col=False`**. After changing this, **re-run** [`filter_data.py`](code/filter_data.py) so existing `data_filtered/*.csv` files are rewritten.
 
 ---
 
@@ -58,6 +59,7 @@ python code/analyze_cardinality.py --dataset data
 - Tumbling windows are **aligned to Berlin local wall clock** (same idea as DEBS clock alignment), not to raw Unix-epoch multiples.
 - CSV outputs use **`window_start_utc_ms`** / **`window_end_utc_ms`** for window bounds.
 - **`Time` is intentionally not used** for frequency/window stats: it reflects a different mix of update types; blending it with **`Trading time`** produced inter-arrival summaries that were mostly uninformative (e.g. mass of zero-ms gaps). **`Trading time`** matches **last-trade** timing and the OTLP mapping below when using **`Date`** as the trading calendar day.
+- **Window summary CSVs** (`analyze_windows.py`): **`window_summary.csv`** — long form, sorted by **`window_size`** then file; **`window_summary_by_window_size.csv`** — one row per window size, **aggregated across all files** in the run (sums / means of per-file metrics); **`window_summary_pivoted.csv`** — one row per **file**, wide columns `metric_windowSize` (not a group-by on window size).
 
 ---
 
