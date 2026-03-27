@@ -8,6 +8,7 @@ mod store;
 mod types;
 
 use std::sync::Arc;
+use std::time::Duration;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -16,12 +17,13 @@ use axum::{
     Json, Router,
 };
 use serde_json::json;
-use tracing::info;
+use tracing::{info, warn};
 
 use analyzer::{Analyzer, QuerySpec};
-use config::{generate_agent_config, build_precompute_jobs};
-use opamp::{OpampServer, RemoteConfig};
-use planner::CostModelPlanner;
+use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
+use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
+use opamp::{AgentRole, OpampServer, RemoteConfig};
+use planner::{CostModelPlanner, OnlineMetricsStore, init_online_store};
 use store::PlanStore;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
@@ -32,6 +34,8 @@ struct AppState {
     planner:        Arc<CostModelPlanner>,
     store:          Arc<PlanStore>,
     opamp:          Arc<OpampServer>,
+    scraper:        Arc<Scraper>,
+    online_store:   OnlineMetricsStore,
     opamp_endpoint: String,
 }
 
@@ -47,16 +51,89 @@ async fn main() {
         .unwrap_or_else(|_| "0.0.0.0:4320".into());
     let opamp_ep   = std::env::var("CONTROLLER_OPAMP_ENDPOINT")
         .unwrap_or_else(|_| "ws://controller:4320/v1/opamp".into());
+    let scrape_interval = Duration::from_secs(
+        std::env::var("CONTROLLER_SCRAPE_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60u64),
+    );
 
-    let opamp_srv = Arc::new(OpampServer::new());
+    // ── SP-5: Online EMA cost store ───────────────────────────────────────────
+    let online_store = init_online_store();
+
+    // ── SP-8: Prometheus scraper ──────────────────────────────────────────────
+    // Endpoints are added dynamically as collectors connect via OpAMP.
+    let scraper: Arc<Scraper> = {
+        let ema = Arc::clone(&online_store);
+        Arc::new(
+            Scraper::new(
+                vec![],
+                Thresholds::default(),
+                Arc::new(|v: Violation| {
+                    warn!(agent = %v.agent_id, kind = %v.kind,
+                          observed = v.observed, threshold = v.threshold,
+                          "SLA violation detected — queuing re-plan");
+                }),
+                scrape_interval,
+            )
+            .with_on_metrics(Arc::new(move |data: ScrapedData| {
+                // Update EMA only when we know the sketch type and have a
+                // CPU-per-sample estimate (requires at least 2 scrapes).
+                if let (Some(st), Some(cpu)) = (data.sketch_type, data.cpu_micros_per_sample) {
+                    let ema = Arc::clone(&ema);
+                    tokio::spawn(async move {
+                        planner::online_cost_model::update(
+                            &ema, &st, data.sketch_size_bytes, cpu,
+                        ).await;
+                    });
+                }
+            })),
+        )
+    };
+
+    // ── OpAMP server with connect/disconnect hooks ────────────────────────────
+    let opamp_srv: Arc<OpampServer> = {
+        let sc = Arc::clone(&scraper);
+        let sd = Arc::clone(&scraper);
+        Arc::new(
+            OpampServer::new()
+                .with_on_connect(move |agent_id, _role| {
+                    // Convention: agent metrics endpoint at http://<agent_id>/metrics.
+                    // Collectors should set their agent-id to "<host>:<port>" so this
+                    // resolves correctly, or override CONTROLLER_METRICS_PATH.
+                    let url     = format!("http://{agent_id}/metrics");
+                    let sc      = Arc::clone(&sc);
+                    let id_copy = agent_id.clone();
+                    tokio::spawn(async move {
+                        sc.add_endpoint(Endpoint::new(id_copy, url)).await;
+                    });
+                })
+                .with_on_disconnect(move |agent_id| {
+                    let sd = Arc::clone(&sd);
+                    tokio::spawn(async move {
+                        sd.remove_endpoint(&agent_id).await;
+                    });
+                }),
+        )
+    };
+
+    // ── CostModelPlanner backed by live EMA data ──────────────────────────────
+    let planner = Arc::new(
+        CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
+    );
 
     let state = AppState {
-        analyzer:       Arc::new(Analyzer::new()),
-        planner:        Arc::new(CostModelPlanner::new()),
-        store:          Arc::new(PlanStore::new()),
-        opamp:          Arc::clone(&opamp_srv),
+        analyzer:     Arc::new(Analyzer::new()),
+        planner,
+        store:        Arc::new(PlanStore::new()),
+        opamp:        Arc::clone(&opamp_srv),
+        scraper:      Arc::clone(&scraper),
+        online_store: Arc::clone(&online_store),
         opamp_endpoint: opamp_ep,
     };
+
+    // ── Start scraper background loop ─────────────────────────────────────────
+    tokio::spawn(Arc::clone(&scraper).run());
 
     // ── OpAMP WebSocket listener ──────────────────────────────────────────────
     let opamp_router = Router::new()
@@ -99,9 +176,28 @@ async fn handle_plan(
     plan.precompute = build_precompute_jobs(&workload, &plan, "backend:4317");
     st.store.set(&workload.metric_name, plan.clone());
 
-    if let Ok(yaml) = generate_agent_config(&plan.agent_config, &st.opamp_endpoint) {
-        let hash = short_hash(&yaml);
-        st.opamp.push_all(RemoteConfig { config_hash: hash, yaml }).await;
+    // ── Push agent config to agent-role collectors ────────────────────────────
+    if let Ok(agent_yaml) = generate_agent_config(&plan.agent_config, &st.opamp_endpoint) {
+        let hash = short_hash(&agent_yaml);
+        st.opamp.push_to_role(
+            AgentRole::Agent,
+            RemoteConfig { config_hash: hash, yaml: agent_yaml },
+        ).await;
+    }
+
+    // ── Push backend config to backend-role collectors ────────────────────────
+    if let Ok(backend_yaml) = generate_backend_config(&plan.backend_config, &st.opamp_endpoint) {
+        let hash = short_hash(&backend_yaml);
+        st.opamp.push_to_role(
+            AgentRole::Backend,
+            RemoteConfig { config_hash: hash, yaml: backend_yaml },
+        ).await;
+    }
+
+    // ── Update scrape-endpoint sketch types for EMA attribution ───────────────
+    let sketch_type = plan.agent_config.sketch_type.clone();
+    for agent_id in st.opamp.connected_agents().await {
+        st.scraper.set_sketch_type(&agent_id, sketch_type.clone()).await;
     }
 
     let agents = st.opamp.connected_agents().await;
@@ -148,7 +244,14 @@ async fn handle_rollback(
     match st.store.rollback(&metric) {
         Ok(plan) => {
             if let Ok(yaml) = generate_agent_config(&plan.agent_config, &st.opamp_endpoint) {
-                st.opamp.push_all(RemoteConfig { config_hash: short_hash(&yaml), yaml }).await;
+                st.opamp.push_to_role(AgentRole::Agent, RemoteConfig {
+                    config_hash: short_hash(&yaml), yaml,
+                }).await;
+            }
+            if let Ok(yaml) = generate_backend_config(&plan.backend_config, &st.opamp_endpoint) {
+                st.opamp.push_to_role(AgentRole::Backend, RemoteConfig {
+                    config_hash: short_hash(&yaml), yaml,
+                }).await;
             }
             (StatusCode::OK, Json(json!({ "metric": metric, "rolled_back": true }))).into_response()
         }
@@ -157,7 +260,7 @@ async fn handle_rollback(
 }
 
 async fn handle_agents(State(st): State<AppState>) -> impl IntoResponse {
-    Json(st.opamp.connected_agents().await)
+    Json(st.opamp.connected_agents_with_roles().await)
 }
 
 /// Returns a complete OTel collector YAML for the named metric's current plan.

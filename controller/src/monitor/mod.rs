@@ -1,11 +1,15 @@
 /// Feedback loop: scrapes Prometheus /metrics from OTel collectors and fires
-/// violation callbacks to trigger re-planning.
+/// violation callbacks to trigger re-planning, and an optional metrics callback
+/// to feed observed bandwidth/CPU data into the EMA cost model (SP-5/SP-8).
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
+use tokio::sync::RwLock;
 use tracing::{info, warn};
+
+use crate::types::SketchType;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -64,16 +68,40 @@ impl Default for Thresholds {
 pub struct Endpoint {
     pub agent_id:    String,
     pub metrics_url: String,
+    /// The sketch type currently deployed to this agent; used to attribute
+    /// scraped metrics to the right EMA bucket.
+    pub sketch_type: Option<SketchType>,
 }
 
-pub type OnViolationFn = Arc<dyn Fn(Violation) + Send + Sync>;
+impl Endpoint {
+    pub fn new(agent_id: impl Into<String>, metrics_url: impl Into<String>) -> Self {
+        Self { agent_id: agent_id.into(), metrics_url: metrics_url.into(), sketch_type: None }
+    }
+}
+
+/// Data reported to the `on_metrics` callback after each successful scrape.
+#[derive(Debug, Clone)]
+pub struct ScrapedData {
+    pub agent_id:              String,
+    /// The sketch type configured on this endpoint at scrape time (if known).
+    pub sketch_type:           Option<SketchType>,
+    /// Current total sketch size in bytes at the agent.
+    pub sketch_size_bytes:     f64,
+    /// Derived µs/sample over the last scrape window; `None` on the very first
+    /// scrape because there is no previous baseline yet.
+    pub cpu_micros_per_sample: Option<f64>,
+}
+
+pub type OnViolationFn = Arc<dyn Fn(Violation)  + Send + Sync>;
+pub type OnMetricsFn   = Arc<dyn Fn(ScrapedData) + Send + Sync>;
 
 // ── Scraper ───────────────────────────────────────────────────────────────────
 
 pub struct Scraper {
-    endpoints:    Vec<Endpoint>,
+    endpoints:    Arc<RwLock<Vec<Endpoint>>>,
     thresholds:   Thresholds,
     on_violation: OnViolationFn,
+    on_metrics:   Option<OnMetricsFn>,
     interval:     Duration,
     client:       reqwest::Client,
     last:         Mutex<HashMap<String, CollectorMetrics>>,
@@ -87,15 +115,47 @@ impl Scraper {
         interval:     Duration,
     ) -> Self {
         Self {
-            endpoints,
+            endpoints:    Arc::new(RwLock::new(endpoints)),
             thresholds,
             on_violation,
+            on_metrics:   None,
             interval,
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
                 .expect("reqwest client"),
             last: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Attach a callback invoked after every successful scrape with observed metrics.
+    pub fn with_on_metrics(mut self, cb: OnMetricsFn) -> Self {
+        self.on_metrics = Some(cb);
+        self
+    }
+
+    /// Registers a new endpoint to be scraped. Safe to call from any async context.
+    pub async fn add_endpoint(&self, ep: Endpoint) {
+        info!(agent = %ep.agent_id, "adding scrape endpoint");
+        self.endpoints.write().await.push(ep);
+    }
+
+    /// Removes an endpoint by agent ID. No-op if not found.
+    pub async fn remove_endpoint(&self, agent_id: &str) {
+        let mut eps = self.endpoints.write().await;
+        eps.retain(|e| e.agent_id != agent_id);
+        info!(agent = %agent_id, "removed scrape endpoint");
+    }
+
+    /// Updates the sketch type recorded for an existing endpoint.
+    /// Called after a new plan is pushed so EMA attribution is accurate.
+    pub async fn set_sketch_type(&self, agent_id: &str, st: SketchType) {
+        let mut eps = self.endpoints.write().await;
+        for ep in eps.iter_mut() {
+            if ep.agent_id == agent_id {
+                ep.sketch_type = Some(st);
+                return;
+            }
         }
     }
 
@@ -111,9 +171,11 @@ impl Scraper {
 
     /// Performs a single scrape of all endpoints. Useful for tests.
     pub async fn scrape_all(&self) {
-        for ep in &self.endpoints {
+        // Clone the endpoint list so we don't hold the lock across async scrapes.
+        let endpoints = self.endpoints.read().await.clone();
+        for ep in &endpoints {
             match self.scrape(ep).await {
-                Ok(m)  => self.analyze(&m),
+                Ok(m)  => self.analyze(&m, ep.sketch_type.as_ref()),
                 Err(e) => warn!(agent = %ep.agent_id, "scrape failed: {e}"),
             }
         }
@@ -138,7 +200,7 @@ impl Scraper {
         Ok(m)
     }
 
-    fn analyze(&self, m: &CollectorMetrics) {
+    fn analyze(&self, m: &CollectorMetrics, sketch_type: Option<&SketchType>) {
         // Bandwidth / sketch size.
         if m.sketch_size_bytes > self.thresholds.max_sketch_size_bytes {
             (self.on_violation)(Violation {
@@ -161,7 +223,7 @@ impl Scraper {
 
         // CPU: compare δCPU/δsamples with the previous scrape.
         let mut last = self.last.lock().unwrap();
-        if let Some(prev) = last.get(&m.agent_id) {
+        let cpu_micros = if let Some(prev) = last.get(&m.agent_id) {
             let delta_samples = m.samples_ingested  - prev.samples_ingested;
             let delta_cpu     = m.cpu_seconds_total - prev.cpu_seconds_total;
             if delta_samples > 0.0 {
@@ -174,9 +236,25 @@ impl Scraper {
                         threshold: self.thresholds.max_cpu_micros_per_sample,
                     });
                 }
+                Some(micros_per_sample)
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
         last.insert(m.agent_id.clone(), m.clone());
+        drop(last);
+
+        // Fire on_metrics callback so callers can feed EMA / telemetry.
+        if let Some(cb) = &self.on_metrics {
+            cb(ScrapedData {
+                agent_id:              m.agent_id.clone(),
+                sketch_type:           sketch_type.cloned(),
+                sketch_size_bytes:     m.sketch_size_bytes,
+                cpu_micros_per_sample: cpu_micros,
+            });
+        }
     }
 }
 
@@ -246,7 +324,7 @@ otelcol_sketch_error_rate 0.05
         let violations: Arc<Mutex<Vec<Violation>>> = Arc::new(Mutex::new(vec![]));
         let v2 = Arc::clone(&violations);
         let s = Arc::new(Scraper::new(
-            vec![Endpoint { agent_id: "a1".into(), metrics_url: url.to_string() }],
+            vec![Endpoint::new("a1", url)],
             Thresholds::default(),
             Arc::new(move |v| v2.lock().unwrap().push(v)),
             Duration::from_secs(60),
@@ -308,7 +386,7 @@ otelcol_sketch_error_rate 0.05
         let violations: Arc<Mutex<Vec<Violation>>> = Arc::new(Mutex::new(vec![]));
         let v2 = Arc::clone(&violations);
         let s = Arc::new(Scraper::new(
-            vec![Endpoint { agent_id: "a1".into(), metrics_url: format!("http://{addr}/metrics") }],
+            vec![Endpoint::new("a1", format!("http://{addr}/metrics"))],
             Thresholds::default(),
             Arc::new(move |v| v2.lock().unwrap().push(v)),
             Duration::from_secs(60),
@@ -330,8 +408,8 @@ otelcol_sketch_error_rate 0.05
         let v2 = Arc::clone(&violations);
         let s = Arc::new(Scraper::new(
             vec![
-                Endpoint { agent_id: "ok".into(),  metrics_url: ok_url },
-                Endpoint { agent_id: "bad".into(), metrics_url: bad_url },
+                Endpoint::new("ok",  ok_url),
+                Endpoint::new("bad", bad_url),
             ],
             Thresholds::default(),
             Arc::new(move |v| v2.lock().unwrap().push(v)),
@@ -357,5 +435,52 @@ otelcol_sketch_error_rate 0.05
         assert_eq!(ViolationKind::Bandwidth.to_string(), "bandwidth");
         assert_eq!(ViolationKind::Accuracy.to_string(),  "accuracy");
         assert_eq!(ViolationKind::Cpu.to_string(),       "cpu");
+    }
+
+    #[tokio::test]
+    async fn on_metrics_callback_fires() {
+        let url = serve_metrics(NORMAL_PAYLOAD).await;
+        let scraped: Arc<Mutex<Vec<ScrapedData>>> = Arc::new(Mutex::new(vec![]));
+        let s2 = Arc::clone(&scraped);
+        let s = Arc::new(
+            Scraper::new(
+                vec![Endpoint::new("a1", url)],
+                Thresholds::default(),
+                Arc::new(|_| {}),
+                Duration::from_secs(60),
+            )
+            .with_on_metrics(Arc::new(move |d| s2.lock().unwrap().push(d))),
+        );
+        s.scrape_all().await;
+        let got = scraped.lock().unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].agent_id, "a1");
+        assert!(got[0].sketch_size_bytes > 0.0);
+    }
+
+    #[tokio::test]
+    async fn add_remove_endpoint() {
+        let url = serve_metrics(NORMAL_PAYLOAD).await;
+        let violations: Arc<Mutex<Vec<Violation>>> = Arc::new(Mutex::new(vec![]));
+        let v2 = Arc::clone(&violations);
+        let s = Arc::new(Scraper::new(
+            vec![],
+            Thresholds::default(),
+            Arc::new(move |v| v2.lock().unwrap().push(v)),
+            Duration::from_secs(60),
+        ));
+        // Initially no endpoints → no violations.
+        s.scrape_all().await;
+        assert!(violations.lock().unwrap().is_empty());
+
+        // Add endpoint and scrape.
+        s.add_endpoint(Endpoint::new("a1", &url)).await;
+        s.scrape_all().await;
+        // NORMAL_PAYLOAD → no violation.
+        assert!(violations.lock().unwrap().is_empty());
+
+        // Remove and verify nothing scrapes.
+        s.remove_endpoint("a1").await;
+        assert!(s.endpoints.read().await.is_empty());
     }
 }
