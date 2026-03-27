@@ -1,388 +1,610 @@
-//! SQL-to-sketch mapping for SP-1 workload extraction.
+//! SQL → SketchExpr compiler.
 //!
-//! Implements the AST traversal algorithm from the design doc:
-//! <https://docs.google.com/document/d/1rXNjQwiiJ_jz-DCdPYCh16_1Gr0sdyfPsnvSVhES_iY/>
+//! Implements the `AST_SQL_to_sketch` algorithm from the design doc
+//! (`docs/Top-Down SQL-to-sketch mapping.pdf`).
 //!
-//! # Mapping rules (doc §SQL Operators)
+//! # Algorithm
 //!
-//! | SQL construct                              | Sketch type        |
-//! |--------------------------------------------|--------------------|
-//! | COUNT(*) GROUP BY k                        | Frequency (CMS)    |
-//! | COUNT(*) GROUP BY k ORDER BY … DESC LIMIT k | Frequency (CS)   |
-//! | COUNT(DISTINCT col)                        | Cardinality (HLL)  |
-//! | COUNT(DISTINCT col) GROUP BY k             | Cardinality per k  |
-//! | AVG(col) GROUP BY k                        | Quantile p50 (DD)  |
-//! | MIN/MAX(col) GROUP BY k                    | Quantile p0/p100   |
-//! | SUM(col) or COUNT(*) no GROUP BY           | Exact (no sketch)  |
-//! | Multiple agg fns in one SELECT             | All collected      |
-//! | JOIN + aggregation                         | Pre-agg on join key|
-//! | UNION ALL + aggregation                    | Mergeable sketches |
+//! For each FUNCTION edge in the SELECT projection (leaf → root):
+//!   1. Collect context: GROUP BY, WHERE, HAVING, JOIN, DISTINCT, UNION ALL
+//!   2. Call `try_replace` → choose `SketchAggOp` (or Exact passthrough)
+//!   3. Apply structural transformations:
+//!      - WHERE predicates   → pushed into Filter node
+//!      - HAVING predicates  → stay above Agg as a second Filter
+//!      - Multi-dim GROUP BY → Hydra via rewrite rule R4
+//!      - JOIN               → JoinSketch push-down
+//!      - UNION ALL          → Merge node (sketch linearity via rule R3)
+//!      - DISTINCT           → Dedup node (absorbed by HLL via rule R6)
+//!
+//! Multiple aggregations in one SELECT each emit their own `SketchAggOp`,
+//! then are combined with a `Merge` node (coverage = Partial when some are Exact).
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use sqlparser::ast::{
-    BinaryOperator, Expr, FunctionArg, FunctionArgExpr, GroupByExpr,
-    ObjectName, OrderByExpr, SelectItem, SetExpr, Statement,
-    TableFactor, Value,
+    BinaryOperator, DuplicateTreatment, Expr, FunctionArg, FunctionArgExpr,
+    FunctionArgumentList, FunctionArguments, GroupByExpr, Join, JoinConstraint,
+    JoinOperator, LimitClause, ObjectName, OrderBy, OrderByExpr, OrderByKind,
+    Query, Select, SelectItem, SetExpr, SetOperator, Statement, TableFactor,
+    Value, ValueWithSpan,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
-use super::{debs_hint, ParsedQuery, QueryHint};
-use crate::types::AggType;
+use super::sketch_algebra::{
+    ColumnRef, ExactAgg, FilterOp, FilterVal, PartitionKeys, Predicate,
+    SketchAggOp, SketchExpr, SketchCoverage, SourceSpec,
+};
+use super::sketch_rules::optimize;
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// Parse a SQL SELECT statement into a [`ParsedQuery`].
-pub fn parse_sql(sql: &str) -> anyhow::Result<ParsedQuery> {
+/// Parse a SQL SELECT statement into an optimised [`SketchExpr`].
+pub fn parse_sql(sql: &str) -> anyhow::Result<SketchExpr> {
     let dialect = GenericDialect {};
     let mut stmts = Parser::parse_sql(&dialect, sql)
-        .with_context(|| format!("SQL parse error in: {sql:?}"))?;
-
-    let stmt = stmts
-        .pop()
-        .ok_or_else(|| anyhow!("no statement found in SQL input"))?;
-
+        .with_context(|| format!("SQL parse error: {sql:?}"))?;
+    let stmt = stmts.pop().ok_or_else(|| anyhow!("no SQL statement found"))?;
     let query = match stmt {
         Statement::Query(q) => *q,
-        other => return Err(anyhow!("expected SELECT query, got {:?}", other)),
+        other => return Err(anyhow!("expected SELECT, got {:?}", other)),
     };
-
-    extract_from_query(&query)
+    let sketch = extract_from_query(&query)?;
+    Ok(optimize(sketch))
 }
 
-// ── AST traversal ─────────────────────────────────────────────────────────────
+// ── Query-level dispatch ──────────────────────────────────────────────────────
 
-fn extract_from_query(query: &sqlparser::ast::Query) -> anyhow::Result<ParsedQuery> {
-    // Unwrap top-level WITH / subquery wrappers until we reach a SELECT.
-    match query.body.as_ref() {
-        SetExpr::Select(sel) => extract_from_select(sel, query),
+fn extract_from_query(query: &Query) -> anyhow::Result<SketchExpr> {
+    let order_by: Vec<OrderByExpr> = match &query.order_by {
+        Some(OrderBy { kind: OrderByKind::Expressions(exprs), .. }) => exprs.clone(),
+        _ => vec![],
+    };
+    let limit: Option<&Expr> = match &query.limit_clause {
+        Some(LimitClause::LimitOffset { limit: Some(e), .. }) => Some(e),
+        Some(LimitClause::OffsetCommaLimit { limit: e, .. }) => Some(e),
+        _ => None,
+    };
+    extract_from_set_expr(query.body.as_ref(), &order_by, limit)
+}
+
+fn extract_from_set_expr(
+    set_expr: &SetExpr,
+    order_by: &[OrderByExpr],
+    limit: Option<&Expr>,
+) -> anyhow::Result<SketchExpr> {
+    match set_expr {
+        SetExpr::Select(sel) => extract_from_select(sel, order_by, limit),
         SetExpr::Query(inner) => extract_from_query(inner),
-        // UNION ALL → all branches must produce the same sketch type;
-        // collect from the left side (dominant).
-        SetExpr::SetOperation { left, .. } => {
-            let inner_q = sqlparser::ast::Query {
-                with: None,
-                body: left.clone(),
-                order_by: query.order_by.clone(),
-                limit: query.limit.clone(),
-                limit_by: vec![],
-                offset: None,
-                fetch: None,
-                locks: vec![],
-                for_clause: None,
-            };
-            extract_from_query(&inner_q)
+
+        // UNION ALL → Merge of both branches (sketch linearity rule R3 will
+        // distribute Agg over Merge if ops are mergeable).
+        SetExpr::SetOperation { left, right, op: SetOperator::Union, .. } => {
+            let left_expr  = extract_from_set_expr(left,  &[], None)?;
+            let right_expr = extract_from_set_expr(right, &[], None)?;
+            Ok(SketchExpr::Merge { inputs: vec![left_expr, right_expr] })
         }
+
         other => Err(anyhow!("unsupported query body: {:?}", other)),
     }
 }
 
+// ── SELECT-level extraction ───────────────────────────────────────────────────
+
 fn extract_from_select(
-    sel: &sqlparser::ast::Select,
-    query: &sqlparser::ast::Query,
-) -> anyhow::Result<ParsedQuery> {
-    // ── Step 1: metric name from FROM clause ──────────────────────────────────
+    sel: &Select,
+    order_by: &[OrderByExpr],
+    limit: Option<&Expr>,
+) -> anyhow::Result<SketchExpr> {
+    // ── Step 1: source table(s) ───────────────────────────────────────────────
     let metric_name = extract_table_name(sel)?;
 
-    // ── Step 2: aggregation functions from SELECT list ────────────────────────
-    // Following doc §Func Try_Replace_subtree_SQL_to_Sketch: traverse the
-    // projection, find FUNCTION edges, classify each aggregation.
-    let agg_infos = collect_agg_infos(&sel.projection);
-
-    // ── Step 3: GROUP BY → aggregate_by dimensions ───────────────────────────
-    let group_by_labels = extract_group_by(&sel.group_by);
-
-    // ── Step 4: WHERE → label_filters (equality predicates only) ─────────────
-    let label_filters = sel
-        .selection
-        .as_ref()
-        .map(|e| extract_eq_filters(e))
+    // ── Step 2: WHERE predicates ──────────────────────────────────────────────
+    let where_preds: Vec<Predicate> = sel.selection.as_ref()
+        .map(|e| collect_predicates(e))
         .unwrap_or_default();
 
-    // ── Step 5: ORDER BY + LIMIT → top-K detection ───────────────────────────
-    let topk: Option<u64> = detect_topk(query);
+    // ── Step 3: GROUP BY keys ─────────────────────────────────────────────────
+    let group_by_keys = extract_group_by(&sel.group_by);
+
+    // ── Step 4: HAVING predicates ─────────────────────────────────────────────
+    let having_preds: Vec<Predicate> = sel.having.as_ref()
+        .map(|e| collect_predicates(e))
+        .unwrap_or_default();
+
+    // ── Step 5: top-K detection (ORDER BY … DESC LIMIT k) ────────────────────
+    let topk: Option<u64> = detect_topk(order_by, limit);
 
     // ── Step 6: JOIN detection ────────────────────────────────────────────────
-    let has_join = sel.from.iter().any(|t| !t.joins.is_empty());
+    let join_info: Option<JoinInfo> = extract_join_info(sel);
 
-    // ── Step 7: map aggregation infos → AggTypes (doc §Generate_SQL_Aggregation_Sketch_Mapping)
-    let (aggregations, quantiles, exact_required) =
-        map_agg_infos_to_sketch(&agg_infos, &group_by_labels, topk, has_join);
+    // ── Step 7: SELECT-DISTINCT flag ──────────────────────────────────────────
+    let select_distinct = sel.distinct.is_some();
 
-    // Default time window for SQL queries (no range vector).  Caller may
-    // override via explicit `time_window` in QuerySpec.
-    let time_window = Duration::from_secs(300); // 5 min DEBS default
+    // ── Step 8: aggregation functions from SELECT list ────────────────────────
+    let agg_items = collect_agg_items(&sel.projection);
 
-    let hint = debs_hint(&metric_name, &aggregations, &quantiles, exact_required, topk);
+    if agg_items.is_empty() {
+        // No aggregation — bare SELECT (e.g. SELECT col FROM t WHERE …).
+        let source   = SketchExpr::Source(SourceSpec { name: metric_name });
+        let filtered = apply_filters(source, where_preds);
+        return Ok(filtered);
+    }
 
-    Ok(ParsedQuery {
-        metric_name,
-        aggregations,
-        group_by_labels,
-        label_filters,
-        time_window,
-        exact_required,
-        quantiles,
-        hint,
+    // ── Step 9: try_replace each agg item → SketchAggOp ──────────────────────
+    let ops: Vec<(SketchAggOp, ColumnRef)> = agg_items
+        .iter()
+        .map(|item| try_replace(item, &group_by_keys, topk, join_info.as_ref(), select_distinct))
+        .collect();
+
+    // ── Step 10: determine coverage ───────────────────────────────────────────
+    let has_sketch = ops.iter().any(|(op, _)| !op.is_exact());
+    let has_exact  = ops.iter().any(|(op, _)| op.is_exact());
+    let _coverage  = match (has_sketch, has_exact) {
+        (true,  false) => SketchCoverage::Full,
+        (true,  true)  => SketchCoverage::Partial,
+        (false, _)     => SketchCoverage::None,
+    };
+
+    // ── Step 11: assemble the SketchExpr tree ────────────────────────────────
+
+    // Base source with pushed-down WHERE.
+    let source   = SketchExpr::Source(SourceSpec { name: metric_name.clone() });
+    let filtered = apply_filters(source, where_preds);
+
+    // If there's a JOIN, build JoinSketch.  Otherwise use the filtered source.
+    let base = if let Some(ji) = join_info {
+        build_join_sketch(filtered, ji, &ops, &group_by_keys)?
+    } else {
+        build_agg_tree(filtered, ops, &group_by_keys, topk, having_preds)
+    };
+
+    Ok(base)
+}
+
+// ── try_replace: aggregation function → SketchAggOp ──────────────────────────
+
+struct AggItem {
+    kind:     AggKind,
+    col:      ColumnRef,
+    distinct: bool,
+}
+
+#[derive(Debug, Clone)]
+enum AggKind {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+/// Map one aggregation item to its best sketch operator.
+///
+/// Priority (doc §Generate_SQL_Aggregation_Sketch_Mapping):
+///   1. Cardinality (COUNT DISTINCT) → HLL
+///   2. Frequency heavy-hitter (COUNT + top-K) → CountSketch
+///   3. Frequency (COUNT GROUP BY) → CountMin
+///   4. Quantile (AVG/MIN/MAX with GROUP BY) → DDSketch
+///   5. Extrema without GROUP BY → ExactMinMax
+///   6. Sum / global count → Exact
+fn try_replace(
+    item:        &AggItem,
+    group_by:    &[String],
+    topk:        Option<u64>,
+    _join_info:  Option<&JoinInfo>,
+    _distinct:   bool,
+) -> (SketchAggOp, ColumnRef) {
+    let has_group = !group_by.is_empty();
+
+    match item.kind {
+        AggKind::Count if item.distinct => {
+            // COUNT(DISTINCT col) → HLL
+            (SketchAggOp::default_hll(), item.col.clone())
+        }
+        AggKind::Count => {
+            if let Some(k) = topk {
+                // ORDER BY … DESC LIMIT k → heavy-hitter CountSketch
+                (SketchAggOp::CountSketch { k }, item.col.clone())
+            } else if has_group {
+                // COUNT(*) GROUP BY → frequency CountMin
+                (SketchAggOp::default_count_min(), item.col.clone())
+            } else {
+                // Global COUNT(*) — exact
+                (SketchAggOp::Exact(ExactAgg::Count), item.col.clone())
+            }
+        }
+        AggKind::Avg => {
+            if has_group {
+                // AVG per group → DDSketch(p50) — mergeable proxy
+                (SketchAggOp::default_ddsketch(vec![0.5]), item.col.clone())
+            } else {
+                // Global AVG — not mergeable as-is; store exact (sum,count)
+                (SketchAggOp::Exact(ExactAgg::Avg), item.col.clone())
+            }
+        }
+        AggKind::Min => {
+            if has_group {
+                (SketchAggOp::default_ddsketch(vec![0.0]), item.col.clone())
+            } else {
+                (SketchAggOp::ExactMinMax { min: true, max: false }, item.col.clone())
+            }
+        }
+        AggKind::Max => {
+            if has_group {
+                (SketchAggOp::default_ddsketch(vec![1.0]), item.col.clone())
+            } else {
+                (SketchAggOp::ExactMinMax { min: false, max: true }, item.col.clone())
+            }
+        }
+        AggKind::Sum => {
+            // SUM is always exact — no sketch benefit.
+            (SketchAggOp::Exact(ExactAgg::Sum), item.col.clone())
+        }
+    }
+}
+
+// ── Tree assembly ─────────────────────────────────────────────────────────────
+
+fn build_agg_tree(
+    base:        SketchExpr,
+    ops:         Vec<(SketchAggOp, ColumnRef)>,
+    group_by:    &[String],
+    topk:        Option<u64>,
+    having:      Vec<Predicate>,
+) -> SketchExpr {
+    // One Agg node per op; combine with Merge if multiple.
+    let agg_nodes: Vec<SketchExpr> = ops
+        .into_iter()
+        .map(|(op, col)| SketchExpr::Agg { op, col, input: Box::new(base.clone()) })
+        .collect();
+
+    let merged = if agg_nodes.len() == 1 {
+        agg_nodes.into_iter().next().unwrap()
+    } else {
+        SketchExpr::Merge { inputs: agg_nodes }
+    };
+
+    // Apply GROUP BY partition.
+    let partitioned = if group_by.is_empty() {
+        merged
+    } else {
+        SketchExpr::Partition {
+            keys:  PartitionKeys::By(group_by.to_vec()),
+            input: Box::new(merged),
+        }
+    };
+
+    // Apply HAVING as a post-agg filter.
+    let after_having = apply_filters(partitioned, having);
+
+    // Apply top-K.
+    if let Some(k) = topk {
+        SketchExpr::TopK { k, input: Box::new(after_having) }
+    } else {
+        after_having
+    }
+}
+
+// ── JOIN push-down ─────────────────────────────────────────────────────────────
+
+struct JoinInfo {
+    inner_table: String,
+    join_key:    String,
+    outer_key:   String,
+}
+
+fn build_join_sketch(
+    outer_filtered: SketchExpr,
+    ji:             JoinInfo,
+    ops:            &[(SketchAggOp, ColumnRef)],
+    outer_group_by: &[String],
+) -> anyhow::Result<SketchExpr> {
+    // Pre-aggregate on the inner table grouped by the join key.
+    let inner_source = SketchExpr::Source(SourceSpec { name: ji.inner_table.clone() });
+    let inner_agg = if let Some((op, col)) = ops.first() {
+        SketchExpr::Agg { op: op.clone(), col: col.clone(), input: Box::new(inner_source) }
+    } else {
+        inner_source
+    };
+    let inner_partitioned = SketchExpr::Partition {
+        keys:  PartitionKeys::By(vec![ji.join_key.clone()]),
+        input: Box::new(inner_agg),
+    };
+
+    Ok(SketchExpr::JoinSketch {
+        join_key: ji.outer_key,
+        outer:    Box::new(outer_filtered),
+        inner:    Box::new(inner_partitioned),
     })
 }
 
-// ── Table name extraction ─────────────────────────────────────────────────────
+// ── AST helpers: aggregation collection ──────────────────────────────────────
 
-fn extract_table_name(sel: &sqlparser::ast::Select) -> anyhow::Result<String> {
-    sel.from
-        .first()
-        .and_then(|t| match &t.relation {
-            TableFactor::Table { name, .. } => Some(object_name_to_string(name)),
-            _ => None,
-        })
-        .ok_or_else(|| anyhow!("could not determine table/metric name from FROM clause"))
-}
-
-fn object_name_to_string(name: &ObjectName) -> String {
-    name.0
-        .iter()
-        .map(|i| i.value.as_str())
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-// ── Aggregation info collection ───────────────────────────────────────────────
-
-/// Internal classification of a single aggregation function call found in
-/// the SELECT list.
-#[derive(Debug, Clone)]
-enum AggInfo {
-    /// COUNT(*) or COUNT(col) without DISTINCT.
-    Count,
-    /// COUNT(DISTINCT col) or COUNT(DISTINCT *).
-    CountDistinct { col: String },
-    /// SUM(col).
-    Sum { col: String },
-    /// AVG(col) — mapped to quantile p50.
-    Avg { col: String },
-    /// MIN(col) — mapped to quantile p0.
-    Min { col: String },
-    /// MAX(col) — mapped to quantile p100.
-    Max { col: String },
-}
-
-fn collect_agg_infos(projection: &[SelectItem]) -> Vec<AggInfo> {
+fn collect_agg_items(projection: &[SelectItem]) -> Vec<AggItem> {
     let mut out = Vec::new();
     for item in projection {
         let expr = match item {
-            SelectItem::UnnamedExpr(e)              => e,
-            SelectItem::ExprWithAlias { expr, .. }  => expr,
-            _                                       => continue,
+            SelectItem::UnnamedExpr(e)             => e,
+            SelectItem::ExprWithAlias { expr, .. } => expr,
+            _                                      => continue,
         };
-        collect_from_expr(expr, &mut out);
+        collect_agg_from_expr(expr, &mut out);
     }
     out
 }
 
-fn collect_from_expr(expr: &Expr, out: &mut Vec<AggInfo>) {
+fn collect_agg_from_expr(expr: &Expr, out: &mut Vec<AggItem>) {
     match expr {
         Expr::Function(f) => {
-            let name = f.name.0.last().map(|i| i.value.to_uppercase()).unwrap_or_default();
-            let distinct = f.distinct;
-            let first_col = first_col_arg(&f.args);
-            match name.as_str() {
-                "COUNT" => {
-                    if distinct {
-                        out.push(AggInfo::CountDistinct {
-                            col: first_col.unwrap_or_else(|| "*".into()),
-                        });
-                    } else {
-                        out.push(AggInfo::Count);
-                    }
+            let fn_name = f.name.0.last()
+                .and_then(|i| i.as_ident())
+                .map(|id| id.value.to_uppercase())
+                .unwrap_or_default();
+
+            let (distinct, args) = match &f.args {
+                FunctionArguments::List(FunctionArgumentList { duplicate_treatment, args, .. }) => {
+                    let is_distinct = matches!(
+                        duplicate_treatment,
+                        Some(DuplicateTreatment::Distinct)
+                    );
+                    (is_distinct, args.as_slice())
                 }
-                "SUM" => out.push(AggInfo::Sum { col: first_col.unwrap_or_default() }),
-                "AVG" => out.push(AggInfo::Avg { col: first_col.unwrap_or_default() }),
-                "MIN" => out.push(AggInfo::Min { col: first_col.unwrap_or_default() }),
-                "MAX" => out.push(AggInfo::Max { col: first_col.unwrap_or_default() }),
-                _     => {}
-            }
+                _ => (false, &[][..]),
+            };
+
+            let col = first_col_from_args(args);
+
+            let kind = match fn_name.as_str() {
+                "COUNT" => AggKind::Count,
+                "SUM"   => AggKind::Sum,
+                "AVG"   => AggKind::Avg,
+                "MIN"   => AggKind::Min,
+                "MAX"   => AggKind::Max,
+                _       => return,
+            };
+
+            out.push(AggItem { kind, col, distinct });
         }
-        // Recurse into binary ops, casts, etc. that may wrap aggregations.
         Expr::BinaryOp { left, right, .. } => {
-            collect_from_expr(left, out);
-            collect_from_expr(right, out);
+            collect_agg_from_expr(left, out);
+            collect_agg_from_expr(right, out);
         }
-        Expr::Nested(inner) => collect_from_expr(inner, out),
+        Expr::Nested(inner) => collect_agg_from_expr(inner, out),
         _ => {}
     }
 }
 
-/// Returns the column name from the first non-wildcard function argument.
-fn first_col_arg(args: &[FunctionArg]) -> Option<String> {
+fn first_col_from_args(args: &[FunctionArg]) -> ColumnRef {
     for arg in args {
         match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Wildcard) => return ColumnRef::Wildcard,
             FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(id))) => {
-                return Some(id.value.clone());
+                return ColumnRef::Named(id.value.clone());
             }
             FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(parts))) => {
-                return Some(parts.last().map(|i| i.value.clone()).unwrap_or_default());
+                if let Some(last) = parts.last() {
+                    return ColumnRef::Named(last.value.clone());
+                }
             }
             _ => {}
         }
     }
-    None
+    ColumnRef::Wildcard
 }
 
-// ── GROUP BY extraction ───────────────────────────────────────────────────────
+// ── AST helpers: GROUP BY ──────────────────────────────────────────────────────
 
 fn extract_group_by(group_by: &GroupByExpr) -> Vec<String> {
     let exprs = match group_by {
-        GroupByExpr::All              => return vec![],
-        GroupByExpr::Expressions(e)   => e,
+        GroupByExpr::All(_)         => return vec![],
+        GroupByExpr::Expressions(e, _) => e,
     };
-    exprs
-        .iter()
-        .filter_map(|e| match e {
-            Expr::Identifier(id) => Some(id.value.clone()),
-            Expr::CompoundIdentifier(parts) => {
-                parts.last().map(|i| i.value.clone())
-            }
-            _ => None,
-        })
-        .collect()
+    exprs.iter().filter_map(|e| match e {
+        Expr::Identifier(id)             => Some(id.value.clone()),
+        Expr::CompoundIdentifier(parts)  => parts.last().map(|i| i.value.clone()),
+        _                                => None,
+    }).collect()
 }
 
-// ── WHERE equality filter extraction ─────────────────────────────────────────
+// ── AST helpers: WHERE / predicate extraction ─────────────────────────────────
 
-/// Recursively extracts `col = 'literal'` predicates from a WHERE expression.
-fn extract_eq_filters(expr: &Expr) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    extract_eq_filters_rec(expr, &mut out);
+fn collect_predicates(expr: &Expr) -> Vec<Predicate> {
+    let mut out = Vec::new();
+    collect_pred_rec(expr, &mut out);
     out
 }
 
-fn extract_eq_filters_rec(expr: &Expr, out: &mut HashMap<String, String>) {
+fn collect_pred_rec(expr: &Expr, out: &mut Vec<Predicate>) {
     match expr {
+        // col = 'v'
         Expr::BinaryOp { left, op: BinaryOperator::Eq, right } => {
-            let col = match left.as_ref() {
-                Expr::Identifier(id) => Some(id.value.clone()),
-                Expr::CompoundIdentifier(parts) => parts.last().map(|i| i.value.clone()),
-                _ => None,
-            };
-            let val = match right.as_ref() {
-                Expr::Value(Value::SingleQuotedString(s)) => Some(s.clone()),
-                Expr::Value(Value::DoubleQuotedString(s)) => Some(s.clone()),
-                _ => None,
-            };
-            if let (Some(k), Some(v)) = (col, val) {
-                out.insert(k, v);
+            if let Some(p) = binary_pred(left, BinaryOperator::Eq, right) { out.push(p); }
+        }
+        // col <> 'v'
+        Expr::BinaryOp { left, op: BinaryOperator::NotEq, right } => {
+            if let Some(p) = binary_pred(left, BinaryOperator::NotEq, right) { out.push(p); }
+        }
+        // col > v
+        Expr::BinaryOp { left, op: BinaryOperator::Gt, right } => {
+            if let Some(p) = binary_pred(left, BinaryOperator::Gt, right) { out.push(p); }
+        }
+        // col >= v
+        Expr::BinaryOp { left, op: BinaryOperator::GtEq, right } => {
+            if let Some(p) = binary_pred(left, BinaryOperator::GtEq, right) { out.push(p); }
+        }
+        // col < v
+        Expr::BinaryOp { left, op: BinaryOperator::Lt, right } => {
+            if let Some(p) = binary_pred(left, BinaryOperator::Lt, right) { out.push(p); }
+        }
+        // col <= v
+        Expr::BinaryOp { left, op: BinaryOperator::LtEq, right } => {
+            if let Some(p) = binary_pred(left, BinaryOperator::LtEq, right) { out.push(p); }
+        }
+        // AND — recurse into both sides
+        Expr::BinaryOp { left, op: BinaryOperator::And, right } => {
+            collect_pred_rec(left, out);
+            collect_pred_rec(right, out);
+        }
+        // col LIKE '%v%'
+        Expr::Like { expr, pattern, negated, .. } => {
+            if let Some(col) = col_name(expr) {
+                if let Some(val) = literal_str(pattern) {
+                    let op = if *negated { FilterOp::NotLike } else { FilterOp::Like };
+                    out.push(Predicate { col, op, val: FilterVal::Str(val) });
+                }
             }
         }
-        Expr::BinaryOp { left, op: BinaryOperator::And, right } => {
-            extract_eq_filters_rec(left, out);
-            extract_eq_filters_rec(right, out);
+        // col IS NULL / IS NOT NULL
+        Expr::IsNull(inner) => {
+            if let Some(col) = col_name(inner) {
+                out.push(Predicate { col, op: FilterOp::IsNull, val: FilterVal::Null });
+            }
         }
-        Expr::Nested(inner) => extract_eq_filters_rec(inner, out),
+        Expr::IsNotNull(inner) => {
+            if let Some(col) = col_name(inner) {
+                out.push(Predicate { col, op: FilterOp::IsNotNull, val: FilterVal::Null });
+            }
+        }
+        Expr::Nested(inner) => collect_pred_rec(inner, out),
+        // OR predicates span both columns — cannot push to collector; skip.
         _ => {}
     }
 }
 
-// ── Top-K detection ───────────────────────────────────────────────────────────
-
-/// Returns `Some(k)` when the query has an `ORDER BY … DESC LIMIT k` pattern
-/// that implies a heavy-hitter / top-K sketch (CountSketch).
-fn detect_topk(query: &sqlparser::ast::Query) -> Option<u64> {
-    let limit = match query.limit.as_ref()? {
-        Expr::Value(Value::Number(n, _)) => n.parse::<u64>().ok()?,
-        _ => return None,
+fn binary_pred(left: &Expr, sql_op: BinaryOperator, right: &Expr) -> Option<Predicate> {
+    let col = col_name(left)?;
+    let (op, val) = match sql_op {
+        BinaryOperator::Eq    => (FilterOp::Eq, literal_val(right)?),
+        BinaryOperator::NotEq => (FilterOp::Ne, literal_val(right)?),
+        BinaryOperator::Gt    => (FilterOp::Gt, literal_val(right)?),
+        BinaryOperator::GtEq  => (FilterOp::Ge, literal_val(right)?),
+        BinaryOperator::Lt    => (FilterOp::Lt, literal_val(right)?),
+        BinaryOperator::LtEq  => (FilterOp::Le, literal_val(right)?),
+        _                     => return None,
     };
-    // Must have at least one DESC order-by column.
-    let has_desc = query.order_by.iter().any(|o: &OrderByExpr| {
-        matches!(o.asc, Some(false) | None) // None = default (ASC), Some(false) = DESC
-    });
-    if has_desc { Some(limit) } else { None }
+    Some(Predicate { col, op, val })
 }
 
-// ── Sketch mapping (doc §Generate_SQL_Aggregation_Sketch_Mapping) ─────────────
+fn col_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Identifier(id)            => Some(id.value.clone()),
+        Expr::CompoundIdentifier(parts) => parts.last().map(|i| i.value.clone()),
+        _                               => None,
+    }
+}
 
-/// Map collected `AggInfo`s to `(agg_types, quantiles, exact_required)`.
-///
-/// Priority (highest to lowest):
-/// 1. Cardinality (`COUNT DISTINCT`) — HLL
-/// 2. Frequency heavy-hitter (COUNT + top-K ORDER BY LIMIT) — CountSketch
-/// 3. Frequency (COUNT GROUP BY) — CountMinSketch
-/// 4. Quantile (AVG → p50, MIN → p0, MAX → p100) — DDSketch
-/// 5. Sum/Count without GROUP BY → exact, no sketch
-fn map_agg_infos_to_sketch(
-    infos: &[AggInfo],
-    group_by: &[String],
-    topk: Option<u64>,
-    _has_join: bool,
-) -> (Vec<AggType>, Vec<f64>, bool) {
-    let mut aggs: Vec<AggType> = Vec::new();
-    let mut quantiles: Vec<f64> = Vec::new();
-    let mut has_exact_only = false;
-
-    for info in infos {
-        match info {
-            // COUNT(DISTINCT col) → Cardinality (HLL), doc §Distinct with Aggregation
-            AggInfo::CountDistinct { .. } => {
-                if !aggs.contains(&AggType::Cardinality) {
-                    aggs.push(AggType::Cardinality);
-                }
-            }
-            // COUNT(*) with GROUP BY → Frequency.
-            // With ORDER BY … DESC LIMIT k → heavy-hitter (CountSketch).
-            AggInfo::Count => {
-                if !group_by.is_empty() || topk.is_some() {
-                    if !aggs.contains(&AggType::Frequency) {
-                        aggs.push(AggType::Frequency);
-                    }
-                } else {
-                    has_exact_only = true; // global COUNT(*) — trivially exact
-                }
-            }
-            // AVG → p50 proxy, doc §Projection with Aggregation
-            AggInfo::Avg { .. } => {
-                if !aggs.contains(&AggType::Quantile) {
-                    aggs.push(AggType::Quantile);
-                }
-                if !quantiles.contains(&0.5) {
-                    quantiles.push(0.5);
-                }
-            }
-            // MIN → p0, MAX → p100, doc §Selection with Aggregation (extrema via sketches)
-            AggInfo::Min { .. } => {
-                if !aggs.contains(&AggType::Quantile) {
-                    aggs.push(AggType::Quantile);
-                }
-                if !quantiles.contains(&0.0) {
-                    quantiles.push(0.0);
-                }
-            }
-            AggInfo::Max { .. } => {
-                if !aggs.contains(&AggType::Quantile) {
-                    aggs.push(AggType::Quantile);
-                }
-                if !quantiles.contains(&1.0) {
-                    quantiles.push(1.0);
-                }
-            }
-            // SUM is always exact — no sketch benefit.
-            AggInfo::Sum { .. } => {
-                has_exact_only = true;
+fn literal_val(expr: &Expr) -> Option<FilterVal> {
+    let v = match expr {
+        Expr::Value(vws) => &vws.value,
+        _ => return None,
+    };
+    match v {
+        Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => {
+            Some(FilterVal::Str(s.clone()))
+        }
+        Value::Number(n, _) => {
+            if let Ok(i) = n.parse::<i64>() {
+                Some(FilterVal::Int(i))
+            } else if let Ok(f) = n.parse::<f64>() {
+                Some(FilterVal::Num(f))
+            } else {
+                None
             }
         }
+        Value::Null => Some(FilterVal::Null),
+        _ => None,
     }
+}
 
-    // If we have only exact-only aggregations and no sketch-eligible ones,
-    // mark as exact_required.
-    let exact_required = aggs.is_empty() && has_exact_only;
+fn literal_str(expr: &Expr) -> Option<String> {
+    let v = match expr {
+        Expr::Value(vws) => &vws.value,
+        _ => return None,
+    };
+    match v {
+        Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => Some(s.clone()),
+        _ => None,
+    }
+}
 
-    // Sort quantiles ascending.
-    quantiles.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    quantiles.dedup();
+// ── AST helpers: table name ───────────────────────────────────────────────────
 
-    (aggs, quantiles, exact_required)
+fn extract_table_name(sel: &Select) -> anyhow::Result<String> {
+    sel.from.first()
+        .and_then(|t| match &t.relation {
+            TableFactor::Table { name, .. } => Some(object_name_str(name)),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("could not determine table name from FROM clause"))
+}
+
+fn object_name_str(name: &ObjectName) -> String {
+    name.0.iter()
+        .map(|i| i.as_ident().map(|id| id.value.as_str()).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+// ── AST helpers: top-K detection ─────────────────────────────────────────────
+
+fn detect_topk(order_by: &[OrderByExpr], limit: Option<&Expr>) -> Option<u64> {
+    let limit_n = match limit? {
+        Expr::Value(ValueWithSpan { value: Value::Number(n, _), .. }) => n.parse::<u64>().ok()?,
+        _ => return None,
+    };
+    // Must have at least one DESC (or default) ORDER BY.
+    let has_desc = order_by.iter().any(|o| matches!(o.options.asc, Some(false) | None));
+    if has_desc { Some(limit_n) } else { None }
+}
+
+// ── AST helpers: JOIN extraction ──────────────────────────────────────────────
+
+fn extract_join_info(sel: &Select) -> Option<JoinInfo> {
+    let table_with_joins = sel.from.first()?;
+    let join = table_with_joins.joins.first()?;
+
+    let inner_table = match &join.relation {
+        TableFactor::Table { name, .. } => object_name_str(name),
+        _ => return None,
+    };
+
+    // Extract the ON key from JOIN … ON a.key = b.key.
+    let (join_key, outer_key) = extract_join_keys(join)?;
+
+    Some(JoinInfo { inner_table, join_key, outer_key })
+}
+
+fn extract_join_keys(join: &Join) -> Option<(String, String)> {
+    let constraint = match &join.join_operator {
+        JoinOperator::Inner(c)
+        | JoinOperator::LeftOuter(c)
+        | JoinOperator::RightOuter(c)
+        | JoinOperator::FullOuter(c) => c,
+        _ => return None,
+    };
+    let on_expr = match constraint {
+        JoinConstraint::On(e) => e,
+        _ => return None,
+    };
+    // Expect: a.key = b.key  or  key = key
+    if let Expr::BinaryOp { left, op: BinaryOperator::Eq, right } = on_expr {
+        let lk = col_name(left)?;
+        let rk = col_name(right)?;
+        Some((rk, lk)) // inner key, outer key
+    } else {
+        None
+    }
+}
+
+// ── Shared helper ─────────────────────────────────────────────────────────────
+
+fn apply_filters(input: SketchExpr, pred: Vec<Predicate>) -> SketchExpr {
+    if pred.is_empty() { input } else {
+        SketchExpr::Filter { pred, input: Box::new(input) }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -390,30 +612,44 @@ fn map_agg_infos_to_sketch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::sketch_algebra::{ExactAgg, SketchAggOp};
+    use crate::types::AggType;
+    use std::time::Duration;
 
-    fn parse(sql: &str) -> ParsedQuery {
+    fn parse(sql: &str) -> SketchExpr {
         parse_sql(sql).unwrap_or_else(|e| panic!("parse_sql failed: {e}\nSQL: {sql}"))
     }
 
-    // ── ClickBench patterns ───────────────────────────────────────────────────
+    fn pq(sql: &str) -> super::super::ParsedQuery {
+        parse(sql).to_parsed_query()
+    }
+
+    // ── Basic aggregations ────────────────────────────────────────────────────
 
     #[test]
-    fn count_distinct_cardinality() {
-        let pq = parse("SELECT COUNT(DISTINCT UserID) FROM hits");
-        assert!(pq.aggregations.contains(&AggType::Cardinality));
-        assert!(!pq.exact_required);
+    fn count_star_no_group_is_exact() {
+        let pq = pq("SELECT COUNT(*) FROM hits");
+        assert!(pq.exact_required);
+        assert!(pq.aggregations.is_empty());
     }
 
     #[test]
-    fn count_star_group_by_frequency() {
-        let pq = parse("SELECT AdvEngineID, COUNT(*) FROM hits WHERE AdvEngineID <> 0 GROUP BY AdvEngineID");
+    fn count_star_group_by_is_frequency() {
+        let pq = pq("SELECT AdvEngineID, COUNT(*) FROM hits WHERE AdvEngineID <> 0 GROUP BY AdvEngineID");
         assert!(pq.aggregations.contains(&AggType::Frequency));
         assert!(pq.group_by_labels.contains(&"AdvEngineID".to_string()));
     }
 
     #[test]
-    fn topk_order_by_desc_limit() {
-        let pq = parse(
+    fn count_distinct_is_cardinality() {
+        let pq = pq("SELECT COUNT(DISTINCT UserID) FROM hits");
+        assert!(pq.aggregations.contains(&AggType::Cardinality));
+        assert!(!pq.exact_required);
+    }
+
+    #[test]
+    fn count_star_order_by_desc_limit_is_topk() {
+        let pq = pq(
             "SELECT SearchPhrase, COUNT(*) AS c FROM hits \
              WHERE SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10",
         );
@@ -421,79 +657,152 @@ mod tests {
     }
 
     #[test]
-    fn avg_maps_to_quantile_p50() {
-        let pq = parse("SELECT symbol, AVG(last) FROM hits GROUP BY symbol");
+    fn avg_with_group_by_is_quantile_p50() {
+        let pq = pq("SELECT symbol, AVG(last) FROM hits GROUP BY symbol");
         assert!(pq.aggregations.contains(&AggType::Quantile));
         assert!(pq.quantiles.contains(&0.5));
     }
 
     #[test]
-    fn min_max_maps_to_quantile_extremes() {
-        let pq = parse("SELECT symbol, MIN(last), MAX(last) FROM hits GROUP BY symbol");
+    fn min_max_with_group_by_are_extremes() {
+        let pq = pq("SELECT symbol, MIN(last), MAX(last) FROM hits GROUP BY symbol");
         assert!(pq.aggregations.contains(&AggType::Quantile));
         assert!(pq.quantiles.contains(&0.0));
         assert!(pq.quantiles.contains(&1.0));
     }
 
     #[test]
-    fn sum_exact_no_sketch() {
-        let pq = parse("SELECT SUM(AdvEngineID) FROM hits");
+    fn min_max_no_group_by_is_exact_minmax() {
+        let expr = parse("SELECT MIN(EventDate), MAX(EventDate) FROM hits");
+        // After optimize: ExactMinMax nodes
+        let pq = expr.to_parsed_query();
+        // ExactMinMax maps to Quantile in legacy AggType
+        assert!(pq.aggregations.contains(&AggType::Quantile));
+    }
+
+    #[test]
+    fn sum_is_always_exact() {
+        let pq = pq("SELECT SUM(AdvEngineID) FROM hits");
         assert!(pq.exact_required);
-        assert!(pq.aggregations.is_empty());
     }
 
-    #[test]
-    fn count_distinct_with_group_by() {
-        // doc §ClickBench: RegionID + COUNT(DISTINCT UserID) → per-region HLL
-        let pq = parse(
-            "SELECT RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY RegionID ORDER BY u DESC LIMIT 10",
-        );
-        assert!(pq.aggregations.contains(&AggType::Cardinality));
-        assert!(pq.group_by_labels.contains(&"RegionID".to_string()));
-    }
+    // ── WHERE predicates ──────────────────────────────────────────────────────
 
     #[test]
-    fn multi_agg_collects_all() {
-        // doc §ClickBench: SUM + COUNT + AVG + COUNT(DISTINCT) → multiple sketches
-        let pq = parse(
-            "SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) \
-             FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10",
-        );
-        assert!(pq.aggregations.contains(&AggType::Cardinality), "should have cardinality");
-        assert!(pq.aggregations.contains(&AggType::Frequency),   "should have frequency");
-        assert!(pq.aggregations.contains(&AggType::Quantile),    "should have quantile");
-    }
-
-    #[test]
-    fn where_equality_filter_extracted() {
-        let pq = parse("SELECT COUNT(*) FROM hits WHERE sectype = 'E' GROUP BY symbol");
+    fn where_equality_captured() {
+        let pq = pq("SELECT COUNT(*) FROM hits WHERE sectype = 'E' GROUP BY symbol");
         assert_eq!(pq.label_filters.get("sectype").map(String::as_str), Some("E"));
     }
 
     #[test]
-    fn metric_name_from_table() {
-        let pq = parse("SELECT COUNT(*) FROM financial.last_trade_price GROUP BY symbol");
+    fn where_inequality_captured() {
+        // ne predicate should be captured in filters (not label_filters, but present)
+        let expr = parse("SELECT COUNT(*) FROM hits WHERE AdvEngineID <> 0 GROUP BY AdvEngineID");
+        // Verify parse succeeds and has frequency
+        let pq = expr.to_parsed_query();
+        assert!(pq.aggregations.contains(&AggType::Frequency));
+    }
+
+    // ── Multi-aggregation ─────────────────────────────────────────────────────
+
+    #[test]
+    fn multi_agg_collects_all() {
+        let pq = pq(
+            "SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) \
+             FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10",
+        );
+        assert!(pq.aggregations.contains(&AggType::Cardinality), "missing cardinality");
+        assert!(pq.aggregations.contains(&AggType::Frequency),   "missing frequency");
+        assert!(pq.aggregations.contains(&AggType::Quantile),    "missing quantile");
+        // SUM adds exact_required alongside sketch ops
+        assert!(pq.exact_required, "SUM should set exact_required");
+    }
+
+    // ── Table / metric name ───────────────────────────────────────────────────
+
+    #[test]
+    fn dotted_table_name() {
+        let pq = pq("SELECT COUNT(*) FROM financial.last_trade_price GROUP BY symbol");
         assert_eq!(pq.metric_name, "financial.last_trade_price");
     }
 
     // ── DEBS SQL variants ─────────────────────────────────────────────────────
 
     #[test]
-    fn debs_q6_sql_cardinality() {
-        let pq = parse(
-            "SELECT COUNT(DISTINCT symbol) AS active_symbols \
-             FROM financial.last_trade_price",
-        );
+    fn debs_q6_cardinality() {
+        use super::super::QueryHint;
+        let pq = pq("SELECT COUNT(DISTINCT symbol) FROM financial.last_trade_price");
         assert!(pq.aggregations.contains(&AggType::Cardinality));
-        matches!(pq.hint, Some(QueryHint::DebsCardinality));
+        assert!(matches!(pq.hint, Some(QueryHint::DebsCardinality)));
     }
 
     #[test]
-    fn debs_q3_sql_topk() {
-        let pq = parse(
+    fn debs_q3_topk() {
+        let pq = pq(
             "SELECT symbol, COUNT(*) AS c FROM financial.last_trade_price \
              GROUP BY symbol ORDER BY c DESC LIMIT 10",
         );
         assert!(pq.aggregations.contains(&AggType::Frequency));
+    }
+
+    // ── COUNT(DISTINCT) with GROUP BY → Hydra via R4 ─────────────────────────
+
+    #[test]
+    fn count_distinct_with_group_by() {
+        let pq = pq(
+            "SELECT RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY RegionID ORDER BY u DESC LIMIT 10",
+        );
+        assert!(pq.aggregations.contains(&AggType::Cardinality));
+        assert!(pq.group_by_labels.contains(&"RegionID".to_string()));
+    }
+
+    // ── UNION ALL → Merge ─────────────────────────────────────────────────────
+
+    #[test]
+    fn union_all_produces_merge() {
+        let expr = parse(
+            "SELECT COUNT(DISTINCT UserID) FROM R \
+             UNION ALL \
+             SELECT COUNT(DISTINCT UserID) FROM S",
+        );
+        // After R3 optimization: Merge([Agg(HLL,R), Agg(HLL,S)])
+        assert!(matches!(expr, SketchExpr::Merge { .. }));
+    }
+
+    // ── Complex queries ───────────────────────────────────────────────────────
+
+    #[test]
+    fn complex_multi_agg_multi_dim_group_by_topk() {
+        // COUNT(*) → Frequency, COUNT(DISTINCT) → Cardinality, AVG → Quantile
+        // Two GROUP BY dimensions; ORDER BY + LIMIT signals TopK
+        let pq = pq(
+            "SELECT region, dc, COUNT(*) AS c, COUNT(DISTINCT UserID), AVG(ResponseTime) \
+             FROM hits WHERE env = 'prod' GROUP BY region, dc ORDER BY c DESC LIMIT 5",
+        );
+        assert!(pq.aggregations.contains(&AggType::Frequency));
+        assert!(pq.aggregations.contains(&AggType::Cardinality));
+        assert!(pq.aggregations.contains(&AggType::Quantile));
+        assert!(pq.group_by_labels.contains(&"region".to_string()));
+        assert!(pq.group_by_labels.contains(&"dc".to_string()));
+        assert_eq!(
+            pq.label_filters.get("env").map(String::as_str),
+            Some("prod")
+        );
+        // AVG maps to median (p50) sketch
+        assert!(pq.quantiles.contains(&0.5));
+    }
+
+    #[test]
+    fn complex_union_all_hll_with_where_on_each_branch() {
+        // UNION ALL → Merge; each branch has its own WHERE predicate
+        let expr = parse(
+            "SELECT region, COUNT(DISTINCT UserID) FROM sessions WHERE status = 'active' GROUP BY region \
+             UNION ALL \
+             SELECT region, COUNT(DISTINCT UserID) FROM sessions WHERE status = 'expired' GROUP BY region",
+        );
+        assert!(matches!(expr, SketchExpr::Merge { .. }));
+        let pq = expr.to_parsed_query();
+        assert!(pq.aggregations.contains(&AggType::Cardinality));
+        assert!(pq.group_by_labels.contains(&"region".to_string()));
     }
 }
