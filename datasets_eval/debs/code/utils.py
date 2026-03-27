@@ -12,8 +12,6 @@ DEBS_ROOT = Path(__file__).resolve().parent.parent
 DEBS_TZ = "Europe/Berlin"
 BASE_COLS = ("ID", "SecType", "Date", "Time")
 BASE_USECOLS = (0, 1, 2, 3)
-TRADING_TS_USECOLS = (2, 23)
-TRADING_TS_NAMES = ("Date", "Trading time")
 WINDOW_SIZES_MS = (60_000, 300_000, 900_000, 1_800_000, 3_600_000)
 WINDOW_LABELS = ("1min", "5min", "15min", "30min", "1hour")
 
@@ -95,26 +93,9 @@ def iter_csv_chunks(
         yield chunk
 
 
-def iter_csv_chunks_trading_ts(
-    path: Path, chunksize: int = 1_000_000
-) -> Iterator[pd.DataFrame]:
-    for chunk in pd.read_csv(
-        path,
-        comment="#",
-        usecols=list(TRADING_TS_USECOLS),
-        names=list(TRADING_TS_NAMES),
-        header=0,
-        index_col=False,
-        dtype={"Date": "string", "Trading time": "string"},
-        chunksize=chunksize,
-        low_memory=False,
-    ):
-        yield chunk
-
-
 def chunk_event_timestamps_ms_utc(chunk: pd.DataFrame) -> np.ndarray:
     d = chunk["Date"].astype("string").str.strip()
-    t = chunk["Trading time"].astype("string").str.strip()
+    t = chunk["Time"].astype("string").str.strip()
     m = d.notna() & t.notna() & (d != "") & (t != "") & (t.str.lower() != "nan")
     if not m.any():
         return np.array([], dtype=np.int64)
@@ -130,11 +111,11 @@ def chunk_event_timestamps_ms_utc(chunk: pd.DataFrame) -> np.ndarray:
     return (ns[ok] // 1_000_000).astype(np.int64)
 
 
-def load_trading_event_timestamps_ms_utc(
+def load_event_timestamps_ms_utc(
     path: Path, chunksize: int = 1_000_000
 ) -> np.ndarray:
     parts: list[np.ndarray] = []
-    for ch in iter_csv_chunks_trading_ts(path, chunksize):
+    for ch in iter_csv_chunks(path, chunksize):
         a = chunk_event_timestamps_ms_utc(ch)
         if a.size:
             parts.append(a)
@@ -232,73 +213,6 @@ def write_csv_rows(path: Path, fieldnames: Sequence[str], rows: Iterable[dict]) 
         w.writeheader()
         for row in rows:
             w.writerow(row)
-
-
-def window_summary_pivot_fieldnames() -> list[str]:
-    field_order = ["file"]
-    for w in WINDOW_LABELS:
-        for m in (
-            "total_windows",
-            "avg_samples",
-            "min_samples",
-            "max_samples",
-            "std_samples",
-        ):
-            field_order.append(f"{m}_{w}")
-    return field_order
-
-
-def pivot_window_summary_rows(sum_rows: list[dict]) -> list[dict]:
-    if not sum_rows:
-        return []
-    by_file: dict[str, dict[str, float | int | str]] = {}
-    for row in sum_rows:
-        fn = str(row["file"])
-        if fn not in by_file:
-            by_file[fn] = {"file": fn}
-        w = str(row["window_size"])
-        by_file[fn][f"total_windows_{w}"] = row["total_windows"]
-        by_file[fn][f"avg_samples_{w}"] = row["avg_samples"]
-        by_file[fn][f"min_samples_{w}"] = row["min_samples"]
-        by_file[fn][f"max_samples_{w}"] = row["max_samples"]
-        by_file[fn][f"std_samples_{w}"] = row["std_samples"]
-    field_order = window_summary_pivot_fieldnames()
-    out = []
-    for fn in sorted(by_file.keys()):
-        r = by_file[fn]
-        out.append({k: r.get(k, "") for k in field_order})
-    return out
-
-
-def group_window_summary_by_size(sum_rows: list[dict]) -> list[dict]:
-    if not sum_rows:
-        return []
-    df = pd.DataFrame(sum_rows)
-    for c in ("total_windows", "avg_samples", "min_samples", "max_samples", "std_samples"):
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    out: list[dict] = []
-    for w in WINDOW_LABELS:
-        sub = df[df["window_size"].astype(str) == w]
-        if sub.empty:
-            continue
-        nz = sub[sub["total_windows"] > 0]
-        out.append(
-            {
-                "window_size": w,
-                "file_count": int(len(sub)),
-                "files_with_windows": int(len(nz)),
-                "sum_total_windows": int(sub["total_windows"].sum()),
-                "mean_avg_samples": float(nz["avg_samples"].mean())
-                if len(nz) > 0
-                else float("nan"),
-                "min_min_samples": float(sub["min_samples"].min()),
-                "max_max_samples": float(sub["max_samples"].max()),
-                "mean_std_samples": float(nz["std_samples"].mean())
-                if len(nz) > 0
-                else float("nan"),
-            }
-        )
-    return out
 
 
 def window_summary_sorted_long(sum_rows: list[dict]) -> list[dict]:

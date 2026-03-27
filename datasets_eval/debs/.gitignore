@@ -4,3 +4,5 @@ code/__pycache__/
 ./results/data/detailed_windows/
 ./results/data_filtered/detailed_windows/
 ./results/tmux*.log
+./results/**/summaries/window_summary_pivoted.csv
+./results/**/summaries/window_summary_by_window_size.csv

@@ -9,7 +9,7 @@ from utils import (
     diffs_ms_sorted,
     ensure_dirs,
     list_csv_files,
-    load_trading_event_timestamps_ms_utc,
+    load_event_timestamps_ms_utc,
     parse_dataset_and_configure,
     results_dir,
     segment_by_window_cest,
@@ -27,7 +27,7 @@ def main() -> None:
     det_rows: list[dict] = []
     for path in list_csv_files():
         name = path.name
-        ts = load_trading_event_timestamps_ms_utc(path)
+        ts = load_event_timestamps_ms_utc(path)
         if ts.size == 0:
             st = diff_stats_ms(np.array([], dtype=np.int64))
             sum_rows.append({"file": name, **st})

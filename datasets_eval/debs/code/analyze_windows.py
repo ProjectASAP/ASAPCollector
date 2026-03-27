@@ -6,16 +6,13 @@ from utils import (
     WINDOW_LABELS,
     WINDOW_SIZES_MS,
     ensure_dirs,
-    group_window_summary_by_size,
     list_csv_files,
-    load_trading_event_timestamps_ms_utc,
+    load_event_timestamps_ms_utc,
     parse_dataset_and_configure,
-    pivot_window_summary_rows,
     results_dir,
     segment_by_window_cest,
     summarize_counts,
     window_sample_counts,
-    window_summary_pivot_fieldnames,
     window_summary_sorted_long,
     write_csv_rows,
 )
@@ -25,8 +22,6 @@ def main() -> None:
     parse_dataset_and_configure()
     ensure_dirs()
     summ_path = results_dir() / "summaries" / "window_summary.csv"
-    pivot_path = results_dir() / "summaries" / "window_summary_pivoted.csv"
-    by_size_path = results_dir() / "summaries" / "window_summary_by_window_size.csv"
     sum_rows: list[dict] = []
     detail_paths = {
         lbl: results_dir() / "detailed_windows" / f"window_details_{lbl}.csv"
@@ -35,7 +30,7 @@ def main() -> None:
     detail_rows: dict[str, list[dict]] = {lbl: [] for lbl in WINDOW_LABELS}
     for path in list_csv_files():
         name = path.name
-        ts = load_trading_event_timestamps_ms_utc(path)
+        ts = load_event_timestamps_ms_utc(path)
         if ts.size == 0:
             for w_lbl in WINDOW_LABELS:
                 sum_rows.append(
@@ -88,23 +83,6 @@ def main() -> None:
             "std_samples",
         ),
         sum_long,
-    )
-    pivot_rows = pivot_window_summary_rows(sum_rows)
-    write_csv_rows(pivot_path, window_summary_pivot_fieldnames(), pivot_rows)
-    grouped_rows = group_window_summary_by_size(sum_rows)
-    write_csv_rows(
-        by_size_path,
-        (
-            "window_size",
-            "file_count",
-            "files_with_windows",
-            "sum_total_windows",
-            "mean_avg_samples",
-            "min_min_samples",
-            "max_max_samples",
-            "mean_std_samples",
-        ),
-        grouped_rows,
     )
     for lbl in WINDOW_LABELS:
         write_csv_rows(
