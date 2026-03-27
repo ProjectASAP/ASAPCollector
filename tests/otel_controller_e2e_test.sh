@@ -24,7 +24,7 @@
 #   - cargo          (Rust toolchain)
 #   - go             (Go toolchain)
 #   - ddsketchcol    (built via ../../build_ddsketchcol.sh)
-#   - curl, jq
+#   - curl, python3
 
 set -euo pipefail
 
@@ -74,15 +74,12 @@ sketch_to_processor_key() {
   echo "$1"   # processor key == sketch type string for all current types
 }
 
-# Returns the sketch_type JSON field value to include in the plan request.
-# Only needed when the default planner selection for the aggregation type
-# differs from the desired sketch (e.g. kll overrides the default ddsketch
-# for quantile queries).
+# Returns the sketch_type JSON field for the plan request.
+# Always explicit: the cost optimizer may choose a different sketch type among
+# valid candidates for the same aggregation (e.g. KLL vs DDSketch for quantile),
+# so pinning is required to run the right collector binary.
 sketch_to_override_json() {
-  case "$1" in
-    kll|countminsketch)  echo "\"sketch_type\": \"$1\"," ;;
-    *)                   echo "" ;;  # rely on planner default
-  esac
+  echo "\"sketch_type\": \"$1\","
 }
 
 # Build the optional memory_budget field for the JSON body.
@@ -203,7 +200,7 @@ if [[ "$ALL_SKETCHES" == true ]]; then
         }
       }")
 
-    CHOSEN=$(echo "$RESP" | jq -r '.sketch_type // empty' 2>/dev/null || true)
+    CHOSEN=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sketch_type',''))" 2>/dev/null)
     if [[ "$CHOSEN" != "$ST" ]]; then
       echo "    [FAIL] planner returned sketch_type='${CHOSEN}', expected '${ST}'"
       ALL_PASS=false; continue
@@ -217,7 +214,7 @@ if [[ "$ALL_SKETCHES" == true ]]; then
       echo "    [FAIL] YAML missing processor key '${PKEY}:'"
       ALL_PASS=false; continue
     fi
-    if ! grep -q "- ${PKEY}" "$YAML_FILE"; then
+    if ! grep -q -- "- ${PKEY}" "$YAML_FILE"; then
       echo "    [FAIL] pipeline processor list missing '- ${PKEY}'"
       ALL_PASS=false; continue
     fi
@@ -257,10 +254,14 @@ PLAN_RESP=$(curl -sf -X POST "${CONTROLLER_API}/api/v1/plan" \
     }
   }")
 echo "    Plan response:"
-echo "$PLAN_RESP" | jq . 2>/dev/null || echo "$PLAN_RESP"
+echo "$PLAN_RESP" | python3 -m json.tool 2>/dev/null || echo "$PLAN_RESP"
 
-CHOSEN_SKETCH=$(echo "$PLAN_RESP" | jq -r '.sketch_type // empty' 2>/dev/null \
-  || echo "$PLAN_RESP" | grep -o '"sketch_type":"[^"]*"' | cut -d'"' -f4)
+# Extract a top-level string field from a JSON string without jq.
+_json_str() { echo "$2" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('$1',''))" 2>/dev/null; }
+# Extract a nested string/number field (parent → child) from a JSON string.
+_json_nested() { echo "$3" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('$1',{}).get('$2',''))" 2>/dev/null; }
+
+CHOSEN_SKETCH=$(_json_str "sketch_type" "$PLAN_RESP")
 echo "    Chosen sketch: ${CHOSEN_SKETCH}"
 if [[ "$CHOSEN_SKETCH" != "$SKETCH" ]]; then
   echo "ERROR: expected planner to choose '${SKETCH}' but got '${CHOSEN_SKETCH}'." >&2
@@ -270,11 +271,11 @@ fi
 # ── Step 3a: Verify delta_decision and transmission_costs are present ─────────
 echo ""
 echo "==> [Step 3a] Verifying delta_decision in plan response..."
-DELTA_MODE=$(echo "$PLAN_RESP" | jq -r '.delta_decision.mode // empty' 2>/dev/null || true)
-FILL_RATE=$(echo "$PLAN_RESP"  | jq -r '.transmission_costs.estimated_fill_rate // empty' 2>/dev/null || true)
-FULL_BW=$(echo "$PLAN_RESP"    | jq -r '.transmission_costs.sketch_full_bytes_per_sec // empty' 2>/dev/null || true)
-DELTA_BW=$(echo "$PLAN_RESP"   | jq -r '.transmission_costs.sketch_delta_bytes_per_sec // empty' 2>/dev/null || true)
-RAW_BW=$(echo "$PLAN_RESP"     | jq -r '.transmission_costs.raw_bytes_per_sec // empty' 2>/dev/null || true)
+DELTA_MODE=$(_json_nested "delta_decision"    "mode"                          "$PLAN_RESP")
+FILL_RATE=$( _json_nested "transmission_costs" "estimated_fill_rate"           "$PLAN_RESP")
+FULL_BW=$(   _json_nested "transmission_costs" "sketch_full_bytes_per_sec"     "$PLAN_RESP")
+DELTA_BW=$(  _json_nested "transmission_costs" "sketch_delta_bytes_per_sec"    "$PLAN_RESP")
+RAW_BW=$(    _json_nested "transmission_costs" "raw_bytes_per_sec"             "$PLAN_RESP")
 
 if [[ -z "$DELTA_MODE" ]]; then
   echo "ERROR: plan response missing delta_decision field." >&2
@@ -347,7 +348,7 @@ if ! grep -q "${EXPECTED_PROC_KEY}:" "${OUTPUT_DIR}/collector-config.yaml"; then
 fi
 echo "    [OK] Processor block '${EXPECTED_PROC_KEY}:' present"
 
-if ! grep -q "- ${EXPECTED_PROC_KEY}" "${OUTPUT_DIR}/collector-config.yaml"; then
+if ! grep -q -- "- ${EXPECTED_PROC_KEY}" "${OUTPUT_DIR}/collector-config.yaml"; then
   echo "ERROR: pipeline processor list missing '- ${EXPECTED_PROC_KEY}'" >&2
   cat "${OUTPUT_DIR}/collector-config.yaml" >&2
   exit 1

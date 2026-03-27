@@ -285,3 +285,4 @@ replaces:
   - github.com/open-telemetry/opentelemetry-collector-contrib => ../../../opentelemetry-collector-contrib
   - go.opentelemetry.io/collector => ../../../opentelemetry-collector
   - go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
+  - go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
