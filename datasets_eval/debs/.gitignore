@@ -1,4 +1,6 @@
 ./data
 ./data_filtered
-./results
 code/__pycache__/
+./results/data/detailed_windows/
+./results/data_filtered/detailed_windows/
+./results/tmux*.log
