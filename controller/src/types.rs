@@ -228,6 +228,13 @@ pub struct QueryWorkload {
     /// When set, the planner must use this sketch type instead of running
     /// the cost model. Allows pinning for collectors that support a subset.
     pub sketch_type_override: Option<SketchType>,
+    /// When true, sketches offer no benefit and the plan must use raw
+    /// pass-through (SP-2–SP-4 collapse to raw-preservation).
+    /// Set for stateful per-sample queries (RSI, MACD, stochastic, SUM).
+    pub exact_required: bool,
+    /// Quantile φ targets implied by the query (e.g. [0.5] for TWAP,
+    /// [0.0, 1.0] for price range).  Empty for non-quantile workloads.
+    pub quantiles: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Default)]

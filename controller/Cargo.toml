@@ -20,6 +20,8 @@ thiserror   = "1"
 tracing     = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 chrono      = { version = "0.4",  features = ["serde"] }
+sqlparser      = "0.61"
+promql-parser  = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

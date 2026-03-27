@@ -472,6 +472,8 @@ mod tests {
             accuracy_sla: 0.01,
             latency_sla: None,
             sketch_type_override: None,
+            exact_required: false,
+            quantiles: vec![],
         }
     }
 
