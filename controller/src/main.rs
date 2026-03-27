@@ -23,7 +23,7 @@ use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
-use planner::{CostModelPlanner, OnlineMetricsStore, init_online_store};
+use planner::{CostModelPlanner, FreezeAfterFirstPlanner, OnlineMetricsStore, init_online_store};
 use store::PlanStore;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ use store::PlanStore;
 #[derive(Clone)]
 struct AppState {
     analyzer:       Arc<Analyzer>,
-    planner:        Arc<CostModelPlanner>,
+    planner:        Arc<FreezeAfterFirstPlanner>,
     store:          Arc<PlanStore>,
     opamp:          Arc<OpampServer>,
     scraper:        Arc<Scraper>,
@@ -117,10 +117,15 @@ async fn main() {
         )
     };
 
-    // ── CostModelPlanner backed by live EMA data ──────────────────────────────
-    let planner = Arc::new(
+    // ── FreezeAfterFirstPlanner: runs cost optimisation once per metric ───────
+    // The CostModelPlanner performs the initial sketch selection using the
+    // benchmark cost table blended with any live EMA observations.  The
+    // FreezeAfterFirstPlanner wraps it so that the result is cached after
+    // the first request for each metric and never re-computed on workload
+    // changes, giving a stable, predictable configuration in production.
+    let planner = Arc::new(FreezeAfterFirstPlanner::new(
         CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
-    );
+    ));
 
     let state = AppState {
         analyzer:     Arc::new(Analyzer::new()),
@@ -241,6 +246,9 @@ async fn handle_rollback(
     State(st): State<AppState>,
     Path(metric): Path<String>,
 ) -> impl IntoResponse {
+    // Clear the frozen plan so the next POST /api/v1/plan re-runs the cost
+    // model and produces a fresh optimised plan for this metric.
+    st.planner.unfreeze(&metric);
     match st.store.rollback(&metric) {
         Ok(plan) => {
             if let Ok(yaml) = generate_agent_config(&plan.agent_config, &st.opamp_endpoint) {
