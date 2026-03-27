@@ -24,7 +24,7 @@ use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
-use planner::{CostModelPlanner, FreezeAfterFirstPlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
+use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
 use replan::Replanner;
 use store::{PlanStore, WorkloadStore};
 
@@ -33,7 +33,7 @@ use store::{PlanStore, WorkloadStore};
 #[derive(Clone)]
 struct AppState {
     analyzer:        Arc<Analyzer>,
-    planner:         Arc<FreezeAfterFirstPlanner>,
+    planner:         Arc<BaselinePlanner>,
     store:           Arc<PlanStore>,
     workload_store:  Arc<WorkloadStore>,
     opamp:           Arc<OpampServer>,
@@ -134,11 +134,11 @@ async fn main() {
         )
     };
 
-    // ── FreezeAfterFirstPlanner backed by live EMA data ───────────────────────
+    // ── BaselinePlanner backed by live EMA data ─────────────────────────────
     // Runs the full cost-model optimisation once per metric on the first
-    // request, then freezes the result.  The Replanner unfreezes and
+    // request, then locks in that plan as the baseline.  The Replanner resets
     // re-optimises on SLA violation or plan expiry.
-    let planner = Arc::new(FreezeAfterFirstPlanner::new(
+    let planner = Arc::new(BaselinePlanner::new(
         CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
     ));
 
@@ -338,9 +338,9 @@ async fn handle_rollback(
     State(st): State<AppState>,
     Path(metric): Path<String>,
 ) -> impl IntoResponse {
-    // Clear the frozen plan so the next POST /api/v1/plan re-runs the cost
-    // model and produces a fresh optimised plan for this metric.
-    st.planner.unfreeze(&metric);
+    // Reset the baseline so the next POST /api/v1/plan re-runs the cost
+    // model and establishes a fresh baseline plan for this metric.
+    st.planner.reset(&metric);
     match st.store.rollback(&metric) {
         Ok(plan) => {
             if let Ok(yaml) = generate_agent_config(&plan.agent_config, &st.opamp_endpoint) {

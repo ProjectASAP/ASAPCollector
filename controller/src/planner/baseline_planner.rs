@@ -1,24 +1,30 @@
-/// Freeze-after-first planner.
+/// Baseline planner.
 ///
-/// Runs the full cost-model optimisation **once** per metric (on the first
-/// POST /api/v1/plan call for that metric name) and then returns the same
-/// `CollectionPlan` for every subsequent request — even if the workload
-/// characteristics change.
+/// A *baseline* is the cost-optimised `CollectionPlan` established on the
+/// **first** `POST /api/v1/plan` request for a metric.  Once set, the same
+/// plan is returned for every subsequent request — even if the workload
+/// characteristics change — giving a stable, predictable collector
+/// configuration in production.
 ///
-/// This is the intended production default: you get a data-driven initial
-/// plan without the risk of live re-optimisation diverging mid-stream.
+/// The baseline is intentionally static: live workload fluctuations do **not**
+/// trigger re-optimisation, which prevents mid-stream sketch-type flips that
+/// would break downstream aggregation pipelines.
+///
+/// To replace the baseline (e.g. after an SLA violation or explicit rollback)
+/// call [`BaselinePlanner::reset`] for the metric.  The next plan request will
+/// run the cost model afresh and lock in a new baseline.
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::types::{CollectionPlan, QueryWorkload, WorkloadCharacteristics};
 use super::cost_model::CostModelPlanner;
 
-pub struct FreezeAfterFirstPlanner {
+pub struct BaselinePlanner {
     inner: CostModelPlanner,
     cache: Arc<RwLock<HashMap<String, CollectionPlan>>>,
 }
 
-impl FreezeAfterFirstPlanner {
+impl BaselinePlanner {
     pub fn new(inner: CostModelPlanner) -> Self {
         Self {
             inner,
@@ -26,8 +32,8 @@ impl FreezeAfterFirstPlanner {
         }
     }
 
-    /// Return the frozen plan for this metric, or run the cost model and
-    /// freeze the result if this is the first request for the metric.
+    /// Return the baseline plan for this metric, or run the cost model and
+    /// establish a new baseline if this is the first request for the metric.
     pub fn plan(
         &self,
         workload: &QueryWorkload,
@@ -49,15 +55,15 @@ impl FreezeAfterFirstPlanner {
         plan
     }
 
-    /// Explicitly clear the frozen plan for a metric so the next request
+    /// Clear the baseline for a metric so the next request
     /// triggers a fresh cost-model run.  Called by the rollback handler or
     /// any future re-plan endpoint.
-    pub fn unfreeze(&self, metric: &str) {
+    pub fn reset(&self, metric: &str) {
         self.cache.write().unwrap().remove(metric);
     }
 
-    /// Return the metric names for which a frozen plan exists.
-    pub fn frozen_metrics(&self) -> Vec<String> {
+    /// Return the metric names that have an established baseline.
+    pub fn baseline_metrics(&self) -> Vec<String> {
         self.cache.read().unwrap().keys().cloned().collect()
     }
 }
@@ -87,8 +93,8 @@ mod tests {
         }
     }
 
-    fn planner() -> FreezeAfterFirstPlanner {
-        FreezeAfterFirstPlanner::new(CostModelPlanner::new())
+    fn planner() -> BaselinePlanner {
+        BaselinePlanner::new(CostModelPlanner::new())
     }
 
     #[test]
@@ -104,14 +110,14 @@ mod tests {
     fn second_call_returns_same_plan() {
         let p = planner();
         let first  = p.plan(&workload("latency"), None);
-        // Change the workload — the frozen planner must ignore it.
+        // Change the workload — the baseline planner must ignore it.
         let mut w2 = workload("latency");
         w2.aggregations = vec![AggType::Cardinality];
         let second = p.plan(&w2, None);
         assert_eq!(
             first.agent_config.sketch_type,
             second.agent_config.sketch_type,
-            "frozen plan must not change even when workload changes"
+            "baseline plan must not change even when workload changes"
         );
     }
 
@@ -123,32 +129,32 @@ mod tests {
         // Both plans are valid (exact sketch type may differ by cost model
         // internals, but we just check they are independently produced).
         let _ = (a, b);
-        assert_eq!(p.frozen_metrics().len(), 2);
+        assert_eq!(p.baseline_metrics().len(), 2);
     }
 
     #[test]
-    fn unfreeze_allows_re_plan() {
+    fn reset_allows_re_plan() {
         let p = planner();
         let first = p.plan(&workload("latency"), None);
-        p.unfreeze("latency");
-        assert!(p.frozen_metrics().is_empty());
-        // After unfreeze the planner will run the cost model again on the same
+        p.reset("latency");
+        assert!(p.baseline_metrics().is_empty());
+        // After reset the planner will run the cost model again on the same
         // workload and should produce an equivalent plan.
         let second = p.plan(&workload("latency"), None);
         assert_eq!(
             first.agent_config.sketch_type,
             second.agent_config.sketch_type,
-            "same workload after unfreeze should produce the same sketch type"
+            "same workload after reset should produce the same sketch type"
         );
     }
 
     #[test]
-    fn frozen_metrics_lists_all_seen_metrics() {
+    fn baseline_metrics_lists_all_seen_metrics() {
         let p = planner();
         p.plan(&workload("cpu"), None);
         p.plan(&workload("mem"), None);
         p.plan(&workload("cpu"), None); // repeat — should not double-count
-        let mut metrics = p.frozen_metrics();
+        let mut metrics = p.baseline_metrics();
         metrics.sort();
         assert_eq!(metrics, vec!["cpu", "mem"]);
     }
