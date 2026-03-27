@@ -552,6 +552,139 @@ The control plane manages decisions across every hop in the data lifecycle. The 
 
 ---
 
+## SP-7 Implementation Gap: ASAPQuery Precompute Delivery
+
+### Current state
+
+`PrecomputeClient` (`controller/src/config/precompute.rs`) is implemented and exported, but is **never instantiated or called from `main.rs`**. The controller builds `PrecomputeJob` structs via `build_precompute_jobs()` and reports their count in the plan response (`"precompute_jobs": N`), but the HTTP call to ASAPQuery is never made. Precompute delivery is therefore a no-op in the current implementation.
+
+### Required controller changes
+
+**1. Add `ASAP_QUERY_URL` environment variable**
+
+```
+ASAP_QUERY_URL=http://asapquery:8090   # optional; skip precompute delivery if unset
+```
+
+Instantiate `PrecomputeClient` in `AppState` as `Option<PrecomputeClient>`.
+
+**2. Register jobs from `handle_plan()`**
+
+After `plan.precompute` is populated, call `client.register()` for each job and persist the returned `job_id` values alongside the plan in the store. Failure to register should be logged and reflected in the plan response but must not fail the plan itself.
+
+```rust
+// in handle_plan(), after build_precompute_jobs():
+if let Some(ref client) = st.precompute_client {
+    for job in &plan.precompute {
+        match client.register(job).await {
+            Ok(resp) => { /* store resp.job_id with plan */ }
+            Err(e)   => warn!("precompute register failed: {e}"),
+        }
+    }
+}
+```
+
+**3. Deregister stale jobs on re-plan and rollback**
+
+In `handle_rollback()` and the replanner (`replan.rs`), call `client.deregister(job_id)` for every job ID stored against the previous plan version before applying the new plan. This prevents stale materializations from accumulating in ASAPQuery.
+
+**4. Plan response additions**
+
+Add `precompute_job_ids: [string]` to the plan JSON response so callers can track which jobs were registered.
+
+### Testing the sketch-to-OTel-datapath assignment
+
+**A. Per-sketch-type YAML unit test (Rust)**
+
+Add a `#[tokio::test]` in `config/agent.rs` (or a new `tests/sketch_otel_assignment.rs`) that calls `generate_agent_config()` for each aggregation type and asserts the resulting YAML processor key matches the expected sketch:
+
+| `aggregations` | `plan.agent_config.sketch_type` | Expected YAML processor key |
+|---|---|---|
+| `["quantile"]` | `DDSketch` | `ddsketch:` |
+| `["cardinality"]` | `HLL` | `hll:` |
+| `["frequency"]` | `CountSketch` | `countsketch:` |
+
+**B. E2E shell test extension**
+
+Extend `tests/otel_controller_e2e_test.sh` to loop over sketch types. For each iteration: submit plan → fetch YAML → assert processor key → start matching collector binary → run `e2esdkbench --sketch-type=<type>` → assert `otelcol_processor_accepted_metric_points > 0`.
+
+**C. OpAMP assignment path test**
+
+Add a test that connects a minimal fake OpAMP client (a `tokio::spawn` WebSocket echo) before submitting a plan, then asserts the `RemoteConfig` YAML pushed by the controller contains the right processor key. This validates the OpAMP delivery path independently of the HTTP config provider.
+
+---
+
+## SP-3/SP-7: ASAPQuery Requirements for E2E Precomputation
+
+For the precompute stage assignment in SP-3 to function end-to-end, ASAPQuery must implement the following components. The controller's `PrecomputeClient` defines the exact wire contract.
+
+### API surface (HTTP REST)
+
+```
+POST   /api/v1/precompute/jobs          register a new precompute job
+DELETE /api/v1/precompute/jobs/{id}     deregister and evict a job
+GET    /api/v1/precompute/jobs          list active jobs and their status
+```
+
+**Request body for `POST /api/v1/precompute/jobs`:**
+
+```json
+{
+  "query":       "quantile_over_time(0.99, latency{service=\"web\"}[5m])",
+  "granularity": "1m",
+  "source":      "backend-collector:4317",
+  "sketch_type": "ddsketch",
+  "store_path":  "precomputed/latency/p99/5m"
+}
+```
+
+**Response:**
+
+```json
+{
+  "job_id":     "job-abc123",
+  "status":     "created",
+  "created_at": "2026-03-26T00:00:00Z"
+}
+```
+
+### Required internal components
+
+| Component | Responsibility |
+|---|---|
+| **Job registry** | Persist active jobs; survive restart; expose `GET /jobs` for status |
+| **Sketch puller** | On each `granularity` tick, fetch accumulated sketch blobs from `source` (backend collector OTLP or Prometheus endpoint) |
+| **Query executor** | Evaluate `query_expr` using sketch-native functions (table below) |
+| **Result cache** | Store scalar or vector result keyed by `store_path`; serve zero-latency on cache hit |
+| **Scheduler** | Trigger each job at its `granularity` interval; honour `valid_until` TTL sent by the controller on re-plan |
+| **Query router** | When a user PromQL/SQL query matches a registered `store_path`, short-circuit to cache instead of DB scan |
+| **SP-8 metrics endpoint** | Expose `/metrics` (Prometheus) with job execution latency, cache hit rate, and sketch pull errors so the controller's feedback collector can feed them into the EMA cost model |
+
+### Query executor — sketch function mapping
+
+The `query_expr` strings emitted by the controller (`build_query_expr()` in `config/precompute.rs`) use the following function names. ASAPQuery must implement or alias each:
+
+| Function | Sketch type | Semantics |
+|---|---|---|
+| `quantile_over_time(φ, metric[window])` | DDSketch | Query the DDSketch for quantile φ over the accumulated window |
+| `count_distinct_over_time(metric[window])` | HLL | Return the HLL cardinality estimate for the window |
+| `top_k_over_time(k, metric[window])` | CountSketch / CountMinSketch | Return the top-k heavy hitters from the sketch for the window |
+
+### Integration with SP-8 feedback loop
+
+The controller's `monitor/mod.rs` scrapes collector `/metrics` endpoints. To close the feedback loop for precomputation, ASAPQuery must expose these metrics on its own `/metrics` endpoint:
+
+| Metric name | Type | Description |
+|---|---|---|
+| `asapquery_precompute_job_duration_seconds` | Histogram | Wall time to execute one precompute job cycle |
+| `asapquery_precompute_cache_hits_total` | Counter | Queries served from precomputed cache |
+| `asapquery_precompute_cache_misses_total` | Counter | Queries that fell through to DB scan |
+| `asapquery_precompute_sketch_pull_errors_total` | Counter | Failed sketch fetches from source |
+
+These map directly to the "ASAPQuery execution logs" row in the SP-8 feedback sources table and allow the EMA cost model to observe actual precompute job timing and cache efficiency.
+
+---
+
 ## Subproblem Summary
 
 | # | Subproblem | Input | Output | Primary technique |
