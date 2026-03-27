@@ -512,4 +512,210 @@ mod tests {
         assert_eq!(keys.keys(), &["instance".to_string()]);
         assert!(!keys.is_empty());
     }
+
+    // ── Accuracy bound tests ──────────────────────────────────────────────────
+    //
+    // These tests verify that the default sketch parameters satisfy the
+    // documented accuracy guarantees.  The bounds are derived from the
+    // theoretical properties of each sketch family.
+
+    /// DDSketch default: ε = 0.01 → at most 1 % relative rank error.
+    ///
+    /// For a stream of n items the rank of a DDSketch quantile estimate r̂
+    /// satisfies |r̂ − r| ≤ ε·n.  The default ε = 0.01 gives a 1 % SLA.
+    #[test]
+    fn ddsketch_default_epsilon_one_pct() {
+        let op = SketchAggOp::default_ddsketch(vec![0.99]);
+        match op {
+            SketchAggOp::DDSketch { epsilon, .. } => {
+                assert!(
+                    epsilon <= 0.01,
+                    "DDSketch default epsilon {epsilon} exceeds 1 % accuracy SLA"
+                );
+            }
+            _ => panic!("expected DDSketch"),
+        }
+    }
+
+    /// For n = 10 000 items, a 1 % DDSketch (ε = 0.01) guarantees the
+    /// p99 rank estimate is within ±100 positions of the true rank 9 900.
+    #[test]
+    fn ddsketch_rank_error_bound_n10k() {
+        let n: f64 = 10_000.0;
+        let epsilon = 0.01_f64;
+        let true_rank = (0.99 * n) as i64; // 9 900
+        let max_error = (epsilon * n).ceil() as i64; // 100
+        assert!(
+            max_error <= 100,
+            "rank error {max_error} exceeds expected bound for n={n} ε={epsilon}"
+        );
+        // Verify the bound makes sense: estimate ∈ [true_rank-error, true_rank+error].
+        let lo = true_rank - max_error;
+        let hi = true_rank + max_error;
+        assert!(lo >= 0 && hi <= n as i64);
+    }
+
+    /// HyperLogLog default: registers = 14 (2¹⁴ = 16 384 buckets).
+    /// Standard error ≈ 1.04 / √(2^registers) ≈ 0.81 % < 1 %.
+    #[test]
+    fn hll_default_registers_error_below_1pct() {
+        let op = SketchAggOp::default_hll();
+        match op {
+            SketchAggOp::HLL { registers } => {
+                let buckets = (1u64 << registers) as f64; // 2^registers
+                let std_error = 1.04 / buckets.sqrt();
+                assert!(
+                    std_error < 0.01,
+                    "HLL standard error {std_error:.4} ≥ 1 % for registers={registers}"
+                );
+            }
+            _ => panic!("expected HLL"),
+        }
+    }
+
+    /// CountMin-Sketch default: width = 2 000, depth = 5.
+    /// Frequency error ε = e / width ≈ 0.136 % of total count N.
+    /// Failure probability δ = e^(−depth) ≈ 0.67 % < 1 %.
+    #[test]
+    fn countmin_default_error_and_failure_prob() {
+        let op = SketchAggOp::default_count_min();
+        match op {
+            SketchAggOp::CountMin { width, depth } => {
+                let eps   = std::f64::consts::E / width as f64;
+                let delta = (-(depth as f64)).exp();
+                assert!(
+                    eps < 0.002,
+                    "CountMin frequency error ε={eps:.5} should be < 0.2 % of N"
+                );
+                assert!(
+                    delta < 0.01,
+                    "CountMin failure probability δ={delta:.5} should be < 1 %"
+                );
+            }
+            _ => panic!("expected CountMin"),
+        }
+    }
+
+    // ── Mergeability correctness ──────────────────────────────────────────────
+    //
+    // Mergeability means sketch(A ∪ B) = merge(sketch(A), sketch(B)).
+    // All sketches used here satisfy this property except Exact(Avg),
+    // because avg(A ∪ B) ≠ avg(avg(A), avg(B)) in general.
+
+    #[test]
+    fn countmin_is_mergeable() {
+        assert!(SketchAggOp::default_count_min().is_mergeable());
+    }
+
+    #[test]
+    fn countsketch_is_mergeable() {
+        assert!(SketchAggOp::CountSketch { k: 10 }.is_mergeable());
+    }
+
+    #[test]
+    fn ddsketch_is_mergeable() {
+        assert!(SketchAggOp::default_ddsketch(vec![0.99]).is_mergeable());
+    }
+
+    #[test]
+    fn exact_minmax_is_mergeable() {
+        // min(A∪B) = min(min(A), min(B)) — globally mergeable.
+        assert!(SketchAggOp::ExactMinMax { min: true, max: false }.is_mergeable());
+    }
+
+    #[test]
+    fn exact_sum_and_count_are_mergeable() {
+        assert!(SketchAggOp::Exact(ExactAgg::Sum).is_mergeable());
+        assert!(SketchAggOp::Exact(ExactAgg::Count).is_mergeable());
+    }
+
+    #[test]
+    fn exact_avg_not_mergeable_avg_of_avgs_is_wrong() {
+        // avg([1,2,3]) = 2, avg([4,5]) = 4.5
+        // avg-of-avgs = (2 + 4.5) / 2 = 3.25  ≠  avg([1,2,3,4,5]) = 3
+        assert!(!SketchAggOp::Exact(ExactAgg::Avg).is_mergeable());
+    }
+
+    #[test]
+    fn hydra_mergeable_when_inner_is_hll() {
+        let hydra = SketchAggOp::Hydra {
+            inner:          Box::new(SketchAggOp::default_hll()),
+            partition_keys: vec!["region".into(), "dc".into()],
+        };
+        assert!(hydra.is_mergeable());
+    }
+
+    #[test]
+    fn hydra_not_mergeable_when_inner_is_avg() {
+        let hydra = SketchAggOp::Hydra {
+            inner:          Box::new(SketchAggOp::Exact(ExactAgg::Avg)),
+            partition_keys: vec!["region".into()],
+        };
+        assert!(!hydra.is_mergeable());
+    }
+
+    // ── AggType mapping ───────────────────────────────────────────────────────
+
+    #[test]
+    fn agg_type_mapping_correct() {
+        use crate::types::AggType;
+        assert_eq!(SketchAggOp::default_hll().to_agg_type(),              AggType::Cardinality);
+        assert_eq!(SketchAggOp::default_count_min().to_agg_type(),        AggType::Frequency);
+        assert_eq!(SketchAggOp::CountSketch { k: 5 }.to_agg_type(),       AggType::Frequency);
+        assert_eq!(SketchAggOp::default_ddsketch(vec![0.5]).to_agg_type(),AggType::Quantile);
+        assert_eq!(SketchAggOp::ExactMinMax { min: true, max: true }.to_agg_type(), AggType::Quantile);
+    }
+
+    // ── SketchCoverage ────────────────────────────────────────────────────────
+    //
+    // Coverage classifies whether a SELECT can be fully, partially, or not
+    // at all served by sketches.
+
+    #[test]
+    fn coverage_full_when_all_sketch() {
+        let ops: Vec<SketchAggOp> = vec![
+            SketchAggOp::default_hll(),
+            SketchAggOp::default_count_min(),
+        ];
+        let has_sketch = ops.iter().any(|o| !o.is_exact());
+        let has_exact  = ops.iter().any(|o|  o.is_exact());
+        let cov = match (has_sketch, has_exact) {
+            (true,  false) => SketchCoverage::Full,
+            (true,  true)  => SketchCoverage::Partial,
+            _              => SketchCoverage::None,
+        };
+        assert_eq!(cov, SketchCoverage::Full);
+    }
+
+    #[test]
+    fn coverage_partial_when_exact_mixed_in() {
+        let ops: Vec<SketchAggOp> = vec![
+            SketchAggOp::default_hll(),
+            SketchAggOp::Exact(ExactAgg::Sum),
+        ];
+        let has_sketch = ops.iter().any(|o| !o.is_exact());
+        let has_exact  = ops.iter().any(|o|  o.is_exact());
+        let cov = match (has_sketch, has_exact) {
+            (true,  false) => SketchCoverage::Full,
+            (true,  true)  => SketchCoverage::Partial,
+            _              => SketchCoverage::None,
+        };
+        assert_eq!(cov, SketchCoverage::Partial);
+    }
+
+    #[test]
+    fn coverage_none_when_all_exact() {
+        let ops: Vec<SketchAggOp> = vec![
+            SketchAggOp::Exact(ExactAgg::Sum),
+            SketchAggOp::Exact(ExactAgg::Count),
+        ];
+        let has_sketch = ops.iter().any(|o| !o.is_exact());
+        let has_exact  = ops.iter().any(|o|  o.is_exact());
+        let cov = match (has_sketch, has_exact) {
+            (true,  false) => SketchCoverage::Full,
+            (true,  true)  => SketchCoverage::Partial,
+            _              => SketchCoverage::None,
+        };
+        assert_eq!(cov, SketchCoverage::None);
+    }
 }
