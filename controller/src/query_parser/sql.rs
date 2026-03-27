@@ -768,4 +768,41 @@ mod tests {
         // After R3 optimization: Merge([Agg(HLL,R), Agg(HLL,S)])
         assert!(matches!(expr, SketchExpr::Merge { .. }));
     }
+
+    // ── Complex queries ───────────────────────────────────────────────────────
+
+    #[test]
+    fn complex_multi_agg_multi_dim_group_by_topk() {
+        // COUNT(*) → Frequency, COUNT(DISTINCT) → Cardinality, AVG → Quantile
+        // Two GROUP BY dimensions; ORDER BY + LIMIT signals TopK
+        let pq = pq(
+            "SELECT region, dc, COUNT(*) AS c, COUNT(DISTINCT UserID), AVG(ResponseTime) \
+             FROM hits WHERE env = 'prod' GROUP BY region, dc ORDER BY c DESC LIMIT 5",
+        );
+        assert!(pq.aggregations.contains(&AggType::Frequency));
+        assert!(pq.aggregations.contains(&AggType::Cardinality));
+        assert!(pq.aggregations.contains(&AggType::Quantile));
+        assert!(pq.group_by_labels.contains(&"region".to_string()));
+        assert!(pq.group_by_labels.contains(&"dc".to_string()));
+        assert_eq!(
+            pq.label_filters.get("env").map(String::as_str),
+            Some("prod")
+        );
+        // AVG maps to median (p50) sketch
+        assert!(pq.quantiles.contains(&0.5));
+    }
+
+    #[test]
+    fn complex_union_all_hll_with_where_on_each_branch() {
+        // UNION ALL → Merge; each branch has its own WHERE predicate
+        let expr = parse(
+            "SELECT region, COUNT(DISTINCT UserID) FROM sessions WHERE status = 'active' GROUP BY region \
+             UNION ALL \
+             SELECT region, COUNT(DISTINCT UserID) FROM sessions WHERE status = 'expired' GROUP BY region",
+        );
+        assert!(matches!(expr, SketchExpr::Merge { .. }));
+        let pq = expr.to_parsed_query();
+        assert!(pq.aggregations.contains(&AggType::Cardinality));
+        assert!(pq.group_by_labels.contains(&"region".to_string()));
+    }
 }

@@ -435,4 +435,249 @@ mod tests {
         let opt = optimize(expr);
         assert!(matches!(opt, SketchExpr::TopK { k: 5, .. }));
     }
+
+    // ── R1 additional ─────────────────────────────────────────────────────────
+
+    /// R1 basic: Filter wrapping Agg is pushed inside the Agg.
+    /// Filter(pred, Agg(op, X)) → Agg(op, Filter(pred, X))
+    #[test]
+    fn r1_filter_pushed_below_agg() {
+        let pred = vec![Predicate {
+            col: "region".into(),
+            op:  FilterOp::Eq,
+            val: FilterVal::Str("us-east".into()),
+        }];
+        let expr = SketchExpr::Filter {
+            pred:  pred.clone(),
+            input: Box::new(SketchExpr::Agg {
+                op:    SketchAggOp::default_count_min(),
+                col:   ColumnRef::Wildcard,
+                input: Box::new(src("hits")),
+            }),
+        };
+        let opt = optimize(expr);
+        // Must become Agg(..., Filter(...))
+        match opt {
+            SketchExpr::Agg { input, .. } => {
+                assert!(matches!(*input, SketchExpr::Filter { .. }),
+                    "Filter should be inside Agg after R1");
+            }
+            other => panic!("expected Agg after R1, got {other:?}"),
+        }
+    }
+
+    /// R1 accuracy preservation: pushing Filter below Agg must not change
+    /// the sketch operator or its parameters.
+    #[test]
+    fn r1_preserves_sketch_epsilon() {
+        let pred = vec![Predicate {
+            col: "env".into(),
+            op:  FilterOp::Eq,
+            val: FilterVal::Str("prod".into()),
+        }];
+        let original_op = SketchAggOp::DDSketch { quantiles: vec![0.99], epsilon: 0.01 };
+        let expr = SketchExpr::Filter {
+            pred,
+            input: Box::new(SketchExpr::Agg {
+                op:    original_op.clone(),
+                col:   ColumnRef::SampleValue,
+                input: Box::new(src("latency")),
+            }),
+        };
+        let opt = optimize(expr);
+        match opt {
+            SketchExpr::Agg { op, .. } => {
+                assert_eq!(op, original_op,
+                    "R1 must not alter the DDSketch epsilon or quantile parameters");
+            }
+            other => panic!("expected Agg, got {other:?}"),
+        }
+    }
+
+    // ── R3 additional ─────────────────────────────────────────────────────────
+
+    /// R3 distributes CountMin over UNION ALL branches and preserves
+    /// the same width/depth parameters on every branch.
+    #[test]
+    fn r3_countmin_branches_have_same_params() {
+        let op = SketchAggOp::default_count_min();
+        let expr = SketchExpr::Agg {
+            op:    op.clone(),
+            col:   ColumnRef::Wildcard,
+            input: Box::new(SketchExpr::Merge {
+                inputs: vec![src("R"), src("S"), src("T")],
+            }),
+        };
+        let opt = optimize(expr);
+        match opt {
+            SketchExpr::Merge { inputs } => {
+                assert_eq!(inputs.len(), 3);
+                for branch in &inputs {
+                    match branch {
+                        SketchExpr::Agg { op: branch_op, .. } => {
+                            assert_eq!(branch_op, &op,
+                                "Each UNION branch must use identical CountMin parameters");
+                        }
+                        other => panic!("expected Agg branch, got {other:?}"),
+                    }
+                }
+            }
+            other => panic!("expected Merge after R3, got {other:?}"),
+        }
+    }
+
+    /// R3 distributes DDSketch over Merge, preserving ε on every branch.
+    #[test]
+    fn r3_ddsketch_epsilon_preserved_on_each_branch() {
+        let op = SketchAggOp::DDSketch { quantiles: vec![0.95], epsilon: 0.005 };
+        let expr = SketchExpr::Agg {
+            op:    op.clone(),
+            col:   ColumnRef::SampleValue,
+            input: Box::new(SketchExpr::Merge {
+                inputs: vec![src("A"), src("B")],
+            }),
+        };
+        let opt = optimize(expr);
+        match opt {
+            SketchExpr::Merge { inputs } => {
+                for branch in &inputs {
+                    match branch {
+                        SketchExpr::Agg { op: bop, .. } => assert_eq!(bop, &op),
+                        other => panic!("expected Agg, got {other:?}"),
+                    }
+                }
+            }
+            other => panic!("expected Merge, got {other:?}"),
+        }
+    }
+
+    // ── R4 additional ─────────────────────────────────────────────────────────
+
+    /// R4 Hydra wraps the inner op without altering its accuracy parameters.
+    #[test]
+    fn r4_hydra_preserves_inner_ddsketch_epsilon() {
+        let inner_op = SketchAggOp::DDSketch { quantiles: vec![0.5], epsilon: 0.01 };
+        let expr = SketchExpr::Partition {
+            keys:  PartitionKeys::By(vec!["region".into(), "dc".into()]),
+            input: Box::new(SketchExpr::Agg {
+                op:    inner_op.clone(),
+                col:   ColumnRef::SampleValue,
+                input: Box::new(src("latency")),
+            }),
+        };
+        let opt = optimize(expr);
+        match opt {
+            SketchExpr::Agg {
+                op: SketchAggOp::Hydra { inner, partition_keys },
+                ..
+            } => {
+                assert_eq!(*inner, inner_op,
+                    "Hydra must not alter inner DDSketch accuracy parameters");
+                assert_eq!(partition_keys, vec!["region", "dc"]);
+            }
+            other => panic!("expected Hydra Agg, got {other:?}"),
+        }
+    }
+
+    // ── Optimizer idempotency ─────────────────────────────────────────────────
+
+    /// Applying `optimize` twice must yield a structurally identical tree.
+    /// This verifies the rules reach a fixed point in one pass.
+    #[test]
+    fn optimize_is_idempotent() {
+        // Build a tree that exercises multiple rules: R3, R4, R7.
+        let pred = vec![Predicate {
+            col: "env".into(), op: FilterOp::Eq, val: FilterVal::Str("prod".into()),
+        }];
+        let expr = SketchExpr::Partition {
+            keys:  PartitionKeys::By(vec!["region".into(), "dc".into()]),
+            input: Box::new(SketchExpr::Agg {
+                op:    SketchAggOp::default_hll(),
+                col:   ColumnRef::Named("user".into()),
+                input: Box::new(SketchExpr::Merge {
+                    inputs: vec![
+                        SketchExpr::Window {
+                            duration: Duration::from_secs(300),
+                            input: Box::new(SketchExpr::Filter {
+                                pred:  pred.clone(),
+                                input: Box::new(src("R")),
+                            }),
+                        },
+                        src("S"),
+                    ],
+                }),
+            }),
+        };
+        let once  = optimize(expr.clone());
+        let twice = optimize(once.clone());
+        // Structural equality: format the debug output (simplest proxy for deep eq).
+        assert_eq!(format!("{once:?}"), format!("{twice:?}"),
+            "optimize is not idempotent — a second pass changed the tree");
+    }
+
+    // ── End-to-end accuracy pipeline ─────────────────────────────────────────
+
+    /// Build the tree for `COUNT(DISTINCT UserID) FROM hits UNION ALL
+    /// SELECT COUNT(DISTINCT UserID) FROM hits2`, optimize it, and verify:
+    ///
+    /// 1. R3 distributed HLL over the Merge branches.
+    /// 2. Every branch uses the same HLL parameters (registers = 14).
+    /// 3. The standard error bound 1.04/√(2^14) < 1 % is preserved.
+    #[test]
+    fn end_to_end_union_hll_accuracy_preserved() {
+        let hll = SketchAggOp::default_hll();
+        let expr = SketchExpr::Agg {
+            op:    hll.clone(),
+            col:   ColumnRef::Named("UserID".into()),
+            input: Box::new(SketchExpr::Merge {
+                inputs: vec![src("hits"), src("hits2")],
+            }),
+        };
+        let opt = optimize(expr);
+        match opt {
+            SketchExpr::Merge { inputs } => {
+                assert_eq!(inputs.len(), 2, "both UNION branches must be present");
+                for branch in &inputs {
+                    match branch {
+                        SketchExpr::Agg { op: SketchAggOp::HLL { registers }, .. } => {
+                            assert_eq!(*registers, 14);
+                            let std_err = 1.04 / ((1u64 << registers) as f64).sqrt();
+                            assert!(std_err < 0.01,
+                                "HLL standard error {std_err:.4} must be < 1 %");
+                        }
+                        other => panic!("expected HLL Agg on each branch, got {other:?}"),
+                    }
+                }
+            }
+            other => panic!("expected Merge after R3, got {other:?}"),
+        }
+    }
+
+    /// Build a DDSketch pipeline through R1 (filter push-down) and verify
+    /// the ε = 0.01 accuracy guarantee survives optimization.
+    #[test]
+    fn end_to_end_ddsketch_epsilon_survives_filter_pushdown() {
+        let pred = vec![Predicate {
+            col: "service".into(),
+            op:  FilterOp::Eq,
+            val: FilterVal::Str("checkout".into()),
+        }];
+        let expr = SketchExpr::Filter {
+            pred,
+            input: Box::new(SketchExpr::Agg {
+                op:    SketchAggOp::DDSketch { quantiles: vec![0.99], epsilon: 0.01 },
+                col:   ColumnRef::SampleValue,
+                input: Box::new(src("latency")),
+            }),
+        };
+        let opt = optimize(expr);
+        // After R1: Agg(DDSketch, Filter(Source))
+        match opt {
+            SketchExpr::Agg { op: SketchAggOp::DDSketch { epsilon, quantiles }, .. } => {
+                assert_eq!(epsilon, 0.01, "ε must not change through R1");
+                assert_eq!(quantiles, vec![0.99]);
+            }
+            other => panic!("expected DDSketch Agg after R1, got {other:?}"),
+        }
+    }
 }

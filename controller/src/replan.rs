@@ -23,7 +23,7 @@ use tracing::{info, warn};
 use crate::config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
 use crate::monitor::Scraper;
 use crate::opamp::{AgentRole, OpampServer, RemoteConfig};
-use crate::planner::CostModelPlanner;
+use crate::planner::BaselinePlanner;
 use crate::store::{PlanStore, WorkloadStore};
 
 fn short_hash(s: &str) -> String {
@@ -37,7 +37,7 @@ fn short_hash(s: &str) -> String {
 // ── Replanner ─────────────────────────────────────────────────────────────────
 
 pub struct Replanner {
-    planner:        Arc<CostModelPlanner>,
+    planner:        Arc<BaselinePlanner>,
     plan_store:     Arc<PlanStore>,
     workload_store: Arc<WorkloadStore>,
     opamp:          Arc<OpampServer>,
@@ -50,7 +50,7 @@ pub struct Replanner {
 
 impl Replanner {
     pub fn new(
-        planner:        Arc<CostModelPlanner>,
+        planner:        Arc<BaselinePlanner>,
         plan_store:     Arc<PlanStore>,
         workload_store: Arc<WorkloadStore>,
         opamp:          Arc<OpampServer>,
@@ -94,6 +94,10 @@ impl Replanner {
 
         info!(metric, "re-planning metric");
 
+        // Reset the baseline so the cost model runs fresh rather than returning the
+        // previously established baseline — the whole point of a re-plan is to
+        // re-optimise with current EMA data.
+        self.planner.reset(metric);
         let mut plan = self.planner.plan(&workload, Some(&wc));
         plan.precompute = build_precompute_jobs(&workload, &plan, "backend:4317");
         self.plan_store.set(metric, plan.clone());
@@ -169,14 +173,14 @@ mod tests {
 
     use chrono::Utc;
 
-    use crate::planner::CostModelPlanner;
+    use crate::planner::{CostModelPlanner, BaselinePlanner};
     use crate::store::{PlanStore, WorkloadStore};
     use crate::types::*;
 
     fn make_replanner() -> Arc<Replanner> {
         let plan_store     = Arc::new(PlanStore::new());
         let workload_store = Arc::new(WorkloadStore::new());
-        let planner        = Arc::new(CostModelPlanner::new());
+        let planner        = Arc::new(BaselinePlanner::new(CostModelPlanner::new()));
         let opamp          = Arc::new(crate::opamp::OpampServer::new());
         let scraper        = Arc::new(crate::monitor::Scraper::new(
             vec![], crate::monitor::Thresholds::default(),

@@ -24,17 +24,17 @@ use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
-use planner::{CostModelPlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
+use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
+use planner::online_cost_model;
 use replan::Replanner;
 use store::{PlanStore, WorkloadStore};
-use planner::online_cost_model;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct AppState {
     analyzer:        Arc<Analyzer>,
-    planner:         Arc<CostModelPlanner>,
+    planner:         Arc<BaselinePlanner>,
     store:           Arc<PlanStore>,
     workload_store:  Arc<WorkloadStore>,
     opamp:           Arc<OpampServer>,
@@ -135,10 +135,13 @@ async fn main() {
         )
     };
 
-    // ── CostModelPlanner backed by live EMA data ──────────────────────────────
-    let planner = Arc::new(
+    // ── BaselinePlanner backed by live EMA data ─────────────────────────────
+    // Runs the full cost-model optimisation once per metric on the first
+    // request, then locks in that plan as the baseline.  The Replanner resets
+    // and re-optimises on SLA violation or plan expiry.
+    let planner = Arc::new(BaselinePlanner::new(
         CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
-    );
+    ));
 
     let plan_store     = Arc::new(PlanStore::new());
     let workload_store = Arc::new(WorkloadStore::new());
@@ -242,7 +245,7 @@ async fn handle_plan(
         ).await;
     }
 
-    // ── Update scrape-endpoint sketch types and agent→metric mapping ─────────
+    // ── Update scrape-endpoint sketch types and agent→metric mapping ──────────
     let sketch_type = plan.agent_config.sketch_type.clone();
     for agent_id in st.opamp.connected_agents().await {
         st.scraper.set_sketch_type(&agent_id, sketch_type.clone()).await;
@@ -338,6 +341,9 @@ async fn handle_rollback(
     State(st): State<AppState>,
     Path(metric): Path<String>,
 ) -> impl IntoResponse {
+    // Reset the baseline so the next POST /api/v1/plan re-runs the cost
+    // model and establishes a fresh baseline plan for this metric.
+    st.planner.reset(&metric);
     match st.store.rollback(&metric) {
         Ok(plan) => {
             if let Ok(yaml) = generate_agent_config(&plan.agent_config, &st.opamp_endpoint) {
@@ -446,9 +452,9 @@ fn test_app() -> (AppState, axum::Router) {
     let scraper        = Arc::new(Scraper::new(
         vec![], Thresholds::default(), Arc::new(|_| {}), Duration::from_secs(60),
     ));
-    let planner = Arc::new(
+    let planner = Arc::new(BaselinePlanner::new(
         CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
-    );
+    ));
     let replanner = Arc::new(Replanner::new(
         Arc::clone(&planner),
         Arc::clone(&plan_store),

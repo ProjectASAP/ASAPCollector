@@ -602,4 +602,44 @@ mod tests {
         let pq = pq("count by (symbol) (count_over_time(financial_last_trade_price[5m]))");
         assert!(matches!(pq.hint, Some(QueryHint::DebsCardinality)));
     }
+
+    // ── Complex queries ───────────────────────────────────────────────────────
+
+    #[test]
+    fn complex_topk_count_over_time_multi_label() {
+        // topk absorbs CountSketch (R8); multiple label filters extracted
+        let pq = pq(
+            r#"topk by (service) (10, count_over_time(http_requests_total{status="500",env="prod"}[5m]))"#,
+        );
+        assert_eq!(pq.aggregations, vec![AggType::Frequency]);
+        assert_eq!(pq.group_by_labels, vec!["service"]);
+        assert_eq!(
+            pq.label_filters.get("status").map(String::as_str),
+            Some("500")
+        );
+        assert_eq!(
+            pq.label_filters.get("env").map(String::as_str),
+            Some("prod")
+        );
+        assert_eq!(pq.time_window, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn complex_histogram_quantile_multi_label() {
+        // histogram_quantile wraps rate → DDSketch; two label selectors
+        let pq = pq(
+            r#"histogram_quantile(0.99, rate(request_duration_seconds_bucket{service="checkout",region="us-east"}[10m]))"#,
+        );
+        assert_eq!(pq.aggregations, vec![AggType::Quantile]);
+        assert_eq!(pq.quantiles, vec![0.99]);
+        assert_eq!(
+            pq.label_filters.get("service").map(String::as_str),
+            Some("checkout")
+        );
+        assert_eq!(
+            pq.label_filters.get("region").map(String::as_str),
+            Some("us-east")
+        );
+        assert_eq!(pq.time_window, Duration::from_secs(600));
+    }
 }
