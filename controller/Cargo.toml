@@ -25,3 +25,6 @@ promql-parser  = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.4", features = ["util"] }
+axum = { version = "0.7", features = ["ws"] }
+http-body-util = "0.1"

@@ -25,6 +25,7 @@ use config::{generate_agent_config, generate_backend_config, build_precompute_jo
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
 use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
+use planner::online_cost_model;
 use replan::Replanner;
 use store::{PlanStore, WorkloadStore};
 
@@ -137,7 +138,7 @@ async fn main() {
     // ── BaselinePlanner backed by live EMA data ─────────────────────────────
     // Runs the full cost-model optimisation once per metric on the first
     // request, then locks in that plan as the baseline.  The Replanner resets
-    // re-optimises on SLA violation or plan expiry.
+    // and re-optimises on SLA violation or plan expiry.
     let planner = Arc::new(BaselinePlanner::new(
         CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
     ));
@@ -197,8 +198,10 @@ async fn main() {
         .route("/api/v1/plan/pareto",             post(handle_pareto))
         .route("/api/v1/plan/:metric",            get(handle_get_plan))
         .route("/api/v1/plan/:metric/rollback",   post(handle_rollback))
+        .route("/api/v1/plan/:metric/diff",       get(handle_plan_diff))
         .route("/api/v1/agents",                  get(handle_agents))
         .route("/api/v1/config/:metric",          get(handle_get_config))
+        .route("/api/v1/cost-model",              get(handle_cost_model))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&api_addr).await.unwrap();
@@ -383,10 +386,319 @@ async fn handle_get_config(
     }
 }
 
+/// Returns the diff between the current and previous plan for `metric`.
+/// 404 if the metric has no plan, 200 with `null` data if no previous plan exists.
+async fn handle_plan_diff(
+    State(st): State<AppState>,
+    Path(metric): Path<String>,
+) -> impl IntoResponse {
+    match st.store.diff(&metric) {
+        Ok(Some(diff)) => (StatusCode::OK, Json(json!({
+            "metric": metric,
+            "has_diff": true,
+            "diff": diff,
+        }))).into_response(),
+        Ok(None) => (StatusCode::OK, Json(json!({
+            "metric": metric,
+            "has_diff": false,
+        }))).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
+}
+
+/// Returns the current EMA cost model state — blended benchmark + observed costs
+/// per sketch type.  Useful for diagnosing whether the online cost model has
+/// received sufficient observations to meaningfully influence plan selection.
+async fn handle_cost_model(State(st): State<AppState>) -> impl IntoResponse {
+    let table = online_cost_model::effective_table(&st.online_store);
+    let raw   = st.online_store.try_read();
+
+    let entries: Vec<serde_json::Value> = table.iter().map(|(sketch_type, costs)| {
+        let observations = raw.as_ref().ok()
+            .and_then(|m| m.get(sketch_type))
+            .map(|o| o.observations)
+            .unwrap_or(0);
+        json!({
+            "sketch_type":               sketch_type.to_string(),
+            "bw_bytes_per_series_per_sec": costs.bytes_per_series_per_sec,
+            "cpu_micros_per_sample":       costs.cpu_micros_per_sample,
+            "base_memory_bytes":           costs.base_memory_bytes,
+            "relative_error":              costs.relative_error_at_default,
+            "observations":                observations,
+        })
+    }).collect();
+
+    (StatusCode::OK, Json(json!({ "sketches": entries }))).into_response()
+}
+
 fn short_hash(s: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
     s.hash(&mut h);
     format!("{:016x}", h.finish())
+}
+
+// ── Test helpers ──────────────────────────────────────────────────────────────
+
+/// Builds a minimal `AppState` + `Router` for integration tests.
+/// No background tasks are started; OpAMP/scraper hold no real connections.
+#[cfg(test)]
+fn test_app() -> (AppState, axum::Router) {
+    let online_store   = init_online_store();
+    let plan_store     = Arc::new(PlanStore::new());
+    let workload_store = Arc::new(WorkloadStore::new());
+    let opamp          = Arc::new(OpampServer::new());
+    let scraper        = Arc::new(Scraper::new(
+        vec![], Thresholds::default(), Arc::new(|_| {}), Duration::from_secs(60),
+    ));
+    let planner = Arc::new(BaselinePlanner::new(
+        CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
+    ));
+    let replanner = Arc::new(Replanner::new(
+        Arc::clone(&planner),
+        Arc::clone(&plan_store),
+        Arc::clone(&workload_store),
+        Arc::clone(&opamp),
+        Arc::clone(&scraper),
+        "ws://ctrl:4320/v1/opamp",
+    ));
+    let state = AppState {
+        analyzer:       Arc::new(Analyzer::new()),
+        planner,
+        store:          Arc::clone(&plan_store),
+        workload_store: Arc::clone(&workload_store),
+        opamp,
+        scraper,
+        replanner,
+        online_store,
+        opamp_endpoint: "ws://ctrl:4320/v1/opamp".into(),
+    };
+    let router = axum::Router::new()
+        .route("/api/v1/plan",                  axum::routing::post(handle_plan))
+        .route("/api/v1/plan/pareto",           axum::routing::post(handle_pareto))
+        .route("/api/v1/plan/:metric",          axum::routing::get(handle_get_plan))
+        .route("/api/v1/plan/:metric/rollback", axum::routing::post(handle_rollback))
+        .route("/api/v1/plan/:metric/diff",     axum::routing::get(handle_plan_diff))
+        .route("/api/v1/agents",                axum::routing::get(handle_agents))
+        .route("/api/v1/cost-model",            axum::routing::get(handle_cost_model))
+        .with_state(state.clone());
+    (state, router)
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn plan_spec(metric: &str) -> serde_json::Value {
+        serde_json::json!({
+            "metric_name":  metric,
+            "aggregations": ["quantile"],
+            "time_window":  "5m",
+            "accuracy_sla": 0.01
+        })
+    }
+
+    // ── POST /api/v1/plan ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn plan_happy_path() {
+        let (_, app) = test_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/plan")
+            .header("content-type", "application/json")
+            .body(Body::from(plan_spec("latency").to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body["metric"], "latency");
+        assert!(body["sketch_type"].as_str().is_some());
+        assert!(body["valid_until"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn plan_invalid_spec_returns_422() {
+        let (_, app) = test_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/plan")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"metric_name":"","aggregations":["quantile"],"time_window":"5m","accuracy_sla":0.01}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn plan_invalid_aggregation_returns_422() {
+        let (_, app) = test_app();
+        let bad = serde_json::json!({
+            "metric_name": "m", "aggregations": ["histogram"],
+            "time_window": "5m", "accuracy_sla": 0.01
+        });
+        let req = Request::builder()
+            .method("POST").uri("/api/v1/plan")
+            .header("content-type", "application/json")
+            .body(Body::from(bad.to_string())).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // ── GET /api/v1/plan/:metric ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_plan_not_found_returns_404() {
+        let (_, app) = test_app();
+        let req = Request::builder()
+            .uri("/api/v1/plan/nonexistent").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_plan_after_post() {
+        let (_, app) = test_app();
+        // POST first
+        let post_req = Request::builder()
+            .method("POST").uri("/api/v1/plan")
+            .header("content-type", "application/json")
+            .body(Body::from(plan_spec("cpu").to_string())).unwrap();
+        let post_resp = app.clone().oneshot(post_req).await.unwrap();
+        assert_eq!(post_resp.status(), StatusCode::OK);
+        // Then GET
+        let get_req = Request::builder()
+            .uri("/api/v1/plan/cpu").body(Body::empty()).unwrap();
+        let get_resp = app.oneshot(get_req).await.unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+        let body = body_json(get_resp).await;
+        assert_eq!(body["metric"], "cpu");
+    }
+
+    // ── POST /api/v1/plan/:metric/rollback ────────────────────────────────────
+
+    #[tokio::test]
+    async fn rollback_no_previous_returns_400() {
+        let (st, app) = test_app();
+        // Seed one plan directly.
+        use crate::planner::rules::RulesPlanner;
+        let wl = crate::types::QueryWorkload {
+            metric_name: "m".into(),
+            label_filters: std::collections::HashMap::new(),
+            group_by_labels: vec![],
+            aggregations: vec![crate::types::AggType::Quantile],
+            time_window: std::time::Duration::from_secs(300),
+            repeat_every: None, accuracy_sla: 0.01, latency_sla: None,
+            sketch_type_override: None, exact_required: false, quantiles: vec![],
+        };
+        st.store.set("m", RulesPlanner::new().plan(&wl));
+        let req = Request::builder()
+            .method("POST").uri("/api/v1/plan/m/rollback")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn rollback_not_found_returns_400() {
+        let (_, app) = test_app();
+        let req = Request::builder()
+            .method("POST").uri("/api/v1/plan/ghost/rollback")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── GET /api/v1/plan/:metric/diff ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn diff_no_previous_returns_has_diff_false() {
+        let (_, app) = test_app();
+        // POST a plan once.
+        let req = Request::builder()
+            .method("POST").uri("/api/v1/plan")
+            .header("content-type", "application/json")
+            .body(Body::from(plan_spec("rtt").to_string())).unwrap();
+        app.clone().oneshot(req).await.unwrap();
+        // Diff should exist but has_diff=false (only one version).
+        let req = Request::builder()
+            .uri("/api/v1/plan/rtt/diff").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body["has_diff"], false);
+    }
+
+    #[tokio::test]
+    async fn diff_not_found_returns_404() {
+        let (_, app) = test_app();
+        let req = Request::builder()
+            .uri("/api/v1/plan/ghost/diff").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── GET /api/v1/cost-model ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cost_model_returns_all_sketch_types() {
+        let (_, app) = test_app();
+        let req = Request::builder()
+            .uri("/api/v1/cost-model").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let sketches = body["sketches"].as_array().unwrap();
+        assert!(sketches.len() >= 4, "expected at least 4 sketch types");
+        for s in sketches {
+            assert!(s["sketch_type"].as_str().is_some());
+            assert!(s["observations"].as_u64().is_some());
+        }
+    }
+
+    // ── POST /api/v1/plan/pareto ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pareto_returns_frontier_for_quantile() {
+        let (_, app) = test_app();
+        let body = serde_json::json!({
+            "metric_name": "latency", "aggregations": ["quantile"],
+            "time_window": "5m", "accuracy_sla": 0.02,
+            "weights": { "bandwidth": 0.7, "cpu": 0.2, "memory": 0.1 }
+        });
+        let req = Request::builder()
+            .method("POST").uri("/api/v1/plan/pareto")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string())).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let frontier = body["frontier"].as_array().unwrap();
+        assert!(!frontier.is_empty(), "frontier should not be empty");
+        assert!(body["best"].as_str().is_some(), "best sketch should be set");
+    }
+
+    // ── GET /api/v1/agents ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn agents_returns_empty_map_initially() {
+        let (_, app) = test_app();
+        let req = Request::builder()
+            .uri("/api/v1/agents").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        // No agents connected → empty object.
+        assert_eq!(body, serde_json::json!({}));
+    }
 }
