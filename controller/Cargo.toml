@@ -28,3 +28,4 @@ tokio = { version = "1", features = ["full", "test-util"] }
 tower = { version = "0.4", features = ["util"] }
 axum = { version = "0.7", features = ["ws"] }
 http-body-util = "0.1"
+tokio-tungstenite = "0.21"

@@ -246,4 +246,110 @@ mod tests {
         assert_eq!(AgentRole::from_header(""),        AgentRole::Agent);
         assert_eq!(AgentRole::from_header("BACKEND"), AgentRole::Backend);
     }
+
+    /// Helper: start a real OpAMP server on a random port, return the server
+    /// Arc and the bound address.
+    async fn start_server() -> (Arc<OpampServer>, std::net::SocketAddr) {
+        let srv = Arc::new(OpampServer::new());
+        let app = Router::new()
+            .route("/v1/opamp", get(OpampServer::ws_handler))
+            .with_state(Arc::clone(&srv));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (srv, addr)
+    }
+
+    /// Connect a WebSocket client with a given agent-id and role.
+    async fn connect_ws_client(
+        addr: std::net::SocketAddr,
+        agent_id: &str,
+        role: &str,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        use tokio_tungstenite::tungstenite::http::Request;
+        let req = Request::builder()
+            .uri(format!("ws://{addr}/v1/opamp"))
+            .header("Host", addr.to_string())
+            .header("X-Agent-ID", agent_id)
+            .header("X-Agent-Role", role)
+            .header("Upgrade", "websocket")
+            .header("Connection", "Upgrade")
+            .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("Sec-WebSocket-Version", "13")
+            .body(())
+            .unwrap();
+        let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        ws
+    }
+
+    /// `push_to_role` delivers a RemoteConfig to a connected agent-role client.
+    #[tokio::test]
+    async fn push_to_role_delivers_yaml_to_agent_role() {
+        let (srv, addr) = start_server().await;
+        let mut agent_ws = connect_ws_client(addr, "agent-1", "agent").await;
+
+        // Allow the server to register the connection.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let yaml_payload = "ddsketch:\n  mode: window\n";
+        srv.push_to_role(AgentRole::Agent, RemoteConfig {
+            config_hash: "hash-1".into(),
+            yaml: yaml_payload.to_string(),
+        }).await;
+
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            futures_util::StreamExt::next(&mut agent_ws),
+        )
+        .await
+        .expect("timed out waiting for message")
+        .unwrap()
+        .unwrap();
+
+        let rc: RemoteConfig = serde_json::from_str(
+            msg.to_text().expect("message should be text"),
+        ).unwrap();
+        assert_eq!(rc.yaml, yaml_payload, "delivered yaml must match");
+        assert_eq!(rc.config_hash, "hash-1", "delivered hash must match");
+    }
+
+    /// `push_to_role(Agent)` must not deliver to a backend-role client.
+    #[tokio::test]
+    async fn push_to_agent_role_does_not_reach_backend_role() {
+        use futures_util::StreamExt;
+        let (srv, addr) = start_server().await;
+        let mut agent_ws   = connect_ws_client(addr, "agent-1",   "agent").await;
+        let mut backend_ws = connect_ws_client(addr, "backend-1", "backend").await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        srv.push_to_role(AgentRole::Agent, RemoteConfig {
+            config_hash: "hash-agent".into(),
+            yaml: "ddsketch:\n  mode: batch\n".to_string(),
+        }).await;
+
+        // Agent must receive the message.
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            agent_ws.next(),
+        )
+        .await
+        .expect("agent timed out")
+        .unwrap()
+        .unwrap();
+        let rc: RemoteConfig = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+        assert_eq!(rc.config_hash, "hash-agent");
+
+        // Backend must receive nothing within a short window.
+        let backend_result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            backend_ws.next(),
+        )
+        .await;
+        assert!(
+            backend_result.is_err(),
+            "backend-role client must not receive agent-role push"
+        );
+    }
 }

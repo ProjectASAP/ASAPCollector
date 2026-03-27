@@ -10,12 +10,15 @@
 #       [--distribution zipf|uniform|bursty]
 #       [--memory-budget-mb N]   # optional agent memory budget in MiB
 #       [--skip-build]
+#       [--all-sketches]     # plan+YAML check for all 5 sketch types (no collector/bench)
 #
-# The test now submits a WorkloadCharacteristics alongside the plan request so
-# the controller can make a delta transmission decision.  It then verifies that:
+# The test submits a WorkloadCharacteristics alongside the plan request so
+# the controller can make a delta transmission decision.  It verifies that:
 #   • The plan response contains delta_decision and transmission_costs.
 #   • The generated collector YAML contains delta_transmission when delta is used.
-#   • e2esdkbench successfully delivers metrics through the collector.
+#   • The YAML processor key matches the planned sketch type.
+#   • The pipeline processor list references the same key as the processor block.
+#   • e2esdkbench successfully delivers metrics through the collector (single-sketch mode).
 #
 # Prerequisites (must already be on PATH or built):
 #   - cargo          (Rust toolchain)
@@ -38,6 +41,7 @@ BENCH_DURATION="30s"
 DISTRIBUTION="zipf"
 MEMORY_BUDGET_MB=""
 SKIP_BUILD=false
+ALL_SKETCHES=false
 
 for arg in "$@"; do
   case "$arg" in
@@ -48,9 +52,38 @@ for arg in "$@"; do
     --distribution=*)      DISTRIBUTION="${arg#*=}" ;;
     --memory-budget-mb=*)  MEMORY_BUDGET_MB="${arg#*=}" ;;
     --skip-build)          SKIP_BUILD=true ;;
+    --all-sketches)        ALL_SKETCHES=true ;;
     *) echo "Unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
+
+# ── Sketch-type helpers ────────────────────────────────────────────────────────
+
+# Maps a sketch type to the aggregation type used in the plan request.
+sketch_to_aggregation() {
+  case "$1" in
+    ddsketch|kll)                    echo "quantile" ;;
+    hll)                             echo "cardinality" ;;
+    countsketch|countminsketch)      echo "frequency" ;;
+    *) echo "quantile" ;;
+  esac
+}
+
+# Maps a sketch type to the expected processor key in the generated YAML.
+sketch_to_processor_key() {
+  echo "$1"   # processor key == sketch type string for all current types
+}
+
+# Returns the sketch_type JSON field value to include in the plan request.
+# Only needed when the default planner selection for the aggregation type
+# differs from the desired sketch (e.g. kll overrides the default ddsketch
+# for quantile queries).
+sketch_to_override_json() {
+  case "$1" in
+    kll|countminsketch)  echo "\"sketch_type\": \"$1\"," ;;
+    *)                   echo "" ;;  # rely on planner default
+  esac
+}
 
 # Build the optional memory_budget field for the JSON body.
 if [[ -n "$MEMORY_BUDGET_MB" ]]; then
@@ -140,18 +173,81 @@ for i in $(seq 1 20); do
 done
 echo ""
 
+# ── --all-sketches mode: plan + YAML check for every sketch type ──────────────
+# Runs steps 3/4/4a/4b for all five sketch types without starting a collector
+# or running e2esdkbench.  Use this to verify the controller assigns the right
+# processor key for each aggregation type without needing all collector binaries.
+if [[ "$ALL_SKETCHES" == true ]]; then
+  ALL_PASS=true
+  for ST in ddsketch kll hll countsketch countminsketch; do
+    AGG=$(sketch_to_aggregation "$ST")
+    OVR=$(sketch_to_override_json "$ST")
+    PKEY=$(sketch_to_processor_key "$ST")
+    MN="${ST}_metric"
+    echo "==> [all-sketches] sketch=${ST}  agg=${AGG}  expected_key=${PKEY}"
+
+    RESP=$(curl -sf -X POST "${CONTROLLER_API}/api/v1/plan" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"metric_name\":  \"${MN}\",
+        \"aggregations\": [\"${AGG}\"],
+        \"time_window\":  \"5m\",
+        \"accuracy_sla\": 0.01,
+        \"repeat_every\": \"1m\",
+        \"latency_sla\":  \"10m\",
+        ${OVR}
+        \"workload\": {
+          \"series_count\": 100, \"samples_per_sec_per_series\": 20,
+          \"bytes_per_raw_sample\": 100, \"data_distribution\": \"zipf\",
+          \"memory_budget_bytes\": null
+        }
+      }")
+
+    CHOSEN=$(echo "$RESP" | jq -r '.sketch_type // empty' 2>/dev/null || true)
+    if [[ "$CHOSEN" != "$ST" ]]; then
+      echo "    [FAIL] planner returned sketch_type='${CHOSEN}', expected '${ST}'"
+      ALL_PASS=false; continue
+    fi
+
+    YAML=$(curl -sf "${CONTROLLER_API}/api/v1/config/${MN}")
+    YAML_FILE="${OUTPUT_DIR}/collector-config-${ST}.yaml"
+    echo "$YAML" > "$YAML_FILE"
+
+    if ! grep -q "${PKEY}:" "$YAML_FILE"; then
+      echo "    [FAIL] YAML missing processor key '${PKEY}:'"
+      ALL_PASS=false; continue
+    fi
+    if ! grep -q "- ${PKEY}" "$YAML_FILE"; then
+      echo "    [FAIL] pipeline processor list missing '- ${PKEY}'"
+      ALL_PASS=false; continue
+    fi
+    echo "    [OK]   processor key '${PKEY}:' present and pipeline references it"
+  done
+
+  echo ""
+  if [[ "$ALL_PASS" == true ]]; then
+    echo "==> [PASS] all-sketches plan+YAML check passed for all 5 sketch types."
+  else
+    echo "==> [FAIL] one or more sketch types failed the plan+YAML check." >&2
+    exit 1
+  fi
+  exit 0
+fi
+
 # ── Step 3: Submit a plan with WorkloadCharacteristics ───────────────────────
-echo "==> [Step 3] Submitting plan (sketch=${SKETCH}, series=${SERIES}, rate=${SAMPLES_PER_SEC}Hz, dist=${DISTRIBUTION})..."
+AGGREGATION=$(sketch_to_aggregation "$SKETCH")
+SKETCH_OVERRIDE_JSON=$(sketch_to_override_json "$SKETCH")
+echo "==> [Step 3] Submitting plan (sketch=${SKETCH}, agg=${AGGREGATION}, series=${SERIES}, rate=${SAMPLES_PER_SEC}Hz, dist=${DISTRIBUTION})..."
 PLAN_RESP=$(curl -sf -X POST "${CONTROLLER_API}/api/v1/plan" \
   -H "Content-Type: application/json" \
   -d "{
     \"metric_name\":    \"${METRIC_NAME}\",
-    \"aggregations\":   [\"quantile\"],
+    \"aggregations\":   [\"${AGGREGATION}\"],
     \"time_window\":    \"5m\",
     \"accuracy_sla\":   0.01,
     \"repeat_every\":   \"1m\",
     \"latency_sla\":    \"10m\",
-    \"sketch_type\":    \"ddsketch\",
+    ${SKETCH_OVERRIDE_JSON}
     \"workload\": {
       \"series_count\":               ${SERIES},
       \"samples_per_sec_per_series\": ${SAMPLES_PER_SEC},
@@ -166,9 +262,8 @@ echo "$PLAN_RESP" | jq . 2>/dev/null || echo "$PLAN_RESP"
 CHOSEN_SKETCH=$(echo "$PLAN_RESP" | jq -r '.sketch_type // empty' 2>/dev/null \
   || echo "$PLAN_RESP" | grep -o '"sketch_type":"[^"]*"' | cut -d'"' -f4)
 echo "    Chosen sketch: ${CHOSEN_SKETCH}"
-if [[ "$CHOSEN_SKETCH" != "ddsketch" ]]; then
-  echo "ERROR: ddsketchcol only supports 'ddsketch' processor; planner chose '${CHOSEN_SKETCH}'." >&2
-  echo "       Tighten accuracy_sla (e.g. 0.01) so only DDSketch meets the SLA." >&2
+if [[ "$CHOSEN_SKETCH" != "$SKETCH" ]]; then
+  echo "ERROR: expected planner to choose '${SKETCH}' but got '${CHOSEN_SKETCH}'." >&2
   exit 1
 fi
 
@@ -240,6 +335,24 @@ elif [[ "$EXPECTS_DELTA" == true && "$YAML_HAS_DELTA" == false ]]; then
 else
   echo "    [WARN] YAML has delta_transmission: true but plan decided ${DELTA_MODE}"
 fi
+echo ""
+
+# ── Step 4b: Verify YAML processor key and pipeline reference ────────────────
+EXPECTED_PROC_KEY=$(sketch_to_processor_key "$CHOSEN_SKETCH")
+echo "==> [Step 4b] Checking processor key '${EXPECTED_PROC_KEY}:' and pipeline reference in YAML..."
+if ! grep -q "${EXPECTED_PROC_KEY}:" "${OUTPUT_DIR}/collector-config.yaml"; then
+  echo "ERROR: YAML missing processor key '${EXPECTED_PROC_KEY}:'" >&2
+  cat "${OUTPUT_DIR}/collector-config.yaml" >&2
+  exit 1
+fi
+echo "    [OK] Processor block '${EXPECTED_PROC_KEY}:' present"
+
+if ! grep -q "- ${EXPECTED_PROC_KEY}" "${OUTPUT_DIR}/collector-config.yaml"; then
+  echo "ERROR: pipeline processor list missing '- ${EXPECTED_PROC_KEY}'" >&2
+  cat "${OUTPUT_DIR}/collector-config.yaml" >&2
+  exit 1
+fi
+echo "    [OK] Pipeline processor list references '- ${EXPECTED_PROC_KEY}'"
 echo ""
 
 # ── Step 5: Start the collector with the HTTP config provider ─────────────────

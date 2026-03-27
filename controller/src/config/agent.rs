@@ -370,4 +370,113 @@ mod tests {
             "YAML must not contain delta_threshold when disabled\n{yaml}"
         );
     }
+
+    #[test]
+    fn kll_processor() {
+        let cfg = AgentCollectorConfig {
+            sketch_type: SketchType::KLL,
+            sketch_params: SketchParams {
+                k: 200,
+                quantiles: vec![0.5, 0.99],
+                ..Default::default()
+            },
+            mode: ProcessorMode::Window,
+            window_duration: Some(std::time::Duration::from_secs(300)),
+            output_mode: OutputMode::Sketch,
+            aggregate_by: vec![],
+            label_matchers: vec![],
+            enable_self_monitoring: true,
+            transmit_sketch: true,
+            drop_original: true,
+            delta_transmission: false,
+            delta_threshold: 0.0,
+        };
+        let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
+        assert!(yaml.contains("kll:"), "YAML should contain 'kll:'\n{yaml}");
+        assert!(yaml.contains("k:"), "YAML should contain 'k:' param\n{yaml}");
+        assert!(!yaml.contains("ddsketch:"), "YAML must not contain wrong processor key\n{yaml}");
+    }
+
+    #[test]
+    fn countsketch_processor() {
+        let cfg = AgentCollectorConfig {
+            sketch_type: SketchType::CountSketch,
+            sketch_params: SketchParams {
+                rows: 5,
+                cols: 10000,
+                ..Default::default()
+            },
+            mode: ProcessorMode::Batch,
+            window_duration: None,
+            output_mode: OutputMode::Sketch,
+            aggregate_by: vec![],
+            label_matchers: vec![],
+            enable_self_monitoring: true,
+            transmit_sketch: true,
+            drop_original: true,
+            delta_transmission: false,
+            delta_threshold: 0.0,
+        };
+        let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
+        assert!(
+            yaml.contains("countsketch:"),
+            "YAML should contain 'countsketch:'\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("countminsketch:"),
+            "YAML must not contain 'countminsketch:' for CountSketch\n{yaml}"
+        );
+    }
+
+    /// Verifies that for every sketch type the processor key in the `processors:`
+    /// section and the key listed under `service.pipelines.metrics.processors`
+    /// are identical.  This guards against the processor map and the pipeline
+    /// reference going out of sync.
+    #[test]
+    fn all_sketch_types_processor_key_matches_pipeline_ref() {
+        let cases: &[(&str, SketchType, SketchParams)] = &[
+            ("ddsketch", SketchType::DDSketch, SketchParams { relative_accuracy: 0.01, ..Default::default() }),
+            ("kll",      SketchType::KLL,      SketchParams { k: 200, ..Default::default() }),
+            ("hll",      SketchType::HLL,      SketchParams { precision: 14, ..Default::default() }),
+            ("countsketch",    SketchType::CountSketch,    SketchParams { rows: 5, cols: 10000, ..Default::default() }),
+            ("countminsketch", SketchType::CountMinSketch, SketchParams { rows: 5, cols: 2048, ..Default::default() }),
+        ];
+
+        for (expected_key, sketch_type, sketch_params) in cases {
+            let cfg = AgentCollectorConfig {
+                sketch_type: sketch_type.clone(),
+                sketch_params: sketch_params.clone(),
+                mode: ProcessorMode::Batch,
+                window_duration: None,
+                output_mode: OutputMode::Sketch,
+                aggregate_by: vec![],
+                label_matchers: vec![],
+                enable_self_monitoring: true,
+                transmit_sketch: true,
+                drop_original: true,
+                delta_transmission: false,
+                delta_threshold: 0.0,
+            };
+            let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
+
+            // Processor section key present.
+            assert!(
+                yaml.contains(&format!("{expected_key}:")),
+                "sketch_type={expected_key}: YAML missing processor key '{expected_key}:'\n{yaml}"
+            );
+            // Pipeline processor list references the same key.
+            assert!(
+                yaml.contains(&format!("- {expected_key}")),
+                "sketch_type={expected_key}: pipeline processor list missing '- {expected_key}'\n{yaml}"
+            );
+            // No other sketch type key should appear as a processor.
+            for (other_key, _, _) in cases {
+                if other_key == expected_key { continue; }
+                assert!(
+                    !yaml.contains(&format!("{other_key}:")),
+                    "sketch_type={expected_key}: YAML must not contain foreign key '{other_key}:'\n{yaml}"
+                );
+            }
+        }
+    }
 }
