@@ -1,3 +1,6 @@
+pub mod workload;
+pub use workload::WorkloadStore;
+
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::RwLock;

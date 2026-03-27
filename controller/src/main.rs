@@ -4,6 +4,7 @@ mod monitor;
 mod opamp;
 mod planner;
 mod query_parser;
+mod replan;
 mod store;
 mod types;
 
@@ -23,20 +24,23 @@ use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
-use planner::{CostModelPlanner, FreezeAfterFirstPlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
-use store::PlanStore;
+use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
+use replan::Replanner;
+use store::{PlanStore, WorkloadStore};
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct AppState {
-    analyzer:       Arc<Analyzer>,
-    planner:        Arc<FreezeAfterFirstPlanner>,
-    store:          Arc<PlanStore>,
-    opamp:          Arc<OpampServer>,
-    scraper:        Arc<Scraper>,
-    online_store:   OnlineMetricsStore,
-    opamp_endpoint: String,
+    analyzer:        Arc<Analyzer>,
+    planner:         Arc<BaselinePlanner>,
+    store:           Arc<PlanStore>,
+    workload_store:  Arc<WorkloadStore>,
+    opamp:           Arc<OpampServer>,
+    scraper:         Arc<Scraper>,
+    replanner:       Arc<Replanner>,
+    online_store:    OnlineMetricsStore,
+    opamp_endpoint:  String,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -62,17 +66,30 @@ async fn main() {
     let online_store = init_online_store();
 
     // ── SP-8: Prometheus scraper ──────────────────────────────────────────────
-    // Endpoints are added dynamically as collectors connect via OpAMP.
+    // Violations are forwarded to the Replanner (built below).
+    // We use an Arc<RwLock<Option<Arc<Replanner>>>> as a late-binding cell so
+    // the scraper can hold a reference even though the Replanner is built after it.
+    let replanner_cell: Arc<tokio::sync::RwLock<Option<Arc<Replanner>>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+
     let scraper: Arc<Scraper> = {
-        let ema = Arc::clone(&online_store);
+        let ema  = Arc::clone(&online_store);
+        let cell = Arc::clone(&replanner_cell);
         Arc::new(
             Scraper::new(
                 vec![],
                 Thresholds::default(),
-                Arc::new(|v: Violation| {
+                Arc::new(move |v: Violation| {
                     warn!(agent = %v.agent_id, kind = %v.kind,
                           observed = v.observed, threshold = v.threshold,
-                          "SLA violation detected — queuing re-plan");
+                          "SLA violation detected — triggering re-plan");
+                    let cell = Arc::clone(&cell);
+                    let agent_id = v.agent_id.clone();
+                    tokio::spawn(async move {
+                        if let Some(r) = cell.read().await.as_ref() {
+                            r.handle_violation(&agent_id).await;
+                        }
+                    });
                 }),
                 scrape_interval,
             )
@@ -117,28 +134,51 @@ async fn main() {
         )
     };
 
-    // ── FreezeAfterFirstPlanner: runs cost optimisation once per metric ───────
-    // The CostModelPlanner performs the initial sketch selection using the
-    // benchmark cost table blended with any live EMA observations.  The
-    // FreezeAfterFirstPlanner wraps it so that the result is cached after
-    // the first request for each metric and never re-computed on workload
-    // changes, giving a stable, predictable configuration in production.
-    let planner = Arc::new(FreezeAfterFirstPlanner::new(
+    // ── BaselinePlanner backed by live EMA data ─────────────────────────────
+    // Runs the full cost-model optimisation once per metric on the first
+    // request, then locks in that plan as the baseline.  The Replanner resets
+    // re-optimises on SLA violation or plan expiry.
+    let planner = Arc::new(BaselinePlanner::new(
         CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
     ));
 
+    let plan_store     = Arc::new(PlanStore::new());
+    let workload_store = Arc::new(WorkloadStore::new());
+
+    // ── Replanner — closes the SP-8 feedback loop ─────────────────────────────
+    let replanner = Arc::new(Replanner::new(
+        Arc::clone(&planner),
+        Arc::clone(&plan_store),
+        Arc::clone(&workload_store),
+        Arc::clone(&opamp_srv),
+        Arc::clone(&scraper),
+        opamp_ep.clone(),
+    ));
+    // Bind the late-binding cell so the violation callback can reach the replanner.
+    *replanner_cell.write().await = Some(Arc::clone(&replanner));
+
+    let replan_interval = Duration::from_secs(
+        std::env::var("CONTROLLER_REPLAN_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300u64), // re-check plan expiry every 5 minutes
+    );
+
     let state = AppState {
-        analyzer:     Arc::new(Analyzer::new()),
+        analyzer:       Arc::new(Analyzer::new()),
         planner,
-        store:        Arc::new(PlanStore::new()),
-        opamp:        Arc::clone(&opamp_srv),
-        scraper:      Arc::clone(&scraper),
-        online_store: Arc::clone(&online_store),
+        store:          Arc::clone(&plan_store),
+        workload_store: Arc::clone(&workload_store),
+        opamp:          Arc::clone(&opamp_srv),
+        scraper:        Arc::clone(&scraper),
+        replanner:      Arc::clone(&replanner),
+        online_store:   Arc::clone(&online_store),
         opamp_endpoint: opamp_ep,
     };
 
-    // ── Start scraper background loop ─────────────────────────────────────────
+    // ── Background tasks ──────────────────────────────────────────────────────
     tokio::spawn(Arc::clone(&scraper).run());
+    tokio::spawn(Arc::clone(&replanner).run_expiry_ticker(replan_interval));
 
     // ── OpAMP WebSocket listener ──────────────────────────────────────────────
     let opamp_router = Router::new()
@@ -181,6 +221,8 @@ async fn handle_plan(
     let mut plan = st.planner.plan(&workload, Some(&wc));
     plan.precompute = build_precompute_jobs(&workload, &plan, "backend:4317");
     st.store.set(&workload.metric_name, plan.clone());
+    // Persist workload so the replanner can re-run plan() without the original spec.
+    st.workload_store.set(&workload.metric_name, workload.clone(), wc);
 
     // ── Push agent config to agent-role collectors ────────────────────────────
     if let Ok(agent_yaml) = generate_agent_config(&plan.agent_config, &st.opamp_endpoint) {
@@ -200,10 +242,11 @@ async fn handle_plan(
         ).await;
     }
 
-    // ── Update scrape-endpoint sketch types for EMA attribution ───────────────
+    // ── Update scrape-endpoint sketch types and agent→metric mapping ──────────
     let sketch_type = plan.agent_config.sketch_type.clone();
     for agent_id in st.opamp.connected_agents().await {
         st.scraper.set_sketch_type(&agent_id, sketch_type.clone()).await;
+        st.replanner.register_agent(&agent_id, &workload.metric_name).await;
     }
 
     let agents = st.opamp.connected_agents().await;
@@ -295,9 +338,9 @@ async fn handle_rollback(
     State(st): State<AppState>,
     Path(metric): Path<String>,
 ) -> impl IntoResponse {
-    // Clear the frozen plan so the next POST /api/v1/plan re-runs the cost
-    // model and produces a fresh optimised plan for this metric.
-    st.planner.unfreeze(&metric);
+    // Reset the baseline so the next POST /api/v1/plan re-runs the cost
+    // model and establishes a fresh baseline plan for this metric.
+    st.planner.reset(&metric);
     match st.store.rollback(&metric) {
         Ok(plan) => {
             if let Ok(yaml) = generate_agent_config(&plan.agent_config, &st.opamp_endpoint) {
