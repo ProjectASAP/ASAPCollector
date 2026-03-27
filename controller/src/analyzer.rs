@@ -342,4 +342,111 @@ mod tests {
     fn trailing_digits_error() {
         assert!(parse_duration("5").is_err());
     }
+
+    // ── query_string path ─────────────────────────────────────────────────────
+
+    /// Build a minimal QuerySpec driven entirely by a query_string.
+    fn qs_only(query: &str) -> QuerySpec {
+        QuerySpec {
+            query_string:    Some(query.into()),
+            metric_name:     "".into(),
+            label_filters:   Default::default(),
+            group_by_labels: vec![],
+            aggregations:    vec![],
+            time_window:     "".into(),
+            repeat_every:    None,
+            accuracy_sla:    0.01,
+            latency_sla:     None,
+            sketch_type:     None,
+            workload:        Default::default(),
+        }
+    }
+
+    /// PromQL query_string auto-populates metric_name, aggregations,
+    /// time_window, and quantiles — no explicit fields required.
+    #[test]
+    fn query_string_promql_populates_workload() {
+        let w = Analyzer::new()
+            .analyze(qs_only("sum by (host) (quantile_over_time(0.99, latency[5m]))"))
+            .unwrap();
+        assert_eq!(w.metric_name,  "latency");
+        assert_eq!(w.aggregations, vec![AggType::Quantile]);
+        assert_eq!(w.time_window,  Duration::from_secs(300));
+        assert_eq!(w.quantiles,    vec![0.99]);
+        assert!(!w.exact_required);
+    }
+
+    /// SQL query_string auto-populates metric_name, aggregations,
+    /// and group_by_labels.
+    #[test]
+    fn query_string_sql_populates_workload() {
+        let w = Analyzer::new()
+            .analyze(qs_only(
+                "SELECT symbol, COUNT(*) FROM financial_last_trade_price GROUP BY symbol",
+            ))
+            .unwrap();
+        assert_eq!(w.metric_name, "financial_last_trade_price");
+        assert_eq!(w.aggregations, vec![AggType::Frequency]);
+        assert!(w.group_by_labels.contains(&"symbol".to_string()));
+    }
+
+    /// Explicit metric_name overrides the name derived from query_string.
+    #[test]
+    fn explicit_metric_name_overrides_parsed() {
+        let mut spec = qs_only("sum by (host) (avg_over_time(cpu[5m]))");
+        spec.metric_name = "my_custom_metric".into();
+        let w = Analyzer::new().analyze(spec).unwrap();
+        assert_eq!(w.metric_name, "my_custom_metric");
+        // aggregations still come from parse (avg → DDSketch → Quantile)
+        assert_eq!(w.aggregations, vec![AggType::Quantile]);
+    }
+
+    /// Explicit time_window overrides the window derived from query_string.
+    #[test]
+    fn explicit_time_window_overrides_parsed() {
+        let mut spec = qs_only("sum by (host) (avg_over_time(cpu[5m]))");
+        spec.time_window = "1h".into();
+        let w = Analyzer::new().analyze(spec).unwrap();
+        assert_eq!(w.time_window, Duration::from_secs(3600));
+    }
+
+    /// Explicit aggregations override those derived from query_string.
+    #[test]
+    fn explicit_aggregations_override_parsed() {
+        let mut spec = qs_only("sum by (host) (avg_over_time(cpu[5m]))"); // → Quantile
+        spec.aggregations = vec!["cardinality".into()];
+        let w = Analyzer::new().analyze(spec).unwrap();
+        assert_eq!(w.aggregations, vec![AggType::Cardinality]);
+    }
+
+    /// sum_over_time is a stateful exact aggregation; exact_required is set.
+    #[test]
+    fn query_string_exact_required_propagated() {
+        let w = Analyzer::new()
+            .analyze(qs_only("sum by (service) (sum_over_time(request_bytes[1h]))"))
+            .unwrap();
+        assert!(w.exact_required, "sum_over_time must set exact_required");
+        assert_eq!(w.aggregations, vec![]);
+    }
+
+    /// DDSketch quantile φ values are surfaced through the workload.
+    #[test]
+    fn query_string_quantiles_populated() {
+        let w = Analyzer::new()
+            .analyze(qs_only("sum by (host) (quantile_over_time(0.5, latency[5m]))"))
+            .unwrap();
+        assert_eq!(w.quantiles, vec![0.5]);
+    }
+
+    /// Existing callers that supply all fields explicitly and omit
+    /// query_string continue to work unchanged (backward compatibility).
+    #[test]
+    fn backward_compat_no_query_string() {
+        let w = Analyzer::new().analyze(basic_spec()).unwrap();
+        assert_eq!(w.metric_name,  "request_latency");
+        assert_eq!(w.aggregations, vec![AggType::Quantile]);
+        assert_eq!(w.time_window,  Duration::from_secs(300));
+        assert!(!w.exact_required);
+        assert!(w.quantiles.is_empty());
+    }
 }
