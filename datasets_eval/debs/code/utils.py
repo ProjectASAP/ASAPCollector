@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import csv
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
@@ -7,18 +8,52 @@ from typing import Iterable, Iterator, Sequence
 import numpy as np
 import pandas as pd
 
+DEBS_ROOT = Path(__file__).resolve().parent.parent
+DEBS_TZ = "Europe/Berlin"
 BASE_COLS = ("ID", "SecType", "Date", "Time")
 BASE_USECOLS = (0, 1, 2, 3)
+TRADING_TS_USECOLS = (2, 23)
+TRADING_TS_NAMES = ("Date", "Trading time")
 WINDOW_SIZES_MS = (60_000, 300_000, 900_000, 1_800_000, 3_600_000)
 WINDOW_LABELS = ("1min", "5min", "15min", "30min", "1hour")
 
+_dataset_subdir: str = "data"
+
+
+def set_dataset(subdir: str) -> None:
+    global _dataset_subdir
+    if subdir not in ("data", "data_filtered"):
+        raise ValueError(subdir)
+    _dataset_subdir = subdir
+
+
+def get_dataset() -> str:
+    return _dataset_subdir
+
 
 def data_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "data"
+    return DEBS_ROOT / _dataset_subdir
 
 
 def results_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "results"
+    return DEBS_ROOT / "results" / _dataset_subdir
+
+
+def add_dataset_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--dataset",
+        choices=("data", "data_filtered"),
+        default="data",
+        help="Input CSV directory under debs/ and matching results/<name>/",
+    )
+
+
+def parse_dataset_and_configure(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    add_dataset_arg(p)
+    args = p.parse_args(argv)
+    set_dataset(args.dataset)
+    return args
 
 
 def ensure_dirs() -> None:
@@ -30,6 +65,17 @@ def ensure_dirs() -> None:
 def list_csv_files() -> list[Path]:
     d = data_dir()
     return sorted(p for p in d.glob("*.csv") if p.is_file())
+
+
+def split_series_symbol_exchange(ids: pd.Series) -> tuple[pd.Series, pd.Series]:
+    s = ids.astype("string").str.strip()
+    sp = s.str.rsplit(".", n=1, expand=True)
+    sym = sp[0]
+    if sp.shape[1] > 1:
+        exc = sp[1].fillna("")
+    else:
+        exc = pd.Series(pd.array([""] * len(sym), dtype="string"), index=sym.index)
+    return sym, exc
 
 
 def iter_csv_chunks(
@@ -48,20 +94,46 @@ def iter_csv_chunks(
         yield chunk
 
 
-def chunk_timestamps_ms(chunk: pd.DataFrame) -> np.ndarray:
+def iter_csv_chunks_trading_ts(
+    path: Path, chunksize: int = 1_000_000
+) -> Iterator[pd.DataFrame]:
+    for chunk in pd.read_csv(
+        path,
+        comment="#",
+        usecols=list(TRADING_TS_USECOLS),
+        names=list(TRADING_TS_NAMES),
+        header=0,
+        dtype={"Date": "string", "Trading time": "string"},
+        chunksize=chunksize,
+        low_memory=False,
+    ):
+        yield chunk
+
+
+def chunk_event_timestamps_ms_utc(chunk: pd.DataFrame) -> np.ndarray:
     d = chunk["Date"].astype("string").str.strip()
-    t = chunk["Time"].astype("string").str.strip()
-    dt = pd.to_datetime(d + " " + t, dayfirst=True, errors="coerce")
-    ns = dt.values.astype("int64")
+    t = chunk["Trading time"].astype("string").str.strip()
+    m = d.notna() & t.notna() & (d != "") & (t != "") & (t.str.lower() != "nan")
+    if not m.any():
+        return np.array([], dtype=np.int64)
+    raw = pd.to_datetime(d[m] + " " + t[m], dayfirst=True, errors="coerce")
+    mv = raw.notna()
+    if not mv.any():
+        return np.array([], dtype=np.int64)
+    loc = raw[mv].dt.tz_localize(
+        DEBS_TZ, ambiguous="infer", nonexistent="shift_forward"
+    )
+    ns = loc.astype("int64")
     ok = ns > 0
-    out = (ns[ok] // 1_000_000).astype(np.int64)
-    return out
+    return (ns[ok] // 1_000_000).astype(np.int64)
 
 
-def load_timestamps_ms(path: Path, chunksize: int = 1_000_000) -> np.ndarray:
+def load_trading_event_timestamps_ms_utc(
+    path: Path, chunksize: int = 1_000_000
+) -> np.ndarray:
     parts: list[np.ndarray] = []
-    for ch in iter_csv_chunks(path, chunksize):
-        a = chunk_timestamps_ms(ch)
+    for ch in iter_csv_chunks_trading_ts(path, chunksize):
+        a = chunk_event_timestamps_ms_utc(ch)
         if a.size:
             parts.append(a)
     if not parts:
@@ -96,14 +168,27 @@ def diff_stats_ms(diffs: np.ndarray) -> dict[str, float]:
     }
 
 
-def segment_by_window(ts_sorted: np.ndarray, window_ms: int) -> tuple[np.ndarray, list[np.ndarray]]:
+def segment_by_window_cest(
+    ts_sorted: np.ndarray, window_ms: int
+) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
     if ts_sorted.size == 0:
-        return np.array([], dtype=np.int64), []
-    keys = (ts_sorted // window_ms) * window_ms
-    ch = np.flatnonzero(np.diff(keys) != 0) + 1
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64), []
+    td = pd.Timedelta(milliseconds=window_ms)
+    s = pd.to_datetime(ts_sorted, unit="ms", utc=True).tz_convert(DEBS_TZ)
+    floored = s.floor(td)
+    keys_ms = (
+        np.asarray(floored.tz_convert("UTC").astype("int64"), dtype=np.int64)
+        // 1_000_000
+    )
+    ch = np.flatnonzero(np.diff(keys_ms) != 0) + 1
     segs = np.split(ts_sorted, ch)
-    ustarts = np.array([int(seg[0]) // window_ms * window_ms for seg in segs], dtype=np.int64)
-    return ustarts, segs
+    mask = np.r_[True, keys_ms[1:] != keys_ms[:-1]]
+    starts = keys_ms[mask].astype(np.int64)
+    ends = np.empty(len(starts), dtype=np.int64)
+    for i, st_ms in enumerate(starts):
+        st_loc = pd.Timestamp(int(st_ms), unit="ms", tz="UTC").tz_convert(DEBS_TZ)
+        ends[i] = int((st_loc + td).tz_convert("UTC").timestamp() * 1000)
+    return starts, ends, segs
 
 
 def window_mean_interarrival_ms(segments: list[np.ndarray]) -> np.ndarray:
@@ -145,3 +230,39 @@ def write_csv_rows(path: Path, fieldnames: Sequence[str], rows: Iterable[dict]) 
         w.writeheader()
         for row in rows:
             w.writerow(row)
+
+
+def window_summary_pivot_fieldnames() -> list[str]:
+    field_order = ["file"]
+    for w in WINDOW_LABELS:
+        for m in (
+            "total_windows",
+            "avg_samples",
+            "min_samples",
+            "max_samples",
+            "std_samples",
+        ):
+            field_order.append(f"{m}_{w}")
+    return field_order
+
+
+def pivot_window_summary_rows(sum_rows: list[dict]) -> list[dict]:
+    if not sum_rows:
+        return []
+    by_file: dict[str, dict[str, float | int | str]] = {}
+    for row in sum_rows:
+        fn = str(row["file"])
+        if fn not in by_file:
+            by_file[fn] = {"file": fn}
+        w = str(row["window_size"])
+        by_file[fn][f"total_windows_{w}"] = row["total_windows"]
+        by_file[fn][f"avg_samples_{w}"] = row["avg_samples"]
+        by_file[fn][f"min_samples_{w}"] = row["min_samples"]
+        by_file[fn][f"max_samples_{w}"] = row["max_samples"]
+        by_file[fn][f"std_samples_{w}"] = row["std_samples"]
+    field_order = window_summary_pivot_fieldnames()
+    out = []
+    for fn in sorted(by_file.keys()):
+        r = by_file[fn]
+        out.append({k: r.get(k, "") for k in field_order})
+    return out

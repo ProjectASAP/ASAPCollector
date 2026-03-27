@@ -13,6 +13,37 @@
 - [Zenodo record — DEBS 2022 Grand Challenge: Trading Data](https://doi.org/10.5281/zenodo.6382482)  
 - [arXiv:2206.13237 — *The DEBS 2022 Grand Challenge* (dataset and queries)](https://arxiv.org/abs/2206.13237)
 
+### Corpus column reality (this checkout)
+
+- The CSV column **`Trading date`** is **empty** in every file here. For event dates, use **`Date`** (trading day of the file) together with **`Trading time`** for last-trade timestamps, matching the challenge’s CEST wall-clock intent.
+- The generic **`Time`** column is **not** the same as **`Trading time`**: many **last-trade** rows have **`Trading time`** set and **`Time`** empty. For **price / query ground truth**, do **not** substitute **`Time`** for **`Trading time`**.
+
+---
+
+## Evaluation streams and layout
+
+Two logical streams are used:
+
+| Stream | Directory | Purpose |
+|--------|-----------|---------|
+| **Full feed** | [`data/`](data/) | Raw daily CSVs as published. Use for **throughput**, parsers, and any query variant where an **event** is **any row** (e.g. cardinality / activity-style tests). |
+| **Price (last-trade) stream** | [`data_filtered/`](data_filtered/) | Rows with both **`Last`** and **`Trading time`** non-empty. Built with [`code/filter_data.py`](code/filter_data.py) (`--source` / `--dest` default to `data/` and `data_filtered/`). Use for **Q1–Q5, Q7–Q12** and any logic defined on **`last`** with last-trade times. |
+
+**Analysis and query tooling**
+
+- Python scripts in [`code/`](code/) accept **`--dataset data`** (default) or **`--dataset data_filtered`**. They read CSVs only from that subdirectory of [`datasets_eval/debs/`](.).
+- Outputs go to **`results/data/`** or **`results/data_filtered/`** respectively (`summaries/`, `detailed_windows/`), so runs on the two streams never overwrite each other.
+- **`analyze_cardinality.py`** reports distinct **`symbol`** (stem of `ID` before the last `.`), **`exchange`** (suffix after the last `.`, e.g. `NL`), **`sectype`** (from `SecType`), and unique **`(symbol, exchange, sectype)`** triples—aligned with the OTLP attributes on `financial.last_trade_price` in the mapping below.
+
+**Commands**
+
+```bash
+python code/filter_data.py
+python code/analyze_frequency.py --dataset data
+python code/analyze_windows.py --dataset data_filtered
+python code/analyze_cardinality.py --dataset data
+```
+
 ---
 
 ## Time windows (DEBS)
@@ -21,6 +52,13 @@
 - **Size:** 5 minutes (300 s)  
 - **Alignment:** clock-aligned (e.g. 09:00–09:05, 09:05–09:10)
 
+### Offline window / frequency analysis (`code/`)
+
+- Uses **`Date` + `Trading time`** only, localized as **`Europe/Berlin`** (CET/CEST), then converted to UTC for ordering and diffs.
+- Tumbling windows are **aligned to Berlin local wall clock** (same idea as DEBS clock alignment), not to raw Unix-epoch multiples.
+- CSV outputs use **`window_start_utc_ms`** / **`window_end_utc_ms`** for window bounds.
+- **`Time` is intentionally not used** for frequency/window stats: it reflects a different mix of update types; blending it with **`Trading time`** produced inter-arrival summaries that were mostly uninformative (e.g. mass of zero-ms gaps). **`Trading time`** matches **last-trade** timing and the OTLP mapping below when using **`Date`** as the trading calendar day.
+
 ---
 
 ## OTLP mapping
@@ -28,7 +66,7 @@
 - **Metric:** `financial.last_trade_price` (Gauge)  
 - **Value:** `last`  
 - **Labels:** `symbol`, `exchange` (from suffix), `sectype`  
-- **Timestamp:** `trading_date` + `trading_time`  
+- **Timestamp:** `trading_date` + `trading_time` in the challenge spec; in **this corpus** use **`Date` + `Trading time`** (see *Corpus column reality* above), in **`Europe/Berlin`**, because **`Trading date`** is never populated in the files we have.  
 - **Window:** 5-minute tumbling unless noted  
 
 **Controller:** `POST /api/v1/plan` with `metric_name`, `aggregations` (`quantile` / `frequency` / `cardinality`), `time_window: "5m"`, workload hints; `GET /api/v1/config/{metric_name}` for YAML.
