@@ -627,12 +627,12 @@ func benchHLL(mode string, deltaOn bool) sketchResult {
 		if mode == "batch" {
 			cur = hll.NewHyperLogLog()
 			for _, v := range vals {
-				cur.InsertValue(v)
+				cur.Insert(v)
 				seenValues[v] = struct{}{}
 			}
 		} else {
 			for _, v := range vals {
-				winSketch.InsertValue(v)
+				winSketch.Insert(v)
 				seenValues[v] = struct{}{}
 			}
 			cur = cloneHLL(winSketch)
@@ -688,7 +688,7 @@ func benchHLL(mode string, deltaOn bool) sketchResult {
 		recvSnap = cloneHLL(reconSketch)
 
 		// Accuracy: cardinality relative error.
-		estCard := float64(reconSketch.EstimateCardinality())
+		estCard := float64(reconSketch.Estimate())
 		re := relErr(estCard, float64(trueCard))
 
 		// Verify reconstruction.
