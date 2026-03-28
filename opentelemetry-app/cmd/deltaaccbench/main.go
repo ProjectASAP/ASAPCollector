@@ -77,29 +77,33 @@ var (
 // ---------------------------------------------------------------------------
 
 type windowResult struct {
-	Window      int     `json:"window"`
-	Encoding    string  `json:"encoding"` // "full" or "delta"
-	FullBytes   int     `json:"full_bytes"`
-	DeltaBytes  int     `json:"delta_bytes"`
-	MeanRelErr  float64 `json:"mean_rel_err"`
-	MaxRelErr   float64 `json:"max_rel_err"`
-	CorrectRecon bool   `json:"correct_recon"`
+	Window       int     `json:"window"`
+	Encoding     string  `json:"encoding"` // "full" or "delta"
+	RawBytes     int     `json:"raw_bytes"`  // proto-packed fixed64, 8 B per sample
+	FullBytes    int     `json:"full_bytes"`
+	DeltaBytes   int     `json:"delta_bytes"`
+	MeanRelErr   float64 `json:"mean_rel_err"`
+	MaxRelErr    float64 `json:"max_rel_err"`
+	CorrectRecon bool    `json:"correct_recon"`
 }
 
 type sketchResult struct {
-	SketchType    string         `json:"sketch_type"`
-	AggMode       string         `json:"agg_mode"` // "batch" or "window"
-	DeltaEnabled  bool           `json:"delta_enabled"`
-	Windows       []windowResult `json:"windows"`
-	AvgFullBytes  float64        `json:"avg_full_bytes"`
-	AvgDeltaBytes float64        `json:"avg_delta_bytes"`
-	CompressionRatio float64     `json:"compression_ratio"` // avg full / avg delta (0 if no delta)
-	AvgMeanRelErr float64        `json:"avg_mean_rel_err"`
-	MaxMaxRelErr  float64        `json:"max_max_rel_err"`
-	WallMs        float64        `json:"wall_ms"`
-	CPUUserMs     float64        `json:"cpu_user_ms"`
-	CPUSysMs      float64        `json:"cpu_sys_ms"`
-	HeapAllocMB   float64        `json:"heap_alloc_mb"`
+	SketchType       string         `json:"sketch_type"`
+	AggMode          string         `json:"agg_mode"` // "batch" or "window"
+	DeltaEnabled     bool           `json:"delta_enabled"`
+	Windows          []windowResult `json:"windows"`
+	AvgRawBytes      float64        `json:"avg_raw_bytes"`      // raw sample stream bytes/window
+	AvgFullBytes     float64        `json:"avg_full_bytes"`
+	AvgDeltaBytes    float64        `json:"avg_delta_bytes"`
+	CompressionRatio float64        `json:"compression_ratio"`  // full / delta
+	RawVsFullRatio   float64        `json:"raw_vs_full_ratio"`  // raw / full (>1 means raw is larger)
+	RawVsDeltaRatio  float64        `json:"raw_vs_delta_ratio"` // raw / delta (>1 means raw is larger)
+	AvgMeanRelErr    float64        `json:"avg_mean_rel_err"`
+	MaxMaxRelErr     float64        `json:"max_max_rel_err"`
+	WallMs           float64        `json:"wall_ms"`
+	CPUUserMs        float64        `json:"cpu_user_ms"`
+	CPUSysMs         float64        `json:"cpu_sys_ms"`
+	HeapAllocMB      float64        `json:"heap_alloc_mb"`
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +311,7 @@ func benchCMS(mode string, deltaOn bool) sketchResult {
 		wr := windowResult{
 			Window:       w,
 			Encoding:     encoding,
+			RawBytes:     *insertsPerWin * 8,
 			FullBytes:    len(fullBytes),
 			DeltaBytes:   len(transmitBytes),
 			MeanRelErr:   meanRel,
@@ -331,6 +336,7 @@ func benchCMS(mode string, deltaOn bool) sketchResult {
 	}
 	result.AvgMeanRelErr = sumMeanRel / float64(len(result.Windows))
 	result.MaxMaxRelErr = maxMaxRel
+	setRawStats(&result)
 
 	result.WallMs = float64(time.Since(wallStart).Milliseconds())
 	cpuU1, cpuS1 := getRusage()
@@ -507,6 +513,7 @@ func benchCS(mode string, deltaOn bool) sketchResult {
 		result.Windows = append(result.Windows, windowResult{
 			Window:       w,
 			Encoding:     encoding,
+			RawBytes:     *insertsPerWin * 8,
 			FullBytes:    len(fullBytes),
 			DeltaBytes:   len(transmitBytes),
 			MeanRelErr:   meanRel,
@@ -521,6 +528,7 @@ func benchCS(mode string, deltaOn bool) sketchResult {
 		result.CompressionRatio = result.AvgFullBytes / result.AvgDeltaBytes
 	}
 	summarizeResult(&result)
+	setRawStats(&result)
 
 	result.WallMs = float64(time.Since(wallStart).Milliseconds())
 	cpuU1, cpuS1 := getRusage()
@@ -698,6 +706,7 @@ func benchHLL(mode string, deltaOn bool) sketchResult {
 		result.Windows = append(result.Windows, windowResult{
 			Window:       w,
 			Encoding:     encoding,
+			RawBytes:     *insertsPerWin * 8,
 			FullBytes:    len(fullBytes),
 			DeltaBytes:   len(transmitBytes),
 			MeanRelErr:   re,
@@ -712,6 +721,7 @@ func benchHLL(mode string, deltaOn bool) sketchResult {
 		result.CompressionRatio = result.AvgFullBytes / result.AvgDeltaBytes
 	}
 	summarizeResult(&result)
+	setRawStats(&result)
 
 	result.WallMs = float64(time.Since(wallStart).Milliseconds())
 	cpuU1, cpuS1 := getRusage()
@@ -899,6 +909,7 @@ func benchDD(mode string, deltaOn bool) sketchResult {
 		result.Windows = append(result.Windows, windowResult{
 			Window:       w,
 			Encoding:     encoding,
+			RawBytes:     *insertsPerWin * 8,
 			FullBytes:    len(fullBytes),
 			DeltaBytes:   len(transmitBytes),
 			MeanRelErr:   meanRel,
@@ -913,6 +924,7 @@ func benchDD(mode string, deltaOn bool) sketchResult {
 		result.CompressionRatio = result.AvgFullBytes / result.AvgDeltaBytes
 	}
 	summarizeResult(&result)
+	setRawStats(&result)
 
 	result.WallMs = float64(time.Since(wallStart).Milliseconds())
 	cpuU1, cpuS1 := getRusage()
@@ -1043,6 +1055,7 @@ func benchKLL(mode string) sketchResult {
 		result.Windows = append(result.Windows, windowResult{
 			Window:       w,
 			Encoding:     "full",
+			RawBytes:     *insertsPerWin * 8,
 			FullBytes:    len(fullBytes),
 			DeltaBytes:   len(fullBytes),
 			MeanRelErr:   meanRel,
@@ -1058,6 +1071,7 @@ func benchKLL(mode string) sketchResult {
 	result.AvgFullBytes = float64(totalFull) / float64(*windows)
 	result.AvgDeltaBytes = result.AvgFullBytes
 	summarizeResult(&result)
+	setRawStats(&result)
 
 	result.WallMs = float64(time.Since(wallStart).Milliseconds())
 	cpuU1, cpuS1 := getRusage()
@@ -1082,6 +1096,18 @@ func summarizeResult(r *sketchResult) {
 	}
 	r.AvgMeanRelErr = sumMean / math.Max(1, float64(len(r.Windows)))
 	r.MaxMaxRelErr = maxMax
+}
+
+// setRawStats populates raw-sample bandwidth fields after AvgFullBytes /
+// AvgDeltaBytes have been set. Raw bytes = proto-packed fixed64: 8 B per sample.
+func setRawStats(r *sketchResult) {
+	r.AvgRawBytes = float64(*insertsPerWin * 8)
+	if r.AvgFullBytes > 0 {
+		r.RawVsFullRatio = r.AvgRawBytes / r.AvgFullBytes
+	}
+	if r.AvgDeltaBytes > 0 {
+		r.RawVsDeltaRatio = r.AvgRawBytes / r.AvgDeltaBytes
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,16 +1137,20 @@ func writeCSV(path string, results []sketchResult) {
 	defer w.Flush()
 	_ = w.Write([]string{
 		"sketch_type", "agg_mode", "delta_enabled",
-		"avg_full_bytes", "avg_delta_bytes", "compression_ratio",
+		"avg_raw_bytes", "avg_full_bytes", "avg_delta_bytes",
+		"compression_ratio", "raw_vs_full_ratio", "raw_vs_delta_ratio",
 		"avg_mean_rel_err", "max_max_rel_err",
 		"wall_ms", "cpu_user_ms", "cpu_sys_ms", "heap_alloc_mb",
 	})
 	for _, r := range results {
 		_ = w.Write([]string{
 			r.SketchType, r.AggMode, fmt.Sprintf("%t", r.DeltaEnabled),
+			fmt.Sprintf("%.1f", r.AvgRawBytes),
 			fmt.Sprintf("%.1f", r.AvgFullBytes),
 			fmt.Sprintf("%.1f", r.AvgDeltaBytes),
 			fmt.Sprintf("%.3f", r.CompressionRatio),
+			fmt.Sprintf("%.3f", r.RawVsFullRatio),
+			fmt.Sprintf("%.3f", r.RawVsDeltaRatio),
 			fmt.Sprintf("%.6f", r.AvgMeanRelErr),
 			fmt.Sprintf("%.6f", r.MaxMaxRelErr),
 			fmt.Sprintf("%.1f", r.WallMs),
@@ -1132,11 +1162,12 @@ func writeCSV(path string, results []sketchResult) {
 }
 
 func printTable(results []sketchResult) {
-	fmt.Printf("\n%-8s %-7s %-6s  %10s  %10s  %11s  %12s  %12s\n",
+	fmt.Printf("\n%-8s %-7s %-6s  %10s  %10s  %10s  %11s  %9s  %9s  %12s  %12s\n",
 		"Sketch", "Mode", "Delta",
-		"Full B avg", "Delta B avg", "Compression",
+		"Raw B avg", "Full B avg", "Delta B avg", "Full/Delta",
+		"Raw/Full", "Raw/Delta",
 		"MeanRelErr", "MaxRelErr")
-	fmt.Println(string(make([]byte, 95)))
+	fmt.Println(string(make([]byte, 120)))
 	for _, r := range results {
 		deltaStr := "off"
 		if r.DeltaEnabled {
@@ -1146,9 +1177,18 @@ func printTable(results []sketchResult) {
 		if r.CompressionRatio > 0 {
 			comp = fmt.Sprintf("%.2fx", r.CompressionRatio)
 		}
-		fmt.Printf("%-8s %-7s %-6s  %10.0f  %10.0f  %11s  %12.4f%%  %12.4f%%\n",
+		rvf := "-"
+		if r.RawVsFullRatio > 0 {
+			rvf = fmt.Sprintf("%.2fx", r.RawVsFullRatio)
+		}
+		rvd := "-"
+		if r.RawVsDeltaRatio > 0 {
+			rvd = fmt.Sprintf("%.2fx", r.RawVsDeltaRatio)
+		}
+		fmt.Printf("%-8s %-7s %-6s  %10.0f  %10.0f  %10.0f  %11s  %9s  %9s  %12.4f%%  %12.4f%%\n",
 			r.SketchType, r.AggMode, deltaStr,
-			r.AvgFullBytes, r.AvgDeltaBytes, comp,
+			r.AvgRawBytes, r.AvgFullBytes, r.AvgDeltaBytes, comp,
+			rvf, rvd,
 			r.AvgMeanRelErr*100, r.MaxMaxRelErr*100)
 	}
 }

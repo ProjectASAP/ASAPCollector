@@ -1,7 +1,10 @@
-# Benchmark: Delta Transmission vs Raw Baseline
+# Benchmark: Raw Samples vs Full Sketch vs Delta Sketch
 **Date:** 2026-03-28
 **Tool:** `opentelemetry-app/cmd/deltaaccbench`
 **Config:** 20 windows · 5 000 inserts/window · Zipf(s=1.10, v=1.00, max=5 000) · delta-threshold=1.0
+
+Raw bytes = proto-packed fixed64 encoding: **8 bytes per sample** (5 000 × 8 = 40 000 B / window).
+This is the minimum on-wire cost for transmitting every raw data point.
 
 ---
 
@@ -17,51 +20,39 @@ go run ./cmd/deltaaccbench \
 
 ---
 
-## Raw-data baseline
+## Bandwidth: Raw Samples vs Full Sketch vs Delta Sketch
 
-Each window inserts 5 000 elements.
-A raw payload transmits every insert as a uint64 hash (8 bytes):
+| Sketch | Mode | Delta | Raw B/win | Full B/win | Delta B/win | Full/Delta | Raw/Full | Raw/Delta |
+|---|---|---|---|---|---|---|---|---|
+| CMS (5×2048) | batch | off | 40 000 | 246 003 | — | — | 0.16× | — |
+| CMS (5×2048) | batch | **on** | 40 000 | 246 003 | 170 480 | 1.44× | 0.16× | 0.23× |
+| CMS (5×2048) | window | off | 40 000 | 246 003 | — | — | 0.16× | — |
+| CMS (5×2048) | window | **on** | 40 000 | 246 003 | 150 014 | 1.64× | 0.16× | 0.27× |
+| CS (ε=0.01) | batch | off | 40 000 | 655 554 | — | — | 0.06× | — |
+| CS (ε=0.01) | batch | **on** | 40 000 | 655 554 | 116 987 | 5.60× | 0.06× | 0.34× |
+| CS (ε=0.01) | window | off | 40 000 | 655 554 | — | — | 0.06× | — |
+| CS (ε=0.01) | window | **on** | 40 000 | 655 554 | 87 507 | 7.49× | 0.06× | 0.46× |
+| HLL (16 k regs) | batch | off | 40 000 | 16 532 | — | — | **2.42×** | — |
+| HLL (16 k regs) | window | off | 40 000 | 16 532 | — | — | **2.42×** | — |
+| HLL (16 k regs) | window | **on** | 40 000 | 16 532 | 8 543 | 1.94× | **2.42×** | **4.68×** |
+| DD (α=0.01) | batch | off | 40 000 | 725 | — | — | **55×** | — |
+| DD (α=0.01) | window | off | 40 000 | 882 | — | — | **45×** | — |
+| DD (α=0.01) | window | on¹ | 40 000 | 882 | 0 | — | **45×** | — |
+| KLL (k=256) | batch | off | 40 000 | 3 074 | — | — | **13×** | **13×** |
+| KLL (k=256) | window | off | 40 000 | 2 992 | — | — | **13×** | **13×** |
 
-| Description | Bytes / window |
-|---|---|
-| Raw key stream (5 000 × 8 B) | **40 000 B** (~39 KB) |
+¹ DD delta returned 0 bytes in window mode (falls back to full when delta ≥ full) — investigate separately.
 
-> For real telemetry spans/metrics (name + labels + timestamp + value ≈ 200 B each)
-> the raw payload is ≈ **1 MB / window** — making sketches far more compact than raw data.
+**Key takeaways:**
 
----
-
-## Bandwidth: Full Sketch vs Delta
-
-| Sketch | Mode | Full B/win | Delta B/win | Compression | Notes |
-|---|---|---|---|---|---|
-| CMS (5×2048) | batch | 246 003 | 170 480 | **1.44×** | |
-| CMS (5×2048) | window | 246 003 | 150 014 | **1.64×** | |
-| CS (ε=0.01) | batch | 655 554 | 116 987 | **5.60×** | |
-| CS (ε=0.01) | window | 655 554 | 87 507 | **7.49×** | |
-| HLL (16 k regs) | batch | 16 532 | — | — | delta N/A in batch |
-| HLL (16 k regs) | window | 16 532 | 8 543 | **1.94×** | |
-| DD | batch | 725 | — | — | no delta needed |
-| DD | window | 882 | 0 | — | delta produces empty payload¹ |
-| KLL | batch | 2 797 | — | — | no delta support |
-| KLL | window | 3 121 | — | — | no delta support |
-
-¹ DDSketch delta returned 0 bytes in window mode — investigate separately.
-
-**vs raw key stream (40 KB baseline):**
-
-| Sketch | Delta B/win | vs raw stream |
-|---|---|---|
-| CMS delta (window) | 150 014 | 3.75× **larger** than raw key stream |
-| CS delta (window) | 87 507 | 2.19× **larger** than raw key stream |
-| HLL delta (window) | 8 543 | **4.68× smaller** than raw key stream |
-| CMS delta (window) | 150 014 | **6.67× smaller** vs 1 MB real-telemetry baseline |
-| CS delta (window) | 87 507 | **11.4× smaller** vs 1 MB real-telemetry baseline |
-
-> CMS and CS full-sketch payloads are large (246–656 KB) because of their 2D count arrays.
-> Delta encoding shrinks these significantly, but vs a raw uint64 key stream the crossover
-> depends heavily on sketch dimensions. Against realistic telemetry payloads (with labels, timestamps)
-> all sketch variants are substantially smaller.
+- **CMS and CS full sketches are larger than raw samples** (6–16× bigger). Delta helps a lot (5–7×
+  compression vs full) but the delta payload is still 2–4× larger than raw samples at 5 000 inserts/window.
+  This is inherent to their 2D count array wire format; with smaller sketch dimensions or larger windows
+  the crossover shifts in sketches' favour.
+- **HLL full sketch is already smaller than raw** (raw is 2.42× larger than full). Delta pushes that to
+  4.68× — the best raw/delta ratio of the frequency/cardinality sketches.
+- **DD and KLL are dramatically smaller than raw** (13–55× compression vs raw samples). Quantile
+  sketches are highly compact because they only store bucket boundaries, not counts per cell.
 
 ---
 
@@ -69,16 +60,16 @@ A raw payload transmits every insert as a uint64 hash (8 bytes):
 
 | Sketch | Mode | Delta | Wall ms | CPU user ms | CPU sys ms | Heap MB |
 |---|---|---|---|---|---|---|
-| CMS | batch | off (baseline) | 111 | 168 | 26 | 3.0 |
+| CMS | batch | off | 111 | 168 | 26 | 3.0 |
 | CMS | batch | **on** | 250 | 400 | 52 | 3.8 |
-| CMS | window | off (baseline) | 191 | 324 | 22 | 3.6 |
+| CMS | window | off | 191 | 324 | 22 | 3.6 |
 | CMS | window | **on** | 292 | 424 | 70 | 4.3 |
-| CS | batch | off (baseline) | 326 | 462 | 105 | 7.2 |
+| CS | batch | off | 326 | 462 | 105 | 7.2 |
 | CS | batch | **on** | 454 | 597 | 159 | 5.3 |
-| CS | window | off (baseline) | 354 | 497 | 107 | 8.6 |
+| CS | window | off | 354 | 497 | 107 | 8.6 |
 | CS | window | **on** | 485 | 681 | 128 | 7.3 |
-| HLL | batch | off (baseline) | 44 | 52 | 5 | 6.0 |
-| HLL | window | off (baseline) | 32 | 38 | 1 | 5.9 |
+| HLL | batch | off | 44 | 52 | 5 | 6.0 |
+| HLL | window | off | 32 | 38 | 1 | 5.9 |
 | HLL | window | **on** | 55 | 70 | 1 | 5.6 |
 | DD | batch | off | 35 | 39 | 0 | 2.9 |
 | DD | window | off | 234 | 231 | 34 | 4.2 |
@@ -95,24 +86,24 @@ A raw payload transmits every insert as a uint64 hash (8 bytes):
 | CS | window | +37% | +37% | −15% |
 | HLL | window | +72% | +85% | −5% |
 
-> Delta computation requires cloning the processor-side snapshot and computing a diff at each window
-> boundary, which adds wall-clock and CPU time. Memory overhead is moderate (snapshot copy per partition).
+Delta computation requires cloning the processor-side snapshot and diffing at each window boundary.
 
 ---
 
-## Accuracy: Delta vs Full (no accuracy loss)
+## Accuracy: Delta vs Full (no loss)
 
-All reconstructed sketches exactly match the full-sketch reference (`correct_recon=true` on every window).
-Mean relative query error is **identical** between delta=on and delta=off for the same sketch+mode,
-confirming lossless round-trip at threshold=1.0.
+All reconstructed sketches exactly match the full-sketch reference (`correct_recon=true` every window).
+Mean relative error is **identical** between delta=on and delta=off at threshold=1.0 — lossless round-trip.
 
-| Sketch | Mode | Mean rel err (both) | Max rel err (both) |
+| Sketch | Mode | Mean rel err | Max rel err |
 |---|---|---|---|
 | CMS | batch | 0.1563% | 18.75% |
 | CMS | window | 4.6953% | 150.0% |
 | CS | batch | 0.0056% | 7.14% |
 | CS | window | 0.0911% | 40.0% |
 | HLL | window | 0.7297% | 1.34% |
+| DD | batch/window | 0.29–0.37% | <1% |
+| KLL | batch/window | 0.30–0.46% | <2% |
 
 ---
 
@@ -120,9 +111,11 @@ confirming lossless round-trip at threshold=1.0.
 
 | Metric | Result |
 |---|---|
-| Best bandwidth reduction (CS window) | **7.49× vs full sketch** |
-| vs real-telemetry raw baseline (~1 MB/win) | **up to 11× smaller** |
+| CMS/CS vs raw (delta, window) | Delta sketch is **2–4× larger** than raw sample stream |
+| HLL vs raw (delta, window) | Delta sketch is **4.68× smaller** than raw sample stream |
+| DD/KLL vs raw (full) | Full sketch is **13–55× smaller** than raw sample stream |
+| Best sketch/delta compression vs full | CS window: **7.49×** |
 | CPU overhead of delta (worst case) | **+137%** user CPU (CMS batch) |
-| CPU overhead of delta (typical window mode) | **+31–85%** user CPU |
-| Memory overhead | **−27% to +25%** heap (snapshot copy cost) |
+| CPU overhead of delta (typical) | **+31–85%** user CPU (window mode) |
+| Memory overhead | **−27% to +25%** heap |
 | Accuracy impact | **Zero** — lossless at threshold=1.0 |
