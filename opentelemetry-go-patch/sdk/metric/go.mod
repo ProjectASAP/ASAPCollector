@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/DataDog/sketches-go v1.4.1
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260321024028-d20a9f9151b5
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260328221809-b24e56e64e94
 	github.com/go-logr/logr v1.4.3
 	github.com/go-logr/stdr v1.2.2
 	github.com/google/go-cmp v0.7.0
@@ -42,3 +42,4 @@ replace go.opentelemetry.io/otel/trace => ../../trace
 
 replace go.opentelemetry.io/otel/sdk => ../
 
+replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go

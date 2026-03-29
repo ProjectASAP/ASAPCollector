@@ -3,7 +3,7 @@ module github.com/approx-telemetry/opentelemetry-app
 go 1.24.0
 
 require (
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260321024028-d20a9f9151b5
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260328221809-b24e56e64e94
 	github.com/cespare/xxhash/v2 v2.3.0
 	go.opentelemetry.io/otel v1.41.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.38.0
@@ -39,7 +39,6 @@ require (
 )
 
 replace (
-	github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go
 	go.opentelemetry.io/otel => ../opentelemetry-go
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc => ../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetricgrpc
 	go.opentelemetry.io/otel/metric => ../opentelemetry-go/metric
@@ -47,3 +46,5 @@ replace (
 	go.opentelemetry.io/otel/sdk/metric => ../opentelemetry-go/sdk/metric
 	go.opentelemetry.io/proto/otlp => ../opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp
 )
+
+replace github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go

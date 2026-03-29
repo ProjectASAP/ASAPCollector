@@ -3,7 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllpr
 go 1.25.0
 
 require (
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260321024028-d20a9f9151b5
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260328221809-b24e56e64e94
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.54.0
 	go.opentelemetry.io/collector/consumer v1.47.0
@@ -71,3 +71,5 @@ retract (
 	v0.76.1
 	v0.65.0
 )
+
+replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go

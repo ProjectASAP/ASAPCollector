@@ -10,7 +10,7 @@ receivers:
 processors:
   countsketch:
     mode: window
-    epsilon: 0.01
+    epsilon: 0.02
     delta: 0.99
     transmit_sketch: true
     drop_original: true
