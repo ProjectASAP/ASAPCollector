@@ -1,0 +1,47 @@
+# Benchmark mode: Delta CountSketch transmission.
+# SDK sends raw Float64Gauge data points every 1s; agent aggregates into
+# CountSketch over a 10s window, forwards sparse delta between consecutive
+# windows. epsilon=0.02, delta=0.99 (Opt-3: 4096 cols vs old 16384).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
+
+processors:
+  countsketch:
+    mode: window
+    epsilon: 0.02
+    delta: 0.99
+    transmit_sketch: true
+    drop_original: true
+    window_duration: 10s
+    delta_transmission: true
+    delta_threshold: 1.0
+
+exporters:
+  otlp:
+    endpoint: localhost:4319
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [countsketch]
+      exporters: [otlp]
+  telemetry:
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+    logs:
+      level: warn
+    resource:
+      service.name: countsketchcol-bench-cs-delta

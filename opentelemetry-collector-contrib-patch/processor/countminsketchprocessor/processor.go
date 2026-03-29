@@ -649,7 +649,7 @@ func cloneCMS(s *cms.CountMinSketch) *cms.CountMinSketch {
 	if err != nil {
 		return nil
 	}
-	clone, err := cms.DeserializeCountMinSketchFromBytes(data)
+	clone, err := cms.DeserializeCountMinSketchFromProtoBytes(data)
 	if err != nil {
 		return nil
 	}

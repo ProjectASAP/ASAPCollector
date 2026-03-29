@@ -1,0 +1,37 @@
+# Backend receiver for 4-mode bandwidth benchmark.
+# Listens on :4319 for OTLP gRPC from the agent collector.
+# Uses nop processor and nop exporter — just receives and drops.
+# CPU/mem of this process gives "receiver" resource cost.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4319
+        max_recv_msg_size_mib: 64
+
+processors:
+  nop:
+
+exporters:
+  nop:
+
+service:
+  telemetry:
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890
+    logs:
+      level: warn
+    resource:
+      service.name: nopcol-bench-backend
+
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [nop]
+      exporters: [nop]

@@ -1,0 +1,44 @@
+# Benchmark mode: Raw pass-through, batched at sketch window cadence (10s).
+# SDK sends raw Float64Gauge data points every 1s; agent accumulates them in a
+# 10s batch before forwarding — same transmission cadence as the sketch window.
+# Note: this does NOT aggregate values. All data points from the 10s window are
+# forwarded in one OTLP export, giving higher payload size than sketches at the
+# same transmission frequency. If OTel SDK is the only sender, LastValue
+# semantics mean ~1 point/series arrives per second (50× lower than true rate).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1000000  # accumulate entire 10s window
+
+exporters:
+  otlp:
+    endpoint: localhost:4319
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp]
+  telemetry:
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+    logs:
+      level: warn
+    resource:
+      service.name: countminsketchcol-bench-raw-batched
