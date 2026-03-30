@@ -1,11 +1,13 @@
+# Benchmark mode: Full CountSketch transmission (no delta).
+# SDK sends raw Float64Gauge data points every 1s; agent aggregates all points
+# in a 10s window into a CountSketch and forwards the full sketch payload.
+# epsilon=0.02, delta=0.99, window=10s — no delta transmission.
 receivers:
   otlp:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
         max_recv_msg_size_mib: 64
-      http:
-        endpoint: 0.0.0.0:4318
 
 processors:
   countsketch:
@@ -15,19 +17,20 @@ processors:
     transmit_sketch: true
     drop_original: true
     window_duration: 10s
-    delta_transmission: true
-    delta_threshold: 1.0
+    delta_transmission: false
 
 exporters:
-  prometheus:
-    endpoint: 0.0.0.0:8889
+  otlp:
+    endpoint: localhost:4319
+    tls:
+      insecure: true
 
 service:
   pipelines:
     metrics:
       receivers: [otlp]
       processors: [countsketch]
-      exporters: [prometheus]
+      exporters: [otlp]
   telemetry:
     metrics:
       level: basic
@@ -38,6 +41,6 @@ service:
                 host: 0.0.0.0
                 port: 8888
     logs:
-      level: info
+      level: warn
     resource:
-      service.name: countsketchcol-window-delta
+      service.name: countsketchcol-bench-cs-full

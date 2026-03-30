@@ -1,0 +1,48 @@
+# Benchmark mode: Full CMS sketch transmission (no delta).
+# SDK sends raw Float64Gauge data points every 1s; agent aggregates all points
+# in a 10s window into a CountMinSketch and forwards the full sketch payload.
+# rows=5, cols=2000, no delta — baseline for sketch compression comparison.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
+
+processors:
+  countmin:
+    mode: window
+    metric_name: "countmin_sketch"
+    rows: 5
+    columns: 2000
+    transmit_sketch: true
+    group_by: []
+    drop_original: true
+    window_duration: 10s
+    delta_transmission: false
+
+exporters:
+  otlp:
+    endpoint: localhost:4319
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [countmin]
+      exporters: [otlp]
+  telemetry:
+    metrics:
+      level: basic
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+    logs:
+      level: warn
+    resource:
+      service.name: countminsketchcol-bench-cms-full

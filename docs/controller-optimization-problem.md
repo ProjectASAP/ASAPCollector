@@ -36,7 +36,7 @@ The controller optimization problem takes as input a set of **PromQL or SQL quer
 
 ### Control Plane — Overview
 
-The controller ingests the query registry and drives configuration across every data-plane stage. It is decomposed into eight subproblems (SP-1 through SP-8); SP-8 closes the feedback loop back into SP-5/SP-6 using live telemetry.
+The controller ingests the query registry and drives configuration across every data-plane stage. It is decomposed into nine subproblems (SP-1 through SP-9); SP-8 closes the feedback loop back into SP-5/SP-6 using live telemetry, and SP-9 extends SP-3 with AST-aware hierarchical stage assignment.
 
 ```
   PromQL / SQL queries
@@ -52,6 +52,10 @@ The controller ingests the query registry and drives configuration across every 
   │    │                                                                    │
   │  SP-3  Stage Assignment        assign sketch/agg to SDK|Agent|          │
   │    │                           Backend|Precompute|DB                    │
+  │    │                                                                    │
+  │  SP-9  AST-Aware Stage Split   split SketchExpr tree across stages:     │
+  │    │                           leaf nodes → OTel Collector,             │
+  │    │                           upper nodes → Precompute Engine          │
   │    │                                                                    │
   │  SP-4  Storage & Compression   raw preserve? Gorilla/Serf/delta?        │
   │    │                           TSDB hot vs S3 cold? precompute?         │
@@ -326,6 +330,67 @@ The Plan Store maintains a versioned, diffable log of all applied plans and supp
 - Actual query latency > latency SLA.
 - Plan `ValidUntil` expiry (time-based re-evaluation).
 - Significant shift in query workload (new queries registered, existing queries deleted).
+
+---
+
+### SP-9: AST-Aware Hierarchical Stage Assignment
+
+**Input:** The optimized `SketchExpr` tree produced by SP-1 (query parser + algebraic optimizer) and the stage assignment from SP-3.
+
+**Output:** A per-node stage assignment that splits the `SketchExpr` tree across pipeline stages — leaf-level operations on the OTel Collector, upper-level operations on the ASAPQuery Precompute Engine.
+
+**Motivation:** SP-3 currently assigns a single flat sketch type to the whole pipeline. Every stage receives the same sketch configuration. For compositional queries (e.g. `TopK(Partition(Window(Agg(Source))))`) this wastes precompute capacity: the collector re-does work the precompute engine could absorb, and the precompute engine receives fully-materialized sketches when it only needs to evaluate the top of the tree.
+
+The `SketchExpr` IR already exists (built by `query_parser/` and optimized by `sketch_rules.rs`) but is discarded after parsing — it never reaches the planner. SP-9 routes it there.
+
+**Node-to-stage mapping:**
+
+| `SketchExpr` node | Natural stage | Rationale |
+|---|---|---|
+| `Source` | SDK / Agent OTel Collector | Raw sample ingestion |
+| `Filter` | Agent OTel Collector | Label-based predicate push-down at edge |
+| `Window` | Agent OTel Collector | Time-windowed sketch accumulation per flush |
+| `Agg` (leaf sketch: DDSketch, HLL, CountSketch) | Agent OTel Collector | Sketch insertion at earliest safe stage |
+| `Partition` | Backend OTel Collector | Group-by across agents after merge |
+| `Merge` | Backend OTel Collector | Sketch linearity — merge N agent sketches |
+| `Dedup` | Backend OTel Collector | HLL deduplication absorbed at merge stage |
+| `TopK` | ASAPQuery Precompute Engine | Heavy-hitter extraction over merged sketches |
+| `ExactAgg` | DB-side query (ClickHouse) | Exact computation required — no sketch |
+
+**Algorithm (tree split):**
+
+```
+fn assign_stages(expr: SketchExpr) -> StagedPlan:
+    walk expr bottom-up:
+        Source, Filter, Window, Agg → assign to Agent OTel Collector
+        Partition, Merge, Dedup     → assign to Backend OTel Collector
+        TopK                        → assign to Precompute Engine
+        ExactAgg                    → assign to DB-side query
+    emit:
+        agent_config    ← nodes assigned to Agent stage
+        backend_config  ← nodes assigned to Backend stage
+        precompute_jobs ← nodes assigned to Precompute stage
+        db_query        ← nodes assigned to DB stage
+```
+
+**What changes from SP-3:**
+
+- SP-3 produces a single `(sketch_type, params)` shared across all stages.
+- SP-9 produces a per-stage sub-tree: the agent receives a `Window + Agg` sub-plan, the backend receives a `Merge + Partition` sub-plan, and the precompute engine receives a `TopK` or upper-aggregation query over the merged sketches already in the backend.
+- The `PrecomputeJob.query_expr` becomes the upper sub-tree serialized as a PromQL expression, rather than a hardcoded `quantile_over_time(0.99, ...)` template.
+
+**Current implementation gap:**
+
+The `SketchExpr` tree is built and optimized in `query_parser/` but is **flattened to `Vec<AggType>` in `analyzer.rs`** before reaching the planner. The planner (`rules.rs`) never sees the tree structure. To implement SP-9:
+
+1. Thread `SketchExpr` (or a normalized form) through `QueryWorkload` alongside `aggregations`.
+2. Add a `split_expr_by_stage()` function in `planner/` that walks the tree and emits per-stage sub-plans.
+3. Replace the hardcoded `build_query_expr()` template in `config/precompute.rs` with serialization of the upper sub-tree.
+4. Extend `CollectionPlan` to carry a per-stage sub-expression so `config/agent.rs` and `config/backend.rs` can emit the right processor chain.
+
+**Interaction with SP-3 and SP-6:**
+
+SP-9 is a refinement of SP-3, not a replacement. The SP-3 flat assignment remains as the fallback when the query maps to a single aggregation type with no compositional structure. SP-6 (optimizer) can score both plans (flat vs. AST-split) using SP-5 costs and select the cheaper option.
 
 ---
 
@@ -697,6 +762,7 @@ These map directly to the "ASAPQuery execution logs" row in the SP-8 feedback so
 | SP-6 | Optimization | Candidate plans + cost vectors | `CollectionPlan` | Pareto / heuristic / learned |
 | SP-7 | Plan Delivery | `CollectionPlan` | Live configs pushed to components | OpAMP + HTTP API |
 | SP-8 | Feedback & Re-planning | Live telemetry | Updated cost model + re-plan trigger | EMA + SLA monitoring |
+| SP-9 | AST-Aware Stage Split | `SketchExpr` tree + stage map | Per-stage sub-plans (agent / backend / precompute) | Tree partitioning |
 
 ---
 

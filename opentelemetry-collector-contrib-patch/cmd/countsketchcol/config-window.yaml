@@ -9,7 +9,7 @@ processors:
   countsketch:
     transmit_sketch: false
     mode: window
-    epsilon: 0.01
+    epsilon: 0.02
     delta: 0.99
     window_duration: 10s
     drop_original: false

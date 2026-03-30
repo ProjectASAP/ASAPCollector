@@ -55,7 +55,7 @@ sketch:
   countsketch:
     rows: 5                   # number of hash functions
     cols: 2000                # buckets per row
-    epsilon: 0.01             # accuracy parameter (0,1)
+    epsilon: 0.02             # accuracy parameter (0,1)
     delta:   0.99             # failure probability (0,1)
     dimension: ""             # free-form label describing the sketched dimension
 

@@ -36,7 +36,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.12.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.5.0 // indirect
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260321024028-d20a9f9151b5 // indirect
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260328221809-b24e56e64e94 // indirect
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b // indirect
 	github.com/aws/aws-sdk-go-v2 v1.39.6 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.31.17 // indirect
@@ -221,3 +221,5 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllp
 replace go.opentelemetry.io/collector/pdata => ../opentelemetry-collector/pdata
 
 replace go.opentelemetry.io/collector/processor => ../opentelemetry-collector/processor
+
+replace github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go

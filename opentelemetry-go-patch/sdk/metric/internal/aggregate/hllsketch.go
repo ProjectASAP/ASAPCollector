@@ -91,7 +91,7 @@ func (d *hllSketchValues[N]) measure(
 		}
 	}
 
-	series.sketch.InsertValue(float64(value))
+	series.sketch.Insert(float64(value))
 	series.count++
 	series.measuredSince = true
 }
@@ -281,7 +281,7 @@ func (d *hllSketch[N]) exportDataPoint(
 	encoding metricdata.HLLSketchEncoding,
 	dest *metricdata.HLLSketchDataPoint,
 ) bool {
-	cardinality := uint64(series.sketch.EstimateCardinality())
+	cardinality := uint64(series.sketch.Estimate())
 
 	dp := dest
 	if series.seriesID != 0 {

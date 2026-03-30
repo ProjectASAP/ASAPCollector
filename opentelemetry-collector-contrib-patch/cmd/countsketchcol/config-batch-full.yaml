@@ -9,7 +9,7 @@ processors:
   countsketch:
     transmit_sketch: true
     mode: batch
-    epsilon: 0.01
+    epsilon: 0.02
     delta: 0.99
     drop_original: true
 
