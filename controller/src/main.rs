@@ -23,6 +23,7 @@ use tracing::{info, warn};
 
 use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
+use config::generate_backend_config_staged;
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
 use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
@@ -217,12 +218,22 @@ async fn handle_plan(
     Json(spec): Json<QuerySpec>,
 ) -> impl IntoResponse {
     let wc = spec.workload.clone();
-    let workload = match st.analyzer.analyze(spec) {
+    let (workload, sketch_expr) = match st.analyzer.analyze_with_sketch(spec) {
         Ok(w)  => w,
         Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
     };
 
     let mut plan = st.planner.plan(&workload, Some(&wc));
+
+    // ── SP-9: AST-aware hierarchical stage assignment ─────────────────────────
+    // When a SketchExpr tree is available (query_string path), split it across
+    // stages and attach the result to the plan.  The SP-3 flat assignment
+    // remains active as the fallback when no tree is present.
+    if let Some(ref expr) = sketch_expr {
+        let budgets = types::StageResourceBudgets::from_workload_chars(&wc);
+        plan.staged_plan = Some(planner::stage_split::split_expr_by_stage(expr, &budgets));
+    }
+
     plan.precompute = build_precompute_jobs(&workload, &plan, "backend:4317");
     st.store.set(&workload.metric_name, plan.clone());
     // Persist workload so the replanner can re-run plan() without the original spec.
@@ -238,7 +249,11 @@ async fn handle_plan(
     }
 
     // ── Push backend config to backend-role collectors ────────────────────────
-    if let Ok(backend_yaml) = generate_backend_config(&plan.backend_config, &st.opamp_endpoint) {
+    // SP-9: pass the BackendSubPlan so the YAML gains a dedup processor when needed.
+    let backend_staged = plan.staged_plan.as_ref().map(|sp| &sp.backend);
+    if let Ok(backend_yaml) = generate_backend_config_staged(
+        &plan.backend_config, backend_staged, &st.opamp_endpoint,
+    ) {
         let hash = short_hash(&backend_yaml);
         st.opamp.push_to_role(
             AgentRole::Backend,
@@ -264,6 +279,7 @@ async fn handle_plan(
         "agents_notified":     agents.len(),
         "precompute_jobs":     plan.precompute.len(),
         "delta_decision":      plan.delta_decision,
+        "staged_plan":         plan.staged_plan,
         "transmission_costs": {
             "raw_bytes_per_sec":                   cost.raw_bytes_per_sec,
             "sketch_full_bytes_per_sec":            cost.sketch_full_bytes_per_sec,

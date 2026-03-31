@@ -68,6 +68,7 @@ impl RulesPlanner {
             valid_until,
             delta_decision: DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 
@@ -108,6 +109,7 @@ impl RulesPlanner {
             valid_until,
             delta_decision:           DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 }
