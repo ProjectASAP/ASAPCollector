@@ -255,7 +255,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 							continue
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
-						bs.sketch.InsertValue(dp.DoubleValue())
+						bs.sketch.Insert(dp.DoubleValue())
 					}
 				case pmetric.MetricTypeHLLSketch:
 					dps := metric.HLLSketch().DataPoints()
@@ -297,7 +297,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 			dp := m.Gauge().DataPoints().AppendEmpty()
 			bs.attrs.CopyTo(dp.Attributes())
 			dp.SetTimestamp(now)
-			dp.SetDoubleValue(float64(bs.sketch.EstimateCardinality()))
+			dp.SetDoubleValue(float64(bs.sketch.Estimate()))
 		}
 	}
 	return nil
@@ -462,7 +462,7 @@ func (p *hllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 			}
 			mw.series[attrKey] = series
 		}
-		series.sketch.InsertValue(dp.DoubleValue())
+		series.sketch.Insert(dp.DoubleValue())
 	}
 }
 
@@ -580,7 +580,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 					dps = append(dps, struct {
 						attrs pcommon.Map
 						val   float64
-					}{series.attrs, float64(series.sketch.EstimateCardinality())})
+					}{series.attrs, float64(series.sketch.Estimate())})
 					series.attrs = pcommon.Map{}
 					p.seriesPool.Put(series)
 				}
@@ -676,10 +676,10 @@ func appendHLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *
 	dp := metric.Gauge().DataPoints().AppendEmpty()
 	attrs.CopyTo(dp.Attributes())
 	dp.Attributes().PutInt("hll.precision", hll.HLLPrecision)
-	dp.Attributes().PutInt("hll.cardinality", int64(sketch.EstimateCardinality()))
+	dp.Attributes().PutInt("hll.cardinality", int64(sketch.Estimate()))
 	dp.Attributes().PutEmptyBytes("hll.sketch_payload").FromRaw(payload)
 	dp.SetTimestamp(ts)
-	dp.SetDoubleValue(float64(sketch.EstimateCardinality()))
+	dp.SetDoubleValue(float64(sketch.Estimate()))
 	return nil
 }
 
@@ -694,11 +694,11 @@ func appendHLLDeltaDataPoint(metric pmetric.Metric, attrs pcommon.Map, snapshot,
 	dp := metric.Gauge().DataPoints().AppendEmpty()
 	attrs.CopyTo(dp.Attributes())
 	dp.Attributes().PutInt("hll.precision", hll.HLLPrecision)
-	dp.Attributes().PutInt("hll.cardinality", int64(current.EstimateCardinality()))
+	dp.Attributes().PutInt("hll.cardinality", int64(current.Estimate()))
 	dp.Attributes().PutStr("hll.encoding", "proto_delta")
 	dp.Attributes().PutEmptyBytes("hll.sketch_payload").FromRaw(payload)
 	dp.SetTimestamp(ts)
-	dp.SetDoubleValue(float64(current.EstimateCardinality()))
+	dp.SetDoubleValue(float64(current.Estimate()))
 	return nil
 }
 
