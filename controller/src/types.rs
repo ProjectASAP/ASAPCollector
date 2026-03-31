@@ -245,6 +245,12 @@ pub struct SketchParams {
     pub rows: u32,
     pub cols: u32,
     pub quantiles: Vec<f64>,
+    /// CountSketch error probability. Maps to the processor's `delta` field.
+    pub delta: f64,
+    /// CountSketch relative error bound (ε). Maps to the processor's `epsilon` field.
+    pub epsilon: f64,
+    /// Metric name required by CountMinSketch processor (`metric_name` field).
+    pub metric_name: String,
 }
 
 #[derive(Debug, Clone)]

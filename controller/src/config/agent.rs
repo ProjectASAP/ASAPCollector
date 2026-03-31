@@ -6,6 +6,20 @@ use std::collections::HashMap;
 use crate::analyzer::format_duration;
 use crate::types::*;
 
+/// Processor map key and pipeline entry must match the OpenTelemetry **component type**
+/// string from each factory (`MustNewType` in
+/// `opentelemetry-collector-contrib-patch/processor/*/factory.go`). This is not always
+/// the same as `SketchType`'s `Display` (e.g. HLL vs `hll`, KLL vs `kll`).
+fn collector_processor_component_id(st: &SketchType) -> &'static str {
+    match st {
+        SketchType::DDSketch => "ddsketch",
+        SketchType::KLL => "KLL",
+        SketchType::HLL => "HLL",
+        SketchType::CountSketch => "countsketch",
+        SketchType::CountMinSketch => "countmin",
+    }
+}
+
 // ── YAML structural types ─────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -42,7 +56,7 @@ pub fn generate_agent_config(
     cfg: &AgentCollectorConfig,
     _opamp_endpoint: &str,
 ) -> anyhow::Result<String> {
-    let processor_key = cfg.sketch_type.to_string();
+    let processor_key = collector_processor_component_id(&cfg.sketch_type).to_string();
     let processor_val = build_processor_block(cfg);
 
     // Standard OTLP receiver (gRPC + HTTP).
@@ -96,13 +110,19 @@ fn build_processor_block(cfg: &AgentCollectorConfig) -> Value {
         m.insert("label_matchers".into(), seq_of_strings(&cfg.label_matchers));
     }
 
-    // Delta transmission fields (emitted for all sketch types that support it).
-    if cfg.delta_transmission {
+    // Delta transmission: only emit fields each processor's Config actually defines.
+    // KLL rejects delta_transmission at Validate(); HLL has no delta_threshold key.
+    if cfg.delta_transmission && cfg.sketch_type != SketchType::KLL {
         m.insert("delta_transmission".into(), Value::Bool(true));
-        m.insert(
-            "delta_threshold".into(),
-            Value::Number(cfg.delta_threshold.into()),
-        );
+        if matches!(
+            cfg.sketch_type,
+            SketchType::DDSketch | SketchType::CountSketch | SketchType::CountMinSketch
+        ) {
+            m.insert(
+                "delta_threshold".into(),
+                Value::Number(cfg.delta_threshold.into()),
+            );
+        }
     }
 
     // Sketch-type-specific params.
@@ -140,14 +160,21 @@ fn build_processor_block(cfg: &AgentCollectorConfig) -> Value {
             }
         }
         SketchType::HLL => {
-            m.insert(
-                "precision".into(),
-                Value::Number((p.precision as u64).into()),
-            );
+            // hllprocessor uses a fixed HLL precision in code; Config has no precision field.
         }
-        SketchType::CountSketch | SketchType::CountMinSketch => {
+        SketchType::CountSketch => {
+            // countsketchprocessor requires epsilon and delta (not rows/cols).
+            m.insert("epsilon".into(), Value::Number(p.epsilon.into()));
+            m.insert("delta".into(), Value::Number(p.delta.into()));
+        }
+        SketchType::CountMinSketch => {
+            // countminsketchprocessor requires metric_name, rows, and columns.
+            m.insert(
+                "metric_name".into(),
+                Value::String(p.metric_name.clone()),
+            );
             m.insert("rows".into(), Value::Number((p.rows as u64).into()));
-            m.insert("cols".into(), Value::Number((p.cols as u64).into()));
+            m.insert("columns".into(), Value::Number((p.cols as u64).into()));
         }
     }
 
@@ -261,10 +288,14 @@ mod tests {
             delta_threshold: 0.0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
-        assert!(yaml.contains("hll:"), "YAML should contain 'hll:'\n{yaml}");
+        assert!(yaml.contains("HLL:"), "YAML should contain HLL processor key\n{yaml}");
         assert!(
-            yaml.contains("precision"),
-            "YAML should contain 'precision'\n{yaml}"
+            yaml.contains("- HLL"),
+            "pipeline should reference HLL processor\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("precision"),
+            "HLL processor YAML must not set precision (not in Config)\n{yaml}"
         );
     }
 
@@ -290,8 +321,8 @@ mod tests {
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
-            yaml.contains("countminsketch:"),
-            "YAML should contain processor key\n{yaml}"
+            yaml.contains("countmin:"),
+            "YAML should use countmin component id (factory type)\n{yaml}"
         );
     }
 
