@@ -52,7 +52,7 @@ impl RulesPlanner {
                 window_duration,
                 mode,
                 enable_self_monitoring: true,
-                transmit_sketch: true,
+                transmit_sketch: false,
                 drop_original: true,
                 // Delta fields are left as disabled defaults here; the
                 // CostModelPlanner overwrites them via decide_delta().
@@ -133,7 +133,7 @@ pub fn default_sketch_params(st: &SketchType, accuracy_sla: f64) -> SketchParams
 }
 
 /// Like [`default_sketch_params`] but seeds the quantiles list from the
-/// query-parsed φ values when non-empty; falls back to [0.5, 0.9, 0.99].
+/// query-parsed φ values when non-empty; falls back to an extended DEBS-style grid.
 pub fn default_sketch_params_with_quantiles(
     st: &SketchType,
     accuracy_sla: f64,
@@ -143,7 +143,7 @@ pub fn default_sketch_params_with_quantiles(
     let quantiles: Vec<f64> = if !query_quantiles.is_empty() {
         query_quantiles.to_vec()
     } else {
-        vec![0.5, 0.9, 0.99]
+        vec![0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0]
     };
     match st {
         SketchType::DDSketch => SketchParams {
@@ -154,7 +154,7 @@ pub fn default_sketch_params_with_quantiles(
         SketchType::KLL => {
             let k = ((1.0 / acc) as u32).max(32);
             SketchParams { k, quantiles, ..Default::default() }
-        }
+        },
         SketchType::HLL => {
             let precision = if acc > 0.02 { 10u32 } else { 14u32 };
             SketchParams { precision, ..Default::default() }
@@ -162,6 +162,11 @@ pub fn default_sketch_params_with_quantiles(
         SketchType::CountSketch | SketchType::CountMinSketch => SketchParams {
             rows: 5,
             cols: 2048,
+            // epsilon/delta required by countsketchprocessor; rows/cols kept for reference.
+            // epsilon ≈ 1/sqrt(cols), delta ≈ e^(-rows) for the equivalent sketch size.
+            epsilon: 0.022,
+            delta: 0.007,
+            metric_name: "countsketch_partition".to_string(),
             ..Default::default()
         },
     }
