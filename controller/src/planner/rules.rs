@@ -32,8 +32,8 @@ impl RulesPlanner {
             return self.raw_passthrough_plan(w);
         }
 
-        let sketch_type = select_sketch_type(&w.aggregations);
-        let sketch_params = build_sketch_params(&self.sketch_defaults, &sketch_type, w.accuracy_sla, &w.quantiles);
+        let sketch_type = crate::algebra::directory::sketch_type_for_agg(&w.aggregations);
+        let sketch_params = crate::algebra::directory::build_sketch_params(&self.sketch_defaults, &sketch_type, w.accuracy_sla, &w.quantiles);
         let (mode, window_duration) = select_window_strategy(w);
 
         let mut aggregate_by = w.group_by_labels.clone();
@@ -123,70 +123,9 @@ impl RulesPlanner {
     }
 }
 
-// ── Sketch selection ──────────────────────────────────────────────────────────
+// ── Sketch selection (delegated to algebra::directory) ───────────────────────
 
-/// Picks the primary sketch type from the aggregation list.
-/// Priority order: Quantile → Cardinality → Frequency.
-fn select_sketch_type(aggs: &[AggType]) -> SketchType {
-    for agg in aggs {
-        match agg {
-            AggType::Quantile => return SketchType::DDSketch,
-            AggType::Cardinality => return SketchType::HLL,
-            AggType::Frequency => return SketchType::CountSketch,
-        }
-    }
-    SketchType::DDSketch
-}
-
-/// Returns type-appropriate default parameters using compiled-in defaults.
-pub fn default_sketch_params(st: &SketchType, accuracy_sla: f64) -> SketchParams {
-    build_sketch_params(&SketchDefaults::default(), st, accuracy_sla, &[])
-}
-
-/// Build sketch parameters from a [`SketchDefaults`] config.
-///
-/// Query-specific quantiles override the configured grid when non-empty.
-pub fn build_sketch_params(
-    defaults: &SketchDefaults,
-    st: &SketchType,
-    accuracy_sla: f64,
-    query_quantiles: &[f64],
-) -> SketchParams {
-    let acc = if accuracy_sla <= 0.0 {
-        defaults.ddsketch.relative_accuracy
-    } else {
-        accuracy_sla
-    };
-    let quantiles: Vec<f64> = if !query_quantiles.is_empty() {
-        query_quantiles.to_vec()
-    } else {
-        defaults.quantile_grid.clone()
-    };
-    match st {
-        SketchType::DDSketch => SketchParams::DDSketch {
-            relative_accuracy: acc,
-            quantiles,
-        },
-        SketchType::KLL => {
-            let k = ((1.0 / acc) as u32).max(defaults.kll.min_k);
-            SketchParams::KLL { k, quantiles }
-        }
-        SketchType::HLL => {
-            let d = &defaults.hll;
-            let precision = if acc > d.precision_threshold { d.precision_coarse } else { d.precision_fine };
-            SketchParams::HLL { precision }
-        }
-        SketchType::CountSketch => SketchParams::CountSketch {
-            epsilon: defaults.count_sketch.epsilon,
-            delta: defaults.count_sketch.delta,
-        },
-        SketchType::CountMinSketch => SketchParams::CountMinSketch {
-            rows: defaults.count_min_sketch.rows,
-            cols: defaults.count_min_sketch.cols,
-            metric_name: defaults.count_min_sketch.metric_name.clone(),
-        },
-    }
-}
+pub use crate::algebra::directory::{default_sketch_params, build_sketch_params};
 
 // ── Window strategy ───────────────────────────────────────────────────────────
 

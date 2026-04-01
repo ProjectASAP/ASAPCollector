@@ -32,7 +32,7 @@ use super::plan::{
     CostEstimate, ExecutionMode, NodeAnnotation, PipelineStage, PlanNode,
 };
 use super::expr::{ExactAgg, SketchAggOp};
-use crate::types::{CountSketchDefaults, SketchParams, SketchType, StageResourceBudgets};
+use crate::types::{SketchParams, SketchType, StageResourceBudgets};
 
 // ── Resource budget tracker ───────────────────────────────────────────────────
 
@@ -583,7 +583,7 @@ impl SketchAllocator {
 
         // Sketch operators: try Agent → Backend → Precompute.
         let mem = estimated_sketch_memory(&op);
-        let (sketch_type, params) = sketch_type_for_op(&op);
+        let (sketch_type, params) = super::directory::sketch_type_and_params(&op);
 
         if budget.fits_agent(mem) {
             budget.consume_agent(mem);
@@ -673,7 +673,7 @@ fn estimated_sketch_memory(op: &SketchAggOp) -> f64 {
         SketchAggOp::DDSketch { .. }              => 4_096.0,
         SketchAggOp::HLL { registers }            => (1u64 << registers) as f64,
         SketchAggOp::CountMin { width, depth }    => (*width as f64) * (*depth as f64) * 8.0,
-        SketchAggOp::CountSketch { k }            => (*k as f64) * 64.0,
+        SketchAggOp::CountSketch { width, depth }  => (*width as f64) * (*depth as f64) * 8.0,
         SketchAggOp::ExactMinMax { .. }           => 16.0,
         SketchAggOp::Hydra { inner, partition_keys } => {
             // Hydra memory = inner sketch size × expected number of key tuples.
@@ -685,40 +685,7 @@ fn estimated_sketch_memory(op: &SketchAggOp) -> f64 {
     }
 }
 
-/// Map a [`SketchAggOp`] to a [`SketchType`] + [`SketchParams`].
-fn sketch_type_for_op(op: &SketchAggOp) -> (SketchType, SketchParams) {
-    match op {
-        SketchAggOp::DDSketch { quantiles, epsilon } => (
-            SketchType::DDSketch,
-            SketchParams::DDSketch {
-                relative_accuracy: *epsilon,
-                quantiles: quantiles.clone(),
-            },
-        ),
-        SketchAggOp::HLL { registers } => (
-            SketchType::HLL,
-            SketchParams::HLL { precision: *registers as u32 },
-        ),
-        SketchAggOp::CountMin { width, depth } => (
-            SketchType::CountMinSketch,
-            SketchParams::CountMinSketch {
-                cols: *width,
-                rows: *depth as u32,
-                metric_name: String::new(),
-            },
-        ),
-        SketchAggOp::CountSketch { .. } => (
-            SketchType::CountSketch,
-            { let d = CountSketchDefaults::default(); SketchParams::CountSketch { epsilon: d.epsilon, delta: d.delta } },
-        ),
-        SketchAggOp::ExactMinMax { .. } => (
-            SketchType::DDSketch,
-            SketchParams::default(),
-        ),
-        SketchAggOp::Hydra { inner, .. } => sketch_type_for_op(inner),
-        SketchAggOp::Exact(_) => (SketchType::DDSketch, SketchParams::default()),
-    }
-}
+// sketch_type_for_op delegated to algebra::directory::sketch_type_and_params.
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

@@ -79,11 +79,11 @@ pub enum ColumnRef {
 /// The concrete sketch type used for aggregation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SketchAggOp {
-    /// Count-Min Sketch — frequency per group (COUNT(*) GROUP BY).
+    /// Count-Min Sketch — frequency estimation.
     CountMin { width: u32, depth: u8 },
 
-    /// Count Sketch (heavy-hitter) — top-K by frequency.
-    CountSketch { k: u64 },
+    /// Count Sketch — frequency estimation (unbiased, supports negative counts).
+    CountSketch { width: u32, depth: u8 },
 
     /// HyperLogLog — distinct-value counting (COUNT DISTINCT).
     HLL { registers: u8 },
@@ -156,6 +156,9 @@ impl SketchAggOp {
 
     pub fn default_count_min() -> Self {
         SketchAggOp::CountMin { width: 2000, depth: 5 }
+    }
+    pub fn default_count_sketch() -> Self {
+        SketchAggOp::CountSketch { width: 2000, depth: 5 }
     }
     pub fn default_hll() -> Self {
         SketchAggOp::HLL { registers: 14 }
@@ -560,7 +563,7 @@ impl AggFunc {
         match self {
             AggFunc::Quantile(phi) => Some(SketchAggOp::default_ddsketch(vec![*phi])),
             AggFunc::CountDistinct => Some(SketchAggOp::default_hll()),
-            AggFunc::HeavyHitters { k } => Some(SketchAggOp::CountSketch { k: *k }),
+            AggFunc::HeavyHitters { .. } => Some(SketchAggOp::default_count_sketch()),
             AggFunc::Count   => Some(SketchAggOp::Exact(ExactAgg::Count)),
             AggFunc::Sum     => Some(SketchAggOp::Exact(ExactAgg::Sum)),
             AggFunc::Avg     => Some(SketchAggOp::Exact(ExactAgg::Avg)),
@@ -1008,7 +1011,7 @@ mod tests {
     #[test]
     fn agg_func_to_sketch_op_heavy_hitters() {
         let op = AggFunc::HeavyHitters { k: 50 }.to_sketch_op();
-        assert!(matches!(op, Some(SketchAggOp::CountSketch { k: 50 })));
+        assert!(matches!(op, Some(SketchAggOp::CountSketch { .. })));
     }
 
     // ── ScalarExpr predicate list conversion ──────────────────────────────────
@@ -1054,7 +1057,7 @@ mod tests {
                     duration: Duration::from_secs(300),
                     slide:    None,
                     input:    Box::new(QueryExpr::SketchAgg {
-                        op:    SketchAggOp::CountSketch { k: 10 },
+                        op:    SketchAggOp::default_count_sketch(),
                         col:   ColumnRef::Wildcard,
                         input: Box::new(src("price")),
                     }),
