@@ -52,9 +52,14 @@ def window_start_ms_vectorized(
     return (floored_utc.asi8 // 1_000_000).astype(np.int64)
 
 
-def load_filtered_day(csv_path: Path, chunksize: int) -> pd.DataFrame:
+def load_filtered_day(
+    csv_path: Path,
+    chunksize: int,
+    max_event_minutes: int | None = None,
+) -> pd.DataFrame:
     columns = ["ID", "SecType", "Date", "Last", "Trading time"]
     parts: list[pd.DataFrame] = []
+    cutoff_ms: int | None = None
     for chunk in pd.read_csv(
         csv_path,
         comment="#",
@@ -78,8 +83,18 @@ def load_filtered_day(csv_path: Path, chunksize: int) -> pd.DataFrame:
         chunk["ts_ms"] = (localized.astype("int64") // 1_000_000).astype(np.int64)
         chunk["Last"] = pd.to_numeric(chunk["Last"], errors="coerce")
         chunk = chunk[chunk["ts_ms"] > 0].dropna(subset=["Last"])
+        chunk = chunk[chunk["Last"] > 0]
         if chunk.empty:
             continue
+        if max_event_minutes is not None:
+            chunk_min = int(chunk["ts_ms"].min())
+            if cutoff_ms is None:
+                cutoff_ms = chunk_min + max_event_minutes * 60_000
+            chunk = chunk[chunk["ts_ms"] <= cutoff_ms]
+            if chunk.empty:
+                # Chunk may be entirely after cutoff in file order; later chunks
+                # can still contain rows within the window (CSV is not sorted by time).
+                continue
         symbol_series, exchange_series = split_symbol_exchange(chunk["ID"])
         chunk["symbol"] = symbol_series
         chunk["exchange"] = exchange_series
@@ -90,9 +105,14 @@ def load_filtered_day(csv_path: Path, chunksize: int) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True)
 
 
-def load_full_feed_day(csv_path: Path, chunksize: int) -> pd.DataFrame:
+def load_full_feed_day(
+    csv_path: Path,
+    chunksize: int,
+    max_event_minutes: int | None = None,
+) -> pd.DataFrame:
     columns = ["ID", "SecType", "Date", "Time", "Last"]
     parts: list[pd.DataFrame] = []
+    cutoff_ms: int | None = None
     for chunk in pd.read_csv(
         csv_path,
         comment="#",
@@ -119,6 +139,13 @@ def load_full_feed_day(csv_path: Path, chunksize: int) -> pd.DataFrame:
         chunk = chunk[chunk["ts_ms"] > 0]
         if chunk.empty:
             continue
+        if max_event_minutes is not None:
+            chunk_min = int(chunk["ts_ms"].min())
+            if cutoff_ms is None:
+                cutoff_ms = chunk_min + max_event_minutes * 60_000
+            chunk = chunk[chunk["ts_ms"] <= cutoff_ms]
+            if chunk.empty:
+                continue
         chunk["symbol"], _ = split_symbol_exchange(chunk["ID"])
         parts.append(chunk[["symbol", "ts_ms", "Last"]])
     if not parts:

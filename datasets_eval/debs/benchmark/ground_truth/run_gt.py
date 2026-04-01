@@ -82,12 +82,19 @@ def main() -> None:
     )
     parser.add_argument("--chunksize", type=int, default=200_000)
     parser.add_argument(
+        "--max-event-minutes",
+        type=int,
+        default=0,
+        help="Stop after this many minutes of event time from the first tick (0 = full day).",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=None,
         help="Parallel worker processes (default: min(CPU count, number of tasks))",
     )
     args = parser.parse_args()
+    max_event_minutes = args.max_event_minutes or None
 
     if args.query != "all" and args.query not in ACCEPTED_GT_QUERIES:
         parser.error(
@@ -127,7 +134,13 @@ def main() -> None:
                 flush=True,
             )
             try:
-                run_ground_truth_task(query_id, day, args.out_dir, args.chunksize)
+                run_ground_truth_task(
+                    query_id,
+                    day,
+                    args.out_dir,
+                    args.chunksize,
+                    max_event_minutes=max_event_minutes,
+                )
             except Exception as exc:
                 print(
                     "ground_truth FAILED",
@@ -146,7 +159,12 @@ def main() -> None:
         executor = ProcessPoolExecutor(max_workers=max_workers)
         future_map = {
             executor.submit(
-                run_ground_truth_task, query_id, day, args.out_dir, args.chunksize
+                run_ground_truth_task,
+                query_id,
+                day,
+                args.out_dir,
+                args.chunksize,
+                max_event_minutes=max_event_minutes,
             ): (query_id, day)
             for query_id, day in tasks
         }
