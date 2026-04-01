@@ -32,7 +32,7 @@ use super::plan::{
     CostEstimate, ExecutionMode, NodeAnnotation, PipelineStage, PlanNode,
 };
 use super::expr::{ExactAgg, SketchAggOp};
-use crate::types::{SketchParams, SketchType, StageResourceBudgets, DEFAULT_CS_EPSILON, DEFAULT_CS_DELTA};
+use crate::types::{CountSketchDefaults, SketchParams, SketchType, StageResourceBudgets};
 
 // ── Resource budget tracker ───────────────────────────────────────────────────
 
@@ -709,7 +709,7 @@ fn sketch_type_for_op(op: &SketchAggOp) -> (SketchType, SketchParams) {
         ),
         SketchAggOp::CountSketch { .. } => (
             SketchType::CountSketch,
-            SketchParams::CountSketch { epsilon: DEFAULT_CS_EPSILON, delta: DEFAULT_CS_DELTA },
+            { let d = CountSketchDefaults::default(); SketchParams::CountSketch { epsilon: d.epsilon, delta: d.delta } },
         ),
         SketchAggOp::ExactMinMax { .. } => (
             SketchType::DDSketch,

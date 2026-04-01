@@ -41,8 +41,9 @@ use crate::algebra::expr::{AggFunc, BinaryOpKind, LiteralValue, QueryExpr, Scala
 use crate::analyzer::format_duration;
 use crate::algebra::expr::{ExactAgg, PartitionKeys, SketchAggOp};
 use crate::types::{
-    AgentSubPlan, BackendSubPlan, DbSubPlan, PrecomputeSubPlan, SketchParams, SketchType,
-    StagedPlan, StageResourceBudgets, DEFAULT_CS_EPSILON, DEFAULT_CS_DELTA,
+    AgentSubPlan, BackendSubPlan, CountMinSketchDefaults, CountSketchDefaults,
+    DbSubPlan, PrecomputeSubPlan, SketchParams, SketchType,
+    StagedPlan, StageResourceBudgets,
 };
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -353,10 +354,10 @@ fn agg_op_to_sketch_params(op: &SketchAggOp) -> SketchParams {
             cols: *width,
             metric_name: String::new(),
         },
-        SketchAggOp::CountSketch { .. } => SketchParams::CountSketch {
-            epsilon: DEFAULT_CS_EPSILON,
-            delta: DEFAULT_CS_DELTA,
-        },
+        SketchAggOp::CountSketch { .. } => {
+            let d = CountSketchDefaults::default();
+            SketchParams::CountSketch { epsilon: d.epsilon, delta: d.delta }
+        }
         SketchAggOp::Hydra { inner, .. } => agg_op_to_sketch_params(inner),
         SketchAggOp::ExactMinMax { .. } => SketchParams::DDSketch {
             relative_accuracy: 0.01,

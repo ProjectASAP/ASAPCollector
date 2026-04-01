@@ -237,14 +237,132 @@ pub struct QueryWorkload {
     pub quantiles: Vec<f64>,
 }
 
-/// Default quantile grid used when no query-specific φ values are available.
-pub const DEFAULT_QUANTILE_GRID: &[f64] = &[0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0];
+// ── Sketch defaults (YAML-configurable) ──────────────────────────────────────
 
-/// Default CountSketch relative error bound (ε ≈ 1/√cols for cols=2048).
-pub const DEFAULT_CS_EPSILON: f64 = 0.022;
+/// Per-sketch-type default parameters.  Loaded from a YAML config file at
+/// startup; falls back to compile-time defaults when the file is absent.
+///
+/// Example `sketch_params_default.yml`:
+/// ```yaml
+/// quantile_grid: [0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0]
+/// ddsketch:
+///   relative_accuracy: 0.01
+/// kll:
+///   min_k: 32
+/// hll:
+///   precision_coarse: 10
+///   precision_fine: 14
+///   precision_threshold: 0.02
+/// count_sketch:
+///   epsilon: 0.022
+///   delta: 0.007
+/// count_min_sketch:
+///   rows: 5
+///   cols: 2048
+///   metric_name: "countsketch_partition"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SketchDefaults {
+    /// Quantile grid used when no query-specific φ values are available.
+    pub quantile_grid: Vec<f64>,
+    pub ddsketch: DDSketchDefaults,
+    pub kll: KLLDefaults,
+    pub hll: HLLDefaults,
+    pub count_sketch: CountSketchDefaults,
+    pub count_min_sketch: CountMinSketchDefaults,
+}
 
-/// Default CountSketch error probability (δ ≈ e^(−rows) for rows=5).
-pub const DEFAULT_CS_DELTA: f64 = 0.007;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DDSketchDefaults {
+    pub relative_accuracy: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KLLDefaults {
+    /// Minimum k value (clamped from 1/accuracy_sla).
+    pub min_k: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HLLDefaults {
+    /// Precision for coarse SLA (accuracy > threshold).
+    pub precision_coarse: u32,
+    /// Precision for fine SLA (accuracy ≤ threshold).
+    pub precision_fine: u32,
+    /// SLA boundary between coarse and fine precision.
+    pub precision_threshold: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CountSketchDefaults {
+    /// Relative error bound (ε ≈ 1/√cols).
+    pub epsilon: f64,
+    /// Error probability (δ ≈ e^(−rows)).
+    pub delta: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CountMinSketchDefaults {
+    pub rows: u32,
+    pub cols: u32,
+    pub metric_name: String,
+}
+
+impl Default for SketchDefaults {
+    fn default() -> Self {
+        Self {
+            quantile_grid: vec![0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0],
+            ddsketch: DDSketchDefaults::default(),
+            kll: KLLDefaults::default(),
+            hll: HLLDefaults::default(),
+            count_sketch: CountSketchDefaults::default(),
+            count_min_sketch: CountMinSketchDefaults::default(),
+        }
+    }
+}
+
+impl Default for DDSketchDefaults {
+    fn default() -> Self { Self { relative_accuracy: 0.01 } }
+}
+
+impl Default for KLLDefaults {
+    fn default() -> Self { Self { min_k: 32 } }
+}
+
+impl Default for HLLDefaults {
+    fn default() -> Self {
+        Self { precision_coarse: 10, precision_fine: 14, precision_threshold: 0.02 }
+    }
+}
+
+impl Default for CountSketchDefaults {
+    fn default() -> Self { Self { epsilon: 0.022, delta: 0.007 } }
+}
+
+impl Default for CountMinSketchDefaults {
+    fn default() -> Self {
+        Self { rows: 5, cols: 2048, metric_name: "countsketch_partition".into() }
+    }
+}
+
+impl SketchDefaults {
+    /// Load from a YAML file, falling back to compiled defaults on any error.
+    pub fn load(path: &str) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => serde_yaml::from_str(&contents).unwrap_or_else(|e| {
+                tracing::warn!(path, error = %e, "invalid sketch_defaults YAML; using built-in defaults");
+                Self::default()
+            }),
+            Err(_) => Self::default(),
+        }
+    }
+}
 
 /// Per-sketch-type parameters.  Each variant carries only the fields relevant
 /// to that sketch family, avoiding the "bag of unrelated fields" problem.
@@ -278,9 +396,10 @@ pub enum SketchParams {
 
 impl Default for SketchParams {
     fn default() -> Self {
+        let d = SketchDefaults::default();
         SketchParams::DDSketch {
-            relative_accuracy: 0.01,
-            quantiles: DEFAULT_QUANTILE_GRID.to_vec(),
+            relative_accuracy: d.ddsketch.relative_accuracy,
+            quantiles: d.quantile_grid,
         }
     }
 }

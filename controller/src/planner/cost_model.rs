@@ -178,6 +178,11 @@ impl CostModelPlanner {
         Self { inner: RulesPlanner::new(), online_store: None }
     }
 
+    pub fn with_sketch_defaults(mut self, defaults: SketchDefaults) -> Self {
+        self.inner.sketch_defaults = defaults;
+        self
+    }
+
     /// Attach a live EMA store so scoring uses blended benchmark + observed costs.
     pub fn with_online_store(mut self, store: online_cost_model::OnlineMetricsStore) -> Self {
         self.online_store = Some(store);

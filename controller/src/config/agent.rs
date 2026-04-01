@@ -407,8 +407,8 @@ mod tests {
         let cfg = AgentCollectorConfig {
             sketch_type: SketchType::CountSketch,
             sketch_params: SketchParams::CountSketch {
-                epsilon: DEFAULT_CS_EPSILON,
-                delta: DEFAULT_CS_DELTA,
+                epsilon: CountSketchDefaults::default().epsilon,
+                delta: CountSketchDefaults::default().delta,
             },
             mode: ProcessorMode::Batch,
             window_duration: None,
@@ -442,7 +442,7 @@ mod tests {
             ("ddsketch",    SketchType::DDSketch,      SketchParams::DDSketch { relative_accuracy: 0.01, quantiles: vec![0.5] }),
             ("KLL",         SketchType::KLL,           SketchParams::KLL { k: 200, quantiles: vec![0.5] }),
             ("HLL",         SketchType::HLL,           SketchParams::HLL { precision: 14 }),
-            ("countsketch", SketchType::CountSketch,   SketchParams::CountSketch { epsilon: DEFAULT_CS_EPSILON, delta: DEFAULT_CS_DELTA }),
+            ("countsketch", SketchType::CountSketch,   SketchParams::CountSketch { epsilon: CountSketchDefaults::default().epsilon, delta: CountSketchDefaults::default().delta }),
             ("countmin",    SketchType::CountMinSketch, SketchParams::CountMinSketch { rows: 5, cols: 2048, metric_name: "m".into() }),
         ];
 
