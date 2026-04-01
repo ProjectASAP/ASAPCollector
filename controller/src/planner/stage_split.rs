@@ -40,8 +40,9 @@ use std::time::Duration;
 use crate::algebra::expr::{AggFunc, BinaryOpKind, LiteralValue, QueryExpr, ScalarExpr};
 use crate::analyzer::format_duration;
 use crate::algebra::expr::{ExactAgg, PartitionKeys, SketchAggOp};
+use crate::algebra::directory;
 use crate::types::{
-    AgentSubPlan, BackendSubPlan, CountMinSketchDefaults, CountSketchDefaults,
+    AgentSubPlan, BackendSubPlan,
     DbSubPlan, PrecomputeSubPlan, SketchParams, SketchType,
     StagedPlan, StageResourceBudgets,
 };
@@ -236,12 +237,12 @@ fn assign_sketch_agg(op: &SketchAggOp, plan: &mut StagedPlan, budgets: &StageRes
         }
         // Sketch ops: assign to Agent, defer if budget exceeded.
         sketch_op => {
-            let est_mem = estimated_sketch_memory_bytes(sketch_op);
+            let est_mem = directory::estimated_sketch_memory_bytes(sketch_op);
             let stage = resolve_sketch_stage(est_mem, budgets, &mut plan.deferral_log, sketch_op);
             match stage {
                 SketchStage::Agent => {
-                    plan.agent.sketch_type   = Some(agg_op_to_sketch_type(sketch_op));
-                    plan.agent.sketch_params = agg_op_to_sketch_params(sketch_op);
+                    plan.agent.sketch_type   = Some(directory::sketch_type_for_op(sketch_op));
+                    plan.agent.sketch_params = directory::sketch_params_for_op(sketch_op);
                 }
                 SketchStage::Backend => {
                     plan.backend.has_merge = true;
@@ -313,59 +314,7 @@ fn resolve_sketch_stage(
     SketchStage::Agent
 }
 
-fn estimated_sketch_memory_bytes(op: &SketchAggOp) -> u64 {
-    match op {
-        SketchAggOp::DDSketch { .. } | SketchAggOp::ExactMinMax { .. } => 4_096,
-        SketchAggOp::HLL { registers }       => 1u64 << (*registers as u64),
-        SketchAggOp::CountMin { width, depth } => (*width as u64) * (*depth as u64) * 8,
-        SketchAggOp::CountSketch { k }        => k * 8 * 5,
-        SketchAggOp::Hydra { inner, partition_keys } => {
-            let factor = 1u64 << partition_keys.len().min(10);
-            estimated_sketch_memory_bytes(inner).saturating_mul(factor)
-        }
-        SketchAggOp::Exact(_) => 8,
-    }
-}
-
-// ── Sketch-type helpers ───────────────────────────────────────────────────────
-
-fn agg_op_to_sketch_type(op: &SketchAggOp) -> SketchType {
-    match op {
-        SketchAggOp::DDSketch { .. } | SketchAggOp::ExactMinMax { .. } => SketchType::DDSketch,
-        SketchAggOp::HLL { .. }       => SketchType::HLL,
-        SketchAggOp::CountMin { .. }  => SketchType::CountMinSketch,
-        SketchAggOp::CountSketch { .. } => SketchType::CountSketch,
-        SketchAggOp::Hydra { inner, .. } => agg_op_to_sketch_type(inner),
-        SketchAggOp::Exact(_)         => SketchType::DDSketch,
-    }
-}
-
-fn agg_op_to_sketch_params(op: &SketchAggOp) -> SketchParams {
-    match op {
-        SketchAggOp::DDSketch { quantiles, epsilon } => SketchParams::DDSketch {
-            relative_accuracy: *epsilon,
-            quantiles: quantiles.clone(),
-        },
-        SketchAggOp::HLL { registers } => SketchParams::HLL {
-            precision: *registers as u32,
-        },
-        SketchAggOp::CountMin { width, depth } => SketchParams::CountMinSketch {
-            rows: *depth as u32,
-            cols: *width,
-            metric_name: String::new(),
-        },
-        SketchAggOp::CountSketch { .. } => {
-            let d = CountSketchDefaults::default();
-            SketchParams::CountSketch { epsilon: d.epsilon, delta: d.delta }
-        }
-        SketchAggOp::Hydra { inner, .. } => agg_op_to_sketch_params(inner),
-        SketchAggOp::ExactMinMax { .. } => SketchParams::DDSketch {
-            relative_accuracy: 0.01,
-            quantiles: vec![0.0, 1.0],
-        },
-        SketchAggOp::Exact(_) => SketchParams::default(),
-    }
-}
+// Sketch-type helpers delegated to algebra::directory.
 
 // ── PromQL serialiser — recursive descent ─────────────────────────────────────
 
