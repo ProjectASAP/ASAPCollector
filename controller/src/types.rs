@@ -325,7 +325,7 @@ impl StageResourceBudgets {
 
 /// Sub-plan for the **Agent OTel Collector** stage.
 ///
-/// Covers `SketchExpr` nodes: `Source`, `Filter`, `Window`, `Agg` (sketch ops).
+/// Covers `QueryExpr` nodes: `Source`, `Filter`, `Window`, `Agg` (sketch ops).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentSubPlan {
     /// Concrete sketch type resolved from the `Agg` node (absent when no Agg
@@ -345,7 +345,7 @@ pub struct AgentSubPlan {
 
 /// Sub-plan for the **Backend OTel Collector** stage.
 ///
-/// Covers `SketchExpr` nodes: `Partition`, `Merge`, `Dedup`, and
+/// Covers `QueryExpr` nodes: `Partition`, `Merge`, `Dedup`, and
 /// `Agg { Exact(Sum|Count|Min|Max) }` (mergeable exact ops).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackendSubPlan {
@@ -360,7 +360,7 @@ pub struct BackendSubPlan {
 
 /// Sub-plan for the **ASAPQuery Precompute Engine** stage.
 ///
-/// Covers `SketchExpr` nodes: `TopK`, and sketch `Agg` ops deferred from
+/// Covers `QueryExpr` nodes: `TopK`, and sketch `Agg` ops deferred from
 /// the Agent stage due to memory budget overflow.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PrecomputeSubPlan {
@@ -389,7 +389,7 @@ pub struct DbSubPlan {
 ///
 /// Produced by `planner::stage_split::split_expr_by_stage()`.  Attached to
 /// [`CollectionPlan::staged_plan`] when the workload was supplied via
-/// `query_string` (giving access to the full `SketchExpr` tree).
+/// `query_string` (giving access to the full `QueryExpr` tree).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StagedPlan {
     pub agent: AgentSubPlan,
@@ -418,7 +418,7 @@ pub struct CollectionPlan {
     /// SP-9: AST-aware per-stage sub-plans.
     ///
     /// `Some` when the workload was supplied via `query_string` (full
-    /// `SketchExpr` tree available).  `None` when built from explicit
+    /// `QueryExpr` tree available).  `None` when built from explicit
     /// aggregation fields — the SP-3 flat assignment is used as fallback.
     pub staged_plan: Option<StagedPlan>,
 }

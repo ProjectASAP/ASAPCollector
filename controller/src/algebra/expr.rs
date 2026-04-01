@@ -10,10 +10,6 @@
 //!   from a row.  Used for WHERE predicates, SELECT projections, HAVING
 //!   conditions, and JOIN conditions.
 //!
-//! The bridge to the existing sketch algebra is [`QueryExpr::from_sketch_expr`],
-//! which converts a [`crate::query_parser::SketchExpr`] tree into the general
-//! algebra for backward-compatibility.
-//!
 //! # Stage vocabulary
 //!
 //! Once the [`crate::algebra::allocator::SketchAllocator`] annotates the tree,
@@ -29,13 +25,194 @@
 
 use std::time::Duration;
 
-use crate::query_parser::sketch_algebra::{
-    ColumnRef, ExactAgg, FilterOp, FilterVal, Predicate, SketchAggOp, SketchExpr, SourceSpec,
-};
+use crate::types::AggType;
+
+// ── Shared sketch / predicate types ───────────────────────────────────────────
+
+/// Base relation / metric stream source.
+#[derive(Debug, Clone)]
+pub struct SourceSpec {
+    /// Table name (SQL) or metric name (PromQL).
+    pub name: String,
+}
+
+/// How the stream is partitioned.
+#[derive(Debug, Clone)]
+pub enum PartitionKeys {
+    /// `by (k1, k2, ...)` — explicit key list.
+    By(Vec<String>),
+    /// `without (k1, k2, ...)` — complement; resolved against schema at plan time.
+    Without(Vec<String>),
+}
+
+impl PartitionKeys {
+    pub fn keys(&self) -> &[String] {
+        match self {
+            PartitionKeys::By(k) | PartitionKeys::Without(k) => k,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys().is_empty()
+    }
+
+    pub fn into_by_keys(self) -> Vec<String> {
+        match self {
+            PartitionKeys::By(k) => k,
+            // For Without, return empty — caller resolves complement.
+            PartitionKeys::Without(k) => k,
+        }
+    }
+}
+
+/// Which column / field the sketch aggregation targets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnRef {
+    /// Explicit column name (SQL: `AVG(price)` → `Named("price")`).
+    Named(String),
+    /// The implicit metric sample value (PromQL — always the series value).
+    SampleValue,
+    /// All rows / COUNT(*).
+    Wildcard,
+}
+
+/// The concrete sketch type used for aggregation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SketchAggOp {
+    /// Count-Min Sketch — frequency per group (COUNT(*) GROUP BY).
+    CountMin { width: u32, depth: u8 },
+
+    /// Count Sketch (heavy-hitter) — top-K by frequency.
+    CountSketch { k: u64 },
+
+    /// HyperLogLog — distinct-value counting (COUNT DISTINCT).
+    HLL { registers: u8 },
+
+    /// DDSketch — quantile estimation.
+    /// `quantiles` holds the φ values to track; `epsilon` is relative error.
+    DDSketch { quantiles: Vec<f64>, epsilon: f64 },
+
+    /// Exact running min/max tracker — cheaper than DDSketch for extrema
+    /// without a GROUP BY (no sketch benefit for global extrema).
+    ExactMinMax { min: bool, max: bool },
+
+    /// Hydra — sketch of sketches for multi-dimensional GROUP BY.
+    /// Maintains one `inner` sketch per distinct `partition_keys` tuple.
+    Hydra {
+        inner:          Box<SketchAggOp>,
+        partition_keys: Vec<String>,
+    },
+
+    /// Exact passthrough — no sketch benefit (SUM, global COUNT, etc.).
+    Exact(ExactAgg),
+}
+
+/// Exact (non-sketch) aggregation kinds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExactAgg {
+    Count,
+    Sum,
+    /// **Not mergeable** — carries `(sum, count)` in distributed contexts.
+    Avg,
+    Min,
+    Max,
+}
+
+impl SketchAggOp {
+    /// Returns `true` when two instances of this sketch can be merged
+    /// (i.e., `sketch(A ∪ B) = merge(sketch(A), sketch(B))`).
+    pub fn is_mergeable(&self) -> bool {
+        match self {
+            SketchAggOp::Exact(ExactAgg::Avg) => false,
+            SketchAggOp::Hydra { inner, .. }  => inner.is_mergeable(),
+            _                                  => true,
+        }
+    }
+
+    /// Map to the coarse [`AggType`] used by the legacy planner.
+    pub fn to_agg_type(&self) -> AggType {
+        match self {
+            SketchAggOp::HLL { .. }                                  => AggType::Cardinality,
+            SketchAggOp::CountMin { .. } | SketchAggOp::CountSketch { .. } => AggType::Frequency,
+            SketchAggOp::DDSketch { .. } | SketchAggOp::ExactMinMax { .. } => AggType::Quantile,
+            SketchAggOp::Hydra { inner, .. }                         => inner.to_agg_type(),
+            SketchAggOp::Exact(_)                                    => AggType::Quantile,
+        }
+    }
+
+    /// Extract quantile φ values for DDSketch operators.
+    pub fn quantiles(&self) -> Vec<f64> {
+        match self {
+            SketchAggOp::DDSketch { quantiles, .. } => quantiles.clone(),
+            SketchAggOp::Hydra { inner, .. }        => inner.quantiles(),
+            _                                        => vec![],
+        }
+    }
+
+    /// Whether this op implies `exact_required` (no sketch benefit).
+    pub fn is_exact(&self) -> bool {
+        matches!(self, SketchAggOp::Exact(_) | SketchAggOp::ExactMinMax { .. })
+    }
+
+    pub fn default_count_min() -> Self {
+        SketchAggOp::CountMin { width: 2000, depth: 5 }
+    }
+    pub fn default_hll() -> Self {
+        SketchAggOp::HLL { registers: 14 }
+    }
+    pub fn default_ddsketch(quantiles: Vec<f64>) -> Self {
+        SketchAggOp::DDSketch { quantiles, epsilon: 0.01 }
+    }
+}
+
+/// A single filter predicate pushed down to the collector.
+#[derive(Debug, Clone)]
+pub struct Predicate {
+    pub col: String,
+    pub op:  FilterOp,
+    pub val: FilterVal,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Like,
+    NotLike,
+    IsNull,
+    IsNotNull,
+    /// PromQL `=~` label matcher (RE2 syntax).
+    Regex(String),
+    /// PromQL `!~` label matcher.
+    NotRegex(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum FilterVal {
+    Str(String),
+    Num(f64),
+    Int(i64),
+    Null,
+}
+
+/// How completely a query can be served by sketches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SketchCoverage {
+    /// All aggregation columns are sketch-mapped.
+    Full,
+    /// Some columns are sketch-mapped; others require exact passthrough.
+    Partial,
+    /// No sketch applicable; query requires exact execution.
+    None,
+}
 
 // ── Relational algebra ────────────────────────────────────────────────────────
 
-/// Full relational + sketch algebra — replaces / extends [`SketchExpr`].
+/// Full relational + sketch algebra — the sole query IR.
 ///
 /// Every variant is a *node* in the logical query plan tree.  Leaves are
 /// [`QueryExpr::Source`] or [`QueryExpr::Ref`].  Interior nodes combine their
@@ -101,7 +278,7 @@ pub enum QueryExpr {
 
     /// Partition the stream by key-tuple (GROUP BY / `by (dims)`).
     Partition {
-        keys:  crate::query_parser::sketch_algebra::PartitionKeys,
+        keys:  PartitionKeys,
         input: Box<QueryExpr>,
     },
 
@@ -573,63 +750,7 @@ pub enum DataType {
     Custom(String),
 }
 
-// ── Bridge: SketchExpr → QueryExpr ───────────────────────────────────────────
-
 impl QueryExpr {
-    /// Convert a legacy [`SketchExpr`] tree into the general algebra.
-    ///
-    /// This bridge preserves backward-compatibility: the existing SQL and
-    /// PromQL parsers emit [`SketchExpr`] trees; the new optimizer and
-    /// allocator work on [`QueryExpr`] trees.
-    pub fn from_sketch_expr(s: &SketchExpr) -> Self {
-        match s {
-            SketchExpr::Source(src) => QueryExpr::Source(src.clone()),
-
-            SketchExpr::Filter { pred, input } => QueryExpr::Filter {
-                pred:  scalar_from_predicates(pred),
-                input: Box::new(QueryExpr::from_sketch_expr(input)),
-            },
-
-            SketchExpr::Window { duration, input } => QueryExpr::Window {
-                duration: *duration,
-                slide:    None,
-                input:    Box::new(QueryExpr::from_sketch_expr(input)),
-            },
-
-            SketchExpr::Partition { keys, input } => QueryExpr::Partition {
-                keys:  keys.clone(),
-                input: Box::new(QueryExpr::from_sketch_expr(input)),
-            },
-
-            SketchExpr::Agg { op, col, input } => QueryExpr::SketchAgg {
-                op:    op.clone(),
-                col:   col.clone(),
-                input: Box::new(QueryExpr::from_sketch_expr(input)),
-            },
-
-            SketchExpr::Dedup { col, input } => QueryExpr::Dedup {
-                col:   col.clone(),
-                input: Box::new(QueryExpr::from_sketch_expr(input)),
-            },
-
-            SketchExpr::TopK { k, input } => QueryExpr::TopK {
-                k:     *k,
-                by:    vec![],
-                input: Box::new(QueryExpr::from_sketch_expr(input)),
-            },
-
-            SketchExpr::Merge { inputs } => QueryExpr::Merge {
-                inputs: inputs.iter().map(QueryExpr::from_sketch_expr).collect(),
-            },
-
-            SketchExpr::JoinSketch { join_key, outer, inner } => QueryExpr::JoinSketch {
-                join_key: join_key.clone(),
-                outer:    Box::new(QueryExpr::from_sketch_expr(outer)),
-                inner:    Box::new(QueryExpr::from_sketch_expr(inner)),
-            },
-        }
-    }
-
     /// Walk the expression tree depth-first and call `f` on every node.
     pub fn walk<F: FnMut(&QueryExpr)>(&self, f: &mut F) {
         f(self);
@@ -811,125 +932,22 @@ impl std::fmt::Display for AggFunc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query_parser::sketch_algebra::{
-        PartitionKeys, SketchAggOp, SketchExpr, SourceSpec,
-    };
     use std::time::Duration;
 
-    fn src(name: &str) -> SketchExpr {
-        SketchExpr::Source(SourceSpec { name: name.into() })
-    }
-
-    // ── Bridge tests ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn bridge_source() {
-        let qe = QueryExpr::from_sketch_expr(&src("cpu"));
-        assert!(matches!(qe, QueryExpr::Source(s) if s.name == "cpu"));
-    }
-
-    #[test]
-    fn bridge_sketch_agg_ddsketch() {
-        use crate::query_parser::sketch_algebra::ColumnRef;
-        let se = SketchExpr::Agg {
-            op:    SketchAggOp::default_ddsketch(vec![0.99]),
-            col:   ColumnRef::SampleValue,
-            input: Box::new(src("latency")),
-        };
-        let qe = QueryExpr::from_sketch_expr(&se);
-        assert!(
-            matches!(&qe, QueryExpr::SketchAgg { op: SketchAggOp::DDSketch { .. }, .. }),
-            "expected SketchAgg(DDSketch), got {qe:?}"
-        );
-    }
-
-    #[test]
-    fn bridge_window_preserves_duration() {
-        let se = SketchExpr::Window {
-            duration: Duration::from_secs(300),
-            input:    Box::new(src("m")),
-        };
-        let qe = QueryExpr::from_sketch_expr(&se);
-        match qe {
-            QueryExpr::Window { duration, .. } => {
-                assert_eq!(duration, Duration::from_secs(300));
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    #[test]
-    fn bridge_filter_converts_predicates() {
-        use crate::query_parser::sketch_algebra::{FilterOp, FilterVal, Predicate};
-        let se = SketchExpr::Filter {
-            pred: vec![Predicate {
-                col: "env".into(),
-                op:  FilterOp::Eq,
-                val: FilterVal::Str("prod".into()),
-            }],
-            input: Box::new(src("http_requests")),
-        };
-        let qe = QueryExpr::from_sketch_expr(&se);
-        assert!(matches!(qe, QueryExpr::Filter { .. }));
-    }
-
-    #[test]
-    fn bridge_topk_sets_k() {
-        let se = SketchExpr::TopK {
-            k:     25,
-            input: Box::new(src("events")),
-        };
-        let qe = QueryExpr::from_sketch_expr(&se);
-        match qe {
-            QueryExpr::TopK { k, .. } => assert_eq!(k, 25),
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    #[test]
-    fn bridge_merge_fans_in() {
-        let se = SketchExpr::Merge {
-            inputs: vec![src("a"), src("b"), src("c")],
-        };
-        let qe = QueryExpr::from_sketch_expr(&se);
-        match qe {
-            QueryExpr::Merge { inputs } => assert_eq!(inputs.len(), 3),
-            other => panic!("unexpected {other:?}"),
-        }
-    }
-
-    #[test]
-    fn bridge_join_sketch() {
-        use crate::query_parser::sketch_algebra::ColumnRef;
-        let se = SketchExpr::JoinSketch {
-            join_key: "order_id".into(),
-            outer:    Box::new(src("orders")),
-            inner:    Box::new(SketchExpr::Agg {
-                op:    SketchAggOp::default_hll(),
-                col:   ColumnRef::Named("item_id".into()),
-                input: Box::new(src("items")),
-            }),
-        };
-        let qe = QueryExpr::from_sketch_expr(&se);
-        match qe {
-            QueryExpr::JoinSketch { join_key, .. } => {
-                assert_eq!(join_key, "order_id");
-            }
-            other => panic!("unexpected {other:?}"),
-        }
+    fn src(name: &str) -> QueryExpr {
+        QueryExpr::Source(SourceSpec { name: name.into() })
     }
 
     // ── has_sketch_work ───────────────────────────────────────────────────────
 
     #[test]
     fn has_sketch_work_true_when_ddsketch_present() {
-        use crate::query_parser::sketch_algebra::ColumnRef;
-        let se = SketchExpr::Agg {
+        let qe = QueryExpr::SketchAgg {
             op:    SketchAggOp::default_ddsketch(vec![0.5]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("m")),
         };
-        assert!(QueryExpr::from_sketch_expr(&se).has_sketch_work());
+        assert!(qe.has_sketch_work());
     }
 
     #[test]
@@ -942,14 +960,14 @@ mod tests {
 
     #[test]
     fn source_name_extracted_through_chain() {
-        let se = SketchExpr::Window {
+        let qe = QueryExpr::Window {
             duration: Duration::from_secs(60),
-            input: Box::new(SketchExpr::Filter {
-                pred:  vec![],
+            slide:    None,
+            input: Box::new(QueryExpr::Filter {
+                pred:  ScalarExpr::Literal(LiteralValue::Bool(true)),
                 input: Box::new(src("my_metric")),
             }),
         };
-        let qe = QueryExpr::from_sketch_expr(&se);
         assert_eq!(qe.source_name(), Some("my_metric"));
     }
 
@@ -1003,7 +1021,6 @@ mod tests {
 
     #[test]
     fn two_preds_become_and_tree() {
-        use crate::query_parser::sketch_algebra::{FilterOp, FilterVal, Predicate};
         let preds = vec![
             Predicate { col: "a".into(), op: FilterOp::Eq, val: FilterVal::Int(1) },
             Predicate { col: "b".into(), op: FilterOp::Gt, val: FilterVal::Num(2.0) },
@@ -1026,16 +1043,17 @@ mod tests {
     // ── Complex nested tree ───────────────────────────────────────────────────
 
     #[test]
-    fn complex_nested_bridge_roundtrip() {
-        use crate::query_parser::sketch_algebra::ColumnRef;
-        // TopK(10, Partition(symbol, Window(5m, Agg(CountSketch, Source(price)))))
-        let se = SketchExpr::TopK {
+    fn complex_nested_tree() {
+        // TopK(10, Partition(symbol, Window(5m, SketchAgg(CountSketch, Source(price)))))
+        let qe = QueryExpr::TopK {
             k: 10,
-            input: Box::new(SketchExpr::Partition {
+            by: vec![],
+            input: Box::new(QueryExpr::Partition {
                 keys:  PartitionKeys::By(vec!["symbol".into()]),
-                input: Box::new(SketchExpr::Window {
+                input: Box::new(QueryExpr::Window {
                     duration: Duration::from_secs(300),
-                    input:    Box::new(SketchExpr::Agg {
+                    slide:    None,
+                    input:    Box::new(QueryExpr::SketchAgg {
                         op:    SketchAggOp::CountSketch { k: 10 },
                         col:   ColumnRef::Wildcard,
                         input: Box::new(src("price")),
@@ -1043,7 +1061,6 @@ mod tests {
                 }),
             }),
         };
-        let qe = QueryExpr::from_sketch_expr(&se);
         assert!(qe.has_sketch_work());
         assert_eq!(qe.source_name(), Some("price"));
     }
@@ -1091,5 +1108,69 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    // ── SketchAggOp and related types ──────────────────────────────────────────
+
+    #[test]
+    fn sketch_agg_op_hll_is_mergeable() {
+        assert!(SketchAggOp::default_hll().is_mergeable());
+    }
+
+    #[test]
+    fn sketch_agg_op_exact_avg_not_mergeable() {
+        assert!(!SketchAggOp::Exact(ExactAgg::Avg).is_mergeable());
+    }
+
+    #[test]
+    fn sketch_agg_op_hydra_mergeability_from_inner() {
+        let hydra_hll = SketchAggOp::Hydra {
+            inner:          Box::new(SketchAggOp::default_hll()),
+            partition_keys: vec!["region".into()],
+        };
+        assert!(hydra_hll.is_mergeable());
+        let hydra_avg = SketchAggOp::Hydra {
+            inner:          Box::new(SketchAggOp::Exact(ExactAgg::Avg)),
+            partition_keys: vec!["region".into()],
+        };
+        assert!(!hydra_avg.is_mergeable());
+    }
+
+    #[test]
+    fn partition_keys_without_variant() {
+        let keys = PartitionKeys::Without(vec!["instance".into()]);
+        assert_eq!(keys.keys(), &["instance".to_string()]);
+        assert!(!keys.is_empty());
+    }
+
+    #[test]
+    fn sketch_agg_op_to_agg_type() {
+        use crate::types::AggType;
+        assert_eq!(SketchAggOp::default_hll().to_agg_type(),         AggType::Cardinality);
+        assert_eq!(SketchAggOp::default_count_min().to_agg_type(),   AggType::Frequency);
+        assert_eq!(SketchAggOp::default_ddsketch(vec![0.5]).to_agg_type(), AggType::Quantile);
+    }
+
+    #[test]
+    fn sketch_agg_op_is_exact() {
+        assert!(SketchAggOp::Exact(ExactAgg::Sum).is_exact());
+        assert!(SketchAggOp::ExactMinMax { min: true, max: false }.is_exact());
+        assert!(!SketchAggOp::default_hll().is_exact());
+    }
+
+    #[test]
+    fn sketch_coverage_classification() {
+        let ops: Vec<SketchAggOp> = vec![
+            SketchAggOp::default_hll(),
+            SketchAggOp::Exact(ExactAgg::Sum),
+        ];
+        let has_sketch = ops.iter().any(|o| !o.is_exact());
+        let has_exact  = ops.iter().any(|o|  o.is_exact());
+        let cov = match (has_sketch, has_exact) {
+            (true, false) => SketchCoverage::Full,
+            (true, true)  => SketchCoverage::Partial,
+            _             => SketchCoverage::None,
+        };
+        assert_eq!(cov, SketchCoverage::Partial);
     }
 }

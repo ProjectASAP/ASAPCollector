@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use crate::algebra::expr::{AggFunc, BinaryOpKind, LiteralValue, QueryExpr, ScalarExpr};
 use crate::analyzer::format_duration;
-use crate::query_parser::sketch_algebra::{ExactAgg, PartitionKeys, SketchAggOp};
+use crate::algebra::expr::{ExactAgg, PartitionKeys, SketchAggOp};
 use crate::types::{
     AgentSubPlan, BackendSubPlan, DbSubPlan, PrecomputeSubPlan, SketchParams, SketchType,
     StagedPlan, StageResourceBudgets,
@@ -685,7 +685,7 @@ fn collect_label_filters_into(pred: &ScalarExpr, out: &mut Vec<String>) {
 mod tests {
     use super::*;
     use crate::algebra::expr::{AggItem, BinaryOpKind, LiteralValue, QueryExpr, ScalarExpr};
-    use crate::query_parser::sketch_algebra::{ColumnRef, PartitionKeys, SketchAggOp, SourceSpec};
+    use crate::algebra::expr::{ColumnRef, PartitionKeys, SketchAggOp, SourceSpec};
 
     fn source(name: &str) -> QueryExpr {
         QueryExpr::Source(SourceSpec { name: name.into() })

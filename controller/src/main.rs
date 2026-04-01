@@ -21,7 +21,7 @@ use axum::{
 use serde_json::json;
 use tracing::{info, warn};
 
-use algebra::{QueryExpr, QueryOptimizer, SketchAllocator};
+use algebra::{QueryOptimizer, SketchAllocator};
 use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
 use config::generate_backend_config_staged;
@@ -30,7 +30,7 @@ use opamp::{AgentRole, OpampServer, RemoteConfig};
 use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
 use planner::online_cost_model;
 use planner::stage_split::split_expr_by_stage;
-use query_parser::{parse_query_expr, parse_query_sketch};
+use query_parser::parse_query_expr;
 use replan::Replanner;
 use store::{PlanStore, WorkloadStore};
 use types::StageResourceBudgets;
@@ -235,10 +235,9 @@ async fn handle_plan(
     // the StagedPlan.  The SP-3 flat assignment remains the fallback when no
     // query_string is supplied.
     if let Some(ref qs) = query_string {
-        match parse_query_sketch(qs) {
-            Err(e) => warn!(query = %qs, error = %e, "parse_query_sketch failed; skipping staged_plan"),
-            Ok(sketch_expr) => {
-                let qe = QueryExpr::from_sketch_expr(&sketch_expr);
+        match parse_query_expr(qs) {
+            Err(e) => warn!(query = %qs, error = %e, "parse_query_expr failed; skipping staged_plan"),
+            Ok(qe) => {
                 let raw_bps = plan.transmission_cost_summary.raw_bytes_per_sec;
                 let (opt_qe, _) = QueryOptimizer::new(raw_bps).optimize(qe);
                 let budgets = StageResourceBudgets::from_workload_chars(&wc);

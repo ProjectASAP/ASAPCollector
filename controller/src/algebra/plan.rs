@@ -272,7 +272,7 @@ impl PlanNode {
 mod tests {
     use super::*;
     use crate::algebra::expr::QueryExpr;
-    use crate::query_parser::sketch_algebra::SourceSpec;
+    use crate::algebra::expr::SourceSpec;
 
     fn source_node(name: &str, stage: PipelineStage) -> PlanNode {
         PlanNode::leaf(

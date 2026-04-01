@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 
-use crate::query_parser::{self, SketchExpr};
+use crate::query_parser;
 use crate::types::{AggType, QueryWorkload, SketchType, WorkloadCharacteristics};
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -157,31 +157,6 @@ impl Analyzer {
         })
     }
 
-    /// Like [`analyze`] but also returns the optimized [`SketchExpr`] tree.
-    ///
-    /// The tree is `Some` when `spec.query_string` was provided; `None` when
-    /// the workload was built from explicit aggregation fields alone.
-    ///
-    /// Callers (e.g. `handle_plan`) pass the `SketchExpr` to
-    /// `planner::stage_split::split_expr_by_stage()` to produce an SP-9
-    /// [`StagedPlan`].  The existing `analyze()` path (SP-3 flat assignment)
-    /// is unchanged and remains the fallback when no tree is available.
-    pub fn analyze_with_sketch(
-        &self,
-        spec: QuerySpec,
-    ) -> anyhow::Result<(QueryWorkload, Option<SketchExpr>)> {
-        // Parse the SketchExpr before `spec` is consumed by `analyze()`.
-        // `parse_query_sketch` runs the algebraic optimiser internally.
-        let sketch_expr = spec
-            .query_string
-            .as_deref()
-            .map(|q| query_parser::parse_query_sketch(q))
-            .transpose()
-            .with_context(|| "failed to parse query_string into SketchExpr")?;
-
-        let workload = self.analyze(spec)?;
-        Ok((workload, sketch_expr))
-    }
 }
 
 // ── Duration helpers (used by other modules) ──────────────────────────────────

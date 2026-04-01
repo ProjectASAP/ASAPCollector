@@ -1,14 +1,10 @@
 //! SP-1 query workload extraction — PromQL and SQL parsers.
 //!
-//! Both parsers compile to the shared [`SketchExpr`] algebra IR defined in
-//! [`sketch_algebra`].  The optimizer in [`sketch_rules`] applies algebraic
-//! rewrite rules before the planner receives the result.
-//!
 //! # Entry points
 //!
 //! | Function | Returns | Use |
 //! |---|---|---|
-//! | [`parse_query_sketch`] | `SketchExpr` | New callers — full algebra IR |
+//! | [`parse_query_expr`] | `QueryExpr` | Full algebra IR |
 //! | [`parse_query`] | `ParsedQuery` | Backward compat with existing analyzer |
 //!
 //! # Supported PromQL patterns (via `promql-parser` AST)
@@ -33,22 +29,18 @@
 
 pub mod promql;
 pub mod sql;
-pub mod sketch_algebra;
-pub mod sketch_rules;
 
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::algebra::expr::QueryExpr;
+use crate::algebra::expr::{QueryExpr, SketchAggOp};
 use crate::types::AggType;
-pub use sketch_algebra::SketchExpr;
 
 // ── Output types (legacy — consumed by analyzer and planner) ──────────────────
 
 /// Flat intermediate representation consumed by [`crate::analyzer::Analyzer`].
 ///
-/// Produced by [`parse_query`] via [`SketchExpr::to_parsed_query`].
-/// New code should use [`parse_query_sketch`] → [`SketchExpr`] directly.
+/// Produced by [`parse_query`] via [`QueryExpr`] tree walking.
 #[derive(Debug, Clone)]
 pub struct ParsedQuery {
     /// Metric name (PromQL: from selector; SQL: FROM clause table).
@@ -95,11 +87,6 @@ pub enum QueryHint {
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Parse a raw query string (PromQL or SQL) into the general [`QueryExpr`] IR.
-///
-/// Unlike [`parse_query_sketch`], this path emits `QueryExpr` *directly*
-/// from the AST — preserving HistogramQuantile, PromQLSubquery,
-/// vector-binary-op matching, Sort+Limit, Join, and SetOp without any
-/// lossy round-trip through [`SketchExpr`].
 pub fn parse_query_expr(query: &str) -> anyhow::Result<QueryExpr> {
     let q = query.trim();
     let upper = q.to_ascii_uppercase();
@@ -110,27 +97,254 @@ pub fn parse_query_expr(query: &str) -> anyhow::Result<QueryExpr> {
     }
 }
 
-/// Parse a raw query string (PromQL or SQL) into the full [`SketchExpr`] IR.
-///
-/// The returned tree has already been through the algebraic optimizer
-/// ([`sketch_rules::optimize`]).
-pub fn parse_query_sketch(query: &str) -> anyhow::Result<SketchExpr> {
-    let q = query.trim();
-    let upper = q.to_ascii_uppercase();
-    if upper.starts_with("SELECT") || upper.starts_with("WITH") {
-        sql::parse_sql(q)
-    } else {
-        promql::parse_promql(q)
-    }
-}
-
 /// Parse a raw query string (PromQL or SQL) into a [`ParsedQuery`].
 ///
 /// This is the backward-compatible entry point for the existing
-/// [`crate::analyzer::Analyzer`].  Internally it calls [`parse_query_sketch`]
-/// and converts via [`SketchExpr::to_parsed_query`].
+/// [`crate::analyzer::Analyzer`].  Internally it parses via [`parse_query_expr`]
+/// and extracts the flat summary by walking the [`QueryExpr`] tree.
 pub fn parse_query(query: &str) -> anyhow::Result<ParsedQuery> {
-    Ok(parse_query_sketch(query)?.to_parsed_query())
+    let qe = parse_query_expr(query)?;
+    Ok(qe_to_parsed_query(&qe))
+}
+
+/// Extract a flat [`ParsedQuery`] by walking a [`QueryExpr`] tree.
+fn qe_to_parsed_query(qe: &QueryExpr) -> ParsedQuery {
+    let mut c = QeCollector::default();
+    c.visit(qe);
+    c.build()
+}
+
+#[derive(Default)]
+struct QeCollector {
+    metric_name:     Option<String>,
+    agg_types:       Vec<AggType>,
+    group_by_labels: Vec<String>,
+    label_filters:   HashMap<String, String>,
+    time_window:     Option<Duration>,
+    exact_required:  bool,
+    quantiles:       Vec<f64>,
+    topk:            Option<u64>,
+}
+
+impl QeCollector {
+    fn visit(&mut self, expr: &QueryExpr) {
+        use crate::algebra::expr::{FilterOp, FilterVal, LiteralValue, ScalarExpr};
+        match expr {
+            QueryExpr::Source(s) => {
+                if self.metric_name.is_none() {
+                    self.metric_name = Some(s.name.clone());
+                }
+            }
+            QueryExpr::Filter { pred, input } => {
+                // Extract equality label filters from the predicate tree.
+                collect_filters_from_scalar(pred, &mut self.label_filters);
+                self.visit(input);
+            }
+            QueryExpr::Window { duration, input, .. } => {
+                if self.time_window.is_none() {
+                    self.time_window = Some(*duration);
+                }
+                self.visit(input);
+            }
+            QueryExpr::Partition { keys, input } => {
+                for k in keys.keys() {
+                    if !self.group_by_labels.contains(k) {
+                        self.group_by_labels.push(k.clone());
+                    }
+                }
+                self.visit(input);
+            }
+            QueryExpr::SketchAgg { op, input, .. } => {
+                self.collect_op(op);
+                self.visit(input);
+            }
+            QueryExpr::TopK { k, input, .. } => {
+                self.topk = Some(*k);
+                self.visit(input);
+            }
+            QueryExpr::Dedup { input, .. } => self.visit(input),
+            QueryExpr::Merge { inputs } => {
+                for i in inputs { self.visit(i); }
+            }
+            QueryExpr::JoinSketch { outer, inner, .. } => {
+                self.visit(outer);
+                self.visit(inner);
+            }
+            QueryExpr::Aggregate { keys, aggs, input, .. } => {
+                for k in keys {
+                    if !self.group_by_labels.contains(k) {
+                        self.group_by_labels.push(k.clone());
+                    }
+                }
+                let has_group_by = !keys.is_empty();
+                for agg in aggs {
+                    self.collect_agg_func_with_group(&agg.func, has_group_by);
+                }
+                self.visit(input);
+            }
+            QueryExpr::Project { input, .. }
+            | QueryExpr::Sort { input, .. }
+            | QueryExpr::Limit { input, .. }
+            | QueryExpr::HistogramQuantile { input, .. }
+            | QueryExpr::PromQLSubquery { input, .. }
+            | QueryExpr::WindowFunc { input, .. } => self.visit(input),
+            QueryExpr::Join { left, right, .. }
+            | QueryExpr::SetOp { left, right, .. }
+            | QueryExpr::BinaryOp { lhs: left, rhs: right, .. } => {
+                self.visit(left);
+                self.visit(right);
+            }
+            QueryExpr::Subquery { expr, .. } => self.visit(expr),
+            QueryExpr::LetBinding { expr, body, .. } => {
+                self.visit(expr);
+                self.visit(body);
+            }
+            QueryExpr::Ref(_) => {}
+        }
+    }
+
+    fn collect_agg_func_with_group(&mut self, func: &crate::algebra::expr::AggFunc, has_group_by: bool) {
+        use crate::algebra::expr::AggFunc;
+        // COUNT(*) without GROUP BY → exact (no sketch benefit)
+        if matches!(func, AggFunc::Count) && !has_group_by {
+            self.exact_required = true;
+            return;
+        }
+        self.collect_agg_func(func);
+    }
+
+    fn collect_agg_func(&mut self, func: &crate::algebra::expr::AggFunc) {
+        use crate::algebra::expr::AggFunc;
+        match func {
+            AggFunc::CountDistinct => {
+                if !self.agg_types.contains(&AggType::Cardinality) {
+                    self.agg_types.push(AggType::Cardinality);
+                }
+            }
+            AggFunc::Count => {
+                if !self.agg_types.contains(&AggType::Frequency) {
+                    self.agg_types.push(AggType::Frequency);
+                }
+            }
+            AggFunc::HeavyHitters { .. } => {
+                if !self.agg_types.contains(&AggType::Frequency) {
+                    self.agg_types.push(AggType::Frequency);
+                }
+            }
+            AggFunc::Quantile(phi) => {
+                if !self.agg_types.contains(&AggType::Quantile) {
+                    self.agg_types.push(AggType::Quantile);
+                }
+                if !self.quantiles.contains(phi) {
+                    self.quantiles.push(*phi);
+                }
+            }
+            AggFunc::Avg => {
+                if !self.agg_types.contains(&AggType::Quantile) {
+                    self.agg_types.push(AggType::Quantile);
+                }
+                // AVG maps to p50 (median) sketch
+                if !self.quantiles.contains(&0.5) { self.quantiles.push(0.5); }
+            }
+            AggFunc::Min => {
+                if !self.agg_types.contains(&AggType::Quantile) {
+                    self.agg_types.push(AggType::Quantile);
+                }
+                if !self.quantiles.contains(&0.0) { self.quantiles.push(0.0); }
+            }
+            AggFunc::Max => {
+                if !self.agg_types.contains(&AggType::Quantile) {
+                    self.agg_types.push(AggType::Quantile);
+                }
+                if !self.quantiles.contains(&1.0) { self.quantiles.push(1.0); }
+            }
+            AggFunc::StdDev { .. } | AggFunc::Variance { .. } => {
+                if !self.agg_types.contains(&AggType::Quantile) {
+                    self.agg_types.push(AggType::Quantile);
+                }
+            }
+            AggFunc::Sum | AggFunc::Rate | AggFunc::Increase | AggFunc::Delta
+            | AggFunc::Custom(_) => {
+                self.exact_required = true;
+            }
+        }
+    }
+
+    fn collect_op(&mut self, op: &SketchAggOp) {
+        use crate::algebra::expr::ExactAgg;
+        match op {
+            SketchAggOp::HLL { .. } => {
+                if !self.agg_types.contains(&AggType::Cardinality) {
+                    self.agg_types.push(AggType::Cardinality);
+                }
+            }
+            SketchAggOp::CountMin { .. } | SketchAggOp::CountSketch { .. } => {
+                if !self.agg_types.contains(&AggType::Frequency) {
+                    self.agg_types.push(AggType::Frequency);
+                }
+            }
+            SketchAggOp::DDSketch { quantiles, .. } => {
+                if !self.agg_types.contains(&AggType::Quantile) {
+                    self.agg_types.push(AggType::Quantile);
+                }
+                for &q in quantiles {
+                    if !self.quantiles.contains(&q) { self.quantiles.push(q); }
+                }
+            }
+            SketchAggOp::ExactMinMax { .. } => {
+                if !self.agg_types.contains(&AggType::Quantile) {
+                    self.agg_types.push(AggType::Quantile);
+                }
+            }
+            SketchAggOp::Exact(_) => { self.exact_required = true; }
+            SketchAggOp::Hydra { inner, .. } => self.collect_op(inner),
+        }
+    }
+
+    fn build(self) -> ParsedQuery {
+        let metric_name = self.metric_name.unwrap_or_default();
+        let mut qs = self.quantiles;
+        qs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        qs.dedup();
+        let hint = debs_hint(
+            &metric_name,
+            &self.agg_types,
+            &qs,
+            self.exact_required,
+            self.topk,
+        );
+        ParsedQuery {
+            metric_name,
+            aggregations:    self.agg_types,
+            group_by_labels: self.group_by_labels,
+            label_filters:   self.label_filters,
+            time_window:     self.time_window.unwrap_or(Duration::from_secs(300)),
+            exact_required:  self.exact_required,
+            quantiles:       qs,
+            hint,
+        }
+    }
+}
+
+fn collect_filters_from_scalar(
+    pred: &crate::algebra::expr::ScalarExpr,
+    out:  &mut HashMap<String, String>,
+) {
+    use crate::algebra::expr::{BinaryOpKind, LiteralValue, ScalarExpr};
+    match pred {
+        ScalarExpr::BinaryOp { op: BinaryOpKind::Eq, lhs, rhs } => {
+            if let (ScalarExpr::Column(col), ScalarExpr::Literal(LiteralValue::Str(v))) =
+                (lhs.as_ref(), rhs.as_ref())
+            {
+                out.insert(col.clone(), v.clone());
+            }
+        }
+        ScalarExpr::BinaryOp { op: BinaryOpKind::And, lhs, rhs } => {
+            collect_filters_from_scalar(lhs, out);
+            collect_filters_from_scalar(rhs, out);
+        }
+        _ => {}
+    }
 }
 
 // ── DEBS hint classifier (shared by both parsers via to_parsed_query) ─────────
@@ -204,12 +418,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_sketch_returns_expr() {
-        let expr = parse_query_sketch(
+    fn parse_query_expr_returns_expr() {
+        let pq = parse_query(
             "topk by (symbol) (10, count_over_time(financial_last_trade_price[5m]))"
         ).unwrap();
-        // Should have been optimized — result is some SketchExpr tree.
-        // Just check it doesn't error.
-        let _ = expr.to_parsed_query();
+        // Should parse without error and extract the metric name.
+        assert_eq!(pq.metric_name, "financial_last_trade_price");
     }
 }
