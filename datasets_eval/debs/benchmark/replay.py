@@ -61,6 +61,7 @@ def _parse_chunk_filtered(chunk: pd.DataFrame) -> pd.DataFrame:
     chunk["ts_ns"] = (localized.astype("int64") // 1_000_000).astype(np.int64) * 1_000_000
     chunk["Last"] = pd.to_numeric(chunk["Last"], errors="coerce")
     chunk = chunk[chunk["ts_ns"] > 0].dropna(subset=["Last"])
+    chunk = chunk[chunk["Last"] > 0]
     if chunk.empty:
         return chunk
     ids = chunk["ID"].astype(str).str.strip()
@@ -386,6 +387,14 @@ def main() -> None:
                         break
                     except queue.Full:
                         continue
+
+                for _v, t_ns, *_rest in batch:
+                    min_event_ns = (
+                        t_ns if min_event_ns is None else min(min_event_ns, t_ns)
+                    )
+                    max_event_ns = (
+                        t_ns if max_event_ns is None else max(max_event_ns, t_ns)
+                    )
     finally:
         send_queue.put(None)
         sender_thread.join()
@@ -415,6 +424,11 @@ def main() -> None:
         export_count,
     )
 
+    event_span_s = (
+        (max_event_ns - min_event_ns) / 1e9
+        if min_event_ns is not None and max_event_ns is not None
+        else 0.0
+    )
     print(
         "replay done",
         f"total_points={total_events}",
@@ -422,8 +436,17 @@ def main() -> None:
         f"send_times={send_times_path}",
         f"elapsed_s={elapsed_total:.2f}",
         f"points_per_s={overall_rate:.0f}",
+        f"event_time_span_s={event_span_s:.6f}",
         flush=True,
     )
+    if args.max_event_minutes > 0 and event_span_s < 10.0 and total_events > 0:
+        print(
+            "replay note: event_time_span_s is tiny vs --max-event-minutes — "
+            "in this CSV slice, almost all points share the same event timestamp "
+            "(or the next ticks are after the cutoff window). "
+            "1:1 paced replay wall time ≈ span, not the full minute budget.",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

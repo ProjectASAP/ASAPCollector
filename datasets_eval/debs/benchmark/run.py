@@ -132,12 +132,16 @@ def sketch_type_for_plan(query: str, sketch: str | None) -> str | None:
     return None
 
 
-def build_plan_body(metric: str, query: str, sketch: str | None) -> dict[str, Any]:
+def build_plan_body(
+    metric: str,
+    query: str,
+    sketch: str | None,
+    bench_mode: str = "sketch-finance",
+) -> dict[str, Any]:
     body: dict[str, Any] = {
         "metric_name": metric,
         "aggregations": plan_aggregations(query),
         "time_window": time_window_for_query(query),
-        "latency_sla": BENCH_LATENCY_SLA_FOR_BATCH_MODE,
         "group_by_labels": group_by_labels_for_plan(query),
         "accuracy_sla": 0.01,
         "workload": {
@@ -147,6 +151,8 @@ def build_plan_body(metric: str, query: str, sketch: str | None) -> dict[str, An
             "data_distribution": "zipf",
         },
     }
+    if bench_mode != "sketch-finance":
+        body["latency_sla"] = BENCH_LATENCY_SLA_FOR_BATCH_MODE
     st = sketch_type_for_plan(query, sketch)
     if st is not None:
         body["sketch_type"] = st
@@ -589,7 +595,7 @@ def main() -> None:
     p_test.add_argument("--day", default=os.environ.get("DAY", "08-11-21"))
     p_test.add_argument("--days", default=os.environ.get("DAYS", ""), help="Comma-separated days; defaults to --day.")
     p_test.add_argument("--mode", default=os.environ.get("MODE", "sketch-finance"))
-    p_test.add_argument("--speed", type=float, default=float(os.environ.get("SPEED", "100")))
+    p_test.add_argument("--speed", type=float, default=float(os.environ.get("SPEED", "1")))
     p_test.add_argument("--batch-size", type=int, default=int(os.environ.get("BATCH_SIZE", "5000")))
     p_test.add_argument("--accuracy-minutes", type=int, default=0,
                         help="Minutes of event time to replay (0 = full day).")
