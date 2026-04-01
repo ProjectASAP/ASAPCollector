@@ -50,8 +50,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
-
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/pdatatest => ../../pkg/pdatatest
 
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
