@@ -247,33 +247,6 @@ pub struct SketchParams {
     pub quantiles: Vec<f64>,
 }
 
-/// Per-stage resource caps used by the sketch allocator.
-///
-/// `None` on any field means "no limit" (the allocator will not demote for
-/// that resource).  The default is all-None (unlimited).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct StageResourceBudgets {
-    /// Maximum memory (bytes) for sketch state at the Agent collector.
-    pub agent_memory_bytes: Option<u64>,
-    /// Maximum CPU overhead (µs/sample) at the Agent collector.
-    pub agent_cpu_micros_per_sample: Option<f64>,
-    /// Maximum memory (bytes) for sketch state at the Backend collector.
-    pub backend_memory_bytes: Option<u64>,
-    /// Maximum memory (bytes) at the Precompute engine.
-    pub precompute_memory_bytes: Option<u64>,
-}
-
-impl StageResourceBudgets {
-    /// Derive budgets from [`WorkloadCharacteristics`]: agent memory cap comes
-    /// from `memory_budget_bytes`; the rest default to unlimited.
-    pub fn from_workload_chars(wc: &WorkloadCharacteristics) -> Self {
-        Self {
-            agent_memory_bytes: wc.memory_budget_bytes,
-            ..Default::default()
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct AgentCollectorConfig {
     pub output_mode: OutputMode,
