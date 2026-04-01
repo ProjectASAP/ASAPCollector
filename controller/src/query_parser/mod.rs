@@ -39,6 +39,7 @@ pub mod sketch_rules;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::algebra::expr::QueryExpr;
 use crate::types::AggType;
 pub use sketch_algebra::SketchExpr;
 
@@ -92,6 +93,22 @@ pub enum QueryHint {
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
+
+/// Parse a raw query string (PromQL or SQL) into the general [`QueryExpr`] IR.
+///
+/// Unlike [`parse_query_sketch`], this path emits `QueryExpr` *directly*
+/// from the AST — preserving HistogramQuantile, PromQLSubquery,
+/// vector-binary-op matching, Sort+Limit, Join, and SetOp without any
+/// lossy round-trip through [`SketchExpr`].
+pub fn parse_query_expr(query: &str) -> anyhow::Result<QueryExpr> {
+    let q = query.trim();
+    let upper = q.to_ascii_uppercase();
+    if upper.starts_with("SELECT") || upper.starts_with("WITH") {
+        sql::parse_sql_expr(q)
+    } else {
+        promql::parse_promql_expr(q)
+    }
+}
 
 /// Parse a raw query string (PromQL or SQL) into the full [`SketchExpr`] IR.
 ///

@@ -21,7 +21,7 @@ use axum::{
 use serde_json::json;
 use tracing::{info, warn};
 
-use algebra::{QueryExpr, QueryOptimizer};
+use algebra::{QueryExpr, QueryOptimizer, SketchAllocator};
 use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
 use config::generate_backend_config_staged;
@@ -30,7 +30,7 @@ use opamp::{AgentRole, OpampServer, RemoteConfig};
 use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
 use planner::online_cost_model;
 use planner::stage_split::split_expr_by_stage;
-use query_parser::parse_query_sketch;
+use query_parser::{parse_query_expr, parse_query_sketch};
 use replan::Replanner;
 use store::{PlanStore, WorkloadStore};
 use types::StageResourceBudgets;
@@ -249,6 +249,8 @@ async fn handle_plan(
 
     plan.precompute = build_precompute_jobs(&workload, &plan, "backend:4317");
     st.store.set(&workload.metric_name, plan.clone());
+    // Persist workload so the replanner can re-run plan() without the original spec.
+    let wc_for_algebra = wc.clone();
     st.workload_store.set(&workload.metric_name, workload.clone(), wc);
 
     // ── Push agent config to agent-role collectors ────────────────────────────
@@ -280,6 +282,23 @@ async fn handle_plan(
         st.replanner.register_agent(&agent_id, &workload.metric_name).await;
     }
 
+    // ── Algebra pipeline: parse → optimise → allocate ─────────────────────────
+    let raw_bps = plan.transmission_cost_summary.raw_bytes_per_sec;
+    let plan_summary = query_string.as_deref().and_then(|qs| {
+        match parse_query_expr(qs) {
+            Err(e) => {
+                warn!(query = qs, error = %e, "parse_query_expr failed; skipping plan_summary");
+                None
+            }
+            Ok(qe) => {
+                let (opt_qe, _iters) = QueryOptimizer::new(raw_bps).optimize(qe);
+                let budgets = StageResourceBudgets::from_workload_chars(&wc_for_algebra);
+                let plan_node = SketchAllocator::new(budgets, raw_bps).allocate(opt_qe);
+                Some(plan_node.summarise(raw_bps))
+            }
+        }
+    });
+
     let agents = st.opamp.connected_agents().await;
     let cost = &plan.transmission_cost_summary;
     (StatusCode::OK, Json(json!({
@@ -301,6 +320,7 @@ async fn handle_plan(
             "estimated_fill_rate":                  cost.estimated_fill_rate,
             "flush_rate_hz":                        cost.flush_rate_hz,
         },
+        "plan_summary": plan_summary,
     }))).into_response()
 }
 
