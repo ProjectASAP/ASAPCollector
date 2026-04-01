@@ -1,3 +1,4 @@
+mod algebra;
 mod analyzer;
 mod config;
 mod monitor;
