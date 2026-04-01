@@ -15,17 +15,52 @@ use crate::types::{
     SketchParams, SketchType,
 };
 
-// ── AggType → SketchType (high-level query mapping) ──────────────────────────
+// ── AggType → candidate SketchTypes ──────────────────────────────────────────
 
-/// Pick the primary sketch family from a list of aggregation types.
+/// Candidate sketch families per aggregation type.
 ///
+/// Each aggregation type has multiple viable sketch implementations.
+/// The first entry is the default; the cost-model planner scores all
+/// candidates and picks the cheapest that meets the accuracy SLA.
+///
+/// | AggType     | Candidates (default first)  |
+/// |-------------|---------------------------- |
+/// | Quantile    | DDSketch, KLL               |
+/// | Cardinality | HLL                         |
+/// | Frequency   | CountSketch, CountMinSketch  |
+pub fn candidates_for_agg(agg: &AggType) -> &'static [SketchType] {
+    match agg {
+        AggType::Quantile    => &[SketchType::DDSketch, SketchType::KLL],
+        AggType::Cardinality => &[SketchType::HLL],
+        AggType::Frequency   => &[SketchType::CountSketch, SketchType::CountMinSketch],
+    }
+}
+
+/// All candidate sketch types for a workload (deduped, stable order).
+pub fn candidates_for_workload(aggs: &[AggType]) -> Vec<SketchType> {
+    let mut out = Vec::new();
+    for agg in aggs {
+        for st in candidates_for_agg(agg) {
+            if !out.contains(st) {
+                out.push(st.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Pick the default sketch family from a list of aggregation types.
+///
+/// Returns the first candidate for the highest-priority aggregation.
 /// Priority: Quantile → Cardinality → Frequency.  Falls back to DDSketch.
+///
+/// For cost-optimised selection, use [`candidates_for_workload`] and score
+/// each candidate via the cost model.
 pub fn sketch_type_for_agg(aggs: &[AggType]) -> SketchType {
     for agg in aggs {
-        match agg {
-            AggType::Quantile    => return SketchType::DDSketch,
-            AggType::Cardinality => return SketchType::HLL,
-            AggType::Frequency   => return SketchType::CountSketch,
+        let candidates = candidates_for_agg(agg);
+        if !candidates.is_empty() {
+            return candidates[0].clone();
         }
     }
     SketchType::DDSketch
@@ -237,5 +272,25 @@ mod tests {
         let d = SketchDefaults::default();
         let p = build_sketch_params(&d, &SketchType::DDSketch, 0.01, &[0.1, 0.9]);
         assert_eq!(p.quantiles(), &[0.1, 0.9]);
+    }
+
+    #[test]
+    fn quantile_candidates_include_ddsketch_and_kll() {
+        let c = candidates_for_agg(&AggType::Quantile);
+        assert!(c.contains(&SketchType::DDSketch));
+        assert!(c.contains(&SketchType::KLL));
+    }
+
+    #[test]
+    fn frequency_candidates_include_cs_and_cms() {
+        let c = candidates_for_agg(&AggType::Frequency);
+        assert!(c.contains(&SketchType::CountSketch));
+        assert!(c.contains(&SketchType::CountMinSketch));
+    }
+
+    #[test]
+    fn candidates_for_workload_dedupes() {
+        let c = candidates_for_workload(&[AggType::Quantile, AggType::Quantile]);
+        assert_eq!(c.iter().filter(|s| **s == SketchType::DDSketch).count(), 1);
     }
 }

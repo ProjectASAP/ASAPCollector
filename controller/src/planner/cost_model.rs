@@ -234,7 +234,7 @@ impl CostModelPlanner {
             return plan;
         }
 
-        let candidates = candidates_for_workload(w);
+        let candidates = crate::algebra::directory::candidates_for_workload(&w.aggregations);
 
         // Start with the rule-based plan as the baseline.
         let baseline = self.inner.plan(w);
@@ -300,25 +300,7 @@ fn apply_delta_decision_with(
     plan.transmission_cost_summary = summary;
 }
 
-/// Returns all sketch types that are semantically valid for the workload's
-/// aggregation types.
-fn candidates_for_workload(w: &QueryWorkload) -> Vec<SketchType> {
-    let mut out = Vec::new();
-    for agg in &w.aggregations {
-        match agg {
-            AggType::Quantile => {
-                out.push(SketchType::DDSketch);
-                out.push(SketchType::KLL);
-            }
-            AggType::Cardinality => out.push(SketchType::HLL),
-            AggType::Frequency => {
-                out.push(SketchType::CountSketch);
-                out.push(SketchType::CountMinSketch);
-            }
-        }
-    }
-    out
-}
+// candidates_for_workload delegated to algebra::directory.
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
