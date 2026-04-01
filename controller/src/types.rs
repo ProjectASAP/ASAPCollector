@@ -181,13 +181,15 @@ pub enum SketchType {
 }
 
 impl std::fmt::Display for SketchType {
+    /// Returns the OTel Collector component type string (must match the Go
+    /// factory's `component.MustNewType(…)` in each processor).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SketchType::DDSketch => write!(f, "ddsketch"),
-            SketchType::KLL => write!(f, "kll"),
-            SketchType::HLL => write!(f, "hll"),
+            SketchType::KLL => write!(f, "KLL"),
+            SketchType::HLL => write!(f, "HLL"),
             SketchType::CountSketch => write!(f, "countsketch"),
-            SketchType::CountMinSketch => write!(f, "countminsketch"),
+            SketchType::CountMinSketch => write!(f, "countmin"),
         }
     }
 }

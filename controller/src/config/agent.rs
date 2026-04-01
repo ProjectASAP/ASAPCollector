@@ -6,20 +6,6 @@ use std::collections::HashMap;
 use crate::analyzer::format_duration;
 use crate::types::*;
 
-/// Processor map key and pipeline entry must match the OpenTelemetry **component type**
-/// string from each factory (`MustNewType` in
-/// `opentelemetry-collector-contrib-patch/processor/*/factory.go`). This is not always
-/// the same as `SketchType`'s `Display` (e.g. HLL vs `hll`, KLL vs `kll`).
-fn collector_processor_component_id(st: &SketchType) -> &'static str {
-    match st {
-        SketchType::DDSketch => "ddsketch",
-        SketchType::KLL => "KLL",
-        SketchType::HLL => "HLL",
-        SketchType::CountSketch => "countsketch",
-        SketchType::CountMinSketch => "countmin",
-    }
-}
-
 // ── YAML structural types ─────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -56,7 +42,7 @@ pub fn generate_agent_config(
     cfg: &AgentCollectorConfig,
     _opamp_endpoint: &str,
 ) -> anyhow::Result<String> {
-    let processor_key = collector_processor_component_id(&cfg.sketch_type).to_string();
+    let processor_key = cfg.sketch_type.to_string();
     let processor_val = build_processor_block(cfg);
 
     // Standard OTLP receiver (gRPC + HTTP).

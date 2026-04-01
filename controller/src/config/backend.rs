@@ -80,7 +80,7 @@ mod tests {
             group_by: vec![],
         };
         let yaml = generate_backend_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
-        assert!(yaml.contains("hll_merge"), "{yaml}");
+        assert!(yaml.contains("HLL_merge"), "{yaml}");
     }
 
     #[test]
@@ -102,7 +102,7 @@ mod tests {
         assert!(yaml.contains("dedup:"), "YAML should contain dedup processor\n{yaml}");
         // dedup must appear before merge in the pipeline list
         let dedup_pos = yaml.find("- dedup").expect("missing dedup in pipeline");
-        let merge_pos = yaml.find("- hll_merge").expect("missing merge in pipeline");
+        let merge_pos = yaml.find("- HLL_merge").expect("missing merge in pipeline");
         assert!(dedup_pos < merge_pos, "dedup must precede merge\n{yaml}");
     }
 
