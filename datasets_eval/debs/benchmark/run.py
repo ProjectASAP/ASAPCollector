@@ -133,12 +133,16 @@ def sketch_type_for_plan(query: str, sketch: str | None) -> str | None:
     return None
 
 
-def build_plan_body(metric: str, query: str, sketch: str | None) -> dict[str, Any]:
+def build_plan_body(
+    metric: str,
+    query: str,
+    sketch: str | None,
+    bench_mode: str = "sketch-finance",
+) -> dict[str, Any]:
     body: dict[str, Any] = {
         "metric_name": metric,
         "aggregations": plan_aggregations(query),
         "time_window": time_window_for_query(query),
-        "latency_sla": BENCH_LATENCY_SLA_FOR_BATCH_MODE,
         "group_by_labels": group_by_labels_for_plan(query),
         "accuracy_sla": 0.01,
         "workload": {
@@ -148,6 +152,8 @@ def build_plan_body(metric: str, query: str, sketch: str | None) -> dict[str, An
             "data_distribution": "zipf",
         },
     }
+    if bench_mode != "sketch-finance":
+        body["latency_sla"] = BENCH_LATENCY_SLA_FOR_BATCH_MODE
     st = sketch_type_for_plan(query, sketch)
     if st is not None:
         body["sketch_type"] = st
