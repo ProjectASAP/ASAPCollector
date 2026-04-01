@@ -607,6 +607,399 @@ fn apply_filters(input: SketchExpr, pred: Vec<Predicate>) -> SketchExpr {
     }
 }
 
+// ── Direct QueryExpr emission ─────────────────────────────────────────────────
+//
+// `parse_sql_expr` walks the same SQL AST but emits [`QueryExpr`] nodes
+// natively, preserving semantic nodes that SketchExpr flattens:
+//
+// | SQL construct   | SketchExpr (old)       | QueryExpr (new)                 |
+// |-----------------|------------------------|---------------------------------|
+// | ORDER BY + LIMIT| TopK node              | Sort + Limit (→ TopK via R5)    |
+// | JOIN … ON       | JoinSketch             | Join { kind, pred }             |
+// | UNION ALL       | Merge                  | SetOp { Union, all: true }      |
+// | GROUP BY + aggs | Agg + Partition + Merge| Aggregate { keys, aggs }        |
+// | WHERE           | Filter (Predicate list)| Filter { ScalarExpr tree }      |
+
+use crate::algebra::expr::{
+    AggFunc, AggItem as AlgAggItem, BinaryOpKind, JoinKind, LiteralValue, ProjectItem,
+    QueryExpr, ScalarExpr, SetOpKind, SortKey,
+};
+use crate::query_parser::sketch_algebra::ColumnRef as SColumnRef;
+
+/// Parse a SQL SELECT statement directly into a [`QueryExpr`] tree.
+///
+/// Unlike `parse_sql` (which emits `SketchExpr`), this preserves `Sort`,
+/// `Limit`, `Join`, and `SetOp` nodes natively so the [`crate::algebra`]
+/// optimizer and allocator can reason about them.
+pub fn parse_sql_expr(sql: &str) -> anyhow::Result<QueryExpr> {
+    let dialect = GenericDialect {};
+    let mut stmts = sqlparser::parser::Parser::parse_sql(&dialect, sql)
+        .with_context(|| format!("SQL parse error: {sql:?}"))?;
+    let stmt = stmts.pop().ok_or_else(|| anyhow!("no SQL statement found"))?;
+    let query = match stmt {
+        Statement::Query(q) => *q,
+        other => return Err(anyhow!("expected SELECT, got {:?}", other)),
+    };
+    extract_query_expr(&query)
+}
+
+fn extract_query_expr(query: &Query) -> anyhow::Result<QueryExpr> {
+    let order_by: Vec<OrderByExpr> = match &query.order_by {
+        Some(OrderBy { kind: OrderByKind::Expressions(exprs), .. }) => exprs.clone(),
+        _ => vec![],
+    };
+    let (limit_n, offset_n) = match &query.limit_clause {
+        Some(LimitClause::LimitOffset { limit: Some(e), offset, .. }) => {
+            (Some(e.clone()), offset.as_ref().and_then(|o| expr_to_u64(&o.value)))
+        }
+        Some(LimitClause::OffsetCommaLimit { limit: e, offset, .. }) => {
+            (Some(e.clone()), Some(expr_to_u64(offset).unwrap_or(0)))
+        }
+        _ => (None, None),
+    };
+    let limit_val = limit_n.as_ref().and_then(|e| expr_to_u64(e));
+    let offset_val = offset_n.unwrap_or(0);
+
+    let body = extract_set_expr_qe(query.body.as_ref(), &order_by, limit_val, offset_val)?;
+    Ok(body)
+}
+
+fn extract_set_expr_qe(
+    set_expr:   &SetExpr,
+    order_by:   &[OrderByExpr],
+    limit_n:    Option<u64>,
+    offset_n:   u64,
+) -> anyhow::Result<QueryExpr> {
+    match set_expr {
+        SetExpr::Select(sel) => extract_select_qe(sel, order_by, limit_n, offset_n),
+        SetExpr::Query(inner) => extract_query_expr(inner),
+
+        // UNION / INTERSECT / EXCEPT
+        SetExpr::SetOperation { left, right, op, set_quantifier } => {
+            use sqlparser::ast::{SetOperator, SetQuantifier};
+            let left_qe  = extract_set_expr_qe(left,  &[], None, 0)?;
+            let right_qe = extract_set_expr_qe(right, &[], None, 0)?;
+            let kind = match op {
+                SetOperator::Union     => SetOpKind::Union,
+                SetOperator::Intersect => SetOpKind::Intersect,
+                SetOperator::Except | SetOperator::Minus => SetOpKind::Except,
+            };
+            let all = matches!(set_quantifier, SetQuantifier::All | SetQuantifier::ByName);
+            Ok(QueryExpr::SetOp {
+                kind,
+                all,
+                left:  Box::new(left_qe),
+                right: Box::new(right_qe),
+            })
+        }
+        other => Err(anyhow!("unsupported query body: {:?}", other)),
+    }
+}
+
+fn extract_select_qe(
+    sel:      &Select,
+    order_by: &[OrderByExpr],
+    limit_n:  Option<u64>,
+    offset_n: u64,
+) -> anyhow::Result<QueryExpr> {
+    let metric_name  = extract_table_name(sel)?;
+    let where_scalar = sel.selection.as_ref().map(sql_expr_to_scalar);
+    let group_keys   = extract_group_by(&sel.group_by);
+    let having_scalar= sel.having.as_ref().map(sql_expr_to_scalar);
+    let agg_items    = collect_agg_items_qe(&sel.projection);
+    let join_qe      = extract_join_qe(sel);
+
+    let source = QueryExpr::Source(crate::query_parser::sketch_algebra::SourceSpec {
+        name: metric_name.clone(),
+    });
+
+    // WHERE → Filter
+    let after_where = match where_scalar {
+        Some(pred) => QueryExpr::Filter { pred, input: Box::new(source) },
+        None       => source,
+    };
+
+    // JOIN
+    let after_join = if let Some((inner_table, join_kind, join_pred)) = join_qe {
+        let inner_source = QueryExpr::Source(
+            crate::query_parser::sketch_algebra::SourceSpec { name: inner_table }
+        );
+        QueryExpr::Join {
+            kind:  join_kind,
+            pred:  join_pred,
+            left:  Box::new(after_where),
+            right: Box::new(inner_source),
+        }
+    } else {
+        after_where
+    };
+
+    // GROUP BY + aggs OR bare projection
+    let after_agg = if agg_items.is_empty() {
+        // No aggregation — bare projection with possible DISTINCT.
+        let cols = collect_project_items(&sel.projection);
+        QueryExpr::Project { cols, input: Box::new(after_join) }
+    } else {
+        let having = having_scalar;
+        QueryExpr::Aggregate {
+            keys:   group_keys,
+            aggs:   agg_items,
+            having,
+            input:  Box::new(after_join),
+        }
+    };
+
+    // ORDER BY → Sort
+    let after_sort = if order_by.is_empty() {
+        after_agg
+    } else {
+        let keys: Vec<SortKey> = order_by.iter().map(|o| SortKey {
+            col:         expr_to_col_name(&o.expr).unwrap_or_else(|| "?".into()),
+            desc:        matches!(o.options.asc, Some(false) | None),
+            nulls_first: None,
+        }).collect();
+        QueryExpr::Sort { keys, input: Box::new(after_agg) }
+    };
+
+    // LIMIT / OFFSET
+    let result = match limit_n {
+        Some(n) => QueryExpr::Limit { n, offset: offset_n, input: Box::new(after_sort) },
+        None    => after_sort,
+    };
+
+    Ok(result)
+}
+
+// ── QueryExpr agg item collection ────────────────────────────────────────────
+
+fn collect_agg_items_qe(projection: &[SelectItem]) -> Vec<AlgAggItem> {
+    let mut out = Vec::new();
+    for item in projection {
+        let (expr, alias) = match item {
+            SelectItem::UnnamedExpr(e)               => (e, None),
+            SelectItem::ExprWithAlias { expr, alias } => (expr, Some(alias.value.clone())),
+            _                                         => continue,
+        };
+        collect_agg_from_expr_qe(expr, alias, &mut out);
+    }
+    out
+}
+
+fn collect_agg_from_expr_qe(expr: &Expr, alias: Option<String>, out: &mut Vec<AlgAggItem>) {
+    match expr {
+        Expr::Function(f) => {
+            let fn_name = f.name.0.last()
+                .and_then(|i| i.as_ident())
+                .map(|id| id.value.to_uppercase())
+                .unwrap_or_default();
+
+            let (distinct, args) = match &f.args {
+                FunctionArguments::List(FunctionArgumentList { duplicate_treatment, args, .. }) => {
+                    let is_distinct = matches!(duplicate_treatment, Some(DuplicateTreatment::Distinct));
+                    (is_distinct, args.as_slice())
+                }
+                _ => (false, &[][..]),
+            };
+
+            let col = first_col_from_args(args);
+            let agg_col = match &col {
+                SColumnRef::Wildcard    => SColumnRef::Wildcard,
+                SColumnRef::Named(n)    => SColumnRef::Named(n.clone()),
+                SColumnRef::SampleValue => SColumnRef::SampleValue,
+            };
+
+            let func = match fn_name.as_str() {
+                "COUNT" if distinct => AggFunc::CountDistinct,
+                "COUNT"             => AggFunc::Count,
+                "SUM"               => AggFunc::Sum,
+                "AVG"               => AggFunc::Avg,
+                "MIN"               => AggFunc::Min,
+                "MAX"               => AggFunc::Max,
+                _                   => return,
+            };
+
+            out.push(AlgAggItem {
+                alias:    alias.unwrap_or_else(|| fn_name.to_lowercase()),
+                func,
+                col:      agg_col,
+                distinct,
+            });
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_agg_from_expr_qe(left,  None, out);
+            collect_agg_from_expr_qe(right, None, out);
+        }
+        Expr::Nested(inner) => collect_agg_from_expr_qe(inner, alias, out),
+        _ => {}
+    }
+}
+
+fn collect_project_items(projection: &[SelectItem]) -> Vec<ProjectItem> {
+    projection.iter().filter_map(|item| match item {
+        SelectItem::UnnamedExpr(e) => Some(ProjectItem {
+            alias: None,
+            expr:  sql_expr_to_scalar(e),
+        }),
+        SelectItem::ExprWithAlias { expr, alias } => Some(ProjectItem {
+            alias: Some(alias.value.clone()),
+            expr:  sql_expr_to_scalar(expr),
+        }),
+        SelectItem::Wildcard(_) => Some(ProjectItem {
+            alias: None,
+            expr:  ScalarExpr::Column("*".into()),
+        }),
+        _ => None,
+    }).collect()
+}
+
+// ── SQL Expr → ScalarExpr ─────────────────────────────────────────────────────
+
+fn sql_expr_to_scalar(expr: &Expr) -> ScalarExpr {
+    match expr {
+        Expr::Identifier(id) => ScalarExpr::Column(id.value.clone()),
+        Expr::CompoundIdentifier(parts) => {
+            ScalarExpr::Column(parts.iter().map(|i| i.value.as_str()).collect::<Vec<_>>().join("."))
+        }
+        Expr::Value(vws) => sql_value_to_scalar(&vws.value),
+        Expr::BinaryOp { left, op, right } => {
+            let lhs = sql_expr_to_scalar(left);
+            let rhs = sql_expr_to_scalar(right);
+            let bop = sql_binop_to_algebra(op);
+            ScalarExpr::BinaryOp { op: bop, lhs: Box::new(lhs), rhs: Box::new(rhs) }
+        }
+        Expr::IsNull(inner) => ScalarExpr::IsNull {
+            expr:    Box::new(sql_expr_to_scalar(inner)),
+            negated: false,
+        },
+        Expr::IsNotNull(inner) => ScalarExpr::IsNull {
+            expr:    Box::new(sql_expr_to_scalar(inner)),
+            negated: true,
+        },
+        Expr::Between { expr, negated, low, high } => ScalarExpr::Between {
+            expr:    Box::new(sql_expr_to_scalar(expr)),
+            low:     Box::new(sql_expr_to_scalar(low)),
+            high:    Box::new(sql_expr_to_scalar(high)),
+            negated: *negated,
+        },
+        Expr::InList { expr, list, negated } => ScalarExpr::InList {
+            expr:    Box::new(sql_expr_to_scalar(expr)),
+            list:    list.iter().map(sql_expr_to_scalar).collect(),
+            negated: *negated,
+        },
+        Expr::Like { expr, pattern, negated, .. } => {
+            let op = if *negated { BinaryOpKind::NotLike } else { BinaryOpKind::Like };
+            ScalarExpr::BinaryOp {
+                op,
+                lhs: Box::new(sql_expr_to_scalar(expr)),
+                rhs: Box::new(sql_expr_to_scalar(pattern)),
+            }
+        }
+        Expr::Nested(inner) => sql_expr_to_scalar(inner),
+        Expr::Function(f) => {
+            let name = f.name.0.last()
+                .and_then(|i| i.as_ident())
+                .map(|id| id.value.clone())
+                .unwrap_or_default();
+            ScalarExpr::FunctionCall { name, args: vec![] }
+        }
+        _ => ScalarExpr::Column("?".into()), // unknown expr → opaque column ref
+    }
+}
+
+fn sql_value_to_scalar(v: &Value) -> ScalarExpr {
+    match v {
+        Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) =>
+            ScalarExpr::Literal(LiteralValue::Str(s.clone())),
+        Value::Number(n, _) => {
+            if let Ok(i) = n.parse::<i64>() {
+                ScalarExpr::Literal(LiteralValue::Int(i))
+            } else if let Ok(f) = n.parse::<f64>() {
+                ScalarExpr::Literal(LiteralValue::Float(f))
+            } else {
+                ScalarExpr::Literal(LiteralValue::Null)
+            }
+        }
+        Value::Boolean(b) => ScalarExpr::Literal(LiteralValue::Bool(*b)),
+        Value::Null        => ScalarExpr::Literal(LiteralValue::Null),
+        _                  => ScalarExpr::Literal(LiteralValue::Null),
+    }
+}
+
+fn sql_binop_to_algebra(op: &BinaryOperator) -> BinaryOpKind {
+    match op {
+        BinaryOperator::Plus      => BinaryOpKind::Add,
+        BinaryOperator::Minus     => BinaryOpKind::Sub,
+        BinaryOperator::Multiply  => BinaryOpKind::Mul,
+        BinaryOperator::Divide    => BinaryOpKind::Div,
+        BinaryOperator::Modulo    => BinaryOpKind::Mod,
+        BinaryOperator::Eq        => BinaryOpKind::Eq,
+        BinaryOperator::NotEq     => BinaryOpKind::Ne,
+        BinaryOperator::Lt        => BinaryOpKind::Lt,
+        BinaryOperator::LtEq      => BinaryOpKind::Le,
+        BinaryOperator::Gt        => BinaryOpKind::Gt,
+        BinaryOperator::GtEq      => BinaryOpKind::Ge,
+        BinaryOperator::And       => BinaryOpKind::And,
+        BinaryOperator::Or        => BinaryOpKind::Or,
+        BinaryOperator::BitwiseAnd => BinaryOpKind::BitAnd,
+        BinaryOperator::BitwiseOr  => BinaryOpKind::BitOr,
+        BinaryOperator::BitwiseXor => BinaryOpKind::BitXor,
+        BinaryOperator::StringConcat => BinaryOpKind::Concat,
+        _                          => BinaryOpKind::Eq, // unknown → eq
+    }
+}
+
+// ── JOIN → QueryExpr::Join ────────────────────────────────────────────────────
+
+fn extract_join_qe(sel: &Select) -> Option<(String, JoinKind, Option<ScalarExpr>)> {
+    let table_with_joins = sel.from.first()?;
+    let join = table_with_joins.joins.first()?;
+    let inner_table = match &join.relation {
+        TableFactor::Table { name, .. } => object_name_str(name),
+        _ => return None,
+    };
+    let (kind, pred) = match &join.join_operator {
+        JoinOperator::Inner(c) =>
+            (JoinKind::Inner, join_constraint_to_scalar(c)),
+        JoinOperator::LeftOuter(c) =>
+            (JoinKind::LeftOuter, join_constraint_to_scalar(c)),
+        JoinOperator::RightOuter(c) =>
+            (JoinKind::RightOuter, join_constraint_to_scalar(c)),
+        JoinOperator::FullOuter(c) =>
+            (JoinKind::FullOuter, join_constraint_to_scalar(c)),
+        JoinOperator::CrossJoin(_) =>
+            (JoinKind::Cross, None),
+        _ => return None,
+    };
+    Some((inner_table, kind, pred))
+}
+
+fn join_constraint_to_scalar(c: &JoinConstraint) -> Option<ScalarExpr> {
+    match c {
+        JoinConstraint::On(e) => Some(sql_expr_to_scalar(e)),
+        _ => None,
+    }
+}
+
+// ── Misc helpers ──────────────────────────────────────────────────────────────
+
+fn expr_to_u64(expr: &Expr) -> Option<u64> {
+    match expr {
+        Expr::Value(vws) => match &vws.value {
+            Value::Number(n, _) => n.parse::<u64>().ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn expr_to_col_name(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Identifier(id)            => Some(id.value.clone()),
+        Expr::CompoundIdentifier(parts) => parts.last().map(|i| i.value.clone()),
+        _ => None,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
