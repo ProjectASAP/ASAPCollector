@@ -673,7 +673,7 @@ fn estimated_sketch_memory(op: &SketchAggOp) -> f64 {
         SketchAggOp::DDSketch { .. }              => 4_096.0,
         SketchAggOp::HLL { registers }            => (1u64 << registers) as f64,
         SketchAggOp::CountMin { width, depth }    => (*width as f64) * (*depth as f64) * 8.0,
-        SketchAggOp::CountSketch { k }            => (*k as f64) * 64.0,
+        SketchAggOp::CountSketch { width, depth }  => (*width as f64) * (*depth as f64) * 8.0,
         SketchAggOp::ExactMinMax { .. }           => 16.0,
         SketchAggOp::Hydra { inner, partition_keys } => {
             // Hydra memory = inner sketch size × expected number of key tuples.

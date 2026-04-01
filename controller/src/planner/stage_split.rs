@@ -265,8 +265,8 @@ fn assign_agg_func(func: &AggFunc, plan: &mut StagedPlan, budgets: &StageResourc
         AggFunc::CountDistinct => {
             assign_sketch_agg(&SketchAggOp::default_hll(), plan, budgets);
         }
-        AggFunc::HeavyHitters { k } => {
-            assign_sketch_agg(&SketchAggOp::CountSketch { k: *k }, plan, budgets);
+        AggFunc::HeavyHitters { .. } => {
+            assign_sketch_agg(&SketchAggOp::default_count_sketch(), plan, budgets);
         }
         // Mergeable exact → Backend.
         AggFunc::Count | AggFunc::Sum | AggFunc::Min | AggFunc::Max
@@ -742,7 +742,7 @@ mod tests {
             k:     10,
             by:    vec!["symbol".into()],
             input: Box::new(QueryExpr::SketchAgg {
-                op:    SketchAggOp::CountSketch { k: 10 },
+                op:    SketchAggOp::default_count_sketch(),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("price")),
             }),
@@ -854,7 +854,7 @@ mod tests {
             k:     10,
             by:    vec![],
             input: Box::new(QueryExpr::SketchAgg {
-                op:    SketchAggOp::CountSketch { k: 10 },
+                op:    SketchAggOp::default_count_sketch(),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("events")),
             }),

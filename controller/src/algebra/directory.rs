@@ -62,10 +62,10 @@ pub fn sketch_params_for_op(op: &SketchAggOp) -> SketchParams {
             cols: *width,
             metric_name: String::new(),
         },
-        SketchAggOp::CountSketch { .. } => {
-            let d = CountSketchDefaults::default();
-            SketchParams::CountSketch { epsilon: d.epsilon, delta: d.delta }
-        }
+        SketchAggOp::CountSketch { width, depth } => SketchParams::CountSketch {
+            epsilon: CountSketchDefaults::default().epsilon,
+            delta: CountSketchDefaults::default().delta,
+        },
         SketchAggOp::Hydra { inner, .. } => sketch_params_for_op(inner),
         SketchAggOp::ExactMinMax { .. } => SketchParams::DDSketch {
             relative_accuracy: 0.01,
@@ -91,7 +91,7 @@ pub fn estimated_sketch_memory_bytes(op: &SketchAggOp) -> u64 {
         SketchAggOp::DDSketch { .. } | SketchAggOp::ExactMinMax { .. } => 4_096,
         SketchAggOp::HLL { registers } => 1u64 << (*registers as u64),
         SketchAggOp::CountMin { width, depth } => (*width as u64) * (*depth as u64) * 8,
-        SketchAggOp::CountSketch { k } => k * 8 * 5,
+        SketchAggOp::CountSketch { width, depth } => (*width as u64) * (*depth as u64) * 8,
         SketchAggOp::Hydra { inner, partition_keys } => {
             let factor = 1u64 << partition_keys.len().min(10);
             estimated_sketch_memory_bytes(inner).saturating_mul(factor)

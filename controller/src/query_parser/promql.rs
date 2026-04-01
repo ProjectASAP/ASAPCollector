@@ -407,7 +407,7 @@ fn build_qe_sketched(
     };
     let agg = if let Some(k) = ctx.topk {
         QueryExpr::SketchAgg {
-            op:    QeSketchAggOp::CountSketch { k },
+            op:    QeSketchAggOp::default_count_sketch(),
             col:   QeColumnRef::SampleValue,
             input: Box::new(windowed),
         }
