@@ -21,13 +21,10 @@
 //! use controller::query_parser;
 //! use controller::types::StageResourceBudgets;
 //!
-//! // 1. Parse a PromQL / SQL query string into SketchExpr.
-//! let sketch_expr = query_parser::parse_query_sketch("quantile_over_time(0.99, latency[5m])")?;
+//! // 1. Parse a PromQL / SQL query string into QueryExpr.
+//! let query_expr = query_parser::parse_query_expr("quantile_over_time(0.99, latency[5m])")?;
 //!
-//! // 2. Lift into the general algebra.
-//! let query_expr = QueryExpr::from_sketch_expr(&sketch_expr);
-//!
-//! // 3. Optimise (cost-based fixed-point rewriting).
+//! // 2. Optimise (cost-based fixed-point rewriting).
 //! let (opt_expr, _iters) = QueryOptimizer::new(raw_bps).optimize(query_expr);
 //!
 //! // 4. Allocate stages.

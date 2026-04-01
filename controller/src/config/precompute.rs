@@ -21,17 +21,35 @@ pub fn should_precompute(w: &QueryWorkload) -> bool {
 
 /// Builds the list of precompute jobs for a plan. Returns an empty Vec if the
 /// workload does not meet the precompute eligibility criterion.
+///
+/// **SP-9**: when `plan.staged_plan` is `Some` and the precompute sub-plan is
+/// active, the job's `query_expr` is taken from the AST-derived PromQL
+/// serialisation ([`PrecomputeSubPlan::query_expr`]) rather than the hardcoded
+/// `quantile_over_time(0.99, …)` template.  This allows the precompute engine
+/// to evaluate the actual upper sub-tree (e.g. `topk(10, count_over_time(…))`).
+///
+/// When no `staged_plan` is present (SP-3 flat path), the legacy
+/// `build_query_expr()` template is used as the fallback.
 pub fn build_precompute_jobs(
     w: &QueryWorkload,
-    _plan: &CollectionPlan,
+    plan: &CollectionPlan,
     backend_addr: &str,
 ) -> Vec<PrecomputeJob> {
     if !should_precompute(w) {
         return vec![];
     }
     let granularity = w.repeat_every.unwrap(); // safe: should_precompute checked it
+
+    // SP-9: use the staged plan's PromQL when available and non-empty.
+    let query_expr = plan
+        .staged_plan
+        .as_ref()
+        .filter(|sp| sp.precompute.active && !sp.precompute.query_expr.is_empty())
+        .map(|sp| sp.precompute.query_expr.clone())
+        .unwrap_or_else(|| build_query_expr(w));
+
     vec![PrecomputeJob {
-        query_expr: build_query_expr(w),
+        query_expr,
         granularity,
         sketch_source: backend_addr.to_string(),
         store_path: build_store_path(w),
@@ -198,6 +216,7 @@ mod tests {
             valid_until: chrono::Utc::now(),
             delta_decision: DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 

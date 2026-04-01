@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 
 use super::expr::{QueryExpr, ScalarExpr, SetOpKind, SortKey};
-use crate::query_parser::sketch_algebra::{PartitionKeys, SketchAggOp, SourceSpec};
+use super::expr::{PartitionKeys, SketchAggOp, SourceSpec};
 
 // ── Cost model interface ──────────────────────────────────────────────────────
 
@@ -787,7 +787,7 @@ fn default_rules() -> Vec<Box<dyn RewriteRule>> {
 mod tests {
     use super::*;
     use crate::algebra::expr::{LiteralValue, ScalarExpr};
-    use crate::query_parser::sketch_algebra::{ColumnRef, PartitionKeys, SketchAggOp, SourceSpec};
+    use crate::algebra::expr::{ColumnRef, PartitionKeys, SketchAggOp, SourceSpec};
     use std::time::Duration;
 
     fn src(name: &str) -> QueryExpr {

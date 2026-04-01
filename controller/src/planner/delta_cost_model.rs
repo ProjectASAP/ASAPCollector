@@ -507,6 +507,7 @@ mod tests {
             valid_until: Utc::now(),
             delta_decision: DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 

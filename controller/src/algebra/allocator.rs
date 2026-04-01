@@ -31,7 +31,7 @@ use super::expr::QueryExpr;
 use super::plan::{
     CostEstimate, ExecutionMode, NodeAnnotation, PipelineStage, PlanNode,
 };
-use crate::query_parser::sketch_algebra::{ExactAgg, SketchAggOp};
+use super::expr::{ExactAgg, SketchAggOp};
 use crate::types::{SketchParams, SketchType, StageResourceBudgets};
 
 // ── Resource budget tracker ───────────────────────────────────────────────────
@@ -533,7 +533,7 @@ impl SketchAllocator {
     fn alloc_sketch_agg(
         &self,
         op:     SketchAggOp,
-        col:    crate::query_parser::sketch_algebra::ColumnRef,
+        col:    super::expr::ColumnRef,
         child:  PlanNode,
         budget: &mut BudgetState,
     ) -> PlanNode {
@@ -734,7 +734,7 @@ mod tests {
     use super::*;
     use crate::algebra::expr::QueryExpr;
     use crate::algebra::plan::{ExecutionMode, PipelineStage};
-    use crate::query_parser::sketch_algebra::{ColumnRef, PartitionKeys, SketchAggOp, SourceSpec};
+    use crate::algebra::expr::{ColumnRef, PartitionKeys, SketchAggOp, SourceSpec};
     use crate::types::{SketchType, StageResourceBudgets};
     use std::time::Duration;
 
