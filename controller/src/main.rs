@@ -141,12 +141,20 @@ async fn main() {
         )
     };
 
+    // ── Sketch defaults (YAML-configurable) ────────────────────────────────
+    let sketch_defaults_path = std::env::var("CONTROLLER_SKETCH_DEFAULTS")
+        .unwrap_or_else(|_| "sketch_params_default.yml".into());
+    let sketch_defaults = types::SketchDefaults::load(&sketch_defaults_path);
+    info!(path = %sketch_defaults_path, "loaded sketch defaults");
+
     // ── BaselinePlanner backed by live EMA data ─────────────────────────────
     // Runs the full cost-model optimisation once per metric on the first
     // request, then locks in that plan as the baseline.  The Replanner resets
     // and re-optimises on SLA violation or plan expiry.
     let planner = Arc::new(BaselinePlanner::new(
-        CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
+        CostModelPlanner::new()
+            .with_sketch_defaults(sketch_defaults)
+            .with_online_store(Arc::clone(&online_store)),
     ));
 
     let plan_store     = Arc::new(PlanStore::new());

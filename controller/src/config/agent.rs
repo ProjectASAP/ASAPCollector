@@ -96,58 +96,50 @@ fn build_processor_block(cfg: &AgentCollectorConfig) -> Value {
         m.insert("label_matchers".into(), seq_of_strings(&cfg.label_matchers));
     }
 
-    // Delta transmission fields (emitted for all sketch types that support it).
-    if cfg.delta_transmission {
+    // Delta transmission: only emit fields each processor's Config actually defines.
+    // KLL rejects delta_transmission at Validate(); HLL has no delta_threshold key.
+    if cfg.delta_transmission && cfg.sketch_type != SketchType::KLL {
         m.insert("delta_transmission".into(), Value::Bool(true));
-        m.insert(
-            "delta_threshold".into(),
-            Value::Number(cfg.delta_threshold.into()),
-        );
+        if matches!(
+            cfg.sketch_type,
+            SketchType::DDSketch | SketchType::CountSketch | SketchType::CountMinSketch
+        ) {
+            m.insert(
+                "delta_threshold".into(),
+                Value::Number(cfg.delta_threshold.into()),
+            );
+        }
     }
 
     // Sketch-type-specific params.
-    let p = &cfg.sketch_params;
-    match &cfg.sketch_type {
-        SketchType::DDSketch => {
-            m.insert(
-                "relative_accuracy".into(),
-                Value::Number(p.relative_accuracy.into()),
-            );
-            if !p.quantiles.is_empty() {
-                m.insert(
-                    "quantiles".into(),
-                    Value::Sequence(
-                        p.quantiles
-                            .iter()
-                            .map(|q| Value::Number((*q).into()))
-                            .collect(),
-                    ),
-                );
+    match &cfg.sketch_params {
+        SketchParams::DDSketch { relative_accuracy, quantiles } => {
+            m.insert("relative_accuracy".into(), Value::Number((*relative_accuracy).into()));
+            if !quantiles.is_empty() {
+                m.insert("quantiles".into(), Value::Sequence(
+                    quantiles.iter().map(|q| Value::Number((*q).into())).collect(),
+                ));
             }
         }
-        SketchType::KLL => {
-            m.insert("k".into(), Value::Number((p.k as u64).into()));
-            if !p.quantiles.is_empty() {
-                m.insert(
-                    "quantiles".into(),
-                    Value::Sequence(
-                        p.quantiles
-                            .iter()
-                            .map(|q| Value::Number((*q).into()))
-                            .collect(),
-                    ),
-                );
+        SketchParams::KLL { k, quantiles } => {
+            m.insert("k".into(), Value::Number((*k as u64).into()));
+            if !quantiles.is_empty() {
+                m.insert("quantiles".into(), Value::Sequence(
+                    quantiles.iter().map(|q| Value::Number((*q).into())).collect(),
+                ));
             }
         }
-        SketchType::HLL => {
-            m.insert(
-                "precision".into(),
-                Value::Number((p.precision as u64).into()),
-            );
+        SketchParams::HLL { .. } => {
+            // hllprocessor uses a fixed HLL precision in code; Config has no precision field.
         }
-        SketchType::CountSketch | SketchType::CountMinSketch => {
-            m.insert("rows".into(), Value::Number((p.rows as u64).into()));
-            m.insert("cols".into(), Value::Number((p.cols as u64).into()));
+        SketchParams::CountSketch { epsilon, delta } => {
+            m.insert("epsilon".into(), Value::Number((*epsilon).into()));
+            m.insert("delta".into(), Value::Number((*delta).into()));
+        }
+        SketchParams::CountMinSketch { rows, cols, metric_name } => {
+            m.insert("metric_name".into(), Value::String(metric_name.clone()));
+            m.insert("rows".into(), Value::Number((*rows as u64).into()));
+            m.insert("columns".into(), Value::Number((*cols as u64).into()));
         }
     }
 
@@ -169,10 +161,9 @@ mod tests {
         AgentCollectorConfig {
             output_mode: OutputMode::Sketch,
             sketch_type: SketchType::DDSketch,
-            sketch_params: SketchParams {
+            sketch_params: SketchParams::DDSketch {
                 relative_accuracy: 0.01,
                 quantiles: vec![0.5, 0.9, 0.99],
-                ..Default::default()
             },
             aggregate_by: vec!["host.name".into(), "service".into()],
             label_matchers: vec!["env=prod".into()],
@@ -245,10 +236,7 @@ mod tests {
     fn hll_processor() {
         let cfg = AgentCollectorConfig {
             sketch_type: SketchType::HLL,
-            sketch_params: SketchParams {
-                precision: 14,
-                ..Default::default()
-            },
+            sketch_params: SketchParams::HLL { precision: 14 },
             mode: ProcessorMode::Batch,
             window_duration: None,
             output_mode: OutputMode::Sketch,
@@ -261,10 +249,14 @@ mod tests {
             delta_threshold: 0.0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
-        assert!(yaml.contains("hll:"), "YAML should contain 'hll:'\n{yaml}");
+        assert!(yaml.contains("HLL:"), "YAML should contain HLL processor key\n{yaml}");
         assert!(
-            yaml.contains("precision"),
-            "YAML should contain 'precision'\n{yaml}"
+            yaml.contains("- HLL"),
+            "pipeline should reference HLL processor\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("precision"),
+            "HLL processor YAML must not set precision (not in Config)\n{yaml}"
         );
     }
 
@@ -272,10 +264,10 @@ mod tests {
     fn countminsketch_processor() {
         let cfg = AgentCollectorConfig {
             sketch_type: SketchType::CountMinSketch,
-            sketch_params: SketchParams {
+            sketch_params: SketchParams::CountMinSketch {
                 rows: 5,
                 cols: 2048,
-                ..Default::default()
+                metric_name: "test_metric".into(),
             },
             mode: ProcessorMode::Batch,
             window_duration: None,
@@ -290,8 +282,8 @@ mod tests {
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
-            yaml.contains("countminsketch:"),
-            "YAML should contain processor key\n{yaml}"
+            yaml.contains("countmin:"),
+            "YAML should use countmin component id (factory type)\n{yaml}"
         );
     }
 
@@ -375,10 +367,9 @@ mod tests {
     fn kll_processor() {
         let cfg = AgentCollectorConfig {
             sketch_type: SketchType::KLL,
-            sketch_params: SketchParams {
+            sketch_params: SketchParams::KLL {
                 k: 200,
                 quantiles: vec![0.5, 0.99],
-                ..Default::default()
             },
             mode: ProcessorMode::Window,
             window_duration: Some(std::time::Duration::from_secs(300)),
@@ -392,7 +383,7 @@ mod tests {
             delta_threshold: 0.0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
-        assert!(yaml.contains("kll:"), "YAML should contain 'kll:'\n{yaml}");
+        assert!(yaml.contains("KLL:"), "YAML should contain 'KLL:'\n{yaml}");
         assert!(yaml.contains("k:"), "YAML should contain 'k:' param\n{yaml}");
         assert!(!yaml.contains("ddsketch:"), "YAML must not contain wrong processor key\n{yaml}");
     }
@@ -401,10 +392,9 @@ mod tests {
     fn countsketch_processor() {
         let cfg = AgentCollectorConfig {
             sketch_type: SketchType::CountSketch,
-            sketch_params: SketchParams {
-                rows: 5,
-                cols: 10000,
-                ..Default::default()
+            sketch_params: SketchParams::CountSketch {
+                epsilon: CountSketchDefaults::default().epsilon,
+                delta: CountSketchDefaults::default().delta,
             },
             mode: ProcessorMode::Batch,
             window_duration: None,
@@ -435,11 +425,11 @@ mod tests {
     #[test]
     fn all_sketch_types_processor_key_matches_pipeline_ref() {
         let cases: &[(&str, SketchType, SketchParams)] = &[
-            ("ddsketch", SketchType::DDSketch, SketchParams { relative_accuracy: 0.01, ..Default::default() }),
-            ("kll",      SketchType::KLL,      SketchParams { k: 200, ..Default::default() }),
-            ("hll",      SketchType::HLL,      SketchParams { precision: 14, ..Default::default() }),
-            ("countsketch",    SketchType::CountSketch,    SketchParams { rows: 5, cols: 10000, ..Default::default() }),
-            ("countminsketch", SketchType::CountMinSketch, SketchParams { rows: 5, cols: 2048, ..Default::default() }),
+            ("ddsketch",    SketchType::DDSketch,      SketchParams::DDSketch { relative_accuracy: 0.01, quantiles: vec![0.5] }),
+            ("KLL",         SketchType::KLL,           SketchParams::KLL { k: 200, quantiles: vec![0.5] }),
+            ("HLL",         SketchType::HLL,           SketchParams::HLL { precision: 14 }),
+            ("countsketch", SketchType::CountSketch,   SketchParams::CountSketch { epsilon: CountSketchDefaults::default().epsilon, delta: CountSketchDefaults::default().delta }),
+            ("countmin",    SketchType::CountMinSketch, SketchParams::CountMinSketch { rows: 5, cols: 2048, metric_name: "m".into() }),
         ];
 
         for (expected_key, sketch_type, sketch_params) in cases {

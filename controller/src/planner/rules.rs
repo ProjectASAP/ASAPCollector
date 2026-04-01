@@ -7,12 +7,21 @@ pub const DEFAULT_VALID_FOR: Duration = Duration::from_secs(10 * 60);
 
 pub struct RulesPlanner {
     pub valid_for: Duration,
+    pub sketch_defaults: SketchDefaults,
 }
 
 impl RulesPlanner {
     pub fn new() -> Self {
         Self {
             valid_for: DEFAULT_VALID_FOR,
+            sketch_defaults: SketchDefaults::default(),
+        }
+    }
+
+    pub fn with_defaults(defaults: SketchDefaults) -> Self {
+        Self {
+            valid_for: DEFAULT_VALID_FOR,
+            sketch_defaults: defaults,
         }
     }
 
@@ -24,7 +33,7 @@ impl RulesPlanner {
         }
 
         let sketch_type = select_sketch_type(&w.aggregations);
-        let sketch_params = default_sketch_params_with_quantiles(&sketch_type, w.accuracy_sla, &w.quantiles);
+        let sketch_params = build_sketch_params(&self.sketch_defaults, &sketch_type, w.accuracy_sla, &w.quantiles);
         let (mode, window_duration) = select_window_strategy(w);
 
         let mut aggregate_by = w.group_by_labels.clone();
@@ -52,7 +61,7 @@ impl RulesPlanner {
                 window_duration,
                 mode,
                 enable_self_monitoring: true,
-                transmit_sketch: true,
+                transmit_sketch: false,
                 drop_original: true,
                 // Delta fields are left as disabled defaults here; the
                 // CostModelPlanner overwrites them via decide_delta().
@@ -129,42 +138,52 @@ fn select_sketch_type(aggs: &[AggType]) -> SketchType {
     SketchType::DDSketch
 }
 
-/// Returns type-appropriate default parameters for the given accuracy SLA.
+/// Returns type-appropriate default parameters using compiled-in defaults.
 pub fn default_sketch_params(st: &SketchType, accuracy_sla: f64) -> SketchParams {
-    default_sketch_params_with_quantiles(st, accuracy_sla, &[])
+    build_sketch_params(&SketchDefaults::default(), st, accuracy_sla, &[])
 }
 
-/// Like [`default_sketch_params`] but seeds the quantiles list from the
-/// query-parsed φ values when non-empty; falls back to [0.5, 0.9, 0.99].
-pub fn default_sketch_params_with_quantiles(
+/// Build sketch parameters from a [`SketchDefaults`] config.
+///
+/// Query-specific quantiles override the configured grid when non-empty.
+pub fn build_sketch_params(
+    defaults: &SketchDefaults,
     st: &SketchType,
     accuracy_sla: f64,
     query_quantiles: &[f64],
 ) -> SketchParams {
-    let acc = if accuracy_sla <= 0.0 { 0.01 } else { accuracy_sla };
+    let acc = if accuracy_sla <= 0.0 {
+        defaults.ddsketch.relative_accuracy
+    } else {
+        accuracy_sla
+    };
     let quantiles: Vec<f64> = if !query_quantiles.is_empty() {
         query_quantiles.to_vec()
     } else {
-        vec![0.5, 0.9, 0.99]
+        defaults.quantile_grid.clone()
     };
     match st {
-        SketchType::DDSketch => SketchParams {
+        SketchType::DDSketch => SketchParams::DDSketch {
             relative_accuracy: acc,
             quantiles,
-            ..Default::default()
         },
         SketchType::KLL => {
-            let k = ((1.0 / acc) as u32).max(32);
-            SketchParams { k, quantiles, ..Default::default() }
+            let k = ((1.0 / acc) as u32).max(defaults.kll.min_k);
+            SketchParams::KLL { k, quantiles }
         }
         SketchType::HLL => {
-            let precision = if acc > 0.02 { 10u32 } else { 14u32 };
-            SketchParams { precision, ..Default::default() }
+            let d = &defaults.hll;
+            let precision = if acc > d.precision_threshold { d.precision_coarse } else { d.precision_fine };
+            SketchParams::HLL { precision }
         }
-        SketchType::CountSketch | SketchType::CountMinSketch => SketchParams {
-            rows: 5,
-            cols: 2048,
-            ..Default::default()
+        SketchType::CountSketch => SketchParams::CountSketch {
+            epsilon: defaults.count_sketch.epsilon,
+            delta: defaults.count_sketch.delta,
+        },
+        SketchType::CountMinSketch => SketchParams::CountMinSketch {
+            rows: defaults.count_min_sketch.rows,
+            cols: defaults.count_min_sketch.cols,
+            metric_name: defaults.count_min_sketch.metric_name.clone(),
         },
     }
 }
@@ -292,7 +311,10 @@ mod tests {
         let mut w = workload(vec![AggType::Quantile]);
         w.accuracy_sla = 0.005;
         let plan = RulesPlanner::new().plan(&w);
-        assert_eq!(plan.agent_config.sketch_params.relative_accuracy, 0.005);
+        match &plan.agent_config.sketch_params {
+            SketchParams::DDSketch { relative_accuracy, .. } => assert_eq!(*relative_accuracy, 0.005),
+            other => panic!("expected DDSketch, got {:?}", other),
+        }
     }
 
     #[test]
@@ -300,10 +322,10 @@ mod tests {
         let mut w = workload(vec![AggType::Cardinality]);
         w.accuracy_sla = 0.03;
         let plan = RulesPlanner::new().plan(&w);
-        assert_eq!(
-            plan.agent_config.sketch_params.precision, 10,
-            "coarse SLA should use lower precision"
-        );
+        match &plan.agent_config.sketch_params {
+            SketchParams::HLL { precision } => assert_eq!(*precision, 10, "coarse SLA should use lower precision"),
+            other => panic!("expected HLL, got {:?}", other),
+        }
     }
 
     #[test]

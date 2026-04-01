@@ -32,7 +32,7 @@ use super::plan::{
     CostEstimate, ExecutionMode, NodeAnnotation, PipelineStage, PlanNode,
 };
 use super::expr::{ExactAgg, SketchAggOp};
-use crate::types::{SketchParams, SketchType, StageResourceBudgets};
+use crate::types::{CountSketchDefaults, SketchParams, SketchType, StageResourceBudgets};
 
 // ── Resource budget tracker ───────────────────────────────────────────────────
 
@@ -690,33 +690,26 @@ fn sketch_type_for_op(op: &SketchAggOp) -> (SketchType, SketchParams) {
     match op {
         SketchAggOp::DDSketch { quantiles, epsilon } => (
             SketchType::DDSketch,
-            SketchParams {
+            SketchParams::DDSketch {
                 relative_accuracy: *epsilon,
                 quantiles: quantiles.clone(),
-                ..Default::default()
             },
         ),
         SketchAggOp::HLL { registers } => (
             SketchType::HLL,
-            SketchParams {
-                precision: *registers as u32,
-                ..Default::default()
-            },
+            SketchParams::HLL { precision: *registers as u32 },
         ),
         SketchAggOp::CountMin { width, depth } => (
             SketchType::CountMinSketch,
-            SketchParams {
+            SketchParams::CountMinSketch {
                 cols: *width,
                 rows: *depth as u32,
-                ..Default::default()
+                metric_name: String::new(),
             },
         ),
-        SketchAggOp::CountSketch { k } => (
+        SketchAggOp::CountSketch { .. } => (
             SketchType::CountSketch,
-            SketchParams {
-                k: *k as u32,
-                ..Default::default()
-            },
+            { let d = CountSketchDefaults::default(); SketchParams::CountSketch { epsilon: d.epsilon, delta: d.delta } },
         ),
         SketchAggOp::ExactMinMax { .. } => (
             SketchType::DDSketch,
