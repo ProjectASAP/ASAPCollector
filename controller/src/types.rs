@@ -237,20 +237,63 @@ pub struct QueryWorkload {
     pub quantiles: Vec<f64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SketchParams {
-    pub relative_accuracy: f64,
-    pub k: u32,
-    pub precision: u32,
-    pub rows: u32,
-    pub cols: u32,
-    pub quantiles: Vec<f64>,
-    /// CountSketch error probability. Maps to the processor's `delta` field.
-    pub delta: f64,
-    /// CountSketch relative error bound (ε). Maps to the processor's `epsilon` field.
-    pub epsilon: f64,
-    /// Metric name required by CountMinSketch processor (`metric_name` field).
-    pub metric_name: String,
+/// Default quantile grid used when no query-specific φ values are available.
+pub const DEFAULT_QUANTILE_GRID: &[f64] = &[0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0];
+
+/// Default CountSketch relative error bound (ε ≈ 1/√cols for cols=2048).
+pub const DEFAULT_CS_EPSILON: f64 = 0.022;
+
+/// Default CountSketch error probability (δ ≈ e^(−rows) for rows=5).
+pub const DEFAULT_CS_DELTA: f64 = 0.007;
+
+/// Per-sketch-type parameters.  Each variant carries only the fields relevant
+/// to that sketch family, avoiding the "bag of unrelated fields" problem.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SketchParams {
+    DDSketch {
+        relative_accuracy: f64,
+        quantiles: Vec<f64>,
+    },
+    KLL {
+        k: u32,
+        quantiles: Vec<f64>,
+    },
+    HLL {
+        precision: u32,
+    },
+    CountSketch {
+        /// Relative error bound (ε).
+        epsilon: f64,
+        /// Error probability (δ).
+        delta: f64,
+    },
+    CountMinSketch {
+        rows: u32,
+        cols: u32,
+        /// Metric name required by the CMS processor.
+        metric_name: String,
+    },
+}
+
+impl Default for SketchParams {
+    fn default() -> Self {
+        SketchParams::DDSketch {
+            relative_accuracy: 0.01,
+            quantiles: DEFAULT_QUANTILE_GRID.to_vec(),
+        }
+    }
+}
+
+impl SketchParams {
+    /// Extract quantiles if this sketch type supports them.
+    pub fn quantiles(&self) -> &[f64] {
+        match self {
+            SketchParams::DDSketch { quantiles, .. }
+            | SketchParams::KLL { quantiles, .. } => quantiles,
+            _ => &[],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -42,7 +42,7 @@ use crate::analyzer::format_duration;
 use crate::algebra::expr::{ExactAgg, PartitionKeys, SketchAggOp};
 use crate::types::{
     AgentSubPlan, BackendSubPlan, DbSubPlan, PrecomputeSubPlan, SketchParams, SketchType,
-    StagedPlan, StageResourceBudgets,
+    StagedPlan, StageResourceBudgets, DEFAULT_CS_EPSILON, DEFAULT_CS_DELTA,
 };
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -341,26 +341,26 @@ fn agg_op_to_sketch_type(op: &SketchAggOp) -> SketchType {
 
 fn agg_op_to_sketch_params(op: &SketchAggOp) -> SketchParams {
     match op {
-        SketchAggOp::DDSketch { quantiles, epsilon } => SketchParams {
+        SketchAggOp::DDSketch { quantiles, epsilon } => SketchParams::DDSketch {
             relative_accuracy: *epsilon,
             quantiles: quantiles.clone(),
-            ..Default::default()
         },
-        SketchAggOp::HLL { registers } => SketchParams {
+        SketchAggOp::HLL { registers } => SketchParams::HLL {
             precision: *registers as u32,
-            ..Default::default()
         },
-        SketchAggOp::CountMin { width, depth } => SketchParams {
+        SketchAggOp::CountMin { width, depth } => SketchParams::CountMinSketch {
             rows: *depth as u32,
             cols: *width,
-            ..Default::default()
+            metric_name: String::new(),
         },
-        SketchAggOp::CountSketch { .. } => SketchParams { rows: 5, cols: 2_048, ..Default::default() },
+        SketchAggOp::CountSketch { .. } => SketchParams::CountSketch {
+            epsilon: DEFAULT_CS_EPSILON,
+            delta: DEFAULT_CS_DELTA,
+        },
         SketchAggOp::Hydra { inner, .. } => agg_op_to_sketch_params(inner),
-        SketchAggOp::ExactMinMax { .. } => SketchParams {
+        SketchAggOp::ExactMinMax { .. } => SketchParams::DDSketch {
             relative_accuracy: 0.01,
             quantiles: vec![0.0, 1.0],
-            ..Default::default()
         },
         SketchAggOp::Exact(_) => SketchParams::default(),
     }
