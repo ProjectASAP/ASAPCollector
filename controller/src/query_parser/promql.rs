@@ -1,8 +1,12 @@
-//! PromQL → QueryExpr compiler.
+//! Layers 1→3 lowering: PromQL string → QueryExpr (sketch logical plan).
 //!
-//! Uses the `promql-parser` crate (GreptimeTeam) for a full AST parse, then
-//! walks the expression tree to emit a [`QueryExpr`] following the mapping
-//! rules in `docs/sketch-algebra-query-mapping.md §2.3`.
+//! - **Layer 1**: the `promql-parser` crate parses the PromQL string into a
+//!   language-specific AST (`promql_parser::parser::Expr`).
+//! - **Layer 2**: the walk functions (`walk_qe`, `walk_call_qe`, `walk_aggregate_qe`)
+//!   interpret PromQL semantics (range vectors, aggregation operators, label matchers)
+//!   and lower them to the sketch algebra.
+//! - **Layer 3**: the output is a `QueryExpr` tree with `AggIntent` nodes that are
+//!   implementation-independent (no sketch names — just Quantile/Cardinality/Frequency).
 //!
 //! # PromQL → Sketch mapping (summary)
 //!
@@ -221,7 +225,7 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: true };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
             let result = QueryExpr::SketchAgg {
-                op:    QeAggIntent::default_hll(),
+                op:    QeAggIntent::default_cardinality(),
                 col:   QeColumnRef::SampleValue,
                 input: Box::new(inner),
             };
@@ -236,7 +240,7 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: false };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
             let result = QueryExpr::SketchAgg {
-                op:    QeAggIntent::default_ddsketch(vec![0.25, 0.75]),
+                op:    QeAggIntent::default_quantile(vec![0.25, 0.75]),
                 col:   QeColumnRef::SampleValue,
                 input: Box::new(inner),
             };
@@ -247,7 +251,7 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: false };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
             let result = QueryExpr::SketchAgg {
-                op:    QeAggIntent::default_ddsketch(vec![phi]),
+                op:    QeAggIntent::default_quantile(vec![phi]),
                 col:   QeColumnRef::SampleValue,
                 input: Box::new(inner),
             };
@@ -266,7 +270,7 @@ fn walk_call_qe(call: &Call, ctx: WalkCtx) -> anyhow::Result<QueryExpr> {
             let rate_expr = call.args.args[1].as_ref();
             let (source, filters, window) = extract_inner_matrix(rate_expr)?;
             let inner = build_qe_sketched(source, filters, window,
-                QeAggIntent::default_ddsketch(vec![phi]),
+                QeAggIntent::default_quantile(vec![phi]),
                 WalkCtx::default());
             Ok(QueryExpr::HistogramQuantile { phi, input: Box::new(inner) })
         }
@@ -274,7 +278,7 @@ fn walk_call_qe(call: &Call, ctx: WalkCtx) -> anyhow::Result<QueryExpr> {
         "quantile_over_time" => {
             let phi = extract_call_num_arg(call, 0)?;
             let (source, filters, window) = extract_matrix_arg(call, 1)?;
-            let op = QeAggIntent::default_ddsketch(vec![phi]);
+            let op = QeAggIntent::default_quantile(vec![phi]);
             Ok(build_qe_sketched(source, filters, window, op, ctx))
         }
         _ => {
@@ -360,33 +364,33 @@ fn walk_call_to_op(call: &Call, ctx: &WalkCtx) -> anyhow::Result<QeAggIntent> {
     match name {
         "quantile_over_time" => {
             let phi = extract_call_num_arg(call, 0)?;
-            Ok(QeAggIntent::default_ddsketch(vec![phi]))
+            Ok(QeAggIntent::default_quantile(vec![phi]))
         }
-        "avg_over_time" => Ok(QeAggIntent::default_ddsketch(vec![0.5])),
+        "avg_over_time" => Ok(QeAggIntent::default_quantile(vec![0.5])),
         "min_over_time" => {
             Ok(if ctx.partition.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
-                QeAggIntent::default_ddsketch(vec![0.0])
+                QeAggIntent::default_quantile(vec![0.0])
             } else {
                 QeAggIntent::Extrema { min: true, max: false }
             })
         }
         "max_over_time" => {
             Ok(if ctx.partition.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
-                QeAggIntent::default_ddsketch(vec![1.0])
+                QeAggIntent::default_quantile(vec![1.0])
             } else {
                 QeAggIntent::Extrema { min: false, max: true }
             })
         }
         "stddev_over_time" | "stdvar_over_time" =>
-            Ok(QeAggIntent::default_ddsketch(vec![0.25, 0.75])),
+            Ok(QeAggIntent::default_quantile(vec![0.25, 0.75])),
         "count_over_time" => {
-            Ok(if ctx.outer_count { QeAggIntent::default_hll() } else { QeAggIntent::default_count_min() })
+            Ok(if ctx.outer_count { QeAggIntent::default_cardinality() } else { QeAggIntent::default_frequency() })
         }
         "sum_over_time" | "last_over_time" | "present_over_time" | "absent_over_time"
         | "delta" | "idelta" | "deriv" | "predict_linear" =>
             Ok(QeAggIntent::Exact(QeExactAgg::Sum)),
-        "changes" | "resets" => Ok(QeAggIntent::default_count_min()),
-        "rate" | "irate" | "increase" => Ok(QeAggIntent::default_count_min()),
+        "changes" | "resets" => Ok(QeAggIntent::default_frequency()),
+        "rate" | "irate" | "increase" => Ok(QeAggIntent::default_frequency()),
         other => Err(anyhow!("unsupported PromQL function: {other}")),
     }
 }
@@ -408,7 +412,7 @@ fn build_qe_sketched(
     };
     let agg = if let Some(k) = ctx.topk {
         QueryExpr::SketchAgg {
-            op:    QeAggIntent::default_count_sketch(),
+            op:    QeAggIntent::default_frequency(),
             col:   QeColumnRef::SampleValue,
             input: Box::new(windowed),
         }

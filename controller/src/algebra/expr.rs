@@ -102,9 +102,6 @@ pub enum AggIntent {
     Exact(ExactAgg),
 }
 
-/// Backward compatibility alias.
-pub type SketchAggOp = AggIntent;
-
 /// Exact (non-sketch) aggregation kinds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExactAgg {
@@ -175,14 +172,6 @@ impl AggIntent {
         AggIntent::Quantile { quantiles, accuracy: 0.01 }
     }
 
-    /// Backward compat: `default_count_min()` → `default_frequency()`.
-    pub fn default_count_min() -> Self { Self::default_frequency() }
-    /// Backward compat: `default_count_sketch()` → `default_frequency()`.
-    pub fn default_count_sketch() -> Self { Self::default_frequency() }
-    /// Backward compat: `default_hll()` → `default_cardinality()`.
-    pub fn default_hll() -> Self { Self::default_cardinality() }
-    /// Backward compat: `default_ddsketch(qs)` → `default_quantile(qs)`.
-    pub fn default_ddsketch(quantiles: Vec<f64>) -> Self { Self::default_quantile(quantiles) }
 }
 
 // ── Accuracy helpers ─────────────────────────────────────────────────────────
@@ -322,7 +311,7 @@ pub enum QueryExpr {
     /// Kept separate from [`Self::Aggregate`] so the allocator can reason
     /// about which sketch type to use without parsing `AggFunc` variants.
     SketchAgg {
-        op:    SketchAggOp,
+        op:    AggIntent,
         col:   ColumnRef,
         input: Box<QueryExpr>,
     },
@@ -1008,7 +997,7 @@ mod tests {
     #[test]
     fn has_sketch_work_true_when_ddsketch_present() {
         let qe = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_ddsketch(vec![0.5]),
+            op:    AggIntent::default_quantile(vec![0.5]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("m")),
         };
@@ -1119,7 +1108,7 @@ mod tests {
                     duration: Duration::from_secs(300),
                     slide:    None,
                     input:    Box::new(QueryExpr::SketchAgg {
-                        op:    SketchAggOp::default_count_sketch(),
+                        op:    AggIntent::default_frequency(),
                         col:   ColumnRef::Wildcard,
                         input: Box::new(src("price")),
                     }),

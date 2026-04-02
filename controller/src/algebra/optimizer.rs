@@ -1004,7 +1004,7 @@ mod tests {
     #[test]
     fn r2_lifts_mergeable_sketch_above_merge() {
         let expr = QueryExpr::SketchAgg {
-            op:    AggIntent::default_hll(),
+            op:    AggIntent::default_cardinality(),
             col:   ColumnRef::Named("uid".into()),
             input: Box::new(QueryExpr::Merge {
                 inputs: vec![src("shard_a"), src("shard_b")],

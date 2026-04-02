@@ -587,9 +587,10 @@ impl SketchAllocator {
             };
         }
 
-        // Sketch operators: try Agent → Backend → Precompute.
+        // Sketch operators: resolve to physical, then try Agent → Backend → Precompute.
+        let physical = super::physical::resolve(&op);
         let mem = estimated_sketch_memory(&op);
-        let (sketch_type, params) = super::directory::sketch_type_and_params(&op);
+        let (sketch_type, params) = (physical.sketch_type, physical.sketch_params);
 
         if budget.fits_agent(mem) {
             budget.consume_agent(mem);
@@ -745,7 +746,7 @@ mod tests {
     #[test]
     fn ddsketch_within_budget_goes_to_agent() {
         let expr = QueryExpr::SketchAgg {
-            op:    AggIntent::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_quantile(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("latency")),
         };
@@ -760,7 +761,7 @@ mod tests {
     #[test]
     fn ddsketch_agent_budget_exceeded_goes_to_backend() {
         let expr = QueryExpr::SketchAgg {
-            op:    AggIntent::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_quantile(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("latency")),
         };
@@ -774,7 +775,7 @@ mod tests {
     #[test]
     fn ddsketch_all_budgets_exceeded_goes_to_precompute() {
         let expr = QueryExpr::SketchAgg {
-            op:    AggIntent::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_quantile(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("latency")),
         };
@@ -886,7 +887,7 @@ mod tests {
         let expr = QueryExpr::HistogramQuantile {
             phi:   0.95,
             input: Box::new(QueryExpr::SketchAgg {
-                op:    AggIntent::default_ddsketch(vec![0.95]),
+                op:    AggIntent::default_quantile(vec![0.95]),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(src("hist")),
             }),
@@ -932,7 +933,7 @@ mod tests {
     #[test]
     fn plan_summary_shows_bandwidth_saved() {
         let expr = QueryExpr::SketchAgg {
-            op:    AggIntent::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_quantile(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("latency")),
         };

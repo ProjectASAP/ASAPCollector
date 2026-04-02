@@ -1,7 +1,25 @@
-//! SQL → QueryExpr compiler.
+//! Layers 1→3 lowering: SQL string → QueryExpr (sketch logical plan).
 //!
-//! Implements the `AST_SQL_to_sketch` algorithm from the design doc
-//! (`docs/Top-Down SQL-to-sketch mapping.pdf`).
+//! - **Layer 1**: the `sqlparser` crate parses the SQL string into a
+//!   language-specific AST (`sqlparser::ast::Statement`).
+//! - **Layer 2**: the extraction functions (`extract_query_expr`, `extract_select_qe`)
+//!   interpret SQL semantics (SELECT projection, GROUP BY, WHERE, JOIN, ORDER BY,
+//!   LIMIT, UNION ALL) and lower them to the sketch algebra.
+//! - **Layer 3**: the output is a `QueryExpr` tree with **relational operators only**
+//!   (`Source`, `Filter`, `Aggregate`, `Join`, `Sort`, `Limit`, `SetOp`).
+//!
+//! # Key difference from the PromQL parser
+//!
+//! The SQL parser does **not** emit `SketchAgg` or `WindowedAgg` nodes.  It emits
+//! generic `Aggregate { func: Avg/Count/CountDistinct/... }` nodes.  Sketch assignment
+//! happens later:
+//! - **Layer 4 (optimizer)**: R5 TopKFusion rewrites `Limit(Sort(Aggregate))` → `TopK`;
+//!   R9 HydraConversion rewrites multi-key `CountDistinct` → `PerPartition`.
+//! - **Layer 5 (physical planner / stage-split)**: `assign_agg_func` maps each `AggFunc`
+//!   to an `AggIntent` (e.g., `CountDistinct` → `Cardinality`, `Quantile(φ)` → `Quantile`).
+//!
+//! This means the SQL path goes: relational plan → optimizer rewrites → physical
+//! sketch assignment, whereas PromQL goes: sketch plan directly → optimizer → physical.
 //!
 //! # Algorithm
 //!

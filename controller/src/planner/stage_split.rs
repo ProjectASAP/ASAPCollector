@@ -244,14 +244,14 @@ fn assign_sketch_agg(op: &AggIntent, plan: &mut StagedPlan, budgets: &StageResou
         AggIntent::Exact(ExactAgg::Avg) => {
             plan.db.active = true;
         }
-        // Sketch ops: assign to Agent, defer if budget exceeded.
+        // Sketch ops: resolve to physical, assign to Agent, defer if budget exceeded.
         sketch_op => {
-            let est_mem = directory::estimated_sketch_memory_bytes(sketch_op);
-            let stage = resolve_sketch_stage(est_mem, budgets, &mut plan.deferral_log, sketch_op);
+            let physical = crate::algebra::physical::resolve(sketch_op);
+            let stage = resolve_sketch_stage(physical.estimated_memory_bytes, budgets, &mut plan.deferral_log, sketch_op);
             match stage {
                 SketchStage::Agent => {
-                    plan.agent.sketch_type   = Some(directory::sketch_type_for_op(sketch_op));
-                    plan.agent.sketch_params = directory::sketch_params_for_op(sketch_op);
+                    plan.agent.sketch_type   = Some(physical.sketch_type);
+                    plan.agent.sketch_params = physical.sketch_params;
                 }
                 SketchStage::Backend => {
                     plan.backend.has_merge = true;
@@ -268,14 +268,14 @@ fn assign_agg_func(func: &AggFunc, plan: &mut StagedPlan, budgets: &StageResourc
     match func {
         // Sketchable → synthesise the corresponding AggIntent and use existing logic.
         AggFunc::Quantile(phi) => {
-            let op = AggIntent::default_ddsketch(vec![*phi]);
+            let op = AggIntent::default_quantile(vec![*phi]);
             assign_sketch_agg(&op, plan, budgets);
         }
         AggFunc::CountDistinct => {
-            assign_sketch_agg(&AggIntent::default_hll(), plan, budgets);
+            assign_sketch_agg(&AggIntent::default_cardinality(), plan, budgets);
         }
         AggFunc::HeavyHitters { .. } => {
-            assign_sketch_agg(&AggIntent::default_count_sketch(), plan, budgets);
+            assign_sketch_agg(&AggIntent::default_frequency(), plan, budgets);
         }
         // Mergeable exact → Backend.
         AggFunc::Count | AggFunc::Sum | AggFunc::Min | AggFunc::Max
@@ -684,7 +684,7 @@ mod tests {
             duration: Duration::from_secs(300),
             slide: None,
             input: Box::new(QueryExpr::SketchAgg {
-                op:    AggIntent::default_ddsketch(vec![0.99]),
+                op:    AggIntent::default_quantile(vec![0.99]),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("latency")),
             }),
@@ -699,7 +699,7 @@ mod tests {
     #[test]
     fn hll_stays_at_agent_by_default() {
         let expr = QueryExpr::SketchAgg {
-            op:    AggIntent::default_hll(),
+            op:    AggIntent::default_cardinality(),
             col:   ColumnRef::SampleValue,
             input: Box::new(source("events")),
         };
@@ -712,7 +712,7 @@ mod tests {
         let expr = QueryExpr::Partition {
             keys: PartitionKeys::By(vec!["host".into(), "region".into()]),
             input: Box::new(QueryExpr::SketchAgg {
-                op:    AggIntent::default_ddsketch(vec![0.99]),
+                op:    AggIntent::default_quantile(vec![0.99]),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("latency")),
             }),
@@ -764,7 +764,7 @@ mod tests {
             k:     10,
             by:    vec!["symbol".into()],
             input: Box::new(QueryExpr::SketchAgg {
-                op:    AggIntent::default_count_sketch(),
+                op:    AggIntent::default_frequency(),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("price")),
             }),
@@ -813,7 +813,7 @@ mod tests {
             ..Default::default()
         };
         let expr = QueryExpr::SketchAgg {
-            op:    AggIntent::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_quantile(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(source("latency")),
         };
@@ -831,7 +831,7 @@ mod tests {
             ..Default::default()
         };
         let expr = QueryExpr::SketchAgg {
-            op:    AggIntent::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_quantile(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(source("latency")),
         };
@@ -850,7 +850,7 @@ mod tests {
                 duration: Duration::from_secs(300),
                 slide: None,
                 input: Box::new(QueryExpr::SketchAgg {
-                    op:    AggIntent::default_ddsketch(vec![0.99]),
+                    op:    AggIntent::default_quantile(vec![0.99]),
                     col:   ColumnRef::SampleValue,
                     input: Box::new(QueryExpr::Filter {
                         pred: ScalarExpr::BinaryOp {
@@ -876,7 +876,7 @@ mod tests {
             k:     10,
             by:    vec![],
             input: Box::new(QueryExpr::SketchAgg {
-                op:    AggIntent::default_count_sketch(),
+                op:    AggIntent::default_frequency(),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("events")),
             }),
