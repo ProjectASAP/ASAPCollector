@@ -40,6 +40,8 @@ def compute_q2_crossover(q1_dataframe: pd.DataFrame) -> pd.DataFrame:
                         }
                     )
             previous_diff = diff
+    if not rows:
+        return pd.DataFrame(columns=["symbol", "window_start_ms", "signal"])
     return pd.DataFrame(rows)
 
 
