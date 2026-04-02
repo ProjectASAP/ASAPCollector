@@ -9,7 +9,7 @@ import pandas as pd
 from ground_truth.common import (
     WINDOW_5MIN_MS,
     day_tag_from_arg,
-    load_full_feed_day,
+    load_filtered_day,
     log_phase,
     timed_load,
     window_start_ms_vectorized,
