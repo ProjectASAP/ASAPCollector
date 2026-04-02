@@ -611,7 +611,7 @@ def main() -> None:
     p_matrix.add_argument("--days", nargs="+", default=list(DEFAULT_DAYS))
     p_matrix.add_argument("--mode", default=os.environ.get("MODE", "sketch-finance"))
     p_matrix.add_argument("--speed", type=float, default=float(os.environ.get("SPEED", "100")))
-    p_matrix.add_argument("--batch-size", type=int, default=int(os.environ.get("BATCH_SIZE", "5000")))
+    p_matrix.add_argument("--batch-size", type=int, default=int(os.environ.get("BATCH_SIZE", "50")))
     p_matrix.add_argument("--skip-gt", default=os.environ.get("SKIP_GT", "1"))
     p_matrix.add_argument("--sketch-quantile", default=os.environ.get("SKETCH_QUANTILE", "ddsketch"))
     p_matrix.add_argument("--sketch-freq", default=os.environ.get("SKETCH_FREQ", "countsketch"))
