@@ -49,7 +49,7 @@ REQUIRED_COLS: dict[str, list[str]] = {
     "Q4":  ["symbol", "window_start_ms", "min_v", "max_v", "last_v", "range_v"],
     "Q5":  ["symbol", "window_start_ms", "sigma"],
     "Q6":  ["window_start_ms", "distinct"],
-    "Q7":  ["symbol", "window_start_ms", "mean"],
+    "Q7":  ["symbol", "window_start_ms", "mean_price"],
     "Q8":  ["symbol", "window_start_ms", "mu", "sigma", "flag_count", "tick_count"],
 }
 
@@ -295,7 +295,7 @@ def _check_q6(df: pd.DataFrame) -> list[Check]:
 
 def _check_q7(df: pd.DataFrame) -> list[Check]:
     # Some symbols have price 0.0 in the raw data; mean of 0.0 is valid.
-    neg = (df["mean"] < 0).sum()
+    neg = (df["mean_price"] < 0).sum()
     return [
         _pass("mean_nonneg") if neg == 0
         else _fail("mean_nonneg", f"{neg} negative mean values"),
