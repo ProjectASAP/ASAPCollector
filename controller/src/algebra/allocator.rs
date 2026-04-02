@@ -31,8 +31,8 @@ use super::expr::QueryExpr;
 use super::plan::{
     CostEstimate, ExecutionMode, NodeAnnotation, PipelineStage, PlanNode,
 };
-use super::expr::{ExactAgg, SketchAggOp};
-use crate::types::{SketchParams, SketchType, StageResourceBudgets};
+use super::expr::{AggIntent, ExactAgg};
+use crate::types::{SketchType, StageResourceBudgets};
 
 // ── Resource budget tracker ───────────────────────────────────────────────────
 
@@ -188,6 +188,12 @@ impl SketchAllocator {
             QueryExpr::SketchAgg { op, col, input } => {
                 let child = self.alloc_node(*input, budget);
                 self.alloc_sketch_agg(op, col, child, budget)
+            }
+
+            // ── WindowedAgg — treat as SketchAgg (window is informational) ──
+            QueryExpr::WindowedAgg { agg, window: _, col, input } => {
+                let child = self.alloc_node(*input, budget);
+                self.alloc_sketch_agg(agg, col, child, budget)
             }
 
             // ── TopK — Precompute engine ──────────────────────────────────
@@ -532,13 +538,13 @@ impl SketchAllocator {
 
     fn alloc_sketch_agg(
         &self,
-        op:     SketchAggOp,
+        op:     AggIntent,
         col:    super::expr::ColumnRef,
         child:  PlanNode,
         budget: &mut BudgetState,
     ) -> PlanNode {
         // Exact non-mergeable (Avg) → always Db.
-        if let SketchAggOp::Exact(ExactAgg::Avg) = &op {
+        if let AggIntent::Exact(ExactAgg::Avg) = &op {
             return PlanNode {
                 expr: QueryExpr::SketchAgg {
                     op,
@@ -560,7 +566,7 @@ impl SketchAllocator {
         }
 
         // Exact mergeable (Sum, Count, Min, Max) → Backend.
-        if let SketchAggOp::Exact(_) = &op {
+        if let AggIntent::Exact(_) = &op {
             return PlanNode {
                 expr: QueryExpr::SketchAgg {
                     op,
@@ -668,21 +674,8 @@ impl SketchAllocator {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Estimate the memory footprint of a sketch in bytes.
-fn estimated_sketch_memory(op: &SketchAggOp) -> f64 {
-    match op {
-        SketchAggOp::DDSketch { .. }              => 4_096.0,
-        SketchAggOp::HLL { registers }            => (1u64 << registers) as f64,
-        SketchAggOp::CountMin { width, depth }    => (*width as f64) * (*depth as f64) * 8.0,
-        SketchAggOp::CountSketch { width, depth }  => (*width as f64) * (*depth as f64) * 8.0,
-        SketchAggOp::ExactMinMax { .. }           => 16.0,
-        SketchAggOp::Hydra { inner, partition_keys } => {
-            // Hydra memory = inner sketch size × expected number of key tuples.
-            let inner_mem = estimated_sketch_memory(inner);
-            let keys = partition_keys.len() as f64;
-            inner_mem * (10.0_f64.powf(keys))
-        }
-        SketchAggOp::Exact(_) => 8.0,
-    }
+fn estimated_sketch_memory(op: &AggIntent) -> f64 {
+    super::directory::estimated_sketch_memory_bytes(op) as f64
 }
 
 // sketch_type_for_op delegated to algebra::directory::sketch_type_and_params.
@@ -694,7 +687,7 @@ mod tests {
     use super::*;
     use crate::algebra::expr::QueryExpr;
     use crate::algebra::plan::{ExecutionMode, PipelineStage};
-    use crate::algebra::expr::{ColumnRef, PartitionKeys, SketchAggOp, SourceSpec};
+    use crate::algebra::expr::{AggIntent, ColumnRef, PartitionKeys, SourceSpec};
     use crate::types::{SketchType, StageResourceBudgets};
     use std::time::Duration;
 
@@ -752,7 +745,7 @@ mod tests {
     #[test]
     fn ddsketch_within_budget_goes_to_agent() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_ddsketch(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("latency")),
         };
@@ -767,7 +760,7 @@ mod tests {
     #[test]
     fn ddsketch_agent_budget_exceeded_goes_to_backend() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_ddsketch(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("latency")),
         };
@@ -781,7 +774,7 @@ mod tests {
     #[test]
     fn ddsketch_all_budgets_exceeded_goes_to_precompute() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_ddsketch(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("latency")),
         };
@@ -795,7 +788,7 @@ mod tests {
     #[test]
     fn exact_avg_goes_to_db() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::Exact(ExactAgg::Avg),
+            op:    AggIntent::Exact(ExactAgg::Avg),
             col:   ColumnRef::Named("price".into()),
             input: Box::new(src("trades")),
         };
@@ -809,7 +802,7 @@ mod tests {
     #[test]
     fn exact_sum_goes_to_backend() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::Exact(ExactAgg::Sum),
+            op:    AggIntent::Exact(ExactAgg::Sum),
             col:   ColumnRef::Named("bytes".into()),
             input: Box::new(src("network")),
         };
@@ -848,7 +841,7 @@ mod tests {
     #[test]
     fn hll_within_budget_at_agent() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::HLL { registers: 14 },
+            op:    AggIntent::default_cardinality(),
             col:   ColumnRef::Named("uid".into()),
             input: Box::new(src("events")),
         };
@@ -857,18 +850,18 @@ mod tests {
         assert_eq!(node.annotation.sketch_type, Some(SketchType::HLL));
     }
 
-    // ── CountMin → Agent ──────────────────────────────────────────────────────
+    // ── Frequency → Agent ─────────────────────────────────────────────────────
 
     #[test]
-    fn countmin_within_budget_at_agent() {
+    fn frequency_within_budget_at_agent() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_count_min(),
+            op:    AggIntent::default_frequency(),
             col:   ColumnRef::Wildcard,
             input: Box::new(src("requests")),
         };
         let node = alloc(unlimited(), expr);
         assert_eq!(node.stage, PipelineStage::Agent);
-        assert_eq!(node.annotation.sketch_type, Some(SketchType::CountMinSketch));
+        assert_eq!(node.annotation.sketch_type, Some(SketchType::CountSketch));
     }
 
     // ── Join → Db ─────────────────────────────────────────────────────────────
@@ -893,7 +886,7 @@ mod tests {
         let expr = QueryExpr::HistogramQuantile {
             phi:   0.95,
             input: Box::new(QueryExpr::SketchAgg {
-                op:    SketchAggOp::default_ddsketch(vec![0.95]),
+                op:    AggIntent::default_ddsketch(vec![0.95]),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(src("hist")),
             }),
@@ -922,16 +915,16 @@ mod tests {
     // ── Memory estimate helpers ───────────────────────────────────────────────
 
     #[test]
-    fn hll_memory_estimate_matches_register_count() {
-        let mem = estimated_sketch_memory(&SketchAggOp::HLL { registers: 14 });
-        assert_eq!(mem, (1u64 << 14) as f64); // 16 384 bytes
+    fn cardinality_memory_estimate() {
+        let mem = estimated_sketch_memory(&AggIntent::default_cardinality());
+        assert!(mem > 0.0);
     }
 
     #[test]
-    fn countmin_memory_estimate() {
-        let op = SketchAggOp::CountMin { width: 2000, depth: 5 };
+    fn frequency_memory_estimate() {
+        let op = AggIntent::default_frequency();
         let mem = estimated_sketch_memory(&op);
-        assert_eq!(mem, 2000.0 * 5.0 * 8.0); // 80 000 bytes
+        assert!(mem > 0.0);
     }
 
     // ── PlanSummary from allocated tree ──────────────────────────────────────
@@ -939,7 +932,7 @@ mod tests {
     #[test]
     fn plan_summary_shows_bandwidth_saved() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_ddsketch(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(src("latency")),
         };

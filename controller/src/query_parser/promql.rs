@@ -148,8 +148,9 @@ fn modifier_to_partition(modifier: &LabelModifier) -> PartitionKeys {
 // | `a op b` binary          | BinaryOp { VectorMatch }             |
 
 use crate::algebra::expr::{
+    AggIntent as QeAggIntent,
     BinaryOpKind, ColumnRef as QeColumnRef, ExactAgg as QeExactAgg, GroupSide,
-    PartitionKeys as QePartitionKeys, QueryExpr, SketchAggOp as QeSketchAggOp,
+    PartitionKeys as QePartitionKeys, QueryExpr,
     SourceSpec as QeSourceSpec, VectorGrouping, VectorMatch, VectorMatchKind,
 };
 use promql_parser::parser::{token::TokenType, BinaryExpr, VectorMatchCardinality};
@@ -190,7 +191,7 @@ fn walk_qe(expr: &Expr, ctx: WalkCtx) -> anyhow::Result<QueryExpr> {
             let source   = QueryExpr::Source(QeSourceSpec { name });
             let filtered = apply_qe_filters(source, filters);
             Ok(QueryExpr::SketchAgg {
-                op:    QeSketchAggOp::Exact(QeExactAgg::Sum),
+                op:    QeAggIntent::Exact(QeExactAgg::Sum),
                 col:   QeColumnRef::SampleValue,
                 input: Box::new(filtered),
             })
@@ -220,7 +221,7 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: true };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
             let result = QueryExpr::SketchAgg {
-                op:    QeSketchAggOp::default_hll(),
+                op:    QeAggIntent::default_hll(),
                 col:   QeColumnRef::SampleValue,
                 input: Box::new(inner),
             };
@@ -235,7 +236,7 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: false };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
             let result = QueryExpr::SketchAgg {
-                op:    QeSketchAggOp::default_ddsketch(vec![0.25, 0.75]),
+                op:    QeAggIntent::default_ddsketch(vec![0.25, 0.75]),
                 col:   QeColumnRef::SampleValue,
                 input: Box::new(inner),
             };
@@ -246,7 +247,7 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: false };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
             let result = QueryExpr::SketchAgg {
-                op:    QeSketchAggOp::default_ddsketch(vec![phi]),
+                op:    QeAggIntent::default_ddsketch(vec![phi]),
                 col:   QeColumnRef::SampleValue,
                 input: Box::new(inner),
             };
@@ -265,15 +266,15 @@ fn walk_call_qe(call: &Call, ctx: WalkCtx) -> anyhow::Result<QueryExpr> {
             let rate_expr = call.args.args[1].as_ref();
             let (source, filters, window) = extract_inner_matrix(rate_expr)?;
             let inner = build_qe_sketched(source, filters, window,
-                QeSketchAggOp::default_ddsketch(vec![phi]),
+                QeAggIntent::default_ddsketch(vec![phi]),
                 WalkCtx::default());
             Ok(QueryExpr::HistogramQuantile { phi, input: Box::new(inner) })
         }
-        // All other function calls: map directly to QeSketchAggOp.
+        // All other function calls: map directly to QeAggIntent.
         "quantile_over_time" => {
             let phi = extract_call_num_arg(call, 0)?;
             let (source, filters, window) = extract_matrix_arg(call, 1)?;
-            let op = QeSketchAggOp::default_ddsketch(vec![phi]);
+            let op = QeAggIntent::default_ddsketch(vec![phi]);
             Ok(build_qe_sketched(source, filters, window, op, ctx))
         }
         _ => {
@@ -353,39 +354,39 @@ fn promql_token_to_binop(tok: TokenType) -> BinaryOpKind {
     }
 }
 
-/// Map a PromQL function call to a [`QeSketchAggOp`] for direct QE emission.
-fn walk_call_to_op(call: &Call, ctx: &WalkCtx) -> anyhow::Result<QeSketchAggOp> {
+/// Map a PromQL function call to a [`QeAggIntent`] for direct QE emission.
+fn walk_call_to_op(call: &Call, ctx: &WalkCtx) -> anyhow::Result<QeAggIntent> {
     let name = call.func.name;
     match name {
         "quantile_over_time" => {
             let phi = extract_call_num_arg(call, 0)?;
-            Ok(QeSketchAggOp::default_ddsketch(vec![phi]))
+            Ok(QeAggIntent::default_ddsketch(vec![phi]))
         }
-        "avg_over_time" => Ok(QeSketchAggOp::default_ddsketch(vec![0.5])),
+        "avg_over_time" => Ok(QeAggIntent::default_ddsketch(vec![0.5])),
         "min_over_time" => {
             Ok(if ctx.partition.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
-                QeSketchAggOp::default_ddsketch(vec![0.0])
+                QeAggIntent::default_ddsketch(vec![0.0])
             } else {
-                QeSketchAggOp::ExactMinMax { min: true, max: false }
+                QeAggIntent::Extrema { min: true, max: false }
             })
         }
         "max_over_time" => {
             Ok(if ctx.partition.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
-                QeSketchAggOp::default_ddsketch(vec![1.0])
+                QeAggIntent::default_ddsketch(vec![1.0])
             } else {
-                QeSketchAggOp::ExactMinMax { min: false, max: true }
+                QeAggIntent::Extrema { min: false, max: true }
             })
         }
         "stddev_over_time" | "stdvar_over_time" =>
-            Ok(QeSketchAggOp::default_ddsketch(vec![0.25, 0.75])),
+            Ok(QeAggIntent::default_ddsketch(vec![0.25, 0.75])),
         "count_over_time" => {
-            Ok(if ctx.outer_count { QeSketchAggOp::default_hll() } else { QeSketchAggOp::default_count_min() })
+            Ok(if ctx.outer_count { QeAggIntent::default_hll() } else { QeAggIntent::default_count_min() })
         }
         "sum_over_time" | "last_over_time" | "present_over_time" | "absent_over_time"
         | "delta" | "idelta" | "deriv" | "predict_linear" =>
-            Ok(QeSketchAggOp::Exact(QeExactAgg::Sum)),
-        "changes" | "resets" => Ok(QeSketchAggOp::default_count_min()),
-        "rate" | "irate" | "increase" => Ok(QeSketchAggOp::default_count_min()),
+            Ok(QeAggIntent::Exact(QeExactAgg::Sum)),
+        "changes" | "resets" => Ok(QeAggIntent::default_count_min()),
+        "rate" | "irate" | "increase" => Ok(QeAggIntent::default_count_min()),
         other => Err(anyhow!("unsupported PromQL function: {other}")),
     }
 }
@@ -395,7 +396,7 @@ fn build_qe_sketched(
     metric:  String,
     filters: Vec<Predicate>,
     window:  std::time::Duration,
-    op:      QeSketchAggOp,
+    op:      QeAggIntent,
     ctx:     WalkCtx,
 ) -> QueryExpr {
     let source   = QueryExpr::Source(QeSourceSpec { name: metric });
@@ -407,7 +408,7 @@ fn build_qe_sketched(
     };
     let agg = if let Some(k) = ctx.topk {
         QueryExpr::SketchAgg {
-            op:    QeSketchAggOp::default_count_sketch(),
+            op:    QeAggIntent::default_count_sketch(),
             col:   QeColumnRef::SampleValue,
             input: Box::new(windowed),
         }

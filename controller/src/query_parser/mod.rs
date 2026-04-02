@@ -33,7 +33,7 @@ pub mod sql;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::algebra::expr::{QueryExpr, SketchAggOp};
+use crate::algebra::expr::{AggIntent, QueryExpr};
 use crate::types::AggType;
 
 // ── Output types (legacy — consumed by analyzer and planner) ──────────────────
@@ -158,6 +158,15 @@ impl QeCollector {
                 self.collect_op(op);
                 self.visit(input);
             }
+            QueryExpr::WindowedAgg { agg, window, input, .. } => {
+                if self.time_window.is_none() {
+                    if let crate::algebra::expr::WindowKind::Tumbling { size } = &window.kind {
+                        self.time_window = Some(*size);
+                    }
+                }
+                self.collect_op(agg);
+                self.visit(input);
+            }
             QueryExpr::TopK { k, input, .. } => {
                 self.topk = Some(*k);
                 self.visit(input);
@@ -270,20 +279,19 @@ impl QeCollector {
         }
     }
 
-    fn collect_op(&mut self, op: &SketchAggOp) {
-        use crate::algebra::expr::ExactAgg;
+    fn collect_op(&mut self, op: &AggIntent) {
         match op {
-            SketchAggOp::HLL { .. } => {
+            AggIntent::Cardinality { .. } => {
                 if !self.agg_types.contains(&AggType::Cardinality) {
                     self.agg_types.push(AggType::Cardinality);
                 }
             }
-            SketchAggOp::CountMin { .. } | SketchAggOp::CountSketch { .. } => {
+            AggIntent::Frequency { .. } => {
                 if !self.agg_types.contains(&AggType::Frequency) {
                     self.agg_types.push(AggType::Frequency);
                 }
             }
-            SketchAggOp::DDSketch { quantiles, .. } => {
+            AggIntent::Quantile { quantiles, .. } => {
                 if !self.agg_types.contains(&AggType::Quantile) {
                     self.agg_types.push(AggType::Quantile);
                 }
@@ -291,13 +299,13 @@ impl QeCollector {
                     if !self.quantiles.contains(&q) { self.quantiles.push(q); }
                 }
             }
-            SketchAggOp::ExactMinMax { .. } => {
+            AggIntent::Extrema { .. } => {
                 if !self.agg_types.contains(&AggType::Quantile) {
                     self.agg_types.push(AggType::Quantile);
                 }
             }
-            SketchAggOp::Exact(_) => { self.exact_required = true; }
-            SketchAggOp::Hydra { inner, .. } => self.collect_op(inner),
+            AggIntent::Exact(_) => { self.exact_required = true; }
+            AggIntent::PerPartition { inner, .. } => self.collect_op(inner),
         }
     }
 

@@ -43,6 +43,6 @@ pub mod plan;
 
 // Convenience re-exports.
 pub use allocator::SketchAllocator;
-pub use expr::{AggFunc, BinaryOpKind, QueryExpr, ScalarExpr};
+pub use expr::{AggFunc, AggIntent, BinaryOpKind, QueryExpr, ScalarExpr, WindowKind, WindowSpec};
 pub use optimizer::QueryOptimizer;
 pub use plan::{CostEstimate, ExecutionMode, PipelineStage, PlanNode, PlanSummary};

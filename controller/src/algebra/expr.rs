@@ -76,36 +76,34 @@ pub enum ColumnRef {
     Wildcard,
 }
 
-/// The concrete sketch type used for aggregation.
+/// Layer 3 — Sketch logical plan aggregation intent.
+/// Describes WHAT to compute, not HOW (no sketch implementation names).
 #[derive(Debug, Clone, PartialEq)]
-pub enum SketchAggOp {
-    /// Count-Min Sketch — frequency estimation.
-    CountMin { width: u32, depth: u8 },
+pub enum AggIntent {
+    /// Quantile estimation (DDSketch, KLL, t-digest, etc. at physical layer).
+    Quantile { quantiles: Vec<f64>, accuracy: f64 },
 
-    /// Count Sketch — frequency estimation (unbiased, supports negative counts).
-    CountSketch { width: u32, depth: u8 },
+    /// Cardinality / distinct count (HLL, UnivMon, etc. at physical layer).
+    Cardinality { accuracy: f64 },
 
-    /// HyperLogLog — distinct-value counting (COUNT DISTINCT).
-    HLL { registers: u8 },
+    /// Frequency estimation / heavy-hitters (CountSketch, CountMinSketch, etc.).
+    Frequency { accuracy: f64 },
 
-    /// DDSketch — quantile estimation.
-    /// `quantiles` holds the φ values to track; `epsilon` is relative error.
-    DDSketch { quantiles: Vec<f64>, epsilon: f64 },
+    /// Min/max extrema.
+    Extrema { min: bool, max: bool },
 
-    /// Exact running min/max tracker — cheaper than DDSketch for extrema
-    /// without a GROUP BY (no sketch benefit for global extrema).
-    ExactMinMax { min: bool, max: bool },
-
-    /// Hydra — sketch of sketches for multi-dimensional GROUP BY.
-    /// Maintains one `inner` sketch per distinct `partition_keys` tuple.
-    Hydra {
-        inner:          Box<SketchAggOp>,
-        partition_keys: Vec<String>,
+    /// Per-partition wrapper: "run inner intent once per distinct key tuple".
+    PerPartition {
+        inner: Box<AggIntent>,
+        keys:  Vec<String>,
     },
 
-    /// Exact passthrough — no sketch benefit (SUM, global COUNT, etc.).
+    /// Exact passthrough — no sketch benefit (SUM, global COUNT, AVG, etc.).
     Exact(ExactAgg),
 }
+
+/// Backward compatibility alias.
+pub type SketchAggOp = AggIntent;
 
 /// Exact (non-sketch) aggregation kinds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,54 +116,106 @@ pub enum ExactAgg {
     Max,
 }
 
-impl SketchAggOp {
+impl AggIntent {
     /// Returns `true` when two instances of this sketch can be merged
     /// (i.e., `sketch(A ∪ B) = merge(sketch(A), sketch(B))`).
     pub fn is_mergeable(&self) -> bool {
         match self {
-            SketchAggOp::Exact(ExactAgg::Avg) => false,
-            SketchAggOp::Hydra { inner, .. }  => inner.is_mergeable(),
-            _                                  => true,
+            AggIntent::Exact(ExactAgg::Avg) => false,
+            AggIntent::PerPartition { inner, .. } => inner.is_mergeable(),
+            _ => true,
         }
     }
 
     /// Map to the coarse [`AggType`] used by the legacy planner.
     pub fn to_agg_type(&self) -> AggType {
         match self {
-            SketchAggOp::HLL { .. }                                  => AggType::Cardinality,
-            SketchAggOp::CountMin { .. } | SketchAggOp::CountSketch { .. } => AggType::Frequency,
-            SketchAggOp::DDSketch { .. } | SketchAggOp::ExactMinMax { .. } => AggType::Quantile,
-            SketchAggOp::Hydra { inner, .. }                         => inner.to_agg_type(),
-            SketchAggOp::Exact(_)                                    => AggType::Quantile,
+            AggIntent::Cardinality { .. } => AggType::Cardinality,
+            AggIntent::Frequency { .. } => AggType::Frequency,
+            AggIntent::Quantile { .. } | AggIntent::Extrema { .. } => AggType::Quantile,
+            AggIntent::PerPartition { inner, .. } => inner.to_agg_type(),
+            AggIntent::Exact(_) => AggType::Quantile,
         }
     }
 
-    /// Extract quantile φ values for DDSketch operators.
+    /// Extract quantile φ values for Quantile operators.
     pub fn quantiles(&self) -> Vec<f64> {
         match self {
-            SketchAggOp::DDSketch { quantiles, .. } => quantiles.clone(),
-            SketchAggOp::Hydra { inner, .. }        => inner.quantiles(),
-            _                                        => vec![],
+            AggIntent::Quantile { quantiles, .. } => quantiles.clone(),
+            AggIntent::PerPartition { inner, .. } => inner.quantiles(),
+            _ => vec![],
         }
     }
 
     /// Whether this op implies `exact_required` (no sketch benefit).
     pub fn is_exact(&self) -> bool {
-        matches!(self, SketchAggOp::Exact(_) | SketchAggOp::ExactMinMax { .. })
+        matches!(self, AggIntent::Exact(_) | AggIntent::Extrema { .. })
     }
 
-    pub fn default_count_min() -> Self {
-        SketchAggOp::CountMin { width: 2000, depth: 5 }
+    /// Accuracy parameter (0.0 for exact ops).
+    pub fn accuracy(&self) -> f64 {
+        match self {
+            AggIntent::Quantile { accuracy, .. }
+            | AggIntent::Cardinality { accuracy, .. }
+            | AggIntent::Frequency { accuracy, .. } => *accuracy,
+            AggIntent::PerPartition { inner, .. } => inner.accuracy(),
+            _ => 0.0,
+        }
     }
-    pub fn default_count_sketch() -> Self {
-        SketchAggOp::CountSketch { width: 2000, depth: 5 }
+
+    // ── Default constructors (backward compat) ──────────────────────────────
+
+    pub fn default_frequency() -> Self {
+        AggIntent::Frequency { accuracy: std::f64::consts::E / 2000.0 }
     }
-    pub fn default_hll() -> Self {
-        SketchAggOp::HLL { registers: 14 }
+    pub fn default_cardinality() -> Self {
+        AggIntent::Cardinality { accuracy: hll_accuracy(14) }
     }
-    pub fn default_ddsketch(quantiles: Vec<f64>) -> Self {
-        SketchAggOp::DDSketch { quantiles, epsilon: 0.01 }
+    pub fn default_quantile(quantiles: Vec<f64>) -> Self {
+        AggIntent::Quantile { quantiles, accuracy: 0.01 }
     }
+
+    /// Backward compat: `default_count_min()` → `default_frequency()`.
+    pub fn default_count_min() -> Self { Self::default_frequency() }
+    /// Backward compat: `default_count_sketch()` → `default_frequency()`.
+    pub fn default_count_sketch() -> Self { Self::default_frequency() }
+    /// Backward compat: `default_hll()` → `default_cardinality()`.
+    pub fn default_hll() -> Self { Self::default_cardinality() }
+    /// Backward compat: `default_ddsketch(qs)` → `default_quantile(qs)`.
+    pub fn default_ddsketch(quantiles: Vec<f64>) -> Self { Self::default_quantile(quantiles) }
+}
+
+// ── Accuracy helpers ─────────────────────────────────────────────────────────
+
+/// HLL accuracy from register count: `1.04 / sqrt(2^registers)`.
+pub fn hll_accuracy(registers: u8) -> f64 {
+    1.04 / (2.0f64.powi(registers as i32)).sqrt()
+}
+
+/// CountMin accuracy from width: `e / width`.
+pub fn countmin_accuracy(width: u32) -> f64 {
+    std::f64::consts::E / width as f64
+}
+
+/// Unified window specification — captures all language-level window semantics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowSpec {
+    pub kind: WindowKind,
+    pub time_col: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WindowKind {
+    /// Fixed-size, non-overlapping.
+    Tumbling { size: Duration },
+    /// Fixed-size, overlapping (each sample belongs to ceil(size/slide) windows).
+    Sliding { size: Duration, slide: Duration },
+    /// Aggregate all samples (no time dimension).
+    Unbounded,
+    /// From epoch to current time.
+    Landmark,
+    /// Gap-based: window closes after inactivity.
+    Session { gap: Duration },
 }
 
 /// A single filter predicate pushed down to the collector.
@@ -275,6 +325,16 @@ pub enum QueryExpr {
         op:    SketchAggOp,
         col:   ColumnRef,
         input: Box<QueryExpr>,
+    },
+
+    /// Core sketch algebra operator: windowed aggregation intent.
+    /// Bundles the window and the aggregation because in sketch systems
+    /// the window defines the sketch lifecycle (when to flush/reset).
+    WindowedAgg {
+        agg:    AggIntent,
+        window: WindowSpec,
+        col:    ColumnRef,
+        input:  Box<QueryExpr>,
     },
 
     // ── Distributed / multi-stage operators ──────────────────────────────
@@ -558,17 +618,17 @@ impl AggFunc {
         )
     }
 
-    /// Suggest the appropriate [`SketchAggOp`] for this function, if any.
-    pub fn to_sketch_op(&self) -> Option<SketchAggOp> {
+    /// Suggest the appropriate [`AggIntent`] for this function, if any.
+    pub fn to_sketch_op(&self) -> Option<AggIntent> {
         match self {
-            AggFunc::Quantile(phi) => Some(SketchAggOp::default_ddsketch(vec![*phi])),
-            AggFunc::CountDistinct => Some(SketchAggOp::default_hll()),
-            AggFunc::HeavyHitters { .. } => Some(SketchAggOp::default_count_sketch()),
-            AggFunc::Count   => Some(SketchAggOp::Exact(ExactAgg::Count)),
-            AggFunc::Sum     => Some(SketchAggOp::Exact(ExactAgg::Sum)),
-            AggFunc::Avg     => Some(SketchAggOp::Exact(ExactAgg::Avg)),
-            AggFunc::Min     => Some(SketchAggOp::ExactMinMax { min: true,  max: false }),
-            AggFunc::Max     => Some(SketchAggOp::ExactMinMax { min: false, max: true  }),
+            AggFunc::Quantile(phi) => Some(AggIntent::default_quantile(vec![*phi])),
+            AggFunc::CountDistinct => Some(AggIntent::default_cardinality()),
+            AggFunc::HeavyHitters { .. } => Some(AggIntent::default_frequency()),
+            AggFunc::Count   => Some(AggIntent::Exact(ExactAgg::Count)),
+            AggFunc::Sum     => Some(AggIntent::Exact(ExactAgg::Sum)),
+            AggFunc::Avg     => Some(AggIntent::Exact(ExactAgg::Avg)),
+            AggFunc::Min     => Some(AggIntent::Extrema { min: true,  max: false }),
+            AggFunc::Max     => Some(AggIntent::Extrema { min: false, max: true  }),
             _                => None,
         }
     }
@@ -763,6 +823,7 @@ impl QueryExpr {
             | QueryExpr::Project { input, .. }
             | QueryExpr::Window { input, .. }
             | QueryExpr::SketchAgg { input, .. }
+            | QueryExpr::WindowedAgg { input, .. }
             | QueryExpr::Partition { input, .. }
             | QueryExpr::Dedup { input, .. }
             | QueryExpr::TopK { input, .. }
@@ -797,7 +858,7 @@ impl QueryExpr {
     pub fn has_sketch_work(&self) -> bool {
         let mut found = false;
         self.walk(&mut |n| {
-            if matches!(n, QueryExpr::SketchAgg { .. } | QueryExpr::TopK { .. }) {
+            if matches!(n, QueryExpr::SketchAgg { .. } | QueryExpr::WindowedAgg { .. } | QueryExpr::TopK { .. }) {
                 found = true;
             }
         });
@@ -812,6 +873,7 @@ impl QueryExpr {
             | QueryExpr::Project { input, .. }
             | QueryExpr::Window { input, .. }
             | QueryExpr::SketchAgg { input, .. }
+            | QueryExpr::WindowedAgg { input, .. }
             | QueryExpr::Partition { input, .. }
             | QueryExpr::Dedup { input, .. }
             | QueryExpr::TopK { input, .. }
@@ -999,19 +1061,19 @@ mod tests {
     #[test]
     fn agg_func_to_sketch_op_quantile() {
         let op = AggFunc::Quantile(0.99).to_sketch_op();
-        assert!(matches!(op, Some(SketchAggOp::DDSketch { .. })));
+        assert!(matches!(op, Some(AggIntent::Quantile { .. })));
     }
 
     #[test]
     fn agg_func_to_sketch_op_count_distinct() {
         let op = AggFunc::CountDistinct.to_sketch_op();
-        assert!(matches!(op, Some(SketchAggOp::HLL { .. })));
+        assert!(matches!(op, Some(AggIntent::Cardinality { .. })));
     }
 
     #[test]
     fn agg_func_to_sketch_op_heavy_hitters() {
         let op = AggFunc::HeavyHitters { k: 50 }.to_sketch_op();
-        assert!(matches!(op, Some(SketchAggOp::CountSketch { .. })));
+        assert!(matches!(op, Some(AggIntent::Frequency { .. })));
     }
 
     // ── ScalarExpr predicate list conversion ──────────────────────────────────
@@ -1113,30 +1175,30 @@ mod tests {
         }
     }
 
-    // ── SketchAggOp and related types ──────────────────────────────────────────
+    // ── AggIntent and related types ──────────────────────────────────────────
 
     #[test]
-    fn sketch_agg_op_hll_is_mergeable() {
-        assert!(SketchAggOp::default_hll().is_mergeable());
+    fn agg_intent_cardinality_is_mergeable() {
+        assert!(AggIntent::default_cardinality().is_mergeable());
     }
 
     #[test]
-    fn sketch_agg_op_exact_avg_not_mergeable() {
-        assert!(!SketchAggOp::Exact(ExactAgg::Avg).is_mergeable());
+    fn agg_intent_exact_avg_not_mergeable() {
+        assert!(!AggIntent::Exact(ExactAgg::Avg).is_mergeable());
     }
 
     #[test]
-    fn sketch_agg_op_hydra_mergeability_from_inner() {
-        let hydra_hll = SketchAggOp::Hydra {
-            inner:          Box::new(SketchAggOp::default_hll()),
-            partition_keys: vec!["region".into()],
+    fn agg_intent_per_partition_mergeability_from_inner() {
+        let pp_card = AggIntent::PerPartition {
+            inner: Box::new(AggIntent::default_cardinality()),
+            keys:  vec!["region".into()],
         };
-        assert!(hydra_hll.is_mergeable());
-        let hydra_avg = SketchAggOp::Hydra {
-            inner:          Box::new(SketchAggOp::Exact(ExactAgg::Avg)),
-            partition_keys: vec!["region".into()],
+        assert!(pp_card.is_mergeable());
+        let pp_avg = AggIntent::PerPartition {
+            inner: Box::new(AggIntent::Exact(ExactAgg::Avg)),
+            keys:  vec!["region".into()],
         };
-        assert!(!hydra_avg.is_mergeable());
+        assert!(!pp_avg.is_mergeable());
     }
 
     #[test]
@@ -1147,25 +1209,25 @@ mod tests {
     }
 
     #[test]
-    fn sketch_agg_op_to_agg_type() {
+    fn agg_intent_to_agg_type() {
         use crate::types::AggType;
-        assert_eq!(SketchAggOp::default_hll().to_agg_type(),         AggType::Cardinality);
-        assert_eq!(SketchAggOp::default_count_min().to_agg_type(),   AggType::Frequency);
-        assert_eq!(SketchAggOp::default_ddsketch(vec![0.5]).to_agg_type(), AggType::Quantile);
+        assert_eq!(AggIntent::default_cardinality().to_agg_type(), AggType::Cardinality);
+        assert_eq!(AggIntent::default_frequency().to_agg_type(),   AggType::Frequency);
+        assert_eq!(AggIntent::default_quantile(vec![0.5]).to_agg_type(), AggType::Quantile);
     }
 
     #[test]
-    fn sketch_agg_op_is_exact() {
-        assert!(SketchAggOp::Exact(ExactAgg::Sum).is_exact());
-        assert!(SketchAggOp::ExactMinMax { min: true, max: false }.is_exact());
-        assert!(!SketchAggOp::default_hll().is_exact());
+    fn agg_intent_is_exact() {
+        assert!(AggIntent::Exact(ExactAgg::Sum).is_exact());
+        assert!(AggIntent::Extrema { min: true, max: false }.is_exact());
+        assert!(!AggIntent::default_cardinality().is_exact());
     }
 
     #[test]
     fn sketch_coverage_classification() {
-        let ops: Vec<SketchAggOp> = vec![
-            SketchAggOp::default_hll(),
-            SketchAggOp::Exact(ExactAgg::Sum),
+        let ops: Vec<AggIntent> = vec![
+            AggIntent::default_cardinality(),
+            AggIntent::Exact(ExactAgg::Sum),
         ];
         let has_sketch = ops.iter().any(|o| !o.is_exact());
         let has_exact  = ops.iter().any(|o|  o.is_exact());

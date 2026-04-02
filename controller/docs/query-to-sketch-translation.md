@@ -1,26 +1,85 @@
 # Query-to-Sketch Translation: How QL Maps to Sketch Execution
 
 This document explains how a PromQL or SQL query is translated through the
-controller's intermediate representations and ultimately mapped to sketch-based
-distributed execution across OpenTelemetry Collectors.
+controller's five-layer architecture and ultimately mapped to sketch-based
+distributed execution.
 
-## 1. Intermediate Representation: QueryExpr (Logical Plan)
+## 1. Five-Layer Architecture
 
-The controller uses **`QueryExpr`** (`algebra/expr.rs`) as its sole intermediate
-representation.  QueryExpr is a **logical plan** — a tree of relational algebra
-operators — not a syntax tree.  It normalises both SQL and PromQL into a common
-algebraic form that the optimizer and stage allocator can reason about.
+The controller is structured as a five-layer pipeline.  Each layer has a
+clear input, output, and responsibility:
 
-The key distinction from an AST:
+```
+Query workloads
+  │
+  │  Layer 1 — Query Language
+  │  (PromQL, SQL, DataFusion, ElasticDSL, ...)
+  ▼
+Language-specific AST
+  │
+  │  Layer 2 — Language Logical Plan
+  │  (each language's own relational/query algebra)
+  ▼
+Language Logical Plan
+  │
+  │  Layer 3 — Sketch Logical Plan (Sketch Algebra)
+  │  (language-independent, implementation-independent)
+  ▼
+Sketch Logical Plan
+  │
+  │  Layer 4 — Sketch Optimizer
+  │  (rewrite rules on the sketch logical plan)
+  ▼
+Optimised Sketch Logical Plan
+  │
+  │  Layer 5 — Physical Execution Plan
+  │  (concrete implementations for a specific deployment)
+  ▼
+Physical Plan (OTel processors, PromSketch, DB queries, on-device)
+```
+
+### What each layer owns
+
+| Layer | Input | Output | Responsibility |
+|---|---|---|---|
+| **1. Query Language** | query string | language AST | grammar, parsing |
+| **2. Language Logical Plan** | AST | language-specific relational plan | language semantics (PromQL instant/range vectors, SQL frames, Elastic buckets) |
+| **3. Sketch Logical Plan** | language plan | sketch algebra tree (`QueryExpr`) | **what** to compute: aggregation intent + accuracy requirement + window semantics — no sketch names, no implementation details |
+| **4. Sketch Optimizer** | sketch plan | optimised sketch plan | algebraic rewrites: push-down, fusion, elimination, common sub-expression |
+| **5. Physical Plan** | optimised plan + deployment config | executable plan | **how** to execute: DDSketch vs KLL, OTel vs PromSketch, tumbling ticker vs EH buckets, data exchange format |
+
+### Key design principle: Layers 1–4 are implementation-independent
+
+The sketch logical plan (Layer 3) uses **`AggIntent`** — aggregation intents that
+describe *what* to compute without naming a specific sketch implementation:
+
+| `AggIntent` variant | Meaning | Physical candidates (Layer 5) |
+|---|---|---|
+| `Quantile { quantiles, accuracy }` | "I need quantile estimates at these φ values within this error" | DDSketch, KLL, t-digest, PromSketch EHKLL |
+| `Cardinality { accuracy }` | "I need a distinct-count estimate within this error" | HLL, UnivMon, PromSketch EHUniv |
+| `Frequency { accuracy }` | "I need frequency estimates within this error" | CountSketch, CountMinSketch |
+| `Extrema { min, max }` | "I need exact min/max" | ExactMinMax, DDSketch at φ=0/1 |
+| `PerPartition { inner, keys }` | "Run inner once per distinct key tuple" | Hydra, per-key sketch instances |
+| `Exact(Sum\|Count\|Avg\|Min\|Max)` | "No sketch benefit — exact computation" | Raw passthrough, DB-side |
+
+This separation means:
+- The **parser** (Layers 1–2) says "this query needs a quantile at φ=0.99"
+- The **optimizer** (Layer 4) rewrites the plan algebraically
+- The **physical planner** (Layer 5) says "for this workload on this deployment, DDSketch is cheapest" or "PromSketch EHKLL is better because it's co-located"
+
+## 2. Sketch Logical Plan: `QueryExpr` (Layer 3)
+
+`QueryExpr` (`algebra/expr.rs`) is the sketch algebra IR — a **logical plan** that
+normalises all query languages into a common algebraic form.
 
 | | AST (syntax tree) | Logical Plan (QueryExpr) |
 |---|---|---|
 | **Structure** | Mirrors the grammar | Mirrors relational algebra operators |
-| **Semantics** | Preserves syntactic details (parentheses, keyword order) | Preserves only operator semantics |
-| **Optimization** | Requires pattern-matching on syntax | Uses algebraic rewrite rules |
-| **Language** | Language-specific | Language-independent (shared by SQL and PromQL) |
+| **Semantics** | Preserves syntactic details | Preserves only operator semantics |
+| **Sketch types** | N/A | Implementation-independent intents (`AggIntent`) |
+| **Language** | Language-specific | Language-independent (shared by SQL, PromQL, etc.) |
 
-QueryExpr has **24 operator variants** organized into categories:
+QueryExpr has **25 operator variants** organized into categories:
 
 **Relational core** — standard relational algebra:
 - `Source` — base metric / table (leaf node)
@@ -32,16 +91,19 @@ QueryExpr has **24 operator variants** organized into categories:
 - `Sort { keys, input }` — ORDER BY
 - `Limit { n, offset, input }` — LIMIT / OFFSET
 
-**Sketch-specific** — operators that map directly to sketch data structures:
-- `SketchAgg { op, col, input }` — sketch aggregation (DDSketch, HLL, CountSketch, CountMinSketch)
+**Sketch-specific** — operators that express sketch computation intent:
+- `SketchAgg { op: AggIntent, col, input }` — sketch aggregation intent (what, not how)
+- `WindowedAgg { agg: AggIntent, window: WindowSpec, col, input }` — bundled window + sketch agg (window defines sketch lifecycle)
 - `Partition { keys, input }` — GROUP BY distribution for distributed sketches
-- `Dedup { col, input }` — deduplication (absorbed by HLL)
+- `Dedup { col, input }` — deduplication (absorbed by cardinality sketches)
 - `TopK { k, by, input }` — top-K heavy-hitter query
 - `Merge { inputs }` — sketch merge (linearity: sketch(A∪B) = merge(sketch(A), sketch(B)))
 - `JoinSketch { join_key, outer, inner }` — sketch-aware join push-down
 
+**Time / streaming** — window operators:
+- `Window { duration, slide, input }` — standalone time window (batching)
+
 **PromQL-specific** — operators that preserve PromQL semantics:
-- `Window { duration, slide, input }` — time-range window (`[5m]`)
 - `HistogramQuantile { phi, input }` — `histogram_quantile(φ, …)`
 - `PromQLSubquery { range, resolution, input }` — `expr[range:resolution]`
 - `BinaryOp { op, lhs, rhs, vector_match }` — vector binary arithmetic with matching
@@ -49,27 +111,22 @@ QueryExpr has **24 operator variants** organized into categories:
 **Structural** — subqueries and bindings:
 - `Subquery`, `LetBinding`, `Ref`, `WindowFunc`
 
-## 2. The Full Translation Pipeline
+### Window operators: `Window` vs `WindowedAgg`
 
-```
-PromQL / SQL string
-  │
-  │  Step 1 — Parse (query_parser/)
-  ▼
-QueryExpr (logical plan)
-  │
-  │  Step 2 — Optimize (algebra/optimizer.rs): 12 rewrite rules, fixed-point
-  ▼
-Optimised QueryExpr
-  │
-  │  Step 3 — Stage-split (planner/stage_split.rs): assign nodes to stages
-  ▼
-StagedPlan (Agent / Backend / Precompute / DB sub-plans)
-  │
-  │  Step 4 — Config emit (config/): generate OTel Collector YAML per stage
-  ▼
-Agent YAML + Backend YAML + Precompute query expr
-```
+| Operator | Use | Why separate |
+|---|---|---|
+| `Window { duration, slide }` | Standalone time batching (no sketch) | Used when the sketch op is a separate `SketchAgg` child node |
+| `WindowedAgg { agg, window, col }` | Bundled window + sketch aggregation | In sketch systems the window defines the sketch lifecycle (when to flush/reset). Bundling lets the physical planner choose the best implementation (OTel tumbling flush vs PromSketch EH vs DB time_bucket). |
+
+`WindowSpec` supports five window kinds:
+
+| `WindowKind` | Semantics | Example |
+|---|---|---|
+| `Tumbling { size }` | Fixed-size, non-overlapping | PromQL implicit, SQL `TUMBLE(ts, '5m')`, Elastic `fixed_interval` |
+| `Sliding { size, slide }` | Fixed-size, overlapping | PromQL `[5m]` range vector, SQL `HOP(ts, '1m', '5m')` |
+| `Unbounded` | All samples, no time dimension | SQL `GROUP BY key` without time |
+| `Landmark` | From epoch to now (cumulative) | Running aggregates |
+| `Session { gap }` | Gap-based, closes after inactivity | Elastic session windows |
 
 ## 3. Parsing Algorithm: QL String → QueryExpr (Logical Plan)
 
