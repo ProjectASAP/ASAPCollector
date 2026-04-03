@@ -634,3 +634,4 @@ if __name__ == "__main__":
 # --- Q1 ---
 QUERY_CONFIG["Q1"] = QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile")
 QUERY_CONFIG["Q2"] = QueryCfg((), "5m", "data_filtered", (), "nop")
+QUERY_CONFIG["Q3"] = QueryCfg(("frequency",), "5m", "data", (), "frequency")
