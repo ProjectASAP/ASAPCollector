@@ -460,10 +460,6 @@ _SKETCH_METRIC_PATTERN["Q7"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q7"] = compare_q7
 
 
-
-
-
-
 # --- Q8: IQR accuracy over 15-min windows ---
 
 def compare_q8(
@@ -496,9 +492,6 @@ def compare_q8(
 
 _SKETCH_METRIC_PATTERN["Q8"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q8"] = compare_q8
-
-
-
 
 
 if __name__ == "__main__":
