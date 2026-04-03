@@ -49,6 +49,8 @@ def main() -> None:
             if "Last" not in chunk.columns or "Trading time" not in chunk.columns:
                 raise SystemExit(f"missing Last or Trading time column in {path}")
             m = nz(chunk["Last"]) & nz(chunk["Trading time"])
+            last_num = pd.to_numeric(chunk.loc[m, "Last"], errors="coerce")
+            m[m] = last_num > 0
             sub = chunk.loc[m]
             if sub.empty:
                 continue
