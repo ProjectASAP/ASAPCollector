@@ -620,5 +620,38 @@ _SKETCH_METRIC_PATTERN["Q7"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q7"] = compare_q7
 
 
+# --- Q8: IQR accuracy over 15-min windows ---
+
+def compare_q8(
+    ground_truth: pd.DataFrame,
+    sketch_rows: pd.DataFrame,
+    *,
+    day: str = "",
+    skip_warmup_windows: int = 0,
+) -> dict:
+    gt = _select_evaluation_window(ground_truth, WINDOW_15MIN_MS, skip_warmup_windows)
+    p25 = extract_sketch_quantile(sketch_rows, 0.25)
+    p75 = extract_sketch_quantile(sketch_rows, 0.75)
+    if p25.empty or p75.empty:
+        return {"metric": "frac_iqr_lt_10pct", "value": 0.0, "threshold": 0.90, "pass": 0}
+    sketch = p25.merge(p75, on="symbol", suffixes=("_q25", "_q75"))
+    sketch["sketch_iqr"] = sketch["v_q75"] - sketch["v_q25"]
+    merged = gt.merge(sketch[["symbol", "sketch_iqr"]], on="symbol", how="inner")
+    if merged.empty:
+        return {"metric": "frac_iqr_lt_10pct", "value": 0.0, "threshold": 0.90, "pass": 0}
+    denom = merged["exact_iqr"].abs().clip(lower=1e-12)
+    rel = (merged["sketch_iqr"] - merged["exact_iqr"]).abs() / denom
+    fraction = float((rel < 0.10).mean())
+    return {
+        "metric": "frac_iqr_lt_10pct",
+        "value": fraction,
+        "threshold": 0.90,
+        "pass": int(fraction >= 0.90),
+    }
+
+
+_SKETCH_METRIC_PATTERN["Q8"] = r"ddsketch|kll"
+_COMPARE_DISPATCH["Q8"] = compare_q8
+
 if __name__ == "__main__":
     main()
