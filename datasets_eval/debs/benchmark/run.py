@@ -112,7 +112,9 @@ def dataset_for_query(query: str) -> str:
 def replay_technical_mode(mode: str) -> str:
     if mode == "throughput":
         return "max"
-    return "scaled"
+    if mode in ("latency", "sketch-finance"):
+        return "paced"
+    return "paced"
 
 
 def group_by_labels_for_plan(query: str) -> list[str]:
