@@ -35,5 +35,9 @@ def run_ground_truth_task(
         from ground_truth.q4 import run_q4
 
         run_q4(day, output_dir, chunksize)
+    elif query_id == "Q5":
+        from ground_truth.q5 import run_q5
+
+        run_q5(day, output_dir, chunksize)
     else:
         raise ValueError(f"No ground truth runner for query {query_id!r} in this checkout.")

@@ -636,3 +636,4 @@ QUERY_CONFIG["Q1"] = QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",),
 QUERY_CONFIG["Q2"] = QueryCfg((), "5m", "data_filtered", (), "nop")
 QUERY_CONFIG["Q3"] = QueryCfg(("frequency",), "5m", "data", (), "frequency")
 QUERY_CONFIG["Q4"] = QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile")
+QUERY_CONFIG["Q5"] = QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile")
