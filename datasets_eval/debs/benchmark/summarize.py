@@ -162,29 +162,87 @@ def build_markdown(agg: pd.DataFrame, throughput: pd.DataFrame, days: list[str] 
 
 
 # ---------------------------------------------------------------------------
-# Per-run summary (single Q1 comparison CSV)
+# Per-run summary (any query comparison CSV)
 # ---------------------------------------------------------------------------
 
-_Q1_ERR_METRICS = ("per_pair_rel_err_mean", "per_pair_rel_err_min", "per_pair_rel_err_max")
-_Q1_PASS_METRICS = ("frac_lt_1pct",)
-
 _LOG_HEADER = (
-    "| timestamp | query | day | windows_compared"
-    " | frac_lt_1pct | mean_err | min_err | max_err | pass |\n"
-    "|---|---|---|---|---|---|---|---|---|\n"
+    "| timestamp | query | day | metric | value | threshold | pass |\n"
+    "|---|---|---|---|---|---|---|\n"
 )
 
+_FMT_SCIENTIFIC = {"per_pair_rel_err_min"}
 
-def _count_windows(df: pd.DataFrame) -> int:
-    """Return number of distinct GT windows present in a comparison CSV."""
-    # compare_q1 stores one row per (symbol, window) pair via the merged GT;
-    # the comparison CSV has one row per metric. We store windows_compared in
-    # metadata if available, otherwise fall back to 'n/a'.
-    if "windows_compared" in df.columns:
-        v = df["windows_compared"].dropna()
-        if not v.empty:
-            return int(v.iloc[0])
-    return -1
+
+def _fmt_value(metric: str, v: float) -> str:
+    if metric in _FMT_SCIENTIFIC:
+        return f"{v:.6e}"
+    return f"{v:.6f}"
+
+
+def _fmt_threshold(metric: str, threshold: float) -> str:
+    if metric == "per_pair_rel_err_min":
+        return "—"
+    if metric in ("hll_max_rel_err", "per_pair_rel_err_mean", "per_pair_rel_err_max"):
+        return f"≤ {threshold:.4f}"
+    return f"≥ {threshold:.4f}"
+
+
+def _console_q1(day_tag: str, df: pd.DataFrame) -> bool:
+    def _get(m: str) -> float | None:
+        r = df[df["metric"] == m]
+        return float(r["value"].iloc[0]) if not r.empty else None
+
+    def _pass(m: str) -> int | None:
+        r = df[df["metric"] == m]
+        return int(r["pass"].iloc[0]) if not r.empty else None
+
+    frac = _get("frac_lt_1pct")
+    mean_e = _get("per_pair_rel_err_mean")
+    min_e = _get("per_pair_rel_err_min")
+    max_e = _get("per_pair_rel_err_max")
+    all_pass = all(
+        _pass(m) == 1
+        for m in ("frac_lt_1pct", "per_pair_rel_err_mean", "per_pair_rel_err_max")
+        if _pass(m) is not None
+    )
+    print(f"\nRun summary: Q1 / {day_tag}")
+    print(f"  frac_lt_1pct     : {frac:.4f}" if frac is not None else "  frac_lt_1pct     : n/a")
+    print(f"  mean_err         : {mean_e:.6f}" if mean_e is not None else "  mean_err         : n/a")
+    print(f"  min_err          : {min_e:.6e}" if min_e is not None else "  min_err          : n/a")
+    print(f"  max_err          : {max_e:.6f}" if max_e is not None else "  max_err          : n/a")
+    print(f"  pass             : {'yes' if all_pass else 'no'}")
+    return all_pass
+
+
+def _console_q3(day_tag: str, df: pd.DataFrame) -> bool:
+    def _get(m: str) -> float | None:
+        r = df[df["metric"] == m]
+        return float(r["value"].iloc[0]) if not r.empty else None
+
+    def _pass(m: str) -> int | None:
+        r = df[df["metric"] == m]
+        return int(r["pass"].iloc[0]) if not r.empty else None
+
+    score = _get("q3_score")
+    passed = _pass("q3_score") == 1
+    print(f"\nRun summary: Q3 / {day_tag}")
+    print(f"  q3_score         : {score:.4f}" if score is not None else "  q3_score         : n/a")
+    print(f"  pass             : {'yes' if passed else 'no'}")
+    return passed
+
+
+def _console_generic(query: str, day_tag: str, df: pd.DataFrame) -> bool:
+    all_pass = True
+    print(f"\nRun summary: {query} / {day_tag}")
+    for _, row in df.iterrows():
+        metric = str(row["metric"])
+        value = float(row["value"])
+        passed = int(row["pass"]) == 1
+        if not passed:
+            all_pass = False
+        print(f"  {metric:<30} : {_fmt_value(metric, value)}  pass={'yes' if passed else 'no'}")
+    print(f"  pass             : {'yes' if all_pass else 'no'}")
+    return all_pass
 
 
 def run_single(
@@ -204,65 +262,38 @@ def run_single(
         print(f"Comparison CSV is empty: {csv_path}")
         return
 
-    def _get(metric: str) -> float | None:
-        rows = df[df["metric"] == metric]
-        if rows.empty:
-            return None
-        return float(rows["value"].iloc[0])
+    if query == "Q1":
+        all_pass = _console_q1(day_tag, df)
+    elif query == "Q3":
+        all_pass = _console_q3(day_tag, df)
+    else:
+        all_pass = _console_generic(query, day_tag, df)
 
-    def _pass(metric: str) -> int | None:
-        rows = df[df["metric"] == metric]
-        if rows.empty:
-            return None
-        return int(rows["pass"].iloc[0])
-
-    frac = _get("frac_lt_1pct")
-    mean_e = _get("per_pair_rel_err_mean")
-    min_e = _get("per_pair_rel_err_min")
-    max_e = _get("per_pair_rel_err_max")
-
-    all_pass = all(
-        _pass(m) == 1
-        for m in ("frac_lt_1pct", "per_pair_rel_err_mean", "per_pair_rel_err_max")
-        if _pass(m) is not None
-    )
-
-    windows_compared = _count_windows(df)
-    windows_str = str(windows_compared) if windows_compared >= 0 else "n/a"
-
-    # --- console output ---
-    print(f"\nRun summary: {query} / {day_tag}")
-    print(f"  windows_compared : {windows_str}")
-    print(f"  frac_lt_1pct     : {frac:.4f}" if frac is not None else "  frac_lt_1pct     : n/a")
-    print(f"  mean_err         : {mean_e:.6f}" if mean_e is not None else "  mean_err         : n/a")
-    print(f"  min_err          : {min_e:.6e}" if min_e is not None else "  min_err          : n/a")
-    print(f"  max_err          : {max_e:.6f}" if max_e is not None else "  max_err          : n/a")
-    print(f"  pass             : {'yes' if all_pass else 'no'}")
-
-    # --- append to run log ---
+    # --- append one row per metric to run log ---
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    frac_str = f"{frac:.4f}" if frac is not None else "—"
-    mean_str = f"{mean_e:.6f}" if mean_e is not None else "—"
-    min_str = f"{min_e:.6e}" if min_e is not None else "—"
-    max_str = f"{max_e:.6f}" if max_e is not None else "—"
-    pass_str = "✓" if all_pass else "✗"
-
-    row = (
-        f"| {ts} | {query} | {day_tag} | {windows_str}"
-        f" | {frac_str} | {mean_str} | {min_str} | {max_str} | {pass_str} |\n"
-    )
+    rows: list[str] = []
+    for _, row in df.iterrows():
+        metric = str(row["metric"])
+        value = float(row["value"])
+        threshold = float(row["threshold"])
+        passed = int(row["pass"]) == 1
+        rows.append(
+            f"| {ts} | {query} | {day_tag} | {metric}"
+            f" | {_fmt_value(metric, value)}"
+            f" | {_fmt_threshold(metric, threshold)}"
+            f" | {'✓' if passed else '✗'} |\n"
+        )
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     if not log_path.is_file():
-        log_path.write_text(f"# Run log\n\n{_LOG_HEADER}{row}", encoding="utf-8")
+        log_path.write_text(f"# Run log\n\n{_LOG_HEADER}{''.join(rows)}", encoding="utf-8")
         print(f"Created: {log_path}")
     else:
         content = log_path.read_text(encoding="utf-8")
-        # Append row; if header not present (e.g. file was empty), prepend it.
         if "| timestamp |" not in content:
-            log_path.write_text(content + f"\n{_LOG_HEADER}{row}", encoding="utf-8")
+            log_path.write_text(content + f"\n{_LOG_HEADER}{''.join(rows)}", encoding="utf-8")
         else:
-            log_path.write_text(content + row, encoding="utf-8")
+            log_path.write_text(content + "".join(rows), encoding="utf-8")
         print(f"Appended: {log_path}")
 
 
@@ -275,7 +306,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
 
     # --- 'run' subcommand: per-run single-day stats ---
-    p_run = sub.add_parser("run", help="Print per-run error stats for one Q1 run and append to run_log.md.")
+    p_run = sub.add_parser("run", help="Print per-run stats for one query run and append to run_log.md.")
     p_run.add_argument("--query", default="Q1", help="Query ID (default: Q1).")
     p_run.add_argument("--day", default="08-11-21", help="Trading day tag (default: 08-11-21).")
     p_run.add_argument(
