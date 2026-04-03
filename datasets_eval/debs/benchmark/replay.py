@@ -264,6 +264,8 @@ def main() -> None:
     first_event_time_ns: int | None = None
     replay_start_perf: float | None = None
     cutoff_ns: int | None = None
+    min_event_ns: int | None = None
+    max_event_ns: int | None = None
 
     send_times_file = open(send_times_path, "w", newline="", encoding="utf-8")
     send_times_writer = csv.writer(send_times_file)
