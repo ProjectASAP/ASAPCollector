@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import time
 from pathlib import Path
 
@@ -28,13 +29,19 @@ def compute_q6_distinct(dataframe: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def run_q6(day: str, output_root: Path, chunksize: int) -> None:
+def run_q6(
+    day: str,
+    output_root: Path,
+    chunksize: int,
+    max_event_minutes: int | None = None,
+) -> None:
     day_tag = day_tag_from_arg(day)
     csv_path = data_path("data_filtered") / day_to_filename(day)
     sub = output_root / "Q6"
     sub.mkdir(parents=True, exist_ok=True)
 
-    dataframe, _ = timed_load("Q6", day_tag, csv_path, load_filtered_day, chunksize)
+    loader_fn = functools.partial(load_filtered_day, max_event_minutes=max_event_minutes)
+    dataframe, _ = timed_load("Q6", day_tag, csv_path, loader_fn, chunksize)
     if dataframe.empty:
         log_phase("Q6", day_tag, "skip empty")
         return
