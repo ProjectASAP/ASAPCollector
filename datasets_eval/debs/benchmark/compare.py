@@ -519,5 +519,45 @@ _SKETCH_METRIC_PATTERN["Q4"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q4"] = compare_q4
 
 
+# --- Q5: volatility (IQR/1.349) accuracy ---
+
+def compare_q5(
+    ground_truth: pd.DataFrame,
+    sketch_rows: pd.DataFrame,
+    *,
+    day: str = "",
+    skip_warmup_windows: int = 0,
+) -> dict:
+    gt = _select_evaluation_window(ground_truth, WINDOW_5MIN_MS, skip_warmup_windows)
+    p25 = extract_sketch_quantile(sketch_rows, 0.25)
+    p75 = extract_sketch_quantile(sketch_rows, 0.75)
+    if p25.empty or p75.empty:
+        return {"metric": "frac_sigma_lt_10pct", "value": 0.0, "threshold": 0.90, "pass": 0}
+    sketch = p25.merge(p75, on="symbol", suffixes=("_q25", "_q75"))
+    sketch["sketch_sigma"] = (sketch["v_q75"] - sketch["v_q25"]) / 1.349
+    merged = gt.merge(sketch[["symbol", "sketch_sigma"]], on="symbol", how="inner")
+    if merged.empty:
+        return {"metric": "frac_sigma_lt_10pct", "value": 0.0, "threshold": 0.90, "pass": 0}
+    truth = merged["sigma_iqr"] if "sigma_iqr" in merged.columns else merged["sigma"]
+    acc = 0.01
+    if "ref_price" in merged.columns:
+        floor = (merged["ref_price"].abs() * acc).clip(lower=1e-12)
+    else:
+        floor = 1e-12
+    scale = np.maximum(np.maximum(np.abs(truth), np.abs(merged["sketch_sigma"])), floor)
+    rel = (merged["sketch_sigma"] - truth).abs() / scale
+    fraction = float((rel < 0.10).mean())
+    return {
+        "metric": "frac_sigma_lt_10pct",
+        "value": fraction,
+        "threshold": 0.90,
+        "pass": int(fraction >= 0.90),
+    }
+
+
+_SKETCH_METRIC_PATTERN["Q5"] = r"ddsketch|kll"
+_COMPARE_DISPATCH["Q5"] = compare_q5
+
+
 if __name__ == "__main__":
     main()
