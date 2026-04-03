@@ -327,7 +327,6 @@ _SKETCH_METRIC_PATTERN["Q3"] = r"countsketch"
 _COMPARE_DISPATCH["Q3"] = compare_q3
 
 
-
 # --- Q4: price range (min/max) accuracy ---
 
 def compare_q4(
@@ -360,7 +359,6 @@ def compare_q4(
 
 _SKETCH_METRIC_PATTERN["Q4"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q4"] = compare_q4
-
 
 
 # --- Q5: volatility (IQR/1.349) accuracy ---
