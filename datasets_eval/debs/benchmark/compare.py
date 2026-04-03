@@ -459,5 +459,6 @@ def compare_q7(
 _SKETCH_METRIC_PATTERN["Q7"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q7"] = compare_q7
 
+
 if __name__ == "__main__":
     main()
