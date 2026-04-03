@@ -24,7 +24,7 @@ def compute_q7_twap(dataframe: pd.DataFrame) -> pd.DataFrame:
     )
     means = working.groupby(["symbol", "ws"])["Last"].mean().reset_index()
     means["window_start_ms"] = means["ws"].astype(np.int64)
-    return means.rename(columns={"Last": "mean"})[["symbol", "window_start_ms", "mean"]]
+    return means.rename(columns={"Last": "mean_price"})[["symbol", "window_start_ms", "mean_price"]]
 
 
 def run_q7(day: str, output_root: Path, chunksize: int) -> None:
