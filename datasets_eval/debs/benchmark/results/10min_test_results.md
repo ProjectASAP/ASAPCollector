@@ -18,6 +18,7 @@
 | Q5 | `symbols_within_10pct_volatility` | Fraction of symbols where the sketch-derived volatility (IQR/1.349) is within 10% relative error of exact volatility. `1.0` = 100%. Last window only. | 1.0000 | 1.0000 | 1.0000 | ≥ 0.90 | ✓ |
 | Q6 | `hll_cardinality_rel_error` | `|HLL_estimate − exact_count| / exact_count`. `0.0` = perfect estimate. Last window only. | 0.0000 | 0.0000 | 0.0000 | ≤ 0.02 | ✓ |
 | Q7 | `symbols_within_2pct_mean` | Fraction of symbols where sketch p50 is within 2% relative error of exact mean price. `1.0` = 100%. Last window only. | 1.0000 | 1.0000 | 1.0000 | ≥ 0.90 | ✓ |
+| Q8 | `symbols_within_10pct_iqr` | Fraction of symbols where sketch IQR (p75 − p25) is within 10% relative error of exact IQR. `1.0` = 100%. Last 15-min window only. | 0.9413 | 0.9413 | 0.9413 | ≥ 0.90 | ✓ |
 
 ---
 
