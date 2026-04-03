@@ -53,6 +53,7 @@ QUERY_CONFIG: dict[str, QueryCfg] = {
     "Q3": QueryCfg(("frequency",), "5m", "data_filtered", (), "frequency"),
     "Q4": QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile"),
     "Q5": QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile"),
+    "Q6": QueryCfg(("cardinality",), "5m", "data_filtered", (), "cardinality"),
 }
 
 NOP_QUERIES = frozenset(q for q, c in QUERY_CONFIG.items() if c.sketch_family == "nop")
