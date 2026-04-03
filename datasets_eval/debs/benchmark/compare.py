@@ -433,3 +433,32 @@ def compare_q6(
 
 _SKETCH_METRIC_PATTERN["Q6"] = r"hll_cardinality"
 _COMPARE_DISPATCH["Q6"] = compare_q6
+
+
+# --- Q7: mean price accuracy (p50 as mean proxy) ---
+
+def compare_q7(
+    ground_truth: pd.DataFrame,
+    sketch_rows: pd.DataFrame,
+    *,
+    day: str = "",
+    skip_warmup_windows: int = 0,
+) -> dict:
+    gt = _select_evaluation_window(ground_truth, WINDOW_5MIN_MS, skip_warmup_windows)
+    p50 = extract_sketch_quantile(sketch_rows, 0.5)
+    merged = gt.merge(p50.rename(columns={"v": "p50"}), on="symbol", how="inner")
+    if merged.empty:
+        return {"metric": "frac_mean_lt_2pct", "value": 0.0, "threshold": 0.90, "pass": 0}
+    denom = merged["mean_price"].abs().clip(lower=1e-12)
+    rel = (merged["p50"] - merged["mean_price"]).abs() / denom
+    fraction = float((rel < 0.02).mean())
+    return {
+        "metric": "frac_mean_lt_2pct",
+        "value": fraction,
+        "threshold": 0.90,
+        "pass": int(fraction >= 0.90),
+    }
+
+
+_SKETCH_METRIC_PATTERN["Q7"] = r"ddsketch|kll"
+_COMPARE_DISPATCH["Q7"] = compare_q7
