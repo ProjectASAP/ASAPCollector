@@ -623,3 +623,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# --- Q1 ---
+QUERY_CONFIG["Q1"] = QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile")

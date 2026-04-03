@@ -15,9 +15,8 @@ from common import DEFAULT_DAYS
 
 from ground_truth.tasks import run_ground_truth_task
 
-# Populated incrementally by each debs_qN branch.
-ACCEPTED_GT_QUERIES: tuple[str, ...] = ()
-ALL_GT_BATCH: tuple[str, ...] = ()
+ACCEPTED_GT_QUERIES: tuple[str, ...] = ("Q1",)
+ALL_GT_BATCH: tuple[str, ...] = ("Q1",)
 
 
 def _shutdown_executor_on_failure(
