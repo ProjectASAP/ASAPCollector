@@ -248,6 +248,23 @@ def _console_q4(day_tag: str, df: pd.DataFrame) -> bool:
     return passed
 
 
+def _console_q5(day_tag: str, df: pd.DataFrame) -> bool:
+    def _get(m: str) -> float | None:
+        r = df[df["metric"] == m]
+        return float(r["value"].iloc[0]) if not r.empty else None
+
+    def _pass(m: str) -> int | None:
+        r = df[df["metric"] == m]
+        return int(r["pass"].iloc[0]) if not r.empty else None
+
+    frac = _get("frac_sigma_lt_10pct")
+    passed = _pass("frac_sigma_lt_10pct") == 1
+    print(f"\nRun summary: Q5 / {day_tag}")
+    print(f"  frac_sigma_lt_10pct: {frac:.4f}" if frac is not None else "  frac_sigma_lt_10pct: n/a")
+    print(f"  pass               : {'yes' if passed else 'no'}")
+    return passed
+
+
 def _console_generic(query: str, day_tag: str, df: pd.DataFrame) -> bool:
     all_pass = True
     print(f"\nRun summary: {query} / {day_tag}")
@@ -285,6 +302,8 @@ def run_single(
         all_pass = _console_q3(day_tag, df)
     elif query == "Q4":
         all_pass = _console_q4(day_tag, df)
+    elif query == "Q5":
+        all_pass = _console_q5(day_tag, df)
     else:
         all_pass = _console_generic(query, day_tag, df)
 
