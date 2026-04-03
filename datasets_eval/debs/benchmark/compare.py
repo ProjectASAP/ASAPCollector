@@ -357,5 +357,39 @@ _SKETCH_METRIC_PATTERN["Q3"] = r"countsketch"
 _COMPARE_DISPATCH["Q3"] = compare_q3
 
 
+# --- Q4: price range (min/max) accuracy ---
+
+def compare_q4(
+    ground_truth: pd.DataFrame,
+    sketch_rows: pd.DataFrame,
+    *,
+    day: str = "",
+    skip_warmup_windows: int = 0,
+) -> dict:
+    gt = _select_evaluation_window(ground_truth, WINDOW_5MIN_MS, skip_warmup_windows)
+    p0 = extract_sketch_quantile(sketch_rows, 0.0, tol=1e-6)
+    p100 = extract_sketch_quantile(sketch_rows, 1.0, tol=1e-6)
+    if p0.empty or p100.empty:
+        return {"metric": "frac_hilo_lt_2pct", "value": 0.0, "threshold": 0.90, "pass": 0}
+    sketch = p0.merge(p100, on="symbol", suffixes=("_low", "_high"))
+    merged = gt.merge(sketch[["symbol", "v_low", "v_high"]], on="symbol", how="inner")
+    if merged.empty:
+        return {"metric": "frac_hilo_lt_2pct", "value": 0.0, "threshold": 0.90, "pass": 0}
+    rel_high = (merged["v_high"] - merged["high"]).abs() / merged["high"].abs().clip(lower=1e-12)
+    rel_low = (merged["v_low"] - merged["low"]).abs() / merged["low"].abs().clip(lower=1e-12)
+    passes = (rel_high < 0.02) & (rel_low < 0.02)
+    fraction = float(passes.mean())
+    return {
+        "metric": "frac_hilo_lt_2pct",
+        "value": fraction,
+        "threshold": 0.90,
+        "pass": int(fraction >= 0.90),
+    }
+
+
+_SKETCH_METRIC_PATTERN["Q4"] = r"ddsketch|kll"
+_COMPARE_DISPATCH["Q4"] = compare_q4
+
+
 if __name__ == "__main__":
     main()
