@@ -17,30 +17,37 @@ from ground_truth.common import (
 from common import data_path, day_to_filename
 
 
-def compute_q8_anomaly_flags(dataframe: pd.DataFrame) -> pd.DataFrame:
-    working = dataframe.copy()
-    working["ws"] = window_start_ms_vectorized(
-        working["ts_ms"].to_numpy(dtype=np.int64, copy=False), WINDOW_15MIN_MS
-    )
+def compute_q8_stats(dataframe: pd.DataFrame) -> pd.DataFrame:
+    ts = dataframe["ts_ms"].to_numpy(dtype=np.int64, copy=False)
+    ws = window_start_ms_vectorized(ts, WINDOW_15MIN_MS)
+    tmp = dataframe.assign(window_start_ms=ws)
     rows: list[dict] = []
-    for (symbol, window_start), group in working.groupby(["symbol", "ws"]):
-        group = group.sort_values("ts_ms")
-        prices = group["Last"].astype(float).values
-        if len(prices) < 2:
+    for (symbol, wstart), group in tmp.groupby(["symbol", "window_start_ms"], sort=False):
+        prices = group["Last"].astype(np.float64).to_numpy()
+        n = len(prices)
+        if n < 2:
             continue
-        mean_price = float(np.mean(prices))
-        std_price = float(np.std(prices, ddof=1))
-        if std_price == 0:
-            continue
-        flag_count = int(np.sum(np.abs((prices - mean_price) / std_price) > 2.5))
+        q1, q3 = np.percentile(prices, [25, 75])
+        exact_q1 = float(q1)
+        exact_q3 = float(q3)
+        exact_iqr = exact_q3 - exact_q1
+        mu = float(np.mean(prices))
+        sigma = float(np.std(prices, ddof=1))
+        n_outliers_z = 0
+        if sigma > 0 and np.isfinite(sigma):
+            z = np.abs((prices - mu) / sigma)
+            n_outliers_z = int(np.sum(z > 2.5))
         rows.append(
             {
                 "symbol": symbol,
-                "window_start_ms": int(window_start),
-                "mu": mean_price,
-                "sigma": std_price,
-                "flag_count": flag_count,
-                "tick_count": len(prices),
+                "window_start_ms": int(wstart),
+                "exact_q1": exact_q1,
+                "exact_q3": exact_q3,
+                "exact_iqr": exact_iqr,
+                "mu": mu,
+                "sigma": sigma,
+                "n": n,
+                "n_outliers_z": n_outliers_z,
             }
         )
     return pd.DataFrame(rows)
@@ -60,5 +67,5 @@ def run_q8(day: str, output_root: Path, chunksize: int) -> None:
     log_phase("Q8", day_tag, "compute")
     compute_start = time.perf_counter()
     out_path = sub / f"{day_tag}.csv"
-    compute_q8_anomaly_flags(dataframe).to_csv(out_path, index=False)
+    compute_q8_stats(dataframe).to_csv(out_path, index=False)
     log_phase("Q8", day_tag, "done", out=str(out_path), seconds=f"{time.perf_counter() - compute_start:.1f}")
