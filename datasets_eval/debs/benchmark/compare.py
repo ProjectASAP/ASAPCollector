@@ -249,10 +249,6 @@ def main() -> None:
     )
 
 
-if __name__ == "__main__":
-    main()
-
-
 # --- Q1: EMA quantile accuracy ---
 
 def compare_q1(
@@ -283,3 +279,7 @@ def compare_q1(
 
 _SKETCH_METRIC_PATTERN["Q1"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q1"] = compare_q1
+
+
+if __name__ == "__main__":
+    main()

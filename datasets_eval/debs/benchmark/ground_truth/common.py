@@ -83,7 +83,6 @@ def load_filtered_day(
         chunk["ts_ms"] = (localized.astype("int64") // 1_000_000).astype(np.int64)
         chunk["Last"] = pd.to_numeric(chunk["Last"], errors="coerce")
         chunk = chunk[chunk["ts_ms"] > 0].dropna(subset=["Last"])
-        chunk = chunk[chunk["Last"] > 0]
         if chunk.empty:
             continue
         if max_event_minutes is not None:

@@ -47,8 +47,9 @@ class QueryCfg:
     sketch_family: str  # "quantile" | "frequency" | "cardinality" | "nop"
 
 
-# Populated incrementally by each debs_qN branch.
-QUERY_CONFIG: dict[str, QueryCfg] = {}
+QUERY_CONFIG: dict[str, QueryCfg] = {
+    "Q1": QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile"),
+}
 
 NOP_QUERIES = frozenset(q for q, c in QUERY_CONFIG.items() if c.sketch_family == "nop")
 DEFAULT_QUERIES = tuple(QUERY_CONFIG)
@@ -278,7 +279,7 @@ def kill_process_on_tcp_port(port: int) -> None:
     time.sleep(1)
 
 
-def maybe_clear_aggregate_csvs(results_dir: Path, clear: bool) -> None:
+def clear_aggregate_csv_files(results_dir: Path, clear: bool) -> None:
     if not clear:
         return
     for name in ("throughput.csv", "latency.csv"):
@@ -440,7 +441,7 @@ def run_benchmark_test(args: argparse.Namespace) -> int:
     bench_root = BENCH_ROOT
     results_dir: Path = args.results_dir
     results_dir.mkdir(parents=True, exist_ok=True)
-    maybe_clear_aggregate_csvs(results_dir, args.clear_results)
+    clear_aggregate_csv_files(results_dir, args.clear_results)
 
     controller = os.environ.get("CONTROLLER", "http://localhost:8080")
     controller_bin = _env_path(
@@ -463,16 +464,17 @@ def run_benchmark_test(args: argparse.Namespace) -> int:
             print(f"No offline ground truth for {query}", file=sys.stderr)
         else:
             try:
-                subprocess.run(
-                    [
-                        sys.executable,
-                        str(bench_root / "ground_truth" / "run_gt.py"),
-                        "--query", query,
-                        "--day", day,
-                        "--out-dir", str(results_dir / "ground_truth"),
-                    ],
-                    check=True,
-                )
+                gt_argv = [
+                    sys.executable,
+                    str(bench_root / "ground_truth" / "run_gt.py"),
+                    "--query", query,
+                    "--day", day,
+                    "--out-dir", str(results_dir / "ground_truth"),
+                ]
+                accuracy_minutes = getattr(args, "accuracy_minutes", 0)
+                if accuracy_minutes > 0:
+                    gt_argv += ["--max-event-minutes", str(accuracy_minutes)]
+                subprocess.run(gt_argv, check=True)
             except subprocess.CalledProcessError as e:
                 stop_controller(ctrl_pid)
                 return e.returncode or 1
@@ -503,7 +505,7 @@ def run_matrix(args: argparse.Namespace) -> int:
     bench_root = BENCH_ROOT
     results_dir: Path = args.results_dir
     results_dir.mkdir(parents=True, exist_ok=True)
-    maybe_clear_aggregate_csvs(results_dir, args.clear_results)
+    clear_aggregate_csv_files(results_dir, args.clear_results)
 
     if args.skip_gt != "1":
         print("Pre-computing ground truth...", file=sys.stderr)
@@ -589,7 +591,7 @@ def main() -> None:
     p_test.add_argument("--day", default=os.environ.get("DAY", "08-11-21"))
     p_test.add_argument("--days", default=os.environ.get("DAYS", ""), help="Comma-separated days; defaults to --day.")
     p_test.add_argument("--mode", default=os.environ.get("MODE", "sketch-finance"))
-    p_test.add_argument("--speed", type=float, default=float(os.environ.get("SPEED", "100")))
+    p_test.add_argument("--speed", type=float, default=float(os.environ.get("SPEED", "1")))
     p_test.add_argument("--batch-size", type=int, default=int(os.environ.get("BATCH_SIZE", "5000")))
     p_test.add_argument("--accuracy-minutes", type=int, default=0,
                         help="Minutes of event time to replay (0 = full day).")
@@ -623,7 +625,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-# --- Q1 ---
-QUERY_CONFIG["Q1"] = QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile")

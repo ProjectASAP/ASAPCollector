@@ -55,11 +55,12 @@ METRIC_RENAME: dict[str, str] = {
 THROUGHPUT_QUERIES = ("Q2", "Q9", "Q10", "Q11", "Q12")
 
 
-def summarize_comparison(comparison_dir: Path) -> pd.DataFrame:
+def summarize_comparison(comparison_dir: Path) -> tuple[pd.DataFrame, list[str]]:
     frames = [pd.read_csv(f) for f in sorted(comparison_dir.glob("*.csv"))]
     if not frames:
-        return pd.DataFrame(columns=["query", "metric", "threshold", "avg", "min", "max", "all_pass"])
+        return pd.DataFrame(columns=["query", "metric", "threshold", "avg", "min", "max", "all_pass"]), []
     df = pd.concat(frames, ignore_index=True)
+    days = sorted(df["day"].dropna().unique().tolist()) if "day" in df.columns else []
     agg = (
         df.groupby(["query", "metric", "threshold"])
         .agg(
@@ -70,7 +71,7 @@ def summarize_comparison(comparison_dir: Path) -> pd.DataFrame:
         )
         .reset_index()
     )
-    return agg
+    return agg, days
 
 
 def summarize_throughput(throughput_path: Path) -> pd.DataFrame:
@@ -87,13 +88,21 @@ def fmt(v: float, decimals: int = 4) -> str:
     return f"{v:.{decimals}f}"
 
 
-def build_markdown(agg: pd.DataFrame, throughput: pd.DataFrame) -> str:
+def build_markdown(agg: pd.DataFrame, throughput: pd.DataFrame, days: list[str] | None = None) -> str:
+    if days:
+        days_sorted = sorted(set(days))
+        if len(days_sorted) == 1:
+            days_str = f"`{days_sorted[0]}`"
+        else:
+            days_str = f"`{days_sorted[0]}` through `{days_sorted[-1]}`"
+    else:
+        days_str = "(none)"
     lines: list[str] = [
         "# 10-Minute Benchmark Test Results",
         "",
         "## Setup",
         "",
-        "- Days: `08-11-21` through `12-11-21`",
+        f"- Days: {days_str}",
         "- Mode: `sketch-finance`, `--accuracy-minutes 10`",
         "- Evaluation: Q1 compares all non-warmup 5-min windows; Q3–Q8 compare last "
         "completed window only.",
@@ -164,9 +173,9 @@ def main() -> None:
     comparison_dir = args.results_dir / "comparison"
     out_path = args.out or args.results_dir / "10min_test_results.md"
 
-    agg = summarize_comparison(comparison_dir)
+    agg, days = summarize_comparison(comparison_dir)
     throughput = summarize_throughput(args.results_dir / "throughput.csv")
-    md = build_markdown(agg, throughput)
+    md = build_markdown(agg, throughput, days)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(md, encoding="utf-8")
     print(f"Written: {out_path}")

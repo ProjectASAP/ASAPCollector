@@ -6,10 +6,9 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import List, Tuple
-
 import grpc
 import numpy as np
+from typing import List, Tuple
 import pandas as pd
 from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2_grpc
 from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2
@@ -83,8 +82,8 @@ def _parse_chunk_full(chunk: pd.DataFrame) -> pd.DataFrame:
     )
     localized = raw.dt.tz_localize(DEBS_TZ, ambiguous=True, nonexistent="shift_forward")
     chunk["ts_ns"] = (localized.astype("int64") // 1_000_000).astype(np.int64) * 1_000_000
-    chunk["Last"] = pd.to_numeric(chunk["Last"], errors="coerce").fillna(0.0)
-    chunk = chunk[chunk["ts_ns"] > 0]
+    chunk["Last"] = pd.to_numeric(chunk["Last"], errors="coerce")
+    chunk = chunk[chunk["ts_ns"] > 0].dropna(subset=["Last"])
     if chunk.empty:
         return chunk
     ids = chunk["ID"].astype(str).str.strip()
