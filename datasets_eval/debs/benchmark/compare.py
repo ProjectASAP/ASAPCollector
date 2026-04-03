@@ -283,3 +283,49 @@ def compare_q1(
 
 _SKETCH_METRIC_PATTERN["Q1"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q1"] = compare_q1
+
+
+# --- Q3: top-K frequency accuracy ---
+
+def compare_q3(
+    ground_truth: pd.DataFrame,
+    sketch_rows: pd.DataFrame,
+    *,
+    day: str = "",
+    k: int = 10,
+    skip_warmup_windows: int = 0,
+) -> dict:
+    gt = _select_evaluation_window(ground_truth, WINDOW_5MIN_MS, skip_warmup_windows)
+    if gt.empty or len(gt) < k:
+        return {"metric": "q3_score", "value": 0.0, "threshold": 1.0, "pass": 0}
+    top_gt = gt.nlargest(k, "count")
+    sk = extract_countsketch_estimates(sketch_rows)
+    if sk.empty:
+        return {"metric": "q3_score", "value": 0.0, "threshold": 1.0, "pass": 0}
+    overlap = len(set(top_gt["symbol"]) & set(sk.nlargest(k, "est")["symbol"])) / float(k)
+    merged = top_gt.merge(sk, on="symbol", how="left")
+    merged["est"] = merged["est"].fillna(0.0)
+    rho = merged["count"].corr(merged["est"], method="spearman")
+    try:
+        rho_f = float(rho)
+    except (TypeError, ValueError):
+        rho_f = 0.0
+    # When all GT counts are equal (zero variance), Spearman is undefined (NaN).
+    # Fall back to overlap-only scoring since ranking is meaningless.
+    gt_constant = float(merged["count"].std()) == 0.0
+    if np.isnan(rho_f) or gt_constant:
+        score = overlap / 0.8
+        passed = overlap >= 0.8
+    else:
+        score = min(overlap / 0.8, rho_f / 0.7)
+        passed = overlap >= 0.8 and rho_f > 0.7
+    return {
+        "metric": "q3_score",
+        "value": float(score),
+        "threshold": 1.0,
+        "pass": int(passed),
+    }
+
+
+_SKETCH_METRIC_PATTERN["Q3"] = r"countsketch"
+_COMPARE_DISPATCH["Q3"] = compare_q3
