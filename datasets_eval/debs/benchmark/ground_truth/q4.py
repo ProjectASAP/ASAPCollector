@@ -32,10 +32,10 @@ def compute_q4_price_stats(dataframe: pd.DataFrame) -> pd.DataFrame:
             {
                 "symbol": symbol,
                 "window_start_ms": int(window_start),
-                "min_v": low,
-                "max_v": high,
-                "last_v": last,
-                "range_v": high - low,
+                "high": high,
+                "low": low,
+                "last_price": last,
+                "price_range": high - low,
             }
         )
     return pd.DataFrame(rows)
