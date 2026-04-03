@@ -251,3 +251,35 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# --- Q1: EMA quantile accuracy ---
+
+def compare_q1(
+    ground_truth: pd.DataFrame,
+    sketch_rows: pd.DataFrame,
+    *,
+    day: str = "",
+    skip_warmup_windows: int = 1,
+) -> dict:
+    # Skip first window (EMA cold-start), compare sketch p50 vs EMA38 across all remaining windows.
+    if skip_warmup_windows > 0 and "window_start_ms" in ground_truth.columns:
+        min_window = ground_truth["window_start_ms"].min()
+        cutoff = min_window + skip_warmup_windows * WINDOW_5MIN_MS
+        ground_truth = ground_truth[ground_truth["window_start_ms"] >= cutoff]
+    sketch_medians = extract_ddsketch_median(sketch_rows)
+    merged = ground_truth.merge(sketch_medians, on="symbol", how="inner")
+    if merged.empty:
+        return {"metric": "frac_lt_1pct", "value": 0.0, "threshold": 0.95, "pass": 0}
+    relative_error = (merged["ema38"] - merged["v"]).abs() / merged["ema38"].abs().clip(lower=1e-12)
+    fraction = float((relative_error < 0.01).mean())
+    return {
+        "metric": "frac_lt_1pct",
+        "value": fraction,
+        "threshold": 0.95,
+        "pass": int(fraction >= 0.95),
+    }
+
+
+_SKETCH_METRIC_PATTERN["Q1"] = r"ddsketch|kll"
+_COMPARE_DISPATCH["Q1"] = compare_q1
