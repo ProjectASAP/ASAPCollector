@@ -327,6 +327,7 @@ _SKETCH_METRIC_PATTERN["Q3"] = r"countsketch"
 _COMPARE_DISPATCH["Q3"] = compare_q3
 
 
+
 # --- Q4: price range (min/max) accuracy ---
 
 def compare_q4(
