@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from pathlib import Path
+from typing import List, Tuple
 
 import grpc
 import numpy as np
@@ -13,15 +14,9 @@ import pandas as pd
 from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2_grpc
 from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2
 from opentelemetry.proto.common.v1 import common_pb2
-from typing import List, Tuple
 
-from common import METRIC_NAME, data_path, day_to_filename
+from common import DEBS_TZ, METRIC_NAME, data_path, day_to_filename
 
-_DEBS_TZ = "Europe/Berlin"
-
-# Type alias for a batch of (price, time_unix_nano, symbol, exchange, sectype)
-# Uses typing.List/Tuple for Python 3.7/3.8 compatibility (list[...] syntax
-# is only subscriptable at runtime from Python 3.9+).
 _Batch = List[Tuple[float, int, str, str, str]]
 
 
@@ -53,12 +48,6 @@ def build_otlp_export_request(
 
 
 def _parse_chunk_filtered(chunk: pd.DataFrame) -> pd.DataFrame:
-    """Vectorized parse of a data_filtered CSV chunk.
-
-    Processes the entire chunk in bulk using pandas/numpy operations — no
-    per-row Python loops or per-row pd.to_datetime calls.  Returns a
-    DataFrame with columns [Last, ts_ns, symbol, exchange, sectype].
-    """
     chunk = chunk.copy()
     chunk["Date"] = chunk["Date"].astype(str).str.strip()
     chunk["Trading time"] = chunk["Trading time"].astype(str).str.strip()
@@ -68,7 +57,7 @@ def _parse_chunk_filtered(chunk: pd.DataFrame) -> pd.DataFrame:
         errors="coerce",
         format="mixed",
     )
-    localized = raw.dt.tz_localize(_DEBS_TZ, ambiguous=True, nonexistent="shift_forward")
+    localized = raw.dt.tz_localize(DEBS_TZ, ambiguous=True, nonexistent="shift_forward")
     chunk["ts_ns"] = (localized.astype("int64") // 1_000_000).astype(np.int64) * 1_000_000
     chunk["Last"] = pd.to_numeric(chunk["Last"], errors="coerce")
     chunk = chunk[chunk["ts_ns"] > 0].dropna(subset=["Last"])
@@ -85,12 +74,6 @@ def _parse_chunk_filtered(chunk: pd.DataFrame) -> pd.DataFrame:
 
 
 def _parse_chunk_full(chunk: pd.DataFrame) -> pd.DataFrame:
-    """Vectorized parse of a full-feed CSV chunk.
-
-    Same bulk-operation approach as _parse_chunk_filtered.  Missing Last
-    values are filled with 0.0 to match the original full-feed semantics.
-    Returns a DataFrame with columns [Last, ts_ns, symbol, exchange, sectype].
-    """
     chunk = chunk.copy()
     raw = pd.to_datetime(
         chunk["Date"].astype(str).str.strip() + " " + chunk["Time"].astype(str).str.strip(),
@@ -98,7 +81,7 @@ def _parse_chunk_full(chunk: pd.DataFrame) -> pd.DataFrame:
         errors="coerce",
         format="mixed",
     )
-    localized = raw.dt.tz_localize(_DEBS_TZ, ambiguous=True, nonexistent="shift_forward")
+    localized = raw.dt.tz_localize(DEBS_TZ, ambiguous=True, nonexistent="shift_forward")
     chunk["ts_ns"] = (localized.astype("int64") // 1_000_000).astype(np.int64) * 1_000_000
     chunk["Last"] = pd.to_numeric(chunk["Last"], errors="coerce").fillna(0.0)
     chunk = chunk[chunk["ts_ns"] > 0]
@@ -120,13 +103,7 @@ def iter_batches(
     chunksize: int,
     batch_size: int,
 ):
-    """Yield complete batches of (price, time_unix_nano, symbol, exchange, sectype).
-
-    Reads the CSV in chunks and processes each chunk entirely with vectorized
-    pandas/numpy operations before yielding rows.  This avoids per-row Python
-    overhead (iterrows, per-row pd.to_datetime) that was the main throughput
-    bottleneck in the previous implementation.
-    """
+    """Yield batches of (price, time_unix_nano, symbol, exchange, sectype)."""
     if dataset == "data_filtered":
         columns = ["ID", "SecType", "Date", "Last", "Trading time"]
         parse_fn = _parse_chunk_filtered
@@ -149,8 +126,6 @@ def iter_batches(
         if parsed.empty:
             continue
 
-        # Convert to numpy arrays once per chunk — plain Python loop over
-        # numpy scalars is ~20–50× faster than iterrows over a DataFrame.
         prices = parsed["Last"].to_numpy(dtype=np.float64)
         ts_ns_arr = parsed["ts_ns"].to_numpy(dtype=np.int64)
         symbols = parsed["symbol"].to_numpy(dtype=object)
@@ -232,6 +207,12 @@ def main() -> None:
     parser.add_argument("--endpoint", default="localhost:4317")
     parser.add_argument("--chunksize", type=int, default=200_000)
     parser.add_argument(
+        "--max-event-minutes",
+        type=int,
+        default=0,
+        help="Stop after this many minutes of event time from the first tick (0 = no cutoff).",
+    )
+    parser.add_argument(
         "--results-dir",
         type=Path,
         default=Path(__file__).resolve().parent / "results",
@@ -247,9 +228,7 @@ def main() -> None:
         "--queue-depth",
         type=int,
         default=32,
-        help="Max number of pre-built batches buffered between the reader and sender "
-        "threads. Higher values trade memory for smoother throughput under bursty gRPC "
-        "latency. Default: 32.",
+        help="Max number of pre-built batches buffered between reader and sender threads.",
     )
     parser.add_argument(
         "--query",
@@ -265,7 +244,7 @@ def main() -> None:
 
     pe = args.progress_every
     if pe == 0:
-        pass  # disabled
+        pass
     elif pe < 0:
         args.progress_every = max(5, min(50, 50_000 // max(1, args.batch_size)))
     else:
@@ -284,12 +263,12 @@ def main() -> None:
 
     first_event_time_ns: int | None = None
     replay_start_perf: float | None = None
+    cutoff_ns: int | None = None
 
     send_times_file = open(send_times_path, "w", newline="", encoding="utf-8")
     send_times_writer = csv.writer(send_times_file)
     send_times_writer.writerow(["emit_wall_ns", "event_time_ns"])
 
-    # These are mutated only by the sender thread (after join, read by main thread).
     total_events = 0
     export_count = 0
 
@@ -308,21 +287,10 @@ def main() -> None:
         approx_pts = args.progress_every * args.batch_size
         print(
             "replay",
-            f"progress lines every {args.progress_every} exports (~{approx_pts} points); "
-            "silence here does not mean OTLP is idle.",
+            f"progress lines every {args.progress_every} exports (~{approx_pts} points)",
             flush=True,
         )
 
-    # ------------------------------------------------------------------
-    # Producer-consumer pipeline
-    #
-    # Main thread  : reads CSV chunks, vectorizes, enforces replay timing,
-    #                enqueues complete batches.
-    # Sender thread: dequeues batches, builds OTLP requests, calls gRPC.
-    #
-    # This overlaps CSV I/O + pandas parsing with gRPC network time so
-    # neither side is idle waiting for the other.
-    # ------------------------------------------------------------------
     send_queue: queue.Queue[_Batch | None] = queue.Queue(maxsize=args.queue_depth)
     sender_errors: list[Exception] = []
 
@@ -330,7 +298,7 @@ def main() -> None:
         nonlocal total_events, export_count
         while True:
             batch = send_queue.get()
-            if batch is None:  # sentinel — clean shutdown
+            if batch is None:
                 send_queue.task_done()
                 break
             try:
@@ -383,15 +351,16 @@ def main() -> None:
             print("file", file_path, flush=True)
 
             for batch in iter_batches(file_path, args.dataset, args.chunksize, args.batch_size):
-                # Bail early if the sender thread failed.
                 if sender_errors:
                     raise sender_errors[0]
 
-                # Timing: sleep to the deadline of the LAST event in this batch.
-                # Semantically identical to per-row sleeping but much cheaper
-                # because we avoid one sleep call per row; early events in the
-                # batch are sent at most (batch_size / event_rate) seconds early,
-                # which is negligible at speed_factor=10000.
+                if args.max_event_minutes > 0:
+                    if cutoff_ns is None:
+                        cutoff_ns = batch[0][1] + args.max_event_minutes * 60 * 1_000_000_000
+                    batch = [row for row in batch if row[1] <= cutoff_ns]
+                    if not batch:
+                        continue
+
                 last_event_time_ns = batch[-1][1]
                 if first_event_time_ns is None:
                     first_event_time_ns = batch[0][1]
@@ -409,8 +378,6 @@ def main() -> None:
                         + (last_event_time_ns - first_event_time_ns) / 1e9 / args.speed_factor
                     )
 
-                # Put with a short timeout loop so a crashed sender thread
-                # doesn't leave the main thread blocked on a full queue.
                 while True:
                     if sender_errors:
                         raise sender_errors[0]
@@ -420,7 +387,6 @@ def main() -> None:
                     except queue.Full:
                         continue
     finally:
-        # Always send the sentinel so the sender thread can exit cleanly.
         send_queue.put(None)
         sender_thread.join()
 
