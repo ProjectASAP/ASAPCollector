@@ -403,3 +403,33 @@ def compare_q5(
 
 _SKETCH_METRIC_PATTERN["Q5"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q5"] = compare_q5
+
+
+# --- Q6: HLL distinct-symbol cardinality accuracy ---
+
+def compare_q6(
+    ground_truth: pd.DataFrame,
+    sketch_data: pd.DataFrame,
+    *,
+    day: str = "",
+    skip_warmup_windows: int = 0,
+) -> dict:
+    snap = get_best_snapshot_for_query(sketch_data, "Q6")
+    gt = _select_evaluation_window(ground_truth, WINDOW_5MIN_MS, skip_warmup_windows)
+    if gt.empty or "exact_count" not in gt.columns:
+        return {"metric": "hll_max_rel_err", "value": 1.0, "threshold": 0.02, "pass": 0}
+    exact = float(gt["exact_count"].iloc[0])
+    if exact <= 0:
+        return {"metric": "hll_max_rel_err", "value": 1.0, "threshold": 0.02, "pass": 0}
+    est = extract_hll_cardinality(snap)
+    rel_err = abs(est - exact) / exact
+    return {
+        "metric": "hll_max_rel_err",
+        "value": float(rel_err),
+        "threshold": 0.02,
+        "pass": int(rel_err < 0.02),
+    }
+
+
+_SKETCH_METRIC_PATTERN["Q6"] = r"hll_cardinality"
+_COMPARE_DISPATCH["Q6"] = compare_q6

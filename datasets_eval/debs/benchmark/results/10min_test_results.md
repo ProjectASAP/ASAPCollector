@@ -16,6 +16,7 @@
 | Q3 | `topk_accuracy_score` | `min(overlap/0.8, Spearman_ρ/0.7)`. Overlap = fraction of exact top-10 symbols also in sketch top-10. `1.0` means both overlap ≥ 80% and ρ ≥ 0.7. Last window only. | 1.0000 | 1.0000 | 1.0000 | ≥ 1.00 | ✓ |
 | Q4 | `symbols_within_2pct_price_range` | Fraction of symbols where sketch p0 (min) and p100 (max) are each within 2% relative error of the exact min/max. `1.0` = 100%. Last window only. | 1.0000 | 1.0000 | 1.0000 | ≥ 0.90 | ✓ |
 | Q5 | `symbols_within_10pct_volatility` | Fraction of symbols where the sketch-derived volatility (IQR/1.349) is within 10% relative error of exact volatility. `1.0` = 100%. Last window only. | 1.0000 | 1.0000 | 1.0000 | ≥ 0.90 | ✓ |
+| Q6 | `hll_cardinality_rel_error` | `|HLL_estimate − exact_count| / exact_count`. `0.0` = perfect estimate. Last window only. | 0.0000 | 0.0000 | 0.0000 | ≤ 0.02 | ✓ |
 
 ---
 
