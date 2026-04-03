@@ -17,6 +17,7 @@
 | Q4 | `symbols_within_2pct_price_range` | Fraction of symbols where sketch p0 (min) and p100 (max) are each within 2% relative error of the exact min/max. `1.0` = 100%. Last window only. | 1.0000 | 1.0000 | 1.0000 | ≥ 0.90 | ✓ |
 | Q5 | `symbols_within_10pct_volatility` | Fraction of symbols where the sketch-derived volatility (IQR/1.349) is within 10% relative error of exact volatility. `1.0` = 100%. Last window only. | 1.0000 | 1.0000 | 1.0000 | ≥ 0.90 | ✓ |
 | Q6 | `hll_cardinality_rel_error` | `|HLL_estimate − exact_count| / exact_count`. `0.0` = perfect estimate. Last window only. | 0.0000 | 0.0000 | 0.0000 | ≤ 0.02 | ✓ |
+| Q7 | `symbols_within_2pct_mean` | Fraction of symbols where sketch p50 is within 2% relative error of exact mean price. `1.0` = 100%. Last window only. | 1.0000 | 1.0000 | 1.0000 | ≥ 0.90 | ✓ |
 
 ---
 
