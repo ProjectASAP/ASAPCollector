@@ -33,7 +33,7 @@ Both steps must be done from the repo root. The filtered data lands in `datasets
 
 ## Running benchmarks
 
-All commands are run from the repo root (or with `BENCH_ROOT` pointing to `datasets_eval/debs/benchmark/`).
+All scripts resolve paths relative to their own location (`__file__`), so you can run them from any directory — the script directory, the repo root, or anywhere else. The `BENCH_ROOT` env var is not required.
 
 ### Single accuracy run (statistical queries)
 

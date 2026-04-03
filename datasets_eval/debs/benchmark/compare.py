@@ -208,7 +208,8 @@ def run_comparison(
         result = fn(ground_truth, sketch_data, **kwargs)
     else:
         result = fn(ground_truth, sketch_snapshot, **kwargs)
-    pd.DataFrame([{"query": query_id, "day": day_tag, **result}]).to_csv(
+    rows = [result] if isinstance(result, dict) else list(result)
+    pd.DataFrame([{"query": query_id, "day": day_tag, **r} for r in rows]).to_csv(
         comparison_out_dir / f"{query_id}_{day_tag}.csv", index=False
     )
 
@@ -257,7 +258,7 @@ def compare_q1(
     *,
     day: str = "",
     skip_warmup_windows: int = 1,
-) -> dict:
+) -> list[dict]:
     # Skip first window (EMA cold-start), compare sketch p50 vs EMA38 across all remaining windows.
     if skip_warmup_windows > 0 and "window_start_ms" in ground_truth.columns:
         min_window = ground_truth["window_start_ms"].min()
@@ -266,15 +267,44 @@ def compare_q1(
     sketch_medians = extract_ddsketch_median(sketch_rows)
     merged = ground_truth.merge(sketch_medians, on="symbol", how="inner")
     if merged.empty:
-        return {"metric": "frac_lt_1pct", "value": 0.0, "threshold": 0.95, "pass": 0}
+        return [
+            {"metric": "frac_lt_1pct", "value": 0.0, "threshold": 0.95, "pass": 0},
+            {"metric": "per_pair_rel_err_mean", "value": 0.0, "threshold": 0.01, "pass": 0},
+            {"metric": "per_pair_rel_err_min", "value": 0.0, "threshold": 0.0, "pass": 0},
+            {"metric": "per_pair_rel_err_max", "value": 0.0, "threshold": 0.01, "pass": 0},
+        ]
+    # One row per (symbol, 5-min window): |ema38 − sketch_p50| / |ema38|
     relative_error = (merged["ema38"] - merged["v"]).abs() / merged["ema38"].abs().clip(lower=1e-12)
     fraction = float((relative_error < 0.01).mean())
-    return {
-        "metric": "frac_lt_1pct",
-        "value": fraction,
-        "threshold": 0.95,
-        "pass": int(fraction >= 0.95),
-    }
+    mean_e = float(relative_error.mean())
+    min_e = float(relative_error.min())
+    max_e = float(relative_error.max())
+    return [
+        {
+            "metric": "frac_lt_1pct",
+            "value": fraction,
+            "threshold": 0.95,
+            "pass": int(fraction >= 0.95),
+        },
+        {
+            "metric": "per_pair_rel_err_mean",
+            "value": mean_e,
+            "threshold": 0.01,
+            "pass": int(mean_e <= 0.01),
+        },
+        {
+            "metric": "per_pair_rel_err_min",
+            "value": min_e,
+            "threshold": 0.0,
+            "pass": 1,
+        },
+        {
+            "metric": "per_pair_rel_err_max",
+            "value": max_e,
+            "threshold": 0.01,
+            "pass": int(max_e <= 0.01),
+        },
+    ]
 
 
 _SKETCH_METRIC_PATTERN["Q1"] = r"ddsketch|kll"
