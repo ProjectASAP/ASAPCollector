@@ -109,6 +109,8 @@ def build_markdown(agg: pd.DataFrame, throughput: pd.DataFrame) -> str:
     for _, row in agg.iterrows():
         query = row["query"]
         raw_metric = row["metric"]
+        if raw_metric not in METRIC_DESCRIPTIONS:
+            continue
         metric_label = METRIC_RENAME.get(raw_metric, raw_metric)
         desc = METRIC_DESCRIPTIONS.get(raw_metric, "")
         threshold = row["threshold"]
@@ -116,10 +118,10 @@ def build_markdown(agg: pd.DataFrame, throughput: pd.DataFrame) -> str:
         min_v = fmt(row["min"])
         max_v = fmt(row["max"])
         all_pass = "✓" if row["all_pass"] else "✗"
-        if threshold < 1:
-            thr_str = f"≥ {threshold:.2f}"
+        if raw_metric == "hll_max_rel_err":
+            thr_str = f"≤ {threshold:.2f}"
         else:
-            thr_str = f"≤ {threshold:.2f}" if raw_metric == "hll_max_rel_err" else f"≥ {threshold:.2f}"
+            thr_str = f"≥ {threshold:.2f}"
         lines.append(
             f"| {query} | `{metric_label}` | {desc} | {avg_v} | {min_v} | {max_v} | {thr_str} | {all_pass} |"
         )
