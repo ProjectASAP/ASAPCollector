@@ -15,8 +15,8 @@ from common import DEFAULT_DAYS
 
 from ground_truth.tasks import run_ground_truth_task
 
-ACCEPTED_GT_QUERIES: tuple[str, ...] = ("Q1", "Q2", "Q1Q2", "Q3")
-ALL_GT_BATCH: tuple[str, ...] = ("Q1Q2", "Q3")
+ACCEPTED_GT_QUERIES: tuple[str, ...] = ("Q1", "Q2", "Q1Q2", "Q3", "Q4")
+ALL_GT_BATCH: tuple[str, ...] = ("Q1Q2", "Q3", "Q4")
 
 
 def _shutdown_executor_on_failure(
