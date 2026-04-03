@@ -47,20 +47,8 @@ class QueryCfg:
     sketch_family: str  # "quantile" | "frequency" | "cardinality" | "nop"
 
 
-QUERY_CONFIG: dict[str, QueryCfg] = {
-    "Q1": QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile"),
-    "Q2": QueryCfg((), "5m", "data_filtered", (), "nop"),
-    "Q3": QueryCfg(("frequency",), "5m", "data", (), "frequency"),
-    "Q4": QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile"),
-    "Q5": QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile"),
-    "Q6": QueryCfg(("cardinality",), "5m", "data", (), "cardinality"),
-    "Q7": QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile"),
-    "Q8": QueryCfg(("quantile",), "15m", "data_filtered", ("symbol",), "quantile"),
-    "Q9": QueryCfg((), "5m", "data_filtered", (), "nop"),
-    "Q10": QueryCfg((), "5m", "data_filtered", (), "nop"),
-    "Q11": QueryCfg((), "5m", "data_filtered", (), "nop"),
-    "Q12": QueryCfg((), "5m", "data_filtered", (), "nop"),
-}
+# Populated incrementally by each debs_qN branch.
+QUERY_CONFIG: dict[str, QueryCfg] = {}
 
 NOP_QUERIES = frozenset(q for q, c in QUERY_CONFIG.items() if c.sketch_family == "nop")
 DEFAULT_QUERIES = tuple(QUERY_CONFIG)
