@@ -462,6 +462,7 @@ _COMPARE_DISPATCH["Q7"] = compare_q7
 
 
 
+
 # --- Q8: IQR accuracy over 15-min windows ---
 
 def compare_q8(
