@@ -58,6 +58,7 @@ impl RulesPlanner {
                 // CostModelPlanner overwrites them via decide_delta().
                 delta_transmission: false,
                 delta_threshold: 0.0,
+                file_output_path: None,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -98,6 +99,7 @@ impl RulesPlanner {
                 drop_original:        false,
                 delta_transmission:   false,
                 delta_threshold:      0.0,
+                file_output_path:     None,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {

@@ -216,12 +216,14 @@ async fn handle_plan(
     Json(spec): Json<QuerySpec>,
 ) -> impl IntoResponse {
     let wc = spec.workload.clone();
+    let file_output_path = spec.file_output_path.clone();
     let workload = match st.analyzer.analyze(spec) {
         Ok(w)  => w,
         Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
     };
 
     let mut plan = st.planner.plan(&workload, Some(&wc));
+    plan.agent_config.file_output_path = file_output_path;
     plan.precompute = build_precompute_jobs(&workload, &plan, "backend:4317");
     st.store.set(&workload.metric_name, plan.clone());
     // Persist workload so the replanner can re-run plan() without the original spec.
