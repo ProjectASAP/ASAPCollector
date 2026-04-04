@@ -10,7 +10,8 @@ _BENCH_ROOT = Path(__file__).resolve().parent
 if str(_BENCH_ROOT) not in sys.path:
     sys.path.insert(0, str(_BENCH_ROOT))
 
-from ground_truth.common import WINDOW_15MIN_MS, WINDOW_5MIN_MS
+from common import DEBS_TZ, data_path, day_to_filename
+from ground_truth.common import WINDOW_15MIN_MS, WINDOW_5MIN_MS, split_symbol_exchange
 
 import numpy as np
 import pandas as pd
@@ -279,7 +280,8 @@ def run_comparison(
     else:
         sketch_snapshot = get_best_snapshot_for_query(sketch_data, query_id)
         result = fn(ground_truth, sketch_snapshot, **kwargs)
-    pd.DataFrame([{"query": query_id, "day": day_tag, **result}]).to_csv(
+    rows = [result] if isinstance(result, dict) else list(result)
+    pd.DataFrame([{"query": query_id, "day": day_tag, **r} for r in rows]).to_csv(
         comparison_out_dir / f"{query_id}_{day_tag}.csv", index=False
     )
 
@@ -588,7 +590,59 @@ _SKETCH_METRIC_PATTERN["Q7"] = r"ddsketch|kll"
 _COMPARE_DISPATCH["Q7"] = compare_q7
 
 
-# --- Q8: IQR accuracy over 15-min windows ---
+# --- Q8: anomaly detection accuracy (precision / recall / F1) ---
+
+def _load_window_prices(day_tag: str, window_start_ms: int, window_end_ms: int) -> pd.DataFrame:
+    """Load raw last-trade prices from data_filtered/ for a single 15-min window.
+
+    Returns a DataFrame with columns: ``symbol``, ``Last``.  Reads the day CSV
+    in 50 000-row chunks and keeps only rows inside [window_start_ms, window_end_ms).
+    """
+    csv_path = data_path("data_filtered") / day_to_filename(day_tag)
+    if not csv_path.is_file():
+        return pd.DataFrame(columns=["symbol", "Last"])
+
+    columns = ["ID", "Date", "Last", "Trading time"]
+    parts: list[pd.DataFrame] = []
+    for chunk in pd.read_csv(
+        csv_path,
+        comment="#",
+        usecols=lambda col: col in columns,
+        chunksize=50_000,
+        dtype=object,
+        low_memory=False,
+    ):
+        chunk = chunk.copy()
+        raw = pd.to_datetime(
+            chunk["Date"].astype(str).str.strip() + " " + chunk["Trading time"].astype(str).str.strip(),
+            dayfirst=True,
+            errors="coerce",
+            format="mixed",
+        )
+        localized = raw.dt.tz_localize(DEBS_TZ, ambiguous=True, nonexistent="shift_forward")
+        ts_ms = (localized.astype("int64") // 1_000_000).astype(np.int64)
+        mask = (ts_ms >= window_start_ms) & (ts_ms < window_end_ms)
+        chunk = chunk[mask.values].copy()
+        if chunk.empty:
+            continue
+        chunk["Last"] = pd.to_numeric(chunk["Last"], errors="coerce")
+        chunk = chunk.dropna(subset=["Last"])
+        symbol_series, _ = split_symbol_exchange(chunk["ID"])
+        chunk["symbol"] = symbol_series
+        parts.append(chunk[["symbol", "Last"]])
+
+    if not parts:
+        return pd.DataFrame(columns=["symbol", "Last"])
+    return pd.concat(parts, ignore_index=True)
+
+
+def _q8_empty_result() -> list[dict]:
+    return [
+        {"metric": "anomaly_precision", "value": 0.0, "threshold": 0.70, "pass": 0},
+        {"metric": "anomaly_recall",    "value": 0.0, "threshold": 0.80, "pass": 0},
+        {"metric": "anomaly_f1",        "value": 0.0, "threshold": 0.75, "pass": 0},
+    ]
+
 
 def compare_q8(
     ground_truth: pd.DataFrame,
@@ -596,26 +650,111 @@ def compare_q8(
     *,
     day: str = "",
     skip_warmup_windows: int = 0,
-) -> dict:
+) -> list[dict]:
+    """Compare DDSketch IQR-based anomaly flags against exact IQR-fence ground truth.
+
+    Both the sketch path and the ground truth use the same anomaly rule:
+    Tukey fence [Q1 - 1.5·IQR, Q3 + 1.5·IQR].  The GT applies the fence with
+    exact Q1/Q3 (from ``exact_q1`` / ``exact_q3`` in the GT CSV); the sketch
+    applies it with DDSketch Q1/Q3 estimates.  This is an apples-to-apples
+    comparison: it measures how well the sketch reproduces the exact IQR anomaly
+    detection rule, rather than comparing two structurally different methods
+    (IQR fence vs z-score) that disagree even with perfect statistics.
+
+    Classification unit: symbol (binary — does this symbol have ≥1 anomalous price?).
+    - GT positive  : at least one raw price outside the exact Tukey fence
+    - Sketch positive: at least one raw price outside the sketch Tukey fence
+
+    Returns three metric dicts: anomaly_precision (≥0.70), anomaly_recall (≥0.80),
+    anomaly_f1 (≥0.75), matching the spec in 02_benchmark_queries.md.
+    """
     gt = _select_evaluation_window(ground_truth, WINDOW_15MIN_MS, skip_warmup_windows)
+    required_cols = {"exact_q1", "exact_q3", "exact_iqr"}
+    if gt.empty or not required_cols.issubset(gt.columns):
+        return _q8_empty_result()
+
     p25 = extract_sketch_quantile(sketch_rows, 0.25)
     p75 = extract_sketch_quantile(sketch_rows, 0.75)
     if p25.empty or p75.empty:
-        return {"metric": "frac_iqr_lt_10pct", "value": 0.0, "threshold": 0.90, "pass": 0}
+        return _q8_empty_result()
+
     sketch = p25.merge(p75, on="symbol", suffixes=("_q25", "_q75"))
     sketch["sketch_iqr"] = sketch["v_q75"] - sketch["v_q25"]
-    merged = gt.merge(sketch[["symbol", "sketch_iqr"]], on="symbol", how="inner")
-    if merged.empty:
-        return {"metric": "frac_iqr_lt_10pct", "value": 0.0, "threshold": 0.90, "pass": 0}
-    denom = merged["exact_iqr"].abs().clip(lower=1e-12)
-    rel = (merged["sketch_iqr"] - merged["exact_iqr"]).abs() / denom
-    fraction = float((rel < 0.10).mean())
-    return {
-        "metric": "frac_iqr_lt_10pct",
-        "value": fraction,
-        "threshold": 0.90,
-        "pass": int(fraction >= 0.90),
-    }
+
+    # Guard: skip symbols where sketch_iqr <= 0 (Q1 >= Q3).
+    # This happens when DDSketch's bucket width is larger than the true IQR —
+    # both Q1 and Q3 land in the same bucket and are reported as the same value.
+    # Such symbols produce an inverted or degenerate Tukey fence that flags every
+    # price as anomalous, making precision meaningless.  The root fix is to lower
+    # `accuracy_sla` for Q8 (e.g. 0.001) so buckets are narrower than the IQR.
+    sketch_valid = sketch[sketch["sketch_iqr"] > 0].copy()
+    frac_valid = len(sketch_valid) / max(len(sketch), 1)
+    if sketch_valid.empty or frac_valid < 0.10:
+        # Fewer than 10% of symbols have resolvable IQR — sketch accuracy too low.
+        return _q8_empty_result()
+
+    sketch_valid["fence_lower"] = sketch_valid["v_q25"] - 1.5 * sketch_valid["sketch_iqr"]
+    sketch_valid["fence_upper"] = sketch_valid["v_q75"] + 1.5 * sketch_valid["sketch_iqr"]
+
+    # Load raw prices for this 15-min window from data_filtered/.
+    window_start_ms = int(gt["window_start_ms"].iloc[0])
+    window_end_ms = window_start_ms + WINDOW_15MIN_MS
+    raw = _load_window_prices(day, window_start_ms, window_end_ms)
+    if raw.empty:
+        return _q8_empty_result()
+
+    # Apply sketch Tukey fence to each price, then aggregate to symbol level.
+    raw_fenced = raw.merge(
+        sketch_valid[["symbol", "fence_lower", "fence_upper"]], on="symbol", how="inner"
+    )
+    if raw_fenced.empty:
+        return _q8_empty_result()
+
+    raw_fenced["sketch_flag"] = (
+        (raw_fenced["Last"] < raw_fenced["fence_lower"]) |
+        (raw_fenced["Last"] > raw_fenced["fence_upper"])
+    )
+    sketch_positive: set[str] = set(
+        raw_fenced.groupby("symbol")["sketch_flag"]
+        .any()
+        .loc[lambda s: s]
+        .index
+    )
+
+    # GT positives: symbols with at least one price outside the exact Tukey fence.
+    # Use exact_q1/exact_q3/exact_iqr from the GT CSV (same rule, exact statistics).
+    # Restrict to valid-IQR symbols so the universe is consistent.
+    gt_in_sketch = gt[gt["symbol"].isin(set(sketch_valid["symbol"]))].copy()
+    gt_in_sketch["exact_lower"] = gt_in_sketch["exact_q1"] - 1.5 * gt_in_sketch["exact_iqr"]
+    gt_in_sketch["exact_upper"] = gt_in_sketch["exact_q3"] + 1.5 * gt_in_sketch["exact_iqr"]
+    raw_exact = raw.merge(
+        gt_in_sketch[["symbol", "exact_lower", "exact_upper"]], on="symbol", how="inner"
+    )
+    raw_exact["exact_flag"] = (
+        (raw_exact["Last"] < raw_exact["exact_lower"]) |
+        (raw_exact["Last"] > raw_exact["exact_upper"])
+    )
+    gt_positive: set[str] = set(
+        raw_exact.groupby("symbol")["exact_flag"]
+        .any()
+        .loc[lambda s: s]
+        .index
+    )
+
+    tp = len(sketch_positive & gt_positive)
+    fp = len(sketch_positive - gt_positive)
+    fn = len(gt_positive - sketch_positive)
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = (2 * precision * recall / (precision + recall)
+                 if (precision + recall) > 0 else 0.0)
+
+    return [
+        {"metric": "anomaly_precision", "value": precision, "threshold": 0.70, "pass": int(precision >= 0.70)},
+        {"metric": "anomaly_recall",    "value": recall,    "threshold": 0.80, "pass": int(recall >= 0.80)},
+        {"metric": "anomaly_f1",        "value": f1,        "threshold": 0.75, "pass": int(f1 >= 0.75)},
+    ]
 
 
 _SKETCH_METRIC_PATTERN["Q8"] = r"ddsketch|kll"

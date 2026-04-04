@@ -156,7 +156,7 @@ def build_plan_body(
         "aggregations": plan_aggregations(query),
         "time_window": time_window_for_query(query),
         "group_by_labels": group_by_labels_for_plan(query),
-        "accuracy_sla": 0.01,
+        "accuracy_sla": 0.0001 if query == "Q8" else 0.01,
         "workload": {
             "series_count": 6000,
             "samples_per_sec_per_series": 100,
