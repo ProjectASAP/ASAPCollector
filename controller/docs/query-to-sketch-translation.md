@@ -1,26 +1,101 @@
 # Query-to-Sketch Translation: How QL Maps to Sketch Execution
 
 This document explains how a PromQL or SQL query is translated through the
-controller's intermediate representations and ultimately mapped to sketch-based
-distributed execution across OpenTelemetry Collectors.
+controller's five-layer architecture and ultimately mapped to sketch-based
+distributed execution.
 
-## 1. Intermediate Representation: QueryExpr (Logical Plan)
+## 1. Five-Layer Architecture
 
-The controller uses **`QueryExpr`** (`algebra/expr.rs`) as its sole intermediate
-representation.  QueryExpr is a **logical plan** — a tree of relational algebra
-operators — not a syntax tree.  It normalises both SQL and PromQL into a common
-algebraic form that the optimizer and stage allocator can reason about.
+The controller is structured as a five-layer pipeline.  Each layer has a
+clear input, output, and responsibility:
 
-The key distinction from an AST:
+```
+Query workloads
+  │
+  │  Layer 1 — Query Language
+  │  (PromQL, SQL, DataFusion, ElasticDSL, ...)
+  ▼
+Language-specific AST
+  │
+  │  Layer 2 — Language Logical Plan
+  │  (each language's own relational/query algebra)
+  ▼
+Language Logical Plan
+  │
+  │  Layer 3 — Sketch Logical Plan (Sketch Algebra)
+  │  (language-independent, implementation-independent)
+  ▼
+Sketch Logical Plan
+  │
+  │  Layer 4 — Sketch Optimizer
+  │  (rewrite rules on the sketch logical plan)
+  ▼
+Optimised Sketch Logical Plan
+  │
+  │  Layer 5 — Physical Execution Plan
+  │  (concrete implementations for a specific deployment)
+  ▼
+Physical Plan (edge processors, backend sketchDB, backend original DB, object store)
+```
+
+### What each layer owns
+
+| Layer | Input | Output | Responsibility |
+|---|---|---|---|
+| **1. Query Language** | query string | language AST | grammar, parsing |
+| **2. Language Logical Plan** | AST | language-specific relational plan | language semantics (PromQL instant/range vectors, SQL frames, Elastic buckets) |
+| **3. Sketch Logical Plan** | language plan | sketch algebra tree (`QueryExpr`) | **what** to compute: aggregation intent + accuracy requirement + window semantics — no sketch names, no implementation details |
+| **4. Sketch Optimizer** | sketch plan + deployment constraints | optimised sketch plan | cost-aware rewrites: push-down, fusion, elimination, budget-driven deferral — considers physical deployment constraints (memory budgets, network topology, available backends) |
+| **5. Physical Plan** | optimised plan + deployment config | executable plan | **how** to execute: edge processors (sketch build), backend sketchDB (merge + query), backend original DB (exact), object store (raw backup) |
+
+### Key design principle
+
+**Layers 1–3 are query-language-independent and workload-independent.**
+They define *what* to compute without reference to any specific query language,
+sketch implementation, or deployment topology.  A `Quantile { φ=0.99, accuracy=0.01 }`
+intent is the same whether it came from PromQL, SQL, DataFusion, or ElasticDSL,
+and whether the deployment is a single node or a 1000-agent fleet.
+
+**Layer 4 is deployment-constraint-aware.**
+The optimizer considers physical deployment constraints — memory budgets per stage,
+network bandwidth, available backends — when applying cost-based rewrite rules
+(e.g., deferring a sketch from Agent to Backend when the agent memory budget is
+exceeded, or fusing TopK when the downstream merge is expensive).
+
+**Layer 5 is deployment-specific.**
+The physical planner commits to concrete implementations based on the specific
+setup: edge processors, backend sketchDB, backend original DB, or object store.
+
+### `AggIntent` — the Layer 3 aggregation vocabulary
+
+| `AggIntent` variant | Meaning | Physical candidates (Layer 5) |
+|---|---|---|
+| `Quantile { quantiles, accuracy }` | "I need quantile estimates at these φ values within this error" | DDSketch, KLL, t-digest, PromSketch EHKLL |
+| `Cardinality { accuracy }` | "I need a distinct-count estimate within this error" | HLL, UnivMon, PromSketch EHUniv |
+| `Frequency { accuracy }` | "I need frequency estimates within this error" | CountSketch, CountMinSketch |
+| `Extrema { min, max }` | "I need exact min/max" | ExactMinMax, DDSketch at φ=0/1 |
+| `PerPartition { inner, keys }` | "Run inner once per distinct key tuple" | Hydra, per-key sketch instances |
+| `Exact(Sum\|Count\|Avg\|Min\|Max)` | "No sketch benefit — exact computation" | Raw passthrough, DB-side |
+
+The flow:
+- **Layers 1–2** (parsers): "this query needs a quantile at φ=0.99" → `Aggregate { Quantile(0.99) }`
+- **Layer 3** (lowering): `Aggregate` → `SketchAgg { AggIntent::Quantile }` (shared by all languages)
+- **Layer 4** (optimizer): rewrites the plan considering deployment constraints
+- **Layer 5** (physical planner): "for this deployment, DDSketch at the edge is cheapest" or "KLL at the backend sketchDB is better for this workload"
+
+## 2. Sketch Logical Plan: `QueryExpr` (Layer 3)
+
+`QueryExpr` (`algebra/expr.rs`) is the sketch algebra IR — a **logical plan** that
+normalises all query languages into a common algebraic form.
 
 | | AST (syntax tree) | Logical Plan (QueryExpr) |
 |---|---|---|
 | **Structure** | Mirrors the grammar | Mirrors relational algebra operators |
-| **Semantics** | Preserves syntactic details (parentheses, keyword order) | Preserves only operator semantics |
-| **Optimization** | Requires pattern-matching on syntax | Uses algebraic rewrite rules |
-| **Language** | Language-specific | Language-independent (shared by SQL and PromQL) |
+| **Semantics** | Preserves syntactic details | Preserves only operator semantics |
+| **Sketch types** | N/A | Implementation-independent intents (`AggIntent`) |
+| **Language** | Language-specific | Language-independent (shared by SQL, PromQL, etc.) |
 
-QueryExpr has **24 operator variants** organized into categories:
+QueryExpr has **25 operator variants** organized into categories:
 
 **Relational core** — standard relational algebra:
 - `Source` — base metric / table (leaf node)
@@ -32,16 +107,19 @@ QueryExpr has **24 operator variants** organized into categories:
 - `Sort { keys, input }` — ORDER BY
 - `Limit { n, offset, input }` — LIMIT / OFFSET
 
-**Sketch-specific** — operators that map directly to sketch data structures:
-- `SketchAgg { op, col, input }` — sketch aggregation (DDSketch, HLL, CountSketch, CountMinSketch)
+**Sketch-specific** — operators that express sketch computation intent:
+- `SketchAgg { op: AggIntent, col, input }` — sketch aggregation intent (what, not how)
+- `WindowedAgg { agg: AggIntent, window: WindowSpec, col, input }` — bundled window + sketch agg (window defines sketch lifecycle)
 - `Partition { keys, input }` — GROUP BY distribution for distributed sketches
-- `Dedup { col, input }` — deduplication (absorbed by HLL)
+- `Dedup { col, input }` — deduplication (absorbed by cardinality sketches)
 - `TopK { k, by, input }` — top-K heavy-hitter query
 - `Merge { inputs }` — sketch merge (linearity: sketch(A∪B) = merge(sketch(A), sketch(B)))
 - `JoinSketch { join_key, outer, inner }` — sketch-aware join push-down
 
+**Time / streaming** — window operators:
+- `Window { duration, slide, input }` — standalone time window (batching)
+
 **PromQL-specific** — operators that preserve PromQL semantics:
-- `Window { duration, slide, input }` — time-range window (`[5m]`)
 - `HistogramQuantile { phi, input }` — `histogram_quantile(φ, …)`
 - `PromQLSubquery { range, resolution, input }` — `expr[range:resolution]`
 - `BinaryOp { op, lhs, rhs, vector_match }` — vector binary arithmetic with matching
@@ -49,149 +127,116 @@ QueryExpr has **24 operator variants** organized into categories:
 **Structural** — subqueries and bindings:
 - `Subquery`, `LetBinding`, `Ref`, `WindowFunc`
 
-## 2. The Full Translation Pipeline
+### Window operators: `Window` vs `WindowedAgg`
+
+| Operator | Use | Why separate |
+|---|---|---|
+| `Window { duration, slide }` | Standalone time batching (no sketch) | Used when the sketch op is a separate `SketchAgg` child node |
+| `WindowedAgg { agg, window, col }` | Bundled window + sketch aggregation | In sketch systems the window defines the sketch lifecycle (when to flush/reset). Bundling lets the physical planner choose the best implementation (edge tumbling flush vs backend sketchDB EH vs original DB time_bucket). |
+
+`WindowSpec` supports five window kinds:
+
+| `WindowKind` | Semantics | Example |
+|---|---|---|
+| `Tumbling { size }` | Fixed-size, non-overlapping | PromQL implicit, SQL `TUMBLE(ts, '5m')`, Elastic `fixed_interval` |
+| `Sliding { size, slide }` | Fixed-size, overlapping | PromQL `[5m]` range vector, SQL `HOP(ts, '1m', '5m')` |
+| `Unbounded` | All samples, no time dimension | SQL `GROUP BY key` without time |
+| `Landmark` | From epoch to now (cumulative) | Running aggregates |
+| `Session { gap }` | Gap-based, closes after inactivity | Elastic session windows |
+
+## 3. Layers 1–3: Query Language → Language Plan → Sketch Algebra
+
+### 3.1 Layer 1→2: Language AST → Language Logical Plan
+
+Each parser takes a language-specific AST (from an external crate) and produces
+a **language logical plan** using relational operators (`Aggregate`, `Window`,
+`Filter`, `Sort`, `Limit`, etc.) with generic `AggFunc` variants — no sketch
+names at this layer.
+
+**PromQL** (`query_parser/promql.rs`):
 
 ```
-PromQL / SQL string
-  │
-  │  Step 1 — Parse (query_parser/)
-  ▼
-QueryExpr (logical plan)
-  │
-  │  Step 2 — Optimize (algebra/optimizer.rs): 12 rewrite rules, fixed-point
-  ▼
-Optimised QueryExpr
-  │
-  │  Step 3 — Stage-split (planner/stage_split.rs): assign nodes to stages
-  ▼
-StagedPlan (Agent / Backend / Precompute / DB sub-plans)
-  │
-  │  Step 4 — Config emit (config/): generate OTel Collector YAML per stage
-  ▼
-Agent YAML + Backend YAML + Precompute query expr
+PromQL AST (promql-parser crate)
+  ↓ walk_qe(ast_node, ctx)
+Language Logical Plan (Aggregate + AggFunc + Window)
 ```
 
-## 3. Parsing Algorithm: QL String → QueryExpr (Logical Plan)
+The walker carries context downward: `partition` (GROUP BY keys), `topk` (K value),
+`outer_count` (whether wrapped in `count(…)`).
 
-### 3.1 PromQL parsing algorithm
+| PromQL construct | Layer 2 output |
+|---|---|
+| `quantile_over_time(φ, m[5m])` | `Aggregate { Quantile(φ), input: Window { 5m, Filter(Source) } }` |
+| `histogram_quantile(φ, rate(…))` | `HistogramQuantile { φ, Aggregate { Quantile(φ), Window(...) } }` |
+| `count_over_time(m[5m])` | `Aggregate { Count, input: Window { 5m, Source } }` |
+| `avg_over_time(m[5m])` | `Aggregate { Avg, input: Window { 5m, Source } }` |
+| `topk(k, …) by (dims)` | `TopK { k, Partition { dims, inner } }` |
+| `a + b` | `BinaryOp { Add, lhs, rhs, VectorMatch }` |
+| `m[5m:1m]` | `PromQLSubquery { range: 5m, step: 1m, inner }` |
 
-**Entry**: `parse_promql_expr(query)` → calls `promql-parser` crate → walks AST via `walk_qe`.
-
-The parser carries a **context** (`WalkCtx`) downward through the tree, propagating:
-- `partition`: GROUP BY keys from an outer `by (dims)` clause
-- `topk`: the K value from an outer `topk(k, …)` aggregate
-- `outer_count`: whether the outer operator is `count(…)` (affects sketch selection)
-
-**Algorithm** — `walk_qe(ast_node, ctx)`:
-
-```
-match ast_node:
-
-  VectorSelector {name, labels}:
-    → Source(name) + Filter(labels) + SketchAgg(Exact(Sum))
-    # Bare metric selector: pass through raw data
-
-  Call {func_name, args}:
-    match func_name:
-      "quantile_over_time":
-        → extract φ from arg[0], extract metric/filters/window from arg[1]
-        → SketchAgg(DDSketch([φ]), Window(Filter(Source)))
-
-      "histogram_quantile":
-        → extract φ from arg[0], extract inner rate/matrix from arg[1]
-        → HistogramQuantile(φ, SketchAgg(DDSketch([φ]), Window(Filter(Source))))
-
-      "count_over_time":
-        → if ctx.outer_count: SketchAgg(HLL, ...)        # count(count_over_time(...)) = cardinality
-        → else:               SketchAgg(CountMin, ...)     # plain frequency count
-
-      "avg_over_time":      → SketchAgg(DDSketch([0.5]), ...)    # median as proxy
-      "min_over_time":      → SketchAgg(DDSketch([0.0]), ...)    # or ExactMinMax if no GROUP BY
-      "max_over_time":      → SketchAgg(DDSketch([1.0]), ...)    # or ExactMinMax if no GROUP BY
-      "sum_over_time":      → SketchAgg(Exact(Sum), ...)         # not sketchable
-      "rate"/"increase":    → SketchAgg(CountMin, ...)
-
-    # After creating the SketchAgg, if ctx.topk is set, override op to CountSketch
-    # Then wrap with Partition(ctx.partition) if present
-
-  Aggregate {op, modifier, param, inner_expr}:
-    match op:
-      "topk"/"bottomk":
-        → extract k from param
-        → set ctx.topk = k, propagate ctx.partition from modifier
-        → recurse into inner_expr with new context
-        → wrap result in TopK(k, by) + Partition(keys)
-
-      "count":
-        → set ctx.outer_count = true
-        → recurse (inner count_over_time will become HLL)
-        → wrap result in Partition(keys)
-
-      "sum"/"avg"/"min"/"max":
-        → propagate partition, recurse into inner
-        → wrap result in Partition(keys)
-
-      "quantile":
-        → extract φ from param
-        → SketchAgg(DDSketch([φ]), inner) + Partition(keys)
-
-      "stddev"/"stdvar":
-        → SketchAgg(DDSketch([0.25, 0.75]), inner) + Partition(keys)
-
-  Binary {op, lhs, rhs, matching}:
-    → recurse lhs and rhs independently
-    → BinaryOp(op, lhs, rhs, VectorMatch from matching)
-
-  Subquery {expr, range, step}:
-    → PromQLSubquery(range, step, recurse(expr))
-
-  Paren {inner}:
-    → recurse(inner)        # transparent
-```
-
-### 3.2 SQL parsing algorithm
-
-**Entry**: `parse_sql_expr(sql)` → calls `sqlparser` crate → walks SQL AST.
-
-The parser is **bottom-up** — it builds QueryExpr nodes layer by layer from the
-clauses of a SELECT statement:
-
-**Algorithm** — `extract_select_qe(select, order_by, limit, offset)`:
+**SQL** (`query_parser/sql.rs`):
 
 ```
-1. Extract source table name from FROM clause
-   → Source(table_name)
-
-2. If WHERE clause present:
-   → convert SQL expression to ScalarExpr recursively
-   → Filter(ScalarExpr, Source)
-
-3. If JOIN present:
-   → extract inner table, join kind, ON predicate
-   → Join(kind, ScalarExpr, left=Filter(Source), right=Source(inner))
-
-4. Collect aggregation functions from SELECT projection:
-   → walk each SelectItem looking for COUNT, SUM, AVG, MIN, MAX
-   → for each: create AggItem { func, col, alias, distinct }
-   → COUNT(DISTINCT x) → AggItem { func: CountDistinct }
-   → COUNT(*) → AggItem { func: Count }
-   → AVG(x) → AggItem { func: Avg }
-
-5. If aggregation items found + GROUP BY present:
-   → Aggregate(keys=GROUP_BY, aggs=[AggItem...], having, input=step_3_result)
-   If no aggregation items:
-   → Project(cols, input=step_3_result)
-
-6. If ORDER BY present:
-   → Sort(keys, input=step_5_result)
-
-7. If LIMIT present:
-   → Limit(n, offset, input=step_6_result)
-
-8. If UNION ALL / INTERSECT / EXCEPT:
-   → parse each branch independently
-   → SetOp(kind, all, left, right)
+SQL AST (sqlparser crate)
+  ↓ extract_select_qe(select, order_by, limit, offset)
+Language Logical Plan (Aggregate + AggFunc + Sort + Limit)
 ```
+
+The SQL parser builds the plan bottom-up from SELECT clauses:
+
+| SQL construct | Layer 2 output |
+|---|---|
+| `FROM table` | `Source(table)` |
+| `WHERE pred` | `Filter(ScalarExpr, Source)` |
+| `JOIN … ON` | `Join(kind, pred, left, right)` |
+| `GROUP BY keys` + agg functions | `Aggregate { keys, aggs: [AggItem { func }] }` |
+| `TUMBLE(ts, INTERVAL '5m')` | `Aggregate { input: Window { 5m, Source } }` |
+| `ORDER BY … DESC` | `Sort(keys, input)` |
+| `LIMIT n` | `Limit(n, input)` |
+| `UNION ALL` | `SetOp(Union, all, left, right)` |
+
+### 3.2 Layer 2→3: Language Logical Plan → Sketch Algebra (lowering)
+
+The shared `lower_to_sketch_algebra()` pass (`algebra/lower.rs`) converts
+language-independent `Aggregate { AggFunc }` nodes into sketch algebra
+`SketchAgg { AggIntent }` nodes. This is the same pass for both PromQL and SQL.
+
+**Algorithm**:
+
+```
+lower_to_sketch_algebra(expr):
+  Recursively walk the QueryExpr tree.
+  For each single-agg Aggregate node:
+
+  1. Map AggFunc → AggIntent (implementation-independent):
+     Quantile(φ)   → AggIntent::Quantile { [φ], accuracy }
+     CountDistinct  → AggIntent::Cardinality { accuracy }
+     Count (w/ GROUP BY) → AggIntent::Frequency { accuracy }
+     Avg            → AggIntent::Quantile { [0.5], accuracy }  (median proxy)
+     Min            → AggIntent::Extrema { min: true }
+     Max            → AggIntent::Extrema { max: true }
+     StdDev         → AggIntent::Quantile { [0.25, 0.75], accuracy }  (IQR proxy)
+     Sum/Rate/Delta → AggIntent::Exact(Sum)
+     Count (no GROUP BY) → stays as Aggregate (no sketch benefit)
+
+  2. If the Aggregate's input is a Window, fuse into WindowedAgg:
+     Aggregate { AggFunc, input: Window { duration } }
+       → WindowedAgg { AggIntent, WindowSpec { Tumbling(duration) }, input }
+
+  3. If the Aggregate had GROUP BY keys, wrap with Partition:
+     → Partition { keys, input: SketchAgg/WindowedAgg }
+
+  Multi-agg Aggregates and HAVING clauses pass through unchanged.
+```
+
+| Layer 2 input | Layer 3 output |
+|---|---|
+| `Aggregate { Quantile(0.99), Window { 5m, Source } }` | `WindowedAgg { Quantile([0.99]), Tumbling(5m), Source }` |
+| `Aggregate { CountDistinct, Source }` | `SketchAgg { Cardinality, Source }` |
+| `Aggregate { Count, keys: [region], Source }` | `Partition { [region], SketchAgg { Frequency, Source } }` |
+| `Aggregate { Avg, keys: [symbol], Source }` | `Partition { [symbol], SketchAgg { Quantile([0.5]), Source } }` |
+| `Aggregate { Sum, Source }` | `SketchAgg { Exact(Sum), Source }` |
+| `Aggregate { Count (no GROUP BY), Source }` | unchanged (no sketch benefit) |
 
 **SQL function → AggFunc mapping**:
 
@@ -211,24 +256,27 @@ The SQL parser only produces relational operators; the PromQL parser is more agg
 and emits `SketchAgg` nodes directly because PromQL functions like `quantile_over_time`
 have a 1-to-1 mapping to sketch types.
 
-## 4. Concrete Example: PromQL
+## 4. Concrete Example: PromQL (all 5 layers)
 
 ### Query
 ```promql
 quantile_over_time(0.99, http_request_duration{env="prod"}[5m])
 ```
 
-### Step 1 — Parse to QueryExpr
+### Layer 1 — Language AST
 
-The PromQL parser (`query_parser/promql.rs`) recognises `quantile_over_time` as a
-sketch-eligible function and **emits a `SketchAgg` node directly** — PromQL functions
-have a 1-to-1 mapping to sketch types, so the parser can commit to the sketch
-operator at parse time:
+The `promql-parser` crate parses the string into a PromQL AST:
+`Call("quantile_over_time", [NumberLiteral(0.99), MatrixSelector("http_request_duration", {env="prod"}, 5m)])`
+
+### Layer 2 — Language Logical Plan (parser output)
+
+The PromQL parser emits **relational operators only** — `Aggregate { AggFunc }` + `Window`,
+no sketch names:
 
 ```
-SketchAgg {
-  op: DDSketch { quantiles: [0.99], epsilon: 0.01 },
-  col: SampleValue,
+Aggregate {
+  keys: [],
+  aggs: [AggItem { func: Quantile(0.99), col: SampleValue }],
   input: Window {
     duration: 5m,
     input: Filter {
@@ -239,59 +287,37 @@ SketchAgg {
 }
 ```
 
-The mapping rules for PromQL → QueryExpr:
+### Layer 3 — Sketch Logical Plan (after lowering)
 
-| PromQL construct | QueryExpr node |
-|---|---|
-| metric selector `m{l="v"}` | `Source("m")` + `Filter { pred }` |
-| range vector `[5m]` | `Window { duration: 5m }` |
-| `quantile_over_time(φ, …)` | `SketchAgg { op: DDSketch([φ]) }` |
-| `count_over_time(…)` | `SketchAgg { op: CountMin }` or `CountSketch` |
-| `histogram_quantile(φ, rate(…))` | `HistogramQuantile { phi: φ }` |
-| `topk(k, …)` | `TopK { k }` wrapping inner |
-| `by (dims)` | `Partition { keys: By(dims) }` |
-| `a + b` (vector binary) | `BinaryOp { op: Add, vector_match }` |
+The shared `lower_to_sketch_algebra()` pass converts `Aggregate { Quantile }` to
+`AggIntent::Quantile` and fuses with `Window` into `WindowedAgg`:
 
-### Step 2 — Optimize
-
-The optimizer applies rewrite rules.  For this simple query, only **R1 (PredicatePushDown)**
-is relevant — the filter is already below the window, so no change.  The tree is returned as-is.
-
-### Step 3 — Stage-split
-
-`split_expr_by_stage` walks the tree bottom-up and assigns:
-
-| Node | Stage | Reason |
-|---|---|---|
-| `Source("http_request_duration")` | Agent | leaf |
-| `Filter { env="prod" }` | Agent | reduces volume early |
-| `Window { 5m }` | Agent | time batching |
-| `SketchAgg { DDSketch }` | Agent | sketch fits in agent memory budget |
-
-Result:
 ```
-StagedPlan {
-  agent: AgentSubPlan {
-    sketch_type: DDSketch,
-    sketch_params: DDSketch { relative_accuracy: 0.01, quantiles: [0.99] },
-    window_secs: 300,
-    label_filters: ["env=prod"],
-  },
-  backend: BackendSubPlan { has_merge: false },
-  precompute: PrecomputeSubPlan { active: false },
-  db: DbSubPlan { active: false },
+WindowedAgg {
+  agg: Quantile { quantiles: [0.99], accuracy: 0.01 },
+  window: WindowSpec { kind: Tumbling { size: 5m } },
+  col: SampleValue,
+  input: Filter {
+    pred: Column("env") = Literal("prod"),
+    input: Source("http_request_duration")
+  }
 }
 ```
 
-### Step 4 — Config emit
+Note: no sketch implementation names — just "I need a quantile at φ=0.99 with ≤1% error."
 
-Agent OTel Collector YAML:
+### Layer 4 — Optimizer
+
+R1 (PredicatePushDown): filter is already below the window — no change. Tree is returned as-is.
+
+### Layer 5 — Physical Plan
+
+`physical::resolve(Quantile { [0.99], 0.01 })` → `PhysicalAggOp { sketch_type: DDSketch, sketch_params: DDSketch { relative_accuracy: 0.01, quantiles: [0.99] } }`
+
+`resolve_window(Tumbling { 5m }, AgentCollector)` → `OtelTumblingFlush { 5m }`
+
+Stage-split → all at Agent. Config emit → OTel Collector YAML:
 ```yaml
-receivers:
-  otlp:
-    protocols:
-      grpc: { endpoint: 0.0.0.0:4317 }
-      http: { endpoint: 0.0.0.0:4318 }
 processors:
   ddsketch:
     mode: Window
@@ -299,126 +325,118 @@ processors:
     relative_accuracy: 0.01
     quantiles: [0.99]
     label_matchers: ["env=prod"]
-    transmit_sketch: true
-exporters:
-  prometheus: { endpoint: 0.0.0.0:8889 }
-service:
-  pipelines:
-    metrics:
-      receivers: [otlp]
-      processors: [ddsketch]
-      exporters: [prometheus]
 ```
 
-### How it executes
+### Execution
 
-1. **Agent** receives raw OTLP metric samples → applies `env="prod"` filter →
-   batches into 5-minute windows → inserts each sample into a DDSketch →
-   emits the DDSketch (or delta-compressed diff) to the backend
-2. **Backend** (if multiple agents) merges DDSketches from N agents
-3. **Query time**: extract the 0.99 quantile from the merged DDSketch → returns a single number
+1. **Agent** receives raw samples → filters `env="prod"` → batches 5m windows → DDSketch → emit
+2. **Backend** merges DDSketches from N agents
+3. **Query time**: extract 0.99 quantile from merged DDSketch
 
 ---
 
-## 5. Concrete Example: PromQL with Top-K
+## 5. Concrete Example: PromQL with Top-K (all 5 layers)
 
 ### Query
 ```promql
-topk(10, count_over_time(requests{env="prod"}[1m]) by (service))
+topk by (service) (10, count_over_time(requests{env="prod"}[1m]))
 ```
 
-### Step 1 — Parse to QueryExpr
+### Layer 1 — Language AST
 
-The PromQL parser directly emits sketch-aware nodes — `TopK`, `SketchAgg(CountSketch)`,
-and `Partition` — because PromQL functions have a 1-to-1 sketch mapping.  Compare
-this with the SQL examples below, where the parser emits generic `Aggregate` +
-`Sort` + `Limit` and the optimizer transforms them into sketch nodes later:
+The `promql-parser` crate parses this as:
+`Aggregate(op="topk", param=10, modifier=By(["service"]), expr=Call("count_over_time", MatrixSelector("requests", {env="prod"}, 1m)))`
+
+### Layer 2 — Language Logical Plan (parser output)
+
+The PromQL parser emits relational operators.  The `by (service)` partition keys
+are propagated into the inner `Aggregate`'s GROUP BY keys, so the lowering pass
+can see `Count WITH GROUP BY` → `Frequency`:
 
 ```
-Partition {
-  keys: By(["service"]),
-  input: TopK {
-    k: 10,
-    by: ["service"],
-    input: SketchAgg {
-      op: CountSketch { width: 2000, depth: 5 },
-      col: SampleValue,
-      input: Window {
-        duration: 1m,
-        input: Filter {
-          pred: Column("env") = Literal("prod"),
-          input: Source("requests")
-        }
+TopK {
+  k: 10,
+  by: ["service"],
+  input: Aggregate {
+    keys: ["service"],
+    aggs: [AggItem { func: Count, col: SampleValue }],
+    input: Window {
+      duration: 1m,
+      input: Filter {
+        pred: Column("env") = Literal("prod"),
+        input: Source("requests")
       }
     }
   }
 }
 ```
 
-Note: both `CountSketch` and `CountMinSketch` are valid candidates for top-K
-frequency queries.  The parser emits a default; the `CostModelPlanner` scores
-both candidates and picks the cheapest that meets the accuracy SLA.
+### Layer 3 — Sketch Logical Plan (after lowering)
 
-### Step 2 — Optimize
+`lower_to_sketch_algebra()` converts `Aggregate { Count, keys: ["service"] }` →
+`Partition { ["service"], WindowedAgg { Frequency } }`.  The `Window + Aggregate`
+fuses into `WindowedAgg`:
 
-R1 (PredicatePushDown): filter already below window — no change.
-R5 (TopKFusion): TopK wrapping CountSketch is already the canonical form — no change.
-
-### Step 3 — Stage-split
-
-| Node | Stage | Reason |
-|---|---|---|
-| Source, Filter, Window | Agent | leaf + volume reduction + time batching |
-| SketchAgg { CountSketch } | Agent | sketch fits in memory budget |
-| Partition { service } | Backend | GROUP BY distribution |
-| TopK { 10 } | Precompute | top-K extraction requires merged data |
-
-Result:
 ```
-StagedPlan {
-  agent: AgentSubPlan {
-    sketch_type: CountSketch,
-    window_secs: 60,
-    label_filters: ["env=prod"],
-  },
-  backend: BackendSubPlan {
-    group_by: ["service"],
-    has_merge: true,
-  },
-  precompute: PrecomputeSubPlan {
-    active: true,
-    topk: 10,
-    query_expr: "topk(10, count_over_time(requests{env=\"prod\"}[1m]) by (service))",
-  },
+TopK {
+  k: 10,
+  by: ["service"],
+  input: Partition {
+    keys: By(["service"]),
+    input: WindowedAgg {
+      agg: Frequency { accuracy: 0.001 },
+      window: WindowSpec { kind: Tumbling { size: 1m } },
+      col: SampleValue,
+      input: Filter {
+        pred: env = "prod",
+        input: Source("requests")
+      }
+    }
+  }
 }
 ```
 
-### How it executes
+Note: `Frequency`, not `CountSketch` — implementation-independent. Both CountSketch
+and CountMinSketch are valid candidates; the physical planner decides.
 
-1. **Agent** receives raw samples → filters `env="prod"` → builds a CountSketch
-   per 1-minute window → emits to backend
-2. **Backend** receives sketches from N agents → merges CountSketches, grouped by `service`
-3. **Precompute** receives merged sketches → extracts top-10 services by frequency →
-   returns `[(service_a, 4521), (service_b, 3892), …]`
+### Layer 4 — Optimizer
+
+R1 (PredicatePushDown): filter already below window — no change.
+
+### Layer 5 — Physical Plan
+
+`physical::resolve(Frequency { 0.01 })` → `PhysicalAggOp { sketch_type: CountSketch, ... }`
+
+Stage-split:
+| Node | Stage | Reason |
+|---|---|---|
+| Source, Filter | Agent | leaf + volume reduction |
+| WindowedAgg { Frequency } | Agent | sketch fits in memory budget |
+| Partition { service } | Backend | GROUP BY distribution |
+| TopK { 10 } | Precompute | global ranking requires merged data |
+
+### Execution
+
+1. **Agent** → filters → builds CountSketch per 1m window → emits to backend
+2. **Backend** → merges per service
+3. **Precompute** → extracts top-10 services by frequency
 
 ---
 
-## 6. Concrete Example: SQL
+## 6. Concrete Example: SQL (all 5 layers)
 
 ### Query
 ```sql
 SELECT symbol, AVG(price) FROM trades GROUP BY symbol
 ```
 
-### Step 1 — Parse to QueryExpr
+### Layer 1 — Language AST
 
-Unlike the PromQL parser, the SQL parser **does not emit `SketchAgg` nodes**.  It
-produces relational `Aggregate` nodes with generic `AggFunc` variants (Avg, Count,
-Sum, etc.).  Sketch assignment happens later — the optimizer and allocator decide
-whether and which sketch type to use based on the aggregation function, GROUP BY
-keys, and accuracy SLA.
+`sqlparser` produces: `Select { projection: [Identifier("symbol"), Function(AVG, "price")], from: [Table("trades")], group_by: [Identifier("symbol")] }`
 
-The SQL parser (`query_parser/sql.rs`) maps the SELECT to:
+### Layer 2 — Language Logical Plan
+
+Both parsers emit the same kind of output — relational `Aggregate { AggFunc }`:
 
 ```
 Aggregate {
@@ -429,101 +447,112 @@ Aggregate {
 }
 ```
 
-Note: `Avg` here is a generic `AggFunc`, not a sketch op.  The allocator will later
-determine that `AVG` is **non-mergeable** (`avg(A∪B) ≠ merge(avg(A), avg(B))`), so
-it cannot be pushed down to a sketch on the Agent.
+### Layer 3 — Sketch Logical Plan (after lowering)
 
-### Step 3 — Stage-split
+`lower_to_sketch_algebra()` converts `Avg` → `Quantile { [0.5], 0.01 }` (median proxy):
 
-| Node | Stage | Reason |
-|---|---|---|
-| Source("trades") | Agent | leaf |
-| Aggregate { Avg } | DB | AVG is non-mergeable — requires all raw data |
-
-Result:
 ```
-StagedPlan {
-  agent: AgentSubPlan { sketch_type: None },
-  backend: BackendSubPlan { },
-  precompute: PrecomputeSubPlan { active: false },
-  db: DbSubPlan { active: true, query_expr: "avg by (symbol) (trades)" },
+Partition {
+  keys: By(["symbol"]),
+  input: SketchAgg {
+    op: Quantile { quantiles: [0.5], accuracy: 0.01 },
+    col: Named("price"),
+    input: Source("trades")
+  }
 }
 ```
 
-### How it executes
+However, `Avg` is **non-mergeable** (`avg(A∪B) ≠ merge(avg(A), avg(B))`).
+The stage-split will route this to DB for exact computation.
 
-Since AVG cannot be sketched, the Agent passes raw samples through.  The DB
-(ClickHouse / TSDB) computes the exact AVG per symbol on the full dataset.
+### Layer 4 — Optimizer
+
+No rewrites applicable.
+
+### Layer 5 — Physical Plan
+
+Stage-split assigns `Quantile(Avg proxy)` → DB stage (non-mergeable).
+The DB computes exact AVG per symbol on the full dataset.
 
 ---
 
-## 7. Concrete Example: SQL with Sketch Opportunity
+## 7. Concrete Example: SQL with TUMBLE window (all 5 layers)
 
 ### Query
 ```sql
-SELECT region, COUNT(DISTINCT user_id)
+SELECT region, COUNT(DISTINCT user_id) AS cnt
 FROM sessions
-GROUP BY region
+GROUP BY region, TUMBLE(ts, INTERVAL '5' MINUTE)
 ORDER BY cnt DESC LIMIT 10
 ```
 
-### Step 1 — Parse to QueryExpr
+### Layer 1–2 — Parse to relational operators
 
-Again, the SQL parser emits **relational operators only** — `Aggregate` with
-`CountDistinct`, `Sort`, and `Limit`.  No sketch ops yet:
+The SQL parser detects `TUMBLE(ts, INTERVAL '5' MINUTE)` in GROUP BY and emits
+a `Window` node. `COUNT(DISTINCT user_id)` becomes `AggFunc::CountDistinct`:
 
 ```
 Limit {
   n: 10,
-  offset: 0,
   input: Sort {
-    keys: [SortKey { col: "cnt", desc: true }],
+    keys: [{ col: "cnt", desc: true }],
     input: Aggregate {
       keys: ["region"],
       aggs: [AggItem { func: CountDistinct, col: Named("user_id"), alias: "cnt" }],
-      input: Source("sessions")
+      input: Window {
+        duration: 5m,
+        input: Source("sessions")
+      }
     }
   }
 }
 ```
 
-### Step 2 — Optimize
+### Layer 3 — Sketch Logical Plan (after lowering)
 
-This is where the SQL path diverges from PromQL: the **optimizer rewrites
-relational nodes into sketch-aware nodes**.  PromQL already emitted `SketchAgg`
-at parse time; SQL goes through the optimizer to reach the same representation.
+`lower_to_sketch_algebra()` converts `CountDistinct` → `Cardinality { 0.01 }` and
+fuses `Window + Aggregate` → `WindowedAgg`:
 
-**R5 (TopKFusion)**: `Limit(10, Sort(desc, Aggregate))` → fused into `TopK { k: 10 }`
-
-**R9 (HydraConversion)**: the optimizer recognises `CountDistinct` + `GROUP BY region`
-and suggests HLL as the sketch type.
-
-After optimization:
 ```
-TopK {
-  k: 10,
-  by: ["region"],
-  input: SketchAgg {
-    op: HLL { registers: 14 },
-    col: Named("user_id"),
-    input: Source("sessions")
+Limit {
+  n: 10,
+  input: Sort {
+    input: Partition {
+      keys: By(["region"]),
+      input: WindowedAgg {
+        agg: Cardinality { accuracy: 0.01 },
+        window: WindowSpec { kind: Tumbling { size: 5m } },
+        col: Named("user_id"),
+        input: Source("sessions")
+      }
+    }
   }
 }
 ```
 
-### Step 3 — Stage-split
+### Layer 4 — Optimizer
 
+**R5 (TopKFusion)**: `Limit(10, Sort(desc, ...))` → fused into `TopK { k: 10 }`
+
+### Layer 5 — Physical Plan
+
+`physical::resolve(Cardinality { 0.01 })` → `PhysicalAggOp { sketch_type: HLL, sketch_params: HLL { precision: 14 } }`
+
+`resolve_window(Tumbling { 5m }, AgentCollector)` → `OtelTumblingFlush { 5m }`
+
+Stage-split:
 | Node | Stage | Reason |
 |---|---|---|
 | Source("sessions") | Agent | leaf |
-| SketchAgg { HLL } | Agent | HLL memory = 2^14 = 16KB — fits budget |
-| TopK { 10 } | Precompute | top-K needs merged data |
+| WindowedAgg { Cardinality } | Agent | HLL 16KB — fits budget |
+| Partition { region } | Backend | GROUP BY distribution |
+| TopK { 10 } | Precompute | global ranking |
 
-### How it executes
+### Execution
 
-1. **Agent**: builds one HLL per region per window → emits to backend
+1. **Agent**: builds one HLL per region per 5m window → emits to backend
 2. **Backend**: merges HLLs from N agents (HLL merge = set union)
-3. **Precompute**: extracts cardinality estimates per region → sorts → returns top 10
+3. **Precompute**: extracts cardinality per region → top 10
 
 ---
 

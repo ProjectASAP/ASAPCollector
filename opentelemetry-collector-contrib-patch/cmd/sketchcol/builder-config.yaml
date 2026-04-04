@@ -1,0 +1,59 @@
+# Unified sketch collector — includes ALL sketch processors.
+#
+# Build with:
+#   go install go.opentelemetry.io/collector/cmd/builder@latest
+#   builder --config builder-config.yaml
+#
+# Start with controller-generated config:
+#   ./sketchcol --config "http://controller:8080/api/v1/collector-config/agent"
+#
+# Or with a static file:
+#   ./sketchcol --config file:./config.yaml
+
+dist:
+  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/sketchcol
+  name: sketchcol
+  description: Unified collector with all sketch processors (DDSketch, HLL, KLL, CountSketch, CountMinSketch)
+  version: 0.141.0-dev
+  output_path: ./cmd/sketchcol/dist
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.141.0
+
+processors:
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.141.0
+  # All sketch processors
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddsketchprocessor v0.141.0
+    path: ./processor/ddsketchprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllprocessor v0.141.0
+    path: ./processor/hllprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllprocessor v0.141.0
+    path: ./processor/kllprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchprocessor v0.141.0
+    path: ./processor/countsketchprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor v0.141.0
+    path: ./processor/countminsketchprocessor
+  # Merge processors
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchmergeprocessor v0.141.0
+    path: ./processor/countsketchmergeprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchmergeprocessor v0.141.0
+    path: ./processor/countminsketchmergeprocessor
+
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.141.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.141.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.141.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.141.0
+
+providers:
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.47.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.47.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/httpprovider v1.47.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/httpsprovider v1.47.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.47.0
+
+replaces:
+  - github.com/open-telemetry/opentelemetry-collector-contrib => ../../../opentelemetry-collector-contrib
+  - go.opentelemetry.io/collector => ../../../opentelemetry-collector
+  - go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
+  - go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor

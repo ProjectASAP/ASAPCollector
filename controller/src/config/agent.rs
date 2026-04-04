@@ -93,7 +93,17 @@ fn build_processor_block(cfg: &AgentCollectorConfig) -> Value {
         m.insert("aggregate_by".into(), seq_of_strings(&cfg.aggregate_by));
     }
     if !cfg.label_matchers.is_empty() {
-        m.insert("label_matchers".into(), seq_of_strings(&cfg.label_matchers));
+        // Go processors expect []LabelMatcher{Key, Value}, not flat strings.
+        let matchers: Vec<Value> = cfg.label_matchers.iter().filter_map(|s| {
+            let (k, v) = s.split_once('=')?;
+            let mut map = serde_yaml::Mapping::new();
+            map.insert("key".into(), Value::String(k.to_string()));
+            map.insert("value".into(), Value::String(v.to_string()));
+            Some(Value::Mapping(map))
+        }).collect();
+        if !matchers.is_empty() {
+            m.insert("label_matchers".into(), Value::Sequence(matchers));
+        }
     }
 
     // Delta transmission: only emit fields each processor's Config actually defines.

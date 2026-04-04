@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 
 use super::expr::{QueryExpr, ScalarExpr, SetOpKind, SortKey};
-use super::expr::{PartitionKeys, SketchAggOp, SourceSpec};
+use super::expr::{AggIntent, PartitionKeys, SourceSpec};
 
 // ── Cost model interface ──────────────────────────────────────────────────────
 
@@ -47,22 +47,51 @@ pub struct NodeCost {
 pub trait CostModel: Send + Sync {
     /// Estimate the cost of the expression tree rooted at `expr`.
     fn estimate(&self, expr: &QueryExpr) -> NodeCost;
+
+    /// Deployment constraints (memory budgets, available backends, etc.).
+    /// Returns `None` if no constraints are configured (unconstrained mode).
+    fn constraints(&self) -> Option<&DeploymentConstraints> { None }
+}
+
+/// Physical deployment constraints that influence optimizer decisions.
+///
+/// Layer 4 (optimizer) uses these to make cost-aware rewrites:
+/// - Defer a sketch from Agent to Backend when `agent_memory_bytes` is exceeded
+/// - Prefer PromSketch path when `promsketch_available` is true
+/// - Avoid sliding windows when only tumbling is supported
+#[derive(Debug, Clone, Default)]
+pub struct DeploymentConstraints {
+    /// Memory budget for the Agent stage (bytes per series). `None` = unbounded.
+    pub agent_memory_bytes: Option<u64>,
+    /// Memory budget for the Backend stage. `None` = unbounded.
+    pub backend_memory_bytes: Option<u64>,
+    /// Whether a PromSketch store is available for the Precompute stage.
+    pub promsketch_available: bool,
+    /// Whether the Agent supports sliding windows (requires EH or multi-instance).
+    pub agent_supports_sliding: bool,
+    /// Network bandwidth between Agent and Backend (bytes/sec). `None` = unconstrained.
+    pub agent_backend_bandwidth: Option<f64>,
 }
 
 /// Default cost model — simple heuristics, no schema statistics.
 pub struct DefaultCostModel {
     pub raw_bytes_per_sec: f64,
+    pub deployment: Option<DeploymentConstraints>,
 }
 
 impl CostModel for DefaultCostModel {
+    fn constraints(&self) -> Option<&DeploymentConstraints> {
+        self.deployment.as_ref()
+    }
+
     fn estimate(&self, expr: &QueryExpr) -> NodeCost {
         // Very rough: sketch nodes reduce bandwidth by 10×; exact nodes pass through.
         let factor = match expr {
             QueryExpr::SketchAgg { op, .. } => match op {
-                SketchAggOp::DDSketch { .. }  => 0.05,
-                SketchAggOp::HLL { .. }       => 0.02,
-                SketchAggOp::CountSketch { .. } | SketchAggOp::CountMin { .. } => 0.03,
-                SketchAggOp::Exact(_)         => 1.0,
+                AggIntent::Quantile { .. }    => 0.05,
+                AggIntent::Cardinality { .. } => 0.02,
+                AggIntent::Frequency { .. }   => 0.03,
+                AggIntent::Exact(_)           => 1.0,
                 _                             => 0.1,
             },
             QueryExpr::Merge { inputs } => 1.0 / (inputs.len().max(1) as f64),
@@ -70,11 +99,24 @@ impl CostModel for DefaultCostModel {
             QueryExpr::TopK { k, .. }   => (*k as f64).recip().min(0.1),
             _                           => 1.0,
         };
-        NodeCost {
+        let base = NodeCost {
             bytes_per_sec: self.raw_bytes_per_sec * factor,
             memory_bytes:  self.raw_bytes_per_sec * factor * 0.01,
             cpu_per_sample: factor * 10.0,
+        };
+        // If deployment constraints limit agent memory, penalise sketches
+        // that exceed the budget so the optimizer prefers deferral.
+        if let Some(dc) = &self.deployment {
+            if let Some(budget) = dc.agent_memory_bytes {
+                if base.memory_bytes > budget as f64 {
+                    return NodeCost {
+                        memory_bytes: base.memory_bytes * 10.0, // heavy penalty
+                        ..base
+                    };
+                }
+            }
         }
+        base
     }
 }
 
@@ -199,10 +241,10 @@ impl RewriteRule for HLLDedupElim {
 
     fn try_rewrite(&self, expr: QueryExpr, _model: &dyn CostModel) -> Option<QueryExpr> {
         match expr {
-            QueryExpr::SketchAgg { op: SketchAggOp::HLL { registers }, col, input } => {
+            QueryExpr::SketchAgg { op: AggIntent::Cardinality { accuracy }, col, input } => {
                 if let QueryExpr::Dedup { input: inner, .. } = *input {
                     return Some(QueryExpr::SketchAgg {
-                        op:    SketchAggOp::HLL { registers },
+                        op:    AggIntent::Cardinality { accuracy },
                         col,
                         input: inner,
                     });
@@ -295,7 +337,7 @@ impl RewriteRule for HistogramQuantileFusion {
             QueryExpr::HistogramQuantile { phi, input } => {
                 match *input {
                     QueryExpr::SketchAgg {
-                        op: SketchAggOp::DDSketch { quantiles, epsilon },
+                        op: AggIntent::Quantile { quantiles, accuracy },
                         col,
                         input: inner,
                     } => {
@@ -306,7 +348,7 @@ impl RewriteRule for HistogramQuantileFusion {
                             Some(QueryExpr::HistogramQuantile {
                                 phi,
                                 input: Box::new(QueryExpr::SketchAgg {
-                                    op:    SketchAggOp::DDSketch { quantiles: new_qs, epsilon },
+                                    op:    AggIntent::Quantile { quantiles: new_qs, accuracy },
                                     col,
                                     input: inner,
                                 }),
@@ -315,7 +357,7 @@ impl RewriteRule for HistogramQuantileFusion {
                             Some(QueryExpr::HistogramQuantile {
                                 phi,
                                 input: Box::new(QueryExpr::SketchAgg {
-                                    op: SketchAggOp::DDSketch { quantiles, epsilon },
+                                    op: AggIntent::Quantile { quantiles, accuracy },
                                     col,
                                     input: inner,
                                 }),
@@ -470,14 +512,13 @@ impl RewriteRule for HydraConversion {
                 {
                     if matches!(
                         inner_op,
-                        SketchAggOp::DDSketch { .. }
-                            | SketchAggOp::HLL { .. }
-                            | SketchAggOp::CountMin { .. }
-                            | SketchAggOp::CountSketch { .. }
+                        AggIntent::Quantile { .. }
+                            | AggIntent::Cardinality { .. }
+                            | AggIntent::Frequency { .. }
                     ) {
-                        let hydra_op = SketchAggOp::Hydra {
-                            inner:          Box::new(inner_op.clone()),
-                            partition_keys: key_list.clone(),
+                        let hydra_op = AggIntent::PerPartition {
+                            inner: Box::new(inner_op.clone()),
+                            keys:  key_list.clone(),
                         };
                         let candidate = QueryExpr::SketchAgg {
                             op:    hydra_op,
@@ -602,7 +643,19 @@ impl QueryOptimizer {
     pub fn new(raw_bytes_per_sec: f64) -> Self {
         Self {
             rules: default_rules(),
-            cost_model: Box::new(DefaultCostModel { raw_bytes_per_sec }),
+            cost_model: Box::new(DefaultCostModel { raw_bytes_per_sec, deployment: None }),
+            max_iters: 32,
+        }
+    }
+
+    /// Create an optimizer with deployment constraints.
+    pub fn with_constraints(raw_bytes_per_sec: f64, constraints: DeploymentConstraints) -> Self {
+        Self {
+            rules: default_rules(),
+            cost_model: Box::new(DefaultCostModel {
+                raw_bytes_per_sec,
+                deployment: Some(constraints),
+            }),
             max_iters: 32,
         }
     }
@@ -690,6 +743,10 @@ impl QueryOptimizer {
             QueryExpr::SketchAgg { op, col, input } => {
                 let (new_input, c) = recurse!(input);
                 (QueryExpr::SketchAgg { op, col, input: new_input }, c)
+            }
+            QueryExpr::WindowedAgg { agg, window, col, input } => {
+                let (new_input, c) = recurse!(input);
+                (QueryExpr::WindowedAgg { agg, window, col, input: new_input }, c)
             }
             QueryExpr::Partition { keys, input } => {
                 let (new_input, c) = recurse!(input);
@@ -787,7 +844,7 @@ fn default_rules() -> Vec<Box<dyn RewriteRule>> {
 mod tests {
     use super::*;
     use crate::algebra::expr::{LiteralValue, ScalarExpr};
-    use crate::algebra::expr::{ColumnRef, PartitionKeys, SketchAggOp, SourceSpec};
+    use crate::algebra::expr::{AggIntent, ColumnRef, PartitionKeys, SourceSpec};
     use std::time::Duration;
 
     fn src(name: &str) -> QueryExpr {
@@ -839,7 +896,7 @@ mod tests {
     #[test]
     fn r3_removes_dedup_before_hll() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::HLL { registers: 14 },
+            op:    AggIntent::default_cardinality(),
             col:   ColumnRef::Named("user_id".into()),
             input: Box::new(QueryExpr::Dedup {
                 col:   "user_id".into(),
@@ -898,7 +955,7 @@ mod tests {
         let expr = QueryExpr::HistogramQuantile {
             phi:   0.95,
             input: Box::new(QueryExpr::SketchAgg {
-                op:    SketchAggOp::DDSketch { quantiles: vec![0.5], epsilon: 0.01 },
+                op:    AggIntent::Quantile { quantiles: vec![0.5], accuracy: 0.01 },
                 col:   ColumnRef::SampleValue,
                 input: Box::new(src("latency")),
             }),
@@ -906,7 +963,7 @@ mod tests {
         let (result, _) = opt().optimize(expr);
         match &result {
             QueryExpr::HistogramQuantile { input, .. } => {
-                if let QueryExpr::SketchAgg { op: SketchAggOp::DDSketch { quantiles, .. }, .. } =
+                if let QueryExpr::SketchAgg { op: AggIntent::Quantile { quantiles, .. }, .. } =
                     input.as_ref()
                 {
                     assert!(quantiles.contains(&0.95), "0.95 should be in DDSketch quantiles");
@@ -976,7 +1033,7 @@ mod tests {
                 duration: Duration::from_secs(60),
                 slide:    None,
                 input:    Box::new(QueryExpr::SketchAgg {
-                    op:    SketchAggOp::HLL { registers: 14 },
+                    op:    AggIntent::default_cardinality(),
                     col:   ColumnRef::Named("uid".into()),
                     input: Box::new(QueryExpr::Dedup {
                         col:   "uid".into(),
@@ -1001,7 +1058,7 @@ mod tests {
     #[test]
     fn r2_lifts_mergeable_sketch_above_merge() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_hll(),
+            op:    AggIntent::default_cardinality(),
             col:   ColumnRef::Named("uid".into()),
             input: Box::new(QueryExpr::Merge {
                 inputs: vec![src("shard_a"), src("shard_b")],
