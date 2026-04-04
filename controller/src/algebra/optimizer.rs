@@ -73,6 +73,19 @@ pub struct DeploymentConstraints {
     pub agent_backend_bandwidth: Option<f64>,
 }
 
+impl DeploymentConstraints {
+    /// Build from [`StageResourceBudgets`] (the workload-derived budgets).
+    pub fn from_budgets(budgets: &crate::types::StageResourceBudgets) -> Self {
+        Self {
+            agent_memory_bytes: budgets.agent_memory_bytes,
+            backend_memory_bytes: budgets.backend_memory_bytes,
+            promsketch_available: false,
+            agent_supports_sliding: false,
+            agent_backend_bandwidth: None,
+        }
+    }
+}
+
 /// Default cost model — simple heuristics, no schema statistics.
 pub struct DefaultCostModel {
     pub raw_bytes_per_sec: f64,
@@ -85,9 +98,9 @@ impl CostModel for DefaultCostModel {
     }
 
     fn estimate(&self, expr: &QueryExpr) -> NodeCost {
-        // Very rough: sketch nodes reduce bandwidth by 10×; exact nodes pass through.
+        // Sketch nodes reduce bandwidth; exact nodes pass through.
         let factor = match expr {
-            QueryExpr::SketchAgg { op, .. } => match op {
+            QueryExpr::SketchAgg { op, .. } | QueryExpr::WindowedAgg { agg: op, .. } => match op {
                 AggIntent::Quantile { .. }    => 0.05,
                 AggIntent::Cardinality { .. } => 0.02,
                 AggIntent::Frequency { .. }   => 0.03,
@@ -97,22 +110,52 @@ impl CostModel for DefaultCostModel {
             QueryExpr::Merge { inputs } => 1.0 / (inputs.len().max(1) as f64),
             QueryExpr::Filter { .. }    => 0.5,
             QueryExpr::TopK { k, .. }   => (*k as f64).recip().min(0.1),
+            QueryExpr::Partition { .. }  => 0.8, // partition adds overhead
+            QueryExpr::Dedup { .. }      => 0.9,
             _                           => 1.0,
         };
+
+        let memory = match expr {
+            QueryExpr::SketchAgg { op, .. } | QueryExpr::WindowedAgg { agg: op, .. } =>
+                crate::algebra::directory::estimated_sketch_memory_bytes(op) as f64,
+            _ => self.raw_bytes_per_sec * factor * 0.01,
+        };
+
         let base = NodeCost {
             bytes_per_sec: self.raw_bytes_per_sec * factor,
-            memory_bytes:  self.raw_bytes_per_sec * factor * 0.01,
+            memory_bytes:  memory,
             cpu_per_sample: factor * 10.0,
         };
-        // If deployment constraints limit agent memory, penalise sketches
-        // that exceed the budget so the optimizer prefers deferral.
+
+        // Apply deployment constraint penalties.
         if let Some(dc) = &self.deployment {
+            // Memory constraint: penalise sketches exceeding agent budget.
             if let Some(budget) = dc.agent_memory_bytes {
                 if base.memory_bytes > budget as f64 {
                     return NodeCost {
-                        memory_bytes: base.memory_bytes * 10.0, // heavy penalty
+                        memory_bytes: base.memory_bytes * 10.0,
                         ..base
                     };
+                }
+            }
+            // Bandwidth constraint: penalise if output exceeds network capacity.
+            if let Some(bw) = dc.agent_backend_bandwidth {
+                if base.bytes_per_sec > bw {
+                    return NodeCost {
+                        bytes_per_sec: base.bytes_per_sec * 10.0,
+                        ..base
+                    };
+                }
+            }
+            // Sliding window constraint: penalise if agent doesn't support sliding.
+            if !dc.agent_supports_sliding {
+                if let QueryExpr::WindowedAgg { window, .. } = expr {
+                    if matches!(window.kind, crate::algebra::expr::WindowKind::Sliding { .. }) {
+                        return NodeCost {
+                            cpu_per_sample: base.cpu_per_sample * 10.0,
+                            ..base
+                        };
+                    }
                 }
             }
         }
@@ -1087,5 +1130,51 @@ mod tests {
             QueryExpr::Merge { inputs } => assert_eq!(inputs.len(), 3),
             other => panic!("expected Merge(3), got {other:?}"),
         }
+    }
+
+    // ── DeploymentConstraints tests ─────────────────────────────────────
+
+    #[test]
+    fn constraints_from_budgets() {
+        let budgets = crate::types::StageResourceBudgets {
+            agent_memory_bytes: Some(4096),
+            backend_memory_bytes: Some(1_000_000),
+            ..Default::default()
+        };
+        let dc = DeploymentConstraints::from_budgets(&budgets);
+        assert_eq!(dc.agent_memory_bytes, Some(4096));
+        assert_eq!(dc.backend_memory_bytes, Some(1_000_000));
+    }
+
+    #[test]
+    fn constrained_optimizer_penalises_large_sketch() {
+        let dc = DeploymentConstraints {
+            agent_memory_bytes: Some(1), // 1 byte — too small for any sketch
+            ..Default::default()
+        };
+        let opt = QueryOptimizer::with_constraints(1000.0, dc);
+        let expr = QueryExpr::SketchAgg {
+            op: AggIntent::default_quantile(vec![0.99]),
+            col: ColumnRef::SampleValue,
+            input: Box::new(QueryExpr::Source(SourceSpec { name: "m".into() })),
+        };
+        let cost = opt.cost_model.estimate(&expr);
+        // Memory should be heavily penalised (10× multiplier)
+        assert!(cost.memory_bytes > 10_000.0,
+            "expected penalised memory, got {}", cost.memory_bytes);
+    }
+
+    #[test]
+    fn unconstrained_optimizer_normal_cost() {
+        let opt = QueryOptimizer::new(1000.0);
+        let expr = QueryExpr::SketchAgg {
+            op: AggIntent::default_quantile(vec![0.99]),
+            col: ColumnRef::SampleValue,
+            input: Box::new(QueryExpr::Source(SourceSpec { name: "m".into() })),
+        };
+        let cost = opt.cost_model.estimate(&expr);
+        // Normal cost, no penalty
+        assert!(cost.memory_bytes < 10_000.0,
+            "expected normal memory, got {}", cost.memory_bytes);
     }
 }
