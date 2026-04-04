@@ -23,6 +23,60 @@ _SKETCH_METRIC_PATTERN: dict[str, str] = {}
 _COMPARE_DISPATCH: dict[str, Callable[..., dict]] = {}
 
 
+def read_sketch_jsonl(path: Path) -> pd.DataFrame:
+    """Parse an OTel file-exporter JSONL into a flat DataFrame.
+
+    Each line in the file is one OTLP-JSON export batch (one window flush).
+    Returns a DataFrame with columns: ``flush_idx``, ``time_unix_ns``,
+    ``metric``, ``labels`` (JSON string), ``value``.  ``flush_idx`` is the
+    0-based line number and serves as the ordinal window index.
+
+    This gives one row per (window, symbol, quantile) triple, enabling
+    per-window sketch vs. ground-truth comparison for Q3–Q8.
+    """
+    rows: list[dict] = []
+    if not path.is_file():
+        return pd.DataFrame(columns=["flush_idx", "time_unix_ns", "metric", "labels", "value"])
+
+    with open(path, encoding="utf-8") as fh:
+        for flush_idx, line in enumerate(fh):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for rm in obj.get("resourceMetrics", []):
+                for sm in rm.get("scopeMetrics", []):
+                    for metric in sm.get("metrics", []):
+                        metric_name = str(metric.get("name", ""))
+                        data_block = metric.get("gauge") or metric.get("sum") or {}
+                        for dp in data_block.get("dataPoints", []):
+                            attrs: dict[str, object] = {}
+                            for attr in dp.get("attributes", []):
+                                key = attr.get("key", "")
+                                val = attr.get("value", {})
+                                if "stringValue" in val:
+                                    attrs[key] = val["stringValue"]
+                                elif "doubleValue" in val:
+                                    attrs[key] = float(val["doubleValue"])
+                                elif "intValue" in val:
+                                    attrs[key] = int(val["intValue"])
+                                elif "boolValue" in val:
+                                    attrs[key] = bool(val["boolValue"])
+                            value = dp.get("asDouble") or float(dp.get("asInt", 0) or 0)
+                            time_unix_ns = int(dp.get("timeUnixNano", 0) or 0)
+                            rows.append({
+                                "flush_idx": flush_idx,
+                                "time_unix_ns": time_unix_ns,
+                                "metric": metric_name,
+                                "labels": json.dumps(attrs, sort_keys=True),
+                                "value": value,
+                            })
+    return pd.DataFrame(rows)
+
+
 def get_latest_scrape_snapshot(dataframe: pd.DataFrame) -> pd.DataFrame:
     if dataframe.empty:
         return dataframe
@@ -191,25 +245,99 @@ def run_comparison(
 ) -> None:
     day_tag = day.replace(".csv", "").replace("debs2022-gc-trading-day-", "")
     ground_truth_path = ground_truth_dir / query_id / f"{day_tag}.csv"
-    sketch_path = sketch_output_dir / query_id / f"{day_tag}.csv"
+    sketch_csv_path = sketch_output_dir / query_id / f"{day_tag}.csv"
+    sketch_jsonl_path = sketch_output_dir / query_id / f"{day_tag}.jsonl"
     if not ground_truth_path.is_file():
         return
     ground_truth = pd.read_csv(ground_truth_path)
-    sketch_data = pd.read_csv(sketch_path, on_bad_lines="skip", low_memory=False) if sketch_path.is_file() else pd.DataFrame()
     comparison_out_dir.mkdir(parents=True, exist_ok=True)
     fn = _COMPARE_DISPATCH.get(query_id)
     if fn is None:
         return
-    sketch_snapshot = get_best_snapshot_for_query(sketch_data, query_id)
+
     kwargs: dict = {"day": day_tag}
     if skip_warmup_windows is not None:
         kwargs["skip_warmup_windows"] = skip_warmup_windows
+
+    # Prefer the JSONL file-exporter output when available: it contains one
+    # snapshot per window flush, enabling per-window comparison for Q3–Q8.
+    # Fall back to the Prometheus scrape CSV for backward compatibility.
+    if sketch_jsonl_path.is_file():
+        jsonl_data = read_sketch_jsonl(sketch_jsonl_path)
+        gt_windows = sorted(ground_truth["window_start_ms"].unique()) if "window_start_ms" in ground_truth.columns else []
+        if gt_windows and not jsonl_data.empty:
+            _run_comparison_per_window(
+                fn, query_id, day_tag, ground_truth, jsonl_data,
+                gt_windows, kwargs, comparison_out_dir,
+            )
+            return
+
+    # Fallback: single-snapshot comparison from Prometheus scrape CSV.
+    sketch_data = pd.read_csv(sketch_csv_path, on_bad_lines="skip", low_memory=False) if sketch_csv_path.is_file() else pd.DataFrame()
     if query_id == "Q6":
         result = fn(ground_truth, sketch_data, **kwargs)
     else:
+        sketch_snapshot = get_best_snapshot_for_query(sketch_data, query_id)
         result = fn(ground_truth, sketch_snapshot, **kwargs)
     rows = [result] if isinstance(result, dict) else list(result)
     pd.DataFrame([{"query": query_id, "day": day_tag, **r} for r in rows]).to_csv(
+        comparison_out_dir / f"{query_id}_{day_tag}.csv", index=False
+    )
+
+
+def _run_comparison_per_window(
+    fn: Callable,
+    query_id: str,
+    day_tag: str,
+    ground_truth: pd.DataFrame,
+    jsonl_data: pd.DataFrame,
+    gt_windows: list,
+    kwargs: dict,
+    comparison_out_dir: Path,
+) -> None:
+    """Compare each GT window to its corresponding JSONL flush snapshot.
+
+    JSONL flushes are ordered chronologically (flush_idx 0, 1, 2, …).
+    GT windows are sorted ascending by window_start_ms.
+    We match them by ordinal position after skipping warmup windows.
+
+    For Q6, every flush snapshot is passed to the compare function as
+    ``sketch_data`` (it uses the full timeseries, not a single snapshot).
+    Results across all windows are aggregated and written as a single CSV.
+    """
+    skip = int(kwargs.get("skip_warmup_windows", 0))
+    flush_indices = sorted(jsonl_data["flush_idx"].unique())
+
+    # Skip warmup flushes to align with GT window skipping.
+    flush_indices = flush_indices[skip:]
+    gt_windows_trimmed = gt_windows[skip:]
+
+    # Pair flush index → GT window_start_ms (zip stops at the shorter list).
+    all_rows: list[dict] = []
+    for flush_idx, win_ms in zip(flush_indices, gt_windows_trimmed):
+        flush_snapshot = jsonl_data[jsonl_data["flush_idx"] == flush_idx].copy()
+        # Add a synthetic scrape_wall_ns so existing extract_* helpers work.
+        flush_snapshot["scrape_wall_ns"] = flush_snapshot["time_unix_ns"]
+        gt_window = ground_truth[ground_truth["window_start_ms"] == win_ms] if "window_start_ms" in ground_truth.columns else ground_truth
+
+        per_win_kwargs = {k: v for k, v in kwargs.items() if k != "skip_warmup_windows"}
+        per_win_kwargs["skip_warmup_windows"] = 0  # already skipped above
+
+        try:
+            if query_id == "Q6":
+                result = fn(gt_window, flush_snapshot, **per_win_kwargs)
+            else:
+                result = fn(gt_window, flush_snapshot, **per_win_kwargs)
+        except Exception:
+            continue
+
+        window_rows = [result] if isinstance(result, dict) else list(result)
+        for r in window_rows:
+            all_rows.append({"query": query_id, "day": day_tag, "window_start_ms": win_ms, **r})
+
+    if not all_rows:
+        return
+    pd.DataFrame(all_rows).to_csv(
         comparison_out_dir / f"{query_id}_{day_tag}.csv", index=False
     )
 

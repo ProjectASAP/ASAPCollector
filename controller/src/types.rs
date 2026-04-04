@@ -271,6 +271,11 @@ pub struct AgentCollectorConfig {
     /// Minimum absolute cell change included in a delta payload (T).
     /// Ignored when `delta_transmission` is false.
     pub delta_threshold: f64,
+    /// When set, the collector will also write each window flush to this
+    /// absolute path as OTLP-JSON (one JSON object per line). Used by the
+    /// benchmark to capture per-window sketch snapshots for multi-window
+    /// accuracy comparison without relying solely on Prometheus scrapes.
+    pub file_output_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]

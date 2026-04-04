@@ -52,6 +52,12 @@ pub struct QuerySpec {
     /// bandwidth comparison. Omit to use conservative defaults.
     #[serde(default)]
     pub workload:       WorkloadCharacteristics,
+    /// Optional absolute path for the OTel file exporter. When set the
+    /// controller includes a `file` exporter in the generated collector
+    /// config, writing one OTLP-JSON line per window flush. Intended for
+    /// benchmark use only — production deployments should omit this field.
+    #[serde(default)]
+    pub file_output_path: Option<String>,
 }
 
 pub struct Analyzer;
