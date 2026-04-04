@@ -312,20 +312,17 @@ R1 (PredicatePushDown): filter is already below the window — no change. Tree i
 
 ### Layer 5 — Physical Plan
 
-`physical::resolve(Quantile { [0.99], 0.01 })` → `PhysicalAggOp { sketch_type: DDSketch, sketch_params: DDSketch { relative_accuracy: 0.01, quantiles: [0.99] } }`
+`physical::plan(expr, config)` produces a `PhysicalNode` tree. For this simple
+query, all nodes are at the Agent — no Exchange boundaries:
 
-`resolve_window(Tumbling { 5m }, AgentCollector)` → `OtelTumblingFlush { 5m }`
-
-Stage-split → all at Agent. Config emit → OTel Collector YAML:
-```yaml
-processors:
-  ddsketch:
-    mode: Window
-    window_duration: 5m
-    relative_accuracy: 0.01
-    quantiles: [0.99]
-    label_matchers: ["env=prod"]
 ```
+OtelSketchBuild { DDSketch, OtelTumblingFlush(5m) }  [AgentCollector]
+  └── Filter { env="prod" }                          [AgentCollector]
+        └── OtlpScan                                 [AgentCollector]
+```
+
+Resolution: `Quantile([0.99], 0.01)` → `DDSketch { relative_accuracy: 0.01, quantiles: [0.99] }`,
+`Tumbling(5m)` at AgentCollector → `OtelTumblingFlush { 5m }`.
 
 ### Execution
 
@@ -405,21 +402,29 @@ R1 (PredicatePushDown): filter already below window — no change.
 
 ### Layer 5 — Physical Plan
 
-`physical::resolve(Frequency { 0.01 })` → `PhysicalAggOp { sketch_type: CountSketch, ... }`
+`physical::plan(expr, config)` produces a multi-stage `PhysicalNode` tree with
+Exchange nodes at stage boundaries:
 
-Stage-split:
-| Node | Stage | Reason |
-|---|---|---|
-| Source, Filter | Agent | leaf + volume reduction |
-| WindowedAgg { Frequency } | Agent | sketch fits in memory budget |
-| Partition { service } | Backend | GROUP BY distribution |
-| TopK { 10 } | Precompute | global ranking requires merged data |
+```
+TopK { k: 10 }                                          [QueryEngine]
+  └── Exchange { SketchBinary }                          [QueryEngine]
+        └── HashAggregate { keys: ["service"] }          [BackendCollector]
+              └── Exchange { Otlp }                      [BackendCollector]
+                    └── OtelSketchBuild { CountSketch,   [AgentCollector]
+                          OtelTumblingFlush(1m) }
+                          └── Filter { env="prod" }      [AgentCollector]
+                                └── OtlpScan             [AgentCollector]
+```
+
+Three stages, two Exchange boundaries:
+- **Agent → Backend** (Otlp): sketch data flows from agent collectors to merge tier
+- **Backend → QueryEngine** (SketchBinary): merged sketches flow to query engine for top-K
 
 ### Execution
 
-1. **Agent** → filters → builds CountSketch per 1m window → emits to backend
-2. **Backend** → merges per service
-3. **Precompute** → extracts top-10 services by frequency
+1. **Agent** → filters → builds CountSketch per 1m window → emits via OTLP
+2. **Backend** → merges CountSketches per service
+3. **QueryEngine** → extracts top-10 services by frequency
 
 ---
 
@@ -471,8 +476,15 @@ No rewrites applicable.
 
 ### Layer 5 — Physical Plan
 
-Stage-split assigns `Quantile(Avg proxy)` → DB stage (non-mergeable).
-The DB computes exact AVG per symbol on the full dataset.
+`physical::plan()` assigns the non-mergeable Aggregate to the Database:
+
+```
+DbQuery { GROUP BY ["symbol"] }          [Database]
+  └── Exchange { RawSamples }            [Database]
+        └── OtlpScan                     [AgentCollector]
+```
+
+The Agent passes raw samples through to the Database, which computes exact AVG.
 
 ---
 
@@ -536,23 +548,25 @@ Limit {
 
 ### Layer 5 — Physical Plan
 
-`physical::resolve(Cardinality { 0.01 })` → `PhysicalAggOp { sketch_type: HLL, sketch_params: HLL { precision: 14 } }`
+`physical::plan()` produces a multi-stage tree:
 
-`resolve_window(Tumbling { 5m }, AgentCollector)` → `OtelTumblingFlush { 5m }`
+```
+TopK { k: 10 }                                        [QueryEngine]
+  └── Exchange { SketchBinary }                        [QueryEngine]
+        └── HashAggregate { keys: ["region"] }         [BackendCollector]
+              └── Exchange { Otlp }                    [BackendCollector]
+                    └── OtelSketchBuild { HLL,         [AgentCollector]
+                          OtelTumblingFlush(5m) }
+                          └── OtlpScan                 [AgentCollector]
+```
 
-Stage-split:
-| Node | Stage | Reason |
-|---|---|---|
-| Source("sessions") | Agent | leaf |
-| WindowedAgg { Cardinality } | Agent | HLL 16KB — fits budget |
-| Partition { region } | Backend | GROUP BY distribution |
-| TopK { 10 } | Precompute | global ranking |
+Resolution: `Cardinality(0.01)` → `HLL { precision: 14 }`, `Tumbling(5m)` → `OtelTumblingFlush`.
 
 ### Execution
 
-1. **Agent**: builds one HLL per region per 5m window → emits to backend
+1. **Agent**: builds one HLL per region per 5m window → emits via OTLP
 2. **Backend**: merges HLLs from N agents (HLL merge = set union)
-3. **Precompute**: extracts cardinality per region → top 10
+3. **QueryEngine**: extracts cardinality per region → top 10
 
 ---
 
