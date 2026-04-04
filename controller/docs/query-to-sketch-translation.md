@@ -312,20 +312,17 @@ R1 (PredicatePushDown): filter is already below the window — no change. Tree i
 
 ### Layer 5 — Physical Plan
 
-`physical::resolve(Quantile { [0.99], 0.01 })` → `PhysicalAggOp { sketch_type: DDSketch, sketch_params: DDSketch { relative_accuracy: 0.01, quantiles: [0.99] } }`
+`physical::plan(expr, config)` produces a `PhysicalNode` tree. For this simple
+query, all nodes are at the Agent — no Exchange boundaries:
 
-`resolve_window(Tumbling { 5m }, AgentCollector)` → `OtelTumblingFlush { 5m }`
-
-Stage-split → all at Agent. Config emit → OTel Collector YAML:
-```yaml
-processors:
-  ddsketch:
-    mode: Window
-    window_duration: 5m
-    relative_accuracy: 0.01
-    quantiles: [0.99]
-    label_matchers: ["env=prod"]
 ```
+OtelSketchBuild { DDSketch, OtelTumblingFlush(5m) }  [AgentCollector]
+  └── Filter { env="prod" }                          [AgentCollector]
+        └── OtlpScan                                 [AgentCollector]
+```
+
+Resolution: `Quantile([0.99], 0.01)` → `DDSketch { relative_accuracy: 0.01, quantiles: [0.99] }`,
+`Tumbling(5m)` at AgentCollector → `OtelTumblingFlush { 5m }`.
 
 ### Execution
 
@@ -405,21 +402,29 @@ R1 (PredicatePushDown): filter already below window — no change.
 
 ### Layer 5 — Physical Plan
 
-`physical::resolve(Frequency { 0.01 })` → `PhysicalAggOp { sketch_type: CountSketch, ... }`
+`physical::plan(expr, config)` produces a multi-stage `PhysicalNode` tree with
+Exchange nodes at stage boundaries:
 
-Stage-split:
-| Node | Stage | Reason |
-|---|---|---|
-| Source, Filter | Agent | leaf + volume reduction |
-| WindowedAgg { Frequency } | Agent | sketch fits in memory budget |
-| Partition { service } | Backend | GROUP BY distribution |
-| TopK { 10 } | Precompute | global ranking requires merged data |
+```
+TopK { k: 10 }                                          [QueryEngine]
+  └── Exchange { SketchBinary }                          [QueryEngine]
+        └── HashAggregate { keys: ["service"] }          [BackendCollector]
+              └── Exchange { Otlp }                      [BackendCollector]
+                    └── OtelSketchBuild { CountSketch,   [AgentCollector]
+                          OtelTumblingFlush(1m) }
+                          └── Filter { env="prod" }      [AgentCollector]
+                                └── OtlpScan             [AgentCollector]
+```
+
+Three stages, two Exchange boundaries:
+- **Agent → Backend** (Otlp): sketch data flows from agent collectors to merge tier
+- **Backend → QueryEngine** (SketchBinary): merged sketches flow to query engine for top-K
 
 ### Execution
 
-1. **Agent** → filters → builds CountSketch per 1m window → emits to backend
-2. **Backend** → merges per service
-3. **Precompute** → extracts top-10 services by frequency
+1. **Agent** → filters → builds CountSketch per 1m window → emits via OTLP
+2. **Backend** → merges CountSketches per service
+3. **QueryEngine** → extracts top-10 services by frequency
 
 ---
 
@@ -471,8 +476,15 @@ No rewrites applicable.
 
 ### Layer 5 — Physical Plan
 
-Stage-split assigns `Quantile(Avg proxy)` → DB stage (non-mergeable).
-The DB computes exact AVG per symbol on the full dataset.
+`physical::plan()` assigns the non-mergeable Aggregate to the Database:
+
+```
+DbQuery { GROUP BY ["symbol"] }          [Database]
+  └── Exchange { RawSamples }            [Database]
+        └── OtlpScan                     [AgentCollector]
+```
+
+The Agent passes raw samples through to the Database, which computes exact AVG.
 
 ---
 
@@ -536,27 +548,166 @@ Limit {
 
 ### Layer 5 — Physical Plan
 
-`physical::resolve(Cardinality { 0.01 })` → `PhysicalAggOp { sketch_type: HLL, sketch_params: HLL { precision: 14 } }`
+`physical::plan()` produces a multi-stage tree:
 
-`resolve_window(Tumbling { 5m }, AgentCollector)` → `OtelTumblingFlush { 5m }`
+```
+TopK { k: 10 }                                        [QueryEngine]
+  └── Exchange { SketchBinary }                        [QueryEngine]
+        └── HashAggregate { keys: ["region"] }         [BackendCollector]
+              └── Exchange { Otlp }                    [BackendCollector]
+                    └── OtelSketchBuild { HLL,         [AgentCollector]
+                          OtelTumblingFlush(5m) }
+                          └── OtlpScan                 [AgentCollector]
+```
 
-Stage-split:
-| Node | Stage | Reason |
-|---|---|---|
-| Source("sessions") | Agent | leaf |
-| WindowedAgg { Cardinality } | Agent | HLL 16KB — fits budget |
-| Partition { region } | Backend | GROUP BY distribution |
-| TopK { 10 } | Precompute | global ranking |
+Resolution: `Cardinality(0.01)` → `HLL { precision: 14 }`, `Tumbling(5m)` → `OtelTumblingFlush`.
 
 ### Execution
 
-1. **Agent**: builds one HLL per region per 5m window → emits to backend
+1. **Agent**: builds one HLL per region per 5m window → emits via OTLP
 2. **Backend**: merges HLLs from N agents (HLL merge = set union)
-3. **Precompute**: extracts cardinality per region → top 10
+3. **QueryEngine**: extracts cardinality per region → top 10
 
 ---
 
-## 8. Sketch Directory: Which Sketch for Which Operation?
+## 8. Optimizer: Formulation of the Sketch Placement Problem
+
+### Optimization Goal
+
+Given a set of query workloads Q = {q₁, q₂, …, qₙ} and a deployment with
+pipeline stages S = {Agent, BackendCollector, BackendDB, OriginalDB, ObjectStore},
+the optimizer solves:
+
+```
+minimize    TotalCost(P)
+subject to  Accuracy(qᵢ, P) ≤ accuracy_sla(qᵢ)      ∀ qᵢ ∈ Q
+            Latency(qᵢ, P) ≤ latency_sla(qᵢ)         ∀ qᵢ ∈ Q
+            Throughput(qᵢ, P) ≥ throughput_sla(qᵢ)    ∀ qᵢ ∈ Q
+            ResourceUsage(s, P) ≤ Budget(s)             ∀ s ∈ S
+```
+
+where P is the physical plan (sketch type assignment + stage placement + window
+configuration for each query operator).
+
+### Cost Model
+
+The total cost decomposes into per-stage costs:
+
+```
+TotalCost(P) = Σ_s [ BandwidthCost(s) + MemoryCost(s) + CPUCost(s) + StorageCost(s) ]
+```
+
+Each term is the aggregate resource consumption across all queries assigned to
+that stage:
+
+| Cost component | Formula |
+|---|---|
+| `BandwidthCost(s)` | Σ_q transmission_bytes(sketch(q)) × flush_rate(q) |
+| `MemoryCost(s)` | Σ_q memory_per_series(sketch(q)) × series_count(q) |
+| `CPUCost(s)` | Σ_q cpu_per_insert(sketch(q)) × samples_per_sec(q) |
+| `StorageCost(s)` | Σ_q transmission_bytes(sketch(q)) × retention(q) |
+
+### Constraints
+
+**Per-stage resource budgets** — each stage has memory, CPU, disk, and bandwidth limits:
+
+```
+∀ s ∈ S:
+  Σ_q memory_per_series(sketch(q, s)) × series_count(q) ≤ s.memory_bytes
+  Σ_q cpu_per_insert(sketch(q, s)) × samples_per_sec(q) ≤ s.cpu_budget
+  Σ_q transmission_bytes(sketch(q, s)) × flush_rate(q)  ≤ s.bandwidth_budget
+```
+
+**Accuracy constraint** — sketch error must be within the query's SLA:
+
+```
+∀ qᵢ:
+  error(sketch_type(qᵢ), sketch_params(qᵢ)) ≤ accuracy_sla(qᵢ)
+```
+
+For example: DDSketch with `relative_accuracy = 0.01` guarantees ≤1% relative error
+on quantile queries. HLL with `precision = 14` guarantees ≤0.8% relative error
+on cardinality.
+
+**Functional constraint** — the sketch must support the query's aggregation intent:
+
+```
+∀ qᵢ:
+  intent(qᵢ) ∈ sketch_capability(sketch_type(qᵢ)).supported_intents
+```
+
+For example: a `Cardinality` intent can only be served by a sketch with
+`SupportedIntent::Cardinality` (HLL, UnivMon), not by DDSketch.
+
+### Decision Variables
+
+For each query operator `op` in the plan:
+
+1. **Sketch type selection**: `sketch_type(op) ∈ candidates(intent(op))`
+   - Quantile → {DDSketch, KLL}
+   - Cardinality → {HLL}
+   - Frequency → {CountSketch, CountMinSketch}
+
+2. **Stage placement**: `stage(op) ∈ S`
+   - Subject to `stage_budget(stage(op)).fits(sketch_capability(sketch_type(op)))`
+   - Deferral chain: Agent → BackendCollector → BackendDB
+
+3. **Window configuration**: `window(op) ∈ {Tumbling(d), Sliding(d, s), Unbounded}`
+   - Subject to sketch capability: `sketch_capability(type).supports_sliding_window`
+
+4. **Delta encoding**: `delta(op) ∈ {true, false}`
+   - Subject to: `sketch_capability(type).supports_delta`
+   - Reduces bandwidth at the cost of reconstruction at the receiver
+
+### Cross-Query Optimization: What to Precompute
+
+When multiple queries share overlapping time series or aggregation patterns, the
+optimizer can amortise costs:
+
+**Shared sketch reuse**: if q₁ = `quantile_over_time(0.99, m[5m])` and
+q₂ = `quantile_over_time(0.5, m[5m])`, a single DDSketch serves both
+(DDSketch can answer any quantile from one structure).
+
+**Precomputation decision**: a query should be precomputed (sketch maintained
+continuously) rather than computed on-demand when:
+
+```
+precompute(q) = true  iff  repeat_interval(q) < query_latency_sla(q)
+```
+
+i.e., the query fires more often than the system can recompute it from raw data.
+Precomputed sketches are maintained at the Agent and merged at the Backend,
+with the Precompute Engine answering queries against the merged state.
+
+**Multi-query sketch sharing matrix**: for N queries over the same metric, the
+optimizer builds a sharing matrix:
+
+| | DDSketch | HLL | CountSketch |
+|---|---|---|---|
+| q₁: quantile(0.99) | ✓ serves | ✗ | ✗ |
+| q₂: quantile(0.5) | ✓ **shared with q₁** | ✗ | ✗ |
+| q₃: count_distinct | ✗ | ✓ serves | ✗ |
+| q₄: topk(10) | ✗ | ✗ | ✓ serves |
+
+One DDSketch instance serves both q₁ and q₂ → memory cost counted once, not twice.
+
+### Current Implementation
+
+The optimizer currently solves a simplified version:
+
+1. **Per-query greedy**: each query is optimised independently (no cross-query sharing yet)
+2. **Sketch selection**: `CostModelPlanner` scores all candidates per query, picks cheapest meeting accuracy SLA
+3. **Stage placement**: `physical::decide_sketch_placement()` checks `StageBudget::fits(SketchCapability)` per stage in order: Agent → Backend → QueryEngine
+4. **Precomputation**: `should_precompute(q)` checks `repeat_interval < latency_sla`
+
+Future work:
+- Global optimisation across queries (shared sketch instances)
+- Joint sketch+stage+window optimisation (currently done greedily per dimension)
+- Workload-adaptive re-optimisation (replan when query patterns change)
+
+---
+
+## 9. Sketch Directory: Which Sketch for Which Operation?
 
 The sketch directory (`algebra/directory.rs`) maps aggregation types to candidate
 sketch families.  The `CostModelPlanner` scores all candidates and picks the

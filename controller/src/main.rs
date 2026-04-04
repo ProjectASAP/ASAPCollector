@@ -30,7 +30,7 @@ use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
 use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
 use planner::online_cost_model;
-use planner::stage_split::split_expr_by_stage;
+use algebra::physical::physical_plan_to_staged;
 use query_parser::parse_query_expr;
 use replan::Replanner;
 use store::{PlanStore, WorkloadStore};
@@ -253,7 +253,8 @@ async fn handle_plan(
                 let budgets = StageResourceBudgets::from_workload_chars(&wc);
                 let constraints = algebra::optimizer::DeploymentConstraints::from_budgets(&budgets);
                 let (opt_qe, _) = QueryOptimizer::with_constraints(raw_bps, constraints).optimize(qe);
-                plan.staged_plan = Some(split_expr_by_stage(&opt_qe, &budgets));
+                let (staged, _physical_tree) = physical_plan_to_staged(&opt_qe, &budgets);
+                plan.staged_plan = Some(staged);
             }
         }
     }
