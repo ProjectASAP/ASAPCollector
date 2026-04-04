@@ -1,0 +1,14 @@
+{
+  "sketch_type": "countsketch",
+  "series_per_sketch": 1,
+  "rate_label_mps": 1000,
+  "duration_sec": 30.026994394,
+  "total_bytes_sent": 289913,
+  "avg_bandwidth_bps": 9668.342914235658,
+  "peak_bandwidth_bps": 12846.052232048376,
+  "avg_heap_alloc_mb": 17.021926616800243,
+  "peak_heap_alloc_mb": 22.94812774658203,
+  "sdk_cpu_user_ms": 1325.584,
+  "sdk_cpu_sys_ms": 134.562,
+  "sdk_cpu_percent": 4.862777742056551
+}

@@ -1,0 +1,110 @@
+=== e2e SDK Benchmark ===
+Sketch:           COUNTMINSKETCH
+Endpoint:         localhost:4317
+Series:           500
+Series-per-sketch:1  → 500 distinct sketch(es) per export
+Rate:             10.00 samples/s/series  → ~5000 data-points/s to collector
+Worker interval:  100ms
+Reader interval:  1s
+Duration:         30s
+Output dir:       evaluation/results/paper_v1/exp2_cms_cms-full
+
+2026/04/03 23:19:47 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:48 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:49 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:50 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:51 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:52 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:53 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:54 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:55 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:56 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:57 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:58 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:19:59 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:00 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:01 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:02 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:03 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:04 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:05 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:06 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:07 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:08 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:09 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:10 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:11 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:12 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:13 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:14 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:15 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+2026/04/03 23:20:16 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
+Flushing final export...
+
+=== SDK Benchmark Summary ===
+Sketch type       : COUNTMINSKETCH
+Rate label        : 5000 MPS
+Wall time         : 30.1 s
+--- Bandwidth ---
+Total bytes sent  : 317035 bytes (0.30 MB)
+Avg bandwidth     : 10633.4 B/s  (10.38 KB/s)
+Peak bandwidth    : 17318.8 B/s  (16.91 KB/s)
+--- SDK Memory ---
+Avg heap alloc    : 188.02 MB
+Peak heap alloc   : 256.27 MB
+--- SDK CPU ---
+User CPU time     : 4306.2 ms
+Sys CPU time      : 295.8 ms
+CPU%              : 15.28%
+--- Files ---
+Timeseries CSV    : evaluation/results/paper_v1/exp2_cms_cms-full/countminsketch_5000mps_timeseries.csv
+Summary JSON      : evaluation/results/paper_v1/exp2_cms_cms-full/countminsketch_5000mps_summary.json
+
+=== JSON_RESULT_BEGIN ===
+{
+  "sketch_type": "countminsketch",
+  "series_per_sketch": 1,
+  "rate_label_mps": 5000,
+  "duration_sec": 30.1076144,
+  "total_bytes_sent": 317035,
+  "avg_bandwidth_bps": 10633.3547701064,
+  "peak_bandwidth_bps": 17318.792122538154,
+  "avg_heap_alloc_mb": 188.02308891559468,
+  "peak_heap_alloc_mb": 256.2745590209961,
+  "sdk_cpu_user_ms": 4306.150000000001,
+  "sdk_cpu_sys_ms": 295.785,
+  "sdk_cpu_percent": 15.284953961679543
+}
+=== JSON_RESULT_END ===
+2026/04/03 23:20:16 MeterProvider shutdown: 1 errors occurred transforming ScopeMetrics:
+	* invalid metric (name: "benchmark.latency", description: "Benchmark latency", unit: "ms"): unknown countminsketch encoding: count_min_sketch_proto
