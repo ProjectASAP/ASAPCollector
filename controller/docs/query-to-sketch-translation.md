@@ -35,7 +35,7 @@ Optimised Sketch Logical Plan
   │  Layer 5 — Physical Execution Plan
   │  (concrete implementations for a specific deployment)
   ▼
-Physical Plan (OTel processors, PromSketch, DB queries, on-device)
+Physical Plan (edge processors, backend sketchDB, backend original DB, object store)
 ```
 
 ### What each layer owns
@@ -46,7 +46,7 @@ Physical Plan (OTel processors, PromSketch, DB queries, on-device)
 | **2. Language Logical Plan** | AST | language-specific relational plan | language semantics (PromQL instant/range vectors, SQL frames, Elastic buckets) |
 | **3. Sketch Logical Plan** | language plan | sketch algebra tree (`QueryExpr`) | **what** to compute: aggregation intent + accuracy requirement + window semantics — no sketch names, no implementation details |
 | **4. Sketch Optimizer** | sketch plan + deployment constraints | optimised sketch plan | cost-aware rewrites: push-down, fusion, elimination, budget-driven deferral — considers physical deployment constraints (memory budgets, network topology, available backends) |
-| **5. Physical Plan** | optimised plan + deployment config | executable plan | **how** to execute: DDSketch vs KLL, OTel vs PromSketch, tumbling ticker vs EH buckets, data exchange format |
+| **5. Physical Plan** | optimised plan + deployment config | executable plan | **how** to execute: edge processors (sketch build), backend sketchDB (merge + query), backend original DB (exact), object store (raw backup) |
 
 ### Key design principle
 
@@ -64,8 +64,7 @@ exceeded, or fusing TopK when the downstream merge is expensive).
 
 **Layer 5 is deployment-specific.**
 The physical planner commits to concrete implementations based on the specific
-setup: OTel Collector processors, PromSketch EH stores, on-device ring buffers,
-or database-side SQL.
+setup: edge processors, backend sketchDB, backend original DB, or object store.
 
 ### `AggIntent` — the Layer 3 aggregation vocabulary
 
@@ -82,7 +81,7 @@ The flow:
 - **Layers 1–2** (parsers): "this query needs a quantile at φ=0.99" → `Aggregate { Quantile(0.99) }`
 - **Layer 3** (lowering): `Aggregate` → `SketchAgg { AggIntent::Quantile }` (shared by all languages)
 - **Layer 4** (optimizer): rewrites the plan considering deployment constraints
-- **Layer 5** (physical planner): "for this deployment, DDSketch is cheapest" or "PromSketch EHKLL is better because it's co-located"
+- **Layer 5** (physical planner): "for this deployment, DDSketch at the edge is cheapest" or "KLL at the backend sketchDB is better for this workload"
 
 ## 2. Sketch Logical Plan: `QueryExpr` (Layer 3)
 
@@ -133,7 +132,7 @@ QueryExpr has **25 operator variants** organized into categories:
 | Operator | Use | Why separate |
 |---|---|---|
 | `Window { duration, slide }` | Standalone time batching (no sketch) | Used when the sketch op is a separate `SketchAgg` child node |
-| `WindowedAgg { agg, window, col }` | Bundled window + sketch aggregation | In sketch systems the window defines the sketch lifecycle (when to flush/reset). Bundling lets the physical planner choose the best implementation (OTel tumbling flush vs PromSketch EH vs DB time_bucket). |
+| `WindowedAgg { agg, window, col }` | Bundled window + sketch aggregation | In sketch systems the window defines the sketch lifecycle (when to flush/reset). Bundling lets the physical planner choose the best implementation (edge tumbling flush vs backend sketchDB EH vs original DB time_bucket). |
 
 `WindowSpec` supports five window kinds:
 
@@ -145,7 +144,7 @@ QueryExpr has **25 operator variants** organized into categories:
 | `Landmark` | From epoch to now (cumulative) | Running aggregates |
 | `Session { gap }` | Gap-based, closes after inactivity | Elastic session windows |
 
-## 3. Parsing Algorithm: QL String → QueryExpr (Logical Plan)
+## 3. Layers 1–3: Query Language → Language Plan → Sketch Algebra
 
 ### 3.1 PromQL parsing algorithm
 
