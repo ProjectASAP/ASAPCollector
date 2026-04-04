@@ -87,14 +87,20 @@ pub enum QueryHint {
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Parse a raw query string (PromQL or SQL) into the general [`QueryExpr`] IR.
+///
+/// Both parsers emit Layer 2 relational operators (`Aggregate { AggFunc }`).
+/// The shared lowering pass converts `Aggregate` → `SketchAgg { AggIntent }`
+/// where applicable.
 pub fn parse_query_expr(query: &str) -> anyhow::Result<QueryExpr> {
     let q = query.trim();
     let upper = q.to_ascii_uppercase();
-    if upper.starts_with("SELECT") || upper.starts_with("WITH") {
-        sql::parse_sql_expr(q)
+    let layer2 = if upper.starts_with("SELECT") || upper.starts_with("WITH") {
+        sql::parse_sql_expr(q)?
     } else {
-        promql::parse_promql_expr(q)
-    }
+        promql::parse_promql_expr(q)?
+    };
+    // Layer 2 → Layer 3 lowering (shared by both languages).
+    Ok(crate::algebra::lower::lower_to_sketch_algebra(layer2))
 }
 
 /// Parse a raw query string (PromQL or SQL) into a [`ParsedQuery`].
@@ -124,6 +130,8 @@ struct QeCollector {
     exact_required:  bool,
     quantiles:       Vec<f64>,
     topk:            Option<u64>,
+    /// True when currently visiting inside a TopK node (affects Count handling).
+    inside_topk:     bool,
 }
 
 impl QeCollector {
@@ -169,7 +177,10 @@ impl QeCollector {
             }
             QueryExpr::TopK { k, input, .. } => {
                 self.topk = Some(*k);
+                let prev = self.inside_topk;
+                self.inside_topk = true;
                 self.visit(input);
+                self.inside_topk = prev;
             }
             QueryExpr::Dedup { input, .. } => self.visit(input),
             QueryExpr::Merge { inputs } => {
@@ -214,8 +225,9 @@ impl QeCollector {
 
     fn collect_agg_func_with_group(&mut self, func: &crate::algebra::expr::AggFunc, has_group_by: bool) {
         use crate::algebra::expr::AggFunc;
-        // COUNT(*) without GROUP BY → exact (no sketch benefit)
-        if matches!(func, AggFunc::Count) && !has_group_by {
+        // COUNT(*) without GROUP BY → exact (no sketch benefit), unless inside topk
+        // where Count means frequency counting.
+        if matches!(func, AggFunc::Count) && !has_group_by && !self.inside_topk {
             self.exact_required = true;
             return;
         }
@@ -271,6 +283,9 @@ impl QeCollector {
                 if !self.agg_types.contains(&AggType::Quantile) {
                     self.agg_types.push(AggType::Quantile);
                 }
+                // StdDev/Variance use IQR proxy via p25/p75.
+                if !self.quantiles.contains(&0.25) { self.quantiles.push(0.25); }
+                if !self.quantiles.contains(&0.75) { self.quantiles.push(0.75); }
             }
             AggFunc::Sum | AggFunc::Rate | AggFunc::Increase | AggFunc::Delta
             | AggFunc::Custom(_) => {
@@ -299,10 +314,13 @@ impl QeCollector {
                     if !self.quantiles.contains(&q) { self.quantiles.push(q); }
                 }
             }
-            AggIntent::Extrema { .. } => {
+            AggIntent::Extrema { min, max } => {
                 if !self.agg_types.contains(&AggType::Quantile) {
                     self.agg_types.push(AggType::Quantile);
                 }
+                // Extrema map to boundary quantiles for legacy compat.
+                if *min && !self.quantiles.contains(&0.0) { self.quantiles.push(0.0); }
+                if *max && !self.quantiles.contains(&1.0) { self.quantiles.push(1.0); }
             }
             AggIntent::Exact(_) => { self.exact_required = true; }
             AggIntent::PerPartition { inner, .. } => self.collect_op(inner),

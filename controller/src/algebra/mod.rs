@@ -32,6 +32,7 @@
 pub mod allocator;
 pub mod directory;
 pub mod expr;
+pub mod lower;
 pub mod optimizer;
 pub mod physical;
 pub mod plan;

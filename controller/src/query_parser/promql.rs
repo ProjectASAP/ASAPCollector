@@ -1,32 +1,34 @@
-//! Layers 1→3 lowering: PromQL string → QueryExpr (sketch logical plan).
+//! Layers 1→2 lowering: PromQL string → QueryExpr (relational plan).
 //!
 //! - **Layer 1**: the `promql-parser` crate parses the PromQL string into a
 //!   language-specific AST (`promql_parser::parser::Expr`).
 //! - **Layer 2**: the walk functions (`walk_qe`, `walk_call_qe`, `walk_aggregate_qe`)
 //!   interpret PromQL semantics (range vectors, aggregation operators, label matchers)
-//!   and lower them to the sketch algebra.
-//! - **Layer 3**: the output is a `QueryExpr` tree with `AggIntent` nodes that are
-//!   implementation-independent (no sketch names — just Quantile/Cardinality/Frequency).
+//!   and emit relational operators (`Aggregate { AggFunc }` + `Window`).
 //!
-//! # PromQL → Sketch mapping (summary)
+//! The output is a Layer 2 `QueryExpr` tree — the same relational operators that
+//! the SQL parser emits.  A shared lowering pass (`algebra::lower`) converts
+//! `Aggregate { AggFunc }` → `SketchAgg { AggIntent }` for both languages.
 //!
-//! | Expression | SketchAggOp |
+//! # PromQL → AggFunc mapping (summary)
+//!
+//! | Expression | AggFunc |
 //! |---|---|
-//! | `quantile_over_time(φ, m[w])` | DDSketch([φ]) |
-//! | `histogram_quantile(φ, rate(m[w]))` | DDSketch([φ]) |
-//! | `avg_over_time(m[w])` | DDSketch([0.5]) |
-//! | `min_over_time(m[w]) by (d)` | DDSketch([0.0]) |
-//! | `max_over_time(m[w]) by (d)` | DDSketch([1.0]) |
-//! | `min/max_over_time(m[w])` (no by) | ExactMinMax |
-//! | `stddev/stdvar_over_time(m[w])` | DDSketch([0.25,0.75]) |
-//! | `count_over_time(m[w])` | CountMin |
-//! | `sum_over_time(m[w])` | Exact(Sum) |
-//! | `last_over_time / delta / deriv / predict_linear` | Exact (stateful) |
-//! | `changes / resets` | CountMin |
-//! | `topk(k, …)` outer | CountSketch(k) |
-//! | `count(…over_time… by (d))` outer | HLL |
-//! | `m{filters}` bare | Exact (required) |
-//! | `m_a op m_b` binary | Exact (required) |
+//! | `quantile_over_time(φ, m[w])` | Quantile(φ) |
+//! | `histogram_quantile(φ, rate(m[w]))` | (HistogramQuantile node — not an Aggregate) |
+//! | `avg_over_time(m[w])` | Avg |
+//! | `min_over_time(m[w])` | Min |
+//! | `max_over_time(m[w])` | Max |
+//! | `stddev/stdvar_over_time(m[w])` | StdDev / Variance |
+//! | `count_over_time(m[w])` | Count / CountDistinct (context) |
+//! | `sum_over_time(m[w])` | Sum |
+//! | `last_over_time / delta / deriv / predict_linear` | Delta / Sum (exact) |
+//! | `changes / resets` | Count |
+//! | `rate / irate / increase` | Rate / Increase |
+//! | `topk(k, …)` outer | TopK (structural — not AggFunc) |
+//! | `count(…over_time… by (d))` outer | CountDistinct |
+//! | `m{filters}` bare | Sum (exact) |
+//! | `m_a op m_b` binary | (BinaryOp — not an Aggregate) |
 
 use std::time::Duration;
 
@@ -44,7 +46,7 @@ struct WalkCtx {
     partition: Option<PartitionKeys>,
     /// Top-K k from an outer `topk` / `bottomk` operator.
     topk: Option<u64>,
-    /// Whether the outer context is a `count()` aggregate (→ HLL).
+    /// Whether the outer context is a `count()` aggregate (→ CountDistinct).
     outer_count: bool,
 }
 
@@ -152,8 +154,8 @@ fn modifier_to_partition(modifier: &LabelModifier) -> PartitionKeys {
 // | `a op b` binary          | BinaryOp { VectorMatch }             |
 
 use crate::algebra::expr::{
-    AggIntent as QeAggIntent,
-    BinaryOpKind, ColumnRef as QeColumnRef, ExactAgg as QeExactAgg, GroupSide,
+    AggFunc, AggItem,
+    BinaryOpKind, ColumnRef as QeColumnRef, GroupSide,
     PartitionKeys as QePartitionKeys, QueryExpr,
     SourceSpec as QeSourceSpec, VectorGrouping, VectorMatch, VectorMatchKind,
 };
@@ -189,15 +191,21 @@ fn walk_qe(expr: &Expr, ctx: WalkCtx) -> anyhow::Result<QueryExpr> {
             })
         }
 
-        // Bare vector selector → Source + Filter + exact agg.
+        // Bare vector selector → Source + Filter + Aggregate(Sum).
         Expr::VectorSelector(vs) => {
             let (name, filters) = extract_vs_info(vs);
             let source   = QueryExpr::Source(QeSourceSpec { name });
             let filtered = apply_qe_filters(source, filters);
-            Ok(QueryExpr::SketchAgg {
-                op:    QeAggIntent::Exact(QeExactAgg::Sum),
-                col:   QeColumnRef::SampleValue,
-                input: Box::new(filtered),
+            Ok(QueryExpr::Aggregate {
+                keys:   vec![],
+                aggs:   vec![AggItem {
+                    alias:    "value".into(),
+                    func:     AggFunc::Sum,
+                    col:      QeColumnRef::SampleValue,
+                    distinct: false,
+                }],
+                having: None,
+                input:  Box::new(filtered),
             })
         }
 
@@ -224,10 +232,16 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
         "count" => {
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: true };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
-            let result = QueryExpr::SketchAgg {
-                op:    QeAggIntent::default_cardinality(),
-                col:   QeColumnRef::SampleValue,
-                input: Box::new(inner),
+            let result = QueryExpr::Aggregate {
+                keys:   vec![],
+                aggs:   vec![AggItem {
+                    alias:    "count".into(),
+                    func:     AggFunc::CountDistinct,
+                    col:      QeColumnRef::SampleValue,
+                    distinct: false,
+                }],
+                having: None,
+                input:  Box::new(inner),
             };
             Ok(apply_qe_partition(result, partition))
         }
@@ -236,13 +250,35 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
             Ok(apply_qe_partition(inner, partition))
         }
-        "stddev" | "stdvar" => {
+        "stddev" => {
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: false };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
-            let result = QueryExpr::SketchAgg {
-                op:    QeAggIntent::default_quantile(vec![0.25, 0.75]),
-                col:   QeColumnRef::SampleValue,
-                input: Box::new(inner),
+            let result = QueryExpr::Aggregate {
+                keys:   vec![],
+                aggs:   vec![AggItem {
+                    alias:    "stddev".into(),
+                    func:     AggFunc::StdDev { population: false },
+                    col:      QeColumnRef::SampleValue,
+                    distinct: false,
+                }],
+                having: None,
+                input:  Box::new(inner),
+            };
+            Ok(apply_qe_partition(result, partition))
+        }
+        "stdvar" => {
+            let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: false };
+            let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
+            let result = QueryExpr::Aggregate {
+                keys:   vec![],
+                aggs:   vec![AggItem {
+                    alias:    "stdvar".into(),
+                    func:     AggFunc::Variance { population: false },
+                    col:      QeColumnRef::SampleValue,
+                    distinct: false,
+                }],
+                having: None,
+                input:  Box::new(inner),
             };
             Ok(apply_qe_partition(result, partition))
         }
@@ -250,10 +286,16 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
             let phi = extract_number_param(&agg.param)?;
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: false };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
-            let result = QueryExpr::SketchAgg {
-                op:    QeAggIntent::default_quantile(vec![phi]),
-                col:   QeColumnRef::SampleValue,
-                input: Box::new(inner),
+            let result = QueryExpr::Aggregate {
+                keys:   vec![],
+                aggs:   vec![AggItem {
+                    alias:    "quantile".into(),
+                    func:     AggFunc::Quantile(phi),
+                    col:      QeColumnRef::SampleValue,
+                    distinct: false,
+                }],
+                having: None,
+                input:  Box::new(inner),
             };
             Ok(apply_qe_partition(result, partition))
         }
@@ -264,25 +306,25 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
 fn walk_call_qe(call: &Call, ctx: WalkCtx) -> anyhow::Result<QueryExpr> {
     let name = call.func.name;
     match name {
-        // histogram_quantile → native HistogramQuantile node.
+        // histogram_quantile → native HistogramQuantile node (PromQL-specific).
         "histogram_quantile" => {
             let phi       = extract_call_num_arg(call, 0)?;
             let rate_expr = call.args.args[1].as_ref();
             let (source, filters, window) = extract_inner_matrix(rate_expr)?;
-            let inner = build_qe_sketched(source, filters, window,
-                QeAggIntent::default_quantile(vec![phi]),
+            let inner = build_qe_aggregate(source, filters, window,
+                AggFunc::Quantile(phi),
                 WalkCtx::default());
             Ok(QueryExpr::HistogramQuantile { phi, input: Box::new(inner) })
         }
-        // All other function calls: map directly to QeAggIntent.
+        // All other function calls: map to AggFunc (Layer 2).
         "quantile_over_time" => {
             let phi = extract_call_num_arg(call, 0)?;
             let (source, filters, window) = extract_matrix_arg(call, 1)?;
-            let op = QeAggIntent::default_quantile(vec![phi]);
-            Ok(build_qe_sketched(source, filters, window, op, ctx))
+            let func = AggFunc::Quantile(phi);
+            Ok(build_qe_aggregate(source, filters, window, func, ctx))
         }
         _ => {
-            let op = walk_call_to_op(call, &ctx)?;
+            let func = walk_call_to_op(call, &ctx)?;
             let (source, filters, window) = if call.func.name == "rate"
                 || call.func.name == "irate"
                 || call.func.name == "increase"
@@ -294,7 +336,7 @@ fn walk_call_qe(call: &Call, ctx: WalkCtx) -> anyhow::Result<QueryExpr> {
             } else {
                 extract_matrix_arg(call, 0)?
             };
-            Ok(build_qe_sketched(source, filters, window, op, ctx))
+            Ok(build_qe_aggregate(source, filters, window, func, ctx))
         }
     }
 }
@@ -358,49 +400,39 @@ fn promql_token_to_binop(tok: TokenType) -> BinaryOpKind {
     }
 }
 
-/// Map a PromQL function call to a [`QeAggIntent`] for direct QE emission.
-fn walk_call_to_op(call: &Call, ctx: &WalkCtx) -> anyhow::Result<QeAggIntent> {
+/// Map a PromQL function call to an [`AggFunc`] (Layer 2 relational operator).
+fn walk_call_to_op(call: &Call, ctx: &WalkCtx) -> anyhow::Result<AggFunc> {
     let name = call.func.name;
     match name {
         "quantile_over_time" => {
             let phi = extract_call_num_arg(call, 0)?;
-            Ok(QeAggIntent::default_quantile(vec![phi]))
+            Ok(AggFunc::Quantile(phi))
         }
-        "avg_over_time" => Ok(QeAggIntent::default_quantile(vec![0.5])),
-        "min_over_time" => {
-            Ok(if ctx.partition.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
-                QeAggIntent::default_quantile(vec![0.0])
-            } else {
-                QeAggIntent::Extrema { min: true, max: false }
-            })
-        }
-        "max_over_time" => {
-            Ok(if ctx.partition.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
-                QeAggIntent::default_quantile(vec![1.0])
-            } else {
-                QeAggIntent::Extrema { min: false, max: true }
-            })
-        }
-        "stddev_over_time" | "stdvar_over_time" =>
-            Ok(QeAggIntent::default_quantile(vec![0.25, 0.75])),
+        "avg_over_time" => Ok(AggFunc::Avg),
+        "min_over_time" => Ok(AggFunc::Min),
+        "max_over_time" => Ok(AggFunc::Max),
+        "stddev_over_time" => Ok(AggFunc::StdDev { population: false }),
+        "stdvar_over_time" => Ok(AggFunc::Variance { population: false }),
         "count_over_time" => {
-            Ok(if ctx.outer_count { QeAggIntent::default_cardinality() } else { QeAggIntent::default_frequency() })
+            Ok(if ctx.outer_count { AggFunc::CountDistinct } else { AggFunc::Count })
         }
-        "sum_over_time" | "last_over_time" | "present_over_time" | "absent_over_time"
-        | "delta" | "idelta" | "deriv" | "predict_linear" =>
-            Ok(QeAggIntent::Exact(QeExactAgg::Sum)),
-        "changes" | "resets" => Ok(QeAggIntent::default_frequency()),
-        "rate" | "irate" | "increase" => Ok(QeAggIntent::default_frequency()),
+        "sum_over_time" | "last_over_time" | "present_over_time" | "absent_over_time" =>
+            Ok(AggFunc::Sum),
+        "delta" | "idelta" | "deriv" | "predict_linear" =>
+            Ok(AggFunc::Delta),
+        "changes" | "resets" => Ok(AggFunc::Count),
+        "rate" | "irate" => Ok(AggFunc::Rate),
+        "increase" => Ok(AggFunc::Increase),
         other => Err(anyhow!("unsupported PromQL function: {other}")),
     }
 }
 
-/// Build a `QueryExpr` version of `build_sketched`.
-fn build_qe_sketched(
+/// Build a Layer 2 `QueryExpr`: `Aggregate { AggFunc, input: Window { ... } }`.
+fn build_qe_aggregate(
     metric:  String,
     filters: Vec<Predicate>,
     window:  std::time::Duration,
-    op:      QeAggIntent,
+    func:    AggFunc,
     ctx:     WalkCtx,
 ) -> QueryExpr {
     let source   = QueryExpr::Source(QeSourceSpec { name: metric });
@@ -410,18 +442,23 @@ fn build_qe_sketched(
         slide:    None,
         input:    Box::new(filtered),
     };
-    let agg = if let Some(k) = ctx.topk {
-        QueryExpr::SketchAgg {
-            op:    QeAggIntent::default_frequency(),
-            col:   QeColumnRef::SampleValue,
-            input: Box::new(windowed),
-        }
+    let actual_func = if ctx.topk.is_some() {
+        // Inside topk context, the aggregation is frequency-based.
+        AggFunc::Count
     } else {
-        QueryExpr::SketchAgg {
-            op,
-            col:   QeColumnRef::SampleValue,
-            input: Box::new(windowed),
-        }
+        func
+    };
+    let alias = format!("{}", actual_func).to_lowercase();
+    let agg = QueryExpr::Aggregate {
+        keys:   vec![],
+        aggs:   vec![AggItem {
+            alias,
+            func:     actual_func,
+            col:      QeColumnRef::SampleValue,
+            distinct: false,
+        }],
+        having: None,
+        input:  Box::new(windowed),
     };
     apply_qe_partition(agg, ctx.partition)
 }
