@@ -89,7 +89,7 @@ def load_filtered_day(
             chunk_min = int(chunk["ts_ms"].min())
             if cutoff_ms is None:
                 cutoff_ms = chunk_min + max_event_minutes * 60_000
-            chunk = chunk[chunk["ts_ms"] <= cutoff_ms]
+            chunk = chunk[chunk["ts_ms"] < cutoff_ms]
             if chunk.empty:
                 # Chunk may be entirely after cutoff in file order; later chunks
                 # can still contain rows within the window (CSV is not sorted by time).
@@ -142,7 +142,7 @@ def load_full_feed_day(
             chunk_min = int(chunk["ts_ms"].min())
             if cutoff_ms is None:
                 cutoff_ms = chunk_min + max_event_minutes * 60_000
-            chunk = chunk[chunk["ts_ms"] <= cutoff_ms]
+            chunk = chunk[chunk["ts_ms"] < cutoff_ms]
             if chunk.empty:
                 continue
         chunk["symbol"], _ = split_symbol_exchange(chunk["ID"])

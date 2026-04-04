@@ -67,17 +67,31 @@ pub fn generate_agent_config(
     // Prometheus exporter so downstream scrapers can observe the pipeline.
     let prom_exporter: Value = serde_yaml::from_str("endpoint: \"0.0.0.0:8889\"\n").unwrap();
 
+    let mut exporters: HashMap<String, Value> =
+        [("prometheus".to_string(), prom_exporter)].into();
+    let mut pipeline_exporters = vec!["prometheus".to_string()];
+
+    // Optional file exporter: write one OTLP-JSON line per window flush.
+    // Enabled when `file_output_path` is set in the agent config (benchmark use).
+    if let Some(ref path) = cfg.file_output_path {
+        let file_exporter: Value = serde_yaml::from_str(
+            &format!("path: {path:?}\n"),
+        ).unwrap();
+        exporters.insert("file".to_string(), file_exporter);
+        pipeline_exporters.push("file".to_string());
+    }
+
     let doc = CollectorYaml {
         receivers: [("otlp".to_string(), otlp_receiver)].into(),
         processors: [(processor_key.clone(), processor_val)].into(),
-        exporters: [("prometheus".to_string(), prom_exporter)].into(),
+        exporters,
         service: ServiceSection {
             pipelines: [(
                 "metrics".to_string(),
                 Pipeline {
                     receivers: vec!["otlp".into()],
                     processors: vec![processor_key],
-                    exporters: vec!["prometheus".into()],
+                    exporters: pipeline_exporters,
                 },
             )]
             .into(),
@@ -210,6 +224,7 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+            file_output_path: None,
         }
     }
 
@@ -286,6 +301,7 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+            file_output_path: None,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(yaml.contains("HLL:"), "YAML should contain HLL processor key\n{yaml}");
@@ -318,6 +334,7 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+            file_output_path: None,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
@@ -421,6 +438,7 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+            file_output_path: None,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(yaml.contains("kll:"), "YAML should contain 'kll:'\n{yaml}");
@@ -447,6 +465,7 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+            file_output_path: None,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
@@ -487,6 +506,7 @@ mod tests {
                 drop_original: true,
                 delta_transmission: false,
                 delta_threshold: 0.0,
+                file_output_path: None,
             };
             let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
 
@@ -509,5 +529,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn file_exporter_included_when_path_set() {
+        let mut cfg = ddsketch_cfg();
+        cfg.file_output_path = Some("/tmp/sketch_output.jsonl".into());
+        let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
+        assert!(
+            yaml.contains("file:"),
+            "YAML should contain file exporter section\n{yaml}"
+        );
+        assert!(
+            yaml.contains("/tmp/sketch_output.jsonl"),
+            "YAML should contain the configured file path\n{yaml}"
+        );
+        assert!(
+            yaml.contains("- file"),
+            "pipeline exporters should list file\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn file_exporter_absent_when_path_not_set() {
+        let cfg = ddsketch_cfg(); // file_output_path: None by default
+        let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
+        assert!(
+            !yaml.contains("file:"),
+            "YAML must not contain file exporter when path is not set\n{yaml}"
+        );
     }
 }
