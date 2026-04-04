@@ -37,11 +37,22 @@ pub fn lower_to_sketch_algebra(expr: QueryExpr) -> QueryExpr {
             cols,
             input: Box::new(lower_to_sketch_algebra(*input)),
         },
-        QueryExpr::Window { duration, slide, input } => QueryExpr::Window {
-            duration,
-            slide,
-            input: Box::new(lower_to_sketch_algebra(*input)),
-        },
+        QueryExpr::Window { duration, slide, input } => {
+            let lowered_input = lower_to_sketch_algebra(*input);
+            // Fuse Window + SketchAgg → WindowedAgg (the window defines sketch lifecycle).
+            if let QueryExpr::SketchAgg { op, col, input: sketch_input } = lowered_input {
+                let window = WindowSpec {
+                    kind: match slide {
+                        Some(s) => WindowKind::Sliding { size: duration, slide: s },
+                        None    => WindowKind::Tumbling { size: duration },
+                    },
+                    time_col: None,
+                };
+                QueryExpr::WindowedAgg { agg: op, window, col, input: sketch_input }
+            } else {
+                QueryExpr::Window { duration, slide, input: Box::new(lowered_input) }
+            }
+        }
         QueryExpr::SketchAgg { op, col, input } => QueryExpr::SketchAgg {
             op,
             col,
@@ -153,10 +164,28 @@ fn lower_aggregate(
         }
 
         if let Some(intent) = agg_func_to_intent(&agg.func) {
-            let sketch = QueryExpr::SketchAgg {
-                op:    intent,
-                col:   agg.col.clone(),
-                input,
+            // If the input is a Window, fuse into WindowedAgg (the window
+            // defines the sketch lifecycle — flush/reset/merge semantics).
+            let sketch = if let QueryExpr::Window { duration, slide, input: win_input } = *input {
+                let window = WindowSpec {
+                    kind: match slide {
+                        Some(s) => WindowKind::Sliding { size: duration, slide: s },
+                        None    => WindowKind::Tumbling { size: duration },
+                    },
+                    time_col: None,
+                };
+                QueryExpr::WindowedAgg {
+                    agg:    intent,
+                    window,
+                    col:    agg.col.clone(),
+                    input:  win_input,
+                }
+            } else {
+                QueryExpr::SketchAgg {
+                    op:    intent,
+                    col:   agg.col.clone(),
+                    input,
+                }
             };
             if keys.is_empty() {
                 return sketch;
@@ -377,7 +406,8 @@ mod tests {
     // ── Recursive lowering ───────────────────��────────────────────���──────────
 
     #[test]
-    fn lowering_recurses_into_window() {
+    fn window_wrapping_aggregate_fuses_to_windowed_agg() {
+        // Aggregate inside a Window → fused WindowedAgg.
         let expr = QueryExpr::Window {
             duration: Duration::from_secs(300),
             slide:    None,
@@ -385,11 +415,40 @@ mod tests {
         };
         let lowered = lower_to_sketch_algebra(expr);
         match &lowered {
-            QueryExpr::Window { input, .. } => {
-                assert!(matches!(input.as_ref(), QueryExpr::SketchAgg { .. }));
+            QueryExpr::WindowedAgg { agg, window, .. } => {
+                assert!(matches!(agg, AggIntent::Quantile { .. }));
+                assert!(matches!(window.kind, WindowKind::Tumbling { .. }));
             }
-            other => panic!("expected Window, got {other:?}"),
+            other => panic!("expected WindowedAgg, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn sliding_window_fuses_to_windowed_agg_sliding() {
+        let expr = QueryExpr::Window {
+            duration: Duration::from_secs(300),
+            slide:    Some(Duration::from_secs(60)),
+            input:    Box::new(make_agg(AggFunc::Quantile(0.5), src("m"))),
+        };
+        let lowered = lower_to_sketch_algebra(expr);
+        match &lowered {
+            QueryExpr::WindowedAgg { window, .. } => {
+                assert!(matches!(window.kind, WindowKind::Sliding { .. }));
+            }
+            other => panic!("expected WindowedAgg(Sliding), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn window_wrapping_non_sketchable_stays_separate() {
+        // Custom func is not sketchable → Window stays, Aggregate stays.
+        let expr = QueryExpr::Window {
+            duration: Duration::from_secs(300),
+            slide:    None,
+            input:    Box::new(make_agg(AggFunc::Custom("my_udf".into()), src("m"))),
+        };
+        let lowered = lower_to_sketch_algebra(expr);
+        assert!(matches!(lowered, QueryExpr::Window { .. }));
     }
 
     #[test]

@@ -47,14 +47,43 @@ pub struct NodeCost {
 pub trait CostModel: Send + Sync {
     /// Estimate the cost of the expression tree rooted at `expr`.
     fn estimate(&self, expr: &QueryExpr) -> NodeCost;
+
+    /// Deployment constraints (memory budgets, available backends, etc.).
+    /// Returns `None` if no constraints are configured (unconstrained mode).
+    fn constraints(&self) -> Option<&DeploymentConstraints> { None }
+}
+
+/// Physical deployment constraints that influence optimizer decisions.
+///
+/// Layer 4 (optimizer) uses these to make cost-aware rewrites:
+/// - Defer a sketch from Agent to Backend when `agent_memory_bytes` is exceeded
+/// - Prefer PromSketch path when `promsketch_available` is true
+/// - Avoid sliding windows when only tumbling is supported
+#[derive(Debug, Clone, Default)]
+pub struct DeploymentConstraints {
+    /// Memory budget for the Agent stage (bytes per series). `None` = unbounded.
+    pub agent_memory_bytes: Option<u64>,
+    /// Memory budget for the Backend stage. `None` = unbounded.
+    pub backend_memory_bytes: Option<u64>,
+    /// Whether a PromSketch store is available for the Precompute stage.
+    pub promsketch_available: bool,
+    /// Whether the Agent supports sliding windows (requires EH or multi-instance).
+    pub agent_supports_sliding: bool,
+    /// Network bandwidth between Agent and Backend (bytes/sec). `None` = unconstrained.
+    pub agent_backend_bandwidth: Option<f64>,
 }
 
 /// Default cost model — simple heuristics, no schema statistics.
 pub struct DefaultCostModel {
     pub raw_bytes_per_sec: f64,
+    pub deployment: Option<DeploymentConstraints>,
 }
 
 impl CostModel for DefaultCostModel {
+    fn constraints(&self) -> Option<&DeploymentConstraints> {
+        self.deployment.as_ref()
+    }
+
     fn estimate(&self, expr: &QueryExpr) -> NodeCost {
         // Very rough: sketch nodes reduce bandwidth by 10×; exact nodes pass through.
         let factor = match expr {
@@ -70,11 +99,24 @@ impl CostModel for DefaultCostModel {
             QueryExpr::TopK { k, .. }   => (*k as f64).recip().min(0.1),
             _                           => 1.0,
         };
-        NodeCost {
+        let base = NodeCost {
             bytes_per_sec: self.raw_bytes_per_sec * factor,
             memory_bytes:  self.raw_bytes_per_sec * factor * 0.01,
             cpu_per_sample: factor * 10.0,
+        };
+        // If deployment constraints limit agent memory, penalise sketches
+        // that exceed the budget so the optimizer prefers deferral.
+        if let Some(dc) = &self.deployment {
+            if let Some(budget) = dc.agent_memory_bytes {
+                if base.memory_bytes > budget as f64 {
+                    return NodeCost {
+                        memory_bytes: base.memory_bytes * 10.0, // heavy penalty
+                        ..base
+                    };
+                }
+            }
         }
+        base
     }
 }
 
@@ -601,7 +643,19 @@ impl QueryOptimizer {
     pub fn new(raw_bytes_per_sec: f64) -> Self {
         Self {
             rules: default_rules(),
-            cost_model: Box::new(DefaultCostModel { raw_bytes_per_sec }),
+            cost_model: Box::new(DefaultCostModel { raw_bytes_per_sec, deployment: None }),
+            max_iters: 32,
+        }
+    }
+
+    /// Create an optimizer with deployment constraints.
+    pub fn with_constraints(raw_bytes_per_sec: f64, constraints: DeploymentConstraints) -> Self {
+        Self {
+            rules: default_rules(),
+            cost_model: Box::new(DefaultCostModel {
+                raw_bytes_per_sec,
+                deployment: Some(constraints),
+            }),
             max_iters: 32,
         }
     }
