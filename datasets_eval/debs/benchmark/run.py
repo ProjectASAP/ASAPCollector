@@ -149,6 +149,7 @@ def build_plan_body(
     query: str,
     sketch: str | None,
     bench_mode: str = "sketch-finance",
+    file_output_path: str | None = None,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "metric_name": metric,
@@ -168,6 +169,8 @@ def build_plan_body(
     st = sketch_type_for_plan(query, sketch)
     if st is not None:
         body["sketch_type"] = st
+    if file_output_path is not None:
+        body["file_output_path"] = file_output_path
     return body
 
 
@@ -338,7 +341,13 @@ def _run_one_query_day(
     cpid: subprocess.Popen | None = None
     try:
         if not is_nop:
-            post_plan(controller, build_plan_body(metric, query, sketch if sketch and sketch != "nop" else None))
+            day_tag = day.replace(".csv", "").replace("debs2022-gc-trading-day-", "")
+            jsonl_path = str(results_dir / "sketch_output" / query / f"{day_tag}.jsonl")
+            post_plan(controller, build_plan_body(
+                metric, query,
+                sketch if sketch and sketch != "nop" else None,
+                file_output_path=jsonl_path,
+            ))
             cpid = subprocess.Popen(
                 [str(collector_bin), f"--config={controller.rstrip('/')}/api/v1/config/{metric}"],
                 stdout=open(results_dir / "collector.log", "wb"),

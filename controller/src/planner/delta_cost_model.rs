@@ -497,6 +497,7 @@ mod tests {
                 drop_original: true,
                 delta_transmission: false,
                 delta_threshold: 0.0,
+                file_output_path: None,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
