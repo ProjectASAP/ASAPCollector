@@ -250,8 +250,9 @@ async fn handle_plan(
             Err(e) => warn!(query = %qs, error = %e, "parse_query_expr failed; skipping staged_plan"),
             Ok(qe) => {
                 let raw_bps = plan.transmission_cost_summary.raw_bytes_per_sec;
-                let (opt_qe, _) = QueryOptimizer::new(raw_bps).optimize(qe);
                 let budgets = StageResourceBudgets::from_workload_chars(&wc);
+                let constraints = algebra::optimizer::DeploymentConstraints::from_budgets(&budgets);
+                let (opt_qe, _) = QueryOptimizer::with_constraints(raw_bps, constraints).optimize(qe);
                 let (staged, _physical_tree) = physical_plan_to_staged(&opt_qe, &budgets);
                 plan.staged_plan = Some(staged);
             }
@@ -302,8 +303,9 @@ async fn handle_plan(
                 None
             }
             Ok(qe) => {
-                let (opt_qe, _iters) = QueryOptimizer::new(raw_bps).optimize(qe);
                 let budgets = StageResourceBudgets::from_workload_chars(&wc_for_algebra);
+                let constraints = algebra::optimizer::DeploymentConstraints::from_budgets(&budgets);
+                let (opt_qe, _iters) = QueryOptimizer::with_constraints(raw_bps, constraints).optimize(qe);
                 let plan_node = SketchAllocator::new(budgets, raw_bps).allocate(opt_qe);
                 Some(plan_node.summarise(raw_bps))
             }

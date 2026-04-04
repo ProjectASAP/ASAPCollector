@@ -53,24 +53,255 @@ pub trait CostModel: Send + Sync {
     fn constraints(&self) -> Option<&DeploymentConstraints> { None }
 }
 
-/// Physical deployment constraints that influence optimizer decisions.
+// ── Sketch capabilities ─────────────────────────────────────────────────────
+
+/// Performance and capability profile for a single sketch implementation.
 ///
-/// Layer 4 (optimizer) uses these to make cost-aware rewrites:
-/// - Defer a sketch from Agent to Backend when `agent_memory_bytes` is exceeded
-/// - Prefer PromSketch path when `promsketch_available` is true
-/// - Avoid sliding windows when only tumbling is supported
+/// Used by the optimizer to compare candidates and by the physical planner
+/// to check whether a sketch fits within a stage's budget.
+#[derive(Debug, Clone)]
+pub struct SketchCapability {
+    /// Insertion throughput (samples/sec at 1 core).
+    pub insert_throughput: f64,
+    /// Query throughput (queries/sec at 1 core).
+    pub query_throughput: f64,
+    /// Memory footprint per series (bytes).
+    pub memory_bytes_per_series: u64,
+    /// CPU cost per insert (µs/sample).
+    pub cpu_micros_per_insert: f64,
+    /// Transmission size per flush (bytes).
+    pub transmission_bytes: u64,
+    /// Which logical aggregation intents this sketch supports.
+    pub supported_intents: Vec<SupportedIntent>,
+    /// Whether the sketch supports merge (sketch(A∪B) = merge(sketch(A), sketch(B))).
+    pub mergeable: bool,
+    /// Whether the sketch supports delta encoding.
+    pub supports_delta: bool,
+    /// Whether the sketch supports sliding windows natively.
+    pub supports_sliding_window: bool,
+}
+
+/// A logical aggregation intent that a sketch can serve.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SupportedIntent {
+    Quantile,
+    Cardinality,
+    Frequency,
+    Extrema,
+}
+
+/// YAML-serializable capability profile (for loading from config).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SketchCapabilityYaml {
+    insert_throughput: f64,
+    query_throughput: f64,
+    memory_bytes_per_series: u64,
+    cpu_micros_per_insert: f64,
+    transmission_bytes: u64,
+    supported_intents: Vec<String>,
+    mergeable: bool,
+    supports_delta: bool,
+    supports_sliding_window: bool,
+}
+
+impl SketchCapabilityYaml {
+    fn to_capability(&self) -> SketchCapability {
+        let intents = self.supported_intents.iter().filter_map(|s| match s.as_str() {
+            "quantile" => Some(SupportedIntent::Quantile),
+            "cardinality" => Some(SupportedIntent::Cardinality),
+            "frequency" => Some(SupportedIntent::Frequency),
+            "extrema" => Some(SupportedIntent::Extrema),
+            _ => None,
+        }).collect();
+        SketchCapability {
+            insert_throughput: self.insert_throughput,
+            query_throughput: self.query_throughput,
+            memory_bytes_per_series: self.memory_bytes_per_series,
+            cpu_micros_per_insert: self.cpu_micros_per_insert,
+            transmission_bytes: self.transmission_bytes,
+            supported_intents: intents,
+            mergeable: self.mergeable,
+            supports_delta: self.supports_delta,
+            supports_sliding_window: self.supports_sliding_window,
+        }
+    }
+}
+
+/// YAML file structure for all sketch capabilities.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SketchCapabilitiesFile {
+    ddsketch: SketchCapabilityYaml,
+    kll: SketchCapabilityYaml,
+    hll: SketchCapabilityYaml,
+    count_sketch: SketchCapabilityYaml,
+    count_min_sketch: SketchCapabilityYaml,
+}
+
+/// Load sketch capabilities from a YAML file.
+///
+/// Falls back to built-in defaults if the file is missing or malformed.
+pub fn load_sketch_capabilities(path: &str) -> std::collections::HashMap<crate::types::SketchType, SketchCapability> {
+    use crate::types::SketchType;
+    if let Ok(contents) = std::fs::read_to_string(path) {
+        if let Ok(file) = serde_yaml::from_str::<SketchCapabilitiesFile>(&contents) {
+            let mut map = std::collections::HashMap::new();
+            map.insert(SketchType::DDSketch, file.ddsketch.to_capability());
+            map.insert(SketchType::KLL, file.kll.to_capability());
+            map.insert(SketchType::HLL, file.hll.to_capability());
+            map.insert(SketchType::CountSketch, file.count_sketch.to_capability());
+            map.insert(SketchType::CountMinSketch, file.count_min_sketch.to_capability());
+            return map;
+        }
+    }
+    // Fallback: built-in defaults.
+    let mut map = std::collections::HashMap::new();
+    for st in &[SketchType::DDSketch, SketchType::KLL, SketchType::HLL, SketchType::CountSketch, SketchType::CountMinSketch] {
+        map.insert(st.clone(), sketch_capability(st));
+    }
+    map
+}
+
+/// Built-in capability profiles for known sketch types.
+///
+/// These are compiled-in defaults. For deployment-specific values, load from
+/// `sketch_capabilities.yml` via [`load_sketch_capabilities`], or run benchmarks
+/// with `e2esdkbench` and update the YAML.
+pub fn sketch_capability(st: &crate::types::SketchType) -> SketchCapability {
+    use crate::types::SketchType;
+    match st {
+        SketchType::DDSketch => SketchCapability {
+            insert_throughput: 10_000_000.0,
+            query_throughput: 50_000_000.0,
+            memory_bytes_per_series: 4_096,
+            cpu_micros_per_insert: 0.1,
+            transmission_bytes: 4_096,
+            supported_intents: vec![SupportedIntent::Quantile, SupportedIntent::Extrema],
+            mergeable: true,
+            supports_delta: true,
+            supports_sliding_window: false,
+        },
+        SketchType::KLL => SketchCapability {
+            insert_throughput: 5_000_000.0,
+            query_throughput: 20_000_000.0,
+            memory_bytes_per_series: 8_192,
+            cpu_micros_per_insert: 0.2,
+            transmission_bytes: 8_192,
+            supported_intents: vec![SupportedIntent::Quantile, SupportedIntent::Extrema],
+            mergeable: true,
+            supports_delta: false,
+            supports_sliding_window: false,
+        },
+        SketchType::HLL => SketchCapability {
+            insert_throughput: 20_000_000.0,
+            query_throughput: 100_000_000.0,
+            memory_bytes_per_series: 16_384,
+            cpu_micros_per_insert: 0.05,
+            transmission_bytes: 16_384,
+            supported_intents: vec![SupportedIntent::Cardinality],
+            mergeable: true,
+            supports_delta: true,
+            supports_sliding_window: false,
+        },
+        SketchType::CountSketch => SketchCapability {
+            insert_throughput: 8_000_000.0,
+            query_throughput: 10_000_000.0,
+            memory_bytes_per_series: 80_000,
+            cpu_micros_per_insert: 0.5,
+            transmission_bytes: 80_000,
+            supported_intents: vec![SupportedIntent::Frequency],
+            mergeable: true,
+            supports_delta: true,
+            supports_sliding_window: false,
+        },
+        SketchType::CountMinSketch => SketchCapability {
+            insert_throughput: 8_000_000.0,
+            query_throughput: 10_000_000.0,
+            memory_bytes_per_series: 80_000,
+            cpu_micros_per_insert: 0.5,
+            transmission_bytes: 80_000,
+            supported_intents: vec![SupportedIntent::Frequency],
+            mergeable: true,
+            supports_delta: true,
+            supports_sliding_window: false,
+        },
+    }
+}
+
+// ── Stage budgets ───────────────────────────────────────────────────────────
+
+/// Resource budget for a single pipeline stage.
+///
+/// All fields are `Option` — `None` means unbounded / unconstrained.
+#[derive(Debug, Clone, Default)]
+pub struct StageBudget {
+    /// Memory budget (bytes).
+    pub memory_bytes: Option<u64>,
+    /// CPU budget (µs per sample).
+    pub cpu_micros_per_sample: Option<f64>,
+    /// Disk budget (bytes).
+    pub disk_bytes: Option<u64>,
+    /// Egress bandwidth budget (bytes/sec).
+    pub bandwidth_bytes_per_sec: Option<f64>,
+}
+
+impl StageBudget {
+    /// Check whether a sketch fits within this stage's budget.
+    pub fn fits(&self, cap: &SketchCapability) -> bool {
+        if let Some(mem) = self.memory_bytes {
+            if cap.memory_bytes_per_series > mem { return false; }
+        }
+        if let Some(cpu) = self.cpu_micros_per_sample {
+            if cap.cpu_micros_per_insert > cpu { return false; }
+        }
+        if let Some(bw) = self.bandwidth_bytes_per_sec {
+            // Rough: transmission bytes per flush ÷ 1 second
+            if cap.transmission_bytes as f64 > bw { return false; }
+        }
+        true
+    }
+}
+
+// ── Deployment constraints ──────────────────────────────────────────────────
+
+/// Full deployment specification: per-stage budgets.
+///
+/// The optimizer uses stage budgets to penalise plans that exceed capacity.
+/// The physical planner uses `StageBudget::fits(SketchCapability)` to decide
+/// concrete placement.
 #[derive(Debug, Clone, Default)]
 pub struct DeploymentConstraints {
-    /// Memory budget for the Agent stage (bytes per series). `None` = unbounded.
-    pub agent_memory_bytes: Option<u64>,
-    /// Memory budget for the Backend stage. `None` = unbounded.
-    pub backend_memory_bytes: Option<u64>,
-    /// Whether a PromSketch store is available for the Precompute stage.
-    pub promsketch_available: bool,
-    /// Whether the Agent supports sliding windows (requires EH or multi-instance).
-    pub agent_supports_sliding: bool,
-    /// Network bandwidth between Agent and Backend (bytes/sec). `None` = unconstrained.
-    pub agent_backend_bandwidth: Option<f64>,
+    /// Edge / agent collector (sketch build).
+    pub agent: StageBudget,
+    /// Backend collector (sketch merge).
+    pub backend_collector: StageBudget,
+    /// Backend sketchDB (precompute engine / query engine).
+    pub backend_db: StageBudget,
+    /// Backend original DB (exact computation).
+    pub original_db: StageBudget,
+    /// Object store (S3 raw backup).
+    pub object_store: StageBudget,
+}
+
+impl DeploymentConstraints {
+    /// Build from [`StageResourceBudgets`] (the workload-derived budgets).
+    pub fn from_budgets(budgets: &crate::types::StageResourceBudgets) -> Self {
+        Self {
+            agent: StageBudget {
+                memory_bytes: budgets.agent_memory_bytes,
+                cpu_micros_per_sample: budgets.agent_cpu_micros_per_sample,
+                ..Default::default()
+            },
+            backend_collector: StageBudget {
+                memory_bytes: budgets.backend_memory_bytes,
+                ..Default::default()
+            },
+            backend_db: StageBudget {
+                memory_bytes: budgets.precompute_memory_bytes,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
 }
 
 /// Default cost model — simple heuristics, no schema statistics.
@@ -85,9 +316,9 @@ impl CostModel for DefaultCostModel {
     }
 
     fn estimate(&self, expr: &QueryExpr) -> NodeCost {
-        // Very rough: sketch nodes reduce bandwidth by 10×; exact nodes pass through.
+        // Sketch nodes reduce bandwidth; exact nodes pass through.
         let factor = match expr {
-            QueryExpr::SketchAgg { op, .. } => match op {
+            QueryExpr::SketchAgg { op, .. } | QueryExpr::WindowedAgg { agg: op, .. } => match op {
                 AggIntent::Quantile { .. }    => 0.05,
                 AggIntent::Cardinality { .. } => 0.02,
                 AggIntent::Frequency { .. }   => 0.03,
@@ -97,22 +328,72 @@ impl CostModel for DefaultCostModel {
             QueryExpr::Merge { inputs } => 1.0 / (inputs.len().max(1) as f64),
             QueryExpr::Filter { .. }    => 0.5,
             QueryExpr::TopK { k, .. }   => (*k as f64).recip().min(0.1),
+            QueryExpr::Partition { .. }  => 0.8, // partition adds overhead
+            QueryExpr::Dedup { .. }      => 0.9,
             _                           => 1.0,
         };
+
+        let memory = match expr {
+            QueryExpr::SketchAgg { op, .. } | QueryExpr::WindowedAgg { agg: op, .. } =>
+                crate::algebra::directory::estimated_sketch_memory_bytes(op) as f64,
+            _ => self.raw_bytes_per_sec * factor * 0.01,
+        };
+
         let base = NodeCost {
             bytes_per_sec: self.raw_bytes_per_sec * factor,
-            memory_bytes:  self.raw_bytes_per_sec * factor * 0.01,
+            memory_bytes:  memory,
             cpu_per_sample: factor * 10.0,
         };
-        // If deployment constraints limit agent memory, penalise sketches
-        // that exceed the budget so the optimizer prefers deferral.
+
+        // Apply deployment constraint penalties.
         if let Some(dc) = &self.deployment {
-            if let Some(budget) = dc.agent_memory_bytes {
-                if base.memory_bytes > budget as f64 {
+            // Map each expression to its default stage budget.
+            let stage_budget = match expr {
+                QueryExpr::SketchAgg { .. } | QueryExpr::WindowedAgg { .. }
+                | QueryExpr::Source(_) | QueryExpr::Filter { .. }
+                | QueryExpr::Window { .. } => &dc.agent,
+                QueryExpr::Partition { .. } | QueryExpr::Merge { .. }
+                | QueryExpr::Dedup { .. } => &dc.backend_collector,
+                QueryExpr::TopK { .. } | QueryExpr::HistogramQuantile { .. }
+                | QueryExpr::BinaryOp { .. } | QueryExpr::PromQLSubquery { .. } => &dc.backend_db,
+                QueryExpr::Aggregate { .. } => &dc.original_db,
+                _ => &dc.agent,
+            };
+
+            // For sketch nodes, check sketch capability against stage budget.
+            if let QueryExpr::SketchAgg { op, .. } | QueryExpr::WindowedAgg { agg: op, .. } = expr {
+                let sketch_type = crate::algebra::directory::sketch_type_for_op(op);
+                let cap = sketch_capability(&sketch_type);
+                if !stage_budget.fits(&cap) {
+                    // Sketch doesn't fit — apply 10× penalty across all dimensions.
                     return NodeCost {
-                        memory_bytes: base.memory_bytes * 10.0, // heavy penalty
-                        ..base
+                        bytes_per_sec: base.bytes_per_sec * 10.0,
+                        memory_bytes: base.memory_bytes * 10.0,
+                        cpu_per_sample: base.cpu_per_sample * 10.0,
                     };
+                }
+                // Sliding window: penalise if sketch doesn't support it natively.
+                if let QueryExpr::WindowedAgg { window, .. } = expr {
+                    if matches!(window.kind, crate::algebra::expr::WindowKind::Sliding { .. })
+                        && !cap.supports_sliding_window
+                    {
+                        return NodeCost {
+                            cpu_per_sample: base.cpu_per_sample * 5.0,
+                            ..base
+                        };
+                    }
+                }
+            } else {
+                // Non-sketch nodes: check basic budget constraints.
+                if let Some(budget) = stage_budget.memory_bytes {
+                    if base.memory_bytes > budget as f64 {
+                        return NodeCost { memory_bytes: base.memory_bytes * 10.0, ..base };
+                    }
+                }
+                if let Some(bw) = stage_budget.bandwidth_bytes_per_sec {
+                    if base.bytes_per_sec > bw {
+                        return NodeCost { bytes_per_sec: base.bytes_per_sec * 10.0, ..base };
+                    }
                 }
             }
         }
@@ -1087,5 +1368,51 @@ mod tests {
             QueryExpr::Merge { inputs } => assert_eq!(inputs.len(), 3),
             other => panic!("expected Merge(3), got {other:?}"),
         }
+    }
+
+    // ── DeploymentConstraints tests ─────────────────────────────────────
+
+    #[test]
+    fn constraints_from_budgets() {
+        let budgets = crate::types::StageResourceBudgets {
+            agent_memory_bytes: Some(4096),
+            backend_memory_bytes: Some(1_000_000),
+            ..Default::default()
+        };
+        let dc = DeploymentConstraints::from_budgets(&budgets);
+        assert_eq!(dc.agent.memory_bytes, Some(4096));
+        assert_eq!(dc.backend_collector.memory_bytes, Some(1_000_000));
+    }
+
+    #[test]
+    fn constrained_optimizer_penalises_large_sketch() {
+        let dc = DeploymentConstraints {
+            agent: StageBudget { memory_bytes: Some(1), ..Default::default() },
+            ..Default::default()
+        };
+        let opt = QueryOptimizer::with_constraints(1000.0, dc);
+        let expr = QueryExpr::SketchAgg {
+            op: AggIntent::default_quantile(vec![0.99]),
+            col: ColumnRef::SampleValue,
+            input: Box::new(QueryExpr::Source(SourceSpec { name: "m".into() })),
+        };
+        let cost = opt.cost_model.estimate(&expr);
+        // Memory should be heavily penalised (10× multiplier)
+        assert!(cost.memory_bytes > 10_000.0,
+            "expected penalised memory, got {}", cost.memory_bytes);
+    }
+
+    #[test]
+    fn unconstrained_optimizer_normal_cost() {
+        let opt = QueryOptimizer::new(1000.0);
+        let expr = QueryExpr::SketchAgg {
+            op: AggIntent::default_quantile(vec![0.99]),
+            col: ColumnRef::SampleValue,
+            input: Box::new(QueryExpr::Source(SourceSpec { name: "m".into() })),
+        };
+        let cost = opt.cost_model.estimate(&expr);
+        // Normal cost, no penalty
+        assert!(cost.memory_bytes < 10_000.0,
+            "expected normal memory, got {}", cost.memory_bytes);
     }
 }

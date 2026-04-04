@@ -215,12 +215,14 @@ pub fn resolve_window(window: &WindowSpec, placement: &Placement) -> PhysicalWin
 // ── Physical planner ────────────────────────────────────────────────────────
 
 use crate::algebra::expr::*;
+use crate::algebra::optimizer::DeploymentConstraints;
 use crate::types::StageResourceBudgets;
 
 /// Physical planner configuration.
 #[derive(Debug, Clone)]
 pub struct PhysicalPlannerConfig {
     pub budgets: StageResourceBudgets,
+    pub constraints: DeploymentConstraints,
 }
 
 /// Build a physical plan from an optimized `QueryExpr`.
@@ -260,7 +262,7 @@ fn plan_node(expr: &QueryExpr, config: &PhysicalPlannerConfig) -> PhysicalNode {
         QueryExpr::SketchAgg { op, col, input } => {
             let child = plan_node(input, config);
             let resolved = resolve(op);
-            let placement = decide_sketch_placement(&resolved, &config.budgets);
+            let placement = decide_sketch_placement(&resolved, config);
 
             let physical_op = PhysicalOp::OtelSketchBuild {
                 sketch_type: resolved.sketch_type.clone(),
@@ -287,7 +289,7 @@ fn plan_node(expr: &QueryExpr, config: &PhysicalPlannerConfig) -> PhysicalNode {
         QueryExpr::WindowedAgg { agg, window, col, input } => {
             let child = plan_node(input, config);
             let resolved = resolve(agg);
-            let placement = decide_sketch_placement(&resolved, &config.budgets);
+            let placement = decide_sketch_placement(&resolved, config);
             let phys_window = resolve_window(window, &placement);
 
             let physical_op = PhysicalOp::OtelSketchBuild {
@@ -459,19 +461,27 @@ fn plan_node(expr: &QueryExpr, config: &PhysicalPlannerConfig) -> PhysicalNode {
 }
 
 /// Decide where a sketch operation runs based on memory budget.
-fn decide_sketch_placement(resolved: &PhysicalAggOp, budgets: &StageResourceBudgets) -> Placement {
-    let mem = resolved.estimated_memory_bytes;
-    if let Some(agent_budget) = budgets.agent_memory_bytes {
-        if mem > agent_budget {
-            if let Some(backend_budget) = budgets.backend_memory_bytes {
-                if mem > backend_budget {
-                    return Placement::QueryEngine;
-                }
-            }
-            return Placement::BackendCollector;
-        }
+/// Decide where a sketch runs based on deployment constraints and sketch capability.
+///
+/// Uses `StageBudget::fits(SketchCapability)` to check each stage in order:
+/// Agent → BackendCollector → QueryEngine.
+fn decide_sketch_placement(resolved: &PhysicalAggOp, config: &PhysicalPlannerConfig) -> Placement {
+    use crate::algebra::optimizer::sketch_capability;
+
+    let cap = sketch_capability(&resolved.sketch_type);
+
+    // Try Agent first.
+    if config.constraints.agent.fits(&cap) {
+        return Placement::AgentCollector;
     }
-    Placement::AgentCollector
+
+    // Agent budget exceeded — try Backend.
+    if config.constraints.backend_collector.fits(&cap) {
+        return Placement::BackendCollector;
+    }
+
+    // Both exceeded — defer to QueryEngine.
+    Placement::QueryEngine
 }
 
 /// If a node's child is at a different stage, insert an Exchange node between them.
@@ -619,8 +629,10 @@ pub fn physical_plan_to_staged(
     expr: &QueryExpr,
     budgets: &StageResourceBudgets,
 ) -> (crate::types::StagedPlan, PhysicalNode) {
+    let constraints = DeploymentConstraints::from_budgets(budgets);
     let config = PhysicalPlannerConfig {
         budgets: budgets.clone(),
+        constraints,
     };
     let tree = plan(expr, &config);
     let staged = tree.to_staged_plan();
@@ -710,6 +722,7 @@ mod tests {
     fn default_config() -> PhysicalPlannerConfig {
         PhysicalPlannerConfig {
             budgets: StageResourceBudgets::default(),
+            constraints: DeploymentConstraints::default(),
         }
     }
 
@@ -843,11 +856,13 @@ mod tests {
     #[test]
     fn plan_budget_deferral() {
         // With tiny agent budget, sketch should defer to Backend
+        let budgets = StageResourceBudgets {
+            agent_memory_bytes: Some(1), // 1 byte = too small
+            ..Default::default()
+        };
         let config = PhysicalPlannerConfig {
-            budgets: StageResourceBudgets {
-                agent_memory_bytes: Some(1), // 1 byte = too small
-                ..Default::default()
-            },
+            constraints: DeploymentConstraints::from_budgets(&budgets),
+            budgets,
         };
         let expr = QueryExpr::SketchAgg {
             op: AggIntent::default_quantile(vec![0.99]),

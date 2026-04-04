@@ -570,7 +570,144 @@ Resolution: `Cardinality(0.01)` → `HLL { precision: 14 }`, `Tumbling(5m)` → 
 
 ---
 
-## 8. Sketch Directory: Which Sketch for Which Operation?
+## 8. Optimizer: Formulation of the Sketch Placement Problem
+
+### Optimization Goal
+
+Given a set of query workloads Q = {q₁, q₂, …, qₙ} and a deployment with
+pipeline stages S = {Agent, BackendCollector, BackendDB, OriginalDB, ObjectStore},
+the optimizer solves:
+
+```
+minimize    TotalCost(P)
+subject to  Accuracy(qᵢ, P) ≤ accuracy_sla(qᵢ)      ∀ qᵢ ∈ Q
+            Latency(qᵢ, P) ≤ latency_sla(qᵢ)         ∀ qᵢ ∈ Q
+            Throughput(qᵢ, P) ≥ throughput_sla(qᵢ)    ∀ qᵢ ∈ Q
+            ResourceUsage(s, P) ≤ Budget(s)             ∀ s ∈ S
+```
+
+where P is the physical plan (sketch type assignment + stage placement + window
+configuration for each query operator).
+
+### Cost Model
+
+The total cost decomposes into per-stage costs:
+
+```
+TotalCost(P) = Σ_s [ BandwidthCost(s) + MemoryCost(s) + CPUCost(s) + StorageCost(s) ]
+```
+
+Each term is the aggregate resource consumption across all queries assigned to
+that stage:
+
+| Cost component | Formula |
+|---|---|
+| `BandwidthCost(s)` | Σ_q transmission_bytes(sketch(q)) × flush_rate(q) |
+| `MemoryCost(s)` | Σ_q memory_per_series(sketch(q)) × series_count(q) |
+| `CPUCost(s)` | Σ_q cpu_per_insert(sketch(q)) × samples_per_sec(q) |
+| `StorageCost(s)` | Σ_q transmission_bytes(sketch(q)) × retention(q) |
+
+### Constraints
+
+**Per-stage resource budgets** — each stage has memory, CPU, disk, and bandwidth limits:
+
+```
+∀ s ∈ S:
+  Σ_q memory_per_series(sketch(q, s)) × series_count(q) ≤ s.memory_bytes
+  Σ_q cpu_per_insert(sketch(q, s)) × samples_per_sec(q) ≤ s.cpu_budget
+  Σ_q transmission_bytes(sketch(q, s)) × flush_rate(q)  ≤ s.bandwidth_budget
+```
+
+**Accuracy constraint** — sketch error must be within the query's SLA:
+
+```
+∀ qᵢ:
+  error(sketch_type(qᵢ), sketch_params(qᵢ)) ≤ accuracy_sla(qᵢ)
+```
+
+For example: DDSketch with `relative_accuracy = 0.01` guarantees ≤1% relative error
+on quantile queries. HLL with `precision = 14` guarantees ≤0.8% relative error
+on cardinality.
+
+**Functional constraint** — the sketch must support the query's aggregation intent:
+
+```
+∀ qᵢ:
+  intent(qᵢ) ∈ sketch_capability(sketch_type(qᵢ)).supported_intents
+```
+
+For example: a `Cardinality` intent can only be served by a sketch with
+`SupportedIntent::Cardinality` (HLL, UnivMon), not by DDSketch.
+
+### Decision Variables
+
+For each query operator `op` in the plan:
+
+1. **Sketch type selection**: `sketch_type(op) ∈ candidates(intent(op))`
+   - Quantile → {DDSketch, KLL}
+   - Cardinality → {HLL}
+   - Frequency → {CountSketch, CountMinSketch}
+
+2. **Stage placement**: `stage(op) ∈ S`
+   - Subject to `stage_budget(stage(op)).fits(sketch_capability(sketch_type(op)))`
+   - Deferral chain: Agent → BackendCollector → BackendDB
+
+3. **Window configuration**: `window(op) ∈ {Tumbling(d), Sliding(d, s), Unbounded}`
+   - Subject to sketch capability: `sketch_capability(type).supports_sliding_window`
+
+4. **Delta encoding**: `delta(op) ∈ {true, false}`
+   - Subject to: `sketch_capability(type).supports_delta`
+   - Reduces bandwidth at the cost of reconstruction at the receiver
+
+### Cross-Query Optimization: What to Precompute
+
+When multiple queries share overlapping time series or aggregation patterns, the
+optimizer can amortise costs:
+
+**Shared sketch reuse**: if q₁ = `quantile_over_time(0.99, m[5m])` and
+q₂ = `quantile_over_time(0.5, m[5m])`, a single DDSketch serves both
+(DDSketch can answer any quantile from one structure).
+
+**Precomputation decision**: a query should be precomputed (sketch maintained
+continuously) rather than computed on-demand when:
+
+```
+precompute(q) = true  iff  repeat_interval(q) < query_latency_sla(q)
+```
+
+i.e., the query fires more often than the system can recompute it from raw data.
+Precomputed sketches are maintained at the Agent and merged at the Backend,
+with the Precompute Engine answering queries against the merged state.
+
+**Multi-query sketch sharing matrix**: for N queries over the same metric, the
+optimizer builds a sharing matrix:
+
+| | DDSketch | HLL | CountSketch |
+|---|---|---|---|
+| q₁: quantile(0.99) | ✓ serves | ✗ | ✗ |
+| q₂: quantile(0.5) | ✓ **shared with q₁** | ✗ | ✗ |
+| q₃: count_distinct | ✗ | ✓ serves | ✗ |
+| q₄: topk(10) | ✗ | ✗ | ✓ serves |
+
+One DDSketch instance serves both q₁ and q₂ → memory cost counted once, not twice.
+
+### Current Implementation
+
+The optimizer currently solves a simplified version:
+
+1. **Per-query greedy**: each query is optimised independently (no cross-query sharing yet)
+2. **Sketch selection**: `CostModelPlanner` scores all candidates per query, picks cheapest meeting accuracy SLA
+3. **Stage placement**: `physical::decide_sketch_placement()` checks `StageBudget::fits(SketchCapability)` per stage in order: Agent → Backend → QueryEngine
+4. **Precomputation**: `should_precompute(q)` checks `repeat_interval < latency_sla`
+
+Future work:
+- Global optimisation across queries (shared sketch instances)
+- Joint sketch+stage+window optimisation (currently done greedily per dimension)
+- Workload-adaptive re-optimisation (replan when query patterns change)
+
+---
+
+## 9. Sketch Directory: Which Sketch for Which Operation?
 
 The sketch directory (`algebra/directory.rs`) maps aggregation types to candidate
 sketch families.  The `CostModelPlanner` scores all candidates and picks the
