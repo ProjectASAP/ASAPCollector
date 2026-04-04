@@ -1,0 +1,5 @@
+results/*
+!results/10min_test_results.md
+__pycache__/
+*.pyc
+QUERY_PORTING_GUIDE.md
