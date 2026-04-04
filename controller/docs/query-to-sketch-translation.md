@@ -45,13 +45,29 @@ Physical Plan (OTel processors, PromSketch, DB queries, on-device)
 | **1. Query Language** | query string | language AST | grammar, parsing |
 | **2. Language Logical Plan** | AST | language-specific relational plan | language semantics (PromQL instant/range vectors, SQL frames, Elastic buckets) |
 | **3. Sketch Logical Plan** | language plan | sketch algebra tree (`QueryExpr`) | **what** to compute: aggregation intent + accuracy requirement + window semantics — no sketch names, no implementation details |
-| **4. Sketch Optimizer** | sketch plan | optimised sketch plan | algebraic rewrites: push-down, fusion, elimination, common sub-expression |
+| **4. Sketch Optimizer** | sketch plan + deployment constraints | optimised sketch plan | cost-aware rewrites: push-down, fusion, elimination, budget-driven deferral — considers physical deployment constraints (memory budgets, network topology, available backends) |
 | **5. Physical Plan** | optimised plan + deployment config | executable plan | **how** to execute: DDSketch vs KLL, OTel vs PromSketch, tumbling ticker vs EH buckets, data exchange format |
 
-### Key design principle: Layers 1–4 are implementation-independent
+### Key design principle
 
-The sketch logical plan (Layer 3) uses **`AggIntent`** — aggregation intents that
-describe *what* to compute without naming a specific sketch implementation:
+**Layers 1–3 are query-language-independent and workload-independent.**
+They define *what* to compute without reference to any specific query language,
+sketch implementation, or deployment topology.  A `Quantile { φ=0.99, accuracy=0.01 }`
+intent is the same whether it came from PromQL, SQL, DataFusion, or ElasticDSL,
+and whether the deployment is a single node or a 1000-agent fleet.
+
+**Layer 4 is deployment-constraint-aware.**
+The optimizer considers physical deployment constraints — memory budgets per stage,
+network bandwidth, available backends — when applying cost-based rewrite rules
+(e.g., deferring a sketch from Agent to Backend when the agent memory budget is
+exceeded, or fusing TopK when the downstream merge is expensive).
+
+**Layer 5 is deployment-specific.**
+The physical planner commits to concrete implementations based on the specific
+setup: OTel Collector processors, PromSketch EH stores, on-device ring buffers,
+or database-side SQL.
+
+### `AggIntent` — the Layer 3 aggregation vocabulary
 
 | `AggIntent` variant | Meaning | Physical candidates (Layer 5) |
 |---|---|---|
@@ -62,10 +78,11 @@ describe *what* to compute without naming a specific sketch implementation:
 | `PerPartition { inner, keys }` | "Run inner once per distinct key tuple" | Hydra, per-key sketch instances |
 | `Exact(Sum\|Count\|Avg\|Min\|Max)` | "No sketch benefit — exact computation" | Raw passthrough, DB-side |
 
-This separation means:
-- The **parser** (Layers 1–2) says "this query needs a quantile at φ=0.99"
-- The **optimizer** (Layer 4) rewrites the plan algebraically
-- The **physical planner** (Layer 5) says "for this workload on this deployment, DDSketch is cheapest" or "PromSketch EHKLL is better because it's co-located"
+The flow:
+- **Layers 1–2** (parsers): "this query needs a quantile at φ=0.99" → `Aggregate { Quantile(0.99) }`
+- **Layer 3** (lowering): `Aggregate` → `SketchAgg { AggIntent::Quantile }` (shared by all languages)
+- **Layer 4** (optimizer): rewrites the plan considering deployment constraints
+- **Layer 5** (physical planner): "for this deployment, DDSketch is cheapest" or "PromSketch EHKLL is better because it's co-located"
 
 ## 2. Sketch Logical Plan: `QueryExpr` (Layer 3)
 
