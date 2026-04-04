@@ -335,35 +335,36 @@ processors:
 
 ---
 
-## 5. Concrete Example: PromQL with Top-K
+## 5. Concrete Example: PromQL with Top-K (all 5 layers)
 
 ### Query
 ```promql
-topk(10, count_over_time(requests{env="prod"}[1m]) by (service))
+topk by (service) (10, count_over_time(requests{env="prod"}[1m]))
 ```
 
-### Step 1 — Parse to QueryExpr
+### Layer 1 — Language AST
 
-The PromQL parser directly emits sketch-aware nodes — `TopK`, `SketchAgg(CountSketch)`,
-and `Partition` — because PromQL functions have a 1-to-1 sketch mapping.  Compare
-this with the SQL examples below, where the parser emits generic `Aggregate` +
-`Sort` + `Limit` and the optimizer transforms them into sketch nodes later:
+The `promql-parser` crate parses this as:
+`Aggregate(op="topk", param=10, modifier=By(["service"]), expr=Call("count_over_time", MatrixSelector("requests", {env="prod"}, 1m)))`
+
+### Layer 2 — Language Logical Plan (parser output)
+
+The PromQL parser emits relational operators.  The `by (service)` partition keys
+are propagated into the inner `Aggregate`'s GROUP BY keys, so the lowering pass
+can see `Count WITH GROUP BY` → `Frequency`:
 
 ```
-Partition {
-  keys: By(["service"]),
-  input: TopK {
-    k: 10,
-    by: ["service"],
-    input: SketchAgg {
-      op: CountSketch { width: 2000, depth: 5 },
-      col: SampleValue,
-      input: Window {
-        duration: 1m,
-        input: Filter {
-          pred: Column("env") = Literal("prod"),
-          input: Source("requests")
-        }
+TopK {
+  k: 10,
+  by: ["service"],
+  input: Aggregate {
+    keys: ["service"],
+    aggs: [AggItem { func: Count, col: SampleValue }],
+    input: Window {
+      duration: 1m,
+      input: Filter {
+        pred: Column("env") = Literal("prod"),
+        input: Source("requests")
       }
     }
   }
@@ -372,8 +373,9 @@ Partition {
 
 ### Layer 3 — Sketch Logical Plan (after lowering)
 
-`lower_to_sketch_algebra()` converts `Aggregate { Count }` → `SketchAgg { Frequency }`,
-fuses with `Window` → `WindowedAgg`, and wraps with `Partition`:
+`lower_to_sketch_algebra()` converts `Aggregate { Count, keys: ["service"] }` →
+`Partition { ["service"], WindowedAgg { Frequency } }`.  The `Window + Aggregate`
+fuses into `WindowedAgg`:
 
 ```
 TopK {
@@ -382,7 +384,7 @@ TopK {
   input: Partition {
     keys: By(["service"]),
     input: WindowedAgg {
-      agg: Frequency { accuracy: 0.01 },
+      agg: Frequency { accuracy: 0.001 },
       window: WindowSpec { kind: Tumbling { size: 1m } },
       col: SampleValue,
       input: Filter {

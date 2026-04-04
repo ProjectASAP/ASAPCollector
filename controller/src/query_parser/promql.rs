@@ -226,8 +226,10 @@ fn walk_aggregate_qe(agg: &AggregateExpr, ctx: WalkCtx) -> anyhow::Result<QueryE
             let k = extract_number_param(&agg.param)? as u64;
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: Some(k), outer_count: false };
             let inner = walk_qe(agg.expr.as_ref(), inner_ctx)?;
+            // Don't wrap with Partition here — inner Aggregate already has the keys,
+            // and the lowering pass will create the Partition when it lowers the Aggregate.
             let result = QueryExpr::TopK { k, by: partition.as_ref().map(|p| p.keys().to_vec()).unwrap_or_default(), input: Box::new(inner) };
-            Ok(apply_qe_partition(result, partition))
+            Ok(result)
         }
         "count" => {
             let inner_ctx = WalkCtx { partition: partition.clone(), topk: None, outer_count: true };
@@ -448,9 +450,14 @@ fn build_qe_aggregate(
     } else {
         func
     };
+    // Propagate partition keys into the Aggregate's GROUP BY so the lowering
+    // pass sees Count-with-GROUP-BY → Frequency (not bare Count → no sketch).
+    let group_keys: Vec<String> = ctx.partition.as_ref()
+        .map(|p| p.keys().to_vec())
+        .unwrap_or_default();
     let alias = format!("{}", actual_func).to_lowercase();
     let agg = QueryExpr::Aggregate {
-        keys:   vec![],
+        keys:   group_keys,
         aggs:   vec![AggItem {
             alias,
             func:     actual_func,
@@ -460,7 +467,9 @@ fn build_qe_aggregate(
         having: None,
         input:  Box::new(windowed),
     };
-    apply_qe_partition(agg, ctx.partition)
+    // Don't wrap with Partition separately — keys are already in the Aggregate.
+    // The lowering pass will create the Partition node when it lowers the Aggregate.
+    agg
 }
 
 fn apply_qe_filters(

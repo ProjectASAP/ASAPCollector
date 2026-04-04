@@ -452,3 +452,78 @@ mod tests {
         assert_eq!(pq.metric_name, "financial_last_trade_price");
     }
 }
+
+#[cfg(test)]
+mod doc_verify_all {
+    use super::*;
+    use crate::algebra::expr::*;
+
+    #[test]
+    fn example4_promql_quantile() {
+        let expr = parse_query_expr(
+            "quantile_over_time(0.99, http_request_duration{env=\"prod\"}[5m])"
+        ).unwrap();
+        // Doc: WindowedAgg { Quantile([0.99]), Tumbling(5m), Filter(Source) }
+        assert!(matches!(&expr, QueryExpr::WindowedAgg { agg: AggIntent::Quantile { .. }, .. }));
+    }
+
+    #[test]
+    fn example5_promql_topk() {
+        let expr = parse_query_expr(
+            "topk by (service) (10, count_over_time(requests{env=\"prod\"}[1m]))"
+        ).unwrap();
+        // Doc: TopK { 10, Partition { ["service"], WindowedAgg { Frequency } } }
+        match &expr {
+            QueryExpr::TopK { k: 10, input, .. } => {
+                match input.as_ref() {
+                    QueryExpr::Partition { keys, input: inner } => {
+                        assert_eq!(keys.keys(), &["service".to_string()]);
+                        assert!(matches!(inner.as_ref(), QueryExpr::WindowedAgg { agg: AggIntent::Frequency { .. }, .. }));
+                    }
+                    other => panic!("expected Partition, got {other:?}"),
+                }
+            }
+            other => panic!("expected TopK, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn example6_sql_avg() {
+        let expr = parse_query_expr(
+            "SELECT symbol, AVG(price) FROM trades GROUP BY symbol"
+        ).unwrap();
+        // Doc: Partition { ["symbol"], SketchAgg { Quantile([0.5]), Source } }
+        match &expr {
+            QueryExpr::Partition { keys, input } => {
+                assert_eq!(keys.keys(), &["symbol".to_string()]);
+                assert!(matches!(input.as_ref(), QueryExpr::SketchAgg { op: AggIntent::Quantile { .. }, .. }));
+            }
+            other => panic!("expected Partition, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn example7_sql_tumble() {
+        let expr = parse_query_expr(
+            "SELECT region, COUNT(DISTINCT user_id) AS cnt FROM sessions GROUP BY region, TUMBLE(ts, INTERVAL '5' MINUTE) ORDER BY cnt DESC LIMIT 10"
+        ).unwrap();
+        // Doc: Limit { 10, Sort { Partition { ["region"], WindowedAgg { Cardinality } } } }
+        match &expr {
+            QueryExpr::Limit { n: 10, input, .. } => {
+                match input.as_ref() {
+                    QueryExpr::Sort { input: sort_inner, .. } => {
+                        match sort_inner.as_ref() {
+                            QueryExpr::Partition { keys, input: part_inner } => {
+                                assert_eq!(keys.keys(), &["region".to_string()]);
+                                assert!(matches!(part_inner.as_ref(), QueryExpr::WindowedAgg { agg: AggIntent::Cardinality { .. }, .. }));
+                            }
+                            other => panic!("expected Partition, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Sort, got {other:?}"),
+                }
+            }
+            other => panic!("expected Limit, got {other:?}"),
+        }
+    }
+}
