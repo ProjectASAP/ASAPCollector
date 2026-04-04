@@ -146,125 +146,97 @@ QueryExpr has **25 operator variants** organized into categories:
 
 ## 3. Layers 1–3: Query Language → Language Plan → Sketch Algebra
 
-### 3.1 PromQL parsing algorithm
+### 3.1 Layer 1→2: Language AST → Language Logical Plan
 
-**Entry**: `parse_promql_expr(query)` → calls `promql-parser` crate → walks AST via `walk_qe`.
+Each parser takes a language-specific AST (from an external crate) and produces
+a **language logical plan** using relational operators (`Aggregate`, `Window`,
+`Filter`, `Sort`, `Limit`, etc.) with generic `AggFunc` variants — no sketch
+names at this layer.
 
-The parser carries a **context** (`WalkCtx`) downward through the tree, propagating:
-- `partition`: GROUP BY keys from an outer `by (dims)` clause
-- `topk`: the K value from an outer `topk(k, …)` aggregate
-- `outer_count`: whether the outer operator is `count(…)` (affects sketch selection)
-
-**Algorithm** — `walk_qe(ast_node, ctx)`:
+**PromQL** (`query_parser/promql.rs`):
 
 ```
-match ast_node:
-
-  VectorSelector {name, labels}:
-    → Source(name) + Filter(labels) + SketchAgg(Exact(Sum))
-    # Bare metric selector: pass through raw data
-
-  Call {func_name, args}:
-    match func_name:
-      "quantile_over_time":
-        → extract φ from arg[0], extract metric/filters/window from arg[1]
-        → SketchAgg(DDSketch([φ]), Window(Filter(Source)))
-
-      "histogram_quantile":
-        → extract φ from arg[0], extract inner rate/matrix from arg[1]
-        → HistogramQuantile(φ, SketchAgg(DDSketch([φ]), Window(Filter(Source))))
-
-      "count_over_time":
-        → if ctx.outer_count: SketchAgg(HLL, ...)        # count(count_over_time(...)) = cardinality
-        → else:               SketchAgg(CountMin, ...)     # plain frequency count
-
-      "avg_over_time":      → SketchAgg(DDSketch([0.5]), ...)    # median as proxy
-      "min_over_time":      → SketchAgg(DDSketch([0.0]), ...)    # or ExactMinMax if no GROUP BY
-      "max_over_time":      → SketchAgg(DDSketch([1.0]), ...)    # or ExactMinMax if no GROUP BY
-      "sum_over_time":      → SketchAgg(Exact(Sum), ...)         # not sketchable
-      "rate"/"increase":    → SketchAgg(CountMin, ...)
-
-    # After creating the SketchAgg, if ctx.topk is set, override op to CountSketch
-    # Then wrap with Partition(ctx.partition) if present
-
-  Aggregate {op, modifier, param, inner_expr}:
-    match op:
-      "topk"/"bottomk":
-        → extract k from param
-        → set ctx.topk = k, propagate ctx.partition from modifier
-        → recurse into inner_expr with new context
-        → wrap result in TopK(k, by) + Partition(keys)
-
-      "count":
-        → set ctx.outer_count = true
-        → recurse (inner count_over_time will become HLL)
-        → wrap result in Partition(keys)
-
-      "sum"/"avg"/"min"/"max":
-        → propagate partition, recurse into inner
-        → wrap result in Partition(keys)
-
-      "quantile":
-        → extract φ from param
-        → SketchAgg(DDSketch([φ]), inner) + Partition(keys)
-
-      "stddev"/"stdvar":
-        → SketchAgg(DDSketch([0.25, 0.75]), inner) + Partition(keys)
-
-  Binary {op, lhs, rhs, matching}:
-    → recurse lhs and rhs independently
-    → BinaryOp(op, lhs, rhs, VectorMatch from matching)
-
-  Subquery {expr, range, step}:
-    → PromQLSubquery(range, step, recurse(expr))
-
-  Paren {inner}:
-    → recurse(inner)        # transparent
+PromQL AST (promql-parser crate)
+  ↓ walk_qe(ast_node, ctx)
+Language Logical Plan (Aggregate + AggFunc + Window)
 ```
 
-### 3.2 SQL parsing algorithm
+The walker carries context downward: `partition` (GROUP BY keys), `topk` (K value),
+`outer_count` (whether wrapped in `count(…)`).
 
-**Entry**: `parse_sql_expr(sql)` → calls `sqlparser` crate → walks SQL AST.
+| PromQL construct | Layer 2 output |
+|---|---|
+| `quantile_over_time(φ, m[5m])` | `Aggregate { Quantile(φ), input: Window { 5m, Filter(Source) } }` |
+| `histogram_quantile(φ, rate(…))` | `HistogramQuantile { φ, Aggregate { Quantile(φ), Window(...) } }` |
+| `count_over_time(m[5m])` | `Aggregate { Count, input: Window { 5m, Source } }` |
+| `avg_over_time(m[5m])` | `Aggregate { Avg, input: Window { 5m, Source } }` |
+| `topk(k, …) by (dims)` | `TopK { k, Partition { dims, inner } }` |
+| `a + b` | `BinaryOp { Add, lhs, rhs, VectorMatch }` |
+| `m[5m:1m]` | `PromQLSubquery { range: 5m, step: 1m, inner }` |
 
-The parser is **bottom-up** — it builds QueryExpr nodes layer by layer from the
-clauses of a SELECT statement:
-
-**Algorithm** — `extract_select_qe(select, order_by, limit, offset)`:
+**SQL** (`query_parser/sql.rs`):
 
 ```
-1. Extract source table name from FROM clause
-   → Source(table_name)
-
-2. If WHERE clause present:
-   → convert SQL expression to ScalarExpr recursively
-   → Filter(ScalarExpr, Source)
-
-3. If JOIN present:
-   → extract inner table, join kind, ON predicate
-   → Join(kind, ScalarExpr, left=Filter(Source), right=Source(inner))
-
-4. Collect aggregation functions from SELECT projection:
-   → walk each SelectItem looking for COUNT, SUM, AVG, MIN, MAX
-   → for each: create AggItem { func, col, alias, distinct }
-   → COUNT(DISTINCT x) → AggItem { func: CountDistinct }
-   → COUNT(*) → AggItem { func: Count }
-   → AVG(x) → AggItem { func: Avg }
-
-5. If aggregation items found + GROUP BY present:
-   → Aggregate(keys=GROUP_BY, aggs=[AggItem...], having, input=step_3_result)
-   If no aggregation items:
-   → Project(cols, input=step_3_result)
-
-6. If ORDER BY present:
-   → Sort(keys, input=step_5_result)
-
-7. If LIMIT present:
-   → Limit(n, offset, input=step_6_result)
-
-8. If UNION ALL / INTERSECT / EXCEPT:
-   → parse each branch independently
-   → SetOp(kind, all, left, right)
+SQL AST (sqlparser crate)
+  ↓ extract_select_qe(select, order_by, limit, offset)
+Language Logical Plan (Aggregate + AggFunc + Sort + Limit)
 ```
+
+The SQL parser builds the plan bottom-up from SELECT clauses:
+
+| SQL construct | Layer 2 output |
+|---|---|
+| `FROM table` | `Source(table)` |
+| `WHERE pred` | `Filter(ScalarExpr, Source)` |
+| `JOIN … ON` | `Join(kind, pred, left, right)` |
+| `GROUP BY keys` + agg functions | `Aggregate { keys, aggs: [AggItem { func }] }` |
+| `TUMBLE(ts, INTERVAL '5m')` | `Aggregate { input: Window { 5m, Source } }` |
+| `ORDER BY … DESC` | `Sort(keys, input)` |
+| `LIMIT n` | `Limit(n, input)` |
+| `UNION ALL` | `SetOp(Union, all, left, right)` |
+
+### 3.2 Layer 2→3: Language Logical Plan → Sketch Algebra (lowering)
+
+The shared `lower_to_sketch_algebra()` pass (`algebra/lower.rs`) converts
+language-independent `Aggregate { AggFunc }` nodes into sketch algebra
+`SketchAgg { AggIntent }` nodes. This is the same pass for both PromQL and SQL.
+
+**Algorithm**:
+
+```
+lower_to_sketch_algebra(expr):
+  Recursively walk the QueryExpr tree.
+  For each single-agg Aggregate node:
+
+  1. Map AggFunc → AggIntent (implementation-independent):
+     Quantile(φ)   → AggIntent::Quantile { [φ], accuracy }
+     CountDistinct  → AggIntent::Cardinality { accuracy }
+     Count (w/ GROUP BY) → AggIntent::Frequency { accuracy }
+     Avg            → AggIntent::Quantile { [0.5], accuracy }  (median proxy)
+     Min            → AggIntent::Extrema { min: true }
+     Max            → AggIntent::Extrema { max: true }
+     StdDev         → AggIntent::Quantile { [0.25, 0.75], accuracy }  (IQR proxy)
+     Sum/Rate/Delta → AggIntent::Exact(Sum)
+     Count (no GROUP BY) → stays as Aggregate (no sketch benefit)
+
+  2. If the Aggregate's input is a Window, fuse into WindowedAgg:
+     Aggregate { AggFunc, input: Window { duration } }
+       → WindowedAgg { AggIntent, WindowSpec { Tumbling(duration) }, input }
+
+  3. If the Aggregate had GROUP BY keys, wrap with Partition:
+     → Partition { keys, input: SketchAgg/WindowedAgg }
+
+  Multi-agg Aggregates and HAVING clauses pass through unchanged.
+```
+
+| Layer 2 input | Layer 3 output |
+|---|---|
+| `Aggregate { Quantile(0.99), Window { 5m, Source } }` | `WindowedAgg { Quantile([0.99]), Tumbling(5m), Source }` |
+| `Aggregate { CountDistinct, Source }` | `SketchAgg { Cardinality, Source }` |
+| `Aggregate { Count, keys: [region], Source }` | `Partition { [region], SketchAgg { Frequency, Source } }` |
+| `Aggregate { Avg, keys: [symbol], Source }` | `Partition { [symbol], SketchAgg { Quantile([0.5]), Source } }` |
+| `Aggregate { Sum, Source }` | `SketchAgg { Exact(Sum), Source }` |
+| `Aggregate { Count (no GROUP BY), Source }` | unchanged (no sketch benefit) |
 
 **SQL function → AggFunc mapping**:
 
