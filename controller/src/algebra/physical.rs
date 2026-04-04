@@ -212,6 +212,421 @@ pub fn resolve_window(window: &WindowSpec, placement: &Placement) -> PhysicalWin
     }
 }
 
+// ── Physical planner ────────────────────────────────────────────────────────
+
+use crate::algebra::expr::*;
+use crate::types::StageResourceBudgets;
+
+/// Physical planner configuration.
+#[derive(Debug, Clone)]
+pub struct PhysicalPlannerConfig {
+    pub budgets: StageResourceBudgets,
+}
+
+/// Build a physical plan from an optimized `QueryExpr`.
+///
+/// Walks the logical tree bottom-up, assigning each node to a pipeline stage
+/// (`Placement`), resolving sketch intents to concrete implementations, and
+/// inserting `Exchange` nodes at stage boundaries.
+pub fn plan(expr: &QueryExpr, config: &PhysicalPlannerConfig) -> PhysicalNode {
+    plan_node(expr, config)
+}
+
+fn plan_node(expr: &QueryExpr, config: &PhysicalPlannerConfig) -> PhysicalNode {
+    match expr {
+        // ── Leaf: scan at Agent ─────────────────────────────────────
+        QueryExpr::Source(s) => PhysicalNode {
+            op: PhysicalOp::OtlpScan {
+                endpoint: String::new(),
+                label_matchers: vec![],
+            },
+            placement: Placement::AgentCollector,
+            cost: PhysicalCost::default(),
+            children: vec![],
+        },
+
+        // ── Filter: same placement as child ─────────────────────────
+        QueryExpr::Filter { pred, input } => {
+            let child = plan_node(input, config);
+            PhysicalNode {
+                placement: child.placement.clone(),
+                op: PhysicalOp::Filter { pred: format!("{pred:?}") },
+                cost: PhysicalCost::default(),
+                children: vec![child],
+            }
+        }
+
+        // ── SketchAgg: resolve intent → physical, place at Agent or defer ──
+        QueryExpr::SketchAgg { op, col, input } => {
+            let child = plan_node(input, config);
+            let resolved = resolve(op);
+            let placement = decide_sketch_placement(&resolved, &config.budgets);
+
+            let physical_op = PhysicalOp::OtelSketchBuild {
+                sketch_type: resolved.sketch_type.clone(),
+                sketch_params: resolved.sketch_params.clone(),
+                window: PhysicalWindow::None,
+                delta_encoding: false,
+            };
+
+            let mut node = PhysicalNode {
+                op: physical_op,
+                placement: placement.clone(),
+                cost: PhysicalCost {
+                    memory_bytes: resolved.estimated_memory_bytes as f64,
+                    ..Default::default()
+                },
+                children: vec![child],
+            };
+            // Insert exchange if child is at a different stage
+            insert_exchange_if_needed(&mut node);
+            node
+        }
+
+        // ── WindowedAgg: resolve + place with window ────────────────
+        QueryExpr::WindowedAgg { agg, window, col, input } => {
+            let child = plan_node(input, config);
+            let resolved = resolve(agg);
+            let placement = decide_sketch_placement(&resolved, &config.budgets);
+            let phys_window = resolve_window(window, &placement);
+
+            let physical_op = PhysicalOp::OtelSketchBuild {
+                sketch_type: resolved.sketch_type.clone(),
+                sketch_params: resolved.sketch_params.clone(),
+                window: phys_window,
+                delta_encoding: false,
+            };
+
+            let mut node = PhysicalNode {
+                op: physical_op,
+                placement: placement.clone(),
+                cost: PhysicalCost {
+                    memory_bytes: resolved.estimated_memory_bytes as f64,
+                    ..Default::default()
+                },
+                children: vec![child],
+            };
+            insert_exchange_if_needed(&mut node);
+            node
+        }
+
+        // ── Partition / Merge: Backend stage ────────────────────────
+        QueryExpr::Partition { keys, input } => {
+            let child = plan_node(input, config);
+            let mut node = PhysicalNode {
+                op: PhysicalOp::HashAggregate { keys: keys.keys().to_vec() },
+                placement: Placement::BackendCollector,
+                cost: PhysicalCost::default(),
+                children: vec![child],
+            };
+            insert_exchange_if_needed(&mut node);
+            node
+        }
+
+        QueryExpr::Merge { inputs } => {
+            let children: Vec<PhysicalNode> = inputs.iter()
+                .map(|i| plan_node(i, config))
+                .collect();
+            let sketch_type = children.first()
+                .and_then(|c| match &c.op {
+                    PhysicalOp::OtelSketchBuild { sketch_type, .. } => Some(sketch_type.clone()),
+                    _ => None,
+                })
+                .unwrap_or(SketchType::DDSketch);
+            PhysicalNode {
+                op: PhysicalOp::SketchMerge { sketch_type, group_by: vec![] },
+                placement: Placement::BackendCollector,
+                cost: PhysicalCost::default(),
+                children,
+            }
+        }
+
+        QueryExpr::Dedup { col, input } => {
+            let child = plan_node(input, config);
+            let mut node = PhysicalNode {
+                op: PhysicalOp::Filter { pred: format!("dedup({col})") },
+                placement: Placement::BackendCollector,
+                cost: PhysicalCost::default(),
+                children: vec![child],
+            };
+            insert_exchange_if_needed(&mut node);
+            node
+        }
+
+        // ── TopK / HistogramQuantile / BinaryOp: QueryEngine stage ──
+        QueryExpr::TopK { k, input, .. } => {
+            let child = plan_node(input, config);
+            let mut node = PhysicalNode {
+                op: PhysicalOp::TopK { k: *k },
+                placement: Placement::QueryEngine,
+                cost: PhysicalCost::default(),
+                children: vec![child],
+            };
+            insert_exchange_if_needed(&mut node);
+            node
+        }
+
+        QueryExpr::HistogramQuantile { phi, input } => {
+            let child = plan_node(input, config);
+            let mut node = PhysicalNode {
+                op: PhysicalOp::SketchEval {
+                    sketch_type: SketchType::DDSketch,
+                    func: EvalFunc::Quantile(vec![*phi]),
+                },
+                placement: Placement::QueryEngine,
+                cost: PhysicalCost::default(),
+                children: vec![child],
+            };
+            insert_exchange_if_needed(&mut node);
+            node
+        }
+
+        QueryExpr::BinaryOp { op, lhs, rhs, .. } => {
+            let left = plan_node(lhs, config);
+            let right = plan_node(rhs, config);
+            PhysicalNode {
+                op: PhysicalOp::Passthrough,
+                placement: Placement::QueryEngine,
+                cost: PhysicalCost::default(),
+                children: vec![left, right],
+            }
+        }
+
+        QueryExpr::PromQLSubquery { input, .. } => {
+            let child = plan_node(input, config);
+            let mut node = PhysicalNode {
+                op: PhysicalOp::Passthrough,
+                placement: Placement::QueryEngine,
+                cost: PhysicalCost::default(),
+                children: vec![child],
+            };
+            insert_exchange_if_needed(&mut node);
+            node
+        }
+
+        // ── Aggregate (non-sketch, exact): Database stage ───────────
+        QueryExpr::Aggregate { keys, input, .. } => {
+            let child = plan_node(input, config);
+            let mut node = PhysicalNode {
+                op: PhysicalOp::DbQuery { sql: format!("GROUP BY {:?}", keys) },
+                placement: Placement::Database,
+                cost: PhysicalCost::default(),
+                children: vec![child],
+            };
+            insert_exchange_if_needed(&mut node);
+            node
+        }
+
+        // ── Sort / Limit / Project: inherit child placement ─────────
+        QueryExpr::Sort { input, .. }
+        | QueryExpr::Limit { input, .. }
+        | QueryExpr::Project { input, .. }
+        | QueryExpr::Window { input, .. }
+        | QueryExpr::WindowFunc { input, .. } => {
+            let child = plan_node(input, config);
+            PhysicalNode {
+                op: PhysicalOp::Passthrough,
+                placement: child.placement.clone(),
+                cost: PhysicalCost::default(),
+                children: vec![child],
+            }
+        }
+
+        // ── Join: both children, QueryEngine placement ──────────────
+        QueryExpr::Join { left, right, .. }
+        | QueryExpr::JoinSketch { outer: left, inner: right, .. }
+        | QueryExpr::SetOp { left, right, .. } => {
+            let l = plan_node(left, config);
+            let r = plan_node(right, config);
+            PhysicalNode {
+                op: PhysicalOp::Passthrough,
+                placement: Placement::QueryEngine,
+                cost: PhysicalCost::default(),
+                children: vec![l, r],
+            }
+        }
+
+        // ── Subquery / LetBinding ───────────────────────────────────
+        QueryExpr::Subquery { expr, .. } => plan_node(expr, config),
+        QueryExpr::LetBinding { body, .. } => plan_node(body, config),
+        QueryExpr::Ref(_) => PhysicalNode {
+            op: PhysicalOp::Passthrough,
+            placement: Placement::QueryEngine,
+            cost: PhysicalCost::default(),
+            children: vec![],
+        },
+    }
+}
+
+/// Decide where a sketch operation runs based on memory budget.
+fn decide_sketch_placement(resolved: &PhysicalAggOp, budgets: &StageResourceBudgets) -> Placement {
+    let mem = resolved.estimated_memory_bytes;
+    if let Some(agent_budget) = budgets.agent_memory_bytes {
+        if mem > agent_budget {
+            if let Some(backend_budget) = budgets.backend_memory_bytes {
+                if mem > backend_budget {
+                    return Placement::QueryEngine;
+                }
+            }
+            return Placement::BackendCollector;
+        }
+    }
+    Placement::AgentCollector
+}
+
+/// If a node's child is at a different stage, insert an Exchange node between them.
+fn insert_exchange_if_needed(node: &mut PhysicalNode) {
+    let parent_placement = node.placement.clone();
+    for child in &mut node.children {
+        if child.placement != parent_placement {
+            let format = match (&child.placement, &parent_placement) {
+                (Placement::AgentCollector, Placement::BackendCollector) => ExchangeFormat::Otlp,
+                (Placement::AgentCollector, Placement::QueryEngine) => ExchangeFormat::Otlp,
+                (Placement::BackendCollector, Placement::QueryEngine) => ExchangeFormat::SketchBinary,
+                (Placement::AgentCollector, Placement::Database) => ExchangeFormat::RawSamples,
+                _ => ExchangeFormat::Otlp,
+            };
+            // Wrap the child in an Exchange node
+            let original_child = std::mem::replace(child, PhysicalNode {
+                op: PhysicalOp::Passthrough,
+                placement: parent_placement.clone(),
+                cost: PhysicalCost::default(),
+                children: vec![],
+            });
+            *child = PhysicalNode {
+                op: PhysicalOp::Exchange { format },
+                placement: parent_placement.clone(),
+                cost: PhysicalCost::default(),
+                children: vec![original_child],
+            };
+        }
+    }
+}
+
+impl PhysicalNode {
+    /// Count total nodes in the tree.
+    pub fn node_count(&self) -> usize {
+        1 + self.children.iter().map(|c| c.node_count()).sum::<usize>()
+    }
+
+    /// Collect all distinct placements in the tree.
+    pub fn placements(&self) -> Vec<Placement> {
+        let mut out = vec![self.placement.clone()];
+        for child in &self.children {
+            for p in child.placements() {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+
+    /// Count Exchange nodes (= stage boundary crossings).
+    pub fn exchange_count(&self) -> usize {
+        let self_count = if matches!(self.op, PhysicalOp::Exchange { .. }) { 1 } else { 0 };
+        self_count + self.children.iter().map(|c| c.exchange_count()).sum::<usize>()
+    }
+
+    /// Extract a flat [`StagedPlan`] from this physical plan tree.
+    ///
+    /// Walks the tree and populates each sub-plan based on node placement
+    /// and operator type.  This bridges the physical planner to the existing
+    /// config generators that consume `StagedPlan`.
+    pub fn to_staged_plan(&self) -> crate::types::StagedPlan {
+        use crate::types::{
+            AgentSubPlan, BackendSubPlan, DbSubPlan, PrecomputeSubPlan, StagedPlan,
+        };
+
+        let mut staged = StagedPlan::default();
+        self.collect_into_staged(&mut staged);
+        staged
+    }
+
+    fn collect_into_staged(&self, staged: &mut crate::types::StagedPlan) {
+        use crate::types::StagedPlan;
+
+        match (&self.placement, &self.op) {
+            // Agent: sketch build → populate agent sub-plan
+            (Placement::AgentCollector, PhysicalOp::OtelSketchBuild {
+                sketch_type, sketch_params, window, ..
+            }) => {
+                staged.agent.sketch_type = Some(sketch_type.clone());
+                staged.agent.sketch_params = sketch_params.clone();
+                if let PhysicalWindow::OtelTumblingFlush { duration } = window {
+                    staged.agent.window_secs = Some(duration.as_secs());
+                }
+            }
+
+            // Agent: filter → label filters
+            (Placement::AgentCollector, PhysicalOp::Filter { pred }) => {
+                staged.agent.label_filters.push(pred.clone());
+            }
+
+            // Backend: merge/aggregate
+            (Placement::BackendCollector, PhysicalOp::SketchMerge { group_by, .. }) => {
+                staged.backend.has_merge = true;
+                staged.backend.group_by = group_by.clone();
+            }
+            (Placement::BackendCollector, PhysicalOp::HashAggregate { keys }) => {
+                staged.backend.has_merge = true;
+                staged.backend.group_by = keys.clone();
+            }
+            (Placement::BackendCollector, PhysicalOp::Filter { .. }) => {
+                staged.backend.has_dedup = true;
+            }
+
+            // QueryEngine: TopK, SketchEval
+            (Placement::QueryEngine, PhysicalOp::TopK { k }) => {
+                staged.precompute.active = true;
+                staged.precompute.topk = Some(*k);
+            }
+            (Placement::QueryEngine, PhysicalOp::SketchEval { .. }) => {
+                staged.precompute.active = true;
+            }
+            (Placement::QueryEngine, PhysicalOp::Passthrough) => {
+                staged.precompute.active = true;
+            }
+
+            // Database: exact computation
+            (Placement::Database, PhysicalOp::DbQuery { sql }) => {
+                staged.db.active = true;
+                staged.db.query_expr = sql.clone();
+            }
+
+            // Exchange: record deferral
+            (_, PhysicalOp::Exchange { format }) => {
+                staged.deferral_log.push(format!("Exchange({:?})", format));
+            }
+
+            _ => {}
+        }
+
+        // Recurse into children
+        for child in &self.children {
+            child.collect_into_staged(staged);
+        }
+    }
+}
+
+// ── Public entry point for main.rs ──────────────────────────────────────────
+
+/// Run the full physical planning pipeline: optimize → plan → staged plan.
+///
+/// This is the single function `main.rs` calls to get a `StagedPlan`
+/// from a parsed `QueryExpr`.
+pub fn physical_plan_to_staged(
+    expr: &QueryExpr,
+    budgets: &StageResourceBudgets,
+) -> (crate::types::StagedPlan, PhysicalNode) {
+    let config = PhysicalPlannerConfig {
+        budgets: budgets.clone(),
+    };
+    let tree = plan(expr, &config);
+    let staged = tree.to_staged_plan();
+    (staged, tree)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -288,5 +703,221 @@ mod tests {
         let ws = WindowSpec { kind: WindowKind::Unbounded, time_col: None };
         let pw = resolve_window(&ws, &Placement::AgentCollector);
         assert!(matches!(pw, PhysicalWindow::None));
+    }
+
+    // ── Physical planner tests ──────────────────────────────────────────
+
+    fn default_config() -> PhysicalPlannerConfig {
+        PhysicalPlannerConfig {
+            budgets: StageResourceBudgets::default(),
+        }
+    }
+
+    fn src(name: &str) -> QueryExpr {
+        QueryExpr::Source(SourceSpec { name: name.into() })
+    }
+
+    #[test]
+    fn plan_simple_sketch_at_agent() {
+        // SketchAgg { Quantile, Source } → Agent placement
+        let expr = QueryExpr::SketchAgg {
+            op: AggIntent::default_quantile(vec![0.99]),
+            col: ColumnRef::SampleValue,
+            input: Box::new(src("m")),
+        };
+        let node = plan(&expr, &default_config());
+        assert_eq!(node.placement, Placement::AgentCollector);
+        assert!(matches!(node.op, PhysicalOp::OtelSketchBuild { .. }));
+        assert_eq!(node.children.len(), 1); // Source child
+    }
+
+    #[test]
+    fn plan_windowed_agg_has_window() {
+        let expr = QueryExpr::WindowedAgg {
+            agg: AggIntent::default_quantile(vec![0.5]),
+            window: WindowSpec { kind: WindowKind::Tumbling { size: Duration::from_secs(300) }, time_col: None },
+            col: ColumnRef::SampleValue,
+            input: Box::new(src("m")),
+        };
+        let node = plan(&expr, &default_config());
+        assert_eq!(node.placement, Placement::AgentCollector);
+        match &node.op {
+            PhysicalOp::OtelSketchBuild { window, .. } => {
+                assert!(matches!(window, PhysicalWindow::OtelTumblingFlush { .. }));
+            }
+            other => panic!("expected OtelSketchBuild, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_topk_at_query_engine() {
+        let expr = QueryExpr::TopK {
+            k: 10,
+            by: vec!["svc".into()],
+            input: Box::new(QueryExpr::SketchAgg {
+                op: AggIntent::default_frequency(),
+                col: ColumnRef::SampleValue,
+                input: Box::new(src("m")),
+            }),
+        };
+        let node = plan(&expr, &default_config());
+        assert_eq!(node.placement, Placement::QueryEngine);
+        assert!(matches!(node.op, PhysicalOp::TopK { k: 10 }));
+    }
+
+    #[test]
+    fn plan_topk_inserts_exchange() {
+        // TopK(QueryEngine) wrapping SketchAgg(Agent) → Exchange between them
+        let expr = QueryExpr::TopK {
+            k: 5,
+            by: vec![],
+            input: Box::new(QueryExpr::SketchAgg {
+                op: AggIntent::default_frequency(),
+                col: ColumnRef::SampleValue,
+                input: Box::new(src("m")),
+            }),
+        };
+        let node = plan(&expr, &default_config());
+        assert!(node.exchange_count() > 0, "expected Exchange between Agent and QueryEngine");
+    }
+
+    #[test]
+    fn plan_partition_at_backend() {
+        let expr = QueryExpr::Partition {
+            keys: PartitionKeys::By(vec!["region".into()]),
+            input: Box::new(QueryExpr::SketchAgg {
+                op: AggIntent::default_cardinality(),
+                col: ColumnRef::SampleValue,
+                input: Box::new(src("m")),
+            }),
+        };
+        let node = plan(&expr, &default_config());
+        assert_eq!(node.placement, Placement::BackendCollector);
+    }
+
+    #[test]
+    fn plan_aggregate_at_database() {
+        let expr = QueryExpr::Aggregate {
+            keys: vec!["symbol".into()],
+            aggs: vec![AggItem {
+                alias: "avg".into(),
+                func: AggFunc::Avg,
+                col: ColumnRef::Named("price".into()),
+                distinct: false,
+            }],
+            having: None,
+            input: Box::new(src("trades")),
+        };
+        let node = plan(&expr, &default_config());
+        assert_eq!(node.placement, Placement::Database);
+    }
+
+    #[test]
+    fn plan_full_pipeline_has_multiple_stages() {
+        // TopK(Partition(WindowedAgg(Filter(Source))))
+        // Should span: Agent → Backend → QueryEngine
+        let expr = QueryExpr::TopK {
+            k: 10,
+            by: vec!["svc".into()],
+            input: Box::new(QueryExpr::Partition {
+                keys: PartitionKeys::By(vec!["svc".into()]),
+                input: Box::new(QueryExpr::WindowedAgg {
+                    agg: AggIntent::default_frequency(),
+                    window: WindowSpec { kind: WindowKind::Tumbling { size: Duration::from_secs(60) }, time_col: None },
+                    col: ColumnRef::SampleValue,
+                    input: Box::new(QueryExpr::Filter {
+                        pred: ScalarExpr::Literal(LiteralValue::Bool(true)),
+                        input: Box::new(src("requests")),
+                    }),
+                }),
+            }),
+        };
+        let node = plan(&expr, &default_config());
+        let placements = node.placements();
+        assert!(placements.contains(&Placement::AgentCollector), "should have Agent: {placements:?}");
+        assert!(placements.contains(&Placement::BackendCollector), "should have Backend: {placements:?}");
+        assert!(placements.contains(&Placement::QueryEngine), "should have QueryEngine: {placements:?}");
+        assert!(node.exchange_count() >= 2, "should have ≥2 exchanges: {}", node.exchange_count());
+    }
+
+    #[test]
+    fn plan_budget_deferral() {
+        // With tiny agent budget, sketch should defer to Backend
+        let config = PhysicalPlannerConfig {
+            budgets: StageResourceBudgets {
+                agent_memory_bytes: Some(1), // 1 byte = too small
+                ..Default::default()
+            },
+        };
+        let expr = QueryExpr::SketchAgg {
+            op: AggIntent::default_quantile(vec![0.99]),
+            col: ColumnRef::SampleValue,
+            input: Box::new(src("m")),
+        };
+        let node = plan(&expr, &config);
+        assert_eq!(node.placement, Placement::BackendCollector,
+            "sketch should be deferred to Backend when agent budget is tiny");
+    }
+
+    // ── to_staged_plan tests ────────────────────────────────────────────
+
+    #[test]
+    fn staged_plan_simple_sketch() {
+        let expr = QueryExpr::WindowedAgg {
+            agg: AggIntent::Quantile { quantiles: vec![0.99], accuracy: 0.01 },
+            window: WindowSpec { kind: WindowKind::Tumbling { size: Duration::from_secs(300) }, time_col: None },
+            col: ColumnRef::SampleValue,
+            input: Box::new(src("m")),
+        };
+        let (staged, _) = physical_plan_to_staged(&expr, &StageResourceBudgets::default());
+        assert_eq!(staged.agent.sketch_type, Some(SketchType::DDSketch));
+        assert_eq!(staged.agent.window_secs, Some(300));
+        assert!(!staged.precompute.active);
+        assert!(!staged.db.active);
+    }
+
+    #[test]
+    fn staged_plan_topk_multi_stage() {
+        let expr = QueryExpr::TopK {
+            k: 10,
+            by: vec!["svc".into()],
+            input: Box::new(QueryExpr::Partition {
+                keys: PartitionKeys::By(vec!["svc".into()]),
+                input: Box::new(QueryExpr::WindowedAgg {
+                    agg: AggIntent::default_frequency(),
+                    window: WindowSpec { kind: WindowKind::Tumbling { size: Duration::from_secs(60) }, time_col: None },
+                    col: ColumnRef::SampleValue,
+                    input: Box::new(src("m")),
+                }),
+            }),
+        };
+        let (staged, tree) = physical_plan_to_staged(&expr, &StageResourceBudgets::default());
+        // Agent has sketch
+        assert!(staged.agent.sketch_type.is_some());
+        // Backend has merge
+        assert!(staged.backend.has_merge);
+        // Precompute has topk
+        assert!(staged.precompute.active);
+        assert_eq!(staged.precompute.topk, Some(10));
+        // Exchanges recorded in deferral log
+        assert!(tree.exchange_count() >= 2);
+    }
+
+    #[test]
+    fn staged_plan_exact_agg_at_db() {
+        let expr = QueryExpr::Aggregate {
+            keys: vec!["symbol".into()],
+            aggs: vec![AggItem {
+                alias: "avg".into(),
+                func: AggFunc::Avg,
+                col: ColumnRef::Named("price".into()),
+                distinct: false,
+            }],
+            having: None,
+            input: Box::new(src("trades")),
+        };
+        let (staged, _) = physical_plan_to_staged(&expr, &StageResourceBudgets::default());
+        assert!(staged.db.active);
+        assert!(staged.agent.sketch_type.is_none());
     }
 }
