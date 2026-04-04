@@ -527,6 +527,104 @@ impl PhysicalNode {
         let self_count = if matches!(self.op, PhysicalOp::Exchange { .. }) { 1 } else { 0 };
         self_count + self.children.iter().map(|c| c.exchange_count()).sum::<usize>()
     }
+
+    /// Extract a flat [`StagedPlan`] from this physical plan tree.
+    ///
+    /// Walks the tree and populates each sub-plan based on node placement
+    /// and operator type.  This bridges the physical planner to the existing
+    /// config generators that consume `StagedPlan`.
+    pub fn to_staged_plan(&self) -> crate::types::StagedPlan {
+        use crate::types::{
+            AgentSubPlan, BackendSubPlan, DbSubPlan, PrecomputeSubPlan, StagedPlan,
+        };
+
+        let mut staged = StagedPlan::default();
+        self.collect_into_staged(&mut staged);
+        staged
+    }
+
+    fn collect_into_staged(&self, staged: &mut crate::types::StagedPlan) {
+        use crate::types::StagedPlan;
+
+        match (&self.placement, &self.op) {
+            // Agent: sketch build → populate agent sub-plan
+            (Placement::AgentCollector, PhysicalOp::OtelSketchBuild {
+                sketch_type, sketch_params, window, ..
+            }) => {
+                staged.agent.sketch_type = Some(sketch_type.clone());
+                staged.agent.sketch_params = sketch_params.clone();
+                if let PhysicalWindow::OtelTumblingFlush { duration } = window {
+                    staged.agent.window_secs = Some(duration.as_secs());
+                }
+            }
+
+            // Agent: filter → label filters
+            (Placement::AgentCollector, PhysicalOp::Filter { pred }) => {
+                staged.agent.label_filters.push(pred.clone());
+            }
+
+            // Backend: merge/aggregate
+            (Placement::BackendCollector, PhysicalOp::SketchMerge { group_by, .. }) => {
+                staged.backend.has_merge = true;
+                staged.backend.group_by = group_by.clone();
+            }
+            (Placement::BackendCollector, PhysicalOp::HashAggregate { keys }) => {
+                staged.backend.has_merge = true;
+                staged.backend.group_by = keys.clone();
+            }
+            (Placement::BackendCollector, PhysicalOp::Filter { .. }) => {
+                staged.backend.has_dedup = true;
+            }
+
+            // QueryEngine: TopK, SketchEval
+            (Placement::QueryEngine, PhysicalOp::TopK { k }) => {
+                staged.precompute.active = true;
+                staged.precompute.topk = Some(*k);
+            }
+            (Placement::QueryEngine, PhysicalOp::SketchEval { .. }) => {
+                staged.precompute.active = true;
+            }
+            (Placement::QueryEngine, PhysicalOp::Passthrough) => {
+                staged.precompute.active = true;
+            }
+
+            // Database: exact computation
+            (Placement::Database, PhysicalOp::DbQuery { sql }) => {
+                staged.db.active = true;
+                staged.db.query_expr = sql.clone();
+            }
+
+            // Exchange: record deferral
+            (_, PhysicalOp::Exchange { format }) => {
+                staged.deferral_log.push(format!("Exchange({:?})", format));
+            }
+
+            _ => {}
+        }
+
+        // Recurse into children
+        for child in &self.children {
+            child.collect_into_staged(staged);
+        }
+    }
+}
+
+// ── Public entry point for main.rs ──────────────────────────────────────────
+
+/// Run the full physical planning pipeline: optimize → plan → staged plan.
+///
+/// This is the single function `main.rs` calls to get a `StagedPlan`
+/// from a parsed `QueryExpr`.
+pub fn physical_plan_to_staged(
+    expr: &QueryExpr,
+    budgets: &StageResourceBudgets,
+) -> (crate::types::StagedPlan, PhysicalNode) {
+    let config = PhysicalPlannerConfig {
+        budgets: budgets.clone(),
+    };
+    let tree = plan(expr, &config);
+    let staged = tree.to_staged_plan();
+    (staged, tree)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -759,5 +857,67 @@ mod tests {
         let node = plan(&expr, &config);
         assert_eq!(node.placement, Placement::BackendCollector,
             "sketch should be deferred to Backend when agent budget is tiny");
+    }
+
+    // ── to_staged_plan tests ────────────────────────────────────────────
+
+    #[test]
+    fn staged_plan_simple_sketch() {
+        let expr = QueryExpr::WindowedAgg {
+            agg: AggIntent::Quantile { quantiles: vec![0.99], accuracy: 0.01 },
+            window: WindowSpec { kind: WindowKind::Tumbling { size: Duration::from_secs(300) }, time_col: None },
+            col: ColumnRef::SampleValue,
+            input: Box::new(src("m")),
+        };
+        let (staged, _) = physical_plan_to_staged(&expr, &StageResourceBudgets::default());
+        assert_eq!(staged.agent.sketch_type, Some(SketchType::DDSketch));
+        assert_eq!(staged.agent.window_secs, Some(300));
+        assert!(!staged.precompute.active);
+        assert!(!staged.db.active);
+    }
+
+    #[test]
+    fn staged_plan_topk_multi_stage() {
+        let expr = QueryExpr::TopK {
+            k: 10,
+            by: vec!["svc".into()],
+            input: Box::new(QueryExpr::Partition {
+                keys: PartitionKeys::By(vec!["svc".into()]),
+                input: Box::new(QueryExpr::WindowedAgg {
+                    agg: AggIntent::default_frequency(),
+                    window: WindowSpec { kind: WindowKind::Tumbling { size: Duration::from_secs(60) }, time_col: None },
+                    col: ColumnRef::SampleValue,
+                    input: Box::new(src("m")),
+                }),
+            }),
+        };
+        let (staged, tree) = physical_plan_to_staged(&expr, &StageResourceBudgets::default());
+        // Agent has sketch
+        assert!(staged.agent.sketch_type.is_some());
+        // Backend has merge
+        assert!(staged.backend.has_merge);
+        // Precompute has topk
+        assert!(staged.precompute.active);
+        assert_eq!(staged.precompute.topk, Some(10));
+        // Exchanges recorded in deferral log
+        assert!(tree.exchange_count() >= 2);
+    }
+
+    #[test]
+    fn staged_plan_exact_agg_at_db() {
+        let expr = QueryExpr::Aggregate {
+            keys: vec!["symbol".into()],
+            aggs: vec![AggItem {
+                alias: "avg".into(),
+                func: AggFunc::Avg,
+                col: ColumnRef::Named("price".into()),
+                distinct: false,
+            }],
+            having: None,
+            input: Box::new(src("trades")),
+        };
+        let (staged, _) = physical_plan_to_staged(&expr, &StageResourceBudgets::default());
+        assert!(staged.db.active);
+        assert!(staged.agent.sketch_type.is_none());
     }
 }
