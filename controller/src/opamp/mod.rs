@@ -1,12 +1,14 @@
 /// OpAMP server implemented over WebSocket via axum.
 ///
+/// Speaks the standard OpAMP protobuf protocol (ServerToAgent / AgentToServer)
+/// so the `opampextension` in OTel Collectors can connect directly.
+///
 /// Each OTel collector connects as an "agent" identified by the `X-Agent-ID`
 /// request header.  The role (`agent` vs `backend`) is determined by the
 /// optional `X-Agent-Role` header (defaults to `agent`).
 ///
-/// The server pushes `RemoteConfig` JSON messages to agents and receives
-/// `AgentStatus` messages back.  Optional `on_connect` / `on_disconnect`
-/// callbacks allow callers to register/deregister scrape endpoints.
+/// The server pushes `RemoteConfig` as an OpAMP `ServerToAgent.remote_config`
+/// message (protobuf binary frame) and receives `AgentToServer` status reports.
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -16,9 +18,15 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
+use prost::Message as ProstMessage;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{info, warn};
+
+/// Generated OpAMP protobuf types (from proto/opamp.proto).
+pub mod opamp_proto {
+    include!(concat!(env!("OUT_DIR"), "/opamp.proto.rs"));
+}
 
 // ── Wire types ────────────────────────────────────────────────────────────────
 
@@ -185,22 +193,51 @@ async fn handle_socket(socket: WebSocket, agent_id: String, role: AgentRole, srv
 
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Forward channel messages → WebSocket.
+    // Forward channel messages → WebSocket as standard OpAMP protobuf.
     let writer_id = agent_id.clone();
     let write_task = tokio::spawn(async move {
         while let Some(cfg) = rx.recv().await {
-            let json = serde_json::to_string(&cfg).unwrap_or_default();
-            if ws_tx.send(Message::Text(json.into())).await.is_err() { break; }
-            info!(agent = %writer_id, hash = %cfg.config_hash, "config pushed");
+            // Build standard OpAMP ServerToAgent with RemoteConfig.
+            let server_to_agent = encode_remote_config(&cfg);
+            let mut buf = Vec::new();
+            if server_to_agent.encode(&mut buf).is_err() {
+                warn!(agent = %writer_id, "failed to encode OpAMP protobuf");
+                continue;
+            }
+            // OpAMP uses binary WebSocket frames for protobuf.
+            if ws_tx.send(Message::Binary(buf.into())).await.is_err() { break; }
+            info!(agent = %writer_id, hash = %cfg.config_hash, "config pushed (OpAMP protobuf)");
         }
     });
 
-    // Receive AgentStatus messages.
+    // Receive AgentToServer protobuf messages.
     while let Some(Ok(msg)) = ws_rx.next().await {
         match msg {
+            Message::Binary(data) => {
+                match opamp_proto::AgentToServer::decode(data.as_ref()) {
+                    Ok(ats) => {
+                        info!(agent = %agent_id, "received AgentToServer (OpAMP protobuf)");
+                        // Log effective config if reported.
+                        if let Some(ec) = &ats.effective_config {
+                            if let Some(cm) = &ec.config_map {
+                                for (name, file) in &cm.config_map {
+                                    info!(agent = %agent_id, config_name = %name,
+                                        bytes = file.body.len(), "agent reported effective config");
+                                }
+                            }
+                        }
+                        // Log health if reported.
+                        if let Some(health) = &ats.health {
+                            info!(agent = %agent_id, healthy = health.healthy, "agent health");
+                        }
+                    }
+                    Err(e) => warn!(agent = %agent_id, error = %e, "failed to decode AgentToServer"),
+                }
+            }
+            // Also accept JSON for backward compatibility.
             Message::Text(text) => match serde_json::from_str::<AgentStatus>(&text) {
-                Ok(s) => info!(agent = %s.agent_id, healthy = s.healthy, "agent status"),
-                Err(_) => warn!(agent = %agent_id, "unexpected message"),
+                Ok(s) => info!(agent = %s.agent_id, healthy = s.healthy, "agent status (legacy JSON)"),
+                Err(_) => warn!(agent = %agent_id, "unexpected text message"),
             },
             Message::Close(_) => break,
             _ => {}
@@ -213,6 +250,35 @@ async fn handle_socket(socket: WebSocket, agent_id: String, role: AgentRole, srv
 
     if let Some(cb) = &srv.on_disconnect {
         cb(agent_id);
+    }
+}
+
+/// Encode a `RemoteConfig` as a standard OpAMP `ServerToAgent` protobuf message.
+///
+/// The YAML config body is wrapped in:
+///   ServerToAgent.remote_config.config.config_map[""].body = yaml_bytes
+///
+/// This is the standard OpAMP way to push collector configuration.
+/// The opampextension in the OTel Collector decodes this and applies the config.
+fn encode_remote_config(cfg: &RemoteConfig) -> opamp_proto::ServerToAgent {
+    let config_file = opamp_proto::AgentConfigFile {
+        body: cfg.yaml.as_bytes().to_vec(),
+        content_type: "text/yaml".to_string(),
+    };
+
+    let mut config_map = HashMap::new();
+    config_map.insert(String::new(), config_file); // empty key = single config file
+
+    let agent_config_map = opamp_proto::AgentConfigMap { config_map };
+
+    let remote_config = opamp_proto::AgentRemoteConfig {
+        config: Some(agent_config_map),
+        config_hash: cfg.config_hash.as_bytes().to_vec(),
+    };
+
+    opamp_proto::ServerToAgent {
+        remote_config: Some(remote_config),
+        ..Default::default()
     }
 }
 
@@ -307,11 +373,15 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let rc: RemoteConfig = serde_json::from_str(
-            msg.to_text().expect("message should be text"),
-        ).unwrap();
-        assert_eq!(rc.yaml, yaml_payload, "delivered yaml must match");
-        assert_eq!(rc.config_hash, "hash-1", "delivered hash must match");
+        // Decode standard OpAMP protobuf binary frame.
+        let data = msg.into_data();
+        let sta = opamp_proto::ServerToAgent::decode(data.as_ref()).expect("valid protobuf");
+        let rc = sta.remote_config.expect("should have remote_config");
+        let config = rc.config.expect("should have config");
+        let file = config.config_map.get("").expect("should have empty-key entry");
+        let yaml = String::from_utf8(file.body.clone()).unwrap();
+        assert_eq!(yaml, yaml_payload, "delivered yaml must match");
+        assert_eq!(String::from_utf8(rc.config_hash).unwrap(), "hash-1", "delivered hash must match");
     }
 
     /// `push_to_role(Agent)` must not deliver to a backend-role client.
@@ -338,8 +408,10 @@ mod tests {
         .expect("agent timed out")
         .unwrap()
         .unwrap();
-        let rc: RemoteConfig = serde_json::from_str(msg.to_text().unwrap()).unwrap();
-        assert_eq!(rc.config_hash, "hash-agent");
+        let data = msg.into_data();
+        let sta = opamp_proto::ServerToAgent::decode(data.as_ref()).expect("valid protobuf");
+        let rc = sta.remote_config.expect("should have remote_config");
+        assert_eq!(String::from_utf8(rc.config_hash).unwrap(), "hash-agent");
 
         // Backend must receive nothing within a short window.
         let backend_result = tokio::time::timeout(
