@@ -1,0 +1,5 @@
+# Exathlon raw dataset (large files)
+exathlon/data/raw/
+
+# Exathlon analysis cache
+analysis/code/__pycache__/
