@@ -33,7 +33,7 @@ pub mod sql;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::algebra::expr::{QueryExpr, SketchAggOp};
+use crate::algebra::expr::{AggIntent, QueryExpr};
 use crate::types::AggType;
 
 // ── Output types (legacy — consumed by analyzer and planner) ──────────────────
@@ -87,14 +87,20 @@ pub enum QueryHint {
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Parse a raw query string (PromQL or SQL) into the general [`QueryExpr`] IR.
+///
+/// Both parsers emit Layer 2 relational operators (`Aggregate { AggFunc }`).
+/// The shared lowering pass converts `Aggregate` → `SketchAgg { AggIntent }`
+/// where applicable.
 pub fn parse_query_expr(query: &str) -> anyhow::Result<QueryExpr> {
     let q = query.trim();
     let upper = q.to_ascii_uppercase();
-    if upper.starts_with("SELECT") || upper.starts_with("WITH") {
-        sql::parse_sql_expr(q)
+    let layer2 = if upper.starts_with("SELECT") || upper.starts_with("WITH") {
+        sql::parse_sql_expr(q)?
     } else {
-        promql::parse_promql_expr(q)
-    }
+        promql::parse_promql_expr(q)?
+    };
+    // Layer 2 → Layer 3 lowering (shared by both languages).
+    Ok(crate::algebra::lower::lower_to_sketch_algebra(layer2))
 }
 
 /// Parse a raw query string (PromQL or SQL) into a [`ParsedQuery`].
@@ -124,6 +130,8 @@ struct QeCollector {
     exact_required:  bool,
     quantiles:       Vec<f64>,
     topk:            Option<u64>,
+    /// True when currently visiting inside a TopK node (affects Count handling).
+    inside_topk:     bool,
 }
 
 impl QeCollector {
@@ -158,9 +166,21 @@ impl QeCollector {
                 self.collect_op(op);
                 self.visit(input);
             }
+            QueryExpr::WindowedAgg { agg, window, input, .. } => {
+                if self.time_window.is_none() {
+                    if let crate::algebra::expr::WindowKind::Tumbling { size } = &window.kind {
+                        self.time_window = Some(*size);
+                    }
+                }
+                self.collect_op(agg);
+                self.visit(input);
+            }
             QueryExpr::TopK { k, input, .. } => {
                 self.topk = Some(*k);
+                let prev = self.inside_topk;
+                self.inside_topk = true;
                 self.visit(input);
+                self.inside_topk = prev;
             }
             QueryExpr::Dedup { input, .. } => self.visit(input),
             QueryExpr::Merge { inputs } => {
@@ -205,8 +225,9 @@ impl QeCollector {
 
     fn collect_agg_func_with_group(&mut self, func: &crate::algebra::expr::AggFunc, has_group_by: bool) {
         use crate::algebra::expr::AggFunc;
-        // COUNT(*) without GROUP BY → exact (no sketch benefit)
-        if matches!(func, AggFunc::Count) && !has_group_by {
+        // COUNT(*) without GROUP BY → exact (no sketch benefit), unless inside topk
+        // where Count means frequency counting.
+        if matches!(func, AggFunc::Count) && !has_group_by && !self.inside_topk {
             self.exact_required = true;
             return;
         }
@@ -262,6 +283,9 @@ impl QeCollector {
                 if !self.agg_types.contains(&AggType::Quantile) {
                     self.agg_types.push(AggType::Quantile);
                 }
+                // StdDev/Variance use IQR proxy via p25/p75.
+                if !self.quantiles.contains(&0.25) { self.quantiles.push(0.25); }
+                if !self.quantiles.contains(&0.75) { self.quantiles.push(0.75); }
             }
             AggFunc::Sum | AggFunc::Rate | AggFunc::Increase | AggFunc::Delta
             | AggFunc::Custom(_) => {
@@ -270,20 +294,19 @@ impl QeCollector {
         }
     }
 
-    fn collect_op(&mut self, op: &SketchAggOp) {
-        use crate::algebra::expr::ExactAgg;
+    fn collect_op(&mut self, op: &AggIntent) {
         match op {
-            SketchAggOp::HLL { .. } => {
+            AggIntent::Cardinality { .. } => {
                 if !self.agg_types.contains(&AggType::Cardinality) {
                     self.agg_types.push(AggType::Cardinality);
                 }
             }
-            SketchAggOp::CountMin { .. } | SketchAggOp::CountSketch { .. } => {
+            AggIntent::Frequency { .. } => {
                 if !self.agg_types.contains(&AggType::Frequency) {
                     self.agg_types.push(AggType::Frequency);
                 }
             }
-            SketchAggOp::DDSketch { quantiles, .. } => {
+            AggIntent::Quantile { quantiles, .. } => {
                 if !self.agg_types.contains(&AggType::Quantile) {
                     self.agg_types.push(AggType::Quantile);
                 }
@@ -291,13 +314,16 @@ impl QeCollector {
                     if !self.quantiles.contains(&q) { self.quantiles.push(q); }
                 }
             }
-            SketchAggOp::ExactMinMax { .. } => {
+            AggIntent::Extrema { min, max } => {
                 if !self.agg_types.contains(&AggType::Quantile) {
                     self.agg_types.push(AggType::Quantile);
                 }
+                // Extrema map to boundary quantiles for legacy compat.
+                if *min && !self.quantiles.contains(&0.0) { self.quantiles.push(0.0); }
+                if *max && !self.quantiles.contains(&1.0) { self.quantiles.push(1.0); }
             }
-            SketchAggOp::Exact(_) => { self.exact_required = true; }
-            SketchAggOp::Hydra { inner, .. } => self.collect_op(inner),
+            AggIntent::Exact(_) => { self.exact_required = true; }
+            AggIntent::PerPartition { inner, .. } => self.collect_op(inner),
         }
     }
 
@@ -424,5 +450,80 @@ mod tests {
         ).unwrap();
         // Should parse without error and extract the metric name.
         assert_eq!(pq.metric_name, "financial_last_trade_price");
+    }
+}
+
+#[cfg(test)]
+mod doc_verify_all {
+    use super::*;
+    use crate::algebra::expr::*;
+
+    #[test]
+    fn example4_promql_quantile() {
+        let expr = parse_query_expr(
+            "quantile_over_time(0.99, http_request_duration{env=\"prod\"}[5m])"
+        ).unwrap();
+        // Doc: WindowedAgg { Quantile([0.99]), Tumbling(5m), Filter(Source) }
+        assert!(matches!(&expr, QueryExpr::WindowedAgg { agg: AggIntent::Quantile { .. }, .. }));
+    }
+
+    #[test]
+    fn example5_promql_topk() {
+        let expr = parse_query_expr(
+            "topk by (service) (10, count_over_time(requests{env=\"prod\"}[1m]))"
+        ).unwrap();
+        // Doc: TopK { 10, Partition { ["service"], WindowedAgg { Frequency } } }
+        match &expr {
+            QueryExpr::TopK { k: 10, input, .. } => {
+                match input.as_ref() {
+                    QueryExpr::Partition { keys, input: inner } => {
+                        assert_eq!(keys.keys(), &["service".to_string()]);
+                        assert!(matches!(inner.as_ref(), QueryExpr::WindowedAgg { agg: AggIntent::Frequency { .. }, .. }));
+                    }
+                    other => panic!("expected Partition, got {other:?}"),
+                }
+            }
+            other => panic!("expected TopK, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn example6_sql_avg() {
+        let expr = parse_query_expr(
+            "SELECT symbol, AVG(price) FROM trades GROUP BY symbol"
+        ).unwrap();
+        // Doc: Partition { ["symbol"], SketchAgg { Quantile([0.5]), Source } }
+        match &expr {
+            QueryExpr::Partition { keys, input } => {
+                assert_eq!(keys.keys(), &["symbol".to_string()]);
+                assert!(matches!(input.as_ref(), QueryExpr::SketchAgg { op: AggIntent::Quantile { .. }, .. }));
+            }
+            other => panic!("expected Partition, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn example7_sql_tumble() {
+        let expr = parse_query_expr(
+            "SELECT region, COUNT(DISTINCT user_id) AS cnt FROM sessions GROUP BY region, TUMBLE(ts, INTERVAL '5' MINUTE) ORDER BY cnt DESC LIMIT 10"
+        ).unwrap();
+        // Doc: Limit { 10, Sort { Partition { ["region"], WindowedAgg { Cardinality } } } }
+        match &expr {
+            QueryExpr::Limit { n: 10, input, .. } => {
+                match input.as_ref() {
+                    QueryExpr::Sort { input: sort_inner, .. } => {
+                        match sort_inner.as_ref() {
+                            QueryExpr::Partition { keys, input: part_inner } => {
+                                assert_eq!(keys.keys(), &["region".to_string()]);
+                                assert!(matches!(part_inner.as_ref(), QueryExpr::WindowedAgg { agg: AggIntent::Cardinality { .. }, .. }));
+                            }
+                            other => panic!("expected Partition, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Sort, got {other:?}"),
+                }
+            }
+            other => panic!("expected Limit, got {other:?}"),
+        }
     }
 }

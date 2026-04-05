@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use crate::algebra::expr::{AggFunc, BinaryOpKind, LiteralValue, QueryExpr, ScalarExpr};
 use crate::analyzer::format_duration;
-use crate::algebra::expr::{ExactAgg, PartitionKeys, SketchAggOp};
+use crate::algebra::expr::{AggIntent, ExactAgg};
 use crate::algebra::directory;
 use crate::types::{
     AgentSubPlan, BackendSubPlan,
@@ -109,6 +109,15 @@ fn walk(expr: &QueryExpr, plan: &mut StagedPlan, budgets: &StageResourceBudgets)
         // SketchAgg — the key sketch assignment decision.
         QueryExpr::SketchAgg { op, input, .. } => {
             assign_sketch_agg(op, plan, budgets);
+            walk(input, plan, budgets);
+        }
+
+        // WindowedAgg — bundles window + sketch agg intent.
+        QueryExpr::WindowedAgg { agg, window, input, .. } => {
+            if let crate::algebra::expr::WindowKind::Tumbling { size } = &window.kind {
+                plan.agent.window_secs = Some(size.as_secs());
+            }
+            assign_sketch_agg(agg, plan, budgets);
             walk(input, plan, budgets);
         }
 
@@ -226,23 +235,23 @@ fn walk(expr: &QueryExpr, plan: &mut StagedPlan, budgets: &StageResourceBudgets)
 
 // ── Agg assignment ────────────────────────────────────────────────────────────
 
-fn assign_sketch_agg(op: &SketchAggOp, plan: &mut StagedPlan, budgets: &StageResourceBudgets) {
+fn assign_sketch_agg(op: &AggIntent, plan: &mut StagedPlan, budgets: &StageResourceBudgets) {
     match op {
         // Exact ops: mergeability decides stage.
-        SketchAggOp::Exact(ExactAgg::Sum | ExactAgg::Count | ExactAgg::Min | ExactAgg::Max) => {
+        AggIntent::Exact(ExactAgg::Sum | ExactAgg::Count | ExactAgg::Min | ExactAgg::Max) => {
             plan.backend.has_merge = true;
         }
-        SketchAggOp::Exact(ExactAgg::Avg) => {
+        AggIntent::Exact(ExactAgg::Avg) => {
             plan.db.active = true;
         }
-        // Sketch ops: assign to Agent, defer if budget exceeded.
+        // Sketch ops: resolve to physical, assign to Agent, defer if budget exceeded.
         sketch_op => {
-            let est_mem = directory::estimated_sketch_memory_bytes(sketch_op);
-            let stage = resolve_sketch_stage(est_mem, budgets, &mut plan.deferral_log, sketch_op);
+            let physical = crate::algebra::physical::resolve(sketch_op);
+            let stage = resolve_sketch_stage(physical.estimated_memory_bytes, budgets, &mut plan.deferral_log, sketch_op);
             match stage {
                 SketchStage::Agent => {
-                    plan.agent.sketch_type   = Some(directory::sketch_type_for_op(sketch_op));
-                    plan.agent.sketch_params = directory::sketch_params_for_op(sketch_op);
+                    plan.agent.sketch_type   = Some(physical.sketch_type);
+                    plan.agent.sketch_params = physical.sketch_params;
                 }
                 SketchStage::Backend => {
                     plan.backend.has_merge = true;
@@ -257,16 +266,16 @@ fn assign_sketch_agg(op: &SketchAggOp, plan: &mut StagedPlan, budgets: &StageRes
 
 fn assign_agg_func(func: &AggFunc, plan: &mut StagedPlan, budgets: &StageResourceBudgets) {
     match func {
-        // Sketchable → synthesise the corresponding SketchAggOp and use existing logic.
+        // Sketchable → synthesise the corresponding AggIntent and use existing logic.
         AggFunc::Quantile(phi) => {
-            let op = SketchAggOp::default_ddsketch(vec![*phi]);
+            let op = AggIntent::default_quantile(vec![*phi]);
             assign_sketch_agg(&op, plan, budgets);
         }
         AggFunc::CountDistinct => {
-            assign_sketch_agg(&SketchAggOp::default_hll(), plan, budgets);
+            assign_sketch_agg(&AggIntent::default_cardinality(), plan, budgets);
         }
         AggFunc::HeavyHitters { .. } => {
-            assign_sketch_agg(&SketchAggOp::default_count_sketch(), plan, budgets);
+            assign_sketch_agg(&AggIntent::default_frequency(), plan, budgets);
         }
         // Mergeable exact → Backend.
         AggFunc::Count | AggFunc::Sum | AggFunc::Min | AggFunc::Max
@@ -293,7 +302,7 @@ fn resolve_sketch_stage(
     est_mem: u64,
     budgets: &StageResourceBudgets,
     log: &mut Vec<String>,
-    op: &SketchAggOp,
+    op: &AggIntent,
 ) -> SketchStage {
     if let Some(cap) = budgets.agent_memory_bytes {
         if est_mem > cap {
@@ -367,6 +376,19 @@ fn promql_from_qe(expr: &QueryExpr, ctx: &mut PromQLCtx) -> String {
                 }
             }
             promql_from_qe(input, ctx)
+        }
+
+        // ── WindowedAgg — bundled window + sketch agg ────────────────────────
+        QueryExpr::WindowedAgg { agg, window, input, .. } => {
+            if ctx.window.is_none() {
+                if let crate::algebra::expr::WindowKind::Tumbling { size } = &window.kind {
+                    ctx.window = Some(*size);
+                }
+            }
+            let selector = promql_from_qe(input, ctx);
+            let window_s = window_str(ctx.window);
+            let by       = by_clause(&ctx.group_by);
+            sketch_op_to_promql(agg, &selector, &window_s, &by)
         }
 
         // ── SketchAgg — the main aggregation node ────────────────────────────
@@ -493,29 +515,29 @@ fn by_clause(keys: &[String]) -> String {
     }
 }
 
-fn sketch_op_to_promql(op: &SketchAggOp, selector: &str, window: &str, by: &str) -> String {
+fn sketch_op_to_promql(op: &AggIntent, selector: &str, window: &str, by: &str) -> String {
     match op {
-        SketchAggOp::DDSketch { quantiles, .. } => {
+        AggIntent::Quantile { quantiles, .. } => {
             let phi = quantiles.first().copied().unwrap_or(0.99);
             format!("quantile_over_time({phi}, {selector}{window}){by}")
         }
-        SketchAggOp::HLL { .. } => {
+        AggIntent::Cardinality { .. } => {
             format!("count_over_time({selector}{window}){by}")
         }
-        SketchAggOp::CountMin { .. } | SketchAggOp::CountSketch { .. } => {
+        AggIntent::Frequency { .. } => {
             format!("count_over_time({selector}{window}){by}")
         }
-        SketchAggOp::ExactMinMax { min, max } => match (min, max) {
+        AggIntent::Extrema { min, max } => match (min, max) {
             (true, false) => format!("min_over_time({selector}{window}){by}"),
             (false, true) => format!("max_over_time({selector}{window}){by}"),
             _             => format!("quantile_over_time(0.5, {selector}{window}){by}"),
         },
-        SketchAggOp::Exact(ExactAgg::Count) => format!("count_over_time({selector}{window}){by}"),
-        SketchAggOp::Exact(ExactAgg::Sum)   => format!("sum_over_time({selector}{window}){by}"),
-        SketchAggOp::Exact(ExactAgg::Avg)   => format!("avg_over_time({selector}{window}){by}"),
-        SketchAggOp::Exact(ExactAgg::Min)   => format!("min_over_time({selector}{window}){by}"),
-        SketchAggOp::Exact(ExactAgg::Max)   => format!("max_over_time({selector}{window}){by}"),
-        SketchAggOp::Hydra { inner, .. }    => sketch_op_to_promql(inner, selector, window, by),
+        AggIntent::Exact(ExactAgg::Count) => format!("count_over_time({selector}{window}){by}"),
+        AggIntent::Exact(ExactAgg::Sum)   => format!("sum_over_time({selector}{window}){by}"),
+        AggIntent::Exact(ExactAgg::Avg)   => format!("avg_over_time({selector}{window}){by}"),
+        AggIntent::Exact(ExactAgg::Min)   => format!("min_over_time({selector}{window}){by}"),
+        AggIntent::Exact(ExactAgg::Max)   => format!("max_over_time({selector}{window}){by}"),
+        AggIntent::PerPartition { inner, .. } => sketch_op_to_promql(inner, selector, window, by),
     }
 }
 
@@ -634,8 +656,8 @@ fn collect_label_filters_into(pred: &ScalarExpr, out: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algebra::expr::{AggItem, BinaryOpKind, LiteralValue, QueryExpr, ScalarExpr};
-    use crate::algebra::expr::{ColumnRef, PartitionKeys, SketchAggOp, SourceSpec};
+    use crate::algebra::expr::{AggItem, AggIntent, BinaryOpKind, LiteralValue, QueryExpr, ScalarExpr};
+    use crate::algebra::expr::{ColumnRef, PartitionKeys, SourceSpec};
 
     fn source(name: &str) -> QueryExpr {
         QueryExpr::Source(SourceSpec { name: name.into() })
@@ -662,7 +684,7 @@ mod tests {
             duration: Duration::from_secs(300),
             slide: None,
             input: Box::new(QueryExpr::SketchAgg {
-                op:    SketchAggOp::default_ddsketch(vec![0.99]),
+                op:    AggIntent::default_quantile(vec![0.99]),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("latency")),
             }),
@@ -677,7 +699,7 @@ mod tests {
     #[test]
     fn hll_stays_at_agent_by_default() {
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_hll(),
+            op:    AggIntent::default_cardinality(),
             col:   ColumnRef::SampleValue,
             input: Box::new(source("events")),
         };
@@ -690,7 +712,7 @@ mod tests {
         let expr = QueryExpr::Partition {
             keys: PartitionKeys::By(vec!["host".into(), "region".into()]),
             input: Box::new(QueryExpr::SketchAgg {
-                op:    SketchAggOp::default_ddsketch(vec![0.99]),
+                op:    AggIntent::default_quantile(vec![0.99]),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("latency")),
             }),
@@ -742,7 +764,7 @@ mod tests {
             k:     10,
             by:    vec!["symbol".into()],
             input: Box::new(QueryExpr::SketchAgg {
-                op:    SketchAggOp::default_count_sketch(),
+                op:    AggIntent::default_frequency(),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("price")),
             }),
@@ -791,7 +813,7 @@ mod tests {
             ..Default::default()
         };
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_quantile(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(source("latency")),
         };
@@ -809,7 +831,7 @@ mod tests {
             ..Default::default()
         };
         let expr = QueryExpr::SketchAgg {
-            op:    SketchAggOp::default_ddsketch(vec![0.99]),
+            op:    AggIntent::default_quantile(vec![0.99]),
             col:   ColumnRef::SampleValue,
             input: Box::new(source("latency")),
         };
@@ -828,7 +850,7 @@ mod tests {
                 duration: Duration::from_secs(300),
                 slide: None,
                 input: Box::new(QueryExpr::SketchAgg {
-                    op:    SketchAggOp::default_ddsketch(vec![0.99]),
+                    op:    AggIntent::default_quantile(vec![0.99]),
                     col:   ColumnRef::SampleValue,
                     input: Box::new(QueryExpr::Filter {
                         pred: ScalarExpr::BinaryOp {
@@ -854,7 +876,7 @@ mod tests {
             k:     10,
             by:    vec![],
             input: Box::new(QueryExpr::SketchAgg {
-                op:    SketchAggOp::default_count_sketch(),
+                op:    AggIntent::default_frequency(),
                 col:   ColumnRef::SampleValue,
                 input: Box::new(source("events")),
             }),
