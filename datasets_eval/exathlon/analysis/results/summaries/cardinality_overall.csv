@@ -1,6 +1,0 @@
-dimension,unique_count_global
-time_series,3939
-entity,10
-metric_base,3629
-aggregation_suffix,13
-tested_window_sizes,1min;5min;15min;30min;1hour
