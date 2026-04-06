@@ -22,6 +22,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 chrono      = { version = "0.4",  features = ["serde"] }
 sqlparser      = "0.61"
 promql-parser  = "0.8"
+prost          = "0.13"
+bytes          = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -29,3 +31,6 @@ tower = { version = "0.4", features = ["util"] }
 axum = { version = "0.7", features = ["ws"] }
 http-body-util = "0.1"
 tokio-tungstenite = "0.21"
+
+[build-dependencies]
+prost-build = "0.13"

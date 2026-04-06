@@ -1,48 +1,44 @@
-//! General query algebra — full SQL/PromQL AST, cost-based optimizer,
-//! and sketch-stage allocator.
+//! Sketch algebra — the 5-layer query translation pipeline.
 //!
-//! # Module layout
+//! # Layer architecture
 //!
-//! | Module | Contents |
-//! |--------|----------|
-//! | [`expr`] | [`QueryExpr`] + [`ScalarExpr`] — the complete relational+scalar algebra |
-//! | [`plan`] | [`PlanNode`], [`PipelineStage`], [`ExecutionMode`], [`CostEstimate`] |
-//! | [`optimizer`] | [`QueryOptimizer`] + 12 rewrite rules |
-//! | [`allocator`] | [`SketchAllocator`] — assigns stages and sketch types |
+//! | Layer | Module | Role |
+//! |-------|--------|------|
+//! | **3. Sketch Logical Plan** | [`expr`] | `QueryExpr` + `AggIntent` — implementation-independent algebra |
+//! | **3. Sketch Logical Plan** | [`directory`] | Candidate sketch types per `AggIntent`, memory estimation |
+//! | **4. Sketch Optimizer** | [`optimizer`] | 12 algebraic rewrite rules (fixed-point iteration) |
+//! | **5. Physical Plan** | [`physical`] | `PhysicalAggOp` — resolves `AggIntent` → concrete `SketchType` + `SketchParams` |
+//! | **5. Physical Plan** | [`allocator`] | `SketchAllocator` — assigns physical ops to pipeline stages |
+//! | **5. Physical Plan** | [`plan`] | `PlanNode` tree with cost estimates and stage annotations |
+//!
+//! Layers 1–2 (language parsing) live in `query_parser/`.
 //!
 //! # Typical usage
 //!
 //! ```rust,ignore
-//! use controller::algebra::{
-//!     expr::QueryExpr,
-//!     optimizer::QueryOptimizer,
-//!     allocator::SketchAllocator,
-//! };
 //! use controller::query_parser;
-//! use controller::types::StageResourceBudgets;
+//! use controller::algebra::{expr::QueryExpr, optimizer::QueryOptimizer, physical};
 //!
-//! // 1. Parse a PromQL / SQL query string into QueryExpr.
+//! // Layers 1–3: parse query string → sketch logical plan.
 //! let query_expr = query_parser::parse_query_expr("quantile_over_time(0.99, latency[5m])")?;
 //!
-//! // 2. Optimise (cost-based fixed-point rewriting).
+//! // Layer 4: optimise (algebraic rewrite rules).
 //! let (opt_expr, _iters) = QueryOptimizer::new(raw_bps).optimize(query_expr);
 //!
-//! // 4. Allocate stages.
-//! let budgets   = StageResourceBudgets::from_workload_chars(&workload_chars);
-//! let plan_root = SketchAllocator::new(budgets, raw_bps).allocate(opt_expr);
-//!
-//! // 5. Inspect or serialise.
-//! let summary = plan_root.summarise(raw_bps);
+//! // Layer 5: resolve logical AggIntent → physical SketchType + SketchParams.
+//! // (done automatically by stage_split / allocator via physical::resolve)
 //! ```
 
 pub mod allocator;
 pub mod directory;
 pub mod expr;
+pub mod lower;
 pub mod optimizer;
+pub mod physical;
 pub mod plan;
 
 // Convenience re-exports.
 pub use allocator::SketchAllocator;
-pub use expr::{AggFunc, BinaryOpKind, QueryExpr, ScalarExpr};
+pub use expr::{AggFunc, AggIntent, BinaryOpKind, QueryExpr, ScalarExpr, WindowKind, WindowSpec};
 pub use optimizer::QueryOptimizer;
 pub use plan::{CostEstimate, ExecutionMode, PipelineStage, PlanNode, PlanSummary};

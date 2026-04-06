@@ -9,9 +9,9 @@
 //!
 //! All callers now go through this module.
 
-use crate::algebra::expr::{ExactAgg, SketchAggOp};
+use crate::algebra::expr::{AggIntent, ExactAgg};
 use crate::types::{
-    AggType, CountMinSketchDefaults, CountSketchDefaults, SketchDefaults,
+    AggType, SketchDefaults,
     SketchParams, SketchType,
 };
 
@@ -66,72 +66,80 @@ pub fn sketch_type_for_agg(aggs: &[AggType]) -> SketchType {
     SketchType::DDSketch
 }
 
-// ── SketchAggOp → SketchType ─────────────────────────────────────────────────
+// ── AggIntent → SketchType ───────────────────────────────────────────────────
 
-/// Resolve the concrete [`SketchType`] for a [`SketchAggOp`] IR node.
-pub fn sketch_type_for_op(op: &SketchAggOp) -> SketchType {
+/// Resolve the concrete [`SketchType`] for an [`AggIntent`] IR node.
+pub fn sketch_type_for_op(op: &AggIntent) -> SketchType {
     match op {
-        SketchAggOp::DDSketch { .. } | SketchAggOp::ExactMinMax { .. } => SketchType::DDSketch,
-        SketchAggOp::HLL { .. }        => SketchType::HLL,
-        SketchAggOp::CountMin { .. }   => SketchType::CountMinSketch,
-        SketchAggOp::CountSketch { .. } => SketchType::CountSketch,
-        SketchAggOp::Hydra { inner, .. } => sketch_type_for_op(inner),
-        SketchAggOp::Exact(_)          => SketchType::DDSketch,
+        AggIntent::Quantile { .. } | AggIntent::Extrema { .. } => SketchType::DDSketch,
+        AggIntent::Cardinality { .. } => SketchType::HLL,
+        AggIntent::Frequency { .. } => SketchType::CountSketch,
+        AggIntent::PerPartition { inner, .. } => sketch_type_for_op(inner),
+        AggIntent::Exact(_) => SketchType::DDSketch,
     }
 }
 
-// ── SketchAggOp → SketchParams ───────────────────────────────────────────────
+// ── AggIntent → SketchParams ────────────────────────────────────────────────
 
-/// Derive [`SketchParams`] from a [`SketchAggOp`] IR node.
-pub fn sketch_params_for_op(op: &SketchAggOp) -> SketchParams {
+/// Derive [`SketchParams`] from an [`AggIntent`] IR node.
+pub fn sketch_params_for_op(op: &AggIntent) -> SketchParams {
     match op {
-        SketchAggOp::DDSketch { quantiles, epsilon } => SketchParams::DDSketch {
-            relative_accuracy: *epsilon,
+        AggIntent::Quantile { quantiles, accuracy } => SketchParams::DDSketch {
+            relative_accuracy: *accuracy,
             quantiles: quantiles.clone(),
         },
-        SketchAggOp::HLL { registers } => SketchParams::HLL {
-            precision: *registers as u32,
+        AggIntent::Cardinality { accuracy } => {
+            // registers ≈ (1.04/accuracy)^2, precision = log2(registers)
+            let registers = ((1.04 / accuracy).powi(2) as u32).next_power_of_two();
+            let precision = (registers as f64).log2() as u32;
+            SketchParams::HLL { precision }
         },
-        SketchAggOp::CountMin { width, depth } => SketchParams::CountMinSketch {
-            rows: *depth as u32,
-            cols: *width,
-            metric_name: String::new(),
+        AggIntent::Frequency { accuracy } => {
+            let width = (std::f64::consts::E / accuracy) as u32;
+            SketchParams::CountSketch {
+                epsilon: *accuracy,
+                delta: 0.01,
+            }
         },
-        SketchAggOp::CountSketch { width, depth } => SketchParams::CountSketch {
-            epsilon: CountSketchDefaults::default().epsilon,
-            delta: CountSketchDefaults::default().delta,
-        },
-        SketchAggOp::Hydra { inner, .. } => sketch_params_for_op(inner),
-        SketchAggOp::ExactMinMax { .. } => SketchParams::DDSketch {
+        AggIntent::PerPartition { inner, .. } => sketch_params_for_op(inner),
+        AggIntent::Extrema { .. } => SketchParams::DDSketch {
             relative_accuracy: 0.01,
             quantiles: vec![0.0, 1.0],
         },
-        SketchAggOp::Exact(_) => SketchParams::default(),
+        AggIntent::Exact(_) => SketchParams::default(),
     }
 }
 
 /// Combined (type, params) lookup — convenience for callers that need both.
-pub fn sketch_type_and_params(op: &SketchAggOp) -> (SketchType, SketchParams) {
+pub fn sketch_type_and_params(op: &AggIntent) -> (SketchType, SketchParams) {
     (sketch_type_for_op(op), sketch_params_for_op(op))
 }
 
-// ── SketchAggOp → memory estimate ────────────────────────────────────────────
+// ── AggIntent → memory estimate ─────────────────────────────────────────────
 
 /// Estimated sketch memory footprint per series (bytes).
 ///
 /// Used by `split_expr_by_stage` to decide whether to defer an operation
 /// to a later pipeline stage when the budget is exceeded.
-pub fn estimated_sketch_memory_bytes(op: &SketchAggOp) -> u64 {
+pub fn estimated_sketch_memory_bytes(op: &AggIntent) -> u64 {
     match op {
-        SketchAggOp::DDSketch { .. } | SketchAggOp::ExactMinMax { .. } => 4_096,
-        SketchAggOp::HLL { registers } => 1u64 << (*registers as u64),
-        SketchAggOp::CountMin { width, depth } => (*width as u64) * (*depth as u64) * 8,
-        SketchAggOp::CountSketch { width, depth } => (*width as u64) * (*depth as u64) * 8,
-        SketchAggOp::Hydra { inner, partition_keys } => {
-            let factor = 1u64 << partition_keys.len().min(10);
+        AggIntent::Quantile { .. } => 4_096,
+        AggIntent::Cardinality { accuracy } => {
+            // HLL: registers ≈ (1.04/accuracy)^2, memory = registers
+            let registers = ((1.04 / accuracy).powi(2) as u64).next_power_of_two();
+            registers.max(16)
+        },
+        AggIntent::Frequency { accuracy } => {
+            // CMS: width ≈ e/accuracy, depth ≈ 5, memory = width*depth*8
+            let width = (std::f64::consts::E / accuracy) as u64;
+            width * 5 * 8
+        },
+        AggIntent::Extrema { .. } => 16,
+        AggIntent::PerPartition { inner, keys } => {
+            let factor = 1u64 << keys.len().min(10);
             estimated_sketch_memory_bytes(inner).saturating_mul(factor)
-        }
-        SketchAggOp::Exact(_) => 8,
+        },
+        AggIntent::Exact(_) => 8,
     }
 }
 
@@ -214,47 +222,47 @@ mod tests {
     }
 
     #[test]
-    fn op_ddsketch_yields_ddsketch_type_and_params() {
-        let op = SketchAggOp::DDSketch { quantiles: vec![0.5], epsilon: 0.01 };
+    fn op_quantile_yields_ddsketch_type_and_params() {
+        let op = AggIntent::Quantile { quantiles: vec![0.5], accuracy: 0.01 };
         let (st, p) = sketch_type_and_params(&op);
         assert_eq!(st, SketchType::DDSketch);
         assert!(matches!(p, SketchParams::DDSketch { .. }));
     }
 
     #[test]
-    fn op_hll_yields_hll_type() {
-        let op = SketchAggOp::HLL { registers: 14 };
+    fn op_cardinality_yields_hll_type() {
+        let op = AggIntent::default_cardinality();
         assert_eq!(sketch_type_for_op(&op), SketchType::HLL);
     }
 
     #[test]
-    fn op_countmin_yields_countminsketch() {
-        let op = SketchAggOp::CountMin { width: 2048, depth: 5 };
-        assert_eq!(sketch_type_for_op(&op), SketchType::CountMinSketch);
+    fn op_frequency_yields_countsketch() {
+        let op = AggIntent::default_frequency();
+        assert_eq!(sketch_type_for_op(&op), SketchType::CountSketch);
     }
 
     #[test]
-    fn hydra_delegates_to_inner() {
-        let op = SketchAggOp::Hydra {
-            inner: Box::new(SketchAggOp::HLL { registers: 14 }),
-            partition_keys: vec!["k".into()],
+    fn per_partition_delegates_to_inner() {
+        let op = AggIntent::PerPartition {
+            inner: Box::new(AggIntent::default_cardinality()),
+            keys: vec!["k".into()],
         };
         assert_eq!(sketch_type_for_op(&op), SketchType::HLL);
     }
 
     #[test]
-    fn memory_ddsketch() {
-        let op = SketchAggOp::DDSketch { quantiles: vec![0.5], epsilon: 0.01 };
+    fn memory_quantile() {
+        let op = AggIntent::Quantile { quantiles: vec![0.5], accuracy: 0.01 };
         assert_eq!(estimated_sketch_memory_bytes(&op), 4096);
     }
 
     #[test]
-    fn memory_hydra_scales_by_partition_keys() {
-        let inner = SketchAggOp::HLL { registers: 14 };
+    fn memory_per_partition_scales_by_keys() {
+        let inner = AggIntent::default_cardinality();
         let base_mem = estimated_sketch_memory_bytes(&inner);
-        let op = SketchAggOp::Hydra {
+        let op = AggIntent::PerPartition {
             inner: Box::new(inner),
-            partition_keys: vec!["a".into(), "b".into()],
+            keys: vec!["a".into(), "b".into()],
         };
         assert_eq!(estimated_sketch_memory_bytes(&op), base_mem * 4);
     }

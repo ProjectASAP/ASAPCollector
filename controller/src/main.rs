@@ -24,6 +24,7 @@ use tracing::{info, warn};
 use algebra::{QueryOptimizer, SketchAllocator};
 use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
+use types::AgentCollectorConfig;
 use config::generate_backend_config_staged;
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
@@ -31,6 +32,7 @@ use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetrics
 use planner::online_cost_model;
 use planner::stage_split::split_expr_by_stage;
 use planner::tco;
+use algebra::physical::physical_plan_to_staged;
 use query_parser::parse_query_expr;
 use replan::Replanner;
 use store::{PlanStore, WorkloadStore};
@@ -216,6 +218,8 @@ async fn main() {
         .route("/api/v1/plan/:metric/diff",       get(handle_plan_diff))
         .route("/api/v1/agents",                  get(handle_agents))
         .route("/api/v1/config/:metric",          get(handle_get_config))
+        .route("/api/v1/collector-config/agent",  get(handle_bootstrap_agent_config))
+        .route("/api/v1/collector-config/backend", get(handle_bootstrap_backend_config))
         .route("/api/v1/cost-model",              get(handle_cost_model))
         .route("/api/v1/tco",                     post(handle_tco))
         .with_state(state);
@@ -249,9 +253,11 @@ async fn handle_plan(
             Err(e) => warn!(query = %qs, error = %e, "parse_query_expr failed; skipping staged_plan"),
             Ok(qe) => {
                 let raw_bps = plan.transmission_cost_summary.raw_bytes_per_sec;
-                let (opt_qe, _) = QueryOptimizer::new(raw_bps).optimize(qe);
                 let budgets = StageResourceBudgets::from_workload_chars(&wc);
-                plan.staged_plan = Some(split_expr_by_stage(&opt_qe, &budgets));
+                let constraints = algebra::optimizer::DeploymentConstraints::from_budgets(&budgets);
+                let (opt_qe, _) = QueryOptimizer::with_constraints(raw_bps, constraints).optimize(qe);
+                let (staged, _physical_tree) = physical_plan_to_staged(&opt_qe, &budgets);
+                plan.staged_plan = Some(staged);
             }
         }
     }
@@ -300,8 +306,9 @@ async fn handle_plan(
                 None
             }
             Ok(qe) => {
-                let (opt_qe, _iters) = QueryOptimizer::new(raw_bps).optimize(qe);
                 let budgets = StageResourceBudgets::from_workload_chars(&wc_for_algebra);
+                let constraints = algebra::optimizer::DeploymentConstraints::from_budgets(&budgets);
+                let (opt_qe, _iters) = QueryOptimizer::with_constraints(raw_bps, constraints).optimize(qe);
                 let plan_node = SketchAllocator::new(budgets, raw_bps).allocate(opt_qe);
                 Some(plan_node.summarise(raw_bps))
             }
@@ -441,6 +448,60 @@ async fn handle_get_config(
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
+}
+
+/// Bootstrap YAML config for agent collectors.
+///
+/// Collectors start with:
+///   `./collector --config "http://controller:8080/api/v1/collector-config/agent"`
+///
+/// Returns a minimal valid OTel Collector YAML with OTLP receiver + batch
+/// processor + prometheus exporter.  The controller can later push updated
+/// configs via OpAMP or the collector can re-fetch on reload.
+async fn handle_bootstrap_agent_config(
+    State(st): State<AppState>,
+) -> impl IntoResponse {
+    // Use a default DDSketch config as the bootstrap.
+    let cfg = AgentCollectorConfig {
+        output_mode:          types::OutputMode::Sketch,
+        sketch_type:          types::SketchType::DDSketch,
+        sketch_params:        types::SketchParams::default(),
+        aggregate_by:         vec![],
+        label_matchers:       vec![],
+        window_duration:      Some(std::time::Duration::from_secs(60)),
+        mode:                 types::ProcessorMode::Window,
+        enable_self_monitoring: true,
+        transmit_sketch:      true,
+        drop_original:        true,
+        delta_transmission:   false,
+        delta_threshold:      0.0,
+    };
+    match generate_agent_config(&cfg, &st.opamp_endpoint) {
+        Ok(yaml) => (
+            StatusCode::OK,
+            [("content-type", "application/yaml")],
+            yaml,
+        ).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Bootstrap YAML config for backend (merge) collectors.
+async fn handle_bootstrap_backend_config(
+    State(st): State<AppState>,
+) -> impl IntoResponse {
+    let cfg = types::BackendCollectorConfig {
+        merge_sketch_type: types::SketchType::DDSketch,
+        group_by:          vec![],
+    };
+    match generate_backend_config(&cfg, &st.opamp_endpoint) {
+        Ok(yaml) => (
+            StatusCode::OK,
+            [("content-type", "application/yaml")],
+            yaml,
+        ).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 

@@ -1,7 +1,25 @@
-//! SQL → QueryExpr compiler.
+//! Layers 1→3 lowering: SQL string → QueryExpr (sketch logical plan).
 //!
-//! Implements the `AST_SQL_to_sketch` algorithm from the design doc
-//! (`docs/Top-Down SQL-to-sketch mapping.pdf`).
+//! - **Layer 1**: the `sqlparser` crate parses the SQL string into a
+//!   language-specific AST (`sqlparser::ast::Statement`).
+//! - **Layer 2**: the extraction functions (`extract_query_expr`, `extract_select_qe`)
+//!   interpret SQL semantics (SELECT projection, GROUP BY, WHERE, JOIN, ORDER BY,
+//!   LIMIT, UNION ALL) and lower them to the sketch algebra.
+//! - **Layer 3**: the output is a `QueryExpr` tree with **relational operators only**
+//!   (`Source`, `Filter`, `Aggregate`, `Join`, `Sort`, `Limit`, `SetOp`).
+//!
+//! # Key difference from the PromQL parser
+//!
+//! The SQL parser does **not** emit `SketchAgg` or `WindowedAgg` nodes.  It emits
+//! generic `Aggregate { func: Avg/Count/CountDistinct/... }` nodes.  Sketch assignment
+//! happens later:
+//! - **Layer 4 (optimizer)**: R5 TopKFusion rewrites `Limit(Sort(Aggregate))` → `TopK`;
+//!   R9 HydraConversion rewrites multi-key `CountDistinct` → `PerPartition`.
+//! - **Layer 5 (physical planner / stage-split)**: `assign_agg_func` maps each `AggFunc`
+//!   to an `AggIntent` (e.g., `CountDistinct` → `Cardinality`, `Quantile(φ)` → `Quantile`).
+//!
+//! This means the SQL path goes: relational plan → optimizer rewrites → physical
+//! sketch assignment, whereas PromQL goes: sketch plan directly → optimizer → physical.
 //!
 //! # Algorithm
 //!
@@ -116,12 +134,13 @@ fn extract_select_qe(
     limit_n:  Option<u64>,
     offset_n: u64,
 ) -> anyhow::Result<QueryExpr> {
-    let metric_name  = extract_table_name(sel)?;
-    let where_scalar = sel.selection.as_ref().map(sql_expr_to_scalar);
-    let group_keys   = extract_group_by(&sel.group_by);
-    let having_scalar= sel.having.as_ref().map(sql_expr_to_scalar);
-    let agg_items    = collect_agg_items_qe(&sel.projection);
-    let join_qe      = extract_join_qe(sel);
+    let metric_name   = extract_table_name(sel)?;
+    let where_scalar  = sel.selection.as_ref().map(sql_expr_to_scalar);
+    let group_keys    = extract_group_by(&sel.group_by);
+    let having_scalar = sel.having.as_ref().map(sql_expr_to_scalar);
+    let agg_items     = collect_agg_items_qe(&sel.projection);
+    let join_qe       = extract_join_qe(sel);
+    let window_spec   = extract_group_by_window(&sel.group_by);
 
     let source = QueryExpr::Source(SourceSpec {
         name: metric_name.clone(),
@@ -146,18 +165,29 @@ fn extract_select_qe(
         after_where
     };
 
+    // TUMBLE / HOP → Window node wrapping the source
+    let after_window = if let Some(ws) = window_spec {
+        QueryExpr::Window {
+            duration: ws.size,
+            slide:    ws.slide,
+            input:    Box::new(after_join),
+        }
+    } else {
+        after_join
+    };
+
     // GROUP BY + aggs OR bare projection
     let after_agg = if agg_items.is_empty() {
         // No aggregation — bare projection with possible DISTINCT.
         let cols = collect_project_items(&sel.projection);
-        QueryExpr::Project { cols, input: Box::new(after_join) }
+        QueryExpr::Project { cols, input: Box::new(after_window) }
     } else {
         let having = having_scalar;
         QueryExpr::Aggregate {
             keys:   group_keys,
             aggs:   agg_items,
             having,
-            input:  Box::new(after_join),
+            input:  Box::new(after_window),
         }
     };
 
@@ -281,6 +311,13 @@ fn first_col_from_args(args: &[FunctionArg]) -> ColumnRef {
 
 // ── AST helpers: GROUP BY ──────────────────────────────────────────────────────
 
+/// Window spec extracted from a TUMBLE() or HOP() call in GROUP BY.
+struct SqlWindowSpec {
+    size:     Duration,
+    slide:    Option<Duration>,
+    time_col: Option<String>,
+}
+
 fn extract_group_by(group_by: &GroupByExpr) -> Vec<String> {
     let exprs = match group_by {
         GroupByExpr::All(_)         => return vec![],
@@ -289,8 +326,151 @@ fn extract_group_by(group_by: &GroupByExpr) -> Vec<String> {
     exprs.iter().filter_map(|e| match e {
         Expr::Identifier(id)             => Some(id.value.clone()),
         Expr::CompoundIdentifier(parts)  => parts.last().map(|i| i.value.clone()),
+        // Skip TUMBLE/HOP function calls — extracted separately.
+        Expr::Function(f) => {
+            let name = f.name.0.last()
+                .and_then(|i| i.as_ident())
+                .map(|id| id.value.to_uppercase())
+                .unwrap_or_default();
+            if name == "TUMBLE" || name == "HOP" || name == "TIME_BUCKET" {
+                None
+            } else {
+                None // unknown function in GROUP BY — skip
+            }
+        }
         _                                => None,
     }).collect()
+}
+
+/// Extract a TUMBLE / HOP / time_bucket window from the GROUP BY clause.
+///
+/// Supported forms:
+/// - `TUMBLE(ts, INTERVAL '5' MINUTE)` → Tumbling { size: 5m }
+/// - `HOP(ts, INTERVAL '1' MINUTE, INTERVAL '5' MINUTE)` → Sliding { slide: 1m, size: 5m }
+/// - `time_bucket('5 minutes', ts)` → Tumbling { size: 5m }
+fn extract_group_by_window(group_by: &GroupByExpr) -> Option<SqlWindowSpec> {
+    let exprs = match group_by {
+        GroupByExpr::Expressions(e, _) => e,
+        _ => return None,
+    };
+    for expr in exprs {
+        if let Expr::Function(f) = expr {
+            let name = f.name.0.last()
+                .and_then(|i| i.as_ident())
+                .map(|id| id.value.to_uppercase())
+                .unwrap_or_default();
+
+            let args = match &f.args {
+                FunctionArguments::List(FunctionArgumentList { args, .. }) => args,
+                _ => continue,
+            };
+
+            match name.as_str() {
+                "TUMBLE" if args.len() >= 2 => {
+                    // TUMBLE(ts_col, interval)
+                    let time_col = func_arg_to_col_name(&args[0]);
+                    let size = func_arg_to_duration(&args[1])?;
+                    return Some(SqlWindowSpec { size, slide: None, time_col });
+                }
+                "HOP" if args.len() >= 3 => {
+                    // HOP(ts_col, slide_interval, size_interval)
+                    let time_col = func_arg_to_col_name(&args[0]);
+                    let slide = func_arg_to_duration(&args[1])?;
+                    let size  = func_arg_to_duration(&args[2])?;
+                    return Some(SqlWindowSpec { size, slide: Some(slide), time_col });
+                }
+                "TIME_BUCKET" if args.len() >= 2 => {
+                    // time_bucket('5 minutes', ts_col) — first arg is interval string
+                    let size = func_arg_to_duration(&args[0])?;
+                    let time_col = func_arg_to_col_name(&args[1]);
+                    return Some(SqlWindowSpec { size, slide: None, time_col });
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+fn func_arg_to_col_name(arg: &FunctionArg) -> Option<String> {
+    match arg {
+        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(id))) =>
+            Some(id.value.clone()),
+        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::CompoundIdentifier(parts))) =>
+            parts.last().map(|i| i.value.clone()),
+        _ => None,
+    }
+}
+
+fn func_arg_to_duration(arg: &FunctionArg) -> Option<Duration> {
+    match arg {
+        FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => expr_to_duration(expr),
+        _ => None,
+    }
+}
+
+fn expr_to_duration(expr: &Expr) -> Option<Duration> {
+    match expr {
+        // INTERVAL '5' MINUTE
+        Expr::Interval(iv) => {
+            let val_str = match iv.value.as_ref() {
+                Expr::Value(vws) => match &vws.value {
+                    Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => s.clone(),
+                    Value::Number(n, _) => n.clone(),
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            let val: u64 = val_str.trim().parse().ok()?;
+            let unit = iv.leading_field.as_ref()?;
+            let secs = match unit {
+                sqlparser::ast::DateTimeField::Second => val,
+                sqlparser::ast::DateTimeField::Minute => val * 60,
+                sqlparser::ast::DateTimeField::Hour   => val * 3600,
+                sqlparser::ast::DateTimeField::Day    => val * 86400,
+                _ => return None,
+            };
+            Some(Duration::from_secs(secs))
+        }
+        // '5 minutes' string (time_bucket style)
+        Expr::Value(vws) => match &vws.value {
+            Value::SingleQuotedString(s) | Value::DoubleQuotedString(s) => {
+                parse_duration_string(s)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn parse_duration_string(s: &str) -> Option<Duration> {
+    let s = s.trim().to_lowercase();
+    // Try "Nm", "Ns", "Nmin", "N minutes", "N seconds", "N hours"
+    let (num_str, unit) = if let Some(n) = s.strip_suffix("minutes") {
+        (n.trim(), 60u64)
+    } else if let Some(n) = s.strip_suffix("minute") {
+        (n.trim(), 60)
+    } else if let Some(n) = s.strip_suffix("min") {
+        (n.trim(), 60)
+    } else if let Some(n) = s.strip_suffix("hours") {
+        (n.trim(), 3600)
+    } else if let Some(n) = s.strip_suffix("hour") {
+        (n.trim(), 3600)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n.trim(), 3600)
+    } else if let Some(n) = s.strip_suffix("seconds") {
+        (n.trim(), 1)
+    } else if let Some(n) = s.strip_suffix("second") {
+        (n.trim(), 1)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n.trim(), 1)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n.trim(), 60)
+    } else {
+        return None;
+    };
+    let n: u64 = num_str.parse().ok()?;
+    Some(Duration::from_secs(n * unit))
 }
 
 // ── AST helpers: table name ───────────────────────────────────────────────────
@@ -601,6 +781,68 @@ mod tests {
         );
         assert!(pq.aggregations.contains(&AggType::Cardinality));
         assert!(pq.group_by_labels.contains(&"RegionID".to_string()));
+    }
+
+    // ── TUMBLE / HOP windows ────────────────────────────────────────────────
+
+    /// Helper that runs the full pipeline (parse + lower), not just Layer 2.
+    fn parse_full(sql: &str) -> QueryExpr {
+        super::super::parse_query_expr(sql)
+            .unwrap_or_else(|e| panic!("parse_query_expr failed: {e}\nSQL: {sql}"))
+    }
+
+    fn has_windowed_agg(e: &QueryExpr) -> bool {
+        match e {
+            QueryExpr::WindowedAgg { .. } => true,
+            QueryExpr::Partition { input, .. }
+            | QueryExpr::TopK { input, .. }
+            | QueryExpr::Sort { input, .. }
+            | QueryExpr::Limit { input, .. } => has_windowed_agg(input),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn tumble_in_group_by_produces_windowed_agg() {
+        let expr = parse_full(
+            "SELECT symbol, AVG(price) FROM trades \
+             GROUP BY symbol, TUMBLE(ts, INTERVAL '5' MINUTE)",
+        );
+        assert!(has_windowed_agg(&expr), "expected WindowedAgg in tree, got {expr:?}");
+    }
+
+    #[test]
+    fn hop_in_group_by_produces_windowed_agg() {
+        let expr = parse_full(
+            "SELECT symbol, COUNT(*) FROM trades \
+             GROUP BY symbol, HOP(ts, INTERVAL '1' MINUTE, INTERVAL '5' MINUTE)",
+        );
+        assert!(has_windowed_agg(&expr), "expected WindowedAgg in tree, got {expr:?}");
+    }
+
+    #[test]
+    fn time_bucket_in_group_by_produces_windowed_agg() {
+        let expr = parse_full(
+            "SELECT symbol, AVG(price) FROM trades \
+             GROUP BY symbol, time_bucket('5 minutes', ts)",
+        );
+        assert!(has_windowed_agg(&expr), "expected WindowedAgg in tree, got {expr:?}");
+    }
+
+    #[test]
+    fn tumble_layer2_emits_window_node() {
+        // Layer 2 only (no lowering): should be Aggregate { input: Window { Source } }
+        let expr = parse(
+            "SELECT symbol, AVG(price) FROM trades \
+             GROUP BY symbol, TUMBLE(ts, INTERVAL '5' MINUTE)",
+        );
+        match &expr {
+            QueryExpr::Aggregate { input, .. } => {
+                assert!(matches!(input.as_ref(), QueryExpr::Window { .. }),
+                    "expected Window inside Aggregate, got {input:?}");
+            }
+            other => panic!("expected Aggregate, got {other:?}"),
+        }
     }
 
     // ── UNION ALL → SetOp ─────────────────────────────────────────────────────
