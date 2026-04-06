@@ -1,0 +1,76 @@
+# Dual-path collector config: sketch pipeline + S3 raw backup.
+#
+# Implements paper §3 Fig.1:
+#   Path 1 (fast): OTLP → sketch processor → OTLP to backend
+#   Path 2 (backup): OTLP → batch → S3 (gzip OTLP JSON)
+#
+# Start: ./sketchcol --config file:config-dual-path.yaml
+#
+# Environment variables:
+#   S3_BUCKET:          S3 bucket name (default: telemetry-raw-backup)
+#   S3_REGION:          AWS region (default: us-east-1)
+#   BACKEND_ENDPOINT:   Backend collector OTLP endpoint (default: backend:4317)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Sketch processor (configure per workload or use controller bootstrap)
+  ddsketch:
+    mode: window
+    window_duration: 60s
+    relative_accuracy: 0.01
+    quantiles: [0.5, 0.9, 0.99]
+    transmit_sketch: true
+    enable_self_monitoring: true
+
+  # Batch processor for S3 path (larger batches for cost efficiency)
+  batch/s3:
+    send_batch_size: 10000
+    timeout: 30s
+    send_batch_max_size: 50000
+
+exporters:
+  # Path 1: sketch output → backend collector
+  otlp/backend:
+    endpoint: ${env:BACKEND_ENDPOINT:-backend:4317}
+    tls:
+      insecure: true
+
+  # Path 2: raw data → S3
+  awss3:
+    s3uploader:
+      region: ${env:S3_REGION:-us-east-1}
+      s3_bucket: ${env:S3_BUCKET:-telemetry-raw-backup}
+      s3_prefix: raw-metrics
+      s3_partition: minute
+    marshaler: otlp_json
+    encoding:
+      compression: gzip
+
+  # Self-monitoring
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+service:
+  pipelines:
+    # Path 1: sketch pipeline (low latency, approximate)
+    metrics/sketch:
+      receivers: [otlp]
+      processors: [ddsketch]
+      exporters: [otlp/backend, prometheus]
+
+    # Path 2: raw backup (high latency, exact)
+    metrics/raw:
+      receivers: [otlp]
+      processors: [batch/s3]
+      exporters: [awss3]
+
+  telemetry:
+    metrics:
+      level: basic

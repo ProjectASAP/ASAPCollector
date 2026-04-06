@@ -6,9 +6,10 @@ import queue
 import threading
 import time
 from pathlib import Path
+from typing import List, Tuple
+
 import grpc
 import numpy as np
-from typing import List, Tuple
 import pandas as pd
 from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2_grpc
 from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2

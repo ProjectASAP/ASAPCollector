@@ -214,7 +214,7 @@ mod tests {
             agent_config: AgentCollectorConfig {
                 output_mode: OutputMode::Sketch,
                 sketch_type: SketchType::DDSketch,
-                sketch_params: SketchParams { relative_accuracy: 0.01, ..Default::default() },
+                sketch_params: SketchParams::DDSketch { relative_accuracy: 0.01, quantiles: vec![0.5, 0.99] },
                 aggregate_by: vec![],
                 label_matchers: vec![],
                 window_duration: None,
@@ -235,6 +235,7 @@ mod tests {
             valid_until: Utc::now() + chrono::Duration::seconds(3600),
             delta_decision: DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 

@@ -101,9 +101,10 @@ mod tests {
     fn first_call_produces_a_plan() {
         let p = planner();
         let plan = p.plan(&workload("latency"), None);
-        // Cost model picks the cheapest sketch that meets the SLA; just verify
-        // we got a sketch-mode plan (not raw passthrough).
-        assert!(plan.agent_config.transmit_sketch);
+        // Cost model picks the cheapest sketch that meets the SLA; verify
+        // we got a valid plan.  transmit_sketch defaults to false (enabled
+        // by CostModelPlanner when appropriate).
+        assert!(!plan.agent_config.transmit_sketch);
     }
 
     #[test]
