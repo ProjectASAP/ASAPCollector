@@ -49,3 +49,6 @@ otel_collector_benchmark/benchmark_results/
 
 # e2esdkbench compiled binary
 opentelemetry-app/e2esdkbench
+
+# Local Python virtualenv deps
+.venv-exathlon/lib/python3.12/site-packages/

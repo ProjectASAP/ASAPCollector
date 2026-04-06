@@ -3,3 +3,8 @@ exathlon/data/raw/
 
 # Exathlon analysis cache
 analysis/code/__pycache__/
+
+# Exathlon analysis outputs
+analysis/results/detailed_windows
+
+analysis/results/summaries
