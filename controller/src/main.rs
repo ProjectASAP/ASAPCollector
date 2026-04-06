@@ -58,9 +58,11 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let api_addr   = std::env::var("CONTROLLER_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:8080".into());
+        .unwrap_or_else(|_| "127.0.0.1:8080".into());
+        // .unwrap_or_else(|_| "0.0.0.0:8080".into());
     let opamp_addr = std::env::var("CONTROLLER_OPAMP_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:4320".into());
+        .unwrap_or_else(|_| "127.0.0.1:4320".into());
+        // .unwrap_or_else(|_| "0.0.0.0:4320".into());
     let opamp_ep   = std::env::var("CONTROLLER_OPAMP_ENDPOINT")
         .unwrap_or_else(|_| "ws://controller:4320/v1/opamp".into());
     let scrape_interval = Duration::from_secs(
@@ -233,6 +235,7 @@ async fn handle_plan(
     Json(spec): Json<QuerySpec>,
 ) -> impl IntoResponse {
     let wc           = spec.workload.clone();
+    let file_output_path = spec.file_output_path.clone();
     let query_string = spec.query_string.clone();
     let workload = match st.analyzer.analyze(spec) {
         Ok(w)  => w,

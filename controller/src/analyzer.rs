@@ -52,6 +52,7 @@ pub struct QuerySpec {
     /// bandwidth comparison. Omit to use conservative defaults.
     #[serde(default)]
     pub workload:       WorkloadCharacteristics,
+    pub file_output_path: Option<String>,
 }
 
 pub struct Analyzer;

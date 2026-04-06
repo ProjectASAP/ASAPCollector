@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::delta_cost_model::decide_delta;
 use super::online_cost_model;
-use super::rules::{default_sketch_params, select_window_strategy, RulesPlanner};
+use super::rules::{build_sketch_params, select_window_strategy, RulesPlanner};
 use crate::types::*;
 
 // ── Benchmark-derived cost table ──────────────────────────────────────────────
@@ -222,7 +222,12 @@ impl CostModelPlanner {
 
         // If a specific sketch type is pinned, use it directly.
         if let Some(st) = &w.sketch_type_override {
-            let params = default_sketch_params(st, w.accuracy_sla);
+            let params = build_sketch_params(
+                &self.inner.sketch_defaults,
+                st,
+                w.accuracy_sla,
+                &w.quantiles,
+            );
             let (mode, window_duration) = select_window_strategy(w);
             let mut plan = self.inner.plan(w);
             plan.agent_config.sketch_type = st.clone();

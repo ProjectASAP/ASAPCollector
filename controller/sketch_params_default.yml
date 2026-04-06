@@ -6,7 +6,7 @@
 # Env var: CONTROLLER_SKETCH_DEFAULTS=path/to/this/file.yaml
 
 # Quantile grid used when the query does not specify explicit φ values.
-quantile_grid: [0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0]
+quantile_grid: [0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0]
 
 ddsketch:
   # DDSketch relative accuracy (α).  Lower = more buckets = higher memory.

@@ -435,6 +435,7 @@ pub struct AgentCollectorConfig {
     /// Minimum absolute cell change included in a delta payload (T).
     /// Ignored when `delta_transmission` is false.
     pub delta_threshold: f64,
+    pub file_output_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
