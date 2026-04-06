@@ -110,6 +110,7 @@ fn build_processor_block(cfg: &AgentCollectorConfig) -> Value {
         Value::Bool(cfg.enable_self_monitoring),
     );
     m.insert("transmit_sketch".into(), Value::Bool(cfg.transmit_sketch));
+    m.insert("drop_original".into(), Value::Bool(cfg.drop_original));
 
     if cfg.mode == ProcessorMode::Window {
         if let Some(wd) = cfg.window_duration {

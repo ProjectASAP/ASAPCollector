@@ -266,6 +266,13 @@ def run_comparison(
         jsonl_data = read_sketch_jsonl(sketch_jsonl_path)
         gt_windows = sorted(ground_truth["window_start_ms"].unique()) if "window_start_ms" in ground_truth.columns else []
         if gt_windows and not jsonl_data.empty:
+            # When the JSONL has mixed content (raw export batches + sketch
+            # window flushes, i.e. drop_original was not set), filter to only
+            # countsketch_partition rows so flush_indices align with actual
+            # window flushes rather than raw export batches.
+            cs_mask = jsonl_data["metric"].str.contains("countsketch_partition", na=False)
+            if cs_mask.any() and not cs_mask.all():
+                jsonl_data = jsonl_data[cs_mask].copy()
             _run_comparison_per_window(
                 fn, query_id, day_tag, ground_truth, jsonl_data,
                 gt_windows, kwargs, comparison_out_dir,
