@@ -30,8 +30,6 @@ use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
 use opamp::{AgentRole, OpampServer, RemoteConfig};
 use planner::{CostModelPlanner, BaselinePlanner, ObjectiveWeights, OnlineMetricsStore, init_online_store, pareto_frontier, select_best};
 use planner::online_cost_model;
-use planner::stage_split::split_expr_by_stage;
-use planner::tco;
 use algebra::physical::physical_plan_to_staged;
 use query_parser::parse_query_expr;
 use replan::Replanner;
@@ -221,7 +219,6 @@ async fn main() {
         .route("/api/v1/collector-config/agent",  get(handle_bootstrap_agent_config))
         .route("/api/v1/collector-config/backend", get(handle_bootstrap_backend_config))
         .route("/api/v1/cost-model",              get(handle_cost_model))
-        .route("/api/v1/tco",                     post(handle_tco))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&api_addr).await.unwrap();
@@ -550,20 +547,6 @@ async fn handle_cost_model(State(st): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "sketches": entries }))).into_response()
 }
 
-// ── TCO endpoint ─────────────────────────────────────────────────────────────
-
-#[derive(serde::Deserialize)]
-struct TcoRequest {
-    workload: tco::TcoWorkload,
-    pricing: Option<tco::CloudPricing>,
-}
-
-async fn handle_tco(Json(req): Json<TcoRequest>) -> impl IntoResponse {
-    let pricing = req.pricing.unwrap_or_default();
-    let estimate = tco::estimate_tco(&req.workload, &pricing);
-    (StatusCode::OK, Json(estimate))
-}
-
 fn short_hash(s: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -615,7 +598,6 @@ fn test_app() -> (AppState, axum::Router) {
         .route("/api/v1/plan/:metric/diff",     axum::routing::get(handle_plan_diff))
         .route("/api/v1/agents",                axum::routing::get(handle_agents))
         .route("/api/v1/cost-model",            axum::routing::get(handle_cost_model))
-        .route("/api/v1/tco",                   axum::routing::post(handle_tco))
         .with_state(state.clone());
     (state, router)
 }
@@ -834,71 +816,5 @@ mod api_tests {
         let body = body_json(resp).await;
         // No agents connected → empty object.
         assert_eq!(body, serde_json::json!({}));
-    }
-
-    // ── POST /api/v1/tco ─────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn tco_returns_valid_estimate() {
-        let (_, app) = test_app();
-        let body = serde_json::json!({
-            "workload": {
-                "series_count": 100000,
-                "samples_per_sec": 1.0,
-                "bytes_per_sample": 100,
-                "scrape_interval_secs": 15,
-                "queries_per_sec": 1.0,
-                "query_window_secs": 300,
-                "retention_days": 30,
-                "sketch_compression_ratio": 0.05,
-                "delta_compression_ratio": 0.3
-            }
-        });
-        let req = Request::builder()
-            .method("POST").uri("/api/v1/tco")
-            .header("content-type", "application/json")
-            .body(Body::from(body.to_string())).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_json(resp).await;
-        assert!(body["before"]["total_dollars"].as_f64().unwrap() > 0.0);
-        assert!(body["after"]["total_dollars"].as_f64().unwrap() > 0.0);
-        assert!(body["savings_percent"].as_f64().unwrap() > 0.0);
-    }
-
-    #[tokio::test]
-    async fn tco_with_custom_pricing() {
-        let (_, app) = test_app();
-        let body = serde_json::json!({
-            "workload": {
-                "series_count": 50000,
-                "samples_per_sec": 1.0,
-                "bytes_per_sample": 100,
-                "scrape_interval_secs": 15,
-                "queries_per_sec": 1.0,
-                "query_window_secs": 300,
-                "retention_days": 30,
-                "sketch_compression_ratio": 0.05,
-                "delta_compression_ratio": 0.3
-            },
-            "pricing": {
-                "grafana_per_1k_series_1dpm": 8.0,
-                "s3_storage_per_gb_month": 0.023,
-                "s3_put_per_1k": 0.005,
-                "s3_get_per_1k": 0.0004,
-                "s3_transfer_per_gb": 0.09,
-                "ec2_sketch_instance_per_hour": 0.384
-            }
-        });
-        let req = Request::builder()
-            .method("POST").uri("/api/v1/tco")
-            .header("content-type", "application/json")
-            .body(Body::from(body.to_string())).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_json(resp).await;
-        // With higher Grafana pricing, before cost should be higher.
-        assert!(body["before"]["ingestion_dollars"].as_f64().unwrap() > 0.0);
-        assert!(body["monthly_savings_dollars"].as_f64().unwrap() > 0.0);
     }
 }
