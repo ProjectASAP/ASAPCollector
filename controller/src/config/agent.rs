@@ -45,10 +45,19 @@ pub fn generate_agent_config(
     let processor_key = cfg.sketch_type.to_string();
     let processor_val = build_processor_block(cfg);
 
-    // Standard OTLP receiver (gRPC + HTTP).
-    let otlp_receiver: Value = serde_yaml::from_str(
+    // Standard OTLP receiver (gRPC + HTTP) with optional series_id registry.
+    let mut otlp_map: Mapping = serde_yaml::from_str(
         "protocols:\n  grpc:\n    endpoint: \"0.0.0.0:4317\"\n  http:\n    endpoint: \"0.0.0.0:4318\"\n",
     ).unwrap();
+
+    otlp_map.insert("enable_series_id".into(), Value::Bool(cfg.enable_series_id));
+    if cfg.series_id_ttl_secs > 0 {
+        otlp_map.insert(
+            "series_id_ttl".into(),
+            Value::String(format!("{}s", cfg.series_id_ttl_secs)),
+        );
+    }
+    let otlp_receiver = Value::Mapping(otlp_map);
 
     // Prometheus exporter so downstream scrapers can observe the pipeline.
     let prom_exporter: Value = serde_yaml::from_str("endpoint: \"0.0.0.0:8889\"\n").unwrap();
@@ -184,6 +193,8 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+                enable_series_id: true,
+                series_id_ttl_secs: 0,
         }
     }
 
@@ -257,6 +268,8 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+                enable_series_id: true,
+                series_id_ttl_secs: 0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(yaml.contains("HLL:"), "YAML should contain HLL processor key\n{yaml}");
@@ -289,6 +302,8 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+                enable_series_id: true,
+                series_id_ttl_secs: 0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
@@ -391,6 +406,8 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+                enable_series_id: true,
+                series_id_ttl_secs: 0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(yaml.contains("KLL:"), "YAML should contain 'KLL:'\n{yaml}");
@@ -416,6 +433,8 @@ mod tests {
             drop_original: true,
             delta_transmission: false,
             delta_threshold: 0.0,
+                enable_series_id: true,
+                series_id_ttl_secs: 0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
@@ -456,6 +475,8 @@ mod tests {
                 drop_original: true,
                 delta_transmission: false,
                 delta_threshold: 0.0,
+                enable_series_id: true,
+                series_id_ttl_secs: 0,
             };
             let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
 

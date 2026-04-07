@@ -429,6 +429,13 @@ pub struct AgentCollectorConfig {
     pub enable_self_monitoring: bool,
     pub transmit_sketch: bool,
     pub drop_original: bool,
+    /// Whether to enable the series ID (UID) registry on the OTLP receiver.
+    /// When true, the receiver caches metric name + attributes per series and
+    /// assigns a compact `series_id`. Subsequent exports can omit attributes
+    /// and send only the ID, saving ~120 bytes per sample.
+    pub enable_series_id: bool,
+    /// TTL for series ID cache entries (seconds). 0 = use receiver default.
+    pub series_id_ttl_secs: u64,
     /// Whether the agent processor should enable delta encoding.
     /// Set by the delta cost model after sketch type selection.
     pub delta_transmission: bool,
