@@ -16,11 +16,13 @@
 #       [--rate 20]
 #       [--duration 20s]
 #       [--skip-build]
+#       [--plan-only]    # run only plan tests (no collector/bench), useful for CI
 #
 # Prerequisites:
 #   - cargo      (Rust toolchain)
-#   - go         (Go toolchain)
+#   - go         (Go toolchain)  — only for data-plane tests
 #   - curl, python3
+#   - Run ./setup.sh first to initialise submodules and apply patches
 
 set -euo pipefail
 
@@ -34,16 +36,21 @@ SERIES=100
 SAMPLES_PER_SEC=20
 BENCH_DURATION="20s"
 SKIP_BUILD=false
+PLAN_ONLY=false
 
 # ── PromQL test cases ─────────────────────────────────────────────────────────
 # Each entry: "promql_query|expected_sketch|expected_aggregation|metric_name"
 # metric_name is what the controller should extract from the PromQL.
+#
+# Note: expected_sketch is advisory — the cost-model planner may choose a
+# different sketch (e.g. KLL instead of DDSketch for quantile).  The test
+# only WARNs on mismatch, it does not fail.
 TEST_CASES=(
   'quantile_over_time(0.99, http_request_duration_seconds[5m])|ddsketch|quantile|http_request_duration_seconds'
   'histogram_quantile(0.99, rate(http_request_duration_seconds[5m]))|ddsketch|quantile|http_request_duration_seconds'
   'avg_over_time(cpu_usage_percent[10m])|ddsketch|quantile|cpu_usage_percent'
-  'count(count_over_time(user_sessions[1h]) by (region))|hll|cardinality|user_sessions'
-  'topk(10, sum(rate(api_errors_total[5m])) by (endpoint))|countminsketch|frequency|api_errors_total'
+  'count by (region) (count_over_time(user_sessions[1h]))|hll|cardinality|user_sessions'
+  'topk by (endpoint) (10, sum(rate(api_errors_total[5m])))|countminsketch|frequency|api_errors_total'
 )
 
 # Allow user to pass a single custom query instead
@@ -55,6 +62,7 @@ for arg in "$@"; do
     --rate=*)       SAMPLES_PER_SEC="${arg#*=}" ;;
     --duration=*)   BENCH_DURATION="${arg#*=}" ;;
     --skip-build)   SKIP_BUILD=true ;;
+    --plan-only)    PLAN_ONLY=true ;;
     *) echo "Unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
@@ -105,9 +113,9 @@ if [[ ! -x "$CONTROLLER_BIN" ]]; then
   echo "       Run without --skip-build, or run: cargo build --release" >&2
   exit 1
 fi
-if [[ ! -x "$DDSKETCHCOL" ]]; then
+if [[ "$PLAN_ONLY" == false && ! -x "$DDSKETCHCOL" ]]; then
   echo "ERROR: ddsketchcol binary not found at ${DDSKETCHCOL}" >&2
-  echo "       Run: ${ROOT}/build_ddsketchcol.sh" >&2
+  echo "       Run: ${ROOT}/build_ddsketchcol.sh, or use --plan-only" >&2
   exit 1
 fi
 
@@ -318,24 +326,35 @@ if [[ $PLAN_FAIL -gt 0 ]]; then
   echo "==> [FAIL] Some PromQL plan tests failed. Aborting before collector phase." >&2
   exit 1
 fi
+
+if [[ "$PLAN_ONLY" == true ]]; then
+  echo ""
+  echo "==> [PASS] PromQL plan tests completed (--plan-only, skipping data-plane)."
+  exit 0
+fi
 echo ""
 
 # ── Step 4: Data-plane test — pick one query, run collector + bench ───────────
-# Use the first test case (quantile_over_time → ddsketch) for the live collector
-# test since ddsketch is the most common sketch type.
-IFS='|' read -r LIVE_QUERY LIVE_SKETCH LIVE_AGG LIVE_METRIC <<< "${TEST_CASES[0]}"
+# We use a dedicated metric name and pin sketch_type to "ddsketch" because the
+# ddsketchcol binary only registers the "ddsketch" processor; other sketch types
+# (KLL, HLL, etc.) require separate processor binaries.
+# A unique metric name avoids cache collision with step 3's unpinned plans.
+LIVE_QUERY="quantile_over_time(0.99, benchmark_latency[5m])"
+LIVE_SKETCH="ddsketch"
+LIVE_METRIC="benchmark_latency"
 
 echo "==> [Step 4] Data-plane test: PromQL → collector → metrics"
 echo "    Query:  ${LIVE_QUERY}"
-echo "    Sketch: ${LIVE_SKETCH}"
+echo "    Sketch: ${LIVE_SKETCH} (pinned for collector compatibility)"
 echo "    Metric: ${LIVE_METRIC}"
 echo ""
 
-# Re-submit the plan (may already exist from step 3, but ensures clean state)
+# Submit plan with sketch_type pinned to ddsketch
 PLAN_RESP=$(curl -sf -X POST "${CONTROLLER_API}/api/v1/plan" \
   -H "Content-Type: application/json" \
   -d "{
     \"query_string\":  \"${LIVE_QUERY}\",
+    \"sketch_type\":   \"${LIVE_SKETCH}\",
     \"accuracy_sla\":  0.01,
     \"latency_sla\":   \"10m\",
     \"workload\": {
