@@ -7,6 +7,8 @@ import pandas as pd
 
 from utils import DEBS_ROOT
 
+_DEFAULT_TRADING_START = "09:00:00"
+
 
 def nz(s: pd.Series) -> pd.Series:
     x = s.astype("string").str.strip()
@@ -15,7 +17,8 @@ def nz(s: pd.Series) -> pd.Series:
 
 def main() -> None:
     p = argparse.ArgumentParser(
-        description="Write rows with Last and Trading time to data_filtered/",
+        description="Write rows with Last and Trading time to data_filtered/. "
+                    "Rows whose Trading time is before --trading-start are dropped.",
     )
     p.add_argument(
         "--source",
@@ -30,8 +33,16 @@ def main() -> None:
         help="Output directory for price-stream CSVs",
     )
     p.add_argument("--chunksize", type=int, default=200_000)
+    p.add_argument(
+        "--trading-start",
+        default=_DEFAULT_TRADING_START,
+        help="Earliest Trading time to keep, HH:MM:SS format in CET "
+             f"(default: {_DEFAULT_TRADING_START}). "
+             "Rows with a Trading time before this value are excluded.",
+    )
     args = p.parse_args()
     args.dest.mkdir(parents=True, exist_ok=True)
+
     for path in sorted(args.source.glob("*.csv")):
         if not path.is_file():
             continue
@@ -51,6 +62,10 @@ def main() -> None:
             m = nz(chunk["Last"]) & nz(chunk["Trading time"])
             last_num = pd.to_numeric(chunk.loc[m, "Last"], errors="coerce")
             m[m] = last_num > 0
+            # Keep only rows at or after the configured trading start time.
+            # Trading time is HH:MM:SS[.ssss] in CET — lexicographic comparison works.
+            tt = chunk["Trading time"].astype(str).str.strip()
+            m &= tt >= args.trading_start
             sub = chunk.loc[m]
             if sub.empty:
                 continue
