@@ -387,7 +387,24 @@ def kill_process_on_tcp_port(port: int) -> None:
             subprocess.run(["kill", pid], check=False)
         except OSError:
             pass
-    time.sleep(1)
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        try:
+            remaining = subprocess.check_output(
+                ["lsof", "-ti", f"tcp:{port}"], stderr=subprocess.DEVNULL, text=True
+            ).strip().split()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return
+        if not remaining:
+            return
+        time.sleep(0.25)
+
+    for pid in remaining:
+        try:
+            subprocess.run(["kill", "-9", pid], check=False)
+        except OSError:
+            pass
+    time.sleep(0.5)
 
 
 def maybe_clear_aggregate_csvs(results_dir: Path, clear: bool) -> None:
@@ -432,6 +449,17 @@ def _run_one_query_file(
     cpid: subprocess.Popen | None = None
     tag = file_tag_safe(file_tag)
     replay_mode = replay_mode_for_run(mode)
+    if replay_mode == "paced" and abs(float(speed) - 1.0) > 1e-12:
+        print(
+            "warning: replay mode 'paced' ignores --speed; use --mode scaled to apply speed factor",
+            file=sys.stderr,
+        )
+    if accuracy_minutes > 0:
+        print(
+            f"warning: --accuracy-minutes={accuracy_minutes} replays only a prefix of event time; "
+            "accuracy may not be representative of full-file results",
+            file=sys.stderr,
+        )
 
     try:
         if not is_nop:
@@ -444,24 +472,29 @@ def _run_one_query_file(
                     mode,
                 ),
             )
-            cpid = subprocess.Popen(
-                [str(collector_bin), f"--config={controller.rstrip('/')}/api/v1/config/{metric}"],
-                stdout=open(results_dir / "collector.log", "wb"),
-                stderr=subprocess.STDOUT,
-                cwd=str(bench_root),
-            )
+            with open(results_dir / "collector.log", "wb") as logf:
+                cpid = subprocess.Popen(
+                    [
+                        str(collector_bin),
+                        f"--config={controller.rstrip('/')}/api/v1/config/{metric}",
+                    ],
+                    stdout=logf,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(bench_root),
+                )
         else:
             nop_cfg = nop_config_path(collector_bin)
             if not nop_cfg.is_file():
                 print(f"NOP config not found: {nop_cfg}", file=sys.stderr)
                 return 1
             print(f"NOP query {query}: using {nop_cfg}", file=sys.stderr)
-            cpid = subprocess.Popen(
-                [str(collector_bin), f"--config={nop_cfg}"],
-                stdout=open(results_dir / "collector.log", "wb"),
-                stderr=subprocess.STDOUT,
-                cwd=str(bench_root),
-            )
+            with open(results_dir / "collector.log", "wb") as logf:
+                cpid = subprocess.Popen(
+                    [str(collector_bin), f"--config={nop_cfg}"],
+                    stdout=logf,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(bench_root),
+                )
 
         if not is_nop:
             if not wait_for_prometheus(PROMETHEUS_METRICS_URL, timeout_s=30.0):
@@ -565,6 +598,12 @@ def run_benchmark_test(args: argparse.Namespace) -> int:
     maybe_clear_aggregate_csvs(results_dir, args.clear_results)
 
     controller = os.environ.get("CONTROLLER", "http://localhost:8080")
+    api_port = parse_controller_api_port(controller)
+    opamp_port = int(os.environ.get("CONTROLLER_OPAMP_PORT", "4320"))
+    if not controller_ready(controller) and os.environ.get("AUTO_START_CONTROLLER", "1") == "1":
+        kill_process_on_tcp_port(api_port)
+        kill_process_on_tcp_port(opamp_port)
+
     controller_bin = _env_path(
         "CONTROLLER_BIN",
         REPO_ROOT / "controller" / "target" / "release" / "controller",
@@ -647,7 +686,9 @@ def run_matrix(args: argparse.Namespace) -> int:
 
     controller = os.environ.get("CONTROLLER", "http://localhost:8080")
     api_port = parse_controller_api_port(controller)
+    opamp_port = int(os.environ.get("CONTROLLER_OPAMP_PORT", "4320"))
     kill_process_on_tcp_port(api_port)
+    kill_process_on_tcp_port(opamp_port)
 
     controller_bin = _env_path(
         "CONTROLLER_BIN",

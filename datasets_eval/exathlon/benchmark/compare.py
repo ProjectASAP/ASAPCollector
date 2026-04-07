@@ -22,8 +22,14 @@ _BENCH_ROOT = Path(__file__).resolve().parent
 if str(_BENCH_ROOT) not in sys.path:
     sys.path.insert(0, str(_BENCH_ROOT))
 
-from ground_truth.common import WINDOW_5MIN_S, WINDOW_15MIN_S, TOP_K_ENTITIES, TOP_K_METRICS
-from common import METRIC_NAME, file_tag_safe
+from ground_truth.common import (
+    WINDOW_5MIN_S,
+    WINDOW_15MIN_S,
+    TOP_K_ENTITIES,
+    TOP_K_METRICS,
+    _stream_long_chunks,
+)
+from common import METRIC_NAME, file_csv_path, file_tag_safe
 
 # Prometheus metric name prefix (dots become underscores).
 _PROM_PREFIX = METRIC_NAME.replace(".", "_")  # "system_telemetry"
@@ -598,6 +604,255 @@ def _read_replay_cutoff_s(send_times_path: Path | None) -> int | None:
     return int(event_ns.max() // 1_000_000_000)
 
 
+def _build_q1_replay_relative_ground_truth(
+    file_tag: str,
+    replay_cutoff_s: int | None,
+    accuracy_minutes: int,
+    chunksize: int = 200,
+) -> pd.DataFrame:
+    """Compute Q1 exact quantiles using replay-relative 5-minute windows.
+
+    The canonical Q1 ground truth uses Unix-epoch tumbling windows.  The
+    benchmark DDSketch window processor flushes by collector wall-clock ticker,
+    which makes its windows replay-relative rather than epoch-aligned.  This
+    helper rebuilds Q1 over raw samples with window 0 anchored at the first raw
+    replay timestamp so compare.py can evaluate the collector on matching
+    replay-relative windows without overwriting the canonical GT CSV.
+    """
+    csv_path = file_csv_path(file_tag)
+    if not csv_path.is_file():
+        return pd.DataFrame()
+
+    acc: dict[tuple[str, str, int], list[float]] = {}
+    origin_s: int | None = None
+    cutoff_s: int | None = None
+    max_seen_s: int | None = None
+
+    for chunk in _stream_long_chunks(csv_path, chunksize):
+        if chunk.empty:
+            continue
+        ts = chunk["ts_s"].to_numpy(dtype=np.int64)
+        chunk_max_s = int(ts.max())
+        max_seen_s = chunk_max_s if max_seen_s is None else max(max_seen_s, chunk_max_s)
+        if origin_s is None:
+            origin_s = int(ts.min())
+            if accuracy_minutes > 0:
+                cutoff_s = origin_s + accuracy_minutes * 60
+            if replay_cutoff_s is not None:
+                cutoff_s = replay_cutoff_s if cutoff_s is None else min(cutoff_s, replay_cutoff_s)
+        assert origin_s is not None
+
+        if cutoff_s is not None:
+            if int(ts.min()) > cutoff_s:
+                break
+            chunk = chunk[chunk["ts_s"] <= cutoff_s]
+            if chunk.empty:
+                continue
+
+        rel_window_idx = ((chunk["ts_s"].to_numpy(dtype=np.int64) - origin_s) // WINDOW_5MIN_S)
+        chunk = chunk.copy()
+        chunk["window_start_s"] = origin_s + rel_window_idx * WINDOW_5MIN_S
+        for (entity, mb, ws), group in chunk.groupby(["entity", "metric_base", "window_start_s"]):
+            key = (str(entity), str(mb), int(ws))
+            acc.setdefault(key, []).extend(group["value"].astype(float).tolist())
+
+    if origin_s is None or not acc:
+        return pd.DataFrame()
+
+    if cutoff_s is None:
+        # Exclude the final partial replay-relative window when the file does
+        # not end exactly on a 5-minute boundary.
+        cutoff_s = max_seen_s
+
+    rows = []
+    for (entity, mb, ws), values in acc.items():
+        if ws + WINDOW_5MIN_S > cutoff_s:
+            continue
+        arr = np.asarray(values, dtype=np.float64)
+        if arr.size == 0:
+            continue
+        p50 = float(np.percentile(arr, 50))
+        p90 = float(np.percentile(arr, 90))
+        p95 = float(np.percentile(arr, 95))
+        p99 = float(np.percentile(arr, 99))
+        rows.append({
+            "entity": entity,
+            "metric_base": mb,
+            "window_start_s": ws,
+            "window_size_s": WINDOW_5MIN_S,
+            "window_label": "5min_replay_relative",
+            "p50": p50,
+            "p90": p90,
+            "p95": p95,
+            "p99": p99,
+            "tail_ratio_p99_p50": (p99 / p50) if p50 != 0.0 else float("nan"),
+            "tail_ratio_p95_p50": (p95 / p50) if p50 != 0.0 else float("nan"),
+            "count": int(arr.size),
+        })
+
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    out.sort_values(["entity", "metric_base", "window_start_s"], inplace=True)
+    out.reset_index(drop=True, inplace=True)
+    return out
+
+
+def _build_q1_single_window_ground_truth(
+    file_tag: str,
+    window_start_s: int,
+    window_end_s: int,
+    chunksize: int = 2000,
+) -> pd.DataFrame:
+    """Compute Q1 exact quantiles for one event-time window.
+
+    DDSketch window mode flushes by collector wall-clock time.  The best
+    comparator-side approximation for a selected scrape is therefore the raw
+    event-time interval that had been emitted when that scrape was taken.
+    """
+    csv_path = file_csv_path(file_tag)
+    if not csv_path.is_file() or window_end_s <= window_start_s:
+        return pd.DataFrame()
+
+    acc: dict[tuple[str, str], list[float]] = {}
+    for chunk in _stream_long_chunks(csv_path, chunksize):
+        if chunk.empty:
+            continue
+        chunk = chunk[
+            (chunk["ts_s"] >= window_start_s) & (chunk["ts_s"] <= window_end_s)
+        ]
+        if chunk.empty:
+            continue
+        for (entity, mb), group in chunk.groupby(["entity", "metric_base"]):
+            key = (str(entity), str(mb))
+            acc.setdefault(key, []).extend(group["value"].astype(float).tolist())
+
+    rows = []
+    for (entity, mb), values in acc.items():
+        arr = np.asarray(values, dtype=np.float64)
+        if arr.size == 0:
+            continue
+        p50 = float(np.percentile(arr, 50))
+        p90 = float(np.percentile(arr, 90))
+        p95 = float(np.percentile(arr, 95))
+        p99 = float(np.percentile(arr, 99))
+        rows.append({
+            "entity": entity,
+            "metric_base": mb,
+            "window_start_s": window_start_s,
+            "window_size_s": WINDOW_5MIN_S,
+            "window_label": "5min_flush_aligned",
+            "p50": p50,
+            "p90": p90,
+            "p95": p95,
+            "p99": p99,
+            "tail_ratio_p99_p50": (p99 / p50) if p50 != 0.0 else float("nan"),
+            "tail_ratio_p95_p50": (p95 / p50) if p50 != 0.0 else float("nan"),
+            "count": int(arr.size),
+        })
+
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    out.sort_values(["entity", "metric_base"], inplace=True)
+    out.reset_index(drop=True, inplace=True)
+    return out
+
+
+def _event_time_at_or_before_scrape_s(
+    send_times_path: Path | None,
+    scrape_wall_ns: int,
+) -> int | None:
+    if send_times_path is None or not send_times_path.is_file():
+        return None
+    try:
+        send_times = pd.read_csv(send_times_path, usecols=["emit_wall_ns", "event_time_ns"])
+    except (ValueError, FileNotFoundError, pd.errors.EmptyDataError):
+        return None
+    if send_times.empty:
+        return None
+
+    emit_ns = pd.to_numeric(send_times["emit_wall_ns"], errors="coerce")
+    event_ns = pd.to_numeric(send_times["event_time_ns"], errors="coerce")
+    valid = emit_ns.notna() & event_ns.notna()
+    if not valid.any():
+        return None
+
+    eligible = send_times.loc[valid & (emit_ns <= scrape_wall_ns), "event_time_ns"]
+    if eligible.empty:
+        return None
+    return int(pd.to_numeric(eligible, errors="coerce").max() // 1_000_000_000)
+
+
+def _get_time_aligned_snapshot_for_gt_window(
+    sketch_data: pd.DataFrame,
+    ground_truth: pd.DataFrame,
+    send_times_path: Path | None,
+) -> pd.DataFrame:
+    """Return a scrape snapshot aligned to the last completed GT window.
+
+    Mapping is done through send_times.csv:
+      event_time_ns (replay event clock) -> emit_wall_ns (wall clock at OTLP export).
+    We pick the newest export whose event time is within the completed GT window
+    range, then select the nearest scrape at/before that wall timestamp.
+    """
+    if (
+        sketch_data.empty
+        or ground_truth.empty
+        or send_times_path is None
+        or not send_times_path.is_file()
+        or "window_start_s" not in ground_truth.columns
+    ):
+        return pd.DataFrame()
+
+    try:
+        send_times = pd.read_csv(send_times_path, usecols=["emit_wall_ns", "event_time_ns"])
+    except (ValueError, FileNotFoundError, pd.errors.EmptyDataError):
+        return pd.DataFrame()
+    if send_times.empty:
+        return pd.DataFrame()
+
+    gt_ws = pd.to_numeric(ground_truth["window_start_s"], errors="coerce")
+    if gt_ws.dropna().empty:
+        return pd.DataFrame()
+    if "window_size_s" in ground_truth.columns:
+        gt_size = pd.to_numeric(ground_truth["window_size_s"], errors="coerce")
+        gt_end_s = (gt_ws + gt_size).dropna()
+        if gt_end_s.empty:
+            return pd.DataFrame()
+        target_event_s = int(gt_end_s.max())
+    else:
+        target_event_s = int(gt_ws.max())
+
+    event_ns = pd.to_numeric(send_times["event_time_ns"], errors="coerce")
+    emit_ns = pd.to_numeric(send_times["emit_wall_ns"], errors="coerce")
+    valid = event_ns.notna() & emit_ns.notna()
+    if not valid.any():
+        return pd.DataFrame()
+    event_s = (event_ns[valid] // 1_000_000_000).astype(np.int64)
+    emit_valid = emit_ns[valid].astype(np.int64)
+
+    eligible = emit_valid[event_s <= target_event_s]
+    if eligible.empty:
+        return pd.DataFrame()
+    target_emit_ns = int(eligible.max())
+
+    scrape_ns = pd.to_numeric(sketch_data.get("scrape_wall_ns"), errors="coerce")
+    scrape_valid = sketch_data[scrape_ns.notna()].copy()
+    if scrape_valid.empty:
+        return pd.DataFrame()
+    scrape_ns_valid = pd.to_numeric(scrape_valid["scrape_wall_ns"], errors="coerce").astype(np.int64)
+
+    before_or_equal = scrape_ns_valid[scrape_ns_valid <= target_emit_ns]
+    if not before_or_equal.empty:
+        chosen_ns = int(before_or_equal.max())
+    else:
+        # If scrape cadence is sparse, fall back to the closest scrape.
+        idx = (scrape_ns_valid - target_emit_ns).abs().idxmin()
+        chosen_ns = int(scrape_ns_valid.loc[idx])
+    return scrape_valid[scrape_ns_valid == chosen_ns]
+
+
 def run_comparison(
     query_id: str,
     file_tag: str,
@@ -619,6 +874,14 @@ def run_comparison(
     # "last window" selected by each compare function corresponds to the data
     # the sketch has ingested, not the end of the full 60-minute file.
     replay_cutoff_s = _read_replay_cutoff_s(send_times_path)
+    if query_id == "Q1" and replay_cutoff_s is not None:
+        replay_relative_gt = _build_q1_replay_relative_ground_truth(
+            file_tag,
+            replay_cutoff_s=replay_cutoff_s,
+            accuracy_minutes=accuracy_minutes,
+        )
+        if not replay_relative_gt.empty:
+            ground_truth = replay_relative_gt
     ground_truth = _filter_gt_to_replay_range(
         ground_truth,
         accuracy_minutes,
@@ -636,7 +899,34 @@ def run_comparison(
     if fn is None:
         return
 
-    sketch_snapshot = get_best_snapshot_for_query(sketch_data, query_id)
+    aligned_snapshot = _get_time_aligned_snapshot_for_gt_window(
+        sketch_data,
+        ground_truth,
+        send_times_path,
+    )
+    if aligned_snapshot.empty:
+        sketch_snapshot = get_best_snapshot_for_query(sketch_data, query_id)
+    else:
+        sketch_snapshot = get_best_snapshot_for_query(aligned_snapshot, query_id)
+
+    if query_id == "Q1" and not sketch_snapshot.empty:
+        scrape_wall = pd.to_numeric(
+            sketch_snapshot["scrape_wall_ns"], errors="coerce"
+        ).dropna()
+        if not scrape_wall.empty:
+            window_end_s = _event_time_at_or_before_scrape_s(
+                send_times_path,
+                int(scrape_wall.max()),
+            )
+            if window_end_s is not None:
+                flush_aligned_gt = _build_q1_single_window_ground_truth(
+                    file_tag,
+                    window_start_s=window_end_s - WINDOW_5MIN_S,
+                    window_end_s=window_end_s,
+                )
+                if not flush_aligned_gt.empty:
+                    ground_truth = flush_aligned_gt
+
     if query_id == "Q6":
         result = fn(ground_truth, sketch_data, file=tag)
     else:

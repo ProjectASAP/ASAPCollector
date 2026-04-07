@@ -73,7 +73,15 @@ Polls `http://localhost:8889/metrics` every 2 seconds and appends rows to `resul
 
 ### compare.py — sketch vs ground truth
 
-Loads the ground-truth CSV for the given query and file, selects the best Prometheus scrape snapshot (most non-zero sketch rows), extracts estimates, and writes a one-row-per-metric comparison CSV to `results/comparison/`.
+Loads the ground-truth CSV for the given query and file, selects the best Prometheus scrape snapshot (most non-zero sketch rows), extracts estimates, and writes a one-row-per-metric comparison CSV to `results/comparison/`. For Q1 runs with `send_times.csv`, the comparator rebuilds the 5-minute exact reference from raw data around the selected scrape's observed replay event time, so it aligns with collector timer-driven sketch flushes instead of Unix-epoch buckets.
+
+Q1 alignment notes:
+
+- The canonical offline Q1 ground truth uses Unix-epoch 5-minute windows.
+- DDSketch window mode flushes on the collector's wall-clock ticker, so its output window is not necessarily aligned to Unix-epoch or first-event replay buckets.
+- `compare.py` first uses `send_times.csv` to select a scrape aligned with replay progress, then rebuilds the exact Q1 reference for the raw 5-minute event interval ending at the last emitted event before that scrape.
+- This avoids comparing a DDSketch flush window against a shifted ground-truth window, which can otherwise make an accurate sketch look inaccurate.
+- If the collector does not emit quantile `0.95`, Q1 falls back to comparing emitted `0.90` against exact p90 for the `frac_q95_lt_1pct` row; the row label is retained for report compatibility.
 
 Accuracy metrics per query:
 
@@ -137,6 +145,15 @@ python3 datasets_eval/exathlon/benchmark/ground_truth/run_gt.py \
 ```
 
 ### Step 2 — Single accuracy run
+
+```bash
+python3 datasets_eval/exathlon/benchmark/run.py test \
+  --query Q1 \
+  --file app1/1_0_10000_17 \
+  --mode sketch-telemetry
+```
+
+Quick smoke run (partial event-time replay):
 
 ```bash
 python3 datasets_eval/exathlon/benchmark/run.py test \
@@ -226,7 +243,6 @@ python3 datasets_eval/exathlon/benchmark/summarize.py \
 | `COLLECTOR_COUNTSKETCH` | (default path) | Override CountSketch collector binary |
 | `COLLECTOR_COUNTMINSKETCH` | (default path) | Override CountMinSketch collector binary |
 | `COLLECTOR_NOP` | (default path) | Override NOP collector binary |
-
 ---
 
 ## Results layout

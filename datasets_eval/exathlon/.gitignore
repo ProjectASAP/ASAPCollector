@@ -19,3 +19,7 @@ analysis/results/summaries
 /benchmark/results/*.log
 /benchmark/results/send_times.csv
 /benchmark/results/export_diagnostics.csv
+
+
+.fuse_hidden*
+**/.fuse_hidden*

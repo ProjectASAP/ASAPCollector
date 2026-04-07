@@ -265,6 +265,7 @@ def main() -> None:
     send_times_file = open(send_times_path, "w", newline="", encoding="utf-8")
     send_times_writer = csv.writer(send_times_file)
     send_times_writer.writerow(["emit_wall_ns", "event_time_ns"])
+    send_times_file.flush()
     export_diag_file = open(export_diag_path, "w", newline="", encoding="utf-8")
     export_diag_writer = csv.writer(export_diag_file)
     export_diag_writer.writerow([
@@ -278,6 +279,7 @@ def main() -> None:
         "event_span_ms",
         "event_regressions",
     ])
+    export_diag_file.flush()
 
     total_events = 0
     export_count = 0
@@ -331,10 +333,14 @@ def main() -> None:
                             continue
                         print("export failed", code, rpc_error.details(), flush=True)
                         raise
-                    for row in current:
-                        send_times_writer.writerow([wall_ns, row[1]])
                     event_min_ns = min(row[1] for row in current)
                     event_max_ns = max(row[1] for row in current)
+                    # One row per export: wall time of the Export() call vs. the
+                    # last event timestamp in this batch.  Writing per-point was
+                    # wrong: every point in a batch shares the same emit_wall_ns,
+                    # making np.diff(emit_ns) = 0 inside each batch and producing
+                    # spurious zero inter-arrival times and a negative lag drift.
+                    send_times_writer.writerow([wall_ns, event_max_ns])
                     regressions = 0
                     prev_event = current[0][1]
                     for row in current[1:]:
