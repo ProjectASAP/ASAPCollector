@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # bench_series_id.sh — Bandwidth benchmark: series_id enabled vs disabled
 #
-# Runs e2esdkbench twice against the controller+sketchcollector:
-#   1. With enable_series_id: true  (UID registry active)
-#   2. With enable_series_id: false (stateless OTLP, full attrs every sample)
-#
-# Compares total bytes sent and per-sample overhead.
+# Runs e2esdkbench with series_id on/off and compares wire bytes.
+# Supports both sketch (ddsketch) and raw (baseline/Gauge) modes to show
+# that savings are most visible with raw samples at high cardinality.
 #
 # Usage:
-#   ./tests/bench_series_id.sh [--skip-build] [--series 100] [--duration 20s]
+#   ./tests/bench_series_id.sh [--skip-build] [--duration 15s]
+#   ./tests/bench_series_id.sh --sketch-type=baseline --series=1000
+#   ./tests/bench_series_id.sh --all   # run all combinations
 
 set -euo pipefail
 
@@ -17,17 +17,21 @@ CONTROLLER_DIR="${ROOT}/controller"
 SKETCHCOL="${ROOT}/opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector"
 E2EBENCH_DIR="${ROOT}/opentelemetry-app"
 
-SERIES=100
-BENCH_DURATION="20s"
+SERIES=500
+BENCH_DURATION="15s"
 SAMPLES_PER_SEC=10
+SKETCH_TYPE="baseline"
 SKIP_BUILD=false
+RUN_ALL=false
 
 for arg in "$@"; do
   case "$arg" in
-    --series=*)     SERIES="${arg#*=}" ;;
-    --duration=*)   BENCH_DURATION="${arg#*=}" ;;
-    --rate=*)       SAMPLES_PER_SEC="${arg#*=}" ;;
-    --skip-build)   SKIP_BUILD=true ;;
+    --series=*)       SERIES="${arg#*=}" ;;
+    --duration=*)     BENCH_DURATION="${arg#*=}" ;;
+    --rate=*)         SAMPLES_PER_SEC="${arg#*=}" ;;
+    --sketch-type=*)  SKETCH_TYPE="${arg#*=}" ;;
+    --skip-build)     SKIP_BUILD=true ;;
+    --all)            RUN_ALL=true ;;
     *) echo "Unknown arg: $arg" >&2; exit 1 ;;
   esac
 done
@@ -49,19 +53,18 @@ CONTROLLER_BIN="${CONTROLLER_DIR}/target/release/controller"
 [[ ! -x "$CONTROLLER_BIN" ]] && { echo "ERROR: controller not built" >&2; exit 1; }
 [[ ! -x "$SKETCHCOL" ]]      && { echo "ERROR: sketchcollector not built" >&2; exit 1; }
 
-run_bench() {
+# ── run_single: one benchmark run ────────────────────────────────────────────
+# Args: label enable_series_id sketch_type series
+run_single() {
   local label="$1"
-  local enable_series_id="$2"
+  local enable_sid="$2"
+  local stype="$3"
+  local nseries="$4"
   local metric_name="bench_${label}"
   local out_dir="${OUTPUT_DIR}/${label}"
   mkdir -p "$out_dir"
 
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "  Benchmark: ${label} (enable_series_id=${enable_series_id})"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-  # Kill any leftover processes
+  # Kill leftover processes
   for port in 8080 4320 4317 8889; do
     fuser -k "$port/tcp" 2>/dev/null || true
   done
@@ -79,7 +82,7 @@ run_bench() {
     sleep 0.5
   done
 
-  # Submit plan
+  # Submit plan (use ddsketch as processor type — baseline samples pass through)
   curl -sf -X POST "${CONTROLLER_API}/api/v1/plan" \
     -H "Content-Type: application/json" \
     -d "{
@@ -89,97 +92,136 @@ run_bench() {
       \"accuracy_sla\": 0.01,
       \"sketch_type\": \"ddsketch\",
       \"workload\": {
-        \"series_count\": ${SERIES},
+        \"series_count\": ${nseries},
         \"samples_per_sec_per_series\": ${SAMPLES_PER_SEC},
         \"bytes_per_raw_sample\": 100,
         \"data_distribution\": \"zipf\"
       }
     }" > /dev/null 2>&1
 
-  # If we need to disable series_id, patch the generated config
+  # Fetch config and optionally disable series_id
   CONFIG_YAML=$(curl -sf "${CONTROLLER_API}/api/v1/config/${metric_name}")
-  if [[ "$enable_series_id" == "false" ]]; then
+  if [[ "$enable_sid" == "false" ]]; then
     CONFIG_YAML=$(echo "$CONFIG_YAML" | sed 's/enable_series_id: true/enable_series_id: false/')
   fi
   echo "$CONFIG_YAML" > "${out_dir}/collector-config.yaml"
 
-  # Start collector with the (possibly patched) config file
+  # Start collector
   "$SKETCHCOL" --config="${out_dir}/collector-config.yaml" > "${out_dir}/collector.log" 2>&1 &
   COLLECTOR_PID=$!
 
   for i in $(seq 1 30); do
     curl -sf "http://localhost:8889/metrics" > /dev/null 2>&1 && break
     sleep 1
-    if [[ $i -eq 30 ]]; then
-      echo "  ERROR: collector timeout" >&2
-      tail -5 "${out_dir}/collector.log" >&2
-      return 1
-    fi
+    [[ $i -eq 30 ]] && { echo "  ERROR: collector timeout" >&2; return 1; }
   done
 
   # Run benchmark
   pushd "$E2EBENCH_DIR" > /dev/null
   go run ./cmd/e2esdkbench \
-    --sketch-type="ddsketch" \
+    --sketch-type="$stype" \
     --endpoint="localhost:4317" \
-    --series="$SERIES" \
+    --series="$nseries" \
     --samples-per-sec-per-series="$SAMPLES_PER_SEC" \
     --duration="$BENCH_DURATION" \
-    --output-dir="$out_dir" 2>&1 | grep -E "^(===|Sketch|Series|Rate|Total|Avg|Peak)" | sed 's/^/  /'
+    --output-dir="$out_dir" > "${out_dir}/bench.log" 2>&1
   popd > /dev/null
 
-  # Cleanup processes for next run
+  # Cleanup for next run
   kill "$COLLECTOR_PID" 2>/dev/null; wait "$COLLECTOR_PID" 2>/dev/null || true
   kill "$CONTROLLER_PID" 2>/dev/null; wait "$CONTROLLER_PID" 2>/dev/null || true
   COLLECTOR_PID=""
   CONTROLLER_PID=""
 }
 
-# ── Run both benchmarks ──────────────────────────────────────────────────────
+# ── compare: extract and compare two runs ────────────────────────────────────
+compare() {
+  local label_on="$1"
+  local label_off="$2"
+  local stype="$3"
+  local nseries="$4"
+
+  local on_json=$(ls "${OUTPUT_DIR}/${label_on}"/*_summary.json 2>/dev/null | head -1)
+  local off_json=$(ls "${OUTPUT_DIR}/${label_off}"/*_summary.json 2>/dev/null | head -1)
+
+  if [[ -z "$on_json" || -z "$off_json" ]]; then
+    echo "  [WARN] Missing summary files, skipping comparison"
+    return
+  fi
+
+  python3 -c "
+import json
+with open('${on_json}') as f: on = json.load(f)
+with open('${off_json}') as f: off = json.load(f)
+
+dur_on = on['duration_sec']
+dur_off = off['duration_sec']
+rate = ${SAMPLES_PER_SEC}
+series = ${nseries}
+
+samples_on = series * rate * dur_on
+samples_off = series * rate * dur_off
+
+bps_on = on['total_bytes_sent'] / samples_on if samples_on > 0 else 0
+bps_off = off['total_bytes_sent'] / samples_off if samples_off > 0 else 0
+
+savings = (1 - bps_on / bps_off) * 100 if bps_off > 0 else 0
+
+print(f'  {\"${stype}\":>12s} @ {series:>5} series:  '
+      f'with_sid={bps_on:6.1f} B/sample  '
+      f'without={bps_off:6.1f} B/sample  '
+      f'savings={savings:5.1f}%  '
+      f'({on[\"total_bytes_sent\"]} vs {off[\"total_bytes_sent\"]} bytes)')
+"
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
 echo "Series ID Bandwidth Benchmark"
-echo "Series: ${SERIES}, Rate: ${SAMPLES_PER_SEC} sps, Duration: ${BENCH_DURATION}"
+echo "Duration: ${BENCH_DURATION}, Rate: ${SAMPLES_PER_SEC} sps"
+echo "Output: ${OUTPUT_DIR}"
+echo ""
 
-run_bench "with_series_id" "true"
-run_bench "without_series_id" "false"
+if [[ "$RUN_ALL" == true ]]; then
+  # Run multiple combinations: baseline (raw Gauge) at various cardinalities
+  # + ddsketch for comparison
+  COMBOS=(
+    "baseline:100"
+    "baseline:500"
+    "baseline:1000"
+    "ddsketch:100"
+    "ddsketch:500"
+  )
+else
+  COMBOS=("${SKETCH_TYPE}:${SERIES}")
+fi
 
-# ── Compare results ──────────────────────────────────────────────────────────
+RESULTS=()
+for combo in "${COMBOS[@]}"; do
+  IFS=':' read -r stype nseries <<< "$combo"
+  label_on="${stype}_${nseries}_sid_on"
+  label_off="${stype}_${nseries}_sid_off"
+
+  echo "── ${stype} @ ${nseries} series ──"
+  echo -n "  Running with series_id=true... "
+  run_single "$label_on" "true" "$stype" "$nseries"
+  echo "done"
+
+  echo -n "  Running with series_id=false... "
+  run_single "$label_off" "false" "$stype" "$nseries"
+  echo "done"
+
+  RESULTS+=("${label_on}:${label_off}:${stype}:${nseries}")
+done
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Comparison"
+echo "  Results"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-WITH_JSON=$(ls "${OUTPUT_DIR}/with_series_id"/ddsketch_*_summary.json 2>/dev/null | head -1)
-WITHOUT_JSON=$(ls "${OUTPUT_DIR}/without_series_id"/ddsketch_*_summary.json 2>/dev/null | head -1)
-
-if [[ -n "$WITH_JSON" && -n "$WITHOUT_JSON" ]]; then
-  python3 -c "
-import json, sys
-
-with open('${WITH_JSON}') as f: w = json.load(f)
-with open('${WITHOUT_JSON}') as f: wo = json.load(f)
-
-dur_w = w['duration_sec']
-dur_wo = wo['duration_sec']
-series = ${SERIES}
-rate = ${SAMPLES_PER_SEC}
-
-samples_w = series * rate * dur_w
-samples_wo = series * rate * dur_wo
-
-bps_w = w['total_bytes_sent'] / samples_w if samples_w > 0 else 0
-bps_wo = wo['total_bytes_sent'] / samples_wo if samples_wo > 0 else 0
-
-print(f'  With series_id:    {w[\"total_bytes_sent\"]:>10} bytes  ({bps_w:.1f} B/sample)  avg {w[\"avg_bandwidth_bps\"]:.0f} B/s')
-print(f'  Without series_id: {wo[\"total_bytes_sent\"]:>10} bytes  ({bps_wo:.1f} B/sample)  avg {wo[\"avg_bandwidth_bps\"]:.0f} B/s')
-if bps_wo > 0:
-    savings = (1 - bps_w / bps_wo) * 100
-    print(f'  Savings:           {savings:.1f}%')
-else:
-    print('  Savings:           N/A')
-"
-else
-  echo "  Could not find summary files for comparison."
-fi
+for r in "${RESULTS[@]}"; do
+  IFS=':' read -r label_on label_off stype nseries <<< "$r"
+  compare "$label_on" "$label_off" "$stype" "$nseries"
+done
 
 echo ""
 echo "Results saved to: ${OUTPUT_DIR}/"
