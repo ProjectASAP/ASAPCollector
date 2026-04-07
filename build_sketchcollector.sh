@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# build_ddsketchcol.sh — Build the ddsketchcol OpenTelemetry Collector distribution.
+# build_sketchcollector.sh — Build the sketchcollector OpenTelemetry Collector distribution.
 #
 # Usage:
-#   ./build_ddsketchcol.sh            # builds ddsketchcol
-#   ./build_ddsketchcol.sh --skip-patches  # skip re-applying patches (if already applied)
+#   ./build_sketchcollector.sh            # builds sketchcollector
+#   ./build_sketchcollector.sh --skip-patches  # skip re-applying patches (if already applied)
 #
 # The resulting binary is written to:
-#   opentelemetry-collector-contrib-patch/cmd/ddsketchcol/ddsketchcol
+#   opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,12 +61,12 @@ echo ""
 
 # Step 3: Build
 PATCH_DIR="${ROOT_DIR}/opentelemetry-collector-contrib-patch"
-CONFIG="${PATCH_DIR}/cmd/ddsketchcol/builder-config.yaml"
+CONFIG="${PATCH_DIR}/cmd/sketchcollector/builder-config.yaml"
 
-echo "==> Building ddsketchcol..."
+echo "==> Building sketchcollector..."
 cd "${PATCH_DIR}"
 "${BUILDER}" --config "${CONFIG}"
 
-BINARY="${PATCH_DIR}/cmd/ddsketchcol/ddsketchcol"
+BINARY="${PATCH_DIR}/cmd/sketchcollector/sketchcollector"
 echo ""
 echo "Build successful: ${BINARY}"

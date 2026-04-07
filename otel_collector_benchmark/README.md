@@ -239,10 +239,10 @@ cd opentelemetry-collector-contrib-patch/cmd
 ./bench.sh kll-window
 
 # DDSketch Processor (batch mode)
-./bench.sh ddsketchcol-batch
+./bench.sh sketchcollector-batch
 
 # DDSketch Processor (window mode)
-./bench.sh ddsketchcol-window
+./bench.sh sketchcollector-window
 ```
 
 **Note:** All processors use the centralized benchmark script located at `opentelemetry-collector-contrib-patch/cmd/bench.sh`.

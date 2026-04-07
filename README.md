@@ -215,7 +215,7 @@ make gen-go
 ### Collector-contrib distributions (opentelemetry-collector-contrib-patch)
 
 > **Important:** The OCB builder version must match the distribution target version.
-> The `ddsketchcol` distribution targets v0.141.0, so OCB v0.141.0 is required.
+> The `sketchcollector` distribution targets v0.141.0, so OCB v0.141.0 is required.
 > Using a newer builder (e.g. v0.147.0) injects incompatible runtime sub-modules.
 
 Patches must be applied to the submodules before building because the custom
@@ -228,18 +228,18 @@ Use the provided script from the repo root — it handles patch application and
 builder version automatically:
 
 ```bash
-./build_ddsketchcol.sh
+./build_sketchcollector.sh
 ```
 
 To skip re-applying patches if they were already applied:
 
 ```bash
-./build_ddsketchcol.sh --skip-patches
+./build_sketchcollector.sh --skip-patches
 ```
 
 The binary is written to:
 ```
-opentelemetry-collector-contrib-patch/cmd/ddsketchcol/ddsketchcol
+opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector
 ```
 
 #### Manual build steps
@@ -255,7 +255,7 @@ go install go.opentelemetry.io/collector/cmd/builder@v0.141.0
 
 # 3. Build
 cd opentelemetry-collector-contrib-patch
-builder --config ./cmd/ddsketchcol/builder-config.yaml
+builder --config ./cmd/sketchcollector/builder-config.yaml
 ```
 
 ### Go SDK / exporters (opentelemetry-go)

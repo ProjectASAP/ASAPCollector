@@ -24,7 +24,7 @@ from scrape import append_metrics_snapshot
 PATCH_CMD = REPO_ROOT / "opentelemetry-collector-contrib-patch" / "cmd"
 
 DEFAULT_COLLECTOR_PATHS = {
-    "ddsketch": PATCH_CMD / "ddsketchcol" / "ddsketchcol",
+    "ddsketch": PATCH_CMD / "sketchcollector" / "sketchcollector",
     "kll": PATCH_CMD / "kll" / "KLL",
     "hll": PATCH_CMD / "hllcol" / "HLL",
     "countsketch": PATCH_CMD / "countsketchcol" / "dist" / "countsketchcol",

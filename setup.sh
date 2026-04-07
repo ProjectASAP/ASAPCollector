@@ -5,7 +5,7 @@
 #   1. Verifies or installs Go (>= MIN_GO_VERSION) to /usr/local/go
 #   2. Adds Go and GOPATH/bin to PATH for the current shell and ~/.bashrc
 #   3. Installs the OCB (OpenTelemetry Collector Builder) binary at the
-#      version required to build the ddsketchcol distribution
+#      version required to build the sketchcollector distribution
 #   4. Initialises git submodules (if not already done)
 #   5. Applies all patch overlays to the submodules
 #
@@ -23,7 +23,7 @@ set -euo pipefail
 MIN_GO_VERSION="1.25.4"
 # Go toolchain version to install when Go is absent or below the minimum.
 GO_INSTALL_VERSION="1.26.0"
-# OCB version that matches the ddsketchcol distribution target (v0.141.0).
+# OCB version that matches the sketchcollector distribution target (v0.141.0).
 OCB_VERSION="0.141.0"
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -217,8 +217,8 @@ echo " Go:      $(go version)"
 echo " OCB:     $("${OCB_BINARY}" version 2>&1)"
 echo " Builder: ${OCB_BINARY}"
 echo ""
-echo " To build ddsketchcol:"
-echo "   ./build_ddsketchcol.sh --skip-patches"
+echo " To build sketchcollector:"
+echo "   ./build_sketchcollector.sh --skip-patches"
 echo ""
 if [[ "$ADDED_TO_BASHRC" == true ]]; then
   echo " NOTE: Run 'source ~/.bashrc' to make Go available in new terminals."

@@ -6,10 +6,12 @@ receivers:
 
 processors:
   ddsketch:
-    mode: batch
+    mode: window              # tumbling window mode
+    window_duration: 10s      # shorter for benchmarking; production default is 60s
     relative_accuracy: 0.01
-    transmit_sketch: true
-    metric_suffix: "_ddsketch"
+    transmit_sketch: false
+    quantiles: [0.5, 0.9, 0.99]
+    metric_suffix: "_quantile"
 
 exporters:
   prometheus:
@@ -23,7 +25,7 @@ service:
       exporters: [prometheus]
   telemetry:
     metrics:
-      level: basic
+      level: basic               # basic/normal/detailed
       readers:
         - pull:
             exporter:
@@ -33,4 +35,4 @@ service:
     logs:
       level: info
     resource:
-      service.name: ddsketchcol-batch-full
+      service.name: sketchcollector-window

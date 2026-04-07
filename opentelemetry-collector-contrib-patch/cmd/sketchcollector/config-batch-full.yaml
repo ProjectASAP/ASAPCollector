@@ -6,8 +6,7 @@ receivers:
 
 processors:
   ddsketch:
-    mode: window
-    window_duration: 10s
+    mode: batch
     relative_accuracy: 0.01
     transmit_sketch: true
     metric_suffix: "_ddsketch"
@@ -34,4 +33,4 @@ service:
     logs:
       level: info
     resource:
-      service.name: ddsketchcol-window-full
+      service.name: sketchcollector-batch-full

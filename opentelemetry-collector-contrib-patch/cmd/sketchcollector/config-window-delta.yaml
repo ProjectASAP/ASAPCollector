@@ -35,4 +35,4 @@ service:
     logs:
       level: info
     resource:
-      service.name: ddsketchcol-window-delta
+      service.name: sketchcollector-window-delta

@@ -84,9 +84,9 @@ resolve_collector() {
     local sketch="$1"
     case "$sketch" in
         ddsketch)
-            COLLECTOR_BIN="$CMD_DIR/ddsketchcol/ddsketchcol"
-            COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-window.yaml"
-            COLLECTOR_BUILD_CFG="$CMD_DIR/ddsketchcol/builder-config.yaml"
+            COLLECTOR_BIN="$CMD_DIR/sketchcollector/sketchcollector"
+            COLLECTOR_CONFIG="$CMD_DIR/sketchcollector/config-window.yaml"
+            COLLECTOR_BUILD_CFG="$CMD_DIR/sketchcollector/builder-config.yaml"
             ;;
         kll)
             COLLECTOR_BIN="$CONTRIB_PATCH_DIR/KLL"

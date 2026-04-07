@@ -28,7 +28,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTROLLER_DIR="${ROOT}/controller"
-DDSKETCHCOL="${ROOT}/opentelemetry-collector-contrib-patch/cmd/ddsketchcol/ddsketchcol"
+SKETCHCOL="${ROOT}/opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector"
 E2EBENCH_DIR="${ROOT}/opentelemetry-app"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
@@ -98,9 +98,9 @@ if [[ "$SKIP_BUILD" == false ]]; then
   cargo build --manifest-path="${CONTROLLER_DIR}/Cargo.toml" --release 2>&1 | tail -3
   echo ""
 
-  if [[ ! -x "$DDSKETCHCOL" ]]; then
-    echo "==> [Step 1] Building ddsketchcol..."
-    bash "${ROOT}/build_ddsketchcol.sh" --skip-patches
+  if [[ ! -x "$SKETCHCOL" ]]; then
+    echo "==> [Step 1] Building sketchcollector..."
+    bash "${ROOT}/build_sketchcollector.sh" --skip-patches
     echo ""
   fi
 else
@@ -113,9 +113,9 @@ if [[ ! -x "$CONTROLLER_BIN" ]]; then
   echo "       Run without --skip-build, or run: cargo build --release" >&2
   exit 1
 fi
-if [[ "$PLAN_ONLY" == false && ! -x "$DDSKETCHCOL" ]]; then
-  echo "ERROR: ddsketchcol binary not found at ${DDSKETCHCOL}" >&2
-  echo "       Run: ${ROOT}/build_ddsketchcol.sh, or use --plan-only" >&2
+if [[ "$PLAN_ONLY" == false && ! -x "$SKETCHCOL" ]]; then
+  echo "ERROR: sketchcollector binary not found at ${SKETCHCOL}" >&2
+  echo "       Run: ${ROOT}/build_sketchcollector.sh, or use --plan-only" >&2
   exit 1
 fi
 
@@ -278,7 +278,7 @@ print('yes' if d.get('staged_plan') is not None else 'no')
   # ── Start a collector with this config and verify it boots ──────────────
   if [[ "$PLAN_ONLY" == false ]]; then
     local col_pid=""
-    "$DDSKETCHCOL" \
+    "$SKETCHCOL" \
       --config="${OUTPUT_DIR}/config_${test_label}.yaml" \
       > "${OUTPUT_DIR}/collector_${test_label}.log" 2>&1 &
     col_pid=$!
@@ -380,9 +380,9 @@ fi
 echo ""
 
 # ── Step 4: Data-plane test — pick one query, run collector + bench ───────────
-# We use a dedicated metric name and pin sketch_type to "ddsketch" because the
-# ddsketchcol binary only registers the "ddsketch" processor; other sketch types
-# (KLL, HLL, etc.) require separate processor binaries.
+# We use a dedicated metric name and pin sketch_type to "ddsketch" for the
+# data-plane benchmark test (e2esdkbench uses the sketch type to configure
+# its SDK aggregation pipeline).
 # A unique metric name avoids cache collision with step 3's unpinned plans.
 LIVE_QUERY="quantile_over_time(0.99, benchmark_latency[5m])"
 LIVE_SKETCH="ddsketch"
@@ -442,8 +442,8 @@ for port in 4317 8889; do
   fi
 done
 
-echo "==> [Step 4b] Starting ddsketchcol (OTLP :4317, Prom :8889)..."
-"$DDSKETCHCOL" \
+echo "==> [Step 4b] Starting sketchcollector (OTLP :4317, Prom :8889)..."
+"$SKETCHCOL" \
   --config="http://localhost:8080/api/v1/config/${LIVE_METRIC}" \
   > "${OUTPUT_DIR}/collector.log" 2>&1 &
 COLLECTOR_PID=$!
@@ -533,7 +533,7 @@ echo ""
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo "==> Logs saved to: ${OUTPUT_DIR}/"
 echo "    controller.log           — controller stdout/stderr"
-echo "    collector.log            — ddsketchcol stdout/stderr"
+echo "    collector.log            — sketchcollector stdout/stderr"
 echo "    live-collector-config.yaml — YAML generated from PromQL"
 echo "    plan_case_*.json         — plan responses per test case"
 echo "    config_case_*.yaml       — YAML configs per test case"

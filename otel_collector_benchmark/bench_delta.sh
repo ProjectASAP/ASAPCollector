@@ -149,17 +149,17 @@ resolve_collector() {
     local sketch="$1" mode="$2" delta="$3"
     case "$sketch" in
         ddsketch)
-            COLLECTOR_BIN="$CMD_DIR/ddsketchcol/ddsketchcol"
-            COLLECTOR_BUILD_CFG="$CMD_DIR/ddsketchcol/builder-config.yaml"
+            COLLECTOR_BIN="$CMD_DIR/sketchcollector/sketchcollector"
+            COLLECTOR_BUILD_CFG="$CMD_DIR/sketchcollector/builder-config.yaml"
             if [[ "$delta" == "on" ]]; then
                 case "$mode" in
-                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-batch-delta.yaml" ;;
-                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-window-delta.yaml" ;;
+                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/sketchcollector/config-batch-delta.yaml" ;;
+                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/sketchcollector/config-window-delta.yaml" ;;
                 esac
             else
                 case "$mode" in
-                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-batch-full.yaml" ;;
-                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/ddsketchcol/config-window-full.yaml" ;;
+                    sdkSketch|colBatch) COLLECTOR_CONFIG="$CMD_DIR/sketchcollector/config-batch-full.yaml" ;;
+                    colWindow) COLLECTOR_CONFIG="$CMD_DIR/sketchcollector/config-window-full.yaml" ;;
                 esac
             fi
             ;;
