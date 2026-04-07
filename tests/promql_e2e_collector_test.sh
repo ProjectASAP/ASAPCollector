@@ -275,6 +275,51 @@ print('yes' if d.get('staged_plan') is not None else 'no')
     return
   fi
 
+  # ── Start a collector with this config and verify it boots ──────────────
+  if [[ "$PLAN_ONLY" == false ]]; then
+    local col_pid=""
+    "$DDSKETCHCOL" \
+      --config="${OUTPUT_DIR}/config_${test_label}.yaml" \
+      > "${OUTPUT_DIR}/collector_${test_label}.log" 2>&1 &
+    col_pid=$!
+
+    # Wait up to 15s for the collector to start (check Prometheus port in YAML)
+    local booted=false
+    for attempt in $(seq 1 15); do
+      # Check if the process is still alive (it would exit quickly on bad config)
+      if ! kill -0 "$col_pid" 2>/dev/null; then
+        echo "    [FAIL] collector exited early — config rejected"
+        cat "${OUTPUT_DIR}/collector_${test_label}.log" | tail -5 | sed 's/^/    /'
+        PLAN_FAIL=$((PLAN_FAIL + 1))
+        return
+      fi
+      # Check if the collector log shows it started serving
+      if grep -qi "Everything is ready\|starting.*server\|listening" "${OUTPUT_DIR}/collector_${test_label}.log" 2>/dev/null; then
+        booted=true
+        break
+      fi
+      sleep 1
+    done
+
+    if [[ "$booted" == true ]]; then
+      echo "    [OK]   collector started (pid ${col_pid}, processor=${actual_sketch})"
+    else
+      # Still running after 15s but no "ready" log — check if it's alive
+      if kill -0 "$col_pid" 2>/dev/null; then
+        echo "    [OK]   collector running (pid ${col_pid}, no ready log but alive)"
+      else
+        echo "    [FAIL] collector died during startup"
+        tail -5 "${OUTPUT_DIR}/collector_${test_label}.log" | sed 's/^/    /'
+        PLAN_FAIL=$((PLAN_FAIL + 1))
+        return
+      fi
+    fi
+
+    # Clean up — kill the collector so the next test can use the ports
+    kill "$col_pid" 2>/dev/null
+    wait "$col_pid" 2>/dev/null || true
+  fi
+
   echo "    [PASS]"
   PLAN_PASS=$((PLAN_PASS + 1))
 }
