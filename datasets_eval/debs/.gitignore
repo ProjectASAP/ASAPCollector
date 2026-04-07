@@ -1,0 +1,5 @@
+./data
+./data_filtered
+analysis/code/__pycache__/
+./results/data/detailed_windows/
+./results/data_filtered/detailed_windows/
