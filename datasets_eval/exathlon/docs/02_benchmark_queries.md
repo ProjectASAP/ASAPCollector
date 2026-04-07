@@ -16,6 +16,10 @@ From `analysis/results/summaries/`:
 Interpretation:
 - For per-metric analysis in one file, each active metric gets roughly one sample per second, so ~300 points/5-min window.
 
+Controller-input note:
+- `Formula input path` snippets are parser-compatible PromQL or SQL (SeQuAL) templates for `DataCollector/controller`.
+- Replace placeholder metric/table names (for example `exathlon_metric`, `exathlon_metrics`) with your deployed schema names.
+
 ---
 
 ## Q1 - Windowed distribution profiling (p50/p95/p99) per metric group
@@ -24,7 +28,14 @@ Interpretation:
 
 **Use case domain:** Distributed systems performance monitoring — SRE teams track p50/p95/p99 latency and resource utilization per service/entity to define SLOs and detect degradation without storing raw samples.
 
-**Formula:** compute quantiles `Q0.50`, `Q0.95`, `Q0.99` per `(entity, metric_base, window)`.
+**Formula:** $Q_{0.50}, Q_{0.95}, Q_{0.99}$ per $(\mathrm{entity}, \mathrm{metric\_base}, w)$.
+
+**Formula input path (controller, PromQL):**
+```promql
+quantile_over_time(0.50, exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+quantile_over_time(0.95, exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+quantile_over_time(0.99, exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+```
 
 **Approach:** `ddsketch` / `kll` in tumbling window mode, grouped by entity.
 
@@ -55,7 +66,14 @@ Interpretation:
 
 **Use case domain:** SRE reliability monitoring — the p99/p50 ratio exposes bursty, non-steady-state behavior in cluster jobs (e.g., GC pauses, shuffle spills) that mean alone misses.
 
-**Formula:** `tail_ratio = p99 / p50` (or `p95/p50`) per metric per window.
+**Formula:** $\mathrm{tail\_ratio}(m,w)=Q_{0.99}(m,w)/Q_{0.50}(m,w)$ (or $Q_{0.95}/Q_{0.50}$).
+
+**Formula input path (controller, PromQL):**
+```promql
+quantile_over_time(0.99, exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+/
+quantile_over_time(0.50, exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+```
 
 **Approach:** derive from sketch quantiles (Q1 outputs).
 
@@ -77,7 +95,12 @@ Interpretation:
 
 **Use case domain:** Incident triage in cluster observability — ranking which metrics breach thresholds most often per window guides operator attention and automated remediation in large-scale Spark / HPC deployments.
 
-**Formula:** `score(metric, w) = count(value > threshold)`; take top-K.
+**Formula:** $\mathrm{score}(m,w)=\sum_{t\in w}\mathbf{1}[x_t>\tau]$; return $\mathrm{TopK}_m(\mathrm{score})$.
+
+**Formula input path (controller, PromQL):**
+```promql
+topk(10, count_over_time(exathlon_metric{entity!="",metric_base!=""}[5m])) by (entity, metric_base)
+```
 
 **Approach:** `count-min + spacesaving` over exceedance events.
 
@@ -107,7 +130,16 @@ Interpretation:
 
 **Use case domain:** Capacity planning and resource utilization profiling — min/max/range per window reveals resource saturation ceilings and floor behavior for Spark executors and HPC nodes across job phases.
 
-**Formula:** `min`, `max`, `range = max - min` per metric/window.
+**Formula:** $\min(m,w),\ \max(m,w),\ \mathrm{range}(m,w)=\max(m,w)-\min(m,w)$.
+
+**Formula input path (controller, PromQL):**
+```promql
+min_over_time(exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+max_over_time(exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+max_over_time(exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+-
+min_over_time(exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+```
 
 **Approach:** approximate via quantiles (`q0`, `q1`) or exact NOP baseline.
 
@@ -128,7 +160,14 @@ Interpretation:
 
 **Use case domain:** Automated anomaly detection in telemetry streams — Tukey-fence IQR flagging provides threshold-free, distribution-agnostic outlier detection that tolerates the skewed, heavy-tailed metric distributions typical of Spark cluster telemetry.
 
-**Formula:** outlier if `x < Q1 - 1.5*IQR` or `x > Q3 + 1.5*IQR`, `IQR = Q3-Q1`.
+**Formula:** $\mathrm{IQR}=Q_3-Q_1$; outlier if $x<Q_1-1.5\,\mathrm{IQR}$ or $x>Q_3+1.5\,\mathrm{IQR}$.
+
+**Formula input path (controller, PromQL):**
+```promql
+quantile_over_time(0.25, exathlon_metric{entity!="",metric_base!=""}[15m]) by (entity, metric_base)
+quantile_over_time(0.50, exathlon_metric{entity!="",metric_base!=""}[15m]) by (entity, metric_base)
+quantile_over_time(0.75, exathlon_metric{entity!="",metric_base!=""}[15m]) by (entity, metric_base)
+```
 
 **Approach:** `ddsketch` quantiles `[0.25, 0.5, 0.75]`.
 
@@ -156,7 +195,16 @@ Interpretation:
 
 **Use case domain:** Observability cardinality management — monitoring teams track distinct active series per window to detect cardinality explosions (e.g., label churn from restarted executors) without enumerating the full series space.
 
-**Formula:** `|{metric_id : appears in window}|`.
+**Formula:** $\left|\left\{\mathrm{metric\_id}\mid \mathrm{appears\ in}\ w\right\}\right|$.
+
+**Formula input path (controller, SQL/SeQuAL):**
+```sql
+SELECT
+  entity,
+  COUNT(DISTINCT metric_base) AS active_metric_count
+FROM exathlon_metrics
+GROUP BY entity, TUMBLE(ts, INTERVAL '5' MINUTE)
+```
 
 **Approach:** `HyperLogLog` per window.
 
@@ -184,7 +232,12 @@ Interpretation:
 
 **Use case domain:** Multi-node cluster health ranking — in a 10-entity Spark/HPC deployment, identifying which executor or node generates the most anomaly events per window directs on-call response to the highest-impact component.
 
-**Formula:** `score(entity,w)=count(anomaly_events)`; top-K entities/window.
+**Formula:** $\mathrm{score}(e,w)=\sum_{t\in w}\mathbf{1}[\mathrm{anomaly}_t(e)]$; return $\mathrm{TopK}_e(\mathrm{score})$.
+
+**Formula input path (controller, PromQL):**
+```promql
+topk(5, count_over_time(anomaly_events{entity!=""}[5m])) by (entity)
+```
 
 **Approach:** produce anomaly events (Q5), aggregate with CMS+SpaceSaving.
 
@@ -206,7 +259,14 @@ Interpretation:
 
 **Use case domain:** Streaming concept drift detection in cluster telemetry — sudden shifts in p95 between consecutive windows signal phase transitions in Spark jobs (e.g., map → shuffle → reduce) or onset of resource pressure, enabling early warning before thresholds are breached.
 
-**Formula:** `drift = |p95_t - p95_{t-1}|` (also p50 drift).
+**Formula:** $\mathrm{drift}_{0.95}(t)=\left|Q_{0.95}(t)-Q_{0.95}(t-1)\right|$ (also for $Q_{0.50}$).
+
+**Formula input path (controller, PromQL):**
+```promql
+quantile_over_time(0.95, exathlon_metric{entity!="",metric_base!=""}[5m]) by (entity, metric_base)
+-
+quantile_over_time(0.95, exathlon_metric{entity!="",metric_base!=""}[5m] offset 5m) by (entity, metric_base)
+```
 
 **Approach:** compute from sketch quantile outputs per consecutive windows.
 
@@ -228,7 +288,16 @@ Interpretation:
 
 **Use case domain:** Resource saturation alerting under the USE method — the saturation ratio (`exceeded_metrics / total_metrics` per entity) directly implements the "S" of the USE (Utilization, Saturation, Errors) framework for Spark executor and HPC node health.
 
-**Formula:** `sat_ratio = exceeded_metrics / total_metrics` per entity/window.
+**Formula:** $\mathrm{sat\_ratio}(e,w)=\frac{\mathrm{exceeded\_metrics}(e,w)}{\mathrm{total\_metrics}(e,w)}$.
+
+**Formula input path (controller, SQL/SeQuAL):**
+```sql
+SELECT
+  entity,
+  COUNT(*) AS exceeded_metrics
+FROM metric_exceeded_events
+GROUP BY entity, TUMBLE(ts, INTERVAL '5' MINUTE)
+```
 
 **Approach:** threshold events + distinct/denominator counts (HLL + exact metadata).
 
@@ -250,7 +319,12 @@ Interpretation:
 
 **Use case domain:** Real-time KPI monitoring and alerting — EWMA control charts are a standard SRE tool for detecting sustained shifts in a single critical metric stream (e.g., executor CPU, heap utilization) with low latency and configurable sensitivity.
 
-**Formula:** EWMA / residual-based trigger.
+**Formula:** $\mathrm{EMA}_t=\alpha x_t+(1-\alpha)\mathrm{EMA}_{t-1}$, $\alpha=\frac{2}{n+1}$; trigger on residual/control-limit breach.
+
+**Formula input path (controller, PromQL):**
+```promql
+avg_over_time(exathlon_kpi{entity!="",metric_base="cpu_busy"}[1m]) by (entity)
+```
 
 **Approach:** exact stateful stream computation (NOP/raw path), not a pure sketch query.
 
@@ -278,7 +352,13 @@ Interpretation:
 
 **Use case domain:** Causal telemetry analysis and dependency detection — correlation changes between CPU, memory, and I/O metrics within a Spark executor reveal job phase transitions and resource coupling breakdowns (e.g., GC pressure decoupling CPU from network throughput).
 
-**Formula:** rolling Pearson/Spearman correlation.
+**Formula:** $\rho_w(x,y)=\mathrm{corr}\!\left(x_{t-w:t},y_{t-w:t}\right)$ (Pearson or Spearman).
+
+**Formula input path (controller, PromQL):**
+```promql
+avg_over_time(cpu_busy{entity!=""}[15m]) by (entity)
+avg_over_time(mem_used{entity!=""}[15m]) by (entity)
+```
 
 **Approach:** exact rolling-state pipeline, not sketch-native in this setup.
 
@@ -299,7 +379,16 @@ Interpretation:
 
 **Use case domain:** Composite cluster health scoring — SRE dashboards combine tail ratio, anomaly rate, and saturation signals into a single entity-level health index that is stable across window sizes and actionable without requiring threshold tuning per metric.
 
-**Formula:** weighted score from `tail_ratio`, `anomaly_rate`, `sat_ratio`.
+**Formula:** $\mathrm{health\_score}=w_1\cdot \mathrm{tail\_ratio}+w_2\cdot \mathrm{anomaly\_rate}+w_3\cdot \mathrm{sat\_ratio}$, with $w_1+w_2+w_3=1$.
+
+**Formula input path (controller, SQL/SeQuAL):**
+```sql
+SELECT
+  entity,
+  AVG(tail_ratio) + AVG(anomaly_rate) + AVG(sat_ratio) AS health_score
+FROM exathlon_health_features
+GROUP BY entity, TUMBLE(ts, INTERVAL '15' MINUTE)
+```
 
 **Approach:** combine outputs of Q2 + Q5 + Q9.
 
