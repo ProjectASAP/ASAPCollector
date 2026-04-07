@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Centralized benchmark script for OpenTelemetry Collector processors
-# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|sketchcollector-batch|sketchcollector-window|sketchcollector-sdk-batch|sketchcollector-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol|serfcol-qt|serfcol-1e2|serfcol-1e4|serfcol-qt-1e2|serfcol-qt-1e4|serfcol-adj|serf-transmission-xor|serf-transmission-qt]
+# Usage: ./bench.sh [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol|serfcol-qt|serfcol-1e2|serfcol-1e4|serfcol-qt-1e2|serfcol-qt-1e4|serfcol-adj|serf-transmission-xor|serf-transmission-qt]
 #
 # SDK variants (*-sdk-*) use fakemetricload (opentelemetry-app/cmd/fakemetricload) as the
 # load generator instead of otel_collector_benchmark. For ddsketch-sdk the OTel SDK
@@ -15,17 +15,17 @@ WORKSPACE_DIR="$(cd "$CONTRIB_PATCH_DIR/.." && pwd)"
 # Processor selection
 PROCESSOR="${1:-}"
 if [ -z "$PROCESSOR" ]; then
-    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|sketchcollector-batch|sketchcollector-window|sketchcollector-sdk-batch|sketchcollector-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol|serfcol-qt|serfcol-1e2|serfcol-1e4|serfcol-qt-1e2|serfcol-qt-1e4|serfcol-adj|serf-transmission-xor|serf-transmission-qt]"
+    echo "Usage: $0 [nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol|serfcol-qt|serfcol-1e2|serfcol-1e4|serfcol-qt-1e2|serfcol-qt-1e4|serfcol-adj|serf-transmission-xor|serf-transmission-qt]"
     exit 1
 fi
 
 # Validate processor name
 case "$PROCESSOR" in
-    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|sketchcollector-batch|sketchcollector-window|sketchcollector-sdk-batch|sketchcollector-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol|serfcol-qt|serfcol-1e2|serfcol-1e4|serfcol-qt-1e2|serfcol-qt-1e4|serfcol-adj|serf-transmission-xor|serf-transmission-qt)
+    nopcol|countsketchcol|countsketchcol-batch|countsketchcol-window|countminsketchcol-batch|countminsketchcol-window|kll|kll-batch|kll-window|ddsketchcol-batch|ddsketchcol-window|ddsketchcol-sdk-batch|ddsketchcol-sdk-window|kll-sdk-batch|kll-sdk-window|countsketchcol-sdk-batch|countsketchcol-sdk-window|countminsketchcol-sdk-batch|countminsketchcol-sdk-window|hllcol-batch|hllcol-window|hllcol-sdk-batch|hllcol-sdk-window|gorillacol|serfcol|serfcol-qt|serfcol-1e2|serfcol-1e4|serfcol-qt-1e2|serfcol-qt-1e4|serfcol-adj|serf-transmission-xor|serf-transmission-qt)
         ;;
     *)
         echo "Error: Invalid processor '$PROCESSOR'"
-        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, sketchcollector-batch, sketchcollector-window, sketchcollector-sdk-batch, sketchcollector-sdk-window, kll-sdk-batch, kll-sdk-window, countsketchcol-sdk-batch, countsketchcol-sdk-window, countminsketchcol-sdk-batch, countminsketchcol-sdk-window, hllcol-batch, hllcol-window, hllcol-sdk-batch, hllcol-sdk-window, gorillacol, serfcol, serfcol-qt, serfcol-1e2, serfcol-1e4, serfcol-qt-1e2, serfcol-qt-1e4, serfcol-adj, serf-transmission-xor, serf-transmission-qt"
+        echo "Valid options: nopcol, countsketchcol, countsketchcol-batch, countsketchcol-window, countminsketchcol-batch, countminsketchcol-window, kll, kll-batch, kll-window, ddsketchcol-batch, ddsketchcol-window, ddsketchcol-sdk-batch, ddsketchcol-sdk-window, kll-sdk-batch, kll-sdk-window, countsketchcol-sdk-batch, countsketchcol-sdk-window, countminsketchcol-sdk-batch, countminsketchcol-sdk-window, hllcol-batch, hllcol-window, hllcol-sdk-batch, hllcol-sdk-window, gorillacol, serfcol, serfcol-qt, serfcol-1e2, serfcol-1e4, serfcol-qt-1e2, serfcol-qt-1e4, serfcol-adj, serf-transmission-xor, serf-transmission-qt"
         exit 1
         ;;
 esac
@@ -74,27 +74,27 @@ elif [ "$PROCESSOR" = "countminsketchcol-batch" ] || [ "$PROCESSOR" = "countmins
     else
         CONFIG_FILE="$CM_DIR/config-window.yaml"
     fi
-elif [ "$PROCESSOR" = "sketchcollector-batch" ] || [ "$PROCESSOR" = "sketchcollector-window" ]; then
-    DD_DIR="$SCRIPT_DIR/sketchcollector"
+elif [ "$PROCESSOR" = "ddsketchcol-batch" ] || [ "$PROCESSOR" = "ddsketchcol-window" ]; then
+    DD_DIR="$SCRIPT_DIR/ddsketchcol"
     BUILDER_CONFIG="$DD_DIR/builder-config.yaml"
-    # Builder outputs ./cmd/sketchcollector/sketchcollector (see builder-config.yaml)
-    COLLECTOR_BIN="$DD_DIR/sketchcollector"
+    # Builder outputs ./cmd/ddsketchcol/ddsketchcol (see builder-config.yaml)
+    COLLECTOR_BIN="$DD_DIR/ddsketchcol"
     TELEMETRY_URL="http://localhost:8888/metrics"
-    if [ "$PROCESSOR" = "sketchcollector-batch" ]; then
+    if [ "$PROCESSOR" = "ddsketchcol-batch" ]; then
         CONFIG_FILE="$DD_DIR/config.yaml"
     else
         CONFIG_FILE="$DD_DIR/config-window.yaml"
     fi
-elif [ "$PROCESSOR" = "sketchcollector-sdk-batch" ] || [ "$PROCESSOR" = "sketchcollector-sdk-window" ]; then
+elif [ "$PROCESSOR" = "ddsketchcol-sdk-batch" ] || [ "$PROCESSOR" = "ddsketchcol-sdk-window" ]; then
     # SDK path: OTel SDK pre-aggregates into DDSketch before export.
-    # Reuses the same collector binary and config as sketchcollector-batch/window.
-    DD_DIR="$SCRIPT_DIR/sketchcollector"
+    # Reuses the same collector binary and config as ddsketchcol-batch/window.
+    DD_DIR="$SCRIPT_DIR/ddsketchcol"
     BUILDER_CONFIG="$DD_DIR/builder-config.yaml"
-    COLLECTOR_BIN="$DD_DIR/sketchcollector"
+    COLLECTOR_BIN="$DD_DIR/ddsketchcol"
     TELEMETRY_URL="http://localhost:8888/metrics"
     LOAD_GEN_MODE="sdk"
     SDK_SKETCH_TYPE="ddsketch"
-    if [ "$PROCESSOR" = "sketchcollector-sdk-batch" ]; then
+    if [ "$PROCESSOR" = "ddsketchcol-sdk-batch" ]; then
         CONFIG_FILE="$DD_DIR/config.yaml"
     else
         CONFIG_FILE="$DD_DIR/config-window.yaml"
@@ -266,16 +266,16 @@ case "$PROCESSOR" in
     kll-window)
         PROCESSOR_NAME="KLL PROCESSOR (window mode)"
         ;;
-    sketchcollector-batch)
+    ddsketchcol-batch)
         PROCESSOR_NAME="DDSKETCH PROCESSOR (batch mode)"
         ;;
-    sketchcollector-window)
+    ddsketchcol-window)
         PROCESSOR_NAME="DDSKETCH PROCESSOR (window mode)"
         ;;
-    sketchcollector-sdk-batch)
+    ddsketchcol-sdk-batch)
         PROCESSOR_NAME="DDSKETCH PROCESSOR (batch mode, SDK pre-aggregation)"
         ;;
-    sketchcollector-sdk-window)
+    ddsketchcol-sdk-window)
         PROCESSOR_NAME="DDSKETCH PROCESSOR (window mode, SDK pre-aggregation)"
         ;;
     kll-sdk-batch)
@@ -647,7 +647,7 @@ for RATE in "${RATES[@]}"; do
     #   Cardinality: we require at least the expected summary metric names to be present.
 
     # For ddsketch benchmarks, perform a quick correctness check on emitted quantiles
-    if [[ "$PROCESSOR" == sketchcollector* ]]; then
+    if [[ "$PROCESSOR" == ddsketchcol* ]]; then
         if command -v curl >/dev/null 2>&1; then
             PROM_OUTPUT=$(curl -s "http://localhost:8889/metrics")
             if [ -z "$PROM_OUTPUT" ]; then

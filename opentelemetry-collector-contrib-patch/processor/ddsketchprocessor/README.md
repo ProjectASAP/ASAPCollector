@@ -125,7 +125,7 @@ Works with either input type:
 
 ```bash
 # Terminal 1: start the collector in batch mode
-./cmd/sketchcollector/dist/sketchcollector --config cmd/sketchcollector/config.yaml
+./cmd/ddsketchcol/dist/ddsketchcol --config cmd/ddsketchcol/config.yaml
 
 # Terminal 2a: standard SDK (Gauge inputs)
 cd otel_collector_benchmark && go run main.go --endpoint=localhost:4317 --type=gauge
@@ -142,11 +142,11 @@ Works with either input type. Example using the benchmark load generator
 
 ```bash
 # Terminal 1: start the collector in window mode
-./cmd/sketchcollector/sketchcollector --config cmd/sketchcollector/config-window.yaml
+./cmd/ddsketchcol/ddsketchcol --config cmd/ddsketchcol/config-window.yaml
 
 # Terminal 2: run the benchmark (window mode target)
 cd opentelemetry-collector-contrib-patch/cmd
-./bench.sh sketchcollector-window
+./bench.sh ddsketchcol-window
 ```
 
 The benchmark reports throughput (MPS), CPU, memory, and latency. Because the

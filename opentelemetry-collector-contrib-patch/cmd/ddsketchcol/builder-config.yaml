@@ -1,4 +1,4 @@
-# cmd/sketchcollector/builder-config.yaml
+# cmd/ddsketchcol/builder-config.yaml
 # NOTE:
 # This builder configuration is NOT used to build any official binary.
 # To see the builder manifests used for official binaries,
@@ -8,11 +8,11 @@
 # https://github.com/open-telemetry/opentelemetry-collector-releases/tree/main/distributions/otelcol-contrib
 
 dist:
-  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/sketchcollector
-  name: sketchcollector
+  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/ddsketchcol
+  name: ddsketchcol
   description: Collector distribution including the DDSketch processor
   version: 0.141.0-dev
-  output_path: ./cmd/sketchcollector
+  output_path: ./cmd/ddsketchcol
 
 extensions:
   - gomod: go.opentelemetry.io/collector/extension/zpagesextension v0.141.0

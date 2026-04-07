@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e_test.sh — End-to-end integration test: controller + sketchcollector + e2esdkbench
+# e2e_test.sh — End-to-end integration test: controller + ddsketchcol + e2esdkbench
 #
 # Usage:
 #   ./tests/otel_controller_e2e_test.sh
@@ -23,14 +23,14 @@
 # Prerequisites (must already be on PATH or built):
 #   - cargo          (Rust toolchain)
 #   - go             (Go toolchain)
-#   - sketchcollector    (built via ../../build_sketchcollector.sh)
+#   - ddsketchcol    (built via ../../build_ddsketchcol.sh)
 #   - curl, python3
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTROLLER_DIR="${ROOT}/controller"
-SKETCHCOL="${ROOT}/opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector"
+DDSKETCHCOL="${ROOT}/opentelemetry-collector-contrib-patch/cmd/ddsketchcol/ddsketchcol"
 E2EBENCH_DIR="${ROOT}/opentelemetry-app"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
@@ -117,9 +117,9 @@ if [[ "$SKIP_BUILD" == false ]]; then
   cargo build --manifest-path="${CONTROLLER_DIR}/Cargo.toml" --release 2>&1 | tail -3
   echo ""
 
-  if [[ ! -x "$SKETCHCOL" ]]; then
-    echo "==> [Step 1] Building sketchcollector..."
-    bash "${ROOT}/build_sketchcollector.sh" --skip-patches
+  if [[ ! -x "$DDSKETCHCOL" ]]; then
+    echo "==> [Step 1] Building ddsketchcol..."
+    bash "${ROOT}/build_ddsketchcol.sh" --skip-patches
     echo ""
   fi
 else
@@ -132,9 +132,9 @@ if [[ ! -x "$CONTROLLER_BIN" ]]; then
   echo "       Run without --skip-build, or run: cargo build --release" >&2
   exit 1
 fi
-if [[ ! -x "$SKETCHCOL" ]]; then
-  echo "ERROR: sketchcollector binary not found at ${SKETCHCOL}" >&2
-  echo "       Run: ${ROOT}/build_sketchcollector.sh" >&2
+if [[ ! -x "$DDSKETCHCOL" ]]; then
+  echo "ERROR: ddsketchcol binary not found at ${DDSKETCHCOL}" >&2
+  echo "       Run: ${ROOT}/build_ddsketchcol.sh" >&2
   exit 1
 fi
 
@@ -357,8 +357,8 @@ echo "    [OK] Pipeline processor list references '- ${EXPECTED_PROC_KEY}'"
 echo ""
 
 # ── Step 5: Start the collector with the HTTP config provider ─────────────────
-echo "==> [Step 5] Starting sketchcollector (OTLP :4317, Prom :8889)..."
-"$SKETCHCOL" \
+echo "==> [Step 5] Starting ddsketchcol (OTLP :4317, Prom :8889)..."
+"$DDSKETCHCOL" \
   --config="http://localhost:8080/api/v1/config/${METRIC_NAME}" \
   > "${OUTPUT_DIR}/collector.log" 2>&1 &
 COLLECTOR_PID=$!
@@ -428,7 +428,7 @@ fi
 echo ""
 echo "==> Logs saved to: ${OUTPUT_DIR}/"
 echo "    controller.log        — controller stdout/stderr"
-echo "    collector.log         — sketchcollector stdout/stderr"
+echo "    collector.log         — ddsketchcol stdout/stderr"
 echo "    collector-config.yaml — config fetched from controller"
 echo "    ${SKETCH}_*_summary.json — e2esdkbench bandwidth / CPU / memory summary"
 echo ""

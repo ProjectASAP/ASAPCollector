@@ -1,7 +1,7 @@
 # End-to-End Test Guide: Controller + OTel Collector + SDK
 
 This guide walks through a full integration test of the control plane against
-the custom sketch collector (`sketchcollector`) and the SDK load generator
+the custom sketch collector (`ddsketchcol`) and the SDK load generator
 (`e2esdkbench`). The test verifies that:
 
 1. The controller correctly plans a sketch type for a workload.
@@ -21,7 +21,7 @@ the custom sketch collector (`sketchcollector`) and the SDK load generator
 |------|--------------|
 | Rust toolchain (`cargo`) | `curl https://sh.rustup.rs -sSf \| sh` |
 | Go toolchain (`go 1.22+`) | [go.dev/dl](https://go.dev/dl) |
-| `sketchcollector` binary | `./build_sketchcollector.sh` from repo root |
+| `ddsketchcol` binary | `./build_ddsketchcol.sh` from repo root |
 | `curl`, `jq` | system packages |
 
 All commands below are run from the **repo root** (`/mydata/DataCollector/`)
@@ -82,8 +82,8 @@ patches change):
 
 ```bash
 cd ..
-./build_sketchcollector.sh
-# binary: opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector
+./build_ddsketchcol.sh
+# binary: opentelemetry-collector-contrib-patch/cmd/ddsketchcol/ddsketchcol
 ```
 
 ---
@@ -279,7 +279,7 @@ Pass the controller's config URL using the OTel HTTP config provider syntax.
 The collector fetches the YAML at startup and every 30 s by default.
 
 ```bash
-COLLECTOR=./opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector
+COLLECTOR=./opentelemetry-collector-contrib-patch/cmd/ddsketchcol/ddsketchcol
 
 $COLLECTOR --config="http://localhost:8080/api/v1/config/latency"
 ```
