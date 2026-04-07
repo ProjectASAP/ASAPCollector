@@ -1,4 +1,4 @@
-# cmd/ddsketchcol/builder-config.yaml
+# cmd/sketchcollector/builder-config.yaml
 # NOTE:
 # This builder configuration is NOT used to build any official binary.
 # To see the builder manifests used for official binaries,
@@ -8,11 +8,11 @@
 # https://github.com/open-telemetry/opentelemetry-collector-releases/tree/main/distributions/otelcol-contrib
 
 dist:
-  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/ddsketchcol
-  name: ddsketchcol
-  description: Collector distribution including the DDSketch processor
+  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/sketchcollector
+  name: sketchcollector
+  description: Collector distribution including all sketch processors
   version: 0.141.0-dev
-  output_path: ./cmd/ddsketchcol
+  output_path: ./cmd/sketchcollector
 
 extensions:
   - gomod: go.opentelemetry.io/collector/extension/zpagesextension v0.141.0
@@ -146,6 +146,14 @@ processors:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/datadogsemanticsprocessor v0.141.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddsketchprocessor v0.141.0
     path: ./processor/ddsketchprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllprocessor v0.141.0
+    path: ./processor/kllprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllprocessor v0.141.0
+    path: ./processor/hllprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchprocessor v0.141.0
+    path: ./processor/countsketchprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor v0.141.0
+    path: ./processor/countminsketchprocessor
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/nopreceiver v0.141.0
