@@ -3,7 +3,7 @@ dist:
   name: nopcol
   description: Custom Collector with Nop Processors
   version: 0.141.0-dev
-  output_path: ./cmd/nopcol/dist
+  output_path: ./dist
 
 exporters:
   - gomod: go.opentelemetry.io/collector/exporter/nopexporter v0.141.0
@@ -14,7 +14,7 @@ receivers:
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.141.0
   - gomod: github.com/approx-telemetry/DataCollector/nop_processor v0.0.1
-    path: ./processor/nopprocessor
+    path: ../../processor/nopprocessor
 
 replaces:
   - go.opentelemetry.io/collector/processor => ../../../../opentelemetry-collector/processor

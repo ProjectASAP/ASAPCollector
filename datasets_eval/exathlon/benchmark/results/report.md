@@ -9,39 +9,36 @@
 
 ## Throughput (replay)
 query,file,replay_mode,speed_factor,total_events,elapsed_s,events_per_sec,export_count
-Q1,app1/1_0_10000_17,paced,100,995666,608.294476,1636.815784,40
-Q1,app1/1_0_10000_17,paced,100,995666,608.185405,1637.109329,40
+Q2,app1/1_0_10000_17,max,100,5953960,48.736052,122167.467579,1191
 
 
 ## Latency (send_times.csv, this run)
 | stat | ms |
 | --- | --- |
-| p50_delta_event | 202.358130 |
-| p95_delta_event | 30856.244562 |
-| p99_delta_event | 30857.720807 |
-| p50_send_lag | 6638.797878 |
-| p99_send_lag | 14938.689532 |
-| p50_send_lag_drift | -8263.883152 |
-| p99_send_lag_drift | 36.008502 |
+| p50_delta_event | 36.274688 |
+| p95_delta_event | 64.930792 |
+| p99_delta_event | 86.229385 |
+| p50_send_lag | 1769004.454903 |
+| p99_send_lag | 3504660.797558 |
+| p50_send_lag_drift | -1770721.838616 |
+| p99_send_lag_drift | -35065.495961 |
 
 _`send_lag` uses min-observed wall-event offset as baseline (non-negative, extra delay)._
 
 ## Export diagnostics (export_diagnostics.csv, this run)
 | stat | value |
 | --- | --- |
-| queue_wait_p50_ms | 345.546492 |
-| queue_wait_p95_ms | 393.256833 |
-| queue_wait_p99_ms | 517.055683 |
-| event_span_p50_ms | 15000.000000 |
-| event_span_p95_ms | 16000.000000 |
+| queue_wait_p50_ms | 1148.642648 |
+| queue_wait_p95_ms | 1358.685068 |
+| queue_wait_p99_ms | 1436.351566 |
+| event_span_p50_ms | 3000.000000 |
+| event_span_p95_ms | 3000.000000 |
 | event_regressions_total | 0 |
 | event_regressions_max_export | 0 |
 
 ## Latency history (latency.csv)
 query,file,replay_mode,p50_inter_arrival_ms,p95_inter_arrival_ms,p99_inter_arrival_ms,p50_send_lag_ms,p99_send_lag_ms
-Q1,app1/1_0_10000_17,sketch-telemetry,199.088399,30858.792234,30888.344414,6636.07948,14925.709668
-Q1,app1/1_0_10000_17,sketch-telemetry,199.088399,30858.792234,30888.344414,6636.07948,14925.709668
-Q1,app1/1_0_10000_17,sketch-telemetry,202.35813,30856.244562,30857.720807,6638.797878,14938.689532
+Q2,app1/1_0_10000_17,throughput,36.274688,64.930792,86.229385,1769004.454903,3504660.797558
 
 
 ## Notes

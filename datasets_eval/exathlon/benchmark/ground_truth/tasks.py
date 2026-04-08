@@ -22,6 +22,7 @@ if str(_BENCHMARK_ROOT) not in sys.path:
 
 from common import file_csv_path, file_tag_safe
 from ground_truth.q1 import run_q1
+from ground_truth.q2 import run_q2
 from ground_truth.common import (
     THRESHOLD_QUANTILE,
     TOP_K_ENTITIES,
@@ -39,7 +40,7 @@ from ground_truth.common import (
     log_phase,
 )
 
-ACCEPTED_GT_QUERIES: tuple[str, ...] = ("Q1", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8", "Q9")
+ACCEPTED_GT_QUERIES: tuple[str, ...] = ("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8", "Q9")
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +353,8 @@ def run_ground_truth_task(
 
     if query_id == "Q1":
         run_q1(file_tag, output_dir, chunksize)
+    elif query_id == "Q2":
+        run_q2(file_tag, output_dir, chunksize)
     elif query_id == "Q3":
         _gt_q3(csv_path, WINDOW_5MIN_S, TOP_K_METRICS, out, chunksize)
     elif query_id == "Q4":

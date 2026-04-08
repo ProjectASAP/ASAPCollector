@@ -98,11 +98,12 @@ Accuracy metrics per query:
 
 ### ground_truth/tasks.py — exact reference values
 
-Computes exact answers offline from the raw CSV for Q1–Q9. Q2, Q10, Q11, and Q12 are throughput-only (no ground truth).
+Computes exact answers offline from the raw CSV for Q1–Q9. Q2 exact values are derived from Q1 quantiles (`p99/p50`, `p95/p50`) and can be generated offline, but the current benchmark harness treats Q2, Q10, Q11, and Q12 as throughput-only runs and does not route them through accuracy comparison.
 
 | Query | Algorithm | Window |
 |---|---|---|
 | Q1 | p50 / p95 / p99 per `(entity, metric_base)` | 5 min |
+| Q2 | Tail amplification ratios `p99/p50`, `p95/p50` derived from Q1 per `(entity, metric_base)` | 5 min |
 | Q3 | Top-10 metrics by threshold-exceedance count | 5 min |
 | Q4 | Exact min / max / range per `(entity, metric_base)` | 1 / 5 / 15 / 30 / 60 min |
 | Q5 | IQR bounds and anomaly rate per `(entity, metric_base)` | 15 min |
@@ -294,7 +295,7 @@ Default files used when no `--file` / `--files` is specified:
 | Query | Sketch | GT | Window | Description |
 |---|---|---|---|---|
 | Q1 | DDSketch / KLL | Yes | 5 min | p50 / p95 / p99 per `(entity, metric_base)` |
-| Q2 | NOP | No | 5 min | Tail amplification ratio — derived from Q1 (throughput only) |
+| Q2 | Derived from Q1 quantiles; current harness runs it as NOP | Offline GT exists; harness accuracy compare not wired | 5 min | Tail amplification ratio `p99/p50` (and `p95/p50`) per `(entity, metric_base)` |
 | Q3 | CountSketch / CMS | Yes | 5 min | Top-10 metrics by threshold-exceedance count |
 | Q4 | DDSketch / KLL | Yes | 1 / 5 / 15 / 30 / 60 min | Min / max / range per `(entity, metric_base)` |
 | Q5 | DDSketch | Yes | 15 min | IQR-based anomaly flags (Tukey fences) per metric |
