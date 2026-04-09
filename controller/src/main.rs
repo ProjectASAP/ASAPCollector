@@ -932,6 +932,311 @@ mod api_tests {
         assert!(body["savings_percent"].as_f64().unwrap() > 0.0);
     }
 
+    // ── Integration: controller ↔ collector wiring ─────────────────────────
+
+    /// Helper: start an OpAMP WebSocket server on a random port.
+    /// Returns the (server Arc, local addr string).
+    async fn start_opamp_server(opamp: Arc<OpampServer>) -> String {
+        let router = axum::Router::new()
+            .route("/v1/opamp", axum::routing::get(OpampServer::ws_handler))
+            .with_state(opamp);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        format!("127.0.0.1:{}", addr.port())
+    }
+
+    /// Connect a mock agent via WebSocket, returning the stream.
+    async fn connect_agent(
+        opamp_addr: &str,
+        agent_id: &str,
+        role: &str,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let url = format!("ws://{opamp_addr}/v1/opamp");
+        let mut req = url.into_client_request().unwrap();
+        req.headers_mut().insert("X-Agent-ID", agent_id.parse().unwrap());
+        req.headers_mut().insert("X-Agent-Role", role.parse().unwrap());
+        let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        ws
+    }
+
+    /// Read the next binary WebSocket frame, decode as OpAMP ServerToAgent,
+    /// and extract the YAML config body.
+    async fn recv_config_yaml(
+        ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ) -> String {
+        use tokio_tungstenite::tungstenite::Message;
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            futures_util::StreamExt::next(ws),
+        ).await.expect("timeout waiting for config push")
+         .expect("stream ended")
+         .expect("ws error");
+        match msg {
+            Message::Binary(data) => {
+                let sta = <crate::opamp::opamp_proto::ServerToAgent as prost::Message>::decode(
+                    data.as_slice(),
+                ).expect("decode ServerToAgent");
+                let rc = sta.remote_config.expect("remote_config present");
+                let cm = rc.config.expect("config present");
+                let file = cm.config_map.get("").expect("empty-key config file");
+                String::from_utf8(file.body.clone()).expect("yaml is utf8")
+            }
+            other => panic!("expected binary frame, got {other:?}"),
+        }
+    }
+
+    /// Test 1: Agent connects with workloads.yaml pre-populated, receives config on connect.
+    #[tokio::test]
+    async fn agent_receives_config_on_connect_via_workload_registry() {
+        // Build a full AppState with a workload registry entry.
+        let online_store   = init_online_store();
+        let plan_store     = Arc::new(PlanStore::new());
+        let workload_store = Arc::new(WorkloadStore::new());
+        let opamp          = Arc::new(OpampServer::new());
+        let scraper        = Arc::new(Scraper::new(
+            vec![], Thresholds::default(), Arc::new(|_| {}), Duration::from_secs(60),
+        ));
+        let planner = Arc::new(BaselinePlanner::new(
+            CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
+        ));
+
+        // Pre-populate plan store (simulating what main() does with workload registry).
+        let analyzer = Analyzer::new();
+        let spec = analyzer::QuerySpec {
+            query_string:    None,
+            metric_name:     "http_latency".into(),
+            label_filters:   Default::default(),
+            group_by_labels: vec![],
+            aggregations:    vec!["quantile".into()],
+            time_window:     "5m".into(),
+            repeat_every:    None,
+            accuracy_sla:    0.01,
+            latency_sla:     None,
+            sketch_type:     None,
+            workload:        types::WorkloadCharacteristics::default(),
+        };
+        let wl = analyzer.analyze(spec).unwrap();
+        let wc = types::WorkloadCharacteristics::default();
+        let plan = planner.plan(&wl, Some(&wc));
+        plan_store.set("http_latency", plan);
+        workload_store.set("http_latency", wl, wc);
+
+        // Build replanner and late-binding cells.
+        let replanner_cell: Arc<tokio::sync::RwLock<Option<Arc<Replanner>>>> =
+            Arc::new(tokio::sync::RwLock::new(None));
+        let registry_cell: Arc<tokio::sync::RwLock<Option<Arc<WorkloadRegistry>>>> =
+            Arc::new(tokio::sync::RwLock::new(None));
+
+        let opamp_ep = "ws://127.0.0.1:0/v1/opamp".to_string();
+
+        // Wire on_connect callback — same logic as main().
+        let sc = Arc::clone(&scraper);
+        let connect_cell = Arc::clone(&replanner_cell);
+        let connect_registry = Arc::clone(&registry_cell);
+        let opamp_srv = Arc::new(
+            OpampServer::new()
+                .with_on_connect(move |agent_id, _role| {
+                    let url = format!("http://{agent_id}/metrics");
+                    let sc = Arc::clone(&sc);
+                    let id_copy = agent_id.clone();
+                    let cell = Arc::clone(&connect_cell);
+                    let reg = Arc::clone(&connect_registry);
+                    let aid = agent_id.clone();
+                    tokio::spawn(async move {
+                        sc.add_endpoint(Endpoint::new(id_copy, url)).await;
+                        if let Some(r) = cell.read().await.as_ref() {
+                            let pushed = r.push_config_to_agent(&aid).await;
+                            if !pushed {
+                                if let Some(registry) = reg.read().await.as_ref() {
+                                    if let Some(entry) = registry.first_for_role("agent") {
+                                        r.register_agent(&aid, &entry.metric_name).await;
+                                        r.push_config_to_agent(&aid).await;
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }),
+        );
+
+        let replanner = Arc::new(Replanner::new(
+            Arc::clone(&planner),
+            Arc::clone(&plan_store),
+            Arc::clone(&workload_store),
+            Arc::clone(&opamp_srv),
+            Arc::clone(&scraper),
+            opamp_ep,
+        ));
+
+        // Build a workload registry with one entry matching the pre-populated plan.
+        let registry = Arc::new(WorkloadRegistry::load("/nonexistent")); // empty
+        // We'll create one inline with the correct metric name.
+        let yaml = "- metric_name: http_latency\n  accuracy_sla: 0.01\n  assign_to_role: agent\n";
+        let entries: Vec<crate::config::workloads::WorkloadEntry> =
+            serde_yaml::from_str(yaml).unwrap();
+        // WorkloadRegistry doesn't have a public constructor from entries, so we
+        // test via the first_for_role interface that the on_connect path uses.
+        // Bind the cells.
+        *replanner_cell.write().await = Some(Arc::clone(&replanner));
+        // We need a registry that returns "http_latency". Load trick:
+        let tmp_path = "/tmp/datacollector_test_workloads.yaml";
+        std::fs::write(tmp_path, yaml).unwrap();
+        let registry = Arc::new(WorkloadRegistry::load(tmp_path));
+        *registry_cell.write().await = Some(Arc::clone(&registry));
+
+        // Start OpAMP WS server.
+        let addr = start_opamp_server(Arc::clone(&opamp_srv)).await;
+
+        // Connect a mock agent.
+        let mut ws = connect_agent(&addr, "test-agent-1", "agent").await;
+
+        // The on_connect callback should assign the workload and push config.
+        let yaml_config = recv_config_yaml(&mut ws).await;
+
+        // Verify the config has the expected sketch processor.
+        assert!(
+            yaml_config.contains("ddsketch:") || yaml_config.contains("KLL:"),
+            "expected a sketch processor in the pushed config:\n{yaml_config}"
+        );
+        // Verify OpAMP extension is present.
+        assert!(
+            yaml_config.contains("opamp"),
+            "pushed config should include opamp extension:\n{yaml_config}"
+        );
+
+        std::fs::remove_file(tmp_path).ok();
+    }
+
+    /// Test 2: Re-plan pushes config only to agents registered for that metric.
+    #[tokio::test]
+    async fn replan_pushes_only_to_registered_agent() {
+        let online_store   = init_online_store();
+        let plan_store     = Arc::new(PlanStore::new());
+        let workload_store = Arc::new(WorkloadStore::new());
+        let opamp_srv      = Arc::new(OpampServer::new());
+        let scraper        = Arc::new(Scraper::new(
+            vec![], Thresholds::default(), Arc::new(|_| {}), Duration::from_secs(60),
+        ));
+        let planner = Arc::new(BaselinePlanner::new(
+            CostModelPlanner::new().with_online_store(Arc::clone(&online_store)),
+        ));
+
+        // Seed workload + plan for "metric_a".
+        let analyzer = Analyzer::new();
+        let spec = analyzer::QuerySpec {
+            query_string:    None,
+            metric_name:     "metric_a".into(),
+            label_filters:   Default::default(),
+            group_by_labels: vec![],
+            aggregations:    vec!["quantile".into()],
+            time_window:     "5m".into(),
+            repeat_every:    None,
+            accuracy_sla:    0.01,
+            latency_sla:     None,
+            sketch_type:     None,
+            workload:        types::WorkloadCharacteristics::default(),
+        };
+        let wl = analyzer.analyze(spec).unwrap();
+        let wc = types::WorkloadCharacteristics::default();
+        let plan = planner.plan(&wl, Some(&wc));
+        plan_store.set("metric_a", plan);
+        workload_store.set("metric_a", wl, wc);
+
+        let replanner = Arc::new(Replanner::new(
+            Arc::clone(&planner),
+            Arc::clone(&plan_store),
+            Arc::clone(&workload_store),
+            Arc::clone(&opamp_srv),
+            Arc::clone(&scraper),
+            "ws://ctrl:4320/v1/opamp",
+        ));
+
+        // Start OpAMP server and connect two agents.
+        let addr = start_opamp_server(Arc::clone(&opamp_srv)).await;
+        let mut ws_a = connect_agent(&addr, "agent-a", "agent").await;
+        let mut ws_b = connect_agent(&addr, "agent-b", "agent").await;
+        // Let connections register.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Register agent-a for metric_a, agent-b is NOT registered for metric_a.
+        replanner.register_agent("agent-a", "metric_a").await;
+        replanner.register_agent("agent-b", "metric_b").await;
+
+        // Trigger replan for metric_a.
+        let ok = replanner.replan_metric("metric_a").await;
+        assert!(ok, "replan should succeed");
+
+        // agent-a should receive a config push.
+        let yaml_a = recv_config_yaml(&mut ws_a).await;
+        assert!(!yaml_a.is_empty(), "agent-a should have received config");
+
+        // agent-b should NOT receive anything (timeout).
+        let result_b = tokio::time::timeout(
+            Duration::from_millis(500),
+            futures_util::StreamExt::next(&mut ws_b),
+        ).await;
+        assert!(
+            result_b.is_err(),
+            "agent-b should NOT receive config for metric_a replan"
+        );
+    }
+
+    /// Test 3: Generated agent YAML contains extensions.opamp with correct endpoint.
+    #[tokio::test]
+    async fn generated_agent_yaml_contains_opamp_extension() {
+        let endpoint = "ws://my-controller:4320/v1/opamp";
+        let cfg = AgentCollectorConfig {
+            output_mode:          types::OutputMode::Sketch,
+            sketch_type:          types::SketchType::DDSketch,
+            sketch_params:        types::SketchParams::default(),
+            aggregate_by:         vec![],
+            label_matchers:       vec![],
+            window_duration:      Some(Duration::from_secs(60)),
+            mode:                 types::ProcessorMode::Window,
+            enable_self_monitoring: true,
+            transmit_sketch:      true,
+            drop_original:        true,
+            delta_transmission:   false,
+            delta_threshold:      0.0,
+            enable_series_id:     false,
+            series_id_ttl_secs:   300,
+        };
+        let yaml = generate_agent_config(&cfg, endpoint).unwrap();
+
+        // Parse the YAML to verify structure, not just substring matches.
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+
+        // 1. extensions.opamp.server.ws.endpoint matches the parameter.
+        let opamp_ext = &doc["extensions"]["opamp"];
+        assert!(
+            !opamp_ext.is_null(),
+            "YAML missing extensions.opamp:\n{yaml}"
+        );
+        let ws_endpoint = opamp_ext["server"]["ws"]["endpoint"].as_str().unwrap();
+        assert_eq!(
+            ws_endpoint, endpoint,
+            "OpAMP endpoint mismatch"
+        );
+
+        // 2. service.extensions list includes "opamp".
+        let svc_exts = doc["service"]["extensions"].as_sequence().unwrap();
+        let has_opamp = svc_exts.iter().any(|v| v.as_str() == Some("opamp"));
+        assert!(
+            has_opamp,
+            "service.extensions should include 'opamp':\n{yaml}"
+        );
+
+        // 3. The YAML is complete: has receivers, processors, exporters, service.pipelines.
+        assert!(doc["receivers"]["otlp"].is_mapping(), "missing receivers.otlp");
+        assert!(doc["exporters"]["prometheus"].is_mapping(), "missing exporters.prometheus");
+        let pipeline = &doc["service"]["pipelines"]["metrics"];
+        assert!(pipeline["receivers"].is_sequence(), "missing pipeline receivers");
+        assert!(pipeline["processors"].is_sequence(), "missing pipeline processors");
+        assert!(pipeline["exporters"].is_sequence(), "missing pipeline exporters");
+    }
+
     #[tokio::test]
     async fn tco_with_custom_pricing() {
         let (_, app) = test_app();
