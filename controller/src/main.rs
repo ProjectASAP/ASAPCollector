@@ -24,6 +24,7 @@ use tracing::{info, warn};
 use algebra::{QueryOptimizer, SketchAllocator};
 use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
+use config::WorkloadRegistry;
 use types::AgentCollectorConfig;
 use config::generate_backend_config_staged;
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
@@ -42,15 +43,16 @@ use types::StageResourceBudgets;
 
 #[derive(Clone)]
 struct AppState {
-    analyzer:        Arc<Analyzer>,
-    planner:         Arc<BaselinePlanner>,
-    store:           Arc<PlanStore>,
-    workload_store:  Arc<WorkloadStore>,
-    opamp:           Arc<OpampServer>,
-    scraper:         Arc<Scraper>,
-    replanner:       Arc<Replanner>,
-    online_store:    OnlineMetricsStore,
-    opamp_endpoint:  String,
+    analyzer:          Arc<Analyzer>,
+    planner:           Arc<BaselinePlanner>,
+    store:             Arc<PlanStore>,
+    workload_store:    Arc<WorkloadStore>,
+    opamp:             Arc<OpampServer>,
+    scraper:           Arc<Scraper>,
+    replanner:         Arc<Replanner>,
+    online_store:      OnlineMetricsStore,
+    opamp_endpoint:    String,
+    workload_registry: Arc<WorkloadRegistry>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -80,6 +82,8 @@ async fn main() {
     // We use an Arc<RwLock<Option<Arc<Replanner>>>> as a late-binding cell so
     // the scraper can hold a reference even though the Replanner is built after it.
     let replanner_cell: Arc<tokio::sync::RwLock<Option<Arc<Replanner>>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+    let registry_cell: Arc<tokio::sync::RwLock<Option<Arc<WorkloadRegistry>>>> =
         Arc::new(tokio::sync::RwLock::new(None));
 
     let scraper: Arc<Scraper> = {
@@ -122,6 +126,8 @@ async fn main() {
     let opamp_srv: Arc<OpampServer> = {
         let sc = Arc::clone(&scraper);
         let sd = Arc::clone(&scraper);
+        let connect_cell = Arc::clone(&replanner_cell);
+        let connect_registry = Arc::clone(&registry_cell);
         Arc::new(
             OpampServer::new()
                 .with_on_connect(move |agent_id, _role| {
@@ -131,8 +137,25 @@ async fn main() {
                     let url     = format!("http://{agent_id}/metrics");
                     let sc      = Arc::clone(&sc);
                     let id_copy = agent_id.clone();
+                    let cell    = Arc::clone(&connect_cell);
+                    let reg     = Arc::clone(&connect_registry);
+                    let aid     = agent_id.clone();
                     tokio::spawn(async move {
                         sc.add_endpoint(Endpoint::new(id_copy, url)).await;
+                        if let Some(r) = cell.read().await.as_ref() {
+                            // Push the current plan config if this agent has a prior assignment.
+                            let pushed = r.push_config_to_agent(&aid).await;
+                            // If the agent has no prior assignment, assign it a workload
+                            // from the registry (if available).
+                            if !pushed {
+                                if let Some(registry) = reg.read().await.as_ref() {
+                                    if let Some(entry) = registry.first_for_role("agent") {
+                                        r.register_agent(&aid, &entry.metric_name).await;
+                                        r.push_config_to_agent(&aid).await;
+                                    }
+                                }
+                            }
+                        }
                     });
                 })
                 .with_on_disconnect(move |agent_id| {
@@ -163,6 +186,44 @@ async fn main() {
     let plan_store     = Arc::new(PlanStore::new());
     let workload_store = Arc::new(WorkloadStore::new());
 
+    // ── Declarative workload registry ────────────────────────────────────────
+    let workloads_path = std::env::var("CONTROLLER_WORKLOADS")
+        .unwrap_or_else(|_| "workloads.yaml".into());
+    let workload_registry = Arc::new(WorkloadRegistry::load(&workloads_path));
+
+    // Pre-populate PlanStore from the registry so agents get a config immediately.
+    {
+        let analyzer = Analyzer::new();
+        for entry in workload_registry.entries() {
+            let spec = analyzer::QuerySpec {
+                query_string:    entry.query_string.clone(),
+                metric_name:     entry.metric_name.clone(),
+                label_filters:   Default::default(),
+                group_by_labels: vec![],
+                aggregations:    vec!["quantile".into()],
+                time_window:     "5m".into(),
+                repeat_every:    None,
+                accuracy_sla:    entry.accuracy_sla,
+                latency_sla:     None,
+                sketch_type:     None,
+                workload:        types::WorkloadCharacteristics::default(),
+            };
+            match analyzer.analyze(spec) {
+                Ok(wl) => {
+                    let wc = types::WorkloadCharacteristics::default();
+                    let plan = planner.plan(&wl, Some(&wc));
+                    let metric_name = wl.metric_name.clone();
+                    plan_store.set(&metric_name, plan);
+                    workload_store.set(&metric_name, wl, wc);
+                }
+                Err(e) => {
+                    warn!(metric = %entry.metric_name, error = %e,
+                        "failed to pre-populate plan from workload registry");
+                }
+            }
+        }
+    }
+
     // ── Replanner — closes the SP-8 feedback loop ─────────────────────────────
     let replanner = Arc::new(Replanner::new(
         Arc::clone(&planner),
@@ -172,8 +233,9 @@ async fn main() {
         Arc::clone(&scraper),
         opamp_ep.clone(),
     ));
-    // Bind the late-binding cell so the violation callback can reach the replanner.
+    // Bind the late-binding cells so callbacks can reach the replanner and registry.
     *replanner_cell.write().await = Some(Arc::clone(&replanner));
+    *registry_cell.write().await = Some(Arc::clone(&workload_registry));
 
     let replan_interval = Duration::from_secs(
         std::env::var("CONTROLLER_REPLAN_INTERVAL_SECS")
@@ -183,15 +245,16 @@ async fn main() {
     );
 
     let state = AppState {
-        analyzer:       Arc::new(Analyzer::new()),
+        analyzer:          Arc::new(Analyzer::new()),
         planner,
-        store:          Arc::clone(&plan_store),
-        workload_store: Arc::clone(&workload_store),
-        opamp:          Arc::clone(&opamp_srv),
-        scraper:        Arc::clone(&scraper),
-        replanner:      Arc::clone(&replanner),
-        online_store:   Arc::clone(&online_store),
-        opamp_endpoint: opamp_ep,
+        store:             Arc::clone(&plan_store),
+        workload_store:    Arc::clone(&workload_store),
+        opamp:             Arc::clone(&opamp_srv),
+        scraper:           Arc::clone(&scraper),
+        replanner:         Arc::clone(&replanner),
+        online_store:      Arc::clone(&online_store),
+        opamp_endpoint:    opamp_ep,
+        workload_registry: Arc::clone(&workload_registry),
     };
 
     // ── Background tasks ──────────────────────────────────────────────────────
@@ -476,6 +539,8 @@ async fn handle_bootstrap_agent_config(
         drop_original:        true,
         delta_transmission:   false,
         delta_threshold:      0.0,
+        enable_series_id:     false,
+        series_id_ttl_secs:   300,
     };
     match generate_agent_config(&cfg, &st.opamp_endpoint) {
         Ok(yaml) => (
@@ -597,15 +662,16 @@ fn test_app() -> (AppState, axum::Router) {
         "ws://ctrl:4320/v1/opamp",
     ));
     let state = AppState {
-        analyzer:       Arc::new(Analyzer::new()),
+        analyzer:          Arc::new(Analyzer::new()),
         planner,
-        store:          Arc::clone(&plan_store),
-        workload_store: Arc::clone(&workload_store),
+        store:             Arc::clone(&plan_store),
+        workload_store:    Arc::clone(&workload_store),
         opamp,
         scraper,
         replanner,
         online_store,
-        opamp_endpoint: "ws://ctrl:4320/v1/opamp".into(),
+        opamp_endpoint:    "ws://ctrl:4320/v1/opamp".into(),
+        workload_registry: Arc::new(WorkloadRegistry::empty()),
     };
     let router = axum::Router::new()
         .route("/api/v1/plan",                  axum::routing::post(handle_plan))
