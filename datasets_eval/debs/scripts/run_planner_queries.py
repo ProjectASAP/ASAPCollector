@@ -357,7 +357,6 @@ ORDER  BY symbol, ts""",
 
 ]
 
-# Suggested queries — disabled by default; enable with: CANONICAL_QUERIES += _SUGGESTED_QUERIES
 _SUGGESTED_QUERIES = [
     {
         "id": "suggested-tail-risk-p05",

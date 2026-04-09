@@ -35,6 +35,40 @@
 | Cross-series aggregation | None — independent per-symbol sketches |
 | Test types | **Sketch-finance** (ddsketch/kll quantiles as EMA proxy) + **Latency** |
 
+**Query sent to `/api/v1/plan` (`query_string` API):**
+
+```sql
+WITH ordered AS (
+  SELECT symbol, last, ts,
+         ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts) AS rn
+  FROM   financial_last_trade_price
+  WHERE  sectype = 'E'
+),
+ema AS (
+  SELECT symbol, last, ts, rn,
+         last AS ema38,
+         last AS ema100
+  FROM   ordered WHERE rn = 1
+
+  UNION ALL
+
+  SELECT o.symbol, o.last, o.ts, o.rn,
+         (2.0/39)  * o.last + (1 - 2.0/39)  * e.ema38,
+         (2.0/101) * o.last + (1 - 2.0/101) * e.ema100
+  FROM   ordered o
+  JOIN   ema e ON e.symbol = o.symbol AND e.rn = o.rn - 1
+)
+SELECT symbol, ts, ema38, ema100
+FROM   ema
+ORDER  BY symbol, ts
+```
+
+**Controller response — HTTP 422**
+```
+could not infer aggregation type from query_string; provide explicit aggregations
+```
+Recursive CTE with no `GROUP BY` aggregate at the top level — not supported by the unmodified controller.
+
 **References:**
 
 - [DEBS 2022 call for solutions — **Query 1** (exponential moving average trend indicators, 5-minute windows)](https://2022.debs.org/call-for-grand-challenge-solutions/)  
@@ -79,6 +113,37 @@
 | Cross-series aggregation | None — per-symbol sign-flip detection |
 | Test types | **Throughput + Latency** (Sketch-finance: not applicable — exact sign-flip detection required) |
 
+**Query sent to `/api/v1/plan` (`query_string` API):**
+
+```sql
+WITH q1 AS (
+  SELECT symbol, last, ts,
+         ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts) AS rn,
+         last AS ema38, last AS ema100
+  FROM   financial_last_trade_price
+  WHERE  sectype = 'E'
+),
+diffs AS (
+  SELECT symbol, ts, ema38 - ema100 AS diff,
+         LAG(ema38 - ema100) OVER (PARTITION BY symbol ORDER BY ts) AS prev_diff
+  FROM   q1
+)
+SELECT symbol, ts,
+       CASE
+         WHEN prev_diff <= 0 AND diff > 0 THEN 'bullish'
+         WHEN prev_diff >= 0 AND diff < 0 THEN 'bearish'
+       END AS signal
+FROM   diffs
+WHERE  (prev_diff <= 0 AND diff > 0)
+    OR (prev_diff >= 0 AND diff < 0)
+```
+
+**Controller response — HTTP 422**
+```
+could not infer aggregation type from query_string; provide explicit aggregations
+```
+`CASE`/`LAG` window function with no recognised aggregate — not supported by the unmodified controller.
+
 **References:**
 
 - [DEBS 2022 call for solutions — **Query 2** (buy/sell advice from EMA crossover)](https://2022.debs.org/call-for-grand-challenge-solutions/)  
@@ -120,6 +185,29 @@
 | Unique series (active per day) | 5497 |
 | Cross-series aggregation | **All 5502 series → top-K (K=10) per window** via CountSketch sort |
 | Test types | **Sketch-finance** (CountSketch frequency ranking) + **Throughput** |
+
+**Queries sent to `/api/v1/plan` (`query_string` API):**
+
+```promql
+count_over_time(financial_last_trade_price[5m])
+```
+
+```sql
+SELECT symbol, COUNT(*) AS freq
+FROM   financial_last_trade_price
+GROUP  BY symbol, TUMBLE(ts, INTERVAL '5' MINUTE)
+```
+
+**Controller response — HTTP 200 (both variants)**
+
+| Field | PromQL | SQL |
+|---|---|---|
+| sketch_type | CountSketch | CountSketch |
+| mode | window | window |
+| aggregate_by | `[]` | `["symbol"]` |
+| bandwidth sent | 69 040 B/s (delta) | 69 040 B/s (delta) |
+| delta_mode | use_delta (×15) | use_delta (×15) |
+| agent memory | 0 B | 80 000 B |
 
 **References:**
 
@@ -163,6 +251,38 @@
 | Cross-series aggregation | None — independent per-symbol sketches |
 | Test types | **Sketch-finance** (ddsketch p0/p100 for approx min/max, exact NOP path) + **Throughput** |
 
+**Queries sent to `/api/v1/plan` (`query_string` API):**
+
+```promql
+max_over_time(financial_last_trade_price{sectype="E"}[5m])
+min_over_time(financial_last_trade_price{sectype="E"}[5m])
+last_over_time(financial_last_trade_price{sectype="E"}[5m])
+```
+
+```sql
+SELECT symbol,
+       MAX(last) AS high,
+       MIN(last) AS low,
+       LAST_VALUE(last) OVER (
+         PARTITION BY symbol, TUMBLE(ts, INTERVAL '5' MINUTE)
+         ORDER BY ts
+         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+       ) AS last_price,
+       MAX(last) - MIN(last) AS range
+FROM   financial_last_trade_price
+WHERE  sectype = 'E'
+GROUP  BY symbol, TUMBLE(ts, INTERVAL '5' MINUTE)
+```
+
+**Controller response — HTTP 200**
+
+| Variant | Sketch | Mode | Bandwidth | Delta mode |
+|---|---|---|---|---|
+| `max_over_time` | KLL | window | 414 240 B/s (full) | use_full_sketch (sketch_type_unsupported) |
+| `min_over_time` | KLL | window | 414 240 B/s (full) | use_full_sketch (sketch_type_unsupported) |
+| `last_over_time` | ddsketch | batch | 92 053 B/s (delta) | use_delta (×6.75) |
+| SQL MAX/MIN | KLL | window | 414 240 B/s (full) | use_full_sketch (sketch_type_unsupported) |
+
 **References:**
 
 - [Tiger Data tutorial — *Analyze financial tick data* (OHLC / OHLCV aggregation)](https://docs.timescale.com/tutorials/latest/financial-tick-data/)
@@ -202,6 +322,33 @@
 | Unique series (active per day) | 5178 |
 | Cross-series aggregation | None — per-symbol log-return sequences |
 | Test types | **Sketch-finance** (ddsketch IQR proxy: σ ≈ IQR/1.349) + **Latency** |
+
+**Query sent to `/api/v1/plan` (`query_string` API):**
+
+```sql
+WITH ticks AS (
+  SELECT symbol, ts, last,
+         LN(last / LAG(last) OVER (PARTITION BY symbol ORDER BY ts)) AS log_return
+  FROM   financial_last_trade_price
+  WHERE  sectype = 'E'
+),
+windowed AS (
+  SELECT symbol, log_return,
+         TUMBLE_START(ts, INTERVAL '5' MINUTE) AS window_start
+  FROM   ticks
+  WHERE  log_return IS NOT NULL
+)
+SELECT symbol, window_start,
+       STDDEV_SAMP(log_return) AS realized_vol
+FROM   windowed
+GROUP  BY symbol, window_start
+```
+
+**Controller response — HTTP 422**
+```
+could not infer aggregation type from query_string; provide explicit aggregations
+```
+`STDDEV_SAMP` match arm is commented out in the unmodified `sql.rs`.
 
 **References:**
 
@@ -243,6 +390,31 @@
 | Unique series (active per day) | 5497 |
 | Cross-series aggregation | **All 5502 series → 1 distinct count per window** via HLL |
 | Test types | **Sketch-finance** (HLL cardinality estimation) + **Throughput** |
+
+**Queries sent to `/api/v1/plan` (`query_string` API):**
+
+```promql
+count(count_over_time(financial_last_trade_price[5m]))
+```
+
+```sql
+SELECT TUMBLE_START(ts, INTERVAL '5' MINUTE) AS window_start,
+       COUNT(DISTINCT symbol) AS active_symbols
+FROM   financial_last_trade_price
+GROUP  BY TUMBLE_START(ts, INTERVAL '5' MINUTE)
+```
+
+**Controller response — HTTP 200 (both variants)**
+
+| Field | PromQL | SQL |
+|---|---|---|
+| sketch_type | HLL | HLL |
+| mode | window | window |
+| bandwidth sent | 207 120 B/s (full) | 207 120 B/s (full) |
+| delta_mode | use_full_sketch (fill_rate_too_high: 96.5%) | use_full_sketch (fill_rate_too_high: 96.5%) |
+| agent memory | 32 768 B | 16 384 B |
+
+Delta rejected because HLL fill rate is 96.5% — the sketch is almost always full, so delta compression would not save bandwidth.
 
 **References:**
 
@@ -286,6 +458,35 @@
 | Cross-series aggregation | None — independent per-symbol sketches |
 | Test types | **Sketch-finance** (ddsketch p50 as mean proxy) + **Throughput** |
 
+**Queries sent to `/api/v1/plan` (`query_string` API):**
+
+```promql
+avg_over_time(financial_last_trade_price{sectype="E"}[5m])
+```
+
+```sql
+SELECT symbol,
+       TUMBLE_START(ts, INTERVAL '5' MINUTE) AS window_start,
+       AVG(last) AS twap
+FROM   financial_last_trade_price
+WHERE  sectype = 'E'
+GROUP  BY symbol, TUMBLE_START(ts, INTERVAL '5' MINUTE)
+```
+
+**Controller response — HTTP 200 (both variants)**
+
+| Field | PromQL | SQL |
+|---|---|---|
+| sketch_type | KLL | KLL |
+| mode | window | window |
+| aggregate_by | `["sectype"]` | `["sectype", "symbol"]` |
+| bandwidth sent | 414 240 B/s (full) | 414 240 B/s (full) |
+| delta_mode | use_full_sketch (sketch_type_unsupported) | use_full_sketch (sketch_type_unsupported) |
+| sketch quantiles | `[0.5]` | `[0.5]` |
+| agent memory | 4 096 B | 4 096 B |
+
+`AVG` → KLL with p50 quantile only (median proxy for arithmetic mean).
+
 **References:**
 
 - [Wikipedia — *Time-weighted average price*](https://en.wikipedia.org/wiki/Time-weighted_average_price)
@@ -325,6 +526,54 @@
 | Unique series (active per day) | 5178 |
 | Cross-series aggregation | None — per-symbol IQR/z-score |
 | Test types | **Sketch-finance** (ddsketch quantiles [0.25, 0.5, 0.75] for IQR anomaly flags) + **Latency** |
+
+**Queries sent to `/api/v1/plan` (`query_string` API):**
+
+```sql
+-- z-score variant
+WITH stats AS (
+  SELECT symbol, ts, last,
+         TUMBLE_START(ts, INTERVAL '15' MINUTE) AS window_start,
+         AVG(last) OVER w AS mu,
+         STDDEV_SAMP(last) OVER w AS sigma
+  FROM   financial_last_trade_price
+  WHERE  sectype = 'E'
+  WINDOW w AS (PARTITION BY symbol, TUMBLE(ts, INTERVAL '15' MINUTE))
+)
+SELECT symbol, ts, last,
+       (last - mu) / NULLIF(sigma, 0) AS z_score,
+       CASE WHEN ABS((last - mu) / NULLIF(sigma, 0)) > 2.5
+            THEN true ELSE false END AS is_anomaly
+FROM   stats
+```
+
+```sql
+-- IQR variant
+WITH quartiles AS (
+  SELECT symbol,
+         TUMBLE_START(ts, INTERVAL '15' MINUTE) AS window_start,
+         PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY last) AS q1,
+         PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY last) AS q3
+  FROM   financial_last_trade_price
+  WHERE  sectype = 'E'
+  GROUP  BY symbol, TUMBLE_START(ts, INTERVAL '15' MINUTE)
+)
+SELECT f.symbol, f.ts, f.last,
+       CASE WHEN f.last < q.q1 - 1.5*(q.q3 - q.q1)
+              OR f.last > q.q3 + 1.5*(q.q3 - q.q1)
+            THEN true ELSE false
+       END AS is_anomaly
+FROM   financial_last_trade_price f
+JOIN   quartiles q ON f.symbol = q.symbol
+       AND TUMBLE_START(f.ts, INTERVAL '15' MINUTE) = q.window_start
+```
+
+**Controller response — HTTP 422 (both variants)**
+```
+could not infer aggregation type from query_string; provide explicit aggregations
+```
+z-score: `STDDEV_SAMP` not supported; outer SELECT projects arithmetic expressions without a top-level aggregate.  
+IQR: `PERCENTILE_CONT` not supported in the unmodified `sql.rs`.
 
 **References:**
 
@@ -368,6 +617,38 @@
 | Cross-series aggregation | None — per-symbol rolling band computation |
 | Test types | **Throughput + Latency** (Sketch-finance: not applicable — rolling sequential SMA/σ required) |
 
+**Query sent to `/api/v1/plan` (`query_string` API):**
+
+```sql
+WITH bars AS (
+  SELECT symbol,
+         TUMBLE_START(ts, INTERVAL '5' MINUTE) AS bar_start,
+         AVG(last) AS bar_avg
+  FROM   financial_last_trade_price
+  WHERE  sectype = 'E'
+  GROUP  BY symbol, TUMBLE_START(ts, INTERVAL '5' MINUTE)
+),
+bands AS (
+  SELECT symbol, bar_start,
+         AVG(bar_avg)         OVER w AS sma,
+         STDDEV_SAMP(bar_avg) OVER w AS sigma
+  FROM   bars
+  WINDOW w AS (PARTITION BY symbol ORDER BY bar_start ROWS 2 PRECEDING)
+)
+SELECT symbol, bar_start,
+       sma,
+       sma + 2 * sigma AS upper_band,
+       sma - 2 * sigma AS lower_band
+FROM   bands
+WHERE  sigma IS NOT NULL
+```
+
+**Controller response — HTTP 422**
+```
+could not infer aggregation type from query_string; provide explicit aggregations
+```
+The outer SELECT contains arithmetic expressions without a top-level aggregate. `STDDEV_SAMP` in the CTE window clause is also not supported.
+
 **References:**
 
 - [Wikipedia — *Bollinger Bands*](https://en.wikipedia.org/wiki/Bollinger_Bands)
@@ -407,6 +688,56 @@
 | Cross-series aggregation | None — per-symbol momentum state |
 | Test types | **Throughput + Latency** (Sketch-finance: not applicable — sequential lookback state required) |
 
+**Query sent to `/api/v1/plan` (`query_string` API):**
+
+```sql
+WITH changes AS (
+  SELECT symbol, ts, last,
+         last - LAG(last) OVER (PARTITION BY symbol ORDER BY ts) AS delta
+  FROM   financial_last_trade_price
+  WHERE  sectype = 'E'
+),
+gains_losses AS (
+  SELECT symbol, ts,
+         GREATEST(delta, 0)  AS gain,
+         GREATEST(-delta, 0) AS loss,
+         ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts) AS rn
+  FROM   changes
+  WHERE  delta IS NOT NULL
+),
+seed AS (
+  SELECT symbol,
+         AVG(gain) AS avg_gain,
+         AVG(loss) AS avg_loss,
+         MAX(ts)   AS ts,
+         14        AS rn
+  FROM   gains_losses
+  WHERE  rn <= 14
+  GROUP  BY symbol
+),
+rsi_calc AS (
+  SELECT symbol, ts, avg_gain, avg_loss, rn FROM seed
+  UNION ALL
+  SELECT g.symbol, g.ts,
+         (r.avg_gain * 13 + g.gain) / 14.0,
+         (r.avg_loss * 13 + g.loss) / 14.0,
+         g.rn
+  FROM   gains_losses g
+  JOIN   rsi_calc r ON r.symbol = g.symbol AND g.rn = r.rn + 1
+)
+SELECT symbol, ts,
+       100 - 100 / (1 + avg_gain / NULLIF(avg_loss, 0)) AS rsi
+FROM   rsi_calc
+WHERE  rn > 14
+ORDER  BY symbol, ts
+```
+
+**Controller response — HTTP 422**
+```
+could not infer aggregation type from query_string; provide explicit aggregations
+```
+Final SELECT projects arithmetic expression with no top-level aggregate. Recursive CTE also not supported.
+
 **References:**
 
 - [Wikipedia — *Relative strength index*](https://en.wikipedia.org/wiki/Relative_strength_index)
@@ -442,6 +773,51 @@
 | Unique series (active per day) | 5178 |
 | Cross-series aggregation | None — per-symbol EMA chain |
 | Test types | **Throughput + Latency** (Sketch-finance: not applicable — chained EMA state required) |
+
+**Query sent to `/api/v1/plan` (`query_string` API):**
+
+```sql
+WITH ordered AS (
+  SELECT symbol, last, ts,
+         ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts) AS rn
+  FROM   financial_last_trade_price
+  WHERE  sectype = 'E'
+),
+macd AS (
+  SELECT symbol, ts, rn, last,
+         last AS ema12,
+         last AS ema26,
+         0.0  AS macd_line,
+         0.0  AS signal_line
+  FROM   ordered WHERE rn = 1
+
+  UNION ALL
+
+  SELECT o.symbol, o.ts, o.rn, o.last,
+         (2.0/13) * o.last + (1 - 2.0/13) * m.ema12,
+         (2.0/27) * o.last + (1 - 2.0/27) * m.ema26,
+         ((2.0/13) * o.last + (1 - 2.0/13) * m.ema12)
+           - ((2.0/27) * o.last + (1 - 2.0/27) * m.ema26),
+         (2.0/10) * (
+           ((2.0/13) * o.last + (1 - 2.0/13) * m.ema12)
+           - ((2.0/27) * o.last + (1 - 2.0/27) * m.ema26)
+         ) + (1 - 2.0/10) * m.signal_line
+  FROM   ordered o
+  JOIN   macd m ON m.symbol = o.symbol AND m.rn = o.rn - 1
+)
+SELECT symbol, ts, ema12, ema26,
+       macd_line,
+       signal_line,
+       macd_line - signal_line AS histogram
+FROM   macd
+ORDER  BY symbol, ts
+```
+
+**Controller response — HTTP 422**
+```
+could not infer aggregation type from query_string; provide explicit aggregations
+```
+Recursive CTE with no `GROUP BY` aggregate — not supported. Same limitation as Q1.
 
 **References:**
 
@@ -480,6 +856,41 @@
 | Unique series (active per day) | 5178 |
 | Cross-series aggregation | None — per-symbol H/L range tracking |
 | Test types | **Throughput + Latency** (Sketch-finance: not applicable — exact min/max over rolling window required) |
+
+**Query sent to `/api/v1/plan` (`query_string` API):**
+
+```sql
+WITH rolling AS (
+  SELECT symbol, ts, last,
+         MIN(last) OVER w AS low_14,
+         MAX(last) OVER w AS high_14
+  FROM   financial_last_trade_price
+  WHERE  sectype = 'E'
+  WINDOW w AS (PARTITION BY symbol ORDER BY ts ROWS 13 PRECEDING)
+),
+pct_k AS (
+  SELECT symbol, ts, last,
+         100.0 * (last - low_14) / NULLIF(high_14 - low_14, 0) AS k
+  FROM   rolling
+)
+SELECT symbol, ts, k,
+       AVG(k) OVER (PARTITION BY symbol ORDER BY ts ROWS 2 PRECEDING) AS d
+FROM   pct_k
+ORDER  BY symbol, ts
+```
+
+**Controller response — HTTP 200**
+
+| Field | Value |
+|---|---|
+| sketch_type | KLL |
+| mode | window |
+| metric resolved as | `pct_k` (last CTE name — metric name mangling ineffective) |
+| bandwidth sent | 414 240 B/s (full) |
+| delta_mode | use_full_sketch (sketch_type_unsupported) |
+| sketch quantiles | `[0.5]` |
+
+The planner finds `AVG(k)` in the final `OVER (...)` window clause and picks KLL — a false positive. The actual stochastic oscillator is not sketch-approximable. The metric resolves as the last CTE name (`pct_k`) rather than the source table.
 
 **References:**
 
