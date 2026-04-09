@@ -71,8 +71,8 @@ func TestBatchModeCardinalityOutput(t *testing.T) {
 	assert.True(t, foundCardinality, "expected metric requests_hll_cardinality")
 }
 
-// TestBatchModeTransmitSketch verifies that transmit_sketch=true embeds the
-// HLL payload in gauge data point attributes.
+// TestBatchModeTransmitSketch verifies that transmit_sketch=true emits a native
+// HLLSketch metric with properly populated data point fields.
 func TestBatchModeTransmitSketch(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.Mode = ModeBatch
@@ -97,19 +97,20 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 				for k := 0; k < ms.Len(); k++ {
 					if ms.At(k).Name() == "latency_hll_cardinality" {
 						foundSketch = true
-						dps := ms.At(k).Gauge().DataPoints()
+						assert.Equal(t, pmetric.MetricTypeHLLSketch, ms.At(k).Type())
+						dps := ms.At(k).HLLSketch().DataPoints()
 						require.Equal(t, 1, dps.Len())
 						dp := dps.At(0)
-						_, ok := dp.Attributes().Get("hll.sketch_payload")
-						assert.True(t, ok, "expected hll.sketch_payload attribute")
-						_, ok = dp.Attributes().Get("hll.cardinality")
-						assert.True(t, ok, "expected hll.cardinality attribute")
+						assert.Greater(t, dp.Cardinality(), uint64(0), "expected non-zero cardinality")
+						assert.Greater(t, len(dp.Sketch()), 0, "expected non-empty sketch bytes")
+						assert.Equal(t, pmetric.HLLSketchEncodingProto, dp.Encoding())
+						assert.Greater(t, dp.Precision(), uint32(0), "expected non-zero precision")
 					}
 				}
 			}
 		}
 	}
-	assert.True(t, foundSketch, "expected metric latency_hll_cardinality with sketch payload")
+	assert.True(t, foundSketch, "expected metric latency_hll_cardinality as HLLSketch")
 }
 
 // TestBatchModeMetricSuffix verifies that a custom metric_suffix is applied.
