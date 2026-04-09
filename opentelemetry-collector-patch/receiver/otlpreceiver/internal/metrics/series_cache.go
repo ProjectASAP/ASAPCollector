@@ -62,6 +62,10 @@ const (
 	metricTypeDDSketchInt          = "ddsketch_int"
 	metricTypeDDSketchDouble       = "ddsketch_double"
 	metricTypeDDSketchUnspecified  = "ddsketch"
+	metricTypeHLLSketch            = "hllsketch"
+	metricTypeKLLSketch            = "kllsketch"
+	metricTypeCountSketch          = "countsketch"
+	metricTypeCountMinSketch       = "countminsketch"
 )
 
 func newSeriesCache(ttl time.Duration) *seriesCache {
@@ -149,6 +153,30 @@ func (sc *seriesCache) rehydrateMetricLocked(src *seriesSource, resourceKey, sco
 				metricType = metricTypeDDSketchUnspecified
 			}
 			sc.rehydrateDataPointLocked(src, resourceKey, scopeKey, m.Name(), metricType, dp, assignments, now)
+		}
+	case pmetric.MetricTypeHLLSketch:
+		dps := m.HLLSketch().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			sc.rehydrateDataPointLocked(src, resourceKey, scopeKey, m.Name(), metricTypeHLLSketch, dp, assignments, now)
+		}
+	case pmetric.MetricTypeKLLSketch:
+		dps := m.KLLSketch().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			sc.rehydrateDataPointLocked(src, resourceKey, scopeKey, m.Name(), metricTypeKLLSketch, dp, assignments, now)
+		}
+	case pmetric.MetricTypeCountSketch:
+		dps := m.CountSketch().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			sc.rehydrateDataPointLocked(src, resourceKey, scopeKey, m.Name(), metricTypeCountSketch, dp, assignments, now)
+		}
+	case pmetric.MetricTypeCountMinSketch:
+		dps := m.CountMinSketch().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			sc.rehydrateDataPointLocked(src, resourceKey, scopeKey, m.Name(), metricTypeCountMinSketch, dp, assignments, now)
 		}
 	default:
 	}

@@ -221,6 +221,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 		unit   string
 		attrs  pcommon.Map
 		sketch *hll.HyperLogLog
+		count  uint64
 	}
 	batched := make(map[string]*batchSeries)
 
@@ -256,6 +257,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
 						bs.sketch.InsertValue(dp.DoubleValue())
+						bs.count++
 					}
 				case pmetric.MetricTypeHLLSketch:
 					dps := metric.HLLSketch().DataPoints()
@@ -265,6 +267,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 							continue
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
+						bs.count += dp.Count()
 						inboundKey := metric.Name() + "::" + p.seriesKey(dp.Attributes())
 						if err := p.inboundMergeHLL(inboundKey, dp, bs.sketch); err != nil && p.logger != nil {
 							p.logger.Error("hllprocessor: failed to merge inbound HLLSketch", zap.Error(err))
@@ -283,17 +286,45 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 	scope.Scope().SetName("otelcol/hllprocessor")
 	now := pcommon.NewTimestampFromTime(time.Now())
 
-	for _, bs := range batched {
-		if bs.sketch == nil {
-			continue
-		}
-		metricName := p.cardinalityMetricName(bs.name)
-		m := findOrCreateGaugeMetric(scope.Metrics(), metricName, bs.unit)
-		if p.cfg.TransmitSketch {
-			if err := appendHLLSketchDataPoint(m, bs.attrs, bs.sketch, now); err != nil && p.logger != nil {
-				p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
+	if p.cfg.TransmitSketch {
+		// Group all batch series into a single HLLSketch metric per unique name.
+		hllMetrics := make(map[string]pmetric.Metric)
+		for _, bs := range batched {
+			if bs.sketch == nil {
+				continue
 			}
-		} else {
+			metricName := p.cardinalityMetricName(bs.name)
+			m, ok := hllMetrics[metricName]
+			if !ok {
+				m = scope.Metrics().AppendEmpty()
+				m.SetName(metricName)
+				m.SetUnit(bs.unit)
+				m.SetEmptyHLLSketch().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+				hllMetrics[metricName] = m
+			}
+			payload, err := bs.sketch.SerializeProtoBytes()
+			if err != nil {
+				if p.logger != nil {
+					p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
+				}
+				continue
+			}
+			dp := m.HLLSketch().DataPoints().AppendEmpty()
+			bs.attrs.CopyTo(dp.Attributes())
+			dp.SetTimestamp(now)
+			dp.SetCount(bs.count)
+			dp.SetCardinality(bs.sketch.EstimateCardinality())
+			dp.SetSketch(payload)
+			dp.SetEncoding(pmetric.HLLSketchEncodingProto)
+			dp.SetPrecision(uint32(hll.HLLPrecision))
+		}
+	} else {
+		for _, bs := range batched {
+			if bs.sketch == nil {
+				continue
+			}
+			metricName := p.cardinalityMetricName(bs.name)
+			m := findOrCreateGaugeMetric(scope.Metrics(), metricName, bs.unit)
 			dp := m.Gauge().DataPoints().AppendEmpty()
 			bs.attrs.CopyTo(dp.Attributes())
 			dp.SetTimestamp(now)
@@ -535,7 +566,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 							m.SetName(metricName)
 							m.SetDescription(mw.description)
 							m.SetUnit(mw.unit)
-							m.SetEmptyGauge()
+							m.SetEmptyHLLSketch().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
 							created = true
 						}
 						snapKey := mw.name + "::" + p.seriesKey(series.attrs)
@@ -544,21 +575,60 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 							snap, hasSnap := p.snapshots[snapKey]
 							p.snapshotsMu.Unlock()
 
-							var appErr error
 							if hasSnap && snap != nil {
-								appErr = appendHLLDeltaDataPoint(m, series.attrs, snap, series.sketch, now)
+								deltaMsg := hll.ComputeRegisterDelta(snap, series.sketch)
+								payload, err := hll.SerializeRegisterDelta(deltaMsg)
+								if err != nil {
+									if p.logger != nil {
+										p.logger.Error("hllprocessor: failed to serialize delta", zap.Error(err))
+									}
+								} else {
+									dp := m.HLLSketch().DataPoints().AppendEmpty()
+									series.attrs.CopyTo(dp.Attributes())
+									dp.SetTimestamp(now)
+									dp.SetCount(0)
+									dp.SetCardinality(series.sketch.EstimateCardinality())
+									dp.SetSketch(payload)
+									dp.SetEncoding(pmetric.HLLSketchEncodingDelta)
+									dp.SetPrecision(uint32(hll.HLLPrecision))
+								}
 							} else {
-								appErr = appendHLLSketchDataPoint(m, series.attrs, series.sketch, now)
-							}
-							if appErr != nil && p.logger != nil {
-								p.logger.Error("hllprocessor: failed to emit sketch", zap.Error(appErr))
+								payload, err := series.sketch.SerializeProtoBytes()
+								if err != nil {
+									if p.logger != nil {
+										p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
+									}
+								} else {
+									dp := m.HLLSketch().DataPoints().AppendEmpty()
+									series.attrs.CopyTo(dp.Attributes())
+									dp.SetTimestamp(now)
+									dp.SetCount(0)
+									dp.SetCardinality(series.sketch.EstimateCardinality())
+									dp.SetSketch(payload)
+									dp.SetEncoding(pmetric.HLLSketchEncodingProto)
+									dp.SetPrecision(uint32(hll.HLLPrecision))
+								}
 							}
 							newSnap := cloneHLL(series.sketch)
 							p.snapshotsMu.Lock()
 							p.snapshots[snapKey] = newSnap
 							p.snapshotsMu.Unlock()
-						} else if err := appendHLLSketchDataPoint(m, series.attrs, series.sketch, now); err != nil && p.logger != nil {
-							p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
+						} else {
+							payload, err := series.sketch.SerializeProtoBytes()
+							if err != nil {
+								if p.logger != nil {
+									p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
+								}
+							} else {
+								dp := m.HLLSketch().DataPoints().AppendEmpty()
+								series.attrs.CopyTo(dp.Attributes())
+								dp.SetTimestamp(now)
+								dp.SetCount(0)
+								dp.SetCardinality(series.sketch.EstimateCardinality())
+								dp.SetSketch(payload)
+								dp.SetEncoding(pmetric.HLLSketchEncodingProto)
+								dp.SetPrecision(uint32(hll.HLLPrecision))
+							}
 						}
 						series.attrs = pcommon.Map{}
 						p.seriesPool.Put(series)

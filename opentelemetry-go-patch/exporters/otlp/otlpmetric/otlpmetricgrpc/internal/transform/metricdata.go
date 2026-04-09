@@ -706,8 +706,10 @@ func HLLSketchDataPoints(
 // HLLSketchEncodingValue returns an OTLP HLLSketchEncoding generated from enc.
 func HLLSketchEncodingValue(enc metricdata.HLLSketchEncoding) (mpb.HLLSketchEncoding, error) {
 	switch enc {
-	case metricdata.HLLSketchEncodingBinary:
-		return mpb.HLLSketchEncoding_HLL_SKETCH_ENCODING_BINARY, nil
+	case metricdata.HLLSketchEncodingProto:
+		return mpb.HLLSketchEncoding_HLL_SKETCH_ENCODING_PROTO, nil
+	case metricdata.HLLSketchEncodingDelta:
+		return mpb.HLLSketchEncoding_HLL_SKETCH_ENCODING_DELTA, nil
 	default:
 		return mpb.HLLSketchEncoding_HLL_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownHLLSketchEncoding, enc)
 	}

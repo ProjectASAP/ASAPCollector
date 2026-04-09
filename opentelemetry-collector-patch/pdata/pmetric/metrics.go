@@ -50,6 +50,8 @@ func (ms Metrics) DataPointCount() (dataPointCount int) {
 					dataPointCount += m.ExponentialHistogram().DataPoints().Len()
 				case MetricTypeSummary:
 					dataPointCount += m.Summary().DataPoints().Len()
+				case MetricTypeDDSketch:
+					dataPointCount += m.DDSketch().DataPoints().Len()
 				case MetricTypeKLLSketch:
 					dataPointCount += m.KLLSketch().DataPoints().Len()
 				case MetricTypeCountSketch:
