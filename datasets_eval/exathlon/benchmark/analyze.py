@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -74,6 +75,98 @@ def append_latency_row(
         csv.writer(f).writerow(row)
 
 
+def _fmt_num(v: float, decimals: int = 3) -> str:
+    if pd.isna(v):
+        return "NA"
+    return f"{float(v):.{decimals}f}"
+
+
+def _build_q3_analysis(df: pd.DataFrame) -> str:
+    if df.empty:
+        return "No per-window Q3 rows were generated."
+
+    pass_count = int(pd.to_numeric(df["pass"], errors="coerce").fillna(0).astype(bool).sum())
+    total = len(df)
+    rho = pd.to_numeric(df["rank_correlation"], errors="coerce")
+    overlap = pd.to_numeric(df["topk_overlap"], errors="coerce")
+    q3_score = pd.to_numeric(df["q3_score"], errors="coerce")
+    gt_range = pd.to_numeric(df["gt_topk_range"], errors="coerce")
+
+    strong_rank = int((rho >= 0.95).fillna(False).sum())
+    early_n = max(total // 2, 1)
+    early_avg = float(q3_score.iloc[:early_n].mean()) if total else float("nan")
+    late_avg = float(q3_score.iloc[early_n:].mean()) if total > early_n else float("nan")
+    range_first = float(gt_range.iloc[0]) if total else float("nan")
+    range_last = float(gt_range.iloc[-1]) if total else float("nan")
+
+    parts = [
+        f"The CountSketch estimates show strong rank agreement in {strong_rank}/{total} windows "
+        f"(Spearman rho >= 0.95), with mean top-K overlap {_fmt_num(overlap.mean())}.",
+        f"Using q3_score = overlap + 0.25 * max(rho, 0), the pass rate is {pass_count}/{total} "
+        f"windows at the threshold q3_score >= 1.0.",
+    ]
+    if not np.isnan(early_avg) and not np.isnan(late_avg):
+        direction = "declines" if late_avg < early_avg else "improves"
+        parts.append(
+            f"The average q3_score {direction} from {_fmt_num(early_avg)} in the earlier windows "
+            f"to {_fmt_num(late_avg)} in the later windows."
+        )
+    if not np.isnan(range_first) and not np.isnan(range_last):
+        parts.append(
+            f"The exact top-10 exceedance spread narrows from {_fmt_num(range_first, 1)} to "
+            f"{_fmt_num(range_last, 1)} counts across the run; smaller spreads make near-threshold "
+            "top-10 membership more sensitive to one-count estimation error."
+        )
+    return " ".join(parts)
+
+
+def write_q3_window_report(results_dir: Path, query_tag: str, file_tag: str) -> None:
+    window_csv = results_dir / "window_comparison" / f"{query_tag}_{file_tag}.csv"
+    if query_tag != "Q3" or not window_csv.is_file():
+        return
+    df = pd.read_csv(window_csv)
+    if df.empty:
+        return
+
+    first_ws = pd.to_numeric(df["window_start_s"], errors="coerce").dropna()
+    if first_ws.empty:
+        day_label = file_tag
+    else:
+        dt = datetime.fromtimestamp(int(first_ws.min()), tz=timezone.utc)
+        day_label = dt.strftime("%Y-%m-%d UTC")
+
+    lines = [
+        f"Results - {day_label}",
+        "",
+        "| Window | q3_score | Pass |",
+        "| --- | --- | --- |",
+    ]
+    for _, row in df.iterrows():
+        mark = "\u2713" if bool(row.get("pass", False)) else "\u2717"
+        score = _fmt_num(pd.to_numeric(row.get('q3_score'), errors='coerce'))
+        reason = str(row.get("reason", "")).strip()
+        if score == "NA" and reason:
+            score = f"NA ({reason})"
+        lines.append(f"| {row.get('window', '')} | {score} | {mark} |")
+
+    pass_count = int(pd.to_numeric(df["pass"], errors="coerce").fillna(0).astype(bool).sum())
+    total = len(df)
+    lines += [
+        "",
+        f"Pass rate: {pass_count}/{total} windows (threshold q3_score >= 1.0).",
+        "",
+        "Analysis",
+        _build_q3_analysis(df),
+        "",
+        "Notes",
+        "- q3_score = topk_overlap + 0.25 * max(rank_correlation, 0).",
+        "- topk_overlap is the fraction of exact top-10 metrics also present in the sketch top-10.",
+        "- rank_correlation is Spearman rho over the shared keys in the top-10 sets.",
+        "",
+    ]
+    (results_dir / "q3_benchmarking.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Aggregate exathlon benchmark results into report.md."
@@ -100,6 +193,7 @@ def main() -> None:
     file_tag = args.file or "unknown"
     mode_tag = args.replay_mode or "unknown"
     append_latency_row(args.results_dir, query_tag, file_tag, mode_tag, send_times)
+    write_q3_window_report(args.results_dir, query_tag, file_tag)
 
     lines: list[str] = ["# Exathlon benchmark report", ""]
 
@@ -112,16 +206,40 @@ def main() -> None:
                 pass
     if comparison_frames:
         accuracy = pd.concat(comparison_frames, ignore_index=True)
+        detail_metrics = {"gt_topk_keys", "sketch_topk_keys", "topk_exact_match"}
+        numeric_accuracy = accuracy[~accuracy["metric"].isin(detail_metrics)].copy()
         lines.append("## Accuracy (sketch vs ground truth)")
         lines.append("| query | file | metric | value | threshold | pass |")
         lines.append("| --- | --- | --- | --- | --- | --- |")
-        for _, record in accuracy.iterrows():
+        for _, record in numeric_accuracy.iterrows():
             lines.append(
                 f"| {record.get('query', '')} | {record.get('file', '')} | "
                 f"{record.get('metric', '')} | {record.get('value', '')} | "
                 f"{record.get('threshold', '')} | {record.get('pass', '')} |"
             )
         lines.append("")
+
+        q3_details = accuracy[accuracy["metric"].isin(detail_metrics)].copy()
+        if not q3_details.empty:
+            lines.append("## Q3 Top-K Comparison")
+            for (query, file_name), group in q3_details.groupby(["query", "file"], dropna=False):
+                gt_keys = group.loc[group["metric"] == "gt_topk_keys", "value"]
+                sk_keys = group.loc[group["metric"] == "sketch_topk_keys", "value"]
+                exact_match = group.loc[group["metric"] == "topk_exact_match", "value"]
+                lines.append(f"### {query} / {file_name}")
+                lines.append("")
+                lines.append(f"- Exact match: {exact_match.iloc[0] if not exact_match.empty else 'False'}")
+                lines.append("- Ground truth Top-K:")
+                gt_items = [s.strip() for s in str(gt_keys.iloc[0]).split("|")] if not gt_keys.empty else []
+                for item in gt_items:
+                    if item:
+                        lines.append(f"`{item}`")
+                lines.append("- Sketch Top-K:")
+                sk_items = [s.strip() for s in str(sk_keys.iloc[0]).split("|")] if not sk_keys.empty else []
+                for item in sk_items:
+                    if item:
+                        lines.append(f"`{item}`")
+                lines.append("")
 
     if throughput_path.is_file():
         throughput_df = pd.read_csv(throughput_path)

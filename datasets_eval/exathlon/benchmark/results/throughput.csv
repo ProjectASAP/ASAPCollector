@@ -1,2 +1,3 @@
 query,file,replay_mode,speed_factor,total_events,elapsed_s,events_per_sec,export_count
 Q2,app1/1_0_10000_17,max,100,5953960,48.736052,122167.467579,1191
+Q3,app1/1_0_10000_17,paced,100,27058,620.814441,43.584682,6

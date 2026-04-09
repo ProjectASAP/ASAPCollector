@@ -23,6 +23,7 @@ if str(_BENCHMARK_ROOT) not in sys.path:
 from common import file_csv_path, file_tag_safe
 from ground_truth.q1 import run_q1
 from ground_truth.q2 import run_q2
+from ground_truth.q3 import run_q3
 from ground_truth.common import (
     THRESHOLD_QUANTILE,
     TOP_K_ENTITIES,
@@ -356,7 +357,7 @@ def run_ground_truth_task(
     elif query_id == "Q2":
         run_q2(file_tag, output_dir, chunksize)
     elif query_id == "Q3":
-        _gt_q3(csv_path, WINDOW_5MIN_S, TOP_K_METRICS, out, chunksize)
+        run_q3(file_tag, output_dir, k=TOP_K_METRICS, chunksize=chunksize)
     elif query_id == "Q4":
         # Write multi-window ground truth: one row per (entity, metric_base, window, window_size).
         parts = []

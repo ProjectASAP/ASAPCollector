@@ -34,6 +34,7 @@ from common import (
     file_csv_path,
     file_tag_safe,
 )
+from ground_truth.common import compute_per_metric_thresholds
 
 # Each element: (value, time_unix_nano, entity, metric_base, aggregation)
 _Point = Tuple[float, int, str, str, str]
@@ -85,11 +86,16 @@ def iter_batches(
     csv_path: Path,
     chunksize: int,
     batch_size: int,
+    query: str = "",
+    thresholds: dict[tuple[str, str], float] | None = None,
 ):
     """Yield batches of (value, time_unix_nano, entity, metric_base, aggregation).
 
     Performs the wide-to-narrow pivot inline: each non-sentinel, non-NaN
     column value in a row becomes one tuple in the batch.
+
+    For Q3, emits only threshold-exceedance events and normalizes each emitted
+    value to 1.0 so the collector-side sample_count equals the exceedance count.
     """
     # Pre-parse all column names from the header.
     header_df = pd.read_csv(csv_path, nrows=0)
@@ -130,6 +136,11 @@ def iter_batches(
                 v = col_values[col][i]
                 if np.isnan(v) or v == SENTINEL_VALUE:
                     continue
+                if query == "Q3":
+                    thr = None if thresholds is None else thresholds.get((entity, mb))
+                    if thr is None or float(v) <= float(thr):
+                        continue
+                    v = 1.0
                 pending.append((float(v), t_ns, entity, mb, agg))
                 if len(pending) >= batch_size:
                     yield pending
@@ -396,8 +407,19 @@ def main() -> None:
                 print(f"skip missing {csv_path}", flush=True)
                 continue
             print(f"file {csv_path}", flush=True)
+            thresholds: dict[tuple[str, str], float] | None = None
+            if args.query == "Q3":
+                print("q3 threshold pass start", f"file={csv_path}", flush=True)
+                thresholds = compute_per_metric_thresholds(csv_path, chunksize=args.chunksize)
+                print("q3 threshold pass done", f"metrics={len(thresholds)}", flush=True)
 
-            for batch in iter_batches(csv_path, args.chunksize, args.batch_size):
+            for batch in iter_batches(
+                csv_path,
+                args.chunksize,
+                args.batch_size,
+                query=args.query,
+                thresholds=thresholds,
+            ):
                 if sender_errors:
                     raise sender_errors[0]
 

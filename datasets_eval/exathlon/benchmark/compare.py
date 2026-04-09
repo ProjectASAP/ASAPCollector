@@ -11,6 +11,7 @@ Each query has a registered ``_COMPARE_DISPATCH[qN]`` function that:
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -28,6 +29,7 @@ from ground_truth.common import (
     TOP_K_ENTITIES,
     TOP_K_METRICS,
     _stream_long_chunks,
+    compute_per_metric_thresholds,
 )
 from common import METRIC_NAME, file_csv_path, file_tag_safe
 
@@ -184,6 +186,195 @@ def extract_countsketch_estimates(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).groupby("key", as_index=False)["est"].max()
 
 
+def _q3_gt_key(row: pd.Series) -> str:
+    return (
+        f"aggregation={row['aggregation']};"
+        f"entity={row['entity']};"
+        f"metric_base={row['metric_base']};"
+    )
+
+
+def _filter_frequency_sketch_rows(sketch_data: pd.DataFrame, query_id: str) -> pd.DataFrame:
+    """Drop raw metric rows when a scrape mixes originals and CountSketch flushes."""
+    if query_id not in {"Q3", "Q7"} or sketch_data.empty or "metric" not in sketch_data.columns:
+        return sketch_data
+    metrics = sketch_data["metric"].astype(str)
+    has_partition = metrics.str.contains("countsketch_partition", regex=False, na=False).any()
+    has_non_partition = (~metrics.str.contains("countsketch_partition", regex=False, na=False)).any()
+    if has_partition and has_non_partition:
+        return sketch_data[metrics.str.contains("countsketch_partition", regex=False, na=False)].copy()
+    return sketch_data
+
+
+def _spearman_for_topk(gt_top: list[str], sk_top: list[str]) -> float:
+    common = [k for k in gt_top if k in set(sk_top)]
+    if len(common) < 2:
+        return float("nan")
+    gt_ranks = [gt_top.index(k) + 1 for k in common]
+    sk_ranks = [sk_top.index(k) + 1 for k in common]
+    rho, _ = scipy.stats.spearmanr(gt_ranks, sk_ranks)
+    return float(rho) if not np.isnan(rho) else 0.0
+
+
+def compute_q3_score(topk_overlap: float, rank_correlation: float) -> float:
+    """Weighted Q3 score used by the detailed per-window report.
+
+    Overlap is the primary term; rank agreement adds a smaller bonus and is
+    clipped at zero so anti-correlation does not invert the score.
+    """
+    rho = 0.0 if np.isnan(rank_correlation) else max(float(rank_correlation), 0.0)
+    return float(topk_overlap + 0.25 * rho)
+
+
+def _format_window_label(window_start_s: int, window_size_s: int) -> str:
+    start = datetime.fromtimestamp(window_start_s, tz=timezone.utc)
+    end = datetime.fromtimestamp(window_start_s + window_size_s, tz=timezone.utc)
+    return f"{start:%H:%M}-{end:%H:%M} UTC"
+
+
+def _get_snapshot_for_event_time_s(
+    sketch_data: pd.DataFrame,
+    target_event_s: int,
+    query_id: str,
+    send_times_path: Path | None,
+) -> pd.DataFrame:
+    if (
+        sketch_data.empty
+        or send_times_path is None
+        or not send_times_path.is_file()
+    ):
+        return pd.DataFrame()
+    try:
+        send_times = pd.read_csv(send_times_path, usecols=["emit_wall_ns", "event_time_ns"])
+    except (ValueError, FileNotFoundError, pd.errors.EmptyDataError):
+        return pd.DataFrame()
+    if send_times.empty:
+        return pd.DataFrame()
+
+    event_ns = pd.to_numeric(send_times["event_time_ns"], errors="coerce")
+    emit_ns = pd.to_numeric(send_times["emit_wall_ns"], errors="coerce")
+    valid = event_ns.notna() & emit_ns.notna()
+    if not valid.any():
+        return pd.DataFrame()
+    event_s = (event_ns[valid] // 1_000_000_000).astype(np.int64)
+    emit_valid = emit_ns[valid].astype(np.int64)
+
+    eligible = emit_valid[event_s <= target_event_s]
+    if eligible.empty:
+        return pd.DataFrame()
+    target_emit_ns = int(eligible.max())
+
+    scrape_ns = pd.to_numeric(sketch_data.get("scrape_wall_ns"), errors="coerce")
+    scrape_valid = sketch_data[scrape_ns.notna()].copy()
+    if scrape_valid.empty:
+        return pd.DataFrame()
+    scrape_ns_valid = pd.to_numeric(scrape_valid["scrape_wall_ns"], errors="coerce").astype(np.int64)
+
+    before_or_equal = scrape_ns_valid[scrape_ns_valid <= target_emit_ns]
+    if not before_or_equal.empty:
+        chosen_ns = int(before_or_equal.max())
+    else:
+        idx = (scrape_ns_valid - target_emit_ns).abs().idxmin()
+        chosen_ns = int(scrape_ns_valid.loc[idx])
+    snapshot = scrape_valid[scrape_ns_valid == chosen_ns]
+    return get_best_snapshot_for_query(snapshot, query_id)
+
+
+def compare_q3_per_window(
+    ground_truth: pd.DataFrame,
+    sketch_data: pd.DataFrame,
+    send_times_path: Path | None,
+    score_threshold: float = 1.0,
+) -> pd.DataFrame:
+    """Return one comparison row per GT window for Q3."""
+    cols = [
+        "query", "file", "window_start_s", "window_size_s", "window",
+        "topk_overlap", "rank_correlation", "q3_score", "threshold", "pass",
+        "gt_rank1_count", "gt_rank10_count", "gt_topk_range",
+        "snapshot_rows", "partition_rows", "partition_nonzero_rows", "status", "reason",
+        "gt_topk_keys", "sketch_topk_keys", "topk_exact_match",
+    ]
+    if ground_truth.empty:
+        return pd.DataFrame(columns=cols)
+
+    windows: list[dict] = []
+    gt_sorted = ground_truth.sort_values(["window_start_s", "rank"]).copy()
+    for ws, gt_win in gt_sorted.groupby("window_start_s", sort=True):
+        gt_top = [
+            _q3_gt_key(row)
+            for _, row in gt_win.nsmallest(TOP_K_METRICS, "rank").iterrows()
+        ]
+        if not gt_top:
+            continue
+        window_size_s = int(pd.to_numeric(gt_win["window_size_s"], errors="coerce").dropna().iloc[0])
+        window_end_s = int(ws) + window_size_s
+        snapshot = _get_snapshot_for_event_time_s(sketch_data, window_end_s, "Q3", send_times_path)
+        snapshot_rows = int(len(snapshot))
+        partition_rows = 0
+        partition_nonzero_rows = 0
+        status = "ok"
+        reason = ""
+        if snapshot.empty:
+            status = "missing"
+            reason = "no_aligned_snapshot"
+        else:
+            metric_series = snapshot["metric"].astype(str) if "metric" in snapshot.columns else pd.Series(dtype=str)
+            partition_mask = metric_series.str.contains("countsketch_partition", regex=False, na=False)
+            partition_rows = int(partition_mask.sum())
+            if partition_rows == 0:
+                status = "missing"
+                reason = "no_countsketch_partition_rows"
+            else:
+                values = pd.to_numeric(snapshot.loc[partition_mask, "value"], errors="coerce").fillna(0.0)
+                partition_nonzero_rows = int((values > 0).sum())
+                if partition_nonzero_rows == 0:
+                    status = "missing"
+                    reason = "countsketch_rows_all_zero"
+        sk = extract_countsketch_estimates(snapshot)
+        if sk.empty:
+            overlap = float("nan")
+            rho = float("nan")
+            sk_top: list[str] = []
+            if status == "ok":
+                status = "missing"
+                reason = "extract_countsketch_estimates_empty"
+        else:
+            sk_top = sk.sort_values("est", ascending=False).head(TOP_K_METRICS)["key"].tolist()
+            overlap = len(set(gt_top) & set(sk_top)) / max(len(gt_top), 1)
+            rho = _spearman_for_topk(gt_top, sk_top)
+            if len(sk_top) == 0 and status == "ok":
+                status = "missing"
+                reason = "sketch_topk_empty"
+        q3_score = compute_q3_score(overlap, rho) if not np.isnan(overlap) else float("nan")
+        sorted_counts = gt_win.nsmallest(TOP_K_METRICS, "rank")["exceedance_count"].astype(float).tolist()
+        gt_rank1_count = sorted_counts[0] if sorted_counts else float("nan")
+        gt_rank10_count = sorted_counts[-1] if sorted_counts else float("nan")
+        windows.append({
+            "query": "Q3",
+            "file": "",
+            "window_start_s": int(ws),
+            "window_size_s": window_size_s,
+            "window": _format_window_label(int(ws), window_size_s),
+            "topk_overlap": float(overlap),
+            "rank_correlation": float(rho),
+            "q3_score": float(q3_score),
+            "threshold": float(score_threshold),
+            "pass": bool(not np.isnan(q3_score) and q3_score >= score_threshold),
+            "gt_rank1_count": float(gt_rank1_count),
+            "gt_rank10_count": float(gt_rank10_count),
+            "gt_topk_range": float(gt_rank1_count - gt_rank10_count),
+            "snapshot_rows": snapshot_rows,
+            "partition_rows": partition_rows,
+            "partition_nonzero_rows": partition_nonzero_rows,
+            "status": status,
+            "reason": reason,
+            "gt_topk_keys": " | ".join(gt_top),
+            "sketch_topk_keys": " | ".join(sk_top),
+            "topk_exact_match": gt_top == sk_top,
+        })
+    return pd.DataFrame(windows, columns=cols)
+
+
 def extract_hll_cardinality_by_label(
     df: pd.DataFrame,
     label_key: str | None = None,
@@ -284,33 +475,45 @@ _COMPARE_DISPATCH["Q1"] = _compare_q1
 
 def _compare_q3(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
     if ground_truth.empty:
-        return {"topk_overlap": float("nan"), "rank_correlation": float("nan")}
+        return {
+            "topk_overlap": float("nan"),
+            "rank_correlation": float("nan"),
+            "gt_topk_keys": "",
+            "sketch_topk_keys": "",
+            "topk_exact_match": False,
+        }
 
     # Ground truth: last window only.
     last_ws = int(ground_truth["window_start_s"].max())
     gt_win = ground_truth[ground_truth["window_start_s"] == last_ws].copy()
-    gt_top = gt_win.nsmallest(TOP_K_METRICS, "rank")["key"].tolist()
+    gt_top = [
+        _q3_gt_key(row)
+        for _, row in gt_win.nsmallest(TOP_K_METRICS, "rank").iterrows()
+    ]
 
     sk = extract_countsketch_estimates(sketch)
     if sk.empty:
-        return {"topk_overlap": float("nan"), "rank_correlation": float("nan")}
+        return {
+            "topk_overlap": float("nan"),
+            "rank_correlation": float("nan"),
+            "gt_topk_keys": " | ".join(gt_top),
+            "sketch_topk_keys": "",
+            "topk_exact_match": False,
+        }
 
     sk_sorted = sk.sort_values("est", ascending=False).head(TOP_K_METRICS)
     sk_top = sk_sorted["key"].tolist()
 
     overlap = len(set(gt_top) & set(sk_top)) / max(len(gt_top), 1)
+    rho = _spearman_for_topk(gt_top, sk_top)
 
-    # Spearman rank correlation on common keys.
-    common = [k for k in gt_top if k in set(sk_top)]
-    if len(common) >= 2:
-        gt_ranks = [gt_top.index(k) + 1 for k in common]
-        sk_ranks = [sk_top.index(k) + 1 if k in sk_top else len(sk_top) + 1 for k in common]
-        rho, _ = scipy.stats.spearmanr(gt_ranks, sk_ranks)
-        rho = float(rho) if not np.isnan(rho) else 0.0
-    else:
-        rho = float("nan")
-
-    return {"topk_overlap": float(overlap), "rank_correlation": float(rho)}
+    return {
+        "topk_overlap": float(overlap),
+        "rank_correlation": float(rho),
+        "gt_topk_keys": " | ".join(gt_top),
+        "sketch_topk_keys": " | ".join(sk_top),
+        "topk_exact_match": gt_top == sk_top,
+    }
 
 
 _COMPARE_DISPATCH["Q3"] = _compare_q3
@@ -759,6 +962,73 @@ def _build_q1_single_window_ground_truth(
     return out
 
 
+def _build_q3_single_window_ground_truth(
+    file_tag: str,
+    window_start_s: int,
+    window_end_s: int,
+    chunksize: int = 2000,
+) -> pd.DataFrame:
+    """Compute exact Q3 top-K for one event-time window.
+
+    Thresholds remain file-local p95 per (entity, metric_base), matching the
+    canonical Q3 definition. The window itself is aligned to the replay event
+    interval covered by the selected scrape.
+    """
+    csv_path = file_csv_path(file_tag)
+    if not csv_path.is_file() or window_end_s <= window_start_s:
+        return pd.DataFrame()
+
+    thresholds = compute_per_metric_thresholds(csv_path, chunksize=chunksize)
+    exc_counts: dict[tuple[str, str, str], int] = {}
+
+    for chunk in _stream_long_chunks(csv_path, chunksize):
+        if chunk.empty:
+            continue
+        chunk = chunk[
+            (chunk["ts_s"] >= window_start_s) & (chunk["ts_s"] <= window_end_s)
+        ]
+        if chunk.empty:
+            continue
+        entities = chunk["entity"].to_numpy()
+        metric_bases = chunk["metric_base"].to_numpy()
+        aggregations = chunk["aggregation"].to_numpy()
+        values = chunk["value"].to_numpy(dtype=np.float64)
+        for i in range(len(values)):
+            thr = thresholds.get((entities[i], metric_bases[i]))
+            if thr is not None and values[i] > thr:
+                key = (str(entities[i]), str(metric_bases[i]), str(aggregations[i]))
+                exc_counts[key] = exc_counts.get(key, 0) + 1
+
+    if not exc_counts:
+        return pd.DataFrame(
+            columns=[
+                "entity", "metric_base", "aggregation", "window_start_s",
+                "window_size_s", "window_label", "exceedance_count", "rank",
+            ]
+        )
+
+    ranked = sorted(
+        exc_counts.items(),
+        key=lambda kv: (-kv[1], kv[0][0], kv[0][1], kv[0][2]),
+    )[:TOP_K_METRICS]
+    rows: list[dict[str, object]] = []
+    for rank, ((entity, metric_base, aggregation), cnt) in enumerate(ranked, start=1):
+        rows.append({
+            "entity": entity,
+            "metric_base": metric_base,
+            "aggregation": aggregation,
+            "window_start_s": window_start_s,
+            "window_size_s": WINDOW_5MIN_S,
+            "window_label": "5min_flush_aligned",
+            "exceedance_count": int(cnt),
+            "rank": int(rank),
+        })
+    out = pd.DataFrame(rows)
+    out.sort_values("rank", inplace=True)
+    out.reset_index(drop=True, inplace=True)
+    return out
+
+
 def _event_time_at_or_before_scrape_s(
     send_times_path: Path | None,
     scrape_wall_ns: int,
@@ -864,6 +1134,10 @@ def run_comparison(
 ) -> None:
     tag = file_tag_safe(file_tag)
     gt_path = ground_truth_dir / query_id / f"{tag}.csv"
+    if query_id == "Q3" and not gt_path.is_file():
+        fallback = ground_truth_dir / query_id / f"{tag}_5min.csv"
+        if fallback.is_file():
+            gt_path = fallback
     sketch_path = sketch_output_dir / query_id / f"{tag}.csv"
 
     if not gt_path.is_file():
@@ -893,21 +1167,30 @@ def run_comparison(
         if sketch_path.is_file()
         else pd.DataFrame()
     )
+    sketch_data = _filter_frequency_sketch_rows(sketch_data, query_id)
 
     comparison_out_dir.mkdir(parents=True, exist_ok=True)
     fn = _COMPARE_DISPATCH.get(query_id)
     if fn is None:
         return
 
-    aligned_snapshot = _get_time_aligned_snapshot_for_gt_window(
-        sketch_data,
-        ground_truth,
-        send_times_path,
-    )
-    if aligned_snapshot.empty:
+    if query_id == "Q3":
+        # Q3 uses Window mode (5-min wall-clock flushes). The time-aligned periodic
+        # scrape may predate the last flush, causing a snapshot/GT mismatch.
+        # Always use the latest snapshot (which captures the most recent complete
+        # window flush); the GT is rebuilt dynamically from that snapshot's
+        # event-time boundary below.
         sketch_snapshot = get_best_snapshot_for_query(sketch_data, query_id)
     else:
-        sketch_snapshot = get_best_snapshot_for_query(aligned_snapshot, query_id)
+        aligned_snapshot = _get_time_aligned_snapshot_for_gt_window(
+            sketch_data,
+            ground_truth,
+            send_times_path,
+        )
+        if aligned_snapshot.empty:
+            sketch_snapshot = get_best_snapshot_for_query(sketch_data, query_id)
+        else:
+            sketch_snapshot = get_best_snapshot_for_query(aligned_snapshot, query_id)
 
     if query_id == "Q1" and not sketch_snapshot.empty:
         scrape_wall = pd.to_numeric(
@@ -920,6 +1203,24 @@ def run_comparison(
             )
             if window_end_s is not None:
                 flush_aligned_gt = _build_q1_single_window_ground_truth(
+                    file_tag,
+                    window_start_s=window_end_s - WINDOW_5MIN_S,
+                    window_end_s=window_end_s,
+                )
+                if not flush_aligned_gt.empty:
+                    ground_truth = flush_aligned_gt
+
+    if query_id == "Q3" and not sketch_snapshot.empty:
+        scrape_wall = pd.to_numeric(
+            sketch_snapshot["scrape_wall_ns"], errors="coerce"
+        ).dropna()
+        if not scrape_wall.empty:
+            window_end_s = _event_time_at_or_before_scrape_s(
+                send_times_path,
+                int(scrape_wall.max()),
+            )
+            if window_end_s is not None:
+                flush_aligned_gt = _build_q3_single_window_ground_truth(
                     file_tag,
                     window_start_s=window_end_s - WINDOW_5MIN_S,
                     window_end_s=window_end_s,
@@ -950,6 +1251,14 @@ def run_comparison(
     pd.DataFrame(rows).to_csv(
         comparison_out_dir / f"{query_id}_{tag}.csv", index=False
     )
+
+    if query_id == "Q3":
+        q3_windows = compare_q3_per_window(ground_truth, sketch_data, send_times_path)
+        if not q3_windows.empty:
+            q3_windows["file"] = tag
+            window_out_dir = comparison_out_dir.parent / "window_comparison"
+            window_out_dir.mkdir(parents=True, exist_ok=True)
+            q3_windows.to_csv(window_out_dir / f"{query_id}_{tag}.csv", index=False)
 
 
 def _metric_threshold(query_id: str, metric: str, value: float) -> tuple[float, bool]:
