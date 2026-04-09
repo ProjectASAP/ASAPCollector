@@ -246,9 +246,11 @@ def build_plan_body(
     # p95 and causes frac_q95_lt_1pct to be NaN in compare.py.
     if cfg.sketch_family == "quantile":
         quantiles_needed = sorted(
-            {0.0, 1.0}
-            | {float(p.lstrip("p")) / 100 for p in cfg.aggregations
-               if p.startswith("p") and p[1:].isdigit()}
+            {
+                float(p.lstrip("p")) / 100
+                for p in cfg.aggregations
+                if p.startswith("p") and p[1:].isdigit()
+            }
         )
         if quantiles_needed:
             body["quantile_grid"] = quantiles_needed

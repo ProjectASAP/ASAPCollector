@@ -375,6 +375,177 @@ def compare_q3_per_window(
     return pd.DataFrame(windows, columns=cols)
 
 
+def _build_q4_single_window_ground_truth(
+    file_tag: str,
+    window_start_s: int,
+    window_end_s: int,
+    chunksize: int = 2000,
+) -> pd.DataFrame:
+    """Compute Q4 exact min / max / range for one event-time window."""
+    csv_path = file_csv_path(file_tag)
+    if not csv_path.is_file() or window_end_s <= window_start_s:
+        return pd.DataFrame()
+
+    acc: dict[tuple[str, str], list[float]] = {}
+    for chunk in _stream_long_chunks(csv_path, chunksize):
+        if chunk.empty:
+            continue
+        chunk = chunk[
+            (chunk["ts_s"] >= window_start_s) & (chunk["ts_s"] <= window_end_s)
+        ]
+        if chunk.empty:
+            continue
+        for (entity, mb), group in chunk.groupby(["entity", "metric_base"]):
+            key = (str(entity), str(mb))
+            acc.setdefault(key, []).extend(group["value"].astype(float).tolist())
+
+    rows = []
+    for (entity, mb), values in acc.items():
+        arr = np.asarray(values, dtype=np.float64)
+        if arr.size == 0:
+            continue
+        exact_min = float(arr.min())
+        exact_max = float(arr.max())
+        rows.append({
+            "entity": entity,
+            "metric_base": mb,
+            "window_start_s": window_start_s,
+            "window_size_s": WINDOW_5MIN_S,
+            "window_label": "5min_flush_aligned",
+            "exact_min": exact_min,
+            "exact_max": exact_max,
+            "exact_range": exact_max - exact_min,
+            "count": int(arr.size),
+        })
+
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    out.sort_values(["entity", "metric_base"], inplace=True)
+    out.reset_index(drop=True, inplace=True)
+    return out
+
+
+def compare_q4_per_window(
+    file_tag: str,
+    ground_truth: pd.DataFrame,
+    sketch_data: pd.DataFrame,
+    send_times_path: Path | None,
+    threshold: float = 0.90,
+    rel_err_threshold: float = 0.02,
+) -> pd.DataFrame:
+    """Return one comparison row per GT window for Q4.
+
+    The window-level metric is the fraction of (entity, metric_base) pairs for
+    which both p0 and p100 are within ``rel_err_threshold`` relative error.
+    """
+    cols = [
+        "query", "file", "window_start_s", "window_size_s", "window",
+        "frac_min_lt_2pct", "frac_max_lt_2pct", "frac_minmax_both_lt_2pct",
+        "threshold", "pass", "pairs_compared",
+        "snapshot_rows", "status", "reason", "sketch_flavor",
+    ]
+    if ground_truth.empty:
+        return pd.DataFrame(columns=cols)
+
+    gt_5m = ground_truth[ground_truth["window_size_s"] == WINDOW_5MIN_S].copy()
+    if gt_5m.empty:
+        return pd.DataFrame(columns=cols)
+
+    rows: list[dict[str, object]] = []
+    for ws in sorted(pd.to_numeric(gt_5m["window_start_s"], errors="coerce").dropna().astype(int).unique()):
+        gt_win = gt_5m[gt_5m["window_start_s"] == ws].copy()
+        if gt_win.empty:
+            continue
+        window_size_s = int(pd.to_numeric(gt_win["window_size_s"], errors="coerce").dropna().iloc[0])
+        window_end_s = int(ws) + window_size_s
+        snapshot = _get_snapshot_for_event_time_s(sketch_data, window_end_s, "Q4", send_times_path)
+        snapshot_rows = int(len(snapshot))
+        status = "ok"
+        reason = ""
+        sketch_flavor = _detect_sketch_flavor(snapshot)
+        if snapshot.empty:
+            status = "missing"
+            reason = "no_aligned_snapshot"
+
+        aligned_gt = _build_q4_single_window_ground_truth(
+            file_tag,
+            window_start_s=int(ws),
+            window_end_s=window_end_s,
+        )
+        if aligned_gt.empty:
+            status = "missing"
+            reason = "no_aligned_ground_truth"
+
+        sk_min = extract_sketch_quantile_by_group(snapshot, 0.0, ("entity", "metric_base"))
+        sk_max = extract_sketch_quantile_by_group(snapshot, 1.0, ("entity", "metric_base"))
+
+        frac_min = float("nan")
+        frac_max = float("nan")
+        frac_both = float("nan")
+        pairs_compared = 0
+
+        if not aligned_gt.empty and not sk_min.empty and not sk_max.empty:
+            merged = (
+                aligned_gt
+                .merge(sk_min, on=["entity", "metric_base"], how="inner")
+                .rename(columns={"v": "sk_min"})
+                .merge(sk_max, on=["entity", "metric_base"], how="inner")
+                .rename(columns={"v": "sk_max"})
+            )
+            if not merged.empty:
+                pairs_compared = int(len(merged))
+                exact_min = merged["exact_min"].to_numpy(dtype=np.float64)
+                exact_max = merged["exact_max"].to_numpy(dtype=np.float64)
+                est_min = merged["sk_min"].to_numpy(dtype=np.float64)
+                est_max = merged["sk_max"].to_numpy(dtype=np.float64)
+
+                min_ok = np.zeros(len(merged), dtype=bool)
+                max_ok = np.zeros(len(merged), dtype=bool)
+
+                min_nonzero = exact_min != 0
+                max_nonzero = exact_max != 0
+                min_ok[min_nonzero] = (
+                    np.abs(est_min[min_nonzero] - exact_min[min_nonzero]) / np.abs(exact_min[min_nonzero])
+                ) < rel_err_threshold
+                max_ok[max_nonzero] = (
+                    np.abs(est_max[max_nonzero] - exact_max[max_nonzero]) / np.abs(exact_max[max_nonzero])
+                ) < rel_err_threshold
+
+                frac_min = float(np.mean(min_ok[min_nonzero])) if min_nonzero.any() else float("nan")
+                frac_max = float(np.mean(max_ok[max_nonzero])) if max_nonzero.any() else float("nan")
+
+                both_mask = min_nonzero & max_nonzero
+                both_ok = min_ok & max_ok
+                frac_both = float(np.mean(both_ok[both_mask])) if both_mask.any() else float("nan")
+            elif status == "ok":
+                status = "missing"
+                reason = "no_common_pairs"
+        elif status == "ok":
+            status = "missing"
+            reason = "missing_p0_or_p100_rows"
+
+        rows.append({
+            "query": "Q4",
+            "file": "",
+            "window_start_s": int(ws),
+            "window_size_s": window_size_s,
+            "window": _format_window_label(int(ws), window_size_s),
+            "frac_min_lt_2pct": float(frac_min),
+            "frac_max_lt_2pct": float(frac_max),
+            "frac_minmax_both_lt_2pct": float(frac_both),
+            "threshold": float(threshold),
+            "pass": bool(not np.isnan(frac_both) and frac_both >= threshold),
+            "pairs_compared": int(pairs_compared),
+            "snapshot_rows": snapshot_rows,
+            "status": status,
+            "reason": reason,
+            "sketch_flavor": sketch_flavor,
+        })
+
+    return pd.DataFrame(rows, columns=cols)
+
+
 def extract_hll_cardinality_by_label(
     df: pd.DataFrame,
     label_key: str | None = None,
@@ -525,7 +696,11 @@ _COMPARE_DISPATCH["Q3"] = _compare_q3
 
 def _compare_q4(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
     if ground_truth.empty:
-        return {"frac_min_lt_2pct": float("nan"), "frac_max_lt_2pct": float("nan")}
+        return {
+            "frac_min_lt_2pct": float("nan"),
+            "frac_max_lt_2pct": float("nan"),
+            "frac_minmax_both_lt_2pct": float("nan"),
+        }
 
     gt = ground_truth[ground_truth["window_size_s"] == WINDOW_5MIN_S].copy()
     gt_last = gt[gt["window_start_s"] == gt["window_start_s"].max()]
@@ -545,9 +720,37 @@ def _compare_q4(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
         rel_err = np.abs(est[nonzero] - exact[nonzero]) / np.abs(exact[nonzero])
         return float(np.mean(rel_err < threshold)) if nonzero.any() else float("nan")
 
+    frac_min = _frac(sk_min, "exact_min", 0.02)
+    frac_max = _frac(sk_max, "exact_max", 0.02)
+
+    frac_both = float("nan")
+    if not sk_min.empty and not sk_max.empty and not gt_last.empty:
+        merged = (
+            gt_last
+            .merge(sk_min, on=["entity", "metric_base"], how="inner")
+            .rename(columns={"v": "sk_min"})
+            .merge(sk_max, on=["entity", "metric_base"], how="inner")
+            .rename(columns={"v": "sk_max"})
+        )
+        if not merged.empty:
+            exact_min = merged["exact_min"].to_numpy(dtype=np.float64)
+            exact_max = merged["exact_max"].to_numpy(dtype=np.float64)
+            est_min = merged["sk_min"].to_numpy(dtype=np.float64)
+            est_max = merged["sk_max"].to_numpy(dtype=np.float64)
+            both_mask = (exact_min != 0) & (exact_max != 0)
+            if both_mask.any():
+                min_ok = (
+                    np.abs(est_min[both_mask] - exact_min[both_mask]) / np.abs(exact_min[both_mask])
+                ) < 0.02
+                max_ok = (
+                    np.abs(est_max[both_mask] - exact_max[both_mask]) / np.abs(exact_max[both_mask])
+                ) < 0.02
+                frac_both = float(np.mean(min_ok & max_ok))
+
     return {
-        "frac_min_lt_2pct": _frac(sk_min, "exact_min", 0.02),
-        "frac_max_lt_2pct": _frac(sk_max, "exact_max", 0.02),
+        "frac_min_lt_2pct": frac_min,
+        "frac_max_lt_2pct": frac_max,
+        "frac_minmax_both_lt_2pct": frac_both,
     }
 
 
@@ -1029,6 +1232,50 @@ def _build_q3_single_window_ground_truth(
     return out
 
 
+def _find_last_sketch_flush_wall_ns(
+    sketch_data: pd.DataFrame,
+    snapshot_wall_ns: int,
+) -> int | None:
+    """Return the wall-clock ns of the most recent sketch window flush.
+
+    The DDSketch processor fires a fixed-interval wall-clock ticker
+    (``window_duration = 5 min``).  Flush boundaries form an arithmetic
+    sequence starting at the wall time of the first non-zero scrape.  We
+    compute the last flush before ``snapshot_wall_ns`` using integer
+    division so the GT window aligns with the sketch's *actual* accumulated
+    interval rather than the last OTLP emit time (which may belong to the
+    *next* window that has not yet flushed).
+
+    Returns ``None`` if the flush time cannot be determined (e.g. no non-zero
+    sketch rows exist in ``sketch_data``).
+    """
+    if sketch_data.empty:
+        return None
+    flavor_mask = sketch_data["metric"].astype(str).str.contains(
+        "_ddsketch|_kll", regex=True, na=False
+    )
+    ddsk = sketch_data[flavor_mask]
+    if ddsk.empty:
+        return None
+    numeric = pd.to_numeric(ddsk["value"], errors="coerce").fillna(0)
+    non_zero = ddsk[numeric > 0]
+    if non_zero.empty:
+        return None
+    wall_ns_series = pd.to_numeric(non_zero["scrape_wall_ns"], errors="coerce").dropna()
+    if wall_ns_series.empty:
+        return None
+    first_flush_ns = int(wall_ns_series.min())
+    window_ns = WINDOW_5MIN_S * 1_000_000_000
+    if snapshot_wall_ns < first_flush_ns:
+        return None
+    n_flushes = (snapshot_wall_ns - first_flush_ns) // window_ns
+    last_flush_ns = first_flush_ns + n_flushes * window_ns
+    # Sanity: the computed flush must be strictly before the snapshot.
+    if last_flush_ns >= snapshot_wall_ns:
+        return None
+    return last_flush_ns
+
+
 def _event_time_at_or_before_scrape_s(
     send_times_path: Path | None,
     scrape_wall_ns: int,
@@ -1228,6 +1475,32 @@ def run_comparison(
                 if not flush_aligned_gt.empty:
                     ground_truth = flush_aligned_gt
 
+    if query_id == "Q4" and not sketch_snapshot.empty:
+        scrape_wall = pd.to_numeric(
+            sketch_snapshot["scrape_wall_ns"], errors="coerce"
+        ).dropna()
+        if not scrape_wall.empty:
+            # Use the wall-clock time of the last sketch *flush* rather than
+            # the scrape time.  In Window mode the DDSketch ticker fires every
+            # WINDOW_5MIN_S seconds; data keeps arriving between the flush and
+            # the next scrape, so "last OTLP emit before scrape" overshoots by
+            # one full window and makes the GT miss the sketch's actual window.
+            scrape_wall_ns = int(scrape_wall.max())
+            flush_wall_ns = _find_last_sketch_flush_wall_ns(sketch_data, scrape_wall_ns)
+            lookup_wall_ns = flush_wall_ns if flush_wall_ns is not None else scrape_wall_ns
+            window_end_s = _event_time_at_or_before_scrape_s(
+                send_times_path,
+                lookup_wall_ns,
+            )
+            if window_end_s is not None:
+                flush_aligned_gt = _build_q4_single_window_ground_truth(
+                    file_tag,
+                    window_start_s=window_end_s - WINDOW_5MIN_S,
+                    window_end_s=window_end_s,
+                )
+                if not flush_aligned_gt.empty:
+                    ground_truth = flush_aligned_gt
+
     if query_id == "Q6":
         result = fn(ground_truth, sketch_data, file=tag)
     else:
@@ -1259,6 +1532,13 @@ def run_comparison(
             window_out_dir = comparison_out_dir.parent / "window_comparison"
             window_out_dir.mkdir(parents=True, exist_ok=True)
             q3_windows.to_csv(window_out_dir / f"{query_id}_{tag}.csv", index=False)
+    elif query_id == "Q4":
+        q4_windows = compare_q4_per_window(file_tag, ground_truth, sketch_data, send_times_path)
+        if not q4_windows.empty:
+            q4_windows["file"] = tag
+            window_out_dir = comparison_out_dir.parent / "window_comparison"
+            window_out_dir.mkdir(parents=True, exist_ok=True)
+            q4_windows.to_csv(window_out_dir / f"{query_id}_{tag}.csv", index=False)
 
 
 def _metric_threshold(query_id: str, metric: str, value: float) -> tuple[float, bool]:
@@ -1277,6 +1557,7 @@ def _metric_threshold(query_id: str, metric: str, value: float) -> tuple[float, 
         "rank_correlation": 0.70,
         "frac_min_lt_2pct": 0.90,
         "frac_max_lt_2pct": 0.90,
+        "frac_minmax_both_lt_2pct": 0.90,
         "frac_iqr_lt_10pct": 0.85,
         "entity_topk_overlap": 0.80,
         "frac_drift_p95_lt_20pct": 0.80,

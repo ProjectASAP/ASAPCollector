@@ -1,0 +1,4 @@
+query,file,metric,value,threshold,pass
+Q4,app1_1_0_10000_17,frac_min_lt_2pct,0.9689655172413794,0.9,True
+Q4,app1_1_0_10000_17,frac_max_lt_2pct,0.9984076433121019,0.9,True
+Q4,app1_1_0_10000_17,frac_minmax_both_lt_2pct,0.9688581314878892,0.9,True

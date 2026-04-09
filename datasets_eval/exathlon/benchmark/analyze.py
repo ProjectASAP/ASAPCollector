@@ -167,6 +167,83 @@ def write_q3_window_report(results_dir: Path, query_tag: str, file_tag: str) -> 
     (results_dir / "q3_benchmarking.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _build_q4_analysis(df: pd.DataFrame) -> str:
+    if df.empty:
+        return "No per-window Q4 rows were generated."
+
+    frac_both = pd.to_numeric(df["frac_minmax_both_lt_2pct"], errors="coerce")
+    frac_min = pd.to_numeric(df["frac_min_lt_2pct"], errors="coerce")
+    frac_max = pd.to_numeric(df["frac_max_lt_2pct"], errors="coerce")
+    pass_count = int(pd.to_numeric(df["pass"], errors="coerce").fillna(0).astype(bool).sum())
+    total = len(df)
+    sketch_flavor = str(df.get("sketch_flavor", pd.Series(dtype=str)).dropna().iloc[0]) if "sketch_flavor" in df and not df["sketch_flavor"].dropna().empty else "Sketch"
+
+    if pass_count == total and total > 0:
+        return (
+            f"{sketch_flavor.capitalize()} p0/p100 (min/max) are essentially exact on this data. "
+            f"All {total} windows pass the threshold, with median joint pass fraction "
+            f"{_fmt_num(frac_both.median())}."
+        )
+
+    return (
+        f"{sketch_flavor.capitalize()} p0/p100 remain sensitive to endpoint error here. "
+        f"The median joint pass fraction is {_fmt_num(frac_both.median())}, with "
+        f"median p0-only {_fmt_num(frac_min.median())} and p100-only {_fmt_num(frac_max.median())}."
+    )
+
+
+def write_q4_window_report(results_dir: Path, query_tag: str, file_tag: str) -> None:
+    window_csv = results_dir / "window_comparison" / f"{query_tag}_{file_tag}.csv"
+    if query_tag != "Q4" or not window_csv.is_file():
+        return
+    df = pd.read_csv(window_csv)
+    if df.empty:
+        return
+
+    first_ws = pd.to_numeric(df["window_start_s"], errors="coerce").dropna()
+    if first_ws.empty:
+        day_label = file_tag
+    else:
+        dt = datetime.fromtimestamp(int(first_ws.min()), tz=timezone.utc)
+        day_label = dt.strftime("%Y-%m-%d UTC")
+
+    total = len(df)
+    pass_count = int(pd.to_numeric(df["pass"], errors="coerce").fillna(0).astype(bool).sum())
+    window_labels = df["window"].astype(str).tolist()
+    span_label = f"{window_labels[0]} to {window_labels[-1]}" if window_labels else "n/a"
+    sketch_flavor = str(df["sketch_flavor"].dropna().iloc[0]).capitalize() if "sketch_flavor" in df and not df["sketch_flavor"].dropna().empty else "DDSketch"
+    verdict = "Perfect - all windows pass" if pass_count == total and total > 0 else f"Needs work - {pass_count}/{total} windows pass"
+
+    lines = [
+        f"Results - {day_label}",
+        "",
+        f"Sketch: {sketch_flavor}, relative_accuracy=0.01, quantiles [0.0, 1.0]",
+        "Metric: fraction of symbols where both sketch p0 and p100 have <= 2% relative error.",
+        "",
+        "| Windows | Pass rate | Verdict |",
+        "| --- | --- | --- |",
+        f"| {total} ({span_label}) | {pass_count} / {total} | {verdict} |",
+        "",
+        "| Window | p0 <= 2% | p100 <= 2% | both <= 2% | Pass |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for _, row in df.iterrows():
+        mark = "yes" if bool(row.get("pass", False)) else "no"
+        lines.append(
+            f"| {row.get('window', '')} | {_fmt_num(pd.to_numeric(row.get('frac_min_lt_2pct'), errors='coerce'))} | "
+            f"{_fmt_num(pd.to_numeric(row.get('frac_max_lt_2pct'), errors='coerce'))} | "
+            f"{_fmt_num(pd.to_numeric(row.get('frac_minmax_both_lt_2pct'), errors='coerce'))} | {mark} |"
+        )
+
+    lines += [
+        "",
+        "Analysis",
+        _build_q4_analysis(df),
+        "",
+    ]
+    (results_dir / "q4_benchmarking.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Aggregate exathlon benchmark results into report.md."
@@ -194,6 +271,7 @@ def main() -> None:
     mode_tag = args.replay_mode or "unknown"
     append_latency_row(args.results_dir, query_tag, file_tag, mode_tag, send_times)
     write_q3_window_report(args.results_dir, query_tag, file_tag)
+    write_q4_window_report(args.results_dir, query_tag, file_tag)
 
     lines: list[str] = ["# Exathlon benchmark report", ""]
 

@@ -24,6 +24,7 @@ from common import file_csv_path, file_tag_safe
 from ground_truth.q1 import run_q1
 from ground_truth.q2 import run_q2
 from ground_truth.q3 import run_q3
+from ground_truth.q4 import run_q4
 from ground_truth.common import (
     THRESHOLD_QUANTILE,
     TOP_K_ENTITIES,
@@ -119,7 +120,7 @@ def _gt_q3(
 # ---------------------------------------------------------------------------
 
 def _gt_q4(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> None:
-    """Exact min, max, range per (entity, metric_base, window)."""
+    """Legacy helper for exact min, max, and range per window."""
     acc = accumulate_window_values(csv_path, window_s, chunksize)
     rows = []
     for (entity, mb, ws), values in acc.items():
@@ -359,14 +360,7 @@ def run_ground_truth_task(
     elif query_id == "Q3":
         run_q3(file_tag, output_dir, k=TOP_K_METRICS, chunksize=chunksize)
     elif query_id == "Q4":
-        # Write multi-window ground truth: one row per (entity, metric_base, window, window_size).
-        parts = []
-        for ws in (WINDOW_1MIN_S, WINDOW_5MIN_S, WINDOW_15MIN_S, WINDOW_30MIN_S, WINDOW_1HR_S):
-            tmp_out = out.with_name(f"{tag}_q4_{ws}s.csv")
-            _gt_q4(csv_path, ws, tmp_out, chunksize)
-            df = pd.read_csv(tmp_out)
-            parts.append(df)
-        pd.concat(parts, ignore_index=True).to_csv(out, index=False)
+        run_q4(file_tag, output_dir, chunksize=chunksize)
     elif query_id == "Q5":
         _gt_q5(csv_path, WINDOW_15MIN_S, out, chunksize)
     elif query_id == "Q6":

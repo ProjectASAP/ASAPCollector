@@ -39,6 +39,10 @@ METRIC_DESCRIPTIONS: dict[str, str] = {
         "Fraction of (entity, metric_base) pairs where sketch max (p100) is within 2% "
         "relative error of exact max. Last 5-min window."
     ),
+    "frac_minmax_both_lt_2pct": (
+        "Fraction of (entity, metric_base) pairs where both sketch p0 and sketch p100 "
+        "are within 2% relative error of exact min/max. Last 5-min window."
+    ),
     "frac_iqr_lt_10pct": (
         "Fraction of (entity, metric_base) pairs where sketch IQR (p75−p25) is within "
         "10% relative error of exact IQR. Last 15-min window."
@@ -69,6 +73,7 @@ METRIC_RENAME: dict[str, str] = {
     "rank_correlation": "topk_rank_spearman",
     "frac_min_lt_2pct": "series_within_2pct_min",
     "frac_max_lt_2pct": "series_within_2pct_max",
+    "frac_minmax_both_lt_2pct": "series_within_2pct_minmax_both",
     "frac_iqr_lt_10pct": "series_within_10pct_iqr",
     "hll_rel_err": "hll_distinct_rel_error",
     "entity_topk_overlap": "entity_topk_overlap",
