@@ -10,6 +10,7 @@ use crate::types::*;
 
 #[derive(Serialize)]
 struct CollectorYaml {
+    extensions: HashMap<String, Value>,
     receivers: HashMap<String, Value>,
     processors: HashMap<String, Value>,
     exporters: HashMap<String, Value>,
@@ -18,6 +19,7 @@ struct CollectorYaml {
 
 #[derive(Serialize)]
 struct ServiceSection {
+    extensions: Vec<String>,
     pipelines: HashMap<String, Pipeline>,
 }
 
@@ -32,15 +34,13 @@ struct Pipeline {
 
 /// Generates an OTel collector YAML string for an agent collector from a plan.
 ///
-/// The `opamp_endpoint` parameter is accepted for API compatibility but the
-/// generated config intentionally omits the opamp extension: the controller
-/// currently speaks JSON over WebSocket while the opamp-go client used by the
-/// collector expects binary protobuf, so including it would only produce
-/// repeated "bad handshake" errors in the collector log. Configs are delivered
-/// via the HTTP config provider instead (`--config=http://...`).
+/// The `opamp_endpoint` parameter specifies the OpAMP WebSocket endpoint that
+/// the collector should connect to for receiving runtime config updates from the
+/// controller.  An `extensions.opamp` section is included in the generated YAML
+/// so the collector can receive pushed configs without a restart.
 pub fn generate_agent_config(
     cfg: &AgentCollectorConfig,
-    _opamp_endpoint: &str,
+    opamp_endpoint: &str,
 ) -> anyhow::Result<String> {
     let processor_key = cfg.sketch_type.to_string();
     let processor_val = build_processor_block(cfg);
@@ -62,11 +62,18 @@ pub fn generate_agent_config(
     // Prometheus exporter so downstream scrapers can observe the pipeline.
     let prom_exporter: Value = serde_yaml::from_str("endpoint: \"0.0.0.0:8889\"\n").unwrap();
 
+    // OpAMP extension — allows the controller to push config updates at runtime.
+    let opamp_ext: Value = serde_yaml::from_str(&format!(
+        "server:\n  ws:\n    endpoint: \"{opamp_endpoint}\"\n"
+    )).unwrap();
+
     let doc = CollectorYaml {
+        extensions: [("opamp".to_string(), opamp_ext)].into(),
         receivers: [("otlp".to_string(), otlp_receiver)].into(),
         processors: [(processor_key.clone(), processor_val)].into(),
         exporters: [("prometheus".to_string(), prom_exporter)].into(),
         service: ServiceSection {
+            extensions: vec!["opamp".into()],
             pipelines: [(
                 "metrics".to_string(),
                 Pipeline {
@@ -212,14 +219,15 @@ mod tests {
     }
 
     #[test]
-    fn omits_opamp_extension() {
-        // The opamp extension is intentionally absent: the controller speaks JSON
-        // but the opamp-go client expects protobuf, causing bad-handshake errors.
-        // Config delivery uses the HTTP config provider instead.
+    fn contains_opamp_extension() {
         let yaml = generate_agent_config(&ddsketch_cfg(), "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
-            !yaml.contains("opamp"),
-            "YAML must not include the opamp extension\n{yaml}"
+            yaml.contains("opamp"),
+            "YAML should include the opamp extension\n{yaml}"
+        );
+        assert!(
+            yaml.contains("ws://ctrl:4320/v1/opamp"),
+            "YAML should contain the opamp endpoint\n{yaml}"
         );
     }
 

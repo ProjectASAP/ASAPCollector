@@ -493,6 +493,8 @@ mod tests {
                 drop_original: true,
                 delta_transmission: false,
                 delta_threshold: 0.0,
+                enable_series_id: false,
+                series_id_ttl_secs: 0,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
