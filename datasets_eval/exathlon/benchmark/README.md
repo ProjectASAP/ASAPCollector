@@ -107,7 +107,7 @@ Computes exact answers offline from the raw CSV for Q1–Q9. Q2 exact values are
 | Q3 | Top-10 metrics by threshold-exceedance count | 5 min |
 | Q4 | Exact min / max / range per `(entity, metric_base)` | 1 / 5 / 15 / 30 / 60 min |
 | Q5 | IQR bounds and anomaly rate per `(entity, metric_base)` | 15 min |
-| Q6 | Distinct active `(entity, metric_base, aggregation)` count | 5 min |
+| Q6 | Distinct active `metric_base` count per `entity` | 5 min |
 | Q7 | Top-3 entities by IQR-anomaly event volume | 5 min |
 | Q8 | `|p95_t − p95_{t-1}|` drift per `(entity, metric_base)` | 5 min |
 | Q9 | Saturation ratio per entity (file-local p95 threshold) | 5 min |

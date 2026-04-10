@@ -10,6 +10,7 @@ Subcommands:
 import argparse
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -35,7 +36,8 @@ CONTROLLER_SKETCH_DEFAULTS = REPO_ROOT / "controller" / "sketch_params_default.y
 DEFAULT_COLLECTOR_PATHS = {
     "ddsketch": PATCH_CMD / "ddsketchcol" / "ddsketchcol",
     "kll": PATCH_CMD / "kll" / "KLL",
-    "hll": PATCH_CMD / "hllcol" / "HLL",
+    # HLL's builder config writes the binary at the contrib-patch repo root.
+    "hll": REPO_ROOT / "opentelemetry-collector-contrib-patch" / "HLL",
     "countsketch": PATCH_CMD / "countsketchcol" / "dist" / "countsketchcol",
     "countminsketch": PATCH_CMD / "countminsketchcol" / "dist" / "countminsketchcol",
     "nop": PATCH_CMD / "nopcol" / "dist" / "nopcol",
@@ -91,7 +93,7 @@ QUERY_CONFIG: dict[str, QueryCfg] = {
     "Q6": QueryCfg(
         aggregations=("cardinality",),
         time_window="5m",
-        group_by=(),
+        group_by=("entity",),
         sketch_family="cardinality",
     ),
     "Q7": QueryCfg(
@@ -418,6 +420,13 @@ def maybe_clear_aggregate_csvs(results_dir: Path, clear: bool) -> None:
             p.unlink()
 
 
+def per_run_send_times_path(results_dir: Path, query: str, file_tag: str) -> Path:
+    tag = file_tag_safe(file_tag)
+    out_dir = results_dir / "send_times"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"{query}_{tag}.csv"
+
+
 # ---------------------------------------------------------------------------
 # Core per-(query, file) runner
 # ---------------------------------------------------------------------------
@@ -451,6 +460,7 @@ def _run_one_query_file(
     cpid: subprocess.Popen | None = None
     tag = file_tag_safe(file_tag)
     replay_mode = replay_mode_for_run(mode)
+    send_times_run_path = per_run_send_times_path(results_dir, query, file_tag)
     if replay_mode == "paced" and abs(float(speed) - 1.0) > 1e-12:
         print(
             "warning: replay mode 'paced' ignores --speed; use --mode scaled to apply speed factor",
@@ -533,6 +543,10 @@ def _run_one_query_file(
             replay_argv += ["--max-event-minutes", str(accuracy_minutes)]
         subprocess.run(replay_argv, check=True, cwd=str(bench_root))
 
+        send_times_latest = results_dir / "send_times.csv"
+        if send_times_latest.is_file():
+            shutil.copy2(send_times_latest, send_times_run_path)
+
         scrape_proc.send_signal(signal.SIGTERM)
         try:
             scrape_proc.wait(timeout=10)
@@ -563,7 +577,7 @@ def _run_one_query_file(
             "--gt-dir", str(results_dir / "ground_truth"),
             "--sketch-dir", str(results_dir / "sketch_output"),
             "--out-dir", str(results_dir / "comparison"),
-            "--send-times", str(results_dir / "send_times.csv"),
+            "--send-times", str(send_times_run_path),
         ]
         if accuracy_minutes > 0:
             compare_argv += ["--accuracy-minutes", str(accuracy_minutes)]
@@ -575,6 +589,7 @@ def _run_one_query_file(
                 "--query", query,
                 "--file", file_tag,
                 "--replay-mode", mode,
+                "--send-times", str(send_times_run_path),
             ],
             check=True,
             cwd=str(bench_root),

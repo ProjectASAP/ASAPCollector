@@ -14,6 +14,7 @@ and are skipped.
 
 import argparse
 import csv
+import hashlib
 import queue
 import threading
 import time
@@ -40,6 +41,20 @@ from ground_truth.common import compute_per_metric_thresholds
 _Point = Tuple[float, int, str, str, str]
 _Batch = List[_Point]
 _QueuedBatch = tuple[_Batch, int]
+
+
+def _metric_base_token(metric_base: str) -> float:
+    """Return a stable float token for one metric_base.
+
+    Q6's HLL collector counts distinct numeric values. For doc-correct Q6 we
+    therefore map each metric_base to a deterministic 53-bit float token so
+    counting distinct values approximates COUNT(DISTINCT metric_base).
+    """
+    digest = hashlib.blake2b(metric_base.encode("utf-8"), digest_size=8).digest()
+    token = int.from_bytes(digest, byteorder="big", signed=False) & ((1 << 53) - 1)
+    if token == 0:
+        token = 1
+    return float(token)
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +156,10 @@ def iter_batches(
                     if thr is None or float(v) <= float(thr):
                         continue
                     v = 1.0
+                elif query == "Q6":
+                    # HLL currently counts distinct float values; encode the
+                    # distinct metric identifier into the value channel.
+                    v = _metric_base_token(mb)
                 pending.append((float(v), t_ns, entity, mb, agg))
                 if len(pending) >= batch_size:
                     yield pending

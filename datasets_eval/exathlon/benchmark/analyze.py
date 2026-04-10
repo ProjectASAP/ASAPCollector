@@ -256,10 +256,16 @@ def main() -> None:
     parser.add_argument("--query", default="", help="Tag for latency row.")
     parser.add_argument("--file", default="", help="File tag for latency row.")
     parser.add_argument("--replay-mode", default="", dest="replay_mode")
+    parser.add_argument(
+        "--send-times",
+        type=Path,
+        default=None,
+        help="Optional per-run send_times.csv path. Defaults to results/send_times.csv.",
+    )
     args = parser.parse_args()
 
     comparison_dir = args.results_dir / "comparison"
-    send_times_path = args.results_dir / "send_times.csv"
+    send_times_path = args.send_times or (args.results_dir / "send_times.csv")
     export_diag_path = args.results_dir / "export_diagnostics.csv"
     throughput_path = args.results_dir / "throughput.csv"
     report_path = args.results_dir / "report.md"

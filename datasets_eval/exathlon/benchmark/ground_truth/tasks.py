@@ -26,6 +26,7 @@ from ground_truth.q2 import run_q2
 from ground_truth.q3 import run_q3
 from ground_truth.q4 import run_q4
 from ground_truth.q5 import run_q5
+from ground_truth.q6 import run_q6
 from ground_truth.common import (
     THRESHOLD_QUANTILE,
     TOP_K_ENTITIES,
@@ -35,7 +36,6 @@ from ground_truth.common import (
     WINDOW_30MIN_S,
     WINDOW_5MIN_S,
     _stream_long_chunks,
-    accumulate_window_distinct,
     accumulate_window_values,
     compute_per_metric_thresholds,
     load_exathlon_long,
@@ -137,20 +137,6 @@ def _gt_q4(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> Non
             "exact_range": exact_max - exact_min,
             "count": len(arr),
         })
-    pd.DataFrame(rows).to_csv(out_path, index=False)
-
-
-# ---------------------------------------------------------------------------
-# Q6 — Distinct active metrics per window
-# ---------------------------------------------------------------------------
-
-def _gt_q6(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> None:
-    """Exact distinct (entity, metric_base, aggregation) count per window."""
-    distinct = accumulate_window_distinct(csv_path, window_s, chunksize)
-    rows = [
-        {"window_start_s": ws, "exact_distinct_count": len(series_set)}
-        for ws, series_set in sorted(distinct.items())
-    ]
     pd.DataFrame(rows).to_csv(out_path, index=False)
 
 
@@ -330,7 +316,7 @@ def run_ground_truth_task(
     elif query_id == "Q5":
         run_q5(file_tag, output_dir, chunksize=chunksize)
     elif query_id == "Q6":
-        _gt_q6(csv_path, WINDOW_5MIN_S, out, chunksize)
+        run_q6(file_tag, output_dir, chunksize=chunksize)
     elif query_id == "Q7":
         _gt_q7(csv_path, WINDOW_5MIN_S, TOP_K_ENTITIES, out, chunksize)
     elif query_id == "Q8":

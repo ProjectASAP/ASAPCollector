@@ -552,7 +552,10 @@ def extract_hll_cardinality_by_label(
 ) -> dict[str, float]:
     """Return {label_value: hll_estimate_count} for HLL cardinality rows.
 
-    If ``label_key`` is None, returns {'': total_non_zero_count}.
+    Uses the maximum observed estimate per label within the supplied rows.
+    For aligned snapshots there should typically be one row per label; using
+    ``max`` is robust to duplicate exports without re-summing the same HLL
+    estimate across repeated scrapes.
     """
     result: dict[str, float] = {}
     for _, record in df.iterrows():
@@ -565,14 +568,14 @@ def extract_hll_cardinality_by_label(
         if v <= 0:
             continue
         if label_key is None:
-            result[""] = result.get("", 0.0) + 1.0
+            result[""] = max(result.get("", 0.0), v)
         else:
             try:
                 labels = json.loads(record["labels"])
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
             lv = str(labels.get(label_key, ""))
-            result[lv] = result.get(lv, 0.0) + v
+            result[lv] = max(result.get(lv, 0.0), v)
     return result
 
 
@@ -909,23 +912,32 @@ _COMPARE_DISPATCH["Q5"] = _compare_q5
 # Q6 — HLL distinct-count relative error
 # ---------------------------------------------------------------------------
 
-def _compare_q6(ground_truth: pd.DataFrame, sketch_full: pd.DataFrame, **_) -> dict:
-    """Q6 uses full sketch_full (all scrapes) to pick the best estimate."""
+def _compare_q6(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
+    """Compare per-entity HLL distinct counts against exact Q6 output."""
     if ground_truth.empty:
         return {"hll_rel_err": float("nan")}
 
     last_ws = int(ground_truth["window_start_s"].max())
-    gt_count = float(
-        ground_truth[ground_truth["window_start_s"] == last_ws]["exact_distinct_count"].iloc[0]
-    )
+    gt_last = ground_truth[ground_truth["window_start_s"] == last_ws].copy()
+    if gt_last.empty or "entity" not in gt_last.columns:
+        return {"hll_rel_err": float("nan")}
 
-    hll_vals = extract_hll_cardinality_by_label(sketch_full, label_key=None)
+    hll_vals = extract_hll_cardinality_by_label(sketch, label_key="entity")
     if not hll_vals:
         return {"hll_rel_err": float("nan")}
 
-    hll_est = hll_vals.get("", 0.0)
-    rel_err = abs(hll_est - gt_count) / gt_count if gt_count > 0 else float("nan")
-    return {"hll_rel_err": float(rel_err)}
+    rel_errors: list[float] = []
+    for _, row in gt_last.iterrows():
+        entity = str(row["entity"])
+        gt_count = float(row["exact_active_metric_count"])
+        if gt_count <= 0:
+            continue
+        hll_est = float(hll_vals.get(entity, 0.0))
+        rel_errors.append(abs(hll_est - gt_count) / gt_count)
+
+    if not rel_errors:
+        return {"hll_rel_err": float("nan")}
+    return {"hll_rel_err": float(np.mean(rel_errors))}
 
 
 _COMPARE_DISPATCH["Q6"] = _compare_q6
@@ -1508,10 +1520,12 @@ def run_comparison(
     # "last window" selected by each compare function corresponds to the data
     # the sketch has ingested, not the end of the full 60-minute file.
     replay_cutoff_s = _read_replay_cutoff_s(send_times_path)
-    if query_id == "Q1" and replay_cutoff_s is not None:
+    cutoff_queries = {"Q1", "Q3", "Q4"}
+    cutoff_for_query = replay_cutoff_s if query_id in cutoff_queries else None
+    if query_id == "Q1" and cutoff_for_query is not None:
         replay_relative_gt = _build_q1_replay_relative_ground_truth(
             file_tag,
-            replay_cutoff_s=replay_cutoff_s,
+            replay_cutoff_s=cutoff_for_query,
             accuracy_minutes=accuracy_minutes,
         )
         if not replay_relative_gt.empty:
@@ -1519,7 +1533,7 @@ def run_comparison(
     ground_truth = _filter_gt_to_replay_range(
         ground_truth,
         accuracy_minutes,
-        replay_cutoff_s=replay_cutoff_s,
+        replay_cutoff_s=cutoff_for_query,
     )
 
     sketch_data = (
@@ -1614,10 +1628,7 @@ def run_comparison(
                 if not flush_aligned_gt.empty:
                     ground_truth = flush_aligned_gt
 
-    if query_id == "Q6":
-        result = fn(ground_truth, sketch_data, file=file_tag)
-    else:
-        result = fn(ground_truth, sketch_snapshot, file=file_tag)
+    result = fn(ground_truth, sketch_snapshot, file=file_tag)
 
     out_row = {"query": query_id, "file": tag}
     for metric_name, value in result.items():
