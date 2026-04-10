@@ -1,10 +1,12 @@
-# DEBS 2022 — Benchmark Queries (Q1–Q12)
+# DEBS 2022 — Benchmark Queries (Q1–Q13)
 
 ## Q1 - DEBS EMA indicators (per symbol)
 
 **Purpose:** Trend from short vs long EMA; tests per-symbol state, ordering, windowed aggregation under ~5504 series.
 
 **Formula:** $\mathrm{EMA}_t = \alpha p_t + (1-\alpha)\mathrm{EMA}_{t-1}$, $\alpha = 2/(n+1)$; $n \in \{38,100\}$.
+
+where: p_t = price (last field) at tick t; EMA_{t-1} = EMA value at the previous tick; α = smoothing factor = 2/(n+1); n = EMA period (38 or 100).
 
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]` (symbol), `SecType` (sectype), `Last` (last), `Trading time`, `Date`
@@ -83,6 +85,8 @@ Recursive CTE with no `GROUP BY` aggregate at the top level — not supported by
 
 **Formula:** $\mathrm{diff}_t = \mathrm{EMA}_{38,t}-\mathrm{EMA}_{100,t}$; bullish: $\mathrm{diff}_{t-1}\le 0 \land \mathrm{diff}_t>0$; bearish: $\mathrm{diff}_{t-1}\ge 0 \land \mathrm{diff}_t<0$.
 
+where: diff_t = EMA(38) minus EMA(100) at window t; EMA_38 / EMA_100 = exponential moving averages from Q1; a bullish crossover occurs when diff_t crosses from ≤ 0 to > 0; bearish when it crosses from ≥ 0 to < 0.
+
 **Data requirements:**
 - Inputs: per symbol, ordered by event time — EMA(38) and EMA(100) at each 5-minute window boundary (from pipeline/Prometheus scrape or recomputed from ticks)
 - If recomputing from ticks — DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
@@ -157,6 +161,8 @@ could not infer aggregation type from query_string; provide explicit aggregation
 
 **Formula:** e.g. $\mathrm{score}(s,w)=\max_{t\in w} p_t - \min_{t\in w} p_t$, or $|p_{\mathrm{end}}-p_{\mathrm{start}}|$, or $\max p$; take top $K$ (e.g. $K=10$). Frequency-only variant: rank by event count.
 
+where: s = symbol; w = 5-min tumbling window; p_t = price (last) at tick t within the window; p_end / p_start = last / first price in the window; K = number of top symbols to return (e.g. 10).
+
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
 - OTLP metric: Gauge `financial.last_trade_price` (value = `last`, labels `symbol`, `exchange`, `sectype`); event time from `Date` + `Time` for the full feed (all row types) or `Date` + `Trading time` for the last-trade variant
@@ -178,12 +184,12 @@ could not infer aggregation type from query_string; provide explicit aggregation
 
 | Parameter | Value |
 |-----------|-------|
-| Dataset | `data` (full feed) |
+| Dataset | `data_filtered` |
 | Window size | 5-min (300 s) |
-| Avg samples / window (global, all symbols) | ~216K |
-| Avg samples / window (per symbol) | ~39 |
-| Unique series (active per day) | 5497 |
-| Cross-series aggregation | **All 5502 series → top-K (K=10) per window** via CountSketch sort |
+| Avg samples / window (global, all symbols) | ~61K |
+| Avg samples / window (per symbol) | ~12 |
+| Unique series (active per day) | 5178 |
+| Cross-series aggregation | **All 5178 series → top-K (K=10) per window** via CountSketch sort |
 | Test types | **Sketch-finance** (CountSketch frequency ranking) + **Throughput** |
 
 **Queries sent to `/api/v1/plan` (`query_string` API):**
@@ -221,6 +227,8 @@ GROUP  BY symbol, TUMBLE(ts, INTERVAL '5' MINUTE)
 **Purpose:** Window high, low, last, range; tests min/max style outputs vs sketches.
 
 **Formula:** $\mathrm{high}=\max p_t$, $\mathrm{low}=\min p_t$, $\mathrm{last}=$ last tick in window, $\mathrm{range}=\mathrm{high}-\mathrm{low}$.
+
+where: p_t = price (last field) at tick t within the 5-min window; high / low = maximum / minimum price in the window; last = final price of the window; range = high minus low.
 
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
@@ -295,6 +303,8 @@ GROUP  BY symbol, TUMBLE(ts, INTERVAL '5' MINUTE)
 
 **Formula:** $r_i=\ln(p_i/p_{i-1})$; $\sigma_w = \sqrt{\frac{1}{n-1}\sum(r_i-\bar r)^2}$.
 
+where: p_i = price (last) at step i; p_{i-1} = previous price; r_i = log return at step i = ln(p_i / p_{i-1}); r̄ = mean log return over all n returns in window w; n = number of returns in the window; σ_w = realized volatility (sample std dev of log returns) for window w.
+
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
 - OTLP metric: Gauge `financial.last_trade_price` (value = `last`, labels `symbol`, `exchange`, `sectype`, timestamp from `Date` + `Trading time`)
@@ -362,6 +372,8 @@ could not infer aggregation type from query_string; provide explicit aggregation
 
 **Formula:** $|\{s : \exists t\in w,\ \mathrm{event}(s,t)\}|$.
 
+where: s = symbol (distinct label value); t = event timestamp; w = 5-min tumbling window; event(s, t) = any tick from symbol s arriving at time t; |{...}| = count of distinct symbols with at least one tick in the window.
+
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `Date`, `Time` (only symbol identity and event timestamp are needed; `Last` optional)
 - OTLP metric: Gauge `financial.last_trade_price` with labels `symbol`, `exchange`, `sectype` on each point; value can be 1.0 or actual `last` if present; event time from `Date` + `Time` (full feed — all row types)
@@ -383,12 +395,12 @@ could not infer aggregation type from query_string; provide explicit aggregation
 
 | Parameter | Value |
 |-----------|-------|
-| Dataset | `data` (full feed) |
+| Dataset | `data_filtered` |
 | Window size | 5-min (300 s) |
-| Avg samples / window (global, all symbols) | ~216K |
+| Avg samples / window (global, all symbols) | ~61K |
 | Avg samples / window (per symbol) | N/A — global distinct count, not per-symbol |
-| Unique series (active per day) | 5497 |
-| Cross-series aggregation | **All 5502 series → 1 distinct count per window** via HLL |
+| Unique series (active per day) | 5178 |
+| Cross-series aggregation | **All 5178 series → 1 distinct count per window** via HLL |
 | Test types | **Sketch-finance** (HLL cardinality estimation) + **Throughput** |
 
 **Queries sent to `/api/v1/plan` (`query_string` API):**
@@ -428,6 +440,8 @@ Delta rejected because HLL fill rate is 96.5% — the sketch is almost always fu
 **Purpose:** Simple average of ticks in window (DEBS has no volume for true VWAP).
 
 **Formula:** $\mathrm{TWAP}_w = \frac{1}{n}\sum_{i=1}^n p_i$ (optional time-weighted variant with $\Delta t_i$ if you model durations).
+
+where: n = number of ticks in window w; p_i = price (last) of the i-th tick; TWAP_w = arithmetic mean price for window w; Δt_i = time the i-th price was held (used only in the time-weighted variant).
 
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
@@ -498,6 +512,8 @@ GROUP  BY symbol, TUMBLE_START(ts, INTERVAL '5' MINUTE)
 **Purpose:** Flag unusual prices vs window distribution.
 
 **Formula:** $z_i=(p_i-\mu_w)/\sigma_w$; flag if $|z|>2.5$ (tune as needed). **IQR:** outlier if outside $[Q_1-1.5\,\mathrm{IQR},\, Q_3+1.5\,\mathrm{IQR}]$.
+
+where: p_i = price at tick i; μ_w = mean price in window w; σ_w = sample std dev of prices in window w; z_i = z-score of p_i; Q1 / Q3 = first / third quartile of prices in window; IQR = Q3 − Q1.
 
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
@@ -588,6 +604,8 @@ IQR: `PERCENTILE_CONT` not supported in the unmodified `sql.rs`.
 
 **Formula:** $\mathrm{Middle}=\mathrm{SMA}_n$, $\mathrm{Upper}=\mathrm{SMA}_n+k\sigma_n$, $\mathrm{Lower}=\mathrm{SMA}_n-k\sigma_n$ (often $k=2$).
 
+where: SMA_n = simple moving average of prices across the N most recent 5-min bars (N = 3); σ_n = sample std dev of prices over the same N bars; k = band-width multiplier (default 2); Middle = centre band = SMA_n.
+
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
 - OTLP metric: Gauge `financial.last_trade_price` (value = `last`, labels `symbol`, `exchange`, `sectype`, timestamp from `Date` + `Trading time`)
@@ -660,6 +678,8 @@ The outer SELECT contains arithmetic expressions without a top-level aggregate. 
 **Purpose:** Momentum 0–100 from avg gain/loss (typically 14 periods).
 
 **Formula:** $\mathrm{RSI}=100-100/(1+\mathrm{RS})$, $\mathrm{RS}=\mathrm{avg\_gain}/\mathrm{avg\_loss}$ (EMA-smoothed).
+
+where: RS = relative strength = avg_gain / avg_loss; avg_gain = Wilder's smoothed EMA of price up-moves (α = 1/14); avg_loss = Wilder's smoothed EMA of price down-moves; lookback = 14 consecutive price changes.
 
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
@@ -748,6 +768,8 @@ Final SELECT projects arithmetic expression with no top-level aggregate. Recursi
 
 **Purpose:** $\mathrm{MACD}=\mathrm{EMA}_{12}-\mathrm{EMA}_{26}$, $\mathrm{Signal}=\mathrm{EMA}_9(\mathrm{MACD})$.
 
+where: EMA_12 = 12-period exponential moving average of price (α = 2/13); EMA_26 = 26-period EMA of price (α = 2/27); MACD line = EMA_12 − EMA_26; Signal line = 9-period EMA of the MACD line (α = 2/10); Histogram = MACD line − Signal line.
+
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
 - OTLP metric: Gauge `financial.last_trade_price` (value = `last`, labels `symbol`, `exchange`, `sectype`, timestamp from `Date` + `Trading time`)
@@ -831,6 +853,8 @@ Recursive CTE with no `GROUP BY` aggregate — not supported. Same limitation as
 
 **Formula:** $\%K=100\cdot(C-L_n)/(H_n-L_n)$; $\%D=\mathrm{SMA}_3(\%K)$.
 
+where: C = current price (last field); H_n = highest price over the n-period lookback (n = 14 ticks); L_n = lowest price over the same lookback; %K = position of C within the H/L range (0–100); %D = 3-period simple moving average of %K.
+
 **Data requirements:**
 - DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
 - OTLP metric: Gauge `financial.last_trade_price` (value = `last`, labels `symbol`, `exchange`, `sectype`, timestamp from `Date` + `Trading time`)
@@ -896,3 +920,62 @@ The planner finds `AVG(k)` in the final `OVER (...)` window clause and picks KLL
 
 - [Investopedia — *Stochastic oscillator* (definition and %K / %D)](https://www.investopedia.com/terms/s/stochasticoscillator.asp)  
 - [Wikipedia — *Stochastic oscillator* § Calculation](https://en.wikipedia.org/wiki/Stochastic_oscillator)
+
+---
+
+## Q13 - Top-K symbols by median price (topk + avg_over_time)
+
+**Purpose:** Top-10 symbols per window ranked by estimated mean price; tests price-based heavy-hitter ranking under CountSketch. Contrasts with Q3 (frequency / event-count ranking): both follow the same `topk(...)` planner path but Q13 ranks by price level rather than tick frequency. The `topk()` wrapper always routes to CountSketch regardless of the wrapped aggregate function.
+
+**Formula:** Rank all equity symbols by 5-min mean price and emit the 10 highest:
+$$\mathrm{score}(s,w) = \overline{p}_{s,w} = \frac{1}{|w|}\sum_{t\in w} p_t, \quad \text{take top-}K=10$$
+
+where: s = symbol; w = 5-min tumbling window; p_t = price (last) at tick t within the window; |w| = number of ticks for symbol s in window w; score(s, w) = arithmetic mean price for symbol s in window w; K = 10 (number of top symbols to return).
+
+**Data requirements:**
+- DEBS CSV columns: `ID.[Exchange]`, `SecType`, `Last`, `Trading time`, `Date`
+- OTLP metric: Gauge `financial.last_trade_price` (value = `last`, label `sectype`); filter `sectype="E"` (equities only)
+- Windows: 5-minute tumbling; only `Last`-populated rows (`data_filtered`)
+
+**Approach:**
+- Use `countsketchprocessor`, `mode: window`, `window_size: 300s`, `aggregate_by: [sectype]`
+- Controller: `aggregations: ["topk"]`, `k: 10`
+- Downstream: CountSketch top-K extraction → top-10 symbols per window sorted by estimated mean price
+
+**Validation:**
+- **Ground truth:** per (window, symbol) arithmetic mean price → exact top-10 ranking.
+- **Sketch path:** CountSketch top-K extraction per window.
+- **Metrics:** top-K set overlap, Spearman ρ.
+- **Success:** overlap ≥ 80%, ρ > 0.7.
+
+**Evaluation configuration:**
+
+| Parameter | Value |
+|-----------|-------|
+| Dataset | `data_filtered` (equities only, `sectype="E"`) |
+| Window size | 5-min (300 s) |
+| Unique series (active per day) | 5178 |
+| Cross-series aggregation | **5178 → top-10 per window** via CountSketch |
+| Test types | **Sketch-finance** (CountSketch top-K price ranking) + **Throughput** |
+
+**Query sent to `/api/v1/plan` (`query_string` API):**
+
+```promql
+topk(10, avg_over_time(financial_last_trade_price{sectype="E"}[5m]))
+```
+
+**Controller response — HTTP 200**
+
+| Field | Value |
+|---|---|
+| sketch_type | CountSketch |
+| mode | window |
+| aggregate_by | `["sectype"]` |
+| bandwidth sent | 69 040 B/s (delta) |
+| delta_mode | use_delta (×15) |
+| K | 10 — 640 B precompute memory |
+
+**References:**
+
+- [PromQL — `topk` aggregation operator](https://prometheus.io/docs/prometheus/latest/querying/operators/#aggregation-operators)
+- [PromQL — `avg_over_time` function](https://prometheus.io/docs/prometheus/latest/querying/functions/#aggregation_over_time)

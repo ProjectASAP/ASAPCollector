@@ -9,7 +9,9 @@ import os
 import signal
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONTROLLER_BIN = os.path.join(SCRIPT_DIR, "target/release/controller")
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../.."))
+CONTROLLER_DIR = os.path.join(REPO_ROOT, "controller")
+CONTROLLER_BIN = os.path.join(CONTROLLER_DIR, "target/release/controller")
 CONTROLLER_URL = "http://127.0.0.1:8080"
 PLAN_ENDPOINT = f"{CONTROLLER_URL}/api/v1/plan"
 
@@ -355,64 +357,16 @@ FROM   pct_k
 ORDER  BY symbol, ts""",
     },
 
+    # Q13
+    {
+        "id": "Q13-promql",
+        "label": "Q13 top-K symbols by median price topk(avg_over_time) (PromQL)",
+        "query": 'topk(10, avg_over_time(financial_last_trade_price{sectype="E"}[5m]))',
+    },
+
 ]
 
-_SUGGESTED_QUERIES = [
-    {
-        "id": "suggested-tail-risk-p05",
-        "label": "Tail risk VaR p05 quantile_over_time (PromQL)",
-        "query": "quantile_over_time(0.05, financial_last_trade_price[5m])",
-    },
-    {
-        "id": "suggested-tail-risk-p95",
-        "label": "Tail risk VaR p95 quantile_over_time (PromQL)",
-        "query": "quantile_over_time(0.95, financial_last_trade_price[5m])",
-    },
-    {
-        "id": "suggested-stddev",
-        "label": "Realized stddev stddev_over_time (PromQL)",
-        "query": "stddev_over_time(financial_last_trade_price[5m])",
-    },
-    {
-        "id": "suggested-rate",
-        "label": "Tick arrival rate rate (PromQL)",
-        "query": "rate(financial_last_trade_price[5m])",
-    },
-    {
-        "id": "suggested-topk-equities",
-        "label": "Top-5 active equities filtered topk (PromQL)",
-        "query": 'topk(5, count_over_time(financial_last_trade_price{sectype="E"}[5m]))',
-    },
-    {
-        "id": "suggested-exchange-cardinality",
-        "label": "Distinct symbols per exchange (SQL)",
-        "query": """SELECT exchange,
-       TUMBLE_START(ts, INTERVAL '5' MINUTE) AS window_start,
-       COUNT(DISTINCT symbol) AS active_symbols
-FROM   financial_last_trade_price
-GROUP  BY exchange, TUMBLE_START(ts, INTERVAL '5' MINUTE)""",
-    },
-    {
-        "id": "suggested-multi-quantile",
-        "label": "p10 quantile_over_time (PromQL)",
-        "query": "quantile_over_time(0.1, financial_last_trade_price[5m])",
-    },
-    {
-        "id": "suggested-vol-15m",
-        "label": "15-min realized vol stddev_over_time (PromQL)",
-        "query": "stddev_over_time(financial_last_trade_price[15m])",
-    },
-    {
-        "id": "suggested-exchange-avg",
-        "label": "Avg price per exchange (SQL)",
-        "query": """SELECT exchange,
-       TUMBLE_START(ts, INTERVAL '5' MINUTE) AS window_start,
-       AVG(last) AS avg_price
-FROM   financial_last_trade_price
-WHERE  sectype = 'E'
-GROUP  BY exchange, TUMBLE_START(ts, INTERVAL '5' MINUTE)""",
-    },
-]
+
 
 
 def start_controller():
@@ -421,16 +375,16 @@ def start_controller():
     env["CONTROLLER_OPAMP_ADDR"] = "127.0.0.1:4320"
     env["CONTROLLER_OPAMP_ENDPOINT"] = "ws://127.0.0.1:4320/v1/opamp"
     env["CONTROLLER_SKETCH_DEFAULTS"] = os.path.join(
-        SCRIPT_DIR, "sketch_params_default.yml"
+        CONTROLLER_DIR, "sketch_params_default.yml"
     )
     env["CONTROLLER_SKETCH_CAPABILITIES"] = os.path.join(
-        SCRIPT_DIR, "sketch_capabilities.yml"
+        CONTROLLER_DIR, "sketch_capabilities.yml"
     )
     env["RUST_LOG"] = "info"
 
     proc = subprocess.Popen(
         [CONTROLLER_BIN],
-        cwd=SCRIPT_DIR,
+        cwd=CONTROLLER_DIR,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

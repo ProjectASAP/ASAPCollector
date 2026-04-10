@@ -123,6 +123,7 @@ Planner responses from the unmodified controller (`05_canonical_planner_test.md`
 | Q10 RSI | — | **422** | Recursive CTE — not supported |
 | Q11 MACD | — | **422** | Recursive CTE — not supported |
 | Q12 stochastic | KLL | **200** | `AVG` found in final `OVER()` clause (planner quirk); full sketch |
+| Q13 top-K price | CountSketch | **200** | `topk(avg_over_time)`; same CountSketch path as Q3; delta ×15 |
 
 Full per-query detail (window sizes, evaluation configs, success criteria) is in [`02_benchmark_queries.md`](02_benchmark_queries.md).
 
@@ -147,6 +148,7 @@ For each query that uses a sketch processor (Q1, Q3–Q8), run two independent p
    - Q6: exact distinct symbol count per 5-min window
    - Q7: exact arithmetic mean per symbol per 5-min window
    - Q8: exact z-score flags per symbol per 15-min window
+   - Q13: exact top-10 symbols by arithmetic mean price per 5-min window
 3. **Persist results to disk** under `results/ground_truth/<query>/` (e.g. as CSV or Parquet files keyed by `(day, symbol, window_start)`) — computed once, reused for all future benchmark runs without reprocessing the raw data
 
 ### Sketch path
@@ -169,6 +171,7 @@ Load both stored files and compute per-query error metrics as defined in [`02_be
 | Q6 | Rel error on distinct count | < 2% per window |
 | Q7 | Rel error on mean | < 2% for ≥90% of windows |
 | Q8 | Precision / Recall / F1 on anomaly flags | Precision > 70%, Recall > 80%, F1 > 0.75 |
+| Q13 | Top-K set overlap, Spearman ρ | Overlap ≥ 80%, ρ > 0.7 |
 
 This run is performed at **natural pace on a single day** to isolate sketch accuracy from load effects.
 
@@ -196,7 +199,8 @@ results/
 │   ├── Q5/   ← exact volatility per (day, symbol, window)
 │   ├── Q6/   ← exact distinct count per (day, window)
 │   ├── Q7/   ← exact mean per (day, symbol, window)
-│   └── Q8/   ← exact anomaly flags per (day, symbol, window)
+│   ├── Q8/   ← exact anomaly flags per (day, symbol, window)
+│   └── Q13/   ← exact top-10 by mean price per (day, window)
 ├── sketch_output/
 │   └── <same structure as ground_truth/>
 └── comparison/
