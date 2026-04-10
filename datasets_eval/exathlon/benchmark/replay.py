@@ -36,6 +36,7 @@ from common import (
     file_tag_safe,
 )
 from ground_truth.common import compute_per_metric_thresholds
+from ground_truth.q5 import compute_q5_single_window
 
 # Each element: (value, time_unix_nano, entity, metric_base, aggregation)
 _Point = Tuple[float, int, str, str, str]
@@ -55,6 +56,29 @@ def _metric_base_token(metric_base: str) -> float:
     if token == 0:
         token = 1
     return float(token)
+
+
+def _compute_q7_anomaly_bounds(
+    csv_path: Path,
+    chunksize: int,
+) -> dict[tuple[str, str, int], tuple[float, float]]:
+    """Return 5-minute Tukey-fence bounds for each (entity, metric_base, window)."""
+    q5_df = compute_q5_single_window(
+        csv_path,
+        window_s=300,
+        window_label="5min",
+        chunksize=chunksize,
+    )
+    bounds: dict[tuple[str, str, int], tuple[float, float]] = {}
+    if q5_df.empty:
+        return bounds
+    for _, row in q5_df.iterrows():
+        bounds[(
+            str(row["entity"]),
+            str(row["metric_base"]),
+            int(row["window_start_s"]),
+        )] = (float(row["lower_fence"]), float(row["upper_fence"]))
+    return bounds
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +114,18 @@ def build_otlp_export_request(
         cv.string_value = aggregation
         dp.attributes.add(key="aggregation", value=cv)
 
+        # Q7 anomaly-event points carry their 5-minute event-time window start
+        # so the CMS can group by (entity, window_start_s) and produce one
+        # sample_count per entity per event-time window rather than a single
+        # whole-file aggregate.  Without this label the CMS groups all windows
+        # for each entity into one bucket, making the flush semantically
+        # equivalent to a full-file total instead of a per-window count.
+        if metric_base == "anomaly_event":
+            ws = (int(time_unix_nano) // 1_000_000_000 // 300) * 300
+            wv = common_pb2.AnyValue()
+            wv.string_value = str(ws)
+            dp.attributes.add(key="window_start_s", value=wv)
+
     return request
 
 
@@ -103,6 +139,7 @@ def iter_batches(
     batch_size: int,
     query: str = "",
     thresholds: dict[tuple[str, str], float] | None = None,
+    anomaly_bounds: dict[tuple[str, str, int], tuple[float, float]] | None = None,
 ):
     """Yield batches of (value, time_unix_nano, entity, metric_base, aggregation).
 
@@ -111,6 +148,10 @@ def iter_batches(
 
     For Q3, emits only threshold-exceedance events and normalizes each emitted
     value to 1.0 so the collector-side sample_count equals the exceedance count.
+
+    For Q7, emits only IQR-anomaly events using Q5's 5-minute Tukey fences and
+    normalizes each emitted value to 1.0 so the collector-side sample_count
+    equals the anomaly-event count.
     """
     # Pre-parse all column names from the header.
     header_df = pd.read_csv(csv_path, nrows=0)
@@ -156,6 +197,19 @@ def iter_batches(
                     if thr is None or float(v) <= float(thr):
                         continue
                     v = 1.0
+                elif query == "Q7":
+                    window_start_s = (t_ns // 1_000_000_000 // 300) * 300
+                    fence = None if anomaly_bounds is None else anomaly_bounds.get(
+                        (entity, mb, int(window_start_s))
+                    )
+                    if fence is None:
+                        continue
+                    lower_fence, upper_fence = fence
+                    if not (float(v) < lower_fence or float(v) > upper_fence):
+                        continue
+                    v = 1.0
+                    mb = "anomaly_event"
+                    agg = "count"
                 elif query == "Q6":
                     # HLL currently counts distinct float values; encode the
                     # distinct metric identifier into the value channel.
@@ -427,10 +481,15 @@ def main() -> None:
                 continue
             print(f"file {csv_path}", flush=True)
             thresholds: dict[tuple[str, str], float] | None = None
+            anomaly_bounds: dict[tuple[str, str, int], tuple[float, float]] | None = None
             if args.query == "Q3":
                 print("q3 threshold pass start", f"file={csv_path}", flush=True)
                 thresholds = compute_per_metric_thresholds(csv_path, chunksize=args.chunksize)
                 print("q3 threshold pass done", f"metrics={len(thresholds)}", flush=True)
+            elif args.query == "Q7":
+                print("q7 anomaly-bounds pass start", f"file={csv_path}", flush=True)
+                anomaly_bounds = _compute_q7_anomaly_bounds(csv_path, chunksize=args.chunksize)
+                print("q7 anomaly-bounds pass done", f"groups={len(anomaly_bounds)}", flush=True)
 
             for batch in iter_batches(
                 csv_path,
@@ -438,6 +497,7 @@ def main() -> None:
                 args.batch_size,
                 query=args.query,
                 thresholds=thresholds,
+                anomaly_bounds=anomaly_bounds,
             ):
                 if sender_errors:
                     raise sender_errors[0]

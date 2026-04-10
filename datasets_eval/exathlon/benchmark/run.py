@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(BENCH_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCH_ROOT))
 
-from scrape import append_metrics_snapshot
+from scrape import append_metrics_snapshot, fetch_prometheus_metrics_text
 from common import DEFAULT_FILES, file_tag_safe, METRIC_NAME
 
 PATCH_CMD = REPO_ROOT / "opentelemetry-collector-contrib-patch" / "cmd"
@@ -99,7 +99,7 @@ QUERY_CONFIG: dict[str, QueryCfg] = {
     "Q7": QueryCfg(
         aggregations=("count",),
         time_window="5m",
-        group_by=("entity",),
+        group_by=("entity", "window_start_s"),
         sketch_family="frequency",
     ),
     "Q8": QueryCfg(
@@ -379,6 +379,57 @@ def wait_for_prometheus(url: str, timeout_s: float = 30.0) -> bool:
     return False
 
 
+def _parse_time_window_seconds(time_window: str) -> int:
+    """Parse a time window string such as '5m', '15m', '1h', '300s' to seconds."""
+    tw = time_window.strip().lower()
+    if tw.endswith("m"):
+        return int(tw[:-1]) * 60
+    if tw.endswith("h"):
+        return int(tw[:-1]) * 3600
+    if tw.endswith("s"):
+        return int(tw[:-1])
+    return int(tw)
+
+
+def _wait_for_frequency_flush(
+    prometheus_url: str,
+    timeout_s: float,
+    poll_interval_s: float = 2.0,
+) -> bool:
+    """Poll the Prometheus endpoint until a CMS window-flush row appears.
+
+    A flush row is identified by the presence of a ``sample_count`` label,
+    which the CMS processor always attaches to its output data points.
+    Returns True when a flush is detected, False when the timeout expires.
+
+    Background: for Q7 the paced replay sends all anomaly events in a single
+    batch at the *end* of the pacing sleep (when the last event's wall-clock
+    deadline is reached).  The CMS window boundary may therefore not occur
+    until up to ``window_duration`` seconds after the batch is sent, which is
+    *after* the replay subprocess exits.  Keeping the scraper alive until this
+    function returns ensures the flush is captured in the sketch-output CSV.
+    """
+    import json as _json
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            rows = fetch_prometheus_metrics_text(prometheus_url)
+            for row in rows:
+                try:
+                    labels = _json.loads(row.get("labels", "{}"))
+                except Exception:
+                    continue
+                if "sample_count" in labels:
+                    return True
+        except Exception:
+            pass
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(poll_interval_s, remaining))
+    return False
+
+
 def kill_process_on_tcp_port(port: int) -> None:
     try:
         out = subprocess.check_output(
@@ -529,10 +580,21 @@ def _run_one_query_file(
             scrape_argv.append("--no-probe")
         scrape_proc = subprocess.Popen(scrape_argv, cwd=str(bench_root))
 
+        # Q7 pre-computes per-window IQR fences and tags each anomaly event
+        # with its event-time window via the window_start_s attribute.  Pacing
+        # the replay to 1× wall-clock time causes the CMS to flush before later
+        # batches are sent, leaving event-time windows beyond the first flush
+        # uncaptured.  Since the CMS groups by (entity, window_start_s) rather
+        # than by arrival time, pacing adds no semantic value: send all events
+        # as fast as possible so the first 5-minute wall-clock window captures
+        # every event-time window in one flush.
+        effective_replay_mode = (
+            "max" if query == "Q7" else replay_mode
+        )
         replay_argv = [
             py, str(bench_root / "replay.py"),
             "--files", files,
-            "--mode", replay_mode,
+            "--mode", effective_replay_mode,
             "--speed-factor", str(speed),
             "--batch-size", str(batch_size),
             "--results-dir", str(results_dir),
@@ -547,11 +609,37 @@ def _run_one_query_file(
         if send_times_latest.is_file():
             shutil.copy2(send_times_latest, send_times_run_path)
 
-        scrape_proc.send_signal(signal.SIGTERM)
-        try:
-            scrape_proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            scrape_proc.kill()
+        # For frequency-family queries (Q3, Q7) the CMS window tick fires up to
+        # ``window_duration`` seconds after the collector starts.  Q7 uses max
+        # replay mode so all events arrive before the first tick; Q3 uses paced
+        # mode where the batch may arrive just before a tick boundary.  In both
+        # cases keep the collector and scraper alive until the flush is detected
+        # (via a ``sample_count`` label on the Prometheus endpoint) or the
+        # timeout expires.  Allow 2× the window duration to cover the worst
+        # case where events arrive just after a tick and must wait a full extra
+        # window before the next flush.
+        # NOTE: this must happen *before* killing either process so the
+        # Prometheus HTTP server stays available for both polling and the final
+        # snapshot call below.
+        if not is_nop and QUERY_CONFIG[query].sketch_family == "frequency":
+            window_s = _parse_time_window_seconds(QUERY_CONFIG[query].time_window)
+            flush_timeout = 2 * window_s + 30
+            print(
+                f"Frequency query {query}: waiting up to {flush_timeout}s "
+                "for CMS window flush...",
+                file=sys.stderr,
+            )
+            flushed = _wait_for_frequency_flush(
+                PROMETHEUS_METRICS_URL,
+                timeout_s=flush_timeout,
+            )
+            if flushed:
+                print("CMS window flush detected.", file=sys.stderr)
+            else:
+                print(
+                    "CMS window flush not detected within timeout; proceeding.",
+                    file=sys.stderr,
+                )
 
         if not is_nop:
             out_csv = results_dir / "sketch_output" / query / f"{tag}.csv"
@@ -560,6 +648,12 @@ def _run_one_query_file(
                 print(f"Final Prometheus snapshot: {n} lines -> {out_csv}", file=sys.stderr)
             except Exception as exc:
                 print(f"Final snapshot failed: {exc}", file=sys.stderr)
+
+        scrape_proc.send_signal(signal.SIGTERM)
+        try:
+            scrape_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            scrape_proc.kill()
 
         time.sleep(2)
         if cpid is not None:

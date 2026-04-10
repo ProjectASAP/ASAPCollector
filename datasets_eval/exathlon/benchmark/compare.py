@@ -39,11 +39,11 @@ _PROM_PREFIX = METRIC_NAME.replace(".", "_")  # "system_telemetry"
 # Maps query ID → regex matching its primary sketch metric name in Prometheus.
 _SKETCH_METRIC_PATTERN: dict[str, str] = {
     "Q1": rf"{_PROM_PREFIX}_(?:ddsketch|kll)",
-    "Q3": rf"{_PROM_PREFIX}_countsketch_partition",
+    "Q3": r"countsketch_partition|countmin",
     "Q4": rf"{_PROM_PREFIX}_(?:ddsketch|kll)",
     "Q5": rf"{_PROM_PREFIX}_(?:ddsketch|kll)",
     "Q6": rf"{_PROM_PREFIX}_hll_cardinality",
-    "Q7": rf"{_PROM_PREFIX}_countsketch_partition",
+    "Q7": r"countsketch_partition|countmin",
     "Q8": rf"{_PROM_PREFIX}_(?:ddsketch|kll)",
     "Q9": rf"{_PROM_PREFIX}_hll_cardinality",
 }
@@ -165,22 +165,77 @@ def extract_sketch_quantile_by_group(
     return result.groupby(list(group_keys), as_index=False)["v"].mean()
 
 
-def extract_countsketch_estimates(df: pd.DataFrame) -> pd.DataFrame:
-    """Return DataFrame with columns ['key', 'est'] from CountSketch partition rows."""
+def _q3_key_from_labels(labels: dict) -> str | None:
+    entity = labels.get("entity")
+    metric_base = labels.get("metric_base")
+    aggregation = labels.get("aggregation")
+    if entity is None or metric_base is None or aggregation is None:
+        return None
+    return f"aggregation={aggregation};entity={entity};metric_base={metric_base};"
+
+
+def _extract_frequency_key(labels: dict, query_id: str) -> str | None:
+    partition_key = labels.get("partition_key")
+    if partition_key:
+        return str(partition_key)
+    if query_id == "Q3":
+        return _q3_key_from_labels(labels)
+    if query_id == "Q7":
+        entity = labels.get("entity")
+        window_start_s = labels.get("window_start_s")
+        if entity is None or window_start_s is None:
+            return None
+        return f"entity={entity};window_start_s={window_start_s}"
+    return None
+
+
+def _is_frequency_sketch_record(metric: str, labels: dict, query_id: str) -> bool:
+    if "partition_key" in labels and "countsketch_partition" in metric:
+        return True
+    if "sample_count" not in labels:
+        return False
+    if query_id == "Q3":
+        return all(k in labels for k in ("entity", "metric_base", "aggregation"))
+    if query_id == "Q7":
+        return "entity" in labels and "window_start_s" in labels
+    return False
+
+
+def extract_frequency_estimates(df: pd.DataFrame, query_id: str) -> pd.DataFrame:
+    """Return DataFrame with columns ['key', 'est'] from CountSketch or CMS rows.
+
+    For CountSketch rows the metric value already holds the sketch estimate.
+    For CMS rows the processor always writes the exact ingestion count into the
+    ``sample_count`` label attribute; when ``transmit_sketch=true`` the metric
+    value is 0.0 (the binary payload goes into a separate attribute), so we
+    prefer ``sample_count`` from labels whenever it is present.
+    """
     rows: list[dict] = []
     for _, record in df.iterrows():
-        if "countsketch_partition" not in str(record.get("metric", "")):
-            continue
+        metric = str(record.get("metric", ""))
         try:
             labels = json.loads(record["labels"])
         except (json.JSONDecodeError, KeyError, TypeError):
             continue
-        pk = labels.get("partition_key", "")
-        try:
-            est = float(record["value"])
-        except (TypeError, ValueError):
+        if not _is_frequency_sketch_record(metric, labels, query_id):
             continue
-        rows.append({"key": pk, "est": est})
+        key = _extract_frequency_key(labels, query_id)
+        if not key:
+            continue
+        # Prefer sample_count from labels: the CMS processor always sets it and
+        # it carries the correct event count even when transmit_sketch=true
+        # (in which case the gauge value field is 0.0).
+        if "sample_count" in labels:
+            try:
+                est = float(labels["sample_count"])
+            except (TypeError, ValueError):
+                continue
+        else:
+            try:
+                est = float(record["value"])
+            except (TypeError, ValueError):
+                continue
+        rows.append({"key": key, "est": est})
     if not rows:
         return pd.DataFrame(columns=["key", "est"])
     return pd.DataFrame(rows).groupby("key", as_index=False)["est"].max()
@@ -195,14 +250,22 @@ def _q3_gt_key(row: pd.Series) -> str:
 
 
 def _filter_frequency_sketch_rows(sketch_data: pd.DataFrame, query_id: str) -> pd.DataFrame:
-    """Drop raw metric rows when a scrape mixes originals and CountSketch flushes."""
+    """Drop raw metric rows when a scrape mixes originals and frequency sketch flushes."""
     if query_id not in {"Q3", "Q7"} or sketch_data.empty or "metric" not in sketch_data.columns:
         return sketch_data
-    metrics = sketch_data["metric"].astype(str)
-    has_partition = metrics.str.contains("countsketch_partition", regex=False, na=False).any()
-    has_non_partition = (~metrics.str.contains("countsketch_partition", regex=False, na=False)).any()
-    if has_partition and has_non_partition:
-        return sketch_data[metrics.str.contains("countsketch_partition", regex=False, na=False)].copy()
+    mask: list[bool] = []
+    has_frequency = False
+    for _, record in sketch_data.iterrows():
+        metric = str(record.get("metric", ""))
+        try:
+            labels = json.loads(record["labels"])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            labels = {}
+        is_frequency = _is_frequency_sketch_record(metric, labels, query_id)
+        mask.append(is_frequency)
+        has_frequency = has_frequency or is_frequency
+    if has_frequency and not all(mask):
+        return sketch_data[pd.Series(mask, index=sketch_data.index)].copy()
     return sketch_data
 
 
@@ -318,26 +381,33 @@ def compare_q3_per_window(
             status = "missing"
             reason = "no_aligned_snapshot"
         else:
-            metric_series = snapshot["metric"].astype(str) if "metric" in snapshot.columns else pd.Series(dtype=str)
-            partition_mask = metric_series.str.contains("countsketch_partition", regex=False, na=False)
+            freq_mask: list[bool] = []
+            for _, record in snapshot.iterrows():
+                metric = str(record.get("metric", ""))
+                try:
+                    labels = json.loads(record["labels"])
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    labels = {}
+                freq_mask.append(_is_frequency_sketch_record(metric, labels, "Q3"))
+            partition_mask = pd.Series(freq_mask, index=snapshot.index)
             partition_rows = int(partition_mask.sum())
             if partition_rows == 0:
                 status = "missing"
-                reason = "no_countsketch_partition_rows"
+                reason = "no_frequency_sketch_rows"
             else:
                 values = pd.to_numeric(snapshot.loc[partition_mask, "value"], errors="coerce").fillna(0.0)
                 partition_nonzero_rows = int((values > 0).sum())
                 if partition_nonzero_rows == 0:
                     status = "missing"
-                    reason = "countsketch_rows_all_zero"
-        sk = extract_countsketch_estimates(snapshot)
+                    reason = "frequency_rows_all_zero"
+        sk = extract_frequency_estimates(snapshot, "Q3")
         if sk.empty:
             overlap = float("nan")
             rho = float("nan")
             sk_top: list[str] = []
             if status == "ok":
                 status = "missing"
-                reason = "extract_countsketch_estimates_empty"
+                reason = "extract_frequency_estimates_empty"
         else:
             sk_top = sk.sort_values("est", ascending=False).head(TOP_K_METRICS)["key"].tolist()
             overlap = len(set(gt_top) & set(sk_top)) / max(len(gt_top), 1)
@@ -665,7 +735,7 @@ def _compare_q3(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
         for _, row in gt_win.nsmallest(TOP_K_METRICS, "rank").iterrows()
     ]
 
-    sk = extract_countsketch_estimates(sketch)
+    sk = extract_frequency_estimates(sketch, "Q3")
     if sk.empty:
         return {
             "topk_overlap": float("nan"),
@@ -957,20 +1027,49 @@ def _compare_q7(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
         .nsmallest(TOP_K_ENTITIES, "rank")["entity"].tolist()
     )
 
-    sk = extract_countsketch_estimates(sketch)
+    sk = extract_frequency_estimates(sketch, "Q7")
     if sk.empty:
         return {"entity_topk_overlap": float("nan")}
 
-    # For Q7, the partition_key encodes entity only: "entity=N"
-    def _extract_entity(key: str) -> str:
-        for part in key.split(";"):
-            part = part.strip()
-            if part.startswith("entity="):
-                return part[len("entity="):]
-        return key
+    # Keys are composite: "entity=N;window_start_s=T"
+    def _parse_key(key: str) -> tuple[str, int | None]:
+        parts = {p.split("=", 1)[0]: p.split("=", 1)[1] for p in key.split(";") if "=" in p}
+        entity = parts.get("entity", "")
+        try:
+            ws = int(parts.get("window_start_s", ""))
+        except (ValueError, TypeError):
+            ws = None
+        return entity, ws
 
-    sk["entity"] = sk["key"].map(_extract_entity)
-    sk_top = sk.sort_values("est", ascending=False).head(TOP_K_ENTITIES)["entity"].tolist()
+    sk["entity"] = sk["key"].map(lambda k: _parse_key(k)[0])
+    sk["window_start_s"] = sk["key"].map(lambda k: _parse_key(k)[1])
+
+    # Determine which event-time window to compare: prefer the last GT window
+    # if the sketch captured it; otherwise use the latest window the sketch did
+    # capture, and align the GT side to that same window.
+    valid_ws = sk["window_start_s"].dropna().astype(int)
+    if valid_ws.empty:
+        return {"entity_topk_overlap": float("nan")}
+
+    sk_max_ws = int(valid_ws.max())
+    if sk_max_ws == last_ws:
+        cmp_ws = last_ws
+    else:
+        # Sketch doesn't reach the last GT window; compare at the most recent
+        # event-time window that both sides share.
+        gt_windows = set(ground_truth["window_start_s"].astype(int).unique())
+        sk_windows = set(valid_ws.unique())
+        shared = gt_windows & sk_windows
+        if not shared:
+            return {"entity_topk_overlap": float("nan")}
+        cmp_ws = int(max(shared))
+
+    gt_top = (
+        ground_truth[ground_truth["window_start_s"] == cmp_ws]
+        .nsmallest(TOP_K_ENTITIES, "rank")["entity"].tolist()
+    )
+    sk_last = sk[sk["window_start_s"] == cmp_ws]
+    sk_top = sk_last.sort_values("est", ascending=False).head(TOP_K_ENTITIES)["entity"].tolist()
 
     overlap = len(set(gt_top) & set(sk_top)) / max(len(gt_top), 1)
     return {"entity_topk_overlap": float(overlap)}

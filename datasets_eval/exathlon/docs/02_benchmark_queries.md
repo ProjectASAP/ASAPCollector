@@ -239,7 +239,7 @@ GROUP BY entity, TUMBLE(ts, INTERVAL '5' MINUTE)
 topk(5, count_over_time(anomaly_events{entity!=""}[5m])) by (entity)
 ```
 
-**Approach:** produce anomaly events (Q5), aggregate with CMS+SpaceSaving.
+**Approach:** replay now emits anomaly-event metrics derived from Q5 rather than raw telemetry samples; Q7 aggregates those anomaly-event metrics with CMS+SpaceSaving.
 
 **Validation:** top-K entity overlap/ranking vs exact.
 

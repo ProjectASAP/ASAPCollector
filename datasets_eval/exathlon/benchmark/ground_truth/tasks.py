@@ -27,6 +27,7 @@ from ground_truth.q3 import run_q3
 from ground_truth.q4 import run_q4
 from ground_truth.q5 import run_q5
 from ground_truth.q6 import run_q6
+from ground_truth.q7 import run_q7
 from ground_truth.common import (
     THRESHOLD_QUANTILE,
     TOP_K_ENTITIES,
@@ -137,69 +138,6 @@ def _gt_q4(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> Non
             "exact_range": exact_max - exact_min,
             "count": len(arr),
         })
-    pd.DataFrame(rows).to_csv(out_path, index=False)
-
-
-# ---------------------------------------------------------------------------
-# Q7 — Top-K entities by anomaly event volume
-# ---------------------------------------------------------------------------
-
-def _gt_q7(
-    csv_path: Path,
-    window_s: int,
-    k: int,
-    out_path: Path,
-    chunksize: int,
-) -> None:
-    """Exact top-K entities by anomaly event count per window.
-
-    Uses the same IQR-based anomaly definition as Q5: value is anomalous if
-    it falls outside [Q1 - 1.5*IQR, Q3 + 1.5*IQR] for its
-    (entity, metric_base, window).
-
-    Step 1: compute IQR bounds per (entity, metric_base, window) from Q5.
-    Step 2: count anomalous events per (entity, window).
-    """
-    # Build IQR bounds from accumulated window values.
-    acc = accumulate_window_values(csv_path, window_s, chunksize)
-    bounds: dict[tuple, tuple[float, float]] = {}
-    for (entity, mb, ws), values in acc.items():
-        arr = np.asarray(values, dtype=np.float64)
-        if len(arr) < 4:
-            continue
-        q1 = float(np.percentile(arr, 25))
-        q3 = float(np.percentile(arr, 75))
-        iqr = q3 - q1
-        bounds[(entity, mb, ws)] = (q1 - 1.5 * iqr, q3 + 1.5 * iqr)
-
-    # Count anomaly events per (entity, window).
-    entity_window_counts: dict[tuple, int] = defaultdict(int)
-    for chunk in _stream_long_chunks(csv_path, chunksize):
-        chunk["window_start_s"] = (chunk["ts_s"] // window_s) * window_s
-        for _, row in chunk.iterrows():
-            b = bounds.get((row["entity"], row["metric_base"], int(row["window_start_s"])))
-            if b is None:
-                continue
-            lower, upper = b
-            if row["value"] < lower or row["value"] > upper:
-                entity_window_counts[(str(row["entity"]), int(row["window_start_s"]))] += 1
-
-    # Take top-K per window.
-    window_entity: dict[int, list[tuple[str, int]]] = defaultdict(list)
-    for (entity, ws), cnt in entity_window_counts.items():
-        window_entity[ws].append((entity, cnt))
-
-    rows = []
-    for ws, entries in sorted(window_entity.items()):
-        top = sorted(entries, key=lambda x: x[1], reverse=True)[:k]
-        for rank, (entity, cnt) in enumerate(top, 1):
-            rows.append({
-                "window_start_s": ws,
-                "rank": rank,
-                "entity": entity,
-                "exact_count": cnt,
-            })
-
     pd.DataFrame(rows).to_csv(out_path, index=False)
 
 
@@ -318,7 +256,7 @@ def run_ground_truth_task(
     elif query_id == "Q6":
         run_q6(file_tag, output_dir, chunksize=chunksize)
     elif query_id == "Q7":
-        _gt_q7(csv_path, WINDOW_5MIN_S, TOP_K_ENTITIES, out, chunksize)
+        run_q7(file_tag, output_dir, k=TOP_K_ENTITIES, chunksize=chunksize)
     elif query_id == "Q8":
         _gt_q8(csv_path, WINDOW_5MIN_S, out, chunksize)
     elif query_id == "Q9":

@@ -93,7 +93,7 @@ GET /api/v1/config/spark.*
 | Q4 Min/max/range | `ddsketchprocessor` / NOP | `quantile` | p0/p100 for approx min/max; NOP for exact |
 | Q5 IQR anomaly flags | `ddsketchprocessor` | `quantile` | Quantiles [0.25, 0.50, 0.75] for Tukey-fence detection |
 | Q6 Distinct active metrics | `hllprocessor` | `cardinality` | Global distinct series count per window (3,939-space) |
-| Q7 Top-K entities by anomaly | `countsketchprocessor` | `frequency` | CMS+SpaceSaving over anomaly events produced by Q5 |
+| Q7 Top-K entities by anomaly | `countsketchprocessor` | `frequency` | CMS+SpaceSaving over anomaly-event metrics emitted by replay from Q5, not the raw telemetry stream |
 | Q8 Quantile drift | `ddsketchprocessor` / `kllprocessor` | `quantile` | Inter-window p95 / p50 delta per metric |
 | Q9 Saturation ratio | `hllprocessor` + NOP | hybrid | HLL for distinct exceeded metrics; NOP for total denominator |
 | Q10 EWMA change-point | NOP | — | Sequential EWMA state; not sketch-native |
@@ -112,8 +112,9 @@ Full per-query detail (window sizes, evaluation configs, success criteria) is in
 
 1. Configure the DataCollector with the target query's sketch processor (or NOP for exact-path queries)
 2. Run the replay script in **max-speed mode** — no artificial throttle; rows pivoted and emitted as fast as the network and receiver allow
-3. Use the raw telemetry stream (`exathlon/data/raw/`) for maximum load: ~298.5 rows/5-min window × ~2,283 columns = ~**681K OTLP data points per 5-min window**
-4. Run single-file replay (e.g. `1_0_1000000_14.csv`) first, then multi-file sequential replay across all 93 files to observe degradation under sustained load
+3. Use the raw telemetry stream (`exathlon/data/raw/`) for maximum load on direct-telemetry queries: ~298.5 rows/5-min window × ~2,283 columns = ~**681K OTLP data points per 5-min window**
+4. For Q7, replay the derived anomaly-event metric stream instead of the raw telemetry stream, because replay now sends anomaly-event metrics generated from the Q5 detector path
+5. Run single-file replay (e.g. `1_0_1000000_14.csv`) first, then multi-file sequential replay across all 93 files to observe degradation under sustained load
 
 **Metrics recorded:**
 
