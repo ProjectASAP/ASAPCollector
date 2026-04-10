@@ -758,12 +758,73 @@ _COMPARE_DISPATCH["Q4"] = _compare_q4
 
 
 # ---------------------------------------------------------------------------
-# Q5 — IQR accuracy (fraction of series within 10% relative error)
+# Q5 — IQR accuracy and anomaly-flag validation
 # ---------------------------------------------------------------------------
 
+def _build_q5_window_event_flags(
+    file_tag: str,
+    window_start_s: int,
+    window_size_s: int,
+    bounds: pd.DataFrame,
+    chunksize: int = 2000,
+) -> pd.DataFrame:
+    """Return per-point anomaly flags for one Q5 window using supplied bounds.
+
+    ``bounds`` must contain:
+        entity, metric_base, lower_fence, upper_fence
+    """
+    csv_path = file_csv_path(file_tag)
+    if not csv_path.is_file() or window_size_s <= 0 or bounds.empty:
+        return pd.DataFrame()
+
+    window_end_s = window_start_s + window_size_s
+    bounds_map = {
+        (str(row["entity"]), str(row["metric_base"])): (
+            float(row["lower_fence"]),
+            float(row["upper_fence"]),
+        )
+        for _, row in bounds.iterrows()
+    }
+
+    rows: list[dict[str, object]] = []
+    for chunk in _stream_long_chunks(csv_path, chunksize):
+        if chunk.empty:
+            continue
+        chunk = chunk[
+            (chunk["ts_s"] >= window_start_s) & (chunk["ts_s"] < window_end_s)
+        ]
+        if chunk.empty:
+            continue
+        for _, row in chunk.iterrows():
+            key = (str(row["entity"]), str(row["metric_base"]))
+            fence = bounds_map.get(key)
+            if fence is None:
+                continue
+            lower_fence, upper_fence = fence
+            value = float(row["value"])
+            rows.append({
+                "entity": key[0],
+                "metric_base": key[1],
+                "ts_s": int(row["ts_s"]),
+                "value": value,
+                "is_anomaly": bool(value < lower_fence or value > upper_fence),
+            })
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
 def _compare_q5(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
+    file_tag = str(_.get("file", ""))
+    nan_result = {
+        "frac_iqr_lt_10pct": float("nan"),
+        "anomaly_precision": float("nan"),
+        "anomaly_recall": float("nan"),
+        "anomaly_f1": float("nan"),
+    }
     if ground_truth.empty:
-        return {"frac_iqr_lt_10pct": float("nan")}
+        return nan_result
 
     gt_last = ground_truth[ground_truth["window_start_s"] == ground_truth["window_start_s"].max()]
 
@@ -771,14 +832,16 @@ def _compare_q5(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
     sk_q3 = extract_sketch_quantile_by_group(sketch, 0.75, ("entity", "metric_base"))
 
     if sk_q1.empty or sk_q3.empty or gt_last.empty:
-        return {"frac_iqr_lt_10pct": float("nan")}
+        return nan_result
 
     sk_iqr = sk_q1.merge(sk_q3, on=["entity", "metric_base"], suffixes=("_q1", "_q3"))
     sk_iqr["sketch_iqr"] = sk_iqr["v_q3"] - sk_iqr["v_q1"]
+    sk_iqr["sketch_lower_fence"] = sk_iqr["v_q1"] - 1.5 * sk_iqr["sketch_iqr"]
+    sk_iqr["sketch_upper_fence"] = sk_iqr["v_q3"] + 1.5 * sk_iqr["sketch_iqr"]
 
     merged = gt_last.merge(sk_iqr, on=["entity", "metric_base"], how="inner")
     if merged.empty:
-        return {"frac_iqr_lt_10pct": float("nan")}
+        return nan_result
 
     exact = merged["iqr"].to_numpy(dtype=np.float64)
     est = merged["sketch_iqr"].to_numpy(dtype=np.float64)
@@ -786,7 +849,57 @@ def _compare_q5(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
     rel_err = np.abs(est[nonzero] - exact[nonzero]) / np.abs(exact[nonzero])
     frac = float(np.mean(rel_err < 0.10)) if nonzero.any() else float("nan")
 
-    return {"frac_iqr_lt_10pct": frac}
+    precision = float("nan")
+    recall = float("nan")
+    f1 = float("nan")
+
+    if file_tag and "window_size_s" in gt_last.columns:
+        window_start_s = int(pd.to_numeric(gt_last["window_start_s"], errors="coerce").max())
+        window_size_s = int(pd.to_numeric(gt_last["window_size_s"], errors="coerce").dropna().iloc[0])
+
+        exact_flags = _build_q5_window_event_flags(
+            file_tag,
+            window_start_s,
+            window_size_s,
+            merged[["entity", "metric_base", "lower_fence", "upper_fence"]],
+        )
+        sketch_flags = _build_q5_window_event_flags(
+            file_tag,
+            window_start_s,
+            window_size_s,
+            merged[["entity", "metric_base", "sketch_lower_fence", "sketch_upper_fence"]].rename(
+                columns={
+                    "sketch_lower_fence": "lower_fence",
+                    "sketch_upper_fence": "upper_fence",
+                }
+            ),
+        )
+
+        if not exact_flags.empty and not sketch_flags.empty:
+            flags = exact_flags.merge(
+                sketch_flags[["entity", "metric_base", "ts_s", "value", "is_anomaly"]].rename(
+                    columns={"is_anomaly": "sketch_is_anomaly"}
+                ),
+                on=["entity", "metric_base", "ts_s", "value"],
+                how="inner",
+            )
+            if not flags.empty:
+                y_true = flags["is_anomaly"].to_numpy(dtype=bool)
+                y_pred = flags["sketch_is_anomaly"].to_numpy(dtype=bool)
+                tp = int(np.sum(y_true & y_pred))
+                fp = int(np.sum((~y_true) & y_pred))
+                fn = int(np.sum(y_true & (~y_pred)))
+                precision = float(tp / (tp + fp)) if (tp + fp) > 0 else float("nan")
+                recall = float(tp / (tp + fn)) if (tp + fn) > 0 else float("nan")
+                if not np.isnan(precision) and not np.isnan(recall) and (precision + recall) > 0:
+                    f1 = float(2.0 * precision * recall / (precision + recall))
+
+    return {
+        "frac_iqr_lt_10pct": frac,
+        "anomaly_precision": precision,
+        "anomaly_recall": recall,
+        "anomaly_f1": f1,
+    }
 
 
 _COMPARE_DISPATCH["Q5"] = _compare_q5
@@ -1502,9 +1615,9 @@ def run_comparison(
                     ground_truth = flush_aligned_gt
 
     if query_id == "Q6":
-        result = fn(ground_truth, sketch_data, file=tag)
+        result = fn(ground_truth, sketch_data, file=file_tag)
     else:
-        result = fn(ground_truth, sketch_snapshot, file=tag)
+        result = fn(ground_truth, sketch_snapshot, file=file_tag)
 
     out_row = {"query": query_id, "file": tag}
     for metric_name, value in result.items():
@@ -1559,6 +1672,9 @@ def _metric_threshold(query_id: str, metric: str, value: float) -> tuple[float, 
         "frac_max_lt_2pct": 0.90,
         "frac_minmax_both_lt_2pct": 0.90,
         "frac_iqr_lt_10pct": 0.85,
+        "anomaly_precision": 0.80,
+        "anomaly_recall": 0.80,
+        "anomaly_f1": 0.80,
         "entity_topk_overlap": 0.80,
         "frac_drift_p95_lt_20pct": 0.80,
     }

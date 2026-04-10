@@ -1,0 +1,5 @@
+query,file,metric,value,threshold,pass
+Q5,app1_1_0_10000_17,frac_iqr_lt_10pct,0.39273356401384085,0.85,False
+Q5,app1_1_0_10000_17,anomaly_precision,0.32384719274551416,0.8,False
+Q5,app1_1_0_10000_17,anomaly_recall,0.9366629464285714,0.8,True
+Q5,app1_1_0_10000_17,anomaly_f1,0.48129032258064514,0.8,False

@@ -25,11 +25,11 @@ from ground_truth.q1 import run_q1
 from ground_truth.q2 import run_q2
 from ground_truth.q3 import run_q3
 from ground_truth.q4 import run_q4
+from ground_truth.q5 import run_q5
 from ground_truth.common import (
     THRESHOLD_QUANTILE,
     TOP_K_ENTITIES,
     TOP_K_METRICS,
-    WINDOW_15MIN_S,
     WINDOW_1MIN_S,
     WINDOW_1HR_S,
     WINDOW_30MIN_S,
@@ -136,40 +136,6 @@ def _gt_q4(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> Non
             "exact_max": exact_max,
             "exact_range": exact_max - exact_min,
             "count": len(arr),
-        })
-    pd.DataFrame(rows).to_csv(out_path, index=False)
-
-
-# ---------------------------------------------------------------------------
-# Q5 — IQR-based anomaly flags (Tukey fences) per (entity, metric_base)
-# ---------------------------------------------------------------------------
-
-def _gt_q5(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> None:
-    """Exact IQR parameters and anomaly rates per (entity, metric_base, window)."""
-    acc = accumulate_window_values(csv_path, window_s, chunksize)
-    rows = []
-    for (entity, mb, ws), values in acc.items():
-        arr = np.asarray(values, dtype=np.float64)
-        if len(arr) < 4:
-            continue
-        q1 = float(np.percentile(arr, 25))
-        q3 = float(np.percentile(arr, 75))
-        iqr = q3 - q1
-        lower = q1 - 1.5 * iqr
-        upper = q3 + 1.5 * iqr
-        n_anomaly = int(np.sum((arr < lower) | (arr > upper)))
-        rows.append({
-            "entity": entity,
-            "metric_base": mb,
-            "window_start_s": ws,
-            "q1": q1,
-            "q3": q3,
-            "iqr": iqr,
-            "lower_fence": lower,
-            "upper_fence": upper,
-            "n_total": len(arr),
-            "n_anomaly": n_anomaly,
-            "anomaly_rate": n_anomaly / len(arr),
         })
     pd.DataFrame(rows).to_csv(out_path, index=False)
 
@@ -362,7 +328,7 @@ def run_ground_truth_task(
     elif query_id == "Q4":
         run_q4(file_tag, output_dir, chunksize=chunksize)
     elif query_id == "Q5":
-        _gt_q5(csv_path, WINDOW_15MIN_S, out, chunksize)
+        run_q5(file_tag, output_dir, chunksize=chunksize)
     elif query_id == "Q6":
         _gt_q6(csv_path, WINDOW_5MIN_S, out, chunksize)
     elif query_id == "Q7":

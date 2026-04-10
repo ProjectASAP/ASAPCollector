@@ -84,7 +84,7 @@ QUERY_CONFIG: dict[str, QueryCfg] = {
     ),
     "Q5": QueryCfg(
         aggregations=("p25", "p50", "p75"),
-        time_window="15m",
+        time_window="5m",
         group_by=("entity", "metric_base"),
         sketch_family="quantile",
     ),

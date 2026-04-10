@@ -90,7 +90,7 @@ Accuracy metrics per query:
 | Q1 | `frac_q50_lt_1pct`, `frac_q95_lt_1pct`, `frac_q99_lt_1pct` | ≥ 0.90 / 0.90 / 0.85 |
 | Q3 | `topk_overlap`, `rank_correlation` | ≥ 0.80 / 0.70 |
 | Q4 | `frac_min_lt_2pct`, `frac_max_lt_2pct`, `frac_minmax_both_lt_2pct` | ≥ 0.90 |
-| Q5 | `frac_iqr_lt_10pct` | ≥ 0.85 |
+| Q5 | `frac_iqr_lt_10pct`, `anomaly_precision`, `anomaly_recall`, `anomaly_f1` | ≥ 0.85 / 0.80 / 0.80 / 0.80 |
 | Q6 | `hll_rel_err` | ≤ 0.05 |
 | Q7 | `entity_topk_overlap` | ≥ 0.80 |
 | Q8 | `frac_drift_p95_lt_20pct` | ≥ 0.80 |

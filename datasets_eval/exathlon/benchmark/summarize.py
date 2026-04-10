@@ -47,6 +47,18 @@ METRIC_DESCRIPTIONS: dict[str, str] = {
         "Fraction of (entity, metric_base) pairs where sketch IQR (p75−p25) is within "
         "10% relative error of exact IQR. Last 15-min window."
     ),
+    "anomaly_precision": (
+        "Precision of sketch-derived Tukey-fence anomaly flags against exact flags over "
+        "raw points in the last 15-min window."
+    ),
+    "anomaly_recall": (
+        "Recall of sketch-derived Tukey-fence anomaly flags against exact flags over raw "
+        "points in the last 15-min window."
+    ),
+    "anomaly_f1": (
+        "F1 score of sketch-derived Tukey-fence anomaly flags against exact flags over raw "
+        "points in the last 15-min window."
+    ),
     "hll_rel_err": (
         "|HLL_estimate − exact_distinct| / exact_distinct. `0.0` = perfect estimate. "
         "Last 5-min window."
@@ -75,6 +87,9 @@ METRIC_RENAME: dict[str, str] = {
     "frac_max_lt_2pct": "series_within_2pct_max",
     "frac_minmax_both_lt_2pct": "series_within_2pct_minmax_both",
     "frac_iqr_lt_10pct": "series_within_10pct_iqr",
+    "anomaly_precision": "q5_anomaly_precision",
+    "anomaly_recall": "q5_anomaly_recall",
+    "anomaly_f1": "q5_anomaly_f1",
     "hll_rel_err": "hll_distinct_rel_error",
     "entity_topk_overlap": "entity_topk_overlap",
     "frac_drift_p95_lt_20pct": "series_within_20pct_drift_p95",

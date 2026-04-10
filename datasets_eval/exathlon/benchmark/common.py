@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 EXATHLON_ROOT = Path(__file__).resolve().parent.parent
 METRIC_NAME = "system.telemetry"
@@ -30,11 +31,30 @@ DEFAULT_FILES = (
 # ---------------------------------------------------------------------------
 
 def file_csv_path(file_tag: str) -> Path:
-    """Return absolute CSV path for a file tag like 'app1/1_0_10000_17'."""
+    """Return absolute CSV path for a raw or safe file tag.
+
+    Accepts either the canonical raw tag form (``app1/1_0_10000_17``) or the
+    safe form used in result filenames (``app1_1_0_10000_17``).
+    """
     tag = file_tag.strip()
+    candidates: list[str] = []
+
     if tag.endswith(".csv"):
-        return RAW_DATA_ROOT / tag
-    return RAW_DATA_ROOT / f"{tag}.csv"
+        candidates.append(tag)
+    else:
+        candidates.append(f"{tag}.csv")
+
+    if "/" not in tag:
+        safe_match = re.match(r"^(app\d+)_(.+?)(?:\.csv)?$", tag)
+        if safe_match:
+            app_dir, stem = safe_match.groups()
+            candidates.append(f"{app_dir}/{stem}.csv")
+
+    for candidate in candidates:
+        path = RAW_DATA_ROOT / candidate
+        if path.is_file():
+            return path
+    return RAW_DATA_ROOT / candidates[0]
 
 
 def file_tag_safe(file_tag: str) -> str:
