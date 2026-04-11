@@ -302,6 +302,41 @@ func TestBuildObjectKey_FixedName(t *testing.T) {
 	assert.Equal(t, "fixed.gorilla", key)
 }
 
+func TestFlushWindow_S3FilesWithPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		WindowInterval: time.Hour,
+		S3Files: S3FilesConfig{
+			MountPath: tmpDir,
+			Prefix:    "data/%Y/%m/%d/",
+		},
+	}
+	_ = cfg.Validate()
+	logger := zaptest.NewLogger(t)
+	proc := newProcessor(cfg, nil, logger)
+
+	baseTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	md := buildTestMetrics("cpu.usage", 10, baseTime)
+	_, err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	proc.flushWindow()
+
+	// Files should appear in the date-partitioned subdirectory
+	pattern := filepath.Join(tmpDir, "data", "2025", "01", "01", "*.gorilla")
+	files, err := filepath.Glob(pattern)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(files))
+
+	// Verify GORILLA1 header
+	data, err := os.ReadFile(files[0])
+	require.NoError(t, err)
+	require.True(t, len(data) > 13, "file too small")
+	assert.Equal(t, "GORILLA1", string(data[:8]))
+	seriesCount := binary.LittleEndian.Uint32(data[9:13])
+	assert.Equal(t, uint32(1), seriesCount)
+}
+
 func TestFormatPrefix(t *testing.T) {
 	ts := time.Date(2025, 6, 15, 14, 30, 45, 0, time.UTC)
 	result := formatPrefix("data/%Y/%m/%d/%H/", ts)

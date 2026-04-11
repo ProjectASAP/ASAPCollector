@@ -1,0 +1,48 @@
+# S3 Files mode: write gorilla-compressed blocks to a filesystem path
+# using S3-compatible directory partitioning.
+#
+# In production, mount_path would be an S3 Files mount point
+# (e.g. /mnt/s3/my-metrics-bucket). For local testing, any directory works.
+#
+# Start: ./gorillacol --config file:config-s3files.yaml
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
+
+processors:
+  gorilla:
+    window_interval: 10s
+    drop_original: false
+    s3_files:
+      mount_path: /tmp/gorilla-s3files
+      prefix: "raw-samples/%Y/%m/%d/%H/"
+
+  batch:
+    send_batch_size: 5000
+    timeout: 200ms
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [gorilla, batch]
+      exporters: [prometheus, debug]
