@@ -25,6 +25,18 @@ type S3Config struct {
 	UploadTimeout      time.Duration `mapstructure:"upload_timeout"`
 }
 
+// S3FilesConfig holds settings for writing to an S3 Files mount point
+// (or any local filesystem path for testing). No AWS credentials required.
+type S3FilesConfig struct {
+	// MountPath is the filesystem path where the S3 bucket is mounted via
+	// Amazon S3 Files, or a local directory for testing.
+	MountPath string `mapstructure:"mount_path"`
+
+	// Prefix uses strftime-style tokens (%Y, %m, %d, %H, %M, %S) for
+	// S3-compatible directory partitioning (e.g. "raw-samples/%Y/%m/%d/%H/").
+	Prefix string `mapstructure:"prefix"`
+}
+
 // Config holds the gorillaprocessor configuration.
 type Config struct {
 	// WindowInterval is the tumbling window duration for accumulating data points
@@ -44,6 +56,10 @@ type Config struct {
 	// LocalDir, when set, writes compressed blocks to the local filesystem.
 	// Can be used alone or together with S3.
 	LocalDir string `mapstructure:"local_dir"`
+
+	// S3Files holds S3 Files mode configuration for writing to an S3 Files
+	// mount point using filesystem I/O with S3-compatible directory partitioning.
+	S3Files S3FilesConfig `mapstructure:"s3_files"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -52,8 +68,8 @@ func (c *Config) Validate() error {
 	if c.WindowInterval <= 0 {
 		c.WindowInterval = 10 * time.Minute
 	}
-	if c.S3.Bucket == "" && c.LocalDir == "" {
-		return fmt.Errorf("at least one of s3.bucket or local_dir must be configured")
+	if c.S3.Bucket == "" && c.LocalDir == "" && c.S3Files.MountPath == "" {
+		return fmt.Errorf("at least one of s3.bucket, s3_files.mount_path, or local_dir must be configured")
 	}
 	if c.S3.Bucket != "" && c.S3.Region == "" {
 		return fmt.Errorf("s3.region is required when s3.bucket is set")

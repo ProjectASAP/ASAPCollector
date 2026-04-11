@@ -38,7 +38,7 @@ func TestConfig_Validate_NeitherS3NorLocal(t *testing.T) {
 	}
 	err := cfg.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "at least one of s3.bucket or local_dir")
+	assert.Contains(t, err.Error(), "at least one of s3.bucket, s3_files.mount_path, or local_dir")
 }
 
 func TestConfig_Validate_S3MissingRegion(t *testing.T) {
@@ -59,6 +59,17 @@ func TestConfig_Validate_DefaultWindowInterval(t *testing.T) {
 	}
 	require.NoError(t, cfg.Validate())
 	assert.Equal(t, 10*time.Minute, cfg.WindowInterval)
+}
+
+func TestConfig_Validate_S3FilesOnly(t *testing.T) {
+	cfg := &Config{
+		WindowInterval: time.Minute,
+		S3Files: S3FilesConfig{
+			MountPath: "/tmp/s3-files-sim",
+			Prefix:    "raw-samples/%Y/%m/%d/%H/",
+		},
+	}
+	require.NoError(t, cfg.Validate())
 }
 
 func TestConfig_Validate_MultipartPartBytesMinimum(t *testing.T) {
