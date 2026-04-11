@@ -29,6 +29,7 @@ from ground_truth.q5 import run_q5
 from ground_truth.q6 import run_q6
 from ground_truth.q7 import run_q7
 from ground_truth.q8 import run_q8
+from ground_truth.q9 import run_q9
 from ground_truth.common import (
     THRESHOLD_QUANTILE,
     TOP_K_ENTITIES,
@@ -145,42 +146,8 @@ def _gt_q4(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> Non
 # ---------------------------------------------------------------------------
 # Q9 — Saturation ratio per entity (USE method)
 # ---------------------------------------------------------------------------
-
-def _gt_q9(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> None:
-    """Exact saturation ratio = saturated_metrics / total_active_metrics per (entity, window).
-
-    A (entity, metric_base) is considered saturated in a window if any of its
-    values in that window exceeds the file-wide p95 threshold for that group.
-    """
-    thresholds = compute_per_metric_thresholds(csv_path, THRESHOLD_QUANTILE, chunksize)
-
-    # For each (entity, window): track which metric_bases are active and which are saturated.
-    active: dict[tuple, set] = defaultdict(set)     # (entity, ws) → {metric_base}
-    saturated: dict[tuple, set] = defaultdict(set)  # (entity, ws) → {metric_base}
-
-    for chunk in _stream_long_chunks(csv_path, chunksize):
-        chunk["window_start_s"] = (chunk["ts_s"] // window_s) * window_s
-        for _, row in chunk.iterrows():
-            ew = (str(row["entity"]), int(row["window_start_s"]))
-            active[ew].add(row["metric_base"])
-            thr = thresholds.get((row["entity"], row["metric_base"]))
-            if thr is not None and row["value"] > thr:
-                saturated[ew].add(row["metric_base"])
-
-    all_ew = set(active.keys()) | set(saturated.keys())
-    rows = []
-    for (entity, ws) in sorted(all_ew):
-        total = len(active.get((entity, ws), set()))
-        exceeded = len(saturated.get((entity, ws), set()))
-        rows.append({
-            "entity": entity,
-            "window_start_s": ws,
-            "saturated_metric_count": exceeded,
-            "total_active_metric_count": total,
-            "exact_saturation_ratio": exceeded / total if total > 0 else 0.0,
-        })
-
-    pd.DataFrame(rows).to_csv(out_path, index=False)
+# Delegated entirely to ground_truth/q9.py.  See that module for full
+# documentation, window configuration, and the standalone CLI.
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +187,7 @@ def run_ground_truth_task(
     elif query_id == "Q8":
         run_q8(file_tag, output_dir, chunksize=chunksize)
     elif query_id == "Q9":
-        _gt_q9(csv_path, WINDOW_5MIN_S, out, chunksize)
+        run_q9(file_tag, output_dir, chunksize=chunksize)
     else:
         raise ValueError(f"No ground truth runner for query {query_id!r}.")
 

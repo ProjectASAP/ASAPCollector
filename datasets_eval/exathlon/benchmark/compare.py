@@ -1150,13 +1150,52 @@ _COMPARE_DISPATCH["Q8"] = _compare_q8
 # ---------------------------------------------------------------------------
 
 def _compare_q9(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
+    """Compare HLL-estimated saturation ratio against the last 5-min GT window.
+
+    The sketch HLL is a PER-WINDOW sketch: the collector resets it every
+    5 minutes (wall-clock ticker).  At any scrape, the HLL reflects the
+    distinct exceeded metric_base names seen ONLY within the current
+    collector window — not cumulatively across all windows.
+
+    Alignment strategy
+    ------------------
+    We restrict the ground-truth to 5-minute per-window rows (excluding the
+    cumulative summary rows added for Q12) and compare against the LAST
+    completed event-time window, which is what ``_get_time_aligned_snapshot``
+    selects the sketch snapshot for.
+
+    Residual error note
+    -------------------
+    When the replay runs faster than 1× real-time the collector's wall-clock
+    5-min window spans more than 5 minutes of event time, so the HLL
+    accumulates exceeded tokens from two adjacent event-time windows.  This
+    causes a small systematic bias (the HLL over-counts relative to any
+    single GT window) that the per-window comparison will flag but cannot
+    fully eliminate without a 1× replay.
+
+    ``sat_ratio_mae`` = mean |hll_est/total - exact_ratio| per entity.
+    """
     if ground_truth.empty:
         return {"sat_ratio_mae": float("nan")}
 
-    last_ws = int(ground_truth["window_start_s"].max())
-    gt_last = ground_truth[ground_truth["window_start_s"] == last_ws].copy()
+    # Use 5-minute per-window rows only — cumulative rows (window_size_s == -1,
+    # window_label == "cumulative") are for Q12 and do not match the per-window HLL.
+    gt_5m = ground_truth.copy()
+    if "window_label" in gt_5m.columns:
+        gt_5m = gt_5m[gt_5m["window_label"] != "cumulative"]
+    if "window_size_s" in gt_5m.columns:
+        filt = gt_5m[gt_5m["window_size_s"] == WINDOW_5MIN_S]
+        if not filt.empty:
+            gt_5m = filt
 
-    # HLL estimate per entity = distinct saturated metric count per entity.
+    if gt_5m.empty:
+        return {"sat_ratio_mae": float("nan")}
+
+    last_ws = int(gt_5m["window_start_s"].max())
+    gt_last = gt_5m[gt_5m["window_start_s"] == last_ws].copy()
+
+    # HLL estimates distinct exceeded metric_base names per entity in the
+    # current collector window.
     hll_by_entity = extract_hll_cardinality_by_label(sketch, label_key="entity")
 
     errors = []

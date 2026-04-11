@@ -214,6 +214,14 @@ def iter_batches(
                     # HLL currently counts distinct float values; encode the
                     # distinct metric identifier into the value channel.
                     v = _metric_base_token(mb)
+                elif query == "Q9":
+                    # Emit only threshold-exceeded values; encode the metric_base
+                    # as a stable float token so the HLL counts distinct exceeded
+                    # metric_base names (the numerator of the saturation ratio).
+                    thr = None if thresholds is None else thresholds.get((entity, mb))
+                    if thr is None or float(v) <= float(thr):
+                        continue
+                    v = _metric_base_token(mb)
                 pending.append((float(v), t_ns, entity, mb, agg))
                 if len(pending) >= batch_size:
                     yield pending
@@ -482,10 +490,10 @@ def main() -> None:
             print(f"file {csv_path}", flush=True)
             thresholds: dict[tuple[str, str], float] | None = None
             anomaly_bounds: dict[tuple[str, str, int], tuple[float, float]] | None = None
-            if args.query == "Q3":
-                print("q3 threshold pass start", f"file={csv_path}", flush=True)
+            if args.query in ("Q3", "Q9"):
+                print(f"{args.query.lower()} threshold pass start", f"file={csv_path}", flush=True)
                 thresholds = compute_per_metric_thresholds(csv_path, chunksize=args.chunksize)
-                print("q3 threshold pass done", f"metrics={len(thresholds)}", flush=True)
+                print(f"{args.query.lower()} threshold pass done", f"metrics={len(thresholds)}", flush=True)
             elif args.query == "Q7":
                 print("q7 anomaly-bounds pass start", f"file={csv_path}", flush=True)
                 anomaly_bounds = _compute_q7_anomaly_bounds(csv_path, chunksize=args.chunksize)
