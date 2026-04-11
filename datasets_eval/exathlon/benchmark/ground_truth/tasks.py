@@ -28,6 +28,7 @@ from ground_truth.q4 import run_q4
 from ground_truth.q5 import run_q5
 from ground_truth.q6 import run_q6
 from ground_truth.q7 import run_q7
+from ground_truth.q8 import run_q8
 from ground_truth.common import (
     THRESHOLD_QUANTILE,
     TOP_K_ENTITIES,
@@ -142,47 +143,6 @@ def _gt_q4(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Q8 — Quantile drift between adjacent windows
-# ---------------------------------------------------------------------------
-
-def _gt_q8(csv_path: Path, window_s: int, out_path: Path, chunksize: int) -> None:
-    """Exact |p95_t − p95_{t-1}| and |p50_t − p50_{t-1}| per (entity, metric_base)."""
-    acc = accumulate_window_values(csv_path, window_s, chunksize)
-
-    # Collect (entity, metric_base) → {window_start_s: (p50, p95)} mapping.
-    series_windows: dict[tuple, dict[int, tuple[float, float]]] = defaultdict(dict)
-    for (entity, mb, ws), values in acc.items():
-        arr = np.asarray(values, dtype=np.float64)
-        series_windows[(entity, mb)][ws] = (
-            float(np.percentile(arr, 50)),
-            float(np.percentile(arr, 95)),
-        )
-
-    rows = []
-    for (entity, mb), window_dict in series_windows.items():
-        sorted_windows = sorted(window_dict.keys())
-        for i in range(1, len(sorted_windows)):
-            prev_ws = sorted_windows[i - 1]
-            curr_ws = sorted_windows[i]
-            prev_p50, prev_p95 = window_dict[prev_ws]
-            curr_p50, curr_p95 = window_dict[curr_ws]
-            rows.append({
-                "entity": entity,
-                "metric_base": mb,
-                "window_start_s": curr_ws,
-                "prev_window_start_s": prev_ws,
-                "prev_p50": prev_p50,
-                "curr_p50": curr_p50,
-                "drift_p50": abs(curr_p50 - prev_p50),
-                "prev_p95": prev_p95,
-                "curr_p95": curr_p95,
-                "drift_p95": abs(curr_p95 - prev_p95),
-            })
-
-    pd.DataFrame(rows).to_csv(out_path, index=False)
-
-
-# ---------------------------------------------------------------------------
 # Q9 — Saturation ratio per entity (USE method)
 # ---------------------------------------------------------------------------
 
@@ -258,7 +218,7 @@ def run_ground_truth_task(
     elif query_id == "Q7":
         run_q7(file_tag, output_dir, k=TOP_K_ENTITIES, chunksize=chunksize)
     elif query_id == "Q8":
-        _gt_q8(csv_path, WINDOW_5MIN_S, out, chunksize)
+        run_q8(file_tag, output_dir, chunksize=chunksize)
     elif query_id == "Q9":
         _gt_q9(csv_path, WINDOW_5MIN_S, out, chunksize)
     else:

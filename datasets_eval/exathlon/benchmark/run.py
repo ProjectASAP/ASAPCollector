@@ -218,6 +218,7 @@ def build_plan_body(
     query: str,
     sketch: str | None,
     run_mode: str,
+    speed: float = 1.0,
 ) -> dict[str, Any]:
     cfg = QUERY_CONFIG[query]
     # Controller API accepts aggregation families, not percentile labels.
@@ -229,10 +230,20 @@ def build_plan_body(
         aggregations = ["cardinality"]
     else:
         aggregations = list(cfg.aggregations)
+    # For scaled replay, compress the configured time_window so that one
+    # wall-clock window covers exactly one event-time window:
+    #   wall_window_s = event_window_s / speed_factor
+    # This aligns sketch flush boundaries with the GT event-time windows.
+    raw_window_s = _parse_time_window_seconds(cfg.time_window)
+    if replay_mode_for_run(run_mode) == "scaled" and speed > 1.0:
+        wall_s = max(1, round(raw_window_s / speed))
+        effective_time_window = f"{wall_s}s"
+    else:
+        effective_time_window = cfg.time_window
     body: dict[str, Any] = {
         "metric_name": metric,
         "aggregations": aggregations,
-        "time_window": cfg.time_window,
+        "time_window": effective_time_window,
         "group_by_labels": list(cfg.group_by),
         "accuracy_sla": 0.01,
         "workload": {
@@ -526,13 +537,17 @@ def _run_one_query_file(
 
     try:
         if not is_nop:
+            # For Q8 the effective replay mode is "scaled"; pass it so
+            # build_plan_body can compute the correct wall-clock window_duration.
+            plan_mode = "scaled" if query == "Q8" else mode
             post_plan(
                 controller,
                 build_plan_body(
                     metric,
                     query,
                     sketch if sketch and sketch != "nop" else None,
-                    mode,
+                    plan_mode,
+                    speed=speed,
                 ),
             )
             with open(results_dir / "collector.log", "wb") as logf:
@@ -588,8 +603,16 @@ def _run_one_query_file(
         # than by arrival time, pacing adds no semantic value: send all events
         # as fast as possible so the first 5-minute wall-clock window captures
         # every event-time window in one flush.
+        #
+        # Q8 (quantile drift) uses scaled replay so that wall-clock window
+        # boundaries align with event-time window boundaries:
+        #   wall_window = event_window / speed_factor
+        # The plan is posted with the scaled time_window so the controller
+        # configures the DDSketch collector with the appropriate window_duration.
         effective_replay_mode = (
-            "max" if query == "Q7" else replay_mode
+            "max" if query == "Q7" else
+            "scaled" if query == "Q8" else
+            replay_mode
         )
         replay_argv = [
             py, str(bench_root / "replay.py"),

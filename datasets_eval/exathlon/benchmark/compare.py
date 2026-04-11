@@ -1083,33 +1083,60 @@ _COMPARE_DISPATCH["Q7"] = _compare_q7
 # ---------------------------------------------------------------------------
 
 def _compare_q8(ground_truth: pd.DataFrame, sketch: pd.DataFrame, **_) -> dict:
+    _nan = {"frac_drift_p95_lt_20pct": float("nan")}
     if ground_truth.empty:
-        return {"frac_drift_p95_lt_20pct": float("nan")}
+        return _nan
 
-    # Use last window pair.
-    last_ws = int(ground_truth["window_start_s"].max())
-    gt_last = ground_truth[ground_truth["window_start_s"] == last_ws]
+    # Restrict to 5-min windows (primary); combined GT CSV also carries 1-min rows.
+    gt_5m = (
+        ground_truth[ground_truth["window_size_s"] == WINDOW_5MIN_S].copy()
+        if "window_size_s" in ground_truth.columns
+        else ground_truth.copy()
+    )
+    if gt_5m.empty:
+        return _nan
 
+    last_ws = int(gt_5m["window_start_s"].max())
+    gt_last = gt_5m[gt_5m["window_start_s"] == last_ws]
+
+    # Q8 uses scaled replay with short wall-clock windows (one per event-time
+    # window).  The scraper captures many snapshots across multiple window
+    # flushes; extract_sketch_quantile_by_group would average them.  Instead
+    # use only the last scrape snapshot, which reflects the most recent flush.
+    if "scrape_wall_ns" in sketch.columns and not sketch.empty:
+        sketch = sketch[sketch["scrape_wall_ns"] == sketch["scrape_wall_ns"].max()]
+
+    # Try p95 first; fall back to p90 when the collector omits that quantile
+    # (same pattern as _compare_q1 frac_q95_lt_1pct).
     sk_p95 = extract_sketch_quantile_by_group(sketch, 0.95, ("entity", "metric_base"))
-    sk_p95_prev = extract_sketch_quantile_by_group(sketch, 0.95, ("entity", "metric_base"))
+    drift_col = "drift_p95"
+    prev_col = "prev_p95"
+    if sk_p95.empty and "drift_p90" in gt_last.columns:
+        sk_p95 = extract_sketch_quantile_by_group(sketch, 0.90, ("entity", "metric_base"))
+        drift_col = "drift_p90"
+        prev_col = "prev_p90"
 
     if sk_p95.empty or gt_last.empty:
-        return {"frac_drift_p95_lt_20pct": float("nan")}
+        return _nan
 
     merged = gt_last.merge(sk_p95, on=["entity", "metric_base"], how="inner")
-    if merged.empty:
-        return {"frac_drift_p95_lt_20pct": float("nan")}
+    if merged.empty or drift_col not in merged.columns or prev_col not in merged.columns:
+        return _nan
 
-    # We compare the sketch p95 drift (prev vs curr) relative to exact drift.
-    exact_drift = merged["drift_p95"].to_numpy(dtype=np.float64)
-    # Use the absolute difference between sketch p95 and exact prev_p95 as proxy for drift.
+    # Drift proxy: only one scrape snapshot is available, so we cannot directly
+    # compute |sketch_curr_q - sketch_prev_q|.  Instead we use:
+    #   sketch_drift ≈ |sketch_curr_q - exact_prev_q|
+    # When the sketch is accurate (sketch_curr ≈ exact_curr) this converges to
+    # exact_drift = |exact_curr_q - exact_prev_q|.  Systematic sketch bias
+    # inflates or deflates the apparent error, but the 20 % tolerance absorbs it.
+    exact_drift = merged[drift_col].to_numpy(dtype=np.float64)
     sketch_curr = merged["v"].to_numpy(dtype=np.float64)
-    exact_prev = merged["prev_p95"].to_numpy(dtype=np.float64)
+    exact_prev = merged[prev_col].to_numpy(dtype=np.float64)
     sketch_drift = np.abs(sketch_curr - exact_prev)
 
     nonzero = exact_drift > 0
     if not nonzero.any():
-        return {"frac_drift_p95_lt_20pct": float("nan")}
+        return _nan
     rel_err = np.abs(sketch_drift[nonzero] - exact_drift[nonzero]) / exact_drift[nonzero]
     frac = float(np.mean(rel_err < 0.20))
     return {"frac_drift_p95_lt_20pct": frac}
@@ -1619,7 +1646,7 @@ def run_comparison(
     # "last window" selected by each compare function corresponds to the data
     # the sketch has ingested, not the end of the full 60-minute file.
     replay_cutoff_s = _read_replay_cutoff_s(send_times_path)
-    cutoff_queries = {"Q1", "Q3", "Q4"}
+    cutoff_queries = {"Q1", "Q3", "Q4", "Q8"}
     cutoff_for_query = replay_cutoff_s if query_id in cutoff_queries else None
     if query_id == "Q1" and cutoff_for_query is not None:
         replay_relative_gt = _build_q1_replay_relative_ground_truth(
