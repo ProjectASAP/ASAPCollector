@@ -37,6 +37,9 @@ processors:
     path: ./processor/countsketchprocessor
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor v0.141.0
     path: ./processor/countminsketchprocessor
+  # Compression processors
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/gorillaprocessor v0.141.0
+    path: ./processor/gorillaprocessor
   # Merge processors
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchmergeprocessor v0.141.0
     path: ./processor/countsketchmergeprocessor

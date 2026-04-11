@@ -1,10 +1,10 @@
-# S3 Files mode: write gorilla-compressed blocks to a filesystem path
+# S3 Files mode: gorilla-compress raw samples and write to a filesystem path
 # using S3-compatible directory partitioning.
 #
 # In production, mount_path would be an S3 Files mount point
 # (e.g. /mnt/s3/my-metrics-bucket). For local testing, any directory works.
 #
-# Start: ./gorillacol --config file:config-s3files.yaml
+# Start: ./sketchcol --config file:config-s3files.yaml
 
 receivers:
   otlp:
