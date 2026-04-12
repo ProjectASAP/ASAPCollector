@@ -195,7 +195,7 @@ where: s = symbol; w = 5-min tumbling window; p_t = price (last) at tick t withi
 **Queries sent to `/api/v1/plan` (`query_string` API):**
 
 ```promql
-count_over_time(financial_last_trade_price[5m])
+topk(10, count_over_time(financial_last_trade_price[5m]))
 ```
 
 ```sql
@@ -214,6 +214,7 @@ GROUP  BY symbol, TUMBLE(ts, INTERVAL '5' MINUTE)
 | bandwidth sent | 69 040 B/s (delta) | 69 040 B/s (delta) |
 | delta_mode | use_delta (×15) | use_delta (×15) |
 | agent memory | 0 B | 80 000 B |
+| precompute | active (K=10, 640 B) | inactive |
 
 **References:**
 
@@ -423,10 +424,10 @@ GROUP  BY TUMBLE_START(ts, INTERVAL '5' MINUTE)
 | sketch_type | HLL | HLL |
 | mode | window | window |
 | bandwidth sent | 207 120 B/s (full) | 207 120 B/s (full) |
-| delta_mode | use_full_sketch (fill_rate_too_high: 96.5%) | use_full_sketch (fill_rate_too_high: 96.5%) |
+| delta_mode | use_full_sketch (fill_rate_too_high: ~100%) | use_full_sketch (fill_rate_too_high: ~100%) |
 | agent memory | 32 768 B | 16 384 B |
 
-Delta rejected because HLL fill rate is 96.5% — the sketch is almost always full, so delta compression would not save bandwidth.
+Delta rejected because estimated HLL fill rate is ~100% (`estimated_fill_rate` ≈ 0.9999995) — the sketch is effectively full, so delta compression would not save bandwidth.
 
 **References:**
 

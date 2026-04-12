@@ -80,7 +80,7 @@ POST /api/v1/plan
   "accuracy_sla": 0.01,
   "workload": {
     "series_count": 5178,
-    "samples_per_sec_per_series": 0.2,
+    "samples_per_sec_per_series": 1.0,
     "bytes_per_raw_sample": 100,
     "data_distribution": "zipf"
   }
@@ -112,11 +112,11 @@ Planner responses from the unmodified controller (`05_canonical_planner_test.md`
 |-------|--------|---------------|-------|
 | Q1 EMA | — | **422** | Recursive CTE — not supported |
 | Q2 EMA crossover | — | **422** | `LAG`/`CASE` — not supported |
-| Q3 frequency | CountSketch | **200** | `count_over_time` / `COUNT(*) GROUP BY symbol`; delta ×15 |
+| Q3 frequency | CountSketch | **200** | `topk(10, count_over_time)` (precompute, window, ×15) / `COUNT(*) GROUP BY symbol` (window, ×15) |
 | Q4 high/low | KLL | **200** | `max/min_over_time` + SQL MAX/MIN; full sketch |
 | Q4 last | ddsketch | **200** | `last_over_time`; batch mode, delta ×6.75 |
 | Q5 realized vol | — | **422** | `STDDEV_SAMP` — not supported |
-| Q6 cardinality | HLL | **200** | `count(count_over_time)` / `COUNT(DISTINCT)`; full (fill_rate 96.5%) |
+| Q6 cardinality | HLL | **200** | `count(count_over_time)` / `COUNT(DISTINCT)`; full (fill_rate ~100%) |
 | Q7 TWAP | KLL | **200** | `avg_over_time` / `AVG`; p50 proxy; full sketch |
 | Q8 anomaly | — | **422** | `STDDEV_SAMP` / `PERCENTILE_CONT` — not supported |
 | Q9 Bollinger | — | **422** | `STDDEV_SAMP` in window — not supported |

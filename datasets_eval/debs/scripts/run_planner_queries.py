@@ -1,4 +1,4 @@
-"""Sends /api/v1/plan for each DEBS 2022 query and saves results to canonical_results.json."""
+"""Sends /api/v1/plan for each DEBS 2022 query and saves results to results/canonical_results.json."""
 
 import json
 import subprocess
@@ -17,7 +17,7 @@ PLAN_ENDPOINT = f"{CONTROLLER_URL}/api/v1/plan"
 
 DEFAULT_WORKLOAD = {
     "series_count": 5178,
-    "samples_per_sec_per_series": 0.2,
+    "samples_per_sec_per_series": 1.0,
     "bytes_per_raw_sample": 100,
     "data_distribution": "zipf",
 }
@@ -84,7 +84,7 @@ WHERE  (prev_diff <= 0 AND diff > 0)
     {
         "id": "Q3-promql",
         "label": "Q3 count per symbol frequency (PromQL)",
-        "query": "count_over_time(financial_last_trade_price[5m])",
+        "query": "topk(10, count_over_time(financial_last_trade_price[5m]))",
     },
     {
         "id": "Q3-sql",
@@ -475,7 +475,9 @@ def main():
                 print(f"    Error: {str(body)[:300]}")
 
     # Write full output to JSON
-    out_file = os.path.join(SCRIPT_DIR, "canonical_results.json")
+    results_dir = os.path.join(SCRIPT_DIR, "results")
+    os.makedirs(results_dir, exist_ok=True)
+    out_file = os.path.join(results_dir, "canonical_results.json")
     with open(out_file, "w") as f:
         json.dump(all_results, f, indent=2, default=str)
     print(f"\n{'═' * 80}")
