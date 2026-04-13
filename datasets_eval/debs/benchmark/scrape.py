@@ -80,7 +80,7 @@ def append_metrics_snapshot(url: str, output_path: Path) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Poll Prometheus text metrics into CSV.")
-    parser.add_argument("--query", default="Q1")
+    parser.add_argument("--query", default="Q3")
     parser.add_argument("--day", default="08-11-21")
     parser.add_argument(
         "--out-dir",

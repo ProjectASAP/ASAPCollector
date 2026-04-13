@@ -48,13 +48,10 @@ class QueryCfg:
 
 
 QUERY_CONFIG: dict[str, QueryCfg] = {
-    "Q1": QueryCfg(("quantile",), "5m", "data_filtered", ("symbol",), "quantile"),
-    "Q2": QueryCfg((), "5m", "data_filtered", (), "nop"),
     "Q3": QueryCfg(("frequency",), "5m", "data_filtered", ("symbol",), "frequency"),
 }
 
-NOP_QUERIES = frozenset(q for q, c in QUERY_CONFIG.items() if c.sketch_family == "nop")
-DEFAULT_QUERIES = tuple(QUERY_CONFIG)
+DEFAULT_QUERIES: tuple[str, ...] = ("Q3",)
 
 # Controller `select_window_strategy`: window mode if latency_sla is unset or
 # latency_sla >= time_window; otherwise batch. Sketch processors only forward to
@@ -112,33 +109,9 @@ def group_by_labels_for_plan(query: str) -> list[str]:
     return list(QUERY_CONFIG[query].group_by)
 
 
-def sketch_for_matrix_cell(query: str, sketch_quantile: str, sketch_freq: str, sketch_card: str) -> str:
-    family = QUERY_CONFIG[query].sketch_family
-    if family == "frequency":
-        return sketch_freq
-    if family == "cardinality":
-        return sketch_card
-    if family == "nop":
-        return "nop"
-    return sketch_quantile
-
-
-def sketch_type_for_plan(query: str, sketch: str | None) -> str | None:
-    s = (sketch or "").strip().lower()
-    family = QUERY_CONFIG[query].sketch_family
-    if family == "frequency":
-        return "countminsketch" if s == "countminsketch" else "countsketch"
-    if family == "cardinality":
-        return "hll"
-    if family == "quantile":
-        return "kll" if s == "kll" else "ddsketch"
-    return None
-
-
 def build_plan_body(
     metric: str,
     query: str,
-    sketch: str | None,
     bench_mode: str = "sketch-finance",
     file_output_path: str | None = None,
 ) -> dict[str, Any]:
@@ -157,9 +130,6 @@ def build_plan_body(
     }
     if bench_mode != "sketch-finance":
         body["latency_sla"] = BENCH_LATENCY_SLA_FOR_BATCH_MODE
-    st = sketch_type_for_plan(query, sketch)
-    if st is not None:
-        body["sketch_type"] = st
     if file_output_path is not None:
         body["file_output_path"] = file_output_path
     return body
@@ -252,14 +222,6 @@ def post_plan(controller: str, body: dict[str, Any]) -> None:
     print(r.text[:2000], file=sys.stderr)
 
 
-def nop_config_path(collector_bin: Path) -> Path:
-    parent = collector_bin.parent
-    cand = parent.parent / "config-bench.yaml"
-    if cand.is_file():
-        return cand
-    return parent / "config-bench.yaml"
-
-
 def wait_for_prometheus(url: str, timeout_s: float = 30.0) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -327,46 +289,33 @@ def _run_one_query_day(
     metrics_port = int(urlparse(PROMETHEUS_METRICS_URL).port or 8889)
     kill_process_on_tcp_port(metrics_port)
 
-    is_nop = query in NOP_QUERIES
     py = sys.executable
     cpid: subprocess.Popen | None = None
     try:
-        if not is_nop:
-            day_tag = day.replace(".csv", "").replace("debs2022-gc-trading-day-", "")
-            jsonl_path = str(results_dir / "sketch_output" / query / f"{day_tag}.jsonl")
-            post_plan(controller, build_plan_body(
-                metric, query,
-                sketch if sketch and sketch != "nop" else None,
+        day_tag = day.replace(".csv", "").replace("debs2022-gc-trading-day-", "")
+        jsonl_path = str(results_dir / "sketch_output" / query / f"{day_tag}.jsonl")
+        post_plan(
+            controller,
+            build_plan_body(
+                metric=metric,
+                query=query,
+                bench_mode=mode,
                 file_output_path=jsonl_path,
-            ))
-            cpid = subprocess.Popen(
-                [str(collector_bin), f"--config={controller.rstrip('/')}/api/v1/config/{metric}"],
-                stdout=open(results_dir / "collector.log", "wb"),
-                stderr=subprocess.STDOUT,
-                cwd=str(bench_root),
-            )
-        else:
-            nop_cfg = nop_config_path(collector_bin)
-            if not nop_cfg.is_file():
-                print(f"NOP config not found: {nop_cfg}", file=sys.stderr)
-                return 1
-            print(f"NOP query {query}: using {nop_cfg}", file=sys.stderr)
-            cpid = subprocess.Popen(
-                [str(collector_bin), f"--config={nop_cfg}"],
-                stdout=open(results_dir / "collector.log", "wb"),
-                stderr=subprocess.STDOUT,
-                cwd=str(bench_root),
-            )
+            ),
+        )
+        cpid = subprocess.Popen(
+            [str(collector_bin), f"--config={controller.rstrip('/')}/api/v1/config/{metric}"],
+            stdout=open(results_dir / "collector.log", "wb"),
+            stderr=subprocess.STDOUT,
+            cwd=str(bench_root),
+        )
 
-        if not is_nop:
-            if not wait_for_prometheus(PROMETHEUS_METRICS_URL, timeout_s=30.0):
-                print(
-                    f"Warning: {PROMETHEUS_METRICS_URL} not reachable within 30s; "
-                    "sketch_output may be empty.",
-                    file=sys.stderr,
-                )
-        else:
-            time.sleep(3)
+        if not wait_for_prometheus(PROMETHEUS_METRICS_URL, timeout_s=30.0):
+            print(
+                f"Warning: {PROMETHEUS_METRICS_URL} not reachable within 30s; "
+                "sketch_output may be empty.",
+                file=sys.stderr,
+            )
 
         scrape_argv = [
             py,
@@ -377,8 +326,6 @@ def _run_one_query_day(
             "--url", PROMETHEUS_METRICS_URL,
             "--duration", "7200",
         ]
-        if is_nop:
-            scrape_argv.append("--no-probe")
         scrape_proc = subprocess.Popen(scrape_argv, cwd=str(bench_root))
 
         replay_argv = [
@@ -403,14 +350,12 @@ def _run_one_query_day(
         except subprocess.TimeoutExpired:
             scrape_proc.kill()
 
-        if not is_nop:
-            day_tag = day.replace(".csv", "").replace("debs2022-gc-trading-day-", "")
-            out_csv = results_dir / "sketch_output" / query / f"{day_tag}.csv"
-            try:
-                n = append_metrics_snapshot(PROMETHEUS_METRICS_URL, out_csv)
-                print(f"Final Prometheus snapshot: {n} metric lines -> {out_csv}", file=sys.stderr)
-            except Exception as exc:
-                print(f"Final snapshot failed: {exc}", file=sys.stderr)
+        out_csv = results_dir / "sketch_output" / query / f"{day_tag}.csv"
+        try:
+            n = append_metrics_snapshot(PROMETHEUS_METRICS_URL, out_csv)
+            print(f"Final Prometheus snapshot: {n} metric lines -> {out_csv}", file=sys.stderr)
+        except Exception as exc:
+            print(f"Final snapshot failed: {exc}", file=sys.stderr)
 
         time.sleep(2)
         if cpid is not None:
@@ -560,12 +505,7 @@ def run_matrix(args: argparse.Namespace) -> int:
         for query in queries:
             for day in days:
                 total += 1
-                sk = sketch_for_matrix_cell(
-                    query,
-                    args.sketch_quantile,
-                    args.sketch_freq,
-                    args.sketch_card,
-                )
+                sk = args.sketch_freq
                 print(f"[{total}] QUERY={query} DAY={day} SKETCH={sk}", file=sys.stderr)
                 rc = _run_one_query_day(
                     bench_root=bench_root,
@@ -604,7 +544,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_test = sub.add_parser("test", help="Single benchmark run.")
-    p_test.add_argument("--query", default=os.environ.get("QUERY", "Q1"))
+    p_test.add_argument("--query", default=os.environ.get("QUERY", "Q3"))
     p_test.add_argument("--day", default=os.environ.get("DAY", "08-11-21"))
     p_test.add_argument("--days", default=os.environ.get("DAYS", ""), help="Comma-separated days; defaults to --day.")
     p_test.add_argument("--mode", default=os.environ.get("MODE", "sketch-finance"))
@@ -626,9 +566,7 @@ def main() -> None:
     p_matrix.add_argument("--speed", type=float, default=float(os.environ.get("SPEED", "100")))
     p_matrix.add_argument("--batch-size", type=int, default=int(os.environ.get("BATCH_SIZE", "50")))
     p_matrix.add_argument("--skip-gt", default=os.environ.get("SKIP_GT", "1"))
-    p_matrix.add_argument("--sketch-quantile", default=os.environ.get("SKETCH_QUANTILE", "ddsketch"))
     p_matrix.add_argument("--sketch-freq", default=os.environ.get("SKETCH_FREQ", "countsketch"))
-    p_matrix.add_argument("--sketch-card", default=os.environ.get("SKETCH_CARD", "hll"))
     p_matrix.add_argument("--collector", default=os.environ.get("COLLECTOR", "") or None)
     p_matrix.add_argument("--results-dir", type=Path, default=BENCH_ROOT / "results")
     p_matrix.add_argument("--clear-results", action="store_true")

@@ -113,9 +113,7 @@ def _select_evaluation_window(
     """Select the GT window to compare against the sketch.
 
     Two steps:
-    1. Skip the first `skip_warmup_windows` windows. For EMA-based queries
-       (Q1/Q2) the first window has cold-start bias; set skip=1 there.
-       For stateless queries (Q3-Q8) set skip=0.
+    1. Skip the first `skip_warmup_windows` windows (Q3 uses 0).
     2. Keep only the last remaining window. The Prometheus scrape captures the
        collector's current state, which corresponds to the most recent closed
        window, so we match GT to that same window.
@@ -351,13 +349,13 @@ def _run_comparison_per_window(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare sketch scrapes to ground truth.")
-    parser.add_argument("--query", default="Q1")
+    parser.add_argument("--query", default="Q3")
     parser.add_argument("--day", default="08-11-21")
     parser.add_argument(
         "--skip-warmup-windows",
         type=int,
         default=None,
-        help="Override number of warmup windows to skip (default: 1 for Q1, 0 for Q3-Q8).",
+        help="Override number of warmup windows to skip (default: 0 for Q3).",
     )
     parser.add_argument(
         "--gt-dir",
@@ -383,67 +381,6 @@ def main() -> None:
         args.out_dir,
         skip_warmup_windows=args.skip_warmup_windows,
     )
-
-
-# --- Q1: EMA quantile accuracy ---
-
-def compare_q1(
-    ground_truth: pd.DataFrame,
-    sketch_rows: pd.DataFrame,
-    *,
-    day: str = "",
-    skip_warmup_windows: int = 1,
-) -> list[dict]:
-    # Skip first window (EMA cold-start), compare sketch p50 vs EMA38 across all remaining windows.
-    if skip_warmup_windows > 0 and "window_start_ms" in ground_truth.columns:
-        min_window = ground_truth["window_start_ms"].min()
-        cutoff = min_window + skip_warmup_windows * WINDOW_5MIN_MS
-        ground_truth = ground_truth[ground_truth["window_start_ms"] >= cutoff]
-    sketch_medians = extract_ddsketch_median(sketch_rows)
-    merged = ground_truth.merge(sketch_medians, on="symbol", how="inner")
-    if merged.empty:
-        return [
-            {"metric": "frac_lt_1pct", "value": 0.0, "threshold": 0.95, "pass": 0},
-            {"metric": "per_pair_rel_err_mean", "value": 0.0, "threshold": 0.01, "pass": 0},
-            {"metric": "per_pair_rel_err_min", "value": 0.0, "threshold": 0.0, "pass": 0},
-            {"metric": "per_pair_rel_err_max", "value": 0.0, "threshold": 0.01, "pass": 0},
-        ]
-    # One row per (symbol, 5-min window): |ema38 − sketch_p50| / |ema38|
-    relative_error = (merged["ema38"] - merged["v"]).abs() / merged["ema38"].abs().clip(lower=1e-12)
-    fraction = float((relative_error < 0.01).mean())
-    mean_e = float(relative_error.mean())
-    min_e = float(relative_error.min())
-    max_e = float(relative_error.max())
-    return [
-        {
-            "metric": "frac_lt_1pct",
-            "value": fraction,
-            "threshold": 0.95,
-            "pass": int(fraction >= 0.95),
-        },
-        {
-            "metric": "per_pair_rel_err_mean",
-            "value": mean_e,
-            "threshold": 0.01,
-            "pass": int(mean_e <= 0.01),
-        },
-        {
-            "metric": "per_pair_rel_err_min",
-            "value": min_e,
-            "threshold": 0.0,
-            "pass": 1,
-        },
-        {
-            "metric": "per_pair_rel_err_max",
-            "value": max_e,
-            "threshold": 0.01,
-            "pass": int(max_e <= 0.01),
-        },
-    ]
-
-
-_SKETCH_METRIC_PATTERN["Q1"] = r"ddsketch|kll"
-_COMPARE_DISPATCH["Q1"] = compare_q1
 
 
 # --- Q3: top-K frequency accuracy ---

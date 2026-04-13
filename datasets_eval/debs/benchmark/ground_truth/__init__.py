@@ -1,1 +1,1 @@
-"""Offline ground-truth computations for DEBS benchmark queries Q1–Q8."""
+"""Offline ground-truth computations for DEBS benchmark query Q3."""
