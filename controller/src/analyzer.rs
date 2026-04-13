@@ -250,6 +250,7 @@ mod tests {
             latency_sla:    Some("10m".into()),
             sketch_type:    None,
             workload:       Default::default(),
+            file_output_path: None,
         }
     }
 
@@ -366,6 +367,7 @@ mod tests {
             latency_sla:     None,
             sketch_type:     None,
             workload:        Default::default(),
+            file_output_path: None,
         }
     }
 

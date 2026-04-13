@@ -1020,6 +1020,7 @@ mod api_tests {
             latency_sla:     None,
             sketch_type:     None,
             workload:        types::WorkloadCharacteristics::default(),
+            file_output_path: None,
         };
         let wl = analyzer.analyze(spec).unwrap();
         let wc = types::WorkloadCharacteristics::default();
@@ -1141,6 +1142,7 @@ mod api_tests {
             latency_sla:     None,
             sketch_type:     None,
             workload:        types::WorkloadCharacteristics::default(),
+            file_output_path: None,
         };
         let wl = analyzer.analyze(spec).unwrap();
         let wc = types::WorkloadCharacteristics::default();
