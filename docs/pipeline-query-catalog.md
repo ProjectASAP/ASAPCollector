@@ -1712,7 +1712,49 @@ Alternative architectures remain viable for specific workloads:
    the corresponding concrete accumulator. Delta-transmission
    encodings (issues [#62](https://github.com/ProjectASAP/DataCollector/issues/62)–[#67](https://github.com/ProjectASAP/DataCollector/issues/67))
    and `series_id` optimisations come along for free.
-2. **Retire `asap-planner-rs`, consolidate on the DataCollector
+2. **MessagePack as a parallel encoding option for sketch payloads.**
+   Once the modified-OTLP adoption (item 1) is in place, add
+   MessagePack as an opt-in alternative to protobuf for the bytes
+   inside the `*SketchDataPoint.sketch` field — *not* for the OTLP
+   envelope, which stays protobuf. This is a coordinated change
+   across three repos:
+
+   - **sketchlib-go**: add MessagePack ser/de for every sketch type
+     (CountMin, CountSketch, KLL, HLL, DDSketch, …) alongside the
+     existing protobuf path. Cross-language round-trip tests in CI:
+     serialize in Go via msgpack, deserialize in Rust via msgpack,
+     and assert the queried statistic equals the ground-truth value
+     within the sketch's error bound.
+   - **DataCollector modified `opentelemetry-proto`**: extend each
+     per-sketch encoding enum with `*_ENCODING_MSGPACK = 2`
+     (`KLLSketchEncoding`, `DDSketchEncoding`, `CountSketchEncoding`,
+     `CountMinSketchEncoding`, `HLLSketchEncoding`). No
+     `*_ENCODING_MSGPACK_DELTA` variants — delta transmission stays
+     protobuf-only to avoid double-implementation drift.
+   - **DataCollector sketch processors**: add a per-processor config
+     knob `payload_encoding: proto | msgpack` (default `proto`).
+     When set to `msgpack`, the processor calls sketchlib-go's
+     MessagePack serializer and stamps the matching encoding enum
+     on the emitted DataPoint.
+   - **ASAPQuery-backend** per-variant handlers (extending item 1
+     above) and concrete accumulators each gain a parallel
+     `from_msgpack` constructor; the handler dispatches on
+     `dp.encoding()` between `from_proto` and `from_msgpack`.
+   - **Tests**: cross-format equality in `asap-query-engine` — for
+     each sketch type, emit the same source data via both formats,
+     decode both at the backend, query the same statistic, and
+     assert the answers are equal (within the sketch's error
+     bound). Catches silent schema drift between the two stacks.
+
+   Ground rules: protobuf stays the default everywhere; MessagePack
+   is opt-in per metric at the sketchcol processor config; delta
+   transmission stays protobuf-only; the OTLP envelope itself
+   always stays protobuf; every sketch type must support both
+   encodings (no MessagePack-only types). Trade-off context
+   (qualitative + benchmark numbers) is captured in
+   [sketchlib-go#26](https://github.com/ProjectASAP/sketchlib-go/issues/26).
+
+3. **Retire `asap-planner-rs`, consolidate on the DataCollector
    controller as the single planner.** Today ASAPQuery-backend
    links `asap-planner-rs` in-process for query → config generation
    (ASAPQuery [#240](https://github.com/ProjectASAP/ASAPQuery/issues/240),
@@ -1737,17 +1779,17 @@ Alternative architectures remain viable for specific workloads:
    after or alongside the capability-miss → controller call-out
    work so there is never an ambiguous middle state where both
    planners are live.
-3. **Cross-metric binary ops** — `m_a / m_b` and similar; requires
+4. **Cross-metric binary ops** — `m_a / m_b` and similar; requires
    store-side window alignment between two `agg_id`s.
-4. **Exact-required operators** (`last_over_time`, `deriv`,
+5. **Exact-required operators** (`last_over_time`, `deriv`,
    `predict_linear`, bare selectors) — would need either raw sample
    retention or a dedicated exact passthrough path through the
    precompute engine.
-5. **Quality-of-approximation metadata in store.** Today the stored
+6. **Quality-of-approximation metadata in store.** Today the stored
    accumulator carries its own parameters but not an explicit error
    budget; adding that would let the query engine return confidence
    intervals alongside point estimates.
-6. **Runtime sketch upgrade.** When a query asks for φ=0.99 on a
+7. **Runtime sketch upgrade.** When a query asks for φ=0.99 on a
    sketch built for φ=0.5, there is currently no way to ask the OTel
    side to rebuild — the controller has to schedule a new aggregation.
    A feedback loop from query engine → controller → OTel would close
