@@ -169,12 +169,13 @@ Plus PromQL spatial aggregators (`sum`, `count`, `avg`, `min`, `max`,
 SQL and ElasticDSL front-ends route through separate HTTP adapters but
 ultimately dispatch to the same accumulators by `AggregationType`.
 
-> **A note on `count` and distinct counting in PromQL.**
-> Standard PromQL has no `count_distinct` operator — `count()` counts
-> *time series*, not distinct values, and `count_over_time` is a rollup
-> that counts *samples per series*, not distinct values either. The
-> idiomatic pattern for "distinct values of `Y` per `X` over window
-> `w`" is
+> **A note on `count`, distinct counting, and PromQL shorthand used in this doc.**
+>
+> ① **`count` vs distinct counting.** Standard PromQL has no
+> `count_distinct` operator — `count()` counts *time series*, not
+> distinct values, and `count_over_time` is a rollup that counts
+> *samples per series*, not distinct values either. The idiomatic
+> pattern for "distinct values of `Y` per `X` over window `w`" is
 >
 > ```promql
 > count by (X) (count_over_time(metric_with_label_Y[w]))
@@ -184,22 +185,46 @@ ultimately dispatch to the same accumulators by `AggregationType`.
 > distinct combinations of free labels including `Y`) that had any
 > samples in the range. This only yields *distinct-count-of-Y* when
 > the metric actually carries `Y` as a label, so each distinct `Y`
-> value produces a distinct series.
+> value produces a distinct series. SimpleEngine recognizes this
+> outer-`count` shape and dispatches it to the `SetAggregator` /
+> `HLL` accumulator — execution is cardinality sketching, not series
+> enumeration. This is the form the catalog uses for every Q-C3-style
+> distinct-count query.
 >
-> SimpleEngine recognizes this specific outer-`count` shape and
-> dispatches it to the `SetAggregator` / `HLL` accumulator — so the
-> execution is cardinality sketching, not series enumeration. (See
-> `docs/sketch-algebra-query-mapping.md` §2.3 for the canonical table
-> of PromQL shape → accumulator dispatch.)
+> ② **Project shorthand `rollup(m[w]) by (d)` for non-count rollups.**
+> Queries elsewhere in the catalog like
 >
-> Two common pitfalls: (1) `count_over_time(m[w]) by (l)` is a PromQL
-> parse error because rollup functions don't accept `by`/`without` —
-> `by` attaches to the outer aggregator. (2) Writing `count(...)`
-> without a grouping clause yields the *global* distinct count, not
-> a per-label breakdown. The catalog below uses the correct
-> `count by (...) (...)` form throughout; watch for this shape when
-> translating queries from SQL `COUNT(DISTINCT …)` or ClickHouse
-> `uniq(…)`.
+> ```
+> quantile_over_time(0.99, m{f}[1h]) by (service)
+> sum_over_time(m{f}[w]) by (d)
+> max_over_time(m{f}[w]) by (d)
+> ```
+>
+> use a **project shorthand inherited from
+> [`docs/sketch-algebra-query-mapping.md`](sketch-algebra-query-mapping.md)**.
+> Strict PromQL actually rejects `rollup(m[w]) by (d)` — rollup
+> functions don't accept `by`/`without`; the clause attaches to the
+> *outer* aggregator. We keep the shorthand because it is a compact
+> way to say:
+>
+> > "The metric `m` is filtered by `f`, rolled up over window `w`,
+> > and the stored backend sketch is keyed by `d` via
+> > `StreamingConfig.grouping_labels = [d]`. When this query hits
+> > SimpleEngine, it reads the per-`d` stored sketch and runs the
+> > rollup's statistic (quantile, sum, extrema, ...) against it."
+>
+> A PromQL engine that does not know the project convention would
+> reject the shorthand. If you need strict PromQL for a specific
+> integration, drop the `by (d)` — SimpleEngine will still pick the
+> right stored sketch from `StreamingConfig`, because the grouping
+> lives in config, not in the query shape. The shorthand is a
+> reader-facing hint about which label gets projected, *not* a
+> runtime difference.
+>
+> **Watch this shape when translating queries from SQL
+> `COUNT(DISTINCT …)`, ClickHouse `uniq(…)`, or
+> `histogram_quantile(…)` idioms from a Prometheus / Grafana
+> dashboard.**
 
 ---
 
