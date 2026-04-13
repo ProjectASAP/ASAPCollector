@@ -249,7 +249,133 @@ plumbing).
 
 ---
 
-## 4. Not (yet) answerable end-to-end
+## 4. Resource & bandwidth analysis
+
+Why does the pipeline have *two* merge stages (agent sketch build + backend
+precompute merge) instead of one? The short answer: the savings from
+each stage are different. Agent-side sketching saves wire bytes between
+agent and backend; the backend precompute merge saves store write rate,
+store footprint, and query compute — in separate accounting. Collapsing
+the two stages into one loses whichever savings you folded up.
+
+The rest of this section walks through the analysis for a
+representative workload.
+
+### 4.1 Three scenarios
+
+| | **(A) Raw passthrough** | **(B) Agent sketches → store direct** | **(C) Multi-stage (this pipeline)** |
+|---|---|---|---|
+| Agent | forwards raw samples | builds sketch per window per partition | same as B |
+| Backend | builds sketches from raw samples | writes each agent sketch straight to store | precompute merge → store |
+| Store | one sketch per backend window per group | one entry per agent × partition × agent-window | one entry per `(agg_id, backend_window, group_key)` |
+| Query | reads one sketch | reads N agent sketches and merges per query | reads one sketch |
+
+Scenario A has no edge sketching at all — the backend does it. Scenario
+B has edge sketching but no backend merge. Scenario C is what we build.
+
+### 4.2 Reference workload
+
+- 1000 OTel agents, each processing 10 000 events/s × 50 bytes
+- each agent builds a CMS per window per partition, 10 partitions/agent
+- CMS width=2000, depth=5 → ~80 KB/sketch
+- agent emits every 10 s
+- `grouping_labels` projects the full label space down to ~50 unique
+  backend groups (cross-agent spatial collapse)
+- backend `window_size = 300 s`
+- ~100 queries/s against the stored data
+
+### 4.3 Bandwidth, link by link
+
+| Link | Scenario A | Scenario B | Scenario C |
+|---|---|---|---|
+| **Events → agent** | 500 MB/s | 500 MB/s | 500 MB/s *(fundamental)* |
+| **Agent → backend** | **500 MB/s** (raw) | **8 MB/s** (sketches) | **8 MB/s** (sketches) |
+| **Backend → store (write)** | 13 KB/s (if backend sketches) | **8 MB/s** (direct) | **13 KB/s** (merged) |
+| **Store footprint / 300 s** | ~4 MB | **~2.4 GB** (1000 × 10 × 30 × 80 KB) | **~4 MB** (50 × 80 KB) |
+| **Store → query (read)** | 80 KB/query | **~2.4 MB scan + merge** | 80 KB/query |
+
+Two separate savings are visible:
+
+1. **Agent → backend** — Scenario A → B/C: 500 MB/s → 8 MB/s, ~63×
+   reduction. This comes from **agent-side sketching**, not from
+   multi-stage. B and C are identical on this link.
+2. **Backend → store, and store → query** — Scenario B → C: 8 MB/s →
+   13 KB/s on the write side (~600×), and ~2.4 MB → 80 KB on the read
+   side (~30×). This comes from **the precompute merge**, not from
+   agent sketching.
+
+Multi-stage keeps both savings. Any single-stage alternative forfeits
+one of them.
+
+### 4.4 Resource usage
+
+| | Scenario A | Scenario B | Scenario C |
+|---|---|---|---|
+| **Agent CPU** | pass-through | CMS inserts (O(events), bounded) | same as B |
+| **Agent memory** | buffer | O(partitions × sketch_size) | same as B |
+| **Backend ingest CPU** | **build all sketches from raw** (heavy) | none | `merge_with` per incoming sketch (cheap, O(sketch_size)) |
+| **Backend ingest memory** | sketches in flight | none | `sketch_panes[pane_start]` per active group; bounded, evicted on window close |
+| **Storage (persistent)** | small | **huge** (agent-emission granularity × retention) | small |
+| **Query CPU** | per-query statistic | per-query **merge of 1000s of sketches** + statistic | per-query statistic |
+| **Query latency** | ms | 10s–100s ms (merge dominates) | ms |
+
+### 4.5 Where each multi-stage win comes from
+
+- **Wire savings agent→backend are NOT from multi-stage.** They are
+  from having agents sketch at all. Scenarios B and C pay the same
+  agent → backend bandwidth cost.
+- **Store write rate** collapses by `(backend_window / agent_window) ×
+  (partition_cardinality / grouping_key_cardinality)` — the same
+  factor also shows up in store footprint and cross-agent fan-in. In
+  the reference workload this is `30 × (10 000 / 50) = 6 000×`, which
+  matches the 8 MB/s → 13 KB/s difference on the write link.
+- **Query amortization:** merge cost moves from *per query* to *per
+  window close*. If there are `Q` queries per backend window, the
+  effective saving is a factor of `Q`. For any workload with `Q ≫ 1`
+  (the normal case for precomputed data) this dominates query-side
+  economics — in the reference workload, 100 QPS × 300 s window =
+  30 000 queries per window all answered from the same merged state.
+- **Cross-agent spatial collapse.** When OTel partitions by a finer
+  label than `grouping_labels` (e.g. agent partitions by `(server,
+  service)` but `grouping_labels = [service]`), the precompute engine
+  merges sketches **across agents** into a single per-service sketch.
+  This is often the single biggest saving in real deployments and is
+  invisible in any single-stage design because the agent cannot know
+  what the other agents are emitting.
+
+### 4.6 Summary
+
+| Saving | Source of win | Typical magnitude |
+|---|---|---|
+| Agent → backend bandwidth | agent sketching (A → B/C) | 10×–100× |
+| Store write rate | precompute merge (B → C) | 100×–10 000× |
+| Store footprint | precompute merge (B → C) | 100×–10 000× |
+| Query CPU | merge amortization (B → C) | ~Q (query rate per window) |
+| Query latency | pre-merged at write time | 10×–1000× |
+| Agent/backend CPU balance | sketch build pushed to edge; backend just merges | shifts the bottleneck away from the backend as the edge fleet grows |
+
+### 4.7 When multi-stage does not pay off
+
+- **`Q` is very low** (fewer than ~1 query per backend window). The
+  merge cost has nothing to amortize over. Still helps with store
+  size and query latency, but rarely decisive.
+- **`backend_window == agent_window` and `grouping_labels` equals the
+  agent's partition set.** Then the precompute merge is an identity,
+  just an extra CPU hop. In this case the engine should be configured
+  with `slide_interval == window_size` and a trivial grouping; the
+  merge is cheap (a single-pane window close at each agent emission).
+- **Non-mergeable operators** (`last_over_time`, `deriv`, bare
+  selectors). These cannot sketch; multi-stage does not apply. See §5.
+- **Extremely bursty workloads** where most agent batches are empty.
+  The precompute engine's per-group state cost is per-active-group,
+  not per-sample, so empty windows still cost memory. Tuning
+  `allowed_lateness_ms` and watermarks keeps this bounded, but if
+  *most* groups are idle most of the time, the store footprint saving
+  may not outweigh the ingest memory cost.
+
+---
+
+## 5. Not (yet) answerable end-to-end
 
 Patterns the physical pipeline cannot serve today, and why.
 
@@ -261,7 +387,7 @@ Patterns the physical pipeline cannot serve today, and why.
 | Queries over sketches with variants not yet decoded (`Coco`, `Elastic`, some `Univmon` / `Hydra` shapes) | OTLP receiver wraps them in `SketchEnvelopeAccumulator` and stores them, but `SketchEnvelopeAccumulator::merge_with` is a no-op and `query_statistic` returns an error — the bytes survive ingest but no query path yet reads them. |
 | Cross-sketch reinterpretation (e.g. feeding a CMS into a KLL reader) | not intended and not supported; each query must hit an accumulator of the matching `AggregationType`. |
 
-### 4.1 The integration gap: SketchEnvelope → concrete accumulator
+### 5.1 The integration gap: SketchEnvelope → concrete accumulator
 
 Today, when a DataCollector sketchcol emits a `SketchEnvelope` over
 OTLP, the backend's `drivers/ingest/otel.rs` wraps the raw proto
@@ -298,9 +424,9 @@ matching accumulator" step is open.
 
 ---
 
-## 5. Worked examples
+## 6. Worked examples
 
-### 5.1 DEBS Q1 — EMA of last trade price
+### 6.1 DEBS Q1 — EMA of last trade price
 
 ```
 Query (PromQL):
@@ -352,9 +478,9 @@ Query:
 
 All steps exist in code *except* the "decode `SketchEnvelope::Ddsketch`
 into `DatasketchesKLLAccumulator`" step — that is the
-`SketchEnvelopeAccumulator` gap (§4.1).
+`SketchEnvelopeAccumulator` gap (§5.1).
 
-### 5.2 ClickBench Q17 — TopK search phrases
+### 6.2 ClickBench Q17 — TopK search phrases
 
 ```
 Query (SQL):
@@ -383,7 +509,7 @@ Query:
   → top-10 (SearchPhrase, count) pairs
 ```
 
-### 5.3 Two-stage window aggregation
+### 6.3 Two-stage window aggregation
 
 ```
 Goal:
@@ -409,7 +535,7 @@ Correctness:
 
 ---
 
-## 6. Configuration knobs users care about
+## 7. Configuration knobs users care about
 
 - **Window / slide at the backend.** `AggregationConfig.window_size` and
   `slide_interval` fully determine how many OTel-side batches are
@@ -435,10 +561,10 @@ Correctness:
 
 ---
 
-## 7. Future work
+## 8. Future work
 
 1. **Per-variant `SketchEnvelope → concrete accumulator` decoders**
-   (§4.1) — the one missing piece needed to make every row in the
+   (§5.1) — the one missing piece needed to make every row in the
    catalog hot end-to-end.
 2. **Cross-metric binary ops** — `m_a / m_b` and similar; requires
    store-side window alignment between two `agg_id`s.
@@ -458,7 +584,7 @@ Correctness:
 
 ---
 
-## 8. Pointers
+## 9. Pointers
 
 - Existing compilation-side design:
   [`docs/sketch-algebra-query-mapping.md`](sketch-algebra-query-mapping.md) — SQL/PromQL → sketch algebra IR
