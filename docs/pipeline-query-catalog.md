@@ -432,24 +432,152 @@ one of them.
 
 ---
 
-## 5. Not (yet) answerable end-to-end
+## 5. Queries not accelerated on the sketch fast path
 
-Patterns the physical pipeline cannot serve today, and why.
+The sketch pipeline is an **accelerator**, not a replacement for the
+exact backend DB. Any PromQL / SQL the user issues — whether the sketch
+path can serve it or not — ultimately reaches `SimpleEngine`, which has
+three dispositions for each query (or, more often, for each sub-tree
+of each query):
 
-| Pattern | Blocker |
-|---|---|
-| `m_a{f} / m_b{f}` *(binary op across metrics)* | SimpleEngine's read-side arithmetic is implemented, but requires both operands to be present in `SimpleMapStore` at the same window — there is no cross-metric join operator and no guarantee the two metrics are aggregated on matching windows. |
-| `last_over_time`, `deriv`, `delta`, `predict_linear` | require exact last-value / timestamped passthrough; no sketch covers them. Marked `exact_required` at compile time. |
-| Bare selector `m{f}` at high resolution | same — exact passthrough is needed and the store does not retain raw samples at sub-window resolution. |
-| Queries over sketches with variants not yet decoded (`Coco`, `Elastic`, some `Univmon` / `Hydra` shapes) | OTLP receiver wraps them in `SketchEnvelopeAccumulator` and stores them, but `SketchEnvelopeAccumulator::merge_with` is a no-op and `query_statistic` returns an error — the bytes survive ingest but no query path yet reads them. |
-| Cross-sketch reinterpretation (e.g. feeding a CMS into a KLL reader) | not intended and not supported; each query must hit an accumulator of the matching `AggregationType`. |
+1. **Full sketch path.** Everything in the catalog (§3) that maps to a
+   stored accumulator. Answered from merged state, ms-scale latency.
+2. **Full fallback to the exact backend DB.** The query has no sketch
+   coverage at all (§5.1 below). SimpleEngine forwards to Prometheus /
+   VictoriaMetrics / ClickHouse / Elasticsearch via the forwarding
+   adapters in `drivers/query/adapters/`.
+3. **Split execution.** The query tree has *some* sub-trees mapped to
+   sketches and *some* that require exact data (§5.3). SimpleEngine
+   runs each sub-tree on its appropriate executor and combines the
+   results at the outer node. Latency and cost are a mix.
 
-### 5.1 The integration gap: SketchEnvelope → concrete accumulator
+The rest of this section catalogues what falls where, how the fallback
+works, and the one real gap that the fallback masks but doesn't fix.
 
-Today, when a DataCollector sketchcol emits a `SketchEnvelope` over
-OTLP, the backend's `drivers/ingest/otel.rs` wraps the raw proto
-bytes in `SketchEnvelopeAccumulator::from_proto_bytes` and routes the
-wrapper through `WorkerMessage::AccumulatorInput`. The wrapper:
+### 5.1 Fully unaccelerated — served by the exact backend
+
+These query shapes have no meaningful sketch representation, or lose
+too much information to reconstruct the user's answer from a sketch.
+SimpleEngine forwards them wholesale to whichever backend DB is
+configured.
+
+| Pattern | Why sketch-unsuitable | Fallback target |
+|---|---|---|
+| `last_over_time(m[w])`, `deriv(m[w])`, `delta(m[w])`, `predict_linear(m[w], t)` | Need exact last-value / timestamped passthrough; no sketch preserves sample ordering | Prometheus, VictoriaMetrics, ClickHouse |
+| Bare selector `m{f}` at sub-window resolution | No sketch; the store holds windowed aggregations, not raw samples | same |
+| Queries that require cross-sketch reinterpretation (e.g. reading a CMS as a KLL) | Not mathematically meaningful | same |
+| `SketchEnvelope` variants whose concrete decoder is not wired yet (today: everything except passes through as opaque bytes — see §5.4) | Bytes survive ingest but the accumulator is opaque | same |
+| Queries on metrics the backend has not been configured to aggregate at all | Nothing is stored | same |
+| Queries against a brand-new dashboard metric the controller has not yet generated a plan for (the "cold query" case from §7 discussion) | `AggregationConfig` does not yet exist in `StreamingConfig` | same *(the fallback serves the user while the backend asynchronously asks the controller to plan the query, hot-reloads `StreamingConfig`, and warms the sketch path for the next call)* |
+
+The forwarding adapters are production-tested (see
+`tests::prometheus_forwarding_tests`, `tests::clickhouse_forwarding_tests`,
+`tests::elastic_forwarding_tests` in `asap-query-engine`), handle
+server-unreachable and error cases, and can be disabled per adapter.
+
+### 5.2 The fallback architecture
+
+The forwarding adapters live under
+`asap-query-engine/src/drivers/query/adapters/`:
+
+| Adapter | File | Targets |
+|---|---|---|
+| Prometheus HTTP | `prometheus_http.rs` | any Prometheus / VictoriaMetrics / Cortex / Thanos-compatible query API |
+| ClickHouse HTTP | `clickhouse_http.rs` | ClickHouse native HTTP endpoint |
+| Elasticsearch | `elastic_http.rs` | Elasticsearch search + SQL API |
+
+The adapter is selected per query language: a PromQL query enters via
+the Prometheus adapter; a SQL query via the ClickHouse adapter; an
+Elastic DSL query via the Elasticsearch adapter. Each adapter has a
+per-target config with options for:
+
+- `fallback_url` — where to forward if the sketch path cannot serve
+  the query (or serves it only partially)
+- `fallback_always` — bypass the sketch path entirely (useful for
+  correctness validation; see `test_fallback_always_used`)
+- `fallback_disabled` — refuse to fall through, return an error
+  instead (useful when testing the sketch path in isolation)
+- timeouts, retries, TLS, authentication
+
+**What this means for the resource analysis in §4:** Scenario A
+(raw passthrough to the backend DB) is not a hypothetical — it is
+the fallback's baseline. The multi-stage savings in §4 are relative
+to this baseline, and they only accrue on queries that hit the
+sketch path. Heavy fallback traffic erodes them proportionally.
+A well-tuned deployment aims to have almost all dashboard refreshes
+hit the sketch path, with the fallback serving (a) cold-start
+queries until they warm up and (b) the small fraction of queries
+that are exact-required by definition.
+
+### 5.3 Split execution — some sub-trees sketched, others exact
+
+This is the most interesting case, and it maps directly onto the
+**`Partial` coverage classification** in
+[`sketch-algebra-query-mapping.md`](sketch-algebra-query-mapping.md) §6:
+
+> `Partial` coverage is valid: the controller runs exact passthrough
+> for the non-sketch columns and sketch-merge for the rest.
+
+A concrete ClickBench example from that doc:
+
+```sql
+SELECT SearchPhrase, MIN(URL), COUNT(*) AS c
+FROM hits
+WHERE URL LIKE '%google%' AND SearchPhrase <> ''
+GROUP BY SearchPhrase
+ORDER BY c DESC LIMIT 10;
+```
+
+- `COUNT(*)` → `CountSketch(k=10)` accumulator, served from the
+  sketch path
+- `MIN(URL)` → no sketch (URL is a string, and we want the actual
+  URL, not a quantile), served from ClickHouse exact passthrough
+- the outer `ORDER BY c DESC LIMIT 10` reads both sub-trees and
+  combines them: the top-10 search phrases come from the sketch,
+  and for each of those phrases the `MIN(URL)` value is looked up
+  from ClickHouse
+
+SimpleEngine's query planner is the place where this split happens.
+For a PromQL example:
+
+```promql
+# Alert: per-host CPU exceeds its cluster's p99
+(cpu_usage_seconds_total{cluster="prod"})
+  > on(cluster) group_left
+    (quantile_over_time(0.99, cpu_usage_seconds_total[1m]) by (cluster))
+```
+
+- Right-hand side: `quantile_over_time(0.99, … by (cluster))` → KLL
+  sketch per cluster, hot read
+- Left-hand side: raw per-host value at the current instant — bare
+  selector, exact passthrough via the Prometheus adapter
+- The `>` comparison and `on(cluster) group_left` join happen at the
+  SimpleEngine query planner level, reading from both sources
+
+Other split patterns worth naming:
+
+- **Sketch-covered inner + exact outer.** `topk(10, quantile_over_time(0.99, m[5m]) by (service))` — the quantiles come from KLLs, the topk selection is a tiny post-processing step.
+- **Sketch-covered aggregation + exact arithmetic.** `sum by (service) (rate(http_requests_total[5m])) / on(service) count by (service) (rate(http_requests_total[5m]))` — both operands are sketch-covered, the ratio is computed at the query engine.
+- **Sketch counter + exact lookup column.** The ClickBench `MIN(URL)` case above.
+- **Sketch histogram + exact gauge join.** `quantile_over_time(0.99, http_request_duration[1h]) by (service) - on(service) group_left rollout_baseline{service=~".*"}` where the baseline is a slowly-changing gauge served from the exact backend.
+
+The win here is that **the sketch-covered sub-trees still benefit
+from §4's resource savings** — the backend doesn't scan raw samples
+for the hot parts of the tree. The exact sub-trees carry their own
+cost, but they are usually cheap relative to what the sketch paths
+replaced.
+
+### 5.4 The one real gap — `SketchEnvelope` → concrete accumulator
+
+The rows in §5.1 are the queries that genuinely cannot be sketched
+(by design). There is one more case where a query *would* be
+sketch-servable in principle, but currently isn't: the
+`SketchEnvelope` decoder gap.
+
+When a DataCollector sketchcol emits a `SketchEnvelope` over OTLP,
+the backend's `drivers/ingest/otel.rs` wraps the raw proto bytes in
+`SketchEnvelopeAccumulator::from_proto_bytes` and routes the wrapper
+through `WorkerMessage::AccumulatorInput`. The wrapper:
 
 - preserves the opaque bytes,
 - caches the sketch type string ("CountMin", "KLL", ...),
@@ -457,12 +585,15 @@ wrapper through `WorkerMessage::AccumulatorInput`. The wrapper:
   combine two envelopes,
 - implements `query_statistic` as **Err("not supported")**.
 
-The worker therefore receives a correctly-labeled, correctly-routed,
-correctly-pane-assigned message whose payload cannot be queried. This
-is the deliberate "plumbing without semantics" state PR #3 landed the
-backend in. Closing the gap means adding a **per-variant decoder**
-that converts each `SketchState` variant into the concrete
-`*Accumulator` the config asked for — e.g.
+So sketches from the OTel side are *structurally* labeled, routed,
+pane-assigned, and merged — but their payload cannot be queried yet.
+Today every such query falls through to the exact backend via the
+fallback (§5.2), so the user *still gets a correct answer*, just
+without the sketch path's resource wins.
+
+Closing the gap means adding a **per-variant decoder** that converts
+each `SketchState` variant into the concrete `*Accumulator` the
+config asked for — e.g.
 
 ```rust
 match sketch_state {
@@ -473,11 +604,18 @@ match sketch_state {
 }
 ```
 
-Once per-variant decoders exist, every row in the catalog becomes
-hot end-to-end without further engine changes. The catalog's rows are
-otherwise already supported by mergeable concrete accumulators; only
-the "OTel built it, send it across the wire, install it in the
-matching accumulator" step is open.
+Once per-variant decoders exist, every row in the catalog (§3) that
+maps to a sketch becomes hot end-to-end without further engine
+changes. The catalog's rows are otherwise already supported by
+mergeable concrete accumulators; only the "OTel built it, send it
+across the wire, install it in the matching accumulator" step is
+open. This is the single highest-leverage piece of unblocked work
+on the sketch path and is tracked explicitly in §10 (Future work).
+
+**Bottom line:** the pipeline never returns "not supported" to a user.
+Everything either hits the sketch path (fast, cheap, per §4), falls
+through to the exact backend (slower, correct), or splits between
+the two and recombines.
 
 ---
 
@@ -820,7 +958,7 @@ cpu_usage_seconds_total{cluster="prod"}
 
 The pipeline keeps **two stored entries per cluster per minute** —
 one KLL, one keyed Sum — both already merged across hundreds of hosts.
-The remaining work is the read-side join (tracked in §9 future work).
+The remaining work is the read-side join (tracked in §10 future work).
 
 #### 7.7.3 Bollinger bands chained on top of DEBS Q1
 
@@ -901,7 +1039,7 @@ This subsection walks queries lifted from public observability blogs
 and docs — ClickHouse / ClickStack, VictoriaMetrics / MetricsQL, and
 NCCL Inspector — and shows that the design covers the same questions
 production tools answer, while inheriting §4's bandwidth and resource
-savings. Source URLs are listed in §10.
+savings. Source URLs are listed in §11.
 
 #### 7.8.1 ClickHouse / ClickStack — OTel trace analytics
 
@@ -1121,7 +1259,173 @@ each:
 
 ---
 
-## 8. Configuration knobs users care about
+## 8. Design choices: where does sketching start, and where do raw metrics go?
+
+§§1–7 describe *what* the pipeline does. This section discusses *why*
+the pipeline is shaped the way it is — specifically two cross-cutting
+design choices and their trade-offs:
+
+1. **The sketching boundary.** At what point in the flow do metrics
+   stop being raw samples and start being sketches? (§8.1)
+2. **The archive lane.** What happens to metrics that need to be
+   preserved losslessly for correctness fallback, audit, or cold
+   queries? (§§8.2–8.4)
+
+Both of these determine whether §4's resource savings actually accrue
+in a given deployment.
+
+### 8.1 Where does sketching start? Three plausible boundaries
+
+Sketching compresses raw metrics into bounded state at *some* point
+in the data path. The three plausible boundaries — SDK, agent
+collector, backend collector — trade off bandwidth, CPU, flexibility,
+and operational complexity differently.
+
+| Boundary | Who builds the sketch | Agent → backend link | Pros | Cons |
+|---|---|---|---|---|
+| **SDK** | application process | compact (sketches) | smallest bytes leaving the app; lowest CPU on agent and backend; natural for apps that already pre-aggregate | per-language SDK implementation; reconfiguration requires app redeploy; SDK has only a single-process view; memory pressure on app |
+| **Agent collector** *(current design)* | node-local OTel collector | compact (sketches) | reconfigurable via OpAMP without touching apps; language-agnostic; per-node fanin across SDKs; agent has more headroom than apps | extra CPU on the agent; SDK → agent link is still raw |
+| **Backend collector** | central OTLP receiver | **raw** | one place to manage sketches; agents stay minimal; easy to change sketch type fleet-wide | agent → backend link is the bottleneck (reproduces §4's Scenario A); backend CPU does all the sketching; loses cross-edge fanout |
+
+The current system places the boundary at the **agent collector**.
+The reasoning tracks directly onto §4's multi-stage analysis:
+
+- **SDK-side** is strictly better on the SDK → agent link, but that
+  link is typically same-host localhost and cheap. Not worth the
+  cross-language implementation cost for most workloads.
+- **Backend-side** reproduces §4's Scenario A — the bandwidth on the
+  agent → backend link is raw, and the backend CPU builds the
+  sketches. That erases the 10×–100× bandwidth saving the
+  multi-stage analysis is built on.
+- **Agent-side** (Scenarios B and C in §4) catches both savings:
+  compact agent → backend link *and* node-local fanin across all
+  the SDKs running on that node. The backend precompute engine then
+  adds one more level of temporal / cross-agent merging.
+
+Edge cases where the **SDK boundary** is preferred:
+
+- Very high per-application rates where even SDK → agent is a
+  bottleneck (high-frequency trading, kernel-bypass networking)
+- Secure enclaves where raw values must not leave the app process
+- Edge / field deployments where the agent is not co-located with
+  the SDK and the link between them is expensive
+
+Edge cases where the **backend boundary** is preferred:
+
+- Heterogeneous fleets where a small minority of hosts need sketches
+- Resource-constrained agents (embedded / IoT devices)
+- Simplicity-first deployments where config surface is more
+  precious than bandwidth
+
+These boundaries are **not mutually exclusive**. A real deployment can
+run SDK-side sketching for its most demanding metrics, agent-side for
+the rest, and still have the backend precompute engine do cross-agent
+merging on top — each metric's own `AggregationConfig` decides.
+
+### 8.2 The sketch lane vs the archive lane
+
+Sketches are lossy by design (that is their whole value proposition
+per §4). For correctness-sensitive workloads — audit, replay,
+ground-truth regeneration, cold-query fallback — the pipeline needs
+a parallel **lossless archive lane** that keeps the raw metric stream.
+
+The design uses two parallel lanes, not a tee-and-switch:
+
+```
+  SDK or agent ─┬── sketch lane ───── OTLP ── backend precompute engine
+                │                               └── SimpleMapStore ── SimpleEngine (hot)
+                │
+                └── archive lane ──── gorilla processor ── S3 Files exporter
+                                                            └── s3://… (cold / ground truth)
+```
+
+The archive lane uses the **Gorilla** time-series compression
+algorithm. Gorilla (from the Facebook paper) is lossless and achieves
+~10× compression on timestamp-value pairs by delta-of-delta encoding
+timestamps and XOR-encoding float values. DataCollector ships a
+`gorillacol` under `opentelemetry-collector-contrib-patch/cmd/`, and
+the in-progress `feat/s3-files-mode` branch adds an **S3 Files mode**
+for the Gorilla processor (see the #152 PR): the processor writes
+segmented files with S3-compatible partitioning, suitable for upload
+to S3 / MinIO / GCS.
+
+### 8.3 Why two lanes instead of one?
+
+1. **Sketches are lossy.** No amount of careful aggregation recovers
+   the raw stream. A metric that was only ever sketched cannot be
+   replayed, re-aggregated under a different `grouping_labels`, or
+   used as ground truth for a correctness audit.
+2. **Gorilla is lossless but compact.** Its compression ratio is
+   high enough (~10×) that keeping a parallel raw stream is
+   affordable, and S3-backed storage is cheap enough to retain
+   months of data.
+3. **The query path can fall through to the archive lane.** Cold
+   queries and exact-required operators (§5.1) hit the forwarding
+   adapters (§5.2), which today talk to Prometheus / ClickHouse /
+   Elasticsearch. A natural extension is to add an S3-backed exact
+   executor — a DataFusion / ClickHouse local cluster that reads
+   the Gorilla-compressed S3 segments — which becomes the *cold
+   tier* of the fallback: in-memory store (hot) → external
+   Prom/CH/ES (warm) → S3/Gorilla (cold).
+4. **The two lanes decouple flush rates.** Sketches flush on
+   window close (seconds to minutes). Gorilla can flush on size
+   thresholds (tens of seconds to minutes) and stream to S3
+   asynchronously, independent of query latency concerns.
+
+### 8.4 Where to place the tee, and what per-metric policy to use
+
+Given the two-lane design, there is still a placement choice for
+where the Gorilla / S3 branch forks off the raw stream:
+
+| Tee point | Trade-off |
+|---|---|
+| **In the agent** | Gorilla runs alongside sketch processors in the same OTel pipeline; agent → backend is still the compact sketch link; agent uploads to S3 directly. Most parallelism, keeps the backend lean, at the cost of agents needing S3 credentials and the agent → S3 link being operator-visible. |
+| **In the backend** | Backend forks the raw stream after OTLP receive. Agents stay minimal, but now the agent → backend link carries raw metrics (Scenario A), erasing §4's bandwidth savings. Only makes sense if the sketch lane and the archive lane are both downstream of a single raw-ingestion point. |
+| **Hybrid** | Agent sketches, and also Gorilla-compress-and-forwards a selected subset (e.g. only metrics the controller marked `retain_raw=true`) to S3. Backend gets compact sketches; S3 gets selectively archived raw data. Most flexible, largest configuration surface. |
+
+The **agent-side tee** is the default for deployments that care
+about §4's bandwidth savings. The **hybrid** option is what the
+in-progress `feat/s3-files-mode` work is building toward: the
+gorilla processor becomes a configurable sink alongside the OTLP
+exporter, with S3 Files as the landing target.
+
+Per-metric policy (orthogonal to placement): each metric's
+`AggregationConfig` + archive-policy decides which lanes it uses.
+
+| Policy | When to use | Sketch lane | Archive lane |
+|---|---|---|---|
+| **Sketch-and-archive** *(default for high-volume metrics)* | observability dashboards with occasional exact audit | ✓ | ✓ |
+| **Sketch-only** | high-rate, low-value-per-sample metrics where archival cost exceeds value | ✓ | ✗ |
+| **Archive-only** | exact-required operators, regulatory audit trails, metrics whose cardinality exceeds sketch accuracy targets | ✗ | ✓ |
+| **Raw passthrough** *(debug / bootstrap)* | development, or when one of the other lanes is broken | ✗ | ✗ — agent forwards raw to backend DB directly |
+
+The `StreamingConfig.aggregation_configs` the backend is loaded with,
+plus a parallel archive-policy config for the gorilla processor,
+implement this per-metric policy today. ASAPQuery issue #242
+(programmatic control of asap-summary-ingest pipelines) is about
+making this policy controllable at runtime from the query engine.
+
+### 8.5 Summary
+
+| Question | Choice | Why |
+|---|---|---|
+| Where does sketching start? | agent collector | catches §4's 10×–100× bandwidth savings on the agent → backend link without per-SDK implementation cost |
+| How are raw metrics preserved? | parallel Gorilla lane + S3 cold storage | lossless archive tier for correctness fallback; decouples hot sketch queries from cold exact queries |
+| Where is the tee? | agent (with hybrid support under `feat/s3-files-mode`) | keeps agent → backend compact; S3 archival runs in parallel on the agent |
+| Per-metric flexibility | sketch-and-archive / sketch-only / archive-only / raw-passthrough | different metrics have different query cost vs storage cost trade-offs |
+
+Alternative architectures remain viable for specific workloads:
+- **SDK-side sketching** for ultra-high-rate hot paths (HFT, kernel
+  bypass) where even SDK → agent is a bottleneck
+- **Backend-side sketching** for heterogeneous or embedded fleets
+  where agents must stay minimal
+- **Archive-only** for regulatory / audit metrics that cannot be lossy
+- **Sketch-only** for throwaway high-volume telemetry where the
+  archive lane is not worth its cost
+
+---
+
+## 9. Configuration knobs users care about
 
 - **Window / slide at the backend.** `AggregationConfig.window_size` and
   `slide_interval` fully determine how many OTel-side batches are
@@ -1147,7 +1451,7 @@ each:
 
 ---
 
-## 9. Future work
+## 10. Future work
 
 1. **Per-variant `SketchEnvelope → concrete accumulator` decoders**
    (§5.1) — the one missing piece needed to make every row in the
@@ -1170,7 +1474,7 @@ each:
 
 ---
 
-## 10. Pointers
+## 11. Pointers
 
 - Existing compilation-side design:
   [`docs/sketch-algebra-query-mapping.md`](sketch-algebra-query-mapping.md) — SQL/PromQL → sketch algebra IR
