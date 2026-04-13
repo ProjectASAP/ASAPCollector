@@ -45,6 +45,13 @@ pub fn generate_agent_config(
     let processor_key = cfg.sketch_type.to_string();
     let processor_val = build_processor_block(cfg);
 
+    // Standard OTLP receiver (gRPC + HTTP).
+    // Note: series_id tracking is handled inside the receiver implementation
+    // and is not a YAML-configurable key in any current collector binary.
+    // let otlp_receiver: Value = serde_yaml::from_str(
+    //     "protocols:\n  grpc:\n    endpoint: \"0.0.0.0:4317\"\n  http:\n    endpoint: \"0.0.0.0:4318\"\n",
+    // ).unwrap();
+
     // Standard OTLP receiver (gRPC + HTTP) with optional series_id registry.
     let mut otlp_map: Mapping = serde_yaml::from_str(
         "protocols:\n  grpc:\n    endpoint: \"0.0.0.0:4317\"\n  http:\n    endpoint: \"0.0.0.0:4318\"\n",
@@ -63,8 +70,9 @@ pub fn generate_agent_config(
     let prom_exporter: Value = serde_yaml::from_str("endpoint: \"0.0.0.0:8889\"\n").unwrap();
 
     // OpAMP extension — allows the controller to push config updates at runtime.
+    // X-Agent-ID and X-Agent-Role headers are required by the controller's ws_handler.
     let opamp_ext: Value = serde_yaml::from_str(&format!(
-        "server:\n  ws:\n    endpoint: \"{opamp_endpoint}\"\n"
+        "server:\n  ws:\n    endpoint: \"{opamp_endpoint}\"\n    headers:\n      X-Agent-ID: ${{env:AGENT_ID:-agent-001}}\n      X-Agent-Role: agent\n"
     )).unwrap();
 
     let mut exporters: HashMap<String, Value> =

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -23,16 +24,25 @@ from scrape import append_metrics_snapshot
 
 PATCH_CMD = REPO_ROOT / "opentelemetry-collector-contrib-patch" / "cmd"
 
+# Unified collector: all sketch processors + OpAMP extension (built from cmd/sketchcol).
+# Falls back to per-sketch binaries if the unified one hasn't been built yet.
+SKETCHCOL_BIN = PATCH_CMD / "sketchcol" / "dist" / "sketchcol"
+
 DEFAULT_COLLECTOR_PATHS = {
-    "ddsketch": PATCH_CMD / "ddsketchcol" / "ddsketchcol",
-    "kll": PATCH_CMD / "kll" / "KLL",
-    "hll": PATCH_CMD / "hllcol" / "HLL",
-    "countsketch": PATCH_CMD / "countsketchcol" / "dist" / "countsketchcol",
-    "countminsketch": PATCH_CMD / "countminsketchcol" / "dist" / "countminsketchcol",
+    "ddsketch": SKETCHCOL_BIN,
+    "kll": SKETCHCOL_BIN,
+    "hll": SKETCHCOL_BIN,
+    "countsketch": SKETCHCOL_BIN,
+    "countminsketch": SKETCHCOL_BIN,
     "nop": PATCH_CMD / "nopcol" / "dist" / "nopcol",
 }
 
 PROMETHEUS_METRICS_URL = os.environ.get("PROMETHEUS_METRICS_URL", "http://localhost:8889/metrics")
+PROMETHEUS_READY_TIMEOUT_S = float(os.environ.get("PROMETHEUS_READY_TIMEOUT_S", "30"))
+SCRAPE_PROBE_TIMEOUT_S = float(os.environ.get("SCRAPE_PROBE_TIMEOUT_S", "30"))
+# OTLP receiver ports for sketchcol — override if the default ports are taken.
+OTLP_GRPC_ENDPOINT = os.environ.get("OTLP_GRPC_ENDPOINT", "localhost:4327")
+OTLP_HTTP_ENDPOINT = os.environ.get("OTLP_HTTP_ENDPOINT", "localhost:4328")
 DEFAULT_DAYS = ("08-11-21", "09-11-21", "10-11-21", "11-11-21", "12-11-21")
 
 
@@ -72,17 +82,8 @@ def resolve_collector_bin(query: str, sketch: str, collector_override: str | Non
     family = cfg.sketch_family
     if family == "nop":
         return _env_path("COLLECTOR_NOP", DEFAULT_COLLECTOR_PATHS["nop"])
-    if family == "cardinality":
-        return _env_path("COLLECTOR_HLL", DEFAULT_COLLECTOR_PATHS["hll"])
-    if family == "frequency":
-        if sketch == "countminsketch":
-            return _env_path("COLLECTOR_COUNTMINSKETCH", DEFAULT_COLLECTOR_PATHS["countminsketch"])
-        return _env_path("COLLECTOR_COUNTSKETCH", DEFAULT_COLLECTOR_PATHS["countsketch"])
-    if family == "quantile":
-        if sketch == "kll":
-            return _env_path("COLLECTOR_KLL", DEFAULT_COLLECTOR_PATHS["kll"])
-        return _env_path("COLLECTOR_DDSKETCH", DEFAULT_COLLECTOR_PATHS["ddsketch"])
-    return _env_path("COLLECTOR_DDSKETCH", DEFAULT_COLLECTOR_PATHS["ddsketch"])
+    # All sketch types use the unified sketchcol binary (OpAMP + all processors).
+    return _env_path("COLLECTOR_SKETCHCOL", SKETCHCOL_BIN)
 
 
 def plan_aggregations(query: str) -> list[str]:
@@ -222,6 +223,10 @@ def post_plan(controller: str, body: dict[str, Any]) -> None:
     print(r.text[:2000], file=sys.stderr)
 
 
+def collector_config_url(controller: str, metric: str) -> str:
+    return f"{controller.rstrip('/')}/api/v1/config/{metric}"
+
+
 def wait_for_prometheus(url: str, timeout_s: float = 30.0) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -261,6 +266,14 @@ def clear_aggregate_csv_files(results_dir: Path, clear: bool) -> None:
             p.unlink()
 
 
+def clear_sketch_output(results_dir: Path) -> None:
+    """Remove prior sketch scrapes / JSONL so each benchmark run starts clean."""
+    out = results_dir / "sketch_output"
+    if out.is_dir():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+
+
 def _run_one_query_day(
     bench_root: Path,
     results_dir: Path,
@@ -287,13 +300,19 @@ def _run_one_query_day(
         return 1
 
     metrics_port = int(urlparse(PROMETHEUS_METRICS_URL).port or 8889)
+    otlp_grpc_port = int(OTLP_GRPC_ENDPOINT.rsplit(":", 1)[-1])
+    otlp_http_port = int(OTLP_HTTP_ENDPOINT.rsplit(":", 1)[-1])
     kill_process_on_tcp_port(metrics_port)
+    kill_process_on_tcp_port(otlp_grpc_port)
+    kill_process_on_tcp_port(otlp_http_port)
 
     py = sys.executable
     cpid: subprocess.Popen | None = None
     try:
         day_tag = day.replace(".csv", "").replace("debs2022-gc-trading-day-", "")
-        jsonl_path = str(results_dir / "sketch_output" / query / f"{day_tag}.jsonl")
+        jsonl_dir = results_dir / "sketch_output" / query
+        jsonl_dir.mkdir(parents=True, exist_ok=True)
+        jsonl_path = str(jsonl_dir / f"{day_tag}.jsonl")
         post_plan(
             controller,
             build_plan_body(
@@ -303,19 +322,37 @@ def _run_one_query_day(
                 file_output_path=jsonl_path,
             ),
         )
+        cfg_url = collector_config_url(controller, metric)
         cpid = subprocess.Popen(
-            [str(collector_bin), f"--config={controller.rstrip('/')}/api/v1/config/{metric}"],
+            [
+                str(collector_bin),
+                f"--config={cfg_url}",
+                # Disable internal self-monitoring (:8888) — conflicts on shared hosts.
+                "--set=service::telemetry::metrics::level=none",
+                # Override OTLP ports to avoid conflicts with other users' collectors.
+                f"--set=receivers::otlp::protocols::grpc::endpoint=0.0.0.0:{otlp_grpc_port}",
+                f"--set=receivers::otlp::protocols::http::endpoint=0.0.0.0:{otlp_http_port}",
+            ],
             stdout=open(results_dir / "collector.log", "wb"),
             stderr=subprocess.STDOUT,
             cwd=str(bench_root),
         )
 
-        if not wait_for_prometheus(PROMETHEUS_METRICS_URL, timeout_s=30.0):
+        if not wait_for_prometheus(PROMETHEUS_METRICS_URL, timeout_s=PROMETHEUS_READY_TIMEOUT_S):
             print(
-                f"Warning: {PROMETHEUS_METRICS_URL} not reachable within 30s; "
+                f"Warning: {PROMETHEUS_METRICS_URL} not reachable within "
+                f"{PROMETHEUS_READY_TIMEOUT_S}s; check results/collector.log — "
                 "sketch_output may be empty.",
                 file=sys.stderr,
             )
+            # Collector failed to start — log the last few lines for diagnosis.
+            try:
+                with open(results_dir / "collector.log", "r", errors="replace") as f:
+                    lines = f.readlines()
+                    tail = "".join(lines[-10:])
+                print(f"collector.log tail:\n{tail}", file=sys.stderr)
+            except OSError:
+                pass
 
         scrape_argv = [
             py,
@@ -324,6 +361,7 @@ def _run_one_query_day(
             "--day", day,
             "--out-dir", str(results_dir / "sketch_output"),
             "--url", PROMETHEUS_METRICS_URL,
+            "--probe-timeout", str(SCRAPE_PROBE_TIMEOUT_S),
             "--duration", "7200",
         ]
         scrape_proc = subprocess.Popen(scrape_argv, cwd=str(bench_root))
@@ -339,6 +377,7 @@ def _run_one_query_day(
             "--results-dir", str(results_dir),
             "--query", query,
             "--day", day,
+            "--endpoint", OTLP_GRPC_ENDPOINT,
         ]
         if accuracy_minutes > 0:
             replay_argv += ["--max-event-minutes", str(accuracy_minutes)]
@@ -404,6 +443,7 @@ def run_benchmark_test(args: argparse.Namespace) -> int:
     results_dir: Path = args.results_dir
     results_dir.mkdir(parents=True, exist_ok=True)
     clear_aggregate_csv_files(results_dir, args.clear_results)
+    clear_sketch_output(results_dir)
 
     controller = os.environ.get("CONTROLLER", "http://localhost:8080")
     controller_bin = _env_path(
@@ -468,6 +508,7 @@ def run_matrix(args: argparse.Namespace) -> int:
     results_dir: Path = args.results_dir
     results_dir.mkdir(parents=True, exist_ok=True)
     clear_aggregate_csv_files(results_dir, args.clear_results)
+    clear_sketch_output(results_dir)
 
     if args.skip_gt != "1":
         print("Pre-computing ground truth...", file=sys.stderr)

@@ -113,7 +113,9 @@ def _select_evaluation_window(
     """Select the GT window to compare against the sketch.
 
     Two steps:
-    1. Skip the first `skip_warmup_windows` windows (Q3 uses 0).
+    1. Skip the first `skip_warmup_windows` windows. For EMA-based queries
+       (Q1/Q2) the first window has cold-start bias; set skip=1 there.
+       For stateless queries (Q3-Q8) set skip=0.
     2. Keep only the last remaining window. The Prometheus scrape captures the
        collector's current state, which corresponds to the most recent closed
        window, so we match GT to that same window.
@@ -257,20 +259,10 @@ def run_comparison(
     if skip_warmup_windows is not None:
         kwargs["skip_warmup_windows"] = skip_warmup_windows
 
-    # Prefer the JSONL file-exporter output when available: it contains one
-    # snapshot per window flush, enabling per-window comparison for Q3–Q8.
-    # Fall back to the Prometheus scrape CSV for backward compatibility.
     if sketch_jsonl_path.is_file():
         jsonl_data = read_sketch_jsonl(sketch_jsonl_path)
         gt_windows = sorted(ground_truth["window_start_ms"].unique()) if "window_start_ms" in ground_truth.columns else []
         if gt_windows and not jsonl_data.empty:
-            # When the JSONL has mixed content (raw export batches + sketch
-            # window flushes, i.e. drop_original was not set), filter to only
-            # countsketch_partition rows so flush_indices align with actual
-            # window flushes rather than raw export batches.
-            cs_mask = jsonl_data["metric"].str.contains("countsketch_partition", na=False)
-            if cs_mask.any() and not cs_mask.all():
-                jsonl_data = jsonl_data[cs_mask].copy()
             _run_comparison_per_window(
                 fn, query_id, day_tag, ground_truth, jsonl_data,
                 gt_windows, kwargs, comparison_out_dir,
@@ -284,8 +276,7 @@ def run_comparison(
     else:
         sketch_snapshot = get_best_snapshot_for_query(sketch_data, query_id)
         result = fn(ground_truth, sketch_snapshot, **kwargs)
-    rows = [result] if isinstance(result, dict) else list(result)
-    pd.DataFrame([{"query": query_id, "day": day_tag, **r} for r in rows]).to_csv(
+    pd.DataFrame([{"query": query_id, "day": day_tag, **result}]).to_csv(
         comparison_out_dir / f"{query_id}_{day_tag}.csv", index=False
     )
 
@@ -349,13 +340,13 @@ def _run_comparison_per_window(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare sketch scrapes to ground truth.")
-    parser.add_argument("--query", default="Q3")
+    parser.add_argument("--query", default="Q1")
     parser.add_argument("--day", default="08-11-21")
     parser.add_argument(
         "--skip-warmup-windows",
         type=int,
         default=None,
-        help="Override number of warmup windows to skip (default: 0 for Q3).",
+        help="Override number of warmup windows to skip (default: 1 for Q1, 0 for Q3-Q8).",
     )
     parser.add_argument(
         "--gt-dir",
@@ -381,7 +372,6 @@ def main() -> None:
         args.out_dir,
         skip_warmup_windows=args.skip_warmup_windows,
     )
-
 
 # --- Q3: top-K frequency accuracy ---
 
@@ -427,7 +417,6 @@ def compare_q3(
 
 _SKETCH_METRIC_PATTERN["Q3"] = r"countsketch"
 _COMPARE_DISPATCH["Q3"] = compare_q3
-
 
 if __name__ == "__main__":
     main()
