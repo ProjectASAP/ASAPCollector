@@ -535,7 +535,325 @@ Correctness:
 
 ---
 
-## 7. Configuration knobs users care about
+## 7. Use cases from real workloads
+
+> The query examples in this section are sourced from open issues —
+> [#47](https://github.com/ProjectASAP/DataCollector/issues/47)
+> (benchmark datasets across finance, cluster telemetry, IoT, network,
+> mobility, and healthcare),
+> [#78](https://github.com/ProjectASAP/DataCollector/issues/78) (DEBS
+> 2022 financial queries Q1–Q12),
+> [#46](https://github.com/ProjectASAP/DataCollector/issues/46) (MVP
+> reduction targets), and
+> [#49–#52](https://github.com/ProjectASAP/DataCollector/issues/49)
+> (the three aggregation patterns the collector is designed for) — and
+> are picked to exercise different facets of the pipeline.
+> Each query is mapped end-to-end: OTel processor + agent partition
+> → backend `AggregationConfig` → stored accumulator → PromQL.
+
+### 7.1 The three aggregation patterns
+
+Issues [#49–#52](https://github.com/ProjectASAP/DataCollector/issues/49)
+frame the design space as three orthogonal patterns. The catalog covers
+all three; the multi-stage win is largest on the third.
+
+| Pattern (issue) | Axis | Example | Where the savings live |
+|---|---|---|---|
+| **Window aggregation per series** ([#50](https://github.com/ProjectASAP/DataCollector/issues/50)) | temporal | "p99 latency for service `auth` over the last hour" | precompute folds N agent windows into one backend window per series |
+| **Series aggregation at each timestamp** ([#51](https://github.com/ProjectASAP/DataCollector/issues/51)) | spatial (cross-series) | "median request rate across all pods at this instant" | precompute folds many series at the same time into one |
+| **Matrix aggregation** ([#52](https://github.com/ProjectASAP/DataCollector/issues/52)) | both | "p99 latency per region per hour, over a fleet of 1000 hosts" | both reductions stacked — the killer multi-stage win |
+
+§§7.2–7.6 below pick concrete queries from real datasets that fall
+into each pattern. §7.7 shows complex compositions that span pipeline
+features.
+
+### 7.2 Financial workloads (DEBS 2022, NYSE TAQ, Binance)
+
+Sourced from [#78](https://github.com/ProjectASAP/DataCollector/issues/78).
+DataCollector ingest config: `metric=financial.last_trade_price`,
+labels `[symbol, exchange, sectype]`, 5-minute tumbling windows.
+
+- **DEBS Q1 — EMA per symbol** *(also worked example §6.1)*. KLL or
+  DDSketch, `aggregate_by=[symbol]`, quantiles `[0.5]` as median proxy.
+  Stored as `DatasketchesKLLAccumulator`.
+  ```promql
+  avg_over_time(financial.last_trade_price[5m]) by (symbol)
+  ```
+- **DEBS Q3 — Top-K most active symbols per window.** `countsketchcol`
+  or `countminsketchcol` (heap=10), `aggregate_by=[symbol]`. Stored as
+  `CountMinSketchWithHeapAccumulator`. Cross-agent collapse is the win
+  — many gateways may stream the same symbols.
+  ```promql
+  topk(10, count_over_time(financial.last_trade_price[5m]) by (symbol))
+  ```
+- **DEBS Q4 — Per-symbol high/low/range.** `kllprocessor` quantiles
+  `[0, 1]`, `aggregate_by=[symbol]`. Stored as `MultipleMinMaxAccumulator`
+  (or `HydraKllSketchAccumulator` for joint range queries).
+  ```promql
+  max_over_time(financial.last_trade_price[5m]) by (symbol) -
+  min_over_time(financial.last_trade_price[5m]) by (symbol)
+  ```
+- **DEBS Q5 — Realized volatility (IQR proxy).** DDSketch quantiles
+  `[0.25, 0.5, 0.75]`. Query reads three quantiles → IQR → σ ≈ IQR/1.349.
+- **DEBS Q6 — Distinct active symbols per window.** `hllprocessor`,
+  `mode=window`. Stored as `HllAccumulator`.
+  ```promql
+  count(count_over_time(financial.last_trade_price[5m]) by (symbol))
+  ```
+
+### 7.3 Cluster & cloud telemetry
+
+Datasets cited in [#47](https://github.com/ProjectASAP/DataCollector/issues/47):
+Google Cluster Trace, Alibaba Cluster Trace, Datadog BOOM, MIT Supercloud.
+
+- **Heavy-hitter HTTP routes by request count.** Each agent runs
+  `countminsketchcol` with heap on `(host, route)`, 10-second batches.
+  Backend `grouping_labels=[route]` collapses across the entire fleet.
+  This is the §4.5 cross-agent spatial collapse story in action: 1000
+  hosts × 10 routes × every 10 s become **one CMS per route per
+  minute** stored.
+  ```promql
+  topk(10, count_over_time(http_requests_total[1m]) by (route))
+  ```
+- **p99 request latency per service per hour.** `kllprocessor` per
+  `(host, service)`, 30-second batches. Backend
+  `grouping_labels=[service]`, `window_size=3600s`,
+  `slide_interval=60s` (sliding). Dashboards refreshing every 60 s
+  read pre-merged state — query amortization (§4.5) over ~60 reads
+  per closed window.
+  ```promql
+  quantile_over_time(0.99, http_request_duration_seconds[1h]) by (service)
+  ```
+- **Cluster-wide active container count.** `hllprocessor` per
+  `(host, namespace)`, 10-second batches. Backend
+  `grouping_labels=[namespace]`, 1-minute window.
+  ```promql
+  count(count_over_time(container_running[1m]) by (container_id))
+  ```
+- **Top noisy-neighbor pods by CPU per node per minute** (Google
+  Cluster Trace pattern). `countminsketchcol` heap on `(pod_id)`,
+  partitioned by `(node)`. Backend `grouping_labels=[node]`, 1-min
+  tumbling. Useful as an alert input for scheduler eviction.
+
+### 7.4 IoT, smart grid, and predictive maintenance
+
+Datasets cited in [#47](https://github.com/ProjectASAP/DataCollector/issues/47):
+Pecan Street, UCI household power, NASA CMAPSS, PHM Society.
+
+- **Rolling p95 of household power per circuit.** `ddsketchprocessor`
+  per `(meter_id, circuit)`, 1-minute batches. Backend
+  `grouping_labels=[circuit]`, 15-min sliding window with 1-min slide.
+  ```promql
+  quantile_over_time(0.95, household_power_watts[15m]) by (circuit)
+  ```
+- **Top transformers by load per substation per hour.**
+  `countminsketchcol` (heap) on `(transformer_id)`. Backend
+  `grouping_labels=[substation]`, 1-hour tumbling.
+  ```promql
+  topk(5, sum_over_time(transformer_load_kw[1h]) by (substation))
+  ```
+- **Vibration percentile per turbofan engine per cycle** (NASA CMAPSS).
+  `kllprocessor` per `(engine_id)`, 1-second batches. Backend
+  `grouping_labels=[engine_id]`, per-cycle window. Feeds into
+  remaining-useful-life prediction.
+
+### 7.5 Network & 5G
+
+5G high-frequency time-series dataset cited in
+[#47](https://github.com/ProjectASAP/DataCollector/issues/47).
+
+- **Top source IPs per cell per second.** `countminsketchcol` heap on
+  `src_ip`, 1-second batches per cell. Backend `grouping_labels=[cell_id]`,
+  1-second tumbling. Output feeds straight into per-cell rate limiters.
+  ```promql
+  topk(10, count_over_time(packets_total[1s]) by (src_ip))
+  ```
+- **Packet size distribution per BSS per minute.** `ddsketchprocessor`,
+  1-second batches. Backend `grouping_labels=[bss_id]`, 60-second
+  tumbling.
+  ```promql
+  quantile_over_time(0.5, packet_size_bytes[1m]) by (bss_id)
+  ```
+
+### 7.6 Mobility and healthcare
+
+NYC Taxi, Uber Movement, MIMIC-IV waveforms (all from #47).
+
+- **Top busiest pickup zones per 5 minutes** (NYC Taxi).
+  `countsketchcol` heap on `pickup_zone`. 30-second agent batches,
+  5-minute backend windows.
+  ```promql
+  topk(20, count_over_time(taxi_pickups_total[5m]) by (pickup_zone))
+  ```
+- **p50/p95 trip duration per zone pair per hour.** `kllprocessor`
+  per `(pickup_zone, dropoff_zone)`. Backend
+  `grouping_labels=[pickup_zone, dropoff_zone]`, 1-hour tumbling.
+  ```promql
+  quantile_over_time(0.95, trip_duration_seconds[1h]) by (pickup_zone, dropoff_zone)
+  ```
+- **HR distribution per ICU ward per minute** (MIMIC-IV).
+  `ddsketchprocessor` per `(patient_id, ward)`. Backend
+  `grouping_labels=[ward]`, 1-min tumbling. Crowdsourced ward-level
+  alarms read pre-merged sketches.
+
+### 7.7 Complex multi-stage compositions
+
+These are queries that combine multiple pipeline features and
+illustrate why the catalog wins on bandwidth + resources.
+
+#### 7.7.1 Cross-tenant fairness — distinct active users per region per day
+
+The killer matrix-aggregation example.
+
+```yaml
+# OTel side
+hllprocessor:
+  partition_by: [pod, namespace, region]
+  emit_window: 5m
+
+# Backend AggregationConfig
+metric:           active_users_total
+aggregation_type: HLL
+grouping_labels:  [region]
+window_size:      86400s   # 1 day
+slide_interval:   300s     # emit every 5 min
+```
+
+Stored: **one `HllAccumulator` per region per day** (typically ≤ 5
+entries per day, regardless of fleet size). Query:
+
+```promql
+count(count_over_time(active_users_total[1d]) by (user_id))
+```
+
+A naïve store without precompute would hold roughly
+`288 backend buckets × N pods × 5 regions = ~2.5M entries/day` for a
+1000-pod cluster. The pipeline collapses that to ~5/day losslessly via
+HLL register-OR mergeability (§3.1).
+
+#### 7.7.2 Anomaly detection by comparing a host to its cluster's p99
+
+Two parallel aggregations on the same metric, both pre-merged:
+
+```yaml
+# Per-cluster p99 quantile sketch
+- metric:           cpu_usage_seconds_total
+  aggregation_type: DatasketchesKLL
+  grouping_labels:  [cluster]
+  window_size:      60s
+
+# Per-host point value
+- metric:           cpu_usage_seconds_total
+  aggregation_type: Sum
+  grouping_labels:  [host, cluster]
+  window_size:      60s
+```
+
+Alert (pseudo-PromQL — the cross-metric binary op is in §5's "not yet
+answerable" list, but the *underlying state* is already there):
+
+```promql
+cpu_usage_seconds_total{cluster="prod"}
+  > on(cluster) group_left
+    quantile_over_time(0.99, cpu_usage_seconds_total[1m]) by (cluster)
+```
+
+The pipeline keeps **two stored entries per cluster per minute** —
+one KLL, one keyed Sum — both already merged across hundreds of hosts.
+The remaining work is the read-side join (tracked in §9 future work).
+
+#### 7.7.3 Bollinger bands chained on top of DEBS Q1
+
+The OTel side never sees the band. It only emits per-tick-window
+quantiles via `kllprocessor`, exactly as in §7.2. A downstream
+consumer reads N consecutive 5-minute backend windows from the store,
+recomputes SMA + σ from the stored quantiles, and emits breakout
+signals.
+
+The agent → backend bandwidth stays constant regardless of whether a
+downstream consumer wants 5-, 15-, or 60-minute Bollinger bands. The
+controller does not need to push a new sketch config when the
+downstream window changes — the precompute engine's stored sketches
+are reusable across temporal aggregation horizons.
+
+#### 7.7.4 Two-stage volume-weighted top-K (NYSE TAQ × NYC Taxi pattern)
+
+A query that needs both *frequency* (number of events) and *quantile*
+(median size). Two parallel sketches on the same stream:
+
+```yaml
+- metric:           order_events_total
+  aggregation_type: CountMinSketchWithHeap
+  grouping_labels:  [symbol]
+  window_size:      300s
+
+- metric:           order_size_usd
+  aggregation_type: DatasketchesKLL
+  grouping_labels:  [symbol]
+  window_size:      300s
+```
+
+Query (read-side composition):
+
+```
+top_10_by_count = topk(10, count_over_time(order_events_total[5m]) by (symbol))
+median_size      = quantile_over_time(0.5, order_size_usd[5m]) by (symbol)
+result           = join(top_10_by_count, median_size, on=symbol)
+```
+
+Both stored entries are merged across many trading-floor agents; the
+read side joins ten symbols × two sketches = 20 lookups per query.
+
+#### 7.7.5 Long-horizon monitoring — distinct error fingerprints per service per week
+
+Demonstrates extreme temporal merging.
+
+```yaml
+hllprocessor:
+  partition_by: [host, service, error_fingerprint]
+  emit_window: 5m
+
+backend:
+  metric:           errors_total
+  aggregation_type: HLL
+  grouping_labels:  [service]
+  window_size:      604800s   # 1 week
+  slide_interval:   3600s     # emit hourly
+```
+
+Stored: one `HllAccumulator` per service per week, slid hourly. Each
+backend window is the merge of `7 × 24 × 12 = 2016` 5-minute agent
+emissions. Query:
+
+```promql
+count(count_over_time(errors_total[1w]) by (error_fingerprint))
+```
+
+**Why this works:** HLL is associative, so merging 2016 sketches is
+identical (modulo numerical noise) to one sketch over the whole week.
+The query is answered from a single sketch read.
+
+### 7.8 Targets from #46 (MVP)
+
+[#46](https://github.com/ProjectASAP/DataCollector/issues/46) lists
+three reduction targets the design is meant to hit:
+
+> Reducing metrics transmission cost by X
+> Reducing aggregation query latency by Y
+> Reducing aggregation query cost, and the e2e pipeline resource usage cost by Z
+
+The query catalog and the analysis in §4 give concrete handles for
+each:
+
+| #46 target | How the catalog hits it | Magnitude (from §4) |
+|---|---|---|
+| transmission cost (X) | OTel agent sketches replace raw streams | 10×–100× on the agent → backend link |
+| query latency (Y) | precompute merge happens at write time, queries are point reads | 10×–1000× tail-latency reduction |
+| e2e resource cost (Z) | store write rate + footprint collapse via temporal × cross-agent merge | 100×–10 000× store reduction; query CPU amortized over Q queries/window |
+
+---
+
+## 8. Configuration knobs users care about
 
 - **Window / slide at the backend.** `AggregationConfig.window_size` and
   `slide_interval` fully determine how many OTel-side batches are
@@ -561,7 +879,7 @@ Correctness:
 
 ---
 
-## 8. Future work
+## 9. Future work
 
 1. **Per-variant `SketchEnvelope → concrete accumulator` decoders**
    (§5.1) — the one missing piece needed to make every row in the
@@ -584,7 +902,7 @@ Correctness:
 
 ---
 
-## 9. Pointers
+## 10. Pointers
 
 - Existing compilation-side design:
   [`docs/sketch-algebra-query-mapping.md`](sketch-algebra-query-mapping.md) — SQL/PromQL → sketch algebra IR
