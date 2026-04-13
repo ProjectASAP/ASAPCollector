@@ -1712,17 +1712,42 @@ Alternative architectures remain viable for specific workloads:
    the corresponding concrete accumulator. Delta-transmission
    encodings (issues [#62](https://github.com/ProjectASAP/DataCollector/issues/62)–[#67](https://github.com/ProjectASAP/DataCollector/issues/67))
    and `series_id` optimisations come along for free.
-2. **Cross-metric binary ops** — `m_a / m_b` and similar; requires
+2. **Retire `asap-planner-rs`, consolidate on the DataCollector
+   controller as the single planner.** Today ASAPQuery-backend
+   links `asap-planner-rs` in-process for query → config generation
+   (ASAPQuery [#240](https://github.com/ProjectASAP/ASAPQuery/issues/240),
+   [#241](https://github.com/ProjectASAP/ASAPQuery/issues/241),
+   [#250](https://github.com/ProjectASAP/ASAPQuery/issues/250)), and
+   DataCollector's controller runs its own five-layer planner
+   (see [`controller/docs/query-to-sketch-translation.md`](../controller/docs/query-to-sketch-translation.md)).
+   Two planners in one architecture means duplicated maintenance
+   and ambiguity about who owns a given plan. The consolidation:
+   (a) audit every `asap-planner-rs` call site in
+   `asap-query-engine` (the always-on query tracker and the
+   in-process planner integration are the known ones); (b) replace
+   each with a `ControllerClient::create_plan(query_spec)` call
+   (the HTTP client from ASAPQuery-backend PR #2 already exists);
+   (c) port any `asap-planner-rs` logic missing from the controller
+   into the controller (e.g. auto-infer labels from Prometheus,
+   ASAPQuery#250); (d) drop `asap-planner-rs` as a workspace
+   member and as a dependency from `asap-query-engine`; (e)
+   update tests that relied on in-process planning; (f) document
+   the consolidation here and in
+   `controller/docs/query-to-sketch-translation.md`. Should land
+   after or alongside the capability-miss → controller call-out
+   work so there is never an ambiguous middle state where both
+   planners are live.
+3. **Cross-metric binary ops** — `m_a / m_b` and similar; requires
    store-side window alignment between two `agg_id`s.
-3. **Exact-required operators** (`last_over_time`, `deriv`,
+4. **Exact-required operators** (`last_over_time`, `deriv`,
    `predict_linear`, bare selectors) — would need either raw sample
    retention or a dedicated exact passthrough path through the
    precompute engine.
-4. **Quality-of-approximation metadata in store.** Today the stored
+5. **Quality-of-approximation metadata in store.** Today the stored
    accumulator carries its own parameters but not an explicit error
    budget; adding that would let the query engine return confidence
    intervals alongside point estimates.
-5. **Runtime sketch upgrade.** When a query asks for φ=0.99 on a
+6. **Runtime sketch upgrade.** When a query asks for φ=0.99 on a
    sketch built for φ=0.5, there is currently no way to ask the OTel
    side to rebuild — the controller has to schedule a new aggregation.
    A feedback loop from query engine → controller → OTel would close
