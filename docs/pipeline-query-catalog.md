@@ -479,7 +479,8 @@ of each query):
    results at the outer node. Latency and cost are a mix.
 
 The rest of this section catalogues what falls where, how the fallback
-works, and the one real gap that the fallback masks but doesn't fix.
+works, and the committed plan for closing the one remaining gap
+(backend adoption of DataCollector's modified OTLP proto, §5.4).
 
 ### 5.1 Fully unaccelerated — served by the exact backend
 
@@ -594,7 +595,7 @@ for the hot parts of the tree. The exact sub-trees carry their own
 cost, but they are usually cheap relative to what the sketch paths
 replaced.
 
-### 5.4 The one real gap — backend adoption of DataCollector's modified OTLP
+### 5.4 Committed adoption plan — backend support for DataCollector's modified OTLP proto
 
 The rows in §5.1 are the queries that genuinely cannot be sketched
 (by design). There is one more case where a query *would* be
@@ -602,6 +603,12 @@ sketch-servable in principle, but currently isn't: **the backend is
 not yet consuming DataCollector's modified OTLP proto**, so the
 sketches DataCollector's processors actually emit on the wire never
 reach the precompute engine in typed form.
+
+The committed plan is to **adopt the modified OTLP proto end-to-end**
+— vendor it into the backend, add per-variant decoders, and switch
+off the legacy attribute-bytes path. The rest of this subsection
+describes the modified proto, the current backend state, and the
+adoption tasks.
 
 #### The wire format DataCollector actually emits
 
@@ -748,9 +755,9 @@ So the current state is:
 Queries are therefore correct today (thanks to the fallback), but
 the sketch fast path is idle for anything DataCollector emits.
 
-#### Closing the gap — what the work actually is
+#### The adoption plan — what the work is
 
-There are two concrete tasks, which together close the gap:
+There are two concrete tasks, which together land the adoption:
 
 1. **Vendor the modified `opentelemetry-proto` into
    `asap-query-engine`.** Replace the stock `opentelemetry-proto = "0.28"`
@@ -797,9 +804,8 @@ There are two concrete tasks, which together close the gap:
 Once both tasks land, every row in the catalog (§3) that maps to a
 sketch becomes hot end-to-end, with the full labeling, window, and
 per-series metadata preserved — and the delta-transmission /
-series_id optimisations come along for free. This is the single
-highest-leverage piece of unblocked work on the sketch path and is
-tracked in §10 (Future work).
+series_id optimisations come along for free. This is tracked as the
+single top-priority item in §10 (Future work).
 
 #### What this means for existing work
 
@@ -822,10 +828,10 @@ tracked in §10 (Future work).
 **Bottom line:** the pipeline never returns "not supported" to a
 user. Everything either hits the sketch path (fast, cheap, per §4),
 falls through to the exact backend (slower, correct), or splits
-between the two and recombines. Today *the sketch path is cold*
-because the backend and the collector speak slightly different
-OTLP dialects; closing that one dialect gap turns on every row in
-§3's catalog.
+between the two and recombines. Until the adoption tasks above land,
+*the sketch path is cold* because the backend and the collector
+speak slightly different OTLP dialects; once they land, every row
+in §3's catalog becomes hot.
 
 ---
 
@@ -898,7 +904,7 @@ Query:
 
 All steps exist in code *except* vendoring the modified
 opentelemetry-proto into `asap-query-engine` and adding the
-`Data::Ddsketch => …` handler. That is the §5.4 gap.
+`Data::Ddsketch => …` handler. Both are tracked as the §5.4 adoption plan.
 
 ### 6.2 ClickBench Q17 — TopK search phrases
 
@@ -1567,7 +1573,8 @@ per §4). For correctness-sensitive workloads — audit, replay,
 ground-truth regeneration, cold-query fallback — the pipeline needs
 a parallel **lossless archive lane** that keeps the raw metric stream.
 
-The design uses two parallel lanes, not a tee-and-switch:
+The design uses two parallel lanes, with the stream split at a
+single well-defined point:
 
 ```
   SDK or agent ─┬── sketch lane ───── OTLP ── backend precompute engine
@@ -1610,18 +1617,20 @@ to S3 / MinIO / GCS.
    thresholds (tens of seconds to minutes) and stream to S3
    asynchronously, independent of query latency concerns.
 
-### 8.4 Where to place the tee, and what per-metric policy to use
+### 8.4 Where to place the split point, and what per-metric policy to use
 
 Given the two-lane design, there is still a placement choice for
-where the Gorilla / S3 branch forks off the raw stream:
+where the Gorilla / S3 branch forks off the raw stream — i.e.
+**where to place the split point between the sketch lane and the
+archive lane**:
 
-| Tee point | Trade-off |
+| Split location | Trade-off |
 |---|---|
 | **In the agent** | Gorilla runs alongside sketch processors in the same OTel pipeline; agent → backend is still the compact sketch link; agent uploads to S3 directly. Most parallelism, keeps the backend lean, at the cost of agents needing S3 credentials and the agent → S3 link being operator-visible. |
 | **In the backend** | Backend forks the raw stream after OTLP receive. Agents stay minimal, but now the agent → backend link carries raw metrics (Scenario A), erasing §4's bandwidth savings. Only makes sense if the sketch lane and the archive lane are both downstream of a single raw-ingestion point. |
 | **Hybrid** | Agent sketches, and also Gorilla-compress-and-forwards a selected subset (e.g. only metrics the controller marked `retain_raw=true`) to S3. Backend gets compact sketches; S3 gets selectively archived raw data. Most flexible, largest configuration surface. |
 
-The **agent-side tee** is the default for deployments that care
+The **agent-side split** is the default for deployments that care
 about §4's bandwidth savings. The **hybrid** option is what the
 in-progress `feat/s3-files-mode` work is building toward: the
 gorilla processor becomes a configurable sink alongside the OTLP
@@ -1649,7 +1658,7 @@ making this policy controllable at runtime from the query engine.
 |---|---|---|
 | Where does sketching start? | agent collector | catches §4's 10×–100× bandwidth savings on the agent → backend link without per-SDK implementation cost |
 | How are raw metrics preserved? | parallel Gorilla lane + S3 cold storage | lossless archive tier for correctness fallback; decouples hot sketch queries from cold exact queries |
-| Where is the tee? | agent (with hybrid support under `feat/s3-files-mode`) | keeps agent → backend compact; S3 archival runs in parallel on the agent |
+| Where is the split between the two lanes? | agent (with hybrid support under `feat/s3-files-mode`) | keeps agent → backend compact; S3 archival runs in parallel on the agent |
 | Per-metric flexibility | sketch-and-archive / sketch-only / archive-only / raw-passthrough | different metrics have different query cost vs storage cost trade-offs |
 
 Alternative architectures remain viable for specific workloads:
@@ -1692,8 +1701,9 @@ Alternative architectures remain viable for specific workloads:
 ## 10. Future work
 
 1. **Backend adoption of DataCollector's modified `opentelemetry-proto`**
-   (§5.4) — the one missing piece needed to make every row in the
-   catalog hot end-to-end. Two sub-tasks: (a) vendor/path-depend on
+   (§5.4, committed adoption plan) — the one remaining piece needed
+   to make every row in the catalog hot end-to-end. Two sub-tasks:
+   (a) vendor/path-depend on
    the modified proto so the tonic Rust bindings generate
    `Data::Kllsketch` / `Data::Ddsketch` / `Data::Countsketch` /
    `Data::Countminsketch` / `Data::Hllsketch` oneof variants, and
