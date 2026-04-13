@@ -31,23 +31,31 @@ SimpleMapStore → query engine`.
       │    countsketchcol / hllcol / sketchcol / ... )       │
       │                                                      │
       │   • builds per-window, per-group sketches at edge    │
-      │   • emits SketchEnvelope bytes in OTLP attributes    │
-      │   • labels from input metric are preserved as        │
-      │     OTLP DataPoint attributes                        │
+      │   • emits via MODIFIED OTLP proto as first-class     │
+      │     Metric.data variants:                            │
+      │       DDSketch / KLLSketch / CountSketch /           │
+      │       CountMinSketch / HLLSketch                     │
+      │   • typed fields: attributes (labels),               │
+      │     start_time_unix_nano, time_unix_nano,            │
+      │     count/sum/min/max, sketch bytes, encoding        │
+      │   • encoding enum distinguishes PROTO vs DELTA       │
+      │     for bandwidth-optimised delta transmission       │
       └──────────────────┬───────────────────────────────────┘
-                         │  OTLP gRPC/HTTP
+                         │  OTLP gRPC/HTTP (modified proto)
                          ▼
       ┌──────────────────────────────────────────────────────┐
       │ ASAPQuery-backend OtlpReceiver                       │
       │   (drivers/ingest/otel.rs)                           │
       │                                                      │
       │   • parses ExportMetricsServiceRequest               │
+      │   • typed sketch variants → per-variant decoder →    │
+      │     concrete *Accumulator (see §5.4 for the          │
+      │     backend-side proto adoption gap)                 │
+      │   • raw points    → WorkerMessage::GroupSamples      │
+      │   • sketch DPs    → WorkerMessage::AccumulatorInput  │
       │   • formats labels into metric{k="v"} series keys    │
-      │   • matches series against StreamingConfig           │
-      │     aggregation_configs                              │
-      │   • raw points  → WorkerMessage::GroupSamples        │
-      │   • sketches    → SketchEnvelopeAccumulator          │
-      │                   → WorkerMessage::AccumulatorInput  │
+      │     using typed attributes + StreamingConfig         │
+      │     grouping_labels                                  │
       └──────────────────┬───────────────────────────────────┘
                          │  router hashes (agg_id, group_key)
                          ▼
@@ -97,22 +105,41 @@ on keys being preserved at each stage.
 
 ### 2.1 OTel-side sketch processors
 
-Processors under `opentelemetry-collector-contrib-patch/processor/*` that
-emit `SketchEnvelope` payloads, listed by wire type:
+Processors under `opentelemetry-collector-contrib-patch/processor/*`
+emit via **first-class sketch variants of the modified OTLP proto**
+(see `opentelemetry-proto/opentelemetry/proto/metrics/v1/metrics.proto`
+in the `feat/s3-files-mode` worktree), not via DataPoint attribute
+bytes. Each processor writes one or more `Metric.data = <SketchType>{…}`
+values directly into the `ExportMetricsServiceRequest`, with typed
+fields for labels (`attributes`), window boundaries
+(`start_time_unix_nano`, `time_unix_nano`), per-window count / sum /
+min / max, the serialised sketch bytes, and an encoding tag.
 
-| Processor | `SketchState` variant | Output | Notes |
+| Processor | Modified-OTLP `Metric.data` variant | Output | Notes |
 |---|---|---|---|
-| `countminsketchprocessor` | `CountMin` | CMS matrix | Window/batch mode; supports delta transmission |
-| `countsketchprocessor` | `CountSketch` | Signed-count arrays | Delta transmission with snapshots |
-| `ddsketchprocessor` | `Ddsketch` | DDSketch buckets + min/max | Window-aligned, per-resource partitioning, lossless extrema |
-| `kllprocessor` | `Kll` | KLL levels | Window/batch mode |
-| `hllprocessor` | `Hll` | HLL registers | Supports delta/full proto encoding |
-| `univmonprocessor` | `Univmon` | Universal monitoring sketch | — |
-| `sketchcol` (meta) | any of the above | multiplex | Mounts multiple sketch processors in one collector image |
+| `countminsketchprocessor` | `CountMinSketch` | CMS matrix (rows × cols) | Window/batch mode; emits via `pmetric.MetricTypeCountMinSketch`; supports full and `COUNT_MIN_SKETCH_ENCODING_DELTA` delta transmission |
+| `countsketchprocessor` | `CountSketch` | Signed-count arrays | Emits via `pmetric.MetricTypeCountSketch`; full + `COUNT_SKETCH_ENCODING_DELTA` delta |
+| `ddsketchprocessor` | `DDSketch` | DDSketch buckets + min/max | Emits via `pmetric.MetricTypeDDSketch`; `DDSKETCH_ENCODING_PROTO` full or `DDSKETCH_ENCODING_PROTO_DELTA` delta; window-aligned, per-resource partitioning; lossless extrema are first-class typed fields, not derived |
+| `kllprocessor` | `KLLSketch` | KLL levels | Emits via `pmetric.MetricTypeKLLSketch`; `KLL_SKETCH_ENCODING_PROTO` |
+| `hllprocessor` | `HLLSketch` | HLL registers | Emits via `pmetric.MetricTypeHLLSketch`; supports full + `HLL_SKETCH_ENCODING_DELTA` delta |
+| `sketchcol` (meta) | any of the above | multiplex | Mounts multiple sketch processors in one collector image; all still emit via modified-OTLP variants |
 
-Additional variants exist in `sketchlib.proto::SketchEnvelope::SketchState`
-(`Hydra`, `Coco`, `Elastic`) but do not have dedicated single-sketch
-collector images; they are only reachable via the meta-collector.
+Each data point also carries an optional `series_id` (with the
+invariant "exactly one of `series_id != 0` or `attributes` populated")
+so the collector can hand out stable series descriptors and avoid
+re-shipping `KeyValue` lists on every packet.
+
+The older `asap_sketchlib::proto::sketchlib::SketchEnvelope` type
+(with a `oneof sketch_state` of `CountMin`, `CountSketch`, `Kll`,
+`Hll`, `Ddsketch`, `Univmon`, `Hydra`, `Coco`, `Elastic` variants)
+still exists in sketchlib, but it is an **in-process** accumulator
+serialisation format — *not* what the modified OTLP proto uses on
+the wire. Attribute-bytes encoding (e.g. `kll.sketch_payload` as a
+bytes DataPoint attribute) is a **legacy path** only reachable via
+standard-OTLP clients that cannot speak the modified proto; none of
+the modern processors use it, so backends that only recognise the
+attribute-bytes path see no sketches at all. See §5.4 for the
+backend-side consequences.
 
 ### 2.2 ASAPQuery-backend precompute engine
 
@@ -466,7 +493,7 @@ configured.
 | `last_over_time(m[w])`, `deriv(m[w])`, `delta(m[w])`, `predict_linear(m[w], t)` | Need exact last-value / timestamped passthrough; no sketch preserves sample ordering | Prometheus, VictoriaMetrics, ClickHouse |
 | Bare selector `m{f}` at sub-window resolution | No sketch; the store holds windowed aggregations, not raw samples | same |
 | Queries that require cross-sketch reinterpretation (e.g. reading a CMS as a KLL) | Not mathematically meaningful | same |
-| `SketchEnvelope` variants whose concrete decoder is not wired yet (today: everything except passes through as opaque bytes — see §5.4) | Bytes survive ingest but the accumulator is opaque | same |
+| Any sketch metric from DataCollector's modern processors (today) | Backend's `opentelemetry-proto 0.28` does not yet know about the modified OTLP's sketch variants; metric is silently dropped at proto-decode time (see §5.4) | same — served via fallback until the backend vendors the modified proto |
 | Queries on metrics the backend has not been configured to aggregate at all | Nothing is stored | same |
 | Queries against a brand-new dashboard metric the controller has not yet generated a plan for (the "cold query" case from §7 discussion) | `AggregationConfig` does not yet exist in `StreamingConfig` | same *(the fallback serves the user while the backend asynchronously asks the controller to plan the query, hot-reloads `StreamingConfig`, and warms the sketch path for the next call)* |
 
@@ -567,55 +594,238 @@ for the hot parts of the tree. The exact sub-trees carry their own
 cost, but they are usually cheap relative to what the sketch paths
 replaced.
 
-### 5.4 The one real gap — `SketchEnvelope` → concrete accumulator
+### 5.4 The one real gap — backend adoption of DataCollector's modified OTLP
 
 The rows in §5.1 are the queries that genuinely cannot be sketched
 (by design). There is one more case where a query *would* be
-sketch-servable in principle, but currently isn't: the
-`SketchEnvelope` decoder gap.
+sketch-servable in principle, but currently isn't: **the backend is
+not yet consuming DataCollector's modified OTLP proto**, so the
+sketches DataCollector's processors actually emit on the wire never
+reach the precompute engine in typed form.
 
-When a DataCollector sketchcol emits a `SketchEnvelope` over OTLP,
-the backend's `drivers/ingest/otel.rs` wraps the raw proto bytes in
-`SketchEnvelopeAccumulator::from_proto_bytes` and routes the wrapper
-through `WorkerMessage::AccumulatorInput`. The wrapper:
+#### The wire format DataCollector actually emits
 
-- preserves the opaque bytes,
-- caches the sketch type string ("CountMin", "KLL", ...),
-- implements `merge_with` as **self.clone()** — it does not actually
-  combine two envelopes,
-- implements `query_statistic` as **Err("not supported")**.
+DataCollector ships a **modified `opentelemetry-proto`** submodule
+(see the `feat/s3-files-mode` working tree — in
+`opentelemetry-proto/opentelemetry/proto/metrics/v1/metrics.proto`)
+that extends the standard `Metric.data` oneof with first-class
+sketch variants:
 
-So sketches from the OTel side are *structurally* labeled, routed,
-pane-assigned, and merged — but their payload cannot be queried yet.
-Today every such query falls through to the exact backend via the
-fallback (§5.2), so the user *still gets a correct answer*, just
-without the sketch path's resource wins.
-
-Closing the gap means adding a **per-variant decoder** that converts
-each `SketchState` variant into the concrete `*Accumulator` the
-config asked for — e.g.
-
-```rust
-match sketch_state {
-    SketchState::CountMin(inner) => CountMinSketchAccumulator::from_proto(inner),
-    SketchState::Kll(inner)      => DatasketchesKLLAccumulator::from_proto(inner),
-    SketchState::Hll(inner)      => HllAccumulator::from_proto(inner),
-    ...
+```proto
+message Metric {
+  oneof data {
+    Gauge gauge = 5;
+    Sum sum = 7;
+    Histogram histogram = 9;
+    ExponentialHistogram exponential_histogram = 10;
+    DDSketch ddsketch = 13;          // NEW
+    Summary summary = 11;
+    KLLSketch kllsketch = 14;        // NEW
+    CountSketch countsketch = 15;    // NEW
+    CountMinSketch countminsketch = 16;   // NEW
+    HLLSketch hllsketch = 17;        // NEW
+  }
+  ...
 }
 ```
 
-Once per-variant decoders exist, every row in the catalog (§3) that
-maps to a sketch becomes hot end-to-end without further engine
-changes. The catalog's rows are otherwise already supported by
-mergeable concrete accumulators; only the "OTel built it, send it
-across the wire, install it in the matching accumulator" step is
-open. This is the single highest-leverage piece of unblocked work
-on the sketch path and is tracked explicitly in §10 (Future work).
+Each new variant has a typed data-point message with the fields an
+OTel idiomatic sketch metric needs:
 
-**Bottom line:** the pipeline never returns "not supported" to a user.
-Everything either hits the sketch path (fast, cheap, per §4), falls
-through to the exact backend (slower, correct), or splits between
-the two and recombines.
+```proto
+message KLLSketchDataPoint {
+  repeated opentelemetry.proto.common.v1.KeyValue attributes = 1;
+  fixed64 start_time_unix_nano = 2;
+  fixed64 time_unix_nano = 3;
+  fixed64 count = 4;
+  double sum   = 5;
+  double min   = 6;
+  double max   = 7;
+  bytes   sketch    = 8;   // serialised KLL payload
+  KLLSketchEncoding encoding = 9;   // PROTO | DELTA | …
+  uint32 flags       = 10;
+  uint64 series_id   = 11;
+}
+```
+
+(Analogous shapes for `DDSketchDataPoint`, `CountSketchDataPoint`,
+`CountMinSketchDataPoint`, `HLLSketchDataPoint`.)
+
+The DataCollector sketch processors — `kllprocessor`,
+`ddsketchprocessor`, `countsketchprocessor`, `countminsketchprocessor`,
+`hllprocessor` — all emit via these native variants today. For
+example `kllprocessor/processor.go:192` matches on
+`pmetric.MetricTypeKLLSketch` and `kllprocessor/processor.go:228`
+calls `appendKLLSketchDataPoint(…)`. No sketch lives in a DataPoint
+attribute; sketches are first-class OTLP metric types.
+
+#### Why this is better than attribute-stuffing
+
+Everything the backend needs to route a sketch — labels, timestamps,
+window boundaries, count/sum/min/max metadata, sketch bytes, sketch
+encoding — travels as **typed protobuf fields** on the wire. There
+is no need for `get_sketch_payload_from_attrs("kll.sketch_payload")`
+string-matching, no opaque envelope bytes, and the per-point count/
+sum/min/max are preserved losslessly alongside the sketch (useful
+both for correctness checks and for queries like `sum_over_time` or
+`max_over_time` that can read the typed fields instead of the
+sketch).
+
+The `encoding` enum is particularly important — it distinguishes
+full-snapshot payloads (`KLL_SKETCH_ENCODING_PROTO`,
+`DDSKETCH_ENCODING_PROTO`) from **delta transmission** payloads
+(`COUNT_SKETCH_ENCODING_DELTA`, `COUNT_MIN_SKETCH_ENCODING_DELTA`,
+`HLL_SKETCH_ENCODING_DELTA`, `DDSKETCH_ENCODING_PROTO_DELTA`). Delta
+transmission is the bandwidth optimisation tracked by DataCollector
+issues [#62](https://github.com/ProjectASAP/DataCollector/issues/62),
+[#63](https://github.com/ProjectASAP/DataCollector/issues/63),
+[#64](https://github.com/ProjectASAP/DataCollector/issues/64),
+[#66](https://github.com/ProjectASAP/DataCollector/issues/66), and
+[#67](https://github.com/ProjectASAP/DataCollector/issues/67) — a
+processor can send "only the cells that changed" since the last
+transmission, and the receiver has to merge against a maintained
+per-series baseline. The modified OTLP proto wires this natively into
+the encoding tag rather than requiring a parallel out-of-band
+protocol. The `series_id` field on every data point (with the
+invariant "exactly one of `series_id != 0` or `attributes` populated")
+also enables the collector to hand out stable series descriptors
+and skip re-parsing `KeyValue` lists on every packet — another
+bandwidth/CPU optimisation.
+
+#### Where the backend actually is today
+
+ASAPQuery-backend's `asap-query-engine/Cargo.toml` depends on the
+**stock crate**:
+
+```toml
+opentelemetry-proto = { version = "0.28",
+                       features = ["gen-tonic", "gen-tonic-messages", "metrics"] }
+```
+
+Stock `opentelemetry-proto 0.28` does **not** know about tags 13–17,
+so the tonic-generated Rust bindings only see:
+
+```rust
+use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+match &metric.data {
+    Some(Data::Gauge(g))                  => { … }
+    Some(Data::Sum(s))                    => { … }
+    Some(Data::Histogram(h))               => { … }
+    Some(Data::ExponentialHistogram(eh))   => { … }
+    Some(Data::Summary(sm))                => { … }
+    None => { … }
+}
+```
+
+`asap-query-engine/src/drivers/ingest/otel.rs` has exactly this
+match, plus an attribute-scraping helper
+`get_sketch_payload_from_attrs` that looks for keys like
+`kll.sketch_payload` / `cms.sketch_payload` / `countsketch.sketch_payload`
+and wraps the raw bytes in `SketchEnvelopeAccumulator::from_proto_bytes`
+from `asap_sketchlib::proto::sketchlib::SketchEnvelope`. That path
+is a **legacy / backward-compat placeholder** — DataCollector's
+sketch processors as of today do not emit via DataPoint attributes
+at all, and the `SketchEnvelopeAccumulator` wrapper itself is a
+stub (`merge_with` is a no-op, `query_statistic` returns `Err`,
+see PR #3 rebased history).
+
+So the current state is:
+
+1. DataCollector sketchcol emits via `Metric.data = KLLSketch{…}` (or
+   one of the other native variants) on the modified OTLP wire.
+2. The backend deserialises the metric with stock
+   `opentelemetry-proto 0.28`, which does not recognise tags 13–17.
+   Depending on the runtime's unknown-field handling, the sketch data
+   either lands in the protobuf "unknown fields" bucket or is
+   silently dropped.
+3. The match in `otel.rs` falls into `None => {}` and the metric
+   contributes nothing to `SimpleMapStore`.
+4. The user's query falls through to the exact backend via the
+   fallback (§5.2) and returns a correct answer — but **without any
+   of §4's resource wins**, because the sketch path is effectively
+   bypassed.
+
+Queries are therefore correct today (thanks to the fallback), but
+the sketch fast path is idle for anything DataCollector emits.
+
+#### Closing the gap — what the work actually is
+
+There are two concrete tasks, which together close the gap:
+
+1. **Vendor the modified `opentelemetry-proto` into
+   `asap-query-engine`.** Replace the stock `opentelemetry-proto = "0.28"`
+   dependency with a path/submodule dependency on DataCollector's
+   modified proto (or a dedicated `asap-otel-proto` crate that
+   re-exports the modified schema). The tonic build-rs generates
+   `Data::Kllsketch`, `Data::Ddsketch`, `Data::Countsketch`,
+   `Data::Countminsketch`, `Data::Hllsketch` as additional oneof
+   variants.
+2. **Add per-variant handlers in `drivers/ingest/otel.rs`**. Each
+   handler reads the typed fields (attributes → labels,
+   `time_unix_nano` → timestamp, `start_time_unix_nano` → window
+   start, `count`/`sum`/`min`/`max` → auxiliary stats) and decodes
+   the `sketch` bytes using the `encoding` enum into the concrete
+   accumulator the config asked for. Something like:
+
+   ```rust
+   Some(Data::Kllsketch(k)) => {
+       for dp in &k.data_points {
+           let labels = attributes_to_map(&dp.attributes);
+           let ts_ms  = (dp.time_unix_nano / 1_000_000) as i64;
+           let acc: Box<dyn AggregateCore> = match dp.encoding() {
+               KllSketchEncoding::Proto =>
+                   Box::new(DatasketchesKLLAccumulator::from_proto(&dp.sketch)?),
+               // DELTA variants apply the delta to a per-series baseline
+               // and return the merged accumulator
+               _ => continue,
+           };
+           route_accumulator(agg_id, group_key(labels), ts_ms, acc).await;
+       }
+   }
+   Some(Data::Ddsketch(d))       => { /* same shape */ }
+   Some(Data::Countsketch(c))    => { /* same shape */ }
+   Some(Data::Countminsketch(c)) => { /* same shape */ }
+   Some(Data::Hllsketch(h))      => { /* same shape */ }
+   ```
+
+   The typed fields mean labels / timestamps / count/sum/min/max are
+   free — no attribute scraping, no `SketchEnvelopeAccumulator`
+   wrapper, no string-typed sketch kind. The only part that needs
+   per-variant code is the "bytes → concrete accumulator" step, and
+   the encoding enum tells you exactly which decoder to call.
+
+Once both tasks land, every row in the catalog (§3) that maps to a
+sketch becomes hot end-to-end, with the full labeling, window, and
+per-series metadata preserved — and the delta-transmission /
+series_id optimisations come along for free. This is the single
+highest-leverage piece of unblocked work on the sketch path and is
+tracked in §10 (Future work).
+
+#### What this means for existing work
+
+- **PR #3's `SketchEnvelopeAccumulator` + attribute-bytes path** is
+  effectively dead code for the modern sketch processors. It can
+  stay as a transitional path for standard-OTLP clients that
+  sideband sketches in attributes (e.g. a downstream that doesn't
+  yet speak the modified proto), but none of DataCollector's
+  `*processor/` emitters use it. Once the vendored proto lands
+  the `otel.rs` `None => {}` fallthrough stops being the norm,
+  and `SketchEnvelopeAccumulator` can either be deleted or kept
+  purely as a legacy hatch.
+- **The claim in PR #3's commit message that sketches are "routed
+  through the precompute engine's worker pool"** is only true
+  structurally (the `WorkerMessage::AccumulatorInput` plumbing is
+  correct); in practice no DataCollector-emitted sketch reaches
+  a worker today because the metric is dropped at proto decode
+  time.
+
+**Bottom line:** the pipeline never returns "not supported" to a
+user. Everything either hits the sketch path (fast, cheap, per §4),
+falls through to the exact backend (slower, correct), or splits
+between the two and recombines. Today *the sketch path is cold*
+because the backend and the collector speak slightly different
+OTLP dialects; closing that one dialect gap turns on every row in
+§3's catalog.
 
 ---
 
@@ -635,32 +845,47 @@ OTel side (every 10s batch):
   ddsketchprocessor{metric=financial.last_trade_price,
                     partition_by=[symbol],
                     window=10s}
-  emits: DDSketch[symbol] in SketchEnvelope::Ddsketch
-         with DataPoint attributes {symbol="RDSA.NL", ...}
+  emits: Metric.data = DDSketch{
+           data_points: [
+             DDSketchDataPoint{
+               attributes: [{symbol: "RDSA.NL"}, ...],
+               start_time_unix_nano: t₀,
+               time_unix_nano:       t₀ + 10s,
+               count: N,
+               sum_as_double:  S,
+               min_as_double:  lo,
+               max_as_double:  hi,
+               sketch:   <serialised DDSketch bytes>,
+               encoding: DDSKETCH_ENCODING_PROTO,
+             },
+             ...
+           ],
+           aggregation_temporality: DELTA,
+         }
 
-Wire:
-  OTLP DataPoint:
-    metric_name = financial.last_trade_price
-    attributes:
-      symbol = "RDSA.NL"
-      ddsketch.sketch_payload = <bytes>
-    time_unix_nano = ...
+Wire: first-class OTLP metric variant from the modified
+      opentelemetry-proto (tags 13–17 on Metric.data).
+      Labels, timestamps, count/sum/min/max, sketch bytes,
+      and encoding are all typed proto fields.
 
-Backend ingest (otel.rs):
+Backend ingest (otel.rs, after the modified proto is vendored):
   StreamingConfig.agg_configs contains:
     { metric: "financial.last_trade_price",
       aggregation_type: DatasketchesKLL,
       grouping_labels: ["symbol"],
       window_size: 300s,
       slide_interval: 30s }
-  → route WorkerMessage::AccumulatorInput{
-        agg_id, group_key="RDSA.NL", timestamp_ms,
-        accumulator = SketchEnvelopeAccumulator(Ddsketch bytes)
-    }
+  Data::Ddsketch(dd) => for each data_point dp:
+      labels = attributes_to_map(&dp.attributes)   // {symbol: RDSA.NL}
+      ts_ms  = dp.time_unix_nano / 1_000_000
+      acc    = DatasketchesKLLAccumulator::from_proto(&dp.sketch, dp.encoding)
+      route WorkerMessage::AccumulatorInput{
+          agg_id, group_key="RDSA.NL", timestamp_ms=ts_ms, accumulator=acc
+      }
 
 Worker:
   GroupState[(agg_id, "RDSA.NL")]
-    .sketch_panes[pane_start] = merge_with(...)
+    .sketch_panes[pane_start] = merge_with(incoming)
   window close at 300s:
     emit (PrecomputedOutput{window=[t, t+300s), key=["RDSA.NL"]},
           merged sketch) → SimpleMapStore
@@ -671,9 +896,9 @@ Query:
     → statistic = median
 ```
 
-All steps exist in code *except* the "decode `SketchEnvelope::Ddsketch`
-into `DatasketchesKLLAccumulator`" step — that is the
-`SketchEnvelopeAccumulator` gap (§5.1).
+All steps exist in code *except* vendoring the modified
+opentelemetry-proto into `asap-query-engine` and adding the
+`Data::Ddsketch => …` handler. That is the §5.4 gap.
 
 ### 6.2 ClickBench Q17 — TopK search phrases
 
@@ -689,8 +914,21 @@ AggIntent:
 
 OTel side:
   countminsketchprocessor(heap=true, k=10, partition_by=[SearchPhrase])
-  emits: CMS + heap in SketchEnvelope::CountMin
-         with DataPoint attributes {SearchPhrase=...}
+  emits: Metric.data = CountMinSketch{
+           data_points: [
+             CountMinSketchDataPoint{
+               attributes: [{SearchPhrase: "..."}],
+               start_time_unix_nano: t₀,
+               time_unix_nano:       t₀ + 10s,
+               sample_count: N,
+               sketch:   <serialised CMS-with-heap bytes>,
+               encoding: COUNT_MIN_SKETCH_ENCODING_PROTO,
+               rows: 5, cols: 2000,
+             },
+             ...
+           ],
+           aggregation_temporality: DELTA,
+         }
 
 Backend:
   aggregation_type = CountMinSketchWithHeap
@@ -1453,9 +1691,17 @@ Alternative architectures remain viable for specific workloads:
 
 ## 10. Future work
 
-1. **Per-variant `SketchEnvelope → concrete accumulator` decoders**
-   (§5.1) — the one missing piece needed to make every row in the
-   catalog hot end-to-end.
+1. **Backend adoption of DataCollector's modified `opentelemetry-proto`**
+   (§5.4) — the one missing piece needed to make every row in the
+   catalog hot end-to-end. Two sub-tasks: (a) vendor/path-depend on
+   the modified proto so the tonic Rust bindings generate
+   `Data::Kllsketch` / `Data::Ddsketch` / `Data::Countsketch` /
+   `Data::Countminsketch` / `Data::Hllsketch` oneof variants, and
+   (b) add per-variant handlers in `drivers/ingest/otel.rs` that
+   decode the typed sketch bytes (using the `encoding` enum) into
+   the corresponding concrete accumulator. Delta-transmission
+   encodings (issues [#62](https://github.com/ProjectASAP/DataCollector/issues/62)–[#67](https://github.com/ProjectASAP/DataCollector/issues/67))
+   and `series_id` optimisations come along for free.
 2. **Cross-metric binary ops** — `m_a / m_b` and similar; requires
    store-side window alignment between two `agg_id`s.
 3. **Exact-required operators** (`last_over_time`, `deriv`,
@@ -1487,7 +1733,14 @@ Alternative architectures remain viable for specific workloads:
   `asap-query-engine/src/drivers/ingest/otel.rs`
 - Accumulator set:
   `asap-query-engine/src/precompute_operators/`
-- Wire protobuf:
+- **Modified OTLP wire protobuf** (first-class sketch metric variants):
+  `opentelemetry-proto/opentelemetry/proto/metrics/v1/metrics.proto`
+  in DataCollector's `feat/s3-files-mode` worktree — adds
+  `DDSketch` / `KLLSketch` / `CountSketch` / `CountMinSketch` /
+  `HLLSketch` messages and per-type encoding enums to the
+  `Metric.data` oneof (tags 13–17)
+- In-process accumulator serialisation (legacy attribute-bytes path,
+  not the modern wire format):
   `asap_sketchlib::proto::sketchlib::SketchEnvelope`
 
 ### External references for §7.8 (production observability stacks)
