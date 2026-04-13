@@ -82,6 +82,40 @@ impl Replanner {
         self.agent_to_metric.write().await.remove(agent_id);
     }
 
+    /// Returns a read-only reference to the agent→metric mapping so that
+    /// callers (e.g. the on_connect callback) can check if an agent has a
+    /// prior assignment.
+    pub fn agent_to_metric(&self) -> &Arc<RwLock<HashMap<String, String>>> {
+        &self.agent_to_metric
+    }
+
+    // ── Config push helpers ──────────────────────────────────────────────────
+
+    /// Push the current plan config to a specific agent.
+    ///
+    /// Looks up the metric assigned to this agent, retrieves the plan from
+    /// `plan_store`, generates agent YAML, and pushes via OpAMP.
+    /// Returns `true` if config was pushed, `false` if the agent has no
+    /// metric assignment or no plan exists for that metric.
+    pub async fn push_config_to_agent(&self, agent_id: &str) -> bool {
+        let metric = self.agent_to_metric.read().await.get(agent_id).cloned();
+        let Some(metric) = metric else { return false };
+
+        let Ok(plan) = self.plan_store.get(&metric) else { return false };
+
+        if let Ok(yaml) = generate_agent_config(&plan.agent_config, &self.opamp_endpoint) {
+            self.opamp.push(agent_id, RemoteConfig {
+                config_hash: short_hash(&yaml),
+                yaml,
+            }).await;
+            info!(agent = agent_id, metric = %metric, "pushed config to reconnecting agent");
+            true
+        } else {
+            warn!(agent = agent_id, metric = %metric, "failed to generate agent config on connect");
+            false
+        }
+    }
+
     // ── Re-plan helpers ───────────────────────────────────────────────────────
 
     /// Re-plans a single metric and pushes updated configs.
@@ -102,12 +136,19 @@ impl Replanner {
         plan.precompute = build_precompute_jobs(&workload, &plan, "backend:4317");
         self.plan_store.set(metric, plan.clone());
 
-        // Push role-appropriate configs.
+        // Push agent config only to agents registered for this specific metric,
+        // rather than broadcasting to all agent-role collectors.
         if let Ok(yaml) = generate_agent_config(&plan.agent_config, &self.opamp_endpoint) {
-            self.opamp.push_to_role(
-                AgentRole::Agent,
-                RemoteConfig { config_hash: short_hash(&yaml), yaml },
-            ).await;
+            let cfg = RemoteConfig { config_hash: short_hash(&yaml), yaml };
+            let agents = self.agent_to_metric.read().await;
+            let target_agents: Vec<String> = agents.iter()
+                .filter(|(_, m)| m.as_str() == metric)
+                .map(|(id, _)| id.clone())
+                .collect();
+            drop(agents);
+            for agent_id in target_agents {
+                self.opamp.push(&agent_id, cfg.clone()).await;
+            }
         }
         if let Ok(yaml) = generate_backend_config(&plan.backend_config, &self.opamp_endpoint) {
             self.opamp.push_to_role(
@@ -214,7 +255,7 @@ mod tests {
             agent_config: AgentCollectorConfig {
                 output_mode: OutputMode::Sketch,
                 sketch_type: SketchType::DDSketch,
-                sketch_params: SketchParams { relative_accuracy: 0.01, ..Default::default() },
+                sketch_params: SketchParams::DDSketch { relative_accuracy: 0.01, quantiles: vec![0.5, 0.99] },
                 aggregate_by: vec![],
                 label_matchers: vec![],
                 window_duration: None,
@@ -225,6 +266,8 @@ mod tests {
                 delta_transmission: false,
                 delta_threshold: 0.0,
                 file_output_path: None,
+                enable_series_id: false,
+                series_id_ttl_secs: 300,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -235,6 +278,7 @@ mod tests {
             valid_until: Utc::now() + chrono::Duration::seconds(3600),
             delta_decision: DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 

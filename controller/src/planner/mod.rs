@@ -4,6 +4,8 @@ pub mod delta_cost_model;
 pub mod online_cost_model;
 pub mod pareto;
 pub mod baseline_planner;
+pub mod stage_split;
+pub mod tco;
 
 pub use rules::RulesPlanner;
 pub use cost_model::CostModelPlanner;

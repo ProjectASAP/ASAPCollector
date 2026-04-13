@@ -72,10 +72,17 @@ func (p *gorillaProcessor) Start(ctx context.Context, host component.Host) error
 		}
 	}
 
+	if p.cfg.S3Files.MountPath != "" {
+		if err := os.MkdirAll(p.cfg.S3Files.MountPath, 0o755); err != nil {
+			return fmt.Errorf("gorilla: create s3_files.mount_path: %w", err)
+		}
+	}
+
 	p.logger.Info("Starting Gorilla processor",
 		zap.Duration("window_interval", p.cfg.WindowInterval),
 		zap.String("s3_bucket", p.cfg.S3.Bucket),
 		zap.String("local_dir", p.cfg.LocalDir),
+		zap.String("s3_files_mount_path", p.cfg.S3Files.MountPath),
 	)
 
 	p.ticker = time.NewTicker(p.cfg.WindowInterval)
@@ -237,6 +244,23 @@ func (p *gorillaProcessor) flushWindow() {
 				p.logger.Error("gorilla: local write failed", zap.Error(err))
 			} else {
 				p.logger.Info("gorilla: local write complete",
+					zap.String("path", localPath),
+					zap.Int("series", obj.seriesCount),
+					zap.Int("points", obj.points),
+					zap.Int("compressed_bytes", len(obj.data)),
+					zap.Int64("raw_bytes", obj.rawBytes),
+					zap.Float64("compression_ratio", ratio),
+				)
+			}
+		}
+
+		if p.cfg.S3Files.MountPath != "" {
+			s3fKey := buildObjectKey(p.cfg.S3Files.Prefix, "", blockEnd, idx)
+			localPath, err := writeLocalFile(p.cfg.S3Files.MountPath, s3fKey, obj.data)
+			if err != nil {
+				p.logger.Error("gorilla: s3_files write failed", zap.Error(err))
+			} else {
+				p.logger.Info("gorilla: s3_files write complete",
 					zap.String("path", localPath),
 					zap.Int("series", obj.seriesCount),
 					zap.Int("points", obj.points),

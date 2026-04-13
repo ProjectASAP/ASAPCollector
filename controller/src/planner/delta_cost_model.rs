@@ -202,29 +202,25 @@ pub fn estimate_fill_rate(
     let inserts_per_flush =
         wc.samples_per_sec_per_series * wc.series_count as f64 * flush_secs;
     let distinct = estimate_distinct_keys(inserts_per_flush, wc);
-    let p = &plan.agent_config.sketch_params;
-
-    match plan.agent_config.sketch_type {
-        SketchType::CountMinSketch | SketchType::CountSketch => {
-            let cols = p.cols as f64;
-            if cols > 0.0 {
-                (distinct / cols).min(1.0)
-            } else {
-                0.05 // safe fallback
-            }
+    match &plan.agent_config.sketch_params {
+        SketchParams::CountMinSketch { cols, .. } => {
+            let cols = *cols as f64;
+            if cols > 0.0 { (distinct / cols).min(1.0) } else { 0.05 }
         }
-        SketchType::HLL => {
-            let registers = (1u64 << p.precision.max(1)) as f64;
+        SketchParams::CountSketch { .. } => {
+            // CountSketch uses epsilon-based sizing; approximate cols ≈ 1/ε².
+            0.05 // safe fallback
+        }
+        SketchParams::HLL { precision } => {
+            let registers = (1u64 << (*precision).max(1)) as f64;
             1.0_f64 - (-distinct / registers).exp()
         }
-        SketchType::DDSketch => {
+        SketchParams::DDSketch { .. } => {
             // Scale linearly around the 10-second benchmark baseline.
-            // Clamp: very long windows do not exceed 80 % fill; very short do
-            // not go below 2 % (cold-start overhead dominates).
             let scale = (flush_secs / 10.0).clamp(0.2, 8.0);
             (0.10 * scale).min(0.80)
         }
-        SketchType::KLL => 0.0,
+        SketchParams::KLL { .. } => 0.0,
     }
 }
 
@@ -498,6 +494,8 @@ mod tests {
                 delta_transmission: false,
                 delta_threshold: 0.0,
                 file_output_path: None,
+                enable_series_id: false,
+                series_id_ttl_secs: 0,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -508,6 +506,7 @@ mod tests {
             valid_until: Utc::now(),
             delta_decision: DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 

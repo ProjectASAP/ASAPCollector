@@ -168,6 +168,8 @@ mod tests {
                 delta_transmission: false,
                 delta_threshold: 0.0,
                 file_output_path: None,
+                enable_series_id: false,
+                series_id_ttl_secs: 300,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -178,6 +180,7 @@ mod tests {
             valid_until,
             delta_decision: DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 

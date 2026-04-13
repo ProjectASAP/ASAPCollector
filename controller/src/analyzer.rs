@@ -162,6 +162,7 @@ impl Analyzer {
             quantiles,
         })
     }
+
 }
 
 // ── Duration helpers (used by other modules) ──────────────────────────────────

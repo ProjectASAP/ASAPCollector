@@ -1,17 +1,11 @@
-"""Aggregate per-day comparison CSVs into a results markdown table, or summarise a single run.
+"""Aggregate per-day comparison CSVs into a 10-minute test results markdown table.
 
 Usage:
-    # Cross-day summary (existing behaviour, unchanged):
     python3 summarize.py --results-dir results/ --out results/10min_test_results.md
-
-    # Per-run error stats for one Q1 run:
-    python3 summarize.py run --query Q1 --day 08-11-21
-    python3 summarize.py run --query Q1 --day 08-11-21 --results-dir results/ --log results/run_log.md
 """
 from __future__ import annotations
 
 import argparse
-import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -61,12 +55,11 @@ METRIC_RENAME: dict[str, str] = {
 THROUGHPUT_QUERIES = ("Q2", "Q9", "Q10", "Q11", "Q12")
 
 
-def summarize_comparison(comparison_dir: Path) -> tuple[pd.DataFrame, list[str]]:
+def summarize_comparison(comparison_dir: Path) -> pd.DataFrame:
     frames = [pd.read_csv(f) for f in sorted(comparison_dir.glob("*.csv"))]
     if not frames:
-        return pd.DataFrame(columns=["query", "metric", "threshold", "avg", "min", "max", "all_pass"]), []
+        return pd.DataFrame(columns=["query", "metric", "threshold", "avg", "min", "max", "all_pass"])
     df = pd.concat(frames, ignore_index=True)
-    days = sorted(df["day"].dropna().unique().tolist()) if "day" in df.columns else []
     agg = (
         df.groupby(["query", "metric", "threshold"])
         .agg(
@@ -77,7 +70,7 @@ def summarize_comparison(comparison_dir: Path) -> tuple[pd.DataFrame, list[str]]
         )
         .reset_index()
     )
-    return agg, days
+    return agg
 
 
 def summarize_throughput(throughput_path: Path) -> pd.DataFrame:
@@ -94,21 +87,13 @@ def fmt(v: float, decimals: int = 4) -> str:
     return f"{v:.{decimals}f}"
 
 
-def build_markdown(agg: pd.DataFrame, throughput: pd.DataFrame, days: list[str] | None = None) -> str:
-    if days:
-        days_sorted = sorted(set(days))
-        if len(days_sorted) == 1:
-            days_str = f"`{days_sorted[0]}`"
-        else:
-            days_str = f"`{days_sorted[0]}` through `{days_sorted[-1]}`"
-    else:
-        days_str = "(none)"
+def build_markdown(agg: pd.DataFrame, throughput: pd.DataFrame) -> str:
     lines: list[str] = [
         "# 10-Minute Benchmark Test Results",
         "",
         "## Setup",
         "",
-        f"- Days: {days_str}",
+        "- Days: `08-11-21` through `12-11-21`",
         "- Mode: `sketch-finance`, `--accuracy-minutes 10`",
         "- Evaluation: Q1 compares all non-warmup 5-min windows; Q3–Q8 compare last "
         "completed window only.",
@@ -129,9 +114,9 @@ def build_markdown(agg: pd.DataFrame, throughput: pd.DataFrame, days: list[str] 
         metric_label = METRIC_RENAME.get(raw_metric, raw_metric)
         desc = METRIC_DESCRIPTIONS.get(raw_metric, "")
         threshold = row["threshold"]
-        avg_v = fmt(float(row["avg"]))
-        min_v = fmt(float(row["min"]))
-        max_v = fmt(float(row["max"]))
+        avg_v = fmt(row["avg"])
+        min_v = fmt(row["min"])
+        max_v = fmt(row["max"])
         all_pass = "✓" if row["all_pass"] else "✗"
         if raw_metric == "hll_max_rel_err":
             thr_str = f"≤ {threshold:.2f}"
@@ -161,167 +146,8 @@ def build_markdown(agg: pd.DataFrame, throughput: pd.DataFrame, days: list[str] 
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Per-run summary (any query comparison CSV)
-# ---------------------------------------------------------------------------
-
-_LOG_HEADER = (
-    "| timestamp | query | day | metric | value | threshold | pass |\n"
-    "|---|---|---|---|---|---|---|\n"
-)
-
-_FMT_SCIENTIFIC = {"per_pair_rel_err_min"}
-
-
-def _fmt_value(metric: str, v: float) -> str:
-    if metric in _FMT_SCIENTIFIC:
-        return f"{v:.6e}"
-    return f"{v:.6f}"
-
-
-def _fmt_threshold(metric: str, threshold: float) -> str:
-    if metric == "per_pair_rel_err_min":
-        return "—"
-    if metric in ("hll_max_rel_err", "per_pair_rel_err_mean", "per_pair_rel_err_max"):
-        return f"≤ {threshold:.4f}"
-    return f"≥ {threshold:.4f}"
-
-
-def _console_q1(day_tag: str, df: pd.DataFrame) -> bool:
-    def _get(m: str) -> float | None:
-        r = df[df["metric"] == m]
-        return float(r["value"].iloc[0]) if not r.empty else None
-
-    def _pass(m: str) -> int | None:
-        r = df[df["metric"] == m]
-        return int(r["pass"].iloc[0]) if not r.empty else None
-
-    frac = _get("frac_lt_1pct")
-    mean_e = _get("per_pair_rel_err_mean")
-    min_e = _get("per_pair_rel_err_min")
-    max_e = _get("per_pair_rel_err_max")
-    all_pass = all(
-        _pass(m) == 1
-        for m in ("frac_lt_1pct", "per_pair_rel_err_mean", "per_pair_rel_err_max")
-        if _pass(m) is not None
-    )
-    print(f"\nRun summary: Q1 / {day_tag}")
-    print(f"  frac_lt_1pct     : {frac:.4f}" if frac is not None else "  frac_lt_1pct     : n/a")
-    print(f"  mean_err         : {mean_e:.6f}" if mean_e is not None else "  mean_err         : n/a")
-    print(f"  min_err          : {min_e:.6e}" if min_e is not None else "  min_err          : n/a")
-    print(f"  max_err          : {max_e:.6f}" if max_e is not None else "  max_err          : n/a")
-    print(f"  pass             : {'yes' if all_pass else 'no'}")
-    return all_pass
-
-
-def _console_q3(day_tag: str, df: pd.DataFrame) -> bool:
-    def _get(m: str) -> float | None:
-        r = df[df["metric"] == m]
-        return float(r["value"].iloc[0]) if not r.empty else None
-
-    def _pass(m: str) -> int | None:
-        r = df[df["metric"] == m]
-        return int(r["pass"].iloc[0]) if not r.empty else None
-
-    score = _get("q3_score")
-    passed = _pass("q3_score") == 1
-    print(f"\nRun summary: Q3 / {day_tag}")
-    print(f"  q3_score         : {score:.4f}" if score is not None else "  q3_score         : n/a")
-    print(f"  pass             : {'yes' if passed else 'no'}")
-    return passed
-
-
-def _console_generic(query: str, day_tag: str, df: pd.DataFrame) -> bool:
-    all_pass = True
-    print(f"\nRun summary: {query} / {day_tag}")
-    for _, row in df.iterrows():
-        metric = str(row["metric"])
-        value = float(row["value"])
-        passed = int(row["pass"]) == 1
-        if not passed:
-            all_pass = False
-        print(f"  {metric:<30} : {_fmt_value(metric, value)}  pass={'yes' if passed else 'no'}")
-    print(f"  pass             : {'yes' if all_pass else 'no'}")
-    return all_pass
-
-
-def run_single(
-    query: str,
-    day: str,
-    results_dir: Path,
-    log_path: Path,
-) -> None:
-    day_tag = day.replace(".csv", "").replace("debs2022-gc-trading-day-", "")
-    csv_path = results_dir / "comparison" / f"{query}_{day_tag}.csv"
-    if not csv_path.is_file():
-        print(f"Comparison CSV not found: {csv_path}")
-        return
-
-    df = pd.read_csv(csv_path)
-    if df.empty:
-        print(f"Comparison CSV is empty: {csv_path}")
-        return
-
-    if query == "Q1":
-        all_pass = _console_q1(day_tag, df)
-    elif query == "Q3":
-        all_pass = _console_q3(day_tag, df)
-    else:
-        all_pass = _console_generic(query, day_tag, df)
-
-    # --- append one row per metric to run log ---
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    rows: list[str] = []
-    for _, row in df.iterrows():
-        metric = str(row["metric"])
-        value = float(row["value"])
-        threshold = float(row["threshold"])
-        passed = int(row["pass"]) == 1
-        rows.append(
-            f"| {ts} | {query} | {day_tag} | {metric}"
-            f" | {_fmt_value(metric, value)}"
-            f" | {_fmt_threshold(metric, threshold)}"
-            f" | {'✓' if passed else '✗'} |\n"
-        )
-
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    if not log_path.is_file():
-        log_path.write_text(f"# Run log\n\n{_LOG_HEADER}{''.join(rows)}", encoding="utf-8")
-        print(f"Created: {log_path}")
-    else:
-        content = log_path.read_text(encoding="utf-8")
-        if "| timestamp |" not in content:
-            log_path.write_text(content + f"\n{_LOG_HEADER}{''.join(rows)}", encoding="utf-8")
-        else:
-            log_path.write_text(content + "".join(rows), encoding="utf-8")
-        print(f"Appended: {log_path}")
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Summarise benchmark results.")
-    sub = parser.add_subparsers(dest="command")
-
-    # --- 'run' subcommand: per-run single-day stats ---
-    p_run = sub.add_parser("run", help="Print per-run stats for one query run and append to run_log.md.")
-    p_run.add_argument("--query", default="Q1", help="Query ID (default: Q1).")
-    p_run.add_argument("--day", default="08-11-21", help="Trading day tag (default: 08-11-21).")
-    p_run.add_argument(
-        "--results-dir",
-        type=Path,
-        default=Path(__file__).resolve().parent / "results",
-    )
-    p_run.add_argument(
-        "--log",
-        type=Path,
-        default=None,
-        help="Run log markdown file (default: <results-dir>/run_log.md).",
-    )
-
-    # --- default (no subcommand): cross-day aggregate markdown ---
+    parser = argparse.ArgumentParser(description="Aggregate comparison CSVs into a results markdown.")
     parser.add_argument(
         "--results-dir",
         type=Path,
@@ -333,21 +159,14 @@ def main() -> None:
         default=None,
         help="Output markdown file (default: <results-dir>/10min_test_results.md).",
     )
-
     args = parser.parse_args()
 
-    if args.command == "run":
-        log = args.log or args.results_dir / "run_log.md"
-        run_single(args.query, args.day, args.results_dir, log)
-        return
-
-    # Default cross-day aggregate path
     comparison_dir = args.results_dir / "comparison"
     out_path = args.out or args.results_dir / "10min_test_results.md"
 
-    agg, days = summarize_comparison(comparison_dir)
+    agg = summarize_comparison(comparison_dir)
     throughput = summarize_throughput(args.results_dir / "throughput.csv")
-    md = build_markdown(agg, throughput, days)
+    md = build_markdown(agg, throughput)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(md, encoding="utf-8")
     print(f"Written: {out_path}")

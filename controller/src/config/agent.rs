@@ -6,24 +6,11 @@ use std::collections::HashMap;
 use crate::analyzer::format_duration;
 use crate::types::*;
 
-/// Processor map key and pipeline entry must match the OpenTelemetry **component type**
-/// string from each factory (`MustNewType` in
-/// `opentelemetry-collector-contrib-patch/processor/*/factory.go`). This is not always
-/// the same as `SketchType`'s `Display` (e.g. HLL vs `hll`, KLL vs `kll`).
-fn collector_processor_component_id(st: &SketchType) -> &'static str {
-    match st {
-        SketchType::DDSketch => "ddsketch",
-        SketchType::KLL => "KLL",
-        SketchType::HLL => "HLL",
-        SketchType::CountSketch => "countsketch",
-        SketchType::CountMinSketch => "countmin",
-    }
-}
-
 // ── YAML structural types ─────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct CollectorYaml {
+    extensions: HashMap<String, Value>,
     receivers: HashMap<String, Value>,
     processors: HashMap<String, Value>,
     exporters: HashMap<String, Value>,
@@ -32,6 +19,7 @@ struct CollectorYaml {
 
 #[derive(Serialize)]
 struct ServiceSection {
+    extensions: Vec<String>,
     pipelines: HashMap<String, Pipeline>,
 }
 
@@ -46,46 +34,55 @@ struct Pipeline {
 
 /// Generates an OTel collector YAML string for an agent collector from a plan.
 ///
-/// The `opamp_endpoint` parameter is accepted for API compatibility but the
-/// generated config intentionally omits the opamp extension: the controller
-/// currently speaks JSON over WebSocket while the opamp-go client used by the
-/// collector expects binary protobuf, so including it would only produce
-/// repeated "bad handshake" errors in the collector log. Configs are delivered
-/// via the HTTP config provider instead (`--config=http://...`).
+/// The `opamp_endpoint` parameter specifies the OpAMP WebSocket endpoint that
+/// the collector should connect to for receiving runtime config updates from the
+/// controller.  An `extensions.opamp` section is included in the generated YAML
+/// so the collector can receive pushed configs without a restart.
 pub fn generate_agent_config(
     cfg: &AgentCollectorConfig,
-    _opamp_endpoint: &str,
+    opamp_endpoint: &str,
 ) -> anyhow::Result<String> {
-    let processor_key = collector_processor_component_id(&cfg.sketch_type).to_string();
+    let processor_key = cfg.sketch_type.to_string();
     let processor_val = build_processor_block(cfg);
 
-    // Standard OTLP receiver (gRPC + HTTP).
-    let otlp_receiver: Value = serde_yaml::from_str(
+    // Standard OTLP receiver (gRPC + HTTP) with optional series_id registry.
+    let mut otlp_map: Mapping = serde_yaml::from_str(
         "protocols:\n  grpc:\n    endpoint: \"0.0.0.0:4317\"\n  http:\n    endpoint: \"0.0.0.0:4318\"\n",
     ).unwrap();
+
+    otlp_map.insert("enable_series_id".into(), Value::Bool(cfg.enable_series_id));
+    if cfg.series_id_ttl_secs > 0 {
+        otlp_map.insert(
+            "series_id_ttl".into(),
+            Value::String(format!("{}s", cfg.series_id_ttl_secs)),
+        );
+    }
+    let otlp_receiver = Value::Mapping(otlp_map);
 
     // Prometheus exporter so downstream scrapers can observe the pipeline.
     let prom_exporter: Value = serde_yaml::from_str("endpoint: \"0.0.0.0:8889\"\n").unwrap();
 
+    // OpAMP extension — allows the controller to push config updates at runtime.
+    let opamp_ext: Value = serde_yaml::from_str(&format!(
+        "server:\n  ws:\n    endpoint: \"{opamp_endpoint}\"\n"
+    )).unwrap();
+
     let mut exporters: HashMap<String, Value> =
         [("prometheus".to_string(), prom_exporter)].into();
     let mut pipeline_exporters = vec!["prometheus".to_string()];
-
-    // Optional file exporter: write one OTLP-JSON line per window flush.
-    // Enabled when `file_output_path` is set in the agent config (benchmark use).
     if let Some(ref path) = cfg.file_output_path {
-        let file_exporter: Value = serde_yaml::from_str(
-            &format!("path: {path:?}\n"),
-        ).unwrap();
+        let file_exporter: Value = serde_yaml::from_str(&format!("path: {path:?}\n")).unwrap();
         exporters.insert("file".to_string(), file_exporter);
         pipeline_exporters.push("file".to_string());
     }
 
     let doc = CollectorYaml {
+        extensions: [("opamp".to_string(), opamp_ext)].into(),
         receivers: [("otlp".to_string(), otlp_receiver)].into(),
         processors: [(processor_key.clone(), processor_val)].into(),
         exporters,
         service: ServiceSection {
+            extensions: vec!["opamp".into()],
             pipelines: [(
                 "metrics".to_string(),
                 Pipeline {
@@ -122,7 +119,17 @@ fn build_processor_block(cfg: &AgentCollectorConfig) -> Value {
         m.insert("aggregate_by".into(), seq_of_strings(&cfg.aggregate_by));
     }
     if !cfg.label_matchers.is_empty() {
-        m.insert("label_matchers".into(), seq_of_strings(&cfg.label_matchers));
+        // Go processors expect []LabelMatcher{Key, Value}, not flat strings.
+        let matchers: Vec<Value> = cfg.label_matchers.iter().filter_map(|s| {
+            let (k, v) = s.split_once('=')?;
+            let mut map = serde_yaml::Mapping::new();
+            map.insert("key".into(), Value::String(k.to_string()));
+            map.insert("value".into(), Value::String(v.to_string()));
+            Some(Value::Mapping(map))
+        }).collect();
+        if !matchers.is_empty() {
+            m.insert("label_matchers".into(), Value::Sequence(matchers));
+        }
     }
 
     // Delta transmission: only emit fields each processor's Config actually defines.
@@ -141,55 +148,34 @@ fn build_processor_block(cfg: &AgentCollectorConfig) -> Value {
     }
 
     // Sketch-type-specific params.
-    let p = &cfg.sketch_params;
-    match &cfg.sketch_type {
-        SketchType::DDSketch => {
-            m.insert(
-                "relative_accuracy".into(),
-                Value::Number(p.relative_accuracy.into()),
-            );
-            if !p.quantiles.is_empty() {
-                m.insert(
-                    "quantiles".into(),
-                    Value::Sequence(
-                        p.quantiles
-                            .iter()
-                            .map(|q| Value::Number((*q).into()))
-                            .collect(),
-                    ),
-                );
+    match &cfg.sketch_params {
+        SketchParams::DDSketch { relative_accuracy, quantiles } => {
+            m.insert("relative_accuracy".into(), Value::Number((*relative_accuracy).into()));
+            if !quantiles.is_empty() {
+                m.insert("quantiles".into(), Value::Sequence(
+                    quantiles.iter().map(|q| Value::Number((*q).into())).collect(),
+                ));
             }
         }
-        SketchType::KLL => {
-            m.insert("k".into(), Value::Number((p.k as u64).into()));
-            if !p.quantiles.is_empty() {
-                m.insert(
-                    "quantiles".into(),
-                    Value::Sequence(
-                        p.quantiles
-                            .iter()
-                            .map(|q| Value::Number((*q).into()))
-                            .collect(),
-                    ),
-                );
+        SketchParams::KLL { k, quantiles } => {
+            m.insert("k".into(), Value::Number((*k as u64).into()));
+            if !quantiles.is_empty() {
+                m.insert("quantiles".into(), Value::Sequence(
+                    quantiles.iter().map(|q| Value::Number((*q).into())).collect(),
+                ));
             }
         }
-        SketchType::HLL => {
+        SketchParams::HLL { .. } => {
             // hllprocessor uses a fixed HLL precision in code; Config has no precision field.
         }
-        SketchType::CountSketch => {
-            // countsketchprocessor requires epsilon and delta (not rows/cols).
-            m.insert("epsilon".into(), Value::Number(p.epsilon.into()));
-            m.insert("delta".into(), Value::Number(p.delta.into()));
+        SketchParams::CountSketch { epsilon, delta } => {
+            m.insert("epsilon".into(), Value::Number((*epsilon).into()));
+            m.insert("delta".into(), Value::Number((*delta).into()));
         }
-        SketchType::CountMinSketch => {
-            // countminsketchprocessor requires metric_name, rows, and columns.
-            m.insert(
-                "metric_name".into(),
-                Value::String(p.metric_name.clone()),
-            );
-            m.insert("rows".into(), Value::Number((p.rows as u64).into()));
-            m.insert("columns".into(), Value::Number((p.cols as u64).into()));
+        SketchParams::CountMinSketch { rows, cols, metric_name } => {
+            m.insert("metric_name".into(), Value::String(metric_name.clone()));
+            m.insert("rows".into(), Value::Number((*rows as u64).into()));
+            m.insert("columns".into(), Value::Number((*cols as u64).into()));
         }
     }
 
@@ -211,10 +197,9 @@ mod tests {
         AgentCollectorConfig {
             output_mode: OutputMode::Sketch,
             sketch_type: SketchType::DDSketch,
-            sketch_params: SketchParams {
+            sketch_params: SketchParams::DDSketch {
                 relative_accuracy: 0.01,
                 quantiles: vec![0.5, 0.9, 0.99],
-                ..Default::default()
             },
             aggregate_by: vec!["host.name".into(), "service".into()],
             label_matchers: vec!["env=prod".into()],
@@ -226,6 +211,8 @@ mod tests {
             delta_transmission: false,
             delta_threshold: 0.0,
             file_output_path: None,
+            enable_series_id: true,
+            series_id_ttl_secs: 0,
         }
     }
 
@@ -243,14 +230,15 @@ mod tests {
     }
 
     #[test]
-    fn omits_opamp_extension() {
-        // The opamp extension is intentionally absent: the controller speaks JSON
-        // but the opamp-go client expects protobuf, causing bad-handshake errors.
-        // Config delivery uses the HTTP config provider instead.
+    fn contains_opamp_extension() {
         let yaml = generate_agent_config(&ddsketch_cfg(), "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
-            !yaml.contains("opamp"),
-            "YAML must not include the opamp extension\n{yaml}"
+            yaml.contains("opamp"),
+            "YAML should include the opamp extension\n{yaml}"
+        );
+        assert!(
+            yaml.contains("ws://ctrl:4320/v1/opamp"),
+            "YAML should contain the opamp endpoint\n{yaml}"
         );
     }
 
@@ -288,10 +276,7 @@ mod tests {
     fn hll_processor() {
         let cfg = AgentCollectorConfig {
             sketch_type: SketchType::HLL,
-            sketch_params: SketchParams {
-                precision: 14,
-                ..Default::default()
-            },
+            sketch_params: SketchParams::HLL { precision: 14 },
             mode: ProcessorMode::Batch,
             window_duration: None,
             output_mode: OutputMode::Sketch,
@@ -303,6 +288,8 @@ mod tests {
             delta_transmission: false,
             delta_threshold: 0.0,
             file_output_path: None,
+            enable_series_id: true,
+            series_id_ttl_secs: 0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(yaml.contains("HLL:"), "YAML should contain HLL processor key\n{yaml}");
@@ -320,10 +307,10 @@ mod tests {
     fn countminsketch_processor() {
         let cfg = AgentCollectorConfig {
             sketch_type: SketchType::CountMinSketch,
-            sketch_params: SketchParams {
+            sketch_params: SketchParams::CountMinSketch {
                 rows: 5,
                 cols: 2048,
-                ..Default::default()
+                metric_name: "test_metric".into(),
             },
             mode: ProcessorMode::Batch,
             window_duration: None,
@@ -336,6 +323,8 @@ mod tests {
             delta_transmission: false,
             delta_threshold: 0.0,
             file_output_path: None,
+            enable_series_id: true,
+            series_id_ttl_secs: 0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
@@ -424,10 +413,9 @@ mod tests {
     fn kll_processor() {
         let cfg = AgentCollectorConfig {
             sketch_type: SketchType::KLL,
-            sketch_params: SketchParams {
+            sketch_params: SketchParams::KLL {
                 k: 200,
                 quantiles: vec![0.5, 0.99],
-                ..Default::default()
             },
             mode: ProcessorMode::Window,
             window_duration: Some(std::time::Duration::from_secs(300)),
@@ -440,9 +428,11 @@ mod tests {
             delta_transmission: false,
             delta_threshold: 0.0,
             file_output_path: None,
+            enable_series_id: true,
+            series_id_ttl_secs: 0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
-        assert!(yaml.contains("kll:"), "YAML should contain 'kll:'\n{yaml}");
+        assert!(yaml.contains("KLL:"), "YAML should contain 'KLL:'\n{yaml}");
         assert!(yaml.contains("k:"), "YAML should contain 'k:' param\n{yaml}");
         assert!(!yaml.contains("ddsketch:"), "YAML must not contain wrong processor key\n{yaml}");
     }
@@ -451,10 +441,9 @@ mod tests {
     fn countsketch_processor() {
         let cfg = AgentCollectorConfig {
             sketch_type: SketchType::CountSketch,
-            sketch_params: SketchParams {
-                rows: 5,
-                cols: 10000,
-                ..Default::default()
+            sketch_params: SketchParams::CountSketch {
+                epsilon: CountSketchDefaults::default().epsilon,
+                delta: CountSketchDefaults::default().delta,
             },
             mode: ProcessorMode::Batch,
             window_duration: None,
@@ -467,6 +456,8 @@ mod tests {
             delta_transmission: false,
             delta_threshold: 0.0,
             file_output_path: None,
+            enable_series_id: true,
+            series_id_ttl_secs: 0,
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
@@ -486,11 +477,11 @@ mod tests {
     #[test]
     fn all_sketch_types_processor_key_matches_pipeline_ref() {
         let cases: &[(&str, SketchType, SketchParams)] = &[
-            ("ddsketch", SketchType::DDSketch, SketchParams { relative_accuracy: 0.01, ..Default::default() }),
-            ("kll",      SketchType::KLL,      SketchParams { k: 200, ..Default::default() }),
-            ("hll",      SketchType::HLL,      SketchParams { precision: 14, ..Default::default() }),
-            ("countsketch",    SketchType::CountSketch,    SketchParams { rows: 5, cols: 10000, ..Default::default() }),
-            ("countminsketch", SketchType::CountMinSketch, SketchParams { rows: 5, cols: 2048, ..Default::default() }),
+            ("ddsketch",    SketchType::DDSketch,      SketchParams::DDSketch { relative_accuracy: 0.01, quantiles: vec![0.5] }),
+            ("KLL",         SketchType::KLL,           SketchParams::KLL { k: 200, quantiles: vec![0.5] }),
+            ("HLL",         SketchType::HLL,           SketchParams::HLL { precision: 14 }),
+            ("countsketch", SketchType::CountSketch,   SketchParams::CountSketch { epsilon: CountSketchDefaults::default().epsilon, delta: CountSketchDefaults::default().delta }),
+            ("countmin",    SketchType::CountMinSketch, SketchParams::CountMinSketch { rows: 5, cols: 2048, metric_name: "m".into() }),
         ];
 
         for (expected_key, sketch_type, sketch_params) in cases {
@@ -508,6 +499,8 @@ mod tests {
                 delta_transmission: false,
                 delta_threshold: 0.0,
                 file_output_path: None,
+                enable_series_id: true,
+                series_id_ttl_secs: 0,
             };
             let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
 
@@ -553,7 +546,7 @@ mod tests {
 
     #[test]
     fn file_exporter_absent_when_path_not_set() {
-        let cfg = ddsketch_cfg(); // file_output_path: None by default
+        let cfg = ddsketch_cfg();
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
             !yaml.contains("file:"),

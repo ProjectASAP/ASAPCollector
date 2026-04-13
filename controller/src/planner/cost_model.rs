@@ -151,11 +151,11 @@ pub fn score(plan: &CollectionPlan, w: &QueryWorkload) -> PlanScore {
     }
 }
 
-fn estimate_error(st: &SketchType, p: &SketchParams, costs: SketchCosts) -> f64 {
-    match st {
-        SketchType::DDSketch if p.relative_accuracy > 0.0 => p.relative_accuracy,
-        SketchType::KLL if p.k > 0 => 1.0 / p.k as f64,
-        SketchType::HLL if p.precision > 0 => 1.04 / (2.0f64.powi(p.precision as i32)).sqrt(),
+fn estimate_error(_st: &SketchType, p: &SketchParams, costs: SketchCosts) -> f64 {
+    match p {
+        SketchParams::DDSketch { relative_accuracy, .. } if *relative_accuracy > 0.0 => *relative_accuracy,
+        SketchParams::KLL { k, .. } if *k > 0 => 1.0 / *k as f64,
+        SketchParams::HLL { precision } if *precision > 0 => 1.04 / (2.0f64.powi(*precision as i32)).sqrt(),
         _ => costs.relative_error_at_default,
     }
 }
@@ -176,6 +176,11 @@ pub struct CostModelPlanner {
 impl CostModelPlanner {
     pub fn new() -> Self {
         Self { inner: RulesPlanner::new(), online_store: None }
+    }
+
+    pub fn with_sketch_defaults(mut self, defaults: SketchDefaults) -> Self {
+        self.inner.sketch_defaults = defaults;
+        self
     }
 
     /// Attach a live EMA store so scoring uses blended benchmark + observed costs.
@@ -229,7 +234,7 @@ impl CostModelPlanner {
             return plan;
         }
 
-        let candidates = candidates_for_workload(w);
+        let candidates = crate::algebra::directory::candidates_for_workload(&w.aggregations);
 
         // Start with the rule-based plan as the baseline.
         let baseline = self.inner.plan(w);
@@ -295,25 +300,7 @@ fn apply_delta_decision_with(
     plan.transmission_cost_summary = summary;
 }
 
-/// Returns all sketch types that are semantically valid for the workload's
-/// aggregation types.
-fn candidates_for_workload(w: &QueryWorkload) -> Vec<SketchType> {
-    let mut out = Vec::new();
-    for agg in &w.aggregations {
-        match agg {
-            AggType::Quantile => {
-                out.push(SketchType::DDSketch);
-                out.push(SketchType::KLL);
-            }
-            AggType::Cardinality => out.push(SketchType::HLL),
-            AggType::Frequency => {
-                out.push(SketchType::CountSketch);
-                out.push(SketchType::CountMinSketch);
-            }
-        }
-    }
-    out
-}
+// candidates_for_workload delegated to algebra::directory.
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -355,6 +342,8 @@ mod tests {
                 delta_transmission: false,
                 delta_threshold: 0.0,
                 file_output_path: None,
+                enable_series_id: false,
+                series_id_ttl_secs: 0,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -365,6 +354,7 @@ mod tests {
             valid_until: Utc::now(),
             delta_decision: DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 
@@ -387,7 +377,10 @@ mod tests {
         };
         // Force 1% params despite tighter SLA.
         let mut plan = dummy_plan(SketchType::DDSketch);
-        plan.agent_config.sketch_params.relative_accuracy = 0.01;
+        plan.agent_config.sketch_params = SketchParams::DDSketch {
+            relative_accuracy: 0.01,
+            quantiles: vec![0.5, 0.99],
+        };
         let s = score(&plan, &w);
         assert!(!s.meets_sla, "DDSketch at 1% should NOT meet 0.1% SLA");
     }
@@ -428,7 +421,10 @@ mod tests {
             ..workload(vec![AggType::Quantile])
         };
         let mut plan = dummy_plan(SketchType::KLL);
-        plan.agent_config.sketch_params.k = 100; // error ≈ 1/100 = 1%
+        plan.agent_config.sketch_params = SketchParams::KLL {
+            k: 100, // error ≈ 1/100 = 1%
+            quantiles: vec![0.5, 0.99],
+        };
         let s = score(&plan, &w);
         assert!(s.meets_sla, "KLL k=100 (error~1%) should meet 2% SLA");
     }

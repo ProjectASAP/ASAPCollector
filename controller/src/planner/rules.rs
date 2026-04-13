@@ -7,12 +7,21 @@ pub const DEFAULT_VALID_FOR: Duration = Duration::from_secs(10 * 60);
 
 pub struct RulesPlanner {
     pub valid_for: Duration,
+    pub sketch_defaults: SketchDefaults,
 }
 
 impl RulesPlanner {
     pub fn new() -> Self {
         Self {
             valid_for: DEFAULT_VALID_FOR,
+            sketch_defaults: SketchDefaults::default(),
+        }
+    }
+
+    pub fn with_defaults(defaults: SketchDefaults) -> Self {
+        Self {
+            valid_for: DEFAULT_VALID_FOR,
+            sketch_defaults: defaults,
         }
     }
 
@@ -23,8 +32,8 @@ impl RulesPlanner {
             return self.raw_passthrough_plan(w);
         }
 
-        let sketch_type = select_sketch_type(&w.aggregations);
-        let sketch_params = default_sketch_params_with_quantiles(&sketch_type, w.accuracy_sla, &w.quantiles);
+        let sketch_type = crate::algebra::directory::sketch_type_for_agg(&w.aggregations);
+        let sketch_params = crate::algebra::directory::build_sketch_params(&self.sketch_defaults, &sketch_type, w.accuracy_sla, &w.quantiles);
         let (mode, window_duration) = select_window_strategy(w);
 
         let mut aggregate_by = w.group_by_labels.clone();
@@ -59,6 +68,8 @@ impl RulesPlanner {
                 delta_transmission: false,
                 delta_threshold: 0.0,
                 file_output_path: None,
+                enable_series_id: true,
+                series_id_ttl_secs: 0,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -69,6 +80,7 @@ impl RulesPlanner {
             valid_until,
             delta_decision: DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 
@@ -99,7 +111,9 @@ impl RulesPlanner {
                 drop_original:        false,
                 delta_transmission:   false,
                 delta_threshold:      0.0,
-                file_output_path:     None,
+                file_output_path: None,
+                enable_series_id: true,
+                series_id_ttl_secs: 0,
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -110,69 +124,14 @@ impl RulesPlanner {
             valid_until,
             delta_decision:           DeltaDecision::default(),
             transmission_cost_summary: TransmissionCostSummary::default(),
+            staged_plan: None,
         }
     }
 }
 
-// ── Sketch selection ──────────────────────────────────────────────────────────
+// ── Sketch selection (delegated to algebra::directory) ───────────────────────
 
-/// Picks the primary sketch type from the aggregation list.
-/// Priority order: Quantile → Cardinality → Frequency.
-fn select_sketch_type(aggs: &[AggType]) -> SketchType {
-    for agg in aggs {
-        match agg {
-            AggType::Quantile => return SketchType::DDSketch,
-            AggType::Cardinality => return SketchType::HLL,
-            AggType::Frequency => return SketchType::CountSketch,
-        }
-    }
-    SketchType::DDSketch
-}
-
-/// Returns type-appropriate default parameters for the given accuracy SLA.
-pub fn default_sketch_params(st: &SketchType, accuracy_sla: f64) -> SketchParams {
-    default_sketch_params_with_quantiles(st, accuracy_sla, &[])
-}
-
-/// Like [`default_sketch_params`] but seeds the quantiles list from the
-/// query-parsed φ values when non-empty; falls back to an extended DEBS-style grid.
-pub fn default_sketch_params_with_quantiles(
-    st: &SketchType,
-    accuracy_sla: f64,
-    query_quantiles: &[f64],
-) -> SketchParams {
-    let acc = if accuracy_sla <= 0.0 { 0.01 } else { accuracy_sla };
-    let quantiles: Vec<f64> = if !query_quantiles.is_empty() {
-        query_quantiles.to_vec()
-    } else {
-        vec![0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0]
-    };
-    match st {
-        SketchType::DDSketch => SketchParams {
-            relative_accuracy: acc,
-            quantiles,
-            ..Default::default()
-        },
-        SketchType::KLL => {
-            let k = ((1.0 / acc) as u32).max(32);
-            SketchParams { k, quantiles, ..Default::default() }
-        },
-        SketchType::HLL => {
-            let precision = if acc > 0.02 { 10u32 } else { 14u32 };
-            SketchParams { precision, ..Default::default() }
-        }
-        SketchType::CountSketch | SketchType::CountMinSketch => SketchParams {
-            rows: 5,
-            cols: 2048,
-            // epsilon/delta required by countsketchprocessor; rows/cols kept for reference.
-            // epsilon ≈ 1/sqrt(cols), delta ≈ e^(-rows) for the equivalent sketch size.
-            epsilon: 0.022,
-            delta: 0.007,
-            metric_name: "countsketch_partition".to_string(),
-            ..Default::default()
-        },
-    }
-}
+pub use crate::algebra::directory::{default_sketch_params, build_sketch_params};
 
 // ── Window strategy ───────────────────────────────────────────────────────────
 
@@ -297,7 +256,10 @@ mod tests {
         let mut w = workload(vec![AggType::Quantile]);
         w.accuracy_sla = 0.005;
         let plan = RulesPlanner::new().plan(&w);
-        assert_eq!(plan.agent_config.sketch_params.relative_accuracy, 0.005);
+        match &plan.agent_config.sketch_params {
+            SketchParams::DDSketch { relative_accuracy, .. } => assert_eq!(*relative_accuracy, 0.005),
+            other => panic!("expected DDSketch, got {:?}", other),
+        }
     }
 
     #[test]
@@ -305,10 +267,10 @@ mod tests {
         let mut w = workload(vec![AggType::Cardinality]);
         w.accuracy_sla = 0.03;
         let plan = RulesPlanner::new().plan(&w);
-        assert_eq!(
-            plan.agent_config.sketch_params.precision, 10,
-            "coarse SLA should use lower precision"
-        );
+        match &plan.agent_config.sketch_params {
+            SketchParams::HLL { precision } => assert_eq!(*precision, 10, "coarse SLA should use lower precision"),
+            other => panic!("expected HLL, got {:?}", other),
+        }
     }
 
     #[test]

@@ -37,10 +37,10 @@ func hllWindowConfig(windowDur time.Duration) *Config {
 	}
 }
 
-// collectHLLDataPoints gathers all gauge data points from metrics emitted to sink
-// that belong to the given metric name prefix.
-func collectHLLDataPoints(allMetrics []pmetric.Metrics, metricName string) []pmetric.NumberDataPoint {
-	var dps []pmetric.NumberDataPoint
+// collectHLLDataPoints gathers all HLLSketch data points from metrics emitted
+// to sink that belong to the given metric name.
+func collectHLLDataPoints(allMetrics []pmetric.Metrics, metricName string) []pmetric.HLLSketchDataPoint {
+	var dps []pmetric.HLLSketchDataPoint
 	for _, md := range allMetrics {
 		rms := md.ResourceMetrics()
 		for i := 0; i < rms.Len(); i++ {
@@ -48,8 +48,8 @@ func collectHLLDataPoints(allMetrics []pmetric.Metrics, metricName string) []pme
 			for j := 0; j < sms.Len(); j++ {
 				ms := sms.At(j).Metrics()
 				for k := 0; k < ms.Len(); k++ {
-					if ms.At(k).Name() == metricName {
-						pts := ms.At(k).Gauge().DataPoints()
+					if ms.At(k).Name() == metricName && ms.At(k).Type() == pmetric.MetricTypeHLLSketch {
+						pts := ms.At(k).HLLSketch().DataPoints()
 						for l := 0; l < pts.Len(); l++ {
 							dps = append(dps, pts.At(l))
 						}
@@ -76,7 +76,7 @@ func assertHLLRegistersEqual(t *testing.T, label string, want, got *hll.HyperLog
 }
 
 // TestHLLDelta_FirstWindowSendsFullSketch verifies that the first window flush
-// with DeltaTransmission=true sends a full proto sketch (no hll.encoding attribute).
+// with DeltaTransmission=true sends a full proto sketch (HLLSketchEncodingProto).
 func TestHLLDelta_FirstWindowSendsFullSketch(t *testing.T) {
 	const winDur = 200 * time.Millisecond
 	cfg := hllWindowConfig(winDur)
@@ -94,18 +94,14 @@ func TestHLLDelta_FirstWindowSendsFullSketch(t *testing.T) {
 	dps := collectHLLDataPoints(sink.AllMetrics(), "events_hll_cardinality")
 	require.Len(t, dps, 1, "expected exactly one data point after first flush")
 
-	// Full sketch: hll.sketch_payload present, hll.encoding NOT present (or not "proto_delta").
-	_, hasPayload := dps[0].Attributes().Get("hll.sketch_payload")
-	assert.True(t, hasPayload, "hll.sketch_payload must be present")
-
-	encVal, hasEnc := dps[0].Attributes().Get("hll.encoding")
-	if hasEnc {
-		assert.NotEqual(t, "proto_delta", encVal.Str(), "first window must not be proto_delta")
-	}
+	// Full sketch: encoding must be Proto, not Delta.
+	assert.Equal(t, pmetric.HLLSketchEncodingProto, dps[0].Encoding(),
+		"first window must use Proto encoding, not Delta")
+	assert.Greater(t, len(dps[0].Sketch()), 0, "sketch bytes must be present")
 }
 
 // TestHLLDelta_SubsequentWindowsSendDelta verifies that the second and later
-// window flushes include hll.encoding=proto_delta once a snapshot exists.
+// window flushes use HLLSketchEncodingDelta once a snapshot exists.
 func TestHLLDelta_SubsequentWindowsSendDelta(t *testing.T) {
 	const winDur = 200 * time.Millisecond
 	cfg := hllWindowConfig(winDur)
@@ -129,14 +125,11 @@ func TestHLLDelta_SubsequentWindowsSendDelta(t *testing.T) {
 	dps := collectHLLDataPoints(sink.AllMetrics(), "hits_hll_cardinality")
 	require.Len(t, dps, 1, "expected one data point for window 2")
 
-	encVal, ok := dps[0].Attributes().Get("hll.encoding")
-	require.True(t, ok, "hll.encoding attribute must be present in window 2")
-	assert.Equal(t, "proto_delta", encVal.Str(), "second window must be proto_delta")
+	assert.Equal(t, pmetric.HLLSketchEncodingDelta, dps[0].Encoding(),
+		"second window must use Delta encoding")
 
-	payloadVal, ok := dps[0].Attributes().Get("hll.sketch_payload")
-	require.True(t, ok)
-	_, err := hll.DeserializeRegisterDelta(payloadVal.Bytes().AsRaw())
-	require.NoError(t, err, "proto_delta payload must deserialize as a RegisterDelta")
+	_, err := hll.DeserializeRegisterDelta(dps[0].Sketch())
+	require.NoError(t, err, "Delta payload must deserialize as a RegisterDelta")
 }
 
 // TestHLLDelta_RoundTrip verifies that applying the delta from window 2 onto a
@@ -158,8 +151,8 @@ func TestHLLDelta_RoundTrip(t *testing.T) {
 
 	dps1 := collectHLLDataPoints(sink.AllMetrics(), "req_hll_cardinality")
 	require.Len(t, dps1, 1)
-	rawFull := dps1[0].Attributes().AsRaw()["hll.sketch_payload"].([]byte)
-	snapSketch, err := hll.DeserializeHyperLogLogFromProtoBytes(rawFull)
+	require.Equal(t, pmetric.HLLSketchEncodingProto, dps1[0].Encoding())
+	snapSketch, err := hll.DeserializeHyperLogLogFromProtoBytes(dps1[0].Sketch())
 	require.NoError(t, err)
 
 	sink.Reset()
@@ -171,12 +164,9 @@ func TestHLLDelta_RoundTrip(t *testing.T) {
 	dps2 := collectHLLDataPoints(sink.AllMetrics(), "req_hll_cardinality")
 	require.Len(t, dps2, 1)
 
-	encVal, ok := dps2[0].Attributes().Get("hll.encoding")
-	require.True(t, ok)
-	require.Equal(t, "proto_delta", encVal.Str())
+	require.Equal(t, pmetric.HLLSketchEncodingDelta, dps2[0].Encoding())
 
-	rawDelta := dps2[0].Attributes().AsRaw()["hll.sketch_payload"].([]byte)
-	deltaMsg, err := hll.DeserializeRegisterDelta(rawDelta)
+	deltaMsg, err := hll.DeserializeRegisterDelta(dps2[0].Sketch())
 	require.NoError(t, err)
 
 	// Apply delta onto clone of window-1 snapshot → reconstructed.
@@ -197,8 +187,7 @@ func TestHLLDelta_RoundTrip(t *testing.T) {
 	require.Len(t, batchOut, 1)
 	batchDPs := collectHLLDataPoints(batchOut, "req_hll_cardinality")
 	require.Len(t, batchDPs, 1)
-	rawW2 := batchDPs[0].Attributes().AsRaw()["hll.sketch_payload"].([]byte)
-	w2Sketch, err := hll.DeserializeHyperLogLogFromProtoBytes(rawW2)
+	w2Sketch, err := hll.DeserializeHyperLogLogFromProtoBytes(batchDPs[0].Sketch())
 	require.NoError(t, err)
 
 	expected := cloneHLL(snapSketch)
@@ -226,8 +215,7 @@ func TestHLLDelta_MaxSemanticsIdempotent(t *testing.T) {
 
 	snapDPs := collectHLLDataPoints(sink.AllMetrics(), "ev_hll_cardinality")
 	require.Len(t, snapDPs, 1)
-	rawFull := snapDPs[0].Attributes().AsRaw()["hll.sketch_payload"].([]byte)
-	snapSketch, err := hll.DeserializeHyperLogLogFromProtoBytes(rawFull)
+	snapSketch, err := hll.DeserializeHyperLogLogFromProtoBytes(snapDPs[0].Sketch())
 	require.NoError(t, err)
 
 	sink.Reset()
@@ -238,7 +226,7 @@ func TestHLLDelta_MaxSemanticsIdempotent(t *testing.T) {
 
 	dps2 := collectHLLDataPoints(sink.AllMetrics(), "ev_hll_cardinality")
 	require.Len(t, dps2, 1)
-	rawDelta := dps2[0].Attributes().AsRaw()["hll.sketch_payload"].([]byte)
+	rawDelta := dps2[0].Sketch()
 
 	// Apply once.
 	recv1 := cloneHLL(snapSketch)
@@ -286,13 +274,11 @@ func TestHLLDelta_MultipleWindowsConvergence(t *testing.T) {
 		dps := collectHLLDataPoints(sink.AllMetrics(), "stream_hll_cardinality")
 		require.Len(t, dps, 1, "window %d: expected 1 data point", w)
 
-		attrs := dps[0].Attributes().AsRaw()
-		rawPayload := attrs["hll.sketch_payload"].([]byte)
-		encAttr, hasEnc := attrs["hll.encoding"]
-		enc, _ := encAttr.(string)
+		rawPayload := dps[0].Sketch()
+		enc := dps[0].Encoding()
 
 		var currentHLL *hll.HyperLogLog
-		if !hasEnc || enc != "proto_delta" {
+		if enc != pmetric.HLLSketchEncodingDelta {
 			// Full sketch.
 			var ferr error
 			currentHLL, ferr = hll.DeserializeHyperLogLogFromProtoBytes(rawPayload)
@@ -308,8 +294,7 @@ func TestHLLDelta_MultipleWindowsConvergence(t *testing.T) {
 		prevSnap = cloneHLL(currentHLL)
 
 		// Cardinality estimate must be non-zero after each window.
-		cardAttr, ok := dps[0].Attributes().Get("hll.cardinality")
-		require.True(t, ok, "window %d: hll.cardinality attr missing", w)
-		assert.Greater(t, cardAttr.Int(), int64(0), fmt.Sprintf("window %d: cardinality must be positive", w))
+		assert.Greater(t, dps[0].Cardinality(), uint64(0),
+			fmt.Sprintf("window %d: cardinality must be positive", w))
 	}
 }
