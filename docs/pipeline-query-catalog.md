@@ -833,7 +833,205 @@ count(count_over_time(errors_total[1w]) by (error_fingerprint))
 identical (modulo numerical noise) to one sketch over the whole week.
 The query is answered from a single sketch read.
 
-### 7.8 Targets from #46 (MVP)
+### 7.8 Queries adapted from popular observability stacks
+
+The catalog so far has been driven by issues internal to this project.
+This subsection walks queries lifted from public observability blogs
+and docs — ClickHouse / ClickStack, VictoriaMetrics / MetricsQL, and
+NCCL Inspector — and shows that the design covers the same questions
+production tools answer, while inheriting §4's bandwidth and resource
+savings. Source URLs are listed in §10.
+
+#### 7.8.1 ClickHouse / ClickStack — OTel trace analytics
+
+The canonical ClickStack idiom is `quantile(0.99)(Duration)` over
+`otel_traces` grouped by `SpanName` / `ServiceName`, with HLL-flavored
+`uniq()` for cardinality. Both translate to the same accumulators the
+pipeline already ships.
+
+```sql
+-- ClickHouse: top-10 endpoints by p99 latency over 24h
+SELECT SpanName, count(),
+       quantile(0.50)(Duration) AS p50,
+       quantile(0.95)(Duration) AS p95,
+       quantile(0.99)(Duration) AS p99
+FROM otel_traces
+WHERE Timestamp > now() - INTERVAL 24 HOUR
+  AND SpanKind = 'Server'
+GROUP BY SpanName
+ORDER BY p99 DESC LIMIT 10;
+```
+
+Pipeline mapping:
+
+```yaml
+OTel:     kllprocessor per (host, span_name), 30s batches
+Backend:  metric=otel_span_duration_us
+          aggregation_type=DatasketchesKLL
+          grouping_labels=[span_name]
+          window_size=86400s
+          slide_interval=300s
+```
+```promql
+topk(10, quantile_over_time(0.99, otel_span_duration_us[24h]) by (span_name))
+```
+
+The pipeline returns ten rows from per-`span_name` sketch reads. The
+ClickHouse equivalent scans every span row in a 24 h window. For a
+fleet of N hosts the saving scales as `O(N)` (cross-host collapse) ×
+`O(window_seconds / agent_emit_interval)`.
+
+```sql
+-- ClickHouse: per-service latency dashboard, 1h
+SELECT ServiceName, count(),
+       quantile(0.50)(Duration) AS p50_ms,
+       quantile(0.95)(Duration) AS p95_ms,
+       quantile(0.99)(Duration) AS p99_ms
+FROM otel_traces
+WHERE Timestamp > now() - INTERVAL 1 HOUR AND SpanKind = 'Server'
+GROUP BY ServiceName;
+```
+
+Maps to a single `DatasketchesKLL` aggregation grouped by `service`,
+with three quantile reads from one sketch. A dashboard refreshing
+every 30 s amortizes its work over `~120` queries against the same
+stored entry — the merge-at-write-time win in §4.5.
+
+```sql
+-- ClickHouse: top-K customer IDs causing errors in the last hour
+SELECT CustomerId, count() AS errs
+FROM otel_logs
+WHERE Severity = 'ERROR' AND Timestamp > now() - INTERVAL 1 HOUR
+GROUP BY CustomerId ORDER BY errs DESC LIMIT 20;
+```
+
+Maps to `countminsketchcol` (heap=20) on `customer_id`, backend
+`grouping_labels=[]`, `window_size=3600s`, query
+`topk(20, count_over_time(error_logs[1h]) by (customer_id))`.
+
+```sql
+-- ClickHouse: distinct active users per service per day
+SELECT ServiceName, uniq(UserId) AS dau
+FROM otel_traces
+WHERE Timestamp > now() - INTERVAL 1 DAY GROUP BY ServiceName;
+```
+
+ClickHouse's `uniq()` is itself an HLL-style sketch, so this maps
+directly to `hllprocessor` on `user_id`, backend
+`grouping_labels=[service]`, `window_size=86400s`. Same accuracy
+guarantee, far smaller stored footprint than per-row trace storage.
+
+#### 7.8.2 VictoriaMetrics — MetricsQL dashboard patterns
+
+MetricsQL is a PromQL superset; the canonical observability dashboard
+idioms below all map cleanly.
+
+| MetricsQL query | Pipeline mapping |
+|---|---|
+| `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))` | `kllprocessor` per `(host, route)` 30 s, backend `grouping_labels=[route]` window 5 min, stored `DatasketchesKLL`. PromQL becomes `quantile_over_time(0.95, http_request_duration_seconds[5m]) by (route)` and **avoids shipping bucket vectors entirely** |
+| `rate(http_requests_total[5m])` | scalar passthrough → `Sum` / `Increase` accumulator per `(service)` |
+| `topk(10, sum by (instance) (rate(node_cpu_seconds_total[5m])))` | `countminsketchcol` heap on `(instance)`, backend `grouping_labels=[instance]`, query `topk(10, sum_over_time(node_cpu_seconds_total[5m]) by (instance))` |
+| `count(count_over_time(http_requests_total{status=~"5.."}[1h]) by (path))` | `hllprocessor` on `path`, backend `grouping_labels=[]`, window 1 h, query unchanged |
+| `quantile_over_time(0.99, mysql_query_duration_seconds[10m]) by (db_user)` | `kllprocessor` per `(host, db_user)`, backend `grouping_labels=[db_user]` window 10 min, query unchanged |
+| `bottomk(5, avg_over_time(node_disk_io_time_seconds_total[1h]) by (device))` | `kllprocessor` per `(host, device)`, backend `grouping_labels=[device]` window 1 h, query `bottomk(5, avg_over_time(node_disk_io_time_seconds_total[1h]) by (device))` |
+
+The `histogram_quantile(...)` row is particularly relevant for
+bandwidth: the classic Prometheus histogram approach ships one gauge
+per bucket per series per scrape (commonly 10–15 buckets — see also
+[ASAPQuery#253](https://github.com/ProjectASAP/ASAPQuery/issues/253)
+which audits PromQL coverage against k8s mixin rules), whereas the
+sketch path ships one envelope-bytes blob. For `route` cardinality of
+a few hundred this is roughly an order of magnitude smaller on the
+agent → backend link, and the controller can pick `KLL` or `DDSketch`
+based on the operator's stated `accuracy` (see Layer 3 of
+[`controller/docs/query-to-sketch-translation.md`](../controller/docs/query-to-sketch-translation.md)).
+
+#### 7.8.3 NCCL Inspector — GPU collective communication observability
+
+[NCCL Inspector](https://developer.nvidia.com/blog/enhancing-communication-observability-of-ai-workloads-with-nccl-inspector/)
+emits per-collective performance metrics with these fields:
+
+- algorithmic bandwidth (GB/s)
+- bus bandwidth (GB/s)
+- execution time (μs)
+- message size (bytes)
+- collective type (categorical: AllReduce, AllGather, ReduceScatter, …)
+
+Dimensions: per `(host, gpu_id, comm_id, op_type, comm_size, pattern)`,
+where `pattern ∈ {nvlink-only, hca-only, mixed}`. Typical SRE queries:
+
+- **p99 AllReduce execution time per communicator per minute:**
+  ```yaml
+  OTel:     kllprocessor per (host, gpu_id, comm_id, op_type), 10s batches
+  Backend:  metric=nccl_op_duration_us
+            aggregation_type=DatasketchesKLL
+            grouping_labels=[comm_id, op_type]
+            window_size=60s
+  ```
+  ```promql
+  quantile_over_time(0.99, nccl_op_duration_us{op_type="AllReduce"}[1m]) by (comm_id)
+  ```
+  **Win:** 8 GPUs/host × 100 hosts = 800 raw rank streams collapse
+  into one merged sketch per `(comm_id, op_type)` per minute.
+
+- **Top-K slowest ranks over the last hour** (anomaly detection):
+  ```yaml
+  OTel:     kllprocessor per (host, gpu_id), 10s batches
+  Backend:  grouping_labels=[host, gpu_id], window=3600s
+  ```
+  ```promql
+  topk(5, quantile_over_time(0.99, nccl_op_duration_us[1h]) by (host, gpu_id))
+  ```
+
+- **Bus-bandwidth distribution per collective type per job:**
+  ```yaml
+  OTel:     ddsketchprocessor per (host, job, op_type), 10s batches
+  Backend:  metric=nccl_bus_bandwidth_gbps
+            grouping_labels=[job, op_type]
+            window_size=300s
+  ```
+  ```promql
+  quantile_over_time(0.5, nccl_bus_bandwidth_gbps[5m]) by (job, op_type)
+  ```
+
+- **Distinct active communicators per host per minute** (cardinality):
+  ```yaml
+  OTel:     hllprocessor per (host), 10s batches on comm_id
+  Backend:  grouping_labels=[host], window=60s
+  ```
+  ```promql
+  count(count_over_time(nccl_comm_active[1m]) by (comm_id))
+  ```
+
+- **Message-size histogram per `(comm, op_type)` per minute:**
+  ```yaml
+  OTel:     kllprocessor on nccl_message_size_bytes per (host, comm, op_type), 10s
+  Backend:  grouping_labels=[comm, op_type], window=60s
+  ```
+  ```promql
+  quantile_over_time(0.5, nccl_message_size_bytes[1m]) by (comm, op_type)
+  ```
+
+- **Communication-pattern breakdown** (frequency of nvlink vs hca vs
+  mixed paths per job):
+  ```yaml
+  OTel:     countminsketchcol per (host, job), 10s batches on pattern
+  Backend:  aggregation_type=CountMinSketch
+            grouping_labels=[job]
+            aggregated_labels=[pattern]
+            window_size=60s
+  ```
+  ```promql
+  count_over_time(nccl_op_total[1m]) by (job, pattern)
+  ```
+
+NCCL Inspector emphasizes **always-on, low-overhead** collection. The
+multi-stage design serves that directly: per-rank metrics never leave
+the host as raw point streams, only as compact 10 s sketches; the
+backend collapses across ranks at ingest, so an 800-rank training job
+pays the same dashboard read cost as a single-rank job.
+
+### 7.9 Targets from #46 (MVP)
 
 [#46](https://github.com/ProjectASAP/DataCollector/issues/46) lists
 three reduction targets the design is meant to hit:
@@ -917,3 +1115,25 @@ each:
   `asap-query-engine/src/precompute_operators/`
 - Wire protobuf:
   `asap_sketchlib::proto::sketchlib::SketchEnvelope`
+
+### External references for §7.8 (production observability stacks)
+
+- ClickHouse / ClickStack observability overview:
+  [clickhouse.com/clickstack](https://clickhouse.com/clickstack)
+- ClickStack high-cardinality trap / observability playbook:
+  [clickhouse.com/resources/engineering/high-cardinality-slow-observability-challenge](https://clickhouse.com/resources/engineering/high-cardinality-slow-observability-challenge),
+  [clickhouse.com/resources/engineering/observability-cost-optimization-playbook](https://clickhouse.com/resources/engineering/observability-cost-optimization-playbook)
+- Storing OpenTelemetry traces in ClickHouse (example `quantile()`
+  queries used in §7.8.1):
+  [clickhouse.com/blog/storing-traces-and-spans-open-telemetry-in-clickhouse](https://clickhouse.com/blog/storing-traces-and-spans-open-telemetry-in-clickhouse),
+  [clickhouse.com/blog/how-we-used-clickhouse-to-store-opentelemetry-traces](https://clickhouse.com/blog/how-we-used-clickhouse-to-store-opentelemetry-traces)
+- VictoriaMetrics MetricsQL reference:
+  [docs.victoriametrics.com/victoriametrics/metricsql](https://docs.victoriametrics.com/victoriametrics/metricsql/)
+- NCCL Inspector — per-collective observability metrics (algorithmic
+  bandwidth, bus bandwidth, execution time, message size, collective
+  type; used in §7.8.3):
+  [developer.nvidia.com/blog/enhancing-communication-observability-of-ai-workloads-with-nccl-inspector](https://developer.nvidia.com/blog/enhancing-communication-observability-of-ai-workloads-with-nccl-inspector/)
+- NCCL 2.26 kernel profiler / plugin interface:
+  [developer.nvidia.com/blog/improved-performance-and-monitoring-capabilities-with-nvidia-collective-communications-library-2-26](https://developer.nvidia.com/blog/improved-performance-and-monitoring-capabilities-with-nvidia-collective-communications-library-2-26)
+- NCCL 2.24 networking reliability & observability:
+  [developer.nvidia.com/blog/networking-reliability-and-observability-at-scale-with-nccl-2-24](https://developer.nvidia.com/blog/networking-reliability-and-observability-at-scale-with-nccl-2-24/)
