@@ -160,7 +160,7 @@ PromQL function coverage exposed by `SimpleEngine` today:
 | `sum_over_time(m[w])` | `Sum` / `MultipleSum` |
 | `count_over_time(m[w])` | `CountMinSketch` (with or without heap) |
 | `topk(k, count_over_time(m[w]))` | `CountMinSketchWithHeap` |
-| `count(count_over_time(m[w]) by (l))` | `SetAggregator` / `HLL` |
+| `count by (l) (count_over_time(m[w]))` | `SetAggregator` / `HLL` |
 | `changes(m[w])` | `DeltaSetAggregator` |
 
 Plus PromQL spatial aggregators (`sum`, `count`, `avg`, `min`, `max`,
@@ -168,6 +168,38 @@ Plus PromQL spatial aggregators (`sum`, `count`, `avg`, `min`, `max`,
 
 SQL and ElasticDSL front-ends route through separate HTTP adapters but
 ultimately dispatch to the same accumulators by `AggregationType`.
+
+> **A note on `count` and distinct counting in PromQL.**
+> Standard PromQL has no `count_distinct` operator — `count()` counts
+> *time series*, not distinct values, and `count_over_time` is a rollup
+> that counts *samples per series*, not distinct values either. The
+> idiomatic pattern for "distinct values of `Y` per `X` over window
+> `w`" is
+>
+> ```promql
+> count by (X) (count_over_time(metric_with_label_Y[w]))
+> ```
+>
+> which returns, for each `X`, the number of distinct series (i.e.
+> distinct combinations of free labels including `Y`) that had any
+> samples in the range. This only yields *distinct-count-of-Y* when
+> the metric actually carries `Y` as a label, so each distinct `Y`
+> value produces a distinct series.
+>
+> SimpleEngine recognizes this specific outer-`count` shape and
+> dispatches it to the `SetAggregator` / `HLL` accumulator — so the
+> execution is cardinality sketching, not series enumeration. (See
+> `docs/sketch-algebra-query-mapping.md` §2.3 for the canonical table
+> of PromQL shape → accumulator dispatch.)
+>
+> Two common pitfalls: (1) `count_over_time(m[w]) by (l)` is a PromQL
+> parse error because rollup functions don't accept `by`/`without` —
+> `by` attaches to the outer aggregator. (2) Writing `count(...)`
+> without a grouping clause yields the *global* distinct count, not
+> a per-label breakdown. The catalog below uses the correct
+> `count by (...) (...)` form throughout; watch for this shape when
+> translating queries from SQL `COUNT(DISTINCT …)` or ClickHouse
+> `uniq(…)`.
 
 ---
 
@@ -182,9 +214,9 @@ surface.
 
 | Class | OTel op | Precompute merge | Stored accumulator | Query (PromQL) | Accuracy |
 |---|---|---|---|---|---|
-| **Q-C1. Frequency per group** | `countminsketchcol` → CMS per window | window-align + merge CMS cells | `CountMinSketchAccumulator` (keyed by agg labels) | `count_over_time(m{f}[w]) by (d)` | ε=2/width, δ=1/2^depth |
-| **Q-C2. Top-K groups by count** | `countminsketchcol` with heap, or `countsketchcol` | merge cells + heap | `CountMinSketchWithHeapAccumulator` | `topk(k, count_over_time(m{f}[w]) by (d))` | heap-bounded |
-| **Q-C3. Distinct groups / cardinality** | `hllcol` | OR of HLL registers | `HllAccumulator` / `SetAggregator` | `count(count_over_time(m{f}[w]) by (d))` | σ ≈ 1.04/√m |
+| **Q-C1. Frequency per group** | `countminsketchcol` → CMS per window | window-align + merge CMS cells | `CountMinSketchAccumulator` (keyed by agg labels) | `sum by (d) (count_over_time(m{f}[w]))` | ε=2/width, δ=1/2^depth |
+| **Q-C2. Top-K groups by count** | `countminsketchcol` with heap, or `countsketchcol` | merge cells + heap | `CountMinSketchWithHeapAccumulator` | `topk(k, sum by (d) (count_over_time(m{f}[w])))` | heap-bounded |
+| **Q-C3. Distinct groups / cardinality** | `hllcol` | OR of HLL registers | `HllAccumulator` / `SetAggregator` | `count by (d) (count_over_time(m{f}[w]))` *(see note in §2.3)* | σ ≈ 1.04/√m |
 | **Q-C4. Quantiles per group** | `kll` or `ddsketchcol` | merge KLL levels (or add DD buckets) | `DatasketchesKLLAccumulator` / `HydraKllSketchAccumulator` | `quantile_over_time(φ, m{f}[w]) by (d)` | KLL: ~1% rank error; DDSketch: relative ε |
 | **Q-C5. Median proxy for avg** | `kll` at φ=0.5 | merge KLL | `DatasketchesKLLAccumulator` | `avg_over_time(m{f}[w]) by (d)` | median ≠ mean; explicit opt-in |
 | **Q-C6. Exact min/max per group** | `ddsketchcol` lossless extrema (or `kllprocessor` tracking extrema) | `ExactMinMax` | `MinMaxAccumulator` / `MultipleMinMaxAccumulator` | `min_over_time`/`max_over_time(m{f}[w]) by (d)` | exact |
@@ -584,7 +616,7 @@ labels `[symbol, exchange, sectype]`, 5-minute tumbling windows.
   `CountMinSketchWithHeapAccumulator`. Cross-agent collapse is the win
   — many gateways may stream the same symbols.
   ```promql
-  topk(10, count_over_time(financial.last_trade_price[5m]) by (symbol))
+  topk(10, sum by (symbol) (count_over_time(financial.last_trade_price[5m])))
   ```
 - **DEBS Q4 — Per-symbol high/low/range.** `kllprocessor` quantiles
   `[0, 1]`, `aggregate_by=[symbol]`. Stored as `MultipleMinMaxAccumulator`
@@ -598,7 +630,8 @@ labels `[symbol, exchange, sectype]`, 5-minute tumbling windows.
 - **DEBS Q6 — Distinct active symbols per window.** `hllprocessor`,
   `mode=window`. Stored as `HllAccumulator`.
   ```promql
-  count(count_over_time(financial.last_trade_price[5m]) by (symbol))
+  # distinct active symbols in the last 5 min (global, no grouping)
+  count(count_over_time(financial.last_trade_price[5m]))
   ```
 
 ### 7.3 Cluster & cloud telemetry
@@ -613,7 +646,7 @@ Google Cluster Trace, Alibaba Cluster Trace, Datadog BOOM, MIT Supercloud.
   hosts × 10 routes × every 10 s become **one CMS per route per
   minute** stored.
   ```promql
-  topk(10, count_over_time(http_requests_total[1m]) by (route))
+  topk(10, sum by (route) (count_over_time(http_requests_total[1m])))
   ```
 - **p99 request latency per service per hour.** `kllprocessor` per
   `(host, service)`, 30-second batches. Backend
@@ -628,7 +661,8 @@ Google Cluster Trace, Alibaba Cluster Trace, Datadog BOOM, MIT Supercloud.
   `(host, namespace)`, 10-second batches. Backend
   `grouping_labels=[namespace]`, 1-minute window.
   ```promql
-  count(count_over_time(container_running[1m]) by (container_id))
+  # distinct active containers per namespace in the last minute
+  count by (namespace) (count_over_time(container_running[1m]))
   ```
 - **Top noisy-neighbor pods by CPU per node per minute** (Google
   Cluster Trace pattern). `countminsketchcol` heap on `(pod_id)`,
@@ -666,7 +700,7 @@ Pecan Street, UCI household power, NASA CMAPSS, PHM Society.
   `src_ip`, 1-second batches per cell. Backend `grouping_labels=[cell_id]`,
   1-second tumbling. Output feeds straight into per-cell rate limiters.
   ```promql
-  topk(10, count_over_time(packets_total[1s]) by (src_ip))
+  topk(10, sum by (src_ip) (count_over_time(packets_total[1s])))
   ```
 - **Packet size distribution per BSS per minute.** `ddsketchprocessor`,
   1-second batches. Backend `grouping_labels=[bss_id]`, 60-second
@@ -683,7 +717,7 @@ NYC Taxi, Uber Movement, MIMIC-IV waveforms (all from #47).
   `countsketchcol` heap on `pickup_zone`. 30-second agent batches,
   5-minute backend windows.
   ```promql
-  topk(20, count_over_time(taxi_pickups_total[5m]) by (pickup_zone))
+  topk(20, sum by (pickup_zone) (count_over_time(taxi_pickups_total[5m])))
   ```
 - **p50/p95 trip duration per zone pair per hour.** `kllprocessor`
   per `(pickup_zone, dropoff_zone)`. Backend
@@ -723,7 +757,8 @@ Stored: **one `HllAccumulator` per region per day** (typically ≤ 5
 entries per day, regardless of fleet size). Query:
 
 ```promql
-count(count_over_time(active_users_total[1d]) by (user_id))
+# distinct active users per region per day
+count by (region) (count_over_time(active_users_total[1d]))
 ```
 
 A naïve store without precompute would hold roughly
@@ -796,7 +831,7 @@ A query that needs both *frequency* (number of events) and *quantile*
 Query (read-side composition):
 
 ```
-top_10_by_count = topk(10, count_over_time(order_events_total[5m]) by (symbol))
+top_10_by_count = topk(10, sum by (symbol) (count_over_time(order_events_total[5m])))
 median_size      = quantile_over_time(0.5, order_size_usd[5m]) by (symbol)
 result           = join(top_10_by_count, median_size, on=symbol)
 ```
@@ -826,7 +861,8 @@ backend window is the merge of `7 × 24 × 12 = 2016` 5-minute agent
 emissions. Query:
 
 ```promql
-count(count_over_time(errors_total[1w]) by (error_fingerprint))
+# distinct error fingerprints per service in the last week
+count by (service) (count_over_time(errors_total[1w]))
 ```
 
 **Why this works:** HLL is associative, so merging 2016 sketches is
@@ -907,7 +943,7 @@ GROUP BY CustomerId ORDER BY errs DESC LIMIT 20;
 
 Maps to `countminsketchcol` (heap=20) on `customer_id`, backend
 `grouping_labels=[]`, `window_size=3600s`, query
-`topk(20, count_over_time(error_logs[1h]) by (customer_id))`.
+`topk(20, sum by (customer_id) (count_over_time(error_logs[1h])))`.
 
 ```sql
 -- ClickHouse: distinct active users per service per day
@@ -931,7 +967,7 @@ idioms below all map cleanly.
 | `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))` | `kllprocessor` per `(host, route)` 30 s, backend `grouping_labels=[route]` window 5 min, stored `DatasketchesKLL`. PromQL becomes `quantile_over_time(0.95, http_request_duration_seconds[5m]) by (route)` and **avoids shipping bucket vectors entirely** |
 | `rate(http_requests_total[5m])` | scalar passthrough → `Sum` / `Increase` accumulator per `(service)` |
 | `topk(10, sum by (instance) (rate(node_cpu_seconds_total[5m])))` | `countminsketchcol` heap on `(instance)`, backend `grouping_labels=[instance]`, query `topk(10, sum_over_time(node_cpu_seconds_total[5m]) by (instance))` |
-| `count(count_over_time(http_requests_total{status=~"5.."}[1h]) by (path))` | `hllprocessor` on `path`, backend `grouping_labels=[]`, window 1 h, query unchanged |
+| `count(count_over_time(http_requests_total{status=~"5.."}[1h]))` (distinct error paths) | `hllprocessor` on `path`, backend `grouping_labels=[]`, window 1 h |
 | `quantile_over_time(0.99, mysql_query_duration_seconds[10m]) by (db_user)` | `kllprocessor` per `(host, db_user)`, backend `grouping_labels=[db_user]` window 10 min, query unchanged |
 | `bottomk(5, avg_over_time(node_disk_io_time_seconds_total[1h]) by (device))` | `kllprocessor` per `(host, device)`, backend `grouping_labels=[device]` window 1 h, query `bottomk(5, avg_over_time(node_disk_io_time_seconds_total[1h]) by (device))` |
 
@@ -996,12 +1032,21 @@ where `pattern ∈ {nvlink-only, hca-only, mixed}`. Typical SRE queries:
 
 - **Distinct active communicators per host per minute** (cardinality):
   ```yaml
-  OTel:     hllprocessor per (host), 10s batches on comm_id
-  Backend:  grouping_labels=[host], window=60s
+  OTel:     hllprocessor per (host), 10s batches on label comm_id
+  Backend:  metric=nccl_comm_active
+            aggregation_type=HLL
+            grouping_labels=[host]
+            aggregated_labels=[comm_id]
+            window_size=60s
   ```
   ```promql
-  count(count_over_time(nccl_comm_active[1m]) by (comm_id))
+  count by (host) (count_over_time(nccl_comm_active[1m]))
   ```
+  Relies on `comm_id` being a label on `nccl_comm_active` so that
+  each distinct communicator produces a distinct series; SimpleEngine
+  dispatches the outer-`count by (host)` shape to the `HLL`
+  accumulator (§2.3 note). The per-host cardinality answer comes from
+  the HLL sketch, not by enumerating series.
 
 - **Message-size histogram per `(comm, op_type)` per minute:**
   ```yaml
@@ -1022,7 +1067,7 @@ where `pattern ∈ {nvlink-only, hca-only, mixed}`. Typical SRE queries:
             window_size=60s
   ```
   ```promql
-  count_over_time(nccl_op_total[1m]) by (job, pattern)
+  sum by (job, pattern) (count_over_time(nccl_op_total[1m]))
   ```
 
 NCCL Inspector emphasizes **always-on, low-overhead** collection. The
@@ -1065,7 +1110,7 @@ each:
 - **Aggregated labels at the backend.** For multi-subpopulation
   accumulators (`MultipleSum`, `CountMinSketch`, `HydraKLL`, ...),
   `aggregated_labels` selects the inner dimension each accumulator
-  tracks per-key. This is how `topk(k, count_over_time(m) by (d1, d2))`
+  tracks per-key. This is how `topk(k, sum by (d1, d2) (count_over_time(m[w])))`
   gets a single accumulator answering multi-dim top-K.
 - **Allowed lateness.** `precompute_allowed_lateness_ms` — how far the
   watermark is allowed to trail. Samples older than `watermark -
