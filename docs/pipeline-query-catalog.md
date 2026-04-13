@@ -1712,46 +1712,66 @@ Alternative architectures remain viable for specific workloads:
    the corresponding concrete accumulator. Delta-transmission
    encodings (issues [#62](https://github.com/ProjectASAP/DataCollector/issues/62)–[#67](https://github.com/ProjectASAP/DataCollector/issues/67))
    and `series_id` optimisations come along for free.
-2. **MessagePack as a parallel encoding option for sketch payloads.**
-   Once the modified-OTLP adoption (item 1) is in place, add
-   MessagePack as an opt-in alternative to protobuf for the bytes
-   inside the `*SketchDataPoint.sketch` field — *not* for the OTLP
-   envelope, which stays protobuf. This is a coordinated change
-   across three repos:
+2. **MessagePack as a parallel encoding option for sketch payloads,
+   with full feature parity including delta transmission.** Once
+   the modified-OTLP adoption (item 1) is in place, add MessagePack
+   as an opt-in alternative to protobuf for the bytes inside the
+   `*SketchDataPoint.sketch` field — *not* for the OTLP envelope,
+   which stays protobuf. MessagePack supports both full snapshots
+   and delta transmission, matching protobuf one-for-one. This is
+   a coordinated change across three repos:
 
    - **sketchlib-go**: add MessagePack ser/de for every sketch type
-     (CountMin, CountSketch, KLL, HLL, DDSketch, …) alongside the
-     existing protobuf path. Cross-language round-trip tests in CI:
+     (CountMin, CountSketch, KLL, HLL, DDSketch, …) **with both
+     full-snapshot and delta variants**, alongside the existing
+     protobuf paths. Cross-language round-trip tests in CI:
      serialize in Go via msgpack, deserialize in Rust via msgpack,
      and assert the queried statistic equals the ground-truth value
-     within the sketch's error bound.
+     within the sketch's error bound — for both full and delta
+     emission modes.
    - **DataCollector modified `opentelemetry-proto`**: extend each
-     per-sketch encoding enum with `*_ENCODING_MSGPACK = 2`
-     (`KLLSketchEncoding`, `DDSketchEncoding`, `CountSketchEncoding`,
-     `CountMinSketchEncoding`, `HLLSketchEncoding`). No
-     `*_ENCODING_MSGPACK_DELTA` variants — delta transmission stays
-     protobuf-only to avoid double-implementation drift.
-   - **DataCollector sketch processors**: add a per-processor config
-     knob `payload_encoding: proto | msgpack` (default `proto`).
-     When set to `msgpack`, the processor calls sketchlib-go's
-     MessagePack serializer and stamps the matching encoding enum
-     on the emitted DataPoint.
+     per-sketch encoding enum with **two** new variants —
+     `*_ENCODING_MSGPACK = 2` (full snapshot) and
+     `*_ENCODING_MSGPACK_DELTA = 3` (delta). Applies to
+     `KLLSketchEncoding`, `DDSketchEncoding`, `CountSketchEncoding`,
+     `CountMinSketchEncoding`, `HLLSketchEncoding`.
+   - **DataCollector sketch processors**: add a per-processor
+     `payload_encoding: proto | msgpack` config knob (default
+     `proto`) that composes orthogonally with the existing
+     `delta_transmission` knob. Cross-product is `{proto, msgpack}
+     × {full, delta}` = four output paths per processor; the
+     emitted DataPoint stamps the matching encoding enum value
+     (`_PROTO`, `_PROTO_DELTA`, `_MSGPACK`, `_MSGPACK_DELTA`).
    - **ASAPQuery-backend** per-variant handlers (extending item 1
-     above) and concrete accumulators each gain a parallel
-     `from_msgpack` constructor; the handler dispatches on
-     `dp.encoding()` between `from_proto` and `from_msgpack`.
-   - **Tests**: cross-format equality in `asap-query-engine` — for
-     each sketch type, emit the same source data via both formats,
-     decode both at the backend, query the same statistic, and
-     assert the answers are equal (within the sketch's error
-     bound). Catches silent schema drift between the two stacks.
+     above) dispatch on `dp.encoding()` with **four** paths per
+     sketch type: full-proto → `from_proto`, proto-delta → apply
+     proto delta to per-series baseline, full-msgpack →
+     `from_msgpack`, msgpack-delta → apply msgpack delta to
+     per-series baseline. The per-series baseline is shared across
+     encodings — a series can switch between proto-delta and
+     msgpack-delta mid-stream as long as the decoder can read the
+     previous baseline.
+   - **Concrete accumulators** in `precompute_operators/` each gain
+     a parallel `from_msgpack` constructor and a
+     `merge_msgpack_delta(&self, bytes) -> Self` method alongside
+     the existing `from_proto` / `merge_proto_delta`. Same
+     downstream `AggregateCore` interface — only the
+     deserialization step differs.
+   - **Tests**: four-way correctness in `asap-query-engine` — for
+     each sketch type, emit the same source data through all four
+     encodings (proto-full, proto-delta, msgpack-full,
+     msgpack-delta), decode all four at the backend, query the same
+     statistic, and assert all four answers are equal (within the
+     sketch's error bound). Catches schema drift between formats
+     AND drift between full and delta paths within the same format.
 
    Ground rules: protobuf stays the default everywhere; MessagePack
-   is opt-in per metric at the sketchcol processor config; delta
-   transmission stays protobuf-only; the OTLP envelope itself
-   always stays protobuf; every sketch type must support both
-   encodings (no MessagePack-only types). Trade-off context
-   (qualitative + benchmark numbers) is captured in
+   is opt-in per metric at the sketchcol processor config; **both
+   formats support both full and delta transmission with no
+   asymmetry**; the OTLP envelope itself always stays protobuf;
+   every sketch type must support both encodings (no
+   MessagePack-only types). Trade-off context (qualitative +
+   benchmark numbers) is captured in
    [sketchlib-go#26](https://github.com/ProjectASAP/sketchlib-go/issues/26).
 
 3. **Retire `asap-planner-rs`, consolidate on the DataCollector
