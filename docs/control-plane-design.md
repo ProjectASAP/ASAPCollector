@@ -207,19 +207,22 @@ Input: QueryWorkload W
 
 ## Config Push: OpAMP (Open Agent Management Protocol) Integration
 
-OpAMP is an open protocol (defined by the OpenTelemetry project) for remotely managing telemetry agents over a persistent WebSocket or HTTP connection. The server pushes new config to agents; agents reload without restart and report back health and current config hash.
+OpAMP is an open protocol (defined by the OpenTelemetry project) for remotely managing telemetry agents over a persistent WebSocket or HTTP connection. The server pushes new config to agents; agents receive the push and apply the new configuration via the **OpAMP Supervisor pattern** — the supervisor writes an effective config file and restarts the collector binary so the new YAML takes effect. See [`docs/opamp-config-push.md`](opamp-config-push.md) for the full push/apply architecture, including the restart semantics, why the supervisor pattern is used instead of in-process hot-reload, and the concrete file-by-file wiring.
 
 ### OpAMP Server — the Controller
 
-- The controller runs the OpAMP server
-- It listens for incoming WebSocket connections from collectors
-- It pushes `RemoteConfig` messages (new YAML configs) whenever the plan changes
+- The controller runs the OpAMP server (`controller/src/opamp/mod.rs`, `OpampServer`)
+- It listens for incoming WebSocket connections at `/v1/opamp` (default port 4320)
+- It pushes `RemoteConfig` messages (new YAML configs) whenever the plan changes, via `push`, `push_to_role`, or `push_all` (see `opamp/mod.rs:147–162`)
 
-### OpAMP Clients — the Collectors
+### OpAMP Clients — the Collectors + Supervisor
 
-- Every OTel collector instance (agent, gateway, backend) runs the `opampextension`, which is the OpAMP client
-- On startup, each collector connects to the controller's OpAMP server address
-- It receives config updates and reloads its pipeline, then reports back health/status
+- Each managed collector runs under the **OpenTelemetry Collector OpAMP Supervisor** binary, not as a standalone `opampextension`-only collector. The supervisor is the process that owns the long-lived WebSocket connection to the controller and the lifecycle of the child collector process.
+- Bootstrap config: `opentelemetry-collector-contrib/cmd/sketchcol/supervisor-config.yaml` — points the supervisor at `ws://localhost:4320/v1/opamp` and specifies the child collector binary path
+- On startup, the supervisor connects to the controller, receives a `ServerToAgent` message containing a `RemoteConfig`, merges it with the local base config, writes `effective.yaml`, and **restarts the child collector** so it picks up the new config
+- The embedded `opampextension` inside the collector binary reports health and current config hash back to the controller on the same socket
+
+**Important**: The pipeline does not hot-reload in-process. Config changes trigger a process restart through the supervisor. This is a deliberate design choice — see `docs/opamp-config-push.md` §3 for the rationale.
 
 ```
 ┌─────────────────────────────────┐
