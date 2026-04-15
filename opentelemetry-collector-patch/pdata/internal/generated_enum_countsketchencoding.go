@@ -7,9 +7,11 @@
 package internal
 
 const (
-	CountSketchEncoding_COUNT_SKETCH_ENCODING_UNSPECIFIED = CountSketchEncoding(0)
-	CountSketchEncoding_COUNT_SKETCH_ENCODING_PROTO       = CountSketchEncoding(1)
-	CountSketchEncoding_COUNT_SKETCH_ENCODING_DELTA       = CountSketchEncoding(2)
+	CountSketchEncoding_COUNT_SKETCH_ENCODING_UNSPECIFIED   = CountSketchEncoding(0)
+	CountSketchEncoding_COUNT_SKETCH_ENCODING_PROTO         = CountSketchEncoding(1)
+	CountSketchEncoding_COUNT_SKETCH_ENCODING_DELTA         = CountSketchEncoding(2)
+	CountSketchEncoding_COUNT_SKETCH_ENCODING_MSGPACK       = CountSketchEncoding(3)
+	CountSketchEncoding_COUNT_SKETCH_ENCODING_MSGPACK_DELTA = CountSketchEncoding(4)
 )
 
 // CountSketchEncoding identifies how the CountSketch payload bytes are encoded.
@@ -19,10 +21,14 @@ var CountSketchEncoding_name = map[int32]string{
 	0: "COUNT_SKETCH_ENCODING_UNSPECIFIED",
 	1: "COUNT_SKETCH_ENCODING_PROTO",
 	2: "COUNT_SKETCH_ENCODING_DELTA",
+	3: "COUNT_SKETCH_ENCODING_MSGPACK",
+	4: "COUNT_SKETCH_ENCODING_MSGPACK_DELTA",
 }
 
 var CountSketchEncoding_value = map[string]int32{
-	"COUNT_SKETCH_ENCODING_UNSPECIFIED": 0,
-	"COUNT_SKETCH_ENCODING_PROTO":       1,
-	"COUNT_SKETCH_ENCODING_DELTA":       2,
+	"COUNT_SKETCH_ENCODING_UNSPECIFIED":   0,
+	"COUNT_SKETCH_ENCODING_PROTO":         1,
+	"COUNT_SKETCH_ENCODING_DELTA":         2,
+	"COUNT_SKETCH_ENCODING_MSGPACK":       3,
+	"COUNT_SKETCH_ENCODING_MSGPACK_DELTA": 4,
 }
