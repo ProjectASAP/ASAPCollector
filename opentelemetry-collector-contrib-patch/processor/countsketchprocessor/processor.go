@@ -404,19 +404,63 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 		m.SetName("countsketch_partition")
 		m.SetUnit("1")
 
-		gauge := m.SetEmptyGauge()
-		dp := gauge.DataPoints().AppendEmpty()
-		dp.SetTimestamp(now)
-		dp.Attributes().PutStr("partition_key", partitionKey)
-		dp.Attributes().PutInt("sample_count", int64(sampleCount))
-		dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
-		dp.Attributes().PutDouble("delta", p.config.Delta)
-		dp.Attributes().PutInt("window_duration_seconds", int64(p.config.WindowDuration.Seconds()))
 		if p.config.TransmitSketch {
-			dp.Attributes().PutStr("encoding", encoding)
-			dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
+			// Typed CountSketchDataPoint emission — what
+			// ASAPQuery-backend's modified-OTLP sketch router
+			// consumes as `Metric.data = CountSketch{...}`.
+			// Before this change the processor emitted a Gauge
+			// with the sketch payload stuffed into a
+			// `sketch_payload` byte attribute, which the backend
+			// router never recognized as a sketch variant —
+			// sketch bytes were lost on the wire for any
+			// consumer that tried to decode them as typed.
+			csMetric := m.SetEmptyCountSketch()
+			csMetric.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+			dp := csMetric.DataPoints().AppendEmpty()
+			dp.SetTimestamp(now)
+			// The processor's `partition_key` is the natural
+			// match for CountSketch's `dimension` field (both
+			// identify which sub-population the sketch covers).
+			dp.SetDimension(partitionKey)
+			dp.SetEpsilon(p.config.Epsilon)
+			dp.SetDelta(p.config.Delta)
+			dp.SetSketch(payload)
+			switch encoding {
+			case "proto_delta":
+				dp.SetEncoding(pmetric.CountSketchEncodingDelta)
+			default:
+				// "proto_full" and any unexpected fallback.
+				dp.SetEncoding(pmetric.CountSketchEncodingProto)
+			}
+			// Fields the typed DP doesn't have dedicated setters
+			// for still go on the attribute map. `sample_count`
+			// and `window_duration_seconds` are observability
+			// hints the backend does not use for routing.
+			dp.Attributes().PutInt("sample_count", int64(sampleCount))
+			dp.Attributes().PutInt(
+				"window_duration_seconds",
+				int64(p.config.WindowDuration.Seconds()),
+			)
+		} else {
+			// Non-transmit mode: caller only wants the
+			// per-partition sample count for monitoring, not
+			// the sketch bytes. Keep the legacy Gauge emission
+			// so existing dashboards that read
+			// `countsketch_partition` as a scalar series
+			// continue to work.
+			gauge := m.SetEmptyGauge()
+			dp := gauge.DataPoints().AppendEmpty()
+			dp.SetTimestamp(now)
+			dp.Attributes().PutStr("partition_key", partitionKey)
+			dp.Attributes().PutInt("sample_count", int64(sampleCount))
+			dp.Attributes().PutDouble("epsilon", p.config.Epsilon)
+			dp.Attributes().PutDouble("delta", p.config.Delta)
+			dp.Attributes().PutInt(
+				"window_duration_seconds",
+				int64(p.config.WindowDuration.Seconds()),
+			)
+			dp.SetDoubleValue(float64(sampleCount))
 		}
-		dp.SetDoubleValue(float64(sampleCount))
 	}
 
 	return md
