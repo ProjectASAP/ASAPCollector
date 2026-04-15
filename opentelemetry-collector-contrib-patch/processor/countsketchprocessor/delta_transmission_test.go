@@ -34,18 +34,82 @@ func makeCSGaugeMetrics(service string, count int) pmetric.Metrics {
 	return md
 }
 
-// getCSOutputDPs returns all gauge data points from a Metrics payload.
-func getCSOutputDPs(md pmetric.Metrics) []pmetric.NumberDataPoint {
-	var dps []pmetric.NumberDataPoint
+// csTestDataPoint is a test-only adapter that flattens either a
+// `CountSketchDataPoint` (the typed emission path) or a
+// `NumberDataPoint` (legacy Gauge path kept for non-TransmitSketch
+// mode) into a single `pcommon.Map` so existing test assertions that
+// read `sketch_payload` / `encoding` / `sample_count` via
+// `Attributes().Get(...)` keep compiling without per-site rewrites.
+//
+// `doubleValue` is only populated for the non-TransmitSketch Gauge
+// path; the typed path leaves it zero and unused.
+type csTestDataPoint struct {
+	attributes  pcommon.Map
+	doubleValue float64
+}
+
+func (d csTestDataPoint) Attributes() pcommon.Map { return d.attributes }
+func (d csTestDataPoint) DoubleValue() float64    { return d.doubleValue }
+
+// csEncodingToLegacyString maps the proto enum back to the
+// "proto_full" / "proto_delta" strings existing test assertions
+// compare against.
+func csEncodingToLegacyString(enc pmetric.CountSketchEncoding) string {
+	switch enc {
+	case pmetric.CountSketchEncodingProto:
+		return "proto_full"
+	case pmetric.CountSketchEncodingDelta:
+		return "proto_delta"
+	}
+	return "unknown"
+}
+
+// getCSOutputDPs walks the output metrics and returns a flat slice
+// of test adapters, one per sketch data point (typed or legacy
+// Gauge). For typed `CountSketchDataPoint`s the helper synthesizes
+// the legacy attribute keys (`sketch_payload`, `encoding`,
+// `sample_count`, `partition_key`, `epsilon`, `delta`,
+// `window_duration_seconds`) from the typed fields so downstream
+// assertions in this file don't need per-site rewrites.
+func getCSOutputDPs(md pmetric.Metrics) []csTestDataPoint {
+	var dps []csTestDataPoint
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
 		for j := 0; j < sms.Len(); j++ {
 			ms := sms.At(j).Metrics()
 			for k := 0; k < ms.Len(); k++ {
-				pts := ms.At(k).Gauge().DataPoints()
-				for l := 0; l < pts.Len(); l++ {
-					dps = append(dps, pts.At(l))
+				m := ms.At(k)
+				switch m.Type() {
+				case pmetric.MetricTypeCountSketch:
+					pts := m.CountSketch().DataPoints()
+					for l := 0; l < pts.Len(); l++ {
+						dp := pts.At(l)
+						attrs := pcommon.NewMap()
+						dp.Attributes().CopyTo(attrs)
+						// The typed DP has a dedicated
+						// `dimension` field that carries
+						// the partition key; mirror it
+						// back into the legacy attribute
+						// name.
+						attrs.PutStr("partition_key", dp.Dimension())
+						attrs.PutDouble("epsilon", dp.Epsilon())
+						attrs.PutDouble("delta", dp.Delta())
+						attrs.PutEmptyBytes("sketch_payload").FromRaw(dp.Sketch())
+						attrs.PutStr("encoding", csEncodingToLegacyString(dp.Encoding()))
+						dps = append(dps, csTestDataPoint{attributes: attrs})
+					}
+				case pmetric.MetricTypeGauge:
+					pts := m.Gauge().DataPoints()
+					for l := 0; l < pts.Len(); l++ {
+						dp := pts.At(l)
+						attrs := pcommon.NewMap()
+						dp.Attributes().CopyTo(attrs)
+						dps = append(dps, csTestDataPoint{
+							attributes:  attrs,
+							doubleValue: dp.DoubleValue(),
+						})
+					}
 				}
 			}
 		}

@@ -44,8 +44,8 @@ func TestProcessorPassThrough(t *testing.T) {
 func TestProcessorFlushLogic(t *testing.T) {
 	// Setup with a very short window for testing flush
 	cfg := &Config{
-		Epsilon:    0.1,
-		Delta:      0.9,
+		Epsilon:        0.1,
+		Delta:          0.9,
 		WindowDuration: 100 * time.Millisecond,
 	}
 	next := new(consumertest.MetricsSink)
@@ -70,9 +70,9 @@ func TestProcessorFlushLogic(t *testing.T) {
 
 func TestBatchModePassThroughAndSummary(t *testing.T) {
 	cfg := &Config{
-		Mode:       ModeBatch,
-		Epsilon:    0.01,
-		Delta:      0.99,
+		Mode:           ModeBatch,
+		Epsilon:        0.01,
+		Delta:          0.99,
 		WindowDuration: 0,
 		// Keep originals in batch mode so we can verify both paths.
 		DropOriginal: false,
@@ -119,12 +119,12 @@ func TestBatchModePassThroughAndSummary(t *testing.T) {
 // unique label combination (Mode 1 / Mode 3).
 func TestGroupByPartitioning(t *testing.T) {
 	cfg := &Config{
-		Mode:         ModeBatch,
-		AggregateBy:      []string{"host.name"},
-		Epsilon:      0.01,
-		Delta:        0.99,
-		WindowDuration:   0,
-		DropOriginal: true,
+		Mode:           ModeBatch,
+		AggregateBy:    []string{"host.name"},
+		Epsilon:        0.01,
+		Delta:          0.99,
+		WindowDuration: 0,
+		DropOriginal:   true,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -147,21 +147,15 @@ func TestGroupByPartitioning(t *testing.T) {
 	out, err := proc.processMetrics(context.Background(), md)
 	require.NoError(t, err)
 
-	// Collect all partition_key values from the output.
+	// Collect all partition_key values from the output. Uses the
+	// `getCSOutputDPs` adapter so typed `CountSketchDataPoint`s
+	// (the TransmitSketch path, which carries the partition key
+	// in the `dimension` field) and legacy Gauge data points are
+	// both handled uniformly.
 	partitionKeys := map[string]bool{}
-	rms := out.ResourceMetrics()
-	for i := 0; i < rms.Len(); i++ {
-		sms := rms.At(i).ScopeMetrics()
-		for j := 0; j < sms.Len(); j++ {
-			ms := sms.At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				dps := ms.At(k).Gauge().DataPoints()
-				for l := 0; l < dps.Len(); l++ {
-					if v, ok := dps.At(l).Attributes().Get("partition_key"); ok {
-						partitionKeys[v.Str()] = true
-					}
-				}
-			}
+	for _, dp := range getCSOutputDPs(out) {
+		if v, ok := dp.Attributes().Get("partition_key"); ok {
+			partitionKeys[v.Str()] = true
 		}
 	}
 
@@ -175,12 +169,12 @@ func TestGroupByPartitioning(t *testing.T) {
 // per-partition sketches that reset each window.
 func TestWindowModeGroupBy(t *testing.T) {
 	cfg := &Config{
-		Mode:         ModeWindow,
-		AggregateBy:      []string{"service.name"},
-		Epsilon:      0.1,
-		Delta:        0.9,
-		WindowDuration:   100 * time.Millisecond,
-		DropOriginal: true,
+		Mode:           ModeWindow,
+		AggregateBy:    []string{"service.name"},
+		Epsilon:        0.1,
+		Delta:          0.9,
+		WindowDuration: 100 * time.Millisecond,
+		DropOriginal:   true,
 	}
 	// Skip Validate() to allow sub-second window in tests.
 
@@ -207,19 +201,9 @@ func TestWindowModeGroupBy(t *testing.T) {
 
 	partitionKeys := map[string]bool{}
 	for _, emitted := range next.AllMetrics() {
-		rms := emitted.ResourceMetrics()
-		for i := 0; i < rms.Len(); i++ {
-			sms := rms.At(i).ScopeMetrics()
-			for j := 0; j < sms.Len(); j++ {
-				ms := sms.At(j).Metrics()
-				for k := 0; k < ms.Len(); k++ {
-					dps := ms.At(k).Gauge().DataPoints()
-					for l := 0; l < dps.Len(); l++ {
-						if v, ok := dps.At(l).Attributes().Get("partition_key"); ok {
-							partitionKeys[v.Str()] = true
-						}
-					}
-				}
+		for _, dp := range getCSOutputDPs(emitted) {
+			if v, ok := dp.Attributes().Get("partition_key"); ok {
+				partitionKeys[v.Str()] = true
 			}
 		}
 	}
@@ -230,11 +214,11 @@ func TestWindowModeGroupBy(t *testing.T) {
 
 func TestBatchModeDropOriginal(t *testing.T) {
 	cfg := &Config{
-		Mode:         ModeBatch,
-		Epsilon:      0.01,
-		Delta:        0.99,
-		WindowDuration:   0,
-		DropOriginal: true,
+		Mode:           ModeBatch,
+		Epsilon:        0.01,
+		Delta:          0.99,
+		WindowDuration: 0,
+		DropOriginal:   true,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -273,9 +257,9 @@ func TestBatchModeDropOriginal(t *testing.T) {
 
 func TestConfigValidateModes(t *testing.T) {
 	cfg := &Config{
-		Mode:       ModeWindow,
-		Epsilon:    0.01,
-		Delta:      0.99,
+		Mode:           ModeWindow,
+		Epsilon:        0.01,
+		Delta:          0.99,
 		WindowDuration: 0,
 	}
 	// Window mode requires a positive window size.
@@ -319,9 +303,9 @@ func buildTestMetrics() pmetric.Metrics {
 // TestEmptyInput verifies that empty metrics do not cause panics.
 func TestEmptyInput(t *testing.T) {
 	cfg := &Config{
-		Mode:       ModeBatch,
-		Epsilon:    0.01,
-		Delta:      0.99,
+		Mode:           ModeBatch,
+		Epsilon:        0.01,
+		Delta:          0.99,
 		WindowDuration: 0,
 	}
 	require.NoError(t, cfg.Validate())
@@ -338,11 +322,11 @@ func TestEmptyInput(t *testing.T) {
 // TestBatchModeNoStatePersistence verifies that each batch is independent (no cross-batch state).
 func TestBatchModeNoStatePersistence(t *testing.T) {
 	cfg := &Config{
-		Mode:         ModeBatch,
-		Epsilon:      0.01,
-		Delta:        0.99,
-		WindowDuration:   0,
-		DropOriginal: false,
+		Mode:           ModeBatch,
+		Epsilon:        0.01,
+		Delta:          0.99,
+		WindowDuration: 0,
+		DropOriginal:   false,
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -368,9 +352,9 @@ func TestBatchModeNoStatePersistence(t *testing.T) {
 // TestWindowModeConcurrentConsume verifies concurrent processMetrics calls in window mode do not race.
 func TestWindowModeConcurrentConsume(t *testing.T) {
 	cfg := &Config{
-		Mode:       ModeWindow,
-		Epsilon:    0.01,
-		Delta:      0.99,
+		Mode:           ModeWindow,
+		Epsilon:        0.01,
+		Delta:          0.99,
 		WindowDuration: 2 * time.Second, // long window so we control flush
 	}
 	require.NoError(t, cfg.Validate())
@@ -398,9 +382,9 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 // TestWindowModeFlushDuringConsume verifies flush and processMetrics can run concurrently without race.
 func TestWindowModeFlushDuringConsume(t *testing.T) {
 	cfg := &Config{
-		Mode:       ModeWindow,
-		Epsilon:    0.01,
-		Delta:      0.99,
+		Mode:           ModeWindow,
+		Epsilon:        0.01,
+		Delta:          0.99,
 		WindowDuration: 1 * time.Second,
 	}
 	require.NoError(t, cfg.Validate())
@@ -426,9 +410,9 @@ func TestWindowModeFlushDuringConsume(t *testing.T) {
 // TestShutdownDuringConsume verifies Shutdown completes even when processMetrics is in progress.
 func TestShutdownDuringConsume(t *testing.T) {
 	cfg := &Config{
-		Mode:       ModeWindow,
-		Epsilon:    0.01,
-		Delta:      0.99,
+		Mode:           ModeWindow,
+		Epsilon:        0.01,
+		Delta:          0.99,
 		WindowDuration: 5 * time.Second,
 	}
 	require.NoError(t, cfg.Validate())
