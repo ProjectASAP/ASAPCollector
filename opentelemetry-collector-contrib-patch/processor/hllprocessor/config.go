@@ -53,7 +53,28 @@ type Config struct {
 	// increased since the last snapshot are transmitted (max semantics).
 	// Requires TransmitSketch=true; has no effect in batch mode.
 	DeltaTransmission bool `mapstructure:"delta_transmission"`
+
+	// Encoding selects the wire format for the `HLLSketchDataPoint.Sketch`
+	// bytes. See `SketchEncoding` for supported values. Defaults to "proto".
+	Encoding SketchEncoding `mapstructure:"encoding"`
 }
+
+// SketchEncoding selects the wire format for the serialized HLL bytes
+// carried in `HLLSketchDataPoint.Sketch`.
+//
+//   - "proto" (default) — sketchlib-go `SerializeProtoBytes` →
+//     sketchlib `HyperLogLogState` proto. Tag =
+//     `HLLSketchEncodingProto` / `HLLSketchEncodingDelta`.
+//   - "msgpack"           — sketchlib-go `SerializeMsgpack`. Tag =
+//     `HLLSketchEncodingMsgpack`. Delta transmission is proto-only
+//     today; `encoding = msgpack` + `delta_transmission = true`
+//     still falls back to proto deltas per window.
+type SketchEncoding string
+
+const (
+	EncodingProto   SketchEncoding = "proto"
+	EncodingMsgpack SketchEncoding = "msgpack"
+)
 
 var _ component.Config = (*Config)(nil)
 
@@ -70,5 +91,16 @@ func (c *Config) Validate() error {
 	}
 	// Sort AggregateBy so seriesKey always produces a consistent ordering.
 	sort.Strings(c.AggregateBy)
+
+	switch c.Encoding {
+	case "":
+		c.Encoding = EncodingProto
+	case EncodingProto, EncodingMsgpack:
+	default:
+		return fmt.Errorf(
+			"invalid encoding %q, must be %q or %q",
+			c.Encoding, EncodingProto, EncodingMsgpack)
+	}
+
 	return nil
 }

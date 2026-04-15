@@ -480,6 +480,13 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 
 		if p.cfg.TransmitSketch && p.cfg.DeltaTransmission {
 			// Delta path: compute sparse diff against the last snapshot.
+			// Delta transmission is proto-only today; the msgpack wire
+			// format doesn't yet carry deltas (tracked as a follow-up
+			// once sketchlib-go grows `apply_delta`). When
+			// `encoding: msgpack` is set AND delta is on, the
+			// processor falls through to proto delta for per-window
+			// diffs and still tags the encoding as delta so the
+			// consumer knows.
 			p.snapshotsMu.Lock()
 			snap, hasSnap := p.snapshots[aggregationKey]
 			p.snapshotsMu.Unlock()
@@ -504,8 +511,19 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 			p.snapshots[aggregationKey] = newSnap
 			p.snapshotsMu.Unlock()
 		} else if p.cfg.TransmitSketch {
-			payload, err = serializeCMS(ws.cms)
-			encoding = "proto_full"
+			// Non-delta path: emit a full sketch payload in the
+			// configured encoding. sketchlib-go exposes a parallel
+			// `SerializeMsgpack` that matches the cross-language wire
+			// format ASAPQuery-backend's
+			// `CountMinSketchAccumulator::from_msgpack_bytes` consumes.
+			switch p.cfg.Encoding {
+			case EncodingMsgpack:
+				payload, err = ws.cms.SerializeMsgpack()
+				encoding = "msgpack_full"
+			default:
+				payload, err = serializeCMS(ws.cms)
+				encoding = "proto_full"
+			}
 		}
 
 		ws.mu.Unlock()
@@ -537,13 +555,17 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 			dp.SetRows(int32(rows))
 			dp.SetCols(int32(cols))
 			dp.SetSketch(payload)
-			// Map the internal encoding string onto the proto
-			// enum the backend expects. The encoding string only
-			// branches on delta vs full when delta transmission
-			// is on; otherwise it's always proto_full.
+			// Map the internal encoding string onto the proto enum
+			// the backend expects. `proto_delta` is the sparse-cell
+			// diff format (delta transmission); `msgpack_full` is
+			// the cross-language sketchlib-go msgpack wire format;
+			// everything else is the default sketchlib `CountMinState`
+			// proto.
 			switch encoding {
 			case "proto_delta":
 				dp.SetEncoding(pmetric.CountMinSketchEncodingDelta)
+			case "msgpack_full":
+				dp.SetEncoding(pmetric.CountMinSketchEncodingMsgpack)
 			default:
 				// "proto_full" and any unexpected fallback.
 				dp.SetEncoding(pmetric.CountMinSketchEncodingProto)
