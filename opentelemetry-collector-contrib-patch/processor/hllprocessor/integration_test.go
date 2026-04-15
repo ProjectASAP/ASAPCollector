@@ -127,8 +127,15 @@ func TestIntegrationPipelineWindowMode(t *testing.T) {
 	require.GreaterOrEqual(t, len(all), 0)
 }
 
-// TestIntegrationTransmitSketch verifies that when transmit_sketch=true, the output data points
-// have "hll.sketch_payload" attribute set.
+// TestIntegrationTransmitSketch verifies that when transmit_sketch=true,
+// the processor emits a typed HLLSketch metric carrying the serialized
+// sketch bytes in the typed `Sketch` field and `HLLSketchEncodingProto`
+// in the `Encoding` field — the modified-OTLP shape that
+// ASAPQuery-backend's sketch router decodes. Before the typed-emission
+// refactor the test looked for an `hll.sketch_payload` byte attribute
+// on a Gauge, which was never actually emitted by the processor (dead
+// helper functions from an earlier iteration) so the assertion silently
+// never matched. Updated here to reflect the real wire shape.
 func TestIntegrationTransmitSketch(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
@@ -164,7 +171,8 @@ func TestIntegrationTransmitSketch(t *testing.T) {
 	all := sink.AllMetrics()
 	require.Len(t, all, 1)
 
-	// Find a data point with hll.sketch_payload attribute.
+	// Find a typed HLLSketch metric with a non-empty sketch payload and
+	// the PROTO encoding tag.
 	found := false
 	rms := all[0].ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
@@ -173,19 +181,23 @@ func TestIntegrationTransmitSketch(t *testing.T) {
 			metrics := sms.At(j).Metrics()
 			for k := 0; k < metrics.Len(); k++ {
 				metric := metrics.At(k)
-				if metric.Type() != pmetric.MetricTypeGauge {
+				if metric.Type() != pmetric.MetricTypeHLLSketch {
 					continue
 				}
-				dps := metric.Gauge().DataPoints()
-				for l := 0; l < dps.Len(); l++ {
-					if _, ok := dps.At(l).Attributes().Get("hll.sketch_payload"); ok {
+				hllDPs := metric.HLLSketch().DataPoints()
+				for l := 0; l < hllDPs.Len(); l++ {
+					dp := hllDPs.At(l)
+					if len(dp.Sketch()) > 0 &&
+						dp.Encoding() == pmetric.HLLSketchEncodingProto {
 						found = true
 					}
 				}
 			}
 		}
 	}
-	require.True(t, found, "expected at least one data point with hll.sketch_payload attribute when transmit_sketch=true")
+	require.True(t, found,
+		"expected at least one HLLSketchDataPoint with non-empty Sketch "+
+			"and PROTO encoding when transmit_sketch=true")
 }
 
 // TestIntegrationMultipleSeries verifies that distinct series (different metric names or attributes)

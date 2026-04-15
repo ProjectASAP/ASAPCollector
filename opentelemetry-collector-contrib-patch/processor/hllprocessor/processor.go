@@ -736,42 +736,6 @@ func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pme
 	return m
 }
 
-// appendHLLSketchDataPoint serializes the HLL sketch and embeds it in a gauge
-// data point attribute. The cardinality estimate is also stored for convenience.
-func appendHLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *hll.HyperLogLog, ts pcommon.Timestamp) error {
-	payload, err := sketch.SerializeProtoBytes()
-	if err != nil {
-		return err
-	}
-	dp := metric.Gauge().DataPoints().AppendEmpty()
-	attrs.CopyTo(dp.Attributes())
-	dp.Attributes().PutInt("hll.precision", hll.HLLPrecision)
-	dp.Attributes().PutInt("hll.cardinality", int64(sketch.EstimateCardinality()))
-	dp.Attributes().PutEmptyBytes("hll.sketch_payload").FromRaw(payload)
-	dp.SetTimestamp(ts)
-	dp.SetDoubleValue(float64(sketch.EstimateCardinality()))
-	return nil
-}
-
-// appendHLLDeltaDataPoint computes a register delta between snapshot and current,
-// then embeds the proto-marshalled HLLDelta payload in a gauge data point.
-func appendHLLDeltaDataPoint(metric pmetric.Metric, attrs pcommon.Map, snapshot, current *hll.HyperLogLog, ts pcommon.Timestamp) error {
-	deltaMsg := hll.ComputeRegisterDelta(snapshot, current)
-	payload, err := hll.SerializeRegisterDelta(deltaMsg)
-	if err != nil {
-		return err
-	}
-	dp := metric.Gauge().DataPoints().AppendEmpty()
-	attrs.CopyTo(dp.Attributes())
-	dp.Attributes().PutInt("hll.precision", hll.HLLPrecision)
-	dp.Attributes().PutInt("hll.cardinality", int64(current.EstimateCardinality()))
-	dp.Attributes().PutStr("hll.encoding", "proto_delta")
-	dp.Attributes().PutEmptyBytes("hll.sketch_payload").FromRaw(payload)
-	dp.SetTimestamp(ts)
-	dp.SetDoubleValue(float64(current.EstimateCardinality()))
-	return nil
-}
-
 // cloneHLL returns a deep copy of h suitable for use as a delta snapshot.
 func cloneHLL(h *hll.HyperLogLog) *hll.HyperLogLog {
 	data, err := h.SerializeProtoBytes()
