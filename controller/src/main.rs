@@ -1,5 +1,6 @@
 mod algebra;
 mod analyzer;
+mod backend_client;
 mod config;
 mod monitor;
 mod opamp;
@@ -73,6 +74,7 @@ async fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(60u64),
     );
+    let backend_endpoint = std::env::var("CONTROLLER_BACKEND_ENDPOINT").ok();
 
     // ── SP-5: Online EMA cost store ───────────────────────────────────────────
     let online_store = init_online_store();
@@ -225,14 +227,31 @@ async fn main() {
     }
 
     // ── Replanner — closes the SP-8 feedback loop ─────────────────────────────
-    let replanner = Arc::new(Replanner::new(
-        Arc::clone(&planner),
-        Arc::clone(&plan_store),
-        Arc::clone(&workload_store),
-        Arc::clone(&opamp_srv),
-        Arc::clone(&scraper),
-        opamp_ep.clone(),
-    ));
+    let replanner = {
+        let mut r = Replanner::new(
+            Arc::clone(&planner),
+            Arc::clone(&plan_store),
+            Arc::clone(&workload_store),
+            Arc::clone(&opamp_srv),
+            Arc::clone(&scraper),
+            opamp_ep.clone(),
+        );
+        if let Some(endpoint) = backend_endpoint.as_ref() {
+            info!(
+                endpoint = %endpoint,
+                "ASAPQuery-backend StreamingConfig push enabled"
+            );
+            r = r.with_backend_client(Arc::new(backend_client::BackendClient::new(
+                endpoint.clone(),
+            )));
+        } else {
+            info!(
+                "ASAPQuery-backend StreamingConfig push disabled \
+                 (set CONTROLLER_BACKEND_ENDPOINT=<url> to enable)"
+            );
+        }
+        Arc::new(r)
+    };
     // Bind the late-binding cells so callbacks can reach the replanner and registry.
     *replanner_cell.write().await = Some(Arc::clone(&replanner));
     *registry_cell.write().await = Some(Arc::clone(&workload_registry));

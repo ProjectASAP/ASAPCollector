@@ -20,7 +20,11 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
+use crate::backend_client::{push_or_log, BackendClient};
+use crate::config::{
+    build_precompute_jobs, generate_agent_config, generate_backend_config,
+    generate_streaming_config_yaml,
+};
 use crate::monitor::Scraper;
 use crate::opamp::{AgentRole, OpampServer, RemoteConfig};
 use crate::planner::BaselinePlanner;
@@ -43,6 +47,15 @@ pub struct Replanner {
     opamp:          Arc<OpampServer>,
     scraper:        Arc<Scraper>,
     opamp_endpoint: String,
+    /// Optional client for pushing newly-generated `StreamingConfig`
+    /// YAML to the ASAPQuery-backend's `/api/v1/streaming-config`
+    /// endpoint. When present, every successful replan POSTs the new
+    /// plan to the backend in addition to the existing OpAMP pushes
+    /// to agent-role and backend-role collectors. Configured via the
+    /// `CONTROLLER_BACKEND_ENDPOINT` env var; defaults to `None` so
+    /// existing deployments that don't yet run ASAPQuery-backend
+    /// behave exactly as before.
+    backend_client: Option<Arc<BackendClient>>,
     /// Maps agent_id → metric_name so violation callbacks can look up which
     /// metric a particular agent is serving.
     agent_to_metric: Arc<RwLock<HashMap<String, String>>>,
@@ -64,8 +77,19 @@ impl Replanner {
             opamp,
             scraper,
             opamp_endpoint: opamp_endpoint.into(),
+            backend_client: None,
             agent_to_metric: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Attach a [`BackendClient`] so every replan also pushes the new
+    /// `StreamingConfig` YAML to the ASAPQuery-backend via HTTP.
+    /// Builder-style — call during controller startup in `main.rs`.
+    /// Without this call, replans continue to push only via OpAMP and
+    /// the ASAPQuery-backend (if running) keeps its startup config.
+    pub fn with_backend_client(mut self, client: Arc<BackendClient>) -> Self {
+        self.backend_client = Some(client);
+        self
     }
 
     // ── Agent registry ────────────────────────────────────────────────────────
@@ -155,6 +179,27 @@ impl Replanner {
                 AgentRole::Backend,
                 RemoteConfig { config_hash: short_hash(&yaml), yaml },
             ).await;
+        }
+
+        // Push the ASAPQuery-backend StreamingConfig YAML via HTTP if a
+        // backend client is configured. This is the producer side of the
+        // ASAPQuery PR E hot-reload contract: the backend receives the
+        // new plan on its /api/v1/streaming-config endpoint and makes it
+        // visible to the next query without restarting.
+        if let Some(backend_client) = self.backend_client.as_ref() {
+            match generate_streaming_config_yaml(metric, &plan) {
+                Ok(yaml) => {
+                    push_or_log(backend_client, metric, yaml).await;
+                }
+                Err(e) => {
+                    warn!(
+                        metric,
+                        error = %e,
+                        "failed to build ASAPQuery streaming-config YAML — \
+                         skipping backend HTTP push for this replan cycle"
+                    );
+                }
+            }
         }
 
         // Update scraper endpoint sketch types for correct EMA attribution.
