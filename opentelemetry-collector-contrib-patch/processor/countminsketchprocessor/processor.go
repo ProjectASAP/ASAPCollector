@@ -520,18 +520,47 @@ func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.M
 		m.SetName(p.cfg.MetricName)
 		m.SetUnit("1")
 
-		gauge := m.SetEmptyGauge()
-		dp := gauge.DataPoints().AppendEmpty()
-		dp.SetTimestamp(now)
-
-		outputAttrs.CopyTo(dp.Attributes())
-		dp.Attributes().PutInt("rows", int64(rows))
-		dp.Attributes().PutInt("cols", int64(cols))
-		dp.Attributes().PutInt("sample_count", int64(sampleCount))
 		if p.cfg.TransmitSketch {
-			dp.Attributes().PutEmptyBytes("sketch_payload").FromRaw(payload)
-			dp.Attributes().PutStr("encoding", encoding)
+			// Typed CountMinSketchDataPoint emission — what
+			// ASAPQuery-backend's modified-OTLP sketch router
+			// consumes as `Metric.data = CountMinSketch{...}`.
+			// Before this change the processor emitted a Gauge
+			// with the sketch payload stuffed into a
+			// `sketch_payload` byte attribute, which the backend
+			// router never recognized as a sketch variant.
+			cmsMetric := m.SetEmptyCountMinSketch()
+			cmsMetric.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+			dp := cmsMetric.DataPoints().AppendEmpty()
+			dp.SetTimestamp(now)
+			outputAttrs.CopyTo(dp.Attributes())
+			dp.SetSampleCount(uint64(sampleCount))
+			dp.SetRows(int32(rows))
+			dp.SetCols(int32(cols))
+			dp.SetSketch(payload)
+			// Map the internal encoding string onto the proto
+			// enum the backend expects. The encoding string only
+			// branches on delta vs full when delta transmission
+			// is on; otherwise it's always proto_full.
+			switch encoding {
+			case "proto_delta":
+				dp.SetEncoding(pmetric.CountMinSketchEncodingDelta)
+			default:
+				// "proto_full" and any unexpected fallback.
+				dp.SetEncoding(pmetric.CountMinSketchEncodingProto)
+			}
 		} else {
+			// Non-transmit mode: caller only wants the
+			// per-window sample count for monitoring, not the
+			// sketch bytes. Keep the legacy Gauge emission so
+			// existing dashboards that read `countmin` as a
+			// scalar series continue to work.
+			gauge := m.SetEmptyGauge()
+			dp := gauge.DataPoints().AppendEmpty()
+			dp.SetTimestamp(now)
+			outputAttrs.CopyTo(dp.Attributes())
+			dp.Attributes().PutInt("rows", int64(rows))
+			dp.Attributes().PutInt("cols", int64(cols))
+			dp.Attributes().PutInt("sample_count", int64(sampleCount))
 			dp.SetDoubleValue(float64(sampleCount))
 		}
 	}
