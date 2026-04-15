@@ -89,6 +89,11 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 	out := sink.AllMetrics()
 	require.Len(t, out, 1)
 
+	// Post-refactor: the TransmitSketch path now emits a typed
+	// `KLLSketch` metric with the sketch bytes in the `Sketch`
+	// field and `KLLSketchEncodingProto` in the `Encoding` field
+	// — the modified-OTLP shape ASAPQuery-backend's decoder
+	// consumes.
 	var found bool
 	rms := out[0].ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
@@ -100,12 +105,13 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 				if m.Name() != "latency_kll" {
 					continue
 				}
+				require.Equal(t, pmetric.MetricTypeKLLSketch, m.Type())
 				found = true
-				require.Equal(t, 1, m.Gauge().DataPoints().Len())
-				outDP := m.Gauge().DataPoints().At(0)
-				payload, ok := outDP.Attributes().Get("kll.sketch_payload")
-				require.True(t, ok)
-				sketch, err := kll.DeserializeKLLSketchFromBytes(payload.Bytes().AsRaw())
+				require.Equal(t, 1, m.KLLSketch().DataPoints().Len())
+				outDP := m.KLLSketch().DataPoints().At(0)
+				require.NotEmpty(t, outDP.Sketch(), "sketch bytes must be populated")
+				require.Equal(t, pmetric.KLLSketchEncodingProto, outDP.Encoding())
+				sketch, err := kll.DeserializeKLLSketchFromBytes(outDP.Sketch())
 				require.NoError(t, err)
 				assert.Equal(t, 1, sketch.Count())
 			}
