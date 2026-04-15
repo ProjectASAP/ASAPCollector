@@ -361,6 +361,9 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 
 		if p.config.TransmitSketch && ws.cs != nil {
 			if p.config.DeltaTransmission {
+				// Delta transmission is proto-only — msgpack delta
+				// is tracked as a follow-up once sketchlib-go
+				// grows `apply_delta` semantics.
 				p.snapshotsMu.Lock()
 				snap, hasSnap := p.snapshots[partitionKey]
 				p.snapshotsMu.Unlock()
@@ -383,8 +386,16 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 				p.snapshots[partitionKey] = newSnap
 				p.snapshotsMu.Unlock()
 			} else {
-				payload, serErr = serializeCountSketch(ws.cs)
-				encoding = "proto_full"
+				// Non-delta path — choose between proto and msgpack
+				// wire formats based on the config's Encoding field.
+				switch p.config.Encoding {
+				case EncodingMsgpack:
+					payload, serErr = ws.cs.SerializeMsgpack()
+					encoding = "msgpack_full"
+				default:
+					payload, serErr = serializeCountSketch(ws.cs)
+					encoding = "proto_full"
+				}
 			}
 		}
 
@@ -428,6 +439,8 @@ func (p *countSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
 			switch encoding {
 			case "proto_delta":
 				dp.SetEncoding(pmetric.CountSketchEncodingDelta)
+			case "msgpack_full":
+				dp.SetEncoding(pmetric.CountSketchEncodingMsgpack)
 			default:
 				// "proto_full" and any unexpected fallback.
 				dp.SetEncoding(pmetric.CountSketchEncodingProto)

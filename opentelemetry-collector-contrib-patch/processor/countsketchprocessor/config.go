@@ -73,7 +73,32 @@ type Config struct {
 	// DeltaThreshold is the minimum absolute cell change required to include a
 	// cell in the delta payload. Defaults to 1.0 when DeltaTransmission=true.
 	DeltaThreshold float64 `mapstructure:"delta_threshold"`
+
+	// Encoding selects the wire format for the `CountSketchDataPoint.Sketch`
+	// bytes. See `SketchEncoding` for supported values. Defaults to "proto".
+	Encoding SketchEncoding `mapstructure:"encoding"`
 }
+
+// SketchEncoding selects the wire format for the serialized sketch bytes
+// carried in `CountSketchDataPoint.Sketch`. The corresponding
+// `CountSketchDataPoint.Encoding` enum value is written alongside so the
+// downstream consumer knows how to decode.
+//
+//   - "proto" (default) — sketchlib-go `SerializeProtoBytes`
+//     (sketchlib `CountSketchState` proto). Tag =
+//     `CountSketchEncodingProto` or `CountSketchEncodingDelta` depending
+//     on DeltaTransmission.
+//   - "msgpack"           — sketchlib-go `SerializeMsgpack`. Tag =
+//     `CountSketchEncodingMsgpack`. Delta transmission is currently
+//     proto-only; `encoding = msgpack` + `delta_transmission = true`
+//     still falls back to proto deltas per window until sketchlib-go
+//     grows a msgpack delta path.
+type SketchEncoding string
+
+const (
+	EncodingProto   SketchEncoding = "proto"
+	EncodingMsgpack SketchEncoding = "msgpack"
+)
 
 var _ component.Config = (*Config)(nil)
 
@@ -113,6 +138,16 @@ func (c *Config) Validate() error {
 		if c.DeltaThreshold <= 0 {
 			c.DeltaThreshold = 1.0
 		}
+	}
+
+	switch c.Encoding {
+	case "":
+		c.Encoding = EncodingProto
+	case EncodingProto, EncodingMsgpack:
+	default:
+		return fmt.Errorf(
+			"invalid encoding %q, must be %q or %q",
+			c.Encoding, EncodingProto, EncodingMsgpack)
 	}
 
 	return nil

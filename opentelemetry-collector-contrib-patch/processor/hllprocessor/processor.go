@@ -302,7 +302,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 				m.SetEmptyHLLSketch().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
 				hllMetrics[metricName] = m
 			}
-			payload, err := bs.sketch.SerializeProtoBytes()
+			payload, encodingTag, err := serializeHLLSketch(bs.sketch, p.cfg.Encoding)
 			if err != nil {
 				if p.logger != nil {
 					p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
@@ -315,7 +315,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 			dp.SetCount(bs.count)
 			dp.SetCardinality(uint64(bs.sketch.EstimateCardinality()))
 			dp.SetSketch(payload)
-			dp.SetEncoding(pmetric.HLLSketchEncodingProto)
+			dp.SetEncoding(encodingTag)
 			dp.SetPrecision(uint32(hll.HLLPrecision))
 		}
 	} else {
@@ -614,7 +614,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 							p.snapshots[snapKey] = newSnap
 							p.snapshotsMu.Unlock()
 						} else {
-							payload, err := series.sketch.SerializeProtoBytes()
+							payload, encodingTag, err := serializeHLLSketch(series.sketch, p.cfg.Encoding)
 							if err != nil {
 								if p.logger != nil {
 									p.logger.Error("hllprocessor: failed to serialize sketch", zap.Error(err))
@@ -626,7 +626,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 								dp.SetCount(0)
 								dp.SetCardinality(uint64(series.sketch.EstimateCardinality()))
 								dp.SetSketch(payload)
-								dp.SetEncoding(pmetric.HLLSketchEncodingProto)
+								dp.SetEncoding(encodingTag)
 								dp.SetPrecision(uint32(hll.HLLPrecision))
 							}
 						}
@@ -754,4 +754,25 @@ func (p *hllProcessor) cardinalityMetricName(base string) string {
 		return base + p.cfg.MetricSuffix
 	}
 	return base + "_hll_cardinality"
+}
+
+// serializeHLLSketch serializes an HLL sketch in the configured wire
+// format and returns the bytes along with the matching pmetric
+// encoding enum to write into `HLLSketchDataPoint.Encoding`. Bridges
+// the cross-language msgpack wire format (sketchlib-go `SerializeMsgpack`,
+// consumed by ASAPQuery-backend's
+// `HllSketchAccumulator::from_msgpack_bytes`) alongside the existing
+// sketchlib proto path.
+func serializeHLLSketch(
+	sketch *hll.HyperLogLog,
+	enc SketchEncoding,
+) ([]byte, pmetric.HLLSketchEncoding, error) {
+	switch enc {
+	case EncodingMsgpack:
+		payload, err := sketch.SerializeMsgpack()
+		return payload, pmetric.HLLSketchEncodingMsgpack, err
+	default:
+		payload, err := sketch.SerializeProtoBytes()
+		return payload, pmetric.HLLSketchEncodingProto, err
+	}
 }

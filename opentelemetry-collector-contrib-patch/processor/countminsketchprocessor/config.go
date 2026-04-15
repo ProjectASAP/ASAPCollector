@@ -21,6 +21,29 @@ const (
 	ModeWindow InputMode = "window"
 )
 
+// SketchEncoding selects the wire format for the serialized sketch bytes
+// carried in `CountMinSketchDataPoint.Sketch`. The corresponding
+// `CountMinSketchDataPoint.Encoding` enum value is written alongside
+// so the downstream consumer knows how to decode.
+//
+//   - "proto" (default) — sketchlib-go `SerializeProtoBytesFO`
+//     (sketchlib `CountMinState` proto). Tag = `CountMinSketchEncodingProto`
+//     or `CountMinSketchEncodingDelta` depending on DeltaTransmission.
+//   - "msgpack"           — sketchlib-go `SerializeMsgpack` (the
+//     cross-language wire format consumed by ASAPQuery-backend's
+//     `CountMinSketchAccumulator::from_msgpack_bytes`). Tag =
+//     `CountMinSketchEncodingMsgpack`. Delta transmission is currently
+//     proto-only, so when `encoding = msgpack` and
+//     `delta_transmission = true`, the processor still falls back to
+//     proto for per-window deltas until sketchlib-go grows a msgpack
+//     delta path.
+type SketchEncoding string
+
+const (
+	EncodingProto   SketchEncoding = "proto"
+	EncodingMsgpack SketchEncoding = "msgpack"
+)
+
 // LabelMatcher specifies an exact label key=value filter.
 // A data point matches only if the named label exists and its string value equals Value.
 type LabelMatcher struct {
@@ -44,6 +67,12 @@ type Config struct {
 	EnableSelfMonitoring bool `mapstructure:"enable_self_monitoring"`
 	TransmitSketch       bool `mapstructure:"transmit_sketch"`
 	DropOriginal         bool `mapstructure:"drop_original"`
+
+	// Encoding controls the wire format of the sketch bytes written to
+	// `CountMinSketchDataPoint.Sketch` when `TransmitSketch = true`.
+	// See the [`SketchEncoding`] doc for the supported values. Defaults
+	// to "proto" for backwards compatibility.
+	Encoding SketchEncoding `mapstructure:"encoding"`
 
 	// WindowDuration is the time window to accumulate data before emitting a sketch (window mode only).
 	WindowDuration time.Duration `mapstructure:"window_duration"`
@@ -106,6 +135,19 @@ func (c *Config) Validate() error {
 		if c.DeltaThreshold <= 0 {
 			c.DeltaThreshold = 1.0
 		}
+	}
+
+	// Default Encoding to proto when unset. Accept both supported
+	// values; anything else is a config error rather than a silent
+	// fallback.
+	switch c.Encoding {
+	case "":
+		c.Encoding = EncodingProto
+	case EncodingProto, EncodingMsgpack:
+	default:
+		return fmt.Errorf(
+			"invalid encoding %q, must be %q or %q",
+			c.Encoding, EncodingProto, EncodingMsgpack)
 	}
 
 	return nil
