@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
@@ -180,7 +181,7 @@ func TestProcessor_TumblingWindow_Correctness(t *testing.T) {
 	// ==========================================
 	// 3. Verify Binary Payload (Gob Decode)
 	// ==========================================
-	payloadVal, ok := dps2[0].Attributes().Get("cms.sketch_payload")
+	payloadVal, ok := dps2[0].Attributes().Get("sketch_payload")
 	require.True(t, ok, "Sketch payload must exist in attributes")
 
 	rawBytes := payloadVal.Bytes().AsRaw()
@@ -210,8 +211,45 @@ func generateMetrics(serviceName string, count int) pmetric.Metrics {
 	return md
 }
 
-func getAllDataPoints(md pmetric.Metrics) []pmetric.NumberDataPoint {
-	var dps []pmetric.NumberDataPoint
+// cmsTestDataPoint is a test-only adapter that flattens either a
+// `CountMinSketchDataPoint` (the typed emission path) or a `NumberDataPoint`
+// (the legacy Gauge path kept for non-TransmitSketch mode) into a single
+// `pcommon.Map` so existing test assertions that read `sketch_payload`,
+// `encoding`, `sample_count`, `rows`, `cols` via `Attributes().Get(...)`
+// continue to compile without site-by-site rewrites.
+//
+// `doubleValue` is only populated for the non-TransmitSketch Gauge path —
+// `TestBatchModeQueryMetricsWhenTransmitSketchDisabled` is the single
+// test that reads it. For the typed-DP path it stays 0 and is unused.
+type cmsTestDataPoint struct {
+	attributes  pcommon.Map
+	doubleValue float64
+}
+
+func (d cmsTestDataPoint) Attributes() pcommon.Map { return d.attributes }
+func (d cmsTestDataPoint) DoubleValue() float64    { return d.doubleValue }
+
+// encodingToLegacyString mirrors the strings the processor used to
+// write into the `encoding` attribute, so tests that compare against
+// "proto_full" / "proto_delta" continue to work.
+func encodingToLegacyString(enc pmetric.CountMinSketchEncoding) string {
+	switch enc {
+	case pmetric.CountMinSketchEncodingProto:
+		return "proto_full"
+	case pmetric.CountMinSketchEncodingDelta:
+		return "proto_delta"
+	}
+	return "unknown"
+}
+
+// getAllDataPoints walks the output metrics and returns a flat slice of
+// test adapters, one per sketch data point (typed or legacy Gauge). When
+// the input metric is a typed `CountMinSketch`, its fields (sketch bytes,
+// encoding enum, sample_count, rows, cols) are synthesized into the
+// adapter's attribute map under their legacy string keys so the rest of
+// the test file can keep reading them with `Attributes().Get(...)`.
+func getAllDataPoints(md pmetric.Metrics) []cmsTestDataPoint {
+	var dps []cmsTestDataPoint
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
@@ -219,9 +257,34 @@ func getAllDataPoints(md pmetric.Metrics) []pmetric.NumberDataPoint {
 			ms := sms.At(j).Metrics()
 			for k := 0; k < ms.Len(); k++ {
 				m := ms.At(k)
-				pts := m.Gauge().DataPoints()
-				for l := 0; l < pts.Len(); l++ {
-					dps = append(dps, pts.At(l))
+				switch m.Type() {
+				case pmetric.MetricTypeCountMinSketch:
+					pts := m.CountMinSketch().DataPoints()
+					for l := 0; l < pts.Len(); l++ {
+						dp := pts.At(l)
+						attrs := pcommon.NewMap()
+						dp.Attributes().CopyTo(attrs)
+						// Inject the typed-DP fields under their
+						// legacy attribute names so existing tests
+						// keep working.
+						attrs.PutEmptyBytes("sketch_payload").FromRaw(dp.Sketch())
+						attrs.PutStr("encoding", encodingToLegacyString(dp.Encoding()))
+						attrs.PutInt("sample_count", int64(dp.SampleCount()))
+						attrs.PutInt("rows", int64(dp.Rows()))
+						attrs.PutInt("cols", int64(dp.Cols()))
+						dps = append(dps, cmsTestDataPoint{attributes: attrs})
+					}
+				case pmetric.MetricTypeGauge:
+					pts := m.Gauge().DataPoints()
+					for l := 0; l < pts.Len(); l++ {
+						dp := pts.At(l)
+						attrs := pcommon.NewMap()
+						dp.Attributes().CopyTo(attrs)
+						dps = append(dps, cmsTestDataPoint{
+							attributes:  attrs,
+							doubleValue: dp.DoubleValue(),
+						})
+					}
 				}
 			}
 		}
@@ -301,7 +364,7 @@ func TestBatchModeQueryMetricsWhenTransmitSketchDisabled(t *testing.T) {
 	dps := getAllDataPoints(out)
 	require.Len(t, dps, 1)
 	assert.Equal(t, 3.0, dps[0].DoubleValue())
-	_, hasPayload := dps[0].Attributes().Get("cms.sketch_payload")
+	_, hasPayload := dps[0].Attributes().Get("sketch_payload")
 	assert.False(t, hasPayload)
 }
 
