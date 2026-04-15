@@ -224,8 +224,19 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 			continue
 		}
 		if p.cfg.TransmitSketch {
-			m := findOrCreateGaugeMetric(scope.Metrics(), p.sketchMetricName(bs.name), bs.unit)
-			if err := appendKLLSketchDataPoint(m, bs.attrs, bs.sketch, now, p.cfg.K); err != nil && p.logger != nil {
+			// Typed KLLSketchDataPoint emission — what
+			// ASAPQuery-backend's modified-OTLP sketch router
+			// consumes as `Metric.data = KLLSketch{...}`.
+			// Before this change the processor emitted a Gauge
+			// with the sketch payload stuffed into a
+			// `kll.sketch_payload` byte attribute, which the
+			// backend router never recognized as a sketch
+			// variant.
+			m := findOrCreateKLLSketchMetric(
+				scope.Metrics(), p.sketchMetricName(bs.name), bs.unit)
+			if err := appendTypedKLLSketchDataPoint(
+				m, bs.attrs, bs.sketch, now, p.cfg.K, p.logger,
+			); err != nil && p.logger != nil {
 				p.logger.Error("kllprocessor: failed to serialize sketch", zap.Error(err))
 			}
 			continue
@@ -489,10 +500,15 @@ func (p *kllProcessor) flushWindow(ctx context.Context) error {
 							m.SetName(p.sketchMetricName(mw.name))
 							m.SetDescription(mw.description)
 							m.SetUnit(mw.unit)
-							m.SetEmptyGauge()
+							// Typed KLLSketchDataPoint emission,
+							// matching the batch path above.
+							m.SetEmptyKLLSketch().SetAggregationTemporality(
+								pmetric.AggregationTemporalityDelta)
 							created = true
 						}
-						if err := appendKLLSketchDataPoint(m, series.attrs, series.sketch, now, p.cfg.K); err != nil && p.logger != nil {
+						if err := appendTypedKLLSketchDataPoint(
+							m, series.attrs, series.sketch, now, p.cfg.K, p.logger,
+						); err != nil && p.logger != nil {
 							p.logger.Error("kllprocessor: failed to serialize sketch", zap.Error(err))
 						}
 						series.attrs = pcommon.Map{}
@@ -598,6 +614,9 @@ func (p *kllProcessor) activeSeriesCount() int64 {
 	return total
 }
 
+// findOrCreateGaugeMetric is retained for the non-TransmitSketch
+// quantile-emission path, which still exports gauge-shaped scalar
+// quantile series.
 func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pmetric.Metric {
 	for idx := 0; idx < metrics.Len(); idx++ {
 		if metrics.At(idx).Name() == name {
@@ -611,18 +630,59 @@ func findOrCreateGaugeMetric(metrics pmetric.MetricSlice, name, unit string) pme
 	return m
 }
 
-func appendKLLSketchDataPoint(metric pmetric.Metric, attrs pcommon.Map, sketch *kll.KLLSketch, ts pcommon.Timestamp, k int) error {
+// findOrCreateKLLSketchMetric finds an existing typed KLLSketch metric
+// with the given name in `metrics` or appends a new empty one. Used by
+// the TransmitSketch batch path, which groups multiple sketch series
+// under the same metric name.
+func findOrCreateKLLSketchMetric(metrics pmetric.MetricSlice, name, unit string) pmetric.Metric {
+	for idx := 0; idx < metrics.Len(); idx++ {
+		if metrics.At(idx).Name() == name &&
+			metrics.At(idx).Type() == pmetric.MetricTypeKLLSketch {
+			return metrics.At(idx)
+		}
+	}
+	m := metrics.AppendEmpty()
+	m.SetName(name)
+	m.SetUnit(unit)
+	m.SetEmptyKLLSketch().SetAggregationTemporality(
+		pmetric.AggregationTemporalityDelta)
+	return m
+}
+
+// appendTypedKLLSketchDataPoint serializes the KLL sketch and writes
+// it into a typed `KLLSketchDataPoint` on the given metric (which
+// must already be `MetricTypeKLLSketch`). Replaces the earlier
+// Gauge-with-`kll.sketch_payload`-byte-attribute shape, which
+// ASAPQuery-backend's modified-OTLP decoder never recognized as a
+// sketch variant.
+func appendTypedKLLSketchDataPoint(
+	metric pmetric.Metric,
+	attrs pcommon.Map,
+	sketch *kll.KLLSketch,
+	ts pcommon.Timestamp,
+	k int,
+	logger *zap.Logger,
+) error {
 	payload, err := serializeKLLSketch(sketch)
 	if err != nil {
 		return err
 	}
-	dp := metric.Gauge().DataPoints().AppendEmpty()
+	dp := metric.KLLSketch().DataPoints().AppendEmpty()
 	attrs.CopyTo(dp.Attributes())
+	// Keep `kll.k` on attributes for operator visibility — the
+	// typed DP has no dedicated field for it and the backend's
+	// Rust side derives k from the payload anyway.
 	dp.Attributes().PutInt("kll.k", int64(k))
-	dp.Attributes().PutInt("kll.count", int64(sketch.Count()))
-	dp.Attributes().PutEmptyBytes("kll.sketch_payload").FromRaw(payload)
 	dp.SetTimestamp(ts)
-	dp.SetDoubleValue(float64(sketch.Count()))
+	dp.SetCount(uint64(sketch.Count()))
+	dp.SetSketch(payload)
+	dp.SetEncoding(pmetric.KLLSketchEncodingProto)
+	// Sum / Min / Max fields are part of the KLLSketchDataPoint
+	// spec but the sketchlib-go KLLSketch type does not track them
+	// (KLL is quantile-only; sum/min/max are carried alongside
+	// the sketch for convenience in the proto shape). Leave them
+	// at zero — the backend's decoder tolerates missing values.
+	_ = logger
 	return nil
 }
 
