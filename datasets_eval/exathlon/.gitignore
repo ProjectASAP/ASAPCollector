@@ -4,7 +4,21 @@ exathlon/data/raw/
 # Exathlon analysis cache
 analysis/code/__pycache__/
 
+# Exathlon benchmark cache
+/benchmark/__pycache__
+/benchmark/ground_truth/__pycache__
+
 # Exathlon analysis outputs
 analysis/results/detailed_windows
-
 analysis/results/summaries
+
+# Exathlon benchmark results
+/benchmark/results/sketch_output/
+/benchmark/results/ground_truth/
+/benchmark/results/*.log
+/benchmark/results/send_times.csv
+/benchmark/results/export_diagnostics.csv
+
+
+.fuse_hidden*
+**/.fuse_hidden*

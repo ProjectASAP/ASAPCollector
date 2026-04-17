@@ -323,8 +323,7 @@ GROUP BY entity, TUMBLE(ts, INTERVAL '5' MINUTE)
 
 **Formula input path (controller, PromQL):**
 ```promql
-# Input stream only:
-exathlon_kpi{entity!="",metric_base="cpu_busy"}
+avg_over_time(exathlon_kpi{entity!="",metric_base="cpu_busy"}[1m]) by (entity)
 ```
 
 **Approach:** exact stateful stream computation (NOP/raw path), not a pure sketch query.
@@ -357,10 +356,8 @@ exathlon_kpi{entity!="",metric_base="cpu_busy"}
 
 **Formula input path (controller, PromQL):**
 ```promql
-# Rolling correlation requires a correlation operator/stateful pipeline.
-# The two input streams are:
-cpu_busy{entity!=""}
-mem_used{entity!=""}
+avg_over_time(cpu_busy{entity!=""}[15m]) by (entity)
+avg_over_time(mem_used{entity!=""}[15m]) by (entity)
 ```
 
 **Approach:** exact rolling-state pipeline, not sketch-native in this setup.

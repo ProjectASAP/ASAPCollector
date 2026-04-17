@@ -32,7 +32,16 @@ def project_root() -> Path:
 
 
 def raw_dir() -> Path:
-    return project_root() / "MIT_SUPERCLOUD" / "data" / "raw"
+    root = project_root()
+    candidates = [
+        root / "exathlon" / "data" / "raw",
+        root / "data" / "raw",
+    ]
+    for path in candidates:
+        if path.is_dir():
+            return path
+    joined = ", ".join(str(p) for p in candidates)
+    raise FileNotFoundError(f"Unable to locate raw data directory. Checked: {joined}")
 
 
 def out_dir() -> Path:
@@ -46,7 +55,12 @@ def ensure_dirs() -> Path:
 
 
 def list_csv_files() -> list[Path]:
-    return [p for p in sorted(raw_dir().glob("app*/*.csv")) if p.is_file()]
+    files = [p for p in sorted(raw_dir().glob("app*/*.csv")) if p.is_file()]
+    if not files:
+        raise FileNotFoundError(
+            f"No CSV files found under expected app folders in {raw_dir()}"
+        )
+    return files
 
 
 def read_header(path: Path) -> list[str]:
