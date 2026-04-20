@@ -235,20 +235,3 @@ This page is the column-level reference for the main dataset and the auxiliary t
 ### Upstream `profile.md`
 
 This page explains the `prof*` and `prof*Rso` columns. It is especially useful for understanding the resource-level and operator-level profiling counters in `snowset-main`.
-
-## Why We Use Snowset In This Repository
-
-Snowset is useful here because it combines:
-
-- high-cardinality query identifiers
-- low- to medium-cardinality warehouse and database identifiers
-- heavy-tailed latency and I/O measurements
-- rich profiling columns
-- a precomputed auxiliary time series
-
-That makes it a strong dataset for evaluating sketch-based summaries such as:
-
-- distinct count sketches
-- frequency and top-k sketches
-- quantile sketches
-- windowed time-series summaries
