@@ -28,17 +28,15 @@ scrape_configs:
       - targets: ["controller:8080"]
 
   # ── Backend query-engine internals ──────────────────────────
-  # TODO(backend-metrics): precompute_engine does not yet expose
-  # a `/metrics` Prometheus endpoint. Re-enable this scrape once
-  # the backend adds one (query-latency histograms + served-bytes
-  # are paper §6.3 + §6.5 signals — needed before VLDB/SIGMOD
-  # submission). Until then, the controller job below covers
-  # every agent-push metric; leaving backend unscraped simply
-  # means we won't have backend-internal query-latency plots.
-  #- job_name: "backend"
-  #  metrics_path: /metrics
-  #  static_configs:
-  #    - targets: ["backend:9465"]
+  # `asap_query_*` histograms (P99 query latency, §6.3) +
+  # `asap_ingest_*` counters (§6.2 bandwidth-served) come from
+  # the precompute_engine query server on the --query-port
+  # (9091 in docker-compose). Ingest port 9090 is data-only and
+  # does not expose /metrics.
+  - job_name: "backend"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:9091"]
 
   # ── Gateway aggregator self-telemetry ───────────────────────
   # Forwarded-bytes + processor CPU from the gateway's own
