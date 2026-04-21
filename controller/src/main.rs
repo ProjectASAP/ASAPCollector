@@ -8,6 +8,7 @@ mod opamp;
 mod planner;
 mod query_parser;
 mod replan;
+mod runtime_samples;
 mod store;
 mod types;
 
@@ -55,6 +56,10 @@ struct AppState {
     online_store:      OnlineMetricsStore,
     opamp_endpoint:    String,
     workload_registry: Arc<WorkloadRegistry>,
+    /// Bounded ring buffer for runtime-sample push batches from
+    /// agents' `sketch-runtime::PushExporter`. Read by decision
+    /// loops in the replanner.
+    runtime_samples:   Arc<runtime_samples::RuntimeSamplesStore>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -264,6 +269,7 @@ async fn main() {
             .unwrap_or(300u64), // re-check plan expiry every 5 minutes
     );
 
+    let runtime_samples_store = runtime_samples::RuntimeSamplesStore::new(1024);
     let state = AppState {
         analyzer:          Arc::new(Analyzer::new()),
         planner,
@@ -275,6 +281,7 @@ async fn main() {
         online_store:      Arc::clone(&online_store),
         opamp_endpoint:    opamp_ep,
         workload_registry: Arc::clone(&workload_registry),
+        runtime_samples:   Arc::clone(&runtime_samples_store),
     };
 
     // ── Background tasks ──────────────────────────────────────────────────────
@@ -293,6 +300,14 @@ async fn main() {
     });
 
     // ── HTTP API ──────────────────────────────────────────────────────────────
+    let runtime_samples_state = Arc::clone(&state.runtime_samples);
+    let runtime_samples_router = Router::new()
+        .route(
+            "/api/v1/runtime-samples",
+            post(runtime_samples::handle_runtime_samples),
+        )
+        .with_state(runtime_samples_state);
+
     let app = Router::new()
         .route("/api/v1/plan",                    post(handle_plan))
         .route("/api/v1/plan/pareto",             post(handle_pareto))
@@ -305,7 +320,8 @@ async fn main() {
         .route("/api/v1/collector-config/backend", get(handle_bootstrap_backend_config))
         .route("/api/v1/cost-model",              get(handle_cost_model))
         .route("/api/v1/tco",                     post(handle_tco))
-        .with_state(state);
+        .with_state(state)
+        .merge(runtime_samples_router);
 
     let listener = tokio::net::TcpListener::bind(&api_addr).await.unwrap();
     info!("controller API listening on {api_addr}");
@@ -692,6 +708,7 @@ fn test_app() -> (AppState, axum::Router) {
         online_store,
         opamp_endpoint:    "ws://ctrl:4320/v1/opamp".into(),
         workload_registry: Arc::new(WorkloadRegistry::empty()),
+        runtime_samples:   runtime_samples::RuntimeSamplesStore::new(64),
     };
     let router = axum::Router::new()
         .route("/api/v1/plan",                  axum::routing::post(handle_plan))
