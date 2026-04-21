@@ -32,8 +32,8 @@ x-agent: &agent-base
   deploy:
     resources:
       limits:
-        cpus: "0.5"
-        memory: 512M
+        cpus: "1.0"
+        memory: 1024M
 
 services:
   agent-1:

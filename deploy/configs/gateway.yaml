@@ -8,6 +8,11 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+        # Sketch payloads (DDSketch state + HLL state embedded in
+        # gauge attributes) easily exceed the default 4 MiB cap.
+        # Bump to 64 MiB so paper §6.2 sketch-transmission runs
+        # don't drop batches.
+        max_recv_msg_size_mib: 64
       http:
         endpoint: 0.0.0.0:4318
 
@@ -31,13 +36,19 @@ exporters:
   # precompute_engine --ingest-port), so we use the prometheus
   # remote-write exporter. Switching to OTLP here required OTLP
   # ingest on the backend, which precompute_engine does not
-  # expose today.
+  # expose today. The remote-write exporter drops sketch-typed
+  # metrics (DDSketch/HLLSketch) — that's expected; the ASAP
+  # query path reads sketch state from the backend's ingest,
+  # not from Prometheus.
   prometheusremotewrite/backend:
     endpoint: http://backend:9090/api/v1/write
     tls:
       insecure: true
-  prometheus:
-    endpoint: "0.0.0.0:8889"
+  # `prometheus` (scrape-style) exporter removed: the stock 0.108
+  # build can't translate DDSketch / HLLSketch types and spams
+  # `failed to translate metric` errors. Per-agent sketch
+  # observability comes from each agent's own /metrics at
+  # `agent-*:8889` — Prometheus scrapes those directly.
 
 service:
   telemetry:
@@ -52,4 +63,4 @@ service:
     metrics:
       receivers: [otlp]
       processors: [attributes/drop-internal, batch]
-      exporters: [prometheusremotewrite/backend, prometheus]
+      exporters: [prometheusremotewrite/backend]

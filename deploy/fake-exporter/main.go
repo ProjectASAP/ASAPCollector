@@ -4,17 +4,24 @@
 // cardinality. Paper §6.1: observability-only workloads (see
 // docs/paper-outline.md §non-goals), so this producer is a
 // stand-in for a Google-cluster / Alibaba trace replayer until
-// a real replayer lands. The shape is what matters for §6
-// bandwidth / CPU figures:
+// a real replayer lands.
 //
-//   * One Gauge named EXPORTER_METRIC_NAME (default http_requests_total)
-//   * CARDINALITY distinct {zone, pod} label sets per emit
-//   * One emit per (1 / RATE) seconds, ticking forever
+// Emits two metrics per tick:
+//
+//   1. <metric>_latency_ms : Gauge. Log-normal distribution,
+//      which is the canonical latency shape. DDSketch + HLL both
+//      require Gauge input — Counter/Sum inputs would be
+//      sketch-pipeline no-ops. This is what exercises the
+//      quantile and distinct-count sketches for §5 figures.
+//
+//   2. <metric> : Counter. Preserved for backwards-compat so
+//      existing dashboards / raw-ingest baselines still see a
+//      monotonic time series.
 //
 // Env config:
 //
 //   EXPORTER_TARGET       — OTLP/gRPC endpoint (default gateway:4317)
-//   EXPORTER_METRIC       — metric name (default http_requests_total)
+//   EXPORTER_METRIC       — base metric name (default http_requests_total)
 //   EXPORTER_RATE         — emits/sec per metric (default 10)
 //   EXPORTER_CARDINALITY  — distinct label sets per emit (default 100)
 //
@@ -27,6 +34,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"strconv"
@@ -93,9 +101,21 @@ func main() {
 
 	meter := provider.Meter("asap.fake-exporter")
 	counter, err := meter.Float64Counter(metricName,
-		metric.WithDescription("Synthetic metric produced by fake-exporter"))
+		metric.WithDescription("Synthetic counter — raw-baseline signal"))
 	if err != nil {
 		log.Fatalf("counter init: %v", err)
+	}
+
+	// DDSketch + HLL processors both accept only Gauge inputs;
+	// Counter / Sum values would be pipeline no-ops. Register a
+	// Float64Gauge we push per-tick with a log-normal draw, which
+	// is the textbook latency-distribution shape.
+	latencyName := metricName + "_latency_ms"
+	latencyGauge, err := meter.Float64Gauge(latencyName,
+		metric.WithDescription("Synthetic log-normal latency — sketch-baseline signal"),
+		metric.WithUnit("ms"))
+	if err != nil {
+		log.Fatalf("gauge init: %v", err)
 	}
 
 	// Pre-compute the label sets so the hot loop is allocation-free.
@@ -107,7 +127,7 @@ func main() {
 		}
 	}
 
-	// Track periodically-advertised values; Poisson-ish spikes
+	// Track periodically-advertised counter values; Poisson-ish spikes
 	// per-label-set so Prometheus query output has some shape.
 	values := make([]float64, cardinality)
 	var mu sync.Mutex
@@ -119,6 +139,13 @@ func main() {
 		for i := 0; i < cardinality; i++ {
 			values[i] += rand.ExpFloat64() // exponential increments
 			counter.Add(ctx, values[i], metric.WithAttributes(labelSets[i]...))
+
+			// Log-normal(mu=3, sigma=0.7) ≈ median ~20ms, P99 ~100ms —
+			// typical of a web-service latency distribution. DDSketch
+			// sees each sample individually; HLL sees each distinct
+			// float64 once per window.
+			latencyMs := math.Exp(3.0 + 0.7*rand.NormFloat64())
+			latencyGauge.Record(ctx, latencyMs, metric.WithAttributes(labelSets[i]...))
 		}
 		mu.Unlock()
 	}

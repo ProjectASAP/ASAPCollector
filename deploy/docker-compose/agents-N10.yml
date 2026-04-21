@@ -22,8 +22,11 @@ x-agent: &agent-base
   deploy:
     resources:
       limits:
-        cpus: "0.5"
-        memory: 512M
+        # DDSketch + HLL state at cardinality=1000 runs ~400MB;
+        # 1 GiB leaves headroom for burst windows. Bump further
+        # for higher-cardinality workloads.
+        cpus: "1.0"
+        memory: 1024M
 
 x-producer: &producer-base
   image: asap/fake-exporter:dev
