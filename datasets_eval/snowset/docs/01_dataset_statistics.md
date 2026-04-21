@@ -51,7 +51,7 @@ Each column group maps naturally to one or more sketch families.
 
 A Snowset analysis package similar to `datasets_eval/debs/analysis/code` is available under:
 
-- [utils.py](../analysis/code/utils.py)
+- [utils.py](../snowset/analysis/code/utils.py)
 - [analyze_cardinality.py](../snowset/analysis/code/analyze_cardinality.py)
 - [analyze_frequency.py](../snowset/analysis/code/analyze_frequency.py)
 - [analyze_windows.py](../snowset/analysis/code/analyze_windows.py)
