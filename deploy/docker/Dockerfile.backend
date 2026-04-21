@@ -1,0 +1,46 @@
+# Multi-stage build for the ASAPQuery backend.
+#
+# The backend source lives in a separate private repo
+# (ProjectASAP/ASAPQuery-backend). We take it as a BuildKit
+# named build-context so nothing is vendored / committed here:
+#
+#   # Option A: local checkout
+#   docker build -f deploy/docker/Dockerfile.backend \
+#     --build-context backend-src=/path/to/ASAPQuery-backend \
+#     -t asap/query-backend:dev .
+#
+#   # Option B: via a released tarball / git archive
+#   git archive --remote=git@github.com:ProjectASAP/ASAPQuery-backend.git \
+#     --format=tar main | tar -C /tmp/asap-backend -xf -
+#   docker build --build-context backend-src=/tmp/asap-backend \
+#     -f deploy/docker/Dockerfile.backend -t asap/query-backend:dev .
+#
+# The `:dev` tag is what `deploy/docker-compose/base.yml`
+# references.
+FROM rust:1.90-bookworm AS build
+WORKDIR /src
+
+# protoc for the backend's prost-build usages.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        protobuf-compiler git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Pull the source tree from the caller-provided build context.
+COPY --from=backend-src . backend
+RUN cd backend && cargo build --release --bin precompute_engine
+
+# Runtime image: binary + CA certs.
+FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/backend/target/release/precompute_engine \
+    /usr/local/bin/asap-query-backend
+
+ENV RUST_LOG=info \
+    ASAP_BACKEND_PORT=9090 \
+    ASAP_BACKEND_METRICS_PORT=9465
+
+EXPOSE 9090 9465
+ENTRYPOINT ["/usr/local/bin/asap-query-backend"]

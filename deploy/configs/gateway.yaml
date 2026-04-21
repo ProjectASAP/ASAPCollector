@@ -27,7 +27,12 @@ processors:
         action: delete
 
 exporters:
-  otlphttp/backend:
+  # Backend ingests Prometheus remote-write at port 9090 (see
+  # precompute_engine --ingest-port), so we use the prometheus
+  # remote-write exporter. Switching to OTLP here required OTLP
+  # ingest on the backend, which precompute_engine does not
+  # expose today.
+  prometheusremotewrite/backend:
     endpoint: http://backend:9090/api/v1/write
     tls:
       insecure: true
@@ -40,9 +45,11 @@ service:
       level: info
     metrics:
       level: detailed
-      address: "0.0.0.0:8889"
+      # Self-telemetry port; gateway exporter owns 8889 for
+      # pipeline-level metrics, so self-telemetry moves to 8890.
+      address: "0.0.0.0:8890"
   pipelines:
     metrics:
       receivers: [otlp]
       processors: [attributes/drop-internal, batch]
-      exporters: [otlphttp/backend, prometheus]
+      exporters: [prometheusremotewrite/backend, prometheus]

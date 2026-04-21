@@ -37,8 +37,8 @@ services:
       MINIO_ROOT_USER: asap
       MINIO_ROOT_PASSWORD: asap-local-only
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console
+      - "19000:9000"   # S3 API (host 19000 → container 9000; avoid collision)
+      - "19001:9001"   # web console
     volumes:
       - minio-data:/data
     healthcheck:
@@ -109,9 +109,15 @@ services:
     logging: *default-logging
 
   backend:
-    # Built from ASAPQuery-backend's main. Image built once and
-    # re-used — point `image` at your registry once the image is
-    # pushed.
+    # Image is built separately because the source lives in a
+    # different private repo. From DataCollector root, run:
+    #
+    #   DOCKER_BUILDKIT=1 docker build \
+    #     -f deploy/docker/Dockerfile.backend \
+    #     --build-context backend-src=/path/to/ASAPQuery-backend \
+    #     -t asap/query-backend:dev .
+    #
+    # Then `docker compose up backend` picks up the tagged image.
     image: asap/query-backend:dev
     depends_on:
       - minio
@@ -125,9 +131,15 @@ services:
       ASAP_COLD_STORE_SECRET_KEY: "asap-local-only"
       # Controller push URL for capability-miss notifications.
       ASAP_CONTROLLER_URL: "http://controller:8080/api/v1/plan"
+    volumes:
+      - ../configs/backend-streaming.yaml:/etc/asap/streaming.yaml:ro
+    command:
+      - "--streaming-config=/etc/asap/streaming.yaml"
+      - "--ingest-port=9090"
+      - "--query-port=9091"
     ports:
-      - "19090:9090"   # PromQL-compatible HTTP surface
-      - "19465:9465"   # /metrics scrape
+      - "19090:9090"   # Prometheus remote-write ingest
+      - "19091:9091"   # PromQL-compatible HTTP query surface
     logging: *default-logging
 
   # ───────── OpenTelemetry gateway (aggregator) ─────────
@@ -142,9 +154,9 @@ services:
     depends_on:
       - backend
     ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8889:8889"   # /metrics (gateway self-telemetry)
+      - "14317:4317"   # OTLP gRPC (host 14317 → container 4317; avoid collision)
+      - "14318:4318"   # OTLP HTTP
+      - "18889:8889"   # /metrics (gateway self-telemetry)
     logging: *default-logging
 
   # ───────── workload: synthetic metrics producer ─────────

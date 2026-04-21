@@ -28,13 +28,17 @@ scrape_configs:
       - targets: ["controller:8080"]
 
   # ── Backend query-engine internals ──────────────────────────
-  # Counts + latency histograms for queries answered by the
-  # sketch DB. Not duplicated on the controller — these are
-  # query-path metrics, not agent-push metrics.
-  - job_name: "backend"
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["backend:9465"]
+  # TODO(backend-metrics): precompute_engine does not yet expose
+  # a `/metrics` Prometheus endpoint. Re-enable this scrape once
+  # the backend adds one (query-latency histograms + served-bytes
+  # are paper §6.3 + §6.5 signals — needed before VLDB/SIGMOD
+  # submission). Until then, the controller job below covers
+  # every agent-push metric; leaving backend unscraped simply
+  # means we won't have backend-internal query-latency plots.
+  #- job_name: "backend"
+  #  metrics_path: /metrics
+  #  static_configs:
+  #    - targets: ["backend:9465"]
 
   # ── Gateway aggregator self-telemetry ───────────────────────
   # Forwarded-bytes + processor CPU from the gateway's own

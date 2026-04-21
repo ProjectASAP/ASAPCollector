@@ -1,0 +1,14 @@
+# Small Go build for the fake OTLP metrics producer. See
+# `deploy/fake-exporter/main.go` for the behavior spec.
+#
+#   docker build -f deploy/docker/Dockerfile.fake-exporter \
+#     -t asap/fake-exporter:dev .
+FROM golang:1.22-bookworm AS build
+WORKDIR /src
+COPY deploy/fake-exporter/go.mod deploy/fake-exporter/main.go ./
+RUN go mod tidy && \
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/fake-exporter .
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/fake-exporter /usr/local/bin/fake-exporter
+ENTRYPOINT ["/usr/local/bin/fake-exporter"]

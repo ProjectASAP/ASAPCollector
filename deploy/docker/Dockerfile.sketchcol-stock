@@ -1,0 +1,21 @@
+# Fallback sketchcol image — a stock otel-collector-contrib
+# retagged as `asap/sketchcol:dev`. Runs WITHOUT the ASAP-patched
+# sketch processors (DDSketch / KLL / HLL / CountSketch /
+# CountMinSketch), so this image is only enough to exercise:
+#
+#   * B0 baseline (Prometheus native, no sketches at all)
+#   * B1 baseline (raw-forward — `sketchcol` replaced by a
+#     passthrough processor, which a stock collector already is)
+#
+# For B2 (hand-tuned sketches) and B3 (full ASAP), use
+# `Dockerfile.sketchcol` which runs the full patched build —
+# requires `git submodule update --init` + the
+# `ProjectASAP/sketchlib-go` sibling repo checked out.
+#
+# This retag keeps compose-up working on any host without the
+# submodule dance, so development / CI / smoke tests don't
+# block on the patched binary.
+FROM otel/opentelemetry-collector-contrib:0.108.0
+# Image already has the entrypoint + default config wiring.
+# Overriding the config via a bind-mount in compose keeps this
+# Dockerfile a zero-edit retag.
