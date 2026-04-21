@@ -18,7 +18,12 @@ x-agent: &agent-base
   command:
     - "--config=/etc/otel/config.yaml"
   volumes:
-    - ../configs/sketchcol-agent.yaml:/etc/otel/config.yaml:ro
+    # Default baseline = B2 full-sketch. Override via env var
+    # AGENT_CONFIG to mount a different pipeline yaml — the
+    # paper baselines' compose overlays (baseline-b*.yml) set
+    # it before `docker compose up`. Compose expands the
+    # ${VAR:-default} syntax at container start.
+    - ../configs/${AGENT_CONFIG:-sketchcol-agent-b2-full.yaml}:/etc/otel/config.yaml:ro
   deploy:
     resources:
       limits:
@@ -48,6 +53,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-2:
     <<: *agent-base
@@ -57,6 +66,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-3:
     <<: *agent-base
@@ -66,6 +79,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-4:
     <<: *agent-base
@@ -75,6 +92,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-5:
     <<: *agent-base
@@ -84,6 +105,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-6:
     <<: *agent-base
@@ -93,6 +118,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-7:
     <<: *agent-base
@@ -102,6 +131,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-8:
     <<: *agent-base
@@ -111,6 +144,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-9:
     <<: *agent-base
@@ -120,6 +157,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-10:
     <<: *agent-base
@@ -129,6 +170,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-11:
     <<: *agent-base
@@ -138,6 +183,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-12:
     <<: *agent-base
@@ -147,6 +196,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-13:
     <<: *agent-base
@@ -156,6 +209,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-14:
     <<: *agent-base
@@ -165,6 +222,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-15:
     <<: *agent-base
@@ -174,6 +235,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-16:
     <<: *agent-base
@@ -183,6 +248,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-17:
     <<: *agent-base
@@ -192,6 +261,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-18:
     <<: *agent-base
@@ -201,6 +274,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-19:
     <<: *agent-base
@@ -210,6 +287,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-20:
     <<: *agent-base
@@ -219,6 +300,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-21:
     <<: *agent-base
@@ -228,6 +313,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-22:
     <<: *agent-base
@@ -237,6 +326,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-23:
     <<: *agent-base
@@ -246,6 +339,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-24:
     <<: *agent-base
@@ -255,6 +352,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-25:
     <<: *agent-base
@@ -264,6 +365,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-26:
     <<: *agent-base
@@ -273,6 +378,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-27:
     <<: *agent-base
@@ -282,6 +391,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-28:
     <<: *agent-base
@@ -291,6 +404,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-29:
     <<: *agent-base
@@ -300,6 +417,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-30:
     <<: *agent-base
@@ -309,6 +430,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-31:
     <<: *agent-base
@@ -318,6 +443,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-32:
     <<: *agent-base
@@ -327,6 +456,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-33:
     <<: *agent-base
@@ -336,6 +469,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-34:
     <<: *agent-base
@@ -345,6 +482,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-35:
     <<: *agent-base
@@ -354,6 +495,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-36:
     <<: *agent-base
@@ -363,6 +508,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-37:
     <<: *agent-base
@@ -372,6 +521,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-38:
     <<: *agent-base
@@ -381,6 +534,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-39:
     <<: *agent-base
@@ -390,6 +547,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-40:
     <<: *agent-base
@@ -399,6 +560,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-41:
     <<: *agent-base
@@ -408,6 +573,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-42:
     <<: *agent-base
@@ -417,6 +586,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-43:
     <<: *agent-base
@@ -426,6 +599,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-44:
     <<: *agent-base
@@ -435,6 +612,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-45:
     <<: *agent-base
@@ -444,6 +625,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-46:
     <<: *agent-base
@@ -453,6 +638,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-47:
     <<: *agent-base
@@ -462,6 +651,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-48:
     <<: *agent-base
@@ -471,6 +664,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-49:
     <<: *agent-base
@@ -480,6 +677,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-50:
     <<: *agent-base
@@ -489,6 +690,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-51:
     <<: *agent-base
@@ -498,6 +703,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-52:
     <<: *agent-base
@@ -507,6 +716,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-53:
     <<: *agent-base
@@ -516,6 +729,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-54:
     <<: *agent-base
@@ -525,6 +742,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-55:
     <<: *agent-base
@@ -534,6 +755,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-56:
     <<: *agent-base
@@ -543,6 +768,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-57:
     <<: *agent-base
@@ -552,6 +781,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-58:
     <<: *agent-base
@@ -561,6 +794,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-59:
     <<: *agent-base
@@ -570,6 +807,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-60:
     <<: *agent-base
@@ -579,6 +820,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-61:
     <<: *agent-base
@@ -588,6 +833,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-62:
     <<: *agent-base
@@ -597,6 +846,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-63:
     <<: *agent-base
@@ -606,6 +859,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-64:
     <<: *agent-base
@@ -615,6 +872,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-65:
     <<: *agent-base
@@ -624,6 +885,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-66:
     <<: *agent-base
@@ -633,6 +898,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-67:
     <<: *agent-base
@@ -642,6 +911,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-68:
     <<: *agent-base
@@ -651,6 +924,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-69:
     <<: *agent-base
@@ -660,6 +937,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-70:
     <<: *agent-base
@@ -669,6 +950,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-71:
     <<: *agent-base
@@ -678,6 +963,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-72:
     <<: *agent-base
@@ -687,6 +976,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-73:
     <<: *agent-base
@@ -696,6 +989,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-74:
     <<: *agent-base
@@ -705,6 +1002,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-75:
     <<: *agent-base
@@ -714,6 +1015,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-76:
     <<: *agent-base
@@ -723,6 +1028,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-77:
     <<: *agent-base
@@ -732,6 +1041,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-78:
     <<: *agent-base
@@ -741,6 +1054,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-79:
     <<: *agent-base
@@ -750,6 +1067,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-80:
     <<: *agent-base
@@ -759,6 +1080,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-81:
     <<: *agent-base
@@ -768,6 +1093,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-82:
     <<: *agent-base
@@ -777,6 +1106,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-83:
     <<: *agent-base
@@ -786,6 +1119,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-84:
     <<: *agent-base
@@ -795,6 +1132,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-85:
     <<: *agent-base
@@ -804,6 +1145,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-86:
     <<: *agent-base
@@ -813,6 +1158,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-87:
     <<: *agent-base
@@ -822,6 +1171,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-88:
     <<: *agent-base
@@ -831,6 +1184,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-89:
     <<: *agent-base
@@ -840,6 +1197,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-90:
     <<: *agent-base
@@ -849,6 +1210,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-91:
     <<: *agent-base
@@ -858,6 +1223,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-92:
     <<: *agent-base
@@ -867,6 +1236,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-93:
     <<: *agent-base
@@ -876,6 +1249,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-94:
     <<: *agent-base
@@ -885,6 +1262,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-95:
     <<: *agent-base
@@ -894,6 +1275,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-96:
     <<: *agent-base
@@ -903,6 +1288,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-97:
     <<: *agent-base
@@ -912,6 +1301,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-98:
     <<: *agent-base
@@ -921,6 +1314,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-99:
     <<: *agent-base
@@ -930,6 +1327,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   agent-100:
     <<: *agent-base
@@ -939,6 +1340,10 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads ${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
   fake-exporter-2:
     <<: *producer-base
