@@ -1,0 +1,20 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  # The ASAPQuery backend exposes a PromQL-compatible HTTP
+  # surface on port 9090; Grafana can query it as a second
+  # Prometheus-type datasource. The paper's §eval latency CDF
+  # panels switch between these two to produce the "backend vs
+  # upstream Prom" figure.
+  - name: ASAPQuery
+    type: prometheus
+    access: proxy
+    url: http://backend:9090
+    editable: false

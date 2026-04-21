@@ -1,0 +1,48 @@
+# Minimal gateway collector: accept OTLP from agents, aggregate
+# per-agent counters, forward to backend. Paper §6 "gateway
+# aggregation saves another N% bandwidth" figures come off this
+# pipeline; swap the exporter to the ASAP-patched sketchcol
+# build when we want sketches at the gateway tier too.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  # Drop labels the backend doesn't use — small but non-zero
+  # bandwidth savings at scale.
+  attributes/drop-internal:
+    actions:
+      - key: telemetry.sdk.name
+        action: delete
+      - key: telemetry.sdk.language
+        action: delete
+      - key: telemetry.sdk.version
+        action: delete
+
+exporters:
+  otlphttp/backend:
+    endpoint: http://backend:9090/api/v1/write
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+service:
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: "0.0.0.0:8889"
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [attributes/drop-internal, batch]
+      exporters: [otlphttp/backend, prometheus]

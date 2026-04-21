@@ -1,0 +1,169 @@
+# ASAP multi-agent eval — base stack.
+#
+# Brings up everything that's shared across the N ∈ {1, 10, 100}
+# agent-count overrides: the backend (ASAPQuery), the gateway
+# (OpenTelemetry aggregator), the controller, plus the infra
+# this paper's eval pipes through — MinIO (S3-compatible raw
+# store for the §5.2 cold-fallback tier), Prometheus (scrape
+# target for every agent / backend / controller), and Grafana
+# (pre-wired with the backend + Prometheus data sources).
+#
+# Agent replicas live in `agents-N<K>.yml` overrides so the
+# same base can scale from 1 → 100 agents just by selecting a
+# different compose file combination:
+#
+#   docker compose -f base.yml -f agents-N1.yml up
+#   docker compose -f base.yml -f agents-N10.yml up
+#   docker compose -f base.yml -f agents-N100.yml up
+#
+# See README.md for build prerequisites (the `sketchcol` agent
+# image still needs its Dockerfile + processor binaries built;
+# tracked in deploy/TODO.md).
+
+version: "3.9"
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ───────── raw S3-compatible store (§5.2 cold fallback) ─────────
+  minio:
+    image: minio/minio:RELEASE.2024-07-16T23-46-41Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: asap
+      MINIO_ROOT_PASSWORD: asap-local-only
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging: *default-logging
+
+  # Create the `raw` bucket + seed the layout the cold-fallback
+  # adapter expects (raw/<metric>/YYYY/MM/DD/HH/part-*.jsonl).
+  minio-setup:
+    image: minio/mc:RELEASE.2024-07-16T23-53-52Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set asap http://minio:9000 asap asap-local-only &&
+        mc mb --ignore-existing asap/raw &&
+        mc anonymous set download asap/raw
+    logging: *default-logging
+
+  # ───────── metrics source + scrape ─────────
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    volumes:
+      - ../configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+    volumes:
+      - ../configs/grafana-datasources.yml:/etc/grafana/provisioning/datasources/ds.yml:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    logging: *default-logging
+
+  # ───────── ASAP control / query plane ─────────
+  controller:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.controller
+    environment:
+      CONTROLLER_ADDR: "0.0.0.0:8080"
+      CONTROLLER_OPAMP_ADDR: "0.0.0.0:4320"
+      RUST_LOG: "info,controller=debug"
+    ports:
+      - "8080:8080"   # HTTP API (/api/v1/plan, /api/v1/runtime-samples)
+      - "4320:4320"   # OpAMP websocket
+    logging: *default-logging
+
+  backend:
+    # Built from ASAPQuery-backend's main. Image built once and
+    # re-used — point `image` at your registry once the image is
+    # pushed.
+    image: asap/query-backend:dev
+    depends_on:
+      - minio
+    environment:
+      RUST_LOG: "info"
+      # §5.2 cold fallback points at MinIO; same JSONL layout
+      # works against real S3 later with just a URL swap.
+      ASAP_COLD_STORE_ENDPOINT: "http://minio:9000"
+      ASAP_COLD_STORE_BUCKET: "raw"
+      ASAP_COLD_STORE_ACCESS_KEY: "asap"
+      ASAP_COLD_STORE_SECRET_KEY: "asap-local-only"
+      # Controller push URL for capability-miss notifications.
+      ASAP_CONTROLLER_URL: "http://controller:8080/api/v1/plan"
+    ports:
+      - "19090:9090"   # PromQL-compatible HTTP surface
+      - "19465:9465"   # /metrics scrape
+    logging: *default-logging
+
+  # ───────── OpenTelemetry gateway (aggregator) ─────────
+  gateway:
+    # Stock OpenTelemetry collector — aggregates agent exports,
+    # forwards to backend. When we need the ASAP-patched build
+    # with sketch processors on the gateway side, swap the image.
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ../configs/gateway.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      - backend
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # /metrics (gateway self-telemetry)
+    logging: *default-logging
+
+  # ───────── workload: synthetic metrics producer ─────────
+  fake-exporter:
+    # Replays the Google cluster usage trace (or any OTel
+    # source) at realistic rates to feed the agents. Paper §6.1:
+    # observability workload is the only kind we evaluate.
+    # Placeholder image — the actual binary lives in
+    # DataCollector/datasets_eval/.
+    image: asap/fake-exporter:dev
+    environment:
+      EXPORTER_TARGET: "gateway:4317"
+      EXPORTER_RATE: "1000"     # samples/sec per metric
+      EXPORTER_CARDINALITY: "1000"
+    depends_on:
+      - gateway
+    logging: *default-logging
+
+  # Agents are defined in `agents-N<K>.yml` overrides — keeping
+  # them out of the base lets the same base compose serve every
+  # scale point.
+
+volumes:
+  minio-data:
