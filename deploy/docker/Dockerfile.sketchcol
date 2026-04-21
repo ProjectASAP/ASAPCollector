@@ -1,0 +1,93 @@
+# Full sketchcol build — the ASAP-patched OpenTelemetry Collector
+# with DDSketch / KLL / HLL / CountSketch / CountMinSketch
+# processors compiled in. This is the image the paper's B2
+# (hand-tuned sketches) and B3 (full ASAP) baselines need.
+#
+# ## Prereqs (run once before the build)
+#
+# The DataCollector repo uses git submodules to vendor the
+# upstream OpenTelemetry trees:
+#
+#   git submodule update --init --recursive \
+#       opentelemetry-collector \
+#       opentelemetry-collector-contrib \
+#       opentelemetry-proto
+#
+# The build also depends on the private `ProjectASAP/sketchlib-go`
+# module — it must be checked out as a sibling of the
+# DataCollector tree (or passed as a BuildKit build-context):
+#
+#   # Option A: sibling checkout
+#   git clone git@github.com:ProjectASAP/sketchlib-go.git \
+#       ../sketchlib-go
+#
+#   # Option B: BuildKit build-context
+#   docker build -f deploy/docker/Dockerfile.sketchcol \
+#     --build-context sketchlib-go=/path/to/sketchlib-go \
+#     -t asap/sketchcol:dev .
+#
+# ## What this image does
+#
+# 1. Apply the ASAP patches to the vendored upstream trees via
+#    the `restore_otel_collector*_patches.sh` scripts.
+# 2. Install the OCB builder at the pinned v0.141.0 version.
+# 3. Build the collector distribution from
+#    `opentelemetry-collector-contrib-patch/cmd/sketchcollector/`
+#    with the `builder-config.yaml` manifest.
+# 4. Add the `replace` directive for the private sketchlib-go
+#    module and do the final `go build`.
+#
+# Matches `build_sketchcollector.sh` at the repo root; the
+# script is the source of truth for the build steps.
+
+FROM golang:1.22-bookworm AS build
+
+# Build deps: patch, protoc (OCB generates some proto code
+# during collector assembly), git for the OCB fetch.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        patch git protobuf-compiler ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy the full DataCollector tree. The outer build context
+# must include:
+#   * opentelemetry-collector/         (submodule, initialized)
+#   * opentelemetry-collector-contrib/ (submodule, initialized)
+#   * opentelemetry-proto/             (submodule, initialized)
+#   * opentelemetry-collector-patch/   (patch files)
+#   * opentelemetry-collector-contrib-patch/
+#   * opentelemetry-proto-patch/
+#   * restore_otel_collector_patches.sh
+#   * restore_otel_collector_contrib_patches.sh
+#   * restore_otel_proto_patches.sh
+#   * build_sketchcollector.sh
+#
+# A dockerignore-file should exclude `.git` / build artifacts to
+# keep the context small.
+WORKDIR /src
+COPY . .
+
+# sketchlib-go as a BuildKit named build-context so it doesn't
+# have to be a sibling of the DataCollector checkout at docker
+# build time.
+COPY --from=sketchlib-go . ../sketchlib-go
+
+# Run the existing build script. `--skip-patches=false` is the
+# default; fail loudly if a submodule is missing rather than
+# producing a silently-partial binary.
+ENV GONOSUMCHECK="github.com/ProjectASAP/*" \
+    GONOSUMDB="github.com/ProjectASAP/*" \
+    GOFLAGS="-mod=mod"
+RUN bash build_sketchcollector.sh
+
+FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=build \
+    /src/opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector \
+    /usr/local/bin/sketchcollector
+
+EXPOSE 4317 4318 8888 9464
+ENTRYPOINT ["/usr/local/bin/sketchcollector"]
+CMD ["--config=/etc/otel/config.yaml"]
