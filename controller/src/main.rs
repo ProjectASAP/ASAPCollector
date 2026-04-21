@@ -1,3 +1,4 @@
+mod accuracy;
 mod algebra;
 mod analyzer;
 mod backend_client;
