@@ -51,21 +51,21 @@ Each column group maps naturally to one or more sketch families.
 
 A Snowset analysis package similar to `datasets_eval/debs/analysis/code` is available under:
 
-- [utils.py](datasets_eval/snowset/analysis/code/utils.py)
-- [analyze_cardinality.py](datasets_eval/snowset/analysis/code/analyze_cardinality.py)
-- [analyze_frequency.py](datasets_eval/snowset/analysis/code/analyze_frequency.py)
-- [analyze_windows.py](datasets_eval/snowset/analysis/code/analyze_windows.py)
+- [utils.py](../analysis/code/utils.py)
+- [analyze_cardinality.py](../snowset/analysis/code/analyze_cardinality.py)
+- [analyze_frequency.py](../snowset/analysis/code/analyze_frequency.py)
+- [analyze_windows.py](../snowset/analysis/code/analyze_windows.py)
 
 The scripts write CSV outputs to:
 
 - [analysis/results/snowset-main/summaries](</datasets_eval/snowset/analysis/results/snowset-main/summaries>)
 - [analysis/results/snowset-main/detailed_windows](<datasets_eval/snowset/analysis/results/snowset-main/detailed_windows>)
 
-> **Note on `ts-explosion` (auxiliary dataset):** The `ts-explosion` dataset is not analyzed independently. It serves purely as a complement to the main dataset by providing `(timestamp, queryId)` pairs — one row per second a query was active — enabling time-series joins against `snowset-main`. Since it carries no query metrics of its own (only `sec` and `queryId`), all sketch-relevant analysis targets `snowset-main` exclusively. See [`dataset_overview.md`](datasets_eval/snowset/analysis/dataset_overview.md) for a structural comparison of both datasets.
+> **Note on `ts-explosion` (auxiliary dataset):** The `ts-explosion` dataset is not analyzed independently. It serves purely as a complement to the main dataset by providing `(timestamp, queryId)` pairs — one row per second a query was active — enabling time-series joins against `snowset-main`. Since it carries no query metrics of its own (only `sec` and `queryId`), all sketch-relevant analysis targets `snowset-main` exclusively. See [`dataset_overview.md`](../analysis/dataset_overview.md) for a structural comparison of both datasets.
 
 Current analysis covers the full `snowset-main` parquet dataset:
 
-- `datasets_eval/snowset/data/snowset-main.parquet/part.0.parquet`
+- `datasets_eval/snowset/data/snowset-main.parquet`
 
 ## Analysis Results
 
