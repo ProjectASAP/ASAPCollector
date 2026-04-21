@@ -112,6 +112,11 @@ impl RuntimeSamplesStore {
         Arc::clone(&self.stats)
     }
 
+    #[cfg(test)]
+    pub(crate) fn append_for_test(&self, rec: RuntimeRecord) {
+        self.append(rec)
+    }
+
     fn append(&self, rec: RuntimeRecord) {
         let key = SampleKey {
             source: rec.source.clone(),
@@ -135,6 +140,12 @@ impl RuntimeSamplesStore {
     /// decision loop to read freshness signals.
     pub fn latest(&self, key: &SampleKey) -> Option<RuntimeRecord> {
         self.buffers.read().get(key).and_then(|b| b.back().cloned())
+    }
+
+    /// Clone the atomic stats handle (used by the /metrics
+    /// exposer to pump counters into a Prometheus registry).
+    pub fn stats_handle(&self) -> Arc<RuntimeSamplesStats> {
+        Arc::clone(&self.stats)
     }
 
     /// Snapshot the full ring for a key. O(n) clone; use only
