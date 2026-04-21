@@ -3,6 +3,7 @@ mod algebra;
 mod analyzer;
 mod backend_client;
 mod config;
+mod metrics_exposer;
 mod monitor;
 mod opamp;
 mod planner;
@@ -306,7 +307,21 @@ async fn main() {
             "/api/v1/runtime-samples",
             post(runtime_samples::handle_runtime_samples),
         )
-        .with_state(runtime_samples_state);
+        .with_state(Arc::clone(&runtime_samples_state));
+
+    // /metrics exposes the RuntimeSamplesStore as Prometheus
+    // exposition format. Prom scrapes this endpoint — no
+    // per-agent /metrics plumbing needed; the controller is
+    // the single aggregator.
+    let metrics_registry = metrics_exposer::MetricsRegistry::new();
+    let metrics_state = metrics_exposer::MetricsState {
+        registry: Arc::clone(&metrics_registry),
+        store: Arc::clone(&runtime_samples_state),
+        stats: runtime_samples_state.stats_handle(),
+    };
+    let metrics_router = Router::new()
+        .route("/metrics", axum::routing::get(metrics_exposer::handle_metrics))
+        .with_state(metrics_state);
 
     let app = Router::new()
         .route("/api/v1/plan",                    post(handle_plan))
@@ -321,7 +336,8 @@ async fn main() {
         .route("/api/v1/cost-model",              get(handle_cost_model))
         .route("/api/v1/tco",                     post(handle_tco))
         .with_state(state)
-        .merge(runtime_samples_router);
+        .merge(runtime_samples_router)
+        .merge(metrics_router);
 
     let listener = tokio::net::TcpListener::bind(&api_addr).await.unwrap();
     info!("controller API listening on {api_addr}");
