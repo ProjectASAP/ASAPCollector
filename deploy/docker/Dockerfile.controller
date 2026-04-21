@@ -6,15 +6,23 @@
 # The `:dev` tag is what `deploy/docker-compose/base.yml`
 # references via its `build:` block — you don't normally invoke
 # this file directly.
-FROM rust:1.80-bookworm AS build
+FROM rust:1.90-bookworm AS build
 WORKDIR /src
 
-# Cache deps: copy manifests first, fetch, then the full tree.
-COPY controller/Cargo.toml controller/Cargo.lock ./controller/
-RUN mkdir -p controller/src && \
-    echo "fn main() {}" > controller/src/main.rs && \
-    cd controller && cargo fetch
+# The `opamp.proto` build step uses plain `prost_build::compile_protos`
+# which requires `protoc` on PATH. (`tonic_build` pulls
+# `protoc-bin-vendored` for our `feedback.proto` so doesn't need
+# this, but prost_build alone does.)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/*
 
+# `tonic-build` invokes `protoc` via the `protoc-bin-vendored`
+# crate, so no apt install is needed — but we do need the full
+# controller tree (proto + build.rs + src) available in one
+# layer because `cargo fetch` alone doesn't exercise the build
+# script. Skip the two-stage manifest-cache trick and copy
+# everything up front; release builds aren't hot-path.
 COPY controller controller
 RUN cd controller && cargo build --release --bin controller
 
@@ -29,7 +37,8 @@ COPY --from=build /src/controller/target/release/controller /usr/local/bin/contr
 
 ENV CONTROLLER_ADDR=0.0.0.0:8080 \
     CONTROLLER_OPAMP_ADDR=0.0.0.0:4320 \
+    CONTROLLER_GRPC_ADDR=0.0.0.0:4321 \
     RUST_LOG=info
 
-EXPOSE 8080 4320
+EXPOSE 8080 4320 4321
 ENTRYPOINT ["/usr/local/bin/controller"]

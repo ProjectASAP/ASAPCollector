@@ -1,68 +1,61 @@
-//! Receiver for `sketch-runtime::PushExporter` batches — the
-//! **push side** of the controller's real-time decision loop.
+//! Receiver for agents' [`sketch-runtime::GrpcExporter`]
+//! batches — the **push side** of the controller's real-time
+//! decision loop.
 //!
-//! Agents running an embedded `sketch-runtime` Sampler POST
-//! batched v1 JSONL records (optionally zstd-compressed) to
-//! `/api/v1/runtime-samples`. The handler decodes the batch and
-//! appends each record to a bounded ring buffer keyed by
-//! `(source, sketch, impl)`. Decision loops in the planner /
-//! replanner peek the tail of that buffer to see the freshest
-//! throughput / latency / accuracy signal.
+//! Agents running an embedded `sketch-runtime` Sampler call the
+//! `asap.runtime.v1.RuntimeSamples.Push` RPC with batched
+//! records. The handler appends each record to a bounded ring
+//! buffer keyed by `(source, sketch, impl)`. Decision loops
+//! peek the tail of that buffer to see the freshest throughput
+//! / latency / accuracy signal.
+//!
+//! ## Why gRPC (vs the earlier HTTP+JSONL)
+//!
+//! HTTP/2 flow control surfaces controller back-pressure to
+//! the agent — critical when the decision loop is real-time.
+//! See the design discussion thread for the full trade-off;
+//! the summary is in
+//! [`sketch-runtime::exporter::grpc`](https://github.com/ProjectASAP/sketchlib-bench/blob/main/sketch-runtime/src/exporter/grpc.rs).
 //!
 //! ## Why a ring buffer, not a stream
 //!
 //! Real-time decisions want the freshest N records, not a full
-//! replay. Bounded memory, O(1) append + peek, no eviction
-//! policy beyond FIFO. Post-mortem analysis of a longer window
-//! lives in the agent's `FileExporter` artifact.
-//!
-//! ## Why this handler accepts compressed bodies
-//!
-//! `PushExporter` ships `Content-Encoding: zstd` by default.
-//! We decode on receipt; consumers of `RuntimeSamplesStore`
-//! never see compressed bytes. The compression is
-//! wire-efficiency only — not a schema concern.
+//! replay. Bounded memory, O(1) append + peek, FIFO eviction.
+//! Longer windows live in the agent's `FileExporter` artifact.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use axum::body::Bytes;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+// Generated from proto/feedback.proto by build.rs.
+pub mod feedback {
+    tonic::include_proto!("asap.runtime.v1");
+}
+use feedback::runtime_samples_server::{RuntimeSamples, RuntimeSamplesServer};
+use feedback::{PushAck, PushBatch};
+
 /// One record as stored in the ring buffer. Kept as
-/// `serde_json::Value` so we don't have to define a mirror of
-/// every field on `sketch-core::report::Record` and stay
-/// schema-forward: the `schema_version` field signals which
-/// shape to expect, and consumers parse out the fields they
-/// need.
+/// `serde_json::Value` payload for schema forward-compat — new
+/// fields on `sketch-core::report::Record` flow through without
+/// a controller rebump. Decision loops extract numeric fields
+/// on demand.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeRecord {
     pub source: String,
     pub sketch: String,
     #[serde(rename = "impl")]
     pub impl_name: String,
-    /// Remainder of the record (bench/profile sections, labels
-    /// on `workload`, timestamp, etc.) preserved as opaque JSON.
-    /// Decision loops pull the numeric fields they care about
-    /// without forcing a shared schema crate between DC and
-    /// sketchlib-bench.
+    #[serde(default)]
+    pub schema_version: u32,
+    /// The full `sketch-core::Record` payload, minus the
+    /// labelling fields already in this struct. Parsed from the
+    /// `RuntimeRecord.payload_json` field of the proto.
     #[serde(flatten)]
     pub payload: Value,
-}
-
-/// Bounded FIFO ring buffer of runtime records, keyed by
-/// `(source, sketch, impl)`. Each key gets its own buffer so a
-/// chatty source can't starve a quiet one.
-pub struct RuntimeSamplesStore {
-    buffers: RwLock<HashMap<SampleKey, VecDeque<RuntimeRecord>>>,
-    per_key_capacity: usize,
-    stats: Arc<RuntimeSamplesStats>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -99,6 +92,15 @@ pub struct RuntimeSamplesStatsSnapshot {
     pub decode_errors: u64,
 }
 
+/// Bounded FIFO ring buffer of runtime records, keyed by
+/// `(source, sketch, impl)`. Each key gets its own buffer so a
+/// chatty source can't starve a quiet one.
+pub struct RuntimeSamplesStore {
+    buffers: RwLock<HashMap<SampleKey, VecDeque<RuntimeRecord>>>,
+    per_key_capacity: usize,
+    stats: Arc<RuntimeSamplesStats>,
+}
+
 impl RuntimeSamplesStore {
     pub fn new(per_key_capacity: usize) -> Arc<Self> {
         Arc::new(Self {
@@ -109,6 +111,10 @@ impl RuntimeSamplesStore {
     }
 
     pub fn stats(&self) -> Arc<RuntimeSamplesStats> {
+        Arc::clone(&self.stats)
+    }
+
+    pub fn stats_handle(&self) -> Arc<RuntimeSamplesStats> {
         Arc::clone(&self.stats)
     }
 
@@ -142,14 +148,7 @@ impl RuntimeSamplesStore {
         self.buffers.read().get(key).and_then(|b| b.back().cloned())
     }
 
-    /// Clone the atomic stats handle (used by the /metrics
-    /// exposer to pump counters into a Prometheus registry).
-    pub fn stats_handle(&self) -> Arc<RuntimeSamplesStats> {
-        Arc::clone(&self.stats)
-    }
-
-    /// Snapshot the full ring for a key. O(n) clone; use only
-    /// from non-hot paths.
+    /// Snapshot the full ring for a key. O(n) clone; non-hot-path only.
     pub fn snapshot(&self, key: &SampleKey) -> Vec<RuntimeRecord> {
         self.buffers
             .read()
@@ -163,226 +162,168 @@ impl RuntimeSamplesStore {
     }
 }
 
-/// Axum handler for `POST /api/v1/runtime-samples`. Accepts
-/// `application/x-ndjson` body, optionally with
-/// `Content-Encoding: zstd`. Parses one `RuntimeRecord` per
-/// line and appends them to the store. Returns `204 No Content`
-/// on success; malformed bodies / unknown encodings yield
-/// `400 Bad Request` but never `500` — the controller must stay
-/// up even when agents misbehave.
-pub async fn handle_runtime_samples(
-    State(store): State<Arc<RuntimeSamplesStore>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    store.stats.batches_received.fetch_add(1, Ordering::Relaxed);
+/// tonic service impl. One instance wraps the shared store and
+/// is added to a tonic `Server` listening on the runtime-samples
+/// port.
+pub struct RuntimeSamplesService {
+    store: Arc<RuntimeSamplesStore>,
+}
 
-    let encoding = headers
-        .get("content-encoding")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let decoded = match encoding {
-        "" | "identity" => body.to_vec(),
-        "zstd" => match zstd::decode_all(&body[..]) {
-            Ok(d) => d,
-            Err(e) => {
-                store.stats.decode_errors.fetch_add(1, Ordering::Relaxed);
-                return (StatusCode::BAD_REQUEST, format!("zstd decode failed: {e}"))
-                    .into_response();
-            }
-        },
-        other => {
-            store.stats.decode_errors.fetch_add(1, Ordering::Relaxed);
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("unsupported Content-Encoding: {other}"),
-            )
-                .into_response();
-        }
-    };
-
-    let text = match std::str::from_utf8(&decoded) {
-        Ok(s) => s,
-        Err(e) => {
-            store.stats.decode_errors.fetch_add(1, Ordering::Relaxed);
-            return (StatusCode::BAD_REQUEST, format!("non-utf8 body: {e}")).into_response();
-        }
-    };
-
-    let mut any_ok = false;
-    for (lineno, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<RuntimeRecord>(line) {
-            Ok(rec) => {
-                store.append(rec);
-                any_ok = true;
-            }
-            Err(e) => {
-                store.stats.decode_errors.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(
-                    lineno,
-                    error = %e,
-                    "runtime-samples: malformed line, skipping"
-                );
-            }
-        }
+impl RuntimeSamplesService {
+    pub fn new(store: Arc<RuntimeSamplesStore>) -> Self {
+        Self { store }
     }
 
-    if any_ok {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        StatusCode::BAD_REQUEST.into_response()
+    /// Return the server as a tonic-routed service with gzip
+    /// compression negotiated on both sides.
+    pub fn into_server(self) -> RuntimeSamplesServer<Self> {
+        RuntimeSamplesServer::new(self)
+            .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+            .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+    }
+}
+
+#[tonic::async_trait]
+impl RuntimeSamples for RuntimeSamplesService {
+    async fn push(
+        &self,
+        request: tonic::Request<PushBatch>,
+    ) -> Result<tonic::Response<PushAck>, tonic::Status> {
+        self.store
+            .stats
+            .batches_received
+            .fetch_add(1, Ordering::Relaxed);
+        let batch = request.into_inner();
+        let mut accepted = 0_u64;
+        for pb in batch.records {
+            // The agent's RuntimeRecord carries the full v1
+            // `sketch-core::Record` as JSON in `payload_json`.
+            // Parse it into our `Value`-flattened store struct;
+            // reject individual malformed records rather than
+            // failing the whole batch.
+            let mut payload: Value = match serde_json::from_str(&pb.payload_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.store
+                        .stats
+                        .decode_errors
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(error = %e, "runtime-samples: malformed payload_json, skipping");
+                    continue;
+                }
+            };
+            // Strip the labelling fields out of `payload` — our
+            // RuntimeRecord carries them as typed fields, so
+            // duplicates inside payload would confuse downstream
+            // consumers.
+            if let Some(obj) = payload.as_object_mut() {
+                obj.remove("source");
+                obj.remove("sketch");
+                obj.remove("impl");
+            }
+            let rec = RuntimeRecord {
+                source: pb.source,
+                sketch: pb.sketch,
+                impl_name: pb.impl_name,
+                schema_version: pb.schema_version,
+                payload,
+            };
+            self.store.append(rec);
+            accepted += 1;
+        }
+        Ok(tonic::Response::new(PushAck { accepted }))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use axum::routing::post;
-    use axum::Router;
-    use tower::util::ServiceExt;
+    use feedback::RuntimeRecord as PbRecord;
 
-    fn sample_line() -> String {
-        serde_json::json!({
-            "source": "data-collector",
-            "sketch": "cms",
-            "impl": "oxide",
+    fn make_pb_record(source: &str, sketch: &str, impl_name: &str, tp: f64) -> PbRecord {
+        let payload = serde_json::json!({
             "schema_version": 1,
             "mode": "runtime",
-            "bench": {},
-        })
-        .to_string()
+            "timestamp": "2026-04-21T19:00:00Z",
+            "bench": {
+                "throughput_items_per_sec": { "mean": tp, "stddev": 0.0 },
+                "latency_ns": { "p50": 10, "p99": 100 },
+                "memory_bytes": 2048
+            }
+        });
+        PbRecord {
+            source: source.into(),
+            sketch: sketch.into(),
+            impl_name: impl_name.into(),
+            schema_version: 1,
+            payload_json: payload.to_string(),
+        }
     }
 
     #[tokio::test]
-    async fn uncompressed_ndjson_stores_one_record() {
+    async fn push_stores_records_under_per_key_rings() {
         let store = RuntimeSamplesStore::new(16);
-        let app = Router::new()
-            .route("/api/v1/runtime-samples", post(handle_runtime_samples))
-            .with_state(Arc::clone(&store));
-
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/runtime-samples")
-                    .header("content-type", "application/x-ndjson")
-                    .body(Body::from(format!("{}\n", sample_line())))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let svc = RuntimeSamplesService::new(Arc::clone(&store));
+        let batch = PushBatch {
+            records: vec![
+                make_pb_record("dc-a", "cms", "oxide", 1e6),
+                make_pb_record("dc-b", "hll", "lib", 2e6),
+                make_pb_record("dc-a", "cms", "oxide", 1.5e6),
+            ],
+        };
+        let resp = svc.push(tonic::Request::new(batch)).await.expect("ok");
+        assert_eq!(resp.into_inner().accepted, 3);
+        assert_eq!(store.keys().len(), 2);
         let key = SampleKey {
-            source: "data-collector".into(),
+            source: "dc-a".into(),
             sketch: "cms".into(),
             impl_name: "oxide".into(),
         };
-        assert!(store.latest(&key).is_some());
-        assert_eq!(store.stats.records_stored.load(Ordering::Relaxed), 1);
+        assert_eq!(store.snapshot(&key).len(), 2);
     }
 
     #[tokio::test]
-    async fn zstd_compressed_ndjson_decodes_and_stores() {
+    async fn push_rejects_malformed_payload_individually_but_accepts_rest() {
         let store = RuntimeSamplesStore::new(16);
-        let body_text = format!("{}\n{}\n", sample_line(), sample_line());
-        let compressed = zstd::encode_all(body_text.as_bytes(), 3).unwrap();
-        let app = Router::new()
-            .route("/api/v1/runtime-samples", post(handle_runtime_samples))
-            .with_state(Arc::clone(&store));
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/runtime-samples")
-                    .header("content-type", "application/x-ndjson")
-                    .header("content-encoding", "zstd")
-                    .body(Body::from(compressed))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        assert_eq!(store.stats.records_stored.load(Ordering::Relaxed), 2);
+        let svc = RuntimeSamplesService::new(Arc::clone(&store));
+        let good1 = make_pb_record("dc-a", "cms", "oxide", 1e6);
+        let bad = PbRecord {
+            source: "dc-a".into(),
+            sketch: "cms".into(),
+            impl_name: "oxide".into(),
+            schema_version: 1,
+            payload_json: "{not json".into(),
+        };
+        let good2 = make_pb_record("dc-a", "cms", "oxide", 2e6);
+        let batch = PushBatch {
+            records: vec![good1, bad, good2],
+        };
+        let resp = svc.push(tonic::Request::new(batch)).await.expect("ok");
+        assert_eq!(resp.into_inner().accepted, 2);
+        let snap = store.stats.snapshot();
+        assert_eq!(snap.records_stored, 2);
+        assert_eq!(snap.decode_errors, 1);
     }
 
     #[tokio::test]
     async fn ring_evicts_oldest_past_capacity() {
         let store = RuntimeSamplesStore::new(3);
-        for i in 0..5 {
-            let mut v = serde_json::from_str::<Value>(&sample_line()).unwrap();
-            v["seq"] = serde_json::json!(i);
-            let rec: RuntimeRecord = serde_json::from_value(v).unwrap();
-            store.append(rec);
+        let svc = RuntimeSamplesService::new(Arc::clone(&store));
+        for _ in 0..5 {
+            svc.push(tonic::Request::new(PushBatch {
+                records: vec![make_pb_record("dc-a", "cms", "oxide", 1e6)],
+            }))
+            .await
+            .unwrap();
         }
-        assert_eq!(store.stats.records_stored.load(Ordering::Relaxed), 5);
-        assert_eq!(store.stats.records_evicted.load(Ordering::Relaxed), 2);
+        let snap = store.stats.snapshot();
+        assert_eq!(snap.records_stored, 5);
+        assert_eq!(snap.records_evicted, 2);
         let key = SampleKey {
-            source: "data-collector".into(),
+            source: "dc-a".into(),
             sketch: "cms".into(),
             impl_name: "oxide".into(),
         };
-        let snap = store.snapshot(&key);
-        assert_eq!(snap.len(), 3);
-        assert_eq!(snap[0].payload["seq"], 2);
-        assert_eq!(snap[2].payload["seq"], 4);
-    }
-
-    #[tokio::test]
-    async fn unsupported_encoding_400s() {
-        let store = RuntimeSamplesStore::new(16);
-        let app = Router::new()
-            .route("/api/v1/runtime-samples", post(handle_runtime_samples))
-            .with_state(Arc::clone(&store));
-        let resp = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/runtime-samples")
-                    .header("content-encoding", "gzip")
-                    .body(Body::from("{}\n"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn per_key_separation_across_sources() {
-        let store = RuntimeSamplesStore::new(16);
-        let for_key = |source: &str, sketch: &str, impl_name: &str| {
-            serde_json::json!({
-                "source": source,
-                "sketch": sketch,
-                "impl": impl_name,
-            })
-            .to_string()
-        };
-        let body = format!(
-            "{}\n{}\n{}\n",
-            for_key("dc-a", "cms", "oxide"),
-            for_key("dc-b", "cms", "oxide"),
-            for_key("dc-a", "hll", "lib"),
-        );
-        let app = Router::new()
-            .route("/api/v1/runtime-samples", post(handle_runtime_samples))
-            .with_state(Arc::clone(&store));
-        app.oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/runtime-samples")
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(store.keys().len(), 3);
+        assert_eq!(store.snapshot(&key).len(), 3);
     }
 }

@@ -300,19 +300,29 @@ async fn main() {
         axum::serve(listener, opamp_router).await.unwrap();
     });
 
-    // ── HTTP API ──────────────────────────────────────────────────────────────
+    // ── gRPC runtime-samples service (was HTTP+JSONL) ─────────────────────────
+    // Agents' `sketch-runtime::GrpcExporter` call
+    // `asap.runtime.v1.RuntimeSamples.Push` on this port. See
+    // commit message for the HTTP → gRPC pivot rationale.
     let runtime_samples_state = Arc::clone(&state.runtime_samples);
-    let runtime_samples_router = Router::new()
-        .route(
-            "/api/v1/runtime-samples",
-            post(runtime_samples::handle_runtime_samples),
-        )
-        .with_state(Arc::clone(&runtime_samples_state));
+    let grpc_addr = std::env::var("CONTROLLER_GRPC_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:4321".into());
+    let grpc_store = Arc::clone(&runtime_samples_state);
+    tokio::spawn(async move {
+        let addr: std::net::SocketAddr = grpc_addr.parse().expect("CONTROLLER_GRPC_ADDR");
+        info!("runtime-samples gRPC server listening on {addr}");
+        let svc = runtime_samples::RuntimeSamplesService::new(grpc_store).into_server();
+        if let Err(e) = tonic::transport::Server::builder()
+            .add_service(svc)
+            .serve(addr)
+            .await
+        {
+            tracing::error!(error = %e, "runtime-samples gRPC server exited");
+        }
+    });
 
-    // /metrics exposes the RuntimeSamplesStore as Prometheus
-    // exposition format. Prom scrapes this endpoint — no
-    // per-agent /metrics plumbing needed; the controller is
-    // the single aggregator.
+    // /metrics — same exposer as before, unchanged. Prom scrapes
+    // the controller HTTP port; gRPC is the push side only.
     let metrics_registry = metrics_exposer::MetricsRegistry::new();
     let metrics_state = metrics_exposer::MetricsState {
         registry: Arc::clone(&metrics_registry),
@@ -320,7 +330,10 @@ async fn main() {
         stats: runtime_samples_state.stats_handle(),
     };
     let metrics_router = Router::new()
-        .route("/metrics", axum::routing::get(metrics_exposer::handle_metrics))
+        .route(
+            "/metrics",
+            axum::routing::get(metrics_exposer::handle_metrics),
+        )
         .with_state(metrics_state);
 
     let app = Router::new()
@@ -336,7 +349,6 @@ async fn main() {
         .route("/api/v1/cost-model",              get(handle_cost_model))
         .route("/api/v1/tco",                     post(handle_tco))
         .with_state(state)
-        .merge(runtime_samples_router)
         .merge(metrics_router);
 
     let listener = tokio::net::TcpListener::bind(&api_addr).await.unwrap();
