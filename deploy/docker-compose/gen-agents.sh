@@ -35,7 +35,7 @@ for ((i=1; i<=N; i++)); do
       AGENT_ID: "agent-$i"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
 EOF
 done

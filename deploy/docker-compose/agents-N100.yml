@@ -23,7 +23,7 @@ services:
       AGENT_ID: "agent-1"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-2:
     <<: *agent-base
@@ -32,7 +32,7 @@ services:
       AGENT_ID: "agent-2"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-3:
     <<: *agent-base
@@ -41,7 +41,7 @@ services:
       AGENT_ID: "agent-3"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-4:
     <<: *agent-base
@@ -50,7 +50,7 @@ services:
       AGENT_ID: "agent-4"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-5:
     <<: *agent-base
@@ -59,7 +59,7 @@ services:
       AGENT_ID: "agent-5"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-6:
     <<: *agent-base
@@ -68,7 +68,7 @@ services:
       AGENT_ID: "agent-6"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-7:
     <<: *agent-base
@@ -77,7 +77,7 @@ services:
       AGENT_ID: "agent-7"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-8:
     <<: *agent-base
@@ -86,7 +86,7 @@ services:
       AGENT_ID: "agent-8"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-9:
     <<: *agent-base
@@ -95,7 +95,7 @@ services:
       AGENT_ID: "agent-9"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-10:
     <<: *agent-base
@@ -104,7 +104,7 @@ services:
       AGENT_ID: "agent-10"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-11:
     <<: *agent-base
@@ -113,7 +113,7 @@ services:
       AGENT_ID: "agent-11"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-12:
     <<: *agent-base
@@ -122,7 +122,7 @@ services:
       AGENT_ID: "agent-12"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-13:
     <<: *agent-base
@@ -131,7 +131,7 @@ services:
       AGENT_ID: "agent-13"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-14:
     <<: *agent-base
@@ -140,7 +140,7 @@ services:
       AGENT_ID: "agent-14"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-15:
     <<: *agent-base
@@ -149,7 +149,7 @@ services:
       AGENT_ID: "agent-15"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-16:
     <<: *agent-base
@@ -158,7 +158,7 @@ services:
       AGENT_ID: "agent-16"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-17:
     <<: *agent-base
@@ -167,7 +167,7 @@ services:
       AGENT_ID: "agent-17"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-18:
     <<: *agent-base
@@ -176,7 +176,7 @@ services:
       AGENT_ID: "agent-18"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-19:
     <<: *agent-base
@@ -185,7 +185,7 @@ services:
       AGENT_ID: "agent-19"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-20:
     <<: *agent-base
@@ -194,7 +194,7 @@ services:
       AGENT_ID: "agent-20"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-21:
     <<: *agent-base
@@ -203,7 +203,7 @@ services:
       AGENT_ID: "agent-21"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-22:
     <<: *agent-base
@@ -212,7 +212,7 @@ services:
       AGENT_ID: "agent-22"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-23:
     <<: *agent-base
@@ -221,7 +221,7 @@ services:
       AGENT_ID: "agent-23"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-24:
     <<: *agent-base
@@ -230,7 +230,7 @@ services:
       AGENT_ID: "agent-24"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-25:
     <<: *agent-base
@@ -239,7 +239,7 @@ services:
       AGENT_ID: "agent-25"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-26:
     <<: *agent-base
@@ -248,7 +248,7 @@ services:
       AGENT_ID: "agent-26"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-27:
     <<: *agent-base
@@ -257,7 +257,7 @@ services:
       AGENT_ID: "agent-27"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-28:
     <<: *agent-base
@@ -266,7 +266,7 @@ services:
       AGENT_ID: "agent-28"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-29:
     <<: *agent-base
@@ -275,7 +275,7 @@ services:
       AGENT_ID: "agent-29"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-30:
     <<: *agent-base
@@ -284,7 +284,7 @@ services:
       AGENT_ID: "agent-30"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-31:
     <<: *agent-base
@@ -293,7 +293,7 @@ services:
       AGENT_ID: "agent-31"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-32:
     <<: *agent-base
@@ -302,7 +302,7 @@ services:
       AGENT_ID: "agent-32"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-33:
     <<: *agent-base
@@ -311,7 +311,7 @@ services:
       AGENT_ID: "agent-33"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-34:
     <<: *agent-base
@@ -320,7 +320,7 @@ services:
       AGENT_ID: "agent-34"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-35:
     <<: *agent-base
@@ -329,7 +329,7 @@ services:
       AGENT_ID: "agent-35"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-36:
     <<: *agent-base
@@ -338,7 +338,7 @@ services:
       AGENT_ID: "agent-36"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-37:
     <<: *agent-base
@@ -347,7 +347,7 @@ services:
       AGENT_ID: "agent-37"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-38:
     <<: *agent-base
@@ -356,7 +356,7 @@ services:
       AGENT_ID: "agent-38"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-39:
     <<: *agent-base
@@ -365,7 +365,7 @@ services:
       AGENT_ID: "agent-39"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-40:
     <<: *agent-base
@@ -374,7 +374,7 @@ services:
       AGENT_ID: "agent-40"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-41:
     <<: *agent-base
@@ -383,7 +383,7 @@ services:
       AGENT_ID: "agent-41"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-42:
     <<: *agent-base
@@ -392,7 +392,7 @@ services:
       AGENT_ID: "agent-42"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-43:
     <<: *agent-base
@@ -401,7 +401,7 @@ services:
       AGENT_ID: "agent-43"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-44:
     <<: *agent-base
@@ -410,7 +410,7 @@ services:
       AGENT_ID: "agent-44"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-45:
     <<: *agent-base
@@ -419,7 +419,7 @@ services:
       AGENT_ID: "agent-45"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-46:
     <<: *agent-base
@@ -428,7 +428,7 @@ services:
       AGENT_ID: "agent-46"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-47:
     <<: *agent-base
@@ -437,7 +437,7 @@ services:
       AGENT_ID: "agent-47"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-48:
     <<: *agent-base
@@ -446,7 +446,7 @@ services:
       AGENT_ID: "agent-48"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-49:
     <<: *agent-base
@@ -455,7 +455,7 @@ services:
       AGENT_ID: "agent-49"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-50:
     <<: *agent-base
@@ -464,7 +464,7 @@ services:
       AGENT_ID: "agent-50"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-51:
     <<: *agent-base
@@ -473,7 +473,7 @@ services:
       AGENT_ID: "agent-51"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-52:
     <<: *agent-base
@@ -482,7 +482,7 @@ services:
       AGENT_ID: "agent-52"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-53:
     <<: *agent-base
@@ -491,7 +491,7 @@ services:
       AGENT_ID: "agent-53"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-54:
     <<: *agent-base
@@ -500,7 +500,7 @@ services:
       AGENT_ID: "agent-54"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-55:
     <<: *agent-base
@@ -509,7 +509,7 @@ services:
       AGENT_ID: "agent-55"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-56:
     <<: *agent-base
@@ -518,7 +518,7 @@ services:
       AGENT_ID: "agent-56"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-57:
     <<: *agent-base
@@ -527,7 +527,7 @@ services:
       AGENT_ID: "agent-57"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-58:
     <<: *agent-base
@@ -536,7 +536,7 @@ services:
       AGENT_ID: "agent-58"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-59:
     <<: *agent-base
@@ -545,7 +545,7 @@ services:
       AGENT_ID: "agent-59"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-60:
     <<: *agent-base
@@ -554,7 +554,7 @@ services:
       AGENT_ID: "agent-60"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-61:
     <<: *agent-base
@@ -563,7 +563,7 @@ services:
       AGENT_ID: "agent-61"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-62:
     <<: *agent-base
@@ -572,7 +572,7 @@ services:
       AGENT_ID: "agent-62"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-63:
     <<: *agent-base
@@ -581,7 +581,7 @@ services:
       AGENT_ID: "agent-63"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-64:
     <<: *agent-base
@@ -590,7 +590,7 @@ services:
       AGENT_ID: "agent-64"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-65:
     <<: *agent-base
@@ -599,7 +599,7 @@ services:
       AGENT_ID: "agent-65"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-66:
     <<: *agent-base
@@ -608,7 +608,7 @@ services:
       AGENT_ID: "agent-66"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-67:
     <<: *agent-base
@@ -617,7 +617,7 @@ services:
       AGENT_ID: "agent-67"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-68:
     <<: *agent-base
@@ -626,7 +626,7 @@ services:
       AGENT_ID: "agent-68"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-69:
     <<: *agent-base
@@ -635,7 +635,7 @@ services:
       AGENT_ID: "agent-69"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-70:
     <<: *agent-base
@@ -644,7 +644,7 @@ services:
       AGENT_ID: "agent-70"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-71:
     <<: *agent-base
@@ -653,7 +653,7 @@ services:
       AGENT_ID: "agent-71"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-72:
     <<: *agent-base
@@ -662,7 +662,7 @@ services:
       AGENT_ID: "agent-72"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-73:
     <<: *agent-base
@@ -671,7 +671,7 @@ services:
       AGENT_ID: "agent-73"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-74:
     <<: *agent-base
@@ -680,7 +680,7 @@ services:
       AGENT_ID: "agent-74"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-75:
     <<: *agent-base
@@ -689,7 +689,7 @@ services:
       AGENT_ID: "agent-75"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-76:
     <<: *agent-base
@@ -698,7 +698,7 @@ services:
       AGENT_ID: "agent-76"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-77:
     <<: *agent-base
@@ -707,7 +707,7 @@ services:
       AGENT_ID: "agent-77"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-78:
     <<: *agent-base
@@ -716,7 +716,7 @@ services:
       AGENT_ID: "agent-78"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-79:
     <<: *agent-base
@@ -725,7 +725,7 @@ services:
       AGENT_ID: "agent-79"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-80:
     <<: *agent-base
@@ -734,7 +734,7 @@ services:
       AGENT_ID: "agent-80"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-81:
     <<: *agent-base
@@ -743,7 +743,7 @@ services:
       AGENT_ID: "agent-81"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-82:
     <<: *agent-base
@@ -752,7 +752,7 @@ services:
       AGENT_ID: "agent-82"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-83:
     <<: *agent-base
@@ -761,7 +761,7 @@ services:
       AGENT_ID: "agent-83"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-84:
     <<: *agent-base
@@ -770,7 +770,7 @@ services:
       AGENT_ID: "agent-84"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-85:
     <<: *agent-base
@@ -779,7 +779,7 @@ services:
       AGENT_ID: "agent-85"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-86:
     <<: *agent-base
@@ -788,7 +788,7 @@ services:
       AGENT_ID: "agent-86"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-87:
     <<: *agent-base
@@ -797,7 +797,7 @@ services:
       AGENT_ID: "agent-87"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-88:
     <<: *agent-base
@@ -806,7 +806,7 @@ services:
       AGENT_ID: "agent-88"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-89:
     <<: *agent-base
@@ -815,7 +815,7 @@ services:
       AGENT_ID: "agent-89"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-90:
     <<: *agent-base
@@ -824,7 +824,7 @@ services:
       AGENT_ID: "agent-90"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-91:
     <<: *agent-base
@@ -833,7 +833,7 @@ services:
       AGENT_ID: "agent-91"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-92:
     <<: *agent-base
@@ -842,7 +842,7 @@ services:
       AGENT_ID: "agent-92"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-93:
     <<: *agent-base
@@ -851,7 +851,7 @@ services:
       AGENT_ID: "agent-93"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-94:
     <<: *agent-base
@@ -860,7 +860,7 @@ services:
       AGENT_ID: "agent-94"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-95:
     <<: *agent-base
@@ -869,7 +869,7 @@ services:
       AGENT_ID: "agent-95"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-96:
     <<: *agent-base
@@ -878,7 +878,7 @@ services:
       AGENT_ID: "agent-96"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-97:
     <<: *agent-base
@@ -887,7 +887,7 @@ services:
       AGENT_ID: "agent-97"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-98:
     <<: *agent-base
@@ -896,7 +896,7 @@ services:
       AGENT_ID: "agent-98"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-99:
     <<: *agent-base
@@ -905,7 +905,7 @@ services:
       AGENT_ID: "agent-99"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
   agent-100:
     <<: *agent-base
@@ -914,5 +914,5 @@ services:
       AGENT_ID: "agent-100"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317"
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
-      SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples"
+      SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"

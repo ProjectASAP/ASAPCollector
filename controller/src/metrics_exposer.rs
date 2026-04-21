@@ -306,6 +306,7 @@ mod tests {
                 source: source.into(),
                 sketch: sketch.into(),
                 impl_name: impl_name.into(),
+                schema_version: 1,
                 payload,
             };
             // Inject via the public append-by-record shim we
