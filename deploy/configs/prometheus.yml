@@ -1,0 +1,49 @@
+# Prometheus scrape config for the ASAP multi-agent stack.
+# Paper §6.2 "N% reduction" claims depend on these scrape
+# targets all being live — miss one and the aggregate number
+# is wrong.
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "controller"
+    static_configs:
+      - targets: ["controller:8080"]
+
+  - job_name: "backend"
+    static_configs:
+      - targets: ["backend:9465"]
+    metrics_path: /metrics
+
+  - job_name: "gateway"
+    static_configs:
+      - targets: ["gateway:8889"]
+
+  - job_name: "agents"
+    # Compose DNS resolves agent-N. Prometheus re-scrapes on
+    # each reload; spin-up / spin-down needs a
+    # `curl -X POST http://localhost:9090/-/reload` after the
+    # agent set changes.
+    dns_sd_configs:
+      - names: ["tasks.agents"]
+        type: A
+        port: 9464
+    # Local-compose fallback (no Swarm DNS): enumerate the
+    # likely agent hostnames. Prometheus silently drops ones
+    # that don't resolve. The list covers up to N=100.
+    static_configs:
+      - targets:
+        - "agent-1:9464"
+        - "agent-2:9464"
+        - "agent-3:9464"
+        - "agent-4:9464"
+        - "agent-5:9464"
+        - "agent-6:9464"
+        - "agent-7:9464"
+        - "agent-8:9464"
+        - "agent-9:9464"
+        - "agent-10:9464"
+    # For N>10 regen with:
+    #   yq -o yaml -i '.scrape_configs[3].static_configs[0].targets = [list up to N]' prometheus.yml
+    # (omitted inline to keep this file under ~40 lines.)

@@ -1,0 +1,35 @@
+# Overlay: 10 edge agents. Mid-scale point — what the paper
+# uses for bandwidth / per-node CPU reduction figures when 100
+# agents overwhelms the local box.
+#
+# Written as an explicit per-service list (rather than `deploy:
+# replicas:` which only works under Swarm) so each agent gets a
+# distinct AGENT_ID label for Prometheus scrape differentiation.
+#
+# See README.md for the commented one-shot generator if you
+# want to regenerate this file at a different N.
+
+version: "3.9"
+
+x-agent: &agent-base
+  image: asap/sketchcol:dev
+  depends_on:
+    - gateway
+    - controller
+  deploy:
+    resources:
+      limits:
+        cpus: "0.5"
+        memory: 512M
+
+services:
+  agent-1:   { <<: *agent-base, hostname: agent-1,   environment: { AGENT_ID: "agent-1",   OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }
+  agent-2:   { <<: *agent-base, hostname: agent-2,   environment: { AGENT_ID: "agent-2",   OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }
+  agent-3:   { <<: *agent-base, hostname: agent-3,   environment: { AGENT_ID: "agent-3",   OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }
+  agent-4:   { <<: *agent-base, hostname: agent-4,   environment: { AGENT_ID: "agent-4",   OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }
+  agent-5:   { <<: *agent-base, hostname: agent-5,   environment: { AGENT_ID: "agent-5",   OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }
+  agent-6:   { <<: *agent-base, hostname: agent-6,   environment: { AGENT_ID: "agent-6",   OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }
+  agent-7:   { <<: *agent-base, hostname: agent-7,   environment: { AGENT_ID: "agent-7",   OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }
+  agent-8:   { <<: *agent-base, hostname: agent-8,   environment: { AGENT_ID: "agent-8",   OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }
+  agent-9:   { <<: *agent-base, hostname: agent-9,   environment: { AGENT_ID: "agent-9",   OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }
+  agent-10:  { <<: *agent-base, hostname: agent-10,  environment: { AGENT_ID: "agent-10",  OTEL_EXPORTER_OTLP_ENDPOINT: "http://gateway:4317", CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp", SKETCH_RUNTIME_PUSH_URL: "http://controller:8080/api/v1/runtime-samples", RUST_LOG: "info" } }

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: asap
+description: |
+  ASAP multi-agent stack (N edge agents + gateway + ASAPQuery
+  backend + controller + MinIO + Prometheus + Grafana). See
+  `README.md` + `values.yaml` for the N parameter that drives
+  paper §6 scale figures.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
