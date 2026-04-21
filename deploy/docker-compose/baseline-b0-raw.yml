@@ -1,0 +1,28 @@
+# Baseline B0 selector — raw OTel forward (no sketching).
+#
+# Set AGENT_CONFIG so the agents-N*.yml default mount resolves
+# to the B0 pipeline config. Compose expands the variable at
+# `docker compose up` time.
+#
+#   AGENT_CONFIG=sketchcol-agent-b0-raw.yaml \
+#     docker compose -f base.yml -f agents-N1.yml \
+#       -f baseline-b0-raw.yml up -d
+#
+# The overlay is symmetric with the other baselines' selectors
+# — each one exists mostly to document the baseline and keep
+# the bring-up command explicit.
+
+x-baseline: &b0-marker
+  # Empty override block — the actual selector is the
+  # AGENT_CONFIG env var the operator passes in. The overlay's
+  # presence in the `-f` chain is what signals "this run is B0".
+  labels:
+    asap.baseline: "b0-raw"
+
+services:
+  # No per-service overrides needed — AGENT_CONFIG threads
+  # through to agents-N*.yml's `volumes:` entry. The controller
+  # service carries the label so `docker ps -f label=...` can
+  # identify the active baseline.
+  controller:
+    <<: *b0-marker

@@ -154,6 +154,12 @@ processors:
     path: ./processor/countsketchprocessor
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor v0.141.0
     path: ./processor/countminsketchprocessor
+  # Paper baseline B1: Serf (Gorilla-style XOR float compression).
+  # Bundled into sketchcollector so every baseline runs against the
+  # same binary — different agent YAML configs pick which processor
+  # to use.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/serfprocessor v0.141.0
+    path: ./processor/serfprocessor
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/nopreceiver v0.141.0

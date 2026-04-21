@@ -33,7 +33,12 @@ x-agent: &agent-base
   command:
     - "--config=/etc/otel/config.yaml"
   volumes:
-    - ../configs/sketchcol-agent.yaml:/etc/otel/config.yaml:ro
+    # Default baseline = B2 full-sketch. Override via env var
+    # AGENT_CONFIG to mount a different pipeline yaml — the
+    # paper baselines' compose overlays (baseline-b*.yml) set
+    # it before \`docker compose up\`. Compose expands the
+    # \${VAR:-default} syntax at container start.
+    - ../configs/\${AGENT_CONFIG:-sketchcol-agent-b2-full.yaml}:/etc/otel/config.yaml:ro
   deploy:
     resources:
       limits:
@@ -67,6 +72,10 @@ for ((i=1; i<=N; i++)); do
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
+      # B4 tunable-window baseline reads \${env:SKETCH_WINDOW}
+      # in sketchcol-agent-b4-tunable.yaml. Other baselines
+      # ignore this env. Default 60s.
+      SKETCH_WINDOW: "\${SKETCH_WINDOW:-60s}"
 EOF
 done
 

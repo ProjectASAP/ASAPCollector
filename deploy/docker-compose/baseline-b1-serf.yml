@@ -1,0 +1,24 @@
+# Baseline B1 selector — Serf XOR compression (lossless Gorilla).
+#
+# Bring up via:
+#
+#   AGENT_CONFIG=sketchcol-agent-b1-serf.yaml \
+#     docker compose -f base.yml -f agents-N1.yml \
+#       -f baseline-b1-serf.yml up -d
+#
+# Serf writes compressed blobs to /var/tmp/asap-serf-out. The
+# volume entry below is merged onto every agent service so it
+# stacks with the AGENT_CONFIG-driven mount from agents-N*.yml.
+#
+# Container-only tmpfs — bytes-written is read from
+# `otelcol_datacollector_processor_output_bytes_total{processor_type="serf"}`
+# on :8890, not from host disk.
+
+x-serf-volume: &serf-volume
+  volumes:
+    - /var/tmp/asap-serf-out
+
+services:
+  controller:
+    labels:
+      asap.baseline: "b1-serf"

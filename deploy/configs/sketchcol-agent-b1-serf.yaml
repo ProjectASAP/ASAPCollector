@@ -1,0 +1,68 @@
+# Baseline B1 — Serf (Gorilla-style XOR float compression).
+#
+# Paper §6.2 baseline: lossless float-column compression with no
+# sketch math. Windows incoming data into tumbling intervals,
+# XOR-encodes deltas, writes SERF1 binary blobs to local disk.
+# Bandwidth savings come purely from bit-level compression, not
+# from summarization.
+#
+# Unlike the sketch pipelines, the serfprocessor does NOT forward
+# compressed data over OTLP — it writes to S3 or a local
+# directory. `DropOriginal: true` disables the redundant raw-OTLP
+# forward, so the bytes-on-wire figure is zero and the
+# bandwidth-consumed figure is the size of files written to
+# /var/tmp/asap-serf-out inside each agent container.
+#
+# Mount the output dir as a tmpfs or named volume from the
+# compose overlay to keep it off the host disk. Size accounting
+# via `du -sb /var/tmp/asap-serf-out` inside the container, or
+# via the serfprocessor's self-telemetry
+# `otelcol_datacollector_processor_output_bytes_total`.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  serf:
+    window_interval: 10s
+    # 0 MaxDiff + xor = lossless Gorilla.
+    compression: xor
+    max_diff: 0.0
+    drop_original: true
+    local_dir: /var/tmp/asap-serf-out
+
+exporters:
+  # No OTLP forward — serfprocessor is a sink-style processor
+  # with DropOriginal=true. Keep an OTLP/gateway exporter wired
+  # for consistency with other baselines' service graph but feed
+  # it from a pipeline that carries no data.
+  otlp/gateway:
+    endpoint: gateway:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [serf]
+      # A processor chain with DropOriginal=true ends in no data;
+      # the otlp/gateway exporter is kept as a hook for future
+      # modes that want to fan out alongside the Serf writer.
+      exporters: [otlp/gateway]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

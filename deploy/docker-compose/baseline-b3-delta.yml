@@ -1,0 +1,13 @@
+# Baseline B3 selector — delta sketch transmission, fixed 60s
+# window. Paper §6.2 — delta payloads are sparse diffs of only-
+# changed buckets/registers since the last flush; once the
+# sketch fills in, per-window bytes drop dramatically vs B2.
+#
+#   AGENT_CONFIG=sketchcol-agent-b3-delta.yaml \
+#     docker compose -f base.yml -f agents-N1.yml \
+#       -f baseline-b3-delta.yml up -d
+
+services:
+  controller:
+    labels:
+      asap.baseline: "b3-delta"
