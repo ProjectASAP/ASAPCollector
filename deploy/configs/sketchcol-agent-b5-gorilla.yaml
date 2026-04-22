@@ -28,7 +28,9 @@ receivers:
 
 processors:
   gorilla:
-    window_interval: 10s
+    # 60s window matches the sketch-baseline aggregation budget
+    # — see the B1 Serf config for the apples-to-apples note.
+    window_interval: 60s
     drop_original: true
     local_dir: /var/tmp/asap-gorilla-out
 

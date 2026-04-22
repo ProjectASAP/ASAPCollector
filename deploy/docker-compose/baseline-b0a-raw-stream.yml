@@ -1,0 +1,10 @@
+# Baseline B0a selector — raw OTel streaming (1s batch).
+#
+#   AGENT_CONFIG=sketchcol-agent-b0a-raw-stream.yaml \
+#     docker compose -f base.yml -f agents-N1.yml \
+#       -f baseline-b0a-raw-stream.yml up -d
+
+services:
+  controller:
+    labels:
+      asap.baseline: "b0a-raw-stream"

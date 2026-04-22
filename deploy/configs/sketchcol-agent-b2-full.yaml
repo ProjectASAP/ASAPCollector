@@ -35,13 +35,19 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
-  # Paper §5.1 — DDSketch for latency-style quantiles. `batch`
-  # mode emits a sketch per window + flush; `transmit_sketch:
-  # true` sends the sketch state itself (not just quantile
-  # point-estimates) so the gateway/backend can re-query at
-  # different quantiles without another round-trip.
+  # Paper §5.1 — DDSketch for latency-style quantiles. `window`
+  # mode + `window_duration: 60s` aligns the aggregation budget
+  # with the other 60s baselines (B1 Serf, B3 delta, B5 Gorilla,
+  # B0b raw-batched); previous `mode: batch` was per-arrival-
+  # batch which made B2's §6.2 comparison apples-to-oranges vs
+  # the windowed baselines.
+  #
+  # `transmit_sketch: true` sends the sketch state itself (not
+  # just quantile point-estimates) so the gateway/backend can
+  # re-query at different quantiles without another round-trip.
   ddsketch:
-    mode: batch
+    mode: window
+    window_duration: 60s
     transmit_sketch: true
     enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
@@ -50,10 +56,10 @@ processors:
   # Paper §5.1 — HLL for distinct-count (high-cardinality counters,
   # e.g. unique_users). Pairs with DDSketch to cover the two
   # primary sketch families in one pipeline. Precision is fixed
-  # at 14 internally; the processor exposes only mode +
-  # transmit_sketch + encoding knobs.
+  # at 14 internally.
   HLL:
-    mode: batch
+    mode: window
+    window_duration: 60s
     transmit_sketch: true
     enable_self_monitoring: true
 

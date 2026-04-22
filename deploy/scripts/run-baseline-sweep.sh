@@ -27,11 +27,11 @@ set -euo pipefail
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 COMPOSE_DIR="${SCRIPT_DIR}/../docker-compose"
 
-BASELINES="${BASELINES:-b0-raw b1-serf b2-full b3-delta b5-gorilla}"
+BASELINES="${BASELINES:-b0a-raw-stream b0b-raw-batched b1-serf b2-full b3-delta b5-gorilla}"
 SCALE="${SCALE:-N1}"
 RATES="${RATES:-1000}"
 CARDS="${CARDS:-1000}"
-SOAK_S="${SOAK_S:-60}"
+SOAK_S="${SOAK_S:-180}"  # ≥3 min so rate()/60s windows yield ≥2 samples
 
 # Emit header once.
 head=1
@@ -42,12 +42,13 @@ for baseline in $BASELINES; do
 
       # Map baseline tag to AGENT_CONFIG filename.
       case "$baseline" in
-        b0-raw)    cfg="sketchcol-agent-b0-raw.yaml" ;;
-        b1-serf)   cfg="sketchcol-agent-b1-serf.yaml" ;;
-        b2-full)   cfg="sketchcol-agent-b2-full.yaml" ;;
-        b3-delta)  cfg="sketchcol-agent-b3-delta.yaml" ;;
-        b4-tunable) cfg="sketchcol-agent-b4-tunable.yaml" ;;
-        b5-gorilla) cfg="sketchcol-agent-b5-gorilla.yaml" ;;
+        b0a-raw-stream)  cfg="sketchcol-agent-b0a-raw-stream.yaml" ;;
+        b0b-raw-batched) cfg="sketchcol-agent-b0b-raw-batched.yaml" ;;
+        b1-serf)         cfg="sketchcol-agent-b1-serf.yaml" ;;
+        b2-full)         cfg="sketchcol-agent-b2-full.yaml" ;;
+        b3-delta)        cfg="sketchcol-agent-b3-delta.yaml" ;;
+        b4-tunable)      cfg="sketchcol-agent-b4-tunable.yaml" ;;
+        b5-gorilla)      cfg="sketchcol-agent-b5-gorilla.yaml" ;;
         *) echo "unknown baseline: $baseline" >&2; exit 1 ;;
       esac
 

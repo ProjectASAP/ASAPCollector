@@ -1,15 +1,13 @@
-# Baseline B0 — raw OTel forward (no sketching, no compression).
+# Baseline B0a — raw OTel streaming. Low-latency control:
+# every second, flush whatever raw samples arrived.
 #
-# Pipeline: OTLP in → batch → OTLP out to gateway. Metric bytes
-# on the wire between agent and gateway are raw-OTLP full-
-# fidelity. This is the paper's "do nothing" control against
-# which every other baseline is measured.
+# Pipeline: OTLP in → batch(1s) → OTLP out to gateway.
 #
-# §6.2 bandwidth figure: the other baselines' savings are
-# expressed as a fraction of what B0 sends.
-#
-# Works with `asap/sketchcol:dev` because the patched binary
-# still ships the stock `batch` processor.
+# Pairs with B0b (raw OTel held 60s) so the §6.2 comparison can
+# show both the latency-optimized and the budget-matched raw
+# baselines. Everyone else in the matrix (B1/B2/B3/B5) holds
+# data for 60s; B0a is the one exception, kept as a reference
+# for what "native Prometheus scrape" looks like.
 receivers:
   otlp:
     protocols:

@@ -28,7 +28,11 @@ receivers:
 
 processors:
   serf:
-    window_interval: 10s
+    # 60s window matches the sketch-baseline aggregation budget
+    # (B2/B3/B5 all hold for 60s); see
+    # `deploy/eval-results/README.md` for why the §6.2 sweep
+    # fixes this across baselines.
+    window_interval: 60s
     # 0 MaxDiff + xor = lossless Gorilla.
     compression: xor
     max_diff: 0.0

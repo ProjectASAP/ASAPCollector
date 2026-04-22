@@ -1,0 +1,7 @@
+baseline,scale,rate,cardinality,agent_cpu_cores,agent_rss_mib,agent_in_kib_per_s,agent_out_kib_per_s,agent_points_per_s,gateway_cpu_cores,gateway_rss_mib,gateway_points_per_s,gateway_out_series_per_s,backend_cpu_pct,backend_rss_mib,backend_samples_per_s,backend_query_p99_ms
+b0a-raw-stream,N1,1000,1000,0.777,213.246,nan,nan,325790.476,1.197,200.602,325619.048,325600.000,35.820,12.350,325781.857,nan
+b0b-raw-batched,N1,1000,1000,0.531,913.184,nan,nan,268304.762,0.630,752.273,266666.667,266666.667,0.030,204.900,266800.000,nan
+b1-serf,N1,1000,1000,0.293,nan,nan,nan,142882.756,0.024,188.516,nan,nan,0.010,6.297,nan,nan
+b2-full,N1,1000,1000,0.456,216.516,16633.586,29.510,278342.857,0.000,152.574,nan,nan,0.010,6.262,nan,nan
+b3-delta,N1,1000,1000,0.440,226.223,16370.215,54.749,273504.762,0.000,151.887,nan,nan,0.010,6.270,nan,nan
+b5-gorilla,N1,1000,1000,0.315,nan,nan,nan,129965.002,0.024,188.195,nan,nan,0.020,6.270,nan,nan
