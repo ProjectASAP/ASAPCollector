@@ -59,5 +59,6 @@ services:
   fake-exporter:
     environment:
       EXPORTER_TARGET: "agent-1:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      # Paper §6 workload-sweep knobs; override via shell env.
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"

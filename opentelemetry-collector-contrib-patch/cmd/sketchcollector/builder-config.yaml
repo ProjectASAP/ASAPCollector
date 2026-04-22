@@ -154,12 +154,14 @@ processors:
     path: ./processor/countsketchprocessor
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor v0.141.0
     path: ./processor/countminsketchprocessor
-  # Paper baseline B1: Serf (Gorilla-style XOR float compression).
-  # Bundled into sketchcollector so every baseline runs against the
-  # same binary — different agent YAML configs pick which processor
-  # to use.
+  # Paper baseline B1: Serf (ASAP XOR-with-quantization).
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/serfprocessor v0.141.0
     path: ./processor/serfprocessor
+  # Paper baseline B5: Gorilla (Facebook TSDB XOR — lossless).
+  # Separate baseline from Serf because Serf defaults to quantized
+  # encoding. Same binary bundling + config-selection pattern.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/gorillaprocessor v0.141.0
+    path: ./processor/gorillaprocessor
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/nopreceiver v0.141.0

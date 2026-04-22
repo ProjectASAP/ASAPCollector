@@ -57,8 +57,13 @@ services:
   fake-exporter:
     environment:
       EXPORTER_TARGET: "agent-1:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      # Paper §6 workload-sweep knobs. Defaults match the N=1
+      # smoke-test. Override at bring-up:
+      #
+      #   EXPORTER_RATE=10000 EXPORTER_CARDINALITY=5000 \\
+      #     docker compose -f base.yml -f agents-N1.yml up -d
+      EXPORTER_RATE: "\${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "\${EXPORTER_CARDINALITY:-1000}"
 EOF
 
 for ((i=1; i<=N; i++)); do
@@ -90,7 +95,7 @@ for ((i=2; i<=N; i++)); do
       - agent-$i
     environment:
       EXPORTER_TARGET: "agent-$i:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "\${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "\${EXPORTER_CARDINALITY:-1000}"
 EOF
 done

@@ -42,8 +42,13 @@ services:
   fake-exporter:
     environment:
       EXPORTER_TARGET: "agent-1:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      # Paper §6 workload-sweep knobs. Defaults match the N=1
+      # smoke-test. Override at bring-up:
+      #
+      #   EXPORTER_RATE=10000 EXPORTER_CARDINALITY=5000 \
+      #     docker compose -f base.yml -f agents-N1.yml up -d
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   agent-1:
     <<: *agent-base
@@ -181,8 +186,8 @@ services:
       - agent-2
     environment:
       EXPORTER_TARGET: "agent-2:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-3:
     <<: *producer-base
@@ -190,8 +195,8 @@ services:
       - agent-3
     environment:
       EXPORTER_TARGET: "agent-3:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-4:
     <<: *producer-base
@@ -199,8 +204,8 @@ services:
       - agent-4
     environment:
       EXPORTER_TARGET: "agent-4:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-5:
     <<: *producer-base
@@ -208,8 +213,8 @@ services:
       - agent-5
     environment:
       EXPORTER_TARGET: "agent-5:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-6:
     <<: *producer-base
@@ -217,8 +222,8 @@ services:
       - agent-6
     environment:
       EXPORTER_TARGET: "agent-6:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-7:
     <<: *producer-base
@@ -226,8 +231,8 @@ services:
       - agent-7
     environment:
       EXPORTER_TARGET: "agent-7:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-8:
     <<: *producer-base
@@ -235,8 +240,8 @@ services:
       - agent-8
     environment:
       EXPORTER_TARGET: "agent-8:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-9:
     <<: *producer-base
@@ -244,8 +249,8 @@ services:
       - agent-9
     environment:
       EXPORTER_TARGET: "agent-9:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-10:
     <<: *producer-base
@@ -253,5 +258,5 @@ services:
       - agent-10
     environment:
       EXPORTER_TARGET: "agent-10:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"

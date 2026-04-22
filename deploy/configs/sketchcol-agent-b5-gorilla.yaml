@@ -1,0 +1,58 @@
+# Baseline B5 — Gorilla (Facebook TSDB XOR compression, lossless).
+#
+# Paper §6.2 baseline: classic XOR-delta bit-encoding, no
+# quantization, no sketch math. Same sink-style pattern as B1
+# Serf — windows incoming points into tumbling intervals and
+# writes compressed blocks to a local directory (or S3 in the
+# production path).
+#
+# Differs from B1 in the coder: Gorilla's vanilla Facebook-2015
+# XOR with no approximation knobs; Serf here defaults to the
+# ASAP-quantized variant. Both are lossless with MaxDiff=0, but
+# Gorilla's path is smaller and simpler so it pins the
+# "compression-floor" datapoint on the §6.2 chart.
+#
+# `DropOriginal: true` disables the redundant raw-OTLP forward
+# so the bytes-on-wire figure is zero — measured bandwidth is
+# bytes written under /var/tmp/asap-gorilla-out, read either
+# via `du -sb` or via
+# `otelcol_receiver_accepted_metric_points_total` for the rate
+# reference + log-line-parsed compressed_bytes.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  gorilla:
+    window_interval: 10s
+    drop_original: true
+    local_dir: /var/tmp/asap-gorilla-out
+
+exporters:
+  otlp/gateway:
+    endpoint: gateway:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [gorilla]
+      exporters: [otlp/gateway]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890
