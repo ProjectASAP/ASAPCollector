@@ -155,7 +155,12 @@ QUERIES: dict[str, str] = {
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--prom", default="http://localhost:9090")
-    p.add_argument("--window", default="1m", help="rate() lookback window")
+    p.add_argument(
+        "--window",
+        default="2m",
+        help="rate() lookback window. ≥2m needed when baselines emit on "
+        "60s windows — otherwise rate() sees a single sample and returns NaN.",
+    )
     p.add_argument("--baseline", default="unset", help="label for the output row")
     p.add_argument(
         "--scale", default="N1", help="label for the scale (e.g. N1 / N10)"
