@@ -15,8 +15,14 @@
 #   SCALE="N1"                            compose-overlay to use
 #   RATES="1000 5000 10000"               EXPORTER_RATE sweep
 #   CARDS="500 1000 5000"                 EXPORTER_CARDINALITY sweep
+#   WINDOWS="5s 30s 60s 300s"             SKETCH_WINDOW sweep (B4 only)
 #   SOAK_S=120                            per-config soak seconds
 #   SCRIPT_DIR=.../deploy/scripts         override lookup path
+#
+# WINDOWS is honored only when the baseline is `b4-tunable` —
+# other baselines have their window hard-coded in the YAML. When
+# WINDOWS is unset, the default B4 window (60s via the overlay
+# env var) applies.
 #
 # The caller is responsible for having the compose stack's images
 # built (asap/sketchcol:dev, asap/query-backend:dev, asap/fake-
@@ -31,14 +37,32 @@ BASELINES="${BASELINES:-b0a-raw-stream b0b-raw-batched b1-serf b2-full b3-delta 
 SCALE="${SCALE:-N1}"
 RATES="${RATES:-1000}"
 CARDS="${CARDS:-1000}"
+WINDOWS="${WINDOWS:-}"  # empty = use default window; non-empty only for B4
 SOAK_S="${SOAK_S:-180}"  # ≥3 min so rate()/60s windows yield ≥2 samples
 
 # Emit header once.
 head=1
 for baseline in $BASELINES; do
+  # Only iterate WINDOWS when the baseline actually consumes it.
+  # For non-B4 baselines the inner loop runs once with the yaml
+  # default.
+  if [[ "$baseline" == "b4-tunable" && -n "$WINDOWS" ]]; then
+    windows_for_this="$WINDOWS"
+  else
+    windows_for_this=" "  # single pass; value is a no-op
+  fi
   for rate in $RATES; do
     for card in $CARDS; do
-      echo "# === baseline=${baseline} rate=${rate} card=${card} ===" >&2
+     for window in $windows_for_this; do
+      if [[ "$baseline" == "b4-tunable" && -n "$WINDOWS" ]]; then
+        tag="${baseline}-w${window}"
+        window_env="$window"
+        echo "# === baseline=${baseline} window=${window} rate=${rate} card=${card} ===" >&2
+      else
+        tag="$baseline"
+        window_env=""
+        echo "# === baseline=${baseline} rate=${rate} card=${card} ===" >&2
+      fi
 
       # Map baseline tag to AGENT_CONFIG filename.
       case "$baseline" in
@@ -58,8 +82,19 @@ for baseline in $BASELINES; do
         -f base.yml -f "agents-${SCALE}.yml" -f "baseline-${baseline}.yml" \
         down >/dev/null 2>&1 || true
 
-      EXPORTER_RATE="$rate" EXPORTER_CARDINALITY="$card" AGENT_CONFIG="$cfg" \
-        docker compose \
+      # SKETCH_WINDOW is consumed by the B4 yaml's
+      # ${env:SKETCH_WINDOW} expansion; agents on other baselines
+      # accept the env harmlessly. Using `env` as the wrapper so
+      # an empty window doesn't require separate branches.
+      env_args=(
+        EXPORTER_RATE="$rate"
+        EXPORTER_CARDINALITY="$card"
+        AGENT_CONFIG="$cfg"
+      )
+      if [[ -n "$window_env" ]]; then
+        env_args+=(SKETCH_WINDOW="$window_env")
+      fi
+      env "${env_args[@]}" docker compose \
         -f base.yml -f "agents-${SCALE}.yml" -f "baseline-${baseline}.yml" \
         up -d >/dev/null 2>&1
 
@@ -70,15 +105,16 @@ for baseline in $BASELINES; do
       # emit only data rows.
       if (( head == 1 )); then
         python3 "${SCRIPT_DIR}/measure-baseline.py" \
-          --baseline "$baseline" --scale "$SCALE" \
+          --baseline "$tag" --scale "$SCALE" \
           --rate "$rate" --cardinality "$card"
         head=0
       else
         python3 "${SCRIPT_DIR}/measure-baseline.py" \
-          --baseline "$baseline" --scale "$SCALE" \
+          --baseline "$tag" --scale "$SCALE" \
           --rate "$rate" --cardinality "$card" \
           | tail -n +2
       fi
+     done  # window
     done
   done
 done
