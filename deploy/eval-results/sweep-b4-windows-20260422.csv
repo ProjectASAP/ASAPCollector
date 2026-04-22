@@ -1,0 +1,5 @@
+baseline,scale,rate,cardinality,agent_cpu_cores,agent_rss_mib,agent_in_kib_per_s,agent_out_kib_per_s,agent_points_per_s,gateway_cpu_cores,gateway_rss_mib,gateway_points_per_s,gateway_out_series_per_s,backend_cpu_pct,backend_rss_mib,backend_samples_per_s,backend_query_p99_ms
+b4-tunable-w5s,N1,1000,1000,0.486,227.836,16680.833,380.170,273257.143,0.000,150.496,nan,nan,0.010,6.273,nan,nan
+b4-tunable-w30s,N1,1000,1000,0.447,225.980,16767.107,100.544,279390.476,0.000,150.449,nan,nan,0.010,6.246,nan,nan
+b4-tunable-w60s,N1,1000,1000,0.005,212.355,125.228,5.921,2000.000,0.000,149.957,nan,nan,0.010,6.266,nan,nan
+b4-tunable-w300s,N1,1000,1000,0.005,213.211,119.307,nan,2000.000,0.000,150.227,nan,nan,0.010,6.277,nan,nan
