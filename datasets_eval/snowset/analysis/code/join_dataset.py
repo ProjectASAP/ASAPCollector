@@ -47,7 +47,8 @@ ANALYSIS_ROOT = Path("analysis")
 
 _MAIN_PARQUET = DATA_ROOT / "snowset-main.parquet"
 _AUX_PARQUET  = DATA_ROOT / "ts-explosion.parquet"
-_RESULTS_DIR  = ANALYSIS_ROOT / "results" / "joined"
+# Default joined outputs to the mounted remote storage path.
+_RESULTS_DIR  = Path("/mnt/mydata")
 
 # ---------------------------------------------------------------------------
 # SQL

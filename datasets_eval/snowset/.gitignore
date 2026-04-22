@@ -55,6 +55,7 @@ analysis/results/
 
 # Python cache
 __pycache__/
+__pycache__
 *.pyc
 *.pyo
 
@@ -62,6 +63,12 @@ __pycache__/
 bin/
 *.bin
 .venv
+venv
+ven
+.ven
 
 data/ts-explosion.parquet
 data/snowset-main.parquet
+
+
+.tar.gz

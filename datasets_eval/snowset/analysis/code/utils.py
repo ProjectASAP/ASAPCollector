@@ -24,6 +24,7 @@ class DatasetSpec:
     path: Path
     time_column: str
     entity_columns: tuple[str, ...]
+    results_subdir: str | None = None
 
 
 DATASETS: tuple[DatasetSpec, ...] = (
@@ -33,12 +34,19 @@ DATASETS: tuple[DatasetSpec, ...] = (
         time_column="createdTime",
         entity_columns=("queryId", "warehouseId", "databaseId"),
     ),
+    DatasetSpec(
+        name="fully-joined",
+        path=ANALYSIS_ROOT / "results" / "joined" / "full_join.parquet",
+        time_column="timestamp_sec",
+        entity_columns=("queryId", "warehouseId", "databaseId"),
+        results_subdir="fully-joined",
+    ),
 )
 
 
 def set_dataset(name: str) -> None:
     global _selected_dataset
-    valid = {"snowset-main", "all"}
+    valid = {dataset.name for dataset in DATASETS} | {"all"}
     if name not in valid:
         raise ValueError(f"--dataset must be one of {sorted(valid)}, got {name!r}")
     _selected_dataset = name
@@ -49,9 +57,10 @@ def get_dataset() -> str:
 
 
 def add_dataset_arg(p: argparse.ArgumentParser) -> None:
+    dataset_choices = tuple(dataset.name for dataset in DATASETS) + ("all",)
     p.add_argument(
         "--dataset",
-        choices=("snowset-main", "all"),
+        choices=dataset_choices,
         default="all",
         help="Which dataset to analyse. Default: all.",
     )
@@ -83,7 +92,11 @@ def ensure_dirs() -> None:
 
 
 def results_dir() -> Path:
-    subdir = _selected_dataset if _selected_dataset != "all" else "all"
+    if _selected_dataset == "all":
+        subdir = "all"
+    else:
+        spec = next(dataset for dataset in DATASETS if dataset.name == _selected_dataset)
+        subdir = spec.results_subdir or spec.name
     return ANALYSIS_ROOT / "results" / subdir
 
 

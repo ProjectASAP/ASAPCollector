@@ -60,14 +60,17 @@ The scripts write CSV outputs to:
 
 - [analysis/results/snowset-main/summaries](</datasets_eval/snowset/analysis/results/snowset-main/summaries>)
 - [analysis/results/snowset-main/detailed_windows](<datasets_eval/snowset/analysis/results/snowset-main/detailed_windows>)
+- [analysis/results/fully-joined/summaries](</datasets_eval/snowset/analysis/results/fully-joined/summaries>)
+- [analysis/results/fully-joined/detailed_windows](<datasets_eval/snowset/analysis/results/fully-joined/detailed_windows>)
 
-> **Note on `ts-explosion` (auxiliary dataset):** The `ts-explosion` dataset is not analyzed independently. It serves purely as a complement to the main dataset by providing `(timestamp, queryId)` pairs — one row per second a query was active — enabling time-series joins against `snowset-main`. Since it carries no query metrics of its own (only `sec` and `queryId`), all sketch-relevant analysis targets `snowset-main` exclusively. See [`dataset_overview.md`](../analysis/dataset_overview.md) for a structural comparison of both datasets.
+> **Note on `ts-explosion` (auxiliary dataset):** The raw `ts-explosion` dataset is not analyzed independently. It serves as a complement to the main dataset by providing `(timestamp, queryId)` pairs — one row per second a query was active — enabling time-series joins against `snowset-main`. The analysis target added here is the materialized full join, `analysis/results/joined/full_join.parquet`, which combines the auxiliary timestamps with the query-level metrics from `snowset-main`. See [`dataset_overview.md`](../analysis/dataset_overview.md) for a structural comparison of the source datasets.
 
-Current analysis covers the full `snowset-main` parquet dataset:
+Current analysis covers the full `snowset-main` parquet dataset and the materialized full join:
 
 - `datasets_eval/snowset/data/snowset-main.parquet`
+- `datasets_eval/snowset/analysis/results/joined/full_join.parquet`
 
-## Analysis Results
+## Main Dataset Analysis Results
 
 ### 1. Cardinality Summary
 
@@ -107,3 +110,79 @@ Interpretation:
 - Each window is dense: even the minimum 1-min window contains over 15,000 queries, making sketches over individual windows statistically meaningful.
 - Variability grows with window size (std rising from ~8.6K for 1-min to ~30.2K for 1-hour), reflecting bursty but sustained query throughput.
 - The `1min` and `5min` windows both resolve to 1,153 distinct windows because windows are query-aligned rather than calendar-aligned in this analysis; longer windows (30min, 1hr) collapse into fewer, larger bins.
+
+## Fully-Joined (Main + Auxiliary) Analysis Results
+
+The materialized full join combines query-level rows from `snowset-main` with the second-level activity stream from `ts-explosion`. That means the joined dataset has a different grain from the main dataset:
+
+- In `snowset-main`, one row means one completed query.
+- In the full join, one row means one active second of one query.
+
+This is the key interpretive shift for all statistics below. The full join is not just the main dataset with an extra timestamp column; it is a time-expanded representation of query activity.
+
+### Semantic Implications
+
+| Question | `snowset-main` meaning | `fully-joined` meaning |
+| --- | --- | --- |
+| What does one row represent? | One completed query | One active second of one query |
+| What does a row count measure? | Number of queries | Number of query-seconds |
+| What do frequency counts emphasize? | Queries | Time-weighted query presence |
+| What does a sum over repeated metrics represent? | Per-query totals across distinct rows | Time-attributed totals across repeated active timestamps |
+| What stays directly comparable? | Distinct IDs and per-query metrics | Distinct IDs only; raw counts shift meaning |
+
+In practice:
+
+- Use `snowset-main` for query-centric questions such as per-query latency distributions, unique-query counts, or top-k heavy queries.
+- Use `fully-joined` for time-centric questions such as concurrent activity, aggregate load over time, or time-windowed sketching.
+
+### 1. Cardinality Summary
+
+| Dataset | Rows | Unique `queryId` | Unique `warehouseId` | Unique `databaseId` |
+| --- | ---: | ---: | ---: | ---: |
+| `fully-joined` | 801,891,730 | 69,182,074 | 2,051 | 11,134 |
+
+Interpretation:
+
+- The full join expands `snowset-main` from `69,182,074` rows to `801,891,730` rows, a `11.59x` amplification. That increase is expected because queries are repeated once per active second.
+- The row count should therefore be read as query-seconds, not unique queries.
+- Distinct `queryId`, `warehouseId`, and `databaseId` counts remain unchanged relative to `snowset-main`, so the join preserves the entity domain even though it changes the row grain.
+- Frequency-based sketches over IDs on the full join become time-weighted. For example, a warehouse with fewer but longer-running queries can appear more often than a warehouse with more short-lived queries.
+
+### 2. Frequency / Interarrival Summary
+
+| Dataset | Min ms | Max ms | Mean ms | Median ms | P95 ms | P99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fully-joined` | 0.0 | 1.0 | 0.0014 | 0.0 | 0.0 | 0.0 |
+
+Interpretation:
+
+- Interarrival gaps collapse to near zero because many rows share the same second-level timestamp after the time expansion.
+- This summary no longer describes the arrival process of distinct queries. Instead, it describes how densely the joined table packs active query-seconds onto a shared timestamp axis.
+- The dominant `0 ms` gaps reflect repeated timestamps, not instantaneous bursts of new unique queries.
+- For analysis purposes, the fully joined dataset should be interpreted as a concurrency stream over time, not as a query-arrival stream.
+
+### 3. Window Summary
+
+| Window | Total windows | Avg samples | Min samples | Max samples | Std samples |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `1min` | 20 | 40,094,586.5 | 9,306,737 | 47,839,844 | 7,942,573.0 |
+| `5min` | 4 | 200,472,932.5 | 177,311,212 | 216,737,463 | 14,639,474.2 |
+| `15min` | 2 | 400,945,865.0 | 199,892,200 | 601,999,530 | 201,053,665.0 |
+| `30min` | 1 | 801,891,730.0 | 801,891,730 | 801,891,730 | 0.0 |
+| `1hour` | 1 | 801,891,730.0 | 801,891,730 | 801,891,730 | 0.0 |
+
+Interpretation:
+
+- These windows count joined rows, so they measure active query-seconds per window rather than distinct queries per window.
+- The exported full join spans only `20` one-minute windows, and each is extremely dense, ranging from `9.3M` to `47.8M` joined rows. This indicates very high concurrent activity once the data is expanded into per-second rows.
+- Larger windows quickly collapse the dataset into one or two bins. At `30min` and `1hour`, the output effectively summarizes the whole export range rather than preserving much temporal structure.
+- This makes `1min` and `5min` windows the most useful for time-centric sketching on the fully joined data: they still reflect changes in concurrent activity, while larger windows mostly wash that variation out.
+
+### Takeaway
+
+The fully joined dataset is best treated as a temporal activity view, not as a second version of the main query table. Its statistics are still useful, but their meanings have shifted:
+
+- counts become query-seconds
+- frequencies become time-weighted
+- repeated metrics describe temporal presence, not distinct-query totals
+- distinct-ID summaries remain directly interpretable

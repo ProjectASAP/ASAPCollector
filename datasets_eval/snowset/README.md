@@ -86,11 +86,16 @@ pip install pandas pyarrow numpy
 
 #### `analysis/code/join_dataset.py`
 
-This script joins `snowset-main` with `ts-explosion` using DuckDB and produces a per-second temporal aggregation of the combined workload. It is the entry point for any time-series analysis that needs query metrics (latency, memory, I/O) anchored to wall-clock timestamps.
+This script joins `snowset-main` with `ts-explosion` using DuckDB. It supports two output modes:
+
+- `temporal aggregation`: a per-second aggregate CSV over the joined workload
+- `full join export`: a row-level parquet where selected `snowset-main` metrics are repeated for every active-second row from `ts-explosion`
+
+It is the entry point for any time-series analysis that needs query metrics (latency, memory, I/O) anchored to wall-clock timestamps.
 
 **What it produces**
 
-By default the script runs a temporal aggregation query and writes a CSV to `analysis/results/joined/temporal_agg.csv`. Each row in the output is one second of workload activity with the following aggregate columns derived from the join:
+By default the script runs a temporal aggregation query and writes `temporal_agg.csv` under the selected `--out-dir`. Each row in the output is one second of workload activity with the following aggregate columns derived from the join:
 
 | Output column | Description |
 | --- | --- |
@@ -101,41 +106,50 @@ By default the script runs a temporal aggregation query and writes a CSV to `ana
 | `total_scan_bytes` | Sum of `scanBytes` |
 | `p99_duration_ms` | Approximate p99 of `durationTotal` across active queries |
 
-With `--export-join` the script additionally writes a full row-level join as `analysis/results/joined/full_join.parquet`, repeating selected `snowset-main` metric columns alongside every `ts-explosion` row.
+With `--export-join` the script additionally writes `full_join.parquet` under the selected `--out-dir`, repeating selected `snowset-main` metric columns alongside every `ts-explosion` row.
 
-**Recommended usage**
+**How we run it**
 
 ```bash
-# Standard run — temporal aggregation only (recommended for most use cases)
-python join_dataset.py \
-  --memory-limit 20GB \
-  --threads 16 \
-  --temp-dir datasets_eval/snowset/analysis/results/.duckdb-tmp
+# Temporal aggregation output
+python3 analysis/code/join_dataset.py \
+  --memory-limit 4GB \
+  --threads 2 \
+  --temp-dir /mydata/tmp \
+  --out-dir /mydata/analysis/results/joined
 
-# Low-memory fallback — process one day at a time (Unix timestamps)
-python join_dataset.py \
-  --memory-limit 12GB \
-  --threads 12 \
-  --temp-dir datasets_eval/snowset/analysis/results/.duckdb-tmp \
-  --ts-start 1519171200 \
-  --ts-end   1519257600
-
-# Full row-level join export — large output, ensure sufficient disk space
-python join_dataset.py \
-  --memory-limit 20GB \
-  --threads 16 \
-  --temp-dir datasets_eval/snowset/analysis/results/.duckdb-tmp \
+# Full row-level join export
+python3 analysis/code/join_dataset.py \
+  --memory-limit 4GB \
+  --threads 2 \
+  --temp-dir /mydata/tmp \
+  --out-dir /mydata/analysis/results/full-joined \
   --export-join
 ```
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--memory-limit` | `12GB` | Minimum recommended. 20GB is comfortable on this machine (31 GB RAM, 23 GB free). |
-| `--threads` | auto | Set to `16` to leave 4 cores free for OS/IO scheduling. |
-| `--temp-dir` | `/tmp` | **Override this.** `/tmp` is on the root partition (45 GB free). Use the NVMe path above (102 GB free). Spill files for the full join can reach 30–50 GB. |
-| `--ts-start` / `--ts-end` | none | Unix seconds. Restrict processing to a time window for low-memory machines. |
-| `--export-join` | off | Materialises the full one-to-many join. Output is 20–60 GB — only use when the row-level join is genuinely needed. |
-| `--out-dir` | `analysis/results/joined/` | Destination for all output files. |
+| `--memory-limit` | `12GB` | DuckDB memory cap. Lower values such as `4GB` are usable, but expect more spill-to-disk activity and slower execution. |
+| `--threads` | auto | Number of DuckDB worker threads. Use smaller values like `2` on constrained machines to reduce memory pressure. |
+| `--temp-dir` | unset | Directory for DuckDB spill files. Always set this to a disk with plenty of free space. Avoid small root partitions and `tmpfs`-backed `/tmp`. |
+| `--ts-start` / `--ts-end` | none | Optional Unix-second boundaries. Restrict the auxiliary stream to a time window when you need chunked processing. |
+| `--export-join` | off | Enables row-level `full_join.parquet` export in addition to the temporal aggregation CSV. This is the expensive mode. |
+| `--out-dir` | `/mnt/mydata` | Destination directory for output files. Temporal mode writes `temporal_agg.csv`; full mode also writes `full_join.parquet`. |
+
+**What each configuration does**
+
+- `--memory-limit`: caps DuckDB working memory. If memory is too low, DuckDB spills intermediate join state to disk in `--temp-dir`.
+- `--threads`: controls CPU parallelism. More threads can improve throughput, but also increase memory and spill pressure.
+- `--temp-dir`: stores DuckDB temporary spill files. This is critical for large joins and should point to a fast disk with substantial headroom.
+- `--ts-start` and `--ts-end`: limit processing to a smaller timestamp interval. They are mainly useful when running the temporal aggregation in chunks.
+- `--export-join`: materializes the full one-to-many join instead of only producing the aggregated time-series view.
+- `--out-dir`: separates result sets by run type. In our workflow, we use `/mydata/analysis/results/joined` for temporal output and `/mydata/analysis/results/full-joined` for the row-level export.
+
+**Recommended free space**
+
+- For temporal aggregation only, keep at least `20 GB` free in `--temp-dir` and a few extra GB in `--out-dir` for safety.
+- For the full row-level export with `--export-join`, keep at least `80-100 GB` free on the disk hosting `--temp-dir` and `--out-dir` combined.
+- A good rule is: the full join output itself is very large, and DuckDB may additionally need tens of GB for spill files while building it. If `--temp-dir` and `--out-dir` are on the same filesystem, budget for both at once.
 
 
 **Prerequisites:** `duckdb` must be available in the active Python environment.
@@ -199,6 +213,27 @@ T=100     | Q2      | 800           | 500MB      | 1MB       | ...
 ```
 
 The main dataset metrics are static per query (they are post-completion summaries), so they repeat on every timestamp row for that query. The join lets you ask temporally-structured questions like "what was the total memory committed across all concurrently active queries at timestamp T?"
+
+### How the join shifts the meaning of the data
+
+Joining these two datasets does not just add a timestamp column. It changes the grain of the data:
+
+- In `snowset-main`, one row means "one completed query."
+- In the full join, one row means "one active second of one query."
+
+That shift matters when interpreting results:
+
+- Row counts no longer mean "number of queries." They mean "number of query-seconds" or, more generally, repeated time-expanded query observations.
+- Frequency counts become time-weighted. A long-running query appears many times after the join, while a short query appears only a few times.
+- Aggregates over repeated metric columns can change meaning. For example, summing `memoryUsed` over the joined table does not mean total distinct-query memory; it means memory attributed across active timestamps.
+- Distinct counts such as unique `queryId`, `warehouseId`, or `databaseId` remain meaningful, but simple counts and top-k frequency results now describe temporal presence rather than unique-query presence.
+
+In practice:
+
+- Use `snowset-main` when the question is query-centric, such as "how many unique queries were slow?" or "what is the distribution of per-query scan bytes?"
+- Use the joined dataset when the question is time-centric, such as "how many queries were active at time T?" or "what was the aggregate memory load across concurrent queries?"
+
+So the join is valid, but it introduces a semantic shift from **query-level facts** to **time-expanded query activity**. Analyses on the joined dataset should be read with that change in mind.
 
 ### Why the join is valid — dataset compatibility
 
