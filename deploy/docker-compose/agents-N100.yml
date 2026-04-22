@@ -42,8 +42,13 @@ services:
   fake-exporter:
     environment:
       EXPORTER_TARGET: "agent-1:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      # Paper §6 workload-sweep knobs. Defaults match the N=1
+      # smoke-test. Override at bring-up:
+      #
+      #   EXPORTER_RATE=10000 EXPORTER_CARDINALITY=5000 \
+      #     docker compose -f base.yml -f agents-N1.yml up -d
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   agent-1:
     <<: *agent-base
@@ -1351,8 +1356,8 @@ services:
       - agent-2
     environment:
       EXPORTER_TARGET: "agent-2:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-3:
     <<: *producer-base
@@ -1360,8 +1365,8 @@ services:
       - agent-3
     environment:
       EXPORTER_TARGET: "agent-3:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-4:
     <<: *producer-base
@@ -1369,8 +1374,8 @@ services:
       - agent-4
     environment:
       EXPORTER_TARGET: "agent-4:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-5:
     <<: *producer-base
@@ -1378,8 +1383,8 @@ services:
       - agent-5
     environment:
       EXPORTER_TARGET: "agent-5:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-6:
     <<: *producer-base
@@ -1387,8 +1392,8 @@ services:
       - agent-6
     environment:
       EXPORTER_TARGET: "agent-6:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-7:
     <<: *producer-base
@@ -1396,8 +1401,8 @@ services:
       - agent-7
     environment:
       EXPORTER_TARGET: "agent-7:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-8:
     <<: *producer-base
@@ -1405,8 +1410,8 @@ services:
       - agent-8
     environment:
       EXPORTER_TARGET: "agent-8:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-9:
     <<: *producer-base
@@ -1414,8 +1419,8 @@ services:
       - agent-9
     environment:
       EXPORTER_TARGET: "agent-9:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-10:
     <<: *producer-base
@@ -1423,8 +1428,8 @@ services:
       - agent-10
     environment:
       EXPORTER_TARGET: "agent-10:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-11:
     <<: *producer-base
@@ -1432,8 +1437,8 @@ services:
       - agent-11
     environment:
       EXPORTER_TARGET: "agent-11:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-12:
     <<: *producer-base
@@ -1441,8 +1446,8 @@ services:
       - agent-12
     environment:
       EXPORTER_TARGET: "agent-12:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-13:
     <<: *producer-base
@@ -1450,8 +1455,8 @@ services:
       - agent-13
     environment:
       EXPORTER_TARGET: "agent-13:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-14:
     <<: *producer-base
@@ -1459,8 +1464,8 @@ services:
       - agent-14
     environment:
       EXPORTER_TARGET: "agent-14:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-15:
     <<: *producer-base
@@ -1468,8 +1473,8 @@ services:
       - agent-15
     environment:
       EXPORTER_TARGET: "agent-15:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-16:
     <<: *producer-base
@@ -1477,8 +1482,8 @@ services:
       - agent-16
     environment:
       EXPORTER_TARGET: "agent-16:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-17:
     <<: *producer-base
@@ -1486,8 +1491,8 @@ services:
       - agent-17
     environment:
       EXPORTER_TARGET: "agent-17:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-18:
     <<: *producer-base
@@ -1495,8 +1500,8 @@ services:
       - agent-18
     environment:
       EXPORTER_TARGET: "agent-18:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-19:
     <<: *producer-base
@@ -1504,8 +1509,8 @@ services:
       - agent-19
     environment:
       EXPORTER_TARGET: "agent-19:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-20:
     <<: *producer-base
@@ -1513,8 +1518,8 @@ services:
       - agent-20
     environment:
       EXPORTER_TARGET: "agent-20:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-21:
     <<: *producer-base
@@ -1522,8 +1527,8 @@ services:
       - agent-21
     environment:
       EXPORTER_TARGET: "agent-21:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-22:
     <<: *producer-base
@@ -1531,8 +1536,8 @@ services:
       - agent-22
     environment:
       EXPORTER_TARGET: "agent-22:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-23:
     <<: *producer-base
@@ -1540,8 +1545,8 @@ services:
       - agent-23
     environment:
       EXPORTER_TARGET: "agent-23:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-24:
     <<: *producer-base
@@ -1549,8 +1554,8 @@ services:
       - agent-24
     environment:
       EXPORTER_TARGET: "agent-24:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-25:
     <<: *producer-base
@@ -1558,8 +1563,8 @@ services:
       - agent-25
     environment:
       EXPORTER_TARGET: "agent-25:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-26:
     <<: *producer-base
@@ -1567,8 +1572,8 @@ services:
       - agent-26
     environment:
       EXPORTER_TARGET: "agent-26:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-27:
     <<: *producer-base
@@ -1576,8 +1581,8 @@ services:
       - agent-27
     environment:
       EXPORTER_TARGET: "agent-27:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-28:
     <<: *producer-base
@@ -1585,8 +1590,8 @@ services:
       - agent-28
     environment:
       EXPORTER_TARGET: "agent-28:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-29:
     <<: *producer-base
@@ -1594,8 +1599,8 @@ services:
       - agent-29
     environment:
       EXPORTER_TARGET: "agent-29:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-30:
     <<: *producer-base
@@ -1603,8 +1608,8 @@ services:
       - agent-30
     environment:
       EXPORTER_TARGET: "agent-30:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-31:
     <<: *producer-base
@@ -1612,8 +1617,8 @@ services:
       - agent-31
     environment:
       EXPORTER_TARGET: "agent-31:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-32:
     <<: *producer-base
@@ -1621,8 +1626,8 @@ services:
       - agent-32
     environment:
       EXPORTER_TARGET: "agent-32:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-33:
     <<: *producer-base
@@ -1630,8 +1635,8 @@ services:
       - agent-33
     environment:
       EXPORTER_TARGET: "agent-33:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-34:
     <<: *producer-base
@@ -1639,8 +1644,8 @@ services:
       - agent-34
     environment:
       EXPORTER_TARGET: "agent-34:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-35:
     <<: *producer-base
@@ -1648,8 +1653,8 @@ services:
       - agent-35
     environment:
       EXPORTER_TARGET: "agent-35:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-36:
     <<: *producer-base
@@ -1657,8 +1662,8 @@ services:
       - agent-36
     environment:
       EXPORTER_TARGET: "agent-36:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-37:
     <<: *producer-base
@@ -1666,8 +1671,8 @@ services:
       - agent-37
     environment:
       EXPORTER_TARGET: "agent-37:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-38:
     <<: *producer-base
@@ -1675,8 +1680,8 @@ services:
       - agent-38
     environment:
       EXPORTER_TARGET: "agent-38:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-39:
     <<: *producer-base
@@ -1684,8 +1689,8 @@ services:
       - agent-39
     environment:
       EXPORTER_TARGET: "agent-39:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-40:
     <<: *producer-base
@@ -1693,8 +1698,8 @@ services:
       - agent-40
     environment:
       EXPORTER_TARGET: "agent-40:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-41:
     <<: *producer-base
@@ -1702,8 +1707,8 @@ services:
       - agent-41
     environment:
       EXPORTER_TARGET: "agent-41:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-42:
     <<: *producer-base
@@ -1711,8 +1716,8 @@ services:
       - agent-42
     environment:
       EXPORTER_TARGET: "agent-42:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-43:
     <<: *producer-base
@@ -1720,8 +1725,8 @@ services:
       - agent-43
     environment:
       EXPORTER_TARGET: "agent-43:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-44:
     <<: *producer-base
@@ -1729,8 +1734,8 @@ services:
       - agent-44
     environment:
       EXPORTER_TARGET: "agent-44:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-45:
     <<: *producer-base
@@ -1738,8 +1743,8 @@ services:
       - agent-45
     environment:
       EXPORTER_TARGET: "agent-45:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-46:
     <<: *producer-base
@@ -1747,8 +1752,8 @@ services:
       - agent-46
     environment:
       EXPORTER_TARGET: "agent-46:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-47:
     <<: *producer-base
@@ -1756,8 +1761,8 @@ services:
       - agent-47
     environment:
       EXPORTER_TARGET: "agent-47:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-48:
     <<: *producer-base
@@ -1765,8 +1770,8 @@ services:
       - agent-48
     environment:
       EXPORTER_TARGET: "agent-48:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-49:
     <<: *producer-base
@@ -1774,8 +1779,8 @@ services:
       - agent-49
     environment:
       EXPORTER_TARGET: "agent-49:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-50:
     <<: *producer-base
@@ -1783,8 +1788,8 @@ services:
       - agent-50
     environment:
       EXPORTER_TARGET: "agent-50:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-51:
     <<: *producer-base
@@ -1792,8 +1797,8 @@ services:
       - agent-51
     environment:
       EXPORTER_TARGET: "agent-51:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-52:
     <<: *producer-base
@@ -1801,8 +1806,8 @@ services:
       - agent-52
     environment:
       EXPORTER_TARGET: "agent-52:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-53:
     <<: *producer-base
@@ -1810,8 +1815,8 @@ services:
       - agent-53
     environment:
       EXPORTER_TARGET: "agent-53:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-54:
     <<: *producer-base
@@ -1819,8 +1824,8 @@ services:
       - agent-54
     environment:
       EXPORTER_TARGET: "agent-54:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-55:
     <<: *producer-base
@@ -1828,8 +1833,8 @@ services:
       - agent-55
     environment:
       EXPORTER_TARGET: "agent-55:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-56:
     <<: *producer-base
@@ -1837,8 +1842,8 @@ services:
       - agent-56
     environment:
       EXPORTER_TARGET: "agent-56:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-57:
     <<: *producer-base
@@ -1846,8 +1851,8 @@ services:
       - agent-57
     environment:
       EXPORTER_TARGET: "agent-57:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-58:
     <<: *producer-base
@@ -1855,8 +1860,8 @@ services:
       - agent-58
     environment:
       EXPORTER_TARGET: "agent-58:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-59:
     <<: *producer-base
@@ -1864,8 +1869,8 @@ services:
       - agent-59
     environment:
       EXPORTER_TARGET: "agent-59:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-60:
     <<: *producer-base
@@ -1873,8 +1878,8 @@ services:
       - agent-60
     environment:
       EXPORTER_TARGET: "agent-60:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-61:
     <<: *producer-base
@@ -1882,8 +1887,8 @@ services:
       - agent-61
     environment:
       EXPORTER_TARGET: "agent-61:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-62:
     <<: *producer-base
@@ -1891,8 +1896,8 @@ services:
       - agent-62
     environment:
       EXPORTER_TARGET: "agent-62:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-63:
     <<: *producer-base
@@ -1900,8 +1905,8 @@ services:
       - agent-63
     environment:
       EXPORTER_TARGET: "agent-63:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-64:
     <<: *producer-base
@@ -1909,8 +1914,8 @@ services:
       - agent-64
     environment:
       EXPORTER_TARGET: "agent-64:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-65:
     <<: *producer-base
@@ -1918,8 +1923,8 @@ services:
       - agent-65
     environment:
       EXPORTER_TARGET: "agent-65:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-66:
     <<: *producer-base
@@ -1927,8 +1932,8 @@ services:
       - agent-66
     environment:
       EXPORTER_TARGET: "agent-66:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-67:
     <<: *producer-base
@@ -1936,8 +1941,8 @@ services:
       - agent-67
     environment:
       EXPORTER_TARGET: "agent-67:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-68:
     <<: *producer-base
@@ -1945,8 +1950,8 @@ services:
       - agent-68
     environment:
       EXPORTER_TARGET: "agent-68:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-69:
     <<: *producer-base
@@ -1954,8 +1959,8 @@ services:
       - agent-69
     environment:
       EXPORTER_TARGET: "agent-69:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-70:
     <<: *producer-base
@@ -1963,8 +1968,8 @@ services:
       - agent-70
     environment:
       EXPORTER_TARGET: "agent-70:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-71:
     <<: *producer-base
@@ -1972,8 +1977,8 @@ services:
       - agent-71
     environment:
       EXPORTER_TARGET: "agent-71:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-72:
     <<: *producer-base
@@ -1981,8 +1986,8 @@ services:
       - agent-72
     environment:
       EXPORTER_TARGET: "agent-72:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-73:
     <<: *producer-base
@@ -1990,8 +1995,8 @@ services:
       - agent-73
     environment:
       EXPORTER_TARGET: "agent-73:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-74:
     <<: *producer-base
@@ -1999,8 +2004,8 @@ services:
       - agent-74
     environment:
       EXPORTER_TARGET: "agent-74:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-75:
     <<: *producer-base
@@ -2008,8 +2013,8 @@ services:
       - agent-75
     environment:
       EXPORTER_TARGET: "agent-75:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-76:
     <<: *producer-base
@@ -2017,8 +2022,8 @@ services:
       - agent-76
     environment:
       EXPORTER_TARGET: "agent-76:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-77:
     <<: *producer-base
@@ -2026,8 +2031,8 @@ services:
       - agent-77
     environment:
       EXPORTER_TARGET: "agent-77:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-78:
     <<: *producer-base
@@ -2035,8 +2040,8 @@ services:
       - agent-78
     environment:
       EXPORTER_TARGET: "agent-78:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-79:
     <<: *producer-base
@@ -2044,8 +2049,8 @@ services:
       - agent-79
     environment:
       EXPORTER_TARGET: "agent-79:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-80:
     <<: *producer-base
@@ -2053,8 +2058,8 @@ services:
       - agent-80
     environment:
       EXPORTER_TARGET: "agent-80:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-81:
     <<: *producer-base
@@ -2062,8 +2067,8 @@ services:
       - agent-81
     environment:
       EXPORTER_TARGET: "agent-81:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-82:
     <<: *producer-base
@@ -2071,8 +2076,8 @@ services:
       - agent-82
     environment:
       EXPORTER_TARGET: "agent-82:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-83:
     <<: *producer-base
@@ -2080,8 +2085,8 @@ services:
       - agent-83
     environment:
       EXPORTER_TARGET: "agent-83:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-84:
     <<: *producer-base
@@ -2089,8 +2094,8 @@ services:
       - agent-84
     environment:
       EXPORTER_TARGET: "agent-84:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-85:
     <<: *producer-base
@@ -2098,8 +2103,8 @@ services:
       - agent-85
     environment:
       EXPORTER_TARGET: "agent-85:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-86:
     <<: *producer-base
@@ -2107,8 +2112,8 @@ services:
       - agent-86
     environment:
       EXPORTER_TARGET: "agent-86:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-87:
     <<: *producer-base
@@ -2116,8 +2121,8 @@ services:
       - agent-87
     environment:
       EXPORTER_TARGET: "agent-87:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-88:
     <<: *producer-base
@@ -2125,8 +2130,8 @@ services:
       - agent-88
     environment:
       EXPORTER_TARGET: "agent-88:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-89:
     <<: *producer-base
@@ -2134,8 +2139,8 @@ services:
       - agent-89
     environment:
       EXPORTER_TARGET: "agent-89:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-90:
     <<: *producer-base
@@ -2143,8 +2148,8 @@ services:
       - agent-90
     environment:
       EXPORTER_TARGET: "agent-90:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-91:
     <<: *producer-base
@@ -2152,8 +2157,8 @@ services:
       - agent-91
     environment:
       EXPORTER_TARGET: "agent-91:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-92:
     <<: *producer-base
@@ -2161,8 +2166,8 @@ services:
       - agent-92
     environment:
       EXPORTER_TARGET: "agent-92:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-93:
     <<: *producer-base
@@ -2170,8 +2175,8 @@ services:
       - agent-93
     environment:
       EXPORTER_TARGET: "agent-93:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-94:
     <<: *producer-base
@@ -2179,8 +2184,8 @@ services:
       - agent-94
     environment:
       EXPORTER_TARGET: "agent-94:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-95:
     <<: *producer-base
@@ -2188,8 +2193,8 @@ services:
       - agent-95
     environment:
       EXPORTER_TARGET: "agent-95:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-96:
     <<: *producer-base
@@ -2197,8 +2202,8 @@ services:
       - agent-96
     environment:
       EXPORTER_TARGET: "agent-96:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-97:
     <<: *producer-base
@@ -2206,8 +2211,8 @@ services:
       - agent-97
     environment:
       EXPORTER_TARGET: "agent-97:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-98:
     <<: *producer-base
@@ -2215,8 +2220,8 @@ services:
       - agent-98
     environment:
       EXPORTER_TARGET: "agent-98:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-99:
     <<: *producer-base
@@ -2224,8 +2229,8 @@ services:
       - agent-99
     environment:
       EXPORTER_TARGET: "agent-99:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
 
   fake-exporter-100:
     <<: *producer-base
@@ -2233,5 +2238,5 @@ services:
       - agent-100
     environment:
       EXPORTER_TARGET: "agent-100:4317"
-      EXPORTER_RATE: "1000"
-      EXPORTER_CARDINALITY: "1000"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"

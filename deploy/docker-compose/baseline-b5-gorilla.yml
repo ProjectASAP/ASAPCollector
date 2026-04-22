@@ -1,0 +1,15 @@
+# Baseline B5 selector — Gorilla XOR compression (lossless).
+#
+#   AGENT_CONFIG=sketchcol-agent-b5-gorilla.yaml \
+#     docker compose -f base.yml -f agents-N1.yml \
+#       -f baseline-b5-gorilla.yml up -d
+#
+# Gorilla writes compressed blobs to /var/tmp/asap-gorilla-out.
+# Bytes-written tracked via log lines or `du -sb` inside the
+# container (gorillaprocessor is upstream-style and doesn't
+# expose the ASAP self-monitoring counters that DDSketch/HLL do).
+
+services:
+  controller:
+    labels:
+      asap.baseline: "b5-gorilla"
