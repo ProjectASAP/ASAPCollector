@@ -44,16 +44,19 @@ SOAK_S="${SOAK_S:-180}"  # ≥3 min so rate()/60s windows yield ≥2 samples
 head=1
 for baseline in $BASELINES; do
   # Only iterate WINDOWS when the baseline actually consumes it.
-  # For non-B4 baselines the inner loop runs once with the yaml
-  # default.
+  # For non-B4 baselines the inner loop runs once with a sentinel
+  # empty value so the window_env stays unset. Using an array so
+  # the empty sentinel survives word-splitting (a literal space
+  # string splits to zero tokens — that was a bug in v1).
   if [[ "$baseline" == "b4-tunable" && -n "$WINDOWS" ]]; then
-    windows_for_this="$WINDOWS"
+    # shellcheck disable=SC2206
+    windows_for_this=($WINDOWS)
   else
-    windows_for_this=" "  # single pass; value is a no-op
+    windows_for_this=("")
   fi
   for rate in $RATES; do
     for card in $CARDS; do
-     for window in $windows_for_this; do
+     for window in "${windows_for_this[@]}"; do
       if [[ "$baseline" == "b4-tunable" && -n "$WINDOWS" ]]; then
         tag="${baseline}-w${window}"
         window_env="$window"
