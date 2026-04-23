@@ -176,3 +176,112 @@ Raw `.pb` artefacts aren't committed (~7–12 KiB each). The
 `EXPORTER_PPROF_ADDR` env knob landed with this doc; it's a
 no-op when unset so production runs of the fake-exporter
 aren't exposing a pprof listener.
+
+## Fine-grained follow-up (2026-04-23, same day)
+
+The first pass used `cardinality=10 or 100` at `freq_hz=10` —
+small workloads where per-flush fixed costs dominated. The
+user pushed for 2–3 orders of magnitude more:
+
+| Config | `W` | Card | `freq_hz` | Aggregate raw | Per-tick dp |
+|---|---:|---:|---:|---:|---:|
+| A c1000 f100 | 100 ms | 1000 | 100 | 100 k events/s | 10 k |
+| B c1000 f100 | 10 s | 1000 | 100 | 100 k events/s | 1 M |
+| A c1000 f1000 | 100 ms | 1000 | 1000 | 1 M events/s | 100 k |
+| B c1000 f1000 | 10 s | 1000 | 1000 | 1 M events/s | 10 M |
+
+Same native-binary + live-stack + 15 s pprof harness.
+`EXPORTER_MAX_BUFFER_PER_SERIES=200 000` to stop raw-buffer
+overflow from dropping samples in the big Config B cells.
+
+### Results
+
+| Config | CPU (% of 1 core) | RSS start | RSS end |
+|---|---:|---:|---:|
+| A c1000 f100 | **280 %** | 658 MiB | 1.45 GiB |
+| B c1000 f100 | **302 %** | 113 MiB | 2.08 GiB |
+| A c1000 f1000 | **811 %** | 1.67 GiB | 3.68 GiB |
+| B c1000 f1000 | **979 %** | 332 MiB | 5.95 GiB |
+
+Three things the first pass missed:
+
+1. **The A-vs-B CPU gap collapses at scale.** In the first pass
+   (tiny workloads), A used ~2 × B's CPU because the per-flush
+   gRPC/flate overhead was the dominant cost and A paid it
+   100 × more often. At fine scale the per-flush overhead
+   amortises over enormous per-tick batches (10 k–100 k dp), so
+   it's no longer the dominant cost — A and B converge (+7 %
+   at 100 k events/s; B is actually _worse_ by +21 % at 1 M
+   events/s because it adds GC and buffer-management cost on
+   top of the same marginal per-dp work).
+
+2. **The hot path shifts from gRPC export to aggregator
+   mutex contention.** At `freq_hz=1000` the hot frames in
+   both configs are:
+
+   ```
+   go.opentelemetry.io/otel/sdk/metric/internal/aggregate
+       .(*rawBufferValues[…]).measure         ~38 % cum
+   internal/sync.(*Mutex).lockSlow             ~26 %
+   sync.(*Mutex).Lock                          ~26 %
+   main.runSynthetic.func1 (per-series goroutine) ~50 % cum
+   ```
+
+   `rawBufferValues.measure` takes `valuesMu` for the whole
+   buffer on every `Add` call. With 1000 goroutines firing
+   1000 Adds/s each = 1 M `Lock` acquisitions/s, lock contention
+   becomes the bottleneck. **This is a real design issue in
+   the patched aggregator**: a single `sync.Mutex` over the
+   whole `map[attribute.Distinct]*rawBufferSeries[N]`
+   serialises every producer goroutine.
+
+   Fix options (all deferred, out of scope for this pass):
+   - Shard the buffer by a hash of the attribute key
+     (`[]rawBufferValues` keyed by hash % N_shards; each shard
+     has its own mutex).
+   - Use a `sync.Map` or a striped lock.
+   - Per-series lock (move the `[]rawBufferSample` onto the
+     series struct and take only that series' lock during
+     `append`). The map mutation for new series is rare enough
+     to stay under a global lock.
+
+3. **Heap allocations are dominated by the OTLP transform
+   path, not the raw-buffer itself.** Top heap consumers at
+   `1 M events/s`:
+
+   ```
+   otlp transform.Value           —  547 MiB inuse  (25 %)
+   otlp transform.KeyValue        —  445 MiB         (20 %)
+   otlp transform.DataPoints      —  237 MiB inuse,  1.28 GiB cum
+   rawBufferValues.measure        —  226 MiB
+   aggregate.reset[DataPoint]     —  668 MiB
+   ```
+
+   For every flush, the OTLP exporter builds a protobuf
+   `ResourceMetrics` representation by allocating fresh
+   `KeyValue`, `Value`, `DataPoint` objects for each data
+   point. At 1 M dp/tick this is hundreds of MiB of transient
+   allocations per flush — the main driver of the 3.7–6 GiB
+   peak RSS. Pool reuse in the upstream transform would help
+   both configs; the raw-buffer aggregator itself is
+   relatively disciplined.
+
+### Updated bottleneck picture
+
+| Workload scale | Config A (`W=100 ms`) bottleneck | Config B (`W=10 s`) bottleneck |
+|---|---|---|
+| Tiny (≤ 1 k events/s) | Fixed per-flush cost (gRPC/flate), paid once per 100 ms | Occasional GC spike at flush; bursty memory |
+| Moderate (100 k events/s) | Marginal per-dp cost + flush amortises | Same + buffer holds 1 M dp before flush → transient 2 GiB heap |
+| Fine (≥ 1 M events/s) | **Aggregator mutex contention in `rawBufferValues.measure`** dominates both configs | Same + heap pressure from 10 M-dp flush bursts (~6 GiB RSS) |
+
+The first pass's conclusion — "small `W` + modest card is
+cheap; large `W` + large card is dangerous" — still holds at
+moderate scale. At fine-grained scale both configs are
+expensive and run into the same mutex wall. The producer
+process needs a sharded-buffer redesign before SDK-side
+`raw-buffer` is usable at ≥ 1 M events/s as a paper baseline.
+
+### Artefacts
+
+Raw `.pb` files under `/tmp/sdk-profiles2/` on the dev box;
+not committed.
