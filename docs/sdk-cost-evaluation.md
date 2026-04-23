@@ -272,7 +272,7 @@ The driver is
 the wrapper that runs all four above is
 [`deploy/scripts/run-sdk-cost-sweeps.sh`](../deploy/scripts/run-sdk-cost-sweeps.sh).
 CSVs and a findings write-up live under
-`deploy/eval-results/three-axis/`.
+`deploy/eval-results/sdk-cost/`.
 
 **Related evaluation (separate harness).** Given a set of query
 workloads, check that the controller's chosen `(W, L, agg)`

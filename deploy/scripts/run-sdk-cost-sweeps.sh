@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # run-sdk-cost-sweeps.sh — land all three cost sub-sweep CSVs
-# under deploy/eval-results/three-axis/.
+# under deploy/eval-results/sdk-cost/.
 #
 # Each sub-sweep holds two of (W, L, agg) constant and varies the
 # third. See docs/sdk-cost-evaluation.md "Evaluation
 # mapping" for the plan.
 #
-# Produces (under eval-results/three-axis/):
-#   6.2a-time-${TS}.csv
-#   6.2b-label-${TS}.csv
-#   6.2c-encoding-${TS}.csv
+# Produces (under eval-results/sdk-cost/):
+#   time-axis-${TS}.csv
+#   label-axis-${TS}.csv
+#   encoding-axis-${TS}.csv
 #
 # Runtime at defaults (SOAK_S=180, BYTES_WIN=20): ~1 hour total.
 # Override SOAK_S for a quick smoke run.
@@ -18,7 +18,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-OUT_DIR="${OUT_DIR:-$REPO_ROOT/deploy/eval-results/three-axis}"
+OUT_DIR="${OUT_DIR:-$REPO_ROOT/deploy/eval-results/sdk-cost}"
 mkdir -p "$OUT_DIR"
 
 TS="${TS:-$(date +%Y%m%d)}"
@@ -65,7 +65,7 @@ run_sweep() {
 # Expect bw to drop roughly linearly with 1/W (fewer flushes)
 # and sketch accuracy to hold since DDSketch's per-series
 # summary converges inside each window.
-run_sweep "6.2a-time" \
+run_sweep "time-axis" \
     "1s 15s 60s 300s" \
     ":" \
     "dd-full"
@@ -75,7 +75,7 @@ run_sweep "6.2a-time" \
 # Expect bw to drop roughly linearly with reduced-cardinality
 # (each dropped dim folds attribute sets together into one
 # sketch).
-run_sweep "6.2b-label" \
+run_sweep "label-axis" \
     "60s" \
     ": zone,rack,node zone,rack zone -" \
     "dd-full"
@@ -86,7 +86,7 @@ run_sweep "6.2b-label" \
 # *-full to be middle (one sketch per attribute-set per window),
 # *-delta to be smallest (sparse diff). kll-delta not yet
 # available (see PROGRESS.md).
-run_sweep "6.2c-encoding" \
+run_sweep "encoding-axis" \
     "60s" \
     "zone,rack" \
     "raw-buffer dd-full dd-delta kll cms-full cms-delta hll-full hll-delta"

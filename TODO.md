@@ -72,7 +72,7 @@ them):
       (`producer_cpu_cores`, `producer_rss_mib`,
       `producer_bytes_out_per_s`) — merged.
 - [x] ~~First-pass cost sweeps at N=1~~ — CSVs + findings in
-      `deploy/eval-results/three-axis/`. Known methodology
+      `deploy/eval-results/sdk-cost/`. Known methodology
       caveat (`BYTES_WIN < W` under-reports bytes on some
       cells) called out in the findings doc.
 - [ ] **V2 cost sweep** with `BYTES_WIN ≥ 2×W` so the absolute
