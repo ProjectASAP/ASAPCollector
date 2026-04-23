@@ -18,7 +18,7 @@
 #
 # See README.md for build prerequisites (the `sketchcol` agent
 # image still needs its Dockerfile + processor binaries built;
-# tracked in deploy/TODO.md).
+# tracked in PROGRESS.md).
 
 version: "3.9"
 
