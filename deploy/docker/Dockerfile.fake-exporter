@@ -1,11 +1,54 @@
 # Small Go build for the fake OTLP metrics producer. See
 # `deploy/fake-exporter/main.go` for the behavior spec.
 #
-#   docker build -f deploy/docker/Dockerfile.fake-exporter \
+# The build pulls in the ASAP-patched OTel SDK (for
+# AggregationRawBuffer + DeltaTransmission flags on sketch
+# aggregators — see docs/sdk-aggregation-three-axis-design.md) and
+# the sketchlib-go sibling repo.
+#
+# ## Prereq: combine the patch onto the upstream tree
+#
+#   ./restore_opentelemetry_go_patches.sh
+#
+# That walks the `opentelemetry-go-patch/` directory and copies its
+# contents on top of `opentelemetry-go/`. The combined tree is what
+# the go.mod replaces point at.
+#
+# ## Build
+#
+# Uses BuildKit named build contexts so sketchlib-go (which lives
+# outside this repo) can be supplied without vendoring:
+#
+#   DOCKER_BUILDKIT=1 docker build \
+#     -f deploy/docker/Dockerfile.fake-exporter \
+#     --build-context sketchlib-go=/path/to/sketchlib-go \
 #     -t asap/fake-exporter:dev .
-FROM golang:1.22-bookworm AS build
+#
+# The default repo layout on a dev box is /mydata/{DataCollector,
+# sketchlib-go}, so from /mydata/DataCollector the path is
+# `../sketchlib-go`.
+
+FROM golang:1.24-bookworm AS build
 WORKDIR /src
-COPY deploy/fake-exporter/go.mod deploy/fake-exporter/main.go ./
+
+# Main repo tree (contains opentelemetry-go with patches applied and
+# deploy/fake-exporter source).
+COPY opentelemetry-go     /src/opentelemetry-go
+COPY deploy/fake-exporter /src/deploy/fake-exporter
+
+# Sketchlib-go pulled via named build context to avoid a submodule
+# hop outside this repo.
+COPY --from=sketchlib-go . /src/sketchlib-go
+
+# The go.mod replaces reference ../../../sketchlib-go (three dirs up
+# from deploy/fake-exporter/go.mod). Inside /src the layout is
+# /src/deploy/fake-exporter → /src/sketchlib-go, which is two dirs
+# up. Rewrite on the fly.
+RUN sed -i \
+    's|github.com/ProjectASAP/sketchlib-go => ../../../sketchlib-go|github.com/ProjectASAP/sketchlib-go => /src/sketchlib-go|' \
+    /src/deploy/fake-exporter/go.mod
+
+WORKDIR /src/deploy/fake-exporter
 RUN go mod tidy && \
     CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/fake-exporter .
 
