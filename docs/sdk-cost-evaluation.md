@@ -155,7 +155,7 @@ Not a blocker for this evaluation — the `kll-full` row is
 sufficient for a three-way comparison with `raw-buffer` and
 `dd-delta` on the encoding axis.
 
-### `AggregationRawBuffer` design
+### `AggregationRawBuffer`
 
 **Why this baseline exists.** Two observations drive it:
 
@@ -225,7 +225,7 @@ unlike the sketch encodings whose size is bounded by their
 respective parameters regardless of event count. This is the
 tradeoff the encoding axis measures.
 
-### `Aggregation<X>Delta` — what it is and why it's a separate slot
+### `Aggregation<X>Delta`
 
 For the four sparse-state sketches (DDSketch, CountSketch,
 CountMinSketch, HLL) the SDK can ship one of two wire payloads
