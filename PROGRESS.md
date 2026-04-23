@@ -248,18 +248,20 @@ framework defined in
 
 ### Outstanding SDK aggregators (P1 for paper §6.2)
 
+Correction after a read of
+`opentelemetry-go-patch/sdk/metric/aggregation.go` — **delta
+encoding is already a flag on the four sparse-state sketches**
+(`DeltaTransmission: true`), not a separate aggregator. So the
+real gap is smaller than the earlier plan:
+
 | Aggregator | Slot | Status | Notes |
 |---|---|---|---|
 | `AggregationRawBuffer` | `agg_type=raw-buffer` | ❌ | Buffers `(ts, attrs, value)` tuples within `W`, emits batch of `NumberDataPoint`s per tick. Overflow: drop + drop-counter metric. ~150 LOC. |
-| `AggregationDeltaDDSketch` | `agg_type=dd-delta` | ❌ | Byte-level diff vs last-tick's DDSketch, zstd-compressed. ~100 LOC. |
-| `AggregationDeltaKLLSketch` | `agg_type=kll-delta` | ❌ | Same pattern as above. ~100 LOC. |
-| `AggregationDeltaCountSketch` | `agg_type=cs-delta` | ❌ | Same pattern. ~100 LOC. |
-| `AggregationDeltaCountMinSketch` | `agg_type=cms-delta` | ❌ | Same pattern. ~100 LOC. |
-| `AggregationDeltaHLLSketch` | `agg_type=hll-delta` | ❌ | Same pattern. ~100 LOC. |
+| `AggregationKLLSketch.DeltaTransmission` | `agg_type=kll-delta` | ❌ | KLL's multi-level sample buffers don't support a natural byte-diff; adding delta requires exposing per-level internals from `sketchlib-go` or shipping incremental adds. **Not a §6.2 blocker** (see design doc for rationale). |
 
-Delta aggregators share a helper for byte-level sketch diff +
-zstd encode + "emit full on first tick or when `L` changes"
-reset logic.
+The other four sketch delta slots (DDSketch / CountSketch /
+CountMinSketch / HLLSketch) already work via the
+`DeltaTransmission: true` flag from the 2026-03-14 batch above.
 
 ### Outstanding SDK runtime support
 

@@ -128,13 +128,37 @@ Per-axis:
   | `agg_type` | Status | Where |
   |---|---|---|
   | `sum`, `last-value`, `explicit-bucket-histogram`, `exponential-histogram` | ✅ upstream | `go.opentelemetry.io/otel/sdk/metric` |
-  | `dd-full` (`AggregationDDSketch`) | ✅ landed 2026-03-14 | `opentelemetry-go-patch/sdk/metric/aggregation.go` |
-  | `kll-full` (`AggregationKLLSketch`) | ✅ landed 2026-03-14 | same |
-  | `cms-full` (`AggregationCountMinSketch`) | ✅ landed 2026-03-14 | same |
-  | `cs-full` (`AggregationCountSketch`) | ✅ landed 2026-03-14 | same |
-  | `hll-full` (`AggregationHLLSketch`) | ✅ landed 2026-03-14 | same |
+  | `dd-full` (`AggregationDDSketch{}`) | ✅ landed 2026-03-14 | `opentelemetry-go-patch/sdk/metric/aggregation.go` |
+  | `dd-delta` (`AggregationDDSketch{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | same — flag on the `*-full` type |
+  | `kll-full` (`AggregationKLLSketch{}`) | ✅ landed 2026-03-14 | same |
+  | `cms-full` (`AggregationCountMinSketch{}`) | ✅ landed 2026-03-14 | same |
+  | `cms-delta` (`…{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | flag |
+  | `cs-full` (`AggregationCountSketch{}`) | ✅ landed 2026-03-14 | same |
+  | `cs-delta` (`…{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | flag |
+  | `hll-full` (`AggregationHLLSketch{}`) | ✅ landed 2026-03-14 | same |
+  | `hll-delta` (`…{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | flag |
   | **`raw-buffer` (`AggregationRawBuffer`)** | ❌ not yet | — |
-  | **`dd-delta` / `kll-delta` / `cms-delta` / `cs-delta` / `hll-delta`** | ❌ not yet | — |
+  | **`kll-delta`** | ❌ not yet | KLL's sample-buffer structure makes delta-vs-last nontrivial; see note below |
+
+**Note on `kll-delta`**: the other four sketches (DDSketch / CMS /
+CountSketch / HLL) have sparse internal state (buckets / cells /
+registers) where "what changed" is naturally expressible as a
+list of `(index, new_value)` pairs. KLL keeps sorted sample
+buffers at multiple compaction levels; the sample set can shift
+every tick via compaction, so a naive byte-diff would be no
+smaller than the full sketch. Two options for adding delta
+support:
+
+1. **Incremental add-only**: transmit only samples observed
+   since last export, let the receiver re-apply; changes the
+   algorithm invariant (receiver has to run compaction).
+2. **Hierarchical diff**: transmit per-level diffs of the
+   compactor sample arrays. Smaller payload, but requires
+   exposing KLL internal state through `sketchlib-go`.
+
+Not a §6.2 blocker — the `kll-full` row is sufficient for a
+three-way comparison with `raw-buffer` and `dd-delta` on the
+encoding axis.
 
 Adding `AggregationRawBuffer`:
 - Semantics: buffer `(ts, attrs, value)` tuples per
@@ -194,7 +218,10 @@ ground truth.
 ## Implementation order (follow-up PRs)
 
 1. `AggregationRawBuffer` + unit tests + `Aggregation` enum wire-up.
-2. `AggregationDelta<X>Sketch` ×5, reusing a shared byte-diff helper.
+2. ~~`AggregationDelta<X>Sketch` ×5~~ — already present as
+   `DeltaTransmission: true` on the four sparse-state sketches
+   (DDSketch / CountSketch / CountMinSketch / HLLSketch).
+   Only `kll-delta` is a follow-up, and it's optional for §6.2.
 3. `fake-exporter` knobs: drop `EXPORTER_RATE`; add
    `EXPORTER_SDK_WINDOW`, `EXPORTER_SDK_PROJECTION`,
    `EXPORTER_SDK_AGG`. Widen the synthetic label schema from

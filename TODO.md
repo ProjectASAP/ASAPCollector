@@ -60,9 +60,13 @@ Concrete work items (P0 because §6.2 can't run without them):
       `opentelemetry-go-patch/sdk/metric/aggregation.go` —
       `(ts, attrs, value)` buffer, emit batch per tick, drop +
       drop-counter on overflow. ~150 LOC + tests.
-- [ ] **`Aggregation<X>Delta`** × 5 (DDSketch / KLL / CS / CMS /
-      HLL) — byte-level diff + zstd; emit full on first tick and
-      on `L` change. Shared helper. ~500 LOC + tests total.
+- [x] ~~`Aggregation<X>Delta` × 5~~ — on inspection, four of five
+      (DDSketch / CS / CMS / HLL) already have `DeltaTransmission`
+      as a flag on the `*-full` aggregator (2026-03-14 batch).
+      Only `kll-delta` is missing and is not a §6.2 blocker
+      (KLL's multi-level buffer structure needs a different
+      delta strategy — see
+      [`docs/sdk-aggregation-three-axis-design.md`](docs/sdk-aggregation-three-axis-design.md)).
 - [ ] **`fake-exporter` rewrite** (`deploy/fake-exporter/main.go`)
       — drop `EXPORTER_RATE`; add `EXPORTER_SDK_WINDOW`,
       `EXPORTER_SDK_PROJECTION`, `EXPORTER_SDK_AGG`. Widen label
