@@ -157,19 +157,27 @@ sufficient for a three-way comparison with `raw-buffer` and
 
 ### `AggregationRawBuffer` design
 
-**Why this baseline exists.** Every other `Aggregation` the
-upstream OTel SDK ships is lossy by design — `Sum` discards
-individual events, `Histogram` quantises values into fixed
-buckets, the sketch aggregators keep bounded-error summaries.
-`raw-buffer` is the one aggregator that preserves the full
-observation stream unchanged. It exists to answer the question
-the other encodings can't answer on their own: **what does
-making an SDK-side aggregation decision save compared to not
-making one at all**? Without `raw-buffer` as the reference
-point, every bandwidth / CPU / RSS number reported by a sketch
-encoding is a ratio against something unmeasured, and the
-encoding-axis ablation (sketch vs raw) collapses into
-"sketch vs nothing".
+**Why this baseline exists.** Two observations drive it:
+
+1. **The upstream OTel SDK aggregators are lossy _over the emit
+   period `W`_.** Within a single `W`, `Sum` collapses every
+   `Add` call into one running total, `Histogram` collapses into
+   bucket counts, the sketch aggregators collapse into their
+   bounded-error summaries. By the time anything hits the wire
+   at the end of `W`, individual observations are gone.
+2. **The experiment we want to run** is: at the _same_ emit
+   period `W` that the sketch encodings use, what does the
+   producer pay in CPU, RSS, and wire bandwidth if it doesn't
+   aggregate at all and just batch-ships the raw events
+   accumulated during `W`?
+
+`raw-buffer` is the one aggregator that preserves every
+observation during `W` and ships the full batch on tick. That
+gives the encoding-axis an apples-to-apples reference point —
+same `W`, same `L`, only the encoding differs. Without it,
+every bandwidth / CPU / RSS number a sketch encoding reports
+is a ratio against something unmeasured and the encoding
+ablation collapses into "sketch vs nothing".
 
 It's also the one encoding that preserves enough to serve
 queries no summary can — exact events for cold-fallback
