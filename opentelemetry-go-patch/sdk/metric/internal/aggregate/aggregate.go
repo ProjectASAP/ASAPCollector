@@ -227,6 +227,20 @@ func (b Builder[N]) HLLSketch(deltaTransmission bool) (Measure[N], ComputeAggreg
 	}
 }
 
+// RawBuffer returns a raw-buffer aggregate function input and output.
+// maxEventsPerSeries caps per-attribute buffer length; when zero, a
+// default is used. See AggregationRawBuffer in the sdk/metric package
+// for the semantic contract.
+func (b Builder[N]) RawBuffer(maxEventsPerSeries int) (Measure[N], ComputeAggregation) {
+	agg := newRawBuffer[N](maxEventsPerSeries, b.AggregationLimit)
+	switch b.Temporality {
+	case metricdata.DeltaTemporality:
+		return b.filter(agg.measure), agg.delta
+	default:
+		return b.filter(agg.measure), agg.cumulative
+	}
+}
+
 // reset ensures s has capacity and sets it length. If the capacity of s too
 // small, a new slice is returned with the specified capacity and length.
 func reset[T any](s []T, length, capacity int) []T {

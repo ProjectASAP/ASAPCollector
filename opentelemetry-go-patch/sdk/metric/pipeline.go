@@ -551,6 +551,8 @@ func (i *inserter[N]) aggregateFunc(
 		meas, comp = b.CountMinSketch(a.Rows, a.Cols, a.DeltaTransmission, a.DeltaThreshold)
 	case AggregationHLLSketch:
 		meas, comp = b.HLLSketch(a.DeltaTransmission)
+	case AggregationRawBuffer:
+		meas, comp = b.RawBuffer(a.MaxEventsPerSeries)
 
 	default:
 		err = errUnknownAggregation
@@ -581,7 +583,8 @@ func isAggregatorCompatible(kind InstrumentKind, agg Aggregation) error {
 		AggregationKLLSketch,
 		AggregationCountSketch,
 		AggregationCountMinSketch,
-		AggregationHLLSketch:
+		AggregationHLLSketch,
+		AggregationRawBuffer:
 		switch kind {
 		case InstrumentKindCounter,
 			InstrumentKindUpDownCounter,
