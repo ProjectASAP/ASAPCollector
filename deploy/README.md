@@ -125,7 +125,7 @@ per-agent floor at N=10, vs 130k–326k at N=1. Gateway aggregate
 = 10 × 2k = 20k/s. Agents are near-idle (0.01c, ~220 MiB RSS),
 so this is a producer / transport / kernel bottleneck, not
 agent-side saturation. Diagnosis and fix tracked top-level
-in `DataCollector/TODO.md`.
+in `DataCollector/PROGRESS.md`.
 
 Until fixed, **treat N=10 as a stack-stability test, not a
 scale-quality datapoint**. N=1 rows in `sweep-N1-*.csv` are the
@@ -137,19 +137,19 @@ The current `measure-baseline.py` does not collect every metric
 for every baseline:
 
 - Bytes in/out only emitted by b2 / b3 — tracked in the
-  top-level `TODO.md` under instrumentation.
+  top-level `PROGRESS.md` under instrumentation.
 - Gateway points/s and backend samples/s only emitted by the
   raw baselines (b0a / b0b).
 - `backend_query_p99_ms` is `nan` everywhere because there's
   no query-side driver in the sweep yet — tracked as the
-  query-side follow-up in top-level `TODO.md`.
+  query-side follow-up in top-level `PROGRESS.md`.
 
 ### Grafana dashboards not yet authored
 
 `configs/grafana-datasources.yml` provisions the Prometheus
 datasource, but no dashboard JSONs are checked in. Paper figures
 should be exported from dashboards; writing them is tracked
-in the top-level `TODO.md`.
+in the top-level `PROGRESS.md`.
 
 ## Evaluation → metric mapping
 

@@ -4,7 +4,7 @@ _Last updated: 2026-04-23 (post PRs #168–#185)._
 
 The multi-agent scaffold + baseline matrix + sweep harness are
 in. Top-level blockers for the paper have moved upstream (see
-`DataCollector/TODO.md`); the remaining work in this directory
+`DataCollector/PROGRESS.md`); the remaining work in this directory
 is instrumentation completeness, Helm templates, and polish.
 
 ## Done (PRs #168–#185)
@@ -30,7 +30,7 @@ The SDK cost sweeps defined in
 [`../docs/sdk-cost-evaluation.md`](../docs/sdk-cost-evaluation.md)
 require **producer-side** measurements; the existing multi-agent
 sweep CSV also has several `nan` cells on the collector side.
-Both tracked top-level in `DataCollector/TODO.md`.
+Both tracked top-level in `DataCollector/PROGRESS.md`.
 
 ### Producer-side columns (new, P0)
 
@@ -79,7 +79,7 @@ Both tracked top-level in `DataCollector/TODO.md`.
       `query_p99_ms`, `cold_bytes_served`, `barrier_drops`.
 
 Blocks the query-latency evaluation tracked at the top-level
-`TODO.md`.
+`PROGRESS.md`.
 
 ## Helm templates (F5 post-paper; P2 for reproducibility archive)
 
@@ -113,7 +113,7 @@ Ordered for landing one-at-a-time:
 - [ ] **`deploy/k8s/` plain manifests** as an alternative to
       Helm for operators who don't want Helm. Lowest priority.
 
-## Fault injection (P3; tracked top-level in `TODO.md`)
+## Fault injection (P3; tracked top-level in `PROGRESS.md`)
 
 - [ ] `fault-injection/controller-kill.sh` — docker kill,
       assert queries continue from last-known plan.
@@ -129,9 +129,9 @@ ChaosMesh variants on K8s go under the Helm chart.
 
 - **N=10 throughput collapse** — lives at the system level
   (producer SDK + kernel + docker proxy), tracked top-level
-  in `TODO.md`.
+  in `PROGRESS.md`.
 - **Google cluster trace fetcher** — `datasets_eval/` territory,
-  tracked top-level in `TODO.md`.
+  tracked top-level in `PROGRESS.md`.
 - **Controller feedback loop over real workload** — depends on
   the throughput, query-side, and workload items above; tracked
   top-level.
