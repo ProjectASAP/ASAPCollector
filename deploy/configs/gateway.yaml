@@ -1,5 +1,5 @@
 # Minimal gateway collector: accept OTLP from agents, aggregate
-# per-agent counters, forward to backend. Paper §6 "gateway
+# per-agent counters, forward to backend. The "gateway
 # aggregation saves another N% bandwidth" figures come off this
 # pipeline; swap the exporter to the ASAP-patched sketchcol
 # build when we want sketches at the gateway tier too.
@@ -10,7 +10,7 @@ receivers:
         endpoint: 0.0.0.0:4317
         # Sketch payloads (DDSketch state + HLL state embedded in
         # gauge attributes) easily exceed the default 4 MiB cap.
-        # Bump to 64 MiB so paper §6.2 sketch-transmission runs
+        # Bump to 64 MiB so sketch-transmission runs
         # don't drop batches.
         max_recv_msg_size_mib: 64
       http:

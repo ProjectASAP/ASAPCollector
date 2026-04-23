@@ -1,4 +1,4 @@
-# Stateful Metrics Collection Protocol (Paper §4.5)
+# Stateful Metrics Collection Protocol
 
 ## Problem
 

@@ -1,6 +1,6 @@
 # Baseline B3 — Delta sketch transmission over fixed 60s window.
 #
-# Paper §6.2 baseline: same DDSketch + HLL semantics as B2 (full
+# Baseline: same DDSketch + HLL semantics as B2 (full
 # sketch), but the wire payload is the SKETCH DELTA since the
 # last flush, not the full sketch state. Delta = sparse diff of
 # only-changed buckets/registers, so per-window bytes drop

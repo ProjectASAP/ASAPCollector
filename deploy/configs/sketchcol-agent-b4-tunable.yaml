@@ -1,6 +1,6 @@
 # Baseline B4 — Delta sketch with tunable time granularity.
 #
-# Paper §6.2 baseline-sweep: same semantics as B3 but
+# Baseline-sweep: same semantics as B3 but
 # `window_duration` is controlled by the `SKETCH_WINDOW` env var,
 # so a single agent image + config can sweep 5s / 30s / 60s /
 # 300s without rebuilding.

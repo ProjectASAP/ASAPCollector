@@ -94,7 +94,7 @@ func TestRawBufferEmitsExpectedCount(t *testing.T) {
 }
 
 // TestRawBufferBytesEstimate gives a rough back-of-envelope figure
-// for how big the OTLP payload should be for the §6.2c encoding
+// for how big the OTLP payload should be for the encoding-axis
 // baseline. Not a correctness test — just a sanity floor for the
 // sweep's producer_bytes_out_per_s.
 func TestRawBufferBytesEstimate(t *testing.T) {

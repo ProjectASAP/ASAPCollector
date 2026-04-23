@@ -1,6 +1,6 @@
 # Baseline B0b selector — raw OTel held for 60s, flushed in a
 # single batch. Same raw-fidelity bytes as B0a but matches the
-# aggregation budget of B1/B2/B3/B5 so the §6.2 comparison is
+# aggregation budget of B1/B2/B3/B5 so the comparison is
 # apples-to-apples on time granularity.
 #
 #   AGENT_CONFIG=sketchcol-agent-b0b-raw-batched.yaml \

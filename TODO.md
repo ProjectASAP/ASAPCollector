@@ -39,55 +39,53 @@ landed over PRs #168–#185. Briefly:
   `runtime-samples` receiver (PRs #169, #170).
 - N=1 baseline sweep results in `deploy/eval-results/` — clean,
   per-agent throughput 130k–326k pts/s across baselines, usable
-  as the §6.2 load-quality datapoint.
+  as the load-quality datapoint.
 
 ## For paper submission (blocker)
 
-### 1. SDK three-axis aggregation framework (P0) — supersedes the "N=10 throughput collapse" blocker
+### 1. SDK cost evaluation (P0) — supersedes the "N=10 throughput collapse" blocker
 
 The N=10 "collapse" (#185) turned out not to be a bottleneck:
 the 2 k pts/s floor was the OTel SDK's correct pre-aggregation
 output at `interval=1 s, cardinality=1000, 2 instruments`,
-independent of input rate. That finding reframed the paper's
-§6.2 bandwidth claim as a **three-independent-factor product**
-(see [`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md)).
+independent of input rate. That finding reframed the bandwidth
+claim as a **three-independent-factor product** across time
+window `W`, label projection `L`, and encoding `agg_type`; see
+[`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md)
+for the design + methodology.
 
-Concrete work items (P0 because §6.2 can't run without them):
+Concrete work items (P0 because the cost sweeps can't run without
+them):
 
-- [x] ~~`AggregationRawBuffer`~~ — merged.
-      Contract test in
+- [x] ~~`AggregationRawBuffer`~~ — merged. Contract test in
       `deploy/fake-exporter/sdk_emit_test.go`.
-- [x] ~~`Aggregation<X>Delta` × 5~~ — on inspection, four of five
-      (DDSketch / CS / CMS / HLL) already have `DeltaTransmission`
-      as a flag on the `*-full` aggregator (2026-03-14 batch).
-      Only `kll-delta` is missing and is not a §6.2 blocker
-      (KLL's multi-level buffer structure needs a different
-      delta strategy — see
-      [`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md)).
-- [ ] **`fake-exporter` rewrite** (`deploy/fake-exporter/main.go`)
-      — drop `EXPORTER_RATE`; add `EXPORTER_SDK_WINDOW`,
-      `EXPORTER_SDK_PROJECTION`, `EXPORTER_SDK_AGG`. Widen label
-      schema from 2 dims to 4 (`{zone, rack, node, pod}`).
-- [ ] **`measure-baseline.py`** producer-side columns —
-      `producer_cpu_cores`, `producer_rss_mib`,
-      `producer_bytes_out_per_s` (scrape the fake-exporter
-      container's cgroup + interface counters).
-- [ ] **§6.2 sweeps** at `N=1`:
-      - 6.2a time: `W ∈ {1s, 15s, 60s, 300s}` ×
-        `L=full, agg=dd-full`
-      - 6.2b label: `\|L\| ∈ {0,1,2,3,4}` × `W=60s, agg=dd-full`
-      - 6.2c encoding: `agg ∈ {raw-buffer, dd-full, dd-delta,
-        kll-full, kll-delta, cms-full, hll-full}` ×
-        `W=60s, L=typical projection`
-      - 6.2d combined: best per-metric triple vs `raw-buffer +
-        full-L + W=15s`.
+- [x] ~~`Aggregation<X>Delta` × 5~~ — four of five (DDSketch /
+      CS / CMS / HLL) already have `DeltaTransmission` as a
+      flag on the `*-full` aggregator. `kll-delta` isn't
+      needed (see
+      [`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md)
+      for rationale).
+- [x] ~~`fake-exporter` three-axis knobs~~ (`deploy/fake-exporter/main.go`)
+      — merged (`EXPORTER_SDK_WINDOW`, `EXPORTER_SDK_PROJECTION`,
+      `EXPORTER_SDK_AGG`; 4-dim label schema).
+- [x] ~~`measure-baseline.py` producer-side columns~~
+      (`producer_cpu_cores`, `producer_rss_mib`,
+      `producer_bytes_out_per_s`) — merged.
+- [x] ~~First-pass cost sweeps at N=1~~ — CSVs + findings in
+      `deploy/eval-results/three-axis/`. Known methodology
+      caveat (`BYTES_WIN < W` under-reports bytes on some
+      cells) called out in the findings doc.
+- [ ] **V2 cost sweep** with `BYTES_WIN ≥ 2×W` so the absolute
+      bandwidth numbers are trustworthy on every row, not only
+      ratios within a sub-experiment. ~90 min.
 - [ ] **N-scale sweep rerun** at fixed representative
       `(W=60s, L=subset, agg=dd-delta)` across `N ∈ {1, 10, 100}`.
       This is now the honest scalability test — the 2 k floor
       from #185 is expected; we're looking for whether gateway /
       backend hold up as aggregate ingress grows.
-
-Depends on nothing upstream; can start immediately.
+- [ ] **Profile the label-axis CPU climb** — producer CPU
+      increases ~4× when the `AttributeFilter` is active;
+      root-cause before the numbers go into a paper figure.
 
 ### 2. Instrumentation — fill the `nan` columns (P1)
 
@@ -95,26 +93,25 @@ Depends on nothing upstream; can start immediately.
 
 - `agent_in_kib_per_s` / `agent_out_kib_per_s` — `nan` on
   b0a, b0b, b1, b5. Only b2 (full sketch) and b3 (delta) have
-  these. Needed for the paper's "M× bandwidth reduction" figure
-  (§6.2) across **all** baselines, not just the two where we
-  happen to have byte counters.
+  these. Needed for the cross-baseline bandwidth comparison
+  across **all** baselines, not just the two with byte
+  counters.
 - `gateway_points_per_s` / `gateway_out_series_per_s` — `nan`
   on sketch baselines (b1, b2, b3, b5). Only raw baselines
   (b0a, b0b) have them.
 - `backend_samples_per_s` — `nan` on all sketch baselines.
-- `backend_query_p99_ms` — `nan` everywhere. Query side is
-  not driven during the sweep; see §3.
+- `backend_query_p99_ms` — `nan` everywhere. Query side isn't
+  driven during the sweep; see the query-side item below.
 
 Deliverable: `measure-baseline.py` + Prometheus scrape covers
 every cell of the matrix for every baseline.
 
-Also still-TODO from the original §2:
+Also still-TODO:
 
 - **Grafana dashboards.** `configs/grafana-datasources.yml`
   provisions the datasource; no dashboard JSONs exist yet.
-  Paper figures come from these dashboards, so: one dashboard
-  per paper subsection (6.2 CPU, 6.2 BW, 6.3 query, 6.5 drift,
-  6.7 N-scale).
+  Plot sources for each evaluation axis: producer CPU,
+  producer bandwidth, query latency, workload drift, N-scale.
 - **Per-processor overhead** — sketchcol exposes `bytes_in /
   bytes_out / processor_samples_total / processor_cpu_seconds`
   but the sweep script doesn't collect them per-processor today.
@@ -122,8 +119,8 @@ Also still-TODO from the original §2:
 ### 3. Query side of the sweep (P1)
 
 The current sweep only drives ingest; it does not issue any
-PromQL queries while the stack is warm. Paper §6.3 (query P99
-latency) and §6.4 (ε vs resource Pareto) need:
+PromQL queries while the stack is warm. Query-latency and
+accuracy-vs-resource Pareto evaluation both need:
 
 - A query replay process co-located with the load generator,
   issuing a query suite (avg / p99 / rate / topK × {1m, 5m, 1h}

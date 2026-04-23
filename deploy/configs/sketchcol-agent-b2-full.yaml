@@ -3,7 +3,7 @@
 # the sketched output to the gateway, and exposes self-telemetry
 # for Prometheus.
 #
-# Pipeline shape, matching paper §5:
+# Pipeline shape:
 #
 #   fake-exporter (or real workload)
 #       │
@@ -35,11 +35,11 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
-  # Paper §5.1 — DDSketch for latency-style quantiles. `window`
+  # DDSketch for latency-style quantiles. `window`
   # mode + `window_duration: 60s` aligns the aggregation budget
   # with the other 60s baselines (B1 Serf, B3 delta, B5 Gorilla,
   # B0b raw-batched); previous `mode: batch` was per-arrival-
-  # batch which made B2's §6.2 comparison apples-to-oranges vs
+  # batch which made B2's comparison apples-to-oranges vs
   # the windowed baselines.
   #
   # `transmit_sketch: true` sends the sketch state itself (not
@@ -53,7 +53,7 @@ processors:
     quantiles: [0.5, 0.9, 0.99]
     metric_suffix: "_quantile"
 
-  # Paper §5.1 — HLL for distinct-count (high-cardinality counters,
+  # HLL for distinct-count (high-cardinality counters,
   # e.g. unique_users). Pairs with DDSketch to cover the two
   # primary sketch families in one pipeline. Precision is fixed
   # at 14 internally.
@@ -78,7 +78,7 @@ exporters:
       insecure: true
 
   # Per-agent /metrics exposer: Prometheus scrapes each agent on
-  # :8889. Paper §6.2 per-agent CPU + bandwidth-served numbers
+  # :8889. Per-agent CPU + bandwidth-served numbers
   # come from these counters.
   prometheus:
     endpoint: "0.0.0.0:8889"

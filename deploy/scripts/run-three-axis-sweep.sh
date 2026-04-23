@@ -4,7 +4,7 @@
 # docs/sdk-cost-evaluation.md. Brings up the compose
 # stack once per cell, soaks, measures, tears down.
 #
-# The paper's §6.2 sub-sweeps are each a thin wrapper around this
+# The four sub-sweeps are each a thin wrapper around this
 # script that fixes two axes and varies the third:
 #
 #   6.2a time-axis:     WINDOWS="1s 15s 60s 300s" PROJECTIONS="" AGGS="dd-full"

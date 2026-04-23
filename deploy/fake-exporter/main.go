@@ -10,7 +10,7 @@
 //     by the SDK config below.
 //
 //  2. Trace replay — reads a CSV of recorded `(ts_ms, series_id,
-//     value)` rows and emits at the recorded pace. The paper's §6.1
+//     value)` rows and emits at the recorded pace. The 
 //     workload-credibility hook.
 //
 // Emitted metric families (both modes):
@@ -25,18 +25,18 @@
 //
 // ## Three-axis env config
 //
-//	EXPORTER_SDK_WINDOW        PeriodicReader interval. Paper's W axis.
+//	EXPORTER_SDK_WINDOW        PeriodicReader interval. 
 //	                           Duration string. Default "15s".
 //	EXPORTER_SDK_PROJECTION    Comma-separated attribute keys to keep
 //	                           inside the SDK aggregator. Everything
 //	                           not listed is dropped via View's
-//	                           AttributeFilter. Paper's L axis.
+//	                           AttributeFilter. 
 //	                              ""        keep all labels (orig card)
 //	                              "zone"    keep only zone (reduces card)
 //	                              "zone,rack,node,pod"  keep all four
 //	                              "-"       drop all (single series)
 //	                           Default "" (keep all).
-//	EXPORTER_SDK_AGG           Aggregator kind. Paper's encoding axis.
+//	EXPORTER_SDK_AGG           Aggregator kind. Encoding axis.
 //	                              default | sum | raw-buffer |
 //	                              dd-full | dd-delta |
 //	                              kll |

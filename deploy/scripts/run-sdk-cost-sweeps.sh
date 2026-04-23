@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# run-paper-6.2-sweeps.sh — land all three §6.2 sub-sweep CSVs
+# run-sdk-cost-sweeps.sh — land all three cost sub-sweep CSVs
 # under deploy/eval-results/three-axis/.
 #
 # Each sub-sweep holds two of (W, L, agg) constant and varies the
-# third. See docs/sdk-cost-evaluation.md §"Paper §6
+# third. See docs/sdk-cost-evaluation.md "Evaluation
 # mapping" for the plan.
 #
 # Produces (under eval-results/three-axis/):
@@ -35,7 +35,7 @@ FREQ_HZ="${FREQ_HZ:-10}"
 SCALE="${SCALE:-N1}"
 
 echo "=============================="
-echo "§6.2 three-axis sweeps — $TS"
+echo "SDK cost sweeps — $TS"
 echo "  SOAK_S=$SOAK_S  BYTES_WIN=$BYTES_WIN  CARDINALITY=$CARDINALITY"
 echo "  FREQ_HZ=$FREQ_HZ  SCALE=$SCALE"
 echo "  OUT_DIR=$OUT_DIR"

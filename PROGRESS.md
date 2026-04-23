@@ -1,6 +1,6 @@
 # DataCollector — Implementation Progress
 
-_Last updated: 2026-04-23 — three-axis SDK framework formalized_
+_Last updated: 2026-04-23 — SDK cost evaluation design + raw-buffer landed_
 
 See [`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md)
 for the current authoritative design of the SDK decision point
@@ -246,7 +246,7 @@ CountSketch / CountMinSketch / HLLSketch) all implement the
 framework defined in
 [`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md).
 
-### Outstanding SDK aggregators (P1 for paper §6.2)
+### Outstanding SDK aggregators (P1 for )
 
 Correction after a read of
 `opentelemetry-go-patch/sdk/metric/aggregation.go` — **delta
@@ -266,12 +266,12 @@ CountMinSketch / HLLSketch) already work via the
 ### Outstanding SDK runtime support
 
 - **Hot-reload of View `AttributeFilter`** — required for the
-  controller-in-loop §6.5 scenario where the planner pushes a
+  controller-in-loop scenario where the planner pushes a
   new projection `L` mid-run. Upstream OTel Go SDK doesn't
   support replacing a View's filter after MeterProvider
   construction; needs a small patch in
   `opentelemetry-go-patch/sdk/metric/` to expose a swap API.
-  Not a §6.2 blocker (each static sweep run is a fresh
+  Not a blocker for this evaluation (each static sweep run is a fresh
   process).
 
 ### Downstream dependents

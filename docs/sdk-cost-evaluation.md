@@ -3,12 +3,11 @@
 ## Why this doc exists
 
 The ASAP pipeline has three data-plane decision points —
-SDK / agent collector / backend collector — and the paper's
-claim is that the controller plans each of them based on the
-current query workload. This document pins down **what exactly
-the controller decides for the SDK**, what knobs the SDK
-exposes to express that decision, and how the paper's §6
-ablations map onto those knobs.
+SDK / agent collector / backend collector — and the controller's
+job is to plan each of them based on the current query workload.
+This document pins down **what exactly the controller decides
+for the SDK**, what knobs the SDK exposes to express that
+decision, and how those knobs are evaluated.
 
 It is not a full architecture doc: it only covers the SDK
 decision point. The agent / backend decision points are covered
@@ -152,9 +151,9 @@ support:
    compactor sample arrays. Smaller payload, but requires
    exposing KLL internal state through `sketchlib-go`.
 
-Not a §6.2 blocker — the `kll-full` row is sufficient for a
-three-way comparison with `raw-buffer` and `dd-delta` on the
-encoding axis.
+Not a blocker for this evaluation — the `kll-full` row is
+sufficient for a three-way comparison with `raw-buffer` and
+`dd-delta` on the encoding axis.
 
 ### `AggregationRawBuffer` design
 
@@ -230,54 +229,54 @@ Adding `Aggregation<X>Delta` (×5):
 
 Hot-reload of `L` at runtime:
 - OTel Go SDK doesn't currently support replacing a View's
-  `AttributeFilter` after `MeterProvider` construction. For the
-  static §6 sweeps this is fine — each run is a fresh process.
-- For the controller-in-loop §6.5 "planner pushes `L` change mid-run"
-  scenario, the SDK needs a hot-reload hook. This is tracked as a
-  separate implementation item; **not** a §6.2 blocker.
+  `AttributeFilter` after `MeterProvider` construction. For
+  the static cost sweeps in this doc that's fine — each run
+  is a fresh process.
+- For the controller-in-loop scenario where the planner pushes
+  a new `L` mid-run, the SDK needs a hot-reload hook. That's
+  a separate implementation track, not a blocker here.
 
-## Paper §6 mapping (three-axis ablation)
+## Evaluation design
 
-§6.2 splits into four sub-sweeps, each sweeping one axis while
-holding the other two fixed at a representative operating point:
+Each sub-experiment sweeps one axis of the `(W, L, agg_type)`
+triple and holds the other two fixed at a representative
+operating point.
 
-| Sub-sweep | Fixed | Swept | Claim |
+**The workload driver is
+[`deploy/fake-exporter/`](../deploy/fake-exporter/) — a
+synthetic *instrumented application*, not an OTel `Exporter` and
+not a Prometheus client.** The misleading name is historical.
+Concretely it imports the ASAP-patched OTel Go SDK, stands up
+a `MeterProvider` with a user-configured `View` (the `L` and
+`agg_type` knobs live there) and a `PeriodicReader(W)`, and
+drives `Counter.Add` / `Gauge.Record` from per-series
+goroutines firing at `freq_hz`. That stack is identical to
+what any OTel-instrumented Go service does in production — no
+bespoke wire format, no bypass of the SDK. The SDK's own OTLP
+gRPC exporter ships the aggregated data downstream.
+
+Defaults: `cardinality=1000`, `freq_hz=10` per series, counter
++ gauge instruments, `SOAK_S=180s`. `measure-baseline.py` then
+reads producer CPU / RSS / tx-bytes from `docker stats` and
+agent / gateway / backend stats from Prometheus.
+
+| Axis | Fixed | Swept | What the sweep measures |
 |---|---|---|---|
-| **6.2a Time axis** | `L = full`, `agg = dd-full` | `W ∈ {1s, 15s, 60s, 300s}` | "Longer windows reduce bw / weaken freshness SLA" |
-| **6.2b Label axis** | `W = 60s`, `agg = dd-full` | `\|L\| ∈ {0, 1, 2, 3, 4} dims` | "Projecting compatible label dims reduces bw by `orig/reduced`" |
-| **6.2c Encoding axis** | `W = 60s`, `L = typical projection` | `agg ∈ {raw-buffer, dd-full, dd-delta, kll-full, kll-delta}` | "Sketch vs raw reduces per-point bytes; delta reduces further" |
-| **6.2d End-to-end** | — | best `(W, L, agg)` per metric chosen by planner, vs `raw-buffer` at full label set + `W = 15s` | "Total bw reduction = time-factor × label-factor × encoding-factor" |
+| **Time** | `L = keep-all`, `agg = dd-full` | `W ∈ {1s, 15s, 60s, 300s}` | How producer bw / CPU / RSS change with flush interval. Longer `W` should reduce wire traffic at the cost of freshness. |
+| **Label** | `W = 60s`, `agg = dd-full` | `\|L\| ∈ {0, 1, 2, 3, 4}` dims kept | How attribute-set folding under `AttributeFilter` trades producer RSS against filter CPU. Expected: fewer sketch instances → lower RSS; filter-per-measure → higher CPU. |
+| **Encoding** | `W = 60s`, `L = typical projection` | `agg ∈ {raw-buffer, dd-full, dd-delta, kll, cms-full, cms-delta, hll-full, hll-delta}` | What each encoding costs at a fixed `(W, L)`. Sketches vs raw-buffer for bandwidth + RSS; full vs delta for the memory/bw tradeoff. |
+| **Combined** | — | best `(W, L, agg)` picked for each metric, vs. a baseline at `W=15s`, full `L`, `agg=raw-buffer` | End-to-end bandwidth reduction as the product of the three per-axis factors. |
 
-§6.5 becomes a **planner-quality** experiment independent of the
-SDK emit cost: given query sets `Q_1, …, Q_k`, inspect the
-planner's `(W, L, agg)` output and compare against hand-tuned
-ground truth.
+The driver is
+[`deploy/scripts/run-three-axis-sweep.sh`](../deploy/scripts/run-three-axis-sweep.sh);
+the wrapper that runs all four above is
+[`deploy/scripts/run-sdk-cost-sweeps.sh`](../deploy/scripts/run-sdk-cost-sweeps.sh).
+CSVs and a findings write-up live under
+`deploy/eval-results/three-axis/`.
 
-## Non-goals of this doc
+**Related evaluation (separate harness).** Given a set of query
+workloads, check that the controller's chosen `(W, L, agg)`
+matches the hand-tuned ideal for that workload. Measures
+planner quality independent of SDK emit cost; doesn't need the
+cost sweeps above.
 
-- How the agent collector further aggregates across SDK windows
-  — covered by `delta-transmission-design.md` and
-  `serf-compression-architecture.md`.
-- Cost-model formulation — covered by
-  `controller-optimization-problem.md`.
-- Query-side algebra and the algebra → physical-plan rewrite
-  rules — covered by `sketch-algebra-query-mapping.md` and
-  `controller/docs/query-to-sketch-translation.md`.
-
-## Implementation order (follow-up PRs)
-
-1. ~~`AggregationRawBuffer` + unit tests + `Aggregation` enum wire-up.~~ — merged.
-2. ~~`AggregationDelta<X>Sketch` ×5~~ — already present as
-   `DeltaTransmission: true` on the four sparse-state sketches
-   (DDSketch / CountSketch / CountMinSketch / HLLSketch).
-   Only `kll-delta` is a follow-up, and it's optional for §6.2.
-3. `fake-exporter` knobs: drop `EXPORTER_RATE`; add
-   `EXPORTER_SDK_WINDOW`, `EXPORTER_SDK_PROJECTION`,
-   `EXPORTER_SDK_AGG`. Widen the synthetic label schema from
-   `{zone, pod}` (2 dims) to `{zone, rack, node, pod}` (4 dims)
-   so the `L`-axis sweep has range.
-4. `measure-baseline.py`: add producer-side `producer_cpu_cores`,
-   `producer_rss_mib`, `producer_bytes_out_per_s` columns.
-5. Run the four §6.2 sub-sweeps at `N = 1` on the 40-core dev
-   box. Produce four CSVs + four figures.
-6. (Separate track) OpAMP hot-reload of `L` for §6.5.
