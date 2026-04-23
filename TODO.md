@@ -1,5 +1,7 @@
 # TODO — DataCollector + controller for paper submission
 
+_Last updated: 2026-04-23 (post N=10 sweep, PRs #168–#185)_
+
 This doc lists what's left to get a VLDB / SIGMOD submission out
 the door. For the v1 paper we keep updating `controller/`
 directly in this repo — the [ASAPController](https://github.com/ProjectASAP/ASAPController)
@@ -8,135 +10,169 @@ consolidation is post-paper.
 See also:
 - [`docs/paper-outline.md`](docs/paper-outline.md) — paper
   sections, claims, experiment matrix.
+- [`deploy/README.md`](deploy/README.md) / [`deploy/TODO.md`](deploy/TODO.md)
+  — multi-agent stack status and compose/Helm knobs.
 - ASAPQuery-backend [`TODO.md`](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/TODO.md)
   for sketchDB-side work.
 
+## Current state (what's landed)
+
+The multi-agent scaffold + baseline matrix + sweep harness
+landed over PRs #168–#185. Briefly:
+
+- `deploy/docker-compose/` — `base.yml` (8 services: controller,
+  backend, gateway, fake-exporter, minio, minio-setup, prometheus,
+  grafana) + `agents-N{1,10,100}.yml` overlays + `gen-agents.sh`
+  for arbitrary N.
+- 7 baselines as separate overlays: b0a-raw-stream, b0b-raw-batched,
+  b1-serf, b2-full, b3-delta, b4-tunable, b5-gorilla. (The paper
+  presents B0/B1/B2/B3; b4 is the window-duration sweep axis and
+  b5 is a Gorilla reference point.)
+- `deploy/helm/asap/` — `Chart.yaml` + `values.yaml` with the
+  paper's resource envelope (0.5 CPU / 512 Mi per agent).
+  Templates not yet written.
+- Five Dockerfiles in `deploy/docker/` (sketchcol, sketchcol-stock,
+  backend, controller, fake-exporter).
+- Sweep driver (`deploy/scripts/run-baseline-sweep.sh`) +
+  measurement (`deploy/scripts/measure-baseline.py`).
+- Controller `/metrics` Prometheus exposer + gRPC
+  `runtime-samples` receiver (PRs #169, #170).
+- N=1 baseline sweep results in `deploy/eval-results/` — clean,
+  per-agent throughput 130k–326k pts/s across baselines, usable
+  as the §6.2 load-quality datapoint.
+
 ## For paper submission (blocker)
 
-### 1. Multi-agent deployment at scale
+### 1. Multi-agent scale — N=10 throughput collapse (P0)
 
-Today the demo is single-node Docker compose. Paper experiments
-need multi-agent for bandwidth and CPU/mem-per-node claims.
+N=10 sweep (#185, 2026-04-22) surfaced a system-wide bottleneck:
+per-agent throughput collapses from 130k–326k pts/s at N=1 to a
+universal ~2k floor at N=10, identical across all six baselines
+(so it's a topology / producer-SDK issue, not a sketch pipeline
+issue). Agents are near-idle (0.01c, 220 MiB). Gateway sees
+10 × 2k = 20k total, i.e. coordinated throttling.
 
-- K8s manifests: `N` edge agents, 1 gateway, 1 backend, 1
-  controller. Parameterize `N ∈ {1, 10, 100}` via Helm values.
-- S3-backed raw storage — MinIO for local eval, real S3 for
-  scale runs.
-- Agent-side resource requests/limits tuned to "realistic edge"
-  (0.5 CPU / 512Mi).
+Until this is diagnosed and fixed, the paper's "scales linearly
+N ∈ {1, 10, 100}" claim is unsupported.
 
-### 2. Instrumentation
+Candidate causes, ranked:
 
-Every node exports the following so we can make "reduce by N%"
-claims:
+1. **fake-exporter OTLP/gRPC SDK backpressure.** 10 producers ×
+   1M nominal points/s (rate × cardinality) likely overwhelms a
+   shared socket or SDK reader limit. First thing to try: tune
+   `WithMaxQueueSize` / `WithMaxExportBatchSize`, or drop to a
+   raw gRPC client for the scale sweep.
+2. **Docker userland-proxy CPU contention** across many
+   simultaneous gRPC connections on the default bridge network.
+   Cheap test: switch to `network_mode: host` for agents +
+   gateway and re-run.
+3. **Kernel socket buffers.** `net.core.somaxconn /
+   net.core.rmem_max` at stock Ubuntu defaults may cap inbound
+   gRPC streams.
 
-**Agents** (edge OTel collector):
-- CPU (`container_cpu_usage_seconds_total`)
-- Memory RSS (`container_memory_rss`)
-- Network egress (`container_network_transmit_bytes_total`,
-  filtered to agent→gateway and/or agent→backend links)
-- Per-processor overhead (sketchcol exposes `bytes_in` /
-  `bytes_out` / `processor_samples_total` / `processor_cpu_seconds`)
+Post-fix deliverable: re-run N=1, N=10, N=100 sweeps; paper's
+§6.7 "scales linearly" figure uses those three points.
 
-**Gateway**:
-- Same as agents
-- Plus `gateway_forwarded_bytes_total` for downstream link
+### 2. Instrumentation — fill the `nan` columns (P1)
 
-**Backend** (ASAPQuery-backend):
-- Query latency histogram (HTTP handler)
-- Per-query CPU time + memory peak (per-request span)
-- Hot vs cold bytes served (from ASAPQuery-backend TODO #1)
-- Existing `queryengine_ingest_samples_blocked_by_schema_barrier_total`
-  stays
+`sweep-N10-20260422.csv` has missing measurements:
 
-**Controller**:
-- Plan count / replan count
-- Cost-model eval latency
-- OpAMP push latency
-- Query-miss-notification rate
+- `agent_in_kib_per_s` / `agent_out_kib_per_s` — `nan` on
+  b0a, b0b, b1, b5. Only b2 (full sketch) and b3 (delta) have
+  these. Needed for the paper's "M× bandwidth reduction" figure
+  (§6.2) across **all** baselines, not just the two where we
+  happen to have byte counters.
+- `gateway_points_per_s` / `gateway_out_series_per_s` — `nan`
+  on sketch baselines (b1, b2, b3, b5). Only raw baselines
+  (b0a, b0b) have them.
+- `backend_samples_per_s` — `nan` on all sketch baselines.
+- `backend_query_p99_ms` — `nan` everywhere. Query side is
+  not driven during the sweep; see §3.
 
-Deliverable: Prometheus scrape config + Grafana dashboards
-covering all of the above. Dashboards become paper figures.
+Deliverable: `measure-baseline.py` + Prometheus scrape covers
+every cell of the matrix for every baseline.
 
-### 3. Baselines
+Also still-TODO from the original §2:
 
-Four separately-deployable configs:
+- **Grafana dashboards.** `configs/grafana-datasources.yml`
+  provisions the datasource; no dashboard JSONs exist yet.
+  Paper figures come from these dashboards, so: one dashboard
+  per paper subsection (6.2 CPU, 6.2 BW, 6.3 query, 6.5 drift,
+  6.7 N-scale).
+- **Per-processor overhead** — sketchcol exposes `bytes_in /
+  bytes_out / processor_samples_total / processor_cpu_seconds`
+  but the sweep script doesn't collect them per-processor today.
 
-| Baseline | What it exercises |
-|---|---|
-| **B0. Prometheus native** | No DC, no sketches. Direct Prometheus scrape + query. "Do nothing fancy." |
-| **B1. DC + raw-forward** | DC agents with sketchcol replaced by a passthrough processor. Tests "controller + backend minus sketches." |
-| **B2. DC + hand-tuned sketches (no controller)** | Sketchcol processors configured by hand to a reasonable workload. Tests "sketches minus controller planning." |
-| **B3. Full ASAP** | DC + controller + sketches + backend + cold S3 fallback. Our system. |
+### 3. Query side of the sweep (P1)
 
-Each deployable via a single `docker-compose-<baseline>.yml`
-and a single K8s `values-<baseline>.yaml`.
+The current sweep only drives ingest; it does not issue any
+PromQL queries while the stack is warm. Paper §6.3 (query P99
+latency) and §6.4 (ε vs resource Pareto) need:
 
-### 4. Workload
+- A query replay process co-located with the load generator,
+  issuing a query suite (avg / p99 / rate / topK × {1m, 5m, 1h}
+  windows) at a steady rate for the SOAK window.
+- Per-query attributes captured:
+  `queryengine_query_duration_seconds`,
+  `queryengine_cold_bytes_served_total`,
+  `queryengine_ingest_samples_blocked_by_schema_barrier_total`,
+  PromQL response's `accuracy.epsilon` field (once exposed —
+  see ASAPQuery-backend TODO §2).
+- Sweep output adds: `query_p50/p99_ms`, `cold_bytes_served`,
+  `barrier_drops`.
 
-Observability traces only (no TPC-H / NYC Taxi — out of scope,
-see `paper-outline.md` §non-goals).
+### 4. Real workload — Google cluster trace wiring (P2)
 
-Candidates:
-- **Google cluster usage 2011 + 2019** — canonical: per-job
-  CPU / memory / I/O time-series at minute granularity
-- **Alibaba cluster trace 2017 / 2018** — similar shape,
-  different scale / topology
-- **Robinhood / Uber / Grafana-published Prometheus query logs**
-  where available — for the query-side workload
+fake-exporter already has trace-replay mode and a demo dataset
+(PR #182). Still needed:
 
-Ingestion workload: replay the trace through a synthetic
-"exporter" that faithfully reproduces the cardinality and
-update rate.
+- Fetcher for Google cluster 2011 **and** 2019 traces
+  (`datasets_eval/` has scaffolding, no fetcher yet).
+- Mapping from trace rows to OTLP series (preserve cardinality +
+  update rate).
+- Matching PromQL query log if Robinhood/Uber/Grafana-published
+  logs are usable; otherwise the hand-authored query suite from
+  §3 is the fallback. Paper uses at minimum one synthetic +
+  one trace workload.
 
-Query workload: replay the matching PromQL query log (if we
-have it) OR hand-author a representative query suite
-(`N × {avg, p99, rate, topK} × {1m, 5m, 1h, 24h}`).
+### 5. Controller feedback loop end-to-end on real workload (P2)
 
-### 5. Controller feedback loop — e2e on the workload
+HTTP-layer round-trip is done (see ASAPQuery-backend
+`capability_miss_http_e2e_tests.rs`). What's missing is the
+cross-process story with real ingest:
 
-Across-lifecycle claim in the paper hinges on "controller sees
-a query miss, replans, next query hits." Measure this on the
-Google cluster workload:
-
-- Seed: initial controller plan has CMS for metric X but no
-  `by (zone)` grouping.
-- Issue: query `p99 of X by zone` → miss.
-- Measure:
-  - time-to-plan-ready (controller's replan latency)
-  - time-to-first-hit (end-to-end wall clock from query issue
-    to successful same-query hit)
-  - bandwidth/CPU trace during the transition
-- Assert: bounded regression (e.g. ≤2× baseline during the
+- Seed: initial plan has CMS for metric X, no `by (zone)`.
+- Issue: `p99 of X by zone` → capability miss.
+- Measure: time-to-plan-ready, time-to-first-hit,
+  bandwidth/CPU during the transition.
+- Assert: bounded regression (≤ 2× baseline during the
   transition window).
 
-### 6. Fault injection
+Depends on §1 (throughput) + §3 (query side) + §4 (real data).
 
-Reviewers ask: "what if the controller fails?"
+### 6. Fault injection (P3)
 
-- **Controller kill**: backend keeps serving from last-known
-  plan; queries still answered from existing sketches.
-- **Agent kill**: controller detects (agent status monitor),
-  marks it degraded / missing, re-plans without that agent's
-  contribution.
-- **Network partition** (agent ⇄ controller): agent keeps
-  running its last config; controller marks config "stale"
-  until link heals; reconciliation at heal time.
+Reviewer-facing "what if the controller fails?"
 
-Each of these gets a test in `fault-injection/` (ChaosMesh or
-simple `tc` rules + docker network disconnect).
+- Controller kill — backend keeps serving from last-known plan.
+- Agent kill — controller detects, marks degraded, replans.
+- Network partition (agent ⇄ controller) — agent keeps running
+  last config; reconciliation on heal.
 
-### 7. Reproducibility archive
+Implement each as a test under `fault-injection/` using
+ChaosMesh if on K8s, or `docker network disconnect` + `tc`
+rules on compose.
+
+### 7. Reproducibility archive (P3)
 
 VLDB / SIGMOD Reproducibility (badge):
 
-- `reproduce/` with one entrypoint `make reproduce`
-- `Dockerfile.reproduce` baking the full stack
+- `reproduce/` with `make reproduce` entry point.
+- `Dockerfile.reproduce` baking the full stack.
 - `reproduce/workload/` — fetcher + anonymizer for the Google
-  cluster trace
-- `reproduce/expected/` — table of expected numbers (with
-  tolerance bands for variance)
-- README linking to the archive from the paper
+  cluster trace (ties to §4).
+- `reproduce/expected/` — expected-number table with tolerance
+  bands.
 
 ## Future work (post-paper)
 
@@ -151,17 +187,27 @@ paper — the controller code keeps evolving here for v1.
 
 OpAMP server handles N agents today, tested with ~dozen. Need
 proper stress test at N=100+ for confidence in the scalability
-story.
+story. (Partially reached once §1 is fixed and N=100 sweep
+runs clean.)
 
 ### F3. Sketch processor CPU offload
 
 Edge sketchcol processors today update sketches on the
 data-plane thread. Move to a worker-pool + lock-free ring
 buffer for higher ingest rates on resource-constrained edge
-nodes. Would help B3 CPU numbers.
+nodes.
 
 ### F4. Controller HA (active-passive)
 
 Today single controller. Add an active-passive pair with a
 simple leader election (etcd or similar) so a controller kill
 isn't a "manual restart" event.
+
+### F5. Helm templates
+
+`deploy/helm/asap/` has values.yaml + Chart.yaml but no
+templates. Writing them properly wants an initial pass on a
+real cluster to validate readiness probes / resource
+requests / network policies. Out of scope for the paper (compose
+covers N ≤ ~50 on a single beefy box); needed for the
+reproducibility archive if we promise K8s replay.
