@@ -1,0 +1,442 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import queue
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Iterator, List, Tuple
+
+import grpc
+import numpy as np
+import pandas as pd
+import pyarrow.dataset as ds
+from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2, metrics_service_pb2_grpc
+from opentelemetry.proto.common.v1 import common_pb2
+
+BENCH_ROOT = Path(__file__).resolve().parent
+if str(BENCH_ROOT) not in sys.path:
+    sys.path.insert(0, str(BENCH_ROOT))
+
+from common import JOINED_PARQUET_PATH, PARQUET_PATH, QUERY_CONFIG
+
+_Batch = List[Tuple[float, int, dict]]   # (value, time_unix_nano, labels)
+
+# Q4 archetype derivation uses the actual profiling columns from snowset-main.
+_PROF_COLS = [
+    "profHjRso",
+    "profSortRso",
+    "profAggRso",
+    "profScanRso",
+    "profFilterRso",
+]
+_PROF_NAMES = [
+    "join_heavy",
+    "sort_heavy",
+    "agg_heavy",
+    "scan_heavy",
+    "filter_heavy",
+]
+
+
+def _derive_archetypes(df: pd.DataFrame) -> pd.Series:
+    """Return archetype label per row; 'other' when all prof columns are 0."""
+    present = [c for c in _PROF_COLS if c in df.columns]
+    if not present:
+        return pd.Series(["other"] * len(df), index=df.index)
+    mat = df[present].to_numpy(dtype=np.int64)
+    max_vals = mat.max(axis=1)
+    idx = mat.argmax(axis=1)
+    names = [_PROF_NAMES[_PROF_COLS.index(c)] for c in present]
+    labels = np.where(
+        max_vals > 0,
+        np.array(names, dtype=object)[idx],
+        "other",
+    )
+    return pd.Series(labels, index=df.index)
+
+
+def _ts_to_ns(ts_series: pd.Series) -> np.ndarray:
+    """Convert a timezone-aware timestamp[us] pandas Series to int64 nanoseconds."""
+    # pandas stores tz-aware timestamps as int64 nanoseconds internally.
+    # .astype('int64') returns nanoseconds regardless of precision.
+    return ts_series.astype(np.int64).to_numpy(dtype=np.int64)
+
+
+def _open_dataset() -> ds.Dataset:
+    return ds.dataset(str(PARQUET_PATH), format="parquet")
+
+
+def _open_joined_dataset() -> ds.Dataset:
+    return ds.dataset(str(JOINED_PARQUET_PATH), format="parquet")
+
+
+def _numeric_ts_to_ns(ts_series: pd.Series) -> np.ndarray:
+    return ts_series.to_numpy(dtype=np.int64) * np.int64(1_000_000_000)
+
+
+def _joined_ts_to_ns(ts_series: pd.Series) -> np.ndarray:
+    if pd.api.types.is_datetime64_any_dtype(ts_series):
+        return ts_series.astype(np.int64).to_numpy(dtype=np.int64)
+    return _numeric_ts_to_ns(pd.to_numeric(ts_series, errors="coerce").fillna(0).astype(np.int64))
+
+
+def _q6_counts_by_tick(chunksize: int) -> dict[int, int]:
+    dataset = _open_joined_dataset()
+    counts: dict[int, int] = {}
+    cols = ["timestamp_sec", "warehouseSize", "durationTotal"]
+    for batch in dataset.to_batches(batch_size=chunksize, columns=cols):
+        df = batch.to_pandas()
+        if df.empty:
+            continue
+        df = df.query("warehouseSize == 4 and durationTotal > 0")
+        if df.empty:
+            continue
+        if pd.api.types.is_datetime64_any_dtype(df["timestamp_sec"]):
+            sec_vals = (df["timestamp_sec"].astype(np.int64) // 1_000_000_000).to_numpy(dtype=np.int64)
+        else:
+            sec_vals = pd.to_numeric(df["timestamp_sec"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
+            sec_vals = sec_vals[sec_vals >= 0]
+        if len(sec_vals) == 0:
+            continue
+        uniq, freq = np.unique(sec_vals, return_counts=True)
+        for sec, cnt in zip(uniq.tolist(), freq.tolist()):
+            counts[int(sec)] = counts.get(int(sec), 0) + int(cnt)
+    return counts
+
+
+def _read_batches(
+    query: str,
+    batch_size: int,
+    chunksize: int = 200_000,
+) -> Iterator[_Batch]:
+    """Yield processed batches of (value, time_ns, labels) for the given query."""
+    cfg = QUERY_CONFIG[query]
+
+    if query == "Q6":
+        dataset = _open_joined_dataset()
+        pending: _Batch = []
+        counts_by_tick = _q6_counts_by_tick(chunksize)
+        needed = ["timestamp_sec", "warehouseSize", "durationTotal"]
+        for batch in dataset.to_batches(batch_size=chunksize, columns=needed):
+            df = batch.to_pandas()
+            if df.empty:
+                continue
+            df = df.query(cfg.filter_expr) if cfg.filter_expr else df
+            if df.empty:
+                continue
+
+            if pd.api.types.is_datetime64_any_dtype(df["timestamp_sec"]):
+                sec_vals = (df["timestamp_sec"].astype(np.int64) // 1_000_000_000).to_numpy(dtype=np.int64)
+            else:
+                sec_vals = pd.to_numeric(df["timestamp_sec"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
+
+            valid_mask = sec_vals >= 0
+            if not np.any(valid_mask):
+                continue
+            df = df.loc[valid_mask].copy()
+            sec_vals = sec_vals[valid_mask]
+            ts_ns = _joined_ts_to_ns(df["timestamp_sec"])
+            vals = df["durationTotal"].to_numpy(dtype=np.float64)
+            ws_arr = df["warehouseSize"].astype(str).to_numpy()
+            bands = ((np.array([counts_by_tick.get(int(sec), 0) for sec in sec_vals], dtype=np.int64) // 25) * 25)
+
+            for i in range(len(df)):
+                pending.append((
+                    vals[i],
+                    int(ts_ns[i]),
+                    {"warehouse_size": ws_arr[i], "concurrency_band": str(int(bands[i]))},
+                ))
+                if len(pending) >= batch_size:
+                    yield pending
+                    pending = []
+
+        if pending:
+            yield pending
+        return
+
+    # Choose the minimal column set for this query.
+    needed: set[str] = {"createdTime", "warehouseId"}
+    if query == "Q1":
+        needed.update({"warehouseSize", "persistentReadRequestsS3"})
+    elif query == "Q2":
+        needed.add("durationTotal")
+    elif query == "Q3":
+        needed.add("persistentReadBytesS3")
+    elif query == "Q4":
+        needed.update({"warehouseSize"})
+        needed.update(_PROF_COLS)
+    # Q5 only needs createdTime + warehouseId (already in needed)
+
+    dataset = _open_dataset()
+    pending: _Batch = []
+
+    for batch in dataset.to_batches(batch_size=chunksize, columns=list(needed)):
+        df = batch.to_pandas()
+
+        # Apply filter
+        if cfg.filter_expr and query not in ("Q4",):
+            df = df.query(cfg.filter_expr)
+        if df.empty:
+            continue
+
+        # createdTime is timezone-aware; convert to nanoseconds.
+        ts_ns = _ts_to_ns(df["createdTime"])
+        wh_str = df["warehouseId"].astype(str).to_numpy()
+
+        if query == "Q1":
+            vals = df["persistentReadRequestsS3"].to_numpy(dtype=np.float64)
+            for i in range(len(df)):
+                pending.append((vals[i], int(ts_ns[i]), {"warehouse_id": wh_str[i]}))
+                if len(pending) >= batch_size:
+                    yield pending
+                    pending = []
+
+        elif query == "Q2":
+            vals = df["durationTotal"].to_numpy(dtype=np.float64)
+            for i in range(len(df)):
+                pending.append((vals[i], int(ts_ns[i]), {"warehouse_id": wh_str[i]}))
+                if len(pending) >= batch_size:
+                    yield pending
+                    pending = []
+
+        elif query == "Q3":
+            vals = df["persistentReadBytesS3"].to_numpy(dtype=np.float64)
+            for i in range(len(df)):
+                pending.append((vals[i], int(ts_ns[i]), {"warehouse_id": wh_str[i]}))
+                if len(pending) >= batch_size:
+                    yield pending
+                    pending = []
+
+        elif query == "Q4":
+            present = [c for c in _PROF_COLS if c in df.columns]
+            if not present:
+                continue
+            mask = (df[present] > 0).any(axis=1)
+            df = df[mask]
+            if df.empty:
+                continue
+            archetypes = _derive_archetypes(df)
+            ws_arr  = df["warehouseSize"].astype(str).to_numpy()
+            ts_ns2  = _ts_to_ns(df["createdTime"])
+            arch_arr = archetypes.to_numpy()
+            for i in range(len(df)):
+                pending.append((
+                    1.0,
+                    int(ts_ns2[i]),
+                    {"query_archetype": str(arch_arr[i]), "warehouse_size": ws_arr[i]},
+                ))
+                if len(pending) >= batch_size:
+                    yield pending
+                    pending = []
+
+        elif query == "Q5":
+            wh_float = df["warehouseId"].astype(np.float64).to_numpy()
+            for i in range(len(df)):
+                pending.append((wh_float[i], int(ts_ns[i]), {}))
+                if len(pending) >= batch_size:
+                    yield pending
+                    pending = []
+
+    if pending:
+        yield pending
+
+
+def build_otlp_request(
+    metric_name: str,
+    batch: _Batch,
+) -> metrics_service_pb2.ExportMetricsServiceRequest:
+    req = metrics_service_pb2.ExportMetricsServiceRequest()
+    rm = req.resource_metrics.add()
+    svc = rm.resource.attributes.add()
+    svc.key = "service.name"
+    svc.value.string_value = "snowset-replay"
+    sm = rm.scope_metrics.add()
+    m = sm.metrics.add()
+    m.name = metric_name
+    for value, ts_ns, labels in batch:
+        dp = m.gauge.data_points.add()
+        dp.as_double = float(value)
+        dp.time_unix_nano = ts_ns
+        for k, v in labels.items():
+            attr = dp.attributes.add()
+            attr.key = k
+            attr.value.CopyFrom(common_pb2.AnyValue(string_value=str(v)))
+    return req
+
+
+def sleep_until(deadline: float) -> None:
+    while True:
+        now = time.perf_counter()
+        if now >= deadline:
+            return
+        time.sleep(min(0.05, deadline - now))
+
+
+def append_throughput_row(
+    results_dir: Path,
+    query: str,
+    slice_tag: str,
+    replay_mode: str,
+    speed_factor: float,
+    total_events: int,
+    elapsed_s: float,
+    export_count: int,
+) -> None:
+    path = results_dir / "throughput.csv"
+    header = "query,slice,replay_mode,speed_factor,total_events,elapsed_s,events_per_sec,export_count\n"
+    if not path.is_file():
+        path.write_text(header, encoding="utf-8")
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        eps = total_events / elapsed_s if elapsed_s > 0 else 0.0
+        w.writerow([query, slice_tag, replay_mode, f"{speed_factor:g}",
+                    total_events, f"{elapsed_s:.6f}", f"{eps:.6f}", export_count])
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Replay Snowset snowset-main.parquet as OTLP gauge metrics."
+    )
+    parser.add_argument("--query", required=True, choices=list(QUERY_CONFIG))
+    parser.add_argument("--slice", default="full",
+                        help="Dataset slice tag for result labelling (default: full).")
+    parser.add_argument("--mode", choices=("max", "paced", "scaled"), default="max")
+    parser.add_argument("--speed-factor", type=float, default=1000.0)
+    parser.add_argument("--batch-size", type=int, default=5000)
+    parser.add_argument("--endpoint", default="localhost:4317")
+    parser.add_argument("--chunksize", type=int, default=200_000)
+    parser.add_argument("--results-dir", type=Path,
+                        default=Path(__file__).resolve().parent / "results")
+    parser.add_argument("--progress-every", type=int, default=-1)
+    parser.add_argument("--queue-depth", type=int, default=32)
+    args = parser.parse_args()
+
+    pe = args.progress_every
+    if pe < 0:
+        args.progress_every = max(5, min(50, 50_000 // max(1, args.batch_size)))
+
+    cfg = QUERY_CONFIG[args.query]
+    metric_name = cfg.metric_name
+
+    args.results_dir.mkdir(parents=True, exist_ok=True)
+    send_times_path = args.results_dir / "send_times.csv"
+
+    channel = grpc.insecure_channel(
+        args.endpoint,
+        options=[("grpc.max_send_message_length", 64 * 1024 * 1024)],
+    )
+    stub = metrics_service_pb2_grpc.MetricsServiceStub(channel)
+
+    wall_start = time.perf_counter()
+    first_event_ns: int | None = None
+    replay_start_perf: float | None = None
+    total_events = 0
+    export_count = 0
+
+    send_queue: queue.Queue[_Batch | None] = queue.Queue(maxsize=args.queue_depth)
+    sender_errors: list[Exception] = []
+
+    send_times_file = open(send_times_path, "w", newline="", encoding="utf-8")
+    send_writer = csv.writer(send_times_file)
+    send_writer.writerow(["emit_wall_ns", "event_time_ns"])
+
+    print(
+        f"replay start query={args.query} metric={metric_name} "
+        f"mode={args.mode} speed={args.speed_factor} batch={args.batch_size}",
+        flush=True,
+    )
+
+    def sender_worker() -> None:
+        nonlocal total_events, export_count
+        while True:
+            batch = send_queue.get()
+            if batch is None:
+                send_queue.task_done()
+                break
+            try:
+                wall_ns = time.time_ns()
+                req = build_otlp_request(metric_name, batch)
+                try:
+                    stub.Export(req)
+                except grpc.RpcError as e:
+                    print(f"export failed {e.code()} {e.details()}", flush=True)
+                    raise
+                for row in batch:
+                    send_writer.writerow([wall_ns, row[1]])
+                total_events += len(batch)
+                export_count += 1
+                if export_count <= 3:
+                    print(f"export ok batch={len(batch)} total={total_events} n={export_count}",
+                          flush=True)
+                elif args.progress_every > 0 and export_count % args.progress_every == 0:
+                    el = time.perf_counter() - wall_start
+                    print(
+                        f"progress total={total_events} exports={export_count} "
+                        f"elapsed={el:.1f}s rate={total_events/el:.0f}/s",
+                        flush=True,
+                    )
+            except Exception as exc:
+                sender_errors.append(exc)
+                send_queue.task_done()
+                break
+            send_queue.task_done()
+
+    sender = threading.Thread(target=sender_worker, daemon=True, name="otlp-sender")
+    sender.start()
+
+    try:
+        for batch in _read_batches(args.query, args.batch_size, args.chunksize):
+            if sender_errors:
+                raise sender_errors[0]
+
+            last_ts_ns = batch[-1][1]
+            if first_event_ns is None:
+                first_event_ns = batch[0][1]
+                replay_start_perf = time.perf_counter()
+            assert replay_start_perf is not None
+
+            if args.mode == "paced":
+                sleep_until(
+                    replay_start_perf + (last_ts_ns - first_event_ns) / 1e9
+                )
+            elif args.mode == "scaled":
+                sleep_until(
+                    replay_start_perf + (last_ts_ns - first_event_ns) / 1e9 / args.speed_factor
+                )
+
+            while True:
+                if sender_errors:
+                    raise sender_errors[0]
+                try:
+                    send_queue.put(batch, timeout=1.0)
+                    break
+                except queue.Full:
+                    continue
+    finally:
+        send_queue.put(None)
+        sender.join()
+
+    if sender_errors:
+        raise sender_errors[0]
+
+    send_times_file.close()
+    elapsed = time.perf_counter() - wall_start
+    rate = total_events / elapsed if elapsed > 0 else 0.0
+
+    append_throughput_row(
+        args.results_dir, args.query, args.slice,
+        args.mode, args.speed_factor, total_events, elapsed, export_count,
+    )
+
+    print(
+        f"replay done total={total_events} exports={export_count} "
+        f"elapsed={elapsed:.2f}s rate={rate:.0f}/s",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    main()

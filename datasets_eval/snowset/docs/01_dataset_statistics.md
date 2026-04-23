@@ -185,4 +185,4 @@ The fully joined dataset is best treated as a temporal activity view, not as a s
 - counts become query-seconds
 - frequencies become time-weighted
 - repeated metrics describe temporal presence, not distinct-query totals
-- distinct-ID summaries remain directly interpretable
+ 

@@ -1,0 +1,8 @@
+grpcio>=1.60
+duckdb>=1.0
+opentelemetry-proto>=1.20
+numpy>=1.20
+pandas>=2.0
+pyarrow>=14.0
+requests>=2.31
+scipy>=1.9
