@@ -160,21 +160,67 @@ Not a §6.2 blocker — the `kll-full` row is sufficient for a
 three-way comparison with `raw-buffer` and `dd-delta` on the
 encoding axis.
 
-`AggregationRawBuffer` (landed in #189):
-- Semantics: buffer `(ts, attrs, value)` tuples per
-  reduced-attribute-key within `W`; emit as a batch of
-  `NumberDataPoint`s at each tick; reset.
-- Overflow: drop silently with a per-series drop counter (do
-  **not** backpressure the app — it would conflate "SDK overload"
-  with "app slow path" in the experimental numbers). The drop
-  counter is in-memory only for v1; exposing it as a side-channel
-  metric is tracked in `PROGRESS.md`.
+### `AggregationRawBuffer` design (landed in #189)
+
+**Why this baseline exists.** Every other `Aggregation` the
+upstream OTel SDK ships is lossy by design — `Sum` discards
+individual events, `Histogram` quantises values into fixed
+buckets, the sketch aggregators keep bounded-error summaries.
+`raw-buffer` is the one aggregator that preserves the full
+observation stream unchanged. It exists to answer the question
+the other encodings can't answer on their own: **what does
+making an SDK-side aggregation decision save compared to not
+making one at all**? Without `raw-buffer` as the reference
+point, every bandwidth / CPU / RSS number reported by a sketch
+encoding is a ratio against something unmeasured, and the
+encoding-axis ablation (sketch vs raw) collapses into
+"sketch vs nothing".
+
+It's also the one encoding that preserves enough to serve
+queries no summary can — exact events for cold-fallback
+replay, per-sample audit trails, or downstream sketch
+computation that the SDK policy didn't anticipate. That's
+why the three-axis framework keeps it as a first-class slot
+rather than a "bypass the SDK" escape hatch.
+
+**Semantics.**
+
+- On every `Counter.Add(value, attrs)` / `Gauge.Record(value,
+  attrs)` call, append `(now(), attrs, value)` to the per-
+  reduced-attribute-key buffer.
+- On each `PeriodicReader(W)` collect, emit one
+  `metricdata.DataPoint[N]` per buffered tuple (grouped into
+  a `Gauge[N]` — OTLP allows multiple data points per
+  attribute set at different timestamps), then clear all
+  buffers.
 - Both delta and cumulative temporality paths call the same
-  `collect()` and always clear the buffer — raw-buffer has no
-  meaningful cumulative semantics (re-emitting history every
-  tick would be useless).
-- Contract test: `deploy/fake-exporter/sdk_emit_test.go` asserts
-  `cardinality × instruments × samples_each` data points.
+  `collect()` and always clear. Raw-buffer has no meaningful
+  cumulative interpretation — re-emitting every historical
+  sample on every tick would shadow the whole point of
+  having an interval.
+
+**Overflow policy.** Per-series buffer capped at
+`MaxEventsPerSeries` (default 10 000). Once full, new
+measurements on that attribute key are dropped and the
+per-series drop counter increments. Deliberately **not**
+backpressure: blocking `Add` / `Record` would entangle "SDK
+can't keep up" with "application slow path" in the experiment
+numbers. The drop counter is in-memory for v1 — exposing it
+as a side-channel metric so the processor or operator can see
+drops in flight is a follow-up tracked in `PROGRESS.md`.
+
+**Contract.** Given `N` events emitted on `K` distinct
+attribute sets during one `W`, `collect()` returns `N` data
+points (bounded by `K × MaxEventsPerSeries`). Verified by
+`deploy/fake-exporter/sdk_emit_test.go` via a `ManualReader`
+harness — the wiring-level complement to the aggregator unit
+tests in `opentelemetry-go-patch/sdk/metric/internal/aggregate/`.
+
+**Memory cost.** `O(W × event_rate × per_series_cardinality)`
+— growing linearly with the time window and the event volume,
+unlike the sketch encodings whose size is bounded by their
+respective parameters regardless of event count. This is the
+tradeoff the encoding axis measures.
 
 Adding `Aggregation<X>Delta` (×5):
 - Semantics: keep last emitted sketch bytes per reduced-attribute-key;
