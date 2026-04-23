@@ -1,6 +1,14 @@
 # DataCollector — Implementation Progress
 
-_Last updated: 2026-03-14 (SDK pre-aggregation update)_
+_Last updated: 2026-04-23 — three-axis SDK framework formalized_
+
+See [`docs/sdk-aggregation-three-axis-design.md`](docs/sdk-aggregation-three-axis-design.md)
+for the current authoritative design of the SDK decision point
+(time window `W` × label projection `L` × encoding `agg_type`).
+The 2026-03-14 SDK pre-aggregation batch below covers the
+`*-full` encoding column; the `raw-buffer` and `*-delta`
+columns are still open (see "Outstanding SDK aggregators"
+section at the bottom of this file).
 
 ---
 
@@ -227,3 +235,52 @@ OpenTelemetry Collector (custom build via OCB)
 Prometheus / Grafana
   Metric: <name>_hll_cardinality{host="...", metric="..."} <estimate>
 ```
+
+---
+
+## 2026-04-23 update — three-axis SDK framework
+
+The five SDK pre-aggregation aggregators above (DDSketch / KLL /
+CountSketch / CountMinSketch / HLLSketch) all implement the
+`*-full` encoding slot of the three-axis `(W, L, agg_type)`
+framework defined in
+[`docs/sdk-aggregation-three-axis-design.md`](docs/sdk-aggregation-three-axis-design.md).
+
+### Outstanding SDK aggregators (P1 for paper §6.2)
+
+| Aggregator | Slot | Status | Notes |
+|---|---|---|---|
+| `AggregationRawBuffer` | `agg_type=raw-buffer` | ❌ | Buffers `(ts, attrs, value)` tuples within `W`, emits batch of `NumberDataPoint`s per tick. Overflow: drop + drop-counter metric. ~150 LOC. |
+| `AggregationDeltaDDSketch` | `agg_type=dd-delta` | ❌ | Byte-level diff vs last-tick's DDSketch, zstd-compressed. ~100 LOC. |
+| `AggregationDeltaKLLSketch` | `agg_type=kll-delta` | ❌ | Same pattern as above. ~100 LOC. |
+| `AggregationDeltaCountSketch` | `agg_type=cs-delta` | ❌ | Same pattern. ~100 LOC. |
+| `AggregationDeltaCountMinSketch` | `agg_type=cms-delta` | ❌ | Same pattern. ~100 LOC. |
+| `AggregationDeltaHLLSketch` | `agg_type=hll-delta` | ❌ | Same pattern. ~100 LOC. |
+
+Delta aggregators share a helper for byte-level sketch diff +
+zstd encode + "emit full on first tick or when `L` changes"
+reset logic.
+
+### Outstanding SDK runtime support
+
+- **Hot-reload of View `AttributeFilter`** — required for the
+  controller-in-loop §6.5 scenario where the planner pushes a
+  new projection `L` mid-run. Upstream OTel Go SDK doesn't
+  support replacing a View's filter after MeterProvider
+  construction; needs a small patch in
+  `opentelemetry-go-patch/sdk/metric/` to expose a swap API.
+  Not a §6.2 blocker (each static sweep run is a fresh
+  process).
+
+### Downstream dependents
+
+- `deploy/fake-exporter/main.go` — needs to drop
+  `EXPORTER_RATE` (semantically meaningless now — see
+  [`docs/n10-bottleneck-rca.md`](docs/n10-bottleneck-rca.md))
+  and expose `EXPORTER_SDK_WINDOW`, `EXPORTER_SDK_PROJECTION`,
+  `EXPORTER_SDK_AGG`. Widen the synthetic label schema from 2
+  dims (`{zone, pod}`) to 4 dims (`{zone, rack, node, pod}`)
+  so the `L`-axis sweep has range.
+- `deploy/scripts/measure-baseline.py` — add producer-side
+  columns (`producer_cpu_cores`, `producer_rss_mib`,
+  `producer_bytes_out_per_s`).

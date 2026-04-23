@@ -3,6 +3,22 @@
 _Written: 2026-04-23. Supersedes the bottleneck hypothesis in
 the PR #185 commit message._
 
+> **Status (2026-04-23, later the same day):** the diagnosis
+> in this doc stands. The **Options A–D recommendation section
+> below is superseded** by
+> [`sdk-aggregation-three-axis-design.md`](sdk-aggregation-three-axis-design.md),
+> which makes `raw-buffer` / `*-full` / `*-delta` distinct SDK
+> aggregators (encoding axis), independent of time window `W`
+> and label projection `L`. Options A / B of this doc reduce to
+> "revert to a per-tick interval", which isn't a paper strategy —
+> it's an accidental way to get near-per-sample emission.
+> Option C (bypass SDK) and Option D (reframe as bytes-per-window)
+> are both partially realized in the three-axis design:
+> bytes-per-window is the metric; `raw-buffer` is the SDK-native
+> "every sample" encoding (doesn't bypass the SDK, just picks a
+> different aggregator). Read the diagnosis, skip the
+> recommendation.
+
 ## TL;DR
 
 The ~2,000 pts/s per-agent floor observed across all baselines
