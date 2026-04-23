@@ -3,10 +3,14 @@
 measure-baseline.py — pull per-baseline CPU, memory, bandwidth
 figures from the running compose stack.
 
-Queries Prometheus for every metric the paper §6.2 bandwidth +
-§6.3 CPU tables need, plus supplements with `docker stats` for
-backend resource usage (the backend doesn't self-report CPU/RSS
-the way the patched otel processors do).
+Queries Prometheus for agent / gateway / backend metrics, plus
+supplements with `docker stats` for containers that don't
+self-report (backend + the producer / fake-exporter). Producer-side
+columns were added 2026-04-23 to support the three-axis SDK
+aggregation sweep — see
+docs/sdk-aggregation-three-axis-design.md and the §6.2c encoding
+ablation in particular, which measures the cost the SDK pays to
+emit raw / full-sketch / delta-sketch per tick.
 
 Output is CSV to stdout. The intended flow is:
 
@@ -20,6 +24,7 @@ This is a pure stdlib Python script — no extra deps.
 Usage:
     python3 measure-baseline.py [--prom URL] [--window 60s]
         [--baseline b0-raw|b1-serf|b2-full|b3-delta|b4-tunable|b5-gorilla]
+        [--bytes-sample-window 5s]
 
 The `--baseline` tag is just pass-through labelling; the script
 doesn't know or care which baseline is active.
@@ -29,6 +34,7 @@ import csv
 import json
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -52,10 +58,51 @@ def scalar(url: str, q: str) -> float:
     return float(r[0]["value"][1])
 
 
-def docker_stats() -> dict[str, tuple[float, float]]:
+def _parse_size_to_bytes(s: str) -> float:
+    """'1.23kB' / '4.56MB' / '1.0GB' → bytes. NaN on parse error."""
+    s = s.strip()
+    if not s:
+        return float("nan")
+    # Units docker uses for NetIO: B, kB, MB, GB (decimal SI).
+    for suffix, factor in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3), ("B", 1.0)):
+        if s.endswith(suffix):
+            try:
+                return float(s[: -len(suffix)]) * factor
+            except ValueError:
+                return float("nan")
+    # Fallback: raw number
+    try:
+        return float(s)
+    except ValueError:
+        return float("nan")
+
+
+def _parse_mem_to_mib(s: str) -> float:
+    """'335.8MiB' / '1.0GiB' / '512KiB' → MiB. NaN on parse error."""
+    s = s.strip()
+    for suffix, factor in (("GiB", 1024.0), ("MiB", 1.0), ("KiB", 1.0 / 1024)):
+        if s.endswith(suffix):
+            try:
+                return float(s[: -len(suffix)]) * factor
+            except ValueError:
+                return float("nan")
+    return float("nan")
+
+
+def docker_stats() -> dict[str, dict[str, float]]:
     """
-    `docker stats --no-stream` for {CPU%, MemMB} per container.
-    Matches docker-compose-* names so callers can index by service.
+    `docker stats --no-stream` keyed by container name.
+
+    Returns a dict per container:
+        {
+            "cpu_pct":     float,
+            "mem_mib":     float,
+            "net_rx_bytes": float,   # cumulative since container start
+            "net_tx_bytes": float,   # cumulative since container start
+        }
+
+    NetIO is cumulative — to get a rate, call this twice and divide
+    the delta by the wall-clock gap (see docker_bytes_rate).
     """
     out = subprocess.check_output(
         [
@@ -63,26 +110,70 @@ def docker_stats() -> dict[str, tuple[float, float]]:
             "stats",
             "--no-stream",
             "--format",
-            "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}",
+            "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.NetIO}}",
         ],
         text=True,
     )
-    result: dict[str, tuple[float, float]] = {}
+    result: dict[str, dict[str, float]] = {}
     for line in out.strip().splitlines():
-        name, cpu, mem = line.split("|", 2)
-        # "12.34%" → 12.34
+        name, cpu, mem, netio = line.split("|", 3)
         cpu_pct = float(cpu.rstrip("%"))
-        # "335.8MiB / 1GiB" → 335.8
-        mem_mib_str = mem.split("/", 1)[0].strip()
-        if mem_mib_str.endswith("MiB"):
-            mem_mib = float(mem_mib_str[:-3])
-        elif mem_mib_str.endswith("GiB"):
-            mem_mib = float(mem_mib_str[:-3]) * 1024
-        elif mem_mib_str.endswith("KiB"):
-            mem_mib = float(mem_mib_str[:-3]) / 1024
+        mem_mib = _parse_mem_to_mib(mem.split("/", 1)[0])
+        # NetIO looks like "1.23kB / 4.56MB" = rx / tx
+        if "/" in netio:
+            rx_str, tx_str = [p.strip() for p in netio.split("/", 1)]
+            net_rx = _parse_size_to_bytes(rx_str)
+            net_tx = _parse_size_to_bytes(tx_str)
         else:
-            mem_mib = float("nan")
-        result[name] = (cpu_pct, mem_mib)
+            net_rx = net_tx = float("nan")
+        result[name] = {
+            "cpu_pct": cpu_pct,
+            "mem_mib": mem_mib,
+            "net_rx_bytes": net_rx,
+            "net_tx_bytes": net_tx,
+        }
+    return result
+
+
+def docker_stats_with_bytes_rate(
+    window_s: float,
+) -> dict[str, dict[str, float]]:
+    """
+    Sample `docker stats` twice separated by `window_s` seconds.
+    Returns per-container:
+        {
+            "cpu_pct":         float,  # from the second sample
+            "mem_mib":         float,  # from the second sample
+            "net_tx_per_s":    float,  # delta / window
+            "net_rx_per_s":    float,
+        }
+
+    Adds `window_s` of wall-clock overhead to the caller; worth it
+    because cAdvisor isn't in the compose stack (see
+    deploy/configs/prometheus.yml — only OTel targets configured).
+    """
+    t0 = time.monotonic()
+    s0 = docker_stats()
+    time.sleep(window_s)
+    t1 = time.monotonic()
+    s1 = docker_stats()
+    dt = max(t1 - t0, 1e-6)
+
+    result: dict[str, dict[str, float]] = {}
+    for name, cur in s1.items():
+        prev = s0.get(name, {})
+        result[name] = {
+            "cpu_pct": cur["cpu_pct"],
+            "mem_mib": cur["mem_mib"],
+            "net_tx_per_s": (
+                (cur["net_tx_bytes"] - prev.get("net_tx_bytes", cur["net_tx_bytes"]))
+                / dt
+            ),
+            "net_rx_per_s": (
+                (cur["net_rx_bytes"] - prev.get("net_rx_bytes", cur["net_rx_bytes"]))
+                / dt
+            ),
+        }
     return result
 
 
@@ -167,6 +258,20 @@ def main() -> int:
     )
     p.add_argument("--rate", default="", help="workload rate label")
     p.add_argument("--cardinality", default="", help="workload cardinality label")
+    p.add_argument(
+        "--bytes-sample-window",
+        type=float,
+        default=5.0,
+        help="seconds between the two docker-stats samples used to compute "
+        "producer_bytes_out_per_s. Too short and the tx counter barely moves; "
+        "too long and the sweep gets expensive per baseline.",
+    )
+    p.add_argument(
+        "--producer-container",
+        default="docker-compose-fake-exporter-1",
+        help="docker container name of the producer to scrape for SDK-side "
+        "CPU / RSS / bytes-out.",
+    )
     args = p.parse_args()
 
     # Prom-sourced metrics. `.format(w=…)` fills the rate window.
@@ -182,23 +287,47 @@ def main() -> int:
             print(f"# query {key} failed: {e}", file=sys.stderr)
             rows[key] = float("nan")
 
-    # Backend CPU/RSS via docker stats.
+    # docker stats — backend CPU/RSS + producer CPU / RSS / tx-bytes.
+    # Single two-sample pass (separated by --bytes-sample-window)
+    # avoids three trips through `docker stats`.
     try:
-        stats = docker_stats()
-        backend_stat = stats.get("docker-compose-backend-1")
-        rows["backend_cpu_pct"] = backend_stat[0] if backend_stat else float("nan")
-        rows["backend_rss_mib"] = backend_stat[1] if backend_stat else float("nan")
+        stats = docker_stats_with_bytes_rate(args.bytes_sample_window)
+
+        backend = stats.get("docker-compose-backend-1") or {}
+        rows["backend_cpu_pct"] = backend.get("cpu_pct", float("nan"))
+        rows["backend_rss_mib"] = backend.get("mem_mib", float("nan"))
+
+        producer = stats.get(args.producer_container) or {}
+        # docker reports CPU as a percentage of one core; scale to
+        # cores so the column matches agent_cpu_cores.
+        rows["producer_cpu_cores"] = producer.get("cpu_pct", float("nan")) / 100.0
+        rows["producer_rss_mib"] = producer.get("mem_mib", float("nan"))
+        rows["producer_bytes_out_per_s"] = producer.get(
+            "net_tx_per_s", float("nan")
+        )
     except Exception as e:
         print(f"# docker stats failed: {e}", file=sys.stderr)
-        rows["backend_cpu_pct"] = float("nan")
-        rows["backend_rss_mib"] = float("nan")
+        for k in (
+            "backend_cpu_pct",
+            "backend_rss_mib",
+            "producer_cpu_cores",
+            "producer_rss_mib",
+            "producer_bytes_out_per_s",
+        ):
+            rows[k] = float("nan")
 
-    # Emit CSV with a stable column order.
+    # Emit CSV with a stable column order. Producer columns sit
+    # between the label columns and the agent columns so they show
+    # up first in spreadsheets — the three-axis sweep's headline
+    # metric is producer_bytes_out_per_s.
     header = [
         "baseline",
         "scale",
         "rate",
         "cardinality",
+        "producer_cpu_cores",
+        "producer_rss_mib",
+        "producer_bytes_out_per_s",
         "agent_cpu_cores",
         "agent_rss_mib",
         "agent_in_kib_per_s",
