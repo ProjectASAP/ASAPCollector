@@ -43,7 +43,7 @@ require (
 // `restore_opentelemetry_go_patches.sh`). That combined tree is the
 // source of truth — build against it directly. The patched sdk/metric
 // carries AggregationRawBuffer + DeltaTransmission flags; see
-// docs/sdk-aggregation-three-axis-design.md.
+// docs/sdk-aggregation-cost.md.
 replace (
 	github.com/ProjectASAP/sketchlib-go => ../../../sketchlib-go
 	go.opentelemetry.io/otel => ../../opentelemetry-go

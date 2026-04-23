@@ -3,7 +3,7 @@
 #
 # The build pulls in the ASAP-patched OTel SDK (for
 # AggregationRawBuffer + DeltaTransmission flags on sketch
-# aggregators — see docs/sdk-aggregation-three-axis-design.md) and
+# aggregators — see docs/sdk-aggregation-cost.md) and
 # the sketchlib-go sibling repo.
 #
 # ## Prereq: combine the patch onto the upstream tree

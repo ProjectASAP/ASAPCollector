@@ -8,7 +8,7 @@ supplements with `docker stats` for containers that don't
 self-report (backend + the producer / fake-exporter). Producer-side
 columns were added 2026-04-23 to support the three-axis SDK
 aggregation sweep — see
-docs/sdk-aggregation-three-axis-design.md and the §6.2c encoding
+docs/sdk-aggregation-cost.md and the §6.2c encoding
 ablation in particular, which measures the cost the SDK pays to
 emit raw / full-sketch / delta-sketch per tick.
 

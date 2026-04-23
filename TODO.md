@@ -52,11 +52,11 @@ correct pre-aggregation output at `interval=1 s, cardinality=1000,
 2 instruments`, independent of input rate. That finding reframed
 the paper's §6.2 bandwidth claim as a **three-independent-factor
 product** (see
-[`docs/sdk-aggregation-three-axis-design.md`](docs/sdk-aggregation-three-axis-design.md)).
+[`docs/sdk-aggregation-cost.md`](docs/sdk-aggregation-cost.md)).
 
 Concrete work items (P0 because §6.2 can't run without them):
 
-- [x] ~~`AggregationRawBuffer`~~ — landed 2026-04-23 (#189).
+- [x] ~~`AggregationRawBuffer`~~ — merged.
       Contract test in
       `deploy/fake-exporter/sdk_emit_test.go`.
 - [x] ~~`Aggregation<X>Delta` × 5~~ — on inspection, four of five
@@ -65,7 +65,7 @@ Concrete work items (P0 because §6.2 can't run without them):
       Only `kll-delta` is missing and is not a §6.2 blocker
       (KLL's multi-level buffer structure needs a different
       delta strategy — see
-      [`docs/sdk-aggregation-three-axis-design.md`](docs/sdk-aggregation-three-axis-design.md)).
+      [`docs/sdk-aggregation-cost.md`](docs/sdk-aggregation-cost.md)).
 - [ ] **`fake-exporter` rewrite** (`deploy/fake-exporter/main.go`)
       — drop `EXPORTER_RATE`; add `EXPORTER_SDK_WINDOW`,
       `EXPORTER_SDK_PROJECTION`, `EXPORTER_SDK_AGG`. Widen label

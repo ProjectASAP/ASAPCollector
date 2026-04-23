@@ -2,7 +2,7 @@
 
 _Last updated: 2026-04-23 — three-axis SDK framework formalized_
 
-See [`docs/sdk-aggregation-three-axis-design.md`](docs/sdk-aggregation-three-axis-design.md)
+See [`docs/sdk-aggregation-cost.md`](docs/sdk-aggregation-cost.md)
 for the current authoritative design of the SDK decision point
 (time window `W` × label projection `L` × encoding `agg_type`).
 The 2026-03-14 SDK pre-aggregation batch below covers the
@@ -244,7 +244,7 @@ The five SDK pre-aggregation aggregators above (DDSketch / KLL /
 CountSketch / CountMinSketch / HLLSketch) all implement the
 `*-full` encoding slot of the three-axis `(W, L, agg_type)`
 framework defined in
-[`docs/sdk-aggregation-three-axis-design.md`](docs/sdk-aggregation-three-axis-design.md).
+[`docs/sdk-aggregation-cost.md`](docs/sdk-aggregation-cost.md).
 
 ### Outstanding SDK aggregators (P1 for paper §6.2)
 
@@ -256,7 +256,7 @@ real gap is smaller than the earlier plan:
 
 | Aggregator | Slot | Status | Notes |
 |---|---|---|---|
-| `AggregationRawBuffer` | `agg_type=raw-buffer` | ✅ landed 2026-04-23 (#189) | Buffers `(ts, attrs, value)` tuples within `W`, emits batch of `NumberDataPoint`s per tick. Per-series drop counter on overflow (in-memory only; exposing it as a side-channel metric is still a follow-up). Contract test in `deploy/fake-exporter/sdk_emit_test.go`. |
+| `AggregationRawBuffer` | `agg_type=raw-buffer` | ✅ | Buffers `(ts, attrs, value)` tuples within `W`, emits batch of `NumberDataPoint`s per tick. Per-series drop counter on overflow (in-memory only; exposing it as a side-channel metric is still a follow-up). Contract test in `deploy/fake-exporter/sdk_emit_test.go`. |
 | `AggregationKLLSketch.DeltaTransmission` | `agg_type=kll-delta` | ❌ | KLL's multi-level sample buffers don't support a natural byte-diff; adding delta requires exposing per-level internals from `sketchlib-go` or shipping incremental adds. **Not a blocker** — `kll-full` suffices for the encoding-axis comparison. |
 
 The other four sketch delta slots (DDSketch / CountSketch /

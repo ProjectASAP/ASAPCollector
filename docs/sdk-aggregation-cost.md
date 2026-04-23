@@ -1,4 +1,4 @@
-# SDK-side aggregation: the three-axis design
+# SDK aggregation cost
 
 _Written: 2026-04-23. Authoritative for the paper's §6.2 ablation
 sweeps and supersedes the Options A–D recommendation in
@@ -128,16 +128,16 @@ Per-axis:
   | `agg_type` | Status | Where |
   |---|---|---|
   | `sum`, `last-value`, `explicit-bucket-histogram`, `exponential-histogram` | ✅ upstream | `go.opentelemetry.io/otel/sdk/metric` |
-  | `dd-full` (`AggregationDDSketch{}`) | ✅ landed 2026-03-14 | `opentelemetry-go-patch/sdk/metric/aggregation.go` |
-  | `dd-delta` (`AggregationDDSketch{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | same — flag on the `*-full` type |
-  | `kll-full` (`AggregationKLLSketch{}`) | ✅ landed 2026-03-14 | same |
-  | `cms-full` (`AggregationCountMinSketch{}`) | ✅ landed 2026-03-14 | same |
-  | `cms-delta` (`…{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | flag |
-  | `cs-full` (`AggregationCountSketch{}`) | ✅ landed 2026-03-14 | same |
-  | `cs-delta` (`…{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | flag |
-  | `hll-full` (`AggregationHLLSketch{}`) | ✅ landed 2026-03-14 | same |
-  | `hll-delta` (`…{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | flag |
-  | `raw-buffer` (`AggregationRawBuffer`) | ✅ landed 2026-04-23 (#189) | `opentelemetry-go-patch/sdk/metric/internal/aggregate/rawbuffer.go` |
+  | `dd-full` (`AggregationDDSketch{}`) | ✅ | `opentelemetry-go-patch/sdk/metric/aggregation.go` |
+  | `dd-delta` (`AggregationDDSketch{DeltaTransmission: true}`) | ✅ | same — flag on the `*-full` type |
+  | `kll-full` (`AggregationKLLSketch{}`) | ✅ | same |
+  | `cms-full` (`AggregationCountMinSketch{}`) | ✅ | same |
+  | `cms-delta` (`…{DeltaTransmission: true}`) | ✅ | flag |
+  | `cs-full` (`AggregationCountSketch{}`) | ✅ | same |
+  | `cs-delta` (`…{DeltaTransmission: true}`) | ✅ | flag |
+  | `hll-full` (`AggregationHLLSketch{}`) | ✅ | same |
+  | `hll-delta` (`…{DeltaTransmission: true}`) | ✅ | flag |
+  | `raw-buffer` (`AggregationRawBuffer`) | ✅ | `opentelemetry-go-patch/sdk/metric/internal/aggregate/rawbuffer.go` |
   | **`kll-delta`** | ❌ not yet | KLL's sample-buffer structure makes delta-vs-last nontrivial; see note below |
 
 **Note on `kll-delta`**: the other four sketches (DDSketch / CMS /
@@ -160,7 +160,7 @@ Not a §6.2 blocker — the `kll-full` row is sufficient for a
 three-way comparison with `raw-buffer` and `dd-delta` on the
 encoding axis.
 
-### `AggregationRawBuffer` design (landed in #189)
+### `AggregationRawBuffer` design
 
 **Why this baseline exists.** Every other `Aggregation` the
 upstream OTel SDK ships is lossy by design — `Sum` discards
@@ -270,7 +270,7 @@ ground truth.
 
 ## Implementation order (follow-up PRs)
 
-1. ~~`AggregationRawBuffer` + unit tests + `Aggregation` enum wire-up.~~ — landed in #189.
+1. ~~`AggregationRawBuffer` + unit tests + `Aggregation` enum wire-up.~~ — merged.
 2. ~~`AggregationDelta<X>Sketch` ×5~~ — already present as
    `DeltaTransmission: true` on the four sparse-state sketches
    (DDSketch / CountSketch / CountMinSketch / HLLSketch).

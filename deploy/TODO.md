@@ -27,7 +27,7 @@ is instrumentation completeness, Helm templates, and polish.
 ## Instrumentation gaps (P1 — blocks §6.2/6.3 figures)
 
 The §6.2 sub-sweeps defined in
-[`../docs/sdk-aggregation-three-axis-design.md`](../docs/sdk-aggregation-three-axis-design.md)
+[`../docs/sdk-aggregation-cost.md`](../docs/sdk-aggregation-cost.md)
 require **producer-side** measurements that don't exist yet;
 the N=10 sweep CSV also has several `nan` cells on the
 collector side. Both tracked top-level as
