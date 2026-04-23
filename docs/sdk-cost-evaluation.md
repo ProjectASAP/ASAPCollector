@@ -225,15 +225,47 @@ unlike the sketch encodings whose size is bounded by their
 respective parameters regardless of event count. This is the
 tradeoff the encoding axis measures.
 
-Adding `Aggregation<X>Delta` (×5):
-- Semantics: keep last emitted sketch bytes per reduced-attribute-key;
-  on tick, diff against current sketch and emit delta. If `L` or
-  sketch params changed since last tick, emit full sketch (not a
-  delta) and reset the reference.
-- Encoding: byte-level XOR + zstd at first (simple, works for all
-  5 sketch types with one codepath). Semantic delta (e.g., CMS cell
-  changes, DDSketch bucket changes) is a possible paper follow-up.
-- Expected size: ~100 LOC each × 5 = 500 LOC + tests.
+### `Aggregation<X>Delta` — what it is and why it's a separate slot
+
+For the four sparse-state sketches (DDSketch, CountSketch,
+CountMinSketch, HLL) the SDK can ship one of two wire payloads
+per tick:
+
+- **Full state** (`*-full`, the default): every bucket / cell /
+  register the aggregator holds.
+- **Delta** (`*-delta`, enabled by `DeltaTransmission: true` on
+  the same `Aggregation`): only the cells that changed since the
+  last tick. The aggregator keeps the last-emitted state in
+  memory, computes a sparse diff on collect, and ships just the
+  diff; the receiver reconstructs the full state by accumulating
+  successive deltas. When the projection `L` or sketch params
+  change, the aggregator emits a full state once (not a delta)
+  and resets the reference.
+
+Delta has two independent reasons to live as a distinct encoding
+in this evaluation, not just a free-win optimization:
+
+1. **The bandwidth claim needs both halves measured separately.**
+   "Sketch uses less wire than raw" has two independent sources:
+   the sketch payload is smaller than the raw buffer, _and_ the
+   sparse delta is smaller than the full sketch. If the
+   encoding-axis sweep only had `*-full` rows, every reported
+   bandwidth reduction conflates those two factors and you
+   can't attribute the savings. `*-delta` vs `*-full` vs
+   `raw-buffer` as three points on the same axis lets each
+   factor be read off directly.
+2. **Delta is a memory-for-bandwidth trade, not a free win.**
+   The aggregator has to hold the previous-tick state alongside
+   the current state to compute the diff, so `cms-delta` RSS is
+   ≈ 2× `cms-full` RSS in practice. Readers need that number
+   next to the bandwidth savings to make a meaningful choice;
+   the encoding-axis row is where they sit side by side.
+
+KLL doesn't get a delta variant: its multi-level sample buffers
+are rewritten by compaction on most ticks, so a naive byte-diff
+is no smaller than the full sketch. See the note on `kll-delta`
+above; for the evaluation the `kll-full` row plus `dd-full` /
+`dd-delta` covers the quantile encoding cost adequately.
 
 Hot-reload of `L` at runtime:
 - OTel Go SDK doesn't currently support replacing a View's
