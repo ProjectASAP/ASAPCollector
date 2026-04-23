@@ -333,3 +333,49 @@ var _ Aggregation = AggregationHLLSketch{}
 func (a AggregationHLLSketch) copy() Aggregation { return a }
 
 func (AggregationHLLSketch) err() error { return nil }
+
+// AggregationRawBuffer emits every recorded measurement as its own
+// data point. Unlike the sketch aggregators it does not reduce a
+// stream of Add/Record calls into one summary per attribute set;
+// the SDK "aggregator" here is just a bounded buffer that preserves
+// (timestamp, attrs, value) tuples until the next collect.
+//
+// This is the SDK-side "raw-buffer" encoding on the paper's
+// three-axis framework — see
+// docs/sdk-aggregation-three-axis-design.md. It is the
+// experimental baseline used to measure what the SDK decision
+// point costs when it chooses not to aggregate.
+//
+// Semantics:
+//   - On each Add/Record, append (now(), attrs, value) to the
+//     per-attribute buffer.
+//   - On Collect, emit every buffered tuple as a separate
+//     metricdata.DataPoint[N] inside a Gauge[N]. Buffer is then
+//     cleared regardless of the requested temporality (cumulative
+//     with raw-buffer would mean re-emitting history forever, which
+//     is not a meaningful choice — the delta-temporality-like reset
+//     behaviour is what experiments want).
+//   - Overflow: when a single attribute's buffer exceeds
+//     MaxEventsPerSeries, new measurements on that attribute are
+//     silently dropped. Drop accounting is per-attribute (in-memory
+//     only for v1 — exposing the drop count as a side-channel
+//     counter is a follow-up noted in PROGRESS.md).
+type AggregationRawBuffer struct {
+	// MaxEventsPerSeries caps the per-attribute buffer length to
+	// prevent unbounded memory growth when the exporter stalls.
+	// When zero, a default of 10000 is used.
+	MaxEventsPerSeries int
+}
+
+var _ Aggregation = AggregationRawBuffer{}
+
+var errRawBuffer = fmt.Errorf("%w: raw buffer", errAgg)
+
+func (a AggregationRawBuffer) copy() Aggregation { return a }
+
+func (a AggregationRawBuffer) err() error {
+	if a.MaxEventsPerSeries < 0 {
+		return fmt.Errorf("%w: max events per series %d must be non-negative", errRawBuffer, a.MaxEventsPerSeries)
+	}
+	return nil
+}
