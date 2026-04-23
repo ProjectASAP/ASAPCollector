@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-three-axis-sweep.sh — iterate over the SDK-side three-axis
+# run-sdk-cost-sweep.sh — iterate over the SDK-side three-axis
 # `(W, L, agg_type)` grid defined in
 # docs/sdk-cost-evaluation.md. Brings up the compose
 # stack once per cell, soaks, measures, tears down.
@@ -14,7 +14,7 @@
 # Output: CSV to stdout. Each row is one cell of the grid, produced
 # by measure-baseline.py. Run as:
 #
-#   ./run-three-axis-sweep.sh 2>run.log > sweep-YYYYMMDD.csv
+#   ./run-sdk-cost-sweep.sh 2>run.log > sweep-YYYYMMDD.csv
 #
 # Env overrides (defaults in [brackets]):
 #

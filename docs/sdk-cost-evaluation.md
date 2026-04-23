@@ -308,7 +308,7 @@ agent / gateway / backend stats from Prometheus.
 | **Combined** | — | best `(W, L, agg)` picked for each metric, vs. a baseline at `W=15s`, full `L`, `agg=raw-buffer` | End-to-end bandwidth reduction as the product of the three per-axis factors. |
 
 The driver is
-[`deploy/scripts/run-three-axis-sweep.sh`](../deploy/scripts/run-three-axis-sweep.sh);
+[`deploy/scripts/run-sdk-cost-sweep.sh`](../deploy/scripts/run-sdk-cost-sweep.sh);
 the wrapper that runs all four above is
 [`deploy/scripts/run-sdk-cost-sweeps.sh`](../deploy/scripts/run-sdk-cost-sweeps.sh).
 CSVs and a findings write-up live under

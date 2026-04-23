@@ -56,7 +56,7 @@ run_sweep() {
     WINDOWS="$windows" PROJECTIONS="$projections" AGGS="$aggs" \
         SOAK_S="$SOAK_S" BYTES_WIN="$BYTES_WIN" \
         CARDINALITY="$CARDINALITY" FREQ_HZ="$FREQ_HZ" SCALE="$SCALE" \
-        "$SCRIPT_DIR/run-three-axis-sweep.sh" > "$out" 2> "$log"
+        "$SCRIPT_DIR/run-sdk-cost-sweep.sh" > "$out" 2> "$log"
     echo "    $(wc -l < "$out") rows, $(wc -l < "$log") log lines"
 }
 
