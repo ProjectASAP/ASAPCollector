@@ -1,34 +1,84 @@
-// fake-exporter — OTLP metrics producer. Two modes:
+// fake-exporter — OTLP metrics producer for the ASAP three-axis
+// SDK aggregation sweep (see docs/sdk-aggregation-three-axis-design.md).
 //
-//   1. Synthetic (default) — log-normal gauge + exponential counter.
-//      Stands in for a real workload when you're iterating on the
-//      stack; reproducible by setting the RNG seed.
+// Two operating modes:
 //
-//   2. Trace replay — reads a CSV of recorded (ts_ms, series_id,
-//      value) rows and emits at the recorded pace. The paper's §6.1
-//      workload credibility datapoint. Files in the Google 2019
-//      cluster trace format can be preprocessed into the CSV schema
-//      below; see `deploy/fake-exporter/traces/README.md`.
+//  1. Synthetic (default) — log-normal gauge + event counter driven
+//     by per-series goroutines firing at EXPORTER_FREQ_HZ. The app
+//     layer produces raw events at `freq × cardinality × #instruments`
+//     samples/sec; what makes it to the wire is entirely determined
+//     by the SDK config below.
+//
+//  2. Trace replay — reads a CSV of recorded `(ts_ms, series_id,
+//     value)` rows and emits at the recorded pace. The paper's §6.1
+//     workload-credibility hook.
 //
 // Emitted metric families (both modes):
-//   * <metric>_latency_ms : Gauge. Sketch baselines (DDSketch/HLL)
-//     only process Gauge inputs; Counter/Sum payloads would be a
-//     sketch-pipeline no-op.
-//   * <metric> : Counter. Kept for the raw-baseline path so existing
-//     ingest-rate dashboards still see a monotonic time series.
 //
-// Env config:
+//   - <metric>            : Counter — incremented by 1 on each event.
+//     Used by Sum / CountSketch / CountMinSketch / HLL aggregations.
+//   - <metric>_latency_ms : Gauge — log-normal latency sample per event.
+//     Used by DDSketch / KLLSketch / Histogram aggregations.
 //
-//   EXPORTER_TARGET          OTLP/gRPC endpoint (default gateway:4317)
-//   EXPORTER_METRIC          base metric name (default http_requests_total)
-//   EXPORTER_RATE            synthetic mode: emits/sec (default 10)
-//   EXPORTER_CARDINALITY     synthetic mode: distinct label sets (default 100)
-//   EXPORTER_TRACE_FILE      if set, switches to trace replay of this CSV
-//   EXPORTER_TRACE_SCALE     trace mode: playback speed multiplier (default 1.0)
-//   EXPORTER_TRACE_LOOP      trace mode: wrap around at EOF (default true)
+// The SDK config is identical for both instruments (a single View
+// covers both), so one agg_type choice cleanly sweeps both signals.
+//
+// ## Three-axis env config
+//
+//	EXPORTER_SDK_WINDOW        PeriodicReader interval. Paper's W axis.
+//	                           Duration string. Default "15s".
+//	EXPORTER_SDK_PROJECTION    Comma-separated attribute keys to keep
+//	                           inside the SDK aggregator. Everything
+//	                           not listed is dropped via View's
+//	                           AttributeFilter. Paper's L axis.
+//	                              ""        keep all labels (orig card)
+//	                              "zone"    keep only zone (reduces card)
+//	                              "zone,rack,node,pod"  keep all four
+//	                              "-"       drop all (single series)
+//	                           Default "" (keep all).
+//	EXPORTER_SDK_AGG           Aggregator kind. Paper's encoding axis.
+//	                              default | sum | raw-buffer |
+//	                              dd-full | dd-delta |
+//	                              kll |
+//	                              cms-full | cms-delta |
+//	                              cs-full  | cs-delta  |
+//	                              hll-full | hll-delta
+//	                           Default "default" (Sum for Counter,
+//	                           LastValue for Gauge).
+//
+// ## Workload config (orthogonal to the three SDK axes)
+//
+//	EXPORTER_TARGET                OTLP/gRPC endpoint (default gateway:4317).
+//	EXPORTER_METRIC                base metric name (default http_requests_total).
+//	EXPORTER_CARDINALITY           synthetic: # distinct attribute sets (default 1000).
+//	                               Max is 4 × 10 × 25 × 10 = 10000 under the
+//	                               default schema; to go higher, widen the
+//	                               per-dim value counts below.
+//	EXPORTER_ZONE_VALS             # distinct zone values      (default 4).
+//	EXPORTER_RACK_VALS             # distinct rack values      (default 10).
+//	EXPORTER_NODE_VALS             # distinct node values      (default 25).
+//	EXPORTER_POD_VALS              # distinct pod values       (default 10).
+//	EXPORTER_FREQ_HZ               synthetic: per-series event rate (default 10 Hz).
+//	                               Aggregate raw rate = FREQ × CARDINALITY × 2.
+//	EXPORTER_MAX_BUFFER_PER_SERIES raw-buffer: per-series event buffer cap
+//	                               (default 10000).
+//
+// ## Trace replay config
+//
+//	EXPORTER_TRACE_FILE      if set, switches to trace replay of this CSV.
+//	EXPORTER_TRACE_SCALE     playback speed multiplier (default 1.0).
+//	EXPORTER_TRACE_LOOP      wrap around at EOF (default true).
 //
 // Trace CSV schema (header required):
-//   timestamp_ms,series_id,value
+//
+//	timestamp_ms,series_id,value
+//
+// ## Deprecated (ignored with warning)
+//
+//	EXPORTER_RATE      replaced by EXPORTER_FREQ_HZ. The old meaning
+//	                   was "ticker at 1s/rate", which was
+//	                   semantically a no-op given SDK aggregation
+//	                   (see docs/n10-bottleneck-rca.md).
 
 package main
 
@@ -42,6 +92,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,7 +100,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -92,6 +142,99 @@ func envBool(key string, def bool) bool {
 	}
 }
 
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+		log.Printf("warning: %s=%q is not a valid duration, using default %s", key, v, def)
+	}
+	return def
+}
+
+// parseAgg maps EXPORTER_SDK_AGG to a concrete sdkmetric.Aggregation.
+// Unrecognised values fall back to AggregationDefault with a warning
+// so experiments don't silently run the wrong shape.
+func parseAgg(name string, maxBufferPerSeries int) sdkmetric.Aggregation {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "default":
+		return sdkmetric.AggregationDefault{}
+	case "sum":
+		return sdkmetric.AggregationSum{}
+	case "raw-buffer":
+		return sdkmetric.AggregationRawBuffer{MaxEventsPerSeries: maxBufferPerSeries}
+	case "dd-full", "ddsketch", "ddsketch-full":
+		return sdkmetric.AggregationDDSketch{}
+	case "dd-delta", "ddsketch-delta":
+		return sdkmetric.AggregationDDSketch{DeltaTransmission: true}
+	case "kll", "kll-full":
+		return sdkmetric.AggregationKLLSketch{}
+	case "cms-full", "count-min", "count-min-full":
+		return sdkmetric.AggregationCountMinSketch{}
+	case "cms-delta", "count-min-delta":
+		return sdkmetric.AggregationCountMinSketch{DeltaTransmission: true}
+	case "cs-full", "countsketch", "count-sketch", "count-sketch-full":
+		return sdkmetric.AggregationCountSketch{}
+	case "cs-delta", "count-sketch-delta":
+		return sdkmetric.AggregationCountSketch{DeltaTransmission: true}
+	case "hll-full", "hyperloglog", "hyperloglog-full":
+		return sdkmetric.AggregationHLLSketch{}
+	case "hll-delta", "hyperloglog-delta":
+		return sdkmetric.AggregationHLLSketch{DeltaTransmission: true}
+	default:
+		log.Printf("warning: unknown EXPORTER_SDK_AGG=%q — falling back to default", name)
+		return sdkmetric.AggregationDefault{}
+	}
+}
+
+// parseProjection converts a comma-separated key list to an
+// attribute.Filter. The special token "-" means "drop everything" so
+// the aggregator bucket degenerates to a single series. Empty string
+// (the default) keeps every attribute — no filter registered.
+func parseProjection(spec string) attribute.Filter {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil
+	}
+	if spec == "-" {
+		return func(attribute.KeyValue) bool { return false }
+	}
+	keep := make(map[string]struct{})
+	for _, k := range strings.Split(spec, ",") {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			keep[k] = struct{}{}
+		}
+	}
+	return func(kv attribute.KeyValue) bool {
+		_, ok := keep[string(kv.Key)]
+		return ok
+	}
+}
+
+// buildLabelSets generates the first `cardinality` distinct attribute
+// sets under a 4-dim schema (`zone × rack × node × pod`). If
+// cardinality exceeds the schema's product, extra entries alias onto
+// earlier ones by modular wraparound (so callers always get exactly
+// `cardinality` slices; use EXPORTER_*_VALS to widen the schema for
+// larger experiments).
+func buildLabelSets(cardinality, zoneVals, rackVals, nodeVals, podVals int) [][]attribute.KeyValue {
+	out := make([][]attribute.KeyValue, cardinality)
+	for i := 0; i < cardinality; i++ {
+		z := i % zoneVals
+		r := (i / zoneVals) % rackVals
+		n := (i / (zoneVals * rackVals)) % nodeVals
+		p := (i / (zoneVals * rackVals * nodeVals)) % podVals
+		out[i] = []attribute.KeyValue{
+			attribute.String("zone", fmt.Sprintf("z%d", z)),
+			attribute.String("rack", fmt.Sprintf("r%02d", r)),
+			attribute.String("node", fmt.Sprintf("n%02d", n)),
+			attribute.String("pod", fmt.Sprintf("pod-%03d", p)),
+		}
+	}
+	return out
+}
+
 // traceRow is one row of the replay CSV — a single gauge observation
 // for a single series at a recorded timestamp.
 type traceRow struct {
@@ -101,8 +244,7 @@ type traceRow struct {
 }
 
 // loadTraceCSV reads the replay CSV into memory, sorts by timestamp,
-// and returns the full row list plus the unique series list. Memory
-// footprint is ~40 bytes per row — a 1M-row trace fits in 40 MB.
+// and returns the full row list plus the unique series list.
 func loadTraceCSV(path string) ([]traceRow, []string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -155,6 +297,24 @@ func main() {
 	metricName := envOr("EXPORTER_METRIC", "http_requests_total")
 	traceFile := os.Getenv("EXPORTER_TRACE_FILE")
 
+	// Three-axis SDK config.
+	window := envDuration("EXPORTER_SDK_WINDOW", 15*time.Second)
+	projection := parseProjection(os.Getenv("EXPORTER_SDK_PROJECTION"))
+	aggName := envOr("EXPORTER_SDK_AGG", "default")
+	maxBufPerSeries := envInt("EXPORTER_MAX_BUFFER_PER_SERIES", 0)
+	agg := parseAgg(aggName, maxBufPerSeries)
+
+	// Deprecated env — warn loudly so stale compose files surface.
+	if v := os.Getenv("EXPORTER_RATE"); v != "" {
+		log.Printf(
+			"warning: EXPORTER_RATE=%q is deprecated and ignored. "+
+				"The old ticker-driven meaning was a no-op under SDK aggregation "+
+				"(see docs/n10-bottleneck-rca.md). Use EXPORTER_FREQ_HZ for the "+
+				"app-level event frequency and EXPORTER_SDK_WINDOW for the "+
+				"SDK emit interval.", v,
+		)
+	}
+
 	ctx := context.Background()
 	exp, err := otlpmetricgrpc.New(ctx,
 		otlpmetricgrpc.WithEndpoint(target),
@@ -170,84 +330,130 @@ func main() {
 		semconv.ServiceName("fake-exporter"),
 	))
 
-	// Batch emissions at 1s ticks regardless of mode. Synthetic loop
-	// emits every (1/rate)s; trace loop emits at recorded pace —
-	// using a shared reader interval keeps downstream batching
-	// predictable.
-	reader := sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(time.Second))
+	reader := sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(window))
+
+	// One View covers every instrument this exporter emits (match-all
+	// matches any instrument name). The stream config is what the
+	// three-axis sweep actually varies — aggregation + attribute
+	// filter.
+	stream := sdkmetric.Stream{Aggregation: agg}
+	if projection != nil {
+		stream.AttributeFilter = projection
+	}
+	view := sdkmetric.NewView(
+		sdkmetric.Instrument{Name: "*"},
+		stream,
+	)
+
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(reader),
 		sdkmetric.WithResource(res),
+		sdkmetric.WithView(view),
 	)
 	defer provider.Shutdown(ctx)
 	otel.SetMeterProvider(provider)
 
 	meter := provider.Meter("asap.fake-exporter")
 
+	log.Printf(
+		"fake-exporter sdk config: window=%s agg=%s projection=%q",
+		window, aggName, os.Getenv("EXPORTER_SDK_PROJECTION"),
+	)
+
 	if traceFile != "" {
 		runTraceReplay(ctx, meter, metricName, traceFile)
 	} else {
 		runSynthetic(ctx, meter, metricName)
 	}
-
-	// Silence unused-import when the SDK types are only referenced
-	// indirectly via the meter provider.
-	var _ metricdata.ResourceMetrics
 }
 
-// runSynthetic emits log-normal gauge + exponential counter samples
-// at the configured rate × cardinality. Kept as the default so
-// compose-up without an explicit EXPORTER_TRACE_FILE still produces
-// the shape the existing baseline sweep expects.
+// runSynthetic drives a synthetic workload at EXPORTER_FREQ_HZ per
+// series. One goroutine per attribute set fires `Add(1)` on the
+// counter and `Record(log-normal)` on the gauge every `1/freq` wall
+// time. The raw event rate on the app side is thus `freq × cardinality
+// × 2`; what becomes wire traffic is determined by the SDK View +
+// PeriodicReader config set up in main.
 func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
-	rate := envInt("EXPORTER_RATE", 10)
-	cardinality := envInt("EXPORTER_CARDINALITY", 100)
+	cardinality := envInt("EXPORTER_CARDINALITY", 1000)
+	freqHz := envFloat("EXPORTER_FREQ_HZ", 10.0)
+	zoneVals := envInt("EXPORTER_ZONE_VALS", 4)
+	rackVals := envInt("EXPORTER_RACK_VALS", 10)
+	nodeVals := envInt("EXPORTER_NODE_VALS", 25)
+	podVals := envInt("EXPORTER_POD_VALS", 10)
+	maxCard := zoneVals * rackVals * nodeVals * podVals
+	if cardinality > maxCard {
+		log.Printf(
+			"warning: EXPORTER_CARDINALITY=%d exceeds schema product %d; "+
+				"extra attribute sets alias onto earlier ones",
+			cardinality, maxCard,
+		)
+	}
 
-	log.Printf("fake-exporter starting (synthetic): metric=%s rate=%d/sec cardinality=%d",
-		metricName, rate, cardinality)
+	log.Printf(
+		"fake-exporter starting (synthetic): metric=%s cardinality=%d freq_hz=%.1f schema=%dx%dx%dx%d",
+		metricName, cardinality, freqHz, zoneVals, rackVals, nodeVals, podVals,
+	)
 
 	counter, err := meter.Float64Counter(metricName,
-		metric.WithDescription("Synthetic counter — raw-baseline signal"))
+		metric.WithDescription("Synthetic event counter — incremented by 1 per event"))
 	if err != nil {
 		log.Fatalf("counter init: %v", err)
 	}
 	latencyGauge, err := meter.Float64Gauge(metricName+"_latency_ms",
-		metric.WithDescription("Synthetic log-normal latency — sketch-baseline signal"),
+		metric.WithDescription("Synthetic log-normal latency sample per event"),
 		metric.WithUnit("ms"))
 	if err != nil {
 		log.Fatalf("gauge init: %v", err)
 	}
 
-	labelSets := make([][]attribute.KeyValue, cardinality)
-	for i := 0; i < cardinality; i++ {
-		labelSets[i] = []attribute.KeyValue{
-			attribute.String("zone", fmt.Sprintf("z%d", i%4)),
-			attribute.String("pod", fmt.Sprintf("pod-%d", i)),
-		}
-	}
+	labelSets := buildLabelSets(cardinality, zoneVals, rackVals, nodeVals, podVals)
+	period := time.Duration(float64(time.Second) / freqHz)
 
-	values := make([]float64, cardinality)
-	var mu sync.Mutex
-	tick := time.NewTicker(time.Second / time.Duration(rate))
-	defer tick.Stop()
-	for range tick.C {
-		mu.Lock()
-		for i := 0; i < cardinality; i++ {
-			values[i] += rand.ExpFloat64()
-			counter.Add(ctx, values[i], metric.WithAttributes(labelSets[i]...))
-			latencyMs := math.Exp(3.0 + 0.7*rand.NormFloat64())
-			latencyGauge.Record(ctx, latencyMs, metric.WithAttributes(labelSets[i]...))
-		}
-		mu.Unlock()
+	// Per-series goroutines mean each attribute set ticks on its own
+	// cadence — if we ever want to stagger frequencies per series
+	// (to model heterogeneous workloads) this is the natural hook.
+	var wg sync.WaitGroup
+	for i := 0; i < cardinality; i++ {
+		wg.Add(1)
+		go func(seriesIdx int) {
+			defer wg.Done()
+			// Stagger start so all series don't fire simultaneously
+			// at tick zero — deterministic offset keyed on series.
+			time.Sleep(time.Duration(seriesIdx%int(max64(freqHz, 1))) * period /
+				time.Duration(max64(freqHz, 1)))
+
+			ticker := time.NewTicker(period)
+			defer ticker.Stop()
+			attrs := metric.WithAttributes(labelSets[seriesIdx]...)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					counter.Add(ctx, 1, attrs)
+					latencyGauge.Record(
+						ctx,
+						math.Exp(3.0+0.7*rand.NormFloat64()),
+						attrs,
+					)
+				}
+			}
+		}(i)
 	}
+	wg.Wait()
+}
+
+func max64(a float64, b int) int {
+	if int(a) < b {
+		return b
+	}
+	return int(a)
 }
 
 // runTraceReplay reads a CSV trace and emits its rows as gauges at
-// the recorded pace. Each unique series_id in the CSV becomes a
-// label set `{series_id=…}`; the gauge metric name is the
-// configured base name + `_trace`. When EOF is reached the player
-// wraps back to the first row (so a 10-minute trace loops
-// indefinitely during long soaks).
+// the recorded pace. Each unique series_id becomes label
+// `{series_id=…}`; the SDK config set up in main (window /
+// projection / agg) applies uniformly.
 func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path string) {
 	scale := envFloat("EXPORTER_TRACE_SCALE", 1.0)
 	loop := envBool("EXPORTER_TRACE_LOOP", true)
@@ -256,17 +462,17 @@ func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path st
 	if err != nil {
 		log.Fatalf("trace load: %v", err)
 	}
-	log.Printf("fake-exporter starting (trace replay): metric=%s_trace rows=%d series=%d scale=%.2fx loop=%v",
-		metricName, len(rows), len(series), scale, loop)
+	log.Printf(
+		"fake-exporter starting (trace replay): metric=%s_trace rows=%d series=%d scale=%.2fx loop=%v",
+		metricName, len(rows), len(series), scale, loop,
+	)
 
 	gauge, err := meter.Float64Gauge(metricName+"_trace",
-		metric.WithDescription("Trace replay gauge — cpu_usage or similar"))
+		metric.WithDescription("Trace replay gauge"))
 	if err != nil {
 		log.Fatalf("gauge init: %v", err)
 	}
 
-	// Pre-compute label sets per series so the hot loop is
-	// allocation-free.
 	labelSets := make(map[string][]attribute.KeyValue, len(series))
 	for _, s := range series {
 		labelSets[s] = []attribute.KeyValue{attribute.String("series_id", s)}
@@ -283,8 +489,6 @@ func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path st
 
 // replayOnce plays the rows list once at recorded pace scaled by
 // `scale` (1.0 = real-time, 2.0 = 2× faster, 0.5 = half-speed).
-// The first row anchors wallclock; subsequent rows sleep to align
-// with `(row.tsMs - first.tsMs) / scale` wallclock offset.
 func replayOnce(
 	ctx context.Context,
 	gauge metric.Float64Gauge,
