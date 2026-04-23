@@ -45,14 +45,12 @@ landed over PRs #168–#185. Briefly:
 
 ### 1. SDK three-axis aggregation framework (P0) — supersedes the "N=10 throughput collapse" blocker
 
-The N=10 "collapse" (#185) turned out not to be a bottleneck —
-[`docs/n10-bottleneck-rca.md`](docs/n10-bottleneck-rca.md) walks
-through the diagnosis. The 2 k pts/s floor was the OTel SDK's
-correct pre-aggregation output at `interval=1 s, cardinality=1000,
-2 instruments`, independent of input rate. That finding reframed
-the paper's §6.2 bandwidth claim as a **three-independent-factor
-product** (see
-[`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md)).
+The N=10 "collapse" (#185) turned out not to be a bottleneck:
+the 2 k pts/s floor was the OTel SDK's correct pre-aggregation
+output at `interval=1 s, cardinality=1000, 2 instruments`,
+independent of input rate. That finding reframed the paper's
+§6.2 bandwidth claim as a **three-independent-factor product**
+(see [`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md)).
 
 Concrete work items (P0 because §6.2 can't run without them):
 

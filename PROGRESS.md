@@ -257,7 +257,7 @@ real gap is smaller than the earlier plan:
 | Aggregator | Slot | Status | Notes |
 |---|---|---|---|
 | `AggregationRawBuffer` | `agg_type=raw-buffer` | ✅ | Buffers `(ts, attrs, value)` tuples within `W`, emits batch of `NumberDataPoint`s per tick. Per-series drop counter on overflow (in-memory only; exposing it as a side-channel metric is still a follow-up). Contract test in `deploy/fake-exporter/sdk_emit_test.go`. |
-| `AggregationKLLSketch.DeltaTransmission` | `agg_type=kll-delta` | ❌ | KLL's multi-level sample buffers don't support a natural byte-diff; adding delta requires exposing per-level internals from `sketchlib-go` or shipping incremental adds. **Not a blocker** — `kll-full` suffices for the encoding-axis comparison. |
+| `AggregationKLLSketch.DeltaTransmission` | `agg_type=kll-delta` | **no need** | KLL's multi-level sample buffers don't support a natural byte-diff; adding delta requires exposing per-level internals from `sketchlib-go` or shipping incremental adds. `kll-full` suffices for the encoding-axis comparison — not worth the implementation cost. |
 
 The other four sketch delta slots (DDSketch / CountSketch /
 CountMinSketch / HLLSketch) already work via the
@@ -277,9 +277,9 @@ CountMinSketch / HLLSketch) already work via the
 ### Downstream dependents
 
 - `deploy/fake-exporter/main.go` — needs to drop
-  `EXPORTER_RATE` (semantically meaningless now — see
-  [`docs/n10-bottleneck-rca.md`](docs/n10-bottleneck-rca.md))
-  and expose `EXPORTER_SDK_WINDOW`, `EXPORTER_SDK_PROJECTION`,
+  `EXPORTER_RATE` (semantically meaningless under SDK
+  aggregation) and expose `EXPORTER_SDK_WINDOW`,
+  `EXPORTER_SDK_PROJECTION`,
   `EXPORTER_SDK_AGG`. Widen the synthetic label schema from 2
   dims (`{zone, pod}`) to 4 dims (`{zone, rack, node, pod}`)
   so the `L`-axis sweep has range.

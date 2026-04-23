@@ -1,9 +1,5 @@
 # SDK cost evaluation
 
-_Written: 2026-04-23. Authoritative for the paper's §6.2 ablation
-sweeps and supersedes the Options A–D recommendation in
-[`n10-bottleneck-rca.md`](n10-bottleneck-rca.md)._
-
 ## Why this doc exists
 
 The ASAP pipeline has three data-plane decision points —
@@ -138,7 +134,7 @@ Per-axis:
   | `hll-full` (`AggregationHLLSketch{}`) | ✅ | same |
   | `hll-delta` (`…{DeltaTransmission: true}`) | ✅ | flag |
   | `raw-buffer` (`AggregationRawBuffer`) | ✅ | `opentelemetry-go-patch/sdk/metric/internal/aggregate/rawbuffer.go` |
-  | **`kll-delta`** | ❌ not yet | KLL's sample-buffer structure makes delta-vs-last nontrivial; see note below |
+  | **`kll-delta`** | **no need** | KLL's sample-buffer structure makes delta-vs-last nontrivial, and `kll-full` suffices for the encoding-axis comparison. See note below if/when this changes. |
 
 **Note on `kll-delta`**: the other four sketches (DDSketch / CMS /
 CountSketch / HLL) have sparse internal state (buckets / cells /

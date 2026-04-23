@@ -171,9 +171,7 @@ services:
       EXPORTER_TARGET: "gateway:4317"
       # Workload knobs (can be overridden from sweep scripts via
       # host env). Legacy EXPORTER_RATE is accepted but deprecated
-      # — fake-exporter itself logs a warning when set. See
-      # docs/n10-bottleneck-rca.md for why the old semantics were
-      # meaningless.
+      # — fake-exporter itself logs a warning when set.
       EXPORTER_RATE: "${EXPORTER_RATE:-}"
       EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
       EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"

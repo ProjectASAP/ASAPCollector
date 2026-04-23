@@ -77,8 +77,7 @@
 //
 //	EXPORTER_RATE      replaced by EXPORTER_FREQ_HZ. The old meaning
 //	                   was "ticker at 1s/rate", which was
-//	                   semantically a no-op given SDK aggregation
-//	                   (see docs/n10-bottleneck-rca.md).
+//	                   semantically a no-op given SDK aggregation.
 
 package main
 
@@ -308,10 +307,10 @@ func main() {
 	if v := os.Getenv("EXPORTER_RATE"); v != "" {
 		log.Printf(
 			"warning: EXPORTER_RATE=%q is deprecated and ignored. "+
-				"The old ticker-driven meaning was a no-op under SDK aggregation "+
-				"(see docs/n10-bottleneck-rca.md). Use EXPORTER_FREQ_HZ for the "+
-				"app-level event frequency and EXPORTER_SDK_WINDOW for the "+
-				"SDK emit interval.", v,
+				"The old ticker-driven meaning was a no-op under SDK "+
+				"aggregation. Use EXPORTER_FREQ_HZ for the app-level event "+
+				"frequency and EXPORTER_SDK_WINDOW for the SDK emit interval.",
+			v,
 		)
 	}
 
