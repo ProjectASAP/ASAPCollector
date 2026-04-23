@@ -88,6 +88,8 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"net/http"
+	_ "net/http/pprof" // expose /debug/pprof/* on EXPORTER_PPROF_ADDR
 	"os"
 	"sort"
 	"strconv"
@@ -295,6 +297,20 @@ func main() {
 	target := envOr("EXPORTER_TARGET", "gateway:4317")
 	metricName := envOr("EXPORTER_METRIC", "http_requests_total")
 	traceFile := os.Getenv("EXPORTER_TRACE_FILE")
+
+	// Optional pprof endpoint for producer-side profiling.
+	// When EXPORTER_PPROF_ADDR is set (e.g. "0.0.0.0:6060"), serves
+	// /debug/pprof/{profile,heap,goroutine,...} so external tools
+	// can sample CPU / heap / goroutines while the producer runs.
+	// Off by default.
+	if addr := os.Getenv("EXPORTER_PPROF_ADDR"); addr != "" {
+		go func() {
+			log.Printf("pprof listening on %s", addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				log.Printf("pprof server: %v", err)
+			}
+		}()
+	}
 
 	// Three-axis SDK config.
 	window := envDuration("EXPORTER_SDK_WINDOW", 15*time.Second)
