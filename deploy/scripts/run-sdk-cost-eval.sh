@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-sdk-cost-sweeps.sh — land all three cost sub-sweep CSVs
+# run-sdk-cost-eval.sh — land all three cost sub-sweep CSVs
 # under deploy/eval-results/sdk-cost/.
 #
 # Each sub-sweep holds two of (W, L, agg) constant and varies the
@@ -56,7 +56,7 @@ run_sweep() {
     WINDOWS="$windows" PROJECTIONS="$projections" AGGS="$aggs" \
         SOAK_S="$SOAK_S" BYTES_WIN="$BYTES_WIN" \
         CARDINALITY="$CARDINALITY" FREQ_HZ="$FREQ_HZ" SCALE="$SCALE" \
-        "$SCRIPT_DIR/run-sdk-cost-sweep.sh" > "$out" 2> "$log"
+        "$SCRIPT_DIR/run-sdk-cost-grid.sh" > "$out" 2> "$log"
     echo "    $(wc -l < "$out") rows, $(wc -l < "$log") log lines"
 }
 
