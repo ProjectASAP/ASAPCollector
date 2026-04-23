@@ -26,9 +26,29 @@ is instrumentation completeness, Helm templates, and polish.
 
 ## Instrumentation gaps (P1 — blocks §6.2/6.3 figures)
 
-The N=10 sweep CSV has several `nan` cells that need filling
-before the paper plots can be drawn. Tracked top-level as
-`DataCollector/TODO.md §2`; implementation lives here.
+The §6.2 sub-sweeps defined in
+[`../docs/sdk-aggregation-three-axis-design.md`](../docs/sdk-aggregation-three-axis-design.md)
+require **producer-side** measurements that don't exist yet;
+the N=10 sweep CSV also has several `nan` cells on the
+collector side. Both tracked top-level as
+`DataCollector/TODO.md §1-ish` (the old §2 wording is rolled
+into §1).
+
+### Producer-side columns (new, P0)
+
+- [ ] **`producer_cpu_cores`** — `docker stats` or cgroup
+      read on the `fake-exporter` container. The §6.2
+      SDK-side CPU claim is "how much does `agg_type=*-delta`
+      cost the producer vs `*-full`".
+- [ ] **`producer_rss_mib`** — same source. `agg_type=raw-buffer`
+      is expected to have the largest producer RSS (sample
+      buffer); we need to measure the knee vs window `W`.
+- [ ] **`producer_bytes_out_per_s`** — agent-container
+      `container_network_transmit_bytes_total{name="fake-exporter"}`,
+      `rate()` over the measurement window. The main §6.2
+      bandwidth axis; we've been inferring this from
+      gateway-side counters which conflates multiple agents
+      at N > 1.
 
 - [ ] **Byte counters on raw and Gorilla baselines.**
       `agent_in_kib_per_s` / `agent_out_kib_per_s` are `nan`

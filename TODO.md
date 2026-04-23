@@ -1,6 +1,6 @@
 # TODO — DataCollector + controller for paper submission
 
-_Last updated: 2026-04-23 (post N=10 sweep, PRs #168–#185)_
+_Last updated: 2026-04-23 — N=10 "collapse" diagnosed + new 3-axis SDK design landed_
 
 This doc lists what's left to get a VLDB / SIGMOD submission out
 the door. For the v1 paper we keep updating `controller/`
@@ -43,35 +43,54 @@ landed over PRs #168–#185. Briefly:
 
 ## For paper submission (blocker)
 
-### 1. Multi-agent scale — N=10 throughput collapse (P0)
+### 1. SDK three-axis aggregation framework (P0) — supersedes the "N=10 throughput collapse" blocker
 
-N=10 sweep (#185, 2026-04-22) surfaced a system-wide bottleneck:
-per-agent throughput collapses from 130k–326k pts/s at N=1 to a
-universal ~2k floor at N=10, identical across all six baselines
-(so it's a topology / producer-SDK issue, not a sketch pipeline
-issue). Agents are near-idle (0.01c, 220 MiB). Gateway sees
-10 × 2k = 20k total, i.e. coordinated throttling.
+The N=10 "collapse" (#185) turned out not to be a bottleneck —
+[`docs/n10-bottleneck-rca.md`](docs/n10-bottleneck-rca.md) walks
+through the diagnosis. The 2 k pts/s floor was the OTel SDK's
+correct pre-aggregation output at `interval=1 s, cardinality=1000,
+2 instruments`, independent of input rate. That finding reframed
+the paper's §6.2 bandwidth claim as a **three-independent-factor
+product** (see
+[`docs/sdk-aggregation-three-axis-design.md`](docs/sdk-aggregation-three-axis-design.md)).
 
-Until this is diagnosed and fixed, the paper's "scales linearly
-N ∈ {1, 10, 100}" claim is unsupported.
+Concrete work items (P0 because §6.2 can't run without them):
 
-Candidate causes, ranked:
+- [ ] **`AggregationRawBuffer`** in
+      `opentelemetry-go-patch/sdk/metric/aggregation.go` —
+      `(ts, attrs, value)` buffer, emit batch per tick, drop +
+      drop-counter on overflow. ~150 LOC + tests.
+- [x] ~~`Aggregation<X>Delta` × 5~~ — on inspection, four of five
+      (DDSketch / CS / CMS / HLL) already have `DeltaTransmission`
+      as a flag on the `*-full` aggregator (2026-03-14 batch).
+      Only `kll-delta` is missing and is not a §6.2 blocker
+      (KLL's multi-level buffer structure needs a different
+      delta strategy — see
+      [`docs/sdk-aggregation-three-axis-design.md`](docs/sdk-aggregation-three-axis-design.md)).
+- [ ] **`fake-exporter` rewrite** (`deploy/fake-exporter/main.go`)
+      — drop `EXPORTER_RATE`; add `EXPORTER_SDK_WINDOW`,
+      `EXPORTER_SDK_PROJECTION`, `EXPORTER_SDK_AGG`. Widen label
+      schema from 2 dims to 4 (`{zone, rack, node, pod}`).
+- [ ] **`measure-baseline.py`** producer-side columns —
+      `producer_cpu_cores`, `producer_rss_mib`,
+      `producer_bytes_out_per_s` (scrape the fake-exporter
+      container's cgroup + interface counters).
+- [ ] **§6.2 sweeps** at `N=1`:
+      - 6.2a time: `W ∈ {1s, 15s, 60s, 300s}` ×
+        `L=full, agg=dd-full`
+      - 6.2b label: `\|L\| ∈ {0,1,2,3,4}` × `W=60s, agg=dd-full`
+      - 6.2c encoding: `agg ∈ {raw-buffer, dd-full, dd-delta,
+        kll-full, kll-delta, cms-full, hll-full}` ×
+        `W=60s, L=typical projection`
+      - 6.2d combined: best per-metric triple vs `raw-buffer +
+        full-L + W=15s`.
+- [ ] **N-scale sweep rerun** at fixed representative
+      `(W=60s, L=subset, agg=dd-delta)` across `N ∈ {1, 10, 100}`.
+      This is now the honest scalability test — the 2 k floor
+      from #185 is expected; we're looking for whether gateway /
+      backend hold up as aggregate ingress grows.
 
-1. **fake-exporter OTLP/gRPC SDK backpressure.** 10 producers ×
-   1M nominal points/s (rate × cardinality) likely overwhelms a
-   shared socket or SDK reader limit. First thing to try: tune
-   `WithMaxQueueSize` / `WithMaxExportBatchSize`, or drop to a
-   raw gRPC client for the scale sweep.
-2. **Docker userland-proxy CPU contention** across many
-   simultaneous gRPC connections on the default bridge network.
-   Cheap test: switch to `network_mode: host` for agents +
-   gateway and re-run.
-3. **Kernel socket buffers.** `net.core.somaxconn /
-   net.core.rmem_max` at stock Ubuntu defaults may cap inbound
-   gRPC streams.
-
-Post-fix deliverable: re-run N=1, N=10, N=100 sweeps; paper's
-§6.7 "scales linearly" figure uses those three points.
+Depends on nothing upstream; can start immediately.
 
 ### 2. Instrumentation — fill the `nan` columns (P1)
 

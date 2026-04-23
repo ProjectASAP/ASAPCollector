@@ -129,13 +129,22 @@ workload + SLAs.
    cost model, replanning triggers
 6. **Evaluation**
     - 6.1 Setup (workloads, baselines, deployment)
-    - 6.2 End-to-end benefits: B0 vs B3 on CPU, memory,
-      bandwidth, latency
-    - 6.3 Ablation: B1 vs B3 (no sketches), B2 vs B3 (no
-      controller)
-    - 6.4 Accuracy vs resource tradeoff: ε sweep, Pareto
-    - 6.5 Workload evolution: reconfig frequency × benefit
-    - 6.6 Failure modes: controller / agent / network partition
+    - 6.2 SDK-side three-axis ablation (see below + the
+      authoritative [`sdk-aggregation-three-axis-design.md`](sdk-aggregation-three-axis-design.md)).
+      Sub-sweeps 6.2a / 6.2b / 6.2c / 6.2d decompose the
+      bandwidth-reduction claim into its three independent
+      factors: time window `W`, label projection `L`,
+      encoding `agg_type`.
+    - 6.3 Cross-layer placement: same `agg_type` at SDK
+      vs agent vs backend, CPU / mem / bw tradeoff
+    - 6.4 Accuracy vs resource Pareto: ε sweep at fixed
+      `(W, L, agg_type)` operating point, Pareto curve
+    - 6.5 Planner quality: given query sets `Q_1,…,Q_k`,
+      does the controller's `(W, L, agg_type)` output match
+      hand-tuned ground truth? Independent of SDK emit cost.
+    - 6.6 Workload evolution: online replan latency after
+      injected drift; controller-in-loop end-to-end
+    - 6.7 Failure modes: controller / agent / network partition
 7. **Related Work** — sketch DBs (Druid approximate, Pyramid,
    Moment-based), observability (Prometheus, VictoriaMetrics,
    M3, Thanos, Mimir), cross-tier query planning (ClickHouse
@@ -149,13 +158,24 @@ workload + SLAs.
 | Paper claim | Experiment | Figure |
 |---|---|---|
 | "N% collector CPU reduction" | B1 vs B3 on Google cluster trace, 24h | stacked bar: CPU per node per baseline |
-| "M× bandwidth reduction" | B1 vs B3 bandwidth over agent→backend link, mean + P99 | time-series of bytes/s + summary table |
+| **"Bw reduction = time-factor × label-factor × encoding-factor"** | **6.2a / 6.2b / 6.2c (SDK-side three-axis ablation, each axis swept independently)** | **3 curves, each a mean + P99 band** |
+| "End-to-end bw reduction on realistic queries" | **6.2d** — best `(W, L, agg_type)` per metric under `Q` vs `raw-buffer` at full label set + `W=15s` | Single stacked-bar: product of three factors |
 | "Query P99 latency: PromQL native vs sketch-answered" | B0 vs B3 on realistic query replay | latency CDF |
-| "ε accuracy at M× resource savings" | Accuracy sweep at fixed workload; Pareto curve | accuracy vs cost Pareto scatter |
+| "ε accuracy at M× resource savings" | Accuracy sweep at fixed `(W, L, agg_type)` operating point | accuracy vs cost Pareto scatter |
+| "Cross-layer placement doesn't matter for correctness, but CPU/mem tradeoff differs" | **6.3** — same `agg_type` at SDK vs agent vs backend | stacked CPU/mem per layer |
+| **"Planner's `(W, L, agg_type)` choice matches hand-tuned ideal within X%"** | **6.5** — offline planner vs ground truth over synthetic `Q` sets | match-rate curve |
 | "Controller responds to workload drift in T seconds" | Replan latency after injected drift | time-series with event markers |
 | "Cold S3 fallback adds <K ms P99" | Warm-vs-cold hit latency histograms | latency CDF with hot/cold split |
-| "Scales linearly in number of agents" | B3 throughput at N ∈ {1, 10, 100} agents | throughput curve |
+| "Scales linearly in number of agents" | B3 at N ∈ {1, 10, 100}, under fixed `(W, L, agg_type)` | bw / CPU per-agent stability curve |
 | "Resilient to controller failure" | Kill controller mid-workload; queries continue | time-series showing continuity |
+
+The §6.2 sub-sweeps are defined in detail in
+[`sdk-aggregation-three-axis-design.md`](sdk-aggregation-three-axis-design.md).
+Reviewer-facing: each of the three factors is an independently
+measurable quantity, so a skeptical reader can drop one factor
+(e.g., "I don't buy the `L` factor because `by (...)` queries
+aren't common in your workload") and still see what the
+remaining two buy.
 
 ## Novelty story — what to emphasize
 
