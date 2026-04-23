@@ -49,3 +49,4 @@ otel_collector_benchmark/benchmark_results/
 
 # e2esdkbench compiled binary
 opentelemetry-app/e2esdkbench
+deploy/scripts/__pycache__/
