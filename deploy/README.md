@@ -112,9 +112,9 @@ envelope (0.5 CPU / 512 Mi per agent, matching the paper's
 
 **Templates are not yet written** — `values.yaml` and
 `Chart.yaml` land here; the `templates/` directory is empty.
-See `TODO.md` in this directory for the template list.
-Until then, Helm is values-only; use the compose path for
-actual runs.
+See the top-level [`PROGRESS.md`](../PROGRESS.md) "Future work"
+section for the template landing order. Until templates land,
+Helm is values-only; use the compose path for actual runs.
 
 ## Current known issues (read before running a sweep)
 

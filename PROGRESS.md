@@ -12,8 +12,6 @@ paper. Scoped siblings:
   — SDK-side aggregation knobs + cost-evaluation design.
 - [`deploy/README.md`](deploy/README.md) — multi-agent stack
   setup + sweep driver.
-- [`deploy/TODO.md`](deploy/TODO.md) — deploy-local follow-ups
-  (instrumentation gaps, Helm templates, compose polish).
 - ASAPQuery-backend [`TODO.md`](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/TODO.md)
   — sketch-DB-side work.
 
@@ -141,8 +139,16 @@ use `SerializeToBytes`; CMS uses a per-snapshot gob of
    miss, measure time-to-plan-ready / time-to-first-hit /
    bw + CPU during transition, assert bounded regression.
 8. **Fault injection.** Controller kill, agent kill, network
-   partition. Tests under `fault-injection/` (ChaosMesh on K8s;
-   `docker network disconnect` + `tc` rules on compose).
+   partition. Tests under `fault-injection/`:
+   - `controller-kill.sh` — `docker kill`; assert queries keep
+     serving from the last-known plan.
+   - `agent-kill.sh` — `docker kill` one agent; assert the
+     controller marks it degraded and replans.
+   - `network-partition.sh` — `docker network disconnect`
+     agent ⇄ controller; assert the agent runs its last config
+     and reconciliation happens at heal.
+
+   ChaosMesh variants on K8s go under the Helm chart.
 9. **Reproducibility archive.** `reproduce/` with
    `make reproduce`, `Dockerfile.reproduce`, trace fetcher /
    anonymiser, expected-numbers table with tolerance bands.
@@ -177,7 +183,24 @@ use `SerializeToBytes`; CMS uses a per-snapshot gob of
   `values.yaml` + `Chart.yaml` but no templates. Needs an
   initial pass on a real cluster to validate readiness probes /
   resource requests / network policies. Required for the
-  reproducibility archive if we promise K8s replay.
+  reproducibility archive if we promise K8s replay. Landing
+  order (one at a time, so each is reviewable):
+  `_helpers.tpl` → `controller.yaml` → `backend.yaml` (adds
+  PVC for the sketch-DB disk) → `gateway.yaml` → `agents.yaml`
+  (replicas = `{{ .Values.agents.count }}` + headless Service
+  for Prometheus DNS SD) → `minio.yaml` (StatefulSet + PVC,
+  gated on `.Values.minio.enabled`) → `prometheus.yaml` +
+  `grafana.yaml`.
+- **Compose polish.**
+  - Per-agent `AGENT_ID` label. The static enumeration in
+    `agents-N*.yml` works for N ≤ 100 but bloats the
+    Prometheus target list. Once the agent emits its own
+    hostname as a label, the scrape config collapses to a
+    single DNS-SD rule.
+  - CI check that `base.yml + agents-N<K>.yml + baseline-*.yml`
+    merge to a valid combined compose config.
+  - `deploy/k8s/` plain manifests as a non-Helm alternative
+    for operators who don't want Helm. Lowest priority.
 
 ## Architecture
 
