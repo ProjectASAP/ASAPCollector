@@ -1,0 +1,9 @@
+baseline,scale,rate,cardinality,producer_cpu_cores,producer_rss_mib,producer_bytes_out_per_s,agent_cpu_cores,agent_rss_mib,agent_in_kib_per_s,agent_out_kib_per_s,agent_points_per_s,gateway_cpu_cores,gateway_rss_mib,gateway_points_per_s,gateway_out_series_per_s,backend_cpu_pct,backend_rss_mib,backend_samples_per_s,backend_query_p99_ms
+"w60s-lzone,rack-araw-buffer",N1,,1000,0.329,108.700,45.002,nan,nan,nan,nan,nan,0.001,152.430,nan,nan,0.020,6.512,nan,nan
+"w60s-lzone,rack-add-full",N1,,1000,0.867,33.010,6.299,nan,nan,nan,nan,nan,0.001,151.266,nan,nan,0.020,6.473,nan,nan
+"w60s-lzone,rack-add-delta",N1,,1000,0.837,34.450,6.296,nan,nan,nan,nan,nan,0.001,149.824,nan,nan,0.020,6.508,nan,nan
+"w60s-lzone,rack-akll",N1,,1000,0.958,34.030,6.297,nan,nan,nan,nan,nan,0.001,150.863,nan,nan,0.020,6.473,nan,nan
+"w60s-lzone,rack-acms-full",N1,,1000,0.595,57.520,6.297,nan,nan,nan,nan,nan,0.001,151.203,nan,nan,0.020,6.473,nan,nan
+"w60s-lzone,rack-acms-delta",N1,,1000,0.634,86.380,5.848,nan,nan,nan,nan,nan,0.001,150.461,nan,nan,0.020,6.492,nan,nan
+"w60s-lzone,rack-ahll-full",N1,,1000,0.625,37.570,6.295,nan,nan,nan,nan,nan,0.002,148.660,nan,nan,0.020,6.492,nan,nan
+"w60s-lzone,rack-ahll-delta",N1,,1000,0.602,39.090,5.850,nan,nan,nan,nan,nan,0.001,150.355,nan,nan,0.040,6.500,nan,nan
