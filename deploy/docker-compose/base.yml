@@ -169,8 +169,22 @@ services:
     image: asap/fake-exporter:dev
     environment:
       EXPORTER_TARGET: "gateway:4317"
-      EXPORTER_RATE: "1000"     # samples/sec per metric
-      EXPORTER_CARDINALITY: "1000"
+      # Workload knobs (can be overridden from sweep scripts via
+      # host env). Legacy EXPORTER_RATE is accepted but deprecated
+      # — fake-exporter itself logs a warning when set. See
+      # docs/n10-bottleneck-rca.md for why the old semantics were
+      # meaningless.
+      EXPORTER_RATE: "${EXPORTER_RATE:-}"
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      # Three-axis SDK knobs (PR #190, see
+      # docs/sdk-aggregation-three-axis-design.md). Empty
+      # projection = keep all labels; "default" aggregation =
+      # Sum for Counter / LastValue for Gauge.
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_SDK_PROJECTION: "${EXPORTER_SDK_PROJECTION:-}"
+      EXPORTER_SDK_AGG: "${EXPORTER_SDK_AGG:-default}"
+      EXPORTER_MAX_BUFFER_PER_SERIES: "${EXPORTER_MAX_BUFFER_PER_SERIES:-0}"
     depends_on:
       - gateway
     logging: *default-logging
