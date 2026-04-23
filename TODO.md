@@ -56,10 +56,9 @@ product** (see
 
 Concrete work items (P0 because §6.2 can't run without them):
 
-- [ ] **`AggregationRawBuffer`** in
-      `opentelemetry-go-patch/sdk/metric/aggregation.go` —
-      `(ts, attrs, value)` buffer, emit batch per tick, drop +
-      drop-counter on overflow. ~150 LOC + tests.
+- [x] ~~`AggregationRawBuffer`~~ — landed 2026-04-23 (#189).
+      Contract test in
+      `deploy/fake-exporter/sdk_emit_test.go`.
 - [x] ~~`Aggregation<X>Delta` × 5~~ — on inspection, four of five
       (DDSketch / CS / CMS / HLL) already have `DeltaTransmission`
       as a flag on the `*-full` aggregator (2026-03-14 batch).

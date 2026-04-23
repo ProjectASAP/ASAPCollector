@@ -137,7 +137,7 @@ Per-axis:
   | `cs-delta` (`…{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | flag |
   | `hll-full` (`AggregationHLLSketch{}`) | ✅ landed 2026-03-14 | same |
   | `hll-delta` (`…{DeltaTransmission: true}`) | ✅ landed 2026-03-14 | flag |
-  | **`raw-buffer` (`AggregationRawBuffer`)** | ❌ not yet | — |
+  | `raw-buffer` (`AggregationRawBuffer`) | ✅ landed 2026-04-23 (#189) | `opentelemetry-go-patch/sdk/metric/internal/aggregate/rawbuffer.go` |
   | **`kll-delta`** | ❌ not yet | KLL's sample-buffer structure makes delta-vs-last nontrivial; see note below |
 
 **Note on `kll-delta`**: the other four sketches (DDSketch / CMS /
@@ -160,14 +160,21 @@ Not a §6.2 blocker — the `kll-full` row is sufficient for a
 three-way comparison with `raw-buffer` and `dd-delta` on the
 encoding axis.
 
-Adding `AggregationRawBuffer`:
+`AggregationRawBuffer` (landed in #189):
 - Semantics: buffer `(ts, attrs, value)` tuples per
   reduced-attribute-key within `W`; emit as a batch of
   `NumberDataPoint`s at each tick; reset.
-- Overflow: drop with a drop-counter metric (do **not** backpressure
-  the app — it would conflate "SDK overload" with "app slow path"
-  in the experimental numbers).
-- Expected size: ~150 LOC + tests.
+- Overflow: drop silently with a per-series drop counter (do
+  **not** backpressure the app — it would conflate "SDK overload"
+  with "app slow path" in the experimental numbers). The drop
+  counter is in-memory only for v1; exposing it as a side-channel
+  metric is tracked in `PROGRESS.md`.
+- Both delta and cumulative temporality paths call the same
+  `collect()` and always clear the buffer — raw-buffer has no
+  meaningful cumulative semantics (re-emitting history every
+  tick would be useless).
+- Contract test: `deploy/fake-exporter/sdk_emit_test.go` asserts
+  `cardinality × instruments × samples_each` data points.
 
 Adding `Aggregation<X>Delta` (×5):
 - Semantics: keep last emitted sketch bytes per reduced-attribute-key;
@@ -217,7 +224,7 @@ ground truth.
 
 ## Implementation order (follow-up PRs)
 
-1. `AggregationRawBuffer` + unit tests + `Aggregation` enum wire-up.
+1. ~~`AggregationRawBuffer` + unit tests + `Aggregation` enum wire-up.~~ — landed in #189.
 2. ~~`AggregationDelta<X>Sketch` ×5~~ — already present as
    `DeltaTransmission: true` on the four sparse-state sketches
    (DDSketch / CountSketch / CountMinSketch / HLLSketch).
