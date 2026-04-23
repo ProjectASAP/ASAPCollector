@@ -1,4 +1,4 @@
-# SDK aggregation cost
+# SDK cost evaluation
 
 _Written: 2026-04-23. Authoritative for the paper's §6.2 ablation
 sweeps and supersedes the Options A–D recommendation in

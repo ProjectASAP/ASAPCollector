@@ -6,7 +6,7 @@ the PR #185 commit message._
 > **Status (2026-04-23, later the same day):** the diagnosis
 > in this doc stands. The **Options A–D recommendation section
 > below is superseded** by
-> [`sdk-aggregation-cost.md`](sdk-aggregation-cost.md),
+> [`sdk-cost-evaluation.md`](sdk-cost-evaluation.md),
 > which makes `raw-buffer` / `*-full` / `*-delta` distinct SDK
 > aggregators (encoding axis), independent of time window `W`
 > and label projection `L`. Options A / B of this doc reduce to

@@ -1,5 +1,5 @@
 // fake-exporter — OTLP metrics producer for the ASAP three-axis
-// SDK aggregation sweep (see docs/sdk-aggregation-cost.md).
+// SDK aggregation sweep (see docs/sdk-cost-evaluation.md).
 //
 // Two operating modes:
 //

@@ -3,7 +3,7 @@
 # under deploy/eval-results/three-axis/.
 #
 # Each sub-sweep holds two of (W, L, agg) constant and varies the
-# third. See docs/sdk-aggregation-cost.md §"Paper §6
+# third. See docs/sdk-cost-evaluation.md §"Paper §6
 # mapping" for the plan.
 #
 # Produces (under eval-results/three-axis/):

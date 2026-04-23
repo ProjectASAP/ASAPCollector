@@ -2,7 +2,7 @@
 
 _Last updated: 2026-04-23 — three-axis SDK framework formalized_
 
-See [`docs/sdk-aggregation-cost.md`](docs/sdk-aggregation-cost.md)
+See [`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md)
 for the current authoritative design of the SDK decision point
 (time window `W` × label projection `L` × encoding `agg_type`).
 The 2026-03-14 SDK pre-aggregation batch below covers the
@@ -244,7 +244,7 @@ The five SDK pre-aggregation aggregators above (DDSketch / KLL /
 CountSketch / CountMinSketch / HLLSketch) all implement the
 `*-full` encoding slot of the three-axis `(W, L, agg_type)`
 framework defined in
-[`docs/sdk-aggregation-cost.md`](docs/sdk-aggregation-cost.md).
+[`docs/sdk-cost-evaluation.md`](docs/sdk-cost-evaluation.md).
 
 ### Outstanding SDK aggregators (P1 for paper §6.2)
 

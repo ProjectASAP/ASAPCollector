@@ -178,7 +178,7 @@ services:
       EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
       EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
       # Three-axis SDK knobs (PR #190, see
-      # docs/sdk-aggregation-cost.md). Empty
+      # docs/sdk-cost-evaluation.md). Empty
       # projection = keep all labels; "default" aggregation =
       # Sum for Counter / LastValue for Gauge.
       EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"

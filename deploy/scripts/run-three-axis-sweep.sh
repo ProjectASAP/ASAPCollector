@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-three-axis-sweep.sh — iterate over the SDK-side three-axis
 # `(W, L, agg_type)` grid defined in
-# docs/sdk-aggregation-cost.md. Brings up the compose
+# docs/sdk-cost-evaluation.md. Brings up the compose
 # stack once per cell, soaks, measures, tears down.
 #
 # The paper's §6.2 sub-sweeps are each a thin wrapper around this
