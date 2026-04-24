@@ -4,6 +4,7 @@ import argparse
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -20,8 +21,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(BENCH_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCH_ROOT))
 
-from scrape import append_metrics_snapshot
-
 PATCH_CMD = REPO_ROOT / "opentelemetry-collector-contrib-patch" / "cmd"
 
 # Unified collector: all sketch processors + OpAMP extension (built from cmd/sketchcol).
@@ -37,9 +36,10 @@ DEFAULT_COLLECTOR_PATHS = {
     "nop": PATCH_CMD / "nopcol" / "dist" / "nopcol",
 }
 
-PROMETHEUS_METRICS_URL = os.environ.get("PROMETHEUS_METRICS_URL", "http://localhost:8889/metrics")
-PROMETHEUS_READY_TIMEOUT_S = float(os.environ.get("PROMETHEUS_READY_TIMEOUT_S", "30"))
-SCRAPE_PROBE_TIMEOUT_S = float(os.environ.get("SCRAPE_PROBE_TIMEOUT_S", "30"))
+# Port the controller-generated YAML binds for the sketch metrics exporter (Prometheus format).
+# We only use this to free the port before starting a new collector; accuracy uses JSONL.
+COLLECTOR_EXPORT_PORT = int(os.environ.get("COLLECTOR_EXPORT_PORT", "8889"))
+COLLECTOR_READY_TIMEOUT_S = float(os.environ.get("COLLECTOR_READY_TIMEOUT_S", "30"))
 # OTLP receiver ports for sketchcol — override if the default ports are taken.
 OTLP_GRPC_ENDPOINT = os.environ.get("OTLP_GRPC_ENDPOINT", "localhost:4327")
 OTLP_HTTP_ENDPOINT = os.environ.get("OTLP_HTTP_ENDPOINT", "localhost:4328")
@@ -227,16 +227,25 @@ def collector_config_url(controller: str, metric: str) -> str:
     return f"{controller.rstrip('/')}/api/v1/config/{metric}"
 
 
-def wait_for_prometheus(url: str, timeout_s: float = 30.0) -> bool:
+def _parse_host_port(endpoint: str) -> tuple[str, int]:
+    """Parse ``host:port`` from env like ``localhost:4327``."""
+    ep = endpoint.strip()
+    if ":" not in ep:
+        raise ValueError(f"expected host:port, got {ep!r}")
+    host, _, port_s = ep.rpartition(":")
+    host = host.strip() or "127.0.0.1"
+    return host, int(port_s)
+
+
+def wait_for_tcp_listen(host: str, port: int, timeout_s: float) -> bool:
+    """Return True once something accepts TCP connections on host:port."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            r = requests.get(url, timeout=2)
-            if r.status_code == 200:
+            with socket.create_connection((host, port), timeout=1.0):
                 return True
-        except requests.RequestException:
-            pass
-        time.sleep(0.25)
+        except OSError:
+            time.sleep(0.25)
     return False
 
 
@@ -267,7 +276,7 @@ def clear_aggregate_csv_files(results_dir: Path, clear: bool) -> None:
 
 
 def clear_sketch_output(results_dir: Path) -> None:
-    """Remove prior sketch scrapes / JSONL so each benchmark run starts clean."""
+    """Remove prior sketch JSONL output so each benchmark run starts clean."""
     out = results_dir / "sketch_output"
     if out.is_dir():
         shutil.rmtree(out)
@@ -287,7 +296,9 @@ def _run_one_query_day(
     collector_override: str | None,
     accuracy_minutes: int = 0,
 ) -> int:
-    """Run one (query, day) cell: start collector, scrape, replay, compare, analyze.
+    """Run one (query, day) cell: start collector, replay, compare, analyze.
+
+    Accuracy uses JSONL from the file exporter; no Prometheus scrape is required.
 
     Returns 0 on success, non-zero on failure. Does not manage the controller
     lifecycle — callers are responsible for that.
@@ -299,10 +310,9 @@ def _run_one_query_day(
         print(f"Collector binary missing or not executable: {collector_bin}", file=sys.stderr)
         return 1
 
-    metrics_port = int(urlparse(PROMETHEUS_METRICS_URL).port or 8889)
-    otlp_grpc_port = int(OTLP_GRPC_ENDPOINT.rsplit(":", 1)[-1])
-    otlp_http_port = int(OTLP_HTTP_ENDPOINT.rsplit(":", 1)[-1])
-    kill_process_on_tcp_port(metrics_port)
+    otlp_host, otlp_grpc_port = _parse_host_port(OTLP_GRPC_ENDPOINT)
+    _, otlp_http_port = _parse_host_port(OTLP_HTTP_ENDPOINT)
+    kill_process_on_tcp_port(COLLECTOR_EXPORT_PORT)
     kill_process_on_tcp_port(otlp_grpc_port)
     kill_process_on_tcp_port(otlp_http_port)
 
@@ -338,33 +348,19 @@ def _run_one_query_day(
             cwd=str(bench_root),
         )
 
-        if not wait_for_prometheus(PROMETHEUS_METRICS_URL, timeout_s=PROMETHEUS_READY_TIMEOUT_S):
+        if not wait_for_tcp_listen(otlp_host, otlp_grpc_port, timeout_s=COLLECTOR_READY_TIMEOUT_S):
             print(
-                f"Warning: {PROMETHEUS_METRICS_URL} not reachable within "
-                f"{PROMETHEUS_READY_TIMEOUT_S}s; check results/collector.log — "
-                "sketch_output may be empty.",
+                f"Warning: OTLP gRPC not listening on {otlp_host}:{otlp_grpc_port} within "
+                f"{COLLECTOR_READY_TIMEOUT_S}s; check results/collector.log — "
+                "replay may see no collector.",
                 file=sys.stderr,
             )
-            # Collector failed to start — log the last few lines for diagnosis.
             try:
                 with open(results_dir / "collector.log", "r", errors="replace") as f:
-                    lines = f.readlines()
-                    tail = "".join(lines[-10:])
+                    tail = "".join(f.readlines()[-10:])
                 print(f"collector.log tail:\n{tail}", file=sys.stderr)
             except OSError:
                 pass
-
-        scrape_argv = [
-            py,
-            str(bench_root / "scrape.py"),
-            "--query", query,
-            "--day", day,
-            "--out-dir", str(results_dir / "sketch_output"),
-            "--url", PROMETHEUS_METRICS_URL,
-            "--probe-timeout", str(SCRAPE_PROBE_TIMEOUT_S),
-            "--duration", "7200",
-        ]
-        scrape_proc = subprocess.Popen(scrape_argv, cwd=str(bench_root))
 
         replay_argv = [
             py,
@@ -382,19 +378,6 @@ def _run_one_query_day(
         if accuracy_minutes > 0:
             replay_argv += ["--max-event-minutes", str(accuracy_minutes)]
         subprocess.run(replay_argv, check=True, cwd=str(bench_root))
-
-        scrape_proc.send_signal(signal.SIGTERM)
-        try:
-            scrape_proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            scrape_proc.kill()
-
-        out_csv = results_dir / "sketch_output" / query / f"{day_tag}.csv"
-        try:
-            n = append_metrics_snapshot(PROMETHEUS_METRICS_URL, out_csv)
-            print(f"Final Prometheus snapshot: {n} metric lines -> {out_csv}", file=sys.stderr)
-        except Exception as exc:
-            print(f"Final snapshot failed: {exc}", file=sys.stderr)
 
         time.sleep(2)
         if cpid is not None:

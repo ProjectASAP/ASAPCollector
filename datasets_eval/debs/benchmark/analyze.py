@@ -142,8 +142,7 @@ def main() -> None:
         "queries with ground truth (Q1, Q3–Q8)."
     )
     lines.append(
-        "- End-to-end scrape timing is bounded by scrape interval; see collector logs "
-        "for finer-grained export latency if needed."
+        "- Sketch accuracy rows come from JSONL (file exporter); see collector.log for export issues."
     )
 
     report_path.write_text("\n".join(lines), encoding="utf-8")

@@ -38,8 +38,9 @@ def read_sketch_jsonl(path: Path) -> pd.DataFrame:
     if not path.is_file():
         return pd.DataFrame(columns=["flush_idx", "time_unix_ns", "metric", "labels", "value"])
 
+    flush_idx = -1
     with open(path, encoding="utf-8") as fh:
-        for flush_idx, line in enumerate(fh):
+        for line in fh:
             line = line.strip()
             if not line:
                 continue
@@ -47,6 +48,9 @@ def read_sketch_jsonl(path: Path) -> pd.DataFrame:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not obj.get("resourceMetrics"):
+                continue
+            flush_idx += 1
             for rm in obj.get("resourceMetrics", []):
                 for sm in rm.get("scopeMetrics", []):
                     for metric in sm.get("metrics", []):

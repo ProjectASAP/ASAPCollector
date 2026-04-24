@@ -107,7 +107,10 @@ python3 datasets_eval/debs/benchmark/run.py matrix \
 | `CONTROLLER` | `http://localhost:8080` | Controller API base URL |
 | `CONTROLLER_BIN` | `controller/target/release/controller` | Controller binary path |
 | `CONTROLLER_OPAMP_PORT` | `4320` | OpAMP server port |
-| `PROMETHEUS_METRICS_URL` | `http://localhost:8889/metrics` | Prometheus scrape endpoint |
+| `COLLECTOR_EXPORT_PORT` | `8889` | Port freed before each run (sketch metrics exporter in generated YAML) |
+| `COLLECTOR_READY_TIMEOUT_S` | `30` | Wait for OTLP gRPC to accept connections after collector start |
+| `OTLP_GRPC_ENDPOINT` | `localhost:4327` | OTLP gRPC bind used by `run.py` + replay (must match `--set` overrides) |
+| `OTLP_HTTP_ENDPOINT` | `localhost:4328` | OTLP HTTP bind used by `run.py` |
 | `AUTO_START_CONTROLLER` | `1` | Auto-start controller if not reachable (`0` to disable) |
 | `COLLECTOR_DDSKETCH` | (default path) | Override DDSketch collector binary |
 | `COLLECTOR_KLL` | (default path) | Override KLL collector binary |
@@ -126,7 +129,7 @@ After a run, `results/` contains:
 |---|---|
 | `results/report.md` | Accuracy table, throughput, latency summary |
 | `results/ground_truth/QN/<day>.csv` | Exact offline reference values |
-| `results/sketch_output/QN/<day>.csv` | Raw Prometheus scrape rows |
+| `results/sketch_output/QN/<day>.jsonl` | Per-window sketch output (OTLP-JSON via file exporter) |
 | `results/comparison/QN_<day>.csv` | Per-run accuracy metric and pass/fail |
 | `results/throughput.csv` | Events/sec statistics per run |
 | `results/latency.csv` | Send-time statistics per run |
@@ -139,7 +142,7 @@ After a run, `results/` contains:
 The collector uses 5-minute tumbling windows. Comparing sketch output to ground truth requires at least one complete window before evaluation.
 
 - **Q1** (`skip_warmup_windows=1`): EMA38/EMA100 have a cold-start bias in the first window because the exponential average has not converged yet. The first window is skipped, and all subsequent windows are compared against ground truth.
-- **Q3–Q8** (`skip_warmup_windows=0`): These queries are stateless within each window (no exponential state to warm up). The Prometheus scrape reflects the most recent closed window's snapshot; only that last window is compared to ground truth.
+- **Q3–Q8** (`skip_warmup_windows=0`): These queries are stateless within each window (no exponential state to warm up). Comparison uses JSONL window flushes from the file exporter.
 
 Override with `compare.py --skip-warmup-windows N` if needed.
 
