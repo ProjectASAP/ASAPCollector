@@ -144,8 +144,13 @@ def kill_on_port(port: int) -> None:
     time.sleep(1)
 
 
-def replay_mode_arg(mode: str) -> str:
-    return "max" if mode == "throughput" else "paced"
+def replay_mode_arg(mode: str) -> str:                                                  
+    if mode == "throughput":
+        return "max"                                                                    
+    if mode == "sketch-snowset":
+        return "scaled"                                                                 
+    return "paced"
+
 
 
 def _run_one(
@@ -158,6 +163,7 @@ def _run_one(
     batch_size: int,
     sketch: str,
     collector_override: str | None,
+    accuracy_minutes: float | None = None,
 ) -> int:
     controller = os.environ.get("CONTROLLER", "http://localhost:8080")
     metric     = os.environ.get("METRIC", QUERY_CONFIG[query].metric_name)
@@ -169,14 +175,27 @@ def _run_one(
 
     metrics_port = int(urlparse(PROMETHEUS_METRICS_URL).port or 8889)
     kill_on_port(metrics_port)
+    kill_on_port(8888)  # OTel collector internal telemetry default port
 
     is_nop = query in NOP_QUERIES
     py = sys.executable
     cpid: subprocess.Popen | None = None
     try:
         if not is_nop:
-            post_plan(controller, build_plan_body(metric, query,
-                                                  sketch if sketch and sketch != "nop" else None))
+            plan_sketch = sketch if sketch and sketch != "nop" else None
+            latency_sla = None
+            if accuracy_minutes is not None and plan_sketch == "kll":
+                latency_sla = time_window_for_query(query)
+            plan_body = build_plan_body(metric, query, plan_sketch, latency_sla)
+            if speed > 1.0 and accuracy_minutes is None:
+                # Align the wall-clock window with one 5-min data window.
+                # At replay speed S, a 300-data-second window = 300/S wall seconds.
+                # Controller parser only accepts integer seconds, so clamp to min 1s.
+                # Skip alignment for accuracy-minutes runs: the default 300s window
+                # must outlast the short replay so the KLL retains data for the snapshot.
+                wall_window_s = max(1, int(300.0 / speed))
+                plan_body["time_window"] = f"{wall_window_s}s"
+            post_plan(controller, plan_body)
             cpid = subprocess.Popen(
                 [str(collector_bin),
                  f"--config={controller.rstrip('/')}/api/v1/config/{metric}"],
@@ -223,6 +242,17 @@ def _run_one(
             "--batch-size", str(batch_size),
             "--results-dir", str(results_dir),
         ]
+        if accuracy_minutes is not None:
+            replay_argv += ["--max-data-minutes", str(accuracy_minutes)]
+            # Pass start timestamp from GT so replay skips the expensive full scan.
+            gt_csv = results_dir / "ground_truth" / query / f"{slice_tag}.csv"
+            if gt_csv.is_file():
+                try:
+                    import pandas as _pd
+                    _start_ns = int(_pd.read_csv(gt_csv, usecols=["window_start"])["window_start"].min())
+                    replay_argv += ["--start-ns", str(_start_ns)]
+                except Exception:
+                    pass
         subprocess.run(replay_argv, check=True, cwd=str(bench_root))
 
         scrape_proc.send_signal(signal.SIGTERM)
@@ -255,7 +285,8 @@ def _run_one(
             "--gt-dir",     str(results_dir / "ground_truth"),
             "--sketch-dir", str(results_dir / "sketch_output"),
             "--out-dir",    str(results_dir / "comparison"),
-        ], check=True, cwd=str(bench_root))
+        ] + (["--max-data-minutes", str(accuracy_minutes)]
+             if accuracy_minutes is not None else []), check=True, cwd=str(bench_root))
 
         subprocess.run([
             py, str(bench_root / "analyze.py"),
@@ -327,6 +358,7 @@ def run_test(args: argparse.Namespace) -> int:
             batch_size=args.batch_size,
             sketch=sketch,
             collector_override=args.collector,
+            accuracy_minutes=args.accuracy_minutes,
         )
     finally:
         stop_controller(ctrl_pid)
@@ -382,6 +414,7 @@ def run_matrix(args: argparse.Namespace) -> int:
                     batch_size=args.batch_size,
                     sketch=sk,
                     collector_override=args.collector,
+                    accuracy_minutes=args.accuracy_minutes,
                 )
                 if rc == 0:
                     n_pass += 1
@@ -421,6 +454,11 @@ def main() -> None:
     p_test.add_argument("--collector", default=os.environ.get("COLLECTOR", "") or None)
     p_test.add_argument("--results-dir", type=Path, default=BENCH_ROOT / "results")
     p_test.add_argument("--clear-results", action="store_true")
+    p_test.add_argument(
+        "--accuracy-minutes", type=float, default=None,
+        dest="accuracy_minutes",
+        help="Replay only this many minutes of dataset time, then stop (default: full dataset).",
+    )
 
     p_matrix = sub.add_parser("matrix", help="Full matrix run.")
     p_matrix.add_argument("--queries", nargs="+", default=list(DEFAULT_QUERIES))
@@ -440,6 +478,11 @@ def main() -> None:
     p_matrix.add_argument("--collector", default=os.environ.get("COLLECTOR", "") or None)
     p_matrix.add_argument("--results-dir", type=Path, default=BENCH_ROOT / "results")
     p_matrix.add_argument("--clear-results", action="store_true")
+    p_matrix.add_argument(
+        "--accuracy-minutes", type=float, default=None,
+        dest="accuracy_minutes",
+        help="Replay only this many minutes of dataset time per cell (default: full dataset).",
+    )
 
     args = parser.parse_args()
     if args.command == "test":

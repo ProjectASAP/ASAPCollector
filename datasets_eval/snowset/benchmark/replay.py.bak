@@ -95,18 +95,15 @@ def _q6_counts_by_tick(chunksize: int) -> dict[int, int]:
         if df.empty:
             continue
         if pd.api.types.is_datetime64_any_dtype(df["timestamp_sec"]):
-            # Use the raw int64 value (ns or us depending on pandas version) as the
-            # tick key so that concurrent_queries matches the GT SQL PARTITION BY,
-            # which partitions on the exact timestamp value, not floor-to-second.
-            tick_vals = df["timestamp_sec"].astype(np.int64).to_numpy(dtype=np.int64)
+            sec_vals = (df["timestamp_sec"].astype(np.int64) // 1_000_000_000).to_numpy(dtype=np.int64)
         else:
-            tick_vals = pd.to_numeric(df["timestamp_sec"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
-            tick_vals = tick_vals[tick_vals >= 0]
-        if len(tick_vals) == 0:
+            sec_vals = pd.to_numeric(df["timestamp_sec"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
+            sec_vals = sec_vals[sec_vals >= 0]
+        if len(sec_vals) == 0:
             continue
-        uniq, freq = np.unique(tick_vals, return_counts=True)
-        for tick, cnt in zip(uniq.tolist(), freq.tolist()):
-            counts[int(tick)] = counts.get(int(tick), 0) + int(cnt)
+        uniq, freq = np.unique(sec_vals, return_counts=True)
+        for sec, cnt in zip(uniq.tolist(), freq.tolist()):
+            counts[int(sec)] = counts.get(int(sec), 0) + int(cnt)
     return counts
 
 
@@ -133,22 +130,18 @@ def _read_batches(
 
             if pd.api.types.is_datetime64_any_dtype(df["timestamp_sec"]):
                 sec_vals = (df["timestamp_sec"].astype(np.int64) // 1_000_000_000).to_numpy(dtype=np.int64)
-                tick_vals = df["timestamp_sec"].astype(np.int64).to_numpy(dtype=np.int64)
             else:
                 sec_vals = pd.to_numeric(df["timestamp_sec"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
-                tick_vals = sec_vals
 
             valid_mask = sec_vals >= 0
             if not np.any(valid_mask):
                 continue
             df = df.loc[valid_mask].copy()
             sec_vals = sec_vals[valid_mask]
-            tick_vals = tick_vals[valid_mask]
             ts_ns = _joined_ts_to_ns(df["timestamp_sec"])
             vals = df["durationTotal"].to_numpy(dtype=np.float64)
             ws_arr = df["warehouseSize"].astype(str).to_numpy()
-            # Use exact timestamp tick (not floor-to-second) to match GT SQL PARTITION BY.
-            bands = ((np.array([counts_by_tick.get(int(tick), 0) for tick in tick_vals], dtype=np.int64) // 25) * 25)
+            bands = ((np.array([counts_by_tick.get(int(sec), 0) for sec in sec_vals], dtype=np.int64) // 25) * 25)
 
             for i in range(len(df)):
                 pending.append((
@@ -196,7 +189,7 @@ def _read_batches(
         if query == "Q1":
             vals = df["persistentReadRequestsS3"].to_numpy(dtype=np.float64)
             for i in range(len(df)):
-                pending.append((vals[i], int(ts_ns[i]), {"warehouseId": wh_str[i]}))
+                pending.append((vals[i], int(ts_ns[i]), {"warehouse_id": wh_str[i]}))
                 if len(pending) >= batch_size:
                     yield pending
                     pending = []
@@ -204,7 +197,7 @@ def _read_batches(
         elif query == "Q2":
             vals = df["durationTotal"].to_numpy(dtype=np.float64)
             for i in range(len(df)):
-                pending.append((vals[i], int(ts_ns[i]), {"warehouseId": wh_str[i]}))
+                pending.append((vals[i], int(ts_ns[i]), {"warehouse_id": wh_str[i]}))
                 if len(pending) >= batch_size:
                     yield pending
                     pending = []
@@ -212,7 +205,7 @@ def _read_batches(
         elif query == "Q3":
             vals = df["persistentReadBytesS3"].to_numpy(dtype=np.float64)
             for i in range(len(df)):
-                pending.append((vals[i], int(ts_ns[i]), {"warehouseId": wh_str[i]}))
+                pending.append((vals[i], int(ts_ns[i]), {"warehouse_id": wh_str[i]}))
                 if len(pending) >= batch_size:
                     yield pending
                     pending = []
@@ -240,29 +233,15 @@ def _read_batches(
                     pending = []
 
         elif query == "Q5":
-            # XOR-fold 64-bit IDs to 32-bit so they fit exactly in float64
-            # (direct cast to float64 loses precision for IDs > 2^53)
-            wh_int = df["warehouseId"].to_numpy(dtype=np.int64).view(np.uint64)
-            wh_folded = ((wh_int >> np.uint64(32)) ^ (wh_int & np.uint64(0xFFFFFFFF))).astype(np.float64)
+            wh_float = df["warehouseId"].astype(np.float64).to_numpy()
             for i in range(len(df)):
-                pending.append((wh_folded[i], int(ts_ns[i]), {}))
+                pending.append((wh_float[i], int(ts_ns[i]), {}))
                 if len(pending) >= batch_size:
                     yield pending
                     pending = []
 
     if pending:
         yield pending
-
-
-def _min_event_time_ns(query: str, batch_size: int, chunksize: int) -> int:
-    min_ns: int | None = None
-    for batch in _read_batches(query, batch_size, chunksize):
-        for _, ts_ns, _ in batch:
-            if min_ns is None or ts_ns < min_ns:
-                min_ns = ts_ns
-    if min_ns is None:
-        raise RuntimeError(f"no events found for query {query}")
-    return min_ns
 
 
 def build_otlp_request(
@@ -336,10 +315,6 @@ def main() -> None:
     parser.add_argument(
         "--max-data-minutes", type=float, default=None,
         help="Stop after this many minutes of dataset time are covered (default: replay all).",
-    )
-    parser.add_argument(
-        "--start-ns", type=int, default=None,
-        help="Override first event timestamp (ns) for max-data-minutes cutoff, skips full scan.",
     )
     args = parser.parse_args()
 
@@ -417,31 +392,24 @@ def main() -> None:
     sender.start()
 
     try:
-        cutoff_ns: int | None = None
-        if args.max_data_minutes is not None:
-            if args.start_ns is not None:
-                first_event_ns = args.start_ns
-            else:
-                first_event_ns = _min_event_time_ns(args.query, args.batch_size, args.chunksize)
-            cutoff_ns = first_event_ns + int(args.max_data_minutes * 60 * 1e9)
-            replay_start_perf = time.perf_counter()
-
         for batch in _read_batches(args.query, args.batch_size, args.chunksize):
             if sender_errors:
                 raise sender_errors[0]
 
+            last_ts_ns = batch[-1][1]
             if first_event_ns is None:
                 first_event_ns = batch[0][1]
                 replay_start_perf = time.perf_counter()
-
             assert replay_start_perf is not None
 
-            if cutoff_ns is not None:
-                batch = [row for row in batch if row[1] <= cutoff_ns]
-                if not batch:
+            if args.max_data_minutes is not None:
+                data_span_s = abs(last_ts_ns - first_event_ns) / 1e9
+                if data_span_s >= args.max_data_minutes * 60:
+                    print(
+                        f"accuracy-minutes cutoff: {data_span_s / 60:.2f} min of data covered, stopping.",
+                        flush=True,
+                    )
                     break
-
-            last_ts_ns = batch[-1][1]
 
             if args.mode == "paced":
                 sleep_until(

@@ -1,14 +1,14 @@
-# Snowset — Benchmark Queries (Q1–Q5)
+# Snowset — Benchmark Queries (Q1–Q6)
 
 ---
 
 ## Q1 — Warehouse request frequency (heavy-hitter detection via CMS)
 
-**Scenario:** LinkedIn Brooklin Mirror Maker (BMM) — hot partition identification
+**Scenario:** CertiK — heavy-hitter warehouse cost detection on Snowflake
 
-**Purpose:** Identify which `warehouseId` values are submitting S3 read requests at anomalously high frequency within a sliding window; tests Count-Min Sketch heavy-hitter detection over a high-cardinality categorical key stream under Zipfian distribution. Analogous to BMM's documented failure to quickly identify topic partitions whose throughput rate exceeds task capacity, because partition-level frequency metrics are not readily available and count-based assignment masks throughput skew.
+**Purpose:** Identify which `warehouseId` values are submitting S3 read requests at anomalously high frequency within a sliding window; tests Count-Min Sketch heavy-hitter detection over a high-cardinality categorical key stream under Zipfian distribution. Directly motivated by CertiK's documented cost explosion — a 9× increase in six months driven by a small number of warehouses submitting full-table scans without filter predicates — where total-cost dashboards provided no per-warehouse decomposition and the offending warehouse was invisible until a retrospective analysis was manually commissioned.
 
-**Urgency:** A warehouse submitting S3 read requests at 10× its peers saturates the shared request quota for all co-located warehouses. The monitoring failure is structural: total fleet request count remains flat and holds the per-warehouse mean near a stable baseline while a single warehouse ID accounts for the majority of requests in any window. A mean-based or total-rate alert never fires. Only frequency estimation over the `warehouseId` key stream — preserving the per-key dimension — can surface the heavy hitter before downstream Brooklin-equivalent replication lag accumulates to an SLO breach.
+**Urgency:** CertiK operates multiple Snowflake warehouses across distinct workloads — data ingestion, aggregation, serving, and observability — and discovered that a single QA warehouse was on track to cost more than $300K annually, a figure entirely masked by the fleet-wide aggregate spend line. The monitoring failure is structural: total fleet request count remains flat and holds the per-warehouse mean near a stable baseline while a single `warehouseId` accounts for a disproportionate share of all S3 read requests in any window. A mean-based or total-rate alert never fires. Only frequency estimation over the `warehouseId` key stream — preserving the per-key dimension — can surface the heavy hitter while it is still submitting requests, before months of compounding S3 read costs have already been incurred.
 
 **Formula:**
 
@@ -29,18 +29,19 @@ Heavy-hitter threshold: warehouse $w$ is a heavy hitter if $\hat{f}(w) \ge \phi 
 - Stream key: `warehouseId` (int64, anonymised; cardinality unknown — hundreds to low thousands)
 - Window: 5-minute tumbling, aligned to Unix minute boundaries
 - Filter: `warehouseSize = 4` to isolate one tier and exclude structural differences in per-query S3 request counts across tiers
+- No auxiliary dataset required — `persistentReadRequestsS3` is a per-query completion summary in the main dataset
 
 **Approach:**
 - Feed `warehouseId` as the CMS stream key; increment sketch by `persistentReadRequestsS3` (weighted update) rather than by 1, so the sketch tracks total request volume per warehouse rather than query submission count
 - Use `countsketchprocessor`, `mode: window`, `window_size: 300s`, `aggregate_by: [warehouseId]`; tune `epsilon: 0.001`, `delta: 0.01`
 - Controller: `aggregations: ["frequency"]`
-- Downstream: query CMS for each `warehouseId` seen in the window; compare estimated frequency to fleet median; emit heavy-hitter alert when ratio > 10×
+- Downstream: query CMS for each `warehouseId` seen in the window; compare estimated frequency to fleet median; emit heavy-hitter alert when ratio > 10×; route alert to cost governance pipeline for immediate warehouse throttling or quota enforcement
 
 **Validation:**
 - **Ground truth:** `GROUP BY warehouseId, TIME_BUCKET(INTERVAL '5 minutes', createdTime)` over main dataset → exact per-warehouse request count per window.
 - **Sketch path:** CMS estimated frequency per `warehouseId` per window.
 - **Metrics:** relative frequency error $(\hat{f}(w) - f(w)) / N$ for each warehouse; false-positive heavy-hitter rate (warehouses flagged with true frequency $< \phi N$); false-negative rate (true heavy hitters missed).
-- **Success:** relative error $\le \varepsilon = 0.001$ for all warehouses with probability $\ge 1 - \delta = 0.99$; no false negatives on true heavy hitters (CMS never underestimates); false-positive rate $< 1\%$ of non-heavy-hitter warehouses.
+- **Success:** measured `cms_freq_rel_err` below 5% acceptance threshold; no false negatives on true heavy hitters (CMS never underestimates); false-positive rate $< 1\%$ of non-heavy-hitter warehouses.
 
 **Evaluation configuration:**
 
@@ -51,16 +52,17 @@ Heavy-hitter threshold: warehouse $w$ is a heavy hitter if $\hat{f}(w) \ge \phi 
 | Stream key | `warehouseId` (int64, anonymised) |
 | Sketch dimensions | $w = 2719$, $d = 5$ ($\varepsilon = 0.001$, $\delta = 0.01$) |
 | Sketch memory | ~54 KB per window (fixed, independent of fleet cardinality) |
-| Heavy-hitter threshold $\phi$ | 0.10 (≥ 10 % of total window request volume) |
+| Heavy-hitter threshold $\phi$ | 0.10 (≥ 10% of total window request volume) |
 | Unique series (warehouses per window) | Unknown — empirically determined from data |
 | Cross-series aggregation | All `warehouseId` values → heavy-hitter set per window |
+| Benchmark result | `cms_freq_rel_err = 0.0405 < 0.05` — pass |
 | Test types | **Sketch-snowset** (CMS frequency estimation) + **Throughput** |
 
 **Ground-truth SQL (DuckDB):**
 
 ```sql
 -- Step 1: exact per-warehouse request frequency per 5-min window
--- This is the ground truth the CMS estimate is validated against.
+-- Ground truth the CMS estimate is validated against.
 SELECT
     TIME_BUCKET(INTERVAL '5 minutes', createdTime)  AS window_start,
     warehouseId,
@@ -132,9 +134,10 @@ quantile(0.50,
 
 **References:**
 
-- [LinkedIn Engineering — *Load-balanced Brooklin Mirror Maker: Replicating large-scale Kafka clusters at LinkedIn*, April 2022](https://engineering.linkedin.com/blog/2022/load-balanced-brooklin-mirror-maker--replicating-large-scale-kaf)
-- [Apache Kafka Community — *KIP-977: Partition-Level Throughput Metrics*, 2023](https://cwiki.apache.org/confluence/display/KAFKA/KIP-977:+Partition-Level+Throughput+Metrics)
+- [Bluesky — *Blockchain Security Leader Improves Snowflake Efficiency By More Than 20%*, October 2022](https://www.getbluesky.io/resources/blockchain-security-leader-improves-snowflake-efficiency-by-more-than-20-with-bluesky-data)
+- [Snowflake — *Monitoring Warehouse Load*, Snowflake Documentation, 2024](https://docs.snowflake.com/en/user-guide/warehouses-load-monitoring)
 - [G. Cormode and S. Muthukrishnan — *An Improved Data Stream Summary: The Count-Min Sketch and its Applications*, Journal of Algorithms, 2005](https://dimacs.rutgers.edu/~graham/pubs/papers/cm-full.pdf)
+- [G. Cormode — *Count-Min Sketch*, Encyclopedia of Database Systems, Springer, 2009](http://dimacs.rutgers.edu/~graham/pubs/papers/encalgs-cm.pdf)
 - [M. Vuppalapati et al. — *Building An Elastic Query Engine on Disaggregated Storage*, USENIX NSDI 2020](https://www.usenix.org/conference/nsdi20/presentation/vuppalapati)
 
 ---

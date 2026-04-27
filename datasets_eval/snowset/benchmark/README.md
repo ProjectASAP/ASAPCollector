@@ -214,9 +214,9 @@ python3 datasets_eval/snowset/benchmark/ground_truth/check_gt.py
 
 | Query | Metric | Threshold |
 |---|---|---|
-| Q1 | `cms_s3_frequency_rel_error` | ≤ 0.5 |
-| Q2 | `kll_duration_p99_rel_error` | ≤ 0.5 |
-| Q3 | `dds_s3bytes_p99_rel_error` | ≤ 0.5 |
-| Q4 | `cms_archetype_share_error` | ≤ 0.5 |
-| Q5 | `hll_warehouse_cardinality_rel_error` | ≤ 0.5 |
-| Q6 | `kll_duration_p95_concurrency_band_rel_error` | ≤ 0.5 |
+| Q1 | `cms_s3_frequency_rel_error` | ≤ 0.05 |
+| Q2 | `kll_duration_p99_rel_error` | ≤ 0.05 |
+| Q3 | `dds_s3bytes_p99_rel_error` | ≤ 0.05 |
+| Q4 | `cms_archetype_share_error` | ≤ 0.05 |
+| Q5 | `hll_warehouse_cardinality_rel_error` | ≤ 0.05 |
+| Q6 | `kll_duration_p95_concurrency_band_rel_error` | ≤ 0.05 |

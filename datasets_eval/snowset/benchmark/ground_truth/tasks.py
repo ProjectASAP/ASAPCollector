@@ -178,9 +178,9 @@ WITH joined AS (
 ),
 banded AS (
     SELECT
-        (ts_sec / 300) * 300                        AS window_start,
+        FLOOR(ts_sec / 300) * 300                   AS window_start,
         warehouseSize,
-        (concurrent_queries / 25) * 25             AS concurrency_band,
+        FLOOR(concurrent_queries / 25) * 25         AS concurrency_band,
         durationTotal
     FROM joined
 )
@@ -207,6 +207,58 @@ ORDER BY window_start, warehouseSize, concurrency_band
     out.mkdir(parents=True, exist_ok=True)
     df.to_csv(out / f"{slice_tag}.csv", index=False)
     log_phase("Q6", "done", rows=len(df))
+
+
+# ── Q6 cumulative: overall p99 per band (no window grouping) ─────────────────
+# Used by _compare_q6 to evaluate the cumulative KLL sketch against the true
+# overall quantile (rather than a single 5-min window, which causes ~100% error
+# because the cumulative KLL accumulates extreme outliers across all windows).
+
+def _gt_q6_cumulative(output_dir: Path, slice_tag: str, chunksize: int) -> None:
+    del chunksize
+    log_phase("Q6", "load_joined_cumulative", path=str(JOINED_PARQUET_PATH))
+    try:
+        import duckdb
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Q6 cumulative GT requires duckdb."
+        ) from exc
+
+    if not JOINED_PARQUET_PATH.is_file():
+        raise FileNotFoundError(f"Joined parquet not found: {JOINED_PARQUET_PATH}")
+
+    sql = f"""
+WITH joined AS (
+    SELECT
+        warehouseSize,
+        durationTotal,
+        FLOOR(COUNT(*) OVER (PARTITION BY timestamp_sec) / 25) * 25 AS concurrency_band
+    FROM read_parquet('{JOINED_PARQUET_PATH}')
+    WHERE warehouseSize = 4
+      AND durationTotal > 0
+)
+SELECT
+    warehouseSize,
+    concurrency_band,
+    COUNT(*)                           AS sample_count,
+    quantile_cont(durationTotal, 0.50) AS p50_ms,
+    quantile_cont(durationTotal, 0.95) AS p95_ms,
+    quantile_cont(durationTotal, 0.99) AS p99_ms
+FROM joined
+GROUP BY warehouseSize, concurrency_band
+ORDER BY warehouseSize, concurrency_band
+"""
+
+    con = duckdb.connect()
+    try:
+        df = con.execute(sql).fetch_df()
+    finally:
+        con.close()
+
+    out = output_dir / "Q6"
+    out.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out / "cumulative.csv", index=False)
+    log_phase("Q6", "cumulative_done", rows=len(df))
 
 
 _GT_RUNNERS = {

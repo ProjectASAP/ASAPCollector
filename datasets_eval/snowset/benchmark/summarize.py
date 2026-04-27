@@ -32,6 +32,10 @@ METRIC_DESCRIPTIONS: dict[str, str] = {
         "5-min window of the joined dataset. Baseline query uses KLL over durationTotal "
         "with labels derived from per-tick concurrency bands."
     ),
+    "kll_p99_concurrency_band_rel_err": (
+        "Q6: Mean relative p99 error by `(warehouseSize, concurrency_band)` in the last "
+        "5-min window of the joined dataset. Uses p99 when the sketch does not emit p95."
+    ),
 }
 
 METRIC_RENAME: dict[str, str] = {
@@ -41,6 +45,7 @@ METRIC_RENAME: dict[str, str] = {
     "cms_arch_share_err":    "cms_archetype_share_error",
     "hll_cardinality_rel_err": "hll_warehouse_cardinality_rel_error",
     "kll_p95_concurrency_band_rel_err": "kll_duration_p95_concurrency_band_rel_error",
+    "kll_p99_concurrency_band_rel_err": "kll_duration_p99_concurrency_band_rel_error",
 }
 
 THRESHOLD_DIRECTION: dict[str, str] = {
@@ -50,6 +55,7 @@ THRESHOLD_DIRECTION: dict[str, str] = {
     "cms_arch_share_err":     "≤",
     "hll_cardinality_rel_err": "≤",
     "kll_p95_concurrency_band_rel_err": "≤",
+    "kll_p99_concurrency_band_rel_err": "≤",
 }
 
 

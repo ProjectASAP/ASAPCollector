@@ -31,6 +31,18 @@ DEFAULT_COLLECTOR_PATHS = {
 
 PROMETHEUS_METRICS_URL = os.environ.get("PROMETHEUS_METRICS_URL", "http://localhost:8889/metrics")
 DEFAULT_ACCURACY_SLA = 0.5
+DEFAULT_SKETCH_ACCURACY_SLA = 0.05
+QUERY_SKETCH_ACCURACY_SLA = {
+    # DDSketch's guarantee is parameterized by relative accuracy alpha, not by
+    # the benchmark pass/fail threshold. Q3 needs the planned 1% DDSketch alpha.
+    "Q3": 0.01,
+    # KLL and CMS: 5% target accuracy → controller configures sketch accordingly.
+    "Q1": 0.05,
+    "Q2": 0.05,
+    "Q4": 0.05,
+    "Q5": 0.05,
+    "Q6": 0.05,
+}
 
 DEFAULT_SLICES = ("full",)
 
@@ -171,14 +183,19 @@ def sketch_type_for_plan(query: str, sketch: str | None) -> str | None:
     return None
 
 
-def build_plan_body(metric: str, query: str, sketch: str | None) -> dict[str, Any]:
+def build_plan_body(
+    metric: str,
+    query: str,
+    sketch: str | None,
+    latency_sla: str | None = None,
+) -> dict[str, Any]:
     body: dict[str, Any] = {
         "metric_name": metric,
         "aggregations": plan_aggregations(query),
         "time_window": time_window_for_query(query),
-        "latency_sla": BENCH_LATENCY_SLA_FOR_BATCH_MODE,
+        "latency_sla": latency_sla or BENCH_LATENCY_SLA_FOR_BATCH_MODE,
         "group_by_labels": list(QUERY_CONFIG[query].group_by),
-        "accuracy_sla": DEFAULT_ACCURACY_SLA,
+        "accuracy_sla": QUERY_SKETCH_ACCURACY_SLA.get(query, DEFAULT_SKETCH_ACCURACY_SLA),
         "workload": {
             "series_count": 2051,
             "samples_per_sec_per_series": 10,

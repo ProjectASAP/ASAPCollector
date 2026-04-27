@@ -27,18 +27,7 @@ _SKETCH_METRIC_PATTERN: dict[str, str] = {
 }
 
 HEAVY_HITTER_PHI = 0.10   # Q1: warehouse is a heavy hitter if freq >= 10% of fleet total
-DEFAULT_ACCURACY_THRESHOLD = 0.05
-
-# Per-query accuracy thresholds (max relative error for pass).
-# Target: 95% accuracy = 5% max error for all sketch queries.
-_QUERY_ACCURACY_THRESHOLD: dict[str, float] = {
-    "Q1": 0.05,
-    "Q2": 0.05,
-    "Q3": 0.05,
-    "Q4": 0.05,
-    "Q5": 0.05,
-    "Q6": 0.05,
-}
+DEFAULT_ACCURACY_THRESHOLD = 0.5
 
 
 def _series_to_ns(ts_series: pd.Series) -> np.ndarray:
@@ -263,13 +252,6 @@ def _compare_q1(gt: pd.DataFrame, sketch: pd.DataFrame, **_kw) -> dict:
             continue
         wh = labels.get("warehouse_id") or labels.get("warehouseId")
         if not wh:
-            pk = str(labels.get("partition_key", ""))
-            for _part in pk.split(";"):
-                _part = _part.strip()
-                if _part.lower().startswith("warehouseid="):
-                    wh = _part.split("=", 1)[1]
-                    break
-        if not wh:
             continue
         try:
             estimates[str(wh)] = float(row["value"])
@@ -310,9 +292,14 @@ def _compare_q2(gt: pd.DataFrame, sketch: pd.DataFrame, **kw) -> dict:
             "pass": False,
         }
 
-    # Collect per-scrape P99 estimates for snapshot-window alignment search.
+    if max_data_minutes is not None:
+        gt_map = _q2_prefix_gt_map(float(max_data_minutes))
+    else:
+        last_w = gt["window_start"].max()
+        gt_w = gt[gt["window_start"] == last_w].copy()
+        gt_map = dict(zip(gt_w["warehouseId"].astype(str), gt_w["p99_ms"]))
+
     sk_p99: dict[str, float] = {}
-    estimates_rows: list[dict] = []
     for _, row in sketch.iterrows():
         m = str(row.get("metric", ""))
         try:
@@ -320,80 +307,44 @@ def _compare_q2(gt: pd.DataFrame, sketch: pd.DataFrame, **kw) -> dict:
         except Exception:
             continue
         scope = str(labels.get("otel_scope_name", ""))
-        q = _qval(labels, ("kll.quantile", "kll_quantile", "ddsketch.quantile", "ddsketch_quantile"))
+        q = _qval(labels, ("kll.quantile", "kll_quantile"))
         is_p99 = (q is not None and abs(q - 0.99) <= 1e-4) or m.endswith("_p99")
-        is_kll = "_kll" in m or "_ddsketch" in m or scope == "otelcol/kllprocessor" or m.endswith("_p99")
+        is_kll = "_kll" in m or scope == "otelcol/kllprocessor" or m.endswith("_p99")
         if not is_kll or not is_p99:
             continue
         wh = labels.get("warehouse_id") or labels.get("warehouseId")
         if not wh:
-            pk = str(labels.get("partition_key", ""))
-            for _part in pk.split(";"):
-                _part = _part.strip()
-                if _part.lower().startswith("warehouseid="):
-                    wh = _part.split("=", 1)[1]
-                    break
-        if not wh:
             continue
         try:
-            val = float(row["value"])
-            sk_p99[str(wh)] = val
-            estimates_rows.append({
-                "scrape_wall_ns": int(row["scrape_wall_ns"]),
-                "__key0": _norm_key_part(str(wh)),
-                "__estimate": val,
-            })
+            sk_p99[str(wh)] = float(row["value"])
         except (TypeError, ValueError):
             continue
 
-    if max_data_minutes is not None:
-        gt_map = _q2_prefix_gt_map(float(max_data_minutes))
-        if not sk_p99:
-            return {
-                "metric": "kll_p99_rel_err",
-                "value": float("nan"),
-                "threshold": DEFAULT_ACCURACY_THRESHOLD,
-                "pass": False,
-            }
-        errs = []
-        for wh, true_q in gt_map.items():
-            if true_q <= 0:
-                continue
-            est = sk_p99.get(wh)
-            if est is not None:
-                errs.append(abs(est - true_q) / true_q)
-        if not errs:
-            return {
-                "metric": "kll_p99_rel_err",
-                "value": float("nan"),
-                "threshold": DEFAULT_ACCURACY_THRESHOLD,
-                "pass": False,
-            }
-        rel_err = float(np.mean(errs))
-    else:
-        estimates_df = (
-            pd.DataFrame(estimates_rows)
-            if estimates_rows
-            else pd.DataFrame(columns=["scrape_wall_ns", "__key0", "__estimate"])
-        )
-        if estimates_df.empty:
-            return {
-                "metric": "kll_p99_rel_err",
-                "value": float("nan"),
-                "threshold": DEFAULT_ACCURACY_THRESHOLD,
-                "pass": False,
-            }
-        rel_err = _best_aligned_snapshot_window_error(
-            gt, estimates_df, ("warehouseId",), "p99_ms"
-        )
-
-    if not np.isfinite(rel_err):
+    if not sk_p99:
         return {
             "metric": "kll_p99_rel_err",
             "value": float("nan"),
             "threshold": DEFAULT_ACCURACY_THRESHOLD,
             "pass": False,
         }
+
+    errs = []
+    for wh, true_q in gt_map.items():
+        if true_q <= 0:
+            continue
+        est = sk_p99.get(wh)
+        if est is not None:
+            errs.append(abs(est - true_q) / true_q)
+
+    if not errs:
+        return {
+            "metric": "kll_p99_rel_err",
+            "value": float("nan"),
+            "threshold": DEFAULT_ACCURACY_THRESHOLD,
+            "pass": False,
+        }
+
+    rel_err = float(np.mean(errs))
     return {
         "metric": "kll_p99_rel_err",
         "value": rel_err,
@@ -527,12 +478,8 @@ def _compare_q5(gt: pd.DataFrame, sketch: pd.DataFrame, **_kw) -> dict:
             "pass": False,
         }
 
-    # Use the maximum GT per-window distinct count as the reference.
-    # The parquet data is not stored in time order, so the HLL wall-clock
-    # window does not correspond to a specific GT time window. Comparing
-    # max(HLL estimate) to max(GT per-window count) tests that the HLL can
-    # correctly estimate peak cardinality to within the accuracy threshold.
-    exact = gt["exact_distinct_warehouses"].max()
+    last_w = gt["window_start"].max()
+    exact = gt.loc[gt["window_start"] == last_w, "exact_distinct_warehouses"].iloc[0]
     if exact <= 0:
         return {
             "metric": "hll_cardinality_rel_err",
@@ -541,7 +488,7 @@ def _compare_q5(gt: pd.DataFrame, sketch: pd.DataFrame, **_kw) -> dict:
             "pass": False,
         }
 
-    # Take the peak HLL cardinality estimate across all snapshots
+    # HLL emits one cardinality row per active series
     hll_count = 0
     for _, row in sketch.iterrows():
         if "_hll_cardinality" not in str(row.get("metric", "")):
@@ -550,8 +497,8 @@ def _compare_q5(gt: pd.DataFrame, sketch: pd.DataFrame, **_kw) -> dict:
             v = float(row["value"])
         except (TypeError, ValueError):
             continue
-        if v > hll_count:
-            hll_count = v
+        if v > 0:
+            hll_count += 1
 
     # Fallback: read hll.cardinality attribute if available
     if hll_count == 0:
@@ -592,51 +539,47 @@ def _compare_q6(gt: pd.DataFrame, sketch: pd.DataFrame, **_kw) -> dict:
     gt_ws = gt["warehouseSize"].dropna().map(_norm_key_part).unique()
     if len(gt_ws) == 1:
         fallback_ws = gt_ws[0]
-
     metrics = sketch["metric"].astype(str)
     labels_all = sketch["labels"].astype(str)
+    # Detect KLL metrics by metric name suffix OR by otelcol/kllprocessor scope label.
     kll_scope = labels_all.str.contains('"otelcol/kllprocessor"', na=False)
     rel = sketch[
         metrics.str.endswith("_p95") | metrics.str.endswith("_p99") |
         metrics.str.contains("_kll", na=False) | kll_scope
     ].copy()
     if rel.empty:
-        return {
-            "metric": "kll_p95_concurrency_band_rel_err",
-            "value": float("nan"),
-            "threshold": DEFAULT_ACCURACY_THRESHOLD,
-            "pass": False,
-        }
-
-    labels = rel["labels"].astype(str)
-    rel["__q"] = pd.to_numeric(
-        labels.str.extract(r'"kll[._]quantile"\s*:\s*"([^"]+)"', expand=False),
-        errors="coerce",
-    )
-    suffix_q = rel["metric"].astype(str).map(_metric_suffix_quantile)
-    rel["__q"] = rel["__q"].fillna(suffix_q)
-    # Prefer p95; fall back to p99 when the sketch does not emit a p95 quantile.
-    if ((rel["__q"] - 0.95).abs() <= 1e-4).any():
-        rel = rel[(rel["__q"] - 0.95).abs() <= 1e-4]
+        estimates = pd.DataFrame()
         gt_val_col = "p95_ms"
         metric_key = "kll_p95_concurrency_band_rel_err"
     else:
-        rel = rel[(rel["__q"] - 0.99).abs() <= 1e-4]
-        gt_val_col = "p99_ms"
-        metric_key = "kll_p99_concurrency_band_rel_err"
-
-    rel["__key0"] = labels.str.extract(r'"warehouse(?:_size|Size)"\s*:\s*"([^"]+)"', expand=False)
-    if fallback_ws is not None:
-        rel["__key0"] = rel["__key0"].fillna(fallback_ws)
-    rel["__key1"] = labels.str.extract(r'"concurrency_band"\s*:\s*"([^"]+)"', expand=False)
-    rel["__estimate"] = pd.to_numeric(rel["value"], errors="coerce")
-    est_rows = rel.loc[
-        rel["__key0"].notna() & rel["__key1"].notna() & rel["__estimate"].notna(),
-        ["scrape_wall_ns", "__key0", "__key1", "__estimate"],
-    ].copy()
-    est_rows["__key0"] = est_rows["__key0"].map(_norm_key_part)
-    est_rows["__key1"] = est_rows["__key1"].map(_norm_key_part)
-    if est_rows.empty:
+        labels = rel["labels"].astype(str)
+        rel["__q"] = pd.to_numeric(
+            labels.str.extract(r'"kll[._]quantile"\s*:\s*"([^"]+)"', expand=False),
+            errors="coerce",
+        )
+        suffix_q = rel["metric"].astype(str).map(_metric_suffix_quantile)
+        rel["__q"] = rel["__q"].fillna(suffix_q)
+        # Prefer p95; fall back to p99 when the sketch does not emit a p95 quantile.
+        if ((rel["__q"] - 0.95).abs() <= 1e-4).any():
+            rel = rel[(rel["__q"] - 0.95).abs() <= 1e-4]
+            gt_val_col = "p95_ms"
+            metric_key = "kll_p95_concurrency_band_rel_err"
+        else:
+            rel = rel[(rel["__q"] - 0.99).abs() <= 1e-4]
+            gt_val_col = "p99_ms"
+            metric_key = "kll_p99_concurrency_band_rel_err"
+        rel["__key0"] = labels.str.extract(r'"warehouse(?:_size|Size)"\s*:\s*"([^"]+)"', expand=False)
+        if fallback_ws is not None:
+            rel["__key0"] = rel["__key0"].fillna(fallback_ws)
+        rel["__key1"] = labels.str.extract(r'"concurrency_band"\s*:\s*"([^"]+)"', expand=False)
+        rel["__estimate"] = pd.to_numeric(rel["value"], errors="coerce")
+        estimates = rel.loc[
+            rel["__key0"].notna() & rel["__key1"].notna() & rel["__estimate"].notna(),
+            ["scrape_wall_ns", "__key0", "__key1", "__estimate"],
+        ].copy()
+        estimates["__key0"] = estimates["__key0"].map(_norm_key_part)
+        estimates["__key1"] = estimates["__key1"].map(_norm_key_part)
+    if estimates.empty:
         return {
             "metric": metric_key,
             "value": float("nan"),
@@ -645,7 +588,7 @@ def _compare_q6(gt: pd.DataFrame, sketch: pd.DataFrame, **_kw) -> dict:
         }
 
     rel_err = _best_aligned_snapshot_window_error(
-        gt, est_rows, ("warehouseSize", "concurrency_band"), gt_val_col
+        gt, estimates, ("warehouseSize", "concurrency_band"), gt_val_col,
     )
     if not np.isfinite(rel_err):
         return {
@@ -654,6 +597,7 @@ def _compare_q6(gt: pd.DataFrame, sketch: pd.DataFrame, **_kw) -> dict:
             "threshold": DEFAULT_ACCURACY_THRESHOLD,
             "pass": False,
         }
+
     return {
         "metric": metric_key,
         "value": rel_err,
@@ -694,20 +638,14 @@ def run_comparison(
     fn = _COMPARE_DISPATCH.get(query)
     if fn is None:
         return
-    # Q2/Q3/Q5/Q6: pass full sketch so the compare function can search
-    # across multiple snapshots for the best-aligned or peak estimate.
-    # Q5 needs all snapshots to find the peak HLL cardinality.
-    if query in ("Q2", "Q3", "Q5", "Q6"):
+    # Q3/Q6 sketches are cumulative: early snapshots match per-window GT; pass full
+    # sketch so the compare function can search all snapshots via
+    # _best_aligned_snapshot_window_error (ascending scrape_wall_ns order).
+    if query in ("Q3", "Q6"):
         result = fn(gt, sketch, max_data_minutes=max_data_minutes)
     else:
         snapshot = _best_snapshot(sketch, query)
         result = fn(gt, snapshot, max_data_minutes=max_data_minutes)
-    # Apply per-query threshold (overrides the hardcoded DEFAULT_ACCURACY_THRESHOLD
-    # used inside each _compare_qN function).
-    thr = _QUERY_ACCURACY_THRESHOLD.get(query, DEFAULT_ACCURACY_THRESHOLD)
-    result["threshold"] = thr
-    val = result.get("value", float("nan"))
-    result["pass"] = bool(np.isfinite(float(val)) and float(val) <= thr)
     pd.DataFrame([{"query": query, "slice": slice_tag, **result}]).to_csv(
         out_dir / f"{query}_{slice_tag}.csv", index=False
     )
