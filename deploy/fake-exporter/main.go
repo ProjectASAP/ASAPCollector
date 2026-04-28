@@ -1,5 +1,5 @@
-// fake-exporter — OTLP metrics producer for the ASAP three-axis
-// SDK aggregation sweep (see docs/sdk-cost-evaluation.md).
+// fake-exporter — metrics producer for the ASAP source-side
+// profiling sweeps.
 //
 // Two operating modes:
 //
@@ -10,7 +10,7 @@
 //     by the SDK config below.
 //
 //  2. Trace replay — reads a CSV of recorded `(ts_ms, series_id,
-//     value)` rows and emits at the recorded pace. The 
+//     value)` rows and emits at the recorded pace. The
 //     workload-credibility hook.
 //
 // Emitted metric families (both modes):
@@ -23,14 +23,18 @@
 // The SDK config is identical for both instruments (a single View
 // covers both), so one agg_type choice cleanly sweeps both signals.
 //
-// ## Three-axis env config
+// ## Client selection
 //
-//	EXPORTER_SDK_WINDOW        PeriodicReader interval. 
+//	EXPORTER_CLIENT            "otel" or "prometheus". Default "otel".
+//
+// ## OTel three-axis env config
+//
+//	EXPORTER_SDK_WINDOW        PeriodicReader interval.
 //	                           Duration string. Default "15s".
 //	EXPORTER_SDK_PROJECTION    Comma-separated attribute keys to keep
 //	                           inside the SDK aggregator. Everything
 //	                           not listed is dropped via View's
-//	                           AttributeFilter. 
+//	                           AttributeFilter.
 //	                              ""        keep all labels (orig card)
 //	                              "zone"    keep only zone (reduces card)
 //	                              "zone,rack,node,pod"  keep all four
@@ -62,6 +66,19 @@
 //	                               Aggregate raw rate = FREQ × CARDINALITY × 2.
 //	EXPORTER_MAX_BUFFER_PER_SERIES raw-buffer: per-series event buffer cap
 //	                               (default 10000).
+//
+// ## Prometheus client profiling config
+//
+//	EXPORTER_PROM_ADDR         HTTP listen address for /metrics and
+//	                           /debug/pprof/* in Prometheus mode.
+//	                           Default "0.0.0.0:8000".
+//	EXPORTER_PROM_UPDATE_MODE  "cached" or "dynamic". Cached pre-creates
+//	                           metric children and updates those handles;
+//	                           dynamic calls WithLabelValues on every event.
+//	                           Default "cached".
+//	EXPORTER_PROM_INSTRUMENTS  Comma-separated subset of
+//	                           counter,gauge,histogram. Default
+//	                           "counter,gauge".
 //
 // ## Trace replay config
 //
@@ -97,6 +114,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -244,6 +263,23 @@ type traceRow struct {
 	value    float64
 }
 
+type promInstrumentSet struct {
+	counter   bool
+	gauge     bool
+	histogram bool
+}
+
+type promWorkload struct {
+	instruments promInstrumentSet
+	updateMode  string
+	counterVec  *prometheus.CounterVec
+	gaugeVec    *prometheus.GaugeVec
+	histVec     *prometheus.HistogramVec
+	counter     []prometheus.Counter
+	gauge       []prometheus.Gauge
+	histogram   []prometheus.Observer
+}
+
 // loadTraceCSV reads the replay CSV into memory, sorts by timestamp,
 // and returns the full row list plus the unique series list.
 func loadTraceCSV(path string) ([]traceRow, []string, error) {
@@ -297,6 +333,18 @@ func main() {
 	target := envOr("EXPORTER_TARGET", "gateway:4317")
 	metricName := envOr("EXPORTER_METRIC", "http_requests_total")
 	traceFile := os.Getenv("EXPORTER_TRACE_FILE")
+	client := strings.ToLower(strings.TrimSpace(envOr("EXPORTER_CLIENT", "otel")))
+
+	if client == "prometheus" || client == "prom" {
+		if traceFile != "" {
+			log.Fatalf("EXPORTER_TRACE_FILE is only supported in EXPORTER_CLIENT=otel mode")
+		}
+		runPrometheusClient(context.Background(), metricName)
+		return
+	}
+	if client != "otel" {
+		log.Printf("warning: unknown EXPORTER_CLIENT=%q - using otel", client)
+	}
 
 	// Optional pprof endpoint for producer-side profiling.
 	// When EXPORTER_PPROF_ADDR is set (e.g. "0.0.0.0:6060"), serves
@@ -400,6 +448,194 @@ func main() {
 	} else {
 		runSynthetic(ctx, meter, metricName, rt)
 	}
+}
+
+func runPrometheusClient(ctx context.Context, metricName string) {
+	cardinality := envInt("EXPORTER_CARDINALITY", 1000)
+	freqHz := envFloat("EXPORTER_FREQ_HZ", 10.0)
+	zoneVals := envInt("EXPORTER_ZONE_VALS", 4)
+	rackVals := envInt("EXPORTER_RACK_VALS", 10)
+	nodeVals := envInt("EXPORTER_NODE_VALS", 25)
+	podVals := envInt("EXPORTER_POD_VALS", 10)
+	addr := envOr("EXPORTER_PROM_ADDR", "0.0.0.0:8000")
+	updateMode := strings.ToLower(strings.TrimSpace(envOr("EXPORTER_PROM_UPDATE_MODE", "cached")))
+	instruments := parsePromInstruments(envOr("EXPORTER_PROM_INSTRUMENTS", "counter,gauge"))
+	if updateMode != "cached" && updateMode != "dynamic" {
+		log.Printf("warning: unknown EXPORTER_PROM_UPDATE_MODE=%q - using cached", updateMode)
+		updateMode = "cached"
+	}
+
+	maxCard := zoneVals * rackVals * nodeVals * podVals
+	if cardinality > maxCard {
+		log.Printf(
+			"warning: EXPORTER_CARDINALITY=%d exceeds schema product %d; "+
+				"extra attribute sets alias onto earlier ones",
+			cardinality, maxCard,
+		)
+	}
+
+	reg := prometheus.NewRegistry()
+	workload := newPromWorkload(metricName, instruments, updateMode, reg)
+	labelValues := buildPromLabelValues(cardinality, zoneVals, rackVals, nodeVals, podVals)
+	workload.preload(labelValues)
+
+	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	go func() {
+		log.Printf("prometheus client listening on %s (/metrics + /debug/pprof/*)", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			log.Printf("prometheus client server: %v", err)
+		}
+	}()
+
+	log.Printf(
+		"fake-exporter prometheus config: metric=%s cardinality=%d freq_hz=%.1f update_mode=%s instruments=%s schema=%dx%dx%dx%d",
+		metricName, cardinality, freqHz, updateMode, envOr("EXPORTER_PROM_INSTRUMENTS", "counter,gauge"),
+		zoneVals, rackVals, nodeVals, podVals,
+	)
+
+	if freqHz <= 0 {
+		log.Printf("EXPORTER_FREQ_HZ=%.1f; preloaded series only, no update goroutines", freqHz)
+		select {}
+	}
+
+	period := time.Duration(float64(time.Second) / freqHz)
+	var wg sync.WaitGroup
+	for i := 0; i < cardinality; i++ {
+		wg.Add(1)
+		go func(seriesIdx int) {
+			defer wg.Done()
+			time.Sleep(time.Duration(seriesIdx%int(max64(freqHz, 1))) * period /
+				time.Duration(max64(freqHz, 1)))
+
+			ticker := time.NewTicker(period)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					workload.observe(seriesIdx, labelValues[seriesIdx])
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func parsePromInstruments(spec string) promInstrumentSet {
+	var out promInstrumentSet
+	for _, raw := range strings.Split(spec, ",") {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "counter", "counters":
+			out.counter = true
+		case "gauge", "gauges":
+			out.gauge = true
+		case "histogram", "histograms":
+			out.histogram = true
+		case "":
+		default:
+			log.Printf("warning: unknown EXPORTER_PROM_INSTRUMENTS item %q ignored", raw)
+		}
+	}
+	if !out.counter && !out.gauge && !out.histogram {
+		out.counter = true
+		out.gauge = true
+	}
+	return out
+}
+
+func newPromWorkload(
+	metricName string,
+	instruments promInstrumentSet,
+	updateMode string,
+	reg *prometheus.Registry,
+) *promWorkload {
+	constLabels := []string{"zone", "rack", "node", "pod"}
+	w := &promWorkload{instruments: instruments, updateMode: updateMode}
+	if instruments.counter {
+		w.counterVec = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: metricName,
+			Help: "Synthetic event counter incremented by 1 per event.",
+		}, constLabels)
+		reg.MustRegister(w.counterVec)
+	}
+	if instruments.gauge {
+		w.gaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: metricName + "_latency_ms",
+			Help: "Synthetic log-normal latency sample per event.",
+		}, constLabels)
+		reg.MustRegister(w.gaugeVec)
+	}
+	if instruments.histogram {
+		w.histVec = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    metricName + "_latency_ms_histogram",
+			Help:    "Synthetic log-normal latency histogram per event.",
+			Buckets: prometheus.DefBuckets,
+		}, constLabels)
+		reg.MustRegister(w.histVec)
+	}
+	return w
+}
+
+func (w *promWorkload) preload(labelValues [][]string) {
+	w.counter = make([]prometheus.Counter, len(labelValues))
+	w.gauge = make([]prometheus.Gauge, len(labelValues))
+	w.histogram = make([]prometheus.Observer, len(labelValues))
+	for i, vals := range labelValues {
+		if w.counterVec != nil {
+			w.counter[i] = w.counterVec.WithLabelValues(vals...)
+			w.counter[i].Add(0)
+		}
+		if w.gaugeVec != nil {
+			w.gauge[i] = w.gaugeVec.WithLabelValues(vals...)
+			w.gauge[i].Set(0)
+		}
+		if w.histVec != nil {
+			w.histogram[i] = w.histVec.WithLabelValues(vals...)
+		}
+	}
+}
+
+func (w *promWorkload) observe(seriesIdx int, labels []string) {
+	latency := math.Exp(3.0 + 0.7*rand.NormFloat64())
+	if w.updateMode == "dynamic" {
+		if w.counterVec != nil {
+			w.counterVec.WithLabelValues(labels...).Inc()
+		}
+		if w.gaugeVec != nil {
+			w.gaugeVec.WithLabelValues(labels...).Set(latency)
+		}
+		if w.histVec != nil {
+			w.histVec.WithLabelValues(labels...).Observe(latency)
+		}
+		return
+	}
+	if w.counterVec != nil {
+		w.counter[seriesIdx].Inc()
+	}
+	if w.gaugeVec != nil {
+		w.gauge[seriesIdx].Set(latency)
+	}
+	if w.histVec != nil {
+		w.histogram[seriesIdx].Observe(latency)
+	}
+}
+
+func buildPromLabelValues(cardinality, zoneVals, rackVals, nodeVals, podVals int) [][]string {
+	out := make([][]string, cardinality)
+	for i := 0; i < cardinality; i++ {
+		z := i % zoneVals
+		r := (i / zoneVals) % rackVals
+		n := (i / (zoneVals * rackVals)) % nodeVals
+		p := (i / (zoneVals * rackVals * nodeVals)) % podVals
+		out[i] = []string{
+			fmt.Sprintf("z%d", z),
+			fmt.Sprintf("r%02d", r),
+			fmt.Sprintf("n%02d", n),
+			fmt.Sprintf("pod-%03d", p),
+		}
+	}
+	return out
 }
 
 // runSynthetic drives a synthetic workload at EXPORTER_FREQ_HZ per

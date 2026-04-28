@@ -242,6 +242,12 @@ use `SerializeToBytes`; CMS uses a per-snapshot gob of
 - `run-sdk-cost-eval.sh` — runs the three canonical
   sub-sweeps (time axis, label axis, encoding axis) via the
   grid engine.
+- `run-prom-client-profiling-eval.sh` — runs the matching
+  source-side Prometheus `client_golang` profiling matrix
+  before any collector/backend work.
+- `run-prom-client-profile-cell.sh` — captures one Prometheus
+  client cell with pprof CPU/heap, scrape timing, and docker
+  stats.
 - `run-baseline-sweep.sh` — older per-baseline sweep driver
   (pre-cost-eval, still valid for the baseline matrix).
 - `measure-baseline.py` — per-cell scrape of Prometheus + docker
@@ -291,6 +297,11 @@ plots that only require a producer + collector pair. Landed via
   - `label-axis-20260423.csv` — varies `L`, fixes `W=60s, agg=dd-full`.
   - `encoding-axis-20260423.csv` — varies `agg`, fixes `W=60s, L=zone,rack`.
   - `FINDINGS-20260423.md` — interpretation + methodology caveat.
+- Prometheus client profiling harness in
+  `deploy/eval-results/prom-client/`:
+  - producer-only path: app updates → `client_golang` → `/metrics`
+  - profile phases: update-only, scrape-only, combined
+  - update modes: cached children vs dynamic `WithLabelValues`
 
 ## Outstanding — paper blockers
 

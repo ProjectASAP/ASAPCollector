@@ -1,0 +1,280 @@
+Prometheus client profiling — 20260427-151128
+  OUT_CSV=/data2/gnanesh/ProjectASAP/DataCollector/deploy/eval-results/prom-client/prom-client-profiling-20260427-151128.csv
+  SOAK_S=60 PROFILE_SECONDS=30
+  CARDINALITIES=1000 10000
+  FREQS=10 100 1000
+  SCRAPE_INTERVALS=1s 15s 60s
+  UPDATE_MODES=cached dynamic
+  INSTRUMENTS=counter,gauge
+  PHASES=update-only scrape-only combined
+==> phase=update-only mode=cached C=1000 F=10 S=none
+# starting prom-client-profiler: phase=update-only mode=cached card=1000 freq=10 scrape=none instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=cached C=1000 F=100 S=none
+# starting prom-client-profiler: phase=update-only mode=cached card=1000 freq=100 scrape=none instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=cached C=1000 F=1000 S=none
+# starting prom-client-profiler: phase=update-only mode=cached card=1000 freq=1000 scrape=none instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=cached C=1000 F=0 S=1s
+# starting prom-client-profiler: phase=scrape-only mode=cached card=1000 freq=0 scrape=1s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=cached C=1000 F=0 S=15s
+# starting prom-client-profiler: phase=scrape-only mode=cached card=1000 freq=0 scrape=15s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=cached C=1000 F=0 S=60s
+# starting prom-client-profiler: phase=scrape-only mode=cached card=1000 freq=0 scrape=60s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=1000 F=10 S=1s
+# starting prom-client-profiler: phase=combined mode=cached card=1000 freq=10 scrape=1s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=1000 F=10 S=15s
+# starting prom-client-profiler: phase=combined mode=cached card=1000 freq=10 scrape=15s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=1000 F=10 S=60s
+# starting prom-client-profiler: phase=combined mode=cached card=1000 freq=10 scrape=60s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=1000 F=100 S=1s
+# starting prom-client-profiler: phase=combined mode=cached card=1000 freq=100 scrape=1s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=1000 F=100 S=15s
+# starting prom-client-profiler: phase=combined mode=cached card=1000 freq=100 scrape=15s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=1000 F=100 S=60s
+# starting prom-client-profiler: phase=combined mode=cached card=1000 freq=100 scrape=60s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=1000 F=1000 S=1s
+# starting prom-client-profiler: phase=combined mode=cached card=1000 freq=1000 scrape=1s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=1000 F=1000 S=15s
+# starting prom-client-profiler: phase=combined mode=cached card=1000 freq=1000 scrape=15s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=1000 F=1000 S=60s
+# starting prom-client-profiler: phase=combined mode=cached card=1000 freq=1000 scrape=60s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=cached C=10000 F=10 S=none
+# starting prom-client-profiler: phase=update-only mode=cached card=10000 freq=10 scrape=none instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=cached C=10000 F=100 S=none
+# starting prom-client-profiler: phase=update-only mode=cached card=10000 freq=100 scrape=none instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=cached C=10000 F=1000 S=none
+# starting prom-client-profiler: phase=update-only mode=cached card=10000 freq=1000 scrape=none instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=cached C=10000 F=0 S=1s
+# starting prom-client-profiler: phase=scrape-only mode=cached card=10000 freq=0 scrape=1s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=cached C=10000 F=0 S=15s
+# starting prom-client-profiler: phase=scrape-only mode=cached card=10000 freq=0 scrape=15s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=cached C=10000 F=0 S=60s
+# starting prom-client-profiler: phase=scrape-only mode=cached card=10000 freq=0 scrape=60s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=10000 F=10 S=1s
+# starting prom-client-profiler: phase=combined mode=cached card=10000 freq=10 scrape=1s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=10000 F=10 S=15s
+# starting prom-client-profiler: phase=combined mode=cached card=10000 freq=10 scrape=15s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=10000 F=10 S=60s
+# starting prom-client-profiler: phase=combined mode=cached card=10000 freq=10 scrape=60s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=10000 F=100 S=1s
+# starting prom-client-profiler: phase=combined mode=cached card=10000 freq=100 scrape=1s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=10000 F=100 S=15s
+# starting prom-client-profiler: phase=combined mode=cached card=10000 freq=100 scrape=15s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=10000 F=100 S=60s
+# starting prom-client-profiler: phase=combined mode=cached card=10000 freq=100 scrape=60s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=10000 F=1000 S=1s
+# starting prom-client-profiler: phase=combined mode=cached card=10000 freq=1000 scrape=1s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=10000 F=1000 S=15s
+# starting prom-client-profiler: phase=combined mode=cached card=10000 freq=1000 scrape=15s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=cached C=10000 F=1000 S=60s
+# starting prom-client-profiler: phase=combined mode=cached card=10000 freq=1000 scrape=60s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=dynamic C=1000 F=10 S=none
+# starting prom-client-profiler: phase=update-only mode=dynamic card=1000 freq=10 scrape=none instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=dynamic C=1000 F=100 S=none
+# starting prom-client-profiler: phase=update-only mode=dynamic card=1000 freq=100 scrape=none instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=dynamic C=1000 F=1000 S=none
+# starting prom-client-profiler: phase=update-only mode=dynamic card=1000 freq=1000 scrape=none instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=dynamic C=1000 F=0 S=1s
+# starting prom-client-profiler: phase=scrape-only mode=dynamic card=1000 freq=0 scrape=1s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=dynamic C=1000 F=0 S=15s
+# starting prom-client-profiler: phase=scrape-only mode=dynamic card=1000 freq=0 scrape=15s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=dynamic C=1000 F=0 S=60s
+# starting prom-client-profiler: phase=scrape-only mode=dynamic card=1000 freq=0 scrape=60s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=1000 F=10 S=1s
+# starting prom-client-profiler: phase=combined mode=dynamic card=1000 freq=10 scrape=1s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=1000 F=10 S=15s
+# starting prom-client-profiler: phase=combined mode=dynamic card=1000 freq=10 scrape=15s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=1000 F=10 S=60s
+# starting prom-client-profiler: phase=combined mode=dynamic card=1000 freq=10 scrape=60s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=1000 F=100 S=1s
+# starting prom-client-profiler: phase=combined mode=dynamic card=1000 freq=100 scrape=1s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=1000 F=100 S=15s
+# starting prom-client-profiler: phase=combined mode=dynamic card=1000 freq=100 scrape=15s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=1000 F=100 S=60s
+# starting prom-client-profiler: phase=combined mode=dynamic card=1000 freq=100 scrape=60s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=1000 F=1000 S=1s
+# starting prom-client-profiler: phase=combined mode=dynamic card=1000 freq=1000 scrape=1s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=1000 F=1000 S=15s
+# starting prom-client-profiler: phase=combined mode=dynamic card=1000 freq=1000 scrape=15s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=1000 F=1000 S=60s
+# starting prom-client-profiler: phase=combined mode=dynamic card=1000 freq=1000 scrape=60s instruments=counter,gauge
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=dynamic C=10000 F=10 S=none
+# starting prom-client-profiler: phase=update-only mode=dynamic card=10000 freq=10 scrape=none instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=dynamic C=10000 F=100 S=none
+# starting prom-client-profiler: phase=update-only mode=dynamic card=10000 freq=100 scrape=none instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=update-only mode=dynamic C=10000 F=1000 S=none
+# starting prom-client-profiler: phase=update-only mode=dynamic card=10000 freq=1000 scrape=none instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=dynamic C=10000 F=0 S=1s
+# starting prom-client-profiler: phase=scrape-only mode=dynamic card=10000 freq=0 scrape=1s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=dynamic C=10000 F=0 S=15s
+# starting prom-client-profiler: phase=scrape-only mode=dynamic card=10000 freq=0 scrape=15s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=scrape-only mode=dynamic C=10000 F=0 S=60s
+# starting prom-client-profiler: phase=scrape-only mode=dynamic card=10000 freq=0 scrape=60s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=10000 F=10 S=1s
+# starting prom-client-profiler: phase=combined mode=dynamic card=10000 freq=10 scrape=1s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=10000 F=10 S=15s
+# starting prom-client-profiler: phase=combined mode=dynamic card=10000 freq=10 scrape=15s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=10000 F=10 S=60s
+# starting prom-client-profiler: phase=combined mode=dynamic card=10000 freq=10 scrape=60s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=10000 F=100 S=1s
+# starting prom-client-profiler: phase=combined mode=dynamic card=10000 freq=100 scrape=1s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=10000 F=100 S=15s
+# starting prom-client-profiler: phase=combined mode=dynamic card=10000 freq=100 scrape=15s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=10000 F=100 S=60s
+# starting prom-client-profiler: phase=combined mode=dynamic card=10000 freq=100 scrape=60s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=10000 F=1000 S=1s
+# starting prom-client-profiler: phase=combined mode=dynamic card=10000 freq=1000 scrape=1s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=10000 F=1000 S=15s
+# starting prom-client-profiler: phase=combined mode=dynamic card=10000 freq=1000 scrape=15s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+==> phase=combined mode=dynamic C=10000 F=1000 S=60s
+# starting prom-client-profiler: phase=combined mode=dynamic card=10000 freq=1000 scrape=60s instruments=counter,gauge
+curl: (56) Recv failure: Connection reset by peer
+# soaking 60s
+# capturing CPU profile for 30s
+done: /data2/gnanesh/ProjectASAP/DataCollector/deploy/eval-results/prom-client/prom-client-profiling-20260427-151128.csv

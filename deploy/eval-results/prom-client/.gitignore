@@ -1,0 +1,4 @@
+# Keep compact CSVs and pprof top summaries reviewable, but avoid
+# accidentally committing raw profile binaries and noisy per-cell logs.
+logs/
+profiles/
