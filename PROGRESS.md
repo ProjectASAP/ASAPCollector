@@ -167,51 +167,51 @@ These were already present in the working tree at the start and remain uncommitt
 
 ---
 
+## Resolved since last update (2026-04-30)
+
+### HLL pdata types — ✅ shipped
+
+The pdata layer in `opentelemetry-collector-patch/pdata/` has been updated end
+to end. `MetricTypeHLLSketch` is defined in `pmetric/metric_type.go`; the
+collector marshals/unmarshals field 17 natively (see `generated_proto_metric.go`
+case 17 alongside the field-13 DDSketch path); public wrappers, slice, and the
+HLLSketchEncoding enum are present. `hllprocessor` is no longer constrained to
+the plain-Gauge workaround.
+
+### SDK-level HLL aggregation — ✅ shipped
+
+`AggregationHLLSketch` exists in `opentelemetry-go-patch/sdk/metric/aggregation.go`.
+The status matrix above (line 24) reflects this — HLL uses the
+**`sdkSketch` pre-aggregation** path on par with DDSketch / KLL /
+CountSketch / CountMinSketch.
+
+### Eval-suite expansion — ✅ filed (open PRs as of 2026-04-30)
+
+| PR | Branch | Scope |
+|----|--------|-------|
+| [#197](https://github.com/ProjectASAP/DataCollector/pull/197) | `eval/sketch-bench-suite` | matched-accuracy + cardinality crossover + delta sweep, with full sweep CSVs |
+| [#198](https://github.com/ProjectASAP/DataCollector/pull/198) | `eval/scalability-runners` | 2-node single-host sim, soak runner, telegraf+gorilla wrapper |
+| [#199](https://github.com/ProjectASAP/DataCollector/pull/199) | `eval/debs-cross-key-merging` | DEBS `crosskey` subcommand + groupings (per_symbol / per_sector / random_n / all) |
+| [#200](https://github.com/ProjectASAP/DataCollector/pull/200) | `eval/cms-batch-results-and-builder-fix` | CMS batch results table + sketchlib-go local-replace fix |
+
+CMS batch line in `otel_collector_benchmark/README.md` is rewritten in #200; the
+"not yet captured" note from the previous revision of this doc is superseded.
+
+---
+
 ## Known gaps / future work
-
-### HLL pdata types (collector-internal layer)
-
-The `opentelemetry-proto-patch` proto file defines `HLLSketch` at field 17, but
-the pdata layer (`opentelemetry-collector-patch/pdata/`) has not been updated.
-This means:
-
-- There is **no `MetricTypeHLLSketch`** constant in `pmetric.MetricType`.
-- The collector cannot natively route or inspect HLLSketch-typed metric
-  payloads from the wire.
-- The current `hllprocessor` works around this by outputting plain `Gauge`
-  metrics (same approach as `kllprocessor`, `countsketchprocessor`, and
-  `countminsketchprocessor`).
-
-To add full pdata support (analogous to `MetricTypeDDSketch`), the following
-generated files in `opentelemetry-collector-patch/pdata/` would need to be
-created/updated:
-
-| File | Action |
-|------|--------|
-| `pdata/internal/generated_enum_hllsketchencoding.go` | New — HLLSketchEncoding enum |
-| `pdata/internal/generated_proto_hllsketch.go` | New — HLLSketch internal struct + proto marshal/unmarshal |
-| `pdata/internal/generated_proto_hllsketchdatapoint.go` | New — HLLSketchDataPoint internal struct |
-| `pdata/internal/generated_proto_metric.go` | Update — add `Metric_HLLSketch` variant + pool + marshal/unmarshal at field 17 |
-| `pdata/pmetric/metric_type.go` | Update — add `MetricTypeHLLSketch` |
-| `pdata/pmetric/generated_metric.go` | Update — add `HLLSketch()` / `SetEmptyHLLSketch()` methods |
-| `pdata/pmetric/generated_hllsketch.go` | New — public HLLSketch wrapper |
-| `pdata/pmetric/generated_hllsketchdatapoint.go` | New — public HLLSketchDataPoint |
-| `pdata/pmetric/generated_hllsketchdatapointslice.go` | New — slice wrapper |
-| `pdata/pmetric/hllsketch_encoding.go` | New — HLLSketchEncoding public enum |
-
-### SDK-level HLL aggregation
-
-There is no `AggregationHLLSketch` type in
-`opentelemetry-go-patch/sdk/metric/aggregation.go`.  Adding one would enable
-the SDK to pre-aggregate recorded values into an HLL sketch before export,
-analogous to `AggregationDDSketch`.  This would allow a single compressed
-cardinality sketch per series per export window instead of one gauge value.
 
 ### Integration tests
 
 `hllprocessor` has unit tests but no integration test (cf. `kllprocessor/integration_test.go`).
 An integration test would spin up a full collector binary and verify end-to-end
 cardinality output via the Prometheus scrape endpoint.
+
+### Open research questions
+
+See [`questions.md`](questions.md) — distributed support is partially exercised
+by #198's 2-node single-host sim; full multi-node, batch processing, lossy/lossless
+tradeoffs, and Spark/Iceberg integration remain open.
 
 ---
 
