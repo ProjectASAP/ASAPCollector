@@ -1,0 +1,5 @@
+n_series,sketch_type,dim_label,rows,cols,sketch_bytes,raw_bytes_min,raw_bytes_realistic,ratio_min,ratio_realistic,top_k_relative_error,insert_seconds
+10000,CountSketch,default,5,2048,15674,160000,480000,0.0979625,0.0326542,0,0.000503115
+10000,CountMinSketch,default,5,2048,45987,160000,480000,0.287419,0.0958062,0,0.000584118
+10000,CountSketch,narrowed,3,512,3677,160000,480000,0.0229813,0.00766042,0.00211319,0.000375346
+10000,CountMinSketch,narrowed,3,512,10496,160000,480000,0.0656,0.0218667,0.00195154,0.000319591
