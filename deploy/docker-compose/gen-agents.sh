@@ -23,7 +23,7 @@ cat <<EOF
 #
 # Each agent mounts \`sketchcol-agent.yaml\` and runs DDSketch + HLL
 # on the pipeline, so the bytes reaching the gateway are already
-# sketched (paper §6.2 bandwidth-reduction signal scales with N).
+# sketched (bandwidth-reduction signal scales with N).
 
 x-agent: &agent-base
   image: asap/sketchcol:dev
@@ -57,7 +57,7 @@ services:
   fake-exporter:
     environment:
       EXPORTER_TARGET: "agent-1:4317"
-      # Paper §6 workload-sweep knobs. Defaults match the N=1
+      # workload-sweep knobs. Defaults match the N=1
       # smoke-test. Override at bring-up:
       #
       #   EXPORTER_RATE=10000 EXPORTER_CARDINALITY=5000 \\

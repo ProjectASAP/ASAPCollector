@@ -1,5 +1,5 @@
 # Baseline B3 selector — delta sketch transmission, fixed 60s
-# window. Paper §6.2 — delta payloads are sparse diffs of only-
+# window.  — delta payloads are sparse diffs of only-
 # changed buckets/registers since the last flush; once the
 # sketch fills in, per-window bytes drop dramatically vs B2.
 #

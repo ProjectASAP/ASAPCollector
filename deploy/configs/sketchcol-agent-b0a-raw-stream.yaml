@@ -3,7 +3,7 @@
 #
 # Pipeline: OTLP in → batch(1s) → OTLP out to gateway.
 #
-# Pairs with B0b (raw OTel held 60s) so the §6.2 comparison can
+# Pairs with B0b (raw OTel held 60s) so the baseline comparison can
 # show both the latency-optimized and the budget-matched raw
 # baselines. Everyone else in the matrix (B1/B2/B3/B5) holds
 # data for 60s; B0a is the one exception, kept as a reference

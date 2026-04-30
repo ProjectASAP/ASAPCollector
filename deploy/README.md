@@ -1,13 +1,13 @@
 # ASAP multi-agent deployment
 
-Stack that backs the paper's §6 eval. Lives in two flavours —
-**docker-compose** for single-machine dev + small/mid-scale runs
-(up to ~50 agents on a beefy box), and a **Helm chart** for
-real K8s scale points (templates still pending).
+Stack that backs the evaluation. Lives in two flavours —
+**docker-compose** for single-machine dev + small/mid-scale
+runs (up to ~50 agents on a beefy box), and a **Helm chart**
+for real K8s scale points (templates still pending).
 
 _Last updated: 2026-04-23 (post N=10 sweep)._
 
-## Scale dials (the paper's x-axis)
+## Scale dials
 
 ```
 N ∈ {1, 10, 100}   # number of edge agents
@@ -112,9 +112,9 @@ envelope (0.5 CPU / 512 Mi per agent, matching the paper's
 
 **Templates are not yet written** — `values.yaml` and
 `Chart.yaml` land here; the `templates/` directory is empty.
-See `TODO.md` in this directory for the template list.
-Until then, Helm is values-only; use the compose path for
-actual runs.
+See the top-level [`PROGRESS.md`](../PROGRESS.md) "Future work"
+section for the template landing order. Until templates land,
+Helm is values-only; use the compose path for actual runs.
 
 ## Current known issues (read before running a sweep)
 
@@ -124,8 +124,8 @@ All six reporting baselines collapse to a universal ~2,000 pts/s
 per-agent floor at N=10, vs 130k–326k at N=1. Gateway aggregate
 = 10 × 2k = 20k/s. Agents are near-idle (0.01c, ~220 MiB RSS),
 so this is a producer / transport / kernel bottleneck, not
-agent-side saturation. Diagnosis and fix tracked in
-`DataCollector/TODO.md §1`.
+agent-side saturation. Diagnosis and fix tracked top-level
+in `DataCollector/PROGRESS.md`.
 
 Until fixed, **treat N=10 as a stack-stability test, not a
 scale-quality datapoint**. N=1 rows in `sweep-N1-*.csv` are the
@@ -136,29 +136,28 @@ current load-quality datapoints.
 The current `measure-baseline.py` does not collect every metric
 for every baseline:
 
-- Bytes in/out only emitted by b2 / b3 — TODO §2 of the top-level
-  `TODO.md`.
+- Bytes in/out only emitted by b2 / b3 — tracked in the
+  top-level `PROGRESS.md` under instrumentation.
 - Gateway points/s and backend samples/s only emitted by the
   raw baselines (b0a / b0b).
-- `backend_query_p99_ms` is `nan` everywhere because there's no
-  query-side driver in the sweep yet — TODO §3.
+- `backend_query_p99_ms` is `nan` everywhere because there's
+  no query-side driver in the sweep yet — tracked as the
+  query-side follow-up in top-level `PROGRESS.md`.
 
 ### Grafana dashboards not yet authored
 
 `configs/grafana-datasources.yml` provisions the Prometheus
 datasource, but no dashboard JSONs are checked in. Paper figures
-should be exported from dashboards; writing them is part of
-TODO §2 of the top-level `TODO.md`.
+should be exported from dashboards; writing them is tracked
+in the top-level `PROGRESS.md`.
 
-## Paper §6 mapping
+## Evaluation → metric mapping
 
-| Experiment | Metric (Prometheus) | Scope |
+| Evaluation axis | Metric (Prometheus) | Scope |
 |---|---|---|
-| 6.2 CPU reduction | `container_cpu_usage_seconds_total{name=~"agent-.*"}` | B1 vs B3 |
-| 6.2 bandwidth reduction | `gateway_forwarded_bytes_total` | B1 vs B3 |
-| 6.3 query P99 latency | `queryengine_query_duration_seconds` | B0 vs B3 |
-| 6.4 ε vs resource Pareto | `queryengine_cold_bytes_served_total` + `accuracy.epsilon` field on PromQL responses | all N |
-| 6.5 workload drift response | `time_to_plan_ready` from `/api/v1/plan` timestamps | any N |
-| 6.7 N × scale | above metrics × `agents.count` | N ∈ {1, 10, 100} |
-
-See `docs/paper-outline.md` for the full eval matrix.
+| Agent CPU reduction | `container_cpu_usage_seconds_total{name=~"agent-.*"}` | B1 vs B3 |
+| Bandwidth reduction | `gateway_forwarded_bytes_total` | B1 vs B3 |
+| Query P99 latency | `queryengine_query_duration_seconds` | B0 vs B3 |
+| Accuracy vs resource Pareto | `queryengine_cold_bytes_served_total` + `accuracy.epsilon` field on PromQL responses | all N |
+| Workload drift response | `time_to_plan_ready` from `/api/v1/plan` timestamps | any N |
+| N-scale | above metrics × `agents.count` | N ∈ {1, 10, 100} |
