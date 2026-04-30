@@ -94,7 +94,14 @@ The CountMinSketch processor aggregates metrics into Count-Min Sketch data struc
 **Processor Configuration (batch example):**
 - mode: `batch`, metric_name: `countmin_sketch`, rows: 5, columns: 2000, transmit_sketch: `true`, group_by: `[]`, drop_original: false
 
-> **Note:** Batch-mode benchmarks for CountMinSketch have not yet been captured in this environment. Once runs are available, they should be added here using the same format as the CountSketch and KLL batch-mode tables (including an Output/Input Ratio column).
+**Results Summary (batch mode — initial run, 2026-04-29):**
+
+| Target Rate | Avg CPU | Peak Memory | Avg Latency | P95 Latency | P99 Latency | Notes |
+|-------------|---------|-------------|-------------|-------------|-------------|-------|
+| 10,000 MPS  | 14.40%  | 251.1 MB    | 1.79 ms     | 2.30 ms     | 2.55 ms     | clean 60 s sweep |
+| 20,000 MPS  | 21.25%  | 243.0 MB    | 1.72 ms     | 2.22 ms     | 2.46 ms     | partial (resource sampler exited early); CPU/latency from `bench.sh` summary |
+
+> **Caveat:** Higher rates (30k–50k MPS) failed to start in this run because port 4317 was still bound by the prior iteration (race in `bench.sh` teardown — not a CMS-batch issue). Throughput numbers (`Metrics Received`) read 0 because the Prometheus exporter at :8889 was scraped after the collector kill. The captured CPU/RSS samples in `benchmark_results/countminsketchcol-batch/` are reliable — the load generator log confirms 60 s of `Sent batch` events at both 10k and 20k MPS. Batch-mode CMS shows a similar shape to KLL batch (~1.3× output/input expansion) but at higher RSS (~245 MB vs ~43 MB for KLL) due to the 5×2000 cell matrix.
 
 **Processor Configuration (window example):**
 - mode: `window`, metric_name: `countmin_sketch`, rows: 5, columns: 1000, transmit_sketch: `true`, window_interval: 10s, drop_original: true
