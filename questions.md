@@ -1,4 +1,9 @@
 1. Distributed support by partitioning the data? for otel, telegraf
+   _(2026-04-30: partial — single-host 2-node simulation landed in
+   [#198](https://github.com/ProjectASAP/DataCollector/pull/198)
+   `bench_2node_sim.sh`, validating per-node accounting, port-shifting,
+   and balance math with hash-partitioned input. Real multi-node still
+   pending — swap the two-binary launcher for ssh-spawn.)_
 2. Batch processing support for otel, telegraf?
 3. potential throughput improvement?
 4. lossy or lossless delivery guarantees?

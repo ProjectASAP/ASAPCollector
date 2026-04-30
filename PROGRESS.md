@@ -88,6 +88,40 @@ use `SerializeToBytes`; CMS uses a per-snapshot gob of
 - `measure-baseline.py` — per-cell scrape of Prometheus + docker
   stats; producer-side columns (CPU / RSS / tx bytes) included.
 
+### Evaluation tooling — `otel_collector_benchmark/` (eval-suite expansion, 2026-04-30)
+
+In-process / single-host benches that don't need the deploy stack;
+useful for fast iteration on sketch-internal claims and for paper
+plots that only require a producer + collector pair. Landed via
+[#197](https://github.com/ProjectASAP/DataCollector/pull/197),
+[#198](https://github.com/ProjectASAP/DataCollector/pull/198),
+[#199](https://github.com/ProjectASAP/DataCollector/pull/199).
+
+- `matched_accuracy/` (new Go module) — DDSketch / KLL / T-Digest /
+  HDR / linhist / raw at the **same** p99 error target. Full sweep
+  across Zipf `s ∈ {1.01, 1.5, 2.5}` × 1M samples checked in.
+  Headline: DDSketch ~0.5–1% p99 rel-err at **0.9–2 KB** vs HDR
+  exact at 123 KB and raw at 8 MB.
+- `cardinality_crossover/` (new Go module) — CountSketch and
+  CountMinSketch sketch-bytes vs raw-bytes across `N ∈ {100, 1k,
+  10k, 100k, 1M, 5M}`, default and narrowed dim configs. Full sweep
+  CSVs checked in.
+- `bench_delta_sweep.sh` + `delta_sweep_config_template.yaml` —
+  window `{1s, 5s, 30s, 5m}` × threshold `{0, 0.1, 1.0}` matrix on
+  the existing delta-transmission processors.
+- `bench_2node_sim.sh` — single-host simulation of a 2-node
+  deployment (port-shifted configs, per-node CPU/RSS, balance
+  metric). Lifts to real two-node by swapping the binary launcher
+  for ssh-spawn.
+- `bench_soak.sh` — long-running steady-state with minute-resolution
+  CPU/RSS/heap/fd-count + slope-based leak verdict.
+- `telegraf_benchmarks/run_gorilla_local.sh` — wraps existing
+  send_firehose.py + summarize_telegraf_metrics.py + 1 Hz ps
+  sampler around `max-throughput-gorilla-local.conf`.
+- `datasets_eval/debs/benchmark/` — `crosskey` subcommand on
+  `run.py` plus `groupings.py` / `compare_crosskey.py` for the
+  cross-key merging accuracy plot ([#199](https://github.com/ProjectASAP/DataCollector/pull/199)).
+
 ### Evaluation artefacts
 
 - N=1 and N=10 baseline sweep CSVs in `deploy/eval-results/`
