@@ -1,5 +1,5 @@
 // fake-exporter — OTLP metrics producer for the ASAP three-axis
-// SDK aggregation sweep (see docs/sdk-aggregation-three-axis-design.md).
+// SDK aggregation sweep (see docs/sdk-cost-evaluation.md).
 //
 // Two operating modes:
 //
@@ -10,7 +10,7 @@
 //     by the SDK config below.
 //
 //  2. Trace replay — reads a CSV of recorded `(ts_ms, series_id,
-//     value)` rows and emits at the recorded pace. The paper's §6.1
+//     value)` rows and emits at the recorded pace. The 
 //     workload-credibility hook.
 //
 // Emitted metric families (both modes):
@@ -25,18 +25,18 @@
 //
 // ## Three-axis env config
 //
-//	EXPORTER_SDK_WINDOW        PeriodicReader interval. Paper's W axis.
+//	EXPORTER_SDK_WINDOW        PeriodicReader interval. 
 //	                           Duration string. Default "15s".
 //	EXPORTER_SDK_PROJECTION    Comma-separated attribute keys to keep
 //	                           inside the SDK aggregator. Everything
 //	                           not listed is dropped via View's
-//	                           AttributeFilter. Paper's L axis.
+//	                           AttributeFilter. 
 //	                              ""        keep all labels (orig card)
 //	                              "zone"    keep only zone (reduces card)
 //	                              "zone,rack,node,pod"  keep all four
 //	                              "-"       drop all (single series)
 //	                           Default "" (keep all).
-//	EXPORTER_SDK_AGG           Aggregator kind. Paper's encoding axis.
+//	EXPORTER_SDK_AGG           Aggregator kind. Encoding axis.
 //	                              default | sum | raw-buffer |
 //	                              dd-full | dd-delta |
 //	                              kll |
@@ -77,8 +77,7 @@
 //
 //	EXPORTER_RATE      replaced by EXPORTER_FREQ_HZ. The old meaning
 //	                   was "ticker at 1s/rate", which was
-//	                   semantically a no-op given SDK aggregation
-//	                   (see docs/n10-bottleneck-rca.md).
+//	                   semantically a no-op given SDK aggregation.
 
 package main
 
@@ -89,6 +88,8 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"net/http"
+	_ "net/http/pprof" // expose /debug/pprof/* on EXPORTER_PPROF_ADDR
 	"os"
 	"sort"
 	"strconv"
@@ -297,6 +298,20 @@ func main() {
 	metricName := envOr("EXPORTER_METRIC", "http_requests_total")
 	traceFile := os.Getenv("EXPORTER_TRACE_FILE")
 
+	// Optional pprof endpoint for producer-side profiling.
+	// When EXPORTER_PPROF_ADDR is set (e.g. "0.0.0.0:6060"), serves
+	// /debug/pprof/{profile,heap,goroutine,...} so external tools
+	// can sample CPU / heap / goroutines while the producer runs.
+	// Off by default.
+	if addr := os.Getenv("EXPORTER_PPROF_ADDR"); addr != "" {
+		go func() {
+			log.Printf("pprof listening on %s", addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				log.Printf("pprof server: %v", err)
+			}
+		}()
+	}
+
 	// Three-axis SDK config.
 	window := envDuration("EXPORTER_SDK_WINDOW", 15*time.Second)
 	projection := parseProjection(os.Getenv("EXPORTER_SDK_PROJECTION"))
@@ -308,10 +323,10 @@ func main() {
 	if v := os.Getenv("EXPORTER_RATE"); v != "" {
 		log.Printf(
 			"warning: EXPORTER_RATE=%q is deprecated and ignored. "+
-				"The old ticker-driven meaning was a no-op under SDK aggregation "+
-				"(see docs/n10-bottleneck-rca.md). Use EXPORTER_FREQ_HZ for the "+
-				"app-level event frequency and EXPORTER_SDK_WINDOW for the "+
-				"SDK emit interval.", v,
+				"The old ticker-driven meaning was a no-op under SDK "+
+				"aggregation. Use EXPORTER_FREQ_HZ for the app-level event "+
+				"frequency and EXPORTER_SDK_WINDOW for the SDK emit interval.",
+			v,
 		)
 	}
 

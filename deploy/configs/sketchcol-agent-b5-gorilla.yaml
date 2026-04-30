@@ -1,6 +1,6 @@
 # Baseline B5 — Gorilla (Facebook TSDB XOR compression, lossless).
 #
-# Paper §6.2 baseline: classic XOR-delta bit-encoding, no
+# Baseline: classic XOR-delta bit-encoding, no
 # quantization, no sketch math. Same sink-style pattern as B1
 # Serf — windows incoming points into tumbling intervals and
 # writes compressed blocks to a local directory (or S3 in the
@@ -10,7 +10,7 @@
 # XOR with no approximation knobs; Serf here defaults to the
 # ASAP-quantized variant. Both are lossless with MaxDiff=0, but
 # Gorilla's path is smaller and simpler so it pins the
-# "compression-floor" datapoint on the §6.2 chart.
+# "compression-floor" datapoint on the bandwidth chart.
 #
 # `DropOriginal: true` disables the redundant raw-OTLP forward
 # so the bytes-on-wire figure is zero — measured bandwidth is

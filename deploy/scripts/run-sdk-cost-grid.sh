@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# run-three-axis-sweep.sh — iterate over the SDK-side three-axis
+# run-sdk-cost-grid.sh — iterate over the SDK-side three-axis
 # `(W, L, agg_type)` grid defined in
-# docs/sdk-aggregation-three-axis-design.md. Brings up the compose
+# docs/sdk-cost-evaluation.md. Brings up the compose
 # stack once per cell, soaks, measures, tears down.
 #
-# The paper's §6.2 sub-sweeps are each a thin wrapper around this
+# The four sub-sweeps are each a thin wrapper around this
 # script that fixes two axes and varies the third:
 #
 #   6.2a time-axis:     WINDOWS="1s 15s 60s 300s" PROJECTIONS="" AGGS="dd-full"
@@ -14,7 +14,7 @@
 # Output: CSV to stdout. Each row is one cell of the grid, produced
 # by measure-baseline.py. Run as:
 #
-#   ./run-three-axis-sweep.sh 2>run.log > sweep-YYYYMMDD.csv
+#   ./run-sdk-cost-grid.sh 2>run.log > sweep-YYYYMMDD.csv
 #
 # Env overrides (defaults in [brackets]):
 #

@@ -8,7 +8,7 @@
 #
 # The agent mounts `sketchcol-agent.yaml` and runs DDSketch + HLL
 # on the pipeline, so the bytes reaching the gateway are already
-# sketched (paper §6.2 bandwidth-reduction signal).
+# sketched (bandwidth-reduction signal).
 
 x-agent: &agent-base
   image: asap/sketchcol:dev
@@ -59,6 +59,6 @@ services:
   fake-exporter:
     environment:
       EXPORTER_TARGET: "agent-1:4317"
-      # Paper §6 workload-sweep knobs; override via shell env.
+      # workload-sweep knobs; override via shell env.
       EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
       EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"

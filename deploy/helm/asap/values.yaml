@@ -1,4 +1,4 @@
-# Paper §6 dials. Every figure is produced by varying `agents.count`
+# Scale dials. Every figure is produced by varying `agents.count`
 # across {1, 10, 100} while holding the rest fixed.
 
 agents:
@@ -7,7 +7,7 @@ agents:
   # `replicas: {{ .Values.agents.count }}`.
   count: 10
   image: "asap/sketchcol:dev"
-  # "realistic edge" per paper §6.1
+  # "realistic edge"
   resources:
     requests:
       cpu: 200m

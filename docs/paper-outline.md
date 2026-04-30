@@ -130,7 +130,7 @@ workload + SLAs.
 6. **Evaluation**
     - 6.1 Setup (workloads, baselines, deployment)
     - 6.2 SDK-side three-axis ablation (see below + the
-      authoritative [`sdk-aggregation-three-axis-design.md`](sdk-aggregation-three-axis-design.md)).
+      authoritative [`sdk-cost-evaluation.md`](sdk-cost-evaluation.md)).
       Sub-sweeps 6.2a / 6.2b / 6.2c / 6.2d decompose the
       bandwidth-reduction claim into its three independent
       factors: time window `W`, label projection `L`,
@@ -170,7 +170,7 @@ workload + SLAs.
 | "Resilient to controller failure" | Kill controller mid-workload; queries continue | time-series showing continuity |
 
 The §6.2 sub-sweeps are defined in detail in
-[`sdk-aggregation-three-axis-design.md`](sdk-aggregation-three-axis-design.md).
+[`sdk-cost-evaluation.md`](sdk-cost-evaluation.md).
 Reviewer-facing: each of the three factors is an independently
 measurable quantity, so a skeptical reader can drop one factor
 (e.g., "I don't buy the `L` factor because `by (...)` queries

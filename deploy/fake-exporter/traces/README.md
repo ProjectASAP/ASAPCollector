@@ -2,7 +2,7 @@
 
 fake-exporter's trace-replay mode reads a CSV of
 `(timestamp_ms, series_id, value)` rows and emits them as OTLP
-Gauges at the recorded pace. This is the paper §6.1
+Gauges at the recorded pace. This is the
 workload-credibility hook — run B0/B1/B2/B3/B5 against **real
 production data** instead of the synthetic log-normal default.
 

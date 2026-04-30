@@ -3,8 +3,8 @@
 # Brings up everything that's shared across the N ∈ {1, 10, 100}
 # agent-count overrides: the backend (ASAPQuery), the gateway
 # (OpenTelemetry aggregator), the controller, plus the infra
-# this paper's eval pipes through — MinIO (S3-compatible raw
-# store for the §5.2 cold-fallback tier), Prometheus (scrape
+# the evaluation pipes through — MinIO (S3-compatible raw
+# store for the cold-fallback tier), Prometheus (scrape
 # target for every agent / backend / controller), and Grafana
 # (pre-wired with the backend + Prometheus data sources).
 #
@@ -18,7 +18,7 @@
 #
 # See README.md for build prerequisites (the `sketchcol` agent
 # image still needs its Dockerfile + processor binaries built;
-# tracked in deploy/TODO.md).
+# tracked in PROGRESS.md).
 
 version: "3.9"
 
@@ -29,7 +29,7 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
-  # ───────── raw S3-compatible store (§5.2 cold fallback) ─────────
+  # ───────── raw S3-compatible store (cold fallback) ─────────
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -123,7 +123,7 @@ services:
       - minio
     environment:
       RUST_LOG: "info"
-      # §5.2 cold fallback points at MinIO; same JSONL layout
+      # Cold fallback points at MinIO; same JSONL layout
       # works against real S3 later with just a URL swap.
       ASAP_COLD_STORE_ENDPOINT: "http://minio:9000"
       ASAP_COLD_STORE_BUCKET: "raw"
@@ -162,8 +162,8 @@ services:
   # ───────── workload: synthetic metrics producer ─────────
   fake-exporter:
     # Replays the Google cluster usage trace (or any OTel
-    # source) at realistic rates to feed the agents. Paper §6.1:
-    # observability workload is the only kind we evaluate.
+    # source) at realistic rates to feed the agents. Observability
+    # workload is the only kind we evaluate.
     # Placeholder image — the actual binary lives in
     # DataCollector/datasets_eval/.
     image: asap/fake-exporter:dev
@@ -171,14 +171,12 @@ services:
       EXPORTER_TARGET: "gateway:4317"
       # Workload knobs (can be overridden from sweep scripts via
       # host env). Legacy EXPORTER_RATE is accepted but deprecated
-      # — fake-exporter itself logs a warning when set. See
-      # docs/n10-bottleneck-rca.md for why the old semantics were
-      # meaningless.
+      # — fake-exporter itself logs a warning when set.
       EXPORTER_RATE: "${EXPORTER_RATE:-}"
       EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
       EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
       # Three-axis SDK knobs (PR #190, see
-      # docs/sdk-aggregation-three-axis-design.md). Empty
+      # docs/sdk-cost-evaluation.md). Empty
       # projection = keep all labels; "default" aggregation =
       # Sum for Counter / LastValue for Gauge.
       EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"

@@ -5,7 +5,7 @@
 # `sketch-runtime`'s push pipeline (currently HTTP+JSONL; moving
 # to gRPC in a follow-up). The controller renders them as
 # per-(source, sketch, impl) gauges on `GET /metrics`, and Prom
-# scrapes that one endpoint to get every paper §6 signal.
+# scrapes that one endpoint to get every signal.
 #
 # No per-agent scrape is needed — label-keyed gauges on the
 # controller carry the equivalent data. Backend + gateway still
@@ -20,16 +20,16 @@ scrape_configs:
   # ── Primary: controller aggregator ──────────────────────────
   # `asap_runtime_*` gauges labelled {source, sketch, impl}
   # come out of RuntimeSamplesStore via metrics_exposer.rs.
-  # Paper §6.2 CPU / bandwidth, §6.3 query P99, §6.4 accuracy,
-  # §6.5 time_to_plan_ready all land here.
+  # Producer / agent CPU + bandwidth, query P99, accuracy,
+  # workload-drift response all land here.
   - job_name: "controller"
     metrics_path: /metrics
     static_configs:
       - targets: ["controller:8080"]
 
   # ── Backend query-engine internals ──────────────────────────
-  # `asap_query_*` histograms (P99 query latency, §6.3) +
-  # `asap_ingest_*` counters (§6.2 bandwidth-served) come from
+  # `asap_query_*` histograms (P99 query latency) +
+  # `asap_ingest_*` counters (bandwidth-served) come from
   # the precompute_engine query server on the --query-port
   # (9091 in docker-compose). Ingest port 9090 is data-only and
   # does not expose /metrics.
@@ -41,7 +41,7 @@ scrape_configs:
   # ── Gateway aggregator self-telemetry ───────────────────────
   # Gateway's prometheus (scrape-style) exporter was removed —
   # it couldn't translate DDSketch / HLLSketch types. Self-
-  # telemetry is on :8890 now. Paper §6.2 gateway-tier CPU +
+  # telemetry is on :8890 now. Gateway-tier CPU +
   # forwarded-bytes figures come off this endpoint.
   - job_name: "gateway"
     static_configs:
@@ -61,7 +61,7 @@ scrape_configs:
   #            CPU, RSS (`otelcol_datacollector_processor_*`
   #            family, produced by the patched processors'
   #            `enable_self_monitoring: true`). This is the
-  #            §6.2 CPU/bandwidth data source.
+  #            CPU/bandwidth data source.
   #
   # We only scrape :8890. :8889 duplicates backend data without
   # being sketch-readable. Extend the list when generating
