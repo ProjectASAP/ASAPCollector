@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import subprocess
@@ -20,6 +21,14 @@ if str(BENCH_ROOT) not in sys.path:
     sys.path.insert(0, str(BENCH_ROOT))
 
 from scrape import append_metrics_snapshot
+from groupings import parse_grouping_list
+from compare_crosskey import (
+    append_report_section,
+    evaluate_grouping,
+    load_ground_truth_per_symbol,
+    load_sketch_per_symbol,
+    write_crosskey_csv,
+)
 
 PATCH_CMD = REPO_ROOT / "opentelemetry-collector-contrib-patch" / "cmd"
 
@@ -580,6 +589,144 @@ def run_matrix(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_crosskey(args: argparse.Namespace) -> int:
+    """Cross-key roll-up accuracy.
+
+    Reads the per-symbol sketch output and ground-truth CSVs already produced
+    by a prior ``run.py test`` run, rolls them up by each requested grouping,
+    and emits one row per grouping into ``results/crosskey/<Q>_<day>.csv``,
+    plus a 'Cross-key merging accuracy' section in ``results/report.md``.
+    """
+    bench_root = BENCH_ROOT
+    results_dir: Path = args.results_dir
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    query = args.query
+    day = args.day
+    day_tag = day.replace(".csv", "").replace("debs2022-gc-trading-day-", "")
+
+    sketch_csv = results_dir / "sketch_output" / query / f"{day_tag}.csv"
+    gt_csv = results_dir / "ground_truth" / query / f"{day_tag}.csv"
+
+    if not sketch_csv.is_file():
+        print(
+            f"crosskey: sketch CSV missing: {sketch_csv}\n"
+            f"  Run `run.py test --query {query} --day {day}` first, "
+            f"or pass --synthesize-smoke to generate a 10-row stub.",
+            file=sys.stderr,
+        )
+        if args.synthesize_smoke:
+            sketch_csv.parent.mkdir(parents=True, exist_ok=True)
+            _write_smoke_sketch_csv(sketch_csv)
+            print(f"crosskey: wrote synthetic smoke CSV -> {sketch_csv}", file=sys.stderr)
+        else:
+            return 1
+
+    if not gt_csv.is_file() and args.synthesize_smoke:
+        gt_csv.parent.mkdir(parents=True, exist_ok=True)
+        _write_smoke_gt_csv(gt_csv)
+        print(f"crosskey: wrote synthetic smoke GT -> {gt_csv}", file=sys.stderr)
+
+    sketch_df = load_sketch_per_symbol(sketch_csv, query)
+    gt_df = load_ground_truth_per_symbol(gt_csv, query)
+
+    if sketch_df.empty:
+        print(f"crosskey: no usable sketch rows in {sketch_csv}", file=sys.stderr)
+        return 2
+    if gt_df.empty:
+        print(
+            f"crosskey: no ground truth at {gt_csv}; using sketch values as self-reference. "
+            "Errors will be 0; this is only useful for smoke testing the script flow.",
+            file=sys.stderr,
+        )
+        gt_df = sketch_df.copy()
+
+    groupings = parse_grouping_list(args.groupings)
+    rows = []
+    for label, fn in groupings:
+        rows.append(
+            evaluate_grouping(
+                query=query,
+                day=day_tag,
+                mode=args.mode,
+                grouping_label=label,
+                group_fn=fn,
+                sketch_df=sketch_df,
+                gt_df=gt_df,
+            )
+        )
+
+    out_csv = results_dir / "crosskey" / f"{query}_{day_tag}.csv"
+    write_crosskey_csv(rows, out_csv)
+    print(f"crosskey: wrote {len(rows)} row(s) -> {out_csv}", file=sys.stderr)
+
+    if args.update_report:
+        report_md = results_dir / "report.md"
+        append_report_section(rows, report_md)
+        print(f"crosskey: appended section to {report_md}", file=sys.stderr)
+
+    for r in rows:
+        print(
+            f"  {r.grouping:<14} n_groups={r.n_groups:<5} fan_in_avg={r.fan_in_avg:.2f} "
+            f"rel_err_p50={r.rel_err_p50:.4g} rel_err_p99={r.rel_err_p99:.4g} "
+            f"mode={r.mode}{' note=' + r.note if r.note else ''}",
+            file=sys.stderr,
+        )
+
+    return 0
+
+
+def _write_smoke_sketch_csv(path: Path) -> None:
+    """Write a 10-row synthetic Prometheus-style sketch CSV for smoke testing."""
+    import csv as _csv
+    fieldnames = ["scrape_wall_ns", "metric", "labels", "value"]
+    rows = [
+        ("RDSA",  101.5, 12),
+        ("RDSB",  100.9, 11),
+        ("BP",     53.2, 14),
+        ("ASML",  605.0,  9),
+        ("SAP",   123.4,  8),
+        ("INGA",   12.1, 20),
+        ("ABN",    11.8, 18),
+        ("AD",     27.5,  7),
+        ("AIR",    99.0,  6),
+        ("ZZZZ",   42.0,  3),  # no sector mapping -> OTHER
+    ]
+    wall = "1731000000000000000"
+    with open(path, "w", newline="", encoding="utf-8") as fp:
+        w = _csv.DictWriter(fp, fieldnames=fieldnames)
+        w.writeheader()
+        for sym, v, n in rows:
+            labels = json.dumps({"symbol": sym, "ddsketch.quantile": "0.5", "count": str(n)},
+                                sort_keys=True)
+            w.writerow({"scrape_wall_ns": wall,
+                        "metric": "financial_last_trade_price_ddsketch",
+                        "labels": labels,
+                        "value": f"{v}"})
+
+
+def _write_smoke_gt_csv(path: Path) -> None:
+    import csv as _csv
+    fieldnames = ["window_start_ms", "symbol", "median", "count"]
+    rows = [
+        ("RDSA",  101.4, 12),
+        ("RDSB",  100.7, 11),
+        ("BP",     53.0, 14),
+        ("ASML",  604.5,  9),
+        ("SAP",   123.0,  8),
+        ("INGA",   12.0, 20),
+        ("ABN",    11.7, 18),
+        ("AD",     27.4,  7),
+        ("AIR",    98.8,  6),
+        ("ZZZZ",   41.5,  3),
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as fp:
+        w = _csv.DictWriter(fp, fieldnames=fieldnames)
+        w.writeheader()
+        for sym, v, n in rows:
+            w.writerow({"window_start_ms": "0", "symbol": sym, "median": v, "count": n})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="DEBS benchmark orchestration.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -614,11 +761,50 @@ def main() -> None:
     p_matrix.add_argument("--results-dir", type=Path, default=BENCH_ROOT / "results")
     p_matrix.add_argument("--clear-results", action="store_true")
 
+    p_crosskey = sub.add_parser(
+        "crosskey",
+        help="Cross-key roll-up accuracy (per-symbol -> sector -> all).",
+    )
+    p_crosskey.add_argument("--query", default=os.environ.get("QUERY", "Q5"))
+    p_crosskey.add_argument("--day", default=os.environ.get("DAY", "08-11-21"))
+    p_crosskey.add_argument(
+        "--groupings",
+        default="per_symbol,per_sector,all,random_8,random_32",
+        help="Comma-separated groupings: per_symbol, per_sector, all, random_<N>.",
+    )
+    p_crosskey.add_argument(
+        "--mode",
+        choices=("sketch_merge", "point_rollup"),
+        default="point_rollup",
+        help="Roll-up mode. sketch_merge requires serialized sketch payloads in "
+             "Prometheus labels; otherwise it falls back to point_rollup.",
+    )
+    p_crosskey.add_argument("--results-dir", type=Path, default=BENCH_ROOT / "results")
+    p_crosskey.add_argument(
+        "--update-report",
+        action="store_true",
+        default=True,
+        help="Append a 'Cross-key merging accuracy' section to results/report.md.",
+    )
+    p_crosskey.add_argument(
+        "--no-update-report",
+        action="store_false",
+        dest="update_report",
+        help="Skip writing to report.md.",
+    )
+    p_crosskey.add_argument(
+        "--synthesize-smoke",
+        action="store_true",
+        help="If sketch/GT CSVs are missing, write a 10-row synthetic stub for testing.",
+    )
+
     args = parser.parse_args()
     if args.command == "test":
         sys.exit(run_benchmark_test(args))
     if args.command == "matrix":
         sys.exit(run_matrix(args))
+    if args.command == "crosskey":
+        sys.exit(run_crosskey(args))
 
 
 if __name__ == "__main__":

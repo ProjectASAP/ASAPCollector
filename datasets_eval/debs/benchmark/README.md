@@ -128,9 +128,88 @@ After a run, `results/` contains:
 | `results/ground_truth/QN/<day>.csv` | Exact offline reference values |
 | `results/sketch_output/QN/<day>.csv` | Raw Prometheus scrape rows |
 | `results/comparison/QN_<day>.csv` | Per-run accuracy metric and pass/fail |
+| `results/crosskey/QN_<day>.csv` | Cross-key roll-up accuracy (one row per grouping; see `crosskey` mode) |
 | `results/throughput.csv` | Events/sec statistics per run |
 | `results/latency.csv` | Send-time statistics per run |
 | `results/collector.log` | Collector stderr |
+
+---
+
+## Cross-key merging accuracy (`crosskey` mode)
+
+Once a `run.py test` (or `matrix`) run has produced
+`results/sketch_output/<Q>/<day>.csv` and
+`results/ground_truth/<Q>/<day>.csv`, the `crosskey` subcommand evaluates how
+sketch error scales as we **roll up across keys** (per-symbol → per-sector →
+all-symbols). This produces the data for the paper's "relative error vs
+group fan-in" plot.
+
+```bash
+python3 datasets_eval/debs/benchmark/run.py crosskey \
+  --query Q5 \
+  --day 08-11-21 \
+  --groupings per_symbol,per_sector,all,random_8,random_32 \
+  --mode point_rollup
+```
+
+### Arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `--query` | `Q5` | Query ID; supports the per-symbol quantile/range queries (Q1, Q4, Q5, Q7, Q8) and counters (Q3, Q6) |
+| `--day` | `08-11-21` | Day tag (used to locate `<day>.csv` in `sketch_output/` and `ground_truth/`) |
+| `--groupings` | `per_symbol,per_sector,all,random_8,random_32` | Comma-separated grouping labels |
+| `--mode` | `point_rollup` | `sketch_merge` (true merge of serialized sketch bytes) or `point_rollup` (analytical scalar aggregation) |
+| `--results-dir` | `results/` | Where the per-symbol CSVs live and where the new outputs go |
+| `--update-report` / `--no-update-report` | on | Append a "Cross-key merging accuracy" section to `results/report.md` |
+| `--synthesize-smoke` | off | If sketch/GT CSVs are missing, write 10-row stubs (smoke testing only) |
+
+### Groupings
+
+Defined in [`groupings.py`](groupings.py):
+
+- `per_symbol` — identity; baseline.
+- `per_sector` — symbol → sector via a small hardcoded table (DEBS ships no
+  sector mapping; symbols outside the table fall into `OTHER`).
+- `all` (alias `all_symbols`) — single bucket.
+- `random_<N>` — stable hash-bucket of symbol into `N` buckets, useful for
+  fan-in sweeps (e.g. `random_2`, `random_8`, `random_32`, `random_128`).
+
+### Modes
+
+- **`point_rollup`** — per-symbol *scalar* sketch outputs are aggregated by
+  weighted mean (quantile/mean/IQR queries) or sum (counters). This always
+  works because the inputs are exactly what `scrape.py` already records.
+  It approximates how naive downstream aggregation propagates per-symbol
+  sketch error and is what we report by default.
+- **`sketch_merge`** — looks for serialized sketch bytes published as
+  Prometheus labels (`ddsketch.payload`, `kll.payload`, `hll.sketch_payload`,
+  …). If they are not present (the default DEBS configs publish the
+  *aggregated scalar* per symbol, not the bytes), this mode falls back to
+  `point_rollup` automatically and records `no_sketch_payload_in_labels;
+  fellback_to_point_rollup` in the `note` column. Set `transmit_sketch: true`
+  on the relevant collector config to enable true merging.
+
+### Outputs
+
+| Path | Description |
+|---|---|
+| `results/crosskey/<Q>_<day>.csv` | One row per grouping: `query, day, mode, grouping, fan_in_avg, fan_in_max, n_groups, abs_err_p50, abs_err_p99, rel_err_p50, rel_err_p99, note` |
+| `results/report.md` | "Cross-key merging accuracy" section appended (markdown table) |
+
+### Smoke test
+
+To verify the script flow without a real benchmark run:
+
+```bash
+python3 datasets_eval/debs/benchmark/run.py crosskey \
+  --query Q5 --day SMOKE \
+  --groupings per_symbol,per_sector,all,random_8 \
+  --synthesize-smoke
+```
+
+This writes 10-row stubs into `sketch_output/Q5/SMOKE.csv` and
+`ground_truth/Q5/SMOKE.csv`, then runs the roll-up.
 
 ---
 
