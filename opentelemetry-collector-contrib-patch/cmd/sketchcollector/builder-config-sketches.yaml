@@ -4,6 +4,23 @@
 # bytes are wire-compatible with the Rust backend's
 # `asap_sketchlib` / `sketch_core` decoders.
 #
+# Same binary serves two deploy roles:
+#   - Agent tier:    sketch-from-raw — receives raw OTLP from the
+#                    fake-exporter, runs ddsketch / kll / hll /
+#                    countsketch / countminsketch processors,
+#                    emits typed sketch data points downstream.
+#   - Gateway tier:  forwarder OR sketch-merge. Critically, the
+#                    binary's pdata is built from the patched
+#                    proto so typed Metric.data variants
+#                    (DDSketch / KLLSketch / HLLSketch /
+#                    CountSketch / CountMinSketch on tags 13–17)
+#                    survive an OTLP receive → process → OTLP
+#                    export round-trip. Stock OTel
+#                    contrib 0.108's pdata silently consumes
+#                    those variants via ConsumeUnknown — that's
+#                    why the gateway uses this image, not the
+#                    stock build.
+#
 # Compared to the canonical `builder-config.yaml`, this minimal
 # manifest excludes serfprocessor + gorillaprocessor (paper
 # baselines for non-sketch encodings; not needed for sketch e2e)
@@ -51,6 +68,15 @@ processors:
     path: ./processor/countsketchprocessor
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor v0.141.0
     path: ./processor/countminsketchprocessor
+  # Sketch-state merge processors. Used when the same binary runs
+  # as the *gateway* tier (deploy/configs/gateway-aggregate-from-sketches.yaml)
+  # and reconstructs full CMS/CountSketch state from the proto_full /
+  # proto_delta payloads emitted by the agent-tier processors above.
+  # Not used in agent configs.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchmergeprocessor v0.141.0
+    path: ./processor/countminsketchmergeprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchmergeprocessor v0.141.0
+    path: ./processor/countsketchmergeprocessor
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.141.0

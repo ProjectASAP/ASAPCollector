@@ -154,6 +154,16 @@ processors:
     path: ./processor/countsketchprocessor
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor v0.141.0
     path: ./processor/countminsketchprocessor
+  # Sketch-state merge processors. Used at the *gateway* tier
+  # (`deploy/configs/gateway-aggregate-from-sketches.yaml`) to
+  # reconstruct full CMS / CountSketch state from delta payloads
+  # the agent-tier countmin/count processors emit. Same binary
+  # serves agent (sketch-from-raw) and gateway (sketch-merge);
+  # the gateway-only role is selected via config.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchmergeprocessor v0.141.0
+    path: ./processor/countminsketchmergeprocessor
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchmergeprocessor v0.141.0
+    path: ./processor/countsketchmergeprocessor
   # Paper baseline B1: Serf (ASAP XOR-with-quantization).
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/serfprocessor v0.141.0
     path: ./processor/serfprocessor

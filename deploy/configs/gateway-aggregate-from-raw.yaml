@@ -1,0 +1,105 @@
+# Gateway config: aggregate from RAW. Agents forward raw OTLP
+# metrics here; the gateway runs sketch processors at this tier
+# and emits typed sketch data points downstream to the backend.
+#
+# Use when:
+#   - You want a single sketching tier (gateway, not per-agent).
+#   - Agents are stock collectors / non-ASAP exporters that emit
+#     raw points and you want sketches before the backend ingest.
+#   - The controller has placed sketching at the gateway in this
+#     deploy's plan (see ASAPController).
+#
+# Requires the `asap/sketchcol:dev` image (built from
+# `opentelemetry-collector-contrib-patch/` via the OCB manifest
+# at `cmd/sketchcollector/builder-config-sketches.yaml`).
+#
+# This file enables DDSketch as the canonical example. To enable
+# KLL / HLL / CountSketch / CMS, uncomment the matching processor
+# block and add it to `service.pipelines.metrics.processors`.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  attributes/drop-internal:
+    actions:
+      - key: telemetry.sdk.name
+        action: delete
+      - key: telemetry.sdk.language
+        action: delete
+      - key: telemetry.sdk.version
+        action: delete
+
+  # ---------- Sketch-from-raw processors ----------
+  ddsketch:
+    mode: window
+    window_duration: 30s
+    transmit_sketch: true
+    delta_transmission: false
+    enable_self_monitoring: true
+    quantiles: [0.5, 0.9, 0.99]
+    metric_suffix: "_quantile"
+
+  # kll:
+  #   mode: window
+  #   window_duration: 30s
+  #   transmit_sketch: true
+  #   k: 200
+  #   metric_suffix: "_kll"
+  #
+  # hll:
+  #   mode: window
+  #   window_duration: 30s
+  #   transmit_sketch: true
+  #   precision: 14
+  #   metric_suffix: "_hll"
+  #
+  # countsketch:
+  #   mode: window
+  #   window_duration: 30s
+  #   transmit_sketch: true
+  #   width: 1024
+  #   depth: 5
+  #   metric_suffix: "_cs"
+  #
+  # countminsketch:
+  #   mode: window
+  #   window_duration: 30s
+  #   transmit_sketch: true
+  #   width: 2048
+  #   depth: 5
+  #   metric_suffix: "_cms"
+
+exporters:
+  otlp/backend:
+    endpoint: backend:4317
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+    # Backend's tonic gRPC server doesn't accept gzip-compressed
+    # bodies — keep compression off (mirrors the agent configs).
+    compression: none
+
+service:
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: "0.0.0.0:8890"
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      # Run attribute pruning + sketching first, batch last.
+      processors: [attributes/drop-internal, ddsketch, batch]
+      exporters: [otlp/backend]

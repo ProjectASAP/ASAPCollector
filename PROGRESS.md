@@ -128,22 +128,46 @@ deploy/scripts/run_e2e_sweep.sh --out-dir /tmp/sweep-$(date +%s) --soak-secs 120
 ### Open follow-ups (not e2e blockers)
 
 1. ~~**Warm-tier sketch ingest is dropped at the gateway.**~~ **Done
-   (2026-04-30, deploy follow-up).** Both options landed:
-   (a) `deploy/configs/gateway.yaml` now uses an `otlp/backend`
-   exporter (gRPC → `backend:4317`) instead of
-   `prometheusremotewrite/backend`, and `deploy/docker-compose/base.yml`
-   passes `--enable-otel-ingest --otel-grpc-port=4317
-   --otel-http-port=4318` to `precompute_engine`. The OTLP receiver
-   in `asap-query-engine/src/drivers/ingest/otel.rs` decodes the
-   typed `Metric.data = {DDSketch | KLLSketch | HLLSketch |
-   CountSketch | CountMinSketch}` payloads end-to-end (companion
-   PR ASAPQuery-backend#69). (b) `deploy/docker/Dockerfile.backend.queryengine`
-   builds the `query_engine_rust` binary instead, and
-   `deploy/docker-compose/queryengine-overlay.yml` swaps it in
-   when stack-wide controller-in-loop / query-tracker / backfill /
-   schema-eviction features are wanted alongside OTLP ingest. The
-   PRW exporter is retained in `gateway.yaml` as a non-active
-   fallback for legacy clients.
+   (2026-05-01, patched-gateway PR).** The original PROGRESS note
+   blamed the PRW exporter, and #205's yaml-only fix swapped that
+   for an OTLP exporter. **That wasn't actually the root cause.**
+   The drop happens earlier — in the gateway's pdata *unmarshal*
+   step. Stock `otel/opentelemetry-collector-contrib:0.108.0`'s
+   pdata only knows about the standard `Metric.data` OneOf
+   variants (Gauge / Sum / Histogram / ExponentialHistogram /
+   Summary). Tags 13–17 (DDSketch / KLLSketch / HLLSketch /
+   CountSketch / CountMinSketch) hit the `default:` arm at
+   `opentelemetry-collector/pdata/internal/generated_proto_metric.go:1201`
+   which calls `proto.ConsumeUnknown(...)` — that advances past
+   the bytes without storing them. There's no `XXX_unrecognized`
+   field on the `Metric` struct to catch them. So by the time any
+   exporter sees the metric, the typed sketch payload is gone,
+   regardless of whether the exporter is PRW or OTLP.
+
+   **Real fix:** run the gateway from the ASAP-patched OTel
+   collector (the same build the agents already use). The
+   patched build's pdata knows tags 13–17 and round-trips them
+   intact. `deploy/docker-compose/base.yml`'s gateway service now
+   uses `image: asap/sketchcol:dev` (was stock 0.108). Three
+   gateway configs in `deploy/configs/`:
+   - `gateway.yaml` — pure forwarder (default).
+   - `gateway-aggregate-from-raw.yaml` — gateway runs sketch
+     processors and emits typed sketches downstream.
+   - `gateway-aggregate-from-sketches.yaml` — gateway merges
+     already-sketched payloads via `countminsketchmerge` /
+     `countsketchmerge`. (DD / KLL / HLL pass through; merge
+     processors for those don't exist yet — backend handles
+     per-agent merging via `merge_into` for those types.)
+   Switch via `GATEWAY_CONFIG=...` env (mirror of `AGENT_CONFIG`).
+   The yaml changes from #205 (otlp/backend exporter,
+   `--enable-otel-ingest` on the backend) are still in main and
+   are correct in their own right — they just weren't sufficient
+   alone.
+
+   `Dockerfile.backend.queryengine` + `queryengine-overlay.yml`
+   are still useful when the deploy needs the binary's
+   controller-in-loop / query-tracker / backfill / schema-eviction
+   features — not directly tied to this fix.
 2. **Cold reader is intolerant of torn last lines.** Under
    concurrent producer write + reader scan, the §5.2
    `parse_jsonl` path failed on a torn last line. A 5-line
