@@ -1,6 +1,93 @@
 # DataCollector progress
 
-_Last updated: 2026-04-30._
+_Last updated: 2026-05-01._
+
+## Single-pipeline multi-sketch + delta + queryable warm tier (2026-05-01)
+
+Building on the all-five-sketch wire path from 2026-04-30, this
+session closes the loop from agent emit → gateway preserve → backend
+decode → store → PromQL answer. After this work, a single
+`asap/sketchcol:dev` binary supports any controller-chosen sketch
+combination, in any single-pipeline shape, with delta transmission,
+end-to-end PromQL queries returning real values.
+
+### What landed
+
+- **DDSketch delta wire fix** ([#210](https://github.com/ProjectASAP/ASAPCollector/pull/210)).
+  Three connected agent-side bugs that meant `delta_transmission: true`
+  silently behaved like full-state-only after the first window:
+  (1) `dp.SetEncoding(pmetric.DDSketchEncodingProto)` ran unconditionally
+  — the typed encoding never reflected `proto_delta`, so the backend
+  dispatched delta bytes through the proto_full decoder and failed.
+  (2) `computeDDSketchDelta` was a stub returning the full-state bytes,
+  even after sketchlib-go's `ComputeDelta(snap, current, threshold)`
+  was already available. (3) The agent set `ddsketch.encoding` as a
+  per-data-point attribute, which made the backend's per-series
+  snapshot cache key differ between full and delta frames →
+  "delta-sketch arrived before any base snapshot" on every delta.
+
+- **Single-pipeline multi-sketch** ([#211](https://github.com/ProjectASAP/ASAPCollector/pull/211)).
+  In window mode, `ddsketch / kll / hll` processors were
+  `accumulateIntoWindow(md); return nil` — they accumulated inputs but
+  did NOT forward them to the next consumer. So `[ddsketch, hll, batch]`
+  silently dropped everything: ddsketch ate the raw inputs (HLL never
+  saw them), and HLL had no `case MetricTypeDDSketch:` in its
+  `accumulateIntoWindow` switch (so ddsketch's tick emission also got
+  dropped). Patched all three to `return p.nextConsumer.ConsumeMetrics(ctx, md)`,
+  matching what `countminsketchprocessor / countsketchprocessor` already do.
+  Now any chain of windowed sketch processors works in a single
+  pipeline, which is what the controller actually generates and what
+  the b2/b3/b4 paper baselines were always supposed to test.
+  Supersedes the per-pipeline-split workaround in #209 (closed).
+
+- **Companion backend changes:**
+  - [ASAPQuery-backend#70](https://github.com/ProjectASAP/ASAPQuery-backend/pull/70):
+    bump tonic OTLP gRPC `max_decoding_message_size` from 4 MiB to
+    64 MiB. First-window full-state DDSketch at 1k cardinality is
+    ~17 MiB, so the gateway's exporter looped forever on the
+    `decoded message length too large` error pre-fix.
+  - [ASAPQuery-backend#71](https://github.com/ProjectASAP/ASAPQuery-backend/pull/71):
+    `range_query_into` switched from "fully-contained" to half-open
+    overlap (PromQL queries don't align to the 30s pane grid, so
+    the strict filter returned empty even when the data was in the
+    store). Plus the engine now picks a single closest pane for
+    window queries and annotates the response's `infos` with
+    `precompute_window: [start_ms, end_ms) ms (width N ms)` so the
+    caller sees exactly which precompute time range produced the
+    answer.
+
+### Live e2e verified
+
+```
+W1 (full):  OTLP modified-proto sketch ingest: 1000 routed, 0 decode-failed
+W2 (delta): OTLP modified-proto sketch ingest: 1000 routed, 0 decode-failed
+W3 (delta): OTLP modified-proto sketch ingest: 1000 routed, 0 decode-failed
+
+$ curl '/api/v1/query?query=quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])&time=$(now-90s)'
+{"data":{"result":[{"metric":{"node":""},
+                    "value":[..., "19.493849507395904"]}],
+         "resultType":"vector"},
+ "infos":["accuracy: ε=0.01, δ=0, kind=relative_quantile",
+          "precompute_window: [1777655280000, 1777655310000) ms (width 30000 ms)"]}
+```
+
+Pre-fix the same query against b3-delta (`delta_transmission: true`,
+`[ddsketch, HLL, batch]` chain) returned `result: []` with
+`No precomputed outputs found`.
+
+### Verified live in this round, not yet exhaustively swept
+
+DDSketch was the live-verified path (b3-delta, full + delta, post-fix
+window query). The matching backend decoder code paths
+(`apply_modified_otlp_delta_bytes` →
+`{DDSketch,HLL,CountSketch,CountMinSketch}Accumulator::apply_proto_delta_bytes`)
+exist for HLL / CountSketch / CountMinSketch as well, and the agent
+processors (HLL `ComputeRegisterDelta`, CMS / CountSketch `ComputeDelta`)
+were already correct on the encoding side — only DDSketch had the
+three-stack of bugs above. KLL has no delta concept by construction.
+Running the full P7 sweep over all five with the accuracy reducer is
+the next step (see follow-up #1 below); structurally there is no
+known reason it shouldn't pass.
 
 ## All-five-sketch runtime e2e verification (2026-04-30)
 
@@ -167,41 +254,88 @@ deploy/scripts/run_e2e_sweep.sh --out-dir /tmp/sweep-$(date +%s) --soak-secs 120
      needed for the typed wire today's e2e uses, and similarly
      no separate merge processors are needed for DD / KLL / HLL.
 
-   **e2e verification (2026-05-01):** with the patched gateway up,
-   sent a test OTLP probe (HTTP, Gauge) — it traversed
-   agent-tier OTLP HTTP → gateway → backend OTLP receiver
-   end-to-end with the proto round-trip intact, confirming the
-   patched-gateway preservation is correct. Proven good for
-   Gauge; the typed-sketch path uses the same OTLP framing so it
-   inherits the preservation. (One incidental finding: the
-   default agent's `[ddsketch, batch]` pipeline produced
-   `output_metric_points_total` from ddsketch but no
-   `exporter_sent_metric_points_total` reached the wire — likely
-   an agent-side pipeline-wiring quirk between the ddsketch
-   processor and the batch processor; orthogonal to the gateway
-   preservation question and tracked separately.)
-   Switch via `GATEWAY_CONFIG=...` env (mirror of `AGENT_CONFIG`).
-   The yaml changes from #205 (otlp/backend exporter,
-   `--enable-otel-ingest` on the backend) are still in main and
-   are correct in their own right — they just weren't sufficient
-   alone.
+   **e2e verification (2026-05-01):** with the patched gateway
+   AND the chain pass-through fix
+   ([#211](https://github.com/ProjectASAP/ASAPCollector/pull/211))
+   AND the DDSketch delta wire fixes
+   ([#210](https://github.com/ProjectASAP/ASAPCollector/pull/210))
+   AND the backend's overlap filter + closest-pane fix
+   ([ASAPQuery-backend#71](https://github.com/ProjectASAP/ASAPQuery-backend/pull/71))
+   in place, the b3-delta config (60s agent window, `delta_transmission: true`,
+   chained `[ddsketch, HLL, batch]`) ingests three consecutive
+   windows cleanly (1000 routed, 0 decode-failed each) and PromQL
+   `quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])`
+   returns real values from the warm tier with a
+   `precompute_window` annotation in the response. See the
+   "Single-pipeline multi-sketch + delta" section at the top of
+   this file for the captured run. The earlier note about a
+   ddsketch→batch wiring quirk was that bug — fixed in #211.
+
+   Switch the gateway mode via `GATEWAY_CONFIG=...` env (mirror
+   of `AGENT_CONFIG`). The yaml changes from #205 (otlp/backend
+   exporter, `--enable-otel-ingest` on the backend) are still in
+   main and are correct in their own right — they just weren't
+   sufficient alone.
 
    `Dockerfile.backend.queryengine` + `queryengine-overlay.yml`
    are still useful when the deploy needs the binary's
    controller-in-loop / query-tracker / backfill / schema-eviction
    features — not directly tied to this fix.
-2. **Cold reader is intolerant of torn last lines.** Under
+2. **Run the full P7 sweep + accuracy reducer (P8) over all
+   five sketch types.** Tooling exists (`run_e2e_sweep.sh`,
+   `accuracy_reduce.py`, `e2e_plots.py`) and the wire path was
+   verified live for DDSketch in this round. Multi-sketch
+   structurally should pass — backend decoder paths
+   (`apply_modified_otlp_delta_bytes`) cover all four
+   delta-capable sketches; KLL has no delta. What's missing is
+   the actual sweep producing a CSV that demonstrates each
+   sketch's empirical error stays inside its theoretical
+   `AccuracyEnvelope` (ε / δ / kind already surfaced in every
+   query response's `infos`). Output: per-cell accuracy CSV +
+   the four P9 plots (pareto, bandwidth-vs-N, transition
+   timeline, query CDF).
+3. **Backend in-memory snapshot cache is lost on backend restart.**
+   `IngestState.sketch_snapshots` (the per-series cache that
+   delta frames apply against) is RAM-only. After a backend
+   bounce, agents continue emitting `proto_delta` against their
+   local snapshots, and every delta frame fails decode at the
+   backend with "delta-sketch arrived before any base snapshot"
+   until the agent itself restarts. Two reasonable fixes: (a)
+   persist `sketch_snapshots` to the existing per-key disk
+   layer the precompute store already uses, or (b) add an OpAMP
+   capability that lets the backend signal agents to send the
+   next frame as full state. (a) is local; (b) crosses the
+   controller boundary.
+4. **Inference config breadth.** Only one PromQL pattern per
+   metric currently lands in `backend-inference.yaml`
+   (`quantile_over_time(0.5, …[1m])`,
+   `histogram_quantile(0.5, …)`, `sum_over_time(…[1m])`). Wider
+   ranges (`[2m]`, `[5m]`, `rate(…)`, multi-quantile) fall
+   through to capability matching or the cold tier. Adding
+   patterns is mechanical but expands what queries the warm
+   tier can answer.
+5. **Cold reader is intolerant of torn last lines.** Under
    concurrent producer write + reader scan, the §5.2
    `parse_jsonl` path failed on a torn last line. A 5-line
    change in
    `asap-query-engine/src/drivers/query/fallback/cold_store/format.rs`
    to drop a malformed trailing line + warn would unblock soaks
    that don't pause writes before snapshotting.
-3. **Reducer runs offline; doesn't need the backend live.** That's
+6. **Reducer runs offline; doesn't need the backend live.** That's
    fine for accuracy claims, but PromQL semantics are easy to
    drift from the engine. Add a self-check that runs the same
    query against the cold truth via the engine itself, where
    feasible.
+7. **`build_sketchcollector.sh` env vars are external.** The
+   script needs `GOPRIVATE='github.com/ProjectASAP/*'
+   GOTOOLCHAIN=auto` to actually build (sketchlib-go's
+   private-module + Go toolchain auto-upgrade). Inlining these
+   into the script removes a footgun for new contributors.
+8. **OTel submodules dirty in working tree.** `opentelemetry-collector`
+   and `opentelemetry-go` show as modified content / new
+   commits and have been intentionally excluded from PRs since
+   #204. Decision still pending — either commit a clean bump as
+   its own PR or revert.
 
 ---
 
