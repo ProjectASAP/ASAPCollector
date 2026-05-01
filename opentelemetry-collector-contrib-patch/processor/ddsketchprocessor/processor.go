@@ -280,12 +280,36 @@ func (p *ddsketchProcessor) buildMergedSketchMetric(src pmetric.Metric, series m
 		dp.SetStartTimestamp(s.start)
 		dp.SetTimestamp(s.end)
 		dp.SetCount(s.count)
-		dp.SetEncoding(pmetric.DDSketchEncodingProto)
+		// Set the TYPED encoding to match the actual payload — the
+		// backend's modified-OTLP ingest dispatches on this enum, not
+		// on the `ddsketch.encoding` string attribute. With
+		// `delta_transmission: true` the second window's payload is
+		// a `DDSketchDelta` proto, not a `DDSketchState`, and the
+		// backend's `decode_modified_otlp_sketch_bytes` (PROTO path)
+		// would silently fail to parse it as a state envelope. The
+		// PROTO_DELTA branch hands the bytes to
+		// `apply_modified_otlp_delta_bytes` which knows how to merge
+		// against the per-series snapshot.
+		switch encoding {
+		case "proto_delta":
+			dp.SetEncoding(pmetric.DDSketchEncodingProtoDelta)
+		default:
+			// "proto_full" and any unexpected fallback.
+			dp.SetEncoding(pmetric.DDSketchEncodingProto)
+		}
 		dp.SetSketch(payload)
 		dp.SetFlags(s.flags)
-		if p.cfg.DeltaTransmission {
-			dp.Attributes().PutStr("ddsketch.encoding", encoding)
-		}
+		// NB: do NOT add a `ddsketch.encoding` string attribute here.
+		// The typed `Encoding()` field above is the source of truth.
+		// Adding the encoding as an attribute makes consecutive
+		// frames (proto_full → proto_delta → proto_delta) carry
+		// different attribute sets and therefore different
+		// `series_key`s on the backend, which keys its per-series
+		// snapshot cache by attribute set. Result: the delta frame
+		// looks up the cache with `…,ddsketch.encoding=proto_delta`
+		// and never finds the snapshot stored under
+		// `…,ddsketch.encoding=proto_full`, so every delta drops as
+		// "delta-sketch arrived before any base snapshot".
 	}
 
 	if dps.Len() == 0 {
@@ -545,23 +569,31 @@ func serializeDDSketch(sk *ddsketch.DDSketch) ([]byte, error) {
 	return proto.Marshal(env)
 }
 
-// computeDDSketchDelta computes a sparse delta between a snapshot
-// payload and the current sketch — but the sketchlib-go-side delta
-// encoder isn't generated yet (the Rust backend has it via
-// `asap_otel_proto::sketchlib::v1::DdSketchDelta`; the Go side
-// would need a parallel codegen path). Until that lands, fall
-// through to the full state — `delta_transmission: true` in the
-// processor config will silently behave like
-// `delta_transmission: false` rather than emit incompatible
-// bytes the backend can't decode.
+// computeDDSketchDelta computes a sparse delta between the previous
+// flush's snapshot payload and the current sketch. The result is
+// `proto.Marshal(DDSketchDelta)` from `sketches/DDSketch/delta.go`,
+// byte-for-byte compatible with the backend's
+// `apply_modified_otlp_delta_bytes` → `DDSketchAccumulator.apply_proto_delta_bytes`
+// path (Rust's `asap_otel_proto::sketchlib::v1::DdSketchDelta`).
 //
-// Tracked as a follow-up: port `DdSketchDelta` to sketchlib-go +
-// add `(*DDSketch).SerializeDelta(snap *DDSketchState) []byte`,
-// then wire it here.
+// `snapPayload` is the previously emitted full-state envelope
+// (output of `serializeDDSketch`). We deserialize it into a
+// `*DDSketch` so sketchlib-go's `ComputeDelta` can iterate both
+// stores' bucket counts.
 func computeDDSketchDelta(snapPayload []byte, current *ddsketch.DDSketch, threshold uint64) ([]byte, error) {
-	_ = snapPayload
-	_ = threshold
-	return serializeDDSketch(current)
+	var env envpb.SketchEnvelope
+	if err := proto.Unmarshal(snapPayload, &env); err != nil {
+		return nil, fmt.Errorf("computeDDSketchDelta: unmarshal snapshot envelope: %w", err)
+	}
+	snapState := env.GetDdsketch()
+	if snapState == nil {
+		return nil, fmt.Errorf("computeDDSketchDelta: snapshot envelope did not carry a DDSketchState variant")
+	}
+	snapshot, err := ddsketch.NewFromState(snapState)
+	if err != nil {
+		return nil, fmt.Errorf("computeDDSketchDelta: NewFromState(snapshot): %w", err)
+	}
+	return ddsketch.ComputeDelta(snapshot, current, threshold)
 }
 
 func attributesKey(attrs pcommon.Map) string {
