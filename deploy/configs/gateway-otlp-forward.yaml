@@ -1,0 +1,64 @@
+# Gateway config that forwards everything (sketch + raw) to the
+# backend over OTLP, instead of translating to Prometheus
+# remote-write. Used by the e2e harness because stock OTel's PRW
+# translator silently drops `DDSketch` / `HLLSketch` /
+# `CountSketch` / `CountMinSketch` / `KLLSketch` data point types,
+# which is the wrong default for a sketch-native pipeline.
+#
+# This requires `precompute_engine --enable-otel-ingest` on the
+# backend (added in the same PR as this config).
+#
+# Compared to `gateway.yaml`, two changes:
+#   1. exporter swapped from `prometheusremotewrite/backend` to
+#      `otlp/backend`.
+#   2. raw counters that were getting "for free" through PRW
+#      now ride OTLP, which the backend's `OtlpReceiver` ingests
+#      via the precompute engine's ingest_state — same store, no
+#      extra wiring on the backend side.
+#
+# Future "further aggregate sketches at the gateway tier" work
+# would add the sketch processors here; for now this config is
+# pure forwarder.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  attributes/drop-internal:
+    actions:
+      - key: telemetry.sdk.name
+        action: delete
+      - key: telemetry.sdk.language
+        action: delete
+      - key: telemetry.sdk.version
+        action: delete
+
+exporters:
+  otlp/backend:
+    endpoint: backend:4317
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      queue_size: 5000
+
+service:
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: "0.0.0.0:8890"
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [attributes/drop-internal, batch]
+      exporters: [otlp/backend]

@@ -194,36 +194,129 @@ async fn handle_socket(socket: WebSocket, agent_id: String, role: AgentRole, srv
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Forward channel messages → WebSocket as standard OpAMP protobuf.
+    //
+    // OpAMP WS wire format prepends each binary frame with a varint
+    // header (`uint64(0)` today). See `opamp-go/internal/wsmessage.go`.
+    // Without the header, the agent's `DecodeWSMessage` falls back to
+    // "old format" and decodes successfully — which is why pushes
+    // worked even before this fix. We add the header for spec
+    // conformance so the agent never has to take the legacy path.
     let writer_id = agent_id.clone();
     let write_task = tokio::spawn(async move {
         while let Some(cfg) = rx.recv().await {
             // Build standard OpAMP ServerToAgent with RemoteConfig.
             let server_to_agent = encode_remote_config(&cfg);
-            let mut buf = Vec::new();
-            if server_to_agent.encode(&mut buf).is_err() {
+            let mut payload = Vec::new();
+            if server_to_agent.encode(&mut payload).is_err() {
                 warn!(agent = %writer_id, "failed to encode OpAMP protobuf");
                 continue;
             }
-            // OpAMP uses binary WebSocket frames for protobuf.
+            // Prepend the wsMsgHeader varint (zero byte today; the
+            // varint is `0u64`, which encodes to a single 0x00).
+            let mut buf = Vec::with_capacity(1 + payload.len());
+            buf.push(0u8);
+            buf.extend_from_slice(&payload);
             if ws_tx.send(Message::Binary(buf.into())).await.is_err() { break; }
             info!(agent = %writer_id, hash = %cfg.config_hash, "config pushed (OpAMP protobuf)");
         }
     });
 
     // Receive AgentToServer protobuf messages.
+    //
+    // Strip the OpAMP wire-format header before decoding. Per
+    // `opamp-go/internal/wsmessage.go::DecodeWSMessage`, the spec
+    // header is a varint-encoded `uint64(0)` and is detected by a
+    // leading 0 byte. Older clients send raw protobuf with no header
+    // — in that case the first byte is the protobuf field tag and is
+    // never zero (a tag-0 wire type is illegal), so the
+    // "first-byte-is-zero" check is unambiguous.
     while let Some(Ok(msg)) = ws_rx.next().await {
         match msg {
             Message::Binary(data) => {
-                match opamp_proto::AgentToServer::decode(data.as_ref()) {
+                let payload: &[u8] = if !data.is_empty() && data[0] == 0 {
+                    // Spec format. Decode the varint header (always
+                    // 0 today) and skip it.
+                    match prost::encoding::decode_varint(&mut &data[..]) {
+                        Ok(_hdr) => {
+                            // Recompute consumed bytes = varint length.
+                            // For the canonical zero header this is 1
+                            // byte; for any future non-zero header
+                            // it's `n` bytes from the unsigned LEB128
+                            // encoding.
+                            let mut tmp: &[u8] = data.as_ref();
+                            let _ = prost::encoding::decode_varint(&mut tmp);
+                            let consumed = data.len() - tmp.len();
+                            &data[consumed..]
+                        }
+                        Err(_) => &data[..],
+                    }
+                } else {
+                    &data[..]
+                };
+                match opamp_proto::AgentToServer::decode(payload) {
                     Ok(ats) => {
                         info!(agent = %agent_id, "received AgentToServer (OpAMP protobuf)");
-                        // Log effective config if reported.
+                        // Log effective config if reported. Triggered by
+                        // the `ReportFullState` flag on our outgoing
+                        // ServerToAgent (see `encode_remote_config`).
                         if let Some(ec) = &ats.effective_config {
                             if let Some(cm) = &ec.config_map {
                                 for (name, file) in &cm.config_map {
-                                    info!(agent = %agent_id, config_name = %name,
-                                        bytes = file.body.len(), "agent reported effective config");
+                                    let body_preview = String::from_utf8_lossy(
+                                        &file.body[..file.body.len().min(160)]
+                                    );
+                                    info!(
+                                        agent = %agent_id,
+                                        config_name = %name,
+                                        bytes = file.body.len(),
+                                        preview = %body_preview.replace('\n', " ⏎ "),
+                                        "agent reported effective config",
+                                    );
                                 }
+                            }
+                        }
+                        // Log remote-config apply state — this is the
+                        // signal that "the agent received our pushed
+                        // RemoteConfig, attempted to apply it, and ended
+                        // up in {Applied | Failed | Applying}".
+                        // RemoteConfigStatuses enum values:
+                        //   0 = Unset
+                        //   1 = Applied
+                        //   2 = Applying
+                        //   3 = Failed
+                        if let Some(rcs) = &ats.remote_config_status {
+                            let status_str = match rcs.status {
+                                0 => "Unset",
+                                1 => "Applied",
+                                2 => "Applying",
+                                3 => "Failed",
+                                n => {
+                                    // Future spec-defined values fall through
+                                    // here; surface the raw int rather than
+                                    // claim a meaning.
+                                    return_unknown_status(n)
+                                }
+                            };
+                            let last_hash_hex = rcs
+                                .last_remote_config_hash
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>();
+                            if rcs.status == 3 {
+                                warn!(
+                                    agent = %agent_id,
+                                    status = status_str,
+                                    last_hash = %last_hash_hex,
+                                    error = %rcs.error_message,
+                                    "agent reported remote-config status",
+                                );
+                            } else {
+                                info!(
+                                    agent = %agent_id,
+                                    status = status_str,
+                                    last_hash = %last_hash_hex,
+                                    "agent reported remote-config status",
+                                );
                             }
                         }
                         // Log health if reported.
@@ -258,8 +351,38 @@ async fn handle_socket(socket: WebSocket, agent_id: String, role: AgentRole, srv
 /// The YAML config body is wrapped in:
 ///   ServerToAgent.remote_config.config.config_map[""].body = yaml_bytes
 ///
+/// Format an unknown `RemoteConfigStatuses` int as a stable string
+/// for logs. Pulled out into a helper to keep the match arm above
+/// borrow-checker-friendly (returning a `&'static str`).
+fn return_unknown_status(n: i32) -> &'static str {
+    // Leak the formatted int into a `'static str` only if needed.
+    // For diagnostic logs we accept the cost of a Box::leak per
+    // unrecognised value since this is an "out-of-spec status"
+    // signal that should be rare. Avoids reworking the surrounding
+    // match into String.
+    Box::leak(format!("Unknown({})", n).into_boxed_str())
+}
+
 /// This is the standard OpAMP way to push collector configuration.
 /// The opampextension in the OTel Collector decodes this and applies the config.
+///
+/// Two protocol bits the controller sets per spec:
+///
+/// 1. `flags = ReportFullState` (`0x01`) asks the agent's next
+///    `AgentToServer` to include the full status block —
+///    `effective_config` (the YAML the agent ended up running)
+///    and `remote_config_status` (Applied / Failed / Applying).
+///    Without this, the agent is allowed to elide both fields as
+///    an optimization once the controller has acknowledged a
+///    given sequence_num, and we lose visibility into whether the
+///    push actually took.
+///
+/// 2. `capabilities` advertises what the controller can accept
+///    back. `AcceptsStatus` is mandatory; `OffersRemoteConfig`
+///    must be set whenever we send `remote_config`;
+///    `AcceptsEffectiveConfig` tells the agent it's worth
+///    populating the field (some agents skip it if the server
+///    didn't claim it could parse it).
 fn encode_remote_config(cfg: &RemoteConfig) -> opamp_proto::ServerToAgent {
     let config_file = opamp_proto::AgentConfigFile {
         body: cfg.yaml.as_bytes().to_vec(),
@@ -276,8 +399,18 @@ fn encode_remote_config(cfg: &RemoteConfig) -> opamp_proto::ServerToAgent {
         config_hash: cfg.config_hash.as_bytes().to_vec(),
     };
 
+    // ServerToAgentFlags_ReportFullState = 0x01.
+    const FLAG_REPORT_FULL_STATE: u64 = 0x0000_0001;
+    // ServerCapabilities bitmask:
+    //   AcceptsStatus            = 0x01
+    //   OffersRemoteConfig       = 0x02
+    //   AcceptsEffectiveConfig   = 0x04
+    const CAPS_DEFAULT: u64 = 0x01 | 0x02 | 0x04;
+
     opamp_proto::ServerToAgent {
         remote_config: Some(remote_config),
+        flags: FLAG_REPORT_FULL_STATE,
+        capabilities: CAPS_DEFAULT,
         ..Default::default()
     }
 }

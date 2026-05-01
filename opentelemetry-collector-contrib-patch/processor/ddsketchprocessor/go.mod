@@ -3,7 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddske
 go 1.24.0
 
 require (
-	github.com/DataDog/sketches-go v1.4.7
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260328221809-b24e56e64e94
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.47.0
 	go.opentelemetry.io/collector/component/componenttest v0.141.0
@@ -49,3 +49,9 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden => 
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
 
 replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
+
+// Local sketchlib-go checkout — this processor switched away from
+// DataDog's `sketches-go/ddsketch` so the wire format matches
+// `asap_sketchlib::DDSketchState` on the Rust side. Path is
+// relative to opentelemetry-collector-contrib-patch/processor/ddsketchprocessor.
+replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go

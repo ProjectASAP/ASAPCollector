@@ -442,6 +442,52 @@ pub struct AgentCollectorConfig {
     /// Minimum absolute cell change included in a delta payload (T).
     /// Ignored when `delta_transmission` is false.
     pub delta_threshold: f64,
+    /// Data sink the planner wants the agent to emit to. Decoupled
+    /// from the planner output (which sketch / window / projection)
+    /// because where the data goes is a deployment-scope concern,
+    /// not a planning concern. The previous hardcoded
+    /// "prometheus exporter on :8889" approach broke the moment we
+    /// tried to ship sketch types — stock Prometheus exporter
+    /// silently drops `DDSketchDataPoint` / `HLLSketchDataPoint`
+    /// etc. — so emit OTLP-to-backend for sketch deployments and
+    /// keep the prometheus path only for legacy raw-scalar pipelines.
+    pub data_sink: AgentDataSink,
+}
+
+/// What the agent's collector exports to.
+///
+/// `Otlp` — the agent's pipeline ends with an OTLP exporter
+/// pointed at the configured endpoint. Required for sketch
+/// transport: the modified-OTLP `Data::Ddsketch` / `KLLSketch` /
+/// etc. variants are carried natively over OTLP and decoded by
+/// the backend's `OtlpReceiver` + the per-sketch
+/// `from_sketchlib_proto_bytes` / `from_msgpack_bytes` decoders.
+///
+/// `PrometheusScrape` — agent exposes `/metrics` on the listed
+/// host:port for an external scraper. Loses sketch types at the
+/// translation step; only useful for raw-scalar pipelines.
+#[derive(Debug, Clone)]
+pub enum AgentDataSink {
+    /// `endpoint` is an OTLP gRPC endpoint, e.g. `backend:4317`.
+    /// `compression` is the transport-level codec; the canonical
+    /// path uses `none` because the backend's tonic gRPC server
+    /// rejects gzip-compressed bodies (returns Unimplemented).
+    Otlp { endpoint: String, compression: String },
+    /// Pre-existing path: prometheus exporter at `endpoint`. Kept
+    /// for back-compat with the legacy raw-scalar deployment.
+    PrometheusScrape { endpoint: String },
+}
+
+impl Default for AgentDataSink {
+    /// Default is OTLP-to-backend at the canonical compose
+    /// hostname. Override per-deployment via the planner's
+    /// `--agent-data-sink` flag (or future config push).
+    fn default() -> Self {
+        AgentDataSink::Otlp {
+            endpoint: "backend:4317".to_string(),
+            compression: "none".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

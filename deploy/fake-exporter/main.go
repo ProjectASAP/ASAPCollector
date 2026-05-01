@@ -351,14 +351,34 @@ func main() {
 	// matches any instrument name). The stream config is what the
 	// three-axis sweep actually varies — aggregation + attribute
 	// filter.
-	stream := sdkmetric.Stream{Aggregation: agg}
-	if projection != nil {
-		stream.AttributeFilter = projection
-	}
+	//
+	// AttributeFilter is wrapped in a swappableFilter so the
+	// controller can change the label projection L mid-run via
+	// `POST /control/projection` (P2 of the e2e harness — see
+	// swappable_filter.go). When EXPORTER_CONTROL_ADDR is unset the
+	// HTTP control endpoint is not started, but the wrapper still
+	// works as a static filter, so this is always the right wiring.
+	swappable := newSwappableFilter(projection)
+	stream := sdkmetric.Stream{Aggregation: agg, AttributeFilter: swappable.Filter()}
 	view := sdkmetric.NewView(
 		sdkmetric.Instrument{Name: "*"},
 		stream,
 	)
+	if addr := os.Getenv("EXPORTER_CONTROL_ADDR"); addr != "" {
+		log.Printf("control plane listening on %s (POST /control/projection)", addr)
+		_ = installControlServer(addr, swappable)
+	}
+
+	// Ground-truth tee: every app-level event is mirrored to a
+	// hour-bucketed JSONL store under EXPORTER_RAW_TEE_ROOT
+	// (P4 of the e2e harness — see raw_tee.go). Disabled when the
+	// env is empty; in that case Tee() is a single bool check.
+	rt := newRawTee(os.Getenv("EXPORTER_RAW_TEE_ROOT"))
+	if rt.enabled {
+		log.Printf("raw-tee writing ground truth under %s", rt.root)
+		_ = rt.startBackgroundFlush()
+		defer rt.Close()
+	}
 
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(reader),
@@ -376,9 +396,9 @@ func main() {
 	)
 
 	if traceFile != "" {
-		runTraceReplay(ctx, meter, metricName, traceFile)
+		runTraceReplay(ctx, meter, metricName, traceFile, rt)
 	} else {
-		runSynthetic(ctx, meter, metricName)
+		runSynthetic(ctx, meter, metricName, rt)
 	}
 }
 
@@ -388,7 +408,7 @@ func main() {
 // time. The raw event rate on the app side is thus `freq × cardinality
 // × 2`; what becomes wire traffic is determined by the SDK View +
 // PeriodicReader config set up in main.
-func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
+func runSynthetic(ctx context.Context, meter metric.Meter, metricName string, tee *rawTee) {
 	cardinality := envInt("EXPORTER_CARDINALITY", 1000)
 	freqHz := envFloat("EXPORTER_FREQ_HZ", 10.0)
 	zoneVals := envInt("EXPORTER_ZONE_VALS", 4)
@@ -445,12 +465,17 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
+					nowMs := time.Now().UnixMilli()
 					counter.Add(ctx, 1, attrs)
-					latencyGauge.Record(
-						ctx,
-						math.Exp(3.0+0.7*rand.NormFloat64()),
-						attrs,
-					)
+					latVal := math.Exp(3.0 + 0.7*rand.NormFloat64())
+					latencyGauge.Record(ctx, latVal, attrs)
+					// Ground-truth mirror: same ts, same attrs, raw
+					// values. Two events per tick (counter + gauge),
+					// matching the SDK input-side rate.
+					if tee.enabled {
+						tee.Tee(metricName, nowMs, 1, labelSets[seriesIdx])
+						tee.Tee(metricName+"_latency_ms", nowMs, latVal, labelSets[seriesIdx])
+					}
 				}
 			}
 		}(i)
@@ -469,7 +494,7 @@ func max64(a float64, b int) int {
 // the recorded pace. Each unique series_id becomes label
 // `{series_id=…}`; the SDK config set up in main (window /
 // projection / agg) applies uniformly.
-func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path string) {
+func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path string, tee *rawTee) {
 	scale := envFloat("EXPORTER_TRACE_SCALE", 1.0)
 	loop := envBool("EXPORTER_TRACE_LOOP", true)
 
@@ -494,7 +519,7 @@ func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path st
 	}
 
 	for {
-		replayOnce(ctx, gauge, rows, labelSets, scale)
+		replayOnce(ctx, gauge, rows, labelSets, scale, tee, metricName+"_trace")
 		if !loop {
 			return
 		}
@@ -510,6 +535,8 @@ func replayOnce(
 	rows []traceRow,
 	labelSets map[string][]attribute.KeyValue,
 	scale float64,
+	tee *rawTee,
+	teeMetric string,
 ) {
 	if len(rows) == 0 {
 		return
@@ -523,5 +550,15 @@ func replayOnce(
 			time.Sleep(sleep)
 		}
 		gauge.Record(ctx, r.value, metric.WithAttributes(labelSets[r.seriesID]...))
+		if tee.enabled {
+			// Tee uses wall-clock time, not the trace timestamp,
+			// to match the SDK's view (the SDK stamps records at
+			// emit time). This means the trace's logical timeline
+			// is preserved in the order of writes, but the
+			// hour-bucket key reflects when we replayed the row,
+			// not when it was originally captured. The ASAP
+			// query path consumes wall-clock-stamped data anyway.
+			tee.Tee(teeMetric, time.Now().UnixMilli(), r.value, labelSets[r.seriesID])
+		}
 	}
 }

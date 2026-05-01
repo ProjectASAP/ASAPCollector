@@ -1,11 +1,11 @@
 module github.com/ProjectASAP/DataCollector/deploy/fake-exporter
 
-go 1.24.0
+go 1.25.0
 
 require (
-	go.opentelemetry.io/otel v1.41.0
+	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.41.0
-	go.opentelemetry.io/otel/metric v1.41.0
+	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk v1.41.0
 	go.opentelemetry.io/otel/sdk/metric v1.41.0
 )
@@ -26,7 +26,7 @@ require (
 	github.com/prometheus/prometheus v0.307.1 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel/trace v1.41.0 // indirect
+	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.9.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/net v0.50.0 // indirect
@@ -47,6 +47,8 @@ require (
 replace (
 	github.com/ProjectASAP/sketchlib-go => ../../../sketchlib-go
 	go.opentelemetry.io/otel => ../../opentelemetry-go
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc => ../../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetricgrpc
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp => ../../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetrichttp
 	go.opentelemetry.io/otel/metric => ../../opentelemetry-go/metric
 	go.opentelemetry.io/otel/sdk => ../../opentelemetry-go/sdk
 	go.opentelemetry.io/otel/sdk/metric => ../../opentelemetry-go/sdk/metric

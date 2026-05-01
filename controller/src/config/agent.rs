@@ -59,8 +59,14 @@ pub fn generate_agent_config(
     }
     let otlp_receiver = Value::Mapping(otlp_map);
 
-    // Prometheus exporter so downstream scrapers can observe the pipeline.
-    let prom_exporter: Value = serde_yaml::from_str("endpoint: \"0.0.0.0:8889\"\n").unwrap();
+    // Build the exporter block from `cfg.data_sink`. The planner
+    // chooses the sketch + window + projection; *where* the
+    // sketched data goes is a deployment-scope concern carried
+    // here. Default is `otlp/backend` because the modified-OTLP
+    // `Data::Ddsketch` / `KLLSketch` / ... variants only survive
+    // an OTLP transport — the legacy `prometheus` exporter is
+    // kept only for raw-scalar pipelines.
+    let (exporter_key, exporter_val) = build_exporter_block(&cfg.data_sink);
 
     // OpAMP extension — allows the controller to push config updates at runtime.
     let opamp_ext: Value = serde_yaml::from_str(&format!(
@@ -71,7 +77,7 @@ pub fn generate_agent_config(
         extensions: [("opamp".to_string(), opamp_ext)].into(),
         receivers: [("otlp".to_string(), otlp_receiver)].into(),
         processors: [(processor_key.clone(), processor_val)].into(),
-        exporters: [("prometheus".to_string(), prom_exporter)].into(),
+        exporters: [(exporter_key.clone(), exporter_val)].into(),
         service: ServiceSection {
             extensions: vec!["opamp".into()],
             pipelines: [(
@@ -79,7 +85,7 @@ pub fn generate_agent_config(
                 Pipeline {
                     receivers: vec!["otlp".into()],
                     processors: vec![processor_key],
-                    exporters: vec!["prometheus".into()],
+                    exporters: vec![exporter_key],
                 },
             )]
             .into(),
@@ -87,6 +93,35 @@ pub fn generate_agent_config(
     };
 
     serde_yaml::to_string(&doc).context("serialize agent config")
+}
+
+/// Maps the planner's `AgentDataSink` choice to a (component_id,
+/// component_yaml) pair. The component_id is what goes into the
+/// `exporters:` map AND the pipeline's `exporters:` list — both
+/// references must agree, so it's returned alongside the YAML
+/// block.
+fn build_exporter_block(sink: &AgentDataSink) -> (String, Value) {
+    match sink {
+        AgentDataSink::Otlp {
+            endpoint,
+            compression,
+        } => {
+            let yaml = format!(
+                "endpoint: \"{endpoint}\"\ntls:\n  insecure: true\ncompression: {compression}\n"
+            );
+            (
+                "otlp/backend".to_string(),
+                serde_yaml::from_str(&yaml).unwrap(),
+            )
+        }
+        AgentDataSink::PrometheusScrape { endpoint } => {
+            let yaml = format!("endpoint: \"{endpoint}\"\n");
+            (
+                "prometheus".to_string(),
+                serde_yaml::from_str(&yaml).unwrap(),
+            )
+        }
+    }
 }
 
 fn build_processor_block(cfg: &AgentCollectorConfig) -> Value {

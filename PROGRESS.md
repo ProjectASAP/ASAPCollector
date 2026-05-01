@@ -1,6 +1,155 @@
 # DataCollector progress
 
-_Last updated: 2026-04-23._
+_Last updated: 2026-04-30._
+
+## All-five-sketch runtime e2e verification (2026-04-30)
+
+PromQL → controller → agent (sketchcol) → backend (precompute_engine) →
+PromQL response, end-to-end through the modified-OTLP wire format
+(typed `Metric.data = {DDSketch | KLLSketch | HLLSketch | CountSketch
+| CountMinSketch}` data points, not Gauge-with-payload). One soak
+per sketch with a single configuration; this is *the* path that the
+sweep harness (P5–P9) drives.
+
+| Sketch | Query (PromQL) | Result | Accuracy envelope | Notes |
+|---|---|---|---|---|
+| DDSketch | `histogram_quantile(0.5,…)` etc. | q=0.5→21.12, q=0.9→47.95, q=0.99→104.60 | `relative_quantile`, ε=0.01 | Agent uses `sketchlib-go/DDSketch` (replaced DataDog impl); proto envelope encoded via `SerializePortable`. |
+| KLLSketch | `histogram_quantile(0.5,…)` | q=0.5→18.26 | `rank_quantile`, ε=0.16 | sketchlib-go KLL `SerializeMsgpack` → backend `DatasketchesKLLAccumulator::from_msgpack_bytes`. |
+| HLLSketch | `count(http_requests_total)` | 149.68 distinct | `relative_cardinality`, ε=0.008 | HLL accumulator's `query_statistic` accepts both `Statistic::Cardinality` and `Statistic::Count` (Count alias added). |
+| CountSketch | `sum_over_time(http_requests_total[1m])` | 24266 | `additive_frequency`, ε=0.03 | CountSketch query_statistic returns row-mean total when no key is provided. |
+| CountMinSketch | `sum_over_time(http_requests_total[1m])` | 145735 | `additive_frequency`, ε≈0.0027, δ=0.03125 | CMS query_statistic now mirrors CountSketch's no-key fallback: returns the min-row sum (canonical CMS total-event estimator). |
+
+### Cross-cutting fixes that made the e2e land
+
+- **sketchlib-go**: `SerializeMsgpack` added to HLL / CountSketch /
+  CountMinSketch (parity with KLL); cross-language wire format is
+  what `ASAPQuery-backend` consumes through
+  `*::from_msgpack_bytes`.
+- **Agent processor (`ddsketchprocessor`)**: replaced
+  `github.com/DataDog/sketches-go` with `sketchlib-go/DDSketch` so
+  the proto envelope is decodable by `asap_sketchlib`'s
+  `DDSketchState`.
+- **Controller `data_sink`** (`controller/src/types.rs` +
+  `config/agent.rs`): generated agent config now picks between
+  `Otlp{endpoint,…}` and `PrometheusScrape{…}` exporters via an
+  `AgentDataSink` enum, instead of always emitting the
+  `prometheus` exporter (architectural fix the user flagged —
+  Prometheus exposition is not a controller concern).
+- **OpAMP framing** (`controller/src/opamp/mod.rs`): incoming WS
+  payloads have their varint header stripped before proto decode;
+  outbound `ServerToAgent` frames carry the
+  `ReportFullState` flag and the Accept/Offer capability bitmask
+  so agents accept and apply config.
+- **Backend `query_statistic`**: implemented Quantile / Sum / Count
+  / Min / Max for DDSketch; Cardinality (+ Count alias) for HLL;
+  Topk / Count / Sum for CountSketch; **Count / Sum (no-key) for
+  CMS** with the min-row-sum estimator (this PR).
+- **Build glue**: the OCB v0.141.0 builder file is now
+  `cmd/sketchcollector/builder-config-sketches.yaml` (renamed from
+  `builder-config-ddonly.yaml`); compiles all five sketch
+  processors plus `opampextension`.
+
+### Limitations + follow-ups
+
+- **CMS query without a paired key aggregator returns total volume,
+  not per-key frequency.** That's the right answer for `sum / count
+  / sum_over_time / count_over_time` (every insert increments one
+  cell per row, so the min row total is the exact insert count
+  modulo CMS hashing collisions — and CMS never *under*-counts). To
+  serve `topk(N, …)` over CMS-tracked frequencies the system needs
+  a paired `SetAggregator` / `DeltaSetAggregator` running on the
+  agent so the backend can enumerate keys in the multi-population
+  dual-input path. Out of scope for this verification round.
+- **`compatible_agg_types` in `capability_matching.rs` does not list
+  CountMinSketch under `Statistic::Sum`** even though
+  `query_logics::logics::map_statistic_to_precompute_operator`
+  treats CMS as the canonical approximator for both Sum and Count.
+  The exact-match `find_query_config` path bypasses
+  capability_matching and made the e2e pass; reconciling the two
+  tables (so capability matching also picks CMS for Sum) is a
+  separate cleanup.
+
+## e2e harness build-out (P1–P9, in progress)
+
+Driven by the user request for a real complete e2e: PromQL →
+controller → plan push → agent sketch + backend query → accuracy
++ throughput + latency + plan-transition observability.
+
+| Step | Status | Notes |
+|---|---|---|
+| P1. Wire `ASAP_COLD_STORE_ROOT` in `asap-query-engine/main.rs` | ✅ 2026-04-30 | `--cold-store-root` flag (env `ASAP_COLD_STORE_ROOT`) selects `prometheus_promql_with_cold`; 4 unit tests |
+| P2. Hot-reload View `AttributeFilter` (mid-run projection swap) | ✅ 2026-04-30 | `deploy/fake-exporter/swappable_filter.go` — atomic.Pointer-backed filter wired into `Stream.AttributeFilter`; `POST /control/projection` HTTP endpoint; 5 tests incl. race + e2e through ManualReader. **No SDK patch was needed**: the SDK's `aggregate.Builder.filter` closure dispatches through the function value, so atomic-state inside the filter is observable on the next measurement. |
+| P3. Build deploy images + N=1 b3-delta smoke run | ✅ 2026-04-30 | All four images (`asap/{controller,query-backend,fake-exporter,sketchcol}:dev`) build cleanly and `docker compose up` stands up the full stack. Verified: backend logs cold-tier fallback enabled; raw-tee writes ground-truth JSONL with the right path layout; swappable-filter HTTP swap returns `{"applied":"zone"}`. **Known limitation:** stock OTel gateway 0.108 can't translate DDSketch/HLLSketch through `prometheusremotewrite` to the backend, so the warm-tier sketch ingest is dropped at the gateway. The cold-tier path (P1+P4) carries the e2e flow through. Wiring an OTLP ingest into `precompute_engine` (or switching the backend image to the `query_engine_rust` binary, which has it) is the follow-up to unblock warm-tier sketches. |
+| P4. Ground-truth tee from fake-exporter to MinIO raw JSONL | ✅ 2026-04-30 | `deploy/fake-exporter/raw_tee.go` — atomic.Pointer-style hour-bucketed JSONL writer matching the Rust `RawSample` wire format byte-for-byte. 8 unit tests incl. concurrent-writer race + format anchor + per-instance file naming. Wired into `runSynthetic` + `runTraceReplay`; controlled by `EXPORTER_RAW_TEE_ROOT` env. e2e overlay mounts a shared `cold-store` Docker volume into both fake-exporter (writer) and backend (reader). |
+| P5. PromQL replay client with plan-id tagging | ✅ 2026-04-30 | `deploy/scripts/promql_replay.py` — fires PromQL at backend `:19091` at fixed QPS, captures p50/p99 + result vector per query, tags every line of the JSONL log with the controller's currently-published `plan_id` (1 Hz polling thread). Smoke-tested: 17 queries / 6 s, p50 2.4 ms, p99 1.3 s (cold-fallback dominated). |
+| P6. Plan-transition driver + 1 Hz CPU/bandwidth sampler | ✅ 2026-04-30 | `deploy/scripts/plan_transition.py` — fires a query the active plan can't answer; tracks `t_query_in / t_plan_ready / t_first_hit / t_steady` against the controller's plan-id stream; `DockerStatsSampler` dumps 1 Hz cpu/mem/net per container to a separate JSONL. Imports + smoke-tests pass. |
+| P7. Sweep runner over sketch × N × scrape × cardinality matrix | ✅ 2026-04-30 | `deploy/scripts/run_e2e_sweep.sh` — drives `{DDSketch, KLL, CS, CMS, HLL} × {N=1, 10} × {scrape=100 ms, 1 s} × {card=1e3, 1e4, 1e5}` (60 cells). Per cell: brings stack up, runs P5 + P6 concurrently for the soak window, snapshots the cold-truth volume into the cell directory, brings stack down with `-v`. |
+| P8. Accuracy reducer (truth ⋈ sketch answer) | ✅ 2026-04-30 | `deploy/scripts/accuracy_reduce.py` — parses replay JSONL + the cold-truth tree per cell; computes per-row relative error for quantile / sum / count_unique and per-row top-K recall. Smoke-tested on a real cell: 4.1 M ground-truth samples, 17 query rows, output CSV produced. |
+| P9. Plots — Pareto, bandwidth, transition timeline, query CDF | ✅ 2026-04-30 | `deploy/scripts/e2e_plots.py` — four figures + their underlying CSVs. Smoke-tested: produces `pareto_acc_vs_thru.png` and `query_latency_cdf.png` from real data; `bandwidth_vs_n.png` and `transition_timeline.png` skip cleanly when the corresponding sample/transition records aren't in the cell. |
+
+### Operating the e2e harness
+
+```bash
+# 1. Pre-reqs: docker, python ≥3.10, matplotlib + pandas in the user
+#    env (`pip install --user matplotlib pandas`), the four
+#    `asap/*:dev` images built (see deploy/docker/Dockerfile.* —
+#    backend uses --build-context backend-src=...).
+# 2. Single-cell smoke run:
+AGENT_CONFIG=sketchcol-agent-b3-delta.yaml docker compose \
+    -f deploy/docker-compose/base.yml \
+    -f deploy/docker-compose/agents-N1.yml \
+    -f deploy/docker-compose/baseline-b3-delta.yml \
+    -f deploy/docker-compose/e2e-overlay.yml \
+    up -d
+
+# 3. Drive the workload: replay + plan-transition concurrently:
+python3 deploy/scripts/promql_replay.py \
+    --target http://localhost:19091 --controller http://localhost:18080 \
+    --queries deploy/scripts/queries-e2e.json \
+    --qps 5 --duration 60 --out /tmp/replay.jsonl &
+python3 deploy/scripts/plan_transition.py \
+    --target http://localhost:19091 --controller http://localhost:18080 \
+    --transition-query 'histogram_quantile(0.999, sum by (le) (http_requests_total_latency_ms))' \
+    --transition-out /tmp/transition.jsonl --sample-out /tmp/sample.jsonl \
+    --soak-secs 60 --pre-transition-secs 20
+
+# 4. Snapshot ground truth (volume goes away on -v):
+docker cp $(docker compose -f .../base.yml -f .../e2e-overlay.yml ps -q backend):/var/asap/cold/raw /tmp/cell/cold-truth
+
+# 5. Reduce + plot:
+python3 deploy/scripts/accuracy_reduce.py --cell-dir /tmp/cell --out /tmp/cell/accuracy.csv
+python3 deploy/scripts/e2e_plots.py \
+    --sweep-root /tmp --accuracy /tmp/cell/accuracy.csv --out-dir /tmp/cell/plots
+
+# 6. Full sweep (~hours wall):
+deploy/scripts/run_e2e_sweep.sh --out-dir /tmp/sweep-$(date +%s) --soak-secs 120
+```
+
+### Open follow-ups (not e2e blockers)
+
+1. **Warm-tier sketch ingest is dropped at the gateway.** Stock OTel
+   collector contrib v0.108 can't translate `DDSketch` /
+   `HLLSketch` types through `prometheusremotewrite`. Today the
+   e2e drives data through the cold-tier path. To exercise the
+   warm path: either (a) enable OTLP ingest on `precompute_engine`,
+   or (b) swap the backend image to build the `query_engine_rust`
+   binary (which already has OTLP via `--enable-otel-ingest`).
+2. **Cold reader is intolerant of torn last lines.** Under
+   concurrent producer write + reader scan, the §5.2
+   `parse_jsonl` path failed on a torn last line. A 5-line
+   change in
+   `asap-query-engine/src/drivers/query/fallback/cold_store/format.rs`
+   to drop a malformed trailing line + warn would unblock soaks
+   that don't pause writes before snapshotting.
+3. **Reducer runs offline; doesn't need the backend live.** That's
+   fine for accuracy claims, but PromQL semantics are easy to
+   drift from the engine. Add a self-check that runs the same
+   query against the cold truth via the engine itself, where
+   feasible.
+
+---
+
+_Original progress notes follow._
 
 Single source of truth for where DataCollector stands: what's
 implemented, what's outstanding, what's out of scope for this
@@ -189,13 +338,18 @@ plots that only require a producer + collector pair. Landed via
 
 ## Outstanding — SDK runtime (not a cost-eval blocker)
 
-- **Hot-reload of View `AttributeFilter`.** Upstream OTel Go
-  SDK doesn't support replacing a View's filter after
-  `MeterProvider` construction. Fine for static cost sweeps
-  (each run is a fresh process), but the controller-in-loop
-  scenario where the planner pushes a new `L` mid-run needs a
-  hot-reload hook. Small patch in
-  `opentelemetry-go-patch/sdk/metric/` to expose a swap API.
+- ~~**Hot-reload of View `AttributeFilter`.**~~ **Done (P2,
+  2026-04-30).** Implemented as an in-process swappable filter in
+  `deploy/fake-exporter/swappable_filter.go` rather than a SDK
+  patch. The SDK's `Stream.AttributeFilter` is a function value
+  that the SDK invokes per measurement; an `atomic.Pointer`-backed
+  closure satisfies the same interface and lets the controller
+  swap the projection at runtime via `POST /control/projection`.
+  Caveat: post-swap, attribute sets that previously hashed to one
+  bucket may now hash differently — old buckets keep their data,
+  new measurements land in new buckets. The plan-transition
+  driver (P6) records the swap timestamp so the accuracy reducer
+  (P8) can split before/after.
 
 ## Future work (post-paper)
 

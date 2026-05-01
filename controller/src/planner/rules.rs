@@ -69,6 +69,8 @@ impl RulesPlanner {
                 delta_threshold: 0.0,
                 enable_series_id: true,
                 series_id_ttl_secs: 0,
+
+                data_sink: AgentDataSink::default(),
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
@@ -112,6 +114,8 @@ impl RulesPlanner {
                 delta_threshold:      0.0,
                 enable_series_id: true,
                 series_id_ttl_secs: 0,
+
+                data_sink: AgentDataSink::default(),
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
