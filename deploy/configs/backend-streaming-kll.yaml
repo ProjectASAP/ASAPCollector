@@ -1,41 +1,37 @@
-# e2e harness streaming-config — DDSketch aggregation now that
-# the agent emits sketchlib-go's `SketchEnvelope{DDSketchState}`
-# wire format and the backend's `DDSketchAccumulator` decodes it
-# directly.
 aggregations:
 - aggregationId: 1
-  aggregationType: DDSketch
+  aggregationType: DatasketchesKLL
   aggregationSubType: ''
   labels:
     grouping: [zone]
     rollup: [rack, node, pod]
     aggregated: []
-  metric: http_requests_total_latency_ms_quantile
+  metric: http_requests_total_latency_ms_kll
   parameters:
-    relativeAccuracy: 0.01
+    K: 200
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
 - aggregationId: 2
-  aggregationType: DDSketch
+  aggregationType: DatasketchesKLL
   aggregationSubType: ''
   labels:
     grouping: [zone]
     rollup: [rack, node, pod]
     aggregated: []
-  metric: http_requests_total_quantile
+  metric: http_requests_total_kll
   parameters:
-    relativeAccuracy: 0.01
+    K: 200
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
 metrics:
-  http_requests_total_latency_ms_quantile:
+  http_requests_total_latency_ms_kll:
     - zone
     - rack
     - node
     - pod
-  http_requests_total_quantile:
+  http_requests_total_kll:
     - zone
     - rack
     - node

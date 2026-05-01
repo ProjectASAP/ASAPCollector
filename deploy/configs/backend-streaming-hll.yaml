@@ -1,0 +1,36 @@
+aggregations:
+- aggregationId: 1
+  aggregationType: HLL
+  aggregationSubType: ''
+  labels:
+    grouping: [zone]
+    rollup: [rack, node, pod]
+    aggregated: []
+  metric: http_requests_total_hll
+  parameters: {}
+  windowSize: 30
+  windowType: tumbling
+  spatialFilter: ''
+- aggregationId: 2
+  aggregationType: HLL
+  aggregationSubType: ''
+  labels:
+    grouping: [zone]
+    rollup: [rack, node, pod]
+    aggregated: []
+  metric: http_requests_total_latency_ms_hll
+  parameters: {}
+  windowSize: 30
+  windowType: tumbling
+  spatialFilter: ''
+metrics:
+  http_requests_total_hll:
+    - zone
+    - rack
+    - node
+    - pod
+  http_requests_total_latency_ms_hll:
+    - zone
+    - rack
+    - node
+    - pod

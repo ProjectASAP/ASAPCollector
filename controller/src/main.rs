@@ -605,6 +605,7 @@ async fn handle_bootstrap_agent_config(
         delta_threshold:      0.0,
         enable_series_id:     false,
         series_id_ttl_secs:   300,
+        data_sink:            types::AgentDataSink::default(),
     };
     match generate_agent_config(&cfg, &st.opamp_endpoint) {
         Ok(yaml) => (

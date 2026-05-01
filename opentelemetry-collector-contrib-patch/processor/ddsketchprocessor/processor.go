@@ -12,8 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/DataDog/sketches-go/ddsketch"
-	"github.com/DataDog/sketches-go/ddsketch/pb/sketchpb"
+	ddsketch "github.com/ProjectASAP/sketchlib-go/sketches/DDSketch"
+	ddpb "github.com/ProjectASAP/sketchlib-go/proto/ddsketch"
+	envpb "github.com/ProjectASAP/sketchlib-go/proto/sketch_envelope"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -306,11 +307,12 @@ func (p *ddsketchProcessor) buildQuantileMetric(src pmetric.Metric, series map[s
 			continue
 		}
 		for _, q := range p.cfg.Quantiles {
-			val, err := s.sketch.GetValueAtQuantile(q)
-			if err != nil {
-				if p.logger != nil {
-					p.logger.Error("failed to evaluate DDSketch quantile", zap.Float64("quantile", q), zap.Error(err))
-				}
+			val, ok := s.sketch.GetValueAtQuantile(q)
+			if !ok {
+				// sketchlib-go returns (0, false) for empty sketch
+				// or an out-of-range quantile; skip silently to
+				// avoid log spam when a window contains no
+				// observations.
 				continue
 			}
 			dp := dps.AppendEmpty()
@@ -405,6 +407,19 @@ func (p *ddsketchProcessor) consumeGaugeDataPoints(dps pmetric.NumberDataPointSl
 	return result
 }
 
+// decodeDDSketchDataPoint deserializes an inbound DDSketch data
+// point's `sketch` bytes back to a `*ddsketch.DDSketch` we can
+// merge into the local window. The wire format is the canonical
+// sketchlib-go `SketchEnvelope{DDSketchState}`, byte-compatible
+// with the backend's Rust decoder.
+//
+// Delta encoding (`DDSketchEncodingProtoDelta`) is not yet
+// supported on this side — sketchlib-go's `DDSketchDelta` is
+// only generated in the Rust backend's `asap_otel_proto` crate.
+// Until the Go-side delta encoder lands (mirroring the Rust one
+// in `asap-query-engine/src/.../dd_sketch_accumulator.rs`),
+// callers should use `delta_transmission: false`. With delta
+// off, every payload carries the full sketch state.
 func (p *ddsketchProcessor) decodeDDSketchDataPoint(seriesKey string, dp pmetric.DDSketchDataPoint) (*ddsketch.DDSketch, error) {
 	data := dp.Sketch()
 	if len(data) == 0 {
@@ -413,52 +428,47 @@ func (p *ddsketchProcessor) decodeDDSketchDataPoint(seriesKey string, dp pmetric
 
 	switch dp.Encoding() {
 	case pmetric.DDSketchEncodingProtoDelta:
-		p.inboundMu.Lock()
-		snapPayload, hasSnap := p.inboundSnapshots[seriesKey]
-		p.inboundMu.Unlock()
-		if !hasSnap || snapPayload == nil {
-			// No snapshot to apply delta against; skip this data point.
-			return nil, nil
-		}
-		// Reconstruct: unmarshal snapshot, apply delta bucket counts.
-		var snapPb sketchpb.DDSketch
-		if err := proto.Unmarshal(snapPayload, &snapPb); err != nil {
-			return nil, fmt.Errorf("unmarshal DDSketch snapshot: %w", err)
-		}
-		var deltaPb sketchpb.DDSketch
-		if err := proto.Unmarshal(data, &deltaPb); err != nil {
-			return nil, fmt.Errorf("unmarshal DDSketch delta: %w", err)
-		}
-		reconstructed := applyDDSketchDelta(&snapPb, &deltaPb)
-		reconstructedBytes, err := proto.Marshal(reconstructed)
-		if err != nil {
-			return nil, fmt.Errorf("marshal reconstructed DDSketch: %w", err)
-		}
-		p.inboundMu.Lock()
-		if p.inboundSnapshots == nil {
-			p.inboundSnapshots = make(map[string][]byte)
-		}
-		p.inboundSnapshots[seriesKey] = reconstructedBytes
-		p.inboundMu.Unlock()
-		return ddsketch.FromProto(reconstructed)
+		return nil, fmt.Errorf("DDSketchEncodingProtoDelta inbound decode not implemented for sketchlib-go wire format yet — agent-side delta requires the same generator the backend uses (`asap_otel_proto::sketchlib::v1::DdSketchDelta`); set `delta_transmission: false` on the upstream emitter")
 
 	default: // DDSketchEncodingProto or unspecified
 		if dp.Encoding() != pmetric.DDSketchEncodingProto && dp.Encoding() != pmetric.DDSketchEncodingUnspecified {
 			return nil, fmt.Errorf("unsupported DDSketch encoding %v", dp.Encoding())
 		}
-		var pb sketchpb.DDSketch
-		if err := proto.Unmarshal(data, &pb); err != nil {
-			return nil, fmt.Errorf("unmarshal DDSketch: %w", err)
+		var env envpb.SketchEnvelope
+		if err := proto.Unmarshal(data, &env); err != nil {
+			// Fall back to bare DDSketchState for senders that
+			// skip the envelope wrapper (e.g. unit tests).
+			var bareState ddpb.DDSketchState
+			if err2 := proto.Unmarshal(data, &bareState); err2 != nil {
+				return nil, fmt.Errorf("unmarshal DDSketch envelope: %w (bare-state fallback also failed: %v)", err, err2)
+			}
+			sk, err := ddsketch.DeserializeState(&bareState)
+			if err != nil {
+				return nil, fmt.Errorf("DeserializeState (bare): %w", err)
+			}
+			p.cacheInboundSnapshot(seriesKey, data)
+			return sk, nil
 		}
-		// Store full snapshot for future delta reconstruction.
-		p.inboundMu.Lock()
-		if p.inboundSnapshots == nil {
-			p.inboundSnapshots = make(map[string][]byte)
+		sk, err := ddsketch.DeserializePortable(&env)
+		if err != nil {
+			return nil, fmt.Errorf("DeserializePortable: %w", err)
 		}
-		p.inboundSnapshots[seriesKey] = data
-		p.inboundMu.Unlock()
-		return ddsketch.FromProto(&pb)
+		p.cacheInboundSnapshot(seriesKey, data)
+		return sk, nil
 	}
+}
+
+func (p *ddsketchProcessor) cacheInboundSnapshot(seriesKey string, data []byte) {
+	p.inboundMu.Lock()
+	if p.inboundSnapshots == nil {
+		p.inboundSnapshots = make(map[string][]byte)
+	}
+	// Store a defensive copy — `data` aliases pmetric storage that
+	// can be mutated when the next pdata batch is reused.
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	p.inboundSnapshots[seriesKey] = cp
+	p.inboundMu.Unlock()
 }
 
 func newSketchSeries(attrs pcommon.Map, start, ts pcommon.Timestamp) *sketchSeries {
@@ -486,7 +496,7 @@ func (s *sketchSeries) merge(sk *ddsketch.DDSketch, dp pmetric.DDSketchDataPoint
 	}
 	if s.sketch == nil {
 		s.sketch = sk
-	} else if err := s.sketch.MergeWith(sk); err != nil {
+	} else if err := s.sketch.Merge(sk); err != nil {
 		if logger != nil {
 			logger.Error("failed to merge DDSketch", zap.Error(err))
 		}
@@ -502,110 +512,48 @@ func (p *ddsketchProcessor) ensureSketch(s *sketchSeries) (*ddsketch.DDSketch, e
 	if s.sketch != nil {
 		return s.sketch, nil
 	}
-	sk, err := ddsketch.NewDefaultDDSketch(p.cfg.RelativeAccuracy)
-	if err != nil {
-		return nil, err
+	// sketchlib-go's NewDDSketch panics on alpha out of (0,1); guard
+	// here so we surface a clean error instead.
+	if !(p.cfg.RelativeAccuracy > 0 && p.cfg.RelativeAccuracy < 1) {
+		return nil, fmt.Errorf("ddsketch relative_accuracy %v out of range (0,1)", p.cfg.RelativeAccuracy)
 	}
-	s.sketch = sk
-	return sk, nil
+	s.sketch = ddsketch.NewDDSketch(p.cfg.RelativeAccuracy)
+	return s.sketch, nil
 }
 
+// serializeDDSketch produces the canonical wire format the backend's
+// `DDSketchAccumulator::from_sketchlib_proto_bytes` expects: a
+// proto-marshalled `SketchEnvelope` carrying a `DDSketchState`. This
+// is byte-compatible with the sketch decoded by
+// `asap_sketchlib::proto::sketchlib::SketchEnvelope`.
 func serializeDDSketch(sk *ddsketch.DDSketch) ([]byte, error) {
 	if sk == nil {
 		return nil, nil
 	}
-	return proto.Marshal(sk.ToProto())
+	env, err := sk.SerializePortable()
+	if err != nil {
+		return nil, fmt.Errorf("SerializePortable: %w", err)
+	}
+	return proto.Marshal(env)
 }
 
-// computeDDSketchDelta computes a sparse delta between a snapshot proto payload
-// and the current sketch. Buckets are included when |Δcount| ≥ threshold.
-// Returns proto-marshalled sketchpb.DDSketch bytes with only changed buckets.
+// computeDDSketchDelta computes a sparse delta between a snapshot
+// payload and the current sketch — but the sketchlib-go-side delta
+// encoder isn't generated yet (the Rust backend has it via
+// `asap_otel_proto::sketchlib::v1::DdSketchDelta`; the Go side
+// would need a parallel codegen path). Until that lands, fall
+// through to the full state — `delta_transmission: true` in the
+// processor config will silently behave like
+// `delta_transmission: false` rather than emit incompatible
+// bytes the backend can't decode.
+//
+// Tracked as a follow-up: port `DdSketchDelta` to sketchlib-go +
+// add `(*DDSketch).SerializeDelta(snap *DDSketchState) []byte`,
+// then wire it here.
 func computeDDSketchDelta(snapPayload []byte, current *ddsketch.DDSketch, threshold uint64) ([]byte, error) {
-	var snap sketchpb.DDSketch
-	if err := proto.Unmarshal(snapPayload, &snap); err != nil {
-		// Can't parse snapshot; fall back to full serialization.
-		return serializeDDSketch(current)
-	}
-
-	curr := current.ToProto()
-	delta := &sketchpb.DDSketch{
-		Mapping:   curr.Mapping,
-		ZeroCount: curr.ZeroCount - snap.ZeroCount,
-	}
-
-	// Compute sparse delta for positive/negative bucket stores.
-	delta.PositiveValues = storeDelta(snap.PositiveValues, curr.PositiveValues, float64(threshold))
-	delta.NegativeValues = storeDelta(snap.NegativeValues, curr.NegativeValues, float64(threshold))
-
-	return proto.Marshal(delta)
-}
-
-// storeDelta returns a sparse Store containing only buckets where |Δcount| ≥ threshold.
-func storeDelta(snap, curr *sketchpb.Store, threshold float64) *sketchpb.Store {
-	if curr == nil {
-		return nil
-	}
-
-	// Merge contiguous encoding into a single map for easy diffing.
-	snapCounts := storeToMap(snap)
-	currCounts := storeToMap(curr)
-
-	out := &sketchpb.Store{BinCounts: make(map[int32]float64)}
-	for idx, cnt := range currCounts {
-		delta := cnt - snapCounts[idx]
-		if delta >= threshold || delta <= -threshold {
-			out.BinCounts[idx] = delta
-		}
-	}
-	if len(out.BinCounts) == 0 {
-		return nil
-	}
-	return out
-}
-
-// applyDDSketchDelta reconstructs a full DDSketch proto from a snapshot and a
-// sparse delta (produced by computeDDSketchDelta / ddSketchDeltaPayload).
-func applyDDSketchDelta(snap, delta *sketchpb.DDSketch) *sketchpb.DDSketch {
-	out := &sketchpb.DDSketch{
-		Mapping:   snap.Mapping,
-		ZeroCount: snap.ZeroCount + delta.ZeroCount,
-	}
-	out.PositiveValues = applyDDStore(snap.PositiveValues, delta.PositiveValues)
-	out.NegativeValues = applyDDStore(snap.NegativeValues, delta.NegativeValues)
-	return out
-}
-
-// applyDDStore adds delta bucket counts onto snapshot bucket counts.
-func applyDDStore(snap, delta *sketchpb.Store) *sketchpb.Store {
-	base := storeToMap(snap) // existing helper in the file
-	changes := storeToMap(delta)
-	out := &sketchpb.Store{BinCounts: make(map[int32]float64)}
-	for idx, cnt := range base {
-		out.BinCounts[idx] = cnt
-	}
-	for idx, d := range changes {
-		out.BinCounts[idx] += d
-	}
-	if len(out.BinCounts) == 0 {
-		return nil
-	}
-	return out
-}
-
-// storeToMap converts a sketchpb.Store into a flat index→count map.
-func storeToMap(s *sketchpb.Store) map[int32]float64 {
-	m := make(map[int32]float64)
-	if s == nil {
-		return m
-	}
-	for idx, cnt := range s.BinCounts {
-		m[idx] += cnt
-	}
-	for i, cnt := range s.ContiguousBinCounts {
-		idx := s.ContiguousBinIndexOffset + int32(i)
-		m[idx] += cnt
-	}
-	return m
+	_ = snapPayload
+	_ = threshold
+	return serializeDDSketch(current)
 }
 
 func attributesKey(attrs pcommon.Map) string {

@@ -1,41 +1,43 @@
-# e2e harness streaming-config — DDSketch aggregation now that
-# the agent emits sketchlib-go's `SketchEnvelope{DDSketchState}`
-# wire format and the backend's `DDSketchAccumulator` decodes it
-# directly.
+# CountSketch processor doesn't add a suffix in our build (the
+# `metric_suffix` config key isn't recognised), so the wire metric
+# names match the input: `http_requests_total` (Sum) and
+# `http_requests_total_latency_ms` (Gauge).
 aggregations:
 - aggregationId: 1
-  aggregationType: DDSketch
+  aggregationType: CountSketch
   aggregationSubType: ''
   labels:
     grouping: [zone]
     rollup: [rack, node, pod]
     aggregated: []
-  metric: http_requests_total_latency_ms_quantile
+  metric: http_requests_total
   parameters:
-    relativeAccuracy: 0.01
+    row_num: 5
+    col_num: 1024
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
 - aggregationId: 2
-  aggregationType: DDSketch
+  aggregationType: CountSketch
   aggregationSubType: ''
   labels:
     grouping: [zone]
     rollup: [rack, node, pod]
     aggregated: []
-  metric: http_requests_total_quantile
+  metric: http_requests_total_latency_ms
   parameters:
-    relativeAccuracy: 0.01
+    row_num: 5
+    col_num: 1024
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
 metrics:
-  http_requests_total_latency_ms_quantile:
+  http_requests_total:
     - zone
     - rack
     - node
     - pod
-  http_requests_total_quantile:
+  http_requests_total_latency_ms:
     - zone
     - rack
     - node

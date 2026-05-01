@@ -1,0 +1,50 @@
+# Bootstrap config for the CountMinSketch e2e verification.
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://controller:4320/v1/opamp
+        headers:
+          X-Agent-ID: "agent-1"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  countmin:
+    mode: window
+    window_duration: 30s
+    metric_name: "http_requests_total"
+    rows: 5
+    columns: 1024
+    transmit_sketch: true
+    enable_self_monitoring: true
+    encoding: msgpack
+
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  otlp/backend:
+    endpoint: backend:4317
+    tls:
+      insecure: true
+    compression: none
+
+service:
+  extensions: [opamp]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [countmin, batch]
+      exporters: [otlp/backend]
+
+  telemetry:
+    logs:
+      level: info
