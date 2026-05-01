@@ -66,22 +66,22 @@ exporters:
     endpoint: backend:4317
     tls:
       insecure: true
+    # Backend's tonic gRPC server doesn't accept gzip-compressed
+    # bodies — keep compression off (mirrors the agent configs).
+    compression: none
     # Match the receiver's bumped cap; sketch payloads dwarf 4 MiB.
     sending_queue:
       enabled: true
-  # PRW exporter retained as a fallback / for legacy deploys.
-  # Not in the active pipeline — it drops sketch-typed metrics
-  # at the gateway. Add to a pipeline only if a downstream needs
-  # the Prometheus remote-write wire format specifically.
-  prometheusremotewrite/backend:
-    endpoint: http://backend:9090/api/v1/write
-    tls:
-      insecure: true
-  # `prometheus` (scrape-style) exporter removed: the stock 0.108
-  # build can't translate DDSketch / HLLSketch types and spams
-  # `failed to translate metric` errors. Per-agent sketch
-  # observability comes from each agent's own /metrics at
-  # `agent-*:8889` — Prometheus scrapes those directly.
+  # NB: prometheusremotewriteexporter is NOT in the patched
+  # `asap/sketchcol:dev` builder (see
+  # `opentelemetry-collector-contrib-patch/cmd/sketchcollector/builder-config.yaml`).
+  # Adding it back means listing the exporter in the manifest and
+  # rebuilding. Today's sketch-native pipeline doesn't need it —
+  # the typed sketch path goes via OTLP straight to the backend.
+  # `prometheus` (scrape-style) exporter is also out for the same
+  # reason: per-agent sketch observability comes from each agent's
+  # own /metrics at `agent-*:8890` — Prometheus scrapes those
+  # directly.
 
 service:
   telemetry:
@@ -89,9 +89,16 @@ service:
       level: info
     metrics:
       level: detailed
-      # Self-telemetry port; gateway exporter owns 8889 for
-      # pipeline-level metrics, so self-telemetry moves to 8890.
-      address: "0.0.0.0:8890"
+      # New-style telemetry config (v0.141+). The deprecated
+      # `address: "host:port"` shorthand was removed; use a
+      # `readers` list with a `pull` reader pointing at the
+      # patched build's `prometheus` exporter component.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890
   pipelines:
     metrics:
       receivers: [otlp]

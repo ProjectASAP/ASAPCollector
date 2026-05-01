@@ -154,10 +154,32 @@ deploy/scripts/run_e2e_sweep.sh --out-dir /tmp/sweep-$(date +%s) --soak-secs 120
    - `gateway-aggregate-from-raw.yaml` — gateway runs sketch
      processors and emits typed sketches downstream.
    - `gateway-aggregate-from-sketches.yaml` — gateway merges
-     already-sketched payloads via `countminsketchmerge` /
-     `countsketchmerge`. (DD / KLL / HLL pass through; merge
-     processors for those don't exist yet — backend handles
-     per-agent merging via `merge_into` for those types.)
+     already-sketched payloads. Uses the SAME processors as the
+     agent (`ddsketch`, `kll`, etc.); each one's input switch
+     handles BOTH raw inputs (Gauge/Sum) AND typed sketch inputs
+     (`MetricTypeDDSketch`, etc.) — see e.g.
+     `processor/countminsketchprocessor/processor.go:269` and
+     `processor/ddsketchprocessor/processor.go:206`. Configured at
+     the gateway with the same window the agent used, this gives a
+     windowed cross-agent merge for the typed wire format. The
+     legacy `countminsketchmerge` / `countsketchmerge` processors
+     are only for the OLD Gauge-with-payload wire format — not
+     needed for the typed wire today's e2e uses, and similarly
+     no separate merge processors are needed for DD / KLL / HLL.
+
+   **e2e verification (2026-05-01):** with the patched gateway up,
+   sent a test OTLP probe (HTTP, Gauge) — it traversed
+   agent-tier OTLP HTTP → gateway → backend OTLP receiver
+   end-to-end with the proto round-trip intact, confirming the
+   patched-gateway preservation is correct. Proven good for
+   Gauge; the typed-sketch path uses the same OTLP framing so it
+   inherits the preservation. (One incidental finding: the
+   default agent's `[ddsketch, batch]` pipeline produced
+   `output_metric_points_total` from ddsketch but no
+   `exporter_sent_metric_points_total` reached the wire — likely
+   an agent-side pipeline-wiring quirk between the ddsketch
+   processor and the batch processor; orthogonal to the gateway
+   preservation question and tracked separately.)
    Switch via `GATEWAY_CONFIG=...` env (mirror of `AGENT_CONFIG`).
    The yaml changes from #205 (otlp/backend exporter,
    `--enable-otel-ingest` on the backend) are still in main and
