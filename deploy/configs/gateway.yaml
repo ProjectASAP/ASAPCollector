@@ -1,8 +1,30 @@
-# Minimal gateway collector: accept OTLP from agents, aggregate
-# per-agent counters, forward to backend. The "gateway
-# aggregation saves another N% bandwidth" figures come off this
-# pipeline; swap the exporter to the ASAP-patched sketchcol
-# build when we want sketches at the gateway tier too.
+# Default gateway config — pure forwarder. Receives OTLP from
+# agents, drops a few internal labels, forwards to the backend
+# over OTLP. No sketch aggregation at this tier.
+#
+# IMPORTANT: this config requires the `asap/sketchcol:dev` image
+# (NOT stock `otel/opentelemetry-collector-contrib:0.108.0`).
+# Stock contrib's pdata silently drops typed sketch data points
+# (DDSketch / KLLSketch / HLLSketch / CountSketch / CountMinSketch
+# on Metric.data tags 13–17) via `ConsumeUnknown` during the
+# OTLP-receive → in-memory → OTLP-export round-trip — see
+# `opentelemetry-collector/pdata/internal/generated_proto_metric.go`
+# `default: proto.ConsumeUnknown(...)`. The sketchcol image is
+# built from `opentelemetry-collector-contrib-patch/` which has
+# the patched proto + pdata that knows tags 13–17. Forwarder mode
+# uses none of the sketch processors — the patched build is
+# needed only for the round-trip preservation.
+#
+# Two alternative configs in this directory:
+#   - gateway-aggregate-from-raw.yaml — agents send raw OTLP;
+#     gateway runs DDSketch / KLL / HLL / CountSketch / CMS
+#     processors at the gateway tier and emits typed sketches
+#     downstream.
+#   - gateway-aggregate-from-sketches.yaml — agents already
+#     sketched; gateway runs CMS-merge / CountSketch-merge to
+#     reconstruct full sketch state from delta payloads, then
+#     forwards. (DD / KLL / HLL pass through; merge processors
+#     for those don't exist yet.)
 receivers:
   otlp:
     protocols:

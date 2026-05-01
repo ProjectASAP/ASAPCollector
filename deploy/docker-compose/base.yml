@@ -154,19 +154,30 @@ services:
 
   # ───────── OpenTelemetry gateway (aggregator) ─────────
   gateway:
-    # Stock OpenTelemetry collector — aggregates agent exports,
-    # forwards to backend. When we need the ASAP-patched build
-    # with sketch processors on the gateway side, swap the image.
-    image: otel/opentelemetry-collector-contrib:0.108.0
-    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    # ASAP-patched OTel collector — same image the agents use.
+    # Required because stock contrib 0.108's pdata silently drops
+    # typed sketch data points (Metric.data tags 13–17) via
+    # `ConsumeUnknown` during OTLP receive → in-memory → OTLP
+    # export round-trip. The patched build's pdata knows about
+    # those variants and preserves them. See the comment block in
+    # `deploy/configs/gateway.yaml` for the code reference.
+    #
+    # Three gateway configs in deploy/configs/:
+    #   gateway.yaml                          — pure forwarder (default)
+    #   gateway-aggregate-from-raw.yaml       — sketch raw points at gateway tier
+    #   gateway-aggregate-from-sketches.yaml  — merge already-sketched payloads
+    # Override the mounted file via the GATEWAY_CONFIG env var,
+    # same pattern agents use for AGENT_CONFIG.
+    image: asap/sketchcol:dev
+    command: ["--config=/etc/otel/config.yaml"]
     volumes:
-      - ../configs/gateway.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ../configs/${GATEWAY_CONFIG:-gateway.yaml}:/etc/otel/config.yaml:ro
     depends_on:
       - backend
     ports:
       - "14317:4317"   # OTLP gRPC (host 14317 → container 4317; avoid collision)
       - "14318:4318"   # OTLP HTTP
-      - "18889:8889"   # /metrics (gateway self-telemetry)
+      - "18890:8890"   # /metrics (gateway self-telemetry; patched build uses 8890)
     logging: *default-logging
 
   # ───────── workload: synthetic metrics producer ─────────

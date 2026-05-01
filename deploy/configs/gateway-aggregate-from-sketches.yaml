@@ -1,0 +1,91 @@
+# Gateway config: aggregate from SKETCHES. Agents already sketched
+# (running their own ddsketch / kll / hll / countsketch /
+# countminsketch processor); the gateway receives those sketch
+# payloads, reconstructs full state from proto_full / proto_delta
+# wire form, and forwards merged sketches downstream.
+#
+# Use when:
+#   - Agents emit sketches (the standard ASAP sketch-at-the-edge
+#     deployment) and the controller has placed a *gateway-tier
+#     merge* in the plan to combine cross-agent sketches before
+#     backend ingest.
+#   - Bandwidth between gateway and backend is constrained: a
+#     single merged sketch per window per metric replaces N
+#     per-agent sketches.
+#
+# Requires the `asap/sketchcol:dev` image with the merge
+# processors compiled in (see
+# `opentelemetry-collector-contrib-patch/cmd/sketchcollector/builder-config-sketches.yaml`
+# — the entries pointing at `./processor/countminsketchmergeprocessor`
+# and `./processor/countsketchmergeprocessor`).
+#
+# Coverage today: CMS and CountSketch have merge processors. DD /
+# KLL / HLL do NOT yet — those metrics pass through this gateway
+# unchanged and the backend handles per-agent merging via its
+# accumulator's `merge_into` path. (Merge processors for DD / KLL /
+# HLL are tracked as a follow-up; the merging math is supported
+# by sketchlib-go for all three but no OTel processor wraps it.)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 64
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  attributes/drop-internal:
+    actions:
+      - key: telemetry.sdk.name
+        action: delete
+      - key: telemetry.sdk.language
+        action: delete
+      - key: telemetry.sdk.version
+        action: delete
+
+  # ---------- Sketch-merge processors ----------
+  # Reconstruct full CMS state from a stream of proto_full /
+  # proto_delta payloads emitted by the agent-tier
+  # countminsketchprocessor with delta_transmission=true.
+  # `metric_name` defaults to "countmin_sketch" — override only
+  # if the upstream agent uses a different metric name.
+  countminsketchmerge:
+    metric_name: countmin_sketch
+
+  # Same for CountSketch. Defaults to "countsketch_partition".
+  countsketchmerge:
+    metric_name: countsketch_partition
+
+exporters:
+  otlp/backend:
+    endpoint: backend:4317
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+    compression: none
+
+service:
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      address: "0.0.0.0:8890"
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      # Order matters: prune attributes first; then merge sketches
+      # (merges by metric_name, others pass through); batch last
+      # so we don't merge a partially-arrived window.
+      processors:
+        - attributes/drop-internal
+        - countminsketchmerge
+        - countsketchmerge
+        - batch
+      exporters: [otlp/backend]
