@@ -442,16 +442,24 @@ func (p *ddsketchProcessor) decodeDDSketchDataPoint(seriesKey string, dp pmetric
 			if err2 := proto.Unmarshal(data, &bareState); err2 != nil {
 				return nil, fmt.Errorf("unmarshal DDSketch envelope: %w (bare-state fallback also failed: %v)", err, err2)
 			}
-			sk, err := ddsketch.DeserializeState(&bareState)
+			sk, err := ddsketch.NewFromState(&bareState)
 			if err != nil {
-				return nil, fmt.Errorf("DeserializeState (bare): %w", err)
+				return nil, fmt.Errorf("NewFromState (bare): %w", err)
 			}
 			p.cacheInboundSnapshot(seriesKey, data)
 			return sk, nil
 		}
-		sk, err := ddsketch.DeserializePortable(&env)
+		// SketchEnvelope's `sketch_state` is a oneof; the generated
+		// `GetDdsketch()` accessor returns nil if any other variant
+		// was sent (defensive — the upstream is supposed to emit a
+		// DDSketch state since this is a DDSketchDataPoint).
+		ddState := env.GetDdsketch()
+		if ddState == nil {
+			return nil, fmt.Errorf("DDSketch SketchEnvelope did not carry a DDSketchState variant")
+		}
+		sk, err := ddsketch.NewFromState(ddState)
 		if err != nil {
-			return nil, fmt.Errorf("DeserializePortable: %w", err)
+			return nil, fmt.Errorf("NewFromState (envelope): %w", err)
 		}
 		p.cacheInboundSnapshot(seriesKey, data)
 		return sk, nil

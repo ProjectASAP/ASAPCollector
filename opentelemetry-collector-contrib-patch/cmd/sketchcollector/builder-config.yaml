@@ -312,3 +312,13 @@ replaces:
   - go.opentelemetry.io/collector => ../../../opentelemetry-collector
   - go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
   - go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
+  # sketchlib-go is a private module; redirect to the sibling
+  # checkout so the OCB-driven `go mod tidy` doesn't try to fetch
+  # via sum.golang.org. Path is relative to the OCB-generated
+  # `cmd/sketchcollector/go.mod`, which lives 4 dirs deep under
+  # the ASAPCollector repo root (`./cmd/sketchcollector`); from
+  # there `../../../../sketchlib-go` lands on the sibling repo.
+  # Without this replace the build pinned sketchlib-go to a stale
+  # published commit and ApplyDelta / SerializeMsgpack /
+  # NewFromState constructors would not resolve.
+  - github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
