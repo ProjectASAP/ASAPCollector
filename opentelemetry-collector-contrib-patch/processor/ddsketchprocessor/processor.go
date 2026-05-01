@@ -157,7 +157,16 @@ func (p *ddsketchProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metri
 		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	case ModeWindow:
 		p.accumulateIntoWindow(md)
-		return nil
+		// Forward inputs unchanged so this processor can chain with
+		// other windowed sketch processors in a single pipeline
+		// (`processors: [ddsketch, hll, batch]`). Without this, the
+		// next processor never sees the raw inputs — it only sees
+		// this processor's tick-emitted typed sketches, which it
+		// treats as foreign types and drops. Matches what
+		// countminsketchprocessor / countsketchprocessor already do
+		// in their ModeWindow paths. Add a `filter` processor at the
+		// end of the pipeline if you want to drop the raw inputs.
+		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	default:
 		// Should not happen due to config validation, but be defensive.
 		if p.logger != nil {

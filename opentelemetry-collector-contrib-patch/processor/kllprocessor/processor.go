@@ -133,7 +133,14 @@ func (p *kllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) e
 		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	case ModeWindow:
 		p.accumulateIntoWindow(md)
-		return nil
+		// Forward inputs unchanged so this processor can chain with
+		// other windowed sketch processors in a single pipeline
+		// (`processors: [kll, hll, batch]`). Without this, the next
+		// processor never sees the raw inputs — it only sees this
+		// processor's tick-emitted typed sketches, which it treats
+		// as foreign types and drops. Matches what
+		// countminsketchprocessor / countsketchprocessor already do.
+		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	default:
 		if p.logger != nil {
 			p.logger.Error("kllprocessor: unknown mode, dropping metrics", zap.Any("mode", p.cfg.Mode))
