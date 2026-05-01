@@ -1,0 +1,66 @@
+# Alternative backend overlay: swaps the focused
+# `precompute_engine` binary for the more featureful
+# `query_engine_rust` binary (see Dockerfile.backend.queryengine).
+#
+# Why this overlay exists: both binaries serve the same e2e
+# warm-tier sketch path (`--enable-otel-ingest` on gRPC 4317),
+# but `query_engine_rust` enables capability-miss notifications
+# back to the controller, the query tracker, schema eviction,
+# and the backfill worker — none of which `precompute_engine`
+# wires up. Use this overlay when you want the controller
+# in-the-loop on capability misses or any of those subsystems.
+#
+# Build the image first:
+#   DOCKER_BUILDKIT=1 docker build \
+#     -f deploy/docker/Dockerfile.backend.queryengine \
+#     --build-context backend-src=/path/to/ASAPQuery-backend \
+#     -t asap/query-backend-queryengine:dev .
+#
+# Then bring up the stack with this overlay applied last:
+#   docker compose -f base.yml -f agents-N1.yml \
+#     -f baseline-b3-delta.yml -f queryengine-overlay.yml up -d
+#
+# `query_engine_rust` requires several flags that
+# `precompute_engine` makes optional or omits — they're spelled
+# out here, with values matching the e2e harness's defaults.
+
+services:
+  backend:
+    image: asap/query-backend-queryengine:dev
+    labels:
+      asap.backend-binary: "query_engine_rust"
+    # Override base.yml's command wholesale: the flag set is
+    # incompatible (extra required flags + different default ports).
+    command:
+      - "--config=/etc/asap/inference.yaml"
+      - "--streaming-config=/etc/asap/streaming.yaml"
+      - "--query-language=promql"
+      - "--lock-strategy=per-key"
+      - "--prometheus-scrape-interval=30"
+      - "--output-dir=/var/log/asap"
+      - "--log-level=INFO"
+      # Warm-tier sketch path. Same wire format as the
+      # precompute_engine binary's OTLP ingest — the OTel gateway
+      # forwards typed sketch data points here via otlp/backend.
+      - "--enable-otel-ingest"
+      - "--otel-grpc-port=4317"
+      - "--otel-http-port=4318"
+      # Keep PRW ingest available for legacy / direct PRW clients.
+      - "--enable-prometheus-remote-write"
+      - "--prometheus-remote-write-port=9090"
+      # PromQL HTTP query surface (binary's default is 8088, not
+      # 9091 — remap below to keep host-port 19091 stable across
+      # both backend variants).
+      - "--http-port=8088"
+      # Capability-miss callbacks → controller plan endpoint.
+      - "--controller-endpoint=http://controller:8080/api/v1/plan"
+      - "--controller-protocol=datacollector"
+      - "--forward-unsupported-queries"
+    volumes:
+      - ../configs/backend-streaming.yaml:/etc/asap/streaming.yaml:ro
+      - ../configs/backend-inference.yaml:/etc/asap/inference.yaml:ro
+    ports:
+      # Override base.yml's 19091:9091 — query_engine_rust serves
+      # PromQL on 8088, not 9091.
+      - "19090:9090"   # PRW ingest (legacy)
+      - "19091:8088"   # PromQL-compatible HTTP query surface

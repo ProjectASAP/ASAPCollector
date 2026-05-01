@@ -137,9 +137,19 @@ services:
       - "--streaming-config=/etc/asap/streaming.yaml"
       - "--ingest-port=9090"
       - "--query-port=9091"
+      # Warm-tier sketch ingest. Without this the OTel gateway's
+      # PRW translator drops typed sketch data points
+      # (DDSketch/KLLSketch/HLLSketch/CountSketch/CountMinSketch);
+      # see ASAPQuery-backend#69 for the corresponding receiver.
+      - "--enable-otel-ingest"
+      - "--otel-grpc-port=4317"
+      - "--otel-http-port=4318"
     ports:
-      - "19090:9090"   # Prometheus remote-write ingest
+      - "19090:9090"   # Prometheus remote-write ingest (legacy / direct PRW clients)
       - "19091:9091"   # PromQL-compatible HTTP query surface
+      # OTLP ingest is intra-docker only (gateway → backend).
+      # Expose externally if you want to skip the gateway and
+      # send OTLP straight to the backend from the host.
     logging: *default-logging
 
   # ───────── OpenTelemetry gateway (aggregator) ─────────

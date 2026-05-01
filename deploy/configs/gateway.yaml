@@ -32,14 +32,25 @@ processors:
         action: delete
 
 exporters:
-  # Backend ingests Prometheus remote-write at port 9090 (see
-  # precompute_engine --ingest-port), so we use the prometheus
-  # remote-write exporter. Switching to OTLP here required OTLP
-  # ingest on the backend, which precompute_engine does not
-  # expose today. The remote-write exporter drops sketch-typed
-  # metrics (DDSketch/HLLSketch) — that's expected; the ASAP
-  # query path reads sketch state from the backend's ingest,
-  # not from Prometheus.
+  # Backend exposes OTLP gRPC on 4317 (precompute_engine
+  # --enable-otel-ingest, or the query_engine_rust binary which
+  # has it built in). The OTLP receiver routes both raw metric
+  # points and the typed sketch data points
+  # ({DDSketch | KLLSketch | HLLSketch | CountSketch | CountMinSketch}
+  # on Metric.data tags 13–17) through the precompute engine's
+  # worker pool — so unlike the PRW path, sketch-typed metrics
+  # are NOT dropped here.
+  otlp/backend:
+    endpoint: backend:4317
+    tls:
+      insecure: true
+    # Match the receiver's bumped cap; sketch payloads dwarf 4 MiB.
+    sending_queue:
+      enabled: true
+  # PRW exporter retained as a fallback / for legacy deploys.
+  # Not in the active pipeline — it drops sketch-typed metrics
+  # at the gateway. Add to a pipeline only if a downstream needs
+  # the Prometheus remote-write wire format specifically.
   prometheusremotewrite/backend:
     endpoint: http://backend:9090/api/v1/write
     tls:
@@ -63,4 +74,4 @@ service:
     metrics:
       receivers: [otlp]
       processors: [attributes/drop-internal, batch]
-      exporters: [prometheusremotewrite/backend]
+      exporters: [otlp/backend]

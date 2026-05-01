@@ -79,7 +79,7 @@ controller → plan push → agent sketch + backend query → accuracy
 |---|---|---|
 | P1. Wire `ASAP_COLD_STORE_ROOT` in `asap-query-engine/main.rs` | ✅ 2026-04-30 | `--cold-store-root` flag (env `ASAP_COLD_STORE_ROOT`) selects `prometheus_promql_with_cold`; 4 unit tests |
 | P2. Hot-reload View `AttributeFilter` (mid-run projection swap) | ✅ 2026-04-30 | `deploy/fake-exporter/swappable_filter.go` — atomic.Pointer-backed filter wired into `Stream.AttributeFilter`; `POST /control/projection` HTTP endpoint; 5 tests incl. race + e2e through ManualReader. **No SDK patch was needed**: the SDK's `aggregate.Builder.filter` closure dispatches through the function value, so atomic-state inside the filter is observable on the next measurement. |
-| P3. Build deploy images + N=1 b3-delta smoke run | ✅ 2026-04-30 | All four images (`asap/{controller,query-backend,fake-exporter,sketchcol}:dev`) build cleanly and `docker compose up` stands up the full stack. Verified: backend logs cold-tier fallback enabled; raw-tee writes ground-truth JSONL with the right path layout; swappable-filter HTTP swap returns `{"applied":"zone"}`. **Known limitation:** stock OTel gateway 0.108 can't translate DDSketch/HLLSketch through `prometheusremotewrite` to the backend, so the warm-tier sketch ingest is dropped at the gateway. The cold-tier path (P1+P4) carries the e2e flow through. Wiring an OTLP ingest into `precompute_engine` (or switching the backend image to the `query_engine_rust` binary, which has it) is the follow-up to unblock warm-tier sketches. |
+| P3. Build deploy images + N=1 b3-delta smoke run | ✅ 2026-04-30 | All four images (`asap/{controller,query-backend,fake-exporter,sketchcol}:dev`) build cleanly and `docker compose up` stands up the full stack. Verified: backend logs cold-tier fallback enabled; raw-tee writes ground-truth JSONL with the right path layout; swappable-filter HTTP swap returns `{"applied":"zone"}`. The earlier warm-tier limitation (gateway PRW dropping typed sketches) is now resolved by the OTLP-end-to-end path landed in the deploy follow-up — see follow-up #1 below. |
 | P4. Ground-truth tee from fake-exporter to MinIO raw JSONL | ✅ 2026-04-30 | `deploy/fake-exporter/raw_tee.go` — atomic.Pointer-style hour-bucketed JSONL writer matching the Rust `RawSample` wire format byte-for-byte. 8 unit tests incl. concurrent-writer race + format anchor + per-instance file naming. Wired into `runSynthetic` + `runTraceReplay`; controlled by `EXPORTER_RAW_TEE_ROOT` env. e2e overlay mounts a shared `cold-store` Docker volume into both fake-exporter (writer) and backend (reader). |
 | P5. PromQL replay client with plan-id tagging | ✅ 2026-04-30 | `deploy/scripts/promql_replay.py` — fires PromQL at backend `:19091` at fixed QPS, captures p50/p99 + result vector per query, tags every line of the JSONL log with the controller's currently-published `plan_id` (1 Hz polling thread). Smoke-tested: 17 queries / 6 s, p50 2.4 ms, p99 1.3 s (cold-fallback dominated). |
 | P6. Plan-transition driver + 1 Hz CPU/bandwidth sampler | ✅ 2026-04-30 | `deploy/scripts/plan_transition.py` — fires a query the active plan can't answer; tracks `t_query_in / t_plan_ready / t_first_hit / t_steady` against the controller's plan-id stream; `DockerStatsSampler` dumps 1 Hz cpu/mem/net per container to a separate JSONL. Imports + smoke-tests pass. |
@@ -127,13 +127,23 @@ deploy/scripts/run_e2e_sweep.sh --out-dir /tmp/sweep-$(date +%s) --soak-secs 120
 
 ### Open follow-ups (not e2e blockers)
 
-1. **Warm-tier sketch ingest is dropped at the gateway.** Stock OTel
-   collector contrib v0.108 can't translate `DDSketch` /
-   `HLLSketch` types through `prometheusremotewrite`. Today the
-   e2e drives data through the cold-tier path. To exercise the
-   warm path: either (a) enable OTLP ingest on `precompute_engine`,
-   or (b) swap the backend image to build the `query_engine_rust`
-   binary (which already has OTLP via `--enable-otel-ingest`).
+1. ~~**Warm-tier sketch ingest is dropped at the gateway.**~~ **Done
+   (2026-04-30, deploy follow-up).** Both options landed:
+   (a) `deploy/configs/gateway.yaml` now uses an `otlp/backend`
+   exporter (gRPC → `backend:4317`) instead of
+   `prometheusremotewrite/backend`, and `deploy/docker-compose/base.yml`
+   passes `--enable-otel-ingest --otel-grpc-port=4317
+   --otel-http-port=4318` to `precompute_engine`. The OTLP receiver
+   in `asap-query-engine/src/drivers/ingest/otel.rs` decodes the
+   typed `Metric.data = {DDSketch | KLLSketch | HLLSketch |
+   CountSketch | CountMinSketch}` payloads end-to-end (companion
+   PR ASAPQuery-backend#69). (b) `deploy/docker/Dockerfile.backend.queryengine`
+   builds the `query_engine_rust` binary instead, and
+   `deploy/docker-compose/queryengine-overlay.yml` swaps it in
+   when stack-wide controller-in-loop / query-tracker / backfill /
+   schema-eviction features are wanted alongside OTLP ingest. The
+   PRW exporter is retained in `gateway.yaml` as a non-active
+   fallback for legacy clients.
 2. **Cold reader is intolerant of torn last lines.** Under
    concurrent producer write + reader scan, the §5.2
    `parse_jsonl` path failed on a torn last line. A 5-line
