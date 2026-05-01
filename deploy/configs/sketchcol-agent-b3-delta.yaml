@@ -48,9 +48,25 @@ exporters:
 
 service:
   pipelines:
-    metrics:
+    # Per-sketch pipelines, NOT a chain of `[ddsketch, HLL, batch]`.
+    # Each sketch processor runs in `mode: window`, where its
+    # `ConsumeMetrics` accumulates inputs and `return nil`s — it
+    # does NOT forward inputs to the next processor. Chaining
+    # them in series therefore drops everything: ddsketch eats
+    # the raw inputs, fires its window emit downstream as typed
+    # DDSketch data points, HLL receives those typed points, has
+    # no `case pmetric.MetricTypeDDSketch:` in its
+    # `accumulateIntoWindow` switch, and silently drops them.
+    # OTel collector fans-out the same OTLP receiver across all
+    # pipelines that reference it, so two pipelines pointing at
+    # `receivers: [otlp]` each see every incoming batch.
+    metrics/ddsketch:
       receivers: [otlp]
-      processors: [ddsketch, HLL, batch]
+      processors: [ddsketch, batch]
+      exporters: [otlp/gateway]
+    metrics/hll:
+      receivers: [otlp]
+      processors: [HLL, batch]
       exporters: [otlp/gateway]
 
   telemetry:

@@ -52,9 +52,19 @@ exporters:
 
 service:
   pipelines:
-    metrics:
+    # Per-sketch pipelines — see sketchcol-agent-b3-delta.yaml for
+    # why chaining `[ddsketch, HLL, batch]` silently drops everything.
+    # Short version: both sketch processors run in window mode where
+    # ConsumeMetrics accumulates and `return nil`s without forwarding,
+    # so the second sketch processor never sees the upstream's window
+    # emission as something it can re-accumulate.
+    metrics/ddsketch:
       receivers: [otlp]
-      processors: [ddsketch, HLL, batch]
+      processors: [ddsketch, batch]
+      exporters: [otlp/gateway]
+    metrics/hll:
+      receivers: [otlp]
+      processors: [HLL, batch]
       exporters: [otlp/gateway]
 
   telemetry:
