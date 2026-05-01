@@ -72,7 +72,14 @@ cd "${PATCH_DIR}"
 
 # Step 4: Add sketchlib-go replace (private module) and rebuild
 SKETCHCOL_DIR="${PATCH_DIR}/cmd/sketchcollector"
-if ! grep -q "sketchlib-go" "${SKETCHCOL_DIR}/go.mod" 2>/dev/null; then
+# OCB always re-emits go.mod with `sketchlib-go ... // indirect`
+# in the require block (every sketch processor pulls it in), so a
+# plain `grep -q sketchlib-go` matched even when no replace was
+# present — the build then resolved sketchlib-go via the module
+# proxy / sumdb, pinning to whatever commit was published months
+# ago instead of the local checkout. Match the replace line
+# specifically.
+if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/sketchlib-go" "${SKETCHCOL_DIR}/go.mod" 2>/dev/null; then
   echo "replace github.com/ProjectASAP/sketchlib-go => ${ROOT_DIR}/../sketchlib-go" >> "${SKETCHCOL_DIR}/go.mod"
 fi
 

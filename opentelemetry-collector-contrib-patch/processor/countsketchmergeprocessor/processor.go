@@ -106,9 +106,14 @@ func (p *countSketchMergeProcessor) mergeDataPoint(dp pmetric.NumberDataPoint) {
 				zap.String("key", key))
 			return
 		}
-		if err := cs.ApplyDelta(acc, payload); err != nil {
-			p.logger.Error("countsketchmergeprocessor: ApplyDelta failed", zap.Error(err))
+		// `ApplyDelta` takes a decoded `*Delta`, not raw bytes; the
+		// decoder lives next to the encoder in `delta_codec.go`.
+		delta, err := cs.DeserializeDelta(payload)
+		if err != nil {
+			p.logger.Error("countsketchmergeprocessor: DeserializeDelta failed", zap.Error(err))
+			return
 		}
+		cs.ApplyDelta(acc, delta)
 	default:
 		// proto_full or no encoding: deserialize and replace
 		sketch, err := cs.DeserializeCountSketchFromProtoBytes(payload)

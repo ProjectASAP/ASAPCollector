@@ -24,17 +24,14 @@
 #        opentelemetry-collector-contrib \
 #        opentelemetry-proto
 #
-# 2. Check out `ProjectASAP/sketchlib-go` on the branch that
-#    exposes `SerializeMsgpack` (today:
-#    `feat/sketch-msgpack-serialize`) and note its path.
+# 2. Check out `ProjectASAP/sketchlib-go` at the sibling path
+#    `../sketchlib-go` (relative to the ASAPCollector repo). The
+#    OCB manifest's `replaces:` section points there as
+#    `../../../../sketchlib-go` from `cmd/sketchcollector/go.mod`.
+#    Use `main` for a known-good API surface (NewFromState,
+#    SerializeMsgpack on all five sketches, DeserializeDelta).
 #
-# 3. Add a just-in-time replace to the OCB manifest pointing at
-#    that checkout (don't commit it):
-#
-#      echo "  - github.com/ProjectASAP/sketchlib-go => /path/to/sketchlib-go" \
-#        >> opentelemetry-collector-contrib-patch/cmd/sketchcollector/builder-config.yaml
-#
-# 4. Build the collector:
+# 3. Build the collector:
 #
 #      GOPRIVATE='github.com/ProjectASAP/*' \
 #        bash build_sketchcollector.sh --skip-patches
