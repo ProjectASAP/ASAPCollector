@@ -25,6 +25,23 @@ contract, the per-platform encoding choices, and a phased
 migration that doesn't break the working e2e (b3-delta with #210
 + #211 + ASAPQuery-backend#71).
 
+**Distribution model: common library + per-platform custom
+build.** The framework's core deliverable is the Layer 3 runtime
+(`asap-precompute-go` / `asap-precompute-rs`), distributed as a
+normal Go module / Rust crate that any project can depend on.
+Each Layer-4 adapter is a thin glue crate that pulls Layer 3 in
+as a library dependency. The end-user-visible artifact for each
+host platform is a custom-built binary (`sketchcollector`,
+`sketchtelegraf`, `sketchvector`, `sketchotap`) that links the
+upstream platform + Layer 3 library + Layer 4 adapter together at
+build time, using each platform's official compile-in extension
+mechanism (OCB / build tags / `inventory::submit!` / `linkme`).
+This is the same vendor-repackaged-distro model that Datadog
+Agent, Elastic Beats, and Splunk Universal Forwarder use; it is
+NOT a runtime plugin loader and NOT an upstream-divergent fork.
+§7.4 covers the build/distribution mechanics; the rest of this
+document treats Layer 3 as the load-bearing reusable artifact.
+
 ## 2. Non-goals
 
 - Replacing the controller, query backend, or storage layer.
@@ -447,21 +464,72 @@ calling out as its own subsection: **the "ASAP ships a separate
 aspirational at best.** None of the four target platforms exposes
 a stable dynamic-library or external-process plugin interface for
 the kind of stateful, scheduled, custom-emitting plugin ASAP
-needs. Realistic integration model per platform:
+needs.
 
-| Platform | Integration mode | Implication |
+But "no drop-in plugin" is not the same as "must hard-fork
+upstream." There's a spectrum, and ASAP sits in the middle:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ Tier 1.  Drop-in plugin (.so / .dll / external process)   │
+│   User installs the platform's stock binary, then drops a │
+│   plugin file alongside; runtime loader picks it up. ASAP │
+│   would prefer this. None of the four host platforms      │
+│   support it for stateful + scheduled plugins.            │
+├──────────────────────────────────────────────────────────┤
+│ Tier 2.  Custom build (upstream library + ASAP crate)     │
+│   Upstream platform is a normal git/Cargo dependency.     │
+│   ASAP's crate is added at build time via the platform's  │
+│   official extension mechanism. No upstream code is       │
+│   patched. Tracks upstream releases as deps would.        │
+│   THIS IS ASAP'S MODEL FOR ALL FOUR PLATFORMS.            │
+├──────────────────────────────────────────────────────────┤
+│ Tier 3.  Hard fork (divergent code base)                  │
+│   Maintain a parallel branch of upstream's source with    │
+│   ASAP-specific patches; re-rebase on every upstream      │
+│   release. High maintenance cost.                         │
+│   ASAP only does this for modified-OTLP schema extensions │
+│   in opentelemetry-collector-contrib-patch/ — Strategy B  │
+│   (envelope-as-attribute / -as-bytes-field, §7.2)         │
+│   eliminates the need for fork-style patches on the other │
+│   three platforms.                                        │
+└──────────────────────────────────────────────────────────┘
+```
+
+Per-platform compile-in mechanism (all Tier 2):
+
+| Platform | Mechanism | Distribution unit |
 |---|---|---|
-| **OTel Collector** | OCB (OpenTelemetry Collector Builder) compiles in custom processors at build time. ASAPCollector already does this via `builder-config.yaml`. | ASAP ships an OCB manifest snippet; users build a custom collector binary that includes `asap-otelcol`. Same workflow ASAP already uses today. |
-| **Telegraf** | Compiled-in only (`plugins/aggregators/all/asap.go` + build tag in `plugins/aggregators/all/aggregators.go`). No `aggregators.execd`. | ASAP ships a forked or vendored Telegraf binary. Users replace stock `telegraf` with `asap-telegraf` binary. |
-| **Vector** | In-tree feature flag + `inventory::submit!` registration. No plugin ABI. | ASAP ships a forked or vendored Vector binary (or path-dependency the `asap-vector` crate into a custom Vector build). |
-| **OTAP Dataflow** | `linkme` distributed-slice compile-time registration. Project README explicitly states "current system is compile-time only." | ASAP ships its own binary depending on `otap-df-engine` + `asap-otap` processor crate, OR a fork of `df_engine` that includes ASAP. |
+| **OTel Collector** | OCB (OpenTelemetry Collector Builder) reads `builder-config.yaml`, compiles in custom processors at build time. ASAPCollector already does this. | `sketchcollector` |
+| **Telegraf** | `plugins/aggregators/all/asap.go` + build tag in `plugins/aggregators/all/aggregators.go`. No `aggregators.execd` exists. | `sketchtelegraf` |
+| **Vector** | In-tree feature flag + `inventory::submit!` registration in a path-dependency Cargo workspace. | `sketchvector` |
+| **OTAP Dataflow** | `linkme` distributed-slice compile-time registration; the project README states "current system is compile-time only." | `sketchotap` |
 
-Net consequence: ASAP's deployment story across non-OTel
-platforms is "we ship a binary," not "drop a plugin into your
-existing install." The LoC estimates in §7.3 reflect this — they
-include build/feature plumbing (Cargo workspace edits, OCB
-manifest entries, `linkme` registration boilerplate, etc.) that
-naive estimates miss.
+User-facing mental model: "I install the ASAP-flavored distro of
+$platform" — same as installing Datadog Agent (vendor-repackaged
+upstream Telegraf-equivalent + first-party plugins), Elastic
+Beats (vendor-repackaged + Elastic-specific plugins), or Splunk
+Universal Forwarder. NOT "I install $platform stock and add ASAP
+later."
+
+Net consequence: ASAP's deployment story across all four
+platforms is "we ship a binary." No platform user ever runs
+`docker pull telegraf:latest` and adds ASAP after the fact —
+they pull `sketchtelegraf:latest` directly. The LoC estimates in
+§7.3 reflect this — they include build/feature plumbing (Cargo
+workspace edits, OCB manifest entries, `linkme` registration
+boilerplate, build-tag wiring) that naive "just write a plugin"
+estimates miss.
+
+The implementation goal driving Layer 3 (`asap-precompute-go`,
+`asap-precompute-rs`) is exactly that **Layer 3 is the common
+data-plane library shared across all four distros**. Each Layer-4
+adapter (`asap-otelcol`, `asap-telegraf`, `asap-vector`,
+`asap-otap`) is a thin glue layer that links Layer 3 against its
+specific upstream host. Without a shared Layer 3, every per-distro
+build would re-implement window scheduling, snapshot caches, and
+delta encoding — the explicit goal of the framework is to prevent
+that fragmentation.
 
 ### 7.5 Third-party intermediaries
 
