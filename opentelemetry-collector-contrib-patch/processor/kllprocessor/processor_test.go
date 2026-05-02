@@ -111,7 +111,9 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 				outDP := m.KLLSketch().DataPoints().At(0)
 				require.NotEmpty(t, outDP.Sketch(), "sketch bytes must be populated")
 				require.Equal(t, pmetric.KLLSketchEncodingProto, outDP.Encoding())
-				sketch, err := kll.DeserializeKLLSketchFromBytes(outDP.Sketch())
+				// Emit path uses proto.Marshal(SerializePortable());
+				// matching deserializer is DeserializeKLLSketchFromProtoBytes.
+				sketch, err := kll.DeserializeKLLSketchFromProtoBytes(outDP.Sketch())
 				require.NoError(t, err)
 				assert.Equal(t, 1, sketch.Count())
 			}
@@ -199,16 +201,21 @@ func TestWindowModeGaugeInput(t *testing.T) {
 	dp.SetTimestamp(2)
 	dp.SetDoubleValue(10)
 
+	// Window mode forwards input through (PR #211); synthesized output
+	// arrives only after flushWindow. After ConsumeMetrics the sink
+	// has the forwarded input only.
 	err := proc.ConsumeMetrics(context.Background(), md)
 	require.NoError(t, err)
-	assert.Len(t, sink.AllMetrics(), 0)
+	assert.Len(t, sink.AllMetrics(), 1)
 
 	err = proc.flushWindow(context.Background())
 	require.NoError(t, err)
 
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
-	rms := out[0].ResourceMetrics()
+	require.Len(t, out, 2)
+	// Second push is the flushed synthesized output.
+	synthesized := out[1]
+	rms := synthesized.ResourceMetrics()
 	require.Equal(t, 1, rms.Len())
 	sms := rms.At(0).ScopeMetrics()
 	require.Equal(t, 1, sms.Len())
@@ -247,9 +254,18 @@ func TestWindowModeMultipleBatches(t *testing.T) {
 
 	require.NoError(t, proc.flushWindow(context.Background()))
 
+	// Window mode forwards inputs through (PR #211): 2 ConsumeMetrics +
+	// 1 flushWindow synthesized output = 3 sink entries. Scan all
+	// entries for the synthesized "latency_p50" metric.
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
-	p50 := getQuantileFromOutput(t, out[0], "latency_p50")
+	require.Len(t, out, 3)
+	var p50 *float64
+	for _, md := range out {
+		if v := getQuantileFromOutput(t, md, "latency_p50"); v != nil {
+			p50 = v
+			break
+		}
+	}
 	require.NotNil(t, p50)
 	// Merged window: p50 of [10, 30] should be between 10 and 30
 	assert.GreaterOrEqual(t, *p50, 9.0)
@@ -290,10 +306,13 @@ func TestEmptyInput(t *testing.T) {
 
 	empty := pmetric.NewMetrics()
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), empty))
-	assert.Len(t, sink.AllMetrics(), 0)
+	// Window mode forwards inputs through (PR #211); even an empty input
+	// is forwarded so chained processors observe the original payload.
+	assert.Len(t, sink.AllMetrics(), 1)
 
 	require.NoError(t, proc.flushWindow(context.Background()))
-	assert.Len(t, sink.AllMetrics(), 0)
+	// Empty window: flush emits nothing, so sink length is unchanged.
+	assert.Len(t, sink.AllMetrics(), 1)
 }
 
 // TestEmptyResourceMetrics verifies ResourceMetrics with zero ScopeMetrics is handled in batch mode.
@@ -372,8 +391,20 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 	wg.Wait()
 
 	require.NoError(t, proc.flushWindow(context.Background()))
+	// Window mode forwards inputs through (PR #211): 10 ConsumeMetrics +
+	// 1 flushWindow synthesized output = 11 sink entries. Concurrent
+	// ordering is non-deterministic; locate the synthesized
+	// "latency_p50" metric by name across all entries.
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
+	require.Len(t, out, 11)
+	var found bool
+	for _, md := range out {
+		if v := getQuantileFromOutput(t, md, "latency_p50"); v != nil {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "expected synthesized latency_p50 metric in sink")
 }
 
 // TestWindowModeFlushDuringConsume verifies flush and ConsumeMetrics can run concurrently without race.
@@ -564,27 +595,38 @@ func TestAggregateByWithLabelMatchersWindowMode(t *testing.T) {
 
 	require.NoError(t, proc.flushWindow(context.Background()))
 
+	// Window mode forwards input through (PR #211): 1 ConsumeMetrics +
+	// 1 flushWindow synthesized output = 2 sink entries. Scan all
+	// entries for the synthesized "latency_p50" metric.
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
+	require.Len(t, out, 2)
 
-	p50 := getQuantileFromOutput(t, out[0], "latency_p50")
+	var p50 *float64
+	for _, md := range out {
+		if v := getQuantileFromOutput(t, md, "latency_p50"); v != nil {
+			p50 = v
+			break
+		}
+	}
 	require.NotNil(t, p50)
 	// Only prod data points [10, 30] included; p50 ≈ 20.
 	assert.GreaterOrEqual(t, *p50, 9.0)
 	assert.LessOrEqual(t, *p50, 31.0)
 
 	// Verify output attribute is only "region" (env is not in aggregate_by).
-	rms := out[0].ResourceMetrics()
-	for i := 0; i < rms.Len(); i++ {
-		for j := 0; j < rms.At(i).ScopeMetrics().Len(); j++ {
-			ms := rms.At(i).ScopeMetrics().At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				if ms.At(k).Name() == "latency_p50" {
-					dp := ms.At(k).Gauge().DataPoints().At(0)
-					_, hasEnv := dp.Attributes().Get("env")
-					assert.False(t, hasEnv, "output should not carry 'env' label")
-					_, hasRegion := dp.Attributes().Get("region")
-					assert.True(t, hasRegion, "output must carry 'region' label")
+	for _, md := range out {
+		rms := md.ResourceMetrics()
+		for i := 0; i < rms.Len(); i++ {
+			for j := 0; j < rms.At(i).ScopeMetrics().Len(); j++ {
+				ms := rms.At(i).ScopeMetrics().At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					if ms.At(k).Name() == "latency_p50" {
+						dp := ms.At(k).Gauge().DataPoints().At(0)
+						_, hasEnv := dp.Attributes().Get("env")
+						assert.False(t, hasEnv, "output should not carry 'env' label")
+						_, hasRegion := dp.Attributes().Get("region")
+						assert.True(t, hasRegion, "output must carry 'region' label")
+					}
 				}
 			}
 		}

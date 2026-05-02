@@ -187,8 +187,10 @@ func TestProcessor_TumblingWindow_Correctness(t *testing.T) {
 	rawBytes := payloadVal.Bytes().AsRaw()
 	require.NotEmpty(t, rawBytes)
 
-	// Attempt to decode back to sketch
-	sketch, decErr := cms.DeserializeCountMinSketchFromBytes(rawBytes)
+	// Attempt to decode back to sketch. Emit path uses
+	// SerializeProtoBytesFO (proto envelope, FrequencyOnly); the
+	// matching deserializer is DeserializeCountMinSketchFromProtoBytes.
+	sketch, decErr := cms.DeserializeCountMinSketchFromProtoBytes(rawBytes)
 	assert.NoError(t, decErr, "Payload must be a valid serialized CMS")
 	assert.Equal(t, 5, sketch.Rows)
 	assert.Equal(t, 128, sketch.Cols)

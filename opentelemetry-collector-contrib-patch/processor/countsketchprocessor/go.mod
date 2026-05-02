@@ -13,6 +13,7 @@ require (
 	go.opentelemetry.io/collector/processor v1.47.0
 	go.opentelemetry.io/collector/processor/processorhelper v0.141.0
 	go.uber.org/zap v1.27.1
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -46,10 +47,11 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
+
+replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
 
 replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
