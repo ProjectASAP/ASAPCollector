@@ -156,24 +156,29 @@ func TestWindowModeFlush(t *testing.T) {
 	proc := newProcessor(cfg, zap.NewNop(), sink)
 
 	md := makeGaugeMetrics("sessions", []float64{1, 2, 3})
-	// Window mode: ConsumeMetrics should NOT forward to next consumer.
+	// Window mode forwards input through (PR #211); synthesized output
+	// arrives only after flushWindow. After ConsumeMetrics the sink
+	// has the forwarded input only.
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
-	assert.Len(t, sink.AllMetrics(), 0, "window mode must not forward until flush")
+	assert.Len(t, sink.AllMetrics(), 1, "window mode forwards input pass-through (PR #211)")
 
 	// Manually flush.
 	require.NoError(t, proc.flushWindow(context.Background()))
 
+	// 1 ConsumeMetrics + 1 flushWindow synthesized output = 2 sink entries.
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
+	require.Len(t, out, 2)
 
 	var foundCardinality bool
-	for i := 0; i < out[0].ResourceMetrics().Len(); i++ {
-		sms := out[0].ResourceMetrics().At(i).ScopeMetrics()
-		for j := 0; j < sms.Len(); j++ {
-			ms := sms.At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				if ms.At(k).Name() == "sessions_hll_cardinality" {
-					foundCardinality = true
+	for _, md := range out {
+		for i := 0; i < md.ResourceMetrics().Len(); i++ {
+			sms := md.ResourceMetrics().At(i).ScopeMetrics()
+			for j := 0; j < sms.Len(); j++ {
+				ms := sms.At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					if ms.At(k).Name() == "sessions_hll_cardinality" {
+						foundCardinality = true
+					}
 				}
 			}
 		}
@@ -198,19 +203,24 @@ func TestWindowModeMergesAcrossBatches(t *testing.T) {
 
 	require.NoError(t, proc.flushWindow(context.Background()))
 
+	// Window mode forwards inputs through (PR #211): 2 ConsumeMetrics +
+	// 1 flushWindow synthesized output = 3 sink entries. Scan for the
+	// synthesized cardinality metric across all entries.
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
+	require.Len(t, out, 3)
 
 	var est float64
-	for i := 0; i < out[0].ResourceMetrics().Len(); i++ {
-		sms := out[0].ResourceMetrics().At(i).ScopeMetrics()
-		for j := 0; j < sms.Len(); j++ {
-			ms := sms.At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				if ms.At(k).Name() == "hits_hll_cardinality" {
-					dps := ms.At(k).Gauge().DataPoints()
-					if dps.Len() > 0 {
-						est = dps.At(0).DoubleValue()
+	for _, md := range out {
+		for i := 0; i < md.ResourceMetrics().Len(); i++ {
+			sms := md.ResourceMetrics().At(i).ScopeMetrics()
+			for j := 0; j < sms.Len(); j++ {
+				ms := sms.At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					if ms.At(k).Name() == "hits_hll_cardinality" {
+						dps := ms.At(k).Gauge().DataPoints()
+						if dps.Len() > 0 {
+							est = dps.At(0).DoubleValue()
+						}
 					}
 				}
 			}

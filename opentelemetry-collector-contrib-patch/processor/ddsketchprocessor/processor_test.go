@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/DataDog/sketches-go/ddsketch"
-	"github.com/DataDog/sketches-go/ddsketch/pb/sketchpb"
+	envpb "github.com/ProjectASAP/sketchlib-go/proto/sketch_envelope"
+	ddsketch "github.com/ProjectASAP/sketchlib-go/sketches/DDSketch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -49,7 +49,7 @@ func TestProcessorAddsDDSketchMetric(t *testing.T) {
 	require.NotEmpty(t, dp.Sketch())
 
 	merged := decodeSketch(t, dp.Sketch())
-	require.GreaterOrEqual(t, merged.GetCount(), float64(1), "merged sketch should have at least one sample")
+	require.GreaterOrEqual(t, merged.GetCount(), uint64(1), "merged sketch should have at least one sample")
 }
 
 func TestBatchModeGaugeInput(t *testing.T) {
@@ -115,18 +115,22 @@ func TestWindowModeGaugeInput(t *testing.T) {
 	dp.SetTimestamp(2)
 	dp.SetDoubleValue(10)
 
-	// Window mode should not forward immediately.
+	// Window mode forwards input through (PR #211); synthesized output
+	// arrives only after flushWindow. After ConsumeMetrics the sink
+	// has the forwarded input only.
 	err := proc.ConsumeMetrics(context.Background(), md)
 	require.NoError(t, err)
-	assert.Len(t, sink.AllMetrics(), 0)
+	assert.Len(t, sink.AllMetrics(), 1)
 
 	// Force a flush and verify output.
 	err = proc.flushWindow(context.Background())
 	require.NoError(t, err)
 
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
-	rms := out[0].ResourceMetrics()
+	require.Len(t, out, 2)
+	// Second push is the flushed synthesized output.
+	synthesized := out[1]
+	rms := synthesized.ResourceMetrics()
 	require.Equal(t, 1, rms.Len())
 	sms := rms.At(0).ScopeMetrics()
 	require.Equal(t, 1, sms.Len())
@@ -160,9 +164,13 @@ func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
 	err = proc.flushWindow(context.Background())
 	require.NoError(t, err)
 
+	// Window mode forwards inputs through (PR #211): 2 ConsumeMetrics +
+	// 1 flushWindow synthesized output = 3 sink entries. The synthesized
+	// output is the last one.
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
-	rms := out[0].ResourceMetrics()
+	require.Len(t, out, 3)
+	synthesized := out[2]
+	rms := synthesized.ResourceMetrics()
 	require.Equal(t, 1, rms.Len())
 	sms := rms.At(0).ScopeMetrics()
 	require.Equal(t, 1, sms.Len())
@@ -181,7 +189,7 @@ func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
 	merged := decodeSketch(t, dp.Sketch())
 
 	// Two batches: merged sketch count should be at least the size of one batch.
-	require.GreaterOrEqual(t, merged.GetCount(), float64(1), "window merge should produce sketch with samples")
+	require.GreaterOrEqual(t, merged.GetCount(), uint64(1), "window merge should produce sketch with samples")
 }
 
 func buildDDSketchMetrics(t *testing.T) pmetric.Metrics {
@@ -215,22 +223,37 @@ func buildDDSketchMetrics(t *testing.T) pmetric.Metrics {
 	return metrics
 }
 
+// setSketchPayload builds a sketchlib-go DDSketch with the given
+// values, serializes it as a bare DDSketchState proto (the
+// envelope-fallback path in production decodeDDSketchDataPoint),
+// and writes the bytes onto the data point. Mirrors the agent
+// emit path's wire format byte-for-byte.
 func setSketchPayload(t *testing.T, dp pmetric.DDSketchDataPoint, values []float64) {
-	sk, err := ddsketch.NewDefaultDDSketch(0.01)
-	require.NoError(t, err)
+	t.Helper()
+	sk := ddsketch.NewDDSketch(0.01)
 	for _, v := range values {
-		require.NoError(t, sk.Add(v))
+		sk.Update(v)
 	}
-	bytes, err := proto.Marshal(sk.ToProto())
+	bytes, err := sk.SerializeStateProtoBytes()
 	require.NoError(t, err)
 	dp.SetSketch(bytes)
 }
 
+// decodeSketch unmarshals the processor's emitted sketch payload
+// back into a sketchlib-go *DDSketch we can inspect. The processor
+// emits via SerializePortable (envelope-wrapped); fall back to
+// bare DDSketchState for fixtures that skip the envelope.
 func decodeSketch(t *testing.T, payload []byte) *ddsketch.DDSketch {
 	t.Helper()
-	var pb sketchpb.DDSketch
-	require.NoError(t, proto.Unmarshal(payload, &pb))
-	result, err := ddsketch.FromProto(&pb)
+	var env envpb.SketchEnvelope
+	if err := proto.Unmarshal(payload, &env); err == nil {
+		if state := env.GetDdsketch(); state != nil {
+			result, err := ddsketch.NewFromState(state)
+			require.NoError(t, err)
+			return result
+		}
+	}
+	result, err := ddsketch.NewFromStateProtoBytes(payload)
 	require.NoError(t, err)
 	return result
 }
@@ -321,18 +344,35 @@ func TestWindowModeDualInput(t *testing.T) {
 
 	require.NoError(t, proc.flushWindow(context.Background()))
 
+	// Window mode forwards inputs through (PR #211): 2 ConsumeMetrics +
+	// 1 flushWindow synthesized output = 3 sink entries. Find the
+	// synthesized sketch output by metric name (don't assume position).
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
-	ms := out[0].ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
-	require.GreaterOrEqual(t, ms.Len(), 1)
-	sketchMetric := ms.At(0)
-	assert.Equal(t, "latency_ddsketch", sketchMetric.Name())
-	require.Equal(t, pmetric.MetricTypeDDSketch, sketchMetric.Type())
+	require.Len(t, out, 3)
+	var sketchMetric pmetric.Metric
+	var found bool
+	for _, md := range out {
+		rms := md.ResourceMetrics()
+		for i := 0; i < rms.Len(); i++ {
+			sms := rms.At(i).ScopeMetrics()
+			for j := 0; j < sms.Len(); j++ {
+				ms := sms.At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					m := ms.At(k)
+					if m.Name() == "latency_ddsketch" && m.Type() == pmetric.MetricTypeDDSketch {
+						sketchMetric = m
+						found = true
+					}
+				}
+			}
+		}
+	}
+	require.True(t, found, "expected synthesized latency_ddsketch metric in sink")
 	dps := sketchMetric.DDSketch().DataPoints()
 	require.Equal(t, 1, dps.Len())
 	merged := decodeSketch(t, dps.At(0).Sketch())
 	// Both gauge and DDSketch inputs should be merged (exact count depends on merge semantics).
-	assert.GreaterOrEqual(t, merged.GetCount(), float64(1), "merged sketch should include gauge and/or DDSketch inputs")
+	assert.GreaterOrEqual(t, merged.GetCount(), uint64(1), "merged sketch should include gauge and/or DDSketch inputs")
 }
 
 // TestEmptyInput verifies that empty metrics do not cause panics and produce no output in window mode.
@@ -345,11 +385,13 @@ func TestEmptyInput(t *testing.T) {
 
 	empty := pmetric.NewMetrics()
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), empty))
-	assert.Len(t, sink.AllMetrics(), 0)
+	// Window mode forwards inputs through (PR #211); even an empty input
+	// is forwarded so chained processors observe the original payload.
+	assert.Len(t, sink.AllMetrics(), 1)
 
 	require.NoError(t, proc.flushWindow(context.Background()))
-	// Empty window should not emit
-	assert.Len(t, sink.AllMetrics(), 0)
+	// Empty window: flush emits nothing, so sink length is unchanged.
+	assert.Len(t, sink.AllMetrics(), 1)
 }
 
 // TestEmptyResourceMetrics verifies ResourceMetrics with zero ScopeMetrics is handled.
@@ -471,11 +513,31 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 	wg.Wait()
 
 	require.NoError(t, proc.flushWindow(context.Background()))
+	// Window mode forwards inputs through (PR #211): 10 ConsumeMetrics +
+	// 1 flushWindow synthesized output = 11 sink entries. Concurrent
+	// ordering is non-deterministic, so locate the synthesized sketch
+	// metric by name rather than by position.
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
-	// Should have merged all concurrent batches
-	ms := out[0].ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
-	require.GreaterOrEqual(t, ms.Len(), 1)
+	require.Len(t, out, 11)
+	var found bool
+	for _, md := range out {
+		rms := md.ResourceMetrics()
+		for i := 0; i < rms.Len(); i++ {
+			sms := rms.At(i).ScopeMetrics()
+			for j := 0; j < sms.Len(); j++ {
+				ms := sms.At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					m := ms.At(k)
+					// Synthesized metric carries the suffix; raw input
+					// keeps its original name.
+					if m.Name() == "request_latency_ddsketch" && m.Type() == pmetric.MetricTypeDDSketch {
+						found = true
+					}
+				}
+			}
+		}
+	}
+	require.True(t, found, "expected synthesized request_latency_ddsketch metric in sink")
 }
 
 // TestWindowModeFlushDuringConsume verifies flush and ConsumeMetrics can run concurrently without race.
@@ -707,19 +769,24 @@ func TestDDAggregateByWindowModeDDSketchInput(t *testing.T) {
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
 	require.NoError(t, proc.flushWindow(context.Background()))
 
+	// Window mode forwards input through (PR #211): 1 ConsumeMetrics +
+	// 1 flushWindow synthesized output = 2 sink entries. Scan for the
+	// synthesized "latency_quantile" metric across all entries.
 	out := sink.AllMetrics()
-	require.Len(t, out, 1)
+	require.Len(t, out, 2)
 
 	var outDPs []pmetric.NumberDataPoint
-	rms := out[0].ResourceMetrics()
-	for i := 0; i < rms.Len(); i++ {
-		for j := 0; j < rms.At(i).ScopeMetrics().Len(); j++ {
-			ms := rms.At(i).ScopeMetrics().At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				if ms.At(k).Name() == "latency_quantile" {
-					dps := ms.At(k).Gauge().DataPoints()
-					for l := 0; l < dps.Len(); l++ {
-						outDPs = append(outDPs, dps.At(l))
+	for _, md := range out {
+		rms := md.ResourceMetrics()
+		for i := 0; i < rms.Len(); i++ {
+			for j := 0; j < rms.At(i).ScopeMetrics().Len(); j++ {
+				ms := rms.At(i).ScopeMetrics().At(j).Metrics()
+				for k := 0; k < ms.Len(); k++ {
+					if ms.At(k).Name() == "latency_quantile" {
+						dps := ms.At(k).Gauge().DataPoints()
+						for l := 0; l < dps.Len(); l++ {
+							outDPs = append(outDPs, dps.At(l))
+						}
 					}
 				}
 			}
