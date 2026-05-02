@@ -572,3 +572,95 @@ func TestLabelMatchers(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, int64(1), count.Int())
 }
+
+// TestRoundTripIngestProtoSketch proves that an inbound CountMinSketch
+// payload produced by this processor's emit path (proto-encoded
+// SketchEnvelope via `serializeCMS`/`SerializeProtoBytesFO`) is accepted
+// by the same processor's ingest path. Pre-fix the ingest path called
+// `cms.DeserializeCountMinSketchFromBytes` (gob), which silently rejected
+// the proto bytes that production traffic carries; this test would have
+// caught that asymmetry.
+func TestRoundTripIngestProtoSketch(t *testing.T) {
+	cfg := &Config{
+		Mode:           ModeBatch,
+		MetricName:     "cms_roundtrip",
+		Rows:           5,
+		Columns:        128,
+		TransmitSketch: true,
+		DropOriginal:   true,
+	}
+	require.NoError(t, cfg.Validate())
+
+	// Build a source CMS sketch with N inserts at known hashes and
+	// serialize it via the exact emit-side path.
+	src, err := cms.NewCountMinSketch(cfg.Rows, cfg.Columns)
+	require.NoError(t, err)
+	const numInserts = 7
+	for i := 0; i < numInserts; i++ {
+		src.InsertWithHash(uint64(i + 1))
+	}
+	payload, err := serializeCMS(src)
+	require.NoError(t, err)
+	require.NotEmpty(t, payload)
+
+	// Sanity: the matching proto deserializer round-trips the bytes
+	// back to the same dimensions and per-hash frequency estimates.
+	roundTripped, err := deserializeCMS(payload)
+	require.NoError(t, err)
+	assert.Equal(t, src.Rows, roundTripped.Rows)
+	assert.Equal(t, src.Cols, roundTripped.Cols)
+	for i := 0; i < numInserts; i++ {
+		assert.Equal(t,
+			src.FastEstimateWithHash(uint64(i+1)),
+			roundTripped.FastEstimateWithHash(uint64(i+1)),
+			"per-hash estimate mismatch after direct proto round-trip")
+	}
+
+	// Feed the proto-encoded sketch back through the processor as a
+	// typed CountMinSketch input. The processor must (a) accept the
+	// proto bytes on ingest, (b) merge the inbound sketch into a fresh
+	// batch sketch, and (c) emit a typed CountMinSketchDataPoint whose
+	// payload decodes to the same per-hash estimates as the source.
+	sink := &mockConsumer{}
+	proc := newProcessor(cfg, sink, zap.NewNop())
+
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	metric := sm.Metrics().AppendEmpty()
+	metric.SetName("cms_roundtrip")
+	in := metric.SetEmptyCountMinSketch().DataPoints().AppendEmpty()
+	in.SetSampleCount(uint64(numInserts))
+	in.SetRows(int32(cfg.Rows))
+	in.SetCols(int32(cfg.Columns))
+	in.SetSketch(payload)
+	in.SetEncoding(pmetric.CountMinSketchEncodingProto)
+
+	out, err := proc.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+
+	dps := getAllDataPoints(out)
+	require.Len(t, dps, 1, "expected one emitted CMS sketch metric")
+
+	encoding, ok := dps[0].Attributes().Get("encoding")
+	require.True(t, ok)
+	assert.Equal(t, "proto_full", encoding.Str())
+
+	payloadVal, ok := dps[0].Attributes().Get("sketch_payload")
+	require.True(t, ok, "sketch_payload must be present on emitted DP")
+	mergedBytes := payloadVal.Bytes().AsRaw()
+	require.NotEmpty(t, mergedBytes)
+
+	mergedOut, err := cms.DeserializeCountMinSketchFromProtoBytes(mergedBytes)
+	require.NoError(t, err)
+	assert.Equal(t, cfg.Rows, mergedOut.Rows)
+	assert.Equal(t, cfg.Columns, mergedOut.Cols)
+	// Merging the inbound sketch into a fresh empty batch sketch yields
+	// per-hash estimates equal to the source's.
+	for i := 0; i < numInserts; i++ {
+		assert.Equal(t,
+			src.FastEstimateWithHash(uint64(i+1)),
+			mergedOut.FastEstimateWithHash(uint64(i+1)),
+			"per-hash estimate mismatch after full ingest→emit round-trip")
+	}
+}

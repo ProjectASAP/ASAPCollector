@@ -666,3 +666,86 @@ func TestShutdownDuringConsume(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// TestRoundTripIngestProtoSketch proves that an inbound KLLSketch payload
+// produced by this processor's emit path (proto-encoded SketchEnvelope via
+// `serializeKLLSketch`) is accepted by the same processor's ingest path.
+// Pre-fix the ingest path called `kll.DeserializeKLLSketchFromBytes` (gob),
+// which silently rejected the proto bytes that production traffic carries;
+// this test would have caught that asymmetry.
+func TestRoundTripIngestProtoSketch(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.Mode = ModeBatch
+	cfg.TransmitSketch = true
+	cfg.Quantiles = nil
+	cfg.DropOriginal = true
+	require.NoError(t, cfg.Validate())
+
+	// Build a source KLL sketch with a known multiset and serialize it
+	// using the exact emit-side path (proto-encoded SketchEnvelope).
+	src := newKLLSketch(cfg.K)
+	require.NotNil(t, src)
+	values := []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	for _, v := range values {
+		src.Update(v)
+	}
+	payload, err := serializeKLLSketch(src)
+	require.NoError(t, err)
+	require.NotEmpty(t, payload)
+
+	// Sanity: the matching proto deserializer round-trips the bytes.
+	roundTripped, err := kll.DeserializeKLLSketchFromProtoBytes(payload)
+	require.NoError(t, err)
+	require.Equal(t, src.Count(), roundTripped.Count())
+
+	// Feed the proto-encoded sketch back through the processor as a typed
+	// KLLSketch input. The processor must (a) accept it on ingest, (b)
+	// merge it into a fresh batch sketch, and (c) emit a typed
+	// KLLSketchDataPoint whose payload decodes to the same Count.
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	metric := sm.Metrics().AppendEmpty()
+	metric.SetName("latency")
+	metric.SetUnit("ms")
+	in := metric.SetEmptyKLLSketch().DataPoints().AppendEmpty()
+	in.SetCount(uint64(src.Count()))
+	in.SetSketch(payload)
+	in.SetEncoding(pmetric.KLLSketchEncodingProto)
+
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+
+	var outDP pmetric.KLLSketchDataPoint
+	var found bool
+	rms := out[0].ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				m := ms.At(k)
+				if m.Type() != pmetric.MetricTypeKLLSketch || m.Name() != "latency_kll" {
+					continue
+				}
+				require.Equal(t, 1, m.KLLSketch().DataPoints().Len())
+				outDP = m.KLLSketch().DataPoints().At(0)
+				found = true
+			}
+		}
+	}
+	require.True(t, found, "expected emitted KLLSketch metric latency_kll")
+	require.NotEmpty(t, outDP.Sketch())
+	require.Equal(t, pmetric.KLLSketchEncodingProto, outDP.Encoding())
+
+	mergedOut, err := kll.DeserializeKLLSketchFromProtoBytes(outDP.Sketch())
+	require.NoError(t, err)
+	// Merging the inbound sketch into a fresh empty batch sketch yields a
+	// sketch with the same item count as the source.
+	assert.Equal(t, src.Count(), mergedOut.Count())
+}
