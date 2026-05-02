@@ -102,7 +102,7 @@ func (d *kllSketchValues[N]) measure(
 		}
 	}
 
-	series.sketch.Insert(float64(value))
+	series.sketch.Update(float64(value))
 	series.count++
 	series.measuredSince = true
 	fv := float64(value)

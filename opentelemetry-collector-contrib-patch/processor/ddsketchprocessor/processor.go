@@ -340,7 +340,7 @@ func (p *ddsketchProcessor) buildQuantileMetric(src pmetric.Metric, series map[s
 			continue
 		}
 		for _, q := range p.cfg.Quantiles {
-			val, ok := s.sketch.GetValueAtQuantile(q)
+			val, ok := s.sketch.Quantile(q)
 			if !ok {
 				// sketchlib-go returns (0, false) for empty sketch
 				// or an out-of-range quantile; skip silently to
@@ -425,9 +425,9 @@ func (p *ddsketchProcessor) consumeGaugeDataPoints(dps pmetric.NumberDataPointSl
 		}
 		switch dp.ValueType() {
 		case pmetric.NumberDataPointValueTypeDouble:
-			sk.Add(dp.DoubleValue())
+			sk.Update(dp.DoubleValue())
 		case pmetric.NumberDataPointValueTypeInt:
-			sk.Add(float64(dp.IntValue()))
+			sk.Update(float64(dp.IntValue()))
 		default:
 			if p.logger != nil {
 				p.logger.Error("unsupported gauge data point type", zap.Any("type", dp.ValueType()))
@@ -784,9 +784,9 @@ func (p *ddsketchProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetri
 
 		switch dp.ValueType() {
 		case pmetric.NumberDataPointValueTypeDouble:
-			sk.Add(dp.DoubleValue())
+			sk.Update(dp.DoubleValue())
 		case pmetric.NumberDataPointValueTypeInt:
-			sk.Add(float64(dp.IntValue()))
+			sk.Update(float64(dp.IntValue()))
 		default:
 			if p.logger != nil {
 				p.logger.Error("unsupported gauge data point type in window mode", zap.Any("type", dp.ValueType()))

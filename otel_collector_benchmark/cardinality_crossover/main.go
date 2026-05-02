@@ -276,7 +276,7 @@ func evalCountSketch(n int, tuples []tuple, gt map[uint64]int64, topKKeys []uint
 
 	t0 := time.Now()
 	for _, in := range inputs {
-		cs.Insert(in)
+		cs.Update(in)
 	}
 	insertSec := time.Since(t0).Seconds()
 
@@ -322,7 +322,7 @@ func evalCountMinSketch(n int, tuples []tuple, gt map[uint64]int64, topKKeys []u
 
 	t0 := time.Now()
 	for _, in := range inputs {
-		cms.Insert(in)
+		cms.Update(in)
 	}
 	insertSec := time.Since(t0).Seconds()
 

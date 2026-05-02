@@ -193,7 +193,7 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
 						if bs.sketch != nil {
-							bs.sketch.Insert(val)
+							bs.sketch.Update(val)
 						}
 					}
 				case pmetric.MetricTypeKLLSketch:
@@ -431,7 +431,7 @@ func (p *kllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 			val = dp.DoubleValue()
 		}
 		if series.sketch != nil {
-			series.sketch.Insert(val)
+			series.sketch.Update(val)
 		}
 	}
 }

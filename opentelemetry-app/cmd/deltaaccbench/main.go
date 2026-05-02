@@ -635,12 +635,12 @@ func benchHLL(mode string, deltaOn bool) sketchResult {
 		if mode == "batch" {
 			cur = hll.NewHyperLogLog()
 			for _, v := range vals {
-				cur.Insert(v)
+				cur.UpdateValue(v)
 				seenValues[v] = struct{}{}
 			}
 		} else {
 			for _, v := range vals {
-				winSketch.Insert(v)
+				winSketch.UpdateValue(v)
 				seenValues[v] = struct{}{}
 			}
 			cur = cloneHLL(winSketch)
@@ -811,11 +811,11 @@ func benchDD(mode string, deltaOn bool) sketchResult {
 		if mode == "batch" {
 			cur = dd.New(alpha)
 			for _, v := range vals {
-				cur.Add(v)
+				cur.Update(v)
 			}
 		} else {
 			for _, v := range vals {
-				winSketch.Add(v)
+				winSketch.Update(v)
 			}
 			cur = winSketch.Clone()
 		}
@@ -890,7 +890,7 @@ func benchDD(mode string, deltaOn bool) sketchResult {
 		var sumRel, maxRel float64
 		for _, q := range quantiles {
 			trueQ := trueQuantile(sortedVals, q)
-			estQ, ok := reconSketch.GetValueAtQuantile(q)
+			estQ, ok := reconSketch.Quantile(q)
 			if !ok || trueQ == 0 {
 				continue
 			}
@@ -940,8 +940,8 @@ func ddSketchesCompatible(a, b *dd.DDSketch, quantiles []float64) bool {
 		return false
 	}
 	for _, q := range quantiles {
-		av, aok := a.GetValueAtQuantile(q)
-		bv, bok := b.GetValueAtQuantile(q)
+		av, aok := a.Quantile(q)
+		bv, bok := b.Quantile(q)
 		if aok != bok {
 			return false
 		}
@@ -999,11 +999,11 @@ func benchKLL(mode string) sketchResult {
 		if mode == "batch" {
 			cur = kll.InitKLL(k)
 			for _, v := range vals {
-				cur.Insert(v)
+				cur.Update(v)
 			}
 		} else {
 			for _, v := range vals {
-				winSketch.Insert(v)
+				winSketch.Update(v)
 			}
 			// KLL doesn't have Clone; serialize/deserialize for snapshot.
 			curBytes, err := winSketch.SerializeProtoBytes()
