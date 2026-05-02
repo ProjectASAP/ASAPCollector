@@ -26,7 +26,7 @@ func TestProcessorAddsDDSketchMetric(t *testing.T) {
 	}
 
 	metrics := buildDDSketchMetrics(t)
-	out, err := proc.processBatch(context.Background(), metrics)
+	out, err := proc.ProcessBatch(context.Background(), metrics)
 	require.NoError(t, err)
 
 	rm := out.ResourceMetrics()
@@ -123,7 +123,7 @@ func TestWindowModeGaugeInput(t *testing.T) {
 	assert.Len(t, sink.AllMetrics(), 1)
 
 	// Force a flush and verify output.
-	err = proc.flushWindow(context.Background())
+	err = proc.FlushWindow(context.Background())
 	require.NoError(t, err)
 
 	out := sink.AllMetrics()
@@ -161,7 +161,7 @@ func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
 	require.NoError(t, err)
 
 	// Flush and verify that sketches from both batches were merged.
-	err = proc.flushWindow(context.Background())
+	err = proc.FlushWindow(context.Background())
 	require.NoError(t, err)
 
 	// Window mode forwards inputs through (PR #211): 2 ConsumeMetrics +
@@ -291,7 +291,7 @@ func TestBatchModeDualInput(t *testing.T) {
 	dp.Attributes().PutStr("route", "/api")
 	setSketchPayload(t, dp, []float64{25.0, 75.0})
 
-	out, err := proc.processBatch(context.Background(), metrics)
+	out, err := proc.ProcessBatch(context.Background(), metrics)
 	require.NoError(t, err)
 
 	// Should have original 2 metrics + 2 sketch metrics (one per input type)
@@ -342,7 +342,7 @@ func TestWindowModeDualInput(t *testing.T) {
 	md2.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().At(0).SetName("latency")
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), md2))
 
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 
 	// Window mode forwards inputs through (PR #211): 2 ConsumeMetrics +
 	// 1 flushWindow synthesized output = 3 sink entries. Find the
@@ -389,7 +389,7 @@ func TestEmptyInput(t *testing.T) {
 	// is forwarded so chained processors observe the original payload.
 	assert.Len(t, sink.AllMetrics(), 1)
 
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 	// Empty window: flush emits nothing, so sink length is unchanged.
 	assert.Len(t, sink.AllMetrics(), 1)
 }
@@ -512,7 +512,7 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 	}
 	wg.Wait()
 
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 	// Window mode forwards inputs through (PR #211): 10 ConsumeMetrics +
 	// 1 flushWindow synthesized output = 11 sink entries. Concurrent
 	// ordering is non-deterministic, so locate the synthesized sketch
@@ -767,7 +767,7 @@ func TestDDAggregateByWindowModeDDSketchInput(t *testing.T) {
 	setSketchPayload(t, dp2, []float64{20})
 
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 
 	// Window mode forwards input through (PR #211): 1 ConsumeMetrics +
 	// 1 flushWindow synthesized output = 2 sink entries. Scan for the
