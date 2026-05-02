@@ -205,7 +205,7 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
 						if bs.sketch != nil && len(dp.Sketch()) > 0 {
-							incoming, err := kll.DeserializeKLLSketchFromBytes(dp.Sketch())
+							incoming, err := kll.DeserializeKLLSketchFromProtoBytes(dp.Sketch())
 							if err == nil {
 								_ = bs.sketch.Merge(incoming)
 							} else if p.logger != nil {
@@ -459,7 +459,7 @@ func (p *kllProcessor) accumulateKLLSketchMetric(sw *scopeWindow, metric pmetric
 			mw.series[attrKey] = series
 		}
 		if series.sketch != nil && len(dp.Sketch()) > 0 {
-			incoming, err := kll.DeserializeKLLSketchFromBytes(dp.Sketch())
+			incoming, err := kll.DeserializeKLLSketchFromProtoBytes(dp.Sketch())
 			if err == nil {
 				_ = series.sketch.Merge(incoming)
 			} else if p.logger != nil {

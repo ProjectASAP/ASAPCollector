@@ -690,7 +690,7 @@ func serializeCMS(s *cms.CountMinSketch) ([]byte, error) {
 }
 
 func deserializeCMS(data []byte) (*cms.CountMinSketch, error) {
-	return cms.DeserializeCountMinSketchFromBytes(data)
+	return cms.DeserializeCountMinSketchFromProtoBytes(data)
 }
 
 // cloneCMS returns a deep copy of s suitable for use as a delta snapshot.
