@@ -333,7 +333,11 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 	if entry == nil || entry.Sketch == nil {
 		return nil, nil
 	}
-	seriesKey := SeriesKey(cfg.AggID, entry.ResourceLabels, entry.Labels, cfg.AggregateBy)
+	// Rebuild the same key the window used at admit time. Going
+	// through cfg.SeriesKeyForEntry guarantees the snapshot-cache
+	// lookup in the delta path agrees with the observe-time bucket
+	// regardless of the OmitResourceAttrs / GlobalAggregation flags.
+	seriesKey := cfg.SeriesKeyForEntry(entry.ResourceLabels, entry.Labels)
 	var (
 		payload []byte
 		isFull  bool

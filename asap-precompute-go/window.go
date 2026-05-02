@@ -119,7 +119,7 @@ func (w *windowState) observe(
 		}
 	}
 
-	key := SeriesKey(cfg.AggID, obs.ResourceLabels, obs.Labels, cfg.AggregateBy)
+	key := cfg.SeriesKeyFor(obs)
 	entry, ok := w.series[key]
 	if !ok {
 		// New series — check cap.
@@ -151,10 +151,21 @@ func (w *windowState) observe(
 			}
 		}
 		sketch := sketchFactory()
-		labelsCopy := make([]KeyValue, len(obs.Labels))
-		copy(labelsCopy, obs.Labels)
-		resourceCopy := make([]KeyValue, len(obs.ResourceLabels))
-		copy(resourceCopy, obs.ResourceLabels)
+		// Honor the parity-mode flags by stripping the labels we
+		// promised not to surface. GlobalAggregation collapses
+		// everything; OmitResourceAttrs zeroes only the resource
+		// segment. The output envelope reads ResourceLabels/Labels
+		// straight from the entry, so this is what controls what
+		// shows up on the wire.
+		var resourceCopy, labelsCopy []KeyValue
+		if !cfg.GlobalAggregation {
+			labelsCopy = make([]KeyValue, len(obs.Labels))
+			copy(labelsCopy, obs.Labels)
+			if !cfg.OmitResourceAttrs {
+				resourceCopy = make([]KeyValue, len(obs.ResourceLabels))
+				copy(resourceCopy, obs.ResourceLabels)
+			}
+		}
 		entry = &seriesEntry{
 			Sketch:         sketch,
 			ResourceLabels: resourceCopy,
@@ -205,8 +216,10 @@ func (w *windowState) observeEnvelope(
 
 	// Envelopes carry a single flat labels list (the upstream sender
 	// already collapsed any resource/datapoint distinction), so
-	// resource labels are empty in this path.
-	key := SeriesKey(cfg.AggID, nil, env.Labels, cfg.AggregateBy)
+	// resource labels are empty in this path. We still route through
+	// SeriesKeyForEntry so GlobalAggregation collapses inbound
+	// envelopes into the same global bucket as the scalar path.
+	key := cfg.SeriesKeyForEntry(nil, env.Labels)
 	entry, ok := w.series[key]
 	if !ok {
 		if cfg.MaxSeries > 0 && uint64(len(w.series)) >= cfg.MaxSeries {

@@ -44,61 +44,35 @@ func TestParity_AllSketches(t *testing.T) {
 		{
 			name:   "KLL",
 			metric: harness.MetricKLL,
-			// Legacy KLL batch path collapses every input data
-			// point into a synthetic appended ResourceMetrics
-			// (see kllprocessor.processBatch) and keys series
-			// by `metricName + "::" + dpAttrs(attrs)`. Resource
-			// attrs do NOT enter the series key. Output also
-			// gains a `_kll` metric-name suffix the runtime
-			// path doesn't replicate. asap-precompute-go always
-			// includes resource attrs in SeriesKey, so the two
-			// emit different envelope cardinalities for the
-			// same input. Byte-for-byte parity is not reachable
-			// here without aligning the legacy processor's
-			// resource-handling. See PR description
-			// follow-up #1.
-			skipReason: "structural divergence: legacy KLL batch " +
-				"path drops resource attrs from series key and adds " +
-				"a `_kll` metric-name suffix",
+			// KLL byte-parity is gated on a sketchlib-go change
+			// outside this PR's scope: KLLSketch's compaction
+			// uses a randomized coin seeded from `time.Now()`
+			// (see sketchlib-go/sketches/KLL/kll.go::newCoin),
+			// and the legacy processor + runtime each construct
+			// independent KLLSketches with independent seeds.
+			// The resulting sketch state diverges by a few
+			// items per series, so the wire bytes never match
+			// even when series-key + metric-name shapes are
+			// aligned. Surfacing this as a deliberate SKIP so
+			// the rest of the harness still gates the merge.
+			// Tracking issue: sketchlib-go #N (deterministic-
+			// coin API) and ASAPCollector follow-up #1.
+			skipReason: "sketchlib-go nondeterminism: KLLSketch " +
+				"compaction coin is seeded from time.Now() and the " +
+				"two pipelines build independent sketches; byte-parity " +
+				"requires a deterministic-coin API in sketchlib-go",
 		},
 		{
 			name:   "HLL",
 			metric: harness.MetricHLL,
-			// Same shape as KLL: legacy HLL batch path adds a
-			// new empty ResourceMetrics and keys series only
-			// by dp-attrs, plus a `_hll_cardinality` metric-name
-			// suffix. See PR description follow-up #2.
-			skipReason: "structural divergence: legacy HLL batch " +
-				"path drops resource attrs from series key and adds " +
-				"a `_hll_cardinality` metric-name suffix",
 		},
 		{
 			name:   "CountSketch",
 			metric: harness.MetricCountSketch,
-			// Legacy CountSketchProcessor uses a single "global"
-			// partition when AggregateBy is empty (one sketch
-			// for ALL data points across all resources/labelsets);
-			// asap-precompute-go partitions by (resource,
-			// dp-labels). The two output cardinalities differ by
-			// design; byte-for-byte parity isn't reachable
-			// without matching the partition strategy. See PR
-			// description follow-up #3.
-			skipReason: "structural divergence: legacy emits one " +
-				"global partition; runtime emits per-(resource,labelset) series",
 		},
 		{
 			name:   "CountMinSketch",
 			metric: harness.MetricCMS,
-			// Legacy CountMinSketchProcessor keys series by
-			// (metricName, dp-attrs) — resource attrs do NOT
-			// enter the series key. asap-precompute-go always
-			// includes resource in SeriesKey. Same divergence
-			// shape as CountSketch; byte-parity not reachable
-			// without running the runtime in a per-metric scope
-			// that strips resource. See PR description
-			// follow-up #4.
-			skipReason: "structural divergence: legacy ignores " +
-				"resource attrs in series key; runtime always includes them",
 		},
 	}
 
@@ -136,26 +110,22 @@ func TestParity_DDSketch(t *testing.T) {
 
 func TestParity_KLL(t *testing.T) {
 	runIsolated(t, "KLL", harness.MetricKLL,
-		"structural divergence: legacy KLL batch path drops resource "+
-			"attrs from series key and adds a `_kll` metric-name suffix")
+		"sketchlib-go nondeterminism: KLLSketch compaction coin is "+
+			"seeded from time.Now() and the two pipelines build "+
+			"independent sketches; byte-parity requires a "+
+			"deterministic-coin API in sketchlib-go")
 }
 
 func TestParity_HLL(t *testing.T) {
-	runIsolated(t, "HLL", harness.MetricHLL,
-		"structural divergence: legacy HLL batch path drops resource "+
-			"attrs from series key and adds a `_hll_cardinality` metric-name suffix")
+	runIsolated(t, "HLL", harness.MetricHLL, "")
 }
 
 func TestParity_CountSketch(t *testing.T) {
-	runIsolated(t, "CountSketch", harness.MetricCountSketch,
-		"structural divergence: legacy emits global partition; "+
-			"runtime emits per-(resource,labelset) series")
+	runIsolated(t, "CountSketch", harness.MetricCountSketch, "")
 }
 
 func TestParity_CountMinSketch(t *testing.T) {
-	runIsolated(t, "CountMinSketch", harness.MetricCMS,
-		"structural divergence: legacy ignores resource attrs in "+
-			"series key; runtime always includes them")
+	runIsolated(t, "CountMinSketch", harness.MetricCMS, "")
 }
 
 func runIsolated(t *testing.T, name, metric, skipReason string) {

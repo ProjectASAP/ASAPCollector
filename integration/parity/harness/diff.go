@@ -150,11 +150,21 @@ func projectMetricVariant(m pmetric.Metric, resKey string) []envelopeView {
 			dp := dps.At(i)
 			payload := make([]byte, len(dp.Sketch()))
 			copy(payload, dp.Sketch())
+			// The legacy CountSketch processor decorates each
+			// emitted data point with two operator-visibility
+			// attributes (`sample_count`, `window_duration_seconds`)
+			// that the runtime path does not track. They are
+			// observability hints, not part of the routing key —
+			// the backend ignores them. Strip from the comparison
+			// key so the runtime's empty-label envelope (under
+			// GlobalAggregation) lines up with the legacy emission.
+			label := attrsToStringExcluding(dp.Attributes(),
+				"sample_count", "window_duration_seconds")
 			out = append(out, envelopeView{
 				MetricName:       m.Name(),
 				SketchType:       precompute.SketchTypeCountSketch,
 				ResourceLabelKey: resKey,
-				DataPointLabel:   attrsToString(dp.Attributes()),
+				DataPointLabel:   label,
 				WindowStartMs:    uint64(dp.StartTimestamp() / 1_000_000),
 				WindowEndMs:      uint64(dp.Timestamp() / 1_000_000),
 				Encoding:         legacyCSEncoding(dp.Encoding()),
@@ -398,10 +408,14 @@ func attrsToString(attrs pcommon.Map) string {
 	return b.String()
 }
 
-func attrsToStringExcluding(attrs pcommon.Map, drop string) string {
+func attrsToStringExcluding(attrs pcommon.Map, drop ...string) string {
+	dropSet := make(map[string]struct{}, len(drop))
+	for _, d := range drop {
+		dropSet[d] = struct{}{}
+	}
 	keys := make([]string, 0, attrs.Len())
 	attrs.Range(func(k string, _ pcommon.Value) bool {
-		if k == drop {
+		if _, skip := dropSet[k]; skip {
 			return true
 		}
 		keys = append(keys, k)

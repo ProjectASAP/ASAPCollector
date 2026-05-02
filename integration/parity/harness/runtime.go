@@ -93,6 +93,10 @@ func RunRuntimePath(input pmetric.Metrics, cfg RuntimeConfig) (map[string]*Runti
 				return newDDSketchWrapper(cfg.DDSketchAlpha)
 			},
 			observer: ddSketchObserver{},
+			// DDSketch is the canonical resource-aware case — both
+			// paths key by (resource, dp-attrs) and emit one
+			// envelope per (resource, labelset).
+			outMetricName: MetricDDSketch,
 		},
 		{
 			name: MetricKLL, sk: precompute.SketchTypeKLLSketch,
@@ -100,11 +104,23 @@ func RunRuntimePath(input pmetric.Metrics, cfg RuntimeConfig) (map[string]*Runti
 				return newKLLWrapper(cfg.KLLK)
 			},
 			observer: kllObserver{},
+			// Legacy kllprocessor.processBatch keys series by
+			// `metricName + "::" + dpAttrs(attrs)` (no resource
+			// segment) and emits the output metric named
+			// `<base>_kll`. We mirror both via OmitResourceAttrs
+			// + a baked-in suffix on the runtime's MetricName.
+			omitResourceAttrs: true,
+			outMetricName:     MetricKLL + "_kll",
 		},
 		{
 			name: MetricHLL, sk: precompute.SketchTypeHLLSketch,
 			factory: func() precompute.Sketch { return newHLLWrapper() },
 			observer: hllObserver{},
+			// Legacy hllprocessor.processBatch shape mirrors KLL:
+			// series key is `metricName + "::" + dpAttrs`, output
+			// metric name is `<base>_hll_cardinality`.
+			omitResourceAttrs: true,
+			outMetricName:     MetricHLL + "_hll_cardinality",
 		},
 		{
 			name: MetricCountSketch, sk: precompute.SketchTypeCountSketch,
@@ -114,6 +130,12 @@ func RunRuntimePath(input pmetric.Metrics, cfg RuntimeConfig) (map[string]*Runti
 				)
 			},
 			observer: countSketchObserver{metricName: MetricCountSketch},
+			// Legacy countsketchprocessor with empty AggregateBy
+			// uses a single "global" partition for ALL data points;
+			// the emitted metric name is the literal
+			// "countsketch_partition" (not the input name).
+			globalAggregation: true,
+			outMetricName:     "countsketch_partition",
 		},
 		{
 			name: MetricCMS, sk: precompute.SketchTypeCountMinSketch,
@@ -121,6 +143,13 @@ func RunRuntimePath(input pmetric.Metrics, cfg RuntimeConfig) (map[string]*Runti
 				return newCMSWrapper(cfg.CMSRows, cfg.CMSCols)
 			},
 			observer: cmsObserver{},
+			// Legacy countminsketchprocessor.seriesKey is
+			// `metricName + "::" + encodeKey(dpAttrs)`; resource
+			// attrs are not in the key. The output metric name
+			// comes from cfg.MetricName which we set to the input
+			// metric name (no implicit suffix).
+			omitResourceAttrs: true,
+			outMetricName:     MetricCMS,
 		},
 	} {
 		ro, err := runOnePrecompute(input, sd, cfg, tickMs)
@@ -137,6 +166,22 @@ type sketchDescriptor struct {
 	sk       precompute.SketchType
 	factory  precompute.SketchFactory
 	observer precompute.SketchObserver
+	// outMetricName is the metric name baked into the runtime's
+	// SketchEnvelope. The diff key reads SketchEnvelope.MetricName
+	// directly (not the encoded pmetric output), so legacy-side
+	// suffixes like `_kll` / `_hll_cardinality` and the literal
+	// "countsketch_partition" are baked here rather than going via
+	// AdapterConfig.MetricSuffix on encode.
+	outMetricName string
+	// omitResourceAttrs strips the resource-segment from SeriesKey
+	// AND clears the entry's ResourceLabels so the emitted envelope
+	// matches the legacy "appended-empty-RM" output shape.
+	omitResourceAttrs bool
+	// globalAggregation collapses every observation into a single
+	// shared series — both resource and dp labels are ignored when
+	// constructing the series key, and both fields are nil on the
+	// emitted envelope. CountSketch's batch-mode behavior.
+	globalAggregation bool
 }
 
 // runOnePrecompute wires up one Precompute, drives the input through
@@ -147,6 +192,10 @@ func runOnePrecompute(
 	cfg RuntimeConfig,
 	tickMs uint64,
 ) (*RuntimeOutput, error) {
+	metricName := sd.outMetricName
+	if metricName == "" {
+		metricName = sd.name
+	}
 	pcfg := &precompute.PrecomputeConfig{
 		AggID:      precompute.AggId(uint64(sd.sk)),
 		SketchType: sd.sk,
@@ -157,12 +206,14 @@ func runOnePrecompute(
 		Matchers: []precompute.LabelMatcher{
 			{Name: "", Value: sd.name},
 		},
-		MetricName:        sd.name,
+		MetricName:        metricName,
 		TransmitSketch:    true,
 		DeltaTransmission: cfg.DeltaTransmission,
 		DeltaThreshold:    cfg.DeltaThreshold,
 		Encoding:          precompute.EncodingProtoFull,
 		Temporality:       1, // delta
+		OmitResourceAttrs: sd.omitResourceAttrs,
+		GlobalAggregation: sd.globalAggregation,
 	}
 	pp := precompute.New(pcfg, sd.factory, sd.observer)
 

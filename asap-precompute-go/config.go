@@ -189,6 +189,84 @@ type PrecomputeConfig struct {
 	// (unspecified) and should default to 1 (delta) themselves;
 	// the Phase-2 OTel shim sets it to 1.
 	Temporality int32
+	// OmitResourceAttrs controls whether resource-scope attributes
+	// participate in series-key construction (and whether they are
+	// carried through to the emitted SketchEnvelope's ResourceLabels).
+	// The zero value (false) means "include resource attrs" — the
+	// runtime's default and the shape today's DDSketch processor
+	// expects: SeriesKey distinguishes (resource, dp-labels) tuples.
+	//
+	// The four other legacy processors (KLL, HLL, CountSketch,
+	// CountMinSketch) build their batch-mode series key from the
+	// data-point attributes ONLY: they ignore resource attrs in the
+	// key AND emit output into a freshly-appended ResourceMetrics
+	// with an empty Resource. Setting this knob to true makes the
+	// runtime mirror that behavior: cross-resource observations with
+	// the same dp-labels collapse into a single series, and the
+	// emitted SketchEnvelope.ResourceLabels is empty.
+	//
+	// This is part of the Phase-2 parity gate (ADR-0002 "Behavior
+	// preservation"); shims that wrap the legacy processors set this
+	// to true to keep wire-bytes identical to the pre-refactor
+	// emitter. Naming note: the field is stated as `Omit*` rather
+	// than `Include*` so the zero value is the today-correct default
+	// and existing PrecomputeConfig literals don't need to change.
+	OmitResourceAttrs bool
+	// GlobalAggregation collapses every admitted observation into a
+	// single "global" series — both resource attrs and dp-labels are
+	// ignored when constructing SeriesKey, and both are stripped from
+	// the emitted SketchEnvelope. Used by the legacy CountSketch
+	// processor when AggregateBy is empty (its `buildPartitionKey`
+	// returns the literal string "global", driving every observation
+	// into one shared sketch). When this is true the
+	// IncludeResourceAttrs flag is also implicitly false.
+	//
+	// Defaults to false; only the CountSketch shim sets it to true.
+	GlobalAggregation bool
+}
+
+// SeriesKeyFor builds the canonical series key for an Observation,
+// honoring the OmitResourceAttrs and GlobalAggregation flags.
+//
+// This is the single call site used by both the window's observe
+// path and the serializeSeries flush path so the two stay aligned —
+// a divergence between them would silently mis-route or duplicate
+// envelopes.
+//
+// Encoding rules:
+//   - GlobalAggregation=true   → key = "<aggID>|||" (one global bucket)
+//   - OmitResourceAttrs=true   → resource segment is empty, dp segment
+//     is the AttributesKey of obs.Labels (legacy KLL/HLL/CMS shape)
+//   - default                  → resource and dp segments both populated
+//     (today's DDSketch shape)
+func (cfg *PrecomputeConfig) SeriesKeyFor(obs *Observation) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.GlobalAggregation {
+		return SeriesKey(cfg.AggID, nil, nil, nil)
+	}
+	if cfg.OmitResourceAttrs {
+		return SeriesKey(cfg.AggID, nil, obs.Labels, cfg.AggregateBy)
+	}
+	return SeriesKey(cfg.AggID, obs.ResourceLabels, obs.Labels, cfg.AggregateBy)
+}
+
+// SeriesKeyForEntry rebuilds the same key from a series entry's
+// stored labels. Used by serializeSeries on flush; the invariant is
+// that for a given config and an observation that produced an entry,
+// SeriesKeyFor(obs) == SeriesKeyForEntry(entry).
+func (cfg *PrecomputeConfig) SeriesKeyForEntry(resourceLabels, labels []KeyValue) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.GlobalAggregation {
+		return SeriesKey(cfg.AggID, nil, nil, nil)
+	}
+	if cfg.OmitResourceAttrs {
+		return SeriesKey(cfg.AggID, nil, labels, cfg.AggregateBy)
+	}
+	return SeriesKey(cfg.AggID, resourceLabels, labels, cfg.AggregateBy)
 }
 
 // Encoding (the type and its constants/String method) is declared in
