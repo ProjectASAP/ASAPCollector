@@ -94,6 +94,35 @@ doc (§5.1, §6.2, §6.3). The summary contract:
   metric output schema, and config keys remain identical;
   config-file changes are not required for existing deployments.
 
+### Test API contract — promote private methods to public on the shim
+
+Today's per-processor tests directly call private methods that
+the shim model would otherwise hide:
+
+- `proc.processBatch(ctx, md) (pmetric.Metrics, error)` — DDSketch tests
+- `proc.processMetrics(ctx, md) (pmetric.Metrics, error)` — CountSketch / CMS tests
+- `proc.flushWindow(ctx) error` — DDSketch / KLL / HLL tests
+
+To avoid either rewriting all 5 processor test files or adding
+private wrapper methods that conflict with `MutatesData: false`,
+the shim **promotes these to public methods** with the same
+semantics:
+
+| Public method | Semantics |
+| --- | --- |
+| `Shim.ProcessBatch(ctx, md) (pmetric.Metrics, error)` | Decode input → `Precompute.Observe` each → `Precompute.Tick` (batch flushes per call) → `Adapter.Encode` → return synthesized output. Does NOT touch `nextConsumer`. Caller decides what to do with the output. |
+| `Shim.ProcessMetrics(ctx, md) (pmetric.Metrics, error)` | CountSketch / CMS naming variant of `ProcessBatch`. Same semantics. |
+| `Shim.FlushWindow(ctx) error` | Force `Precompute.Tick(now)`, encode envelopes, and forward via `nextConsumer.ConsumeMetrics`. No-op if no closed windows have data. |
+
+Each is ~10 LoC of delegation. The methods are explicitly
+documented as "test-friendly hooks; production callers should use
+`ConsumeMetrics`." Tests adapt by capitalizing the method name
+(sed-style rename); no test logic changes.
+
+This keeps `Capabilities() = {MutatesData: false}` honest because
+`ProcessBatch` returns a fresh `pmetric.Metrics` rather than
+mutating input md in place.
+
 ### Performance contract
 
 - **Go (Phase 2):** per-observation `Observe` latency p99 must

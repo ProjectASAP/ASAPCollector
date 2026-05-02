@@ -215,6 +215,38 @@ generic shim parameterized by sketch type. Phase 2 keeps them
 separate for OCB build-config compatibility (`builder-config.yaml`
 references each processor's package path).
 
+### Public test-friendly methods on the shim
+
+Today's tests directly call private methods that the shim model
+would otherwise hide. To avoid rewriting all 5 processor test
+files or adding incompatible private wrappers, the shim
+**promotes these to public methods** (per ADR-0002):
+
+```go
+// ProcessBatch decodes input, observes into Precompute, ticks
+// once (batch flushes per input batch), encodes envelopes, and
+// returns the synthesized output. Does NOT touch nextConsumer.
+// Useful as a test-friendly hook; production callers should use
+// ConsumeMetrics, which routes through the same pipeline plus
+// the downstream forwarding.
+func (p *ddsketchProcessor) ProcessBatch(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error)
+
+// ProcessMetrics is the CountSketch / CMS naming variant of
+// ProcessBatch — same semantics, different historical name.
+func (p *countSketchProcessor) ProcessMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error)
+
+// FlushWindow forces a tick on the precompute runtime and forwards
+// the synthesized output via nextConsumer.ConsumeMetrics. No-op
+// if no closed windows have data.
+func (p *ddsketchProcessor) FlushWindow(ctx context.Context) error
+```
+
+Tests adapt by capitalizing the method name (`processBatch` →
+`ProcessBatch`, etc.) — sed-style rename, no logic changes. This
+keeps `Capabilities() = {MutatesData: false}` honest because
+`ProcessBatch` returns a fresh `pmetric.Metrics` rather than
+mutating input md in place.
+
 ## Phase 2 work breakdown
 
 Sequenced for incremental verification — each step is shippable
