@@ -263,7 +263,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 							continue
 						}
 						bs := getOrCreate(metric.Name(), metric.Unit(), dp.Attributes())
-						bs.sketch.InsertValue(dp.DoubleValue())
+						bs.sketch.UpdateValue(dp.DoubleValue())
 						bs.count++
 					}
 				case pmetric.MetricTypeHLLSketch:
@@ -320,7 +320,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 			bs.attrs.CopyTo(dp.Attributes())
 			dp.SetTimestamp(now)
 			dp.SetCount(bs.count)
-			dp.SetCardinality(uint64(bs.sketch.EstimateCardinality()))
+			dp.SetCardinality(uint64(bs.sketch.Estimate()))
 			dp.SetSketch(payload)
 			dp.SetEncoding(encodingTag)
 			dp.SetPrecision(uint32(hll.HLLPrecision))
@@ -335,7 +335,7 @@ func (p *hllProcessor) processBatch(md pmetric.Metrics) error {
 			dp := m.Gauge().DataPoints().AppendEmpty()
 			bs.attrs.CopyTo(dp.Attributes())
 			dp.SetTimestamp(now)
-			dp.SetDoubleValue(float64(bs.sketch.EstimateCardinality()))
+			dp.SetDoubleValue(float64(bs.sketch.Estimate()))
 		}
 	}
 	return nil
@@ -500,7 +500,7 @@ func (p *hllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 			}
 			mw.series[attrKey] = series
 		}
-		series.sketch.InsertValue(dp.DoubleValue())
+		series.sketch.UpdateValue(dp.DoubleValue())
 	}
 }
 
@@ -594,7 +594,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 									series.attrs.CopyTo(dp.Attributes())
 									dp.SetTimestamp(now)
 									dp.SetCount(0)
-									dp.SetCardinality(uint64(series.sketch.EstimateCardinality()))
+									dp.SetCardinality(uint64(series.sketch.Estimate()))
 									dp.SetSketch(payload)
 									dp.SetEncoding(pmetric.HLLSketchEncodingDelta)
 									dp.SetPrecision(uint32(hll.HLLPrecision))
@@ -610,7 +610,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 									series.attrs.CopyTo(dp.Attributes())
 									dp.SetTimestamp(now)
 									dp.SetCount(0)
-									dp.SetCardinality(uint64(series.sketch.EstimateCardinality()))
+									dp.SetCardinality(uint64(series.sketch.Estimate()))
 									dp.SetSketch(payload)
 									dp.SetEncoding(pmetric.HLLSketchEncodingProto)
 									dp.SetPrecision(uint32(hll.HLLPrecision))
@@ -631,7 +631,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 								series.attrs.CopyTo(dp.Attributes())
 								dp.SetTimestamp(now)
 								dp.SetCount(0)
-								dp.SetCardinality(uint64(series.sketch.EstimateCardinality()))
+								dp.SetCardinality(uint64(series.sketch.Estimate()))
 								dp.SetSketch(payload)
 								dp.SetEncoding(encodingTag)
 								dp.SetPrecision(uint32(hll.HLLPrecision))
@@ -657,7 +657,7 @@ func (p *hllProcessor) flushWindow(ctx context.Context) error {
 					dps = append(dps, struct {
 						attrs pcommon.Map
 						val   float64
-					}{series.attrs, float64(series.sketch.EstimateCardinality())})
+					}{series.attrs, float64(series.sketch.Estimate())})
 					series.attrs = pcommon.Map{}
 					p.seriesPool.Put(series)
 				}

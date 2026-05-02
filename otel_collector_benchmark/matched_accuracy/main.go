@@ -140,7 +140,7 @@ func runDDSketch(stream []float64) (float64, int64, int, func(float64) float64) 
 	d := ddsketch.NewDDSketch(0.01)
 	t0 := time.Now()
 	for _, v := range stream {
-		d.Add(v)
+		d.Update(v)
 	}
 	insertNs := float64(time.Since(t0).Nanoseconds()) / float64(len(stream))
 
@@ -154,7 +154,7 @@ func runDDSketch(stream []float64) (float64, int64, int, func(float64) float64) 
 	}
 
 	q := func(p float64) float64 {
-		v, _ := d.GetValueAtQuantile(p)
+		v, _ := d.Quantile(p)
 		return v
 	}
 	return insertNs, heap, len(wire), q
@@ -172,7 +172,7 @@ func runKLL(stream []float64) (float64, int64, int, func(float64) float64) {
 	k := kll.InitKLL(200)
 	t0 := time.Now()
 	for _, v := range stream {
-		k.Insert(v)
+		k.Update(v)
 	}
 	insertNs := float64(time.Since(t0).Nanoseconds()) / float64(len(stream))
 
