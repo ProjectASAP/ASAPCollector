@@ -100,11 +100,9 @@ func TestEncode_MetricSuffixAppended(t *testing.T) {
 	envs := []*precompute.SketchEnvelope{
 		{
 			SketchType: precompute.SketchTypeDDSketch,
-			Labels: []precompute.KeyValue{
-				{Key: "_asap_metric_name", Value: "http.duration"},
-			},
-			Payload:  []byte{1},
-			Encoding: precompute.EncodingProtoFull,
+			MetricName: "http.duration",
+			Payload:    []byte{1},
+			Encoding:   precompute.EncodingProtoFull,
 		},
 	}
 	md, err := Encode(envs, &AdapterConfig{MetricSuffix: "_ddsketch"})
@@ -122,11 +120,9 @@ func TestEncode_MetricNameOverrides(t *testing.T) {
 	envs := []*precompute.SketchEnvelope{
 		{
 			SketchType: precompute.SketchTypeDDSketch,
-			Labels: []precompute.KeyValue{
-				{Key: "_asap_metric_name", Value: "ignored"},
-			},
-			Payload:  []byte{1},
-			Encoding: precompute.EncodingProtoFull,
+			MetricName: "ignored",
+			Payload:    []byte{1},
+			Encoding:   precompute.EncodingProtoFull,
 		},
 	}
 	md, err := Encode(envs, &AdapterConfig{MetricName: "explicit_override", MetricSuffix: "_x"})

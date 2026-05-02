@@ -29,6 +29,14 @@ type seriesEntry struct {
 	// LastSeenMs tracks the most recent observation timestamp;
 	// used for OnOverflowEvictOldest.
 	LastSeenMs uint64
+	// Count is the total observation count accumulated for this
+	// series in the active window. Incremented once per scalar
+	// observation; envelope-valued observations contribute the
+	// upstream envelope's Count when present (so chained pre-
+	// aggregation preserves the running sample count). Copied into
+	// SketchEnvelope.Count at flush time so the OTel adapter can
+	// set dp.SetCount().
+	Count uint64
 }
 
 // windowState is the per-Precompute window manager. Tumbling-only
@@ -166,6 +174,7 @@ func (w *windowState) observe(
 	if err := observer.Observe(entry.Sketch, obs.Value); err != nil {
 		return fmt.Errorf("sketch observe: %w", err)
 	}
+	entry.Count++
 	return nil
 }
 
@@ -251,6 +260,11 @@ func (w *windowState) observeEnvelope(
 	default:
 		return fmt.Errorf("precompute: unsupported envelope encoding %s", env.Encoding)
 	}
+	// Carry the upstream envelope's observation count into our
+	// running entry so the next emission reflects the merged total.
+	// Envelopes with Count==0 (older senders that don't populate
+	// the field) contribute zero, which is a no-op.
+	entry.Count += env.Count
 	return nil
 }
 

@@ -173,6 +173,22 @@ type PrecomputeConfig struct {
 	MaxSeries uint64
 	// OnOverflow controls behavior when MaxSeries is exceeded.
 	OnOverflow OnOverflow
+	// MetricName is the metric name to stamp onto every
+	// SketchEnvelope emitted by Tick. Mirrors today's per-processor
+	// MetricName config knob (see e.g. ddsketchprocessor.Config.
+	// MetricName). The runtime copies it verbatim into
+	// SketchEnvelope.MetricName so Adapter.Encode can set
+	// pmetric.Metric.Name() without a side-channel label hack.
+	MetricName string
+	// Temporality is the OTel aggregation-temporality enum to stamp
+	// onto every SketchEnvelope emitted by Tick: 0 = unspecified,
+	// 1 = delta, 2 = cumulative. Stored as int32 (not
+	// pmetric.AggregationTemporality) to keep the runtime
+	// host-neutral. Today's processors emit delta sums, so adapters
+	// that don't set this explicitly will see the zero value
+	// (unspecified) and should default to 1 (delta) themselves;
+	// the Phase-2 OTel shim sets it to 1.
+	Temporality int32
 }
 
 // Encoding (the type and its constants/String method) is declared in

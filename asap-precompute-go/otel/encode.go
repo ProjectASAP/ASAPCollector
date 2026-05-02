@@ -17,13 +17,19 @@ import (
 // ResourceLabels group produces one ResourceMetrics; inside it, a
 // single ScopeMetrics holds one Metric per envelope. Metric naming
 // follows AdapterConfig.metricNameFor: cfg.MetricName overrides
-// entirely; otherwise the envelope's metric-name (carried in the
-// last KeyValue with key "_asap_metric_name", set by the runtime
-// when wrapping back) plus cfg.MetricSuffix is used. Phase 2 keeps
-// metric naming simple — the runtime currently does NOT thread an
-// explicit Metric name through SketchEnvelope (see TODO below);
-// the encode path falls back to the envelope's AggID stringified
-// as a placeholder name.
+// entirely; otherwise the envelope's MetricName (set by the runtime
+// from PrecomputeConfig.MetricName at flush time) plus
+// cfg.MetricSuffix is used. If neither is set the encode path
+// falls back to "asap.agg_<id>" so downstream consumers always see
+// a non-empty name.
+//
+// Envelopes carry an explicit MetricName field as of step 2.4b —
+// the labels list no longer contains the "_asap_metric_name"
+// side-channel key. Likewise SketchEnvelope.Count and
+// SketchEnvelope.AggregationTemporality are typed fields (not
+// labels) and the encode path reads them directly when populating
+// the output data point's count / temporality where the chosen
+// pmetric data variant supports them.
 //
 // Phase 2 limitation: only TransmitSketch=true is supported here.
 // Quantile-output mode (TransmitSketch=false → emit gauge per
@@ -130,22 +136,20 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 }
 
 // metricNameFor picks the output Metric.Name. cfg.MetricName overrides
-// entirely; otherwise the envelope's Labels are searched for the
-// well-known runtime-supplied "_asap_metric_name" key — that's how
-// the upstream Precompute threads the original metric name back into
-// the encode boundary. If neither is set, a stable placeholder
+// entirely; otherwise the envelope's typed MetricName field (set by
+// the runtime from PrecomputeConfig.MetricName at flush time) plus
+// cfg.MetricSuffix is used. If neither is set, a stable placeholder
 // "asap.agg_<id>" is used so downstream consumers always see a
 // non-empty name.
 //
-// TODO(phase-2-followup): SketchEnvelope should carry an explicit
-// MetricName field; threading it through Labels is a Phase-2-bootstrap
-// shortcut so the existing OTel processors can preserve their
-// per-config MetricSuffix behavior on the encode path.
+// As of step 2.4b the envelope carries MetricName as a typed field,
+// so this function no longer searches Labels for the legacy
+// "_asap_metric_name" side-channel key.
 func metricNameFor(env *precompute.SketchEnvelope, cfg *AdapterConfig) string {
 	if cfg != nil && cfg.MetricName != "" {
 		return cfg.MetricName
 	}
-	base := lookupLabel(env.Labels, "_asap_metric_name")
+	base := env.MetricName
 	if base == "" {
 		base = fmt.Sprintf("asap.agg_%d", env.AggID)
 	}
@@ -170,17 +174,6 @@ func canonicalLabelsKey(kvs []precompute.KeyValue) string {
 		b.WriteByte(';')
 	}
 	return b.String()
-}
-
-// lookupLabel returns the value for the given key in kvs, or the
-// empty string if missing.
-func lookupLabel(kvs []precompute.KeyValue, key string) string {
-	for _, kv := range kvs {
-		if kv.Key == key {
-			return kv.Value
-		}
-	}
-	return ""
 }
 
 // hostNeutralToDDSketchEncoding maps precompute.Encoding back to the

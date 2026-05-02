@@ -185,3 +185,136 @@ func TestPrecompute_StatsAccountsObservations(t *testing.T) {
 		t.Errorf("active series: want 1, got %d", snap.ActiveSeries)
 	}
 }
+
+// TestPrecompute_EnvelopeCarriesMetricNameCountTemporality confirms
+// the runtime threads PrecomputeConfig.MetricName /
+// PrecomputeConfig.Temporality and the per-window observation count
+// onto each emitted SketchEnvelope. This is the contract the OTel
+// adapter relies on after step 2.4b to drop the legacy
+// "_asap_metric_name" label hack.
+func TestPrecompute_EnvelopeCarriesMetricNameCountTemporality(t *testing.T) {
+	t.Parallel()
+	cfg := &PrecomputeConfig{
+		AggID:       42,
+		SketchType:  SketchTypeDDSketch,
+		Mode:        Tumbling,
+		Window:      WindowSpec{Size: 10 * time.Second},
+		MetricName:  "http.server.duration",
+		Temporality: 1, // delta
+	}
+	p := New(cfg, newFakeFactory(), &fakeObserver{}).(*precompute)
+
+	// Three observations on the same series → entry.Count must be 3.
+	for i := 0; i < 3; i++ {
+		if err := p.Observe(&Observation{
+			TimestampMs: 1_000 + uint64(i),
+			Metric:      "http.server.duration",
+			Labels:      []KeyValue{{Key: "method", Value: "GET"}},
+			Value:       FloatValue(1),
+		}); err != nil {
+			t.Fatalf("observe: %v", err)
+		}
+	}
+
+	envelopes := p.Tick(10_000)
+	if len(envelopes) != 1 {
+		t.Fatalf("envelopes: want 1, got %d", len(envelopes))
+	}
+	env := envelopes[0]
+	if env.MetricName != "http.server.duration" {
+		t.Errorf("MetricName: want http.server.duration, got %q", env.MetricName)
+	}
+	if env.Count != 3 {
+		t.Errorf("Count: want 3, got %d", env.Count)
+	}
+	if env.AggregationTemporality != 1 {
+		t.Errorf("AggregationTemporality: want 1 (delta), got %d", env.AggregationTemporality)
+	}
+}
+
+// TestPrecompute_EnvelopeFieldsRespectZeroConfig confirms that when
+// MetricName / Temporality are not set on PrecomputeConfig, the
+// emitted envelope mirrors the zero values rather than synthesizing
+// defaults. The adapter layer is the right place to default
+// Temporality to delta — keeping the runtime free of OTel-specific
+// defaulting upholds ADR-0002's host-neutral invariant.
+func TestPrecompute_EnvelopeFieldsRespectZeroConfig(t *testing.T) {
+	t.Parallel()
+	cfg := &PrecomputeConfig{
+		AggID:      1,
+		SketchType: SketchTypeDDSketch,
+		Mode:       Tumbling,
+		Window:     WindowSpec{Size: 10 * time.Second},
+		// MetricName and Temporality intentionally left zero.
+	}
+	p := New(cfg, newFakeFactory(), &fakeObserver{}).(*precompute)
+	if err := p.Observe(&Observation{
+		TimestampMs: 1_000,
+		Metric:      "m",
+		Value:       FloatValue(1),
+	}); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	envelopes := p.Tick(10_000)
+	if len(envelopes) != 1 {
+		t.Fatalf("envelopes: want 1, got %d", len(envelopes))
+	}
+	env := envelopes[0]
+	if env.MetricName != "" {
+		t.Errorf("MetricName: want empty, got %q", env.MetricName)
+	}
+	if env.AggregationTemporality != 0 {
+		t.Errorf("AggregationTemporality: want 0 (unspecified), got %d", env.AggregationTemporality)
+	}
+	if env.Count != 1 {
+		t.Errorf("Count: want 1, got %d", env.Count)
+	}
+}
+
+// hllStub is a compile-only test double that confirms a Sketch impl
+// can satisfy CardinalitySketch. The shim refactor in steps 2.5–2.9
+// will wire real sketchlib-go sketches; this stub locks in the
+// trait-shape contract today.
+type hllStub struct {
+	fakeSketch
+}
+
+func (h *hllStub) EstimateCardinality() float64 { return 0 }
+
+// ddsketchStub locks in the QuantileSketch shape.
+type ddsketchStub struct {
+	fakeSketch
+}
+
+func (d *ddsketchStub) Quantile(q float64) float64 { return 0 }
+
+// cmsStub locks in the FrequencySketch shape.
+type cmsStub struct {
+	fakeSketch
+}
+
+func (c *cmsStub) EstimateCount(key []byte) float64 { return 0 }
+func (c *cmsStub) TopK(k int) []FrequencyEntry      { return nil }
+
+// Compile-time assertions that the stubs satisfy each sub-interface.
+// Failing assertion = compile error, no need for a runtime check.
+var (
+	_ Sketch            = (*hllStub)(nil)
+	_ CardinalitySketch = (*hllStub)(nil)
+	_ Sketch            = (*ddsketchStub)(nil)
+	_ QuantileSketch    = (*ddsketchStub)(nil)
+	_ Sketch            = (*cmsStub)(nil)
+	_ FrequencySketch   = (*cmsStub)(nil)
+)
+
+// TestSketchSubtraitAssertion is a smoke test that exercises the
+// sub-trait type-assertion adapters will use at the encode boundary.
+func TestSketchSubtraitAssertion(t *testing.T) {
+	t.Parallel()
+	var s Sketch = &hllStub{}
+	cs, ok := s.(CardinalitySketch)
+	if !ok {
+		t.Fatal("hllStub should satisfy CardinalitySketch")
+	}
+	_ = cs.EstimateCardinality()
+}
