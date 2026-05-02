@@ -53,6 +53,15 @@ type Config struct {
 	// if this is set.
 	DeltaTransmission bool `mapstructure:"delta_transmission"`
 
+	// Seed is the optional explicit RNG seed for KLL's compaction coin.
+	// When nil (default), the processor uses sketchlib-go's time-seeded
+	// constructor — the production behavior. When set to a non-nil value,
+	// the processor instead uses NewKLLSketchWithSeed so two processors
+	// fed the same input produce byte-identical sketch state. This is
+	// only set in test contexts (parity harness, deterministic-replay
+	// fixtures); production deployments leave it nil.
+	Seed *int64 `mapstructure:"seed"`
+
 	suffixes map[float64]string // suffix to attach to output quantiles, e.g. _p50, _p99, ...
 }
 

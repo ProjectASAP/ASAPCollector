@@ -223,6 +223,22 @@ type PrecomputeConfig struct {
 	//
 	// Defaults to false; only the CountSketch shim sets it to true.
 	GlobalAggregation bool
+
+	// EmitWindowStats appends two operator-visibility attributes onto
+	// every emitted SketchEnvelope's Labels at flush time:
+	//   - "sample_count"            (entry.Count, the number of admitted
+	//                                observations contributing to the window)
+	//   - "window_duration_seconds" (Window.Size, in whole seconds)
+	//
+	// These mirror the legacy countsketchprocessor's per-data-point
+	// attributes; the backend ignores them for routing, they're just
+	// observability hints. The runtime omits them by default because
+	// the other 4 sketch processors (DDSketch / KLL / HLL / CMS) do
+	// not emit them, and adding them unconditionally would break
+	// byte-parity for those four. CountSketch's parity harness flips
+	// this to true so its envelope shape matches the legacy emission
+	// without a diff-side projection-strip.
+	EmitWindowStats bool
 }
 
 // SeriesKeyFor builds the canonical series key for an Observation,

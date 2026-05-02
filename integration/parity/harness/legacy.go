@@ -3,7 +3,6 @@ package harness
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -92,6 +91,11 @@ func RunLegacyPath(input pmetric.Metrics, cfg RuntimeConfig) (map[string]*Legacy
 		c.EnableSelfMonitoring = false
 		c.LabelMatchers = nil
 		c.DeltaTransmission = false
+		// Pin the same RNG seed both pipelines use so KLL compaction is
+		// byte-deterministic. Production deployments leave Seed nil,
+		// preserving today's time-seeded behavior.
+		seed := HarnessKLLSeed
+		c.Seed = &seed
 		sink := new(consumertest.MetricsSink)
 		set := newProcessorSettings(component.MustNewType("KLL"))
 		proc, err := factory.CreateMetrics(ctx, set, c, sink)
@@ -139,15 +143,17 @@ func RunLegacyPath(input pmetric.Metrics, cfg RuntimeConfig) (map[string]*Legacy
 
 	// CountSketch — runs in window mode because the legacy
 	// processor has no batch path that produces typed
-	// CountSketch envelopes. We drive a synchronous flush by
-	// using an absurdly large window then explicitly invoking
-	// the processor's emit-and-reset entry point via Shutdown,
-	// which the Start/Shutdown hooks plumb through.
+	// CountSketch envelopes. We rely on Shutdown to drive the
+	// final flush; the WindowDuration is set to match
+	// RuntimeConfig.WindowSize so both pipelines stamp the
+	// same window_duration_seconds attr (now part of the byte-
+	// parity comparison). Test execution is sub-second, so the
+	// internal ticker never fires before Shutdown.
 	{
 		factory := csproc.NewFactory()
 		c := factory.CreateDefaultConfig().(*csproc.Config)
 		c.Mode = csproc.ModeWindow
-		c.WindowDuration = 24 * time.Hour
+		c.WindowDuration = cfg.WindowSize
 		c.Epsilon = cfg.CountSketchEps
 		c.Delta = cfg.CountSketchDelta
 		c.TransmitSketch = true
@@ -183,7 +189,7 @@ func RunLegacyPath(input pmetric.Metrics, cfg RuntimeConfig) (map[string]*Legacy
 		factory := cmsproc.NewFactory()
 		c := factory.CreateDefaultConfig().(*cmsproc.Config)
 		c.Mode = cmsproc.ModeWindow
-		c.WindowDuration = 24 * time.Hour
+		c.WindowDuration = cfg.WindowSize
 		c.MetricName = MetricCMS
 		c.Rows = cfg.CMSRows
 		c.Columns = cfg.CMSCols

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync/atomic"
+	"time"
 )
 
 // Sketch is the narrow interface the Layer-3 runtime needs from a
@@ -368,12 +370,28 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 	if payload == nil {
 		return nil, nil
 	}
+	labels := SeriesAttrs(entry.Labels, cfg.AggregateBy)
+	if cfg.EmitWindowStats {
+		// Append the two operator-visibility attrs the legacy
+		// countsketchprocessor stamps onto each emitted data point
+		// (see countsketchprocessor/processor.go ~line 452). Adding
+		// them at the envelope-Labels layer makes them flow through
+		// otel/encode.go::KeyValuesToAttributes naturally, so
+		// runtime and legacy data points carry the same attribute
+		// set without a diff-side projection-strip. Other sketches
+		// leave EmitWindowStats=false; their parity stays untouched.
+		windowSeconds := uint64(cfg.Window.Size / time.Second)
+		labels = append(labels,
+			KeyValue{Key: "sample_count", Value: strconv.FormatUint(entry.Count, 10)},
+			KeyValue{Key: "window_duration_seconds", Value: strconv.FormatUint(windowSeconds, 10)},
+		)
+	}
 	return &SketchEnvelope{
 		SchemaVersion:          1,
 		SketchType:             cfg.SketchType,
 		AggID:                  cfg.AggID,
 		ResourceLabels:         entry.ResourceLabels,
-		Labels:                 SeriesAttrs(entry.Labels, cfg.AggregateBy),
+		Labels:                 labels,
 		WindowStartMs:          rng[0],
 		WindowEndMs:            rng[1],
 		Encoding:               enc,

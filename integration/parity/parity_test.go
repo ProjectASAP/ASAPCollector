@@ -44,23 +44,12 @@ func TestParity_AllSketches(t *testing.T) {
 		{
 			name:   "KLL",
 			metric: harness.MetricKLL,
-			// KLL byte-parity is gated on a sketchlib-go change
-			// outside this PR's scope: KLLSketch's compaction
-			// uses a randomized coin seeded from `time.Now()`
-			// (see sketchlib-go/sketches/KLL/kll.go::newCoin),
-			// and the legacy processor + runtime each construct
-			// independent KLLSketches with independent seeds.
-			// The resulting sketch state diverges by a few
-			// items per series, so the wire bytes never match
-			// even when series-key + metric-name shapes are
-			// aligned. Surfacing this as a deliberate SKIP so
-			// the rest of the harness still gates the merge.
-			// Tracking issue: sketchlib-go #N (deterministic-
-			// coin API) and ASAPCollector follow-up #1.
-			skipReason: "sketchlib-go nondeterminism: KLLSketch " +
-				"compaction coin is seeded from time.Now() and the " +
-				"two pipelines build independent sketches; byte-parity " +
-				"requires a deterministic-coin API in sketchlib-go",
+			// KLL byte-parity is now achieved end-to-end:
+			// sketchlib-go's NewKLLSketchWithSeed plus the
+			// kllprocessor's Seed config knob make compaction
+			// deterministic when both pipelines use the same
+			// seed. The harness pins HarnessKLLSeed=42 on both
+			// sides — see harness/runtime.go and harness/legacy.go.
 		},
 		{
 			name:   "HLL",
@@ -109,11 +98,7 @@ func TestParity_DDSketch(t *testing.T) {
 }
 
 func TestParity_KLL(t *testing.T) {
-	runIsolated(t, "KLL", harness.MetricKLL,
-		"sketchlib-go nondeterminism: KLLSketch compaction coin is "+
-			"seeded from time.Now() and the two pipelines build "+
-			"independent sketches; byte-parity requires a "+
-			"deterministic-coin API in sketchlib-go")
+	runIsolated(t, "KLL", harness.MetricKLL, "")
 }
 
 func TestParity_HLL(t *testing.T) {

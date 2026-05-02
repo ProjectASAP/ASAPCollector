@@ -109,13 +109,20 @@ func decodeDDSketchPortable(b []byte) (*ddsketch.DDSketch, error) {
 // ===== KLL wrapper =====
 
 type kllWrapper struct {
-	sk *kll.KLLSketch
-	k  int
+	sk   *kll.KLLSketch
+	k    int
+	seed int64
 }
 
-func newKLLWrapper(k int) *kllWrapper {
-	sk, _ := kll.NewKLLSketch(k)
-	return &kllWrapper{sk: sk, k: k}
+// newKLLWrapper builds a deterministic KLL via NewKLLSketchWithSeed so two
+// instances fed identical input produce byte-identical SerializePortable
+// output. The legacy KLL processor's sketchlib-go default constructor seeds
+// from time.Now() — see the parallel sketchlib-go fix that adds the seedable
+// API. Both paths use the same fixed seed (HarnessKLLSeed = 42), so byte
+// parity holds end-to-end.
+func newKLLWrapper(k int, seed int64) *kllWrapper {
+	sk, _ := kll.NewKLLSketchWithSeed(k, seed)
+	return &kllWrapper{sk: sk, k: k, seed: seed}
 }
 
 func (w *kllWrapper) update(v float64) { w.sk.Update(v) }
@@ -148,7 +155,10 @@ func (w *kllWrapper) Merge(other precompute.Sketch) error {
 }
 
 func (w *kllWrapper) Reset() {
-	w.sk, _ = kll.NewKLLSketch(w.k)
+	// Re-seed deterministically — sketchlib-go's seeded sketch already
+	// re-seeds itself in Clear(); rebuilding from scratch with the same
+	// seed keeps the contract explicit at the wrapper layer too.
+	w.sk, _ = kll.NewKLLSketchWithSeed(w.k, w.seed)
 }
 
 // ===== HLL wrapper =====

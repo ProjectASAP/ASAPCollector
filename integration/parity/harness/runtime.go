@@ -11,6 +11,15 @@ import (
 	"github.com/ProjectASAP/sketchlib-go/common"
 )
 
+// HarnessKLLSeed is the fixed RNG seed used by both the runtime KLL
+// wrapper and the legacy kllprocessor in the parity harness. KLL's
+// compaction is randomized; without a seed both pipelines build
+// independent sketches with independent random streams and the wire
+// bytes diverge. Pinning the same seed on both sides makes the byte
+// comparison meaningful — see sketchlib-go PR #54
+// (NewKLLSketchWithSeed) and kllprocessor.Config.Seed.
+const HarnessKLLSeed int64 = 42
+
 // RuntimeConfig pins the per-sketch knobs that both paths share.
 // Keep these in lock-step with LegacyConfig so the byte payloads
 // align — divergence here is a config bug, not a runtime bug.
@@ -101,7 +110,7 @@ func RunRuntimePath(input pmetric.Metrics, cfg RuntimeConfig) (map[string]*Runti
 		{
 			name: MetricKLL, sk: precompute.SketchTypeKLLSketch,
 			factory: func() precompute.Sketch {
-				return newKLLWrapper(cfg.KLLK)
+				return newKLLWrapper(cfg.KLLK, HarnessKLLSeed)
 			},
 			observer: kllObserver{},
 			// Legacy kllprocessor.processBatch keys series by
@@ -136,6 +145,11 @@ func RunRuntimePath(input pmetric.Metrics, cfg RuntimeConfig) (map[string]*Runti
 			// "countsketch_partition" (not the input name).
 			globalAggregation: true,
 			outMetricName:     "countsketch_partition",
+			// Legacy countsketchprocessor stamps sample_count and
+			// window_duration_seconds onto each emitted DP for
+			// operator visibility; opt the runtime into the same
+			// shape so byte-parity holds at the envelope layer.
+			emitWindowStats: true,
 		},
 		{
 			name: MetricCMS, sk: precompute.SketchTypeCountMinSketch,
@@ -182,6 +196,12 @@ type sketchDescriptor struct {
 	// constructing the series key, and both fields are nil on the
 	// emitted envelope. CountSketch's batch-mode behavior.
 	globalAggregation bool
+	// emitWindowStats appends sample_count and window_duration_seconds
+	// onto the envelope's Labels at flush time so the runtime's
+	// emission matches the legacy countsketchprocessor's per-data-point
+	// attribute set without a diff-side projection-strip. Only
+	// CountSketch sets this true.
+	emitWindowStats bool
 }
 
 // runOnePrecompute wires up one Precompute, drives the input through
@@ -214,6 +234,7 @@ func runOnePrecompute(
 		Temporality:       1, // delta
 		OmitResourceAttrs: sd.omitResourceAttrs,
 		GlobalAggregation: sd.globalAggregation,
+		EmitWindowStats:   sd.emitWindowStats,
 	}
 	pp := precompute.New(pcfg, sd.factory, sd.observer)
 
