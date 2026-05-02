@@ -164,7 +164,7 @@ func (p *kllProcessor) processBatch(md pmetric.Metrics) error {
 		key := name + "::" + p.seriesKey(attrs)
 		bs := batched[key]
 		if bs == nil {
-			bs = &batchSeries{name: name, unit: unit, attrs: p.seriesAttrs(attrs), sketch: newKLLSketch(p.cfg.K)}
+			bs = &batchSeries{name: name, unit: unit, attrs: p.seriesAttrs(attrs), sketch: newKLLSketch(p.cfg)}
 			batched[key] = bs
 		}
 		return bs
@@ -420,7 +420,7 @@ func (p *kllProcessor) accumulateGaugeMetric(sw *scopeWindow, metric pmetric.Met
 			if series.sketch != nil {
 				series.sketch.Reset()
 			} else {
-				series.sketch = newKLLSketch(p.cfg.K)
+				series.sketch = newKLLSketch(p.cfg)
 			}
 			mw.series[attrKey] = series
 		}
@@ -454,7 +454,7 @@ func (p *kllProcessor) accumulateKLLSketchMetric(sw *scopeWindow, metric pmetric
 			if series.sketch != nil {
 				series.sketch.Reset()
 			} else {
-				series.sketch = newKLLSketch(p.cfg.K)
+				series.sketch = newKLLSketch(p.cfg)
 			}
 			mw.series[attrKey] = series
 		}
@@ -711,8 +711,22 @@ func (p *kllProcessor) sketchMetricName(base string) string {
 	return base + "_kll"
 }
 
-func newKLLSketch(k int) *kll.KLLSketch {
-	sketch, err := kll.NewKLLSketch(k)
+// newKLLSketch builds a fresh KLLSketch honoring cfg.Seed.
+//
+// When cfg.Seed is nil (the default and the production path), the
+// time-seeded constructor is used — preserving today's behavior.
+// When cfg.Seed is set (parity harness / deterministic-replay), the
+// seeded constructor is used so two processors fed identical input
+// produce byte-identical sketch state.
+func newKLLSketch(cfg *Config) *kll.KLLSketch {
+	if cfg.Seed != nil {
+		sketch, err := kll.NewKLLSketchWithSeed(cfg.K, *cfg.Seed)
+		if err != nil {
+			return nil
+		}
+		return sketch
+	}
+	sketch, err := kll.NewKLLSketch(cfg.K)
 	if err != nil {
 		return nil
 	}

@@ -683,7 +683,7 @@ func TestRoundTripIngestProtoSketch(t *testing.T) {
 
 	// Build a source KLL sketch with a known multiset and serialize it
 	// using the exact emit-side path (proto-encoded SketchEnvelope).
-	src := newKLLSketch(cfg.K)
+	src := newKLLSketch(cfg)
 	require.NotNil(t, src)
 	values := []float64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
 	for _, v := range values {
