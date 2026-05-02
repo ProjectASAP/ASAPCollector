@@ -332,11 +332,20 @@ impl StageCapabilities for DatabaseCaps {
             // Filter pushdown into the DB is fine.
             Filter { .. }           => 2.0,
             HashAggregate { .. }    => 2.0,
+            // Real DBs (ClickHouse `quantileTDigest`/`uniqHLL12`, TimescaleDB
+            // hyperloglog ext, etc.) can build, merge, and query sketches
+            // natively via SQL. The implementation isn't OTel-Collector-shaped,
+            // but a future emitter can lower OtelSketchBuild → SQL-side
+            // sketch aggregation. Admitted at high cost so the planner only
+            // picks Database for sketches when no other stage fits.
+            OtelSketchBuild { .. }  => 30.0,
+            SketchMerge { .. }      => 8.0,
+            SketchEval { .. }       => 3.0,
+            TopK { .. }              => 5.0,
             Passthrough             => 0.0,
             Exchange { .. }         => 0.0,
-            // Sketch ops aren't first-class on the DB side.
-            OtlpScan { .. } | PromSketchScan { .. } | PromSketchBuild { .. }
-            | OtelSketchBuild { .. } | SketchMerge { .. } | SketchEval { .. } | TopK { .. } =>
+            // Source-bound ops are pinned to their origin stage.
+            OtlpScan { .. } | PromSketchScan { .. } | PromSketchBuild { .. } =>
                 return None,
         })
     }
