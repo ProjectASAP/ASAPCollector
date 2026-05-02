@@ -697,7 +697,7 @@ The optimizer currently solves a simplified version:
 
 1. **Per-query greedy**: each query is optimised independently (no cross-query sharing yet)
 2. **Sketch selection**: `CostModelPlanner` scores all candidates per query, picks cheapest meeting accuracy SLA
-3. **Stage placement**: `physical::decide_sketch_placement()` checks `StageBudget::fits(SketchCapability)` per stage in order: Agent → Backend → QueryEngine
+3. **Stage placement**: `physical::decide_placement()` ranks every stage by `op_cost + exchange_penalty` and picks the minimum that fits the budget. See §9.4 for the capability-based cost model that replaced the older priority-list heuristic.
 4. **Precomputation**: `should_precompute(q)` checks `repeat_interval < latency_sla`
 
 Future work:
@@ -731,15 +731,134 @@ cheapest that meets the accuracy SLA.
 | CountSketch | `countsketch` | epsilon, delta |
 | CountMinSketch | `countmin` | rows, cols, metric_name |
 
-### Stage Assignment Rules
+### Stage Placement: Capability-Based Cost Model
 
-| QueryExpr node | Default stage | Deferral trigger |
-|---|---|---|
-| Source, Filter, Window, SketchAgg | **Agent** | Memory budget exceeded → Backend |
-| Partition, Merge, Dedup, Exact(Sum/Count/Min/Max) | **Backend** | Memory exceeded → Precompute |
-| TopK, HistogramQuantile, BinaryOp, PromQLSubquery | **Precompute** | — |
-| Exact(Avg) | **DB** | Non-mergeable — cannot distribute |
+Placement is decided by ranking, not by hardcoded `Placement::*` literals in
+the lowering. The framing: **every stage is, in principle, capable of running
+every node in the query tree.** The Controller's job is to *decide which stage
+runs which subset* — it is NOT to declare ops as inherently belonging to one
+stage. The only hard pins are source-bound ops (`OtlpScan`, `PromSketchScan`,
+`PromSketchBuild`, `DbQuery`), which are tied to the data origin and cannot
+be relocated.
 
-When an Agent sketch exceeds the memory budget, it is deferred to Backend.
-If it also exceeds the Backend budget, it moves to Precompute.  Every deferral
-is logged in `StagedPlan.deferral_log` for observability.
+#### `StageCapabilities` trait
+
+Each stage implements:
+
+```rust
+pub trait StageCapabilities {
+    fn placement(&self) -> Placement;
+    fn op_cost(&self, op: &PhysicalOp) -> Option<f64>;   // None = won't run; Some(cost) = ranked
+    fn fits(&self, op: &PhysicalOp, budget: &StageBudget) -> bool;
+}
+```
+
+There are five impls — `AgentCollectorCaps`, `BackendCollectorCaps`,
+`PromSketchStoreCaps`, `QueryEngineCaps`, `DatabaseCaps`. Each declares a
+cost for every `PhysicalOp` variant; cost is unitless and used only for
+ranking.
+
+#### Cost matrix
+
+| op | Agent | Backend | PromSketch | QueryEngine | Database |
+|---|---|---|---|---|---|
+| **OtlpScan** | 1 | – | – | – | – |
+| **PromSketchScan** | – | – | 1 | – | – |
+| **PromSketchBuild** | – | – | 1 | – | – |
+| **DbQuery** | – | – | – | – | 1 |
+| OtelSketchBuild | 1 | 5 | 10 | 20 | 30 |
+| SketchMerge | – | 1 | 5 | 5 | 8 |
+| HashAggregate | 20 | 1 | 10 | 5 | 2 |
+| Filter | 1 | 1 | 2 | 1 | 2 |
+| SketchEval | 20 | 15 | 3 | 1 | 3 |
+| TopK | 20 | 15 | 10 | 1 | 5 |
+| Passthrough / Exchange | 0 | 0 | 0 | 0 | 0 |
+
+`–` means `op_cost` returns `None` — the stage refuses the op. Source ops
+are pinned to their origin; `SketchMerge` on Agent has no cross-agent input
+to merge. Everything else has a finite cost on every stage.
+
+Plus a single global constant: **`EXCHANGE_COST_PENALTY = 10.0`**. Added to
+a candidate stage's cost when the input is on a different stage. This is
+what makes data-locality-sensitive ops (`Filter`, `Project`, `Passthrough`)
+co-locate with their child via cost ranking instead of via special-case
+rules in the lowering.
+
+#### `decide_placement` algorithm
+
+```rust
+pub fn decide_placement(
+    op: &PhysicalOp,
+    input_placement: Option<&Placement>,
+    constraints: &DeploymentConstraints,
+) -> Placement {
+    all_stage_caps()
+        .iter()
+        .filter_map(|caps| {
+            let cost = caps.op_cost(op)?;                              // ① capability filter
+            let placement = caps.placement();
+            if !caps.fits(op, constraints.budget_for(&placement)) {
+                return None;                                           // ② budget filter
+            }
+            let exchange_penalty = match input_placement {
+                Some(p) if *p != placement => EXCHANGE_COST_PENALTY,   // ③ locality penalty
+                _ => 0.0,
+            };
+            Some((placement, cost + exchange_penalty))
+        })
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))    // ④ min total cost
+        .map(|(p, _)| p)
+        .unwrap_or(Placement::QueryEngine)                                  // ⑤ always-available fallback
+}
+```
+
+Five steps:
+
+1. **Capability filter** — ask each stage `op_cost(op)`. `None` drops the stage.
+2. **Budget filter** — ask `caps.fits(op, budget_for(stage))`. Today only `OtelSketchBuild` actually checks budget (via `StageBudget::fits(SketchCapability)`); other ops always return `true`.
+3. **Locality penalty** — add `EXCHANGE_COST_PENALTY` when the input is on a different stage.
+4. **Min-cost** — pick the stage with the smallest `cost + penalty`. Stable tie-break by stage iteration order.
+5. **Fallback** — `QueryEngine` if every stage was filtered out (matches the legacy "QueryEngine is always available" behavior).
+
+#### How budget deferral falls out
+
+When an `OtelSketchBuild`'s sketch doesn't fit at Agent's memory budget,
+`fits` returns `false` and Agent drops out of the candidate set — Backend
+becomes the cheapest remaining stage and wins. Same path for Backend → next
+fallback. No special-case "deferral chain" code; same single `decide_placement`
+function as everything else.
+
+#### Worked example: `Partition { region } over SketchAgg(Cardinality)`
+
+1. **`SketchAgg` lowering** — build `OtelSketchBuild { HLL }`, input is `OtlpScan @ Agent`. `decide_placement` ranks:
+   - Agent: `1.0 + 0 = 1.0` (input co-located) ✓
+   - Backend: `5.0 + 10 = 15.0`, QueryEngine: `30.0`, Database: `40.0`
+   - Pick Agent.
+
+2. **`Partition` lowering** — child is `OtelSketchBuild`, so fold `aggregate_by = ["region"]` into it and construct `SketchMerge { HLL, group_by: ["region"] }`. Input now at Agent. `decide_placement`:
+   - Agent: `None` (Agent rejects SketchMerge)
+   - Backend: `1.0 + 10 = 11.0` ✓
+   - PromSketch: `15.0`, QueryEngine: `15.0`, Database: `18.0`
+   - Pick Backend.
+
+3. **Exchange insertion** — `insert_exchange_if_needed` notices the parent (Backend) and child (Agent) differ, wraps the child in an `Exchange { Otlp }` node.
+
+Final tree:
+
+```
+SketchMerge { HLL, group_by: ["region"] }       [Backend]
+  └─ Exchange { Otlp }                          [Backend]
+       └─ OtelSketchBuild { HLL,                [Agent]
+                            aggregate_by: ["region"] }
+            └─ OtlpScan                         [Agent]
+```
+
+Every placement comes from cost ranking — no hardcoded `Placement::*`
+literals in the `plan_node` arms.
+
+#### What's not implemented yet
+
+- **No global optimization.** Placement is greedy bottom-up: each node sees only its own op + the immediate child's placement. A smarter pass would consider whether sinking a parent into the child's stage saves more than it costs. `EXCHANGE_COST_PENALTY` is a local approximation.
+- **No cardinality-aware costs.** `op_cost` is unitless and ignores actual input volume / selectivity. `optimizer::DefaultCostModel` already has `raw_bytes_per_sec` + per-op factors but isn't wired in.
+
+Both are extensions to the cost function, not changes to the trait surface.
