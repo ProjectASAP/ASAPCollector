@@ -208,7 +208,7 @@ func TestWindowModeGaugeInput(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, sink.AllMetrics(), 1)
 
-	err = proc.flushWindow(context.Background())
+	err = proc.FlushWindow(context.Background())
 	require.NoError(t, err)
 
 	out := sink.AllMetrics()
@@ -252,7 +252,7 @@ func TestWindowModeMultipleBatches(t *testing.T) {
 	addGauge(md2, "latency", 30)
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), md2))
 
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 
 	// Window mode forwards inputs through (PR #211): 2 ConsumeMetrics +
 	// 1 flushWindow synthesized output = 3 sink entries. Scan all
@@ -310,7 +310,7 @@ func TestEmptyInput(t *testing.T) {
 	// is forwarded so chained processors observe the original payload.
 	assert.Len(t, sink.AllMetrics(), 1)
 
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 	// Empty window: flush emits nothing, so sink length is unchanged.
 	assert.Len(t, sink.AllMetrics(), 1)
 }
@@ -390,7 +390,7 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 	}
 	wg.Wait()
 
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 	// Window mode forwards inputs through (PR #211): 10 ConsumeMetrics +
 	// 1 flushWindow synthesized output = 11 sink entries. Concurrent
 	// ordering is non-deterministic; locate the synthesized
@@ -593,7 +593,7 @@ func TestAggregateByWithLabelMatchersWindowMode(t *testing.T) {
 	addDP(md, "us-east", "staging", 9999) // filtered out by label_matchers
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
 
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 
 	// Window mode forwards input through (PR #211): 1 ConsumeMetrics +
 	// 1 flushWindow synthesized output = 2 sink entries. Scan all
