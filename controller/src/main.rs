@@ -1268,6 +1268,7 @@ mod api_tests {
             delta_threshold:      0.0,
             enable_series_id:     false,
             series_id_ttl_secs:   300,
+            data_sink:            types::AgentDataSink::default(),
         };
         let yaml = generate_agent_config(&cfg, endpoint).unwrap();
 

@@ -66,11 +66,18 @@ pub enum PhysicalOp {
 
     // ── Sketch build ──────────────────────────────────────────────
     /// Build sketch via OTel Collector processor (tumbling window flush).
+    ///
+    /// `aggregate_by` is the GROUP BY key list pushed down from a parent
+    /// `Partition` node. Empty = single global sketch. Non-empty = the
+    /// processor maintains a `map[groupKey] -> sketch` and flushes one
+    /// row per group on each window boundary. Per-group sketch instances
+    /// are runtime state; the plan only declares the keys.
     OtelSketchBuild {
         sketch_type: SketchType,
         sketch_params: SketchParams,
         window: PhysicalWindow,
         delta_encoding: bool,
+        aggregate_by: Vec<String>,
     },
 
     /// Build sketch via PromSketch's ExponentialHistogram layer.
@@ -162,6 +169,247 @@ pub enum Placement {
     Database,
 }
 
+// ── Stage capabilities ──────────────────────────────────────────────────────
+//
+// Every stage is, in principle, capable of running every node in the query
+// tree. The Controller's job is to *decide which stage runs which subset* —
+// it is NOT to declare ops as inherently belonging to one stage. The only
+// hard pins are source-bound ops (`OtlpScan`, `PromSketchScan`,
+// `PromSketchBuild`, `DbQuery`), which are tied to the data origin and
+// cannot be relocated. Everything else has a cost on every stage, and the
+// planner picks the minimum-cost stage subject to budget fit.
+
+/// Per-stage capability + cost surface.
+///
+/// Each stage implements this trait to declare:
+/// - which `PhysicalOp` variants it can run, via `op_cost` returning `Some`
+/// - the relative cost weight of running each variant on this stage
+/// - whether the stage's resource budget admits the op (`fits`)
+///
+/// Cost is unitless and used only for ranking; concrete numbers come from
+/// the deployment-tuned tables in `sketch_capabilities.yml` over time.
+pub trait StageCapabilities: Send + Sync {
+    fn placement(&self) -> Placement;
+
+    /// Return `Some(cost)` if this stage can run `op`, `None` if not.
+    /// `None` is used for source-bound ops on stages that aren't the source.
+    fn op_cost(&self, op: &PhysicalOp) -> Option<f64>;
+
+    /// Whether the stage's resource budget admits this op. Defaults to true;
+    /// stages with a sketch-build capability use `StageBudget::fits` against
+    /// the resolved `SketchCapability`.
+    fn fits(&self, _op: &PhysicalOp, _budget: &crate::algebra::optimizer::StageBudget) -> bool {
+        true
+    }
+}
+
+/// Penalty added to a candidate stage's `op_cost` when its input is on a
+/// different stage (i.e. an Exchange must be inserted). Tunable; the value
+/// is large enough to dominate small intra-stage cost differences and keep
+/// data-locality-sensitive ops (Filter, Project) co-located with their child.
+pub const EXCHANGE_COST_PENALTY: f64 = 10.0;
+
+// ── Per-stage capability implementations ────────────────────────────────────
+
+pub struct AgentCollectorCaps;
+pub struct BackendCollectorCaps;
+pub struct PromSketchStoreCaps;
+pub struct QueryEngineCaps;
+pub struct DatabaseCaps;
+
+impl StageCapabilities for AgentCollectorCaps {
+    fn placement(&self) -> Placement { Placement::AgentCollector }
+    fn op_cost(&self, op: &PhysicalOp) -> Option<f64> {
+        use PhysicalOp::*;
+        Some(match op {
+            // Source: this is where OTLP arrives.
+            OtlpScan { .. }         => 1.0,
+            // Sketch build at the edge is the cheapest option (push-down).
+            OtelSketchBuild { .. }  => 1.0,
+            // Filter / Project / Passthrough run anywhere; on Agent they're free.
+            Filter { .. }           => 1.0,
+            Passthrough             => 0.0,
+            Exchange { .. }         => 0.0,
+            // Backend-or-later ops can in principle run at Agent but are
+            // disfavored: the agent is single-host, so it can't merge across
+            // agents, can't see global TopK, etc. Express as expensive.
+            SketchEval { .. }       => 20.0,
+            TopK { .. }              => 20.0,
+            HashAggregate { .. }    => 20.0,
+            // Source-bound ops on the wrong stage.
+            PromSketchScan { .. } | PromSketchBuild { .. } | DbQuery { .. } | SketchMerge { .. } =>
+                return None,
+        })
+    }
+    fn fits(&self, op: &PhysicalOp, budget: &crate::algebra::optimizer::StageBudget) -> bool {
+        sketch_op_fits(op, budget)
+    }
+}
+
+impl StageCapabilities for BackendCollectorCaps {
+    fn placement(&self) -> Placement { Placement::BackendCollector }
+    fn op_cost(&self, op: &PhysicalOp) -> Option<f64> {
+        use PhysicalOp::*;
+        Some(match op {
+            // Sketch build deferred from the edge: workable but more expensive.
+            OtelSketchBuild { .. }  => 5.0,
+            // Backend collector is the natural place for cross-agent merge
+            // and for hash-partitioned aggregation.
+            SketchMerge { .. }      => 1.0,
+            HashAggregate { .. }    => 1.0,
+            Filter { .. }           => 1.0,
+            // Final-shaping ops (Eval / TopK) can run here, but should
+            // strongly prefer QueryEngine even when input is already at
+            // Backend (i.e. cost > QueryEngine.cost + EXCHANGE_COST_PENALTY).
+            SketchEval { .. }       => 15.0,
+            TopK { .. }              => 15.0,
+            Passthrough             => 0.0,
+            Exchange { .. }         => 0.0,
+            // Source-bound ops are not at Backend.
+            OtlpScan { .. } | PromSketchScan { .. } | PromSketchBuild { .. } | DbQuery { .. } =>
+                return None,
+        })
+    }
+    fn fits(&self, op: &PhysicalOp, budget: &crate::algebra::optimizer::StageBudget) -> bool {
+        sketch_op_fits(op, budget)
+    }
+}
+
+impl StageCapabilities for PromSketchStoreCaps {
+    fn placement(&self) -> Placement { Placement::PromSketchStore }
+    fn op_cost(&self, op: &PhysicalOp) -> Option<f64> {
+        use PhysicalOp::*;
+        Some(match op {
+            // PromSketch is the source for its own scans/builds.
+            PromSketchScan { .. }   => 1.0,
+            PromSketchBuild { .. }  => 1.0,
+            // Other ops are possible but uncommon; rank as expensive.
+            OtelSketchBuild { .. }  => 10.0,
+            SketchMerge { .. }      => 5.0,
+            SketchEval { .. }       => 3.0,
+            HashAggregate { .. }    => 10.0,
+            TopK { .. }              => 10.0,
+            Filter { .. }           => 2.0,
+            Passthrough             => 0.0,
+            Exchange { .. }         => 0.0,
+            OtlpScan { .. } | DbQuery { .. } => return None,
+        })
+    }
+}
+
+impl StageCapabilities for QueryEngineCaps {
+    fn placement(&self) -> Placement { Placement::QueryEngine }
+    fn op_cost(&self, op: &PhysicalOp) -> Option<f64> {
+        use PhysicalOp::*;
+        Some(match op {
+            // Final-stage shaping.
+            SketchEval { .. }       => 1.0,
+            TopK { .. }              => 1.0,
+            // Always-available fallback for sketch build and merge.
+            OtelSketchBuild { .. }  => 20.0,
+            SketchMerge { .. }      => 5.0,
+            HashAggregate { .. }    => 5.0,
+            Filter { .. }           => 1.0,
+            Passthrough             => 0.0,
+            Exchange { .. }         => 0.0,
+            // Source-bound ops are pinned elsewhere.
+            OtlpScan { .. } | PromSketchScan { .. } | PromSketchBuild { .. } | DbQuery { .. } =>
+                return None,
+        })
+    }
+    fn fits(&self, op: &PhysicalOp, budget: &crate::algebra::optimizer::StageBudget) -> bool {
+        sketch_op_fits(op, budget)
+    }
+}
+
+impl StageCapabilities for DatabaseCaps {
+    fn placement(&self) -> Placement { Placement::Database }
+    fn op_cost(&self, op: &PhysicalOp) -> Option<f64> {
+        use PhysicalOp::*;
+        Some(match op {
+            // DB is the natural place for exact aggregation expressed as SQL.
+            DbQuery { .. }          => 1.0,
+            // Filter pushdown into the DB is fine.
+            Filter { .. }           => 2.0,
+            HashAggregate { .. }    => 2.0,
+            Passthrough             => 0.0,
+            Exchange { .. }         => 0.0,
+            // Sketch ops aren't first-class on the DB side.
+            OtlpScan { .. } | PromSketchScan { .. } | PromSketchBuild { .. }
+            | OtelSketchBuild { .. } | SketchMerge { .. } | SketchEval { .. } | TopK { .. } =>
+                return None,
+        })
+    }
+}
+
+/// Budget check for sketch-build ops. Non-sketch ops have no enforced budget yet.
+fn sketch_op_fits(op: &PhysicalOp, budget: &crate::algebra::optimizer::StageBudget) -> bool {
+    if let PhysicalOp::OtelSketchBuild { sketch_type, .. } = op {
+        let cap = crate::algebra::optimizer::sketch_capability(sketch_type);
+        return budget.fits(&cap);
+    }
+    true
+}
+
+/// All known stages, ordered by typical preference. Order is not load-bearing
+/// since `decide_placement` ranks by cost; it just stabilises tie-breaks.
+fn all_stage_caps() -> [&'static dyn StageCapabilities; 5] {
+    [
+        &AgentCollectorCaps,
+        &BackendCollectorCaps,
+        &PromSketchStoreCaps,
+        &QueryEngineCaps,
+        &DatabaseCaps,
+    ]
+}
+
+impl crate::algebra::optimizer::DeploymentConstraints {
+    /// Map a `Placement` to its corresponding `StageBudget`.
+    pub fn budget_for(&self, p: &Placement) -> &crate::algebra::optimizer::StageBudget {
+        match p {
+            Placement::AgentCollector   => &self.agent,
+            Placement::BackendCollector => &self.backend_collector,
+            // PromSketchStore + QueryEngine share the backend_db budget today.
+            Placement::PromSketchStore  => &self.backend_db,
+            Placement::QueryEngine      => &self.backend_db,
+            Placement::Database         => &self.original_db,
+        }
+    }
+}
+
+/// Decide which stage should run `op`, given its input's placement (if any)
+/// and the deployment's per-stage budgets.
+///
+/// Iterates every known stage, takes those that can run `op` (`op_cost`
+/// returns `Some`) and have budget headroom (`fits`), adds an Exchange
+/// penalty when `input_placement` is on a different stage, and picks the
+/// minimum total. Falls back to `QueryEngine` only if nothing fits — that
+/// matches today's behavior where QueryEngine is the always-available
+/// stage.
+pub fn decide_placement(
+    op: &PhysicalOp,
+    input_placement: Option<&Placement>,
+    constraints: &crate::algebra::optimizer::DeploymentConstraints,
+) -> Placement {
+    all_stage_caps()
+        .iter()
+        .filter_map(|caps| {
+            let cost = caps.op_cost(op)?;
+            let placement = caps.placement();
+            if !caps.fits(op, constraints.budget_for(&placement)) {
+                return None;
+            }
+            let exchange_penalty = match input_placement {
+                Some(p) if *p != placement => EXCHANGE_COST_PENALTY,
+                _ => 0.0,
+            };
+            Some((placement, cost + exchange_penalty))
+        })
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(p, _)| p)
+        .unwrap_or(Placement::QueryEngine)
+}
+
 // ── Physical plan tree ──────────────────────────────────────────────────────
 
 /// A node in the physical plan tree.
@@ -235,73 +483,93 @@ pub fn plan(expr: &QueryExpr, config: &PhysicalPlannerConfig) -> PhysicalNode {
 }
 
 fn plan_node(expr: &QueryExpr, config: &PhysicalPlannerConfig) -> PhysicalNode {
+    // Helper: build a single-child PhysicalNode for the given op, decide its
+    // placement via the capability-based cost model (using the child's
+    // placement as the locality reference), and insert an Exchange if the
+    // child ends up on a different stage.
+    fn build_unary(
+        op: PhysicalOp,
+        child: PhysicalNode,
+        cost: PhysicalCost,
+        config: &PhysicalPlannerConfig,
+    ) -> PhysicalNode {
+        let placement = decide_placement(&op, Some(&child.placement), &config.constraints);
+        let mut node = PhysicalNode { op, placement, cost, children: vec![child] };
+        insert_exchange_if_needed(&mut node);
+        node
+    }
+
     match expr {
-        // ── Leaf: scan at Agent ─────────────────────────────────────
-        QueryExpr::Source(s) => PhysicalNode {
-            op: PhysicalOp::OtlpScan {
+        // ── Leaf: OtlpScan is source-pinned to Agent via cost model ─
+        QueryExpr::Source(_) => {
+            let op = PhysicalOp::OtlpScan {
                 endpoint: String::new(),
                 label_matchers: vec![],
-            },
-            placement: Placement::AgentCollector,
-            cost: PhysicalCost::default(),
-            children: vec![],
-        },
-
-        // ── Filter: same placement as child ─────────────────────────
-        QueryExpr::Filter { pred, input } => {
-            let child = plan_node(input, config);
-            PhysicalNode {
-                placement: child.placement.clone(),
-                op: PhysicalOp::Filter { pred: format!("{pred:?}") },
-                cost: PhysicalCost::default(),
-                children: vec![child],
-            }
+            };
+            let placement = decide_placement(&op, None, &config.constraints);
+            PhysicalNode { op, placement, cost: PhysicalCost::default(), children: vec![] }
         }
 
-        // ── SketchAgg: resolve intent → physical, place at Agent or defer ──
-        QueryExpr::SketchAgg { op, col, input } => {
+        // ── Filter: cost model co-locates with child via Exchange penalty ──
+        QueryExpr::Filter { pred, input } => {
+            let child = plan_node(input, config);
+            build_unary(
+                PhysicalOp::Filter { pred: format!("{pred:?}") },
+                child,
+                PhysicalCost::default(),
+                config,
+            )
+        }
+
+        // ── SketchAgg: build OtelSketchBuild; cost model picks stage ──
+        QueryExpr::SketchAgg { op, col: _, input } => {
             let child = plan_node(input, config);
             let resolved = resolve(op);
-            let placement = decide_sketch_placement(&resolved, config);
-
             let physical_op = PhysicalOp::OtelSketchBuild {
                 sketch_type: resolved.sketch_type.clone(),
                 sketch_params: resolved.sketch_params.clone(),
                 window: PhysicalWindow::None,
                 delta_encoding: false,
+                aggregate_by: vec![],
             };
-
-            let mut node = PhysicalNode {
-                op: physical_op,
-                placement: placement.clone(),
-                cost: PhysicalCost {
+            build_unary(
+                physical_op,
+                child,
+                PhysicalCost {
                     memory_bytes: resolved.estimated_memory_bytes as f64,
                     ..Default::default()
                 },
-                children: vec![child],
-            };
-            // Insert exchange if child is at a different stage
-            insert_exchange_if_needed(&mut node);
-            node
+                config,
+            )
         }
 
-        // ── WindowedAgg: resolve + place with window ────────────────
-        QueryExpr::WindowedAgg { agg, window, col, input } => {
+        // ── WindowedAgg: OtelSketchBuild with a window resolved ─────
+        // Window resolution depends on placement (different stages have
+        // different window implementations), so we ask the cost model
+        // first using a placeholder window, then re-build with the
+        // resolved window.
+        QueryExpr::WindowedAgg { agg, window, col: _, input } => {
             let child = plan_node(input, config);
             let resolved = resolve(agg);
-            let placement = decide_sketch_placement(&resolved, config);
+            let placeholder = PhysicalOp::OtelSketchBuild {
+                sketch_type: resolved.sketch_type.clone(),
+                sketch_params: resolved.sketch_params.clone(),
+                window: PhysicalWindow::None,
+                delta_encoding: false,
+                aggregate_by: vec![],
+            };
+            let placement = decide_placement(&placeholder, Some(&child.placement), &config.constraints);
             let phys_window = resolve_window(window, &placement);
-
             let physical_op = PhysicalOp::OtelSketchBuild {
                 sketch_type: resolved.sketch_type.clone(),
                 sketch_params: resolved.sketch_params.clone(),
                 window: phys_window,
                 delta_encoding: false,
+                aggregate_by: vec![],
             };
-
             let mut node = PhysicalNode {
                 op: physical_op,
-                placement: placement.clone(),
+                placement,
                 cost: PhysicalCost {
                     memory_bytes: resolved.estimated_memory_bytes as f64,
                     ..Default::default()
@@ -312,17 +580,28 @@ fn plan_node(expr: &QueryExpr, config: &PhysicalPlannerConfig) -> PhysicalNode {
             node
         }
 
-        // ── Partition / Merge: Backend stage ────────────────────────
+        // ── Partition: fold keys into upstream OtelSketchBuild if present ──
         QueryExpr::Partition { keys, input } => {
-            let child = plan_node(input, config);
-            let mut node = PhysicalNode {
-                op: PhysicalOp::HashAggregate { keys: keys.keys().to_vec() },
-                placement: Placement::BackendCollector,
-                cost: PhysicalCost::default(),
-                children: vec![child],
+            let mut child = plan_node(input, config);
+            let key_list = keys.keys().to_vec();
+
+            // If the planned input root is OtelSketchBuild, push keys down
+            // into the sketch processor so it builds per-group sketches at
+            // its placement (Agent in the common case). Wrap with SketchMerge
+            // so the multi-agent merge step is preserved; the cost model
+            // picks where the merge runs.
+            let parent_op = match &mut child.op {
+                PhysicalOp::OtelSketchBuild { aggregate_by, sketch_type, .. } => {
+                    *aggregate_by = key_list.clone();
+                    PhysicalOp::SketchMerge {
+                        sketch_type: sketch_type.clone(),
+                        group_by: key_list,
+                    }
+                }
+                // Fallback: non-sketch input — hash-partition.
+                _ => PhysicalOp::HashAggregate { keys: key_list },
             };
-            insert_exchange_if_needed(&mut node);
-            node
+            build_unary(parent_op, child, PhysicalCost::default(), config)
         }
 
         QueryExpr::Merge { inputs } => {
@@ -335,153 +614,124 @@ fn plan_node(expr: &QueryExpr, config: &PhysicalPlannerConfig) -> PhysicalNode {
                     _ => None,
                 })
                 .unwrap_or(SketchType::DDSketch);
-            PhysicalNode {
-                op: PhysicalOp::SketchMerge { sketch_type, group_by: vec![] },
-                placement: Placement::BackendCollector,
+            let op = PhysicalOp::SketchMerge { sketch_type, group_by: vec![] };
+            // Use first child's placement as locality reference; if children
+            // disagree, the cross-stage Exchanges are inserted below.
+            let input_placement = children.first().map(|c| c.placement.clone());
+            let placement = decide_placement(&op, input_placement.as_ref(), &config.constraints);
+            let mut node = PhysicalNode {
+                op,
+                placement,
                 cost: PhysicalCost::default(),
                 children,
-            }
+            };
+            insert_exchange_if_needed(&mut node);
+            node
         }
 
         QueryExpr::Dedup { col, input } => {
             let child = plan_node(input, config);
-            let mut node = PhysicalNode {
-                op: PhysicalOp::Filter { pred: format!("dedup({col})") },
-                placement: Placement::BackendCollector,
-                cost: PhysicalCost::default(),
-                children: vec![child],
-            };
-            insert_exchange_if_needed(&mut node);
-            node
+            build_unary(
+                PhysicalOp::Filter { pred: format!("dedup({col})") },
+                child,
+                PhysicalCost::default(),
+                config,
+            )
         }
 
-        // ── TopK / HistogramQuantile / BinaryOp: QueryEngine stage ──
         QueryExpr::TopK { k, input, .. } => {
             let child = plan_node(input, config);
-            let mut node = PhysicalNode {
-                op: PhysicalOp::TopK { k: *k },
-                placement: Placement::QueryEngine,
-                cost: PhysicalCost::default(),
-                children: vec![child],
-            };
-            insert_exchange_if_needed(&mut node);
-            node
+            build_unary(
+                PhysicalOp::TopK { k: *k },
+                child,
+                PhysicalCost::default(),
+                config,
+            )
         }
 
         QueryExpr::HistogramQuantile { phi, input } => {
             let child = plan_node(input, config);
-            let mut node = PhysicalNode {
-                op: PhysicalOp::SketchEval {
+            build_unary(
+                PhysicalOp::SketchEval {
                     sketch_type: SketchType::DDSketch,
                     func: EvalFunc::Quantile(vec![*phi]),
                 },
-                placement: Placement::QueryEngine,
+                child,
+                PhysicalCost::default(),
+                config,
+            )
+        }
+
+        QueryExpr::BinaryOp { op: _, lhs, rhs, .. } => {
+            let left = plan_node(lhs, config);
+            let right = plan_node(rhs, config);
+            let physical_op = PhysicalOp::Passthrough;
+            let placement = decide_placement(&physical_op, Some(&left.placement), &config.constraints);
+            let mut node = PhysicalNode {
+                op: physical_op,
+                placement,
                 cost: PhysicalCost::default(),
-                children: vec![child],
+                children: vec![left, right],
             };
             insert_exchange_if_needed(&mut node);
             node
-        }
-
-        QueryExpr::BinaryOp { op, lhs, rhs, .. } => {
-            let left = plan_node(lhs, config);
-            let right = plan_node(rhs, config);
-            PhysicalNode {
-                op: PhysicalOp::Passthrough,
-                placement: Placement::QueryEngine,
-                cost: PhysicalCost::default(),
-                children: vec![left, right],
-            }
         }
 
         QueryExpr::PromQLSubquery { input, .. } => {
             let child = plan_node(input, config);
-            let mut node = PhysicalNode {
-                op: PhysicalOp::Passthrough,
-                placement: Placement::QueryEngine,
-                cost: PhysicalCost::default(),
-                children: vec![child],
-            };
-            insert_exchange_if_needed(&mut node);
-            node
+            build_unary(PhysicalOp::Passthrough, child, PhysicalCost::default(), config)
         }
 
-        // ── Aggregate (non-sketch, exact): Database stage ───────────
+        // ── Aggregate (non-sketch, exact): emitted as a DbQuery, which
+        // is source-bound to Database via the cost model. ──────────
         QueryExpr::Aggregate { keys, input, .. } => {
             let child = plan_node(input, config);
-            let mut node = PhysicalNode {
-                op: PhysicalOp::DbQuery { sql: format!("GROUP BY {:?}", keys) },
-                placement: Placement::Database,
-                cost: PhysicalCost::default(),
-                children: vec![child],
-            };
-            insert_exchange_if_needed(&mut node);
-            node
+            build_unary(
+                PhysicalOp::DbQuery { sql: format!("GROUP BY {:?}", keys) },
+                child,
+                PhysicalCost::default(),
+                config,
+            )
         }
 
-        // ── Sort / Limit / Project: inherit child placement ─────────
+        // ── Sort / Limit / Project / Window / WindowFunc: passthrough.
+        // Cost model co-locates with child via Exchange penalty. ───
         QueryExpr::Sort { input, .. }
         | QueryExpr::Limit { input, .. }
         | QueryExpr::Project { input, .. }
         | QueryExpr::Window { input, .. }
         | QueryExpr::WindowFunc { input, .. } => {
             let child = plan_node(input, config);
-            PhysicalNode {
-                op: PhysicalOp::Passthrough,
-                placement: child.placement.clone(),
-                cost: PhysicalCost::default(),
-                children: vec![child],
-            }
+            build_unary(PhysicalOp::Passthrough, child, PhysicalCost::default(), config)
         }
 
-        // ── Join: both children, QueryEngine placement ──────────────
+        // ── Join / SetOp: passthrough wrapper; cost model picks stage. ──
         QueryExpr::Join { left, right, .. }
         | QueryExpr::JoinSketch { outer: left, inner: right, .. }
         | QueryExpr::SetOp { left, right, .. } => {
             let l = plan_node(left, config);
             let r = plan_node(right, config);
-            PhysicalNode {
-                op: PhysicalOp::Passthrough,
-                placement: Placement::QueryEngine,
+            let op = PhysicalOp::Passthrough;
+            let placement = decide_placement(&op, Some(&l.placement), &config.constraints);
+            let mut node = PhysicalNode {
+                op,
+                placement,
                 cost: PhysicalCost::default(),
                 children: vec![l, r],
-            }
+            };
+            insert_exchange_if_needed(&mut node);
+            node
         }
 
         // ── Subquery / LetBinding ───────────────────────────────────
         QueryExpr::Subquery { expr, .. } => plan_node(expr, config),
         QueryExpr::LetBinding { body, .. } => plan_node(body, config),
-        QueryExpr::Ref(_) => PhysicalNode {
-            op: PhysicalOp::Passthrough,
-            placement: Placement::QueryEngine,
-            cost: PhysicalCost::default(),
-            children: vec![],
-        },
+        QueryExpr::Ref(_) => {
+            let op = PhysicalOp::Passthrough;
+            let placement = decide_placement(&op, None, &config.constraints);
+            PhysicalNode { op, placement, cost: PhysicalCost::default(), children: vec![] }
+        }
     }
-}
-
-/// Decide where a sketch operation runs based on memory budget.
-/// Decide where a sketch runs based on deployment constraints and sketch capability.
-///
-/// Uses `StageBudget::fits(SketchCapability)` to check each stage in order:
-/// Agent → BackendCollector → QueryEngine.
-fn decide_sketch_placement(resolved: &PhysicalAggOp, config: &PhysicalPlannerConfig) -> Placement {
-    use crate::algebra::optimizer::sketch_capability;
-
-    let cap = sketch_capability(&resolved.sketch_type);
-
-    // Try Agent first.
-    if config.constraints.agent.fits(&cap) {
-        return Placement::AgentCollector;
-    }
-
-    // Agent budget exceeded — try Backend.
-    if config.constraints.backend_collector.fits(&cap) {
-        return Placement::BackendCollector;
-    }
-
-    // Both exceeded — defer to QueryEngine.
-    Placement::QueryEngine
 }
 
 /// If a node's child is at a different stage, insert an Exchange node between them.
@@ -559,18 +809,31 @@ impl PhysicalNode {
         match (&self.placement, &self.op) {
             // Agent: sketch build → populate agent sub-plan
             (Placement::AgentCollector, PhysicalOp::OtelSketchBuild {
-                sketch_type, sketch_params, window, ..
+                sketch_type, sketch_params, window, aggregate_by, ..
             }) => {
                 staged.agent.sketch_type = Some(sketch_type.clone());
                 staged.agent.sketch_params = sketch_params.clone();
                 if let PhysicalWindow::OtelTumblingFlush { duration } = window {
                     staged.agent.window_secs = Some(duration.as_secs());
                 }
+                if !aggregate_by.is_empty() {
+                    staged.agent.aggregate_by = aggregate_by.clone();
+                }
             }
 
             // Agent: filter → label filters
             (Placement::AgentCollector, PhysicalOp::Filter { pred }) => {
                 staged.agent.label_filters.push(pred.clone());
+            }
+
+            // Backend: sketch build deferred from Agent due to budget. The
+            // processor here builds per-key sketches itself.
+            (Placement::BackendCollector, PhysicalOp::OtelSketchBuild {
+                aggregate_by, ..
+            }) => {
+                if !aggregate_by.is_empty() {
+                    staged.backend.group_by = aggregate_by.clone();
+                }
             }
 
             // Backend: merge/aggregate
@@ -806,6 +1069,143 @@ mod tests {
         };
         let node = plan(&expr, &default_config());
         assert_eq!(node.placement, Placement::BackendCollector);
+    }
+
+    #[test]
+    fn plan_partition_folds_keys_into_sketch() {
+        // Partition { region } over SketchAgg(Cardinality) collapses to
+        // SketchMerge @ Backend wrapping OtelSketchBuild { aggregate_by: ["region"] } @ Agent.
+        let expr = QueryExpr::Partition {
+            keys: PartitionKeys::By(vec!["region".into()]),
+            input: Box::new(QueryExpr::SketchAgg {
+                op: AggIntent::default_cardinality(),
+                col: ColumnRef::SampleValue,
+                input: Box::new(src("m")),
+            }),
+        };
+        let node = plan(&expr, &default_config());
+
+        assert_eq!(node.placement, Placement::BackendCollector);
+        match &node.op {
+            PhysicalOp::SketchMerge { sketch_type, group_by } => {
+                assert_eq!(*sketch_type, SketchType::HLL);
+                assert_eq!(group_by, &vec!["region".to_string()]);
+            }
+            other => panic!("expected SketchMerge, got {other:?}"),
+        }
+
+        fn find_sketch_build(n: &PhysicalNode) -> Option<&PhysicalOp> {
+            if matches!(n.op, PhysicalOp::OtelSketchBuild { .. }) {
+                return Some(&n.op);
+            }
+            for c in &n.children {
+                if let Some(op) = find_sketch_build(c) {
+                    return Some(op);
+                }
+            }
+            None
+        }
+        match find_sketch_build(&node) {
+            Some(PhysicalOp::OtelSketchBuild { aggregate_by, sketch_type, .. }) => {
+                assert_eq!(*sketch_type, SketchType::HLL);
+                assert_eq!(aggregate_by, &vec!["region".to_string()],
+                    "partition keys should be folded into agent-side sketch");
+            }
+            other => panic!("expected OtelSketchBuild somewhere in tree, got {other:?}"),
+        }
+
+        let staged = node.to_staged_plan();
+        assert_eq!(staged.agent.aggregate_by, vec!["region".to_string()]);
+        assert_eq!(staged.backend.group_by, vec!["region".to_string()]);
+        assert!(staged.backend.has_merge);
+    }
+
+    #[test]
+    fn plan_partition_without_sketch_falls_back_to_hashaggregate() {
+        let expr = QueryExpr::Partition {
+            keys: PartitionKeys::By(vec!["svc".into()]),
+            input: Box::new(QueryExpr::Filter {
+                pred: ScalarExpr::Literal(LiteralValue::Bool(true)),
+                input: Box::new(src("m")),
+            }),
+        };
+        let node = plan(&expr, &default_config());
+        assert_eq!(node.placement, Placement::BackendCollector);
+        assert!(matches!(node.op, PhysicalOp::HashAggregate { .. }));
+    }
+
+    // ── Capability-driven placement ─────────────────────────────────────
+
+    #[test]
+    fn capability_op_costs_pick_natural_stages() {
+        // Sanity: each "natural" host stage offers the cheapest cost for
+        // its op. This is what makes the planner reproduce the old
+        // hardcoded preferences purely via cost-ranking.
+        use PhysicalOp::*;
+        let topk = TopK { k: 10 };
+        assert!(QueryEngineCaps.op_cost(&topk).unwrap() < BackendCollectorCaps.op_cost(&topk).unwrap());
+        assert!(QueryEngineCaps.op_cost(&topk).unwrap() < AgentCollectorCaps.op_cost(&topk).unwrap());
+
+        let merge = SketchMerge { sketch_type: SketchType::HLL, group_by: vec![] };
+        assert!(BackendCollectorCaps.op_cost(&merge).unwrap() < QueryEngineCaps.op_cost(&merge).unwrap());
+
+        let build = OtelSketchBuild {
+            sketch_type: SketchType::HLL,
+            sketch_params: SketchParams::HLL { precision: 14 },
+            window: PhysicalWindow::None,
+            delta_encoding: false,
+            aggregate_by: vec![],
+        };
+        assert!(AgentCollectorCaps.op_cost(&build).unwrap() < BackendCollectorCaps.op_cost(&build).unwrap());
+
+        // Source pinning: PromSketchScan refuses to run anywhere except
+        // PromSketchStore, even though every other stage is asked.
+        let scan = PromSketchScan { store_addr: String::new(), series_selector: String::new() };
+        assert!(AgentCollectorCaps.op_cost(&scan).is_none());
+        assert!(BackendCollectorCaps.op_cost(&scan).is_none());
+        assert!(QueryEngineCaps.op_cost(&scan).is_none());
+        assert!(DatabaseCaps.op_cost(&scan).is_none());
+        assert!(PromSketchStoreCaps.op_cost(&scan).is_some());
+    }
+
+    #[test]
+    fn capability_filter_co_locates_with_child_via_exchange_penalty() {
+        // Filter has the same op_cost (1.0) on Agent / Backend / QueryEngine,
+        // but the Exchange penalty makes the planner co-locate it with
+        // the child to avoid a wasted stage hop. Child is at Agent
+        // (OtlpScan), so Filter should also land at Agent.
+        let expr = QueryExpr::Filter {
+            pred: ScalarExpr::Literal(LiteralValue::Bool(true)),
+            input: Box::new(src("m")),
+        };
+        let node = plan(&expr, &default_config());
+        assert_eq!(node.placement, Placement::AgentCollector,
+            "Filter should co-locate with its child (Agent) via Exchange penalty, not jump stages");
+    }
+
+    #[test]
+    fn capability_budget_failure_migrates_op() {
+        // With a tiny Agent memory budget, the sketch can't fit at Agent.
+        // The cost model must skip Agent and pick Backend (the next
+        // cheapest stage where it fits). This is the same behavior the
+        // old `decide_sketch_placement` had — but now expressed as a
+        // single `fits` check inside the unified placement function.
+        let budgets = StageResourceBudgets {
+            agent_memory_bytes: Some(1),
+            ..Default::default()
+        };
+        let config = PhysicalPlannerConfig {
+            constraints: DeploymentConstraints::from_budgets(&budgets),
+            budgets,
+        };
+        let expr = QueryExpr::SketchAgg {
+            op: AggIntent::default_quantile(vec![0.99]),
+            col: ColumnRef::SampleValue,
+            input: Box::new(src("m")),
+        };
+        let node = plan(&expr, &config);
+        assert_eq!(node.placement, Placement::BackendCollector,
+            "sketch should migrate to Backend when Agent doesn't fit");
     }
 
     #[test]
