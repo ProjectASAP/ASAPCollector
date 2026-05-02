@@ -134,4 +134,25 @@ type SketchEnvelope struct {
 	// HashSpec is the determinism contract for cross-language
 	// reconstruction. Comes from sketchlib-go's `commonpb.HashSpec`.
 	HashSpec *commonpb.HashSpec
+	// MetricName is the metric name the envelope was emitted for.
+	// Today's per-processor flushWindow builds the output
+	// pmetric.Metric and sets its Name() from a config field; once
+	// the shims delegate to this runtime, the runtime needs to know
+	// the metric name per-emission so Adapter.Encode can stamp it
+	// onto the synthesized output Metric. This is an in-process Go
+	// field — NOT a proto wire field. The canonical wire bytes
+	// remain Payload (ADR-0002 §"Behavior preservation").
+	MetricName string
+	// Count is the total observation count this envelope represents
+	// (sum of dp.Count() for the producing window's input samples).
+	// The OTel adapter copies it into output Sum data points via
+	// dp.SetCount(); some downstream consumers use it as a sanity
+	// field. In-process only.
+	Count uint64
+	// AggregationTemporality is the OTel temporality enum stored as
+	// an int32 to keep the runtime host-neutral (no pmetric import
+	// here): 0 = unspecified, 1 = delta, 2 = cumulative. The OTel
+	// adapter encode-side reads this to set
+	// Sum.SetAggregationTemporality(...). In-process only.
+	AggregationTemporality int32
 }

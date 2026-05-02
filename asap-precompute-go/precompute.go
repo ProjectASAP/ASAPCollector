@@ -43,6 +43,62 @@ type Sketch interface {
 	Reset()
 }
 
+// QuantileSketch is implemented by sketches that can answer
+// quantile queries. DDSketch and KLL are the two QuantileSketch
+// implementations in sketchlib-go. The runtime never type-asserts
+// to QuantileSketch — only adapter code does, when materializing
+// typed quantile output (e.g. emitting one gauge per configured
+// quantile when TransmitSketch=false).
+type QuantileSketch interface {
+	Sketch
+	// Quantile returns the q-th rank value (0 ≤ q ≤ 1) from the
+	// sketch's current state. Implementations should clamp q to
+	// [0,1] and return a finite value (NaN is acceptable for an
+	// empty sketch).
+	Quantile(q float64) float64
+}
+
+// CardinalitySketch is implemented by sketches that answer
+// distinct-count queries. HyperLogLog is the canonical
+// CardinalitySketch in sketchlib-go. Adapter code type-asserts
+// `s.(CardinalitySketch)` to call EstimateCardinality() when
+// emitting a typed cardinality gauge from an HLL-backed envelope.
+type CardinalitySketch interface {
+	Sketch
+	// EstimateCardinality returns the sketch's current
+	// distinct-element estimate as a float (HLL's bias-corrected
+	// estimator returns a non-integer; callers round if they want
+	// an integer gauge).
+	EstimateCardinality() float64
+}
+
+// FrequencySketch is implemented by sketches that answer
+// count/top-k queries. CountSketch and CountMinSketch are the
+// two FrequencySketch implementations in sketchlib-go. Adapter
+// code type-asserts `s.(FrequencySketch)` to materialize per-key
+// counts or top-k tables.
+type FrequencySketch interface {
+	Sketch
+	// EstimateCount returns the estimated frequency for the given
+	// key. Implementations may return a non-integer value (e.g.
+	// CountSketch's median-of-rows estimator).
+	EstimateCount(key []byte) float64
+	// TopK returns the top-k highest-frequency entries observed by
+	// the sketch. Order is descending by Count; implementations
+	// may return fewer than k entries when the sketch hasn't seen
+	// enough distinct keys.
+	TopK(k int) []FrequencyEntry
+}
+
+// FrequencyEntry is one entry in a FrequencySketch.TopK result.
+// Key is the opaque byte slice the sketch indexes by (the same
+// shape passed to ObservationValue.Bytes); Count is the estimated
+// frequency.
+type FrequencyEntry struct {
+	Key   []byte
+	Count float64
+}
+
 // SketchFactory constructs an empty Sketch of the type owned by a
 // specific Precompute instance. Phase 2 keeps construction
 // per-Precompute rather than registry-based to avoid global state.
@@ -309,15 +365,18 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 		return nil, nil
 	}
 	return &SketchEnvelope{
-		SchemaVersion:  1,
-		SketchType:     cfg.SketchType,
-		AggID:          cfg.AggID,
-		ResourceLabels: entry.ResourceLabels,
-		Labels:         SeriesAttrs(entry.Labels, cfg.AggregateBy),
-		WindowStartMs:  rng[0],
-		WindowEndMs:    rng[1],
-		Encoding:       enc,
-		Payload:        payload,
+		SchemaVersion:          1,
+		SketchType:             cfg.SketchType,
+		AggID:                  cfg.AggID,
+		ResourceLabels:         entry.ResourceLabels,
+		Labels:                 SeriesAttrs(entry.Labels, cfg.AggregateBy),
+		WindowStartMs:          rng[0],
+		WindowEndMs:            rng[1],
+		Encoding:               enc,
+		Payload:                payload,
+		MetricName:             cfg.MetricName,
+		Count:                  entry.Count,
+		AggregationTemporality: cfg.Temporality,
 	}, nil
 }
 
