@@ -1,166 +1,120 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// Package countminsketchprocessor is the OTel CountMinSketch processor
+// shim. As of Phase 2 step 2.9 the windowing / series-keying / snapshot
+// state machine lives in github.com/ProjectASAP/asap-precompute-go;
+// this file is a thin adapter that decodes pmetric.Metrics into
+// precompute Observations, drives a Precompute per input metric, and
+// re-encodes the emitted SketchEnvelopes back into the legacy pmetric
+// output shape. Encode helpers live in shim_helpers.go; sketch
+// wrappers in sketch_wrapper.go; selfmonitor wiring in monitor.go.
 package countminsketchprocessor
 
 import (
 	"context"
-	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/ProjectASAP/sketchlib-go/common"
-	cms "github.com/ProjectASAP/sketchlib-go/sketches/CountMinSketch"
-
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/processor/selfmonitor"
 	"go.uber.org/zap"
+
+	precompute "github.com/ProjectASAP/asap-precompute-go"
 )
 
-// builderPool recycles strings.Builder instances used in the hot
-// encodeAttributesAsKey path (called on every data point).
-var builderPool = sync.Pool{New: func() any { return new(strings.Builder) }}
-
-//
-// ─────────────────────────────────────────────────────────────
-// Window-level state
-// ─────────────────────────────────────────────────────────────
-//
-
-type windowSketch struct {
-	cms         *cms.CountMinSketch
-	attrs       pcommon.Map // output attributes for this sketch group
-	mu          sync.Mutex
-	sampleCount uint64
-}
-
-//
-// ─────────────────────────────────────────────────────────────
-// Processor definition
-// ─────────────────────────────────────────────────────────────
-//
-
-type windowedCountMinSketchProcessor struct {
-	cfg    *Config
-	logger *zap.Logger
-
+// cmsProcessor is the Phase-2 thin shim. One *Precompute is lazily
+// instantiated per input metric name (the legacy `seriesKey` is
+// `metricName + "::" + encodeKey(dpAttrs)`, partitioning state by
+// metric; the runtime's series key does not include metric name, so
+// the shim partitions explicitly via per-name Precomputes).
+type cmsProcessor struct {
+	cfg          *Config
+	logger       *zap.Logger
 	nextConsumer consumer.Metrics
 	monitor      *selfmonitor.Monitor
 
-	activeWindowSketches map[string]*windowSketch
-	mu                   sync.RWMutex
+	mu       sync.Mutex
+	pcByName map[string]precompute.Precompute
 
-	// snapshots holds one CMS clone per partition key, taken at the end of
-	// each window flush. Used to compute sparse delta payloads when
-	// cfg.DeltaTransmission=true.
-	snapshots   map[string]*cms.CountMinSketch
+	// snapshotsMu / snapshots hold per-series prev snapshots used
+	// when DeltaTransmission=true. See applyDeltaTransmission for
+	// why delta tracking lives at the shim layer instead of the
+	// runtime's SnapshotCache.
 	snapshotsMu sync.Mutex
-
-	// inboundSnapshots tracks the last reconstructed full CMS per aggregation key
-	// received from upstream. Used to apply sparse deltas from SDK-originated
-	// CountMinSketchEncodingDelta payloads.
-	inboundMu        sync.Mutex
-	inboundSnapshots map[string]*cms.CountMinSketch
+	snapshots   map[string][]byte
 
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool
-
-	// windowSketchPool recycles windowSketch structs (and their underlying CMS
-	// arrays via Reset()) across window flushes to reduce GC pressure.
-	windowSketchPool sync.Pool
 }
 
-func newProcessor(
-	cfg *Config,
-	next consumer.Metrics,
-	logger *zap.Logger,
-) *windowedCountMinSketchProcessor {
-	p := &windowedCountMinSketchProcessor{
-		cfg:                  cfg,
-		logger:               logger,
-		nextConsumer:         next,
-		activeWindowSketches: make(map[string]*windowSketch),
-		snapshots:            make(map[string]*cms.CountMinSketch),
-		inboundSnapshots:     make(map[string]*cms.CountMinSketch),
-		stopCh:               make(chan struct{}),
-		doneCh:               make(chan struct{}),
+// windowedCountMinSketchProcessor is preserved as a type alias so
+// callers / tests that reference the legacy name continue to compile
+// without churn. Production code uses cmsProcessor directly.
+type windowedCountMinSketchProcessor = cmsProcessor
+
+func newProcessor(cfg *Config, next consumer.Metrics, logger *zap.Logger) *cmsProcessor {
+	return &cmsProcessor{
+		cfg: cfg, logger: logger, nextConsumer: next,
+		pcByName:  make(map[string]precompute.Precompute),
+		snapshots: make(map[string][]byte),
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
 	}
-	p.windowSketchPool.New = func() any { return new(windowSketch) }
-	return p
 }
 
-//
-// ─────────────────────────────────────────────────────────────
-// Lifecycle methods
-// ─────────────────────────────────────────────────────────────
-//
+// Capabilities advertises MutatesData=true: the batch path appends
+// synthesized output onto the input md before forwarding (legacy
+// behavior preserved via the (pmetric.Metrics, error) return shape).
+func (p *cmsProcessor) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: true}
+}
 
-func (p *windowedCountMinSketchProcessor) Start(
-	ctx context.Context,
-	host component.Host,
-) error {
-	p.logger.Info(
-		"Starting Count-Min Sketch processor",
-		zap.String("mode", string(p.cfg.Mode)),
-		zap.Duration("window_duration", p.cfg.WindowDuration),
-	)
-
-	// Batch mode does not require a background ticker; we flush per-batch.
+// Start kicks off the window-mode tick goroutine. Batch mode flushes
+// inline inside ConsumeMetrics, so Start is a no-op there.
+func (p *cmsProcessor) Start(ctx context.Context, _ component.Host) error {
+	if p.logger != nil {
+		p.logger.Info("Starting Count-Min Sketch processor",
+			zap.String("mode", string(p.cfg.Mode)),
+			zap.Duration("window_duration", p.cfg.WindowDuration),
+		)
+	}
 	if p.cfg.Mode != ModeWindow {
 		return nil
 	}
-
-	// Window mode: start background window loop if a positive window is configured.
 	if p.cfg.WindowDuration <= 0 {
 		return nil
 	}
-
-	ticker := time.NewTicker(p.cfg.WindowDuration)
+	t := time.NewTicker(p.cfg.WindowDuration)
 	p.windowStarted.Store(true)
-
 	go func() {
-		defer func() {
-			ticker.Stop()
-			close(p.doneCh)
-		}()
-
+		defer func() { t.Stop(); close(p.doneCh) }()
 		for {
 			select {
 			case <-ctx.Done():
-				p.emitWindowAndReset()
+				_ = p.FlushWindow(context.Background())
 				return
 			case <-p.stopCh:
-				p.emitWindowAndReset()
+				_ = p.FlushWindow(context.Background())
 				return
-			case <-ticker.C:
-				p.emitWindowAndReset()
+			case <-t.C:
+				_ = p.FlushWindow(context.Background())
 			}
 		}
 	}()
-
 	return nil
 }
 
-func (p *windowedCountMinSketchProcessor) Shutdown(
-	ctx context.Context,
-) error {
+func (p *cmsProcessor) Shutdown(ctx context.Context) error {
 	defer p.shutdownMonitor()
-
-	// Only wait if the window goroutine was actually started; avoids blocking
-	// forever when Start was never called.
 	if p.cfg.Mode != ModeWindow || !p.windowStarted.Load() {
 		return nil
 	}
-
-	// Signal the goroutine and wait for it to finish (or context cancellation).
 	close(p.stopCh)
-
 	select {
 	case <-p.doneCh:
 		return nil
@@ -169,34 +123,37 @@ func (p *windowedCountMinSketchProcessor) Shutdown(
 	}
 }
 
-func (p *windowedCountMinSketchProcessor) Capabilities() consumer.Capabilities {
-	return consumer.Capabilities{MutatesData: true}
-}
-
+// ConsumeMetrics is the OTel pipeline entry. The signature is the
+// processorhelper.ProcessMetricsFunc (`(ctx, md) (pmetric.Metrics,
+// error)`) — the helper forwards the returned md to the next
+// consumer.
 //
-// ─────────────────────────────────────────────────────────────
-// Ingestion phase
-// ─────────────────────────────────────────────────────────────
+// Batch mode synthesizes one output containing originals + sketch
+// metrics (DropOriginal=false) or sketch-only (DropOriginal=true).
 //
-
-func (p *windowedCountMinSketchProcessor) ConsumeMetrics(
-	ctx context.Context,
-	md pmetric.Metrics,
-) (pmetric.Metrics, error) {
+// Window mode observes md into the persistent per-metric Precompute
+// map and forwards md unchanged (DropOriginal=false) or empty
+// (DropOriginal=true). The tick goroutine drives flushes via
+// FlushWindow → nextConsumer.ConsumeMetrics directly.
+func (p *cmsProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	p.recordInput(ctx, md)
-
 	switch p.cfg.Mode {
 	case ModeBatch:
-		out := p.consumeBatch(md)
+		out, err := p.ProcessBatch(ctx, md)
+		if err != nil {
+			return md, err
+		}
 		p.recordOutput(ctx, out)
 		return out, nil
 	case ModeWindow:
-		p.accumulateIntoWindow(md)
-		if !p.cfg.DropOriginal {
-			p.recordOutput(ctx, md)
-			return md, nil
+		if err := p.ProcessMetrics(ctx, md); err != nil {
+			return md, err
 		}
-		return pmetric.NewMetrics(), nil
+		if p.cfg.DropOriginal {
+			return pmetric.NewMetrics(), nil
+		}
+		p.recordOutput(ctx, md)
+		return md, nil
 	default:
 		if p.logger != nil {
 			p.logger.Error("countminsketchprocessor: unknown mode, dropping metrics", zap.Any("mode", p.cfg.Mode))
@@ -205,535 +162,75 @@ func (p *windowedCountMinSketchProcessor) ConsumeMetrics(
 	}
 }
 
-// accumulateIntoWindow ingests metrics into the active window sketches (window mode).
-func (p *windowedCountMinSketchProcessor) accumulateIntoWindow(md pmetric.Metrics) {
-	rms := md.ResourceMetrics()
-	for i := 0; i < rms.Len(); i++ {
-		sms := rms.At(i).ScopeMetrics()
-		for j := 0; j < sms.Len(); j++ {
-			metrics := sms.At(j).Metrics()
-			for k := 0; k < metrics.Len(); k++ {
-				p.ingestMetric(metrics.At(k))
-			}
-		}
-	}
-}
-
-// consumeBatch aggregates a single batch into sketches and returns output metrics
-// according to DropOriginal semantics (batch mode).
-func (p *windowedCountMinSketchProcessor) consumeBatch(md pmetric.Metrics) pmetric.Metrics {
-	// Reuse the window-style accumulation for this batch, then reset.
-	p.accumulateIntoWindow(md)
-
-	sketches := p.buildWindowMetricsAndReset()
-	if sketches.ResourceMetrics().Len() == 0 {
-		if p.cfg.DropOriginal {
-			return pmetric.NewMetrics()
-		}
-		return md
-	}
-
-	if p.cfg.DropOriginal {
-		return sketches
-	}
-
-	// Expansion mode: keep originals and append sketch summaries.
-	out := pmetric.NewMetrics()
-	md.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
-	sketches.ResourceMetrics().MoveAndAppendTo(out.ResourceMetrics())
-	return out
-}
-
-func (p *windowedCountMinSketchProcessor) ingestMetric(
-	metric pmetric.Metric,
-) {
-	switch metric.Type() {
-	case pmetric.MetricTypeGauge:
-		dps := metric.Gauge().DataPoints()
-		for i := 0; i < dps.Len(); i++ {
-			dp := dps.At(i)
-			if !p.matchesMatchers(dp.Attributes()) {
-				continue
-			}
-			p.updateWindowSketch(metric.Name(), dp)
-		}
-	case pmetric.MetricTypeSum:
-		dps := metric.Sum().DataPoints()
-		for i := 0; i < dps.Len(); i++ {
-			dp := dps.At(i)
-			if !p.matchesMatchers(dp.Attributes()) {
-				continue
-			}
-			p.updateWindowSketch(metric.Name(), dp)
-		}
-	case pmetric.MetricTypeCountMinSketch:
-		// Pre-aggregated path: deserialize (or reconstruct from delta) and merge
-		// each incoming sketch into the per-aggregation-key window sketch.
-		dps := metric.CountMinSketch().DataPoints()
-		for i := 0; i < dps.Len(); i++ {
-			dp := dps.At(i)
-			if !p.matchesMatchers(dp.Attributes()) {
-				continue
-			}
-			if len(dp.Sketch()) == 0 {
-				continue
-			}
-			aggregationKey := p.seriesKey(metric.Name(), dp.Attributes())
-			incoming, err := p.inboundDecodeCMS(aggregationKey, dp)
-			if err != nil {
-				p.logger.Error("countminsketchprocessor: failed to decode inbound CountMinSketch", zap.Error(err))
-				continue
-			}
-			if incoming == nil {
-				continue // delta with no snapshot yet
-			}
-			p.mergeWindowSketch(aggregationKey, dp.Attributes(), incoming)
-		}
-	}
-}
-
-// matchesMatchers returns true if attrs satisfies all configured LabelMatchers.
-func (p *windowedCountMinSketchProcessor) matchesMatchers(attrs pcommon.Map) bool {
-	for _, m := range p.cfg.LabelMatchers {
-		v, ok := attrs.Get(m.Key)
-		if !ok || v.AsString() != m.Value {
-			return false
-		}
-	}
-	return true
-}
-
-// seriesKey returns the map key used to locate a series in the window store.
-// When AggregateBy is configured, only those label values form the key (cross-series
-// aggregation). Otherwise the full attribute set is used (per-series, default).
-func (p *windowedCountMinSketchProcessor) seriesKey(metricName string, attrs pcommon.Map) string {
-	return metricName + "::" + p.encodeKey(attrs)
-}
-
-// encodeKey builds a stable string from the labels that form the grouping key.
-// When AggregateBy is set, only those keys are used; otherwise all attributes.
-func (p *windowedCountMinSketchProcessor) encodeKey(attrs pcommon.Map) string {
-	if len(p.cfg.AggregateBy) > 0 {
-		sb := builderPool.Get().(*strings.Builder)
-		sb.Reset()
-		for _, k := range p.cfg.AggregateBy { // already sorted by Validate
-			v, ok := attrs.Get(k)
-			if !ok {
-				continue
-			}
-			sb.WriteString(k)
-			sb.WriteString("=")
-			sb.WriteString(v.AsString())
-			sb.WriteString(";")
-		}
-		s := sb.String()
-		builderPool.Put(sb)
-		return s
-	}
-	return encodeAttributesAsKey(attrs)
-}
-
-// seriesAttrs returns the attribute map to store on a new sketch group.
-// When AggregateBy is configured, only those labels are included in the output.
-// Otherwise a full copy of attrs is returned.
-func (p *windowedCountMinSketchProcessor) seriesAttrs(attrs pcommon.Map) pcommon.Map {
-	out := pcommon.NewMap()
-	if len(p.cfg.AggregateBy) > 0 {
-		for _, k := range p.cfg.AggregateBy {
-			if v, ok := attrs.Get(k); ok {
-				out.PutStr(k, v.AsString())
-			}
-		}
-		return out
-	}
-	attrs.CopyTo(out)
-	return out
-}
-
-// mergeWindowSketch merges an incoming pre-aggregated CMS into the per-key window store.
-func (p *windowedCountMinSketchProcessor) mergeWindowSketch(aggregationKey string, attrs pcommon.Map, incoming *cms.CountMinSketch) {
-	p.mu.RLock()
-	ws, exists := p.activeWindowSketches[aggregationKey]
-	p.mu.RUnlock()
-
-	if !exists {
-		p.mu.Lock()
-		ws, exists = p.activeWindowSketches[aggregationKey]
-		if !exists {
-			ws = p.windowSketchPool.Get().(*windowSketch)
-			if ws.cms != nil && ws.cms.Rows == incoming.Rows && ws.cms.Cols == incoming.Cols {
-				ws.cms.Reset()
-			} else {
-				newCMS, err := cms.NewCountMinSketch(incoming.Rows, incoming.Cols)
-				if err != nil {
-					p.logger.Error("Failed to create CMS for merge", zap.Error(err))
-					p.windowSketchPool.Put(ws)
-					p.mu.Unlock()
-					return
-				}
-				ws.cms = newCMS
-			}
-			ws.attrs = p.seriesAttrs(attrs)
-			ws.sampleCount = 0
-			p.activeWindowSketches[aggregationKey] = ws
-		}
-		p.mu.Unlock()
-	}
-
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-	if err := ws.cms.Merge(incoming); err != nil {
-		p.logger.Error("Failed to merge CMS", zap.Error(err))
-	}
-}
-
-func (p *windowedCountMinSketchProcessor) updateWindowSketch(
-	metricName string,
-	dp pmetric.NumberDataPoint,
-) {
-	aggregationKey := p.seriesKey(metricName, dp.Attributes())
-
-	p.mu.RLock()
-	ws, exists := p.activeWindowSketches[aggregationKey]
-	p.mu.RUnlock()
-
-	if !exists {
-		p.mu.Lock()
-		ws, exists = p.activeWindowSketches[aggregationKey]
-		if !exists {
-			ws = p.windowSketchPool.Get().(*windowSketch)
-			if ws.cms != nil && ws.cms.Rows == p.cfg.Rows && ws.cms.Cols == p.cfg.Columns {
-				ws.cms.Reset()
-			} else {
-				newCMS, err := cms.NewCountMinSketch(p.cfg.Rows, p.cfg.Columns)
-				if err != nil {
-					p.logger.Error("Failed to create CMS", zap.Error(err))
-					p.windowSketchPool.Put(ws)
-					p.mu.Unlock()
-					return
-				}
-				ws.cms = newCMS
-			}
-			ws.attrs = p.seriesAttrs(dp.Attributes())
-			ws.sampleCount = 0
-			p.activeWindowSketches[aggregationKey] = ws
-		}
-		p.mu.Unlock()
-	}
-
-	// Update Sketch
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
-	// GENERATE SKETCH INPUT
-	// We convert the attributes into string keys, then convert them to SketchInput.
-	// SketchInput will calculate the hash using xxhash internally.
-	flowKey := encodeAttributesAsKey(dp.Attributes())
-	input := common.FromString(flowKey)
-
-	// INSERT INTO SKETCH
-	// New API: InsertWithHash(hash uint64)
-	// Note: the library currently performs frequency increment (+1).
-	// Value metric (float/int) is currently not used as a weight.
-	ws.cms.InsertWithHash(input.Hash)
-
-	ws.sampleCount++
-}
-
-//
-// ─────────────────────────────────────────────────────────────
-// Emission phase (tumbling window boundary)
-// ─────────────────────────────────────────────────────────────
-//
-
-// buildWindowMetricsAndReset snapshots the current window sketches, resets the
-// state, and returns a Metrics payload containing sketch summaries.
-func (p *windowedCountMinSketchProcessor) buildWindowMetricsAndReset() pmetric.Metrics {
-	p.mu.Lock()
-	if len(p.activeWindowSketches) == 0 {
-		p.mu.Unlock()
-		return pmetric.NewMetrics()
-	}
-
-	// Snapshot and reset
-	windowSnapshot := p.activeWindowSketches
-	p.activeWindowSketches = make(map[string]*windowSketch)
-	p.mu.Unlock()
-
-	md := pmetric.NewMetrics()
-	rm := md.ResourceMetrics().AppendEmpty()
-	sm := rm.ScopeMetrics().AppendEmpty()
-	sm.Scope().SetName("otelcol/windowed-countmin")
-
-	now := pcommon.NewTimestampFromTime(time.Now())
-
-	for aggregationKey, ws := range windowSnapshot {
-		ws.mu.Lock()
-		rows := ws.cms.Rows
-		cols := ws.cms.Cols
-		sampleCount := ws.sampleCount
-		outputAttrs := ws.attrs
-
-		var payload []byte
-		var encoding string
-		var err error
-
-		if p.cfg.TransmitSketch && p.cfg.DeltaTransmission {
-			// Delta path: compute sparse diff against the last snapshot.
-			// Delta transmission is proto-only today; the msgpack wire
-			// format doesn't yet carry deltas (tracked as a follow-up
-			// once sketchlib-go grows `apply_delta`). When
-			// `encoding: msgpack` is set AND delta is on, the
-			// processor falls through to proto delta for per-window
-			// diffs and still tags the encoding as delta so the
-			// consumer knows.
-			p.snapshotsMu.Lock()
-			snap, hasSnap := p.snapshots[aggregationKey]
-			p.snapshotsMu.Unlock()
-
-			if hasSnap {
-				deltaMsg, deltaErr := cms.ComputeDelta(snap, ws.cms, p.cfg.DeltaThreshold)
-				if deltaErr == nil {
-					payload, err = cms.SerializeDelta(deltaMsg)
-				} else {
-					err = deltaErr
-				}
-				encoding = "proto_delta"
-			} else {
-				// First window for this partition — send full sketch.
-				payload, err = serializeCMS(ws.cms)
-				encoding = "proto_full"
-			}
-
-			// Update snapshot to current state (clone before pool return).
-			newSnap := cloneCMS(ws.cms)
-			p.snapshotsMu.Lock()
-			p.snapshots[aggregationKey] = newSnap
-			p.snapshotsMu.Unlock()
-		} else if p.cfg.TransmitSketch {
-			// Non-delta path: emit a full sketch payload in the
-			// configured encoding. sketchlib-go exposes a parallel
-			// `SerializeMsgpack` that matches the cross-language wire
-			// format ASAPQuery-backend's
-			// `CountMinSketchAccumulator::from_msgpack_bytes` consumes.
-			switch p.cfg.Encoding {
-			case EncodingMsgpack:
-				payload, err = ws.cms.SerializeMsgpack()
-				encoding = "msgpack_full"
-			default:
-				payload, err = serializeCMS(ws.cms)
-				encoding = "proto_full"
-			}
-		}
-
-		ws.mu.Unlock()
-		p.windowSketchPool.Put(ws)
-
-		if p.cfg.TransmitSketch && err != nil {
-			p.logger.Error("Failed to serialize/delta CMS", zap.Error(err))
-			continue
-		}
-
-		m := sm.Metrics().AppendEmpty()
-		m.SetName(p.cfg.MetricName)
-		m.SetUnit("1")
-
-		if p.cfg.TransmitSketch {
-			// Typed CountMinSketchDataPoint emission — what
-			// ASAPQuery-backend's modified-OTLP sketch router
-			// consumes as `Metric.data = CountMinSketch{...}`.
-			// Before this change the processor emitted a Gauge
-			// with the sketch payload stuffed into a
-			// `sketch_payload` byte attribute, which the backend
-			// router never recognized as a sketch variant.
-			cmsMetric := m.SetEmptyCountMinSketch()
-			cmsMetric.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
-			dp := cmsMetric.DataPoints().AppendEmpty()
-			dp.SetTimestamp(now)
-			outputAttrs.CopyTo(dp.Attributes())
-			dp.SetSampleCount(uint64(sampleCount))
-			dp.SetRows(int32(rows))
-			dp.SetCols(int32(cols))
-			dp.SetSketch(payload)
-			// Map the internal encoding string onto the proto enum
-			// the backend expects. `proto_delta` is the sparse-cell
-			// diff format (delta transmission); `msgpack_full` is
-			// the cross-language sketchlib-go msgpack wire format;
-			// everything else is the default sketchlib `CountMinState`
-			// proto.
-			switch encoding {
-			case "proto_delta":
-				dp.SetEncoding(pmetric.CountMinSketchEncodingDelta)
-			case "msgpack_full":
-				dp.SetEncoding(pmetric.CountMinSketchEncodingMsgpack)
-			default:
-				// "proto_full" and any unexpected fallback.
-				dp.SetEncoding(pmetric.CountMinSketchEncodingProto)
-			}
-		} else {
-			// Non-transmit mode: caller only wants the
-			// per-window sample count for monitoring, not the
-			// sketch bytes. Keep the legacy Gauge emission so
-			// existing dashboards that read `countmin` as a
-			// scalar series continue to work.
-			gauge := m.SetEmptyGauge()
-			dp := gauge.DataPoints().AppendEmpty()
-			dp.SetTimestamp(now)
-			outputAttrs.CopyTo(dp.Attributes())
-			dp.Attributes().PutInt("rows", int64(rows))
-			dp.Attributes().PutInt("cols", int64(cols))
-			dp.Attributes().PutInt("sample_count", int64(sampleCount))
-			dp.SetDoubleValue(float64(sampleCount))
-		}
-	}
-
-	return md
-}
-
-func (p *windowedCountMinSketchProcessor) emitWindowAndReset() {
-	md := p.buildWindowMetricsAndReset()
+// ProcessBatch / ProcessMetrics / FlushWindow are the public test
+// hooks pinned by ADR-0002 §"Test API contract". ProcessBatch
+// synchronously decodes → observes → ticks → encodes; the result is
+// the legacy "input + sketch" or "sketch-only" md depending on
+// DropOriginal. ProcessMetrics observes md into the persistent
+// per-metric Precompute map without flushing. FlushWindow forces a
+// tick across every active Precompute and forwards via nextConsumer.
+func (p *cmsProcessor) ProcessBatch(_ context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	if md.ResourceMetrics().Len() == 0 {
-		return
+		return md, nil
 	}
-
-	p.recordOutput(context.Background(), md)
-	if err := p.nextConsumer.ConsumeMetrics(context.Background(), md); err != nil {
-		p.logger.Error("Failed to emit windowed CMS", zap.Error(err))
+	// Observe-then-tick: each batch is its own window in batch mode
+	// because the per-metric Precompute is rebuilt per call (cleared
+	// after Tick drains it). The pcByName map persists across calls
+	// for window mode but the tick path drops every drained name.
+	if err := p.observeAll(md); err != nil {
+		return md, err
 	}
-}
-
-func (p *windowedCountMinSketchProcessor) enableSelfMonitoring(settings component.TelemetrySettings, processorID string) {
-	monitor, err := selfmonitor.New(settings, processorID, "countmin", p.activeSeriesCount)
-	if err != nil {
-		if p.logger != nil {
-			p.logger.Warn("countminsketchprocessor: failed to initialize self-monitoring", zap.Error(err))
-		}
-		return
+	// Each batch is its own window in batch mode (PrecomputeConfig.
+	// Mode=Batch makes Tick always drain). Forcing a far-future
+	// timestamp ensures the active window rotates regardless of
+	// wall-clock. We keep pcByName entries across calls so the
+	// runtime's snapshot cache survives — that's what
+	// DeltaTransmission needs to compute window-N deltas against
+	// the window-(N-1) snapshot.
+	const forceTickMs uint64 = 1<<62 - 1
+	out := p.tickAndEncode(forceTickMs)
+	if p.cfg.DropOriginal {
+		return out, nil
 	}
-	p.monitor = monitor
-}
-
-func (p *windowedCountMinSketchProcessor) shutdownMonitor() {
-	if p.monitor != nil {
-		p.monitor.Shutdown()
+	if out.ResourceMetrics().Len() == 0 {
+		return md, nil
 	}
+	// Expansion mode: graft sketch RMs onto md so the legacy
+	// "originals + appended sketch summaries" shape holds.
+	out.ResourceMetrics().MoveAndAppendTo(md.ResourceMetrics())
+	return md, nil
 }
 
-func (p *windowedCountMinSketchProcessor) recordInput(ctx context.Context, md pmetric.Metrics) {
-	if p.monitor != nil {
-		p.monitor.RecordInput(ctx, md)
-	}
-}
-
-func (p *windowedCountMinSketchProcessor) recordOutput(ctx context.Context, md pmetric.Metrics) {
-	if p.monitor != nil {
-		p.monitor.RecordOutput(ctx, md)
-	}
-}
-
-func (p *windowedCountMinSketchProcessor) activeSeriesCount() int64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return int64(len(p.activeWindowSketches))
-}
-
-//
-// ─────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────
-//
-
-// inboundDecodeCMS decodes an incoming CountMinSketch data point, handling both
-// full (Gob-encoded) and sparse-delta payloads. For delta payloads it applies
-// the delta onto the last stored snapshot to reconstruct the current full state.
-// Returns (nil, nil) when a delta arrives before any full snapshot.
-func (p *windowedCountMinSketchProcessor) inboundDecodeCMS(aggregationKey string, dp pmetric.CountMinSketchDataPoint) (*cms.CountMinSketch, error) {
-	payload := dp.Sketch()
-
-	switch dp.Encoding() {
-	case pmetric.CountMinSketchEncodingDelta:
-		p.inboundMu.Lock()
-		snap, hasSnap := p.inboundSnapshots[aggregationKey]
-		p.inboundMu.Unlock()
-		if !hasSnap || snap == nil {
-			return nil, nil
-		}
-		reconstructed := cloneCMS(snap)
-		if reconstructed == nil {
-			return nil, nil
-		}
-		deltaMsg, err := cms.DeserializeDelta(payload)
-		if err != nil {
-			return nil, err
-		}
-		cms.ApplyDelta(reconstructed, deltaMsg)
-		p.inboundMu.Lock()
-		p.inboundSnapshots[aggregationKey] = cloneCMS(reconstructed)
-		p.inboundMu.Unlock()
-		return reconstructed, nil
-
-	default: // CountMinSketchEncodingProto or unspecified
-		decoded, err := deserializeCMS(payload)
-		if err != nil {
-			return nil, err
-		}
-		p.inboundMu.Lock()
-		p.inboundSnapshots[aggregationKey] = cloneCMS(decoded)
-		p.inboundMu.Unlock()
-		return decoded, nil
-	}
-}
-
-func serializeCMS(s *cms.CountMinSketch) ([]byte, error) {
-	// Opt-1+Opt-2: FrequencyOnly sint64 — omits Sum/Sum2 and uses packed varint.
-	return s.SerializeProtoBytesFO()
-}
-
-func deserializeCMS(data []byte) (*cms.CountMinSketch, error) {
-	return cms.DeserializeCountMinSketchFromProtoBytes(data)
-}
-
-// cloneCMS returns a deep copy of s suitable for use as a delta snapshot.
-// It serializes and deserializes to ensure full independence from the original.
-func cloneCMS(s *cms.CountMinSketch) *cms.CountMinSketch {
-	data, err := s.SerializeProtoBytes()
-	if err != nil {
+func (p *cmsProcessor) ProcessMetrics(_ context.Context, md pmetric.Metrics) error {
+	if md.ResourceMetrics().Len() == 0 {
 		return nil
 	}
-	clone, err := cms.DeserializeCountMinSketchFromProtoBytes(data)
-	if err != nil {
+	return p.observeAll(md)
+}
+
+func (p *cmsProcessor) FlushWindow(ctx context.Context) error {
+	out := p.tickAndEncode(uint64(time.Now().UnixMilli()))
+	if out.ResourceMetrics().Len() == 0 {
 		return nil
 	}
-	return clone
+	p.recordOutput(ctx, out)
+	return p.nextConsumer.ConsumeMetrics(ctx, out)
 }
 
-func buildAggregationKey(
-	metricName string,
-	attrs pcommon.Map,
-) string {
-	return metricName + "::" + encodeAttributesAsKey(attrs)
-}
-
-func encodeAttributesAsKey(
-	attrs pcommon.Map,
-) string {
-	var keys []string
-	attrs.Range(func(k string, _ pcommon.Value) bool {
-		keys = append(keys, k)
-		return true
-	})
-	sort.Strings(keys)
-
-	sb := builderPool.Get().(*strings.Builder)
-	sb.Reset()
-	for _, k := range keys {
-		v, _ := attrs.Get(k)
-		sb.WriteString(k)
-		sb.WriteString("=")
-		sb.WriteString(v.AsString())
-		sb.WriteString(";")
+// precomputeForLocked returns (creating if necessary) the Precompute
+// for the given input metric name. Caller MUST hold p.mu.
+func (p *cmsProcessor) precomputeForLocked(name string) precompute.Precompute {
+	if pp, ok := p.pcByName[name]; ok {
+		return pp
 	}
-	s := sb.String()
-	builderPool.Put(sb)
-	return s
+	useMsgpack := p.cfg.Encoding == EncodingMsgpack && !p.cfg.DeltaTransmission
+	pp := precompute.New(
+		p.cfg.toPrecomputeConfig(name),
+		func() precompute.Sketch {
+			return newCMSSketchWrapper(p.cfg.Rows, p.cfg.Columns, useMsgpack)
+		},
+		cmsSketchObserver{},
+	)
+	p.pcByName[name] = pp
+	return pp
 }

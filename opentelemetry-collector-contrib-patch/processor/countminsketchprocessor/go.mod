@@ -3,6 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/count
 go 1.24.0
 
 require (
+	github.com/ProjectASAP/asap-precompute-go v0.0.0-00010101000000-000000000000
 	github.com/ProjectASAP/sketchlib-go v0.0.0-20260328221809-b24e56e64e94
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.47.0
@@ -73,3 +74,7 @@ retract (
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden => ../../pkg/golden
 
 replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
+
+// Local asap-precompute-go checkout — Phase 2 step 2.9 introduces
+// the runtime delegation. Path is relative to this processor.
+replace github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
