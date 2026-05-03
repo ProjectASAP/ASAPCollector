@@ -163,7 +163,7 @@ func TestWindowModeFlush(t *testing.T) {
 	assert.Len(t, sink.AllMetrics(), 1, "window mode forwards input pass-through (PR #211)")
 
 	// Manually flush.
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 
 	// 1 ConsumeMetrics + 1 flushWindow synthesized output = 2 sink entries.
 	out := sink.AllMetrics()
@@ -201,7 +201,7 @@ func TestWindowModeMergesAcrossBatches(t *testing.T) {
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), makeGaugeMetrics("hits", []float64{1, 2, 3})))
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), makeGaugeMetrics("hits", []float64{3, 4, 5})))
 
-	require.NoError(t, proc.flushWindow(context.Background()))
+	require.NoError(t, proc.FlushWindow(context.Background()))
 
 	// Window mode forwards inputs through (PR #211): 2 ConsumeMetrics +
 	// 1 flushWindow synthesized output = 3 sink entries. Scan for the
@@ -251,7 +251,7 @@ func TestWindowModeRaceFree(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	_ = proc.flushWindow(context.Background())
+	_ = proc.FlushWindow(context.Background())
 }
 
 // TestHLLAggregateByCollapsesSeries verifies that data points with the same aggregate_by
