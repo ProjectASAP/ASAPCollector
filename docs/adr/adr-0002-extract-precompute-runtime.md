@@ -10,20 +10,23 @@
 
 ## Context
 
-Today the windowing / delta / scheduler state machine lives
-inside the Go OTel processors (~3850 LoC across
-`opentelemetry-collector-contrib-patch/processor/{ddsketch,kll,hll,countsketch,countminsketch}processor/processor.go`)
-and inside the Rust ingest path
+Today the windowing / delta / scheduler runtime logic for the
+**edge** path lives inside the Go OTel processors (~3850 LoC
+across
+`opentelemetry-collector-contrib-patch/processor/{ddsketch,kll,hll,countsketch,countminsketch}processor/processor.go`).
+The backend's precompute engine
 (`ASAPQuery-backend/asap-query-engine/src/precompute_operators/*.rs`
-+ `drivers/ingest/otel.rs::apply_modified_otlp_delta_bytes`).
++ `drivers/ingest/otel.rs::apply_modified_otlp_delta_bytes`) is a
+separate concern with its own design and is **not** the subject
+of this ADR — see the backend's own design docs.
 
-Each of those files conflates four concerns:
+Each of the edge-side files conflates four concerns:
 
 1. **OTel binding** — implementing `processor.Metrics`, accepting
    `pmetric.Metrics`, calling `nextConsumer.ConsumeMetrics`.
 2. **Data shape adapter** — extracting `(timestamp, attrs, value)`
    tuples out of `pmetric.Gauge | Sum | DDSketchDataPoint | …`.
-3. **Runtime state machine** — `accumulateIntoWindow`,
+3. **Runtime** — `accumulateIntoWindow`,
    `flushWindow`, snapshot caches, label matchers, scheduler.
 4. **Output binding** — emitting `pmetric.Metrics` of the right
    typed variant, calling `nextConsumer.ConsumeMetrics`.
@@ -43,12 +46,13 @@ Two new artifacts, one per language:
   separate repo for now; promotion to a separate repo is a
   Phase-7 / repo-rename concern).
 - **`asap-precompute-rs`** — Rust crate living under
-  `ASAPCollector/asap-precompute-rs/` for build-time deployment
-  inside an OTel-shaped ingest, and dual-published from the same
-  source as a normal Rust crate that `ASAPQuery-backend` can
-  depend on for its backend-side ingest path. Concretely the crate
-  source lives in this repo and `ASAPQuery-backend` consumes it
-  via git URL, the same way it depends on `asap_sketchlib` today.
+  `ASAPCollector/asap-precompute-rs/`. Mirrors
+  `asap-precompute-go`'s runtime bit-identically and is the
+  Rust **edge** runtime: future Rust-based edge agents (Vector
+  adapter, OTAP-Rust, Arrow-backed shims) consume it. The
+  backend's precompute engine inside `ASAPQuery-backend` is a
+  separate concern with its own design and is **out of scope for
+  this ADR**.
 
 ### Public API
 
@@ -133,10 +137,11 @@ mutating input md in place.
 - **Go (Phase 2):** per-observation `Observe` latency p99 must
   stay within 10% of the pre-refactor in-line implementation.
   Verified via the existing fake-exporter b3-delta benchmark.
-- **Rust (Phase 3):** entry point `observe_envelope` stays
-  bit-identical to today's per-accumulator
-  `apply_proto_delta_bytes`. No behavior drift on backend
-  PromQL output.
+- **Rust (Phase 3):** `asap-precompute-rs` mirrors
+  `asap-precompute-go`'s runtime bit-identically (same
+  `SeriesKey` format, same `SnapshotCache` always-refresh
+  semantics, same `Drain` rotation). Both are edge runtimes; the
+  backend's precompute engine is a separate design.
 
 ### Repo / module layout
 
@@ -191,9 +196,11 @@ ASAPCollector/
 - Telegraf / OTAP / Vector adapters become viable — they reuse
   `asap-precompute-{go,rs}` rather than re-implementing window /
   snapshot / matcher logic.
-- Backend ingest path becomes a thin adapter calling the same
-  Rust crate the agents would use, eliminating the agent /
-  backend duplication for delta-apply logic.
+- Future Rust-based edge agents (Vector, OTAP-Rust, Arrow-backed
+  shims) become viable — they reuse `asap-precompute-rs` rather
+  than re-implementing window / snapshot / matcher logic. The
+  backend's precompute engine is independent of this crate and
+  evolves on its own design.
 - Future Sketch trait additions (e.g., `observe_batch` for
   columnar Arrow ingest) become single-crate changes.
 
@@ -214,7 +221,11 @@ ASAPCollector/
 - No wire-format changes.
 - No config-file changes for existing OTel collector
   deployments.
-- Backend PromQL output preserved bit-for-bit (R4 mitigation).
+- `SketchEnvelope.payload` bytes stay byte-identical
+  pre/post-extraction (R4 mitigation), preserving compatibility
+  with any consumer of the wire format. The backend's PromQL
+  output is governed by its own ADR; this ADR only commits to the
+  wire format.
 
 ## Phase-2 / Phase-3 execution plan
 

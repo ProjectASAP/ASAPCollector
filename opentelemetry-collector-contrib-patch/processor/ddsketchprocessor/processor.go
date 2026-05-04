@@ -3,7 +3,7 @@
 
 // Package ddsketchprocessor implements the DDSketch metrics processor
 // as a thin shim that delegates the windowing, snapshot caching, and
-// delta encoding state machine to the host-neutral asap-precompute-go
+// delta encoding to the host-neutral asap-precompute-go
 // runtime (ADR-0002, Phase 2 step 2.5). The shim itself only owns
 // OTel-side lifecycle, config translation, and quantile materialization
 // when TransmitSketch=false; in-place md merging and metadata

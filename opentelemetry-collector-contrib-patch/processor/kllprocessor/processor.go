@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package kllprocessor is the OTel KLL processor shim. As of Phase 2
-// step 2.6 the windowing / series-keying / snapshot state machine
+// step 2.6 the windowing / series-keying / snapshot runtime
 // lives in github.com/ProjectASAP/asap-precompute-go; this file is a
 // thin adapter that decodes pmetric.Metrics into precompute
 // Observations, drives a Precompute per input metric, and re-encodes

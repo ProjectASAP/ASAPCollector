@@ -8,7 +8,7 @@ edge precompute runtime described in
 [ADR-0002](../docs/adr/adr-0002-extract-precompute-runtime.md).
 
 This crate owns the windowing, snapshot caching, and delta encoding
-state machine that today lives inside `ASAPQuery-backend`'s ingest
+runtime logic that today lives inside `ASAPQuery-backend`'s ingest
 path (`asap-query-engine/src/precompute_operators/*.rs` and
 `drivers/ingest/otel.rs::apply_modified_otlp_delta_bytes`).
 Per-platform Adapter implementations (the Layer-4 shims) translate
@@ -20,10 +20,10 @@ back to the host's native event.
 
 This PR is the **bootstrap**: types, traits, and basic struct
 skeletons. The API surface mirrors `asap-precompute-go` 1:1 so the
-state-machine migration from `ASAPQuery-backend`'s ingest path lands
+runtime migration from `ASAPQuery-backend`'s ingest path lands
 in subsequent PRs (Phase 3 step 2+) against a stable contract.
 
-State-machine methods (`Precompute::observe`, `observe_envelope`,
+Runtime methods (`Precompute::observe`, `observe_envelope`,
 `tick`, `drain`, `WindowState::*`, `SnapshotCache::compute_delta`)
 are `unimplemented!()` and reference the Go file they migrate from.
 
@@ -78,5 +78,5 @@ cargo fmt --check
 ```
 
 All four must pass. Tests today are type-level (constructors, trait
-impls, serde round-trip); behavioral tests for the state machine
+impls, serde round-trip); behavioral tests for the runtime
 arrive with the migration in Phase 3 step 2.

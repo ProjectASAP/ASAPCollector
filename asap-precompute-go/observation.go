@@ -3,7 +3,7 @@
 // by `docs/adr/adr-0002-extract-precompute-runtime.md`.
 //
 // This package owns the windowing, snapshot caching, and delta
-// encoding state machine that today lives inside each OTel
+// encoding runtime logic that today lives inside each OTel
 // processor in `opentelemetry-collector-contrib-patch/processor/`.
 // Per-platform Adapter implementations (the Layer-4 shims) translate
 // their host's native event into Observation, hand it to a

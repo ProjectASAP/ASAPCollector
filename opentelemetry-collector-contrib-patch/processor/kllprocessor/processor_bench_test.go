@@ -16,7 +16,7 @@ package kllprocessor
 //   - kllprocessor's ProcessMetrics is an alias for ProcessBatch (the
 //     shim ticks every call) — there's no observe-only public method,
 //     so this bench exercises the full batch path. Tick cost is
-//     bounded by the runtime's window state machine and small for a
+//     bounded by the runtime's window logic and small for a
 //     2-series fixture; the dominant cost remains the per-observation
 //     KLL Update.
 //   - b.ReportAllocs() surfaces inner-loop allocations.

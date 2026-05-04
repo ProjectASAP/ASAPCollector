@@ -50,3 +50,7 @@ otel_collector_benchmark/benchmark_results/
 # e2esdkbench compiled binary
 opentelemetry-app/e2esdkbench
 deploy/scripts/__pycache__/
+
+# Cross-language parity fixtures — generated locally via
+# `GOLDEN_REGEN=1 go test -run TestGenerateGolden ./integration/parity/...`
+integration/parity/golden/*.bin

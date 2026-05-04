@@ -10,7 +10,7 @@ and the bulk of the code today lives under
 `opentelemetry-collector-contrib-patch/`. That framing misleads
 contributors and users alike: the reusable artifact isn't "an OTel
 Collector with sketch processors", it's an *edge precompute
-runtime* — a state machine that observes per-event samples,
+runtime* that observes per-event samples,
 maintains windowed sketch state, transmits compact summaries on a
 schedule, and applies inbound deltas against cached snapshots.
 The OTel Collector is *one host* for that runtime.
@@ -226,7 +226,7 @@ adapter is leaking samples.
 
 ## 6. Layer 3 — Precompute runtime
 
-The host-neutral state machine. Each `Precompute` instance owns
+The host-neutral runtime. Each `Precompute` instance owns
 one sketch type; multiple sketch types in a deployment = multiple
 `Precompute` instances side-by-side.
 

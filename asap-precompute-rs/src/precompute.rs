@@ -1,22 +1,19 @@
 //! [`Sketch`] trait family + [`Precompute`] trait. Mirrors
 //! `asap-precompute-go/precompute.go`.
-//!
-//! Bootstrap status: trait surface is final; the concrete
-//! [`PrecomputeImpl`] struct's state-machine methods
-//! (`observe`, `observe_envelope`, `tick`, `drain`) are
-//! `unimplemented!()` and migrate from `ASAPQuery-backend`'s ingest
-//! path in Phase 3 step 2.
 
+use std::any::Any;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use thiserror::Error;
 
 use crate::config::{PrecomputeConfig, PrecomputeConfigSet};
-use crate::envelope::{SketchEnvelope, SketchType};
-use crate::observation::{Observation, ObservationValue};
+use crate::envelope::{Encoding, SketchEnvelope, SketchType};
+use crate::matchers::series_attrs;
+use crate::observation::{KeyValue, Observation, ObservationValue, ObservationValueKind};
 use crate::snapshot_cache::SnapshotCache;
-use crate::window::WindowState;
+use crate::window::{SeriesEntry, WindowState};
 
 /// Narrow interface the Layer-3 runtime needs from a Layer-1 sketch
 /// implementation.
@@ -69,6 +66,19 @@ pub trait Sketch: Send + Sync {
     /// Zeros the sketch in place. Used by window rotation and by
     /// sketch object pools.
     fn reset(&mut self);
+
+    /// Type-erased downcast accessor used by paired
+    /// [`SketchObserver`] implementations to recover the concrete
+    /// sketch type.
+    ///
+    /// Implementations that want observer downcasting (e.g. real
+    /// sketch wrappers in [`crate::sketches`]) override this with
+    /// `fn as_any_mut(&mut self) -> &mut dyn Any { self }`. Test
+    /// fakes that route observations via byte-level apply_delta
+    /// (see `tests/runtime.rs::FakeSketch`) can keep the default
+    /// impl which never matches a real downcast — the FakeObserver
+    /// doesn't call `as_any_mut`.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Output of [`Sketch::compute_delta_against`].
@@ -208,7 +218,7 @@ pub enum PrecomputeError {
     Other(String),
 }
 
-/// Host-neutral state machine described in design-doc §6.2 and
+/// Host-neutral runtime described in design-doc §6.2 and
 /// ADR-0002 §"Public API".
 ///
 /// Mirrors Go `precompute.Precompute`. One [`Precompute`] instance
@@ -313,24 +323,11 @@ pub type SketchFactory = Box<dyn Fn() -> Box<dyn Sketch> + Send + Sync>;
 /// but is exposed publicly here so tests and downstream binaries
 /// can construct one directly. Fields are private; construction
 /// goes through [`PrecomputeImpl::new`].
-///
-/// **Phase 3 step 1 (this PR):** the state-machine methods (`observe`,
-/// `observe_envelope`, `tick`, `drain`) are
-/// [`unimplemented!()`](core::unimplemented). The full
-/// implementation migrates from `ASAPQuery-backend/asap-query-engine/
-/// src/precompute_operators/*.rs` and `drivers/ingest/otel.rs::
-/// apply_modified_otlp_delta_bytes` in Phase 3 step 2.
 pub struct PrecomputeImpl {
     cfg: Mutex<Option<PrecomputeConfig>>,
-    // Phase 3 step 2: wired into observe()/observe_envelope() once
-    // the state-machine bodies migrate from ASAPQuery-backend.
-    #[allow(dead_code)]
     sketch_factory: Option<SketchFactory>,
-    #[allow(dead_code)]
     observer: Option<BoxedObserver>,
-    #[allow(dead_code)]
     window: Mutex<WindowState>,
-    #[allow(dead_code)]
     snapshot_cache: SnapshotCache,
     stats: Mutex<StatsSnapshot>,
     sketch_type: SketchType,
@@ -382,49 +379,244 @@ impl PrecomputeImpl {
     }
 }
 
+impl PrecomputeImpl {
+    /// Returns a clone of the active config or `None`. Mirrors Go
+    /// `(*precompute).activeConfig`.
+    fn active_config(&self) -> Option<PrecomputeConfig> {
+        self.cfg.lock().expect("config lock poisoned").clone()
+    }
+
+    /// Walks the closed series, serializes each into a
+    /// [`SketchEnvelope`] (honoring `delta_transmission`), and
+    /// updates the rolling stats counters. Mirrors Go
+    /// `(*precompute).finishRotate`.
+    fn finish_rotate(
+        &self,
+        closed: Vec<SeriesEntry>,
+        rng: [u64; 2],
+        now_ms: u64,
+    ) -> Vec<SketchEnvelope> {
+        if closed.is_empty() {
+            return Vec::new();
+        }
+        let cfg = match self.active_config() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        let mut envelopes = Vec::with_capacity(closed.len());
+        for entry in closed.into_iter() {
+            // Best-effort: skip serialization errors. Real shims log
+            // via their host logger; the Layer-3 runtime is host-
+            // neutral and has no logger.
+            if let Ok(Some(env)) = self.serialize_series(&entry, &cfg, rng) {
+                envelopes.push(env);
+            }
+        }
+        let mut stats = self.stats.lock().expect("stats lock poisoned");
+        stats.output_envelopes = stats
+            .output_envelopes
+            .saturating_add(envelopes.len() as u64);
+        stats.last_tick_ms = now_ms;
+        stats.last_emitted_envelopes = envelopes.len() as u64;
+        envelopes
+    }
+
+    /// Turns a closed series entry into a [`SketchEnvelope`].
+    /// Honors `delta_transmission` via the snapshot cache. Mirrors
+    /// Go `(*precompute).serializeSeries`.
+    fn serialize_series(
+        &self,
+        entry: &SeriesEntry,
+        cfg: &PrecomputeConfig,
+        rng: [u64; 2],
+    ) -> Result<Option<SketchEnvelope>, PrecomputeError> {
+        // Rebuild the same key the window used at admit time.
+        let series_key = cfg.series_key_for_entry(&entry.resource_labels, &entry.labels);
+        let (payload, encoding) = if cfg.delta_transmission {
+            let result = self.snapshot_cache.compute_delta(
+                &series_key,
+                entry.sketch.as_ref(),
+                cfg.delta_threshold,
+            )?;
+            let enc = if result.is_full {
+                Encoding::ProtoFull
+            } else {
+                Encoding::ProtoDelta
+            };
+            (result.payload, enc)
+        } else {
+            let snap = entry.sketch.snapshot()?;
+            // Even without delta transmission, refreshing the cached
+            // outbound snapshot keeps the cache consistent for any
+            // later config change that flips delta_transmission to
+            // true.
+            self.snapshot_cache.cache_outbound(&series_key, &snap);
+            (snap, Encoding::ProtoFull)
+        };
+        if payload.is_empty() {
+            return Ok(None);
+        }
+        let mut labels = series_attrs(&entry.labels, &cfg.aggregate_by);
+        if cfg.emit_window_stats {
+            // Append the two operator-visibility attrs the legacy
+            // countsketchprocessor stamps onto each emitted data
+            // point. Adding them at the envelope-Labels layer makes
+            // them flow through the OTel adapter's
+            // KeyValuesToAttributes naturally, so runtime and legacy
+            // data points carry the same attribute set.
+            let window_seconds = if cfg.window.size == Duration::ZERO {
+                0
+            } else {
+                cfg.window.size.as_secs()
+            };
+            labels.push(KeyValue::new(
+                "sample_count".to_string(),
+                entry.count.to_string(),
+            ));
+            labels.push(KeyValue::new(
+                "window_duration_seconds".to_string(),
+                window_seconds.to_string(),
+            ));
+        }
+        Ok(Some(SketchEnvelope {
+            schema_version: 1,
+            sketch_type: cfg.sketch_type,
+            agg_id: cfg.agg_id,
+            resource_labels: entry.resource_labels.clone(),
+            labels,
+            window_start_ms: rng[0],
+            window_end_ms: rng[1],
+            encoding,
+            payload,
+            hash_spec: None,
+            metric_name: cfg.metric_name.clone(),
+            count: entry.count,
+            aggregation_temporality: cfg.temporality,
+        }))
+    }
+}
+
 impl Precompute for PrecomputeImpl {
-    fn observe(&self, _obs: &Observation) -> Result<(), PrecomputeError> {
-        // PHASE 3 STEP 2: migrate from
-        // ASAPQuery-backend/asap-query-engine/src/precompute_operators/*.rs
-        // and drivers/ingest/otel.rs::apply_modified_otlp_delta_bytes.
-        // Reference: asap-precompute-go/precompute.go::Observe and
-        // window.go::observe.
-        unimplemented!(
-            "PrecomputeImpl::observe — migrates from ASAPQuery-backend ingest path in Phase 3 step 2; \
-             see asap-precompute-go/precompute.go::Observe + window.go::observe for the contract"
-        )
+    fn observe(&self, obs: &Observation) -> Result<(), PrecomputeError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(PrecomputeError::Other("instance is closed".into()));
+        }
+        let cfg = match self.active_config() {
+            Some(c) => c,
+            None => return Err(PrecomputeError::NoConfig),
+        };
+
+        // Envelope-valued observations route through the dedicated
+        // pre-aggregated path so we never explode them to scalars.
+        // Mirror Go: the input_observations counter is bumped before
+        // routing so envelope-valued observations also count.
+        {
+            let mut stats = self.stats.lock().expect("stats lock poisoned");
+            stats.input_observations = stats.input_observations.saturating_add(1);
+        }
+
+        if obs.value.kind == ObservationValueKind::Envelope {
+            if let Some(env) = obs.value.envelope.as_ref() {
+                return self.observe_envelope(env);
+            }
+        }
+
+        if !cfg.matches(obs) {
+            return Ok(());
+        }
+
+        let sketch_factory = self
+            .sketch_factory
+            .as_ref()
+            .ok_or_else(|| PrecomputeError::Other("sketch factory not configured".into()))?;
+        let observer = self
+            .observer
+            .as_ref()
+            .ok_or_else(|| PrecomputeError::Other("sketch observer not configured".into()))?;
+
+        let mut window = self.window.lock().expect("window lock poisoned");
+        let mut stats = self.stats.lock().expect("stats lock poisoned");
+        let result = window.observe(obs, &cfg, sketch_factory, observer, &mut stats);
+        if let Err(err) = &result {
+            match err {
+                PrecomputeError::SeriesCapExceeded => {
+                    stats.dropped_overflow = stats.dropped_overflow.saturating_add(1);
+                }
+                PrecomputeError::LateData => {
+                    stats.dropped_late = stats.dropped_late.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+        result
     }
 
-    fn observe_envelope(&self, _env: &SketchEnvelope) -> Result<(), PrecomputeError> {
-        // PHASE 3 STEP 2: migrate the envelope-merge path from
-        // ASAPQuery-backend (sketch_envelope_accumulator + per-sketch
-        // accumulator ApplyDelta paths). Reference:
-        // asap-precompute-go/precompute.go::ObserveEnvelope and
-        // window.go::observeEnvelope.
-        unimplemented!(
-            "PrecomputeImpl::observe_envelope — migrates from ASAPQuery-backend ingest path in \
-             Phase 3 step 2; see asap-precompute-go/precompute.go::ObserveEnvelope + \
-             window.go::observeEnvelope for the contract"
-        )
+    fn observe_envelope(&self, env: &SketchEnvelope) -> Result<(), PrecomputeError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(PrecomputeError::Other("instance is closed".into()));
+        }
+        let cfg = match self.active_config() {
+            Some(c) => c,
+            None => return Err(PrecomputeError::NoConfig),
+        };
+        // AggID match — strict, per design-doc §5.2 enforcement
+        // point #4. Mismatches are hard errors, not silent drops.
+        if cfg.agg_id != 0 && env.agg_id != 0 && env.agg_id != cfg.agg_id {
+            return Err(PrecomputeError::AggIdMismatch {
+                envelope: env.agg_id,
+                config: cfg.agg_id,
+            });
+        }
+        if cfg.sketch_type != SketchType::Unspecified
+            && env.sketch_type != SketchType::Unspecified
+            && env.sketch_type != cfg.sketch_type
+        {
+            return Err(PrecomputeError::SketchTypeMismatch {
+                envelope: env.sketch_type,
+                config: cfg.sketch_type,
+            });
+        }
+
+        let sketch_factory = self
+            .sketch_factory
+            .as_ref()
+            .ok_or_else(|| PrecomputeError::Other("sketch factory not configured".into()))?;
+
+        let mut window = self.window.lock().expect("window lock poisoned");
+        let mut stats = self.stats.lock().expect("stats lock poisoned");
+        stats.input_envelopes = stats.input_envelopes.saturating_add(1);
+        let result =
+            window.observe_envelope(env, &cfg, sketch_factory, &self.snapshot_cache, &mut stats);
+        if let Err(err) = &result {
+            if matches!(err, PrecomputeError::SeriesCapExceeded) {
+                stats.dropped_overflow = stats.dropped_overflow.saturating_add(1);
+            }
+        }
+        result
     }
 
-    fn tick(&self, _now_ms: u64) -> Vec<SketchEnvelope> {
-        // PHASE 3 STEP 2: window rotation + serializeSeries lands here.
-        // Reference: asap-precompute-go/precompute.go::Tick +
-        // window.go::rotate + precompute.go::serializeSeries.
-        unimplemented!(
-            "PrecomputeImpl::tick — migrates in Phase 3 step 2; see \
-             asap-precompute-go/precompute.go::Tick + window.go::rotate"
-        )
+    fn tick(&self, now_ms: u64) -> Vec<SketchEnvelope> {
+        let cfg = match self.active_config() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        let (closed, rng) = {
+            let mut window = self.window.lock().expect("window lock poisoned");
+            window.rotate(now_ms, &cfg)
+        };
+        self.finish_rotate(closed, rng, now_ms)
     }
 
     fn drain(&self) -> Vec<SketchEnvelope> {
-        // PHASE 3 STEP 2: shutdown / batch-flush rotation. Reference:
-        // asap-precompute-go/precompute.go::Drain + window.go::drain.
-        unimplemented!(
-            "PrecomputeImpl::drain — migrates in Phase 3 step 2; see \
-             asap-precompute-go/precompute.go::Drain + window.go::drain"
-        )
+        let cfg = match self.active_config() {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        let (closed, rng) = {
+            let mut window = self.window.lock().expect("window lock poisoned");
+            window.drain(&cfg)
+        };
+        self.finish_rotate(closed, rng, rng[1])
     }
 
     fn update_config(&self, cs: &PrecomputeConfigSet) {
