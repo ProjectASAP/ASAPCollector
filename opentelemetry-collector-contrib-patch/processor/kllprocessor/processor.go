@@ -124,11 +124,17 @@ func (p *kllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) e
 // ProcessBatch and ProcessMetrics return synthesized output without
 // touching nextConsumer; FlushWindow forces a tick and forwards via
 // nextConsumer (no-op when no closed window has data).
+//
+// All three paths route through Precompute.Drain rather than Tick:
+// the legacy flushWindow rotated regardless of wall-clock, the
+// ticker goroutine fires once per WindowDuration so every fire
+// wants to flush, and the shutdown branches need to capture
+// mid-window state that Tick(time.Now()) would silently drop.
 func (p *kllProcessor) ProcessBatch(_ context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	if err := p.observeAll(md); err != nil {
 		return pmetric.NewMetrics(), err
 	}
-	return p.tickAndEncode(uint64(time.Now().UnixMilli())), nil
+	return p.drainAndEncode(), nil
 }
 
 func (p *kllProcessor) ProcessMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
@@ -136,7 +142,7 @@ func (p *kllProcessor) ProcessMetrics(ctx context.Context, md pmetric.Metrics) (
 }
 
 func (p *kllProcessor) FlushWindow(ctx context.Context) error {
-	out := p.tickAndEncode(uint64(time.Now().UnixMilli()))
+	out := p.drainAndEncode()
 	if out.ResourceMetrics().Len() == 0 {
 		return nil
 	}
@@ -161,9 +167,10 @@ func (p *kllProcessor) observeAll(md pmetric.Metrics) error {
 	return nil
 }
 
-// tickAndEncode rotates every per-metric window and synthesizes one
-// pmetric.Metrics under a single "otelcol/kllprocessor" scope.
-func (p *kllProcessor) tickAndEncode(nowMs uint64) pmetric.Metrics {
+// drainAndEncode rotates every per-metric window unconditionally
+// and synthesizes one pmetric.Metrics under a single
+// "otelcol/kllprocessor" scope.
+func (p *kllProcessor) drainAndEncode() pmetric.Metrics {
 	out := pmetric.NewMetrics()
 	p.mu.Lock()
 	pcs := make(map[string]precompute.Precompute, len(p.pcByName))
@@ -174,7 +181,7 @@ func (p *kllProcessor) tickAndEncode(nowMs uint64) pmetric.Metrics {
 	var sm pmetric.ScopeMetrics
 	var smInit bool
 	for name, pp := range pcs {
-		envs := pp.Tick(nowMs)
+		envs := pp.Drain()
 		if len(envs) == 0 {
 			continue
 		}

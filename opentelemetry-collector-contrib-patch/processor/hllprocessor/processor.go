@@ -53,13 +53,6 @@ type hllProcessor struct {
 	// Only used when TransmitSketch=true.
 	cardMu        sync.Mutex
 	cardSnapshots map[string][]byte
-
-	// flushSeq monotonically advances on every FlushWindow / batch
-	// ProcessBatch call so the runtime's per-Precompute window keeps
-	// rotating. Without it, repeated Tick(nowMs) calls with the same
-	// timestamp would land back in the same already-advanced bucket
-	// and the window would refuse to rotate (nowMs < activeEndMs).
-	flushSeq atomic.Uint64
 }
 
 func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *hllProcessor {
@@ -142,11 +135,17 @@ func (p *hllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) e
 // ProcessBatch and ProcessMetrics return synthesized output without
 // touching nextConsumer; FlushWindow forces a tick and forwards via
 // nextConsumer (no-op when no closed window has data).
+//
+// All three paths route through Precompute.Drain rather than Tick:
+// the legacy flushWindow rotated regardless of wall-clock, and
+// Drain is the runtime's dedicated unconditional-rotation entry
+// point introduced precisely so callers don't need pseudo-timestamp
+// workarounds (see asap-precompute-go/precompute.go::Drain).
 func (p *hllProcessor) ProcessBatch(_ context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	if err := p.observeAll(md); err != nil {
 		return pmetric.NewMetrics(), err
 	}
-	return p.tickAndEncode(p.nextFlushTick()), nil
+	return p.drainAndEncode(), nil
 }
 
 func (p *hllProcessor) ProcessMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
@@ -154,28 +153,12 @@ func (p *hllProcessor) ProcessMetrics(ctx context.Context, md pmetric.Metrics) (
 }
 
 func (p *hllProcessor) FlushWindow(ctx context.Context) error {
-	out := p.tickAndEncode(p.nextFlushTick())
+	out := p.drainAndEncode()
 	if out.ResourceMetrics().Len() == 0 {
 		return nil
 	}
 	p.recordOutput(ctx, out)
 	return p.nextConsumer.ConsumeMetrics(ctx, out)
-}
-
-// nextFlushTick returns a monotonically-increasing pseudo-timestamp
-// that's always far enough in the future to force a window rotation
-// on the next Precompute.Tick. The runtime rotates when
-// `nowMs >= activeEndMs`; after each rotation the active window
-// snaps to a bucket containing the supplied timestamp, so a fixed
-// constant would refuse to rotate the second time. Bumping by a
-// large stride per call (well above any test's window duration)
-// keeps each rotation crisp without leaking real-time semantics
-// into the runtime — the legacy flushWindow rotated regardless of
-// wall-clock.
-func (p *hllProcessor) nextFlushTick() uint64 {
-	const stride uint64 = 1 << 32 // ~50 days in ms; far exceeds any window
-	const base uint64 = 1 << 50   // start in the deep future to avoid races with real-time observe timestamps
-	return base + p.flushSeq.Add(1)*stride
 }
 
 // observeAll routes each metric in md through its per-name Precompute,
@@ -198,9 +181,14 @@ func (p *hllProcessor) observeAll(md pmetric.Metrics) error {
 	return nil
 }
 
-// tickAndEncode rotates every per-metric window and synthesizes one
-// pmetric.Metrics under a single "otelcol/hllprocessor" scope.
-func (p *hllProcessor) tickAndEncode(nowMs uint64) pmetric.Metrics {
+// drainAndEncode rotates every per-metric window unconditionally and
+// synthesizes one pmetric.Metrics under a single "otelcol/hllprocessor"
+// scope. Drain is the right primitive here because the legacy
+// flushWindow rotated regardless of wall-clock, the ticker goroutine
+// fires once per WindowDuration so every fire wants to drain, and the
+// shutdown path needs to flush mid-window state that Tick(time.Now())
+// would silently drop.
+func (p *hllProcessor) drainAndEncode() pmetric.Metrics {
 	out := pmetric.NewMetrics()
 	p.mu.Lock()
 	pcs := make(map[string]precompute.Precompute, len(p.pcByName))
@@ -211,7 +199,7 @@ func (p *hllProcessor) tickAndEncode(nowMs uint64) pmetric.Metrics {
 	var sm pmetric.ScopeMetrics
 	var smInit bool
 	for name, pp := range pcs {
-		envs := pp.Tick(nowMs)
+		envs := pp.Drain()
 		if len(envs) == 0 {
 			continue
 		}

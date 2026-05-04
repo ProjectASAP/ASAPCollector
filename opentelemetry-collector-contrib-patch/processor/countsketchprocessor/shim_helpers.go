@@ -138,7 +138,7 @@ func (p *countSketchProcessor) observeFloat(name string, resourceAttrs, dpAttrs 
 	return p.pc.Observe(&obs)
 }
 
-// flushToMetrics ticks the Precompute and converts the closed
+// flushToMetrics drains the Precompute and converts the closed
 // envelopes into pmetric.Metrics. TransmitSketch=true takes the
 // otel.Encode path then stamps typed-DP fields the host-neutral
 // adapter doesn't know about (Dimension / Epsilon / Delta / Encoding).
@@ -146,11 +146,11 @@ func (p *countSketchProcessor) observeFloat(name string, resourceAttrs, dpAttrs 
 // emission so existing dashboards keep working.
 //
 // Force-drain semantics: legacy emitWindowAndReset rotated regardless
-// of wall-clock; passing a far-future tick timestamp ensures
-// Precompute.Tick always considers the active window due.
+// of wall-clock; Precompute.Drain is the runtime's dedicated entry
+// point for that contract. Drain replaces the previous
+// pseudo-timestamp Tick(1<<62-1) workaround.
 func (p *countSketchProcessor) flushToMetrics() pmetric.Metrics {
-	const forceTickMs uint64 = 1<<62 - 1
-	envs := p.pc.Tick(forceTickMs)
+	envs := p.pc.Drain()
 	if len(envs) == 0 {
 		return pmetric.NewMetrics()
 	}

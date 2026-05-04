@@ -154,13 +154,12 @@ func (a *AllSketches) Stop() {
 	}
 	close(a.done)
 	a.wg.Wait()
-	// Final drain after the ticker goroutine has exited. Pass a wall
-	// clock that is unambiguously past the active window's exclusive
-	// upper bound (now + 2*window) so the runtime's tumbling rotate
-	// fires regardless of how long the plugin actually ran — without
-	// this, Stop'ing before the window naturally closes would silently
-	// drop in-flight observations.
-	a.flush(time.Now().Add(2 * a.window))
+	// Final drain after the ticker goroutine has exited. Drain
+	// rotates the runtime's active window unconditionally so
+	// mid-window observations land in the output rather than being
+	// silently dropped — Tick(time.Now()) would no-op when Stop
+	// fires before the window naturally closes.
+	a.drainAndEmit()
 }
 
 // tickLoop owns the flush cadence. On each tick it calls flush(now);
@@ -186,7 +185,22 @@ func (a *AllSketches) flush(now time.Time) {
 	if a.pc == nil || a.adapter == nil || a.acc == nil {
 		return
 	}
-	envs := a.pc.Tick(uint64(now.UnixMilli()))
+	a.emit(a.pc.Tick(uint64(now.UnixMilli())))
+}
+
+// drainAndEmit unconditionally rotates the active window via
+// Precompute.Drain and emits the resulting envelopes. Used on Stop
+// where Tick would silently drop pending mid-window observations.
+func (a *AllSketches) drainAndEmit() {
+	if a.pc == nil || a.adapter == nil || a.acc == nil {
+		return
+	}
+	a.emit(a.pc.Drain())
+}
+
+// emit encodes envelopes through the codec and pushes them to the
+// stashed accumulator. Shared tail of flush and drainAndEmit.
+func (a *AllSketches) emit(envs []*precompute.SketchEnvelope) {
 	if len(envs) == 0 {
 		return
 	}
