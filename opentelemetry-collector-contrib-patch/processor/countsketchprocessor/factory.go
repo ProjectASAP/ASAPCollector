@@ -51,6 +51,6 @@ func createMetricsProcessor(
 		proc.processMetrics,
 		processorhelper.WithStart(proc.Start),
 		processorhelper.WithShutdown(proc.Shutdown),
-		processorhelper.WithCapabilities(consumer.Capabilities{MutatesData: true}),
+		processorhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 	)
 }

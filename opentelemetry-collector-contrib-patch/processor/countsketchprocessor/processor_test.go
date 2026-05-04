@@ -29,7 +29,7 @@ func TestProcessorPassThrough(t *testing.T) {
 	metrics := buildTestMetrics()
 
 	// Process metrics
-	out, err := proc.processMetrics(context.Background(), metrics)
+	out, err := proc.ProcessMetrics(context.Background(), metrics)
 	require.NoError(t, err)
 
 	// Shutdown
@@ -57,7 +57,7 @@ func TestProcessorFlushLogic(t *testing.T) {
 
 	// Send some data to populate sketches
 	metrics := buildTestMetrics()
-	_, err = proc.processMetrics(context.Background(), metrics)
+	_, err = proc.ProcessMetrics(context.Background(), metrics)
 	require.NoError(t, err)
 
 	// Wait for a window flush (window is 100ms)
@@ -88,7 +88,7 @@ func TestBatchModePassThroughAndSummary(t *testing.T) {
 	metrics := buildTestMetrics()
 
 	// Process a single batch.
-	out, err := proc.processMetrics(context.Background(), metrics)
+	out, err := proc.ProcessMetrics(context.Background(), metrics)
 	require.NoError(t, err)
 
 	err = proc.Shutdown(context.Background())
@@ -144,7 +144,7 @@ func TestGroupByPartitioning(t *testing.T) {
 		m.SetEmptyGauge().DataPoints().AppendEmpty().SetDoubleValue(1.0)
 	}
 
-	out, err := proc.processMetrics(context.Background(), md)
+	out, err := proc.ProcessMetrics(context.Background(), md)
 	require.NoError(t, err)
 
 	// Collect all partition_key values from the output. Uses the
@@ -193,7 +193,7 @@ func TestWindowModeGroupBy(t *testing.T) {
 		dp.Attributes().PutStr("service.name", svc)
 	}
 
-	_, err := proc.processMetrics(context.Background(), md)
+	_, err := proc.ProcessMetrics(context.Background(), md)
 	require.NoError(t, err)
 
 	time.Sleep(200 * time.Millisecond)
@@ -230,7 +230,7 @@ func TestBatchModeDropOriginal(t *testing.T) {
 
 	metrics := buildTestMetrics()
 
-	out, err := proc.processMetrics(context.Background(), metrics)
+	out, err := proc.ProcessMetrics(context.Background(), metrics)
 	require.NoError(t, err)
 
 	err = proc.Shutdown(context.Background())
@@ -314,7 +314,7 @@ func TestEmptyInput(t *testing.T) {
 	proc := newProcessor(zap.NewNop(), cfg, next)
 
 	empty := pmetric.NewMetrics()
-	out, err := proc.processMetrics(context.Background(), empty)
+	out, err := proc.ProcessMetrics(context.Background(), empty)
 	require.NoError(t, err)
 	require.Equal(t, 0, out.ResourceMetrics().Len())
 }
@@ -338,9 +338,9 @@ func TestBatchModeNoStatePersistence(t *testing.T) {
 	metrics1 := buildTestMetrics()
 	metrics2 := buildTestMetrics()
 
-	out1, err := proc.processMetrics(context.Background(), metrics1)
+	out1, err := proc.ProcessMetrics(context.Background(), metrics1)
 	require.NoError(t, err)
-	out2, err := proc.processMetrics(context.Background(), metrics2)
+	out2, err := proc.ProcessMetrics(context.Background(), metrics2)
 	require.NoError(t, err)
 
 	// In batch mode each call returns its own sketch summary in the output; state
@@ -369,7 +369,7 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			metrics := buildTestMetrics()
-			_, _ = proc.processMetrics(context.Background(), metrics)
+			_, _ = proc.ProcessMetrics(context.Background(), metrics)
 		}()
 	}
 	wg.Wait()
@@ -397,7 +397,7 @@ func TestWindowModeFlushDuringConsume(t *testing.T) {
 	go func() {
 		for i := 0; i < 50; i++ {
 			metrics := buildTestMetrics()
-			_, _ = proc.processMetrics(context.Background(), metrics)
+			_, _ = proc.ProcessMetrics(context.Background(), metrics)
 		}
 		close(done)
 	}()
@@ -427,7 +427,7 @@ func TestShutdownDuringConsume(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 100; i++ {
 			metrics := buildTestMetrics()
-			_, _ = proc.processMetrics(context.Background(), metrics)
+			_, _ = proc.ProcessMetrics(context.Background(), metrics)
 		}
 	}()
 	wg.Add(1)

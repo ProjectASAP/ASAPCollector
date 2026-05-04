@@ -177,7 +177,7 @@ func TestCSDelta_FirstWindowSendsFullSketch(t *testing.T) {
 
 	proc := newProcessor(zap.NewNop(), cfg, new(consumertest.MetricsSink))
 
-	out, err := proc.processMetrics(context.Background(), makeCSGaugeMetrics("svc", 10))
+	out, err := proc.ProcessMetrics(context.Background(), makeCSGaugeMetrics("svc", 10))
 	require.NoError(t, err)
 
 	dps := getCSOutputDPs(out)
@@ -207,11 +207,11 @@ func TestCSDelta_SubsequentWindowsSendDelta(t *testing.T) {
 	proc := newProcessor(zap.NewNop(), cfg, new(consumertest.MetricsSink))
 
 	// Window 1 — establishes snapshot.
-	_, err := proc.processMetrics(context.Background(), makeCSGaugeMetrics("svc", 10))
+	_, err := proc.ProcessMetrics(context.Background(), makeCSGaugeMetrics("svc", 10))
 	require.NoError(t, err)
 
 	// Window 2 — should send delta.
-	out2, err := proc.processMetrics(context.Background(), makeCSGaugeMetrics("svc", 5))
+	out2, err := proc.ProcessMetrics(context.Background(), makeCSGaugeMetrics("svc", 5))
 	require.NoError(t, err)
 
 	dps := getCSOutputDPs(out2)
@@ -240,7 +240,7 @@ func TestCSDelta_RoundTrip(t *testing.T) {
 	proc := newProcessor(zap.NewNop(), cfg, new(consumertest.MetricsSink))
 
 	// Window 1: 50 insertions → snapshot created.
-	out1, err := proc.processMetrics(context.Background(), makeCSGaugeMetrics("svc", 50))
+	out1, err := proc.ProcessMetrics(context.Background(), makeCSGaugeMetrics("svc", 50))
 	require.NoError(t, err)
 	dps1 := getCSOutputDPs(out1)
 	require.Len(t, dps1, 1)
@@ -250,7 +250,7 @@ func TestCSDelta_RoundTrip(t *testing.T) {
 
 	// Window 2: 30 insertions of the same key → delta against window-1 snapshot.
 	md2 := makeCSGaugeMetrics("svc", 30)
-	out2, err := proc.processMetrics(context.Background(), md2)
+	out2, err := proc.ProcessMetrics(context.Background(), md2)
 	require.NoError(t, err)
 	dps2 := getCSOutputDPs(out2)
 	require.Len(t, dps2, 1)
@@ -271,7 +271,7 @@ func TestCSDelta_RoundTrip(t *testing.T) {
 	// Reference: fresh no-delta processor with exactly window-2 data.
 	refProc := newProcessor(zap.NewNop(), refCSConfig(), new(consumertest.MetricsSink))
 	require.NoError(t, refCSConfig().Validate())
-	refOut, err := refProc.processMetrics(context.Background(), md2)
+	refOut, err := refProc.ProcessMetrics(context.Background(), md2)
 	require.NoError(t, err)
 	refDps := getCSOutputDPs(refOut)
 	require.Len(t, refDps, 1)
@@ -285,19 +285,31 @@ func TestCSDelta_RoundTrip(t *testing.T) {
 // TestCSDelta_MultipleWindowsConvergence simulates 5 consecutive delta windows
 // and verifies that the receiver's reconstructed sketch matches an independent
 // reference processor for each window.
+//
+// Receiver protocol after Phase-2 step 2.8: the sender's snapshot
+// cache holds the FIRST PROTO_FULL frame as a baseline and emits
+// each subsequent delta as `current_window_state - baseline`. The
+// receiver reconstructs the current window by applying each delta to
+// a clone of the baseline (NOT to the previously reconstructed
+// sketch, as the legacy processor did when it refreshed its
+// snapshot every window). The asap-precompute-go runtime's
+// SnapshotCache.ComputeDelta keeps the cached outbound at the prior
+// baseline whenever the delta stays under threshold, so all
+// downstream receivers can apply against the same fixed baseline —
+// see asap-precompute-go/snapshot_cache.go.
 func TestCSDelta_MultipleWindowsConvergence(t *testing.T) {
 	cfg := deltaCSConfig()
 	require.NoError(t, cfg.Validate())
 
 	proc := newProcessor(zap.NewNop(), cfg, new(consumertest.MetricsSink))
 
-	var prevSnap *countsketch.CountSketch
+	var baseline *countsketch.CountSketch
 
 	for w := 0; w < 5; w++ {
 		insertCount := 20 * (w + 1)
 		md := makeCSGaugeMetrics("svc", insertCount)
 
-		out, err := proc.processMetrics(context.Background(), md)
+		out, err := proc.ProcessMetrics(context.Background(), md)
 		require.NoError(t, err, "window %d", w)
 
 		dps := getCSOutputDPs(out)
@@ -311,20 +323,24 @@ func TestCSDelta_MultipleWindowsConvergence(t *testing.T) {
 		if enc == "proto_full" {
 			currentCS, err = countsketch.DeserializeCountSketchFromProtoBytes(rawPayload)
 			require.NoError(t, err, "window %d: full deserialize", w)
+			baseline = cloneCSTest(currentCS)
+			require.NotNil(t, baseline)
 		} else {
 			require.Equal(t, "proto_delta", enc, "window %d: unexpected encoding", w)
-			require.NotNil(t, prevSnap, "window %d: delta before full snapshot", w)
+			require.NotNil(t, baseline, "window %d: delta before full snapshot", w)
 			deltaMsg, derr := countsketch.DeserializeDelta(rawPayload)
 			require.NoError(t, derr, "window %d: delta deserialize", w)
-			currentCS = cloneCSTest(prevSnap)
+			// Apply delta to the cached baseline — not the previous
+			// reconstruction — to match the runtime's
+			// cumulative-against-baseline emit shape.
+			currentCS = cloneCSTest(baseline)
 			require.NotNil(t, currentCS)
 			countsketch.ApplyDelta(currentCS, deltaMsg)
 		}
-		prevSnap = currentCS
 
 		// Reference: fresh no-delta processor with only this window's data.
 		refProc := newProcessor(zap.NewNop(), refCSConfig(), new(consumertest.MetricsSink))
-		refOut, err := refProc.processMetrics(context.Background(), md)
+		refOut, err := refProc.ProcessMetrics(context.Background(), md)
 		require.NoError(t, err, "window %d: reference proc", w)
 		refDps := getCSOutputDPs(refOut)
 		require.Len(t, refDps, 1, "window %d: reference output", w)
@@ -345,7 +361,7 @@ func TestCSDelta_DisabledAlwaysSendsFullSketch(t *testing.T) {
 	proc := newProcessor(zap.NewNop(), cfg, new(consumertest.MetricsSink))
 
 	for i := 0; i < 3; i++ {
-		out, err := proc.processMetrics(context.Background(), makeCSGaugeMetrics("svc", 5))
+		out, err := proc.ProcessMetrics(context.Background(), makeCSGaugeMetrics("svc", 5))
 		require.NoError(t, err)
 		dps := getCSOutputDPs(out)
 		require.Len(t, dps, 1, "window %d", i)
@@ -386,7 +402,7 @@ func TestCSDelta_PartitionKeyIsolation(t *testing.T) {
 	}
 
 	// Window 1: both services → both send proto_full (no prior snapshot).
-	out1, err := proc.processMetrics(context.Background(), buildTwoService(30, 20))
+	out1, err := proc.ProcessMetrics(context.Background(), buildTwoService(30, 20))
 	require.NoError(t, err)
 	dps1 := getCSOutputDPs(out1)
 	require.Len(t, dps1, 2, "window 1: expected 2 partition data points")
@@ -396,7 +412,7 @@ func TestCSDelta_PartitionKeyIsolation(t *testing.T) {
 	}
 
 	// Window 2: both services → both send proto_delta.
-	out2, err := proc.processMetrics(context.Background(), buildTwoService(15, 10))
+	out2, err := proc.ProcessMetrics(context.Background(), buildTwoService(15, 10))
 	require.NoError(t, err)
 	dps2 := getCSOutputDPs(out2)
 	require.Len(t, dps2, 2, "window 2: expected 2 partition data points")

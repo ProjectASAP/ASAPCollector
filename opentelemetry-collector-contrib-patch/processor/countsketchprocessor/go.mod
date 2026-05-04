@@ -3,6 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/count
 go 1.25.5
 
 require (
+	github.com/ProjectASAP/asap-precompute-go v0.0.0-00010101000000-000000000000
 	github.com/ProjectASAP/sketchlib-go v0.0.0-20260328221809-b24e56e64e94
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.47.0
@@ -13,7 +14,6 @@ require (
 	go.opentelemetry.io/collector/processor v1.47.0
 	go.opentelemetry.io/collector/processor/processorhelper v0.141.0
 	go.uber.org/zap v1.27.1
-	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -47,6 +47,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
@@ -55,3 +56,5 @@ replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/
 replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
 
 replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
+
+replace github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
