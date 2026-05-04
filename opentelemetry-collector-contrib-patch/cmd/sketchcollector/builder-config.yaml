@@ -322,3 +322,12 @@ replaces:
   # published commit and ApplyDelta / SerializeMsgpack /
   # NewFromState constructors would not resolve.
   - github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
+  # asap-precompute-go is a private module living as a sibling
+  # subdirectory of this repo (ASAPCollector/asap-precompute-go).
+  # Same redirect intent as sketchlib-go but a different path: the
+  # OCB-generated cmd/sketchcollector/go.mod lives 3 dirs deep under
+  # the ASAPCollector repo root (`./opentelemetry-collector-contrib-patch/cmd/sketchcollector`),
+  # so ../../../asap-precompute-go resolves to the in-repo subdirectory.
+  # (sketchlib-go uses one extra `..` because it lives as a sibling
+  # repo of ASAPCollector, one level up from this repo root.)
+  - github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go

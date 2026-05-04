@@ -82,6 +82,9 @@ SKETCHCOL_DIR="${PATCH_DIR}/cmd/sketchcollector"
 if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/sketchlib-go" "${SKETCHCOL_DIR}/go.mod" 2>/dev/null; then
   echo "replace github.com/ProjectASAP/sketchlib-go => ${ROOT_DIR}/../sketchlib-go" >> "${SKETCHCOL_DIR}/go.mod"
 fi
+if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/asap-precompute-go" "${SKETCHCOL_DIR}/go.mod" 2>/dev/null; then
+  echo "replace github.com/ProjectASAP/asap-precompute-go => ${ROOT_DIR}/asap-precompute-go" >> "${SKETCHCOL_DIR}/go.mod"
+fi
 
 cd "${SKETCHCOL_DIR}"
 GONOSUMCHECK="github.com/ProjectASAP/*" GONOSUMDB="github.com/ProjectASAP/*" go build -o sketchcollector . 2>&1
