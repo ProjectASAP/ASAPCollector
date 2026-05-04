@@ -275,6 +275,19 @@ map, a window manager (tumbling / sliding / batch), an outbound
 snapshot cache for delta encoding, and an inbound snapshot cache
 for delta apply.
 
+**Delta snapshot semantics.** Each `ComputeDelta` call updates the
+cached previous snapshot to the current one, so successive
+sub-threshold deltas are each computed against the immediately
+preceding window — never against a stale baseline. This matches the
+established behavior of the OTel sketch processors (DDSketch / KLL /
+HLL / CountSketch / CMS) and is the only supported semantic — there
+is no configurable "refresh only on full" mode. (An earlier
+iteration of `asap-precompute-go::SnapshotCache` only refreshed the
+cache when the wrapper returned `isFull=true`; that was a design bug
+because it forced downstream consumers to merge a chain of deltas
+back to the original baseline rather than apply each delta to the
+previous window's reconstructed state. The bug is fixed.)
+
 Crash recovery is intentionally out of the trait. Today's
 collector is stateless across restarts; the backend persists via
 `SimpleMapStore`. A future `PersistentPrecompute: Precompute`

@@ -86,7 +86,12 @@ doc (§5.1, §6.2, §6.3). The summary contract:
   `snapshots map[string][]byte` (Go) and
   `IngestState.sketch_snapshots` (Rust) maps move into
   `snapshot_cache.go` / `snapshot_cache.rs` with the same
-  per-series-key contract.
+  per-series-key contract — every `ComputeDelta` call updates the
+  cached previous snapshot to the current one (always-refresh),
+  matching the legacy processors' "snapshot-update-after-every-emit"
+  behavior. There is no configurable "refresh-only-on-full" mode;
+  successive sub-threshold deltas are each computed against the
+  immediately preceding window.
 - Backwards-compat for the Go OTel processors during Phase 2:
   each existing `processor/{ddsketch,kll,hll,countsketch,countminsketch}processor/processor.go`
   reduces to a ~50-line shim that delegates to

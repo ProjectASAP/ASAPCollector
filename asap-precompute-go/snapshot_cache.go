@@ -76,6 +76,17 @@ func (c *SnapshotCache) GetInbound(seriesKey string) []byte {
 // isFull means the runtime should emit PROTO_FULL (either no prior
 // snapshot existed, or the delta exceeded threshold).
 //
+// Semantics — always-refresh: every call to ComputeDelta updates the
+// cached previous snapshot to the current sketch state. Successive
+// sub-threshold deltas are therefore each computed against the
+// immediately preceding window, matching the established behavior of
+// all five legacy OTel sketch processors (DDSketch / KLL / HLL /
+// CountSketch / CountMinSketch). There is no configurable
+// "refresh-only-on-full" mode — that earlier design was a bug because
+// it forced downstream consumers to merge a chain of deltas back to
+// the original baseline rather than apply each delta to the previous
+// window's reconstructed state.
+//
 // The Sketch interface's ComputeDeltaAgainst does the actual diff
 // using the algorithm-specific delta-encoding rules from sketchlib-go.
 func (c *SnapshotCache) ComputeDelta(
@@ -89,34 +100,40 @@ func (c *SnapshotCache) ComputeDelta(
 	c.mu.RLock()
 	prev := c.outbound[seriesKey]
 	c.mu.RUnlock()
+	// Compute the wire payload first (full on first call or above
+	// threshold; sparse delta otherwise).
 	if prev == nil {
-		// First time — emit full and cache.
-		full, err := current.Snapshot()
-		if err != nil {
-			return nil, false, fmt.Errorf("snapshot: %w", err)
+		// First time — emit full.
+		full, snapErr := current.Snapshot()
+		if snapErr != nil {
+			return nil, false, fmt.Errorf("snapshot: %w", snapErr)
 		}
-		c.CacheOutbound(seriesKey, full)
-		return full, true, nil
+		payload = full
+		isFull = true
+	} else {
+		delta, full, dErr := current.ComputeDeltaAgainst(prev, threshold)
+		if dErr != nil {
+			return nil, false, fmt.Errorf("compute delta: %w", dErr)
+		}
+		payload = delta
+		isFull = full
 	}
-	delta, isFull, err := current.ComputeDeltaAgainst(prev, threshold)
-	if err != nil {
-		return nil, false, fmt.Errorf("compute delta: %w", err)
-	}
+	// Always refresh the cached outbound to the latest snapshot, so
+	// the next ComputeDelta call diffs against the just-emitted
+	// window. When isFull=true the wire payload IS the snapshot, so
+	// reuse it; otherwise serialize a fresh full snapshot for the
+	// cache. Both branches end with c.outbound[seriesKey] == latest
+	// full state.
 	if isFull {
-		// Above threshold; refresh the cached outbound to the new
-		// full snapshot so the next delta is computed against it.
-		full, err := current.Snapshot()
-		if err != nil {
-			return nil, false, fmt.Errorf("snapshot: %w", err)
+		c.CacheOutbound(seriesKey, payload)
+	} else {
+		full, snapErr := current.Snapshot()
+		if snapErr != nil {
+			return nil, false, fmt.Errorf("snapshot: %w", snapErr)
 		}
 		c.CacheOutbound(seriesKey, full)
-		return full, true, nil
 	}
-	// Below threshold; the cached outbound stays at `prev` —
-	// the next delta computes against the same baseline so all
-	// recipients can apply against it. (Mirrors today's
-	// ddsketch processor behavior.)
-	return delta, false, nil
+	return payload, isFull, nil
 }
 
 // Reset clears all cached state (used in tests and on shutdown).
