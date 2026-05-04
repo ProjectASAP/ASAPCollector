@@ -317,6 +317,43 @@ func (w *windowState) rotate(nowMs uint64, cfg *PrecomputeConfig) ([]*seriesEntr
 		return nil, [2]uint64{0, 0}
 	}
 
+	return w.rotateLocked(nowMs, cfg)
+}
+
+// drain unconditionally rotates the active window regardless of
+// wall-clock time. Used by Precompute.Drain on shutdown paths to
+// flush pending mid-window observations that would otherwise be
+// silently dropped by Tick's `nowMs < activeEndMs` gate.
+//
+// Returns the slice of closed series and the window range
+// [start, end) in millis. The next active window starts at the
+// same boundary Tick would have used at natural rotation
+// (activeStartMs := old activeEndMs; activeEndMs += size).
+//
+// When the active window is already empty drain is a no-op:
+// it neither emits envelopes nor advances the window bounds,
+// so callers can invoke Drain multiple times on shutdown without
+// fast-forwarding the window through empty buckets.
+func (w *windowState) drain(cfg *PrecomputeConfig) ([]*seriesEntry, [2]uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.initialized {
+		return nil, [2]uint64{0, 0}
+	}
+	if len(w.series) == 0 {
+		return nil, [2]uint64{0, 0}
+	}
+	// Hand a "now" pegged to the active end so advanceWindow
+	// snaps the next window forward by exactly one size — the
+	// same boundary Tick would have used had it fired naturally.
+	return w.rotateLocked(w.activeEndMs, cfg)
+}
+
+// rotateLocked is the shared rotation body for rotate and drain.
+// Caller must hold w.mu (write lock). Captures the active series,
+// resets the map, and advances the window bounds.
+func (w *windowState) rotateLocked(nowMs uint64, cfg *PrecomputeConfig) ([]*seriesEntry, [2]uint64) {
 	if len(w.series) == 0 {
 		// Slide the window forward but emit nothing.
 		w.advanceWindow(nowMs, cfg)

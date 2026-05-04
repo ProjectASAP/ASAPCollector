@@ -232,6 +232,138 @@ func TestPrecompute_EnvelopeCarriesMetricNameCountTemporality(t *testing.T) {
 	}
 }
 
+// TestPrecompute_DrainFlushesMidWindowObservations asserts the
+// shutdown path: observations dropped into the active window before
+// activeEndMs must still come out of Drain even though Tick(nowMs)
+// would silently drop them while nowMs < activeEndMs.
+func TestPrecompute_DrainFlushesMidWindowObservations(t *testing.T) {
+	t.Parallel()
+	cfg := &PrecomputeConfig{
+		AggID:      7,
+		SketchType: SketchTypeDDSketch,
+		Mode:       Tumbling,
+		Window:     WindowSpec{Size: 10 * time.Second},
+	}
+	p := New(cfg, newFakeFactory(), &fakeObserver{}).(*precompute)
+
+	// Three observations early in window 0 (well before activeEndMs).
+	for i := 0; i < 3; i++ {
+		if err := p.Observe(&Observation{
+			TimestampMs: 1_000 + uint64(i),
+			Metric:      "m",
+			Labels:      []KeyValue{{Key: "k", Value: "a"}},
+			Value:       FloatValue(1),
+		}); err != nil {
+			t.Fatalf("observe[%d]: %v", i, err)
+		}
+	}
+
+	// Mid-window Tick should be a no-op: nowMs < activeEndMs.
+	if got := p.Tick(2_000); len(got) != 0 {
+		t.Fatalf("mid-window Tick: want 0 envelopes, got %d", len(got))
+	}
+
+	// Drain flushes pending observations regardless of wall-clock.
+	envelopes := p.Drain()
+	if len(envelopes) != 1 {
+		t.Fatalf("drain envelopes: want 1, got %d", len(envelopes))
+	}
+	env := envelopes[0]
+	if env.AggID != 7 {
+		t.Errorf("AggID: want 7, got %d", env.AggID)
+	}
+	if env.WindowStartMs != 0 || env.WindowEndMs != 10_000 {
+		t.Errorf("window: want [0,10000), got [%d,%d)", env.WindowStartMs, env.WindowEndMs)
+	}
+	if env.Count != 3 {
+		t.Errorf("count: want 3, got %d", env.Count)
+	}
+	if len(env.Payload) == 0 {
+		t.Error("empty payload")
+	}
+
+	// A second Drain on an empty window emits nothing.
+	if got := p.Drain(); len(got) != 0 {
+		t.Errorf("empty Drain: want 0 envelopes, got %d", len(got))
+	}
+
+	// After Drain, the next active window starts at the boundary
+	// the natural rotation would have used (10_000), so a Tick at
+	// 15_000 mid-next-window is still a no-op...
+	if err := p.Observe(&Observation{
+		TimestampMs: 11_000,
+		Metric:      "m",
+		Labels:      []KeyValue{{Key: "k", Value: "a"}},
+		Value:       FloatValue(1),
+	}); err != nil {
+		t.Fatalf("observe post-drain: %v", err)
+	}
+	if got := p.Tick(15_000); len(got) != 0 {
+		t.Errorf("post-drain mid-window Tick: want 0 envelopes, got %d", len(got))
+	}
+	// ...but a Tick at 20_000 (>= new activeEndMs) flushes window 1.
+	envelopes = p.Tick(20_000)
+	if len(envelopes) != 1 {
+		t.Fatalf("post-drain natural Tick: want 1 envelope, got %d", len(envelopes))
+	}
+	if envelopes[0].WindowStartMs != 10_000 || envelopes[0].WindowEndMs != 20_000 {
+		t.Errorf("post-drain window: want [10000,20000), got [%d,%d)",
+			envelopes[0].WindowStartMs, envelopes[0].WindowEndMs)
+	}
+}
+
+// TestPrecompute_DrainEqualsTickAtBoundary confirms Drain emits the
+// same sketch state Tick would emit if called precisely at
+// activeEndMs. This pins the contract that Drain is "the shutdown
+// twin of Tick" — same envelope payload, same range, same count.
+func TestPrecompute_DrainEqualsTickAtBoundary(t *testing.T) {
+	t.Parallel()
+	mkPrecompute := func() *precompute {
+		cfg := &PrecomputeConfig{
+			AggID:      1,
+			SketchType: SketchTypeDDSketch,
+			Mode:       Tumbling,
+			Window:     WindowSpec{Size: 10 * time.Second},
+		}
+		return New(cfg, newFakeFactory(), &fakeObserver{}).(*precompute)
+	}
+	feed := func(p *precompute) {
+		for i := 0; i < 5; i++ {
+			_ = p.Observe(&Observation{
+				TimestampMs: 1_000 + uint64(i),
+				Metric:      "m",
+				Labels:      []KeyValue{{Key: "k", Value: "a"}},
+				Value:       FloatValue(float64(i + 1)),
+			})
+		}
+	}
+
+	pTick := mkPrecompute()
+	feed(pTick)
+	tickEnvs := pTick.Tick(10_000)
+
+	pDrain := mkPrecompute()
+	feed(pDrain)
+	drainEnvs := pDrain.Drain()
+
+	if len(tickEnvs) != len(drainEnvs) {
+		t.Fatalf("envelope count: tick=%d, drain=%d", len(tickEnvs), len(drainEnvs))
+	}
+	for i := range tickEnvs {
+		te, de := tickEnvs[i], drainEnvs[i]
+		if te.WindowStartMs != de.WindowStartMs || te.WindowEndMs != de.WindowEndMs {
+			t.Errorf("window range: tick=[%d,%d) drain=[%d,%d)",
+				te.WindowStartMs, te.WindowEndMs, de.WindowStartMs, de.WindowEndMs)
+		}
+		if te.Count != de.Count {
+			t.Errorf("count: tick=%d drain=%d", te.Count, de.Count)
+		}
+		if string(te.Payload) != string(de.Payload) {
+			t.Errorf("payload: tick=%q drain=%q", te.Payload, de.Payload)
+		}
+	}
+}
+
 // TestPrecompute_EnvelopeFieldsRespectZeroConfig confirms that when
 // MetricName / Temporality are not set on PrecomputeConfig, the
 // emitted envelope mirrors the zero values rather than synthesizing

@@ -167,22 +167,16 @@ func (p *cmsProcessor) ProcessBatch(_ context.Context, md pmetric.Metrics) (pmet
 	if md.ResourceMetrics().Len() == 0 {
 		return md, nil
 	}
-	// Observe-then-tick: each batch is its own window in batch mode
+	// Observe-then-drain: each batch is its own window in batch mode
 	// because the per-metric Precompute is rebuilt per call (cleared
-	// after Tick drains it). The pcByName map persists across calls
-	// for window mode but the tick path drops every drained name.
+	// after Drain pulls it). The pcByName map persists across calls
+	// so the runtime's snapshot cache survives — that's what
+	// DeltaTransmission needs to compute window-N deltas against
+	// the window-(N-1) snapshot.
 	if err := p.observeAll(md); err != nil {
 		return md, err
 	}
-	// Each batch is its own window in batch mode (PrecomputeConfig.
-	// Mode=Batch makes Tick always drain). Forcing a far-future
-	// timestamp ensures the active window rotates regardless of
-	// wall-clock. We keep pcByName entries across calls so the
-	// runtime's snapshot cache survives — that's what
-	// DeltaTransmission needs to compute window-N deltas against
-	// the window-(N-1) snapshot.
-	const forceTickMs uint64 = 1<<62 - 1
-	out := p.tickAndEncode(forceTickMs)
+	out := p.drainAndEncode()
 	if p.cfg.DropOriginal {
 		return out, nil
 	}
@@ -202,8 +196,13 @@ func (p *cmsProcessor) ProcessMetrics(_ context.Context, md pmetric.Metrics) err
 	return p.observeAll(md)
 }
 
+// FlushWindow drains every active per-metric Precompute and forwards
+// the synthesized output via nextConsumer. Drain — rather than Tick —
+// is the right primitive: the ticker fires once per WindowDuration so
+// every fire wants to flush, and shutdown branches need to capture
+// mid-window state that Tick(time.Now()) would silently drop.
 func (p *cmsProcessor) FlushWindow(ctx context.Context) error {
-	out := p.tickAndEncode(uint64(time.Now().UnixMilli()))
+	out := p.drainAndEncode()
 	if out.ResourceMetrics().Len() == 0 {
 		return nil
 	}

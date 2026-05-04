@@ -77,15 +77,16 @@ func (p *ddsketchProcessor) observeInto(md pmetric.Metrics, batch map[string]pre
 	return nil
 }
 
-// flushToMetrics ticks every Precompute in batch and produces a
+// flushToMetrics drains every Precompute in batch and produces a
 // pmetric.Metrics carrying either DDSketch envelopes (when
 // TransmitSketch=true) or Gauge-quantile metrics. Drops each entry
 // from batch after flushing so batch-mode discards cleanly and
 // window-mode reuses slots for the next window.
 //
 // Force-drain semantics: legacy flushWindow rotated regardless of
-// wall-clock; pass a far-future timestamp so Precompute.Tick always
-// considers the active window due.
+// wall-clock; Precompute.Drain is the runtime's dedicated entry
+// point for that contract. Drain replaces the previous
+// pseudo-timestamp Tick(1<<62-1) workaround.
 func (p *ddsketchProcessor) flushToMetrics(batch map[string]precompute.Precompute) pmetric.Metrics {
 	out := pmetric.NewMetrics()
 	if len(batch) == 0 {
@@ -96,9 +97,8 @@ func (p *ddsketchProcessor) flushToMetrics(batch map[string]precompute.Precomput
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	const forceTickMs uint64 = 1<<62 - 1
 	for _, name := range names {
-		envs := batch[name].Tick(forceTickMs)
+		envs := batch[name].Drain()
 		delete(batch, name)
 		if len(envs) == 0 {
 			continue

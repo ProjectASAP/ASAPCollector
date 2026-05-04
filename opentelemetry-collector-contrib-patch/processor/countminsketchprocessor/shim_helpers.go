@@ -66,16 +66,16 @@ func (p *cmsProcessor) observeAll(md pmetric.Metrics) error {
 	return nil
 }
 
-// tickAndEncode rotates every per-metric window and synthesizes one
-// pmetric.Metrics carrying the emitted typed CMS metrics (or Gauge
-// fallbacks). Used by both the batch path (per ConsumeMetrics) and
-// the window-mode tick goroutine (per FlushWindow).
-//
-// flushAll=true forces every Precompute to drain regardless of
-// wall-clock; passing a far-future timestamp in nowMs is the
-// canonical way to do so. Batch and window paths both pass the
-// equivalent.
-func (p *cmsProcessor) tickAndEncode(nowMs uint64) pmetric.Metrics {
+// drainAndEncode rotates every per-metric window unconditionally
+// and synthesizes one pmetric.Metrics carrying the emitted typed
+// CMS metrics (or Gauge fallbacks). Used by both the batch path
+// (per ConsumeMetrics) and the window-mode tick goroutine (per
+// FlushWindow). Drain is the right primitive — legacy
+// emitWindowAndReset rotated regardless of wall-clock, the ticker
+// fires once per WindowDuration so every fire wants to flush, and
+// the shutdown branches in the goroutine need to capture mid-window
+// state that Tick(time.Now()) would silently drop.
+func (p *cmsProcessor) drainAndEncode() pmetric.Metrics {
 	out := pmetric.NewMetrics()
 	p.mu.Lock()
 	pcs := make(map[string]precompute.Precompute, len(p.pcByName))
@@ -96,7 +96,7 @@ func (p *cmsProcessor) tickAndEncode(nowMs uint64) pmetric.Metrics {
 	var sm pmetric.ScopeMetrics
 	var smInit bool
 	for _, name := range names {
-		envs := pcs[name].Tick(nowMs)
+		envs := pcs[name].Drain()
 		if len(envs) == 0 {
 			continue
 		}

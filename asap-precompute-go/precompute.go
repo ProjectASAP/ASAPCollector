@@ -162,6 +162,20 @@ type Precompute interface {
 	// considers "now"; the runtime uses it to decide whether the
 	// window is due for rotation.
 	Tick(nowMs uint64) []*SketchEnvelope
+	// Drain forces rotation of the active window regardless of
+	// wall-clock time and returns any envelopes that result. Use
+	// this on shutdown paths to flush pending observations that
+	// haven't reached their natural window boundary.
+	//
+	// Distinct from Tick(nowMs): Tick only rotates when nowMs >=
+	// activeEndMs, which is correct for normal time-driven
+	// flushing but silently drops mid-window data on early
+	// termination. Drain is the dedicated shutdown / batch-flush
+	// path. After Drain the next active window's bounds are
+	// advanced to the same boundary Tick would have used at the
+	// natural rotation point (activeStartMs := activeEndMs;
+	// activeEndMs += windowSize).
+	Drain() []*SketchEnvelope
 	// UpdateConfig atomically swaps the active config. The
 	// in-flight window is preserved (matchers/aggregateBy may
 	// change, but bytes already accumulated stay where they are);
@@ -308,9 +322,33 @@ func (p *precompute) Tick(nowMs uint64) []*SketchEnvelope {
 		return nil
 	}
 	closed, rng := p.window.rotate(nowMs, cfg)
+	return p.finishRotate(closed, rng, nowMs)
+}
+
+// Drain implements Precompute.Drain. Unconditionally rotates the
+// active window, regardless of wall-clock time, and returns the
+// resulting envelopes. Intended for shutdown / batch-flush paths.
+//
+// Implementation: delegates to windowState.drain which mirrors
+// rotate's body but skips the `nowMs < activeEndMs` gate.
+func (p *precompute) Drain() []*SketchEnvelope {
+	cfg := p.activeConfig()
+	if cfg == nil {
+		return nil
+	}
+	closed, rng := p.window.drain(cfg)
+	return p.finishRotate(closed, rng, rng[1])
+}
+
+// finishRotate is the shared envelope-serialization tail used by
+// both Tick and Drain. Walks the closed series, serializes each
+// into a SketchEnvelope (honoring DeltaTransmission), and updates
+// the rolling stats counters.
+func (p *precompute) finishRotate(closed []*seriesEntry, rng [2]uint64, nowMs uint64) []*SketchEnvelope {
 	if len(closed) == 0 {
 		return nil
 	}
+	cfg := p.activeConfig()
 	envelopes := make([]*SketchEnvelope, 0, len(closed))
 	for _, entry := range closed {
 		env, err := p.serializeSeries(entry, cfg, rng)
