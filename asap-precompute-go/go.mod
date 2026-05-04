@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/ProjectASAP/sketchlib-go v0.0.0-20260328221809-b24e56e64e94
+	github.com/influxdata/telegraf v1.34.4
 	go.opentelemetry.io/collector/pdata v1.42.0
 	google.golang.org/protobuf v1.36.11
 )
