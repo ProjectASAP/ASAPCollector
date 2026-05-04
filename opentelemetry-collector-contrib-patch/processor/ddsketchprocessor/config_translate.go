@@ -7,6 +7,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
+	"github.com/ProjectASAP/asap-precompute-go/sketches"
 )
 
 // getOrCreate fetches the per-metric Precompute or builds one from
@@ -16,8 +17,8 @@ func getOrCreate(batch map[string]precompute.Precompute, metricName string, cfg 
 		return pc
 	}
 	pc := precompute.New(toPrecomputeConfig(cfg, metricName), func() precompute.Sketch {
-		return newDDSketchWrapper(cfg.RelativeAccuracy)
-	}, ddSketchObserver{})
+		return sketches.NewDDSketchWrapper(cfg.RelativeAccuracy)
+	}, sketches.DDSketchObserver{})
 	batch[metricName] = pc
 	return pc
 }

@@ -286,24 +286,20 @@ func TestCSDelta_RoundTrip(t *testing.T) {
 // and verifies that the receiver's reconstructed sketch matches an independent
 // reference processor for each window.
 //
-// Receiver protocol after Phase-2 step 2.8: the sender's snapshot
-// cache holds the FIRST PROTO_FULL frame as a baseline and emits
-// each subsequent delta as `current_window_state - baseline`. The
+// Receiver protocol post-PR #232: the runtime's SnapshotCache always
+// refreshes the cached outbound after each emit, so every delta is
+// computed as `current_window_state - prev_window_state`. The
 // receiver reconstructs the current window by applying each delta to
-// a clone of the baseline (NOT to the previously reconstructed
-// sketch, as the legacy processor did when it refreshed its
-// snapshot every window). The asap-precompute-go runtime's
-// SnapshotCache.ComputeDelta keeps the cached outbound at the prior
-// baseline whenever the delta stays under threshold, so all
-// downstream receivers can apply against the same fixed baseline —
-// see asap-precompute-go/snapshot_cache.go.
+// the *previous reconstruction* (not to a fixed baseline), which
+// mirrors the legacy CountSketch processor's snapshot-update-after-
+// every-emit invariant.
 func TestCSDelta_MultipleWindowsConvergence(t *testing.T) {
 	cfg := deltaCSConfig()
 	require.NoError(t, cfg.Validate())
 
 	proc := newProcessor(zap.NewNop(), cfg, new(consumertest.MetricsSink))
 
-	var baseline *countsketch.CountSketch
+	var prevReconstruction *countsketch.CountSketch
 
 	for w := 0; w < 5; w++ {
 		insertCount := 20 * (w + 1)
@@ -323,20 +319,19 @@ func TestCSDelta_MultipleWindowsConvergence(t *testing.T) {
 		if enc == "proto_full" {
 			currentCS, err = countsketch.DeserializeCountSketchFromProtoBytes(rawPayload)
 			require.NoError(t, err, "window %d: full deserialize", w)
-			baseline = cloneCSTest(currentCS)
-			require.NotNil(t, baseline)
 		} else {
 			require.Equal(t, "proto_delta", enc, "window %d: unexpected encoding", w)
-			require.NotNil(t, baseline, "window %d: delta before full snapshot", w)
+			require.NotNil(t, prevReconstruction, "window %d: delta before full snapshot", w)
 			deltaMsg, derr := countsketch.DeserializeDelta(rawPayload)
 			require.NoError(t, derr, "window %d: delta deserialize", w)
-			// Apply delta to the cached baseline — not the previous
-			// reconstruction — to match the runtime's
-			// cumulative-against-baseline emit shape.
-			currentCS = cloneCSTest(baseline)
+			// Apply delta to the previous reconstruction — the
+			// always-refresh SnapshotCache (PR #232) emits
+			// `current - prev_window`, not `current - first_baseline`.
+			currentCS = cloneCSTest(prevReconstruction)
 			require.NotNil(t, currentCS)
 			countsketch.ApplyDelta(currentCS, deltaMsg)
 		}
+		prevReconstruction = cloneCSTest(currentCS)
 
 		// Reference: fresh no-delta processor with only this window's data.
 		refProc := newProcessor(zap.NewNop(), refCSConfig(), new(consumertest.MetricsSink))

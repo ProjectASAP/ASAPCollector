@@ -7,8 +7,8 @@
 // thin adapter that decodes pmetric.Metrics into precompute
 // Observations, drives a Precompute per input metric, and re-encodes
 // the emitted SketchEnvelopes back into the legacy pmetric output
-// shape. Encode helpers live in encode.go; sketch wrappers in
-// sketch_wrapper.go.
+// shape. Encode helpers live in encode.go; sketch wrappers come from
+// the canonical asap-precompute-go/sketches package.
 package kllprocessor
 
 import (
@@ -25,6 +25,7 @@ import (
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
 	otelpre "github.com/ProjectASAP/asap-precompute-go/otel"
+	"github.com/ProjectASAP/asap-precompute-go/sketches"
 )
 
 // kllProcessor is the Phase-2 thin shim. One *Precompute is lazily
@@ -194,8 +195,8 @@ func (p *kllProcessor) precomputeForLocked(name string) precompute.Precompute {
 		return pp
 	}
 	pp := precompute.New(p.cfg.toPrecomputeConfig(name), func() precompute.Sketch {
-		return newKLLSketchWrapper(p.cfg.K, p.cfg.Seed)
-	}, kllSketchObserver{})
+		return sketches.NewKLLWrapper(p.cfg.K, p.cfg.Seed)
+	}, sketches.KLLObserver{})
 	p.pcByName[name] = pp
 	return pp
 }
