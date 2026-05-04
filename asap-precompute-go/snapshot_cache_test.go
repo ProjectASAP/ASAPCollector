@@ -99,9 +99,45 @@ func TestSnapshotCache_SubsequentReturnsDelta(t *testing.T) {
 	if string(payload) != "delta:v1v2" {
 		t.Fatalf("payload: %q", payload)
 	}
-	// The cached outbound stays at the original "v1" baseline.
-	if got := c.GetOutbound("k1"); string(got) != "v1" {
-		t.Fatalf("baseline preserved: want v1, got %q", got)
+	// Always-refresh semantics: after a sub-threshold delta the
+	// cached outbound advances to the current full snapshot so the
+	// next delta is computed against this window, not the original
+	// baseline.
+	if got := c.GetOutbound("k1"); string(got) != "v1v2" {
+		t.Fatalf("cache refreshed: want v1v2, got %q", got)
+	}
+}
+
+// TestSnapshotCache_AlwaysRefresh exercises the "successive
+// sub-threshold deltas" sequence the five legacy processors rely on:
+// each delta must be computed against the immediately preceding
+// window's snapshot, not against the original baseline.
+func TestSnapshotCache_AlwaysRefresh(t *testing.T) {
+	t.Parallel()
+	c := NewSnapshotCache()
+	s := &fakeSketch{state: []byte("a")}
+	// Window 0: full snapshot, cache = "a".
+	if _, isFull, err := c.ComputeDelta("k", s, 1024); err != nil || !isFull {
+		t.Fatalf("w0: full=%v err=%v", isFull, err)
+	}
+	if got := c.GetOutbound("k"); string(got) != "a" {
+		t.Fatalf("w0 cache: %q", got)
+	}
+	// Window 1: sub-threshold delta. Cache must advance to "ab".
+	s.state = []byte("ab")
+	if _, isFull, err := c.ComputeDelta("k", s, 1024); err != nil || isFull {
+		t.Fatalf("w1: full=%v err=%v", isFull, err)
+	}
+	if got := c.GetOutbound("k"); string(got) != "ab" {
+		t.Fatalf("w1 cache: want ab, got %q", got)
+	}
+	// Window 2: sub-threshold delta. Cache must advance to "abc".
+	s.state = []byte("abc")
+	if _, isFull, err := c.ComputeDelta("k", s, 1024); err != nil || isFull {
+		t.Fatalf("w2: full=%v err=%v", isFull, err)
+	}
+	if got := c.GetOutbound("k"); string(got) != "abc" {
+		t.Fatalf("w2 cache: want abc, got %q", got)
 	}
 }
 
