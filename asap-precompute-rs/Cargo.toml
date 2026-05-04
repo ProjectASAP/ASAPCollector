@@ -1,0 +1,21 @@
+[package]
+name = "asap-precompute-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Host-neutral edge precompute runtime for ASAP. Rust mirror of asap-precompute-go."
+license = "MIT"
+
+# Depend on the local asap_sketchlib checkout for development. Mirrors how
+# ASAPQuery-backend depends on it today (it uses a git URL in its own
+# Cargo.toml: `asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib", branch = "..." }`).
+# Downstream consumers may want to flip this to the same git URL for
+# reproducible builds; the local path keeps in-tree iteration cheap.
+[dependencies]
+asap_sketchlib = { path = "../../asap_sketchlib" }
+serde = { version = "1", features = ["derive"] }
+prost = "0.13"
+thiserror = "1"
+
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
