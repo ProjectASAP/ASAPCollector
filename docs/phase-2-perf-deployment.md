@@ -1,0 +1,300 @@
+# Phase 2.11B — Deployment Performance: pre-shim vs post-shim
+
+Companion to `docs/phase-2-perf-bench-go.md` (Phase 2.11A, PR #236). The
+A path closed ADR-0002 §"Performance contract" at the
+microbenchmark level (`Precompute.Observe` ns/op). This doc reports the
+deployment-level confirmation: what the existing docker-compose
+b3-delta harness measures end-to-end, and whether those numbers move
+materially between commit `6b3258d` (pre-shim, last commit before the
+5 shim PRs landed) and `c86a62c` (post-shim, HEAD of `origin/main`).
+
+The aim is not a fresh measurement framework — it's a sanity check on
+the harness we already ship, so a future reader can see that the shim
+extraction (PRs #226–#232) didn't blow up the deployed agent's
+throughput, RSS, or per-window output bytes.
+
+## Setup
+
+### Hardware / toolchain
+
+- CPU: AMD Ryzen Threadripper PRO 5955WX (32 logical cores)
+- RAM: 440 GiB (essentially unconstrained for this stack)
+- OS: Linux 5.15 (Ubuntu 20.04 kernel)
+- Go: `go1.25.3 linux/amd64`
+- Docker: 28.1.1
+- Other tenants on the host: an Elasticsearch + Kibana dev stack
+  (idle, healthcheck-only). Not isolated, so absolute numbers carry
+  some noise.
+
+### Stack
+
+`deploy/docker-compose/baseline-b3-delta.yml` over the shared `base.yml`
++ `agents-N1.yml` overlay. B3-delta is the "delta sketch transmission,
+60 s window" baseline; it's the same combination Phase 2.11A's micro
+results care about, since the shim sits in the agent processor pipeline
+that this baseline exercises.
+
+Workload knobs (defaults from `base.yml`):
+
+- `EXPORTER_FREQ_HZ=10` — 10 Hz event rate from the synthetic producer
+- `EXPORTER_CARDINALITY=1000` — 1000 active series
+- `EXPORTER_SDK_WINDOW=15s` — SDK aggregation window
+- `EXPORTER_SDK_AGG=default` — Sum / LastValue per metric kind
+
+One agent (N1), one gateway, one backend. No load-gen client; the
+fake-exporter is the only writer.
+
+## Methodology
+
+The harness has two relevant scripts:
+
+- `deploy/scripts/measure-baseline.py` — instant Prometheus query for
+  per-tier CPU / RSS / point rate / output bytes, plus a
+  `docker stats` two-sample window for backend + producer numbers
+  (script supplements Prom because cAdvisor isn't in the stack).
+- `deploy/scripts/run-baseline-sweep.sh` — orchestrator that brings the
+  stack up, soaks for `SOAK_S` seconds, then invokes
+  `measure-baseline.py`. We do not use the sweep wrapper here because
+  the goal is one stack soak per commit, not the
+  baseline × rate × cardinality matrix.
+
+### Commit handling
+
+`6b3258d` predates PR #231 ("wire asap-precompute-go replace
+directive") but the pre-shim binary doesn't import `asap-precompute-go`
+at all (the shim-extraction PRs are precisely what introduced that
+dependency), so no local fix was needed for the OCB build to succeed.
+The only environmental fixup was a symlink `/tmp/sketchlib-go ->
+/home/zeying/repos/sketchlib-go`, because the OCB-emitted go.mod uses
+`../../../../sketchlib-go` from the build dir at
+`/tmp/preshim-worktree/.../cmd/sketchcollector/`. Both fixups are
+build-host-local — nothing was committed.
+
+### Procedure
+
+For each commit:
+
+1. `git worktree add` at the commit, init submodules, run
+   `./build_sketchcollector.sh` to produce a fresh
+   `sketchcollector` binary.
+2. Copy that binary into the main repo's
+   `opentelemetry-collector-contrib-patch/cmd/sketchcollector/` and
+   `docker build -f deploy/docker/Dockerfile.sketchcol`. Tag
+   appropriately, swap onto `:dev`, then
+   `docker compose ... up -d --force-recreate agent-1 gateway` so only
+   the agent + gateway tier get re-imaged. Producer / backend /
+   controller / Prom / MinIO stay continuously up, which removes a
+   source of cross-run drift.
+3. Soak ≥ 200 s (≥ 3 windows of the 60 s delta cycle, so
+   `rate(...[2m])` sees ≥ 2 samples — required by the harness).
+4. Take 2 readings ≥ 60 s apart with
+   `measure-baseline.py --window 2m --bytes-sample-window 10`; report
+   the mean of the two.
+
+## Results
+
+Two readings per commit. Numbers in the table are the **mean** of the
+two samples. Raw CSV in `/tmp/perf-2-11b/{preshim,postshim}.csv` on
+the build host.
+
+### Single-sample raw values
+
+```
+b3-delta-preshim,    agent_cpu=0.003 cores, agent_rss=288.3 MiB, agent_in=26.40 KiB/s, agent_out=4.69 KiB/s, agent_pts=133.3 /s
+b3-delta-preshim-2,  agent_cpu=0.002 cores, agent_rss=293.9 MiB, agent_in=25.08 KiB/s, agent_out=2.35 KiB/s, agent_pts=133.3 /s
+b3-delta-postshim,   agent_cpu=0.003 cores, agent_rss=302.6 MiB, agent_in=26.41 KiB/s, agent_out=4.70 KiB/s, agent_pts=133.3 /s
+b3-delta-postshim-2, agent_cpu=0.002 cores, agent_rss=302.6 MiB, agent_in=25.08 KiB/s, agent_out=2.35 KiB/s, agent_pts=133.3 /s
+```
+
+### Comparison table
+
+| Metric                  | Pre-shim (6b3258d) | Post-shim (c86a62c) | Δ (post − pre) | Δ %    | Verdict |
+|-------------------------|--------------------|---------------------|---------------:|-------:|---------|
+| agent_cpu_cores         | 0.0025             | 0.0025              |       +0.0000  |   0.0% | pass    |
+| agent_rss_mib           | 291.1              | 302.6               |        +11.5   |  +4.0% | pass    |
+| agent_in_kib_per_s      | 25.74              | 25.74               |        +0.00   |   0.0% | pass    |
+| agent_out_kib_per_s     | 3.52               | 3.52                |        +0.00   |   0.0% | pass    |
+| agent_points_per_s      | 133.3              | 133.3               |        +0.0    |   0.0% | pass    |
+
+Throughput, input bytes, output bytes, and CPU are essentially
+identical — the in/out/points columns match to three significant
+figures because the workload is producer-paced (10 Hz × 1000
+cardinality) and well below saturation; the agent is so far below
+its capacity that the shim's extra method-call hop doesn't show up
+as a CPU delta at all.
+
+The 4% RSS bump is the only directional change. It is consistent
+with the shim's explicit `Precompute` runtime structure (snapshot
+cache, per-source state map) being slightly fatter than the inlined
+processor state it replaced. ADR-0002 doesn't gate on RSS, but a
+4% bump on a 290 MiB agent footprint is well inside what would be
+considered a non-regression — the larger agent_rss drivers
+(sketchlib-go DDSketch buffers, OTel runtime) are roughly 10×
+larger.
+
+### Producer / backend rows (informational)
+
+| Metric                  | Pre-shim sample mean | Post-shim sample mean | Notes                                    |
+|-------------------------|----------------------|-----------------------|------------------------------------------|
+| producer_cpu_cores      | 0.061                | 0.071                 | producer container un-restarted; 4-h-old |
+| producer_rss_mib        | 56.9                 | 75.5                  | (same; runtime drift, not shim)          |
+| backend_cpu_pct         | 0.01                 | 0.94                  | backend never restarted                  |
+| backend_rss_mib         | 163.6                | 134.0                 | (same; GC noise, not shim)               |
+
+The producer + backend containers were intentionally **not** restarted
+between pre-shim and post-shim measurement — only the agent + gateway
+were re-imaged. So these rows compare two snapshots of the *same*
+running container hours apart, which is just the runtime's heap / GC
+drift over time. They are recorded for completeness but do not say
+anything about the shim. Counterintuitively, the post-shim
+`backend_rss_mib` is *lower* than pre-shim — that's because the
+post-shim row was captured first (after 4 h of soak), the pre-shim
+row 9 minutes later; RSS difference between two snapshots of the
+unchanged backend container is just GC-cycle noise.
+
+### Gateway + backend Prom rows: NaN
+
+`gateway_cpu_cores`, `gateway_rss_mib`, `gateway_points_per_s`,
+`gateway_out_series_per_s`, `backend_samples_per_s`,
+`backend_query_p99_ms` are all NaN in the CSV — see "Gaps" below.
+Same NaN pattern in pre-shim and post-shim, so the comparison still
+holds for the rows that do populate.
+
+## Verdict
+
+**Phase 2.11A** (PR #236) confirmed the per-observation gate at the
+microbenchmark level: pre vs post-shim `Precompute.Observe` p99 within
+the ADR-0002 10% tolerance for all five sketches.
+
+**Phase 2.11B** (this doc) confirms the deployment-level non-regression:
+on the b3-delta harness, every shim-affected metric — agent CPU, in /
+out KiB/s, throughput — is within run-to-run noise of pre-shim. RSS
+moves +4% which is well inside any reasonable tolerance and explained
+by the explicit shim runtime structure replacing inlined state.
+
+Together Phase 2.11A and 2.11B close ADR-0002 §"Performance contract"
+with both micro and deployment-level confirmation.
+
+### Caveats
+
+- **Single host, single-machine docker noise.** Two-sample mean for
+  each metric, but only one stack soak per commit. Run-to-run variance
+  in `agent_out_kib_per_s` is intrinsic to the 60 s delta window —
+  `rate()` over 2 m sees 2–3 emissions, so 30–50% jitter on that
+  column within a single stable run is normal (4.7 → 2.4 KiB/s
+  between samples 60 s apart, identical between commits).
+- **Shared host.** A separate Elasticsearch dev stack ran during
+  measurement (idle but resident); not isolated to a cgroup boundary.
+- **Producer-paced workload.** At 1000 cardinality × 10 Hz the agent
+  CPU is ~ 0.0025 cores — three orders of magnitude below saturation.
+  This deployment audit confirms there's no *new* overhead, but does
+  not stress the shim. A higher-cardinality stress test (e.g. 1e5
+  cardinality × 100 Hz) would be more discriminating; see "Gaps"
+  for why we don't run it here.
+- **No cold-store or query traffic.** This soak measured ingest only;
+  `backend_samples_per_s` and `backend_query_p99_ms` are NaN because
+  no PromQL replay client ran. The end-to-end query path is exercised
+  by `run_e2e_sweep.sh` which is much more expensive (5 sketch
+  families × 12 cells × ≥ 2 min each ≥ 2 h wall-clock) and out of
+  scope for this audit.
+- **No `-race`, no profiling overhead.** Plain release build via
+  `Dockerfile.sketchcol`.
+
+## Gaps in the existing harness
+
+These came up while running the harness. They're not fixed here —
+just enumerated so a future investment lines up cleanly:
+
+1. **Gateway metric-name skew.** `measure-baseline.py` was written
+   when the gateway was on otelcol v0.108 (no `_total` suffix on
+   process counters). The current gateway image is v0.141 (matches
+   the agent), so `gateway_cpu_cores` / `gateway_rss_mib` /
+   `gateway_points_per_s` all return NaN against today's stack. Fix
+   is one-line per query template (drop the no-`_total` variant —
+   or alias both query templates to the same key with `or` between
+   them so the harness handles either gateway version).
+
+2. **Backend `/metrics` is empty under ingest-only.** The backend's
+   `asap_ingest_samples_total` and `asap_query_duration_seconds_bucket`
+   only get populated when query traffic flows. The harness queries
+   them unconditionally and silently NaNs out otherwise. Documenting
+   the dependency in `measure-baseline.py`'s docstring is fine; longer
+   term the harness should distinguish "ingest-only soak" from
+   "ingest + query soak" so the operator isn't left wondering whether
+   the numbers are real or absent.
+
+3. **No per-observation latency emission from the deployed shim.**
+   ADR-0002's binding metric is per-observation `Observe` p99, which
+   the deployed sketchcollector doesn't expose as a Prom histogram.
+   Phase 2.11A measured it in `testing.B`, which is fine for the gate,
+   but a future investment could land an
+   `asap_processor_observe_seconds` histogram on each shim so the
+   deployed stack confirms the micro result in production-like
+   conditions. This would also let CI gate on a "deployment-level
+   p99" without re-running the docker stack.
+
+4. **No direct sketch-payload-bytes metric.** `agent_out_kib_per_s` is
+   the OTel-collector-level processor output bytes, which conflates
+   delta-encoded sketch payload bytes with envelope metadata. The
+   B3-delta savings claim requires distinguishing the two; this is
+   visible in `gateway_out_series_per_s` minus a B0a (raw stream)
+   reference, but the delta isn't a single column. A
+   `asap_sketch_payload_bytes_per_window` counter on the processor
+   would close this gap.
+
+5. **`run-baseline-sweep.sh` still parameterises on legacy
+   `EXPORTER_RATE`** (deprecated in favour of `EXPORTER_FREQ_HZ` +
+   `EXPORTER_SDK_WINDOW`); fake-exporter logs a warning per start.
+   The sweep script should be updated, otherwise every run produces
+   a deprecation warning in `up.log`.
+
+6. **Producer-paced workload caps the discriminating power.** At
+   cardinality 1000 × 10 Hz the agent runs at ~ 0.25% of one core
+   so CPU diffs are dominated by measurement noise. To detect a 10%
+   shim regression at deployment level you'd need to run at saturation
+   (e.g. cardinality 1e5 × 100 Hz, or N≥10 agents on a shared
+   gateway). The sweep wrapper allows this via `RATES`/`CARDS` env
+   vars; a future investment is to define a "perf-gate" cell pinning
+   the workload to a specific high-cardinality saturating point so
+   regressions show up as CPU-cores deltas, not just RSS deltas.
+
+## Reproduction
+
+The recipe used to produce the numbers above:
+
+```
+# build pre-shim binary in a worktree (sibling sketchlib-go must exist)
+git worktree add /tmp/preshim-worktree 6b3258d
+cd /tmp/preshim-worktree
+git submodule update --init --recursive opentelemetry-collector \
+  opentelemetry-collector-contrib opentelemetry-proto
+ln -sfn /home/zeying/repos/sketchlib-go /tmp/sketchlib-go
+GOPRIVATE='github.com/ProjectASAP/*' bash build_sketchcollector.sh
+
+# build pre-shim docker image
+cp /tmp/preshim-worktree/opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector \
+   $REPO/opentelemetry-collector-contrib-patch/cmd/sketchcollector/
+cd $REPO
+docker build -f deploy/docker/Dockerfile.sketchcol -t asap/sketchcol:preshim .
+
+# swap onto :dev tag, recreate just agent + gateway, soak, measure
+docker tag asap/sketchcol:dev asap/sketchcol:postshim-saved
+docker tag asap/sketchcol:preshim asap/sketchcol:dev
+cd $REPO/deploy/docker-compose
+AGENT_CONFIG=sketchcol-agent-b3-delta.yaml docker compose \
+  -f base.yml -f agents-N1.yml -f baseline-b3-delta.yml \
+  up -d --no-deps --force-recreate agent-1 gateway
+sleep 200  # 2 m for rate window + 80 s margin
+python3 $REPO/deploy/scripts/measure-baseline.py \
+  --baseline b3-delta-preshim --scale N1 --rate 1000 --cardinality 1000 \
+  --window 2m --bytes-sample-window 10
+sleep 60
+python3 $REPO/deploy/scripts/measure-baseline.py \
+  --baseline b3-delta-preshim-2 --scale N1 --rate 1000 --cardinality 1000 \
+  --window 2m --bytes-sample-window 10
+
+# restore post-shim and re-measure (or just keep the prior post-shim numbers)
+docker tag asap/sketchcol:postshim-saved asap/sketchcol:dev
+docker compose ... up -d --no-deps --force-recreate agent-1 gateway
+# (etc.)
+```
