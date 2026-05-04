@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/component"
+
+	precompute "github.com/ProjectASAP/asap-precompute-go"
 )
 
 // InputMode controls when the processor flushes its KLL output.
@@ -100,4 +102,68 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("delta_transmission is not supported for KLL sketches: KLL uses random compaction and is not additively mergeable")
 	}
 	return nil
+}
+
+// toPrecomputeConfig translates the legacy Config to the host-neutral
+// PrecomputeConfig the shim hands to precompute.New. The translation
+// pins the Phase-2 parity flags the legacy KLL processor's series key
+// and emit shape require:
+//
+//   - OmitResourceAttrs=true: legacy KLL builds its series key from
+//     dp-attrs only and emits into a freshly-appended ResourceMetrics
+//     with an empty Resource (see processBatch / accumulateIntoWindow
+//     prior to refactor). Without this flag the runtime would key
+//     series by (resource, dp-attrs) and surface non-empty
+//     ResourceLabels on the envelope, breaking byte-parity.
+//   - EmitWindowStats=false: legacy KLL does not stamp sample_count
+//     / window_duration_seconds attrs onto its emit. Only CountSketch
+//     does (see PrecomputeConfig.EmitWindowStats docs).
+//
+// MetricName is intentionally left empty here — the legacy KLL emits
+// `<input>_kll` (or `<input><MetricSuffix>` for the quantile path),
+// where `<input>` varies per ingested metric. The shim resolves the
+// final output name in its encode path; the runtime's MetricName
+// field is a static-per-Precompute value and would not honor the
+// per-input naming the legacy emit guarantees.
+func (c *Config) toPrecomputeConfig(metricName string) *precompute.PrecomputeConfig {
+	matchers := make([]precompute.LabelMatcher, 0, len(c.LabelMatchers)+1)
+	if metricName != "" {
+		// The shim uses one Precompute per input metric; pin the
+		// metric-name matcher so observations from other metrics
+		// fed into the same instance are filtered. (Today the shim
+		// only routes matching observations here, but the matcher
+		// makes the contract explicit and preserves the invariant
+		// when the runtime is shared with control-channel-driven
+		// callers in 2.10.)
+		matchers = append(matchers, precompute.LabelMatcher{Value: metricName})
+	}
+	for _, m := range c.LabelMatchers {
+		matchers = append(matchers, precompute.LabelMatcher{
+			Name:  m.Key,
+			Value: m.Value,
+		})
+	}
+	mode := precompute.Batch
+	winSize := time.Duration(0) // Batch: zero size triggers always-flushable rotate
+	if c.Mode == ModeWindow {
+		mode = precompute.Tumbling
+		winSize = c.WindowDuration
+	}
+	return &precompute.PrecomputeConfig{
+		SketchType:        precompute.SketchTypeKLLSketch,
+		Mode:              mode,
+		Window:            precompute.WindowSpec{Size: winSize},
+		Matchers:          matchers,
+		AggregateBy:       append([]string(nil), c.AggregateBy...),
+		TransmitSketch:    c.TransmitSketch,
+		DeltaTransmission: false, // KLL.Validate rejects DeltaTransmission=true
+		Encoding:          precompute.EncodingProtoFull,
+		Temporality:       1, // delta — matches legacy SetAggregationTemporality(Delta)
+		OmitResourceAttrs: true,
+		GlobalAggregation: false,
+		EmitWindowStats:   false,
+		// MetricName left empty: the shim's encode path computes
+		// `<input>_kll` (or `<input><MetricSuffix><quantile>`) from
+		// the per-envelope context; see encodeEnvelopes.
+	}
 }

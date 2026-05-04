@@ -3,6 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllpr
 go 1.25.4
 
 require (
+	github.com/ProjectASAP/asap-precompute-go v0.0.0-00010101000000-000000000000
 	github.com/ProjectASAP/sketchlib-go v0.0.0-20260328221809-b24e56e64e94
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.48.0
@@ -57,3 +58,5 @@ replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/
 replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
 
 replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
+
+replace github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
