@@ -29,6 +29,7 @@ import (
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
 	otelpre "github.com/ProjectASAP/asap-precompute-go/otel"
+	"github.com/ProjectASAP/asap-precompute-go/sketches"
 )
 
 // countSketchProcessor is the Layer-4 OTel shim over precompute.Precompute.
@@ -68,10 +69,10 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 	rows, cols := configDimensions(cfg)
 	pcfg := toPrecomputeConfig(cfg)
 	factory := precompute.SketchFactory(func() precompute.Sketch {
-		w, _ := newCountSketchWrapper(rows, cols)
+		w, _ := sketches.NewCountSketchWrapper(rows, cols)
 		return w
 	})
-	pp := precompute.New(pcfg, factory, countSketchObserver{defaultKey: outputMetricName})
+	pp := precompute.New(pcfg, factory, sketches.CountSketchObserver{DefaultKey: outputMetricName})
 	adapter := otelpre.New(&otelpre.AdapterConfig{
 		ScopeName: "otelcol/countsketch",
 	}, nil)

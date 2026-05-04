@@ -8,7 +8,8 @@
 // precompute Observations, drives a Precompute per input metric, and
 // re-encodes the emitted SketchEnvelopes back into the legacy pmetric
 // output shape. Encode helpers live in shim_helpers.go; sketch
-// wrappers in sketch_wrapper.go; selfmonitor wiring in monitor.go.
+// wrappers come from the canonical asap-precompute-go/sketches
+// package; selfmonitor wiring in monitor.go.
 package countminsketchprocessor
 
 import (
@@ -24,6 +25,7 @@ import (
 	"go.uber.org/zap"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
+	"github.com/ProjectASAP/asap-precompute-go/sketches"
 )
 
 // cmsProcessor is the Phase-2 thin shim. One *Precompute is lazily
@@ -40,13 +42,6 @@ type cmsProcessor struct {
 	mu       sync.Mutex
 	pcByName map[string]precompute.Precompute
 
-	// snapshotsMu / snapshots hold per-series prev snapshots used
-	// when DeltaTransmission=true. See applyDeltaTransmission for
-	// why delta tracking lives at the shim layer instead of the
-	// runtime's SnapshotCache.
-	snapshotsMu sync.Mutex
-	snapshots   map[string][]byte
-
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool
@@ -60,10 +55,9 @@ type windowedCountMinSketchProcessor = cmsProcessor
 func newProcessor(cfg *Config, next consumer.Metrics, logger *zap.Logger) *cmsProcessor {
 	return &cmsProcessor{
 		cfg: cfg, logger: logger, nextConsumer: next,
-		pcByName:  make(map[string]precompute.Precompute),
-		snapshots: make(map[string][]byte),
-		stopCh:    make(chan struct{}),
-		doneCh:    make(chan struct{}),
+		pcByName: make(map[string]precompute.Precompute),
+		stopCh:   make(chan struct{}),
+		doneCh:   make(chan struct{}),
 	}
 }
 
@@ -227,9 +221,9 @@ func (p *cmsProcessor) precomputeForLocked(name string) precompute.Precompute {
 	pp := precompute.New(
 		p.cfg.toPrecomputeConfig(name),
 		func() precompute.Sketch {
-			return newCMSSketchWrapper(p.cfg.Rows, p.cfg.Columns, useMsgpack)
+			return sketches.NewCMSWrapper(p.cfg.Rows, p.cfg.Columns, useMsgpack)
 		},
-		cmsSketchObserver{},
+		sketches.CMSObserver{},
 	)
 	p.pcByName[name] = pp
 	return pp

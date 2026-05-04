@@ -6,7 +6,7 @@
 //
 //   - observeAll: walk md, route observations through the per-metric
 //     Precompute, hashing the encoded data-point attribute set into
-//     a KindBytes value the cmsSketchObserver can consume.
+//     a KindBytes value the sketches.CMSObserver can consume.
 //
 //   - encodeEnvelopes: materialize emitted envelopes into the legacy
 //     pmetric output shape (typed CountMinSketchDataPoint with
@@ -24,7 +24,6 @@ package countminsketchprocessor
 import (
 	"sort"
 
-	cms "github.com/ProjectASAP/sketchlib-go/sketches/CountMinSketch"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
@@ -40,7 +39,7 @@ import (
 // encoded data-point attribute set (NOT the numeric value) — the
 // sketch counts series cardinality, not samples-by-value. We
 // substitute the OTel adapter's KindFloat observation with a
-// KindBytes one carrying the encoded-attrs bytes so cmsSketchObserver
+// KindBytes one carrying the encoded-attrs bytes so sketches.CMSObserver
 // can hash it identically. Envelope-valued observations (typed
 // CountMinSketch input) flow through unmodified — the runtime routes
 // them through ObserveEnvelope and merges the inbound state.
@@ -101,10 +100,6 @@ func (p *cmsProcessor) tickAndEncode(nowMs uint64) pmetric.Metrics {
 		if len(envs) == 0 {
 			continue
 		}
-		// Post-process delta transmission: rewrite envelope payloads
-		// from full proto to sparse delta where Config asks for it,
-		// using the shim-owned per-series prev cache.
-		p.applyDeltaTransmission(envs)
 		if !smInit {
 			sm = out.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty()
 			sm.Scope().SetName("otelcol/windowed-countmin")
@@ -113,89 +108,6 @@ func (p *cmsProcessor) tickAndEncode(nowMs uint64) pmetric.Metrics {
 		p.encodeEnvelopes(sm.Metrics(), envs)
 	}
 	return out
-}
-
-// applyDeltaTransmission rewrites envelope payloads to sparse deltas
-// when Config.DeltaTransmission=true, using a per-series snapshot
-// cache held at the shim layer. Mirrors the legacy CMS processor's
-// "always refresh snapshot after every emit" semantics:
-//
-//   - On the first emit per series key the prev cache is empty;
-//     the envelope payload stays as a full proto state and the
-//     wire encoding stays at PROTO_FULL. The current full state is
-//     stored as the new prev.
-//   - On subsequent emits the prev is decoded, a delta is computed
-//     against the current state, and the envelope payload is
-//     replaced with the proto-encoded delta. The wire encoding is
-//     flipped to PROTO_DELTA. The prev is then refreshed to the
-//     current full state for the next window.
-//
-// MUST run after the runtime's Tick (so envs hold the runtime's
-// freshly-emitted full snapshots) and before the encode path (so
-// encodeEnvelopes sees the rewritten payloads). Msgpack-encoded
-// envelopes are skipped — sketchlib-go has no msgpack-delta path,
-// matching the legacy fallback to proto-full when
-// encoding=msgpack + delta=true.
-func (p *cmsProcessor) applyDeltaTransmission(envs []*precompute.SketchEnvelope) {
-	if !p.cfg.DeltaTransmission {
-		return
-	}
-	threshold := p.cfg.DeltaThreshold
-	if threshold <= 0 {
-		threshold = 1.0
-	}
-	for _, env := range envs {
-		if env == nil || len(env.Payload) == 0 || env.Encoding == precompute.EncodingMsgpack {
-			continue
-		}
-		key := p.deltaKey(env)
-		current, err := cms.DeserializeCountMinSketchFromProtoBytes(env.Payload)
-		if err != nil {
-			// Defensive: bad runtime payload — leave as full.
-			continue
-		}
-		// Always refresh the prev to current full state at end of
-		// loop iteration; matches the legacy processor's
-		// snapshot-update-after-every-emit invariant. Capture the
-		// full state once up front so encode/serialize errors below
-		// don't desync the cache.
-		fullBytes, fErr := current.SerializeProtoBytesFO()
-		if fErr != nil {
-			continue
-		}
-		p.snapshotsMu.Lock()
-		prevBytes, hasPrev := p.snapshots[key]
-		p.snapshots[key] = fullBytes
-		p.snapshotsMu.Unlock()
-		if !hasPrev {
-			// First emit for this key — leave as PROTO_FULL and
-			// seed the cache (already done above).
-			continue
-		}
-		prevSk, err := cms.DeserializeCountMinSketchFromProtoBytes(prevBytes)
-		if err != nil {
-			continue
-		}
-		delta, err := cms.ComputeDelta(prevSk, current, threshold)
-		if err != nil {
-			continue
-		}
-		payload, err := cms.SerializeDelta(delta)
-		if err != nil {
-			continue
-		}
-		env.Payload = payload
-		env.Encoding = precompute.EncodingProtoDelta
-	}
-}
-
-// deltaKey builds the per-series key used to index the shim's prev
-// snapshot cache. Composing MetricName + Labels matches the legacy
-// processor's `metricName + "::" + encodeKey(dpAttrs)` aggregation
-// key (which never included resource attrs — the shim sets
-// OmitResourceAttrs=true so envelopes carry empty ResourceLabels).
-func (p *cmsProcessor) deltaKey(env *precompute.SketchEnvelope) string {
-	return env.MetricName + "::" + precompute.AttributesKey(env.Labels, nil)
 }
 
 // encodeEnvelopes writes envs into metrics. TransmitSketch=true emits

@@ -4,6 +4,7 @@
 package countminsketchprocessor
 
 import (
+	"math"
 	"time"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
@@ -64,19 +65,25 @@ func (c *Config) toPrecomputeConfig(metricName string) *precompute.PrecomputeCon
 	if c.Encoding == EncodingMsgpack {
 		enc = precompute.EncodingMsgpack
 	}
+	threshold := c.DeltaThreshold
+	if threshold <= 0 {
+		threshold = 1.0
+	}
+	thresholdU64 := uint64(math.Ceil(threshold))
 	return &precompute.PrecomputeConfig{
-		SketchType: precompute.SketchTypeCountMinSketch,
-		Mode:       mode,
-		Window:     precompute.WindowSpec{Size: winSize},
-		Matchers:   matchers,
-		AggregateBy: append([]string(nil), c.AggregateBy...),
+		SketchType:     precompute.SketchTypeCountMinSketch,
+		Mode:           mode,
+		Window:         precompute.WindowSpec{Size: winSize},
+		Matchers:       matchers,
+		AggregateBy:    append([]string(nil), c.AggregateBy...),
 		TransmitSketch: c.TransmitSketch,
-		// Delta transmission is post-processed in the shim, not the
-		// runtime. See cmsProcessor.applyDeltaTransmission and the
-		// note on cmsSketchWrapper.ComputeDeltaAgainst for why. We
-		// always ask the runtime for full snapshots and convert to
-		// delta against a shim-owned per-series prev cache.
-		DeltaTransmission: false,
+		// PR #232 fixed SnapshotCache::ComputeDelta's always-refresh
+		// invariant; the shim now drives delta transmission through
+		// the runtime instead of carrying its own per-series prev
+		// snapshot cache. The CMSWrapper's ComputeDeltaAgainst path
+		// is exercised when DeltaTransmission=true.
+		DeltaTransmission: c.DeltaTransmission,
+		DeltaThreshold:    thresholdU64,
 		Encoding:          enc,
 		Temporality:       1, // delta — matches legacy SetAggregationTemporality(Delta)
 		MetricName:        c.MetricName,

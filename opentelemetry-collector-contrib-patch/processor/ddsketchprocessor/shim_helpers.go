@@ -22,15 +22,35 @@
 package ddsketchprocessor
 
 import (
+	"errors"
 	"sort"
 
+	envpb "github.com/ProjectASAP/sketchlib-go/proto/sketch_envelope"
+	ddsketch "github.com/ProjectASAP/sketchlib-go/sketches/DDSketch"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
 	otelpre "github.com/ProjectASAP/asap-precompute-go/otel"
 )
+
+// decodeDDSketchEnvelope unwraps a SerializePortable envelope into a
+// reconstructed *ddsketch.DDSketch. The shim's quantile-emission path
+// uses this to query Quantile(q) on the inbound payload — the canonical
+// wrapper in asap-precompute-go/sketches keeps its decoder unexported.
+func decodeDDSketchEnvelope(b []byte) (*ddsketch.DDSketch, error) {
+	var env envpb.SketchEnvelope
+	if err := proto.Unmarshal(b, &env); err != nil {
+		return nil, err
+	}
+	st := env.GetDdsketch()
+	if st == nil {
+		return nil, errors.New("envelope did not carry DDSketchState")
+	}
+	return ddsketch.NewFromState(st)
+}
 
 // observeInto walks md and feeds each (matched, decoded) observation
 // into the per-metric Precompute, allocating fresh on first sight.
