@@ -37,11 +37,8 @@ binary marshaller — you'd ship the centroid array yourself).
 
 ### what got skipped
 
-* **Gorilla.** A Gorilla codec exists at
-  `telegraf-patch/plugins/aggregators/gorilla/`, but it's
-   1. wrapped in Telegraf's plugin interface (needs `telegraf.Metric`,
-      `time.Time`, etc.), and
-   2. **a (timestamp, value) lossless compressor, not a quantile sketch.**
+* **Gorilla.** Gorilla is **a (timestamp, value) lossless compressor,
+  not a quantile sketch.**
 
   In a matched-p99-error table Gorilla either has to store every sample (in
   which case its wire size is necessarily larger than DDSketch / KLL by
