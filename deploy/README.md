@@ -85,6 +85,59 @@ docker compose -f deploy/docker-compose/base.yml \
                -f deploy/docker-compose/baseline-b3-delta.yml up
 ```
 
+### Inference dispatch (warm-tier query coverage)
+
+The backend's "warm tier" (precomputed-sketch path) only answers
+queries whose canonical PromQL string exact-matches an entry in the
+mounted inference YAML. Five overlays live in `deploy/configs/`:
+
+| YAML | Mounted by | Covers (PromQL families × ranges) | Entries |
+|---|---|---|---|
+| `backend-inference.yaml` | `e2e-overlay.yml`, `queryengine-overlay.yml` (default) | All 33 patterns from `ASAPQuery-backend` PR #79: spatial multi-quantile, `quantile_over_time(φ ∈ {0.5, 0.9, 0.95, 0.99}, …[1m\|2m\|5m])`, `sum_over_time` / `count_over_time` × wider ranges, `rate` / `increase`, spatial `count` / `sum` / `avg`, `topk(5\|10\|50, …)`. | 33 |
+| `backend-inference-cms.yaml` | `e2e-overlay-cms.yml` | CountMinSketch families: `{sum, count, avg}`, `{sum_over_time, count_over_time, rate, increase}` × `[1m, 2m, 5m]`. | 14 |
+| `backend-inference-cs.yaml` | `e2e-overlay-cs.yml` | CountSketch families: same as CMS plus `topk(5\|10\|50, …)`. | 16 |
+| `backend-inference-hll.yaml` | `e2e-overlay-hll.yml` | HLL cardinality families: spatial `count(metric_hll)` and `count_over_time(metric_hll[1m\|2m\|5m])` for both the counter (`http_requests_total_hll`) and gauge (`http_requests_total_latency_ms_hll`) flavours. | 8 |
+| `backend-inference-kll.yaml` | `e2e-overlay-kll.yml` | KLL rank-quantile families: spatial `quantile by (zone) (φ, …)` and `quantile_over_time(φ, metric_kll[1m\|2m\|5m])` × `φ ∈ {0.5, 0.9, 0.95, 0.99}`. | 16 |
+
+This is the canonical paper-experiment pattern set (PR #79
+`tests/inference_yaml_pattern_coverage.rs` is the runtime contract).
+Adding a new query family here without a matching entry in PR #79's
+canonical YAML risks shipping warm-tier "promises" the engine can't
+keep — the YAML is checked exact-string at request time by
+`find_query_config`.
+
+#### Metric-name conventions per overlay
+
+| Overlay | Backend-side metric name | Why |
+|---|---|---|
+| `backend-inference.yaml` | `http_requests_total_latency_ms_quantile` (KLL/DDSketch quantile patterns), `http_requests_total` (CMS/CountSketch/HLL Sum/Count/Topk patterns) | Default deploy uses `gateway-aggregate-from-raw.yaml` → DDSketch → `metric_suffix: "_quantile"`. Sum/Count/Topk patterns target the raw counter forwarded unsuffixed by CMS/CountSketch processors (see `sketchcol-agent-{cms,cs}-direct.yaml`). |
+| `backend-inference-cms.yaml`, `-cs.yaml` | `http_requests_total` | CMS / CountSketch direct agents preserve the raw metric name (no `metric_suffix`). |
+| `backend-inference-hll.yaml` | `http_requests_total_hll`, `http_requests_total_latency_ms_hll` | `sketchcol-agent-hll-direct.yaml` adds `metric_suffix: "_hll"`. |
+| `backend-inference-kll.yaml` | `http_requests_total_latency_ms_kll` | `sketchcol-agent-kll-direct.yaml` adds `metric_suffix: "_kll"`. |
+
+#### Open gap: `histogram_quantile(φ, …)` is NOT covered
+
+The engine pattern matcher
+(`asap-query-engine/src/engines/simple_engine.rs::controller_patterns`)
+includes `quantile_over_time` and the spatial `quantile by (…)` ops
+but does **not** include a `histogram_quantile` pattern block.
+`histogram_quantile(0.99, sum by (le) (http_requests_total_latency_ms))`
+fails the engine matcher before reaching `find_query_config`, even
+when an entry of that exact string is present in the YAML.
+
+Two paths forward (in priority order):
+
+1. **Today (this PR's choice for `queries-e2e.json`):** use the
+   pre-aggregated `quantile_over_time(φ, *_quantile[…])` shape. The
+   gateway / agent path produces `http_requests_total_latency_ms_quantile`
+   (DDSketch / KLL backed) which the engine matches and answers.
+   PROGRESS.md "Single-pipeline multi-sketch + delta + queryable
+   warm tier (2026-05-01)" verified this path live (`q=0.5 →
+   19.49`).
+2. **Tomorrow (separate engine PR):** extend `controller_patterns`
+   with a `histogram_quantile` block. Out of scope for E0; tracked
+   alongside PR #79 follow-ups.
+
 ### E0: single-cell smoke (P5–P9 end-to-end against a live stack)
 
 Smallest cell that exercises the whole P1–P9 path. Use this
@@ -126,6 +179,11 @@ python3 deploy/scripts/plan_transition.py \
     --transition-out /tmp/cell-smoke-e0/transition.jsonl \
     --sample-out /tmp/cell-smoke-e0/sample.jsonl \
     --soak-secs 60 --pre-transition-secs 20 &
+# Note: the `histogram_quantile(...)` shape above is INTENTIONALLY
+# unmatched by the engine — it's the capability-miss probe used by
+# `plan_transition.py` to drive a fresh plan publish. Replay-side
+# queries (`queries-e2e.json`) deliberately use shapes that DO match
+# (see "Inference dispatch" above).
 wait
 
 # 4. Snapshot ground truth from the cold-store volume (the volume
