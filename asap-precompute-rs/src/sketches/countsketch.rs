@@ -42,19 +42,30 @@ impl CountSketchWrapper {
     }
 
     fn build_state(&self) -> CountSketchState {
-        let mut counts_float = Vec::with_capacity(self.rows * self.cols);
+        // Mirror sketchlib-go::CountSketch.SerializePortable: emit
+        // packed sint64 `counts_int` (Opt-2: 4–8× smaller than f64
+        // for typical small-integer counter values) and per-row L2
+        // norms derived as `l2[r] = sum_c counts[r][c]^2`. Both fields
+        // are required for cross-language byte parity against the
+        // sketchlib-go golden fixture; without them the envelope
+        // diverges in counter_type, counts_*, and l2 simultaneously.
+        let mut counts_int = Vec::with_capacity(self.rows * self.cols);
+        let mut l2 = Vec::with_capacity(self.rows);
         for row in self.sk.matrix.iter().take(self.rows) {
+            let mut row_l2 = 0.0f64;
             for &cell in row.iter().take(self.cols) {
-                counts_float.push(cell);
+                counts_int.push(cell as i64);
+                row_l2 += cell * cell;
             }
+            l2.push(row_l2);
         }
         CountSketchState {
             rows: self.rows as u32,
             cols: self.cols as u32,
-            counter_type: CounterType::Float64 as i32,
-            counts_int: Vec::new(),
-            counts_float,
-            l2: Vec::new(),
+            counter_type: CounterType::Int64 as i32,
+            counts_int,
+            counts_float: Vec::new(),
+            l2,
             topk: None,
         }
     }
