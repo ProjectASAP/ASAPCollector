@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package countsketchprocessor is a thin OTel-host shim around the
-// asap-precompute-go runtime. The state machine (windowing, snapshot
+// asap-precompute-go runtime. The runtime (windowing, snapshot
 // caching, delta encoding) lives in asap-precompute-go; this file owns
 // only the OTel binding (decode pmetric → host-neutral Observation,
 // encode SketchEnvelope → pmetric, ConsumeMetrics / Start / Shutdown).

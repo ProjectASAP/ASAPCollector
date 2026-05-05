@@ -2,7 +2,7 @@
 
 This doc records the results of the Phase 2.11 path-A Go-side
 performance audit. The 5 shim PRs (#226–#230) extracted the
-windowing, snapshot, and delta-encoding state machine out of the
+windowing, snapshot, and delta-encoding runtime out of the
 per-processor Go code into the host-neutral `asap-precompute-go`
 runtime. ADR-0002 §"Performance contract" pins a 10% gate on
 per-observation `Observe` latency at p99: post-shim must stay

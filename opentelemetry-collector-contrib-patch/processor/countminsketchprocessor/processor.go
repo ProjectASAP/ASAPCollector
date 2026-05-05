@@ -3,7 +3,7 @@
 
 // Package countminsketchprocessor is the OTel CountMinSketch processor
 // shim. As of Phase 2 step 2.9 the windowing / series-keying / snapshot
-// state machine lives in github.com/ProjectASAP/asap-precompute-go;
+// runtime lives in github.com/ProjectASAP/asap-precompute-go;
 // this file is a thin adapter that decodes pmetric.Metrics into
 // precompute Observations, drives a Precompute per input metric, and
 // re-encodes the emitted SketchEnvelopes back into the legacy pmetric

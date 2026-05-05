@@ -3,23 +3,17 @@
 //! `docs/design-asap-edge-framework.md` §6 and pinned by ADR-0002.
 //!
 //! This crate owns the windowing, snapshot caching, and delta encoding
-//! state machine that today lives inside `ASAPQuery-backend`'s ingest
-//! path (`asap-query-engine/src/precompute_operators/*.rs` +
-//! `drivers/ingest/otel.rs::apply_modified_otlp_delta_bytes`).
+//! runtime for the Rust **edge** runtime — a bit-identical
+//! mirror of `asap-precompute-go`'s runtime. Future Rust-based
+//! edge agents (Vector adapter, OTAP-Rust, Arrow-backed shims)
+//! consume this crate. The backend's precompute engine inside
+//! `ASAPQuery-backend` is a separate concern with its own design and
+//! is **not** consumed by this crate.
+//!
 //! Per-platform Adapter implementations (the Layer-4 shims) translate
 //! their host's native event into [`Observation`], hand it to a
 //! [`Precompute`], and translate the runtime's emitted
 //! [`SketchEnvelope`] back to the host's native event.
-//!
-//! # Bootstrap status (Phase 3 step 1)
-//!
-//! This module is currently the **bootstrap skeleton** — types and
-//! trait surface only. State-machine methods (window rotate, observe
-//! routing, snapshot/delta computation, scheduler) are defined as
-//! `unimplemented!()` and migrate from `ASAPQuery-backend`'s ingest
-//! path in subsequent PRs (Phase 3 step 2+). The API surface here is
-//! the contract those migrations must hit so the cross-PR work stays
-//! safe.
 //!
 //! # Mirror map to `asap-precompute-go`
 //!
@@ -47,6 +41,7 @@ pub mod envelope;
 pub mod matchers;
 pub mod observation;
 pub mod precompute;
+pub mod sketches;
 pub mod snapshot_cache;
 pub mod window;
 

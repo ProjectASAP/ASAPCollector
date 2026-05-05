@@ -220,7 +220,7 @@ func (o CountSketchObserver) Observe(s precompute.Sketch, v precompute.Observati
 }
 
 // Compile-time assertions that CountSketchWrapper satisfies both the
-// base Sketch trait (used by the runtime's window state machine) and
+// base Sketch trait (used by the runtime's window logic) and
 // the FrequencySketch query trait (used by adapter code that needs
 // typed frequency queries).
 var (

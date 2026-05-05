@@ -143,7 +143,7 @@ var (
 	ErrSketchTypeMismatch = errors.New("precompute: envelope sketch_type does not match config")
 )
 
-// Precompute is the host-neutral state machine described in
+// Precompute is the host-neutral runtime described in
 // design-doc §6.2. One Precompute instance owns one sketch type
 // (see config.SketchType); a deployment with multiple sketch types
 // runs multiple Precompute instances side-by-side.
