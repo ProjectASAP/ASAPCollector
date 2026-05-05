@@ -2,18 +2,21 @@
 #
 # The backend source lives in a separate private repo
 # (ProjectASAP/ASAPQuery-backend). We take it as a BuildKit
-# named build-context so nothing is vendored / committed here:
+# named build-context. Two additional path-deps live as siblings
+# in the canonical dev layout (`~/repos/{ASAPCollector, asap_sketchlib,
+# ASAPQuery-backend}`) and must be supplied as build contexts too —
+# the backend's `asap-query-engine/Cargo.toml` path-deps
+# `asap-precompute-rs = { path = "../../ASAPCollector/asap-precompute-rs" }`
+# and that crate's own `Cargo.toml` path-deps
+# `asap_sketchlib = { path = "../../asap_sketchlib" }`. Inside the
+# build container we recreate the same relative layout under /src.
 #
-#   # Option A: local checkout
-#   docker build -f deploy/docker/Dockerfile.backend \
+#   # Option A: local checkouts
+#   DOCKER_BUILDKIT=1 docker build -f deploy/docker/Dockerfile.backend \
 #     --build-context backend-src=/path/to/ASAPQuery-backend \
+#     --build-context asap-precompute-rs=/path/to/ASAPCollector/asap-precompute-rs \
+#     --build-context asap-sketchlib=/path/to/asap_sketchlib \
 #     -t asap/query-backend:dev .
-#
-#   # Option B: via a released tarball / git archive
-#   git archive --remote=git@github.com:ProjectASAP/ASAPQuery-backend.git \
-#     --format=tar main | tar -C /tmp/asap-backend -xf -
-#   docker build --build-context backend-src=/tmp/asap-backend \
-#     -f deploy/docker/Dockerfile.backend -t asap/query-backend:dev .
 #
 # The `:dev` tag is what `deploy/docker-compose/base.yml`
 # references.
@@ -26,16 +29,28 @@ RUN apt-get update && \
         protobuf-compiler git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Pull the source tree from the caller-provided build context.
-COPY --from=backend-src . backend
-RUN cd backend && cargo build --release --bin precompute_engine
+# Recreate the canonical sibling-checkout layout the backend's
+# path-deps expect:
+#
+#   /src/ASAPQuery-backend/...
+#   /src/ASAPCollector/asap-precompute-rs/...
+#   /src/asap_sketchlib/...
+#
+# Then build from inside the backend dir so cargo resolves
+# `../../ASAPCollector/asap-precompute-rs` and `../../asap_sketchlib`
+# to the in-container paths.
+COPY --from=backend-src        . ASAPQuery-backend
+COPY --from=asap-precompute-rs . ASAPCollector/asap-precompute-rs
+COPY --from=asap-sketchlib     . asap_sketchlib
+
+RUN cd ASAPQuery-backend && cargo build --release --bin precompute_engine
 
 # Runtime image: binary + CA certs.
 FROM debian:bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/backend/target/release/precompute_engine \
+COPY --from=build /src/ASAPQuery-backend/target/release/precompute_engine \
     /usr/local/bin/asap-query-backend
 
 ENV RUST_LOG=info \
