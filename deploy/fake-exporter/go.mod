@@ -53,4 +53,9 @@ replace (
 	go.opentelemetry.io/otel/sdk => ../../opentelemetry-go/sdk
 	go.opentelemetry.io/otel/sdk/metric => ../../opentelemetry-go/sdk/metric
 	go.opentelemetry.io/otel/trace => ../../opentelemetry-go/trace
+	// The patched OTLP proto bindings (mpb.DDSketch / KLLSketch / CountSketch
+	// / CountMinSketch / HLLSketch types added on top of upstream v1.9.0)
+	// are regenerated under opentelemetry-proto/gen/go/... by
+	// restore_otel_proto_patches.sh. See opentelemetry-proto-patch/REGEN.md.
+	go.opentelemetry.io/proto/otlp => ../../opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp
 )

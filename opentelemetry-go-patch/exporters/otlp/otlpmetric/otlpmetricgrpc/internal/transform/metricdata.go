@@ -535,8 +535,8 @@ func KLLSketchDataPoints[N int64 | float64](
 // KLLSketchEncodingValue returns an OTLP KLLSketchEncoding generated from enc.
 func KLLSketchEncodingValue(enc metricdata.KLLSketchEncoding) (mpb.KLLSketchEncoding, error) {
 	switch enc {
-	case metricdata.KLLSketchEncodingGob:
-		return mpb.KLLSketchEncoding_KLL_SKETCH_ENCODING_GOB, nil
+	case metricdata.KLLSketchEncodingProto:
+		return mpb.KLLSketchEncoding_KLL_SKETCH_ENCODING_PROTO, nil
 	default:
 		return mpb.KLLSketchEncoding_KLL_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownKLLSketchEncoding, enc)
 	}
@@ -592,8 +592,10 @@ func CountSketchDataPoints[N int64 | float64](
 // CountSketchEncodingValue returns an OTLP CountSketchEncoding generated from enc.
 func CountSketchEncodingValue(enc metricdata.CountSketchEncoding) (mpb.CountSketchEncoding, error) {
 	switch enc {
-	case metricdata.CountSketchEncodingGob:
-		return mpb.CountSketchEncoding_COUNT_SKETCH_ENCODING_GOB, nil
+	case metricdata.CountSketchEncodingProto:
+		return mpb.CountSketchEncoding_COUNT_SKETCH_ENCODING_PROTO, nil
+	case metricdata.CountSketchEncodingDelta:
+		return mpb.CountSketchEncoding_COUNT_SKETCH_ENCODING_DELTA, nil
 	default:
 		return mpb.CountSketchEncoding_COUNT_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownCountSketchEncoding, enc)
 	}
@@ -649,8 +651,10 @@ func CountMinSketchDataPoints[N int64 | float64](
 // CountMinSketchEncodingValue returns an OTLP CountMinSketchEncoding generated from enc.
 func CountMinSketchEncodingValue(enc metricdata.CountMinSketchEncoding) (mpb.CountMinSketchEncoding, error) {
 	switch enc {
-	case metricdata.CountMinSketchEncodingGob:
-		return mpb.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_GOB, nil
+	case metricdata.CountMinSketchEncodingProto:
+		return mpb.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_PROTO, nil
+	case metricdata.CountMinSketchEncodingDelta:
+		return mpb.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_DELTA, nil
 	default:
 		return mpb.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownCountMinSketchEncoding, enc)
 	}
