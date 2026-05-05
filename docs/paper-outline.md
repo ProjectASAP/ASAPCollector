@@ -28,12 +28,64 @@ workload + SLAs.
   planning — the controller decides *which sketches run where*
   based on observed query workload + SLAs + resource budgets
   at each stage.
-- **Measurable benefits at every layer**:
-  - Edge collector: CPU / memory reduction vs. raw-forward
-  - Transmission: bandwidth reduction (agent → gateway →
-    backend)
-  - Storage: smaller hot tier, S3 cold tier at $X / TB
-  - Query: lower latency + lower resource usage at backend
+- **Measurable benefits — five evaluation dimensions**. The
+  paper stands on these five empirical claims, demonstrated
+  end-to-end (system architecturally working is necessary but
+  not sufficient — the data must back each claim):
+  1. **Reduced transmission bandwidth.** Sketch envelopes on
+     the agent → backend wire are smaller than raw samples,
+     vs. raw and vs. compression baselines (b0a / b0b / b1 /
+     b5).
+     - *Evidence:* `deploy/scripts/run_e2e_sweep.sh` (P7) →
+       per-cell `bytes_in / bytes_out` columns →
+       `deploy/scripts/e2e_plots.py` (P9) bandwidth-vs-N plot.
+       Single-host pre-compare:
+       `otel_collector_benchmark/cardinality_crossover/`
+       (sketch-bytes vs raw-bytes across `N ∈ {100…5M}`).
+  2. **Low edge collector CPU overhead at runtime.** Sketch
+     processors don't blow the agent's CPU budget vs.
+     raw-forwarding.
+     - *Evidence:* P7 sweep producer-side `cpu_pct` column;
+       `otel_collector_benchmark/bench_2node_sim.sh` for
+       per-node CPU; SDK label-axis profile (paper blocker
+       #2 of `PROGRESS.md`).
+  3. **Low edge collector memory overhead at runtime.**
+     Sketch-processor RSS stays bounded under load and over
+     long soaks (no leaks).
+     - *Evidence:* P7 sweep `rss` column;
+       `otel_collector_benchmark/bench_soak.sh` (long-running
+       steady-state with minute-resolution RSS / heap /
+       fd-count and slope-based leak verdict).
+  4. **Backend query accuracy.** Every PromQL answer falls
+     inside the sketch's theoretical accuracy envelope
+     (ε / δ / kind), and is quantitatively close to ground
+     truth. The accuracy envelope is already surfaced in the
+     `infos` of every response.
+     - *Evidence:* `deploy/fake-exporter/raw_tee.go` (P4)
+       writes ground truth to MinIO/S3 raw JSONL;
+       `deploy/scripts/accuracy_reduce.py` (P8) joins query
+       answers vs. truth and computes per-row relative
+       error / top-K recall; bound-derivation crib in
+       `ASAPQuery-backend/TODO.md` "Accuracy-profile library
+       per sketch type" + `sketchlib-bench/docs/DESIGN.md`.
+  5. **Fast query computation / short query latency.**
+     Backend p50 / p99 query latency is production-usable.
+     Headline target: ≤2× warm-hot for cold-fallback;
+     warm-tier is the headline number.
+     - *Evidence:* `deploy/scripts/promql_replay.py` (P5)
+       captures p50 / p99 per query at fixed QPS; P9
+       `query_latency_cdf.png` plot;
+       `deploy/scripts/plan_transition.py` (P6)
+       `t_query_in / t_first_hit / t_steady` against the
+       controller's plan-id stream.
+
+  **Combined headline claim** (the Pareto): total resource
+  usage (edge + backend) at equivalent query coverage is
+  lower than the raw-sample baseline. Materialized as P9's
+  `pareto_acc_vs_thru.png` (accuracy vs. throughput /
+  bandwidth across the full sweep matrix). This is the figure
+  the paper's contribution rests on.
+
 - **Formal correctness**: combining sketches across schema
   reconfigure boundaries, deterministic backfill for historical
   accuracy, no query data cliff when the plan evolves.
