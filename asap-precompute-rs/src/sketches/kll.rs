@@ -10,7 +10,7 @@ use asap_sketchlib::sketches::KLL;
 use prost::Message;
 
 use asap_sketchlib::proto::sketchlib::{
-    sketch_envelope, KllState, SketchEnvelope as ProtoEnvelope,
+    sketch_envelope, CoinState, KllState, SketchEnvelope as ProtoEnvelope,
 };
 
 use crate::observation::ObservationValue;
@@ -27,14 +27,14 @@ pub struct KLLWrapper {
     sk: KLL<f64>,
     k: i32,
     seed: Option<u64>,
-    /// Snapshot of all values inserted, kept so the wrapper can
-    /// reconstruct a [`KllState`] proto on snapshot. The wire format
-    /// requires `levels[]` + `items[]` views into the compactor; the
-    /// in-tree `KLL` struct doesn't expose them publicly, so we
-    /// instead serialize via the existing msgpack helper as the
-    /// `items` field and reset levels to `[0, len]` (single-level
-    /// view). Cross-language byte-parity with Go therefore lives in
-    /// the `tests/cross_language_parity.rs` honest-results check.
+    /// Snapshot of all observations seen since the last reset. Kept
+    /// alongside the in-tree compactor so [`Self::merge`] /
+    /// [`Self::apply_delta`] can replay the peer's items into our
+    /// compactor without poking at private state. The compactor
+    /// itself drives [`Self::snapshot`] via the wire-format accessors
+    /// added in `asap_sketchlib` (PR #41 — wire_levels/wire_items/
+    /// wire_coin), so cross-language byte-parity with Go now lives
+    /// against the compactor's actual state, not this history vec.
     history: Vec<f64>,
 }
 
@@ -64,23 +64,23 @@ impl KLLWrapper {
     }
 
     fn build_state(&self) -> KllState {
-        // The wire format expects `levels[]` and `items[]` boundaries
-        // matching the underlying compactor layout. The high-throughput
-        // `KLL` type does not expose `levels` / `items` accessors;
-        // building a faithful state from a serde round-trip requires
-        // upstream API additions in `asap_sketchlib`.
-        //
-        // Minimal-honest path: emit `items = history` and a single-
-        // level layout (`levels = [0, history.len()]`). Consumers that
-        // expect compactor-aware layout will see a degraded sketch
-        // — flagged in the cross-language parity tests.
+        // Wire-format-aligned: read directly from the compactor via
+        // the `wire_*` accessors added in asap_sketchlib PR #41 so the
+        // emitted `KllState.levels` / `items` / `coin` bytes match
+        // sketchlib-go's `SerializePortable` output. Closes part of
+        // ProjectASAP/ASAPCollector#243.
+        let (state, bit_cache, remaining_bits) = self.sk.wire_coin();
         KllState {
-            k: self.k as u32,
-            m: 8,
-            num_levels: 1,
-            levels: vec![0, self.history.len() as u32],
-            items: self.history.clone(),
-            coin: None,
+            k: self.sk.wire_k(),
+            m: self.sk.wire_m(),
+            num_levels: self.sk.wire_num_levels(),
+            levels: self.sk.wire_levels(),
+            items: self.sk.wire_items(),
+            coin: Some(CoinState {
+                state,
+                bit_cache,
+                remaining_bits,
+            }),
         }
     }
 
