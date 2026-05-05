@@ -1,11 +1,11 @@
 [
     {
         "kind": "quantile",
-        "promql": "histogram_quantile(0.99, sum by (le) (http_requests_total_latency_ms))"
+        "promql": "quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])"
     },
     {
         "kind": "quantile",
-        "promql": "histogram_quantile(0.50, sum by (le) (http_requests_total_latency_ms))"
+        "promql": "quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])"
     },
     {
         "kind": "topk",
@@ -13,10 +13,10 @@
     },
     {
         "kind": "count_unique",
-        "promql": "count(count by (zone) (http_requests_total))"
+        "promql": "count(http_requests_total)"
     },
     {
         "kind": "sum",
-        "promql": "sum(http_requests_total)"
+        "promql": "sum_over_time(http_requests_total[1m])"
     }
 ]

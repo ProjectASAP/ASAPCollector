@@ -2,6 +2,21 @@
 
 _Last updated: 2026-05-05._
 
+## Deploy-side inference mirror + queries-e2e alignment (2026-05-05)
+
+Mirrored `ASAPQuery-backend` PR #79's 33-entry warm-tier pattern set
+into the 5 deploy `backend-inference{,-cms,-cs,-hll,-kll}.yaml`
+overlays (was 1–8 entries each; now 33 / 14 / 16 / 8 / 16) and
+swapped `deploy/scripts/queries-e2e.json` off the engine-rejected
+`histogram_quantile(...)` shape onto `quantile_over_time(φ,
+*_quantile[1m])` (live-verified per "Single-pipeline multi-sketch +
+delta + queryable warm tier (2026-05-01)" above). Closes the YAML
+side of the E0 exit criterion (1) — replay queries now exact-match
+warm-tier entries instead of falling through to the cold tier. The
+engine pattern-matcher itself does not yet cover `histogram_quantile`;
+that's a separate ASAPQuery-backend PR (see
+`deploy/README.md` "Inference dispatch").
+
 ## Cross-language byte-format parity, 5/5 sketches (2026-05-05)
 
 Closes [#243](https://github.com/ProjectASAP/ASAPCollector/issues/243).
