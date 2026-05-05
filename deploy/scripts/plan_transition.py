@@ -83,16 +83,21 @@ class DockerStatsSampler(threading.Thread):
         self.prefix = prefix
         self.out_path = out_path
         self.interval_s = interval_s
-        self._stop = threading.Event()
+        # NOTE: must NOT be named `_stop` — Python 3.12's `threading.Thread`
+        # exposes a private `_stop()` method that
+        # `Thread._wait_for_tstate_lock` calls during `join()`. Shadowing it
+        # with an `Event` instance causes
+        # `TypeError: 'Event' object is not callable` at join time.
+        self._stop_event = threading.Event()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self) -> None:
         with open(self.out_path, "w") as f:
-            while not self._stop.is_set():
+            while not self._stop_event.is_set():
                 self._sample_once(f)
-                self._stop.wait(self.interval_s)
+                self._stop_event.wait(self.interval_s)
 
     def _sample_once(self, f) -> None:
         cmd = [

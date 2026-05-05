@@ -14,6 +14,16 @@
 #   5. --cold-store-root + --forward-unsupported-queries on the
 #      backend command line so capability-misses route through the
 #      cold path before falling back to Prom.
+#   6. Mounts deploy/configs/workloads.yaml into the controller and
+#      sets CONTROLLER_WORKLOADS to point at it. Without this the
+#      controller's startup log says "workloads file not found; using
+#      empty registry" and never publishes a plan id, so
+#      plan_transition.py sees `before_plan: null / after_plan: null`.
+#   7. Sets CONTROLLER_BACKEND_ENDPOINT so the controller's replanner
+#      pushes StreamingConfig YAML to the backend on every plan
+#      change. The backend's hot-reload handler is on the query port
+#      (9091) at /api/v1/streaming-config — same surface the planner
+#      tests in `controller/src/backend_client.rs` exercise.
 #
 # Wire it as:
 #
@@ -34,6 +44,19 @@ services:
   controller:
     image: asap/controller:dev
     build: !reset null
+    environment:
+      # Point the declarative workload registry parser at our
+      # mounted YAML. Default lookup path is "workloads.yaml"
+      # relative to the controller's CWD (which is `/` in the
+      # debian-slim runtime image), so we must override.
+      CONTROLLER_WORKLOADS: "/etc/asap/workloads.yaml"
+      # Wires the controller → backend StreamingConfig push path.
+      # On every plan change the controller POSTs a
+      # `StreamingConfig` YAML to this URL; the backend's hot-reload
+      # handler swaps its active config without a restart.
+      CONTROLLER_BACKEND_ENDPOINT: "http://backend:9091/api/v1/streaming-config"
+    volumes:
+      - ../configs/workloads.yaml:/etc/asap/workloads.yaml:ro
 
   # The canonical gateway forwards everything as OTLP (sketches +
   # raw) to the backend. The default `gateway.yaml` uses

@@ -328,6 +328,7 @@ async fn main() {
         registry: Arc::clone(&metrics_registry),
         store: Arc::clone(&runtime_samples_state),
         stats: runtime_samples_state.stats_handle(),
+        plan_store: Some(Arc::clone(&plan_store)),
     };
     let metrics_router = Router::new()
         .route(

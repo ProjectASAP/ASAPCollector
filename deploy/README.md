@@ -85,6 +85,74 @@ docker compose -f deploy/docker-compose/base.yml \
                -f deploy/docker-compose/baseline-b3-delta.yml up
 ```
 
+### E0: single-cell smoke (P5–P9 end-to-end against a live stack)
+
+Smallest cell that exercises the whole P1–P9 path. Use this
+before kicking off the 60-cell sweep to catch wiring regressions.
+
+```bash
+# 1. Stack up. The e2e overlay is what flips controller workload
+#    registry on, wires CONTROLLER_BACKEND_ENDPOINT, mounts the
+#    cold-store volume into both fake-exporter (writer) and
+#    backend (reader), and points the gateway at the OTLP
+#    forwarder (gateway-otlp-forward.yaml). Pin cardinality and
+#    frequency low — the b3-delta overlay's 100k×100Hz default
+#    can blow past the OTLP exporter's 64 MiB max message size on
+#    the first window, even with delta_transmission=true.
+AGENT_CONFIG=sketchcol-agent-b3-delta.yaml \
+EXPORTER_CARDINALITY=1000 EXPORTER_FREQ_HZ=10 \
+docker compose \
+    -f deploy/docker-compose/base.yml \
+    -f deploy/docker-compose/agents-N1.yml \
+    -f deploy/docker-compose/baseline-b3-delta.yml \
+    -f deploy/docker-compose/e2e-overlay.yml \
+    up -d
+
+# 2. Wait for first sketch ingest at the backend (one agent window
+#    = 60 s for b3-delta).
+until docker logs docker-compose-backend-1 2>&1 \
+        | grep -q "OTLP modified-proto sketch ingest"; do sleep 3; done
+
+# 3. Drive workload + plan-transition observability concurrently.
+mkdir -p /tmp/cell-smoke-e0
+python3 deploy/scripts/promql_replay.py \
+    --target http://localhost:19091 --controller http://localhost:18080 \
+    --queries deploy/scripts/queries-e2e.json \
+    --qps 5 --duration 60 \
+    --out /tmp/cell-smoke-e0/replay.jsonl &
+python3 deploy/scripts/plan_transition.py \
+    --target http://localhost:19091 --controller http://localhost:18080 \
+    --transition-query 'histogram_quantile(0.999, sum by (le) (http_requests_total_latency_ms))' \
+    --transition-out /tmp/cell-smoke-e0/transition.jsonl \
+    --sample-out /tmp/cell-smoke-e0/sample.jsonl \
+    --soak-secs 60 --pre-transition-secs 20 &
+wait
+
+# 4. Snapshot ground truth from the cold-store volume (the volume
+#    goes away on `down -v`, so this has to happen before teardown).
+docker cp $(docker compose \
+    -f deploy/docker-compose/base.yml \
+    -f deploy/docker-compose/e2e-overlay.yml ps -q backend):/var/asap/cold/raw \
+    /tmp/cell-smoke-e0/cold-truth
+
+# 5. Reduce + plot.
+python3 deploy/scripts/accuracy_reduce.py \
+    --cell-dir /tmp/cell-smoke-e0 --out /tmp/cell-smoke-e0/accuracy.csv
+python3 deploy/scripts/e2e_plots.py \
+    --sweep-root /tmp --accuracy /tmp/cell-smoke-e0/accuracy.csv \
+    --out-dir /tmp/cell-smoke-e0/plots
+```
+
+Expected: `replay.jsonl` rows tagged with a non-null `plan_id`,
+`transition.jsonl` with non-null `before_plan` / `after_plan`
+(populated by `controller/src/metrics_exposer.rs`'s
+`asap_active_plan_id` gauge), `cold-truth/<metric>/YYYY/MM/DD/HH/`
+hour-bucketed JSONL, `accuracy.csv` with one row per query, and
+at least `query_latency_cdf.png` + `pareto_acc_vs_thru.png` under
+`plots/`. The full 5-sketch coverage in `accuracy.csv` requires
+the 60-cell sweep (E3, `run_e2e_sweep.sh`); the b3-delta cell
+alone only exercises DDSketch + HLL.
+
 ### Sweep driver
 
 ```bash
