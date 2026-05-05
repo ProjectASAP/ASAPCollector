@@ -2,6 +2,19 @@
 
 _Last updated: 2026-05-05._
 
+## Phase 5 step E done — cross-host envelope + PromQL parity (2026-05-05)
+
+`integration/cross_host_parity/` lands the agent-binary-level parity
+gate that §11 row E specifies: sketchcol (OTel-Go) ↔ sketchotap
+(OTAP-Rust) emit byte-identical `SketchEnvelope.Payload`s for the
+canonical golden input across all five sketch families;
+sketchtelegraf opt-in via `--include-telegraf`. Fixture mode
+reproduces the canonical bytes inline (no Docker / submodules / agent
+binaries needed); binary mode (`run_parity.sh --mode=binary`) drives
+real images via `deploy/docker-compose/cross-host-parity.yml` and
+also asserts PromQL response equality across agents over
+`deploy/scripts/queries-e2e.json`.
+
 ## Deploy-side inference mirror + queries-e2e alignment (2026-05-05)
 
 Mirrored `ASAPQuery-backend` PR #79's 33-entry warm-tier pattern set
