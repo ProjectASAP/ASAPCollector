@@ -148,6 +148,22 @@ for sk in "${SKETCHES[@]}"; do
                 # Wait for both.
                 wait "$REPLAY_PID" "$TRANSITION_PID"
 
+                # Pull the per-cell measurement row BEFORE bringing
+                # the stack down — Prom dies with the stack so the
+                # gateway / agent / backend Prom counters won't
+                # survive teardown. `--replay-jsonl` populates
+                # `backend_query_p99_ms` from the client-side
+                # JSONL, which IS preserved on the host (paper
+                # blocker #3, item 3).
+                python3 "${SCRIPT_DIR}/measure-baseline.py" \
+                    --baseline "$FAM-cell" \
+                    --scale "N${N}" \
+                    --rate "$(echo "scale=2; 1000 / ${SCRAPE_MS}" | bc)" \
+                    --cardinality "$CARD" \
+                    --replay-jsonl "${CELL_DIR}/replay.jsonl" \
+                    > "${CELL_DIR}/measurement.csv" \
+                    2> "${CELL_DIR}/measurement.log" || true
+
                 # Snapshot the cold-store ground truth into the
                 # cell directory so the reducer doesn't need to
                 # re-scrape the live volume after teardown.

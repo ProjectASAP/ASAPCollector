@@ -570,16 +570,32 @@ plots that only require a producer + collector pair. Landed via
    pass showed producer CPU climbing ~4× under label
    projection. Root-cause before that number goes into a
    figure.
-3. **Fill the `nan` columns in the multi-agent sweep CSV.**
-   - Agent `bytes_in` / `bytes_out` on raw + Gorilla baselines
-     (`b0a`, `b0b`, `b1`, `b5`).
-   - Gateway `points/s` + backend `samples/s` on sketch
-     baselines.
-   - `backend_query_p99_ms` — needs the query-side driver
-     (item 4).
-   - Grafana dashboards — one per evaluation axis (producer
-     CPU, producer bandwidth, query latency, workload drift,
-     N-scale).
+3. **~~Fill the `nan` columns in the multi-agent sweep CSV.~~**
+   **Done (2026-05-05).** Three fixes landed in
+   `deploy/scripts/measure-baseline.py` (PR
+   `eval/fill-nan-columns-in-sweep-csv`):
+   - **Agent bytes_in/out on raw / Gorilla / Serf baselines.**
+     `docker stats` net rx/tx of all `docker-compose-agent-*`
+     containers feeds `agent_in_kib_per_s` / `_out_kib_per_s`
+     when the patched-processor counter is absent. Captures
+     on-the-wire bytes (what claim #1 actually wants); see
+     `docs/eval-instrumentation-notes.md` for the
+     in-process-vs-wire-bytes caveat.
+   - **Gateway / backend zero-vs-NaN.** Added `or vector(0)`
+     to gateway PromQL + the backend-samples fallback so B1/B5
+     (drop_original=true → no traffic to gateway) report `0`
+     rather than `NaN`. Difference between "Prom is gone"
+     (still NaN) and "this baseline structurally bypasses the
+     gateway" (now 0) preserved.
+   - **`backend_query_p99_ms` from client-side replay JSONL.**
+     New `--replay-jsonl PATH` flag computes p99 of successful
+     `duration_ms` from the replay client's output —
+     survives `docker compose down -v`. Wired through
+     `run_e2e_sweep.sh` (always-on) and
+     `run-baseline-sweep.sh` (`DRIVE_QUERIES=1` opt-in).
+   Verified with `deploy/eval-results/sweep-smoke-postfix-20260505.csv`:
+   one cell per baseline family, no NaN in any of the 17 columns.
+   Grafana dashboards still outstanding (separate work).
 4. **Query side of the sweep.** Co-located PromQL replay
    issuing avg / p99 / rate / topK queries over {1m, 5m, 1h}
    windows at steady rate. Capture `query_p50/p99_ms`,

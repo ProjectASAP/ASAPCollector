@@ -18,6 +18,12 @@
 #   WINDOWS="5s 30s 60s 300s"             SKETCH_WINDOW sweep (B4 only)
 #   SOAK_S=120                            per-config soak seconds
 #   SCRIPT_DIR=.../deploy/scripts         override lookup path
+#   DRIVE_QUERIES=1                       run promql_replay during soak
+#                                         (lights up backend_query_p99_ms;
+#                                         requires e2e-overlay-style stack)
+#   QUERY_QPS=5                           QPS for the optional replay
+#   QUERY_DURATION_S=30                   seconds of replay (≤ SOAK_S)
+#   REPLAY_OUT_DIR=/tmp                   where to dump per-baseline JSONL
 #
 # WINDOWS is honored only when the baseline is `b4-tunable` —
 # other baselines have their window hard-coded in the YAML. When
@@ -39,6 +45,10 @@ RATES="${RATES:-1000}"
 CARDS="${CARDS:-1000}"
 WINDOWS="${WINDOWS:-}"  # empty = use default window; non-empty only for B4
 SOAK_S="${SOAK_S:-180}"  # ≥3 min so rate()/60s windows yield ≥2 samples
+DRIVE_QUERIES="${DRIVE_QUERIES:-0}"
+QUERY_QPS="${QUERY_QPS:-5}"
+QUERY_DURATION_S="${QUERY_DURATION_S:-30}"
+REPLAY_OUT_DIR="${REPLAY_OUT_DIR:-/tmp}"
 
 # Emit header once.
 head=1
@@ -104,17 +114,43 @@ for baseline in $BASELINES; do
       echo "# soaking ${SOAK_S}s..." >&2
       sleep "$SOAK_S"
 
+      # Optionally drive a short PromQL replay against the
+      # backend so `backend_query_p99_ms` lights up. Without this
+      # the column is NaN for every cell — the backend's
+      # asap_query_duration_seconds histogram only fires on
+      # serviced queries (paper blocker #3, item 3). The replay
+      # also feeds a client-side p99 fallback into
+      # measure-baseline.py via --replay-jsonl, so the column is
+      # populated even when Prometheus dies between cells.
+      replay_args=()
+      if (( DRIVE_QUERIES == 1 )); then
+        replay_jsonl="${REPLAY_OUT_DIR}/replay-${tag}-${rate}-${card}.jsonl"
+        echo "# driving queries qps=${QUERY_QPS} dur=${QUERY_DURATION_S}s → ${replay_jsonl}" >&2
+        python3 "${SCRIPT_DIR}/promql_replay.py" \
+          --target http://localhost:19091 \
+          --controller http://localhost:18080 \
+          --queries "${SCRIPT_DIR}/queries-e2e.json" \
+          --qps "$QUERY_QPS" \
+          --duration "$QUERY_DURATION_S" \
+          --out "$replay_jsonl" \
+          --no-plan-poll \
+          >/dev/null 2>&1 || true
+        replay_args+=(--replay-jsonl "$replay_jsonl")
+      fi
+
       # `head=1` path emits the CSV header; subsequent iterations
       # emit only data rows.
       if (( head == 1 )); then
         python3 "${SCRIPT_DIR}/measure-baseline.py" \
           --baseline "$tag" --scale "$SCALE" \
-          --rate "$rate" --cardinality "$card"
+          --rate "$rate" --cardinality "$card" \
+          ${replay_args[@]+"${replay_args[@]}"}
         head=0
       else
         python3 "${SCRIPT_DIR}/measure-baseline.py" \
           --baseline "$tag" --scale "$SCALE" \
           --rate "$rate" --cardinality "$card" \
+          ${replay_args[@]+"${replay_args[@]}"} \
           | tail -n +2
       fi
      done  # window
