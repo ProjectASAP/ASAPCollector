@@ -17,12 +17,9 @@
 # binary (Telegraf is a single-module repo). The script therefore
 # excludes go.mod / go.sum when staging into the submodule.
 #
-# Pre-`allsketches` experimental patches under telegraf-patch/plugins/
-# (aggregators/ddsketch, aggregators/kll, outputs/gorilla_s3, …) are
-# superseded by the unified `allsketches` plugin per the design doc and
-# are intentionally NOT copied — their dependencies were never wired
-# into Telegraf's go.mod and they no longer build. They remain in
-# telegraf-patch/ as archaeology.
+# Pre-`allsketches` experimental aggregator/output patches were
+# deleted in the cleanup that landed alongside this script — the
+# unified `allsketches` plugin supersedes them per the design doc.
 #
 # Idempotent: re-running re-copies files; no-ops if patches don't differ.
 set -euo pipefail

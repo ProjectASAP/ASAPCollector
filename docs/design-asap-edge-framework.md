@@ -514,7 +514,7 @@ Per-platform compile-in mechanism (all Tier 2):
 | Platform | Mechanism | Distribution unit |
 |---|---|---|
 | **OTel Collector** | OCB (OpenTelemetry Collector Builder) reads `builder-config.yaml`, compiles in custom processors at build time. ASAPCollector already does this. | `sketchcollector` |
-| **Telegraf** | `plugins/aggregators/all/asap.go` + build tag in `plugins/aggregators/all/aggregators.go`. No `aggregators.execd` exists. | `sketchtelegraf` |
+| **Telegraf** | `plugins/processors/all/allsketches.go` build-tag overlay registering the unified `processors.allsketches` plugin. | `sketchtelegraf` |
 | **Vector** | In-tree feature flag + `inventory::submit!` registration in a path-dependency Cargo workspace. | `sketchvector` |
 | **OTAP Dataflow** | `linkme` distributed-slice compile-time registration; the project README states "current system is compile-time only." | `sketchotap` |
 

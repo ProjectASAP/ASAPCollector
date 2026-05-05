@@ -21,9 +21,7 @@
 //   6. Raw samples                             – inline (count = N*8 bytes)
 //   7. Gorilla                                 – SKIPPED. See rationale below.
 //
-// On Gorilla: the only Gorilla codec available locally lives in
-// telegraf-patch/plugins/aggregators/gorilla/ and is wrapped in a Telegraf
-// aggregator. More importantly, Gorilla is a (timestamp,value) lossless
+// On Gorilla: Gorilla is a (timestamp,value) lossless
 // compression scheme for sequential time-series points; it does not estimate
 // quantiles. Including it in a "matched p99 error" comparison would mean
 // either feeding it synthetic timestamps and storing every sample (in which
