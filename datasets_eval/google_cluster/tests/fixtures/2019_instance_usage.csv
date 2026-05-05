@@ -1,0 +1,6 @@
+start_time,end_time,collection_id,instance_index,machine_id,alloc_collection_id,average_usage_cpus,average_usage_memory,maximum_usage_cpus,maximum_usage_memory,random_sample_usage_cpus,random_sample_usage_memory,assigned_memory,page_cache_memory,cycles_per_instruction,memory_accesses_per_instruction,sample_rate,cpu_usage_distribution,tail_cpu_usage_distribution
+600000000,900000000,387203829,0,12345,0,0.0123,0.0456,0.0234,0.0511,0.0145,0.0467,0.078,0.012,1.23,0.45,1.0,,
+600000000,900000000,387203829,1,12345,0,0.0234,0.0567,0.0345,0.0623,0.0245,0.0578,0.080,0.013,1.34,0.46,1.0,,
+600000000,900000000,387203830,0,67890,0,0.0067,0.0123,0.0089,0.0145,0.0070,0.0125,0.025,0.005,1.45,0.47,1.0,,
+900000000,1200000000,387203829,0,12345,0,0.0145,0.0478,0.0256,0.0533,0.0150,0.0480,0.079,0.012,1.24,0.45,1.0,,
+900000000,1200000000,387203831,2,11111,0,0.0456,0.0789,0.0567,0.0890,0.0470,0.0795,0.090,0.015,1.56,0.48,1.0,,
