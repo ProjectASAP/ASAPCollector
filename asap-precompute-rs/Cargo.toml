@@ -16,6 +16,20 @@ serde = { version = "1", features = ["derive"] }
 prost = "0.13"
 thiserror = "1"
 
+# Apache Arrow is only pulled in by the OTAP-Rust codec (Phase 5 step B).
+# The other consumers of this crate (sketchcollector / sketchtelegraf /
+# sketchvector — all on a row-oriented data model) never touch Arrow,
+# so the `otap` feature is non-default to keep their build cheap.
+arrow-array = { version = "53", optional = true }
+arrow-schema = { version = "53", optional = true }
+
 [dev-dependencies]
 proptest = "1"
 serde_json = "1"
+
+[features]
+default = []
+# Enables the OTAP-Rust codec at `crate::otap` (decode_batch /
+# encode_batch over `arrow::RecordBatch`). See
+# `docs/design-asap-otap-rust-integration.md` §11 (Phase B).
+otap = ["dep:arrow-array", "dep:arrow-schema"]

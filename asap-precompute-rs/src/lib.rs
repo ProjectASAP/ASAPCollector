@@ -40,6 +40,8 @@ pub mod control_channel;
 pub mod envelope;
 pub mod matchers;
 pub mod observation;
+#[cfg(feature = "otap")]
+pub mod otap;
 pub mod precompute;
 pub mod sketches;
 pub mod snapshot_cache;
