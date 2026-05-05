@@ -50,7 +50,10 @@ impl DDSketchWrapper {
 
     fn build_state(&self) -> DdSketchState {
         DdSketchState {
-            alpha: self.sk.alpha,
+            // Use the gamma-roundtripped alpha so the on-the-wire bytes
+            // match `sketchlib-go::DDSketch.SerializePortable` exactly.
+            // Closes part of ProjectASAP/ASAPCollector#243.
+            alpha: self.sk.wire_alpha(),
             store_counts: self.sk.store_counts.clone(),
             store_offset: self.sk.store_offset,
             count: self.sk.count,
