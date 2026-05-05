@@ -370,6 +370,8 @@ func DDSketchEncodingValue(enc metricdata.DDSketchEncoding) (mpb.DDSketchEncodin
 	switch enc {
 	case metricdata.DDSketchEncodingProto:
 		return mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO, nil
+	case metricdata.DDSketchEncodingProtoDelta:
+		return mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO_DELTA, nil
 	default:
 		return mpb.DDSketchEncoding_DDSKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownDDSketchEncoding, enc)
 	}
