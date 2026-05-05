@@ -83,12 +83,6 @@ fn ddsketch_byte_parity_with_go() {
 }
 
 #[test]
-#[ignore = "Rust KLL wire bytes diverge from Go: the wrapper's \
-    KllState.items field is built from a copy-on-update history vec \
-    rather than the compactor's items[]+levels[] view. \
-    asap_sketchlib::KLL doesn't expose levels()/items() accessors so \
-    the runtime cannot construct a faithful KllState today. Closing \
-    this gap requires upstream API additions in asap_sketchlib::KLL."]
 fn kll_byte_parity_with_go() {
     let Some(want) = load_golden("kll_envelope.bin") else { return; };
     let mut w = KLLWrapper::new(200, Some(42));
