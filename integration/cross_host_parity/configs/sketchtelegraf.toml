@@ -1,0 +1,72 @@
+# Phase 5 step E sketchtelegraf agent config — Telegraf pipeline with
+# the unified `allsketches` processor (Phase 4 step C) instantiated
+# five times. Driven by line-protocol over http_listener_v2 from the
+# envelope-tap driver.
+#
+# Telegraf's input format differs from OTLP: the harness translates
+# the OTLP-shaped golden_input/inputs.json fixture to a line-protocol
+# stream before pushing here. The metric names + tag keys are
+# preserved exactly; only the wire encoding differs. Phase 4 step E
+# already proved this translation does NOT change the emitted
+# SketchEnvelope.Payload bytes (integration/cross-host-parity/).
+
+[agent]
+  interval = "30s"
+  flush_interval = "30s"
+  flush_jitter = "0s"
+  round_interval = false
+
+# Receive line-protocol drives from envelope-tap.
+[[inputs.http_listener_v2]]
+  service_address = ":8186"
+  paths = ["/write"]
+  data_format = "influx"
+
+# Stamp asap.agent_id so the tap can route per-agent captures.
+[[processors.override]]
+  [processors.override.tagpass]
+    "*" = ["*"]
+  [[processors.override.tags]]
+    key = "asap.agent_id"
+    value = "sketchtelegraf"
+
+[[processors.allsketches]]
+  sketch_type = "ddsketch"
+  window_duration = "30s"
+  metric_match = ["http_request_duration_ms"]
+  relative_accuracy = 0.01
+
+[[processors.allsketches]]
+  sketch_type = "kll"
+  window_duration = "30s"
+  metric_match = ["query_duration_ms"]
+  k = 200
+  seed = 42
+
+[[processors.allsketches]]
+  sketch_type = "hll"
+  window_duration = "30s"
+  metric_match = ["unique_users"]
+
+[[processors.allsketches]]
+  sketch_type = "countsketch"
+  window_duration = "30s"
+  metric_match = ["error_codes"]
+  rows = 3
+  cols = 512
+
+[[processors.allsketches]]
+  sketch_type = "countminsketch"
+  window_duration = "30s"
+  metric_match = ["request_paths"]
+  rows = 4
+  cols = 2048
+
+# Forward emitted SketchEnvelope-carrying metrics to envelope-tap via
+# OTLP. The opentelemetry output plugin is the bridge for telegraf →
+# OTLP that the eval pipeline already uses.
+[[outputs.opentelemetry]]
+  service_address = "envelope-tap:4317"
+  compression = "none"
+  [outputs.opentelemetry.tls]
+    insecure = true
