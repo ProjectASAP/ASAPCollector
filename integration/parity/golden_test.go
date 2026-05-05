@@ -177,7 +177,27 @@ func TestGenerateGoldenFixtures(t *testing.T) {
 		for _, k := range goldenCsKeys() {
 			sk.UpdateString(k, 1.0)
 		}
-		bytes, err := sk.SerializeProtoBytes()
+		env, err := sk.SerializePortable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Strip producer / hash_spec metadata so the byte payload is
+		// stable across sketchlib-go version bumps and matches what
+		// the Rust wrapper produces (which omits both fields).
+		// Mirrors the DDSketch / KLL / HLL cases above. Also clear
+		// hh_keys: the sketchlib-go wire format includes candidate
+		// keys from the upstream Space-Saving tracker, but the Rust
+		// wrapper emits a wire-aligned `CountSketch` struct that does
+		// not carry an SS-derived candidate list. Clearing hh_keys
+		// keeps the inner `CountSketchState` byte-compatible across
+		// producers without dropping any matrix-level data
+		// (downstream rebuilds TopK from the merged matrix anyway).
+		env.Producer = nil
+		env.HashSpec = nil
+		if state := env.GetCountSketch(); state != nil {
+			state.HhKeys = nil
+		}
+		bytes, err := proto.Marshal(env)
 		if err != nil {
 			t.Fatal(err)
 		}

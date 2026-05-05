@@ -116,13 +116,6 @@ fn hll_byte_parity_with_go() {
 }
 
 #[test]
-#[ignore = "Rust CountSketch wire bytes diverge from Go: \
-    asap_sketchlib::CountSketch::update uses xxh64 with per-row \
-    seeding (twox_hash::XxHash64::oneshot(r as u64, key)), while \
-    sketchlib-go::CountSketch routes through DeriveIndex/DeriveSign \
-    which use sketchlib-go's seeded HashSpec table. Without a \
-    cross-language hash compatibility layer the matrices diverge \
-    cell-for-cell."]
 fn countsketch_byte_parity_with_go() {
     let Some(want) = load_golden("countsketch_envelope.bin") else { return; };
     let mut w = CountSketchWrapper::new(3, 512); // matches DefaultRuntimeConfig
