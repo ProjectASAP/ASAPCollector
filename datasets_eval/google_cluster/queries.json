@@ -1,0 +1,62 @@
+[
+    {
+        "kind": "quantile",
+        "promql": "histogram_quantile(0.99, sum by (le) (google_cluster_2019_cpu_rate))",
+        "expected_ground_truth_query": "quantile(0.99, google_cluster_2019_cpu_rate)",
+        "rationale": "p99 of per-instance CPU usage rates over the cell — claim #1 (quantile accuracy). Natural for the Google trace because instance_usage is sampled at 5-min intervals across all instances in a cell."
+    },
+    {
+        "kind": "quantile",
+        "promql": "histogram_quantile(0.50, sum by (le) (google_cluster_2019_cpu_rate))",
+        "expected_ground_truth_query": "quantile(0.50, google_cluster_2019_cpu_rate)",
+        "rationale": "p50 of per-instance CPU usage rates — paired with p99 for the quantile accuracy claim."
+    },
+    {
+        "kind": "quantile",
+        "promql": "histogram_quantile(0.99, sum by (le, zone) (google_cluster_2019_memory_usage))",
+        "expected_ground_truth_query": "quantile by (zone) (0.99, google_cluster_2019_memory_usage)",
+        "rationale": "Per-zone p99 memory usage — exercises group-by + quantile (claim #2 cross-key roll-up accuracy)."
+    },
+    {
+        "kind": "topk",
+        "promql": "topk(10, sum by (host) (google_cluster_2019_cpu_rate))",
+        "expected_ground_truth_query": "topk(10, sum by (host) (google_cluster_2019_cpu_rate))",
+        "rationale": "Top-10 busiest hosts by CPU — claim #3 (heavy-hitter accuracy with CountSketch). Natural Google-trace question: 'which machines are most loaded?'"
+    },
+    {
+        "kind": "topk",
+        "promql": "topk(10, count by (service) (google_cluster_2019_cpu_rate))",
+        "expected_ground_truth_query": "topk(10, count by (service) (google_cluster_2019_cpu_rate))",
+        "rationale": "Top-10 services by sample count — heavy-hitter on identity, complements the CPU-load topk."
+    },
+    {
+        "kind": "sum",
+        "promql": "sum(google_cluster_2019_cpu_rate)",
+        "expected_ground_truth_query": "sum(google_cluster_2019_cpu_rate)",
+        "rationale": "Cluster-wide CPU rate — claim #4 (counter exactness; Sum aggregation should be lossless)."
+    },
+    {
+        "kind": "sum",
+        "promql": "sum by (zone) (google_cluster_2019_memory_usage)",
+        "expected_ground_truth_query": "sum by (zone) (google_cluster_2019_memory_usage)",
+        "rationale": "Per-zone memory total — exercises sum + group-by, the simplest cross-key roll-up (claim #2)."
+    },
+    {
+        "kind": "count_unique",
+        "promql": "count(count by (service) (google_cluster_2019_cpu_rate))",
+        "expected_ground_truth_query": "count_distinct(service) where metric=google_cluster_2019_cpu_rate",
+        "rationale": "Distinct-service cardinality — claim #5 (HLL accuracy). Natural Google-trace question: 'how many unique services are running in this cell?'"
+    },
+    {
+        "kind": "count_unique",
+        "promql": "count(count by (host) (google_cluster_2019_cpu_rate))",
+        "expected_ground_truth_query": "count_distinct(host) where metric=google_cluster_2019_cpu_rate",
+        "rationale": "Distinct-host cardinality — exercises HLL on a different attribute and confirms cross-attribute consistency."
+    },
+    {
+        "kind": "count_unique",
+        "promql": "count(count by (service, task) (google_cluster_2019_cpu_rate))",
+        "expected_ground_truth_query": "count_distinct((service, task)) where metric=google_cluster_2019_cpu_rate",
+        "rationale": "Distinct-instance cardinality — saturates at --cardinality-cap when the cap is engaged; the harness scales by U/N to recover the true count (see otlp_mapper.py docstring 'Cardinality cap')."
+    }
+]
