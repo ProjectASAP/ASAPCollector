@@ -5,6 +5,7 @@ package aggregate // import "go.opentelemetry.io/otel/sdk/metric/internal/aggreg
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -59,11 +60,67 @@ func (b Builder[N]) resFunc() func(attribute.Set) FilteredExemplarReservoir[N] {
 
 type fltrMeasure[N int64 | float64] func(ctx context.Context, value N, fltrAttr attribute.Set, droppedAttr []attribute.KeyValue)
 
+// filteredAttrCache memoizes the result of `a.Filter(fltr)` keyed by the
+// input attribute Set's Distinct identity. The label-axis cost-eval sweep
+// in deploy/eval-results/sdk-cost/label-axis-20260423.csv showed that
+// applying a non-trivial AttributeFilter (e.g. keep-only zone+rack)
+// climbed producer CPU ~4× over keep-all because every measurement
+// re-ran attribute.(*Set).Filter, which allocates a fresh []KeyValue
+// (ToSlice) plus a new Set (newSet → hashKVs → computeDataFixed).
+//
+// The fix: under a fixed Filter the result is a pure function of the
+// input Distinct, so cache it. The cache lives per-aggregator (i.e.
+// per-instrument-stream) because it shares the same lifecycle as the
+// MeterProvider's compiled View. Cache invalidation is *not* needed
+// for the SDK's normal lifecycle — Filter is set at Builder time and
+// the Builder is consumed once per stream. The `swappable_filter.go`
+// runtime-swap path in deploy/fake-exporter is a separate
+// experimental track (it mutates atomic state inside the closure)
+// and the cache freezes the pre-swap result for already-seen keys —
+// acceptable for the cost-eval (every cell is a fresh process) but
+// not for hot-reload semantics. See
+// docs/eval-label-axis-cpu-rootcause.md "Why this is NOT correct
+// under runtime swap" for the bump-versioned-cache fix when that
+// path is exercised.
+type filteredAttrCache struct {
+	// m holds attribute.Distinct → *filteredAttrEntry. We use sync.Map
+	// because the access pattern under measurement load is "many
+	// readers concurrently looking up their own bounded key, occasional
+	// insertion when a new attribute set is observed for the first
+	// time". sync.Map's read-only fast path is well-suited to this; a
+	// sync.Mutex+map would serialize all hot-path measurements.
+	m sync.Map
+}
+
+type filteredAttrEntry struct {
+	fAttr   attribute.Set
+	dropped []attribute.KeyValue
+}
+
+// lookup returns the cached filtered (Set, dropped) tuple for a, computing
+// and storing it on miss. The dropped slice is shared between callers and
+// MUST NOT be mutated by them — the SDK's measure paths only read it.
+func (c *filteredAttrCache) lookup(a attribute.Set, fltr attribute.Filter) (attribute.Set, []attribute.KeyValue) {
+	key := a.Equivalent()
+	if v, ok := c.m.Load(key); ok {
+		e := v.(*filteredAttrEntry)
+		return e.fAttr, e.dropped
+	}
+	fAttr, dropped := a.Filter(fltr)
+	// LoadOrStore handles a benign race where two goroutines miss
+	// simultaneously: both compute the same value (Filter is pure),
+	// only one entry survives and both callers see the same result.
+	actual, _ := c.m.LoadOrStore(key, &filteredAttrEntry{fAttr: fAttr, dropped: dropped})
+	e := actual.(*filteredAttrEntry)
+	return e.fAttr, e.dropped
+}
+
 func (b Builder[N]) filter(f fltrMeasure[N]) Measure[N] {
 	if b.Filter != nil {
 		fltr := b.Filter // Copy to make it immutable after assignment.
+		cache := &filteredAttrCache{}
 		return func(ctx context.Context, n N, a attribute.Set) {
-			fAttr, dropped := a.Filter(fltr)
+			fAttr, dropped := cache.lookup(a, fltr)
 			f(ctx, n, fAttr, dropped)
 		}
 	}

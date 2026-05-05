@@ -1,0 +1,26 @@
+# profile-overlay.yml — enable producer-side pprof for the
+# label-axis CPU root-cause investigation (paper blocker #2).
+#
+# Used only with the SDK cost-eval grid (run-sdk-cost-grid.sh)
+# when capturing CPU profiles. Adds the EXPORTER_PPROF_ADDR
+# env var (gated in main.go) and exposes the pprof port on
+# the host. Off by default so production sweeps don't expose a
+# pprof listener.
+#
+# Usage:
+#   docker compose -p asap-blocker2 \
+#     -f base.yml -f agents-N1.yml -f baseline-b0a-raw-stream.yml \
+#     -f profile-overlay.yml up -d
+#   curl "http://127.0.0.1:36060/debug/pprof/profile?seconds=30" -o filtered.prof
+#
+# Use a non-default project name (-p) so this stack doesn't
+# collide with parallel `docker compose up` invocations from
+# other agents that share the default project name.
+
+services:
+  fake-exporter:
+    environment:
+      EXPORTER_PPROF_ADDR: "0.0.0.0:6060"
+    ports:
+      # Host port 36060 to avoid colliding with sibling stacks.
+      - "36060:6060"
