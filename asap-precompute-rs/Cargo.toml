@@ -23,13 +23,25 @@ thiserror = "1"
 arrow-array = { version = "53", optional = true }
 arrow-schema = { version = "53", optional = true }
 
+# Tokio drives the Phase 5 step C plugin lifecycle (Stream consumer
+# task + Wakeup-driven flush ticker + control-channel poll task +
+# graceful drain). Only the `rt`, `sync`, `time`, and `macros`
+# sub-features are needed; the full set is pulled in via the `otap`
+# feature gate so default-feature consumers don't pay for it.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"], optional = true }
+futures = { version = "0.3", optional = true }
+
 [dev-dependencies]
 proptest = "1"
 serde_json = "1"
+# The full tokio runtime is required for #[tokio::test]-driven
+# lifecycle tests under `tests/otap_*.rs`.
+tokio = { version = "1", features = ["full"] }
 
 [features]
 default = []
-# Enables the OTAP-Rust codec at `crate::otap` (decode_batch /
-# encode_batch over `arrow::RecordBatch`). See
-# `docs/design-asap-otap-rust-integration.md` §11 (Phase B).
-otap = ["dep:arrow-array", "dep:arrow-schema"]
+# Enables the OTAP-Rust codec + plugin lifecycle at `crate::otap`
+# (decode_batch / encode_batch over `arrow::RecordBatch`, plus the
+# `AsapSketchesPlugin` Tokio runtime). See
+# `docs/design-asap-otap-rust-integration.md` §11 (Phase B + C).
+otap = ["dep:arrow-array", "dep:arrow-schema", "dep:tokio", "dep:futures"]

@@ -58,28 +58,56 @@
 //! codec's flat shape is also the easiest to round-trip in a unit
 //! test.
 //!
-//! # Out of scope (Phase C / D, deliberately deferred)
+//! # Phase C — full plugin lifecycle
 //!
-//! - Sibling resource / scope / per-row-attribute child batches
-//!   joined by integer ids (the full `OtapArrowRecords` shape).
-//! - `NodeControlMsg::Wakeup`-driven flush ticker.
-//! - Control-channel Tokio task.
-//! - `linkme` distributed-slice plugin registration.
-//! - `otap-patch/plugins/asap_sketches/` directory.
+//! Phase B shipped the stateless codec (`decode_batch` /
+//! `encode_batch`) plus a [`StubPlugin`] anchor. Phase C layers the
+//! Tokio-driven plugin lifecycle on top:
+//!
+//! - [`config::PluginConfig`] + [`config::resolve`] — high-level
+//!   plugin configuration with 5-sketch `sketch_type` dispatch
+//!   (DDSketch / KLL / HLL / CountSketch / CountMinSketch).
+//! - [`records::OtapMetricRecords`] + [`records::flatten`] /
+//!   [`records::lift`] — local model of the upstream OTAP
+//!   `OtapArrowRecords` family with the bidirectional
+//!   sibling-batch ↔ flat-batch projection that Phase B deferred.
+//! - [`lifecycle::AsapSketchesPlugin`] — Tokio runtime: input task
+//!   consumes the host-supplied stream, `Wakeup`-driven flush
+//!   ticker emits batches, control-channel poll task picks up
+//!   plan changes, graceful drain on shutdown.
+//!
+//! The OTAP submodule wiring (linkme distributed-slice registration,
+//! `build_sketchotap.sh`, `otap-patch/all/mod.rs` patch) is **Phase D**
+//! per the §11 phase plan and is deliberately not touched here. The
+//! Phase C plugin lifecycle is exercised end-to-end via the
+//! `tests/otap_lifecycle.rs` harness.
+//!
+//! # Out of scope (Phase D / E, deliberately deferred)
+//!
+//! - `linkme` distributed-slice plugin registration in
+//!   `otap-patch/all/mod.rs`.
 //! - `build_sketchotap.sh`.
+//! - Cross-host envelope parity (Phase E).
+//! - `OtapArrowRecords` binding to the upstream Rust type — Phase D
+//!   wires [`records::OtapMetricRecords`] to the upstream
+//!   `OtapPdata` shape.
 //!
-//! # Stub plugin shell
+//! # Stub plugin shell (kept for back-compat with Phase B tests)
 //!
-//! The exit criterion in the design doc §11 reads "plugin compiles."
-//! That is provided by [`StubPlugin`], a no-op lifecycle wrapper that
-//! threads `decode_batch` / `encode_batch` against a stub
-//! [`crate::precompute::Precompute`]. It exists to anchor the Phase B
-//! exit gate; Phase C replaces it with a real OTAP plugin.
+//! [`StubPlugin`] is a no-op lifecycle wrapper that threads
+//! `decode_batch` / `encode_batch` against any
+//! [`crate::precompute::Precompute`]. Phase C's full plugin lives in
+//! [`lifecycle::AsapSketchesPlugin`]; the stub is retained to keep
+//! Phase B's tests passing as a regression backstop.
 
 mod decode;
 mod encode;
 mod plugin;
 mod schema;
+
+pub mod config;
+pub mod lifecycle;
+pub mod records;
 
 pub use decode::{decode_batch, OtapDecodeError};
 pub use encode::{encode_batch, OtapEncodeError};
@@ -87,3 +115,9 @@ pub use plugin::StubPlugin;
 pub use schema::{ATTR_AGG_ID, ATTR_ENCODING, ATTR_ENVELOPE, ATTR_SCHEMA_VERSION,
     ATTR_SKETCH_TYPE, ATTR_WINDOW_END_MS, ATTR_WINDOW_START_MS, COLUMN_METRIC,
     COLUMN_TIME_UNIX_NANO, COLUMN_VALUE};
+
+pub use config::{ConfigError, PluginConfig, SketchDispatch};
+pub use lifecycle::{
+    AsapSketchesPlugin, EmitReceiver, EmitSender, PluginError, PluginHandle, StartOptions,
+};
+pub use records::{flatten, lift, OtapMetricRecords, OtapRecordsError};
