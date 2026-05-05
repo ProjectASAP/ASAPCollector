@@ -75,29 +75,64 @@ def iter_truth_samples(cold_truth_dir: str, metric: str) -> Iterable[dict]:
 # --- query parsing -------------------------------------------------
 
 
-_QUANTILE_RE = re.compile(
+# Quantile shape #1 (legacy): `histogram_quantile(0.5, sum by (le) (metric))`
+_QUANTILE_HIST_RE = re.compile(
     r"histogram_quantile\(\s*([0-9.]+)\s*,\s*sum\s+by\s+\(\s*le\s*\)\s*\(\s*([\w_]+)\s*\)\s*\)",
     re.IGNORECASE,
 )
+# Quantile shape #2 (post-#266 e2e queries): `quantile_over_time(0.5, metric_quantile[1m])`.
+# We treat the "_quantile" suffix as a sketch-projection naming convention; the
+# underlying ground truth is the raw metric without the suffix. Many of our
+# replay queries are warm-tier `quantile_over_time(φ, *_quantile[1m])` which
+# the engine routes to the DDSketch / KLL precompute output. The cold-truth
+# metric directory is the unsuffixed name (raw_tee writes one dir per
+# top-level metric). Handle both: reduce against the canonical
+# unsuffixed metric.
+_QUANTILE_OVER_TIME_RE = re.compile(
+    r"quantile_over_time\(\s*([0-9.]+)\s*,\s*([\w_]+?)(?:_quantile)?\s*\[\s*[0-9smhd]+\s*\]\s*\)",
+    re.IGNORECASE,
+)
 _TOPK_RE = re.compile(r"topk\(\s*(\d+)\s*,\s*([\w_]+)\s*\)", re.IGNORECASE)
-_COUNT_UNIQUE_RE = re.compile(
+# count_unique shape #1 (legacy): `count(count by (X)(metric))` — distinct
+# values of X across the series set.
+_COUNT_UNIQUE_GROUP_RE = re.compile(
     r"count\(\s*count\s+by\s+\(\s*([\w_]+)\s*\)\s*\(\s*([\w_]+)\s*\)\s*\)",
     re.IGNORECASE,
 )
-_SUM_RE = re.compile(r"sum\(\s*([\w_]+)\s*\)", re.IGNORECASE)
+# count_unique shape #2 (post-#266 e2e queries): `count(metric)` — distinct
+# series count, equivalent to "how many time series exist for this metric".
+# `truth_count_unique(samples, by="series")` re-uses the labels-set as the
+# distinguishing key (computed in truth_count_distinct_series).
+_COUNT_SERIES_RE = re.compile(r"^count\(\s*([\w_]+)\s*\)$", re.IGNORECASE)
+# sum shape #1 (legacy): `sum(metric)` — sum across all series.
+_SUM_INSTANT_RE = re.compile(r"^sum\(\s*([\w_]+)\s*\)$", re.IGNORECASE)
+# sum shape #2 (post-#266 e2e queries): `sum_over_time(metric[1m])` — sum
+# across the trailing 1m window for each series. Truth maps to total sum
+# across all samples in the cold-window since the replay queries an instant
+# at end-of-soak — the cold-truth set covers the full soak.
+_SUM_OVER_TIME_RE = re.compile(
+    r"sum_over_time\(\s*([\w_]+)\s*\[\s*[0-9smhd]+\s*\]\s*\)",
+    re.IGNORECASE,
+)
 
 
 def parse_query(promql: str) -> tuple[str, dict] | None:
     """Returns (kind, params). None if the shape isn't one we
     recognise; the row gets skipped with a logged warning."""
     s = promql.strip()
-    if (m := _QUANTILE_RE.match(s)):
+    if (m := _QUANTILE_HIST_RE.match(s)):
+        return "quantile", {"q": float(m.group(1)), "metric": m.group(2)}
+    if (m := _QUANTILE_OVER_TIME_RE.match(s)):
         return "quantile", {"q": float(m.group(1)), "metric": m.group(2)}
     if (m := _TOPK_RE.match(s)):
         return "topk", {"k": int(m.group(1)), "metric": m.group(2)}
-    if (m := _COUNT_UNIQUE_RE.match(s)):
+    if (m := _COUNT_UNIQUE_GROUP_RE.match(s)):
         return "count_unique", {"by": m.group(1), "metric": m.group(2)}
-    if (m := _SUM_RE.match(s)):
+    if (m := _COUNT_SERIES_RE.match(s)):
+        return "count_unique", {"by": "__series__", "metric": m.group(1)}
+    if (m := _SUM_INSTANT_RE.match(s)):
+        return "sum", {"metric": m.group(1)}
+    if (m := _SUM_OVER_TIME_RE.match(s)):
         return "sum", {"metric": m.group(1)}
     return None
 
@@ -129,6 +164,11 @@ def truth_topk(samples: list[dict], k: int) -> list[tuple[str, float]]:
 
 
 def truth_count_unique(samples: list[dict], by: str) -> int:
+    if by == "__series__":
+        # Distinct series count: full labels-set as key. Mirrors what
+        # `count(metric)` returns in PromQL — number of distinct
+        # time series for the metric.
+        return len({json.dumps(s.get("labels", {}), sort_keys=True) for s in samples})
     return len({s.get("labels", {}).get(by) for s in samples})
 
 
