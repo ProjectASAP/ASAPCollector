@@ -6,8 +6,30 @@
 #   AGENT_CONFIG=sketchcol-agent-b3-delta.yaml \
 #     docker compose -f base.yml -f agents-N1.yml \
 #       -f baseline-b3-delta.yml up -d
+#
+# Workload profile (see docs/phase-2-perf-deployment.md "Gaps" #6):
+# the legacy 1k cardinality × 10 Hz default ran the agent at ~0.25%
+# of one core, three orders of magnitude below saturation. At that
+# load CPU diffs sit inside measurement noise so a 10% shim
+# regression is invisible. The override below pins B3 to a
+# saturating profile — 1e5 cardinality × 100 Hz — chosen to keep the
+# agent in the 50–70% one-core band where CPU deltas discriminate.
+# Each value can be overridden from the host shell (e.g.
+# `EXPORTER_FREQ_HZ=50 docker compose ...`); the override here only
+# changes the default fallback. Phase 2.11B gap #4.
 
 services:
   controller:
     labels:
       asap.baseline: "b3-delta"
+
+  fake-exporter:
+    environment:
+      # 1e5 cardinality × 100 Hz ≈ 1e7 obs/s into the agent's input
+      # ring. Empirically lands the agent at ~50–70% of one core on
+      # the Threadripper hardware described in docs/phase-2-perf-
+      # deployment.md "Hardware". Tune downward if the host caps out
+      # before the agent does — agent CPU is the gate metric for the
+      # shim regression check, not host CPU.
+      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-100000}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-100}"

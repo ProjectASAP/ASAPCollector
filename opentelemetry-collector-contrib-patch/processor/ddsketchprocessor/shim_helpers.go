@@ -69,7 +69,7 @@ func (p *ddsketchProcessor) observeInto(md pmetric.Metrics, batch map[string]pre
 		if !p.matchesLegacyMatchers(obs[i].Labels) {
 			continue
 		}
-		pc := getOrCreate(batch, obs[i].Metric, p.cfg)
+		pc := getOrCreate(batch, obs[i].Metric, p.cfg, p)
 		if err := pc.Observe(&obs[i]); err != nil && p.logger != nil {
 			p.logger.Debug("precompute observe", zap.Error(err))
 		}

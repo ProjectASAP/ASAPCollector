@@ -450,3 +450,74 @@ func TestSketchSubtraitAssertion(t *testing.T) {
 	}
 	_ = cs.EstimateCardinality()
 }
+
+// TestPrecompute_LatencyObserver verifies that the per-Observe
+// latency hook fires exactly once per Observe call (regardless of
+// outcome) and never on Observe-bypass paths like Tick. Closes the
+// runtime side of Phase 2.11B gap #3.
+func TestPrecompute_LatencyObserver(t *testing.T) {
+	t.Parallel()
+	cfg := &PrecomputeConfig{
+		AggID:      7,
+		SketchType: SketchTypeDDSketch,
+		Mode:       Tumbling,
+		Window:     WindowSpec{Size: 10 * time.Second},
+	}
+	p := New(cfg, newFakeFactory(), &fakeObserver{})
+
+	var (
+		samples int
+		total   time.Duration
+	)
+	p.SetLatencyObserver(func(d time.Duration) {
+		samples++
+		total += d
+	})
+
+	// 5 normal observations.
+	for i := 0; i < 5; i++ {
+		if err := p.Observe(&Observation{
+			TimestampMs: uint64(1_000 + i*100),
+			Metric:      "m",
+			Labels:      []KeyValue{{Key: "k", Value: "v"}},
+			Value:       FloatValue(float64(i + 1)),
+		}); err != nil {
+			t.Fatalf("observe %d: %v", i, err)
+		}
+	}
+	// Tick is intentionally NOT counted by the per-observation gate
+	// (ADR-0002 §"Performance contract" pins per-Observe latency,
+	// not per-flush). The hook should NOT fire here.
+	_ = p.Tick(10_000)
+	// One more Observe after the window rotates — should still fire
+	// the hook even though the call ends up touching a fresh sketch.
+	if err := p.Observe(&Observation{
+		TimestampMs: 11_000,
+		Metric:      "m",
+		Labels:      []KeyValue{{Key: "k", Value: "v"}},
+		Value:       FloatValue(10),
+	}); err != nil {
+		t.Fatalf("observe post-tick: %v", err)
+	}
+
+	if samples != 6 {
+		t.Errorf("LatencyObserver samples: want 6, got %d", samples)
+	}
+	if total <= 0 {
+		t.Errorf("LatencyObserver total duration: want >0, got %v", total)
+	}
+
+	// Disable the hook; subsequent Observe must not call back.
+	p.SetLatencyObserver(nil)
+	if err := p.Observe(&Observation{
+		TimestampMs: 12_000,
+		Metric:      "m",
+		Labels:      []KeyValue{{Key: "k", Value: "v"}},
+		Value:       FloatValue(11),
+	}); err != nil {
+		t.Fatalf("observe after disable: %v", err)
+	}
+	if samples != 6 {
+		t.Errorf("LatencyObserver samples after disable: want 6, got %d", samples)
+	}
+}

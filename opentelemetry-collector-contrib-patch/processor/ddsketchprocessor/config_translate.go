@@ -12,13 +12,24 @@ import (
 
 // getOrCreate fetches the per-metric Precompute or builds one from
 // the current Config translated via toPrecomputeConfig.
-func getOrCreate(batch map[string]precompute.Precompute, metricName string, cfg *Config) precompute.Precompute {
+//
+// proc may be nil — Batch-mode flushes (ProcessBatch) call this with
+// a fresh batch map and a non-nil proc, but unit tests construct a
+// throwaway map via the public test helper. Both paths keep working.
+func getOrCreate(batch map[string]precompute.Precompute, metricName string, cfg *Config, proc *ddsketchProcessor) precompute.Precompute {
 	if pc, ok := batch[metricName]; ok {
 		return pc
 	}
 	pc := precompute.New(toPrecomputeConfig(cfg, metricName), func() precompute.Sketch {
 		return sketches.NewDDSketchWrapper(cfg.RelativeAccuracy)
 	}, sketches.DDSketchObserver{})
+	// Wire the per-Observe latency histogram if the shim has one.
+	// Closes Phase 2.11B gap #3 — every observation routed through
+	// this Precompute now contributes to asap_processor_observe_seconds
+	// on the deployed /metrics endpoint.
+	if proc != nil && proc.observeLatency != nil {
+		pc.SetLatencyObserver(proc.recordObserveLatency)
+	}
 	batch[metricName] = pc
 	return pc
 }
