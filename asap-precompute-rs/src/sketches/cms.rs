@@ -42,23 +42,42 @@ impl CMSWrapper {
     }
 
     fn build_state(&self) -> CountMinState {
+        // Mirror sketchlib-go::CountMinSketch.SerializePortableFO:
+        // emit packed sint64 `counts_int` (Opt-2: 4–8× smaller than
+        // f64 for typical small-integer counter values) and per-row
+        // L1/L2 norms (Go's InsertWithHash maintains
+        // `L1[r] += weight` and `L2[r] += curr*curr - prev*prev`,
+        // which collapse to `sum_c count[r][c]` and
+        // `sum_c count[r][c]^2` for the unweighted unit-step stream
+        // the parity harness drives — the only producer pattern this
+        // wire path serves today). Omit `sum_counts` / `sum2_counts`
+        // (Frequency-Only mode) to match Go's `SerializeProtoBytesFO`
+        // payload bit-for-bit.
         let matrix = self.sk.sketch();
-        let mut counts_float = Vec::with_capacity(self.rows * self.cols);
+        let mut counts_int = Vec::with_capacity(self.rows * self.cols);
+        let mut l1 = Vec::with_capacity(self.rows);
+        let mut l2 = Vec::with_capacity(self.rows);
         for row in matrix.iter().take(self.rows) {
+            let mut row_l1 = 0.0f64;
+            let mut row_l2 = 0.0f64;
             for &cell in row.iter().take(self.cols) {
-                counts_float.push(cell);
+                counts_int.push(cell as i64);
+                row_l1 += cell;
+                row_l2 += cell * cell;
             }
+            l1.push(row_l1);
+            l2.push(row_l2);
         }
         CountMinState {
             rows: self.rows as u32,
             cols: self.cols as u32,
-            counter_type: CounterType::Float64 as i32,
-            counts_int: Vec::new(),
-            counts_float,
+            counter_type: CounterType::Int64 as i32,
+            counts_int,
+            counts_float: Vec::new(),
             sum_counts: Vec::new(),
             sum2_counts: Vec::new(),
-            l1: Vec::new(),
-            l2: Vec::new(),
+            l1,
+            l2,
         }
     }
 

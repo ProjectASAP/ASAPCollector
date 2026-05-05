@@ -128,13 +128,6 @@ fn countsketch_byte_parity_with_go() {
 }
 
 #[test]
-#[ignore = "Rust CMS wire bytes diverge from Go: similar to \
-    CountSketch — asap_sketchlib::CountMinSketch's backend hashes \
-    keys through a different DefaultXxHasher path than \
-    sketchlib-go's CountMinSketch.InsertWithHash. The matrix layout \
-    matches but the per-cell counts land in different buckets. \
-    Closing this gap requires unifying the hash layer across \
-    sketchlib-go and asap_sketchlib."]
 fn cms_byte_parity_with_go() {
     let Some(want) = load_golden("cms_envelope.bin") else { return; };
     let mut w = CMSWrapper::new(4, 2048); // matches DefaultRuntimeConfig
