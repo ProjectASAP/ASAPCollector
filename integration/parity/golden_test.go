@@ -162,7 +162,20 @@ func TestGenerateGoldenFixtures(t *testing.T) {
 		for _, k := range goldenHllKeys() {
 			sk.Update(common.FromBytes(k))
 		}
-		bytes, err := sk.SerializeProtoBytes()
+		env, err := sk.SerializePortable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Strip producer / hash_spec metadata so the byte payload is
+		// stable across sketchlib-go version bumps and matches what
+		// the Rust wrapper produces (which sets both fields to None).
+		// Mirrors the DDSketch / KLL / CountSketch cases above. PR
+		// #252 un-ignored the parity test but missed this strip; the
+		// test only "passed" because fixtures are gitignored and
+		// rarely regenerated alongside a test run.
+		env.Producer = nil
+		env.HashSpec = nil
+		bytes, err := proto.Marshal(env)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -213,8 +226,18 @@ func TestGenerateGoldenFixtures(t *testing.T) {
 			sk.Update(common.FromBytes([]byte(k)))
 		}
 		// Use the proto-bytes-FO format the legacy CMS processor's
-		// emit path uses (frequency-only, omitting Sum/Sum2).
-		bytes, err := sk.SerializeProtoBytesFO()
+		// emit path uses (frequency-only, omitting Sum/Sum2). Strip
+		// Producer / HashSpec metadata so the byte payload is stable
+		// across sketchlib-go version bumps and matches what the Rust
+		// wrapper produces (which omits both fields). Mirrors the
+		// DDSketch / KLL / HLL / CountSketch cases above.
+		env, err := sk.SerializePortableFO()
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.Producer = nil
+		env.HashSpec = nil
+		bytes, err := proto.Marshal(env)
 		if err != nil {
 			t.Fatal(err)
 		}
