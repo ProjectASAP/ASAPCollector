@@ -16,3 +16,6 @@
 	path = opentelemetry-collector-contrib
 	url = https://github.com/open-telemetry/opentelemetry-collector-contrib.git
 	branch = release/v0.141.0
+[submodule "otel-arrow"]
+	path = otel-arrow
+	url = https://github.com/open-telemetry/otel-arrow.git
