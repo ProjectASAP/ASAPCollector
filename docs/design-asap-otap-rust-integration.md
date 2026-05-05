@@ -99,8 +99,14 @@ Concretely:
   timers, no control-message inbox. Mirrors the existing
   [`asap-precompute-go/otel/`](../asap-precompute-go/otel/) and
   [`asap-precompute-go/telegraf/`](../asap-precompute-go/telegraf/)
-  directories in shape (`adapter.rs`, `config.rs`, `decode.rs`,
-  `encode.rs`, `seriesattrs.rs` plus tests).
+  directories in shape (`config.rs`, `decode.rs`, `encode.rs`,
+  `lifecycle.rs`, `records.rs`, `schema.rs` plus tests). The
+  `records.rs` module carries the local `OtapMetricRecords` model
+  and the `flatten()` / `lift()` Strategy-B projection that bridges
+  upstream OTAP's sibling-batch family to the codec's flat
+  per-row `RecordBatch` shape — Phase D's binding seam to the
+  upstream `OtapPdata` type lives here as a thin `From` / `Into`
+  adapter.
 - `otap-patch/plugins/asap_sketches/` — the OTAP **plugin**.
   Implements OTAP's receiver / processor trait, owns the flush
   ticker, the `Precompute` instance, the control-channel task, and
@@ -455,12 +461,16 @@ workspace version `0.1.0`, `publish = false`, ~4 commits/day to
 the dataflow tree, breaking changes on the Extension System /
 capability registry / schema validators. Mitigation: pin a
 specific commit SHA in `.gitmodules` and document it in
-`restore_otap_patches.sh`; plan a quarterly upgrade cadence with
+`build_sketchotap.sh`; plan a quarterly upgrade cadence with
 regression tests; isolate ASAP's runtime from OTAP API churn so
 only the `otap-patch/plugins/asap_sketches/` plugin takes the
 upgrade hit when OTAP refactors; document the upgrade workflow
 (pin new commit → `cargo build` → lifecycle harness → cross-host
-parity → update SHA) in the plugin's README.
+parity → update SHA) in the plugin's README. **Current pin
+(Phase D, 2026-05-05):**
+[`29de46bb4dbff6e48b595459188f912b49373eed`](https://github.com/open-telemetry/otel-arrow/commit/29de46bb4dbff6e48b595459188f912b49373eed)
+on `main`, recorded in `.gitmodules` and inlined into
+`build_sketchotap.sh`'s header.
 
 **Arrow schema stability.** OTel-Arrow's `OtapArrowRecords` schema
 is settled but evolving (per the upstream `otel-arrow` repo's
