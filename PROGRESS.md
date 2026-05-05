@@ -1,6 +1,94 @@
 # DataCollector progress
 
-_Last updated: 2026-05-01._
+_Last updated: 2026-05-05._
+
+## Cross-language byte-format parity, 5/5 sketches (2026-05-05)
+
+Closes [#243](https://github.com/ProjectASAP/ASAPCollector/issues/243).
+ADR-0002's bit-identical-wire-format promise is now real across the
+Go and Rust runtimes for all five sketch families, so a fleet mixing
+`asap-precompute-go` (Go edge runtime + sketchlib-go) and
+`asap-precompute-rs` (Rust edge runtime + asap_sketchlib) produces
+envelopes the backend can merge cross-source.
+
+### What landed
+
+- **asap_sketchlib**: ports the canonical hash + serialization paths
+  to match `sketchlib-go` byte-for-byte.
+  - DDSketch ([sketchlib#40](https://github.com/ProjectASAP/asap_sketchlib/pull/40)),
+    KLL ([#41](https://github.com/ProjectASAP/asap_sketchlib/pull/41)),
+    CountSketch hh_keys + apply_delta topk-rebuild ([#42](https://github.com/ProjectASAP/asap_sketchlib/pull/42))
+    landed earlier (2026-05-04 / 2026-05-05 morning).
+  - HLL hash-seed alignment ([#43](https://github.com/ProjectASAP/asap_sketchlib/pull/43)).
+  - CountSketch HashSpec / `derive_index` / `derive_sign` port
+    ([#44](https://github.com/ProjectASAP/asap_sketchlib/pull/44))
+    — also extracts the shared `asap_sketchlib::common::hashspec`
+    module (20-entry seed table, `HashSpec`, `hash_with_spec`,
+    `derive_index`, `derive_sign`) so CMS reuses the same primitives
+    bit-identically.
+  - CountMinSketch port ([#45](https://github.com/ProjectASAP/asap_sketchlib/pull/45))
+    — `CountMinSketch::update` / `::estimate` route through
+    `common::hashspec::derive_index` over a power-of-two-rounded
+    column mask (`hashLayoutForCols`-equivalent), with `col % cols`
+    fold for non-pow2 widths.
+
+- **ASAPCollector** (this repo): un-ignores the `cross_language_parity`
+  tests and aligns the wrappers / fixture generators to Go's
+  `SerializePortable*` byte layout.
+  - DDSketch ([#247](https://github.com/ProjectASAP/ASAPCollector/pull/247)),
+    KLL ([#250](https://github.com/ProjectASAP/ASAPCollector/pull/250)),
+    HLL ([#252](https://github.com/ProjectASAP/ASAPCollector/pull/252)),
+    CountSketch ([#253](https://github.com/ProjectASAP/ASAPCollector/pull/253))
+    landed earlier.
+  - **CountMinSketch + HLL fixture-generator alignment** ([#254](https://github.com/ProjectASAP/ASAPCollector/pull/254)):
+    `CMSWrapper::build_state` now emits the FO payload
+    (`counter_type=INT64`, packed sint64 `counts_int`, per-row
+    `l1`/`l2`, empty `sum_counts`/`sum2_counts`) matching Go's
+    `SerializeProtoBytesFO`. Also fixes a latent inconsistency
+    discovered during fixture regen: the HLL fixture generator was
+    calling `sk.SerializeProtoBytes()` directly (which embeds
+    Producer + HashSpec metadata), while every other sketch uses
+    `sk.SerializePortable*()` + strip + `proto.Marshal`. PR #252
+    un-ignored the HLL test but missed this strip; the test only
+    "passed" because fixtures are gitignored and developers rarely
+    regenerate-then-test in one step. Once you do (`GOLDEN_REGEN=1
+    go test … && cargo test --include-ignored …`), HLL diverged by
+    exactly the 134-byte Producer + HashSpec footprint. #254 brings
+    HLL onto the same `SerializePortable` + strip pattern as
+    DDSketch / KLL / CountSketch / CMS.
+
+### Verification
+
+```
+$ GOLDEN_REGEN=1 go test -run TestGenerateGoldenFixtures \
+    ./integration/parity/...
+ok  	github.com/ProjectASAP/ASAPCollector/integration/parity
+
+$ cargo test --release --test cross_language_parity -- --include-ignored
+running 7 tests
+test ddsketch_byte_parity_with_go ... ok
+test kll_byte_parity_with_go ... ok
+test hll_byte_parity_with_go ... ok
+test countsketch_byte_parity_with_go ... ok
+test cms_byte_parity_with_go ... ok
+test golden_fixtures_when_present_are_nonempty ... ok
+test rust_wrappers_produce_nonempty_envelopes_for_same_input ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored
+```
+
+Fixture sizes (deterministic, byte-stable across regen):
+DDSketch 432 B, KLL 423 B, HLL 16398 B, CountSketch 1577 B,
+CMS 8275 B.
+
+### Downstream unblocks
+
+`ASAPQuery-backend`'s `edge_runtime_consumes_precompute_rs.rs`
+acceptance tests for HLL / CountSketch / CountMinSketch were gated
+`#[ignore = "blocked on ASAPCollector#243"]` per
+`design-phase3-asap-precompute-rs.md` line 141–144 — they should
+now pass without backend code changes. Mechanical un-ignore PR
+pending (separate from this work).
 
 ## Single-pipeline multi-sketch + delta + queryable warm tier (2026-05-01)
 
