@@ -255,6 +255,21 @@ def fig_transition(sweep_root: str, out_dir: str) -> None:
     df = pd.DataFrame(rows).sort_values(["fam", "n", "card"]).reset_index(drop=True)
     df.to_csv(os.path.join(out_dir, "transition_timeline.csv"), index=False)
 
+    # Drop rows where any of the plotted offsets are missing — the
+    # bar geometry can't position a None edge. A transition with
+    # null timestamps means the controller didn't replan during the
+    # observation window; that's a fact about the cell, not data we
+    # can plot. Surface it on stderr so the run log shows we
+    # skipped it on purpose.
+    plot_df = df.dropna(subset=["t_plan_ready_s", "t_first_hit_s", "t_steady_s"])
+    if plot_df.empty:
+        print(
+            f"[fig3] no transitions with full timing in {len(df)} cells; "
+            "skipping transition_timeline.png (csv written for inspection)"
+        )
+        return
+    df = plot_df.reset_index(drop=True)
+
     fig, ax = plt.subplots(figsize=(10, max(4, 0.3 * len(df))))
     y = range(len(df))
     ax.barh(list(y), df["t_plan_ready_s"], height=0.7,
