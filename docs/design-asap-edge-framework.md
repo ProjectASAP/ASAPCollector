@@ -671,7 +671,7 @@ hash seeds, storage growth, and protobuf field ordering
 legitimately differ across runtimes). Same input stream into both
 runtimes; compare P50/P90/P99/count/sum/cardinality/top-K within
 each sketch's published error bound (DDSketch α, KLL rank error,
-HLL standard error). Harness in `sketchlib-bench` (the natural
+HLL standard error). Harness in `sketch-bench` (the natural
 cross-language home; already runs Go vs Rust microbenchmarks).
 Limit to two reference impls long-term: Go and Rust, no third
 language.
@@ -739,7 +739,7 @@ that's not how any of these platforms work.
 
 - [ ] Approve §3–§8 abstractions and naming.
 - [ ] Confirm R1 mitigation: statistical-output harness in
-      `sketchlib-bench`.
+      `sketch-bench`.
 - [ ] Decide repo layout for `asap-precompute-{go,rs}`: separate
       repos or subdirectories of `ASAPCollector`. Recommendation:
       subdirectories until a second consumer wants the runtime.

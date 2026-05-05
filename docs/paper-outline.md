@@ -67,7 +67,7 @@ workload + SLAs.
        answers vs. truth and computes per-row relative
        error / top-K recall; bound-derivation crib in
        `ASAPQuery-backend/TODO.md` "Accuracy-profile library
-       per sketch type" + `sketchlib-bench/docs/DESIGN.md`.
+       per sketch type" + `sketch-bench/docs/DESIGN.md`.
   5. **Fast query computation / short query latency.**
      Backend p50 / p99 query latency is production-usable.
      Headline target: ≤2× warm-hot for cold-fallback;

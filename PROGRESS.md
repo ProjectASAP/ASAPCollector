@@ -402,13 +402,13 @@ deploy/scripts/run_e2e_sweep.sh --out-dir /tmp/sweep-$(date +%s) --soak-secs 120
    through to capability matching or the cold tier. Adding
    patterns is mechanical but expands what queries the warm
    tier can answer.
-5. **Cold reader is intolerant of torn last lines.** Under
-   concurrent producer write + reader scan, the §5.2
-   `parse_jsonl` path failed on a torn last line. A 5-line
-   change in
-   `asap-query-engine/src/drivers/query/fallback/cold_store/format.rs`
-   to drop a malformed trailing line + warn would unblock soaks
-   that don't pause writes before snapshotting.
+5. **~~Cold reader is intolerant of torn last lines.~~**
+   **Done 2026-05-05** ([ASAPQuery-backend#80](https://github.com/ProjectASAP/ASAPQuery-backend/pull/80)).
+   `parse_jsonl_at` tolerates a torn trailing line + warn-logs
+   the part-file path; mid-file corruption still hard-errors.
+   Two new pin tests (`parse_jsonl_ignores_torn_trailing_line`,
+   `parse_jsonl_errors_on_mid_file_corruption`) lock both
+   shapes against future regression.
 6. **Reducer runs offline; doesn't need the backend live.** That's
    fine for accuracy claims, but PromQL semantics are easy to
    drift from the engine. Add a self-check that runs the same
