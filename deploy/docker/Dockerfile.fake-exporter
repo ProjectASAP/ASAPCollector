@@ -6,13 +6,19 @@
 # aggregators — see docs/sdk-cost-evaluation.md) and
 # the sketchlib-go sibling repo.
 #
-# ## Prereq: combine the patch onto the upstream tree
+# ## Prereq: combine the patches onto the upstream trees
 #
 #   ./restore_opentelemetry_go_patches.sh
+#   ./restore_otel_proto_patches.sh
 #
-# That walks the `opentelemetry-go-patch/` directory and copies its
-# contents on top of `opentelemetry-go/`. The combined tree is what
-# the go.mod replaces point at.
+# Those walk the `opentelemetry-go-patch/` and `opentelemetry-proto-patch/`
+# directories and copy their contents on top of `opentelemetry-go/` and
+# `opentelemetry-proto/` respectively. The combined trees are what the
+# `go.mod` replaces point at. The proto-patch carries the patched `.proto`
+# sources AND the regenerated `gen/go/...` Go bindings (mpb.DDSketch,
+# mpb.KLLSketch, mpb.CountSketch, mpb.CountMinSketch, mpb.HLLSketch types
+# + the `MetricsService` gRPC client). See
+# `opentelemetry-proto-patch/REGEN.md` for the regeneration recipe.
 #
 # ## Build
 #
@@ -31,9 +37,14 @@
 FROM golang:1.25-bookworm AS build
 WORKDIR /src
 
-# Main repo tree (contains opentelemetry-go with patches applied and
-# deploy/fake-exporter source).
+# Main repo tree (contains opentelemetry-go and opentelemetry-proto with
+# patches applied and deploy/fake-exporter source). The replace directives
+# in opentelemetry-go's exporter go.mod files point at
+# ../../../../../opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp,
+# so opentelemetry-proto/ must be present alongside opentelemetry-go/ in the
+# build context root.
 COPY opentelemetry-go     /src/opentelemetry-go
+COPY opentelemetry-proto  /src/opentelemetry-proto
 COPY deploy/fake-exporter /src/deploy/fake-exporter
 
 # Sketchlib-go pulled via named build context to avoid a submodule

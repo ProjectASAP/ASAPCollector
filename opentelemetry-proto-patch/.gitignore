@@ -18,12 +18,12 @@
 # Vim
 .swp
 
-# Generated code
-/gen/
+# Generated code: track the regenerated Go bindings under
+# gen/go/go.opentelemetry.io/proto/otlp/. Other languages' gen/* output is
+# ignored. See REGEN.md for the regeneration recipe.
+/gen/*
 !/gen/go/
+/gen/go/*
 !/gen/go/go.opentelemetry.io/
-!/gen/go/go.opentelemetry.io/proto/
-!/gen/go/go.opentelemetry.io/proto/otlp/
-!/gen/go/go.opentelemetry.io/proto/otlp/go.mod
 
 node_modules

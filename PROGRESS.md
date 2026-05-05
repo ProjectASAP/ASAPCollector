@@ -424,6 +424,25 @@ deploy/scripts/run_e2e_sweep.sh --out-dir /tmp/sweep-$(date +%s) --soak-secs 120
    commits and have been intentionally excluded from PRs since
    #204. Decision still pending — either commit a clean bump as
    its own PR or revert.
+9. ~~**`asap/fake-exporter:dev` rebuild broken from upstream drift.**~~
+   **Done (2026-05-05).** The patched OTLP proto bindings (mpb.DDSketch /
+   KLLSketch / CountSketch / CountMinSketch / HLLSketch) were never
+   committed under `opentelemetry-proto-patch/gen/go/...`, so any rebuild
+   hit `undefined: mpb.*` symbols. Separately, the patch dir's transform
+   files referenced `metricdata.*EncodingGob` enum names that the metric-
+   data package had renamed to `*EncodingProto` / `*EncodingDelta`. Fixed:
+   (a) regenerated the Go bindings via the upstream Makefile recipe and
+   committed them under `opentelemetry-proto-patch/gen/go/`; (b) added a
+   `go.opentelemetry.io/proto/otlp` replace to `deploy/fake-exporter/go.mod`
+   pointing at the patch's gen tree; (c) updated the http+grpc transform
+   files to use the post-rename `*EncodingProto` / `*EncodingDelta`
+   metricdata enums and `*_ENCODING_PROTO` / `*_ENCODING_DELTA` mpb enums;
+   (d) updated `Dockerfile.fake-exporter` to copy `opentelemetry-proto/`
+   into the build context. Regen recipe lives at
+   `opentelemetry-proto-patch/REGEN.md`. The companion sketchlib-go PR #53
+   rename refactor (Add/Insert/InsertValue/EstimateCardinality/
+   GetValueAtQuantile → Update/UpdateValue/Estimate/Quantile) was already
+   absorbed into the patch dir before this round; the build verifies it.
 
 ---
 
