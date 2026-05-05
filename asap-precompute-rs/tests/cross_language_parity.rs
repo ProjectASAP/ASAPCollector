@@ -94,25 +94,21 @@ fn kll_byte_parity_with_go() {
 }
 
 #[test]
-#[ignore = "Rust HLL wire bytes diverge from Go: \
-    asap_sketchlib::HllSketch::update hashes input differently from \
-    sketchlib-go::HyperLogLog::UpdateValue (the high-throughput \
-    Rust HyperLogLog uses CANONICAL_HASH_SEED via DefaultXxHasher; \
-    the Go wrapper's UpdateValue routes through a sketchlib-go path \
-    that may use a different seed/hash. Without aligning the hash \
-    layer the registers populated by 50 sequential bytes diverge \
-    register-for-register. Investigating which seed each side uses \
-    is the follow-up; not in this PR."]
 fn hll_byte_parity_with_go() {
     let Some(want) = load_golden("hll_envelope.bin") else { return; };
-    let mut w = HLLWrapper::new(asap_sketchlib::sketches::HllVariant::Regular, 14);
+    // sketchlib-go::HyperLogLog.SerializePortable emits
+    // HLL_VARIANT_DATAFUSION (= proto enum value 2 = `HllVariant::Datafusion`
+    // in asap_sketchlib's enum naming). Construct the Rust wrapper with
+    // the matching variant so the proto envelope bytes align with Go's.
+    // Both producers reach `insert_with_hash` with the same `u64` because
+    // `sketchlib-go::common.FromBytes` and `asap_sketchlib::HllSketch::update`
+    // both route through `xxh3_64(seed=seedList[CanonicalHashSeed=5], key)`.
+    let mut w = HLLWrapper::new(asap_sketchlib::sketches::HllVariant::Datafusion, 14);
     for v in deterministic_floats() {
         // Go's HLLObserver routes float observations through
         // HyperLogLog.UpdateValue(double). Mirror by hashing the
-        // float's IEEE-754 bytes; in practice the bit-patterns
-        // differ between sketchlib-go and asap_sketchlib because
-        // the sketches use independent hash seeds — see ignore
-        // reason above.
+        // float's IEEE-754 little-endian bytes — golden_test.go's
+        // `goldenHllKeys` does the same on the Go side.
         w.update(&v.to_le_bytes());
     }
     let got = w.snapshot().expect("snapshot");
