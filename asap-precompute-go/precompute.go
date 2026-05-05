@@ -143,6 +143,20 @@ var (
 	ErrSketchTypeMismatch = errors.New("precompute: envelope sketch_type does not match config")
 )
 
+// LatencyObserver is the host-neutral hook that the runtime invokes
+// for every Observe call with the wall-clock duration spent inside
+// Observe (matchers, sketch factory, observer dispatch, window
+// admission). Adapters wire this to a Prometheus / OTel histogram so
+// the deployed shim publishes per-observation latency continuously,
+// not just under `testing.B` (Phase 2.11B gap #3 — closes the
+// deployment-level confirmation of ADR-0002 §"Performance contract").
+//
+// The hook is invoked exactly once per Observe call regardless of
+// outcome (success, ErrSeriesCapExceeded, ErrLateData, matcher miss).
+// Implementations must be cheap — the hook runs on the hot path. Nil
+// observers (the default) cost a single nil-check.
+type LatencyObserver func(d time.Duration)
+
 // Precompute is the host-neutral runtime described in
 // design-doc §6.2. One Precompute instance owns one sketch type
 // (see config.SketchType); a deployment with multiple sketch types
@@ -184,6 +198,11 @@ type Precompute interface {
 	UpdateConfig(cs *PrecomputeConfigSet)
 	// Stats returns the live counters; safe to call concurrently.
 	Stats() *PrecomputeStats
+	// SetLatencyObserver installs (or replaces) the per-Observe
+	// latency hook. Pass nil to disable. Safe to call concurrently
+	// with Observe; the runtime stores the function pointer atomically.
+	// See LatencyObserver godoc for semantics.
+	SetLatencyObserver(fn LatencyObserver)
 	// Shutdown flushes any in-progress state; intended for the
 	// shim's Shutdown path to run a final Tick before returning.
 	Shutdown(ctx context.Context) error
@@ -199,14 +218,15 @@ type Precompute interface {
 //
 // No global mutex around the Precompute itself.
 type precompute struct {
-	cfg           atomic.Pointer[PrecomputeConfig]
-	sketchFactory SketchFactory
-	observer      SketchObserver
-	window        *windowState
-	snapshotCache *SnapshotCache
-	stats         *PrecomputeStats
-	sketchType    SketchType
-	closed        atomic.Bool
+	cfg             atomic.Pointer[PrecomputeConfig]
+	sketchFactory   SketchFactory
+	observer        SketchObserver
+	window          *windowState
+	snapshotCache   *SnapshotCache
+	stats           *PrecomputeStats
+	sketchType      SketchType
+	closed          atomic.Bool
+	latencyObserver atomic.Pointer[LatencyObserver]
 }
 
 // New constructs a Precompute given an initial config, a sketch
@@ -239,6 +259,14 @@ func (p *precompute) activeConfig() *PrecomputeConfig {
 
 // Observe implements Precompute.Observe.
 func (p *precompute) Observe(obs *Observation) error {
+	// Time the entire Observe path including early-exit branches —
+	// the deployed-stack consumer (a Prom histogram on each shim)
+	// wants the same envelope `testing.B` measures, not just the
+	// "happy path admit" subset. Closes Phase 2.11B gap #3.
+	if fn := p.latencyObserver.Load(); fn != nil && *fn != nil {
+		start := time.Now()
+		defer func() { (*fn)(time.Since(start)) }()
+	}
 	if p.closed.Load() {
 		return errors.New("precompute: instance is closed")
 	}
@@ -470,6 +498,22 @@ func (p *precompute) UpdateConfig(cs *PrecomputeConfigSet) {
 // Stats implements Precompute.Stats.
 func (p *precompute) Stats() *PrecomputeStats {
 	return p.stats
+}
+
+// SetLatencyObserver implements Precompute.SetLatencyObserver. The
+// hook is stored in an atomic pointer so concurrent Observe calls
+// see a coherent snapshot without locking; replacing the hook never
+// races with the Observe deferred-call.
+func (p *precompute) SetLatencyObserver(fn LatencyObserver) {
+	if fn == nil {
+		// Storing a nil-valued LatencyObserver pointer is harmless
+		// (Observe nil-checks the dereferenced function), but storing
+		// a nil pointer makes the hot-path Load return nil so the
+		// caller skips the deferred-call entirely. Cheaper.
+		p.latencyObserver.Store(nil)
+		return
+	}
+	p.latencyObserver.Store(&fn)
 }
 
 // Shutdown implements Precompute.Shutdown.

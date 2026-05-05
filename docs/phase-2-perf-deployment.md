@@ -202,61 +202,120 @@ with both micro and deployment-level confirmation.
 
 ## Gaps in the existing harness
 
-These came up while running the harness. They're not fixed here —
-just enumerated so a future investment lines up cleanly:
+The four gaps that came up while running the Phase 2.11B audit have
+been triaged below. Each is annotated with the resolution from PR
+#246 (`fix(perf-harness): close 4 gaps from Phase 2.11B deployment
+perf run`); two more harness gaps that surfaced separately are
+listed at the end as standing follow-ups.
 
-1. **Gateway metric-name skew.** `measure-baseline.py` was written
-   when the gateway was on otelcol v0.108 (no `_total` suffix on
-   process counters). The current gateway image is v0.141 (matches
-   the agent), so `gateway_cpu_cores` / `gateway_rss_mib` /
-   `gateway_points_per_s` all return NaN against today's stack. Fix
-   is one-line per query template (drop the no-`_total` variant —
-   or alias both query templates to the same key with `or` between
-   them so the harness handles either gateway version).
+1. **Gateway metric-name skew — FIXED in PR #246.**
+   `measure-baseline.py` was written when the gateway was on otelcol
+   v0.108 (no `_total` suffix on process counters). The current
+   gateway image is v0.141 (matches the agent), so
+   `gateway_cpu_cores` / `gateway_rss_mib` / `gateway_points_per_s` /
+   `gateway_out_series_per_s` all returned NaN against today's
+   stack. Fix: each gateway query is now `<v0.141 name> or <v0.108
+   name>`, so the script keeps producing rows whether the gateway
+   image is current or a legacy worktree replay.
 
-2. **Backend `/metrics` is empty under ingest-only.** The backend's
+2. **Backend `/metrics` is empty under ingest-only — DOCUMENTED in
+   PR #246, deferred as a design-level concern.** The backend's
    `asap_ingest_samples_total` and `asap_query_duration_seconds_bucket`
-   only get populated when query traffic flows. The harness queries
-   them unconditionally and silently NaNs out otherwise. Documenting
-   the dependency in `measure-baseline.py`'s docstring is fine; longer
-   term the harness should distinguish "ingest-only soak" from
-   "ingest + query soak" so the operator isn't left wondering whether
-   the numbers are real or absent.
+   only get populated when PromQL query traffic flows; an ingest-only
+   soak (this audit, `run-baseline-sweep.sh`'s default) leaves both
+   at NaN. This is *not* a query-string bug — the metrics genuinely
+   don't exist under ingest-only operation, so editing
+   `measure-baseline.py` won't help.
 
-3. **No per-observation latency emission from the deployed shim.**
-   ADR-0002's binding metric is per-observation `Observe` p99, which
-   the deployed sketchcollector doesn't expose as a Prom histogram.
-   Phase 2.11A measured it in `testing.B`, which is fine for the gate,
-   but a future investment could land an
-   `asap_processor_observe_seconds` histogram on each shim so the
-   deployed stack confirms the micro result in production-like
-   conditions. This would also let CI gate on a "deployment-level
-   p99" without re-running the docker stack.
+   Closing the gap properly requires either:
 
-4. **No direct sketch-payload-bytes metric.** `agent_out_kib_per_s` is
-   the OTel-collector-level processor output bytes, which conflates
-   delta-encoded sketch payload bytes with envelope metadata. The
-   B3-delta savings claim requires distinguishing the two; this is
-   visible in `gateway_out_series_per_s` minus a B0a (raw stream)
-   reference, but the delta isn't a single column. A
+   - **Replay path on the harness side.** Add an opt-in PromQL
+     replay client (the existing `deploy/scripts/promql_replay.py`
+     primitives are a starting point) that the sweep wrapper drives
+     before the measurement window. This is its own feature with
+     its own design questions (which queries to replay, at what
+     rate, on which sketch families) and is out of scope for a
+     harness-fixes PR.
+   - **Synthetic ingest-side counter on the backend.** The backend
+     could expose an `asap_ingest_envelopes_total` counter that
+     fires regardless of whether query traffic ran. That's a
+     backend code change, also out of scope for a Collector-side
+     harness PR.
+
+   Because the harness can't synthesize these metrics by itself,
+   PR #246 only updates the docstring on the `backend_samples_per_s`
+   / `backend_query_p99_ms` query templates to mark them as
+   "requires query traffic"; the operator now sees in-script why
+   the column is blank. The deeper "ingest-only vs ingest+query
+   soak" mode distinction is tracked as a follow-up item; it
+   belongs in a `run-baseline-sweep.sh` redesign, not a one-shot
+   query-template fix.
+
+3. **No per-observation latency emission from the deployed shim —
+   FIXED in PR #246 (DDSketch only) + follow-up.** ADR-0002's
+   binding metric is per-observation `Observe` p99, which the
+   deployed sketchcollector previously didn't expose as a Prom
+   histogram (Phase 2.11A measured it in `testing.B` only).
+
+   Resolution:
+
+   - **Runtime.** `asap-precompute-go` now exposes a
+     `LatencyObserver func(d time.Duration)` hook installed via
+     `Precompute.SetLatencyObserver`. The hook fires once per
+     `Observe` call (success, ErrSeriesCapExceeded, ErrLateData,
+     and matcher-miss all time), giving the deployed shim the same
+     envelope `testing.B` measures. Nil-safe at the hot path
+     (atomic-pointer load + nil check).
+   - **DDSketch shim wiring.** `ddsketchprocessor.enableSelfMonitoring`
+     constructs a `Float64Histogram` named
+     `asap_processor_observe_seconds` with bucket boundaries
+     spanning 50 ns – 10 ms (covers the 80–500 ns/op post-shim
+     micro envelope plus tail). Each per-metric Precompute spawned
+     via `getOrCreate` picks up the histogram via
+     `proc.recordObserveLatency`. The histogram appears on the
+     gateway / agent `/metrics` endpoint when
+     `EnableSelfMonitoring=true` (the production default).
+   - **Other 4 shims (KLL, HLL, CountSketch, CountMin) — follow-up.**
+     The runtime change is fully backwards-compatible: shims that
+     don't call `SetLatencyObserver` lose nothing. Wiring the
+     histogram into the remaining four processors is a mechanical
+     copy of the DDSketch monitor.go diff; pulled out of this PR
+     to keep the diff focused per the PR-scope constraint. Tracked
+     as **Phase 2.11C**.
+
+4. **No direct sketch-payload-bytes metric — STANDING.**
+   `agent_out_kib_per_s` is the OTel-collector-level processor
+   output bytes, which conflates delta-encoded sketch payload bytes
+   with envelope metadata. The B3-delta savings claim requires
+   distinguishing the two; this is visible in
+   `gateway_out_series_per_s` minus a B0a (raw stream) reference,
+   but the delta isn't a single column. A
    `asap_sketch_payload_bytes_per_window` counter on the processor
-   would close this gap.
+   would close this gap. Not addressed in PR #246.
 
 5. **`run-baseline-sweep.sh` still parameterises on legacy
    `EXPORTER_RATE`** (deprecated in favour of `EXPORTER_FREQ_HZ` +
    `EXPORTER_SDK_WINDOW`); fake-exporter logs a warning per start.
    The sweep script should be updated, otherwise every run produces
-   a deprecation warning in `up.log`.
+   a deprecation warning in `up.log`. Not addressed in PR #246.
 
-6. **Producer-paced workload caps the discriminating power.** At
-   cardinality 1000 × 10 Hz the agent runs at ~ 0.25% of one core
-   so CPU diffs are dominated by measurement noise. To detect a 10%
-   shim regression at deployment level you'd need to run at saturation
-   (e.g. cardinality 1e5 × 100 Hz, or N≥10 agents on a shared
-   gateway). The sweep wrapper allows this via `RATES`/`CARDS` env
-   vars; a future investment is to define a "perf-gate" cell pinning
-   the workload to a specific high-cardinality saturating point so
-   regressions show up as CPU-cores deltas, not just RSS deltas.
+6. **Producer-paced workload caps the discriminating power — FIXED
+   in PR #246.** At cardinality 1000 × 10 Hz the agent ran at
+   ~0.25% of one core so CPU diffs were dominated by measurement
+   noise. `baseline-b3-delta.yml` now overrides
+   `EXPORTER_CARDINALITY` and `EXPORTER_FREQ_HZ` to 1e5 × 100 Hz,
+   chosen to land the agent in the 50–70% one-core band on
+   reference hardware (Threadripper PRO 5955WX as described in
+   the "Hardware" section). The override is still respectful of
+   environment-variable shadowing — set `EXPORTER_CARDINALITY=1000`
+   on the host to recover the legacy quiet profile for ad-hoc work.
+
+   Re-running the pre-shim vs post-shim comparison under the new
+   profile is its own measurement and is **not** included in this
+   PR; the PR only updates the harness so the next operator who
+   runs the sweep sees CPU-cores deltas instead of measurement
+   noise. The numerical re-baselining belongs in a Phase 2.11C
+   "saturating-load comparison" doc.
 
 ## Reproduction
 

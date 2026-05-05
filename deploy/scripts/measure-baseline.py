@@ -178,8 +178,19 @@ def docker_stats_with_bytes_rate(
 
 
 # Prometheus query templates. `w` is the rate window (e.g. "1m").
-# Agent (v0.141) uses `_total` suffix on counters; gateway
-# (v0.108) doesn't — hence the duplicated-looking queries.
+#
+# Both agent and gateway are on otelcol v0.141 today (the gateway was
+# bumped along with the agent during the Phase 2 shim PRs); both use
+# the `_total` suffix on counters and the `_bytes` suffix on the
+# process-RSS gauge. The original measure-baseline.py was written
+# against a v0.108 gateway and v0.141 agent — that asymmetry no
+# longer holds, so the gateway queries now mirror the agent shape.
+# Closes Phase 2.11B gap #1.
+#
+# Each gateway query is wrapped in `or` against the v0.108 (no-suffix)
+# variant so this script keeps producing rows when run against a
+# legacy gateway image (e.g. someone replaying an old worktree).
+# When neither variant exists the result is NaN, same as before.
 QUERIES: dict[str, str] = {
     # ── Agent tier (source) ─────────────────────────────────────
     "agent_cpu_cores": (
@@ -221,20 +232,33 @@ QUERIES: dict[str, str] = {
         ")"
     ),
     # ── Gateway tier (destination-1) ────────────────────────────
-    # Gateway is v0.108, no `_total` suffix on process counters.
-    "gateway_cpu_cores": "rate(otelcol_process_cpu_seconds{{job=\"gateway\"}}[{w}])",
-    "gateway_rss_mib": "otelcol_process_memory_rss{{job=\"gateway\"}} / 1024 / 1024",
-    # Gateway v0.108 metric names drop the `_total` suffix that
-    # v0.141 adds — use the no-suffix variant here.
+    # v0.141 names with `_total` suffix; legacy v0.108 names appended
+    # via PromQL `or` so old worktrees keep producing data.
+    "gateway_cpu_cores": (
+        "rate(otelcol_process_cpu_seconds_total{{job=\"gateway\"}}[{w}])"
+        " or rate(otelcol_process_cpu_seconds{{job=\"gateway\"}}[{w}])"
+    ),
+    "gateway_rss_mib": (
+        "otelcol_process_memory_rss_bytes{{job=\"gateway\"}} / 1024 / 1024"
+        " or otelcol_process_memory_rss{{job=\"gateway\"}} / 1024 / 1024"
+    ),
     "gateway_points_per_s": (
-        "rate(otelcol_receiver_accepted_metric_points"
+        "rate(otelcol_receiver_accepted_metric_points_total"
         "     {{job=\"gateway\"}}[{w}])"
+        " or rate(otelcol_receiver_accepted_metric_points"
+        "        {{job=\"gateway\"}}[{w}])"
     ),
     "gateway_out_series_per_s": (
-        "rate(otelcol_exporter_sent_metric_points"
+        "rate(otelcol_exporter_sent_metric_points_total"
         "     {{job=\"gateway\"}}[{w}])"
+        " or rate(otelcol_exporter_sent_metric_points"
+        "        {{job=\"gateway\"}}[{w}])"
     ),
     # ── Backend tier (destination-2) ────────────────────────────
+    # NOTE: these only populate under an ingest+query soak. An ingest-
+    # only soak (like the Phase 2.11B audit) leaves them at NaN. This
+    # is a design-level gap, not a query bug — see
+    # docs/phase-2-perf-deployment.md "Gaps" section #2.
     "backend_samples_per_s": "rate(asap_ingest_samples_total[{w}])",
     "backend_query_p99_ms": (
         "1000 * histogram_quantile(0.99, "

@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/processor/selfmonitor"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
@@ -35,6 +36,14 @@ type ddsketchProcessor struct {
 	logger       *zap.Logger
 	nextConsumer consumer.Metrics
 	monitor      *selfmonitor.Monitor
+
+	// observeLatency is the per-Observe-call Prom histogram surfaced on
+	// the deployed shim's /metrics. Nil when self-monitoring is
+	// disabled or when the meter rejected the histogram registration.
+	// See monitor.go::enableSelfMonitoring for construction and
+	// config_translate.go::getOrCreate for wiring.
+	observeLatency      metric.Float64Histogram
+	observeLatencyAttrs metric.RecordOption
 
 	mu          sync.Mutex
 	precomputes map[string]precompute.Precompute
