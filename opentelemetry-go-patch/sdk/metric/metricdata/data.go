@@ -308,7 +308,11 @@ type QuantileValue struct {
 	Value float64
 }
 
-// DDSketch represents distributions encoded as DataDog DDSketch payloads.
+// DDSketch represents distributions encoded as DDSketch payloads. The
+// SDK aggregator emits the sketchlib-go portable wire format
+// (SketchEnvelope wrapping a DDSketchState); this is the format every
+// downstream consumer (asap-precompute-{go,rs}, the agent's
+// ddsketchprocessor decoder, the ASAPQuery backend) decodes against.
 type DDSketch[N int64 | float64] struct {
 	// DataPoints are the individual aggregated measurements with unique
 	// attributes.
@@ -324,12 +328,20 @@ func (DDSketch[N]) privateAggregation() {}
 type DDSketchEncoding string
 
 const (
-	// DDSketchEncodingProto indicates the sketch bytes are encoded as the
-	// serialization of github.com/DataDog/sketches-go/ddsketch/pb/sketchpb.DDSketch.
+	// DDSketchEncodingProto indicates the sketch bytes are a full-state
+	// proto serialization of sketchlib-go's
+	// `proto/sketch_envelope.SketchEnvelope` carrying a `DDSketchState`
+	// in its `ddsketch` oneof variant. This is the wire format the SDK
+	// aggregator emits via DDSketch.SerializePortable + proto.Marshal,
+	// and the format the agent / backend / asap-precompute decoders
+	// consume.
 	DDSketchEncodingProto DDSketchEncoding = "ddsketch_proto"
-	// DDSketchEncodingProtoDelta indicates a sparse delta payload: only buckets
-	// whose count changed by at least DeltaThreshold since the previous export
-	// are included. Encoded as sketchpb.DDSketch proto.
+	// DDSketchEncodingProtoDelta indicates a sparse delta payload: only
+	// buckets whose count changed by at least DeltaThreshold since the
+	// previous export are included. Encoded as sketchlib-go's
+	// `proto/ddsketch.DDSketchDelta` (the bare delta message; not
+	// envelope-wrapped) — the same shape the receiver applies via
+	// sketchlib-go's ApplyDelta.
 	DDSketchEncodingProtoDelta DDSketchEncoding = "ddsketch_proto_delta"
 )
 

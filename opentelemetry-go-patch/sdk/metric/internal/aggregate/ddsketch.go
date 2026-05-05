@@ -8,8 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DataDog/sketches-go/ddsketch"
-	"github.com/DataDog/sketches-go/ddsketch/pb/sketchpb"
+	ddsketch "github.com/ProjectASAP/sketchlib-go/sketches/DDSketch"
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/otel"
@@ -62,9 +61,11 @@ type ddSketchValues[N int64 | float64] struct {
 	deltaTransmission bool
 	// deltaThreshold is the minimum absolute bucket count change to include.
 	deltaThreshold uint64
-	// snapshots holds the proto-serialized snapshot of the last exported sketch
-	// per series, keyed by attribute.Distinct. Used only when deltaTransmission=true.
-	snapshots   map[attribute.Distinct][]byte
+	// snapshots holds a clone of the last-exported sketch per series, keyed
+	// by attribute.Distinct. Used only when deltaTransmission=true so we can
+	// invoke sketchlib-go's ComputeDelta(prev, curr, threshold) on the next
+	// cumulative export.
+	snapshots   map[attribute.Distinct]*ddsketch.DDSketch
 	snapshotsMu sync.Mutex
 
 	newRes     func(attribute.Set) FilteredExemplarReservoir[N]
@@ -95,7 +96,7 @@ func newDDSketchValues[N int64 | float64](
 		noSum:             noSum,
 		deltaTransmission: deltaTransmission,
 		deltaThreshold:    deltaThreshold,
-		snapshots:         make(map[attribute.Distinct][]byte),
+		snapshots:         make(map[attribute.Distinct]*ddsketch.DDSketch),
 		newRes:            r,
 		limit:             newLimiter[ddSketchSeries[N]](limit),
 		values:            make(map[attribute.Distinct]*ddSketchSeries[N]),
@@ -106,16 +107,10 @@ func newDDSketchValues[N int64 | float64](
 
 func (d *ddSketchValues[N]) newSeries(attr attribute.Set, value N) *ddSketchSeries[N] {
 	series := d.seriesPool.Get().(*ddSketchSeries[N])
-	if series.sketch != nil {
-		series.sketch.Clear() // reuse internal bucket storage
-	} else {
-		sk, err := ddsketch.NewDefaultDDSketch(d.accuracy)
-		if err != nil {
-			otel.Handle(err)
-			return nil
-		}
-		series.sketch = sk
-	}
+	// sketchlib-go's DDSketch has no in-place Reset(), so we always allocate a
+	// fresh sketch for a new series. The pool still amortizes the
+	// ddSketchSeries header allocation, which is the dominant cost.
+	series.sketch = ddsketch.NewDDSketch(d.accuracy)
 	series.attrs = attr
 	series.seriesID = 0
 	series.res = d.newRes(attr) // attr-dependent, always recreate
@@ -156,10 +151,12 @@ func (d *ddSketchValues[N]) measure(
 		}
 	}
 
-	if err := series.sketch.Add(float64(value)); err != nil {
-		otel.Handle(err)
-		return
-	}
+	// sketchlib-go's DDSketch silently drops non-positive / NaN / Inf values.
+	// The DataDog sketch returned an explicit error for these; we mirror the
+	// permissive sketchlib-go behavior since downstream consumers
+	// (asap-precompute-{go,rs}, the agent decoder) all share the same
+	// invariant set.
+	series.sketch.Update(float64(value))
 	series.updateStats(value, !d.noMinMax)
 	if !d.noSum {
 		series.sum += value
@@ -216,7 +213,12 @@ func (d *ddSketch[N]) delta(
 		if series.count == 0 {
 			continue
 		}
-		if d.exportDataPoint(series, metricdata.DDSketchEncodingProto, nil, t, &dPts[i]) {
+		payload, encoding, err := serializeDDSketchFull(series.sketch)
+		if err != nil {
+			otel.Handle(err)
+			continue
+		}
+		if d.exportDataPoint(series, encoding, payload, t, &dPts[i]) {
 			i++
 		}
 	}
@@ -228,6 +230,7 @@ func (d *ddSketch[N]) delta(
 		series.attrs = attribute.Set{}
 		series.seriesID = 0
 		series.res = nil // release exemplar reservoir (attr-dependent)
+		series.sketch = nil
 		series.count = 0
 		series.sum = 0
 		series.min = 0
@@ -296,6 +299,7 @@ func (d *ddSketch[N]) cumulative(
 		series.attrs = attribute.Set{}
 		series.seriesID = 0
 		series.res = nil
+		series.sketch = nil
 		series.count = 0
 		series.sum = 0
 		series.min = 0
@@ -310,48 +314,48 @@ func (d *ddSketch[N]) cumulative(
 	return len(dPts)
 }
 
-// payloadFor returns the serialized payload and encoding for a cumulative export.
-// If deltaTransmission is enabled and a prior snapshot exists, it returns a
-// sparse delta; otherwise it returns the full proto payload.
+// payloadFor returns the serialized payload and encoding for a cumulative
+// export. If deltaTransmission is enabled and a prior snapshot exists, it
+// invokes sketchlib-go's ComputeDelta to emit a sparse delta; otherwise it
+// emits a full SketchEnvelope-wrapped portable payload.
+//
+// The snapshot map holds *ddsketch.DDSketch clones (not their serialized
+// bytes) so ComputeDelta can iterate buckets directly without re-decoding —
+// this matches the path taken by KLL/HLL/CountSketch/CountMinSketch siblings
+// and asap-precompute-go's DDSketchWrapper.ComputeDeltaAgainst.
 func (d *ddSketchValues[N]) payloadFor(key attribute.Distinct, sketch *ddsketch.DDSketch) ([]byte, metricdata.DDSketchEncoding, error) {
-	fullPayload, err := serializeDDSketch(sketch)
-	if err != nil {
-		return nil, metricdata.DDSketchEncodingProto, err
-	}
-
 	if !d.deltaTransmission {
-		return fullPayload, metricdata.DDSketchEncodingProto, nil
+		return serializeDDSketchFull(sketch)
 	}
 
 	d.snapshotsMu.Lock()
-	snapPayload, hasSnap := d.snapshots[key]
+	snap, hasSnap := d.snapshots[key]
 	d.snapshotsMu.Unlock()
 
-	var (
-		payload  []byte
-		encoding metricdata.DDSketchEncoding
-	)
-	if hasSnap && snapPayload != nil {
-		deltaPayload, deltaErr := ddSketchDeltaPayload(snapPayload, sketch, d.deltaThreshold)
-		if deltaErr != nil {
-			// Fall back to full on error.
-			payload = fullPayload
-			encoding = metricdata.DDSketchEncodingProto
-		} else {
-			payload = deltaPayload
-			encoding = metricdata.DDSketchEncodingProtoDelta
+	if hasSnap && snap != nil {
+		deltaPayload, deltaErr := ddsketch.ComputeDelta(snap, sketch, d.deltaThreshold)
+		if deltaErr == nil {
+			// Update snapshot to a clone of the current sketch; the receiver
+			// will fold this delta into its prior cumulative state, so on
+			// the next tick we want to delta against this same baseline.
+			d.snapshotsMu.Lock()
+			d.snapshots[key] = sketch.Clone()
+			d.snapshotsMu.Unlock()
+			return deltaPayload, metricdata.DDSketchEncodingProtoDelta, nil
 		}
-	} else {
-		payload = fullPayload
-		encoding = metricdata.DDSketchEncodingProto
+		// Fall through to full on error — keeps the emit path always
+		// producing a valid payload, mirroring asap-precompute-go's
+		// DDSketchWrapper.ComputeDeltaAgainst contract.
 	}
 
-	// Update snapshot with the current full payload.
+	full, encoding, err := serializeDDSketchFull(sketch)
+	if err != nil {
+		return nil, encoding, err
+	}
 	d.snapshotsMu.Lock()
-	d.snapshots[key] = fullPayload
+	d.snapshots[key] = sketch.Clone()
 	d.snapshotsMu.Unlock()
-
-	return payload, encoding, nil
+	return full, encoding, nil
 }
 
 func (d *ddSketch[N]) exportDataPoint(
@@ -361,16 +365,6 @@ func (d *ddSketch[N]) exportDataPoint(
 	t time.Time,
 	dest *metricdata.DDSketchDataPoint[N],
 ) bool {
-	// In delta() path payload is nil — serialize inline.
-	if payload == nil {
-		var err error
-		payload, err = serializeDDSketch(series.sketch)
-		if err != nil {
-			otel.Handle(err)
-			return false
-		}
-	}
-
 	dp := dest
 	if series.seriesID != 0 {
 		dp.SeriesID = series.seriesID
@@ -395,65 +389,28 @@ func (d *ddSketch[N]) exportDataPoint(
 	return true
 }
 
-func serializeDDSketch(sk *ddsketch.DDSketch) ([]byte, error) {
+// serializeDDSketchFull emits the canonical full-state portable wire format:
+// a sketchlib-go SketchEnvelope wrapping a DDSketchState. The Producer and
+// HashSpec fields are stripped to match what the asap-precompute-{go,rs}
+// wrappers emit (see integration/parity/golden_test.go's per-sketch
+// overlays); this preserves byte-parity with the cross-language fixtures.
+func serializeDDSketchFull(sk *ddsketch.DDSketch) ([]byte, metricdata.DDSketchEncoding, error) {
 	if sk == nil {
-		return nil, nil
+		return nil, metricdata.DDSketchEncodingProto, nil
 	}
-	return proto.Marshal(sk.ToProto())
-}
-
-// ddSketchDeltaPayload computes a sparse delta between a proto-serialized
-// snapshot and the current sketch. Only buckets whose count changed by at
-// least threshold are included.
-func ddSketchDeltaPayload(snapPayload []byte, current *ddsketch.DDSketch, threshold uint64) ([]byte, error) {
-	var snap sketchpb.DDSketch
-	if err := proto.Unmarshal(snapPayload, &snap); err != nil {
-		return serializeDDSketch(current)
+	env, err := sk.SerializePortable()
+	if err != nil {
+		return nil, metricdata.DDSketchEncodingProto, err
 	}
-
-	curr := current.ToProto()
-	delta := &sketchpb.DDSketch{
-		Mapping:   curr.Mapping,
-		ZeroCount: curr.ZeroCount - snap.ZeroCount,
+	// Strip producer / hash_spec so the payload bytes are stable across
+	// sketchlib-go version bumps and identical to the
+	// asap-precompute-{go,rs} wrapper outputs (see
+	// integration/parity/golden_test.go::TestGenerateGoldenFixtures).
+	env.Producer = nil
+	env.HashSpec = nil
+	bytes, err := proto.Marshal(env)
+	if err != nil {
+		return nil, metricdata.DDSketchEncodingProto, err
 	}
-	delta.PositiveValues = ddStoreDelta(snap.PositiveValues, curr.PositiveValues, float64(threshold))
-	delta.NegativeValues = ddStoreDelta(snap.NegativeValues, curr.NegativeValues, float64(threshold))
-	return proto.Marshal(delta)
-}
-
-// ddStoreDelta returns a sparse Store with only buckets where |Δcount| ≥ threshold.
-func ddStoreDelta(snap, curr *sketchpb.Store, threshold float64) *sketchpb.Store {
-	if curr == nil {
-		return nil
-	}
-	snapCounts := ddStoreToMap(snap)
-	currCounts := ddStoreToMap(curr)
-
-	out := &sketchpb.Store{BinCounts: make(map[int32]float64)}
-	for idx, cnt := range currCounts {
-		d := cnt - snapCounts[idx]
-		if d >= threshold || d <= -threshold {
-			out.BinCounts[idx] = d
-		}
-	}
-	if len(out.BinCounts) == 0 {
-		return nil
-	}
-	return out
-}
-
-// ddStoreToMap converts a sketchpb.Store into a flat index→count map.
-func ddStoreToMap(s *sketchpb.Store) map[int32]float64 {
-	m := make(map[int32]float64)
-	if s == nil {
-		return m
-	}
-	for idx, cnt := range s.BinCounts {
-		m[idx] += cnt
-	}
-	for i, cnt := range s.ContiguousBinCounts {
-		idx := s.ContiguousBinIndexOffset + int32(i)
-		m[idx] += cnt
-	}
-	return m
+	return bytes, metricdata.DDSketchEncodingProto, nil
 }

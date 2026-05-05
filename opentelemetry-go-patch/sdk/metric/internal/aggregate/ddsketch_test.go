@@ -12,7 +12,11 @@ import (
 	"testing"
 	"time"
 
+	envpb "github.com/ProjectASAP/sketchlib-go/proto/sketch_envelope"
+	ddsketch "github.com/ProjectASAP/sketchlib-go/sketches/DDSketch"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -444,4 +448,111 @@ func sampleProcessCPUSeconds() float64 {
 		return v.Float64()
 	}
 	return 0
+}
+
+// TestDDSketchPayloadIsSketchlibPortableEnvelope confirms the post-#262
+// migration to sketchlib-go: the SDK aggregator's DDSketchDataPoint.Sketch
+// payload is now a SketchEnvelope-wrapped DDSketchState (the wire format the
+// agent processor and asap-precompute-{go,rs} consumers expect), not the
+// pre-migration DataDog sketchpb.DDSketch shape that collided on field 1's
+// wire type. The structural mismatch was diagnosed in PR #269.
+func TestDDSketchPayloadIsSketchlibPortableEnvelope(t *testing.T) {
+	c := new(clock)
+	t.Cleanup(c.Register())
+
+	ctx := t.Context()
+	meas, comp := Builder[float64]{
+		Temporality:      metricdata.DeltaTemporality,
+		Filter:           attrFltr,
+		AggregationLimit: 4,
+	}.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+
+	attrs := attribute.NewSet(
+		attribute.String("service", "checkout"),
+		attribute.String("region", "us-east-1"),
+	)
+	for _, v := range []float64{1.5, 2.5, 3.5, 100.0, 99.0} {
+		meas(ctx, v, attrs)
+	}
+
+	got := new(metricdata.Aggregation)
+	require.Equal(t, 1, comp(got))
+	agg := (*got).(metricdata.DDSketch[float64])
+	require.Len(t, agg.DataPoints, 1)
+	dp := agg.DataPoints[0]
+	require.Equal(t, metricdata.DDSketchEncodingProto, dp.Encoding)
+	require.NotEmpty(t, dp.Sketch)
+
+	// Round-trip through sketchlib-go's portable envelope schema. This
+	// pins the SDK's wire format to the same shape decodeDDSketchEnvelope
+	// (in opentelemetry-collector-contrib-patch/processor/ddsketchprocessor)
+	// and asap-precompute-rs's DDSketchWrapper::decode_envelope expect.
+	var env envpb.SketchEnvelope
+	require.NoError(t, proto.Unmarshal(dp.Sketch, &env))
+	state := env.GetDdsketch()
+	require.NotNil(t, state, "envelope must carry a DDSketchState variant")
+	require.InDelta(t, testDDSketchAccuracy, state.Alpha, 1e-12)
+	require.Equal(t, uint64(5), state.Count)
+
+	// Reconstruct via the canonical NewFromState entrypoint and confirm
+	// quantiles agree within the accuracy bound (the actual value the
+	// agent will emit on the consume side).
+	recovered, err := ddsketch.NewFromState(state)
+	require.NoError(t, err)
+	q, ok := recovered.Quantile(0.99)
+	require.True(t, ok)
+	require.InDelta(t, 100.0, q, 100.0*testDDSketchAccuracy)
+}
+
+// TestDDSketchDeltaEncodingViaComputeDelta confirms the cumulative-mode
+// deltaTransmission path emits a DDSketchEncodingProtoDelta payload on the
+// second tick (after a snapshot exists), and that the bytes round-trip
+// through sketchlib-go's ApplyDelta.
+func TestDDSketchDeltaEncodingViaComputeDelta(t *testing.T) {
+	c := new(clock)
+	t.Cleanup(c.Register())
+
+	ctx := t.Context()
+	meas, comp := Builder[float64]{
+		Temporality:      metricdata.CumulativeTemporality,
+		Filter:           attrFltr,
+		AggregationLimit: 4,
+	}.DDSketch(testDDSketchAccuracy, false, false, true, 1)
+
+	attrs := attribute.NewSet(
+		attribute.String("service", "checkout"),
+		attribute.String("region", "us-east-1"),
+	)
+	for _, v := range []float64{1.5, 2.5, 3.5} {
+		meas(ctx, v, attrs)
+	}
+
+	got := new(metricdata.Aggregation)
+	require.Equal(t, 1, comp(got))
+	agg := (*got).(metricdata.DDSketch[float64])
+	require.Len(t, agg.DataPoints, 1)
+	// First export is full state — there's no prior snapshot to delta against.
+	require.Equal(t, metricdata.DDSketchEncodingProto, agg.DataPoints[0].Encoding)
+
+	// Second tick: add more values. With deltaTransmission=true and a
+	// snapshot now present, this must emit a delta payload.
+	for _, v := range []float64{10.0, 20.0, 30.0} {
+		meas(ctx, v, attrs)
+	}
+	require.Equal(t, 1, comp(got))
+	agg = (*got).(metricdata.DDSketch[float64])
+	require.Len(t, agg.DataPoints, 1)
+	dp := agg.DataPoints[0]
+	require.Equal(t, metricdata.DDSketchEncodingProtoDelta, dp.Encoding)
+	require.NotEmpty(t, dp.Sketch)
+
+	// The delta bytes must apply cleanly onto a sketch holding the prior
+	// state — this is exactly what the agent's cumulative-state path does
+	// when it receives a delta envelope from a downstream SDK.
+	prior := ddsketch.NewDDSketch(testDDSketchAccuracy)
+	for _, v := range []float64{1.5, 2.5, 3.5} {
+		prior.Update(v)
+	}
+	require.NoError(t, ddsketch.ApplyDelta(prior, dp.Sketch))
+	assert.Equal(t, uint64(6), prior.GetCount())
 }
