@@ -15,12 +15,12 @@ algorithm crates with overlapping responsibilities:
 
 - `asap_sketchlib` — the canonical algorithm crate, holding
   `DDSketch`, `KLL`, `HLL`, `Count`, `CountMin`, `CMSHeap`, etc.
-  Already shared with `sketchlib-bench` and external benchmark
+  Already shared with `sketch-bench` and external benchmark
   harnesses.
 - `sketch-core` — a wrapper crate vendored into
   `ASAPQuery-backend/asap-common/sketch-core/` (and its sibling
   forks in `ASAPQuery/asap-common/sketch-core/` and
-  `sketchlib-bench/sketch-core/`). It re-exposed the algorithms
+  `sketch-bench/sketch-core/`). It re-exposed the algorithms
   with ASAP-specific wire-format types (`DdSketchState`,
   `CountSketchState`, etc.), `apply_delta` methods, and the
   `Strategy::Legacy` vs `Strategy::Sketchlib` `ImplMode` switch.
@@ -66,7 +66,7 @@ exercised in production paths, the switch became dead weight.
      decision 3).
 
 2. **Drop the three on-disk `sketch-core` forks.** All consumers
-   (`ASAPQuery`, `ASAPQuery-backend`, `sketchlib-bench`) depend
+   (`ASAPQuery`, `ASAPQuery-backend`, `sketch-bench`) depend
    on `asap_sketchlib` directly via git URL.
 
 3. **Drop the `ImplMode` (Legacy / Sketchlib) dispatch.** Always
@@ -117,7 +117,7 @@ exercised in production paths, the switch became dead weight.
   `asap_sketchlib` are now the *only* defense against algorithm
   drift. The R1 risk in the design doc explicitly calls this
   out; mitigation (statistical-output cross-language harness in
-  `sketchlib-bench`) is tracked for follow-up.
+  `sketch-bench`) is tracked for follow-up.
 
 ### Compatibility
 

@@ -15,7 +15,7 @@
 //! the agent — critical when the decision loop is real-time.
 //! See the design discussion thread for the full trade-off;
 //! the summary is in
-//! [`sketch-runtime::exporter::grpc`](https://github.com/ProjectASAP/sketchlib-bench/blob/main/sketch-runtime/src/exporter/grpc.rs).
+//! [`sketch-runtime::exporter::grpc`](https://github.com/ProjectASAP/sketch-bench/blob/main/sketch-runtime/src/exporter/grpc.rs).
 //!
 //! ## Why a ring buffer, not a stream
 //!
