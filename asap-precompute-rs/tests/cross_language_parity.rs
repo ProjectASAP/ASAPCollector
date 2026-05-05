@@ -72,15 +72,6 @@ fn deterministic_floats() -> Vec<f64> {
 }
 
 #[test]
-#[ignore = "Rust DDSketch wire bytes diverge from Go: \
-    asap_sketchlib::DdSketch's bucket-store layout (vec<u64>, \
-    auto-grown in chunks of 128) does NOT match sketchlib-go's \
-    on-the-fly stored.counts allocation, so even after running the \
-    same input both sides serialize to different store_counts arrays. \
-    Closing this gap requires either (a) aligning store growth \
-    semantics in asap_sketchlib::DdSketch with sketchlib-go::DDSketch, \
-    or (b) round-tripping through a normalization helper that strips \
-    trailing-zero buckets before encode. Neither lands in this PR."]
 fn ddsketch_byte_parity_with_go() {
     let Some(want) = load_golden("ddsketch_envelope.bin") else { return; };
     let mut w = DDSketchWrapper::new(0.01);
