@@ -566,10 +566,21 @@ plots that only require a producer + collector pair. Landed via
    `BYTES_WIN=20s < W=60s` on most cells, so absolute bandwidth
    numbers are under-reported. Ratios within a sub-experiment
    are fine; absolute numbers need a rerun (~90 min wall).
-2. **Profile the label-axis `AttributeFilter` hot path.** First
+2. ~~**Profile the label-axis `AttributeFilter` hot path.** First
    pass showed producer CPU climbing ~4× under label
    projection. Root-cause before that number goes into a
-   figure.
+   figure.~~ **Done 2026-05-05.** Root cause: every measurement
+   re-allocated the post-filter `attribute.Set` (fresh
+   `ToSlice` + `newSet → hashKVs + computeDataFixed`),
+   triggering GC pressure ≈ 20 % of CPU. Fix: memoize
+   `(input Distinct → filtered Set)` inside `Builder.filter`.
+   Bench-level: 5–20 × per-call speedup, 0 allocs/op vs 2
+   allocs/op on the cost-eval's `keep-zone-rack` cell. See
+   `docs/eval-label-axis-cpu-rootcause.md` + the two
+   pprof profiles checked in under
+   `deploy/eval-results/sdk-cost/profiles/`. Label-axis CSV
+   needs a v2 rerun against the fixed image before going into
+   any figure.
 3. **~~Fill the `nan` columns in the multi-agent sweep CSV.~~**
    **Done (2026-05-05).** Three fixes landed in
    `deploy/scripts/measure-baseline.py` (PR
