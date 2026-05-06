@@ -547,6 +547,21 @@ impl AggIntent {
 
 **Why `Rate` and `Increase` survive that argument.** They are not "Sum / Count over a Window with a different name" — they include PromQL's counter-reset adjustment, which is a non-trivial transformation an exact `Sum` does not perform. They earn distinct intent variants because they parameterise different physical operators (delta-set aggregators bind on these intents directly). If a non-PromQL streaming language has the same notion (e.g. SQL `RATE() OVER (RANGE)`), it lowers to the same intent — the intent vocabulary names the operation, not the language.
 
+#### Implementation status
+
+Phase B (this PR) ships the L3 IR in `controller/src/intent_algebra/`:
+
+- `intent_algebra::AggIntent` — vocabulary above (`Count`, `Sum`, `Min`, `Max`, `Avg`, `Quantile`, `TopK`, `Cardinality`, `Frequency`, `Rate`, `Increase`).
+- `intent_algebra::QueryExpr` — variant subset for the DC + PromQL deployment: `Scan`, `Window`, `Aggregate`, `LetBinding`, `Ref`. The remaining variants (`Filter`, `Project`, `Partition`, `Distinct`, `Merge`, `Join`, `SetOp`, `Sort`, `Limit`, `Subquery`, `WindowFunc`, `BinaryOp`) are deferred so each lands with a planner consumer rather than as dead code; adding them is purely additive.
+- `intent_algebra::Schema` — typed schema flow with `unique_keys` (the load-bearing CSE-legality field, `cse_substitution_legal_only_with_unique_keys` test pins the invariant).
+- `intent_algebra::lower_parsed_query` — `query_parser::ParsedQuery` → `QueryExpr` single-query lowering, exposed as a standalone function. The analyzer is **not** yet wired to emit `QueryExpr`; that wiring is the follow-up phase's job, kept separate so the IR rev and the consumer rev land independently.
+
+Follow-up phases:
+
+- **Phase C** — wire `Analyzer::analyze` to also produce a `QueryExpr` alongside `QueryWorkload`, populate `WorkloadPlan::roots` from the lowered roots.
+- **Phase D** — workload-level CSE pass (`core::lower::workload::dedupe_subtrees`) that hoists shared sub-DAGs into `WorkloadPlan::bindings`, leaning on `Schema::unique_keys` for legality (the batched-queries example above).
+- **Phase E/F** — L4 `SketchExpr` IR (`core::sketch_algebra`) + L4 binding rules.
+
 ### `core::sketch_algebra` — Layer 4 IR (`SketchExpr`)
 
 L4 binding rules consume L3 `QueryExpr` (in `core::intent_algebra`) and produce `SketchExpr` (in `core::sketch_algebra`). This is the IR L5 emitters consume. The two-IR split — intent-only L3 (`QueryExpr`) and sketch-bound L4 (`SketchExpr`), in two separate modules — gives L4 rule application a clean type signature: `fn apply(&QueryExpr, &Constraints) -> Option<SketchExpr>`, and the boundary cannot be silently violated.

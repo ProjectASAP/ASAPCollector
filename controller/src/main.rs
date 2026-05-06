@@ -3,6 +3,7 @@ mod algebra;
 mod analyzer;
 mod backend_client;
 mod config;
+mod intent_algebra;
 mod language_logical_plan;
 mod metrics_exposer;
 mod monitor;
