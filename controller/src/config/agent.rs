@@ -237,6 +237,13 @@ mod tests {
             delta_threshold: 0.0,
                 enable_series_id: true,
                 series_id_ttl_secs: 0,
+            // Pre-existing fixture tests (`contains_prometheus_exporter`,
+            // `pipeline_has_receivers_and_exporters`) assert the legacy
+            // prometheus exporter on :8889 — keep the test semantics by
+            // pinning the sink, not by changing the default.
+            data_sink: AgentDataSink::PrometheusScrape {
+                endpoint: "0.0.0.0:8889".to_string(),
+            },
         }
     }
 
@@ -313,6 +320,7 @@ mod tests {
             delta_threshold: 0.0,
                 enable_series_id: true,
                 series_id_ttl_secs: 0,
+            data_sink: AgentDataSink::default(),
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(yaml.contains("HLL:"), "YAML should contain HLL processor key\n{yaml}");
@@ -347,6 +355,7 @@ mod tests {
             delta_threshold: 0.0,
                 enable_series_id: true,
                 series_id_ttl_secs: 0,
+            data_sink: AgentDataSink::default(),
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
@@ -451,6 +460,7 @@ mod tests {
             delta_threshold: 0.0,
                 enable_series_id: true,
                 series_id_ttl_secs: 0,
+            data_sink: AgentDataSink::default(),
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(yaml.contains("KLL:"), "YAML should contain 'KLL:'\n{yaml}");
@@ -478,6 +488,7 @@ mod tests {
             delta_threshold: 0.0,
                 enable_series_id: true,
                 series_id_ttl_secs: 0,
+            data_sink: AgentDataSink::default(),
         };
         let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
         assert!(
@@ -520,6 +531,7 @@ mod tests {
                 delta_threshold: 0.0,
                 enable_series_id: true,
                 series_id_ttl_secs: 0,
+                data_sink: AgentDataSink::default(),
             };
             let yaml = generate_agent_config(&cfg, "ws://ctrl:4320/v1/opamp").unwrap();
 

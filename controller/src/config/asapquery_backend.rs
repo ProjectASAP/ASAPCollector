@@ -180,8 +180,8 @@ fn _type_check(_: &AgentCollectorConfig) {}
 mod tests {
     use super::*;
     use crate::types::{
-        BackendCollectorConfig, CollectionPlan, DeltaDecision, GatewayCollectorConfig, OutputMode,
-        ProcessorMode, SketchParams, TransmissionCostSummary,
+        AgentDataSink, BackendCollectorConfig, CollectionPlan, DeltaDecision,
+        GatewayCollectorConfig, OutputMode, ProcessorMode, SketchParams, TransmissionCostSummary,
     };
     use std::time::Duration;
 
@@ -202,6 +202,7 @@ mod tests {
                 series_id_ttl_secs: 0,
                 delta_transmission: false,
                 delta_threshold: 0.0,
+                data_sink: AgentDataSink::default(),
             },
             gateway_config: GatewayCollectorConfig { passthrough: true },
             backend_config: BackendCollectorConfig {
