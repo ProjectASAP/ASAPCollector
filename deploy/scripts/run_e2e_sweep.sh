@@ -27,6 +27,9 @@ OUT_DIR=""
 SOAK_S=120
 PRE_TRANSITION_S=30
 SKIP_CELLS=""
+ONLY_NS=""
+ONLY_SCRAPES_MS=""
+ONLY_CARDINALITIES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,6 +37,12 @@ while [[ $# -gt 0 ]]; do
         --soak-secs) SOAK_S="$2"; shift 2 ;;
         --pre-transition-secs) PRE_TRANSITION_S="$2"; shift 2 ;;
         --skip-cells) SKIP_CELLS="$2"; shift 2 ;;
+        # Override-axis flags. Each accepts a comma-separated list of
+        # values that REPLACES the corresponding default axis. Used
+        # to re-run a small subset of cells (post-fix verification).
+        --ns) ONLY_NS="$2"; shift 2 ;;
+        --scrapes-ms) ONLY_SCRAPES_MS="$2"; shift 2 ;;
+        --cardinalities) ONLY_CARDINALITIES="$2"; shift 2 ;;
         -h|--help)
             sed -n '/^# Usage:/,/^set -euo/{/^set -euo/!p}' "$0"
             exit 0 ;;
@@ -50,32 +59,63 @@ mkdir -p "$OUT_DIR"
 COMPOSE_DIR="$(cd "$(dirname "$0")/../docker-compose" && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# (sketch_family, agent_yaml, exporter_agg, kind_filter)
+# (sketch_family, agent_yaml, exporter_agg, kind_filter,
+#  overlay_yaml, queries_file, transition_query,
+#  force_replan_metric, force_replan_sketch_a, force_replan_sketch_b)
 # kind_filter is the JSON queries entry kind that exercises this
 # sketch — if a query in the suite has a different kind, the
 # accuracy reducer (P8) maps via the `kind` field, not by family
 # name.
+#
+# overlay_yaml selects the per-family backend-streaming/inference
+# YAML pair (configs/backend-{streaming,inference}-<family>.yaml),
+# layered on top of e2e-overlay.yml. The default `e2e-overlay.yml`
+# (DDSketch) is used when overlay_yaml is empty.
+#
+# queries_file is the per-family promql_replay query suite, using
+# metric names that match the family's metric_suffix
+# (HLL → *_hll, KLL → *_kll, DDSketch → *_quantile, CS/CMS → raw).
+# Without per-family queries, the replay client's queries fell
+# through the inference YAML to cold storage, dominating mixed
+# query p99 (claim ③ pre-fix sweep observation).
+#
+# transition_query is the off-plan probe shape — must be a
+# pattern the query engine recognises (so it parses) but NOT in
+# the per-family backend-inference-*.yaml (so it forces a
+# capability-miss → controller replan → t_plan_ready fires).
 SKETCHES=(
-    "ddsketch:sketchcol-agent-b3-delta.yaml:dd-delta:quantile"
-    "kll:sketchcol-agent-b3-delta.yaml:kll-full:quantile"
-    "cs:sketchcol-agent-b3-delta.yaml:cs-delta:topk"
-    "cms:sketchcol-agent-b3-delta.yaml:cms-delta:topk"
-    "hll:sketchcol-agent-b3-delta.yaml:hll-delta:count_unique"
+    "ddsketch:sketchcol-agent-b3-delta.yaml:dd-delta:quantile::queries-e2e.json:quantile_over_time(0.99, http_requests_total_latency_ms_quantile[10m]):http_requests_total_latency_ms:DDSketch:KLL"
+    "kll:sketchcol-agent-kll-direct.yaml:kll-full:quantile:e2e-overlay-kll.yml:queries-e2e-kll.json:quantile_over_time(0.99, http_requests_total_latency_ms_kll[10m]):http_requests_total_latency_ms:KLL:DDSketch"
+    "cs:sketchcol-agent-cs-direct.yaml:cs-delta:topk:e2e-overlay-cs.yml:queries-e2e-cs.json:topk(20, http_requests_total):http_requests_total:CountSketch:CountMinSketch"
+    "cms:sketchcol-agent-cms-direct.yaml:cms-delta:topk:e2e-overlay-cms.yml:queries-e2e-cms.json:topk(20, http_requests_total):http_requests_total:CountMinSketch:CountSketch"
+    "hll:sketchcol-agent-hll-direct.yaml:hll-delta:count_unique:e2e-overlay-hll.yml:queries-e2e-hll.json:count_over_time(http_requests_total_hll[10m]):http_requests_total:HLL:HLL"
 )
 
 NS=(1 10)
 SCRAPES_MS=(100 1000)
 CARDINALITIES=(1000 10000 100000)
 
+if [[ -n "$ONLY_NS" ]]; then
+    IFS=',' read -r -a NS <<< "$ONLY_NS"
+fi
+if [[ -n "$ONLY_SCRAPES_MS" ]]; then
+    IFS=',' read -r -a SCRAPES_MS <<< "$ONLY_SCRAPES_MS"
+fi
+if [[ -n "$ONLY_CARDINALITIES" ]]; then
+    IFS=',' read -r -a CARDINALITIES <<< "$ONLY_CARDINALITIES"
+fi
+
 skip_re="^(${SKIP_CELLS//,/|})$"
 
 cell_count=0
 cell_skipped=0
 for sk in "${SKETCHES[@]}"; do
-    IFS=':' read -r FAM AGENT_YAML AGG KIND <<< "$sk"
+    IFS=':' read -r FAM AGENT_YAML AGG KIND OVERLAY_YAML QUERIES_FILE TRANSITION_QUERY \
+        FORCE_REPLAN_METRIC FORCE_REPLAN_SKETCH_A FORCE_REPLAN_SKETCH_B <<< "$sk"
     if [[ "$SKIP_CELLS" != "" && "$FAM" =~ $skip_re ]]; then
         echo "[skip] sketch=$FAM"
-        cell_skipped=$((cell_skipped + len_each_axis))
+        # Each sketch axis spans (NS × SCRAPES_MS × CARDINALITIES) cells.
+        cell_skipped=$((cell_skipped + ${#NS[@]} * ${#SCRAPES_MS[@]} * ${#CARDINALITIES[@]}))
         continue
     fi
     for N in "${NS[@]}"; do
@@ -95,12 +135,23 @@ for sk in "${SKETCHES[@]}"; do
                     "${COMPOSE_DIR}/gen-agents.sh" "$N" > "$AGENTS_YAML"
                 fi
 
+                # Per-family overlay: layer e2e-overlay-<family>.yml
+                # on top of e2e-overlay.yml so the backend mounts the
+                # right backend-{streaming,inference}-<family>.yaml.
+                # When OVERLAY_YAML is empty, the default DDSketch
+                # mounts from e2e-overlay.yml win.
+                EXTRA_OVERLAY_ARGS=()
+                if [[ -n "$OVERLAY_YAML" ]]; then
+                    EXTRA_OVERLAY_ARGS=(-f "$OVERLAY_YAML")
+                fi
+
                 # Down any prior stack.
                 (cd "$COMPOSE_DIR" && \
                   AGENT_CONFIG="$AGENT_YAML" \
                   docker compose \
                     -f base.yml -f "$AGENTS_YAML" \
                     -f baseline-b3-delta.yml -f e2e-overlay.yml \
+                    "${EXTRA_OVERLAY_ARGS[@]}" \
                     down -v) > "${CELL_DIR}/down.log" 2>&1 || true
 
                 # Up.
@@ -113,35 +164,56 @@ for sk in "${SKETCHES[@]}"; do
                   docker compose \
                     -f base.yml -f "$AGENTS_YAML" \
                     -f baseline-b3-delta.yml -f e2e-overlay.yml \
+                    "${EXTRA_OVERLAY_ARGS[@]}" \
                     up -d) > "${CELL_DIR}/up.log" 2>&1
 
                 # Wait for stack to settle.
                 sleep 8
 
-                # Replay client (background) for the full soak.
+                # Replay client (background) for the full soak. The
+                # per-family queries file points at the metric names
+                # the cell's overlay actually emits (HLL → *_hll, KLL
+                # → *_kll, DDSketch → *_quantile, CS/CMS → unsuffixed).
+                # Falls back to the default queries-e2e.json (DDSketch)
+                # if the family didn't pin one.
+                CELL_QUERIES="${SCRIPT_DIR}/${QUERIES_FILE:-queries-e2e.json}"
                 python3 "${SCRIPT_DIR}/promql_replay.py" \
                     --target http://localhost:19091 \
                     --controller http://localhost:18080 \
-                    --queries "${SCRIPT_DIR}/queries-e2e.json" \
+                    --queries "$CELL_QUERIES" \
                     --qps 5 \
                     --duration "$SOAK_S" \
                     --out "${CELL_DIR}/replay.jsonl" \
                     > "${CELL_DIR}/replay.log" 2>&1 &
                 REPLAY_PID=$!
 
-                # Plan-transition driver runs concurrently. The
-                # transition query is `histogram_quantile(0.999, ...)`
-                # which is unlikely to be on the active plan
-                # (default plans use 0.99 / 0.5 quantiles per
-                # backend-streaming.yaml).
+                # Plan-transition driver runs concurrently. Per-family
+                # transition query is a *supported* PromQL pattern that
+                # is NOT in the cell's backend-inference-*.yaml — so it
+                # forces a capability-miss → controller replan path
+                # (claim ④). Pre-fix the trigger was histogram_quantile
+                # which the engine's pattern matcher rejects outright,
+                # so it never reached the controller.
+                CELL_TRANSITION_Q="${TRANSITION_QUERY:-histogram_quantile(0.999, sum by (le) (http_requests_total_latency_ms))}"
+                # Toggle the forced sketch_type on each cell so back-to-back
+                # cells in a family produce a different plan_id (the planner
+                # hashes the sketch+mode+delta tuple, so submitting the same
+                # spec twice produces an identical hash → no plan_id flip).
+                if (( cell_count % 2 == 0 )); then
+                    FORCE_SKETCH="$FORCE_REPLAN_SKETCH_A"
+                else
+                    FORCE_SKETCH="$FORCE_REPLAN_SKETCH_B"
+                fi
                 python3 "${SCRIPT_DIR}/plan_transition.py" \
                     --target http://localhost:19091 \
                     --controller http://localhost:18080 \
-                    --transition-query 'histogram_quantile(0.999, sum by (le) (http_requests_total_latency_ms))' \
+                    --transition-query "$CELL_TRANSITION_Q" \
                     --transition-out "${CELL_DIR}/transition.jsonl" \
                     --sample-out "${CELL_DIR}/sample.jsonl" \
                     --soak-secs "$SOAK_S" \
                     --pre-transition-secs "$PRE_TRANSITION_S" \
+                    --force-replan-metric "${FORCE_REPLAN_METRIC:-}" \
+                    --force-replan-sketch "${FORCE_SKETCH:-}" \
                     > "${CELL_DIR}/plan_transition.log" 2>&1 &
                 TRANSITION_PID=$!
 
@@ -155,19 +227,33 @@ for sk in "${SKETCHES[@]}"; do
                 # `backend_query_p99_ms` from the client-side
                 # JSONL, which IS preserved on the host (paper
                 # blocker #3, item 3).
+                # `--bytes-sample-window 15` (was default 5s) +
+                # `--bytes-sample-warmup 3` close the HLL-N1
+                # docker-stats NaN gap (claim ② consistency, fix #3):
+                # at HLL N=1 + 100ms scrape the agent flushes between
+                # samples, so a 5 s window can land in dead air and
+                # produce 0 B/s deltas. 15 s is wide enough to span
+                # multiple flushes; the warm-up sample evicts any
+                # stale "container just started" snapshot.
                 python3 "${SCRIPT_DIR}/measure-baseline.py" \
                     --baseline "$FAM-cell" \
                     --scale "N${N}" \
                     --rate "$(echo "scale=2; 1000 / ${SCRAPE_MS}" | bc)" \
                     --cardinality "$CARD" \
                     --replay-jsonl "${CELL_DIR}/replay.jsonl" \
+                    --bytes-sample-window 15 \
+                    --bytes-sample-warmup 3 \
                     > "${CELL_DIR}/measurement.csv" \
                     2> "${CELL_DIR}/measurement.log" || true
 
                 # Snapshot the cold-store ground truth into the
                 # cell directory so the reducer doesn't need to
                 # re-scrape the live volume after teardown.
-                BACKEND_CONT="$(docker compose -f "${COMPOSE_DIR}/base.yml" -f "$AGENTS_YAML" -f "${COMPOSE_DIR}/baseline-b3-delta.yml" -f "${COMPOSE_DIR}/e2e-overlay.yml" ps -q backend 2>/dev/null | head -n 1 || true)"
+                EXTRA_OVERLAY_PATHS=""
+                if [[ -n "$OVERLAY_YAML" ]]; then
+                    EXTRA_OVERLAY_PATHS="-f ${COMPOSE_DIR}/${OVERLAY_YAML}"
+                fi
+                BACKEND_CONT="$(docker compose -f "${COMPOSE_DIR}/base.yml" -f "$AGENTS_YAML" -f "${COMPOSE_DIR}/baseline-b3-delta.yml" -f "${COMPOSE_DIR}/e2e-overlay.yml" $EXTRA_OVERLAY_PATHS ps -q backend 2>/dev/null | head -n 1 || true)"
                 if [[ -n "$BACKEND_CONT" ]]; then
                     docker cp "${BACKEND_CONT}:/var/asap/cold/raw" "${CELL_DIR}/cold-truth" \
                         > "${CELL_DIR}/cold-snapshot.log" 2>&1 || true
@@ -180,6 +266,7 @@ for sk in "${SKETCHES[@]}"; do
                   docker compose \
                     -f base.yml -f "$AGENTS_YAML" \
                     -f baseline-b3-delta.yml -f e2e-overlay.yml \
+                    "${EXTRA_OVERLAY_ARGS[@]}" \
                     down -v) >> "${CELL_DIR}/down.log" 2>&1 || true
 
                 # Capacity check: ensure we don't run out of disk

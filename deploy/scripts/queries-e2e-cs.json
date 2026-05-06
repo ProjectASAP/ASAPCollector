@@ -1,0 +1,18 @@
+[
+    {
+        "kind": "topk",
+        "promql": "topk(10, http_requests_total)"
+    },
+    {
+        "kind": "count_unique",
+        "promql": "count(http_requests_total)"
+    },
+    {
+        "kind": "sum",
+        "promql": "sum_over_time(http_requests_total[1m])"
+    },
+    {
+        "kind": "sum",
+        "promql": "sum(http_requests_total)"
+    }
+]

@@ -8,12 +8,8 @@
         "promql": "quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])"
     },
     {
-        "kind": "topk",
-        "promql": "topk(10, http_requests_total)"
-    },
-    {
-        "kind": "count_unique",
-        "promql": "count(http_requests_total)"
+        "kind": "quantile",
+        "promql": "quantile by (zone) (0.99, http_requests_total_latency_ms_quantile)"
     },
     {
         "kind": "sum",
