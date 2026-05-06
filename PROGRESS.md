@@ -1,6 +1,24 @@
 # DataCollector progress
 
-_Last updated: 2026-05-05._
+_Last updated: 2026-05-06._
+
+## Phase 6 done — Gorilla-S3 cold-engine end-to-end test (2026-05-06)
+
+Outstanding follow-up: Gorilla-S3 e2e shipped. `integration/gorilla_s3_e2e/`
+lands the FINAL phase of the cold-engine work — drives the full pipeline
+(fake-driver → sketchcol+gorillas3processor → MinIO → GorillaS3ColdStore →
+GorillaQueryEngine → backend HTTP) on a sibling docker-compose project
+(`asap-gorilla-e2e` on 29xxx ports) so it never collides with the host
+sweep stack. Default run is fixture-only (`go test ./...` skips the live
+docker path); `GORILLA_E2E_LIVE=1 go test` brings up the ephemeral stack.
+Five subtests cover HappyPath, MultiChunkRange, AccuracyExact,
+DataSourceMarker, and CrossLanguageByteCompat (Go-encoded chunks decoded
+by the Rust `asap-gorilla` crate). The in-test Go decoder mirrors the
+`GORILLA1` byte format directly so the format pin lives in this PR's
+source rather than in a transitive import. AccuracyExact +
+DataSourceMarker subtests SKIP with a documented Phase-6 follow-up note
+when the backend HTTP server still wires `Arc<SimpleEngine>` directly
+(EngineRouter not yet consumed by the HTTP path — separate PR).
 
 ## All-sketches single-agent demo config (2026-05-05, paper §Architecture)
 
