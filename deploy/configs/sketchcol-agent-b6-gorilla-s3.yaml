@@ -79,7 +79,6 @@ processors:
     transmit_sketch: true
     enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
-    encoding: msgpack
     metric_suffix: "_quantile"
 
   HLL:
@@ -87,7 +86,6 @@ processors:
     window_duration: 30s
     transmit_sketch: true
     enable_self_monitoring: true
-    encoding: msgpack
     metric_suffix: "_hll"
 
   countsketch:
@@ -97,7 +95,6 @@ processors:
     delta: 0.01
     transmit_sketch: true
     enable_self_monitoring: true
-    encoding: msgpack
 
   countmin:
     mode: window
@@ -107,7 +104,6 @@ processors:
     columns: 1024
     transmit_sketch: true
     enable_self_monitoring: true
-    encoding: msgpack
 
   batch:
     timeout: 1s
