@@ -1,0 +1,117 @@
+# Agent config — issue #46 v4 single-sketch ASAP demo.
+#
+# Replaces the v3 "all-five sketches at once" agent config with ONE
+# sketch (DDSketch by default; switchable via the
+# ${ASAP_SKETCH_FAMILY:-ddsketch} env var) plus the gorillas3
+# processor for the cold archive. This matches the realistic
+# production deployment: the controller picks ONE sketch family
+# per (metric, query family, workload) on its plan; running all
+# five at once was paper-figure material, NOT v4 §5 evaluation.
+#
+# Pipeline (single OTLP metrics):
+#
+#   raw OTLP ──▶ gorillas3 ──▶ MinIO (asap-gorilla bucket; cold)
+#                 │
+#                 └──▶ <SKETCH> ──▶ batch ──▶ otlp/backend (warm)
+#
+# Selecting the sketch family:
+#
+#   ASAP_SKETCH_FAMILY=ddsketch   # default — quantile (rel-error)
+#   ASAP_SKETCH_FAMILY=kll        # quantile (rank-error)
+#   ASAP_SKETCH_FAMILY=hll        # cardinality
+#   ASAP_SKETCH_FAMILY=countsketch
+#   ASAP_SKETCH_FAMILY=countmin
+#
+# This file is wired to switch between exactly TWO families
+# without a config swap (DDSketch / KLL — both quantile) by
+# templating the processor name on a single env. Switching to
+# HLL / CS / CMS requires picking a different agent config file
+# (sketchcol-agent-{hll,cs,cms}-direct.yaml — already on disk);
+# the single-sketch demo is documented to default to DDSketch
+# because that's the sketch the v4 query suite exercises.
+#
+# IMPORTANT: even with `ASAP_SKETCH_FAMILY` unset, this config
+# only enables ONE sketch processor. The other four are
+# conspicuously absent — that's the point of this baseline vs
+# the v3 all-five-sketches one.
+
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://controller:4320/v1/opamp
+        headers:
+          X-Agent-ID: "agent-1"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # ── Cold tier: Gorilla-S3 archive write ──────────────────────────
+  # `drop_original: false` lets the raw metric pass through to the
+  # warm-tier sketch.
+  gorillas3:
+    window_interval: 60s
+    drop_original: false
+    endpoint: http://minio:9000
+    bucket: asap-gorilla
+    region: us-east-1
+    use_ssl: false
+    access_key_id: asap
+    secret_access_key: asap-local-only
+    prefix_template: "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
+    tenant: default
+    max_retries: 3
+    retry_backoff: 1s
+    upload_timeout: 30s
+
+  # ── Warm tier: SINGLE sketch (DDSketch by default). ──────────────
+  # DDSketch — relative-error quantile family. Output suffix
+  # `_quantile` matches `backend-inference.yaml` for the warm-tier
+  # routing of `quantile_over_time(...)`.
+  ddsketch:
+    mode: window
+    window_duration: 30s
+    transmit_sketch: true
+    delta_transmission: false
+    enable_self_monitoring: true
+    quantiles: [0.5, 0.9, 0.99]
+    metric_suffix: "_quantile"
+
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  otlp/backend:
+    endpoint: backend:4317
+    tls:
+      insecure: true
+    compression: none
+
+service:
+  extensions: [opamp]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      # gorillas3 first — cold-tier write happens on raw input
+      # before the sketch processor mutates the stream.
+      processors: [gorillas3, ddsketch, batch]
+      exporters: [otlp/backend]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890
