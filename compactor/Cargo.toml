@@ -1,0 +1,47 @@
+[package]
+name = "asap-compactor"
+version = "0.1.0"
+edition = "2021"
+description = "ASAP S3 cold-store compactor — concat-only block merger for the GorillaQueryEngine archive tier (mvp/v5)."
+license = "MIT"
+
+# **Concat-only design.** This compactor does NOT decode or re-encode
+# Gorilla bit streams. It walks groups of small per-hour blocks and
+# emits a single merged-block S3 object that is the literal byte
+# concatenation of the source `part-*.gor` files. Each source chunk
+# remains an atomic, individually-decodable Gorilla chunk inside the
+# merged object. The new `index.json` records each chunk's
+# `byte_offset` + `byte_length` within the merged file so the
+# backend can issue `Range: bytes=START-END` partial reads.
+#
+# See `src/lib.rs` and `docs/design-asap-compactor.md` for the full
+# rationale (and why decode + re-encode is the WRONG optimization
+# for MVP).
+
+[[bin]]
+name = "asap-compactor"
+path = "src/bin/asap-compactor.rs"
+
+[dependencies]
+# Sibling-checkout path-dep mirrors the backend's pattern in
+# `ASAPQuery-backend/asap-query-engine/Cargo.toml`. The compactor
+# only consumes the public surface of asap-gorilla
+# (`IndexFile`, `IndexEntry`, `Postings`, `PostingsBuilder`).
+asap-gorilla = { path = "../asap-gorilla" }
+# `rust-s3` (`s3` package) — same client the backend's
+# `GorillaS3ColdStore` uses. Default features are off to share the
+# rustls backend already pulled in elsewhere.
+s3 = { version = "0.37", package = "rust-s3", default-features = false, features = ["tokio-rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"

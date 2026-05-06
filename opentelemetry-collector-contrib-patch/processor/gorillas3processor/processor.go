@@ -177,9 +177,43 @@ func (p *gorillaS3Processor) flushWindow(ctx context.Context) {
 	if blockTime.IsZero() {
 		blockTime = time.Now().UTC()
 	}
+	// mvp/v5: precompute postings once for the whole window. The
+	// agent emits ONE `postings-v1.json` per (metric, hour-bucket)
+	// because all chunks landing under the same prefix share the
+	// same postings file. We bucket by prefix so multi-metric
+	// windows still get their own postings sidecars.
+	postingsByPrefix := make(map[string]map[seriesKey]*seriesBuffer)
+	for sk, buf := range snapshot {
+		if buf == nil || len(buf.points) == 0 {
+			continue
+		}
+		prefix := renderPrefix(p.cfg.PrefixTemplate, p.cfg.Tenant, sk.metricName, blockTime)
+		bucket, ok := postingsByPrefix[prefix]
+		if !ok {
+			bucket = make(map[seriesKey]*seriesBuffer)
+			postingsByPrefix[prefix] = bucket
+		}
+		bucket[sk] = buf
+	}
+
 	for idx, c := range chunks {
 		prefix := renderPrefix(p.cfg.PrefixTemplate, p.cfg.Tenant, c.metricName, blockTime)
 		key := buildObjectKey(prefix, blockTime, idx)
+		// canonical hash of the (metric, sorted-attrs) tuple — same
+		// hash buildPostings uses for the per-series id, so the
+		// backend can join postings → index entries on label_hash.
+		// For multi-series chunks this is not single-valued; we
+		// surface 0 ("multi-series") in that case so the backend
+		// only short-circuits on single-series chunks.
+		var labelHash uint64
+		if c.seriesCount == 1 {
+			for sk, buf := range snapshot {
+				if sk.metricName == c.metricName && buf != nil {
+					labelHash = canonicalLabelHash(sk.metricName, buf.attributes)
+					break
+				}
+			}
+		}
 		hints := chunkHints{
 			Tenant:      p.cfg.Tenant,
 			MetricName:  c.metricName,
@@ -189,6 +223,7 @@ func (p *gorillaS3Processor) flushWindow(ctx context.Context) {
 			PointCount:  c.pointCount,
 			SizeBytes:   len(c.data),
 			IndexPrefix: prefix,
+			LabelHash:   labelHash,
 		}
 		if err := p.sink.PutChunk(ctx, key, c.data, hints); err != nil {
 			p.logger.Error("gorillas3: PutChunk failed",
@@ -212,6 +247,28 @@ func (p *gorillaS3Processor) flushWindow(ctx context.Context) {
 			zap.Int("points", c.pointCount),
 			zap.Int("bytes", len(c.data)),
 		)
+	}
+
+	// mvp/v5: emit `postings-v1.json` per prefix bucket.
+	for prefix, bucket := range postingsByPrefix {
+		body, err := buildPostings(bucket, time.Now().UnixNano())
+		if err != nil {
+			p.logger.Error("gorillas3: buildPostings failed",
+				zap.String("prefix", prefix),
+				zap.Error(err))
+			continue
+		}
+		postingsKey := prefix + "postings-v1.json"
+		if err := p.sink.PutPostings(ctx, postingsKey, body); err != nil {
+			p.logger.Error("gorillas3: PutPostings failed",
+				zap.String("key", postingsKey),
+				zap.Error(err))
+			continue
+		}
+		p.logger.Info("gorillas3: postings written",
+			zap.String("key", postingsKey),
+			zap.Int("bytes", len(body)),
+			zap.Int("series", len(bucket)))
 	}
 }
 

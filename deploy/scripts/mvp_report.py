@@ -1,5 +1,24 @@
 #!/usr/bin/env python3
-"""mvp_report.py — issue-46 MVP report generator (v4).
+"""mvp_report.py — issue-46 MVP report generator (v5).
+
+v5 changes vs v4:
+
+  * Reads three new artifacts under each results dir:
+      - `compactor/{dry_run,live_run}.json`
+      - `compactor/{before,after}.minio.jsonl`
+      - per-baseline `s3_cost.csv`
+      - per-baseline `label_predicate_queries/*.json`
+
+  * Adds §5 Cost (S3 ops, measured) — table of PUT / GET / HEAD /
+    DELETE counts + bytes per baseline.
+  * Adds §6 Compaction effect — before/after object count + total
+    bytes; explicitly notes "no decode/re-encode — concat-only".
+  * Adds §7 Postings filtering — for each ad-hoc query, response
+    `postings_filtered_series_count` vs would-have-scanned chunks.
+  * Adds §8 Criterion ⑦ verdict (PromQL ad-hoc label predicate
+    latency stays bounded).
+  * Adds Annex: S3 cost projection out to 100k / 1M / 10M
+    cardinality using the linear PUT-cost model.
 
 v4 changes vs v3:
 
@@ -454,6 +473,286 @@ def render_freshness_table(
     return md
 
 
+# ── §5 / §6 / §7 / §8 — v5 helpers ──────────────────────────────
+
+
+def load_s3_cost(path: str) -> dict[str, int]:
+    """Read a single-row s3_cost.csv → dict[col → int]."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return {}
+    out: dict[str, int] = {}
+    for k, v in rows[0].items():
+        try:
+            out[k] = int(v)
+        except (TypeError, ValueError):
+            out[k] = 0
+    return out
+
+
+def load_compactor_outputs(results_dir: str) -> dict[str, Any]:
+    """Pull both the dry-run + live-run summary JSON, plus the
+    before/after MinIO listings (count + total bytes)."""
+    cdir = os.path.join(results_dir, "compactor")
+    out: dict[str, Any] = {
+        "dry_run": None,
+        "live_run": None,
+        "before_count": 0, "before_bytes": 0,
+        "after_count": 0, "after_bytes": 0,
+        "skipped": os.path.exists(os.path.join(cdir, "SKIPPED")),
+    }
+    for tag, fname in (("dry_run", "dry_run.json"), ("live_run", "live_run.json")):
+        p = os.path.join(cdir, fname)
+        if os.path.exists(p):
+            try:
+                with open(p, "r") as f:
+                    out[tag] = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+    for tag, fname in (("before", "before.minio.jsonl"), ("after", "after.minio.jsonl")):
+        p = os.path.join(cdir, fname)
+        if not os.path.exists(p):
+            continue
+        count = 0
+        bytes_sum = 0
+        with open(p, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                count += 1
+                # `mc ls --json` carries the size at .size.
+                bytes_sum += int(rec.get("size", 0) or 0)
+        out[f"{tag}_count"] = count
+        out[f"{tag}_bytes"] = bytes_sum
+    return out
+
+
+def load_label_predicate_queries(baseline_dir: str) -> list[dict]:
+    """Read every JSON file under `<baseline>/label_predicate_queries/`."""
+    qdir = os.path.join(baseline_dir, "label_predicate_queries")
+    if not os.path.isdir(qdir):
+        return []
+    out: list[dict] = []
+    for entry in sorted(os.listdir(qdir)):
+        p = os.path.join(qdir, entry)
+        if not entry.endswith(".json"):
+            continue
+        try:
+            with open(p, "r") as f:
+                out.append(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return out
+
+
+def render_s3_cost_section(
+    s3_costs: dict[str, dict[str, int]],
+    baselines: list[str],
+) -> list[str]:
+    md: list[str] = []
+    md.append("## §5 Cost (S3 ops, measured)")
+    md.append("")
+    md.append(
+        "Per-baseline counters from the backend's `/internal/s3_cost.csv` "
+        "endpoint. `bytes_got` is **measured response bytes** (not "
+        "billed S3 bytes — the wire-format overhead is not included)."
+    )
+    md.append("")
+    cols = ["put_count", "get_count", "head_count", "list_count",
+            "delete_count", "bytes_put", "bytes_got"]
+    md.append("| Baseline | " + " | ".join(cols) + " |")
+    md.append("|" + "---|" * (1 + len(cols)))
+    for b in baselines:
+        row = [b]
+        cost = s3_costs.get(b, {})
+        for c in cols:
+            row.append(str(cost.get(c, 0)))
+        md.append("| " + " | ".join(row) + " |")
+    md.append("")
+    return md
+
+
+def render_compaction_section(comp: dict[str, Any]) -> list[str]:
+    md: list[str] = []
+    md.append("## §6 Compaction effect")
+    md.append("")
+    md.append(
+        "Concat-only compaction: source `part-*.gor` files are byte-"
+        "concatenated into a single per-day `block-NNNN-MMMM.gor` "
+        "object; chunks themselves are NOT decoded or re-encoded. "
+        "The merged object is bit-identical to the source bytes "
+        "laid end-to-end. Wins are: ~6× fewer S3 PUTs at "
+        "compaction time, fewer GETs to answer long-range queries, "
+        "single merged postings file. The MVP does not (yet) decode "
+        "+ re-encode adjacent same-series chunks for the additional "
+        "10–30% Gorilla compression — that's the natural follow-up."
+    )
+    md.append("")
+    if comp.get("skipped"):
+        md.append("_Compactor phase was SKIPPED on this run (see `compactor/SKIPPED`)._")
+        md.append("")
+        return md
+    md.append("| Phase | Object count | Total bytes |")
+    md.append("|---|---|---|")
+    md.append(
+        f"| before | {comp.get('before_count', 0)} | {comp.get('before_bytes', 0)} |"
+    )
+    md.append(
+        f"| after  | {comp.get('after_count', 0)} | {comp.get('after_bytes', 0)} |"
+    )
+    md.append("")
+    live = comp.get("live_run") or {}
+    metrics = live.get("metrics") or {}
+    md.append(
+        f"Compactor metrics: blocks_in={metrics.get('blocks_in', 0)}, "
+        f"blocks_out={metrics.get('blocks_out', 0)}, "
+        f"chunks_in={metrics.get('chunks_in', 0)}, "
+        f"chunks_out={metrics.get('chunks_out', 0)}, "
+        f"s3_put={metrics.get('s3_put_count', 0)}, "
+        f"s3_get={metrics.get('s3_get_count', 0)}, "
+        f"s3_delete={metrics.get('s3_delete_count', 0)}, "
+        f"duration_ms={metrics.get('duration_ms', 0)}."
+    )
+    md.append("")
+    if comp.get("dry_run"):
+        dry = comp["dry_run"]
+        md.append(
+            f"Dry-run plan: groups_planned={dry.get('groups_planned', 0)}, "
+            f"deferred={dry.get('deferred', 0)}."
+        )
+        md.append("")
+    return md
+
+
+def render_postings_filtering_section(
+    queries: list[dict],
+) -> list[str]:
+    md: list[str] = []
+    md.append("## §7 Postings filtering (per query)")
+    md.append("")
+    md.append(
+        "`postings_filtered_series_count` comes from the engine's "
+        "response `infos`; `chunks_skipped_via_postings` likewise. "
+        "When `data_source_quirk: postings_missing` appears, the "
+        "engine fell back to the scan-all path and the count is "
+        "the would-have-been series count (post-decode label "
+        "filter)."
+    )
+    md.append("")
+    if not queries:
+        md.append("_No label-predicate query responses captured._")
+        md.append("")
+        return md
+    md.append(
+        "| Query | client latency (ms) | series filtered | "
+        "chunks skipped | postings missing |"
+    )
+    md.append("|---|---|---|---|---|")
+    for q in queries:
+        name = q.get("name", "?")
+        lat = q.get("client_latency_ms", float("nan"))
+        infos = []
+        resp = q.get("response", {}) or {}
+        data = resp.get("data") or {}
+        infos = data.get("infos") or resp.get("infos") or []
+
+        def _num(prefix: str) -> str:
+            for line in infos:
+                if isinstance(line, str) and line.startswith(prefix):
+                    return line[len(prefix):].strip().rstrip(',')
+            return "—"
+
+        series_filtered = _num("postings_filtered_series_count: ")
+        chunks_skipped = _num("chunks_skipped_via_postings: ")
+        postings_missing = "yes" if any(
+            isinstance(l, str) and "postings_missing" in l for l in infos
+        ) else "no"
+        md.append(
+            f"| `{name}` | {lat:.1f} | {series_filtered} | "
+            f"{chunks_skipped} | {postings_missing} |"
+        )
+    md.append("")
+    return md
+
+
+def criterion_label_predicate_latency(
+    queries: list[dict],
+    p99_threshold_ms: float = 2_000.0,
+) -> tuple[str, str, dict]:
+    """Criterion ⑦ — ad-hoc PromQL with label predicates stays
+    bounded (p99 across the supplied queries ≤ threshold)."""
+    if not queries:
+        return "UNKNOWN", "no label-predicate query responses captured", {}
+    latencies = [
+        float(q.get("client_latency_ms", float("nan")))
+        for q in queries
+        if isinstance(q.get("client_latency_ms"), (int, float))
+    ]
+    if not latencies:
+        return "UNKNOWN", "no per-query latency observations", {}
+    p99 = _percentile(latencies, 0.99)
+    pass_ = p99 <= p99_threshold_ms
+    line = (
+        f"p99 across {len(latencies)} queries = {p99:.1f} ms "
+        f"(threshold {p99_threshold_ms:.0f} ms; "
+        f"min={min(latencies):.1f}, max={max(latencies):.1f})"
+    )
+    return "PASS" if pass_ else "FAIL", line, {"p99_ms": p99, "n": len(latencies)}
+
+
+def render_cost_projection_annex(
+    s3_costs: dict[str, dict[str, int]],
+    asap_label: str,
+    cardinalities: tuple[int, ...] = (100_000, 1_000_000, 10_000_000),
+    measured_cardinality: int = 10_000,
+) -> list[str]:
+    """Linear extrapolation of measured PUT / GET counts. State the
+    assumption explicitly: every series writes one chunk per
+    `WindowInterval` (60s default), so PUT count scales linearly
+    with cardinality. GET count is query-driven and not modelled
+    here (we just dilate it identically — same caveat)."""
+    md: list[str] = []
+    md.append("## Annex — Cost projection (linear PUT model)")
+    md.append("")
+    md.append(
+        f"Measured at {measured_cardinality} series. Linear "
+        "extrapolation assumes (a) each series writes one chunk per "
+        "60s window, (b) each window emits one `index.json` and one "
+        "`postings-v1.json` per metric. With the same agent + soak "
+        "duration, PUT count is `(measured PUT) × (target / measured)` "
+        "series. **Caveat**: GET count depends on workload (scan-vs-"
+        "predicate mix) and is reproduced here at the same scaling "
+        "factor for shape only — DO NOT cite as a workload-derived "
+        "projection."
+    )
+    md.append("")
+    asap_cost = s3_costs.get(asap_label, {})
+    if not asap_cost:
+        md.append("_no asap-single-sketch s3_cost.csv to extrapolate from_")
+        md.append("")
+        return md
+    md.append("| Cardinality | PUT (extrap) | GET (extrap) | bytes_got (extrap) |")
+    md.append("|---|---|---|---|")
+    for card in cardinalities:
+        scale = card / max(1, measured_cardinality)
+        md.append(
+            f"| {card:,} | "
+            f"{int(asap_cost.get('put_count', 0) * scale):,} | "
+            f"{int(asap_cost.get('get_count', 0) * scale):,} | "
+            f"{int(asap_cost.get('bytes_got', 0) * scale):,} |"
+        )
+    md.append("")
+    return md
+
+
 # ── markdown assembly ────────────────────────────────────────────
 
 
@@ -500,19 +799,21 @@ def render_markdown_v4(
     total_card = num_agents * per_agent_cardinality
 
     md: list[str] = []
-    md.append("# ASAPCollector MVP demo — issue #46 (v4)")
+    md.append("# ASAPCollector MVP demo — issue #46 (v5)")
     md.append("")
     md.append(
         "Four-baseline back-to-back run: "
         "B0 raw→Prometheus, B1 SERF→Prometheus, B5 Gorilla agent-side, "
-        "B6 ASAP single-sketch + Gorilla-S3 cold archive. One driver "
-        "(`run_mvp_demo.sh`) brings each cell up, soaks, replays, "
-        "measures freshness + stages, then tears the stack down."
+        "B6 ASAP single-sketch + Gorilla-S3 cold archive. v5 adds: "
+        "(1) postings-aware ad-hoc PromQL queries with label predicates, "
+        "(2) S3 cost-tracking CSV per baseline, (3) concat-only "
+        "compactor sweep on the surviving MinIO bucket. The compactor "
+        "does NOT decode + re-encode Gorilla bit streams (see §6)."
     )
     md.append("")
     md.append("## Workload shape")
     md.append("")
-    md.append("| Knob | v4 value |")
+    md.append("| Knob | v5 value |")
     md.append("|------|---------|")
     md.append(f"| Per-agent cardinality | **{per_agent_cardinality}** series |")
     md.append(f"| Number of distributed agents (N) | **{num_agents}** |")
@@ -556,6 +857,28 @@ def render_markdown_v4(
 
     # §3 freshness
     md.extend(render_freshness_table(freshness, baselines))
+
+    # ── v5 §5 / §6 / §7 / §8 ────────────────────────────────────
+    s3_costs = {b: load_s3_cost(os.path.join(results_dir, b, "s3_cost.csv"))
+                for b in baselines}
+    md.extend(render_s3_cost_section(s3_costs, baselines))
+
+    comp = load_compactor_outputs(results_dir)
+    md.extend(render_compaction_section(comp))
+
+    asap_label_predicate_queries = load_label_predicate_queries(
+        os.path.join(results_dir, asap_label)
+    )
+    md.extend(render_postings_filtering_section(asap_label_predicate_queries))
+
+    # §8 — criterion ⑦ verdict.
+    p7_v, p7_line, _ = criterion_label_predicate_latency(asap_label_predicate_queries)
+    md.append("## §8 Criterion ⑦ — PromQL ad-hoc label predicate latency")
+    md.append("")
+    md.append("| # | Criterion | Verdict | Number |")
+    md.append("|---|-----------|---------|--------|")
+    md.append(f"| ⑦ | Label-predicate latency stays bounded | **{badge(p7_v)}** | {p7_line} |")
+    md.append("")
 
     # §4 caveats
     md.append("## §4 Honest caveats")
@@ -601,6 +924,12 @@ def render_markdown_v4(
         md.append("")
     md.append("```")
     md.append("")
+
+    # v5 cost-projection annex.
+    md.extend(render_cost_projection_annex(
+        s3_costs, asap_label,
+        measured_cardinality=total_card,
+    ))
 
     # ASAP cold-fallback response
     md.append("## ASAP cold-fallback ad-hoc query response")

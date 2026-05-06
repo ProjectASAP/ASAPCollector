@@ -32,6 +32,13 @@ type chunkSink interface {
 	// can also (re-)write the per-hour index.json.
 	PutChunk(ctx context.Context, key string, data []byte, hints chunkHints) error
 
+	// PutPostings writes a single `postings-v1.json` sidecar object.
+	// mvp/v5: the processor calls this once per flush; the
+	// compactor (a separate binary) overrides + merges later.
+	// `key` is the full S3 key; `data` is the raw POSTING1-framed
+	// bytes from `buildPostings`.
+	PutPostings(ctx context.Context, key string, data []byte) error
+
 	// Close releases any client resources.
 	Close() error
 }
@@ -46,9 +53,22 @@ type chunkHints struct {
 	PointCount  int
 	SizeBytes   int
 	IndexPrefix string // hour-bucket prefix used to derive "<prefix>index.json"
+	// mvp/v5: a deterministic 64-bit canonical-label-set hash that
+	// the postings sidecar joins on. Empty / 0 ⇒ producer didn't
+	// compute one (older path).
+	LabelHash uint64
 }
 
 // indexEntry is one row inside a per-hour index.json.
+//
+// **mvp/v5**: extended with `object_key`, `byte_offset`, `byte_length`
+// for the compactor's merged-block layout. For pre-compactor flushes
+// the agent emits `object_key = Object`, `byte_offset = 0`,
+// `byte_length = SizeBytes` so backend partial-read code paths can
+// be unconditional. The asap-gorilla Rust crate's `IndexEntry`
+// `Option<…>` fields parse zero-valued JSON keys as "absent" via the
+// `effective_*` accessors — we therefore omit them on the agent side
+// (zero value === legacy semantic).
 type indexEntry struct {
 	Object      string `json:"object"`
 	StartTSNano int64  `json:"start_ts_nano"`
@@ -57,6 +77,14 @@ type indexEntry struct {
 	PointCount  int    `json:"point_count"`
 	SizeBytes   int    `json:"size_bytes"`
 	WrittenAt   int64  `json:"written_at_unix_nano"`
+	// mvp/v5 extension. omitempty keeps the JSON byte-compatible
+	// with pre-v5 readers, since our zero-value semantics
+	// ("chunk lives at Object") match what readers infer from the
+	// existing `Object` + `SizeBytes` pair.
+	ObjectKey  string `json:"object_key,omitempty"`
+	ByteOffset uint64 `json:"byte_offset,omitempty"`
+	ByteLength uint64 `json:"byte_length,omitempty"`
+	LabelHash  uint64 `json:"label_hash,omitempty"`
 }
 
 type indexFile struct {
@@ -64,6 +92,10 @@ type indexFile struct {
 	Tenant  string       `json:"tenant"`
 	Metric  string       `json:"metric"`
 	Entries []indexEntry `json:"entries"`
+	// mvp/v5: relative S3 path of the postings sidecar within the
+	// same hour-bucket (`postings-v1.json`). Empty on pre-v5
+	// blocks. The compactor rewrites this when it merges blocks.
+	Postings string `json:"postings,omitempty"`
 }
 
 // s3Sink is the production aws-sdk-go-v1 implementation. We pick the
@@ -125,6 +157,24 @@ func (s *s3Sink) PutChunk(ctx context.Context, key string, data []byte, hints ch
 	return s.updateIndex(ctx, key, hints)
 }
 
+// PutPostings writes the `postings-v1.json` sidecar. mvp/v5: the
+// processor calls this once per flush, after PutChunk. Failure is
+// surfaced via the same retry/spool path as chunk uploads — postings
+// missing on read becomes a backend `data_source_quirk: postings_missing`
+// soft-fall-through rather than a hard error.
+func (s *s3Sink) PutPostings(ctx context.Context, key string, data []byte) error {
+	if err := s.putWithRetry(ctx, key, data); err != nil {
+		if s.spoolDir != "" {
+			if spErr := writeLocalSpool(s.spoolDir, key, data); spErr != nil {
+				return fmt.Errorf("postings put failed (%w) and spool failed (%v)", err, spErr)
+			}
+			return fmt.Errorf("postings put failed, spooled to %s: %w", s.spoolDir, err)
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *s3Sink) Close() error { return nil }
 
 func (s *s3Sink) putWithRetry(ctx context.Context, key string, data []byte) error {
@@ -174,15 +224,27 @@ func (s *s3Sink) updateIndex(ctx context.Context, chunkKey string, h chunkHints)
 		idx = s.fetchIndex(ctx, indexKey, h)
 		s.indexCache[indexKey] = idx
 	}
+	objectKey := path.Base(chunkKey)
 	idx.Entries = append(idx.Entries, indexEntry{
-		Object:      path.Base(chunkKey),
+		Object:      objectKey,
 		StartTSNano: h.StartTSNano,
 		EndTSNano:   h.EndTSNano,
 		SeriesCount: h.SeriesCount,
 		PointCount:  h.PointCount,
 		SizeBytes:   h.SizeBytes,
 		WrittenAt:   time.Now().UnixNano(),
+		// mvp/v5: pre-compactor agent — the chunk IS its own S3
+		// object so `object_key = Object` and the chunk slice
+		// covers `[0, SizeBytes)` of that object. The compactor
+		// later rewrites these for merged blocks.
+		ObjectKey:  objectKey,
+		ByteOffset: 0,
+		ByteLength: uint64(h.SizeBytes),
+		LabelHash:  h.LabelHash,
 	})
+	// mvp/v5: stamp the postings sidecar pointer so backends can
+	// find it without a separate listing.
+	idx.Postings = "postings-v1.json"
 	body, err := json.Marshal(idx)
 	if err != nil {
 		return fmt.Errorf("marshal index: %w", err)

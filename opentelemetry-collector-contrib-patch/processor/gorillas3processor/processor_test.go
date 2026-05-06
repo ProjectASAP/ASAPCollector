@@ -17,17 +17,24 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
-// mockSink captures every PutChunk for assertion.
+// mockSink captures every PutChunk + PutPostings for assertion.
 type mockSink struct {
-	mu     sync.Mutex
-	chunks []mockChunk
-	fail   bool
+	mu       sync.Mutex
+	chunks   []mockChunk
+	postings []mockPostings
+	fail     bool
 }
 
 type mockChunk struct {
 	key   string
 	data  []byte
 	hints chunkHints
+}
+
+// mvp/v5: postings sidecar capture.
+type mockPostings struct {
+	key  string
+	data []byte
 }
 
 func (m *mockSink) PutChunk(ctx context.Context, key string, data []byte, hints chunkHints) error {
@@ -40,12 +47,28 @@ func (m *mockSink) PutChunk(ctx context.Context, key string, data []byte, hints 
 	return nil
 }
 
+func (m *mockSink) PutPostings(ctx context.Context, key string, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fail {
+		return errors.New("mock sink: induced failure")
+	}
+	m.postings = append(m.postings, mockPostings{key: key, data: append([]byte(nil), data...)})
+	return nil
+}
+
 func (m *mockSink) Close() error { return nil }
 
 func (m *mockSink) chunkCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.chunks)
+}
+
+func (m *mockSink) postingsCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.postings)
 }
 
 func buildTestMetrics(metricName string, n int, baseTime time.Time) pmetric.Metrics {
@@ -207,6 +230,35 @@ func TestConsumeMetrics_HistogramSilentlyIgnored(t *testing.T) {
 	_, err := p.ConsumeMetrics(context.Background(), md)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), p.activeSeries())
+}
+
+// mvp/v5: postings sidecar is emitted alongside the chunk on every
+// flush. The exact byte format is round-trip-tested in postings_test.go;
+// here we just pin the processor → sink call shape.
+func TestFlushWindow_EmitsPostingsSidecar(t *testing.T) {
+	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
+	sink := &mockSink{}
+	p := mkProcessor(t, cfg, sink)
+
+	base := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	md := buildTestMetrics("cpu.usage", 5, base)
+	_, err := p.ConsumeMetrics(context.Background(), md)
+	require.NoError(t, err)
+	p.flushWindow(context.Background())
+
+	require.Equal(t, 1, sink.chunkCount(), "expected one chunk")
+	require.Equal(t, 1, sink.postingsCount(), "expected one postings sidecar")
+	post := sink.postings[0]
+	assert.Contains(t, post.key, "tnt/cpu.usage/2026/05/06/")
+	assert.True(t, len(post.data) > 13, "postings body must include header+body+crc")
+	assert.Equal(t, []byte("POSTING1"), post.data[:8], "postings magic")
+	assert.Equal(t, byte(1), post.data[8], "postings version")
+
+	// Index entry must also pin the new compactor-extension fields:
+	// for a pre-compactor flush the chunk lives at `Object`, byte
+	// offset 0, byte length = SizeBytes.
+	c := sink.chunks[0]
+	assert.NotZero(t, c.hints.LabelHash, "single-series chunk should carry a non-zero label hash")
 }
 
 func TestFactory_DefaultConfig(t *testing.T) {

@@ -22,10 +22,11 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-# NB: the canonical GORILLA1 format does not include a CRC footer
-# (the Go gorillaprocessor does not write one). We stay byte-compatible
-# rather than appending one here. If a future format revision adds a
-# footer, re-introduce `crc32fast = "1"`.
+# Postings (mvp/v5) introduces a CRC32C trailer on its own JSON blob.
+# The Gorilla `GORILLA1` block format itself remains CRC-free for byte
+# compat with the canonical Go encoder — `postings-v1.json` is a
+# sibling sidecar file, not part of the block.
+crc32fast = "1"
 
 [dev-dependencies]
 # No external dev-deps — round-trip + byte-compat tests use std only.

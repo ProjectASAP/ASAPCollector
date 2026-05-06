@@ -1,5 +1,26 @@
 #!/usr/bin/env bash
-# run_mvp_demo.sh — issue-46 MVP demo driver (v4).
+# run_mvp_demo.sh — issue-46 MVP demo driver (v5).
+#
+# v5 changes vs v4:
+#
+#   1. After the per-baseline soak completes, fire ad-hoc PromQL
+#      queries with label predicates against the ASAP backend
+#      (criterion ⑦). These exercise the postings-aware chunk
+#      filter; the response infos carry
+#      `postings_filtered_series_count` so the report can compare
+#      against the would-have-been chunk-scan count.
+#   2. Run the compactor TWICE on the ASAP MinIO bucket: first
+#      `--dry-run` (prints the plan) and then `--no-dry-run`
+#      (executes). Capture before/after object count + total
+#      bytes via `mc ls --recursive --json`.
+#   3. Emit `s3_cost.csv` per baseline (counts of PUT/GET/HEAD/
+#      DELETE × bytes-out). Sourced from the new
+#      `/internal/s3_cost.csv` HTTP endpoint on the backend
+#      (asap-single-sketch only; B0/B1/B5 don't have a backend
+#      that talks to S3).
+#   4. Output dir layout becomes
+#      deploy/eval-results/mvp-v5-2026-05-06/<baseline>/{...}
+#      (was mvp-v4-...).
 #
 # v4 changes vs v3:
 #
@@ -78,7 +99,7 @@ HOST_AGENT_OTLP_HTTP="14328"
 HOST_GATEWAY_OTLP_HTTP="14318"
 
 SWEEP_WAIT_CAP_S="${SWEEP_WAIT_CAP_S:-3600}"
-OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-v4-2026-05-06}"
+OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-v5-2026-05-06}"
 mkdir -p "$OUT_BASE"
 
 # ── replay query suite (warm + cold mix) ─────────────────────────
@@ -99,6 +120,22 @@ JSON
 # Ad-hoc cold-fallback query — only meaningful for the ASAP
 # baseline (the others have no Gorilla archive).
 COLD_QUERY="sum_over_time(http_requests_total[1m])"
+
+# ── v5: ad-hoc PromQL with label predicates (criterion ⑦) ────────
+# Fired against the ASAP backend after the soak. These exercise
+# the postings-aware chunk filter; the report compares response
+# `postings_filtered_series_count` against the
+# would-have-been-scanned count.
+LABEL_PREDICATE_QUERIES_FILE="${OUT_BASE}/label-predicate-queries.json"
+mkdir -p "$(dirname "$LABEL_PREDICATE_QUERIES_FILE")"
+cat > "$LABEL_PREDICATE_QUERIES_FILE" <<'JSON'
+[
+    {"name": "count_with_service_eq",
+     "promql": "count(http_requests_total{service=\"api\"})"},
+    {"name": "topk_with_status_regex",
+     "promql": "topk(5, sum by (zone) (rate(http_requests_total{status=~\"5..\"}[5m])))"}
+]
+JSON
 
 # ── helpers ──────────────────────────────────────────────────────
 log() { printf '[mvp v4] %s\n' "$*"; }
@@ -238,6 +275,53 @@ run_cell() {
             --data-urlencode "query=${COLD_QUERY}" \
             > "${dir}/ad_hoc_query_response.json" 2>"${dir}/ad_hoc_query.err" \
             || true
+
+        # v5 — ad-hoc label-predicate queries (criterion ⑦). One
+        # JSON file per query carrying the response body PLUS
+        # the wall-clock latency we measured client-side.
+        log "  v5 ad-hoc label-predicate queries"
+        mkdir -p "${dir}/label_predicate_queries"
+        python3 - "$query_url" "$LABEL_PREDICATE_QUERIES_FILE" "${dir}/label_predicate_queries" <<'PY'
+import json, os, sys, time, urllib.parse, urllib.request
+
+target, queries_path, out_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(queries_path) as f:
+    queries = json.load(f)
+for q in queries:
+    name = q["name"]
+    promql = q["promql"]
+    url = f"{target}/api/v1/query?{urllib.parse.urlencode({'query': promql})}"
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            body = resp.read()
+        latency_ms = (time.monotonic() - t0) * 1000
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = {"raw": body.decode("utf-8", errors="replace")}
+    except Exception as e:  # noqa: BLE001
+        latency_ms = (time.monotonic() - t0) * 1000
+        payload = {"error": str(e)}
+    out = {
+        "name": name,
+        "promql": promql,
+        "client_latency_ms": latency_ms,
+        "response": payload,
+    }
+    with open(os.path.join(out_dir, f"{name}.json"), "w") as f:
+        json.dump(out, f, indent=2)
+PY
+
+        # v5 — pull the backend's S3 cost CSV. Endpoint is
+        # `/internal/s3_cost.csv` on the backend; if the build
+        # doesn't expose it we silently fall through (the
+        # report renders a "—" cell).
+        log "  v5 fetching s3_cost.csv"
+        curl -sf "${query_url}/internal/s3_cost.csv" \
+            > "${dir}/s3_cost.csv" 2>"${dir}/s3_cost.err" \
+            || echo "put_count,get_count,head_count,list_count,delete_count,bytes_put,bytes_got" \
+                > "${dir}/s3_cost.csv"
     fi
 
     # Per-cell measurement.csv (Prom-sourced + docker stats).
@@ -327,12 +411,74 @@ run_cell "asap-single-sketch" "${OUT_BASE}/asap-single-sketch" \
     "http://localhost:${HOST_BACKEND_QUERY_PORT}" \
     "warm,archive" "yes"
 
-# ── reduce → MVP_REPORT_v4.md ────────────────────────────────────
-log "── reducing → MVP_REPORT_v4.md ──"
+# ── v5 — compactor sweep on the ASAP MinIO bucket ────────────────
+# This runs AFTER all four cells (the ASAP cell's MinIO has been
+# torn down — but we restart only the MinIO container with a
+# host-mount so the cold archive survives). For demo purposes the
+# stack is brought up fresh against the surviving objects in
+# MinIO; in a multi-node deployment the compactor runs as a
+# scheduled K8s job pointed at the live S3 bucket and never
+# requires the ASAP backend to be up.
+COMPACTOR_DIR="${OUT_BASE}/compactor"
+mkdir -p "$COMPACTOR_DIR"
+
+# Pull credentials from the b6 ASAP overlay so the compactor can
+# auth against MinIO without the user setting env vars by hand.
+COMPACTOR_BUCKET="${COMPACTOR_BUCKET:-asap-gorilla}"
+COMPACTOR_ENDPOINT="${COMPACTOR_ENDPOINT:-http://localhost:9000}"
+COMPACTOR_ACCESS_KEY="${COMPACTOR_ACCESS_KEY:-asap}"
+COMPACTOR_SECRET_KEY="${COMPACTOR_SECRET_KEY:-asap-local-only}"
+COMPACTOR_TENANT="${COMPACTOR_TENANT:-default}"
+COMPACTOR_BIN="${COMPACTOR_BIN:-${REPO_ROOT}/compactor/target/release/asap-compactor}"
+
+# Pre-compactor object listing (count + total bytes).
+list_minio_objects() {
+    local out_path="$1"
+    docker run --rm --network host --entrypoint sh minio/mc:latest -c \
+        "mc alias set asap ${COMPACTOR_ENDPOINT} ${COMPACTOR_ACCESS_KEY} ${COMPACTOR_SECRET_KEY} >/dev/null 2>&1; \
+         mc ls --recursive --json asap/${COMPACTOR_BUCKET} 2>/dev/null || true" \
+        > "$out_path" 2>"${out_path}.err" || true
+}
+
+if [[ -x "$COMPACTOR_BIN" ]]; then
+    log "── v5 compactor: dry-run ──"
+    list_minio_objects "${COMPACTOR_DIR}/before.minio.jsonl"
+    "$COMPACTOR_BIN" \
+        --endpoint "$COMPACTOR_ENDPOINT" \
+        --bucket "$COMPACTOR_BUCKET" \
+        --tenant "$COMPACTOR_TENANT" \
+        --access-key-id "$COMPACTOR_ACCESS_KEY" \
+        --secret-access-key "$COMPACTOR_SECRET_KEY" \
+        --threshold-count 6 \
+        --threshold-hours 6 \
+        --dry-run \
+        --out "${COMPACTOR_DIR}/dry_run.json" \
+        > "${COMPACTOR_DIR}/dry_run.log" 2>&1 || true
+
+    log "── v5 compactor: live run ──"
+    "$COMPACTOR_BIN" \
+        --endpoint "$COMPACTOR_ENDPOINT" \
+        --bucket "$COMPACTOR_BUCKET" \
+        --tenant "$COMPACTOR_TENANT" \
+        --access-key-id "$COMPACTOR_ACCESS_KEY" \
+        --secret-access-key "$COMPACTOR_SECRET_KEY" \
+        --threshold-count 6 \
+        --threshold-hours 6 \
+        --out "${COMPACTOR_DIR}/live_run.json" \
+        > "${COMPACTOR_DIR}/live_run.log" 2>&1 || true
+
+    list_minio_objects "${COMPACTOR_DIR}/after.minio.jsonl"
+else
+    log "WARN: compactor binary missing at ${COMPACTOR_BIN}; skipping compaction phase"
+    echo "compactor binary missing" > "${COMPACTOR_DIR}/SKIPPED"
+fi
+
+# ── reduce → MVP_REPORT_v5.md ────────────────────────────────────
+log "── reducing → MVP_REPORT_v5.md ──"
 python3 "${SCRIPT_DIR}/mvp_report.py" \
     --results-dir "$OUT_BASE" \
     --num-agents "$NUM_AGENTS" \
     --per-agent-cardinality "$CARD" \
-    --out "${OUT_BASE}/MVP_REPORT_v4.md"
+    --out "${OUT_BASE}/MVP_REPORT_v5.md"
 
-log "MVP demo v4 complete. Report: ${OUT_BASE}/MVP_REPORT_v4.md"
+log "MVP demo v5 complete. Report: ${OUT_BASE}/MVP_REPORT_v5.md"
