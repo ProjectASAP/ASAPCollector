@@ -94,6 +94,42 @@ impl BackendClient {
             ))
         }
     }
+
+    /// Phase C (MVP v6) variant of [`Self::push_streaming_config`]
+    /// that POSTs `application/json`. The typed L5
+    /// `emit_backend_config_json` emitter produces a `serde_json::Value`
+    /// rather than a YAML document, and the ASAPQuery-backend's
+    /// `/api/v1/streaming-config` endpoint accepts both content types
+    /// (PR #297 / Phase B documents the JSON shape). Same 2xx-or-error
+    /// contract as the YAML variant; same fire-and-forget semantics
+    /// at the call site.
+    pub async fn post_streaming_config_json(&self, json: String) -> Result<()> {
+        debug!(
+            endpoint = %self.endpoint,
+            json_bytes = json.len(),
+            "posting streaming-config JSON to ASAPQuery-backend"
+        );
+        let resp = self
+            .http
+            .post(&self.endpoint)
+            .header("content-type", "application/json")
+            .body(json)
+            .send()
+            .await
+            .context("failed to POST streaming-config JSON to backend")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "backend returned {} for streaming-config JSON POST: {}",
+                status,
+                body
+            ))
+        }
+    }
 }
 
 /// Fire-and-forget convenience helper used by the replanner. Logs
@@ -186,5 +222,40 @@ mod tests {
         let client = BackendClient::new("http://127.0.0.1:1/api/v1/streaming-config");
         // Must not panic or propagate — fire-and-forget semantics.
         push_or_log(&client, "cpu_usage", "content".to_string()).await;
+    }
+
+    /// Phase C: the JSON variant POSTs the body verbatim, returns
+    /// `Ok(())` on a 2xx, and surfaces non-2xx as `Err`. Mock backend
+    /// captures the body so we can verify it round-trips.
+    #[tokio::test]
+    async fn json_post_round_trips_body() {
+        let sink = SharedSink(StdArc::new(Mutex::new(Vec::new())));
+        let url = start_mock_backend(sink.clone(), axum::http::StatusCode::OK).await;
+
+        let client = BackendClient::new(url);
+        let json = r#"{"aggregations":[{"aggregationId":7,"metric":"latency"}]}"#.to_string();
+        client
+            .post_streaming_config_json(json.clone())
+            .await
+            .expect("json post ok");
+
+        let received = sink.0.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0], json);
+    }
+
+    /// Phase C: non-2xx from the backend surfaces as an error so the
+    /// caller (handle_plan) can log + move on.
+    #[tokio::test]
+    async fn json_post_non_2xx_is_error() {
+        let sink = SharedSink(StdArc::new(Mutex::new(Vec::new())));
+        let url =
+            start_mock_backend(sink.clone(), axum::http::StatusCode::BAD_REQUEST).await;
+
+        let client = BackendClient::new(url);
+        let result = client.post_streaming_config_json("{}".to_string()).await;
+        assert!(result.is_err(), "expected error on 400, got {result:?}");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("400"), "error msg should mention 400: {msg}");
     }
 }

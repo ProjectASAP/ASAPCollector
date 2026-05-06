@@ -54,14 +54,24 @@ pub struct AgentStatus {
 pub enum AgentRole {
     /// Edge / agent collector that produces sketches.
     Agent,
+    /// Mid-tier gateway collector that forwards / merges sketches
+    /// between edge agents and the backend. Phase C (MVP v6) wires
+    /// this role through OpAMP so the typed L5 stage_split path can
+    /// push the gateway YAML directly via `push_to_role`.
+    Gateway,
     /// Backend / aggregation collector that merges sketches.
     Backend,
 }
 
 impl AgentRole {
-    fn from_header(value: &str) -> Self {
+    /// Parse the `X-Agent-Role` header value into an `AgentRole`.
+    /// Recognises `backend`, `gateway`, and `agent` (case-insensitive);
+    /// any other value (including the empty string) defaults to
+    /// `Agent` so legacy / mis-configured collectors keep working.
+    pub fn from_header(value: &str) -> Self {
         match value.trim().to_lowercase().as_str() {
             "backend" => AgentRole::Backend,
+            "gateway" => AgentRole::Gateway,
             _         => AgentRole::Agent,
         }
     }
@@ -446,6 +456,47 @@ mod tests {
         assert_eq!(AgentRole::from_header("BACKEND"), AgentRole::Backend);
     }
 
+    /// Phase C: `Gateway` is a recognised role and round-trips through
+    /// the OpAMP `X-Agent-Role` header parser. This locks in the wire
+    /// vocabulary that the typed L5 stage_split path relies on when it
+    /// calls `push_to_role(AgentRole::Gateway, ...)` and expects to
+    /// reach gateway-role collectors only.
+    #[test]
+    fn role_from_header_recognises_gateway() {
+        assert_eq!(AgentRole::from_header("gateway"), AgentRole::Gateway);
+        assert_eq!(AgentRole::from_header("Gateway"), AgentRole::Gateway);
+        assert_eq!(AgentRole::from_header("GATEWAY"), AgentRole::Gateway);
+        // Round-trip through serde lowercase rename.
+        let s = serde_json::to_string(&AgentRole::Gateway).unwrap();
+        assert_eq!(s, "\"gateway\"");
+        let back: AgentRole = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, AgentRole::Gateway);
+        // Still distinct from the other two roles.
+        assert_ne!(AgentRole::Gateway, AgentRole::Agent);
+        assert_ne!(AgentRole::Gateway, AgentRole::Backend);
+    }
+
+    /// Phase C: a gateway-role client connecting via WebSocket appears
+    /// in `connected_agents_with_roles` tagged as `Gateway`. Together
+    /// with the from_header test above this proves the role plumbs
+    /// through the connect path that `push_to_role` selects on.
+    #[tokio::test]
+    async fn gateway_role_round_trips_through_connection() {
+        let (srv, addr) = start_server().await;
+        let _gateway_ws = connect_ws_client(addr, "gw-1", "gateway").await;
+
+        // Wait for server-side registration to complete.
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            let map = srv.connected_agents_with_roles().await;
+            if map.get("gw-1") == Some(&AgentRole::Gateway) {
+                return;
+            }
+        }
+        let map = srv.connected_agents_with_roles().await;
+        panic!("gateway role never registered; map = {:?}", map);
+    }
+
     /// Helper: start a real OpAMP server on a random port, return the server
     /// Arc and the bound address.
     async fn start_server() -> (Arc<OpampServer>, std::net::SocketAddr) {
@@ -515,6 +566,64 @@ mod tests {
         let yaml = String::from_utf8(file.body.clone()).unwrap();
         assert_eq!(yaml, yaml_payload, "delivered yaml must match");
         assert_eq!(String::from_utf8(rc.config_hash).unwrap(), "hash-1", "delivered hash must match");
+    }
+
+    /// Phase C integration test: gateway YAML emitted from the typed L5
+    /// stage_split path is queued onto the gateway-role connection and
+    /// not onto agent-role / backend-role connections. We don't decode
+    /// the protobuf (an unrelated decode-tag-zero issue affects sibling
+    /// tests today); we only assert *delivery routing* — the gateway
+    /// client receives a non-empty binary frame within the timeout, the
+    /// other roles receive nothing.
+    #[tokio::test]
+    async fn push_to_role_gateway_routes_only_to_gateway_role() {
+        use futures_util::StreamExt;
+        let (srv, addr) = start_server().await;
+        let mut agent_ws   = connect_ws_client(addr, "agent-1",   "agent").await;
+        let mut gateway_ws = connect_ws_client(addr, "gateway-1", "gateway").await;
+        let mut backend_ws = connect_ws_client(addr, "backend-1", "backend").await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Mirror the call site that handle_plan now exercises:
+        //   emit_gateway_yaml(...) → push_to_role(Gateway, ...).
+        // We use a stand-in YAML payload here; the emitter has its own
+        // tests in stage_config.rs.
+        let yaml = "extensions:\n  opamp: {}\n".to_string();
+        srv.push_to_role(AgentRole::Gateway, RemoteConfig {
+            config_hash: "hash-gw".into(),
+            yaml,
+        }).await;
+
+        // Gateway must receive exactly one frame.
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            gateway_ws.next(),
+        )
+        .await
+        .expect("gateway timed out")
+        .unwrap()
+        .unwrap();
+        let bytes = msg.into_data();
+        assert!(!bytes.is_empty(), "gateway must receive a non-empty frame");
+
+        // Other roles must receive nothing within a short window.
+        let agent_result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            agent_ws.next(),
+        ).await;
+        assert!(
+            agent_result.is_err(),
+            "agent-role client must not receive gateway-role push"
+        );
+        let backend_result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            backend_ws.next(),
+        ).await;
+        assert!(
+            backend_result.is_err(),
+            "backend-role client must not receive gateway-role push"
+        );
     }
 
     /// `push_to_role(Agent)` must not deliver to a backend-role client.
