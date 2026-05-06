@@ -1,0 +1,48 @@
+# MVP v6 controller input — three canonical query classes
+#
+# Read by the controller at startup (env: CONTROLLER_WORKLOADS,
+# default ./workloads.yaml). The controller's L1 query_language →
+# L5 stage_split pipeline plans sketches + stage placement based
+# on this workload.
+#
+# Schema mirrors deploy/configs/workloads.yaml. See
+# controller/src/config/workloads.rs::WorkloadEntry.
+#
+# Each entry is one PromQL query class the demo will exercise.
+
+# 1. WINDOW AGGREGATION PER SERIES — DDSketch family
+#    Inner: per-series quantile over a 1m sliding window.
+#    Stage: edge (per-agent sketch flushes at window close;
+#    backend only stores resulting sketch state).
+- metric_name: http_requests_total_latency_ms
+  query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"
+  accuracy_sla: 0.01
+  assign_to_role: agent
+
+# 2. LABEL AGGREGATION ACROSS SERIES AT ONE TIMESTAMP
+#    Outer: sum-by(zone) at instant. Inner: identity.
+#    Stage: gateway (cross-host fan-in merge); backend stores
+#    the merged sum-by-zone vector.
+- metric_name: http_requests_total
+  query_string: "sum by (zone) (http_requests_total)"
+  accuracy_sla: 0.0
+  assign_to_role: gateway
+
+# 3. COMBINED WINDOW + LABEL AGGREGATION
+#    Inner: rate per series over 5m. Outer: sum-by(zone).
+#    Stage: edge does rate (small per-series sliding window),
+#    gateway does sum-by-zone fan-in.
+- metric_name: http_requests_total
+  query_string: "sum by (zone) (rate(http_requests_total[5m]))"
+  accuracy_sla: 0.01
+  assign_to_role: agent
+
+# 4. AD-HOC COLD-FALLBACK PROBE — exercises Gorilla archive tier
+#    Metric is configured StorageBackend::GorillaS3 in
+#    backend-storage-routing-mvp-v6.yaml so the warm tier doesn't
+#    cover it; the query forces routing to GorillaQueryEngine.
+#    Drives criterion ⑤ verification (data_source: gorilla_archive).
+- metric_name: http_requests_total
+  query_string: "count(http_requests_total{service=\"payments\"})"
+  accuracy_sla: 0.0
+  assign_to_role: archive
