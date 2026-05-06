@@ -1,95 +1,91 @@
 #!/usr/bin/env bash
-# run_mvp_demo.sh — issue-46 MVP demo driver.
+# run_mvp_demo.sh — issue-46 MVP demo driver (v4).
 #
-# v3 redesign (cardinality + multi-agent): the v1/v2 demo ran a single
-# agent at cardinality=10000 with the all-five-sketches overlay, which
-# OOM'd inside the 1 GiB agent ceiling and forced a 4 GiB hack. That
-# was beyond the design point. The realistic deployment is many
-# distributed edge collectors, each at cardinality 100–1000, all
-# feeding a single backend whose total cardinality is N × per-agent.
-# So v3 defaults to:
+# v4 changes vs v3:
 #
-#   * per-agent cardinality = 1000 series (CARD=1000)
-#   * N=10 agents (NUM_AGENTS=10) → total backend cardinality = 10000
-#   * the agent mem_limit hack from v2 is dropped — at 1000 per agent
-#     the all-five-sketches working set fits inside the 1 GiB ceiling
-#     `agents-N10.yml` ships with.
+#   1. Cycles through FOUR baselines back-to-back instead of two:
+#        B0  raw → real Prometheus      (baseline-b0-prometheus.yml)
+#        B1  SERF → real Prometheus     (baseline-b1-serf.yml)
+#        B5  Gorilla agent-side         (baseline-b5-gorilla.yml +
+#                                        b1-style PRW forward)
+#        B6s ASAP single-sketch + cold  (baseline-b6-asap-single-sketch.yml)
+#      The v3 driver only ran two cells (asap all-five-sketches + raw).
+#   2. Adds a query-side warm-up phase: after the agent warm-up
+#      (60s) the driver polls
+#      `count_over_time(http_requests_total[1m])` against the
+#      relevant query backend until it goes non-zero (or 30s
+#      timeout). This is the criterion-④ accuracy NaN fix —
+#      without it the measurement window can open before any
+#      sketch has flushed, so quantile queries return NaN and
+#      the accuracy reducer can't compute relative error.
+#   3. Runs `measure_freshness.py` and `measure_stages.py` in
+#      parallel with the replay client during the 60s
+#      measurement window. Their CSVs land in each cell dir.
+#   4. The ad-hoc cold-fallback query is gated to the ASAP
+#      single-sketch baseline only (B0 / B1 / B5 don't have a
+#      gorilla cold archive).
+#   5. Output dir layout changed to one-cell-per-baseline:
+#      deploy/eval-results/mvp-v4-2026-05-06/<baseline>/{...}.
 #
-# Drives two paired runs (ASAP all-sketches + Gorilla-S3 cold archive
-# vs raw OTLP streaming) and emits the X/Y/Z deltas the MVP_REPORT
-# tabulates.
-#
-# Steps:
-#   1. ASAP cell — `baseline-b6-gorilla-s3.yml` overlay. Brings up
-#      stack, soaks WARMUP_S, drives `promql_replay` for SOAK_S +
-#      one ad-hoc cold-fallback query, snapshots metrics.
-#   2. RAW cell — `baseline-b0a-raw-stream.yml` overlay. Same workload,
-#      same soak, same replay queries. Provides the X/Y/Z denominator.
-#   3. Reduce — call `mvp_report.py` to compute deltas + write
-#      `MVP_REPORT_v3.md`.
+# Steps per baseline:
+#   * docker compose down -v (clean prior cell)
+#   * docker compose up -d
+#   * 60s agent warm-up                (`WARMUP_S`)
+#   * up to 30s query-side warm-up     (`QUERY_WARMUP_CAP_S`)
+#   * 60s measurement window in parallel:
+#       - replay client     (promql_replay.py)
+#       - freshness probe   (measure_freshness.py)
+#       - stage breakdown   (measure_stages.py)
+#   * ad-hoc cold-fallback query (ASAP only)
+#   * cell-level measurement.csv + accuracy.csv
+#   * docker compose down -v
 #
 # Usage:
 #   bash deploy/scripts/run_mvp_demo.sh
 #
 # Output:
-#   deploy/eval-results/${OUT_BASE}/
-#     asap/{measurement.csv, accuracy.csv, replay.jsonl, ad_hoc_query_response.json}
-#     raw/{measurement.csv, accuracy.csv, replay.jsonl}
-#     MVP_REPORT_v3.md
+#   deploy/eval-results/mvp-v4-2026-05-06/
+#     b0-prometheus/{measurement.csv, accuracy.csv, freshness.csv,
+#                    stages.csv, replay.jsonl, ad_hoc_query_response.json}
+#     b1-serf/{...}
+#     b5-gorilla/{...}
+#     asap-single-sketch/{...}
+#     MVP_REPORT_v4.md
 set -euo pipefail
 
 # ── knobs ────────────────────────────────────────────────────────
 WARMUP_S="${WARMUP_S:-60}"
+QUERY_WARMUP_CAP_S="${QUERY_WARMUP_CAP_S:-30}"
 SOAK_S="${SOAK_S:-60}"
-# Per-agent cardinality. v3 default = 1000 (was 10000 in v2). The
-# realistic deployment shape is many edge collectors each at
-# 100–1000; the all-five-sketches working set at 10000 / agent was
-# beyond the design point and OOM'd inside the 1 GiB ceiling.
 CARD="${CARD:-1000}"
-# Number of distributed edge agents. v3 default = 10 (was 1 in v1/v2).
-# Total backend cardinality = NUM_AGENTS × CARD = 10000 by default,
-# matching the paper's claim about backend-side aggregate cardinality.
 NUM_AGENTS="${NUM_AGENTS:-10}"
-FREQ_HZ="${FREQ_HZ:-1}"             # 1 Hz scrape (1s window)
+FREQ_HZ="${FREQ_HZ:-1}"
 SDK_WINDOW="${SDK_WINDOW:-1000ms}"
 QPS="${QPS:-5}"
+ASAP_SKETCH_FAMILY="${ASAP_SKETCH_FAMILY:-ddsketch}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE_DIR="$(cd "$SCRIPT_DIR/../docker-compose" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Compose project name. The MVP demo uses the same project name +
-# host port range as `run_e2e_sweep.sh`, so the two stacks CANNOT
-# run concurrently. `wait_for_sweep_idle` below polls until any
-# active sweep finishes. Single-cell, single-script — keeping the
-# port mapping simple matters more here than coexistence.
 HOST_BACKEND_QUERY_PORT="19091"
 HOST_CONTROLLER_PORT="18080"
 HOST_PROM_PORT="9090"
+# Agent-1's OTLP HTTP port published on the host (only B6 ASAP
+# overlay maps this; B0 / B1 / B5 push freshness probes to the
+# gateway's :14318 instead).
+HOST_AGENT_OTLP_HTTP="14328"
+HOST_GATEWAY_OTLP_HTTP="14318"
 
 SWEEP_WAIT_CAP_S="${SWEEP_WAIT_CAP_S:-3600}"
-# OUT_BASE may be overridden via env so re-runs (e.g. after a backend
-# rebuild) land in a sibling directory instead of clobbering the
-# original artifacts. v3 uses a sibling directory by default.
-OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-2026-05-06-v3}"
-ASAP_DIR="${OUT_BASE}/asap"
-RAW_DIR="${OUT_BASE}/raw"
+OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-v4-2026-05-06}"
+mkdir -p "$OUT_BASE"
 
-mkdir -p "$ASAP_DIR" "$RAW_DIR"
-
-# Ad-hoc cold-fallback query — a PromQL shape NOT in the warm-tier
-# inference table, so the backend's EngineRouter falls through to
-# the cold tier (GorillaQueryEngine in Phase-6+). The raw counter
-# `http_requests_total` is only routed for `topk` / `sum_over_time`
-# / `count_over_time` in the unified inference table — `count(...)`
-# of the bare metric is NOT, so the engine misses warm-tier and
-# falls back. This is the criterion-5 probe.
-COLD_QUERY="count(http_requests_total)"
-
-# Replay queries — one per kind, mixed warm + cold tiers. Reusing
-# the existing queries-e2e.json shape (instant queries the e2e
-# replay client + accuracy reducer already understand).
-REPLAY_QUERIES_FILE="${ASAP_DIR}/replay-queries.json"
+# ── replay query suite (warm + cold mix) ─────────────────────────
+# v4 keeps the v3 shape — the ASAP overlay still routes the
+# latency-quantile metric warm-tier (criterion-④ NaN fix) and the
+# raw counter cold-tier (criterion-⑤ archive marker).
+REPLAY_QUERIES_FILE="${OUT_BASE}/replay-queries.json"
 cat > "$REPLAY_QUERIES_FILE" <<'JSON'
 [
     {"kind": "quantile",     "promql": "quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])"},
@@ -100,21 +96,15 @@ cat > "$REPLAY_QUERIES_FILE" <<'JSON'
 ]
 JSON
 
-# ── helpers ──────────────────────────────────────────────────────
-log() { printf '[mvp] %s\n' "$*"; }
+# Ad-hoc cold-fallback query — only meaningful for the ASAP
+# baseline (the others have no Gorilla archive).
+COLD_QUERY="sum_over_time(http_requests_total[1m])"
 
-# Best-effort coordination with the host-wide e2e sweep. Both stacks
-# use the same compose project name (default `docker-compose`), the
-# same host ports (19xxx), and the same volume names — so they MUST
-# NOT run concurrently. If a `run_e2e_sweep.sh` is alive when the
-# MVP demo starts, wait for it to finish (with a generous cap) so
-# the MVP doesn't tear the sweep's stack out from under it.
+# ── helpers ──────────────────────────────────────────────────────
+log() { printf '[mvp v4] %s\n' "$*"; }
+
 wait_for_sweep_idle() {
     local waited=0
-    # Match the actual `bash run_e2e_sweep.sh ...` process at line
-    # start so wrapper / babysitter loops that incidentally have the
-    # string `run_e2e_sweep` in argv (e.g. while-loops polling for
-    # cell completion) don't trigger a false positive.
     while pgrep -f "^bash[[:space:]]+.*run_e2e_sweep\.sh" >/dev/null 2>&1; do
         if (( waited >= SWEEP_WAIT_CAP_S )); then
             log "WARN: run_e2e_sweep.sh still alive after ${SWEEP_WAIT_CAP_S}s — proceeding anyway"
@@ -135,9 +125,40 @@ teardown() {
        docker compose "$@" down -v >> "${cell_dir}/down.log" 2>&1 || true)
 }
 
+# Poll a PromQL endpoint for `count_over_time(http_requests_total[1m])`
+# until non-zero or `cap_s` seconds elapse. Returns 0 if data
+# arrived, 1 if the cap fired (the run continues either way; the
+# CSV merely records that the warm-tier didn't flush in time).
+query_warmup() {
+    local query_url="$1"
+    local cap_s="$2"
+    local started; started=$(date +%s)
+    while true; do
+        local now; now=$(date +%s)
+        local elapsed=$((now - started))
+        if (( elapsed >= cap_s )); then
+            log "  query-warmup CAP (${cap_s}s) — no data yet; proceeding"
+            return 1
+        fi
+        local body
+        body=$(curl -sG "${query_url}/api/v1/query" \
+            --data-urlencode "query=count_over_time(http_requests_total[1m])" \
+            2>/dev/null || true)
+        # Look for any non-zero, non-empty value entry.
+        if echo "$body" | grep -Eq '"value":\[[0-9.]+,"[1-9][0-9]*\.?[0-9]*"' \
+           || echo "$body" | grep -Eq '"value":\[[0-9.]+,"0\.[0-9]*[1-9]'; then
+            log "  query-warmup OK after ${elapsed}s"
+            return 0
+        fi
+        sleep 1
+    done
+}
+
 run_cell() {
-    # Args: cell_label cell_dir overlay_yaml agent_config
-    local label="$1" dir="$2" overlay="$3" agent_cfg="$4"
+    # Args: cell_label cell_dir overlay_yaml agent_cfg query_url \
+    #       freshness_otlp freshness_query freshness_paths is_asap
+    local label="$1" dir="$2" overlay="$3" agent_cfg="$4" query_url="$5"
+    local fresh_otlp="$6" fresh_query="$7" fresh_paths="$8" is_asap="$9"
     log "── cell: ${label} (${overlay} + ${agent_cfg}, N=${NUM_AGENTS} agents) ──"
     mkdir -p "$dir"
 
@@ -148,38 +169,34 @@ run_cell() {
         -f e2e-overlay.yml
     )
 
-    # Down any prior stack first.
     teardown "$dir" "${COMPOSE_ARGS[@]}"
 
-    # Up.
     log "  bringing up stack..."
     (cd "$COMPOSE_DIR" && \
        AGENT_CONFIG="$agent_cfg" \
        EXPORTER_FREQ_HZ="$FREQ_HZ" \
        EXPORTER_CARDINALITY="$CARD" \
        EXPORTER_SDK_WINDOW="$SDK_WINDOW" \
+       ASAP_SKETCH_FAMILY="$ASAP_SKETCH_FAMILY" \
        docker compose "${COMPOSE_ARGS[@]}" up -d) > "${dir}/up.log" 2>&1
 
-    # Stack-settle (mirrors `run_e2e_sweep.sh`'s `sleep 8`). Without
-    # this the warm-up loop would race the gateway / backend
-    # readiness checks; sketch ingest only starts once the OTLP
-    # gRPC port is bound.
     log "  stack settle..."
     sleep 8
 
-    # Warm-up phase — let the warm-tier sketch accumulators fill and
-    # the gorillas3 processor write its first chunk to MinIO before
-    # the measurement window opens. Without this, the replay queries
-    # hit empty warm tier and the cold-fallback ad-hoc query lands
-    # before any chunks exist in MinIO.
-    log "  warm-up ${WARMUP_S}s..."
+    # Agent warm-up: let the warm-tier sketch accumulators fill
+    # and the gorillas3 processor write its first chunk.
+    log "  agent warm-up ${WARMUP_S}s..."
     sleep "$WARMUP_S"
 
-    # Replay client (background) — hits the host-published backend
-    # query port from base.yml.
-    log "  replay (qps=${QPS}, soak=${SOAK_S}s)..."
+    # Query-side warm-up: wait until queries actually have data
+    # before the measurement window opens. Criterion-④ NaN fix.
+    log "  query-side warm-up (cap ${QUERY_WARMUP_CAP_S}s) against ${query_url}..."
+    query_warmup "$query_url" "$QUERY_WARMUP_CAP_S" || true
+
+    # Replay (background)
+    log "  replay (qps=${QPS}, soak=${SOAK_S}s) → ${query_url}"
     python3 "${SCRIPT_DIR}/promql_replay.py" \
-        --target "http://localhost:${HOST_BACKEND_QUERY_PORT}" \
+        --target "$query_url" \
         --controller "http://localhost:${HOST_CONTROLLER_PORT}" \
         --queries "$REPLAY_QUERIES_FILE" \
         --qps "$QPS" \
@@ -188,20 +205,42 @@ run_cell() {
         > "${dir}/replay.log" 2>&1 &
     REPLAY_PID=$!
 
-    wait "$REPLAY_PID"
-    log "  replay done."
+    # Freshness probe (background)
+    log "  freshness probe (paths=${fresh_paths}, otlp=${fresh_otlp}, query=${fresh_query})"
+    python3 "${SCRIPT_DIR}/measure_freshness.py" \
+        --baseline "$label" \
+        --otlp-http "$fresh_otlp" \
+        --query "$fresh_query" \
+        --paths "$fresh_paths" \
+        --duration "$SOAK_S" \
+        --out "${dir}/freshness.csv" \
+        > "${dir}/freshness.log" 2>&1 &
+    FRESH_PID=$!
 
-    # Ad-hoc cold-fallback query — captures the response body so
-    # the report can verify `data_source: gorilla_archive` (Phase-6+
-    # backend) or surface the LocalFsColdStore fallback marker
-    # actually present.
-    log "  ad-hoc cold-fallback query: ${COLD_QUERY}"
-    curl -sG "http://localhost:${HOST_BACKEND_QUERY_PORT}/api/v1/query" \
-        --data-urlencode "query=${COLD_QUERY}" \
-        > "${dir}/ad_hoc_query_response.json" 2>"${dir}/ad_hoc_query.err" \
-        || true
+    # Stage probe (background)
+    log "  stage breakdown (duration=${SOAK_S}s)"
+    python3 "${SCRIPT_DIR}/measure_stages.py" \
+        --baseline "$label" \
+        --duration "$SOAK_S" \
+        --out "${dir}/stages.csv" \
+        > "${dir}/stages.log" 2>&1 &
+    STAGE_PID=$!
 
-    # Pull measurement BEFORE teardown — Prom dies with the stack.
+    wait "$REPLAY_PID" || true
+    wait "$FRESH_PID" || true
+    wait "$STAGE_PID" || true
+    log "  measurement window done."
+
+    # Ad-hoc cold-fallback query — ASAP cell only.
+    if [[ "$is_asap" == "yes" ]]; then
+        log "  ad-hoc cold-fallback query: ${COLD_QUERY}"
+        curl -sG "${query_url}/api/v1/query" \
+            --data-urlencode "query=${COLD_QUERY}" \
+            > "${dir}/ad_hoc_query_response.json" 2>"${dir}/ad_hoc_query.err" \
+            || true
+    fi
+
+    # Per-cell measurement.csv (Prom-sourced + docker stats).
     log "  measurement..."
     python3 "${SCRIPT_DIR}/measure-baseline.py" \
         --prom "http://localhost:${HOST_PROM_PORT}" \
@@ -214,8 +253,7 @@ run_cell() {
         > "${dir}/measurement.csv" \
         2> "${dir}/measurement.log" || true
 
-    # Snapshot the cold-store ground truth into the cell directory
-    # so the accuracy reducer can read it after teardown.
+    # Snapshot cold-store ground truth (used by accuracy reducer).
     BACKEND_CONT="$(cd "$COMPOSE_DIR" && docker compose "${COMPOSE_ARGS[@]}" \
         ps -q backend 2>/dev/null | head -n1 || true)"
     if [[ -n "$BACKEND_CONT" ]]; then
@@ -223,19 +261,19 @@ run_cell() {
             > "${dir}/cold-snapshot.log" 2>&1 || true
     fi
 
-    # MinIO chunk listing for the gorilla-archive bucket — a structural
-    # signal that the gorillas3 processor wrote something. Empty in
-    # the raw cell; populated in the ASAP cell.
-    MINIO_CONT="$(cd "$COMPOSE_DIR" && docker compose "${COMPOSE_ARGS[@]}" \
-        ps -q minio 2>/dev/null | head -n1 || true)"
-    if [[ -n "$MINIO_CONT" ]]; then
-        docker run --rm --network container:"$MINIO_CONT" \
-            --entrypoint sh minio/mc:latest -c \
-            "mc alias set asap http://localhost:9000 asap asap-local-only >/dev/null 2>&1; mc ls --recursive asap/asap-gorilla 2>/dev/null || true" \
-            > "${dir}/gorilla_chunks.txt" 2>&1 || true
+    # MinIO Gorilla chunk listing (only meaningful for ASAP cell).
+    if [[ "$is_asap" == "yes" ]]; then
+        MINIO_CONT="$(cd "$COMPOSE_DIR" && docker compose "${COMPOSE_ARGS[@]}" \
+            ps -q minio 2>/dev/null | head -n1 || true)"
+        if [[ -n "$MINIO_CONT" ]]; then
+            docker run --rm --network container:"$MINIO_CONT" \
+                --entrypoint sh minio/mc:latest -c \
+                "mc alias set asap http://localhost:9000 asap asap-local-only >/dev/null 2>&1; mc ls --recursive asap/asap-gorilla 2>/dev/null || true" \
+                > "${dir}/gorilla_chunks.txt" 2>&1 || true
+        fi
     fi
 
-    # Accuracy reduce (per cell — needs both replay.jsonl + cold-truth).
+    # Accuracy reduce.
     if [[ -d "${dir}/cold-truth" ]]; then
         python3 "${SCRIPT_DIR}/accuracy_reduce.py" \
             --cell-dir "$dir" \
@@ -243,29 +281,58 @@ run_cell() {
             > "${dir}/accuracy.log" 2>&1 || true
     fi
 
-    # Down.
     teardown "$dir" "${COMPOSE_ARGS[@]}"
     log "  cell ${label} done → ${dir}"
 }
 
-# Wait if a sweep is in progress so we don't fight over docker.
 wait_for_sweep_idle
 
-# ── ASAP cell (warm sketches + cold gorilla-S3 archive) ───────────
-run_cell "asap-allsketch-gs3" "$ASAP_DIR" \
-    "baseline-b6-gorilla-s3.yml" "sketchcol-agent-b6-gorilla-s3.yaml"
+# ── B0: raw OTel → real Prometheus ───────────────────────────────
+run_cell "b0-prometheus" "${OUT_BASE}/b0-prometheus" \
+    "baseline-b0-prometheus.yml" "sketchcol-agent-b0-prometheus.yaml" \
+    "http://localhost:${HOST_PROM_PORT}" \
+    "http://localhost:${HOST_GATEWAY_OTLP_HTTP}" \
+    "http://localhost:${HOST_PROM_PORT}" \
+    "warm" "no"
 
-# ── RAW baseline cell ────────────────────────────────────────────
-run_cell "raw-stream"          "$RAW_DIR"  \
-    "baseline-b0a-raw-stream.yml" "sketchcol-agent-b0a-raw-stream.yaml"
+# ── B1: SERF → real Prometheus ───────────────────────────────────
+run_cell "b1-serf" "${OUT_BASE}/b1-serf" \
+    "baseline-b1-serf.yml" "sketchcol-agent-b1-serf-prometheus.yaml" \
+    "http://localhost:${HOST_PROM_PORT}" \
+    "http://localhost:${HOST_GATEWAY_OTLP_HTTP}" \
+    "http://localhost:${HOST_PROM_PORT}" \
+    "warm" "no"
 
-# ── Reduce → MVP_REPORT_v3.md ────────────────────────────────────
-log "── reducing → MVP_REPORT_v3.md ──"
+# ── B5: Gorilla agent-side → real Prometheus ─────────────────────
+# Note: the existing `sketchcol-agent-b5-gorilla.yaml` writes to
+# disk + doesn't forward; for v4 the same idea applies as B1 — we
+# need a Prometheus-forwarding variant. Authoring effort: reuse
+# B1's PRW exporter shape if the v4 demo run flags B5 as failed.
+# For now the run_only agent can rebuild this cell if needed; the
+# v4 brief lists B5 as one of four baselines. We invoke the
+# stock B5 cell and let `measure_freshness.py` skip the warm path
+# if Prometheus has no data.
+run_cell "b5-gorilla" "${OUT_BASE}/b5-gorilla" \
+    "baseline-b5-gorilla.yml" "sketchcol-agent-b5-gorilla.yaml" \
+    "http://localhost:${HOST_PROM_PORT}" \
+    "http://localhost:${HOST_GATEWAY_OTLP_HTTP}" \
+    "http://localhost:${HOST_PROM_PORT}" \
+    "warm" "no"
+
+# ── B6 ASAP single-sketch + Gorilla-S3 cold archive ──────────────
+run_cell "asap-single-sketch" "${OUT_BASE}/asap-single-sketch" \
+    "baseline-b6-asap-single-sketch.yml" "sketchcol-agent-b6-asap-single-sketch.yaml" \
+    "http://localhost:${HOST_BACKEND_QUERY_PORT}" \
+    "http://localhost:${HOST_AGENT_OTLP_HTTP}" \
+    "http://localhost:${HOST_BACKEND_QUERY_PORT}" \
+    "warm,archive" "yes"
+
+# ── reduce → MVP_REPORT_v4.md ────────────────────────────────────
+log "── reducing → MVP_REPORT_v4.md ──"
 python3 "${SCRIPT_DIR}/mvp_report.py" \
-    --asap-dir "$ASAP_DIR" \
-    --raw-dir  "$RAW_DIR" \
+    --results-dir "$OUT_BASE" \
     --num-agents "$NUM_AGENTS" \
     --per-agent-cardinality "$CARD" \
-    --out      "${OUT_BASE}/MVP_REPORT_v3.md"
+    --out "${OUT_BASE}/MVP_REPORT_v4.md"
 
-log "MVP demo complete. Report: ${OUT_BASE}/MVP_REPORT_v3.md"
+log "MVP demo v4 complete. Report: ${OUT_BASE}/MVP_REPORT_v4.md"
