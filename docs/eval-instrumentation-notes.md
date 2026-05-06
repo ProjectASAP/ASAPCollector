@@ -32,8 +32,8 @@ NaN. "Stack tier" is which container the signal originates from.
 | `producer_bytes_out_per_s` | `docker stats` net tx delta on `--producer-container`, divided by `--bytes-sample-window` | — | producer | bytes/s on the wire |
 | `agent_cpu_cores` | `rate(otelcol_process_cpu_seconds_total{job="agents"})` | — | agent | cores |
 | `agent_rss_mib` | `otelcol_process_memory_rss_bytes{job="agents"}` / 1MiB | — | agent | MiB |
-| `agent_in_kib_per_s` | `rate(otelcol_datacollector_processor_input_bytes_total{job="agents"})` / 1024 | `docker stats` net rx avg across `docker-compose-agent-*` / 1024 | agent | KiB/s |
-| `agent_out_kib_per_s` | `rate(otelcol_datacollector_processor_output_bytes_total{job="agents"})` / 1024 | `docker stats` net tx avg across `docker-compose-agent-*` / 1024 | agent | KiB/s |
+| `agent_in_kib_per_s` | `rate(otelcol_asapcollector_processor_input_bytes_total{job="agents"})` / 1024 | `docker stats` net rx avg across `docker-compose-agent-*` / 1024 | agent | KiB/s |
+| `agent_out_kib_per_s` | `rate(otelcol_asapcollector_processor_output_bytes_total{job="agents"})` / 1024 | `docker stats` net tx avg across `docker-compose-agent-*` / 1024 | agent | KiB/s |
 | `agent_points_per_s` | `rate(otelcol_receiver_accepted_metric_points_total{job="agents"})` | — | agent | points/s |
 | `gateway_cpu_cores` | `rate(otelcol_process_cpu_seconds_total{job="gateway"})` (with v0.108 fallback) | — | gateway | cores |
 | `gateway_rss_mib` | `otelcol_process_memory_rss_bytes{job="gateway"}` / 1MiB | — | gateway | MiB |
@@ -49,7 +49,7 @@ NaN. "Stack tier" is which container the signal originates from.
 ### `agent_in_kib_per_s` / `agent_out_kib_per_s`: in-process bytes vs wire bytes
 
 The patched-processor counter
-(`otelcol_datacollector_processor_*_bytes_total`) measures the
+(`otelcol_asapcollector_processor_*_bytes_total`) measures the
 **OTLP protobuf MessageSize of the in-process `pmetric.Metrics`
 batch as it crosses the processor boundary**, computed by the
 `pmetric.ProtoMarshaler` in

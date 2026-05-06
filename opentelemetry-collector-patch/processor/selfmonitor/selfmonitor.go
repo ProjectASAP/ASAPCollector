@@ -81,105 +81,105 @@ func New(settings component.TelemetrySettings, processorID, processorType string
 
 	var err error
 	if m.inputBytes, err = meter.Int64Counter(
-		"otelcol_datacollector_processor_input_bytes",
+		"otelcol_asapcollector_processor_input_bytes",
 		metric.WithDescription("Estimated protobuf bytes received by the processor."),
 		metric.WithUnit("By"),
 	); err != nil {
 		return nil, err
 	}
 	if m.outputBytes, err = meter.Int64Counter(
-		"otelcol_datacollector_processor_output_bytes",
+		"otelcol_asapcollector_processor_output_bytes",
 		metric.WithDescription("Estimated protobuf bytes emitted by the processor."),
 		metric.WithUnit("By"),
 	); err != nil {
 		return nil, err
 	}
 	if m.inputPoints, err = meter.Int64Counter(
-		"otelcol_datacollector_processor_input_metric_points",
+		"otelcol_asapcollector_processor_input_metric_points",
 		metric.WithDescription("Metric data points received by the processor."),
 		metric.WithUnit("{datapoint}"),
 	); err != nil {
 		return nil, err
 	}
 	if m.outputPoints, err = meter.Int64Counter(
-		"otelcol_datacollector_processor_output_metric_points",
+		"otelcol_asapcollector_processor_output_metric_points",
 		metric.WithDescription("Metric data points emitted by the processor."),
 		metric.WithUnit("{datapoint}"),
 	); err != nil {
 		return nil, err
 	}
 	if m.inputBandwidth, err = meter.Float64ObservableGauge(
-		"otelcol_datacollector_processor_input_bandwidth",
+		"otelcol_asapcollector_processor_input_bandwidth",
 		metric.WithDescription("Estimated processor input bandwidth."),
 		metric.WithUnit("By/s"),
 	); err != nil {
 		return nil, err
 	}
 	if m.outputBandwidth, err = meter.Float64ObservableGauge(
-		"otelcol_datacollector_processor_output_bandwidth",
+		"otelcol_asapcollector_processor_output_bandwidth",
 		metric.WithDescription("Estimated processor output bandwidth."),
 		metric.WithUnit("By/s"),
 	); err != nil {
 		return nil, err
 	}
 	if m.inputThroughput, err = meter.Float64ObservableGauge(
-		"otelcol_datacollector_processor_input_throughput",
+		"otelcol_asapcollector_processor_input_throughput",
 		metric.WithDescription("Estimated processor input throughput."),
 		metric.WithUnit("{datapoint}/s"),
 	); err != nil {
 		return nil, err
 	}
 	if m.outputThroughput, err = meter.Float64ObservableGauge(
-		"otelcol_datacollector_processor_output_throughput",
+		"otelcol_asapcollector_processor_output_throughput",
 		metric.WithDescription("Estimated processor output throughput."),
 		metric.WithUnit("{datapoint}/s"),
 	); err != nil {
 		return nil, err
 	}
 	if m.cpuUserTime, err = meter.Float64ObservableCounter(
-		"otelcol_datacollector_processor_process_cpu_user_time",
+		"otelcol_asapcollector_processor_process_cpu_user_time",
 		metric.WithDescription("Process user CPU time observed by the processor."),
 		metric.WithUnit("s"),
 	); err != nil {
 		return nil, err
 	}
 	if m.cpuSysTime, err = meter.Float64ObservableCounter(
-		"otelcol_datacollector_processor_process_cpu_system_time",
+		"otelcol_asapcollector_processor_process_cpu_system_time",
 		metric.WithDescription("Process system CPU time observed by the processor."),
 		metric.WithUnit("s"),
 	); err != nil {
 		return nil, err
 	}
 	if m.rssMemory, err = meter.Int64ObservableGauge(
-		"otelcol_datacollector_processor_process_resident_memory",
+		"otelcol_asapcollector_processor_process_resident_memory",
 		metric.WithDescription("Process resident memory observed by the processor."),
 		metric.WithUnit("By"),
 	); err != nil {
 		return nil, err
 	}
 	if m.heapAlloc, err = meter.Int64ObservableGauge(
-		"otelcol_datacollector_processor_heap_alloc",
+		"otelcol_asapcollector_processor_heap_alloc",
 		metric.WithDescription("Current heap allocation observed by the processor."),
 		metric.WithUnit("By"),
 	); err != nil {
 		return nil, err
 	}
 	if m.heapSys, err = meter.Int64ObservableGauge(
-		"otelcol_datacollector_processor_heap_sys",
+		"otelcol_asapcollector_processor_heap_sys",
 		metric.WithDescription("Heap memory obtained from the system as observed by the processor."),
 		metric.WithUnit("By"),
 	); err != nil {
 		return nil, err
 	}
 	if m.goroutines, err = meter.Int64ObservableGauge(
-		"otelcol_datacollector_processor_goroutines",
+		"otelcol_asapcollector_processor_goroutines",
 		metric.WithDescription("Current goroutine count observed by the processor."),
 		metric.WithUnit("{goroutine}"),
 	); err != nil {
 		return nil, err
 	}
 	if m.activeSeries, err = meter.Int64ObservableGauge(
-		"otelcol_datacollector_processor_active_series",
+		"otelcol_asapcollector_processor_active_series",
 		metric.WithDescription("Active processor series or partitions currently retained in memory."),
 		metric.WithUnit("{series}"),
 	); err != nil {

@@ -16,7 +16,7 @@
 #   gorillas3_chunk_bytes_written_total
 #   gorillas3_chunk_points_written_total
 #   gorillas3_s3_put_failures_total
-# plus the standard otelcol_datacollector_processor_* counters from
+# plus the standard otelcol_asapcollector_processor_* counters from
 # the upstream selfmonitor.
 receivers:
   otlp:
