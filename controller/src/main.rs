@@ -67,6 +67,16 @@ struct AppState {
     /// agents' `sketch-runtime::PushExporter`. Read by decision
     /// loops in the replanner.
     runtime_samples:   Arc<runtime_samples::RuntimeSamplesStore>,
+    /// Phase C (MVP v6): shared `BackendClient` for posting
+    /// `StreamingConfig` JSON / YAML to the ASAPQuery-backend's
+    /// `POST /api/v1/streaming-config` endpoint. Phase B had this
+    /// only on the `Replanner`, so the typed L5 stage_split path in
+    /// `handle_plan` could only `info!`-log the backend JSON it
+    /// emitted. Sharing via `Arc` lets `AppState` and `Replanner`
+    /// both push without owning a duplicate client. `None` when
+    /// `CONTROLLER_BACKEND_ENDPOINT` is unset, matching the
+    /// pre-existing fire-and-forget contract.
+    backend_client:    Option<Arc<backend_client::BackendClient>>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -247,6 +257,28 @@ async fn main() {
         }
     }
 
+    // ── Phase C: shared BackendClient ─────────────────────────────────────────
+    // Built once at startup; shared between Replanner (existing path —
+    // pushes the StreamingConfig YAML on every successful replan) and
+    // AppState (Phase C — pushes the typed L5 backend JSON emitted by
+    // `emit_backend_config_json` from `handle_plan`). `None` when
+    // `CONTROLLER_BACKEND_ENDPOINT` is unset preserves the
+    // fire-and-forget "skip silently" contract from Phase B.
+    let backend_client_shared: Option<Arc<backend_client::BackendClient>> =
+        backend_endpoint.as_ref().map(|endpoint| {
+            info!(
+                endpoint = %endpoint,
+                "ASAPQuery-backend StreamingConfig push enabled"
+            );
+            Arc::new(backend_client::BackendClient::new(endpoint.clone()))
+        });
+    if backend_client_shared.is_none() {
+        info!(
+            "ASAPQuery-backend StreamingConfig push disabled \
+             (set CONTROLLER_BACKEND_ENDPOINT=<url> to enable)"
+        );
+    }
+
     // ── Replanner — closes the SP-8 feedback loop ─────────────────────────────
     let replanner = {
         let mut r = Replanner::new(
@@ -257,19 +289,8 @@ async fn main() {
             Arc::clone(&scraper),
             opamp_ep.clone(),
         );
-        if let Some(endpoint) = backend_endpoint.as_ref() {
-            info!(
-                endpoint = %endpoint,
-                "ASAPQuery-backend StreamingConfig push enabled"
-            );
-            r = r.with_backend_client(Arc::new(backend_client::BackendClient::new(
-                endpoint.clone(),
-            )));
-        } else {
-            info!(
-                "ASAPQuery-backend StreamingConfig push disabled \
-                 (set CONTROLLER_BACKEND_ENDPOINT=<url> to enable)"
-            );
+        if let Some(client) = backend_client_shared.as_ref() {
+            r = r.with_backend_client(Arc::clone(client));
         }
         Arc::new(r)
     };
@@ -297,6 +318,7 @@ async fn main() {
         opamp_endpoint:    opamp_ep,
         workload_registry: Arc::clone(&workload_registry),
         runtime_samples:   Arc::clone(&runtime_samples_store),
+        backend_client:    backend_client_shared,
     };
 
     // ── Background tasks ──────────────────────────────────────────────────────
@@ -794,6 +816,16 @@ fn short_hash(s: &str) -> String {
 /// No background tasks are started; OpAMP/scraper hold no real connections.
 #[cfg(test)]
 fn test_app() -> (AppState, axum::Router) {
+    test_app_with_backend(None)
+}
+
+/// Phase C test helper: build an `AppState` whose `backend_client` is
+/// optionally set to a real `BackendClient` pointed at a mock URL. The
+/// `None` arm is the legacy path used by every existing test;
+/// `Some(url)` is the new entry point for Phase C tests that exercise
+/// the typed L5 backend-JSON push.
+#[cfg(test)]
+fn test_app_with_backend(backend_url: Option<String>) -> (AppState, axum::Router) {
     let online_store   = init_online_store();
     let plan_store     = Arc::new(PlanStore::new());
     let workload_store = Arc::new(WorkloadStore::new());
@@ -812,6 +844,8 @@ fn test_app() -> (AppState, axum::Router) {
         Arc::clone(&scraper),
         "ws://ctrl:4320/v1/opamp",
     ));
+    let backend_client = backend_url
+        .map(|u| Arc::new(backend_client::BackendClient::new(u)));
     let state = AppState {
         analyzer:          Arc::new(Analyzer::new()),
         planner,
@@ -824,6 +858,7 @@ fn test_app() -> (AppState, axum::Router) {
         opamp_endpoint:    "ws://ctrl:4320/v1/opamp".into(),
         workload_registry: Arc::new(WorkloadRegistry::empty()),
         runtime_samples:   runtime_samples::RuntimeSamplesStore::new(64),
+        backend_client,
     };
     let router = axum::Router::new()
         .route("/api/v1/plan",                  axum::routing::post(handle_plan))
@@ -858,6 +893,31 @@ mod api_tests {
             "time_window":  "5m",
             "accuracy_sla": 0.01
         })
+    }
+
+    // ── Phase C: AppState.backend_client wiring ───────────────────────────────
+
+    /// Default-constructed AppState (no `CONTROLLER_BACKEND_ENDPOINT`)
+    /// must leave `backend_client` as `None` so the typed L5 backend
+    /// JSON push silently no-ops, matching the Phase B fire-and-forget
+    /// contract.
+    #[test]
+    fn app_state_backend_client_none_by_default() {
+        let (state, _router) = test_app();
+        assert!(state.backend_client.is_none(),
+            "backend_client should default to None when no endpoint is configured");
+    }
+
+    /// When constructed with a backend URL (the production path takes
+    /// it from `CONTROLLER_BACKEND_ENDPOINT`), the field is populated
+    /// and ready for the Phase C `handle_plan` push.
+    #[test]
+    fn app_state_backend_client_some_when_constructed_with_url() {
+        let (state, _router) = test_app_with_backend(
+            Some("http://127.0.0.1:1/api/v1/streaming-config".into()),
+        );
+        let bc = state.backend_client.expect("backend_client must be Some");
+        assert_eq!(bc.endpoint(), "http://127.0.0.1:1/api/v1/streaming-config");
     }
 
     // ── POST /api/v1/plan ─────────────────────────────────────────────────────
