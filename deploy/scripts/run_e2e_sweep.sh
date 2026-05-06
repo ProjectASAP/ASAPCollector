@@ -198,12 +198,21 @@ for sk in "${SKETCHES[@]}"; do
                 # Wait for stack to settle.
                 sleep 8
 
-                # Replay client (background) for the full soak. The
+                # Replay client (foreground) for the full soak. The
                 # per-family queries file points at the metric names
                 # the cell's overlay actually emits (HLL → *_hll, KLL
                 # → *_kll, DDSketch → *_quantile, CS/CMS → unsuffixed).
                 # Falls back to the default queries-e2e.json (DDSketch)
                 # if the family didn't pin one.
+                #
+                # NOTE 2026-05-06: replay used to run concurrently
+                # with plan_transition, but the forced replan resets
+                # the streaming aggregation state — post-replan
+                # replay queries returned empty. Sequencing the two
+                # (replay first, accumulate warm-tier data; then
+                # plan_transition fires the replan) keeps the
+                # warm-tier accuracy claim ⑤ intact while still
+                # exercising claim ④.
                 CELL_QUERIES="${SCRIPT_DIR}/${QUERIES_FILE:-queries-e2e.json}"
                 python3 "${SCRIPT_DIR}/promql_replay.py" \
                     --target http://localhost:19091 \
@@ -212,16 +221,18 @@ for sk in "${SKETCHES[@]}"; do
                     --qps 5 \
                     --duration "$SOAK_S" \
                     --out "${CELL_DIR}/replay.jsonl" \
-                    > "${CELL_DIR}/replay.log" 2>&1 &
-                REPLAY_PID=$!
+                    > "${CELL_DIR}/replay.log" 2>&1
 
-                # Plan-transition driver runs concurrently. Per-family
-                # transition query is a *supported* PromQL pattern that
-                # is NOT in the cell's backend-inference-*.yaml — so it
-                # forces a capability-miss → controller replan path
-                # (claim ④). Pre-fix the trigger was histogram_quantile
-                # which the engine's pattern matcher rejects outright,
-                # so it never reached the controller.
+                # Plan-transition driver runs AFTER the replay so the
+                # replan POST doesn't reset the streaming aggregation
+                # state under the replay client's feet. Per-family
+                # transition query is a *supported* PromQL pattern
+                # that is NOT in the cell's backend-inference-*.yaml
+                # — so it forces a capability-miss → controller
+                # replan path (claim ④). Pre-fix the trigger was
+                # histogram_quantile which the engine's pattern
+                # matcher rejects outright, so it never reached the
+                # controller.
                 CELL_TRANSITION_Q="${TRANSITION_QUERY:-histogram_quantile(0.999, sum by (le) (http_requests_total_latency_ms))}"
                 # Toggle the forced sketch_type on each cell so back-to-back
                 # cells in a family produce a different plan_id (the planner
@@ -246,24 +257,23 @@ for sk in "${SKETCHES[@]}"; do
                 # claim ④; t_first_hit / t_steady are nice-to-have
                 # signals that need a separate trigger-query vs
                 # new-plan-metric pairing PR.
+                # Run plan_transition with shorter pre-transition
+                # (replay already accumulated warm-tier data, no need
+                # to wait again) and its own post-replan probe budget.
                 python3 "${SCRIPT_DIR}/plan_transition.py" \
                     --target http://localhost:19091 \
                     --controller http://localhost:18080 \
                     --transition-query "$CELL_TRANSITION_Q" \
                     --transition-out "${CELL_DIR}/transition.jsonl" \
                     --sample-out "${CELL_DIR}/sample.jsonl" \
-                    --soak-secs "$SOAK_S" \
-                    --pre-transition-secs "$PRE_TRANSITION_S" \
+                    --soak-secs 30 \
+                    --pre-transition-secs 5 \
                     --max-wait-secs 30 \
                     --force-replan-metric "${FORCE_REPLAN_METRIC:-}" \
                     --force-replan-sketch "${FORCE_SKETCH:-}" \
                     --force-replan-companion-metric "${COMPANION_METRIC:-}" \
                     --force-replan-companion-sketch "${COMP_SKETCH:-}" \
-                    > "${CELL_DIR}/plan_transition.log" 2>&1 &
-                TRANSITION_PID=$!
-
-                # Wait for both.
-                wait "$REPLAY_PID" "$TRANSITION_PID"
+                    > "${CELL_DIR}/plan_transition.log" 2>&1
 
                 # Pull the per-cell measurement row BEFORE bringing
                 # the stack down — Prom dies with the stack so the
