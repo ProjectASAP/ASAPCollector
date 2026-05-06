@@ -262,6 +262,27 @@ Per-language parsers, one module each:
 
 Each returns a language-flavored AST type. No sketch awareness.
 
+> **Implementation status (Phase D).** L1 lives in
+> `controller/src/query_language/` with a `Language` trait
+> (`fn id() -> QueryLanguage; fn parse(&str) -> Result<LanguageAst, ParseError>`)
+> + a `LanguageAst` sum type (one variant per `QueryLanguage`). The
+> PromQL backend (`query_language::promql::PromQLLanguage`) wraps the
+> existing `query_parser::{parse_query, parse_query_expr}` entry points
+> — no parsing logic was duplicated; `PromQLAst` bundles the algebra
+> tree (`QueryExpr`) and the flat `ParsedQuery` summary the legacy
+> analyzer expects. The `Sql`, `DataFusion`, and `ElasticDsl`
+> backends are stubbed: they implement `Language` but `parse` returns
+> `ParseError::Unimplemented(...)`. This keeps the type system uniform
+> for the orchestrator while the DC build ships PromQL only. L2 lives
+> in `controller/src/language_logical_plan/`: `LanguageLogicalPlan`
+> mirrors `LanguageAst` with one variant per language; PromQL's L2 IS
+> the existing `QueryExpr` tree (rebadged + paired with a flat
+> `LanguageLogicalPlanSummary` projection). `lower_to_logical_plan`
+> is the L1 → L2 pass; non-PromQL variants surface
+> `LoweringError::UnsupportedLanguage` cleanly. The legacy
+> `query_parser::parse_query` / `parse_query_expr` entry points stay
+> unchanged for back-compat.
+
 ### `core::logical_plan` — Layer 2
 
 A **per-language** algebra tree — one `enum LogicalPlan` per language. Preserves language-specific semantics (PromQL instant vs range vector, SQL window frames, Elastic buckets) that would be lossy to collapse this early. Types are symmetric: `Aggregate { AggFunc }`, `Window`, `Filter`, `Sort`, `Limit`. No sketch names yet.
