@@ -2,6 +2,18 @@
 
 _Last updated: 2026-05-05._
 
+## All-sketches single-agent demo config (2026-05-05, paper §Architecture)
+
+`deploy/configs/sketchcol-agent-allsketches.yaml` (+
+`baseline-allsketches.yml` overlay, README) — one sketchcol agent
+runs all five sketch families concurrently (`[ddsketch, KLL, HLL,
+countsketch, countmin, batch]`) so backend serves all five PromQL
+query families from a single agent. Paper-figure / architecture-demo
+material; pairs with the all-sketch `backend-inference.yaml`. Not
+§5 evaluation data — the per-sketch sweep covers per-family
+resource numbers; this config covers the multi-sketch concurrent
+story.
+
 ## Phase 5 step E done — cross-host envelope + PromQL parity (2026-05-05)
 
 `integration/cross_host_parity/` lands the agent-binary-level parity
