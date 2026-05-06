@@ -113,6 +113,18 @@ services:
       EXPORTER_TARGET: "agent-b:4317"
       EXPORTER_PRODUCER_ID: "p-b-5"
 
+  # ─────────────────────────────── controller workload mount ────────────────
+  # Controller reads the v6 workload manifest at startup so its plan
+  # covers the three canonical query classes from
+  # mvp-v6-workload.yaml. Phase B's emitter consumes the resulting plan.
+
+  controller:
+    environment:
+      CONTROLLER_WORKLOADS: "/etc/asap/mvp-v6-workload.yaml"
+      USE_TYPED_STAGE_SPLIT: "${USE_TYPED_STAGE_SPLIT:-1}"
+    volumes:
+      - ../configs/mvp-v6-workload.yaml:/etc/asap/mvp-v6-workload.yaml:ro
+
   # ─────────────────────────────── 2 agents ──────────────────────────────────
   # Each agent runs the controller-emitted edge config. Until Phase B
   # lands, AGENT_CONFIG defaults to the existing all-sketches overlay
