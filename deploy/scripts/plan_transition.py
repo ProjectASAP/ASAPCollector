@@ -190,6 +190,32 @@ def _parse_mb(s: str) -> float:
 # --- transition timeline -------------------------------------------
 
 
+def post_rollback_request(controller_url: str, metric: str, timeout_s: float = 5.0) -> bool:
+    """POST `/api/v1/plan/<metric>/rollback`. The handler clears
+    the BaselinePlanner cache for this metric (and rolls the
+    plan_store back to a prior version when one exists). The
+    cache reset is what we want here — without it, `POST
+    /api/v1/plan` returns the CACHED plan and our `sketch_type`
+    override is ignored. A 400 (no plan to roll back) is harmless
+    and still resets the planner cache; treat it as success."""
+    req = urllib.request.Request(
+        f"{controller_url.rstrip('/')}/api/v1/plan/{metric}/rollback",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        data=b"",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            return 200 <= resp.getcode() < 300
+    except urllib.error.HTTPError as e:
+        # 400 "no plan to roll back" is fine — the planner-cache
+        # reset is what we needed.
+        return e.code == 400
+    except Exception as e:
+        print(f"plan-transition: rollback POST failed: {e}", file=sys.stderr)
+        return False
+
+
 def post_replan_request(controller_url: str, metric: str, accuracy_sla: float,
                         sketch_hint: str | None = None, timeout_s: float = 5.0) -> bool:
     """POST a fresh `QuerySpec` to the controller's `/api/v1/plan`
@@ -198,6 +224,13 @@ def post_replan_request(controller_url: str, metric: str, accuracy_sla: float,
     already has an active plan, so this is the deterministic way to
     force the plan_id gauge to flip during the e2e cell. Returns
     True on a 2xx response.
+
+    NOTE on the planner cache: `BaselinePlanner` keeps a per-metric
+    cache so repeat POSTs return the same plan unless the cache is
+    invalidated. To force the planner to re-run with our
+    `sketch_type` override taking effect, callers should
+    `post_rollback_request(...)` for the same metric BEFORE this
+    POST (rollback handler resets the planner cache).
 
     Why this exists (post-2026-05-06 fix): the e2e harness runs
     `asap/query-backend:dev` (precompute_engine binary), which
@@ -335,6 +368,11 @@ def main() -> int:
     # changes).
     if args.force_replan_metric:
         sketch = args.force_replan_sketch or None
+        # Rollback first so the planner cache is invalidated and
+        # our sketch_type override is honored on the subsequent
+        # POST. Otherwise BaselinePlanner returns the cached plan
+        # regardless of override.
+        post_rollback_request(args.controller, args.force_replan_metric)
         ok = post_replan_request(
             args.controller,
             args.force_replan_metric,
@@ -348,6 +386,7 @@ def main() -> int:
         # http_requests_total_latency_ms, also touch
         # http_requests_total so both gauges flip. Belt-and-suspenders
         # against the GaugeVec scrape-ordering quirk.
+        post_rollback_request(args.controller, args.force_replan_companion_metric)
         ok2 = post_replan_request(
             args.controller,
             args.force_replan_companion_metric,
