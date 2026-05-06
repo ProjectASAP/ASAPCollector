@@ -304,16 +304,16 @@ run_cell "b1-serf" "${OUT_BASE}/b1-serf" \
     "warm" "no"
 
 # ── B5: Gorilla agent-side → real Prometheus ─────────────────────
-# Note: the existing `sketchcol-agent-b5-gorilla.yaml` writes to
-# disk + doesn't forward; for v4 the same idea applies as B1 — we
-# need a Prometheus-forwarding variant. Authoring effort: reuse
-# B1's PRW exporter shape if the v4 demo run flags B5 as failed.
-# For now the run_only agent can rebuild this cell if needed; the
-# v4 brief lists B5 as one of four baselines. We invoke the
-# stock B5 cell and let `measure_freshness.py` skip the warm path
-# if Prometheus has no data.
+# v4 run-agent fix: the stock `sketchcol-agent-b5-gorilla.yaml`
+# uses `drop_original: true` so Prometheus saw nothing and
+# criterion ⑥ freshness was permanently NaN for B5. The
+# `sketchcol-agent-b5-gorilla-prometheus.yaml` variant flips
+# `drop_original: false` and forwards the raw stream via PRW —
+# mirrors B1's PRW config so the Prometheus query surface is
+# identical across B0/B1/B5. The b5 overlay was also extended
+# to start Prometheus with the remote-write-receiver flag.
 run_cell "b5-gorilla" "${OUT_BASE}/b5-gorilla" \
-    "baseline-b5-gorilla.yml" "sketchcol-agent-b5-gorilla.yaml" \
+    "baseline-b5-gorilla.yml" "sketchcol-agent-b5-gorilla-prometheus.yaml" \
     "http://localhost:${HOST_PROM_PORT}" \
     "http://localhost:${HOST_GATEWAY_OTLP_HTTP}" \
     "http://localhost:${HOST_PROM_PORT}" \
