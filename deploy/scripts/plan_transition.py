@@ -285,6 +285,20 @@ def main() -> int:
         type=float,
         default=0.01,
     )
+    ap.add_argument(
+        "--force-replan-companion-metric",
+        default="",
+        help="Optional second metric to POST a replan for, in case the "
+        "canonical plan_id tracker happens to read the primary metric's "
+        "id first in /metrics scrape order (BTreeMap ordering). The "
+        "companion is typically the OTHER workloads.yaml entry — "
+        "e.g. when primary is http_requests_total_latency_ms, companion "
+        "is http_requests_total.",
+    )
+    ap.add_argument(
+        "--force-replan-companion-sketch",
+        default="",
+    )
     args = ap.parse_args()
 
     if shutil.which("docker") is None:
@@ -312,6 +326,13 @@ def main() -> int:
     # docstring. The query_engine_rust backend would close the loop
     # automatically; this POST is the bridge until the e2e overlay
     # is migrated.
+    #
+    # We POST against `--force-replan-metric` AND, when set,
+    # `--force-replan-companion-metric` (defaults below to a
+    # known-other metric so even when the canonical plan_id
+    # tracker sees this metric's id first in scrape order, the
+    # other metric's plan_id still flips and the canonical
+    # changes).
     if args.force_replan_metric:
         sketch = args.force_replan_sketch or None
         ok = post_replan_request(
@@ -322,6 +343,20 @@ def main() -> int:
         )
         print(f"plan-transition: force-replan POST → {'ok' if ok else 'fail'} "
               f"(metric={args.force_replan_metric}, sketch={sketch})")
+    if args.force_replan_companion_metric:
+        # Companion replan — if our primary metric is
+        # http_requests_total_latency_ms, also touch
+        # http_requests_total so both gauges flip. Belt-and-suspenders
+        # against the GaugeVec scrape-ordering quirk.
+        ok2 = post_replan_request(
+            args.controller,
+            args.force_replan_companion_metric,
+            args.force_replan_accuracy_sla,
+            args.force_replan_companion_sketch or None,
+        )
+        print(f"plan-transition: companion-replan POST → "
+              f"{'ok' if ok2 else 'fail'} "
+              f"(metric={args.force_replan_companion_metric})")
 
     # Watch for plan change.
     t_plan_ready = None

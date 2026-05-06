@@ -61,7 +61,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # (sketch_family, agent_yaml, exporter_agg, kind_filter,
 #  overlay_yaml, queries_file, transition_query,
-#  force_replan_metric, force_replan_sketch_a, force_replan_sketch_b)
+#  force_replan_metric, force_replan_sketch_a, force_replan_sketch_b,
+#  companion_metric, companion_sketch_a, companion_sketch_b)
+#
+# companion_* fields cover the GaugeVec scrape-ordering quirk:
+# `asap_active_plan_id` exposes one (metric, plan_id) tuple per
+# registered workload metric, ordered by metric name. The
+# replay/transition tracker reads the FIRST tuple it sees. When
+# we replan only the cell's primary metric, the alphabetically-
+# first metric's plan_id stays unchanged and the tracker thinks
+# nothing happened. POSTing a companion replan touches the OTHER
+# metric so both id labels flip.
 # kind_filter is the JSON queries entry kind that exercises this
 # sketch — if a query in the suite has a different kind, the
 # accuracy reducer (P8) maps via the `kind` field, not by family
@@ -84,11 +94,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # the per-family backend-inference-*.yaml (so it forces a
 # capability-miss → controller replan → t_plan_ready fires).
 SKETCHES=(
-    "ddsketch:sketchcol-agent-b3-delta.yaml:dd-delta:quantile::queries-e2e.json:quantile_over_time(0.99, http_requests_total_latency_ms_quantile[10m]):http_requests_total_latency_ms:DDSketch:KLL"
-    "kll:sketchcol-agent-kll-direct.yaml:kll-full:quantile:e2e-overlay-kll.yml:queries-e2e-kll.json:quantile_over_time(0.99, http_requests_total_latency_ms_kll[10m]):http_requests_total_latency_ms:KLL:DDSketch"
-    "cs:sketchcol-agent-cs-direct.yaml:cs-delta:topk:e2e-overlay-cs.yml:queries-e2e-cs.json:topk(20, http_requests_total):http_requests_total:CountSketch:CountMinSketch"
-    "cms:sketchcol-agent-cms-direct.yaml:cms-delta:topk:e2e-overlay-cms.yml:queries-e2e-cms.json:topk(20, http_requests_total):http_requests_total:CountMinSketch:CountSketch"
-    "hll:sketchcol-agent-hll-direct.yaml:hll-delta:count_unique:e2e-overlay-hll.yml:queries-e2e-hll.json:count_over_time(http_requests_total_hll[10m]):http_requests_total:HLL:HLL"
+    "ddsketch:sketchcol-agent-b3-delta.yaml:dd-delta:quantile::queries-e2e.json:quantile_over_time(0.99, http_requests_total_latency_ms_quantile[10m]):http_requests_total_latency_ms:DDSketch:KLL:http_requests_total:HLL:CountSketch"
+    "kll:sketchcol-agent-kll-direct.yaml:kll-full:quantile:e2e-overlay-kll.yml:queries-e2e-kll.json:quantile_over_time(0.99, http_requests_total_latency_ms_kll[10m]):http_requests_total_latency_ms:KLL:DDSketch:http_requests_total:HLL:CountSketch"
+    "cs:sketchcol-agent-cs-direct.yaml:cs-delta:topk:e2e-overlay-cs.yml:queries-e2e-cs.json:topk(20, http_requests_total):http_requests_total:CountSketch:CountMinSketch:http_requests_total_latency_ms:DDSketch:KLL"
+    "cms:sketchcol-agent-cms-direct.yaml:cms-delta:topk:e2e-overlay-cms.yml:queries-e2e-cms.json:topk(20, http_requests_total):http_requests_total:CountMinSketch:CountSketch:http_requests_total_latency_ms:DDSketch:KLL"
+    "hll:sketchcol-agent-hll-direct.yaml:hll-delta:count_unique:e2e-overlay-hll.yml:queries-e2e-hll.json:count_over_time(http_requests_total_hll[10m]):http_requests_total:HLL:HLL:http_requests_total_latency_ms:DDSketch:KLL"
 )
 
 NS=(1 10)
@@ -111,7 +121,8 @@ cell_count=0
 cell_skipped=0
 for sk in "${SKETCHES[@]}"; do
     IFS=':' read -r FAM AGENT_YAML AGG KIND OVERLAY_YAML QUERIES_FILE TRANSITION_QUERY \
-        FORCE_REPLAN_METRIC FORCE_REPLAN_SKETCH_A FORCE_REPLAN_SKETCH_B <<< "$sk"
+        FORCE_REPLAN_METRIC FORCE_REPLAN_SKETCH_A FORCE_REPLAN_SKETCH_B \
+        COMPANION_METRIC COMPANION_SKETCH_A COMPANION_SKETCH_B <<< "$sk"
     if [[ "$SKIP_CELLS" != "" && "$FAM" =~ $skip_re ]]; then
         echo "[skip] sketch=$FAM"
         # Each sketch axis spans (NS × SCRAPES_MS × CARDINALITIES) cells.
@@ -201,8 +212,10 @@ for sk in "${SKETCHES[@]}"; do
                 # spec twice produces an identical hash → no plan_id flip).
                 if (( cell_count % 2 == 0 )); then
                     FORCE_SKETCH="$FORCE_REPLAN_SKETCH_A"
+                    COMP_SKETCH="$COMPANION_SKETCH_A"
                 else
                     FORCE_SKETCH="$FORCE_REPLAN_SKETCH_B"
+                    COMP_SKETCH="$COMPANION_SKETCH_B"
                 fi
                 python3 "${SCRIPT_DIR}/plan_transition.py" \
                     --target http://localhost:19091 \
@@ -214,6 +227,8 @@ for sk in "${SKETCHES[@]}"; do
                     --pre-transition-secs "$PRE_TRANSITION_S" \
                     --force-replan-metric "${FORCE_REPLAN_METRIC:-}" \
                     --force-replan-sketch "${FORCE_SKETCH:-}" \
+                    --force-replan-companion-metric "${COMPANION_METRIC:-}" \
+                    --force-replan-companion-sketch "${COMP_SKETCH:-}" \
                     > "${CELL_DIR}/plan_transition.log" 2>&1 &
                 TRANSITION_PID=$!
 
