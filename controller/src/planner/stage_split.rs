@@ -651,6 +651,53 @@ fn collect_label_filters_into(pred: &ScalarExpr, out: &mut Vec<String>) {
     }
 }
 
+// ── Phase E: typed L5 call path (opt-in, additive) ────────────────────────────
+
+/// Env-var that opts the planner into the typed L5 stage_split path
+/// (`crate::stage_split::StageAllocator` + `ThreeStageEmitter`).
+/// Additive — when unset, the existing untyped `split_expr_by_stage`
+/// flow runs unchanged. Mirror of `ENV_USE_TYPED_SKETCH_ALGEBRA` from
+/// Phase C.
+///
+/// Set `USE_TYPED_STAGE_SPLIT=1` to opt in.
+#[allow(dead_code)]
+pub const ENV_USE_TYPED_STAGE_SPLIT: &str = "USE_TYPED_STAGE_SPLIT";
+
+/// Whether the typed L5 stage_split path is enabled for this process.
+/// Reads the env var once per call (cheap; called per `plan()`
+/// invocation at most). Phase E is additive — both code paths produce
+/// per-stage descriptions, but the typed path's structural output is
+/// `crate::stage_split::StageConfig` (sketched against design.md §6),
+/// while the legacy path is the existing `StagedPlan` shape.
+#[allow(dead_code)]
+pub fn typed_stage_split_enabled() -> bool {
+    matches!(
+        std::env::var(ENV_USE_TYPED_STAGE_SPLIT).as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+/// Run the typed L5 path on a Phase-C-bound `SketchExpr` DAG. Returns
+/// the per-stage [`crate::stage_split::StageConfig`] map for the DC
+/// lifecycle topology.
+///
+/// Returns `None` when the typed path errors out (unsupported topology
+/// shape, unresolved Ref, empty backend) — the caller should then fall
+/// back to the legacy `split_expr_by_stage` output. Additive — no
+/// existing call site invokes this. See `ENV_USE_TYPED_STAGE_SPLIT`
+/// for the opt-in gate.
+#[allow(dead_code)]
+pub fn split_typed_three_stage(
+    expr: &crate::sketch_algebra::SketchExpr,
+) -> Option<std::collections::HashMap<crate::stage_split::StageId, crate::stage_split::StageConfig>>
+{
+    use crate::stage_split::{
+        Emitter, StageAllocator, ThreeStageEmitter, Topology,
+    };
+    let dag = StageAllocator.allocate(expr, Topology::ThreeStage).ok()?;
+    ThreeStageEmitter.emit_per_stage(&dag).ok()
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -944,5 +991,58 @@ mod tests {
         let matchers = scalar_to_label_matchers(&pred);
         assert!(matchers.contains(&"job=\"api\"".to_string()));
         assert!(matchers.contains(&"env!=\"dev\"".to_string()));
+    }
+
+    // ── Phase E: typed L5 opt-in path ──────────────────────────────────────
+
+    #[test]
+    fn typed_three_stage_path_returns_three_configs() {
+        use crate::intent_algebra::schema::{Column, DataType};
+        use crate::intent_algebra::{
+            LabelFilter, QueryExpr as L3QE, Schema, Source as L3Source, WindowKind,
+        };
+        use crate::sketch_algebra::params::{KllParams, SketchKind, SketchParams as L4Params};
+        use crate::sketch_algebra::sketch_expr::{EstimateOp, SketchExpr};
+        use crate::stage_split::StageId;
+        let scan = L3QE::Scan {
+            source: L3Source::TimeSeries {
+                metric: "http_request_duration_seconds".into(),
+            },
+            label_filters: vec![LabelFilter {
+                label: "service".into(),
+                equals: "api".into(),
+            }],
+            schema: Schema::with_time_index(
+                vec![
+                    Column {
+                        name: "ts".into(),
+                        dtype: DataType::Timestamp,
+                        nullable: false,
+                    },
+                    Column {
+                        name: "value".into(),
+                        dtype: DataType::Float64,
+                        nullable: false,
+                    },
+                ],
+                0,
+                vec![vec![0]],
+            ),
+        };
+        let windowed = L3QE::Window {
+            kind: WindowKind::Sliding,
+            size: std::time::Duration::from_secs(300),
+            slide: None,
+            child: Box::new(scan),
+        };
+        let l4 = SketchExpr::estimate_over_agg(
+            EstimateOp::Quantile { q: 0.99 },
+            SketchKind::Kll,
+            L4Params::Kll(KllParams { k: 200 }),
+            windowed,
+        );
+        let configs = super::split_typed_three_stage(&l4).expect("typed path produces output");
+        assert!(configs.contains_key(&StageId::Edge));
+        assert!(configs.contains_key(&StageId::Backend));
     }
 }

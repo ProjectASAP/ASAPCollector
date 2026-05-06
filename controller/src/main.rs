@@ -14,6 +14,7 @@ mod query_parser;
 mod replan;
 mod runtime_samples;
 mod sketch_algebra;
+mod stage_split;
 mod store;
 mod types;
 mod types_v2;
