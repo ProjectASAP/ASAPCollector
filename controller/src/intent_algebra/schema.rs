@@ -140,6 +140,71 @@ impl Schema {
     }
 }
 
+// ── CSE legality (the load-bearing consumer of `unique_keys`) ────────────────
+//
+// Phase F per `controller/docs/design.md` §6 Schema flow + the batched-
+// queries example (§6 line ~1320):
+//
+//   "CSE legality leans on `Schema::unique_keys` (§6 Schema flow): two
+//    `QueryExpr::Ref` consumers can share a producer only when its
+//    output schema is provably stable across reads — the unique-key
+//    metadata is what lets the deduper assert that without re-running
+//    the producer's logic."
+//
+// `cse_reuse_is_legal` is the gatekeeper. The workload-level CSE pass
+// (`intent_algebra::cse::dedupe_subtrees`) consults it before emitting
+// a `LetBinding` to share a producer between ≥2 `Ref` consumers.
+
+use thiserror::Error;
+
+/// Errors returned by [`cse_reuse_is_legal`] when shared-producer reuse
+/// would violate the design's stability invariant.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum CseError {
+    /// Producer schema lacks any `unique_keys` set — row identity is
+    /// not provably stable across reads, so two `Ref` consumers cannot
+    /// safely share it. The deduper falls back to per-consumer
+    /// recomputation. Per design.md §6 line ~1356.
+    #[error(
+        "shared-producer CSE refused: producer schema has no unique_keys \
+         (design.md §6 schema-flow — without a provable unique key the \
+         deduper cannot assert row identity across reads)"
+    )]
+    NoUniqueKeys,
+    /// Trivially-callable case: only one consumer means no reuse to
+    /// gate. Returned so the caller can short-circuit instead of
+    /// emitting a degenerate `LetBinding`.
+    #[error("CSE not applicable: {0} consumer(s) — need ≥ 2 for shared-producer reuse")]
+    InsufficientConsumers(usize),
+}
+
+/// Two `QueryExpr::Ref` nodes can share a producer (same `LetBinding`)
+/// only when the producer's output schema has stable per-row identity —
+/// i.e. `Schema::unique_keys` is non-empty. This is the gatekeeper:
+/// returns `Ok(())` if shared-producer reuse is legal, otherwise `Err`.
+///
+/// Per design.md §6 line ~1356 — `unique_keys` is what makes CSE
+/// provably correct. The deduper consults this before emitting a
+/// `LetBinding`, and `CostModel::workload_cost` only credits a shared
+/// binding when this gate has fired green.
+///
+/// `consumer_count` is the number of `QueryExpr::Ref { name }` sites the
+/// deduper has identified for the candidate binding. Single-consumer
+/// cases short-circuit with `InsufficientConsumers` — a `LetBinding`
+/// with one `Ref` is just a no-op alias and shouldn't be hoisted.
+pub fn cse_reuse_is_legal(
+    producer_schema: &Schema,
+    consumer_count: usize,
+) -> Result<(), CseError> {
+    if consumer_count < 2 {
+        return Err(CseError::InsufficientConsumers(consumer_count));
+    }
+    if !producer_schema.has_unique_key() {
+        return Err(CseError::NoUniqueKeys);
+    }
+    Ok(())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -153,6 +218,74 @@ mod tests {
             nullable: false,
         }
     }
+
+    /// `cse_reuse_is_legal` accepts a producer schema with at least one
+    /// `unique_keys` set + ≥2 consumers. This is the design.md §6
+    /// "load-bearing" green path.
+    #[test]
+    fn cse_reuse_legal_when_unique_keys_set() {
+        let producer = Schema::with_time_index(
+            vec![
+                col("ts", DataType::Timestamp),
+                col("service", DataType::Utf8),
+                col("value", DataType::Float64),
+            ],
+            0,
+            vec![vec![0, 1]],
+        );
+        assert_eq!(cse_reuse_is_legal(&producer, 2), Ok(()));
+        assert_eq!(cse_reuse_is_legal(&producer, 5), Ok(()));
+    }
+
+    /// Schema without `unique_keys` is the conservative-default case —
+    /// the deduper must refuse to share it. Pins design.md §6 line
+    /// ~1356 ("Without it, the deduper has to be conservative and reuse
+    /// drops on the floor").
+    #[test]
+    fn cse_reuse_illegal_when_unique_keys_empty() {
+        let producer = Schema::new(vec![
+            col("a", DataType::Int64),
+            col("b", DataType::Float64),
+        ]);
+        assert_eq!(
+            cse_reuse_is_legal(&producer, 2),
+            Err(CseError::NoUniqueKeys)
+        );
+    }
+
+    /// Single-consumer case is short-circuited — no `LetBinding` should
+    /// be emitted for one `Ref` because there's no reuse to credit.
+    #[test]
+    fn cse_reuse_rejects_single_consumer() {
+        let producer = Schema::with_time_index(
+            vec![col("ts", DataType::Timestamp), col("v", DataType::Float64)],
+            0,
+            vec![vec![0]],
+        );
+        assert_eq!(
+            cse_reuse_is_legal(&producer, 1),
+            Err(CseError::InsufficientConsumers(1))
+        );
+        assert_eq!(
+            cse_reuse_is_legal(&producer, 0),
+            Err(CseError::InsufficientConsumers(0))
+        );
+    }
+
+    /// Empty `unique_keys` rejection takes precedence over the consumer
+    /// count check only when both pass — but here we verify the
+    /// insufficient-consumers branch fires first (a defensive ordering
+    /// so callers see the clearer error when they get the call wrong).
+    #[test]
+    fn cse_reuse_consumer_check_precedes_unique_key_check() {
+        let producer = Schema::new(vec![col("a", DataType::Int64)]);
+        // Both conditions fail; consumer check is reported.
+        assert_eq!(
+            cse_reuse_is_legal(&producer, 1),
+            Err(CseError::InsufficientConsumers(1))
+        );
+    }
+
 
     #[test]
     fn schema_new_has_no_time_or_unique_key() {
