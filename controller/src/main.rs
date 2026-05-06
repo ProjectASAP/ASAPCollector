@@ -1294,6 +1294,12 @@ mod api_tests {
             delta_threshold:      0.0,
             enable_series_id:     false,
             series_id_ttl_secs:   300,
+            // This test asserts on `doc["exporters"]["prometheus"]`
+            // (line ~1326). Keep the test semantics by pinning the
+            // sink to the legacy prometheus exporter.
+            data_sink:            types::AgentDataSink::PrometheusScrape {
+                endpoint: "0.0.0.0:8889".to_string(),
+            },
         };
         let yaml = generate_agent_config(&cfg, endpoint).unwrap();
 
