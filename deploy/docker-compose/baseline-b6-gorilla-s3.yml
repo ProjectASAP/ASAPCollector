@@ -31,18 +31,15 @@ services:
     labels:
       asap.baseline: "b6-gorilla-s3"
 
-  # Agent runs all five sketches + gorillas3 simultaneously at
-  # cardinality=10000 / 1 Hz scrape — the default 1024 MiB limit
-  # in `agents-N1.yml` is below the working set and trips
-  # OOMKilled (exit 137) before the first 60 s window closes
-  # (gorillas3 never gets to flush a chunk to MinIO). Bump the
-  # ceiling for the MVP demo so the cold-tier path actually runs.
-  agent-1:
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 4096M
+  # v3 (issue #46 multi-agent / cardinality redesign): the v2 4 GiB
+  # mem_limit override on agent-1 was needed because v2 ran a single
+  # agent at cardinality=10000 with all-five-sketches, which OOM'd
+  # inside the default 1 GiB ceiling. v3 redistributes the working
+  # set across N=10 agents at cardinality=1000 each — the realistic
+  # deployment shape — so the per-agent footprint fits inside the
+  # 1 GiB ceiling `agents-N10.yml` ships with. The override has
+  # been dropped; if a workload trips it again, prefer scaling N up
+  # rather than bumping the per-agent ceiling.
 
   # Additive bucket-seed for the Gorilla-S3 cold tier. base.yml's
   # `minio-setup` only creates the `raw` bucket (used by the
@@ -74,6 +71,16 @@ services:
   # and registers a `GorillaQueryEngine` on the capability router
   # with `data_source_id=gorilla_archive`. Bucket + region are
   # required; the rest fall back to defaults.
+  #
+  # v3 also mounts `backend-storage-routing.yaml` into the backend so
+  # the HTTP query handler consults the per-metric routing table on
+  # every request. Without this, the handler would fall back to
+  # `StreamingConfig::storage_backend()` (always `SketchWarmTier` for
+  # YAML-loaded configs) and silently bypass the EngineRouter — the
+  # v2 criterion ⑤ failure mode. The `ASAP_BACKEND_STORAGE_ROUTING`
+  # env var on the backend's CLI flag points at the mounted file;
+  # the binary handles both the `query_engine_rust` and the
+  # deployed `precompute_engine` entrypoints.
   backend:
     environment:
       ASAP_GORILLA_S3_ENDPOINT: "http://minio:9000"
@@ -84,3 +91,6 @@ services:
       ASAP_GORILLA_S3_TENANT: "default"
       ASAP_GORILLA_S3_USE_SSL: "false"
       ASAP_GORILLA_S3_PREFIX_TEMPLATE: "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
+      ASAP_BACKEND_STORAGE_ROUTING: "/etc/asap/backend-storage-routing.yaml"
+    volumes:
+      - ../configs/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro
