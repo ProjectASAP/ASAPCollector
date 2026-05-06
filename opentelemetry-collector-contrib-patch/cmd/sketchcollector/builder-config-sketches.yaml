@@ -77,6 +77,13 @@ processors:
     path: ./processor/countminsketchmergeprocessor
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchmergeprocessor v0.141.0
     path: ./processor/countsketchmergeprocessor
+  # Gorilla-S3 cold-engine processor (Phase 2). Encodes raw Gauge/Sum
+  # samples with Gorilla XOR-delta on a 60s tumbling window and PUTs
+  # the resulting ASGB chunks to MinIO/S3. `drop_original: true` keeps
+  # the agent's OTLP forward path bytes-free; selfmonitor gauges
+  # publish chunks_written / put_failures for the cold-tier dashboard.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/gorillas3processor v0.141.0
+    path: ./processor/gorillas3processor
 
 receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.141.0
