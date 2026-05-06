@@ -30,14 +30,33 @@
 
 default: sketch_warm_tier
 metrics:
-  # The MVP demo's ad-hoc cold-fallback probe is `count(http_requests_total)`,
-  # a PromQL shape the warm-tier inference table doesn't cover.
-  # Routing it to the Gorilla-S3 archive engine makes the response
-  # carry `data_source: gorilla_archive`, which is the byte-comparable
-  # signal criterion ⑤ demands.
+  # The MVP demo's ad-hoc cold-fallback probe is
+  # `sum_over_time(http_requests_total[1m])` (or `count(...)`),
+  # PromQL shapes the GorillaQueryEngine planner supports.
+  # Routing here makes the response carry
+  # `data_source: gorilla_archive`, the byte-comparable signal
+  # criterion ⑤ demands.
   http_requests_total: gorilla_s3_archive
 
-  # The replay suite's quantile probes hit the latency-quantile
-  # variant; route it to the same cold archive so the v3 demo can
-  # surface end-to-end Gorilla dispatch on quantile shapes too.
-  http_requests_total_latency_ms_quantile: gorilla_s3_archive
+  # v4: revert the v3 route for the latency-quantile metric
+  # back to the warm tier. v3 routed it through gorilla_s3_archive
+  # too, which made every replay-suite quantile query land in the
+  # cold engine. The cold engine returned NaN for the empty/partial
+  # 60s window (gorillas3 writes 60s chunks; the first chunk is
+  # barely landing by query time), so the accuracy reducer couldn't
+  # compute relative error and criterion ④ surfaced as UNKNOWN. v4
+  # keeps the quantile metric on the warm tier (DDSketch / KLL
+  # accumulators served by SimpleEngine) so the reducer gets real
+  # numbers; criterion ⑤ still verifies cold-archive dispatch via
+  # `http_requests_total`.
+  http_requests_total_latency_ms_quantile: sketch_warm_tier
+
+  # v4 freshness probes (criterion ⑥). Two synthetic gauges emitted
+  # by `measure_freshness.py` push to agent-1's OTLP HTTP receiver;
+  # their values encode the unix_ts_ms at generation. The probe polls
+  # the backend for `last_over_time(<metric>[10s])` every 100 ms and
+  # records (observation_time - observed_value) as Δ. Splitting the
+  # metric name lets the routing table dispatch each probe down its
+  # own engine path so the freshness number is path-isolated.
+  http_freshness_probe_warm: sketch_warm_tier
+  http_freshness_probe_archive: gorilla_s3_archive
