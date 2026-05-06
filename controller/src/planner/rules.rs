@@ -5,6 +5,129 @@ use crate::types::*;
 
 pub const DEFAULT_VALID_FOR: Duration = Duration::from_secs(10 * 60);
 
+/// Env-var that opts the planner into the typed L4 binding path
+/// (`sketch_algebra::bind_query_expr`). Additive — when unset, the
+/// existing untyped `algebra::directory::sketch_type_for_agg` path runs
+/// unchanged. Phase E (stage_split refactor) is the natural migration
+/// point at which the typed path becomes the only path.
+///
+/// Set `USE_TYPED_SKETCH_ALGEBRA=1` to opt in.
+#[allow(dead_code)]
+pub const ENV_USE_TYPED_SKETCH_ALGEBRA: &str = "USE_TYPED_SKETCH_ALGEBRA";
+
+/// Whether the typed L4 binding path is enabled for this process.
+/// Reads the env var once per call (cheap; called per `plan()` invocation
+/// at most). Phase C is additive — both code paths produce the same
+/// `CollectionPlan` shape; the typed path is a *parallel* binding that
+/// the planner can compare against the legacy path during development.
+#[allow(dead_code)]
+pub fn typed_sketch_algebra_enabled() -> bool {
+    matches!(
+        std::env::var(ENV_USE_TYPED_SKETCH_ALGEBRA).as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+/// Bind a `QueryWorkload` into the typed L4 [`crate::sketch_algebra::SketchExpr`]
+/// IR, when callers want to inspect the typed binding alongside the
+/// legacy `CollectionPlan` output.
+///
+/// Lowers the workload's first aggregation intent into an `AggIntent`
+/// (Phase C scope: single-intent workloads — workloads with multiple
+/// intents fall through to `None`), then calls
+/// `sketch_algebra::bind_query_expr` with the workload's accuracy SLA
+/// translated through `AccuracyTarget::from_legacy_accuracy_sla`.
+///
+/// Returns `None` when the workload shape is not yet supported by the
+/// typed path (multi-intent, raw-required, or no aggregations) — the
+/// caller should then fall back to the legacy `plan()` output.
+///
+/// Additive — no existing call site invokes this. See module-level
+/// `ENV_USE_TYPED_SKETCH_ALGEBRA` for the opt-in gate.
+#[allow(dead_code)]
+pub fn bind_workload_typed(
+    w: &QueryWorkload,
+) -> Option<crate::sketch_algebra::SketchExpr> {
+    use crate::intent_algebra::{AggIntent as L3AggIntent, QueryExpr, Schema, Source, WindowKind};
+    use crate::intent_algebra::schema::{Column, DataType};
+    use crate::sketch_algebra::bind_query_expr;
+    use crate::types_v2::AccuracyTarget;
+
+    if w.exact_required {
+        return None;
+    }
+    if w.aggregations.len() != 1 {
+        return None;
+    }
+
+    // QueryWorkload::accuracy_sla in the legacy planner is interpreted
+    // directly as the ε bound (e.g. `0.01` ⇒ ε=0.01). The L3/L4 typed
+    // form is `AccuracyTarget::Epsilon(eps)` with the same semantic.
+    let accuracy = if w.accuracy_sla > 0.0 {
+        AccuracyTarget::Epsilon(w.accuracy_sla)
+    } else {
+        AccuracyTarget::Exact
+    };
+    let intent_accuracy = accuracy.clone();
+
+    let intent = match w.aggregations[0] {
+        AggType::Quantile => L3AggIntent::Quantile {
+            q: w.quantiles.first().copied().unwrap_or(0.99),
+            accuracy: intent_accuracy,
+        },
+        AggType::Cardinality => L3AggIntent::Cardinality {
+            accuracy: intent_accuracy,
+        },
+        AggType::Frequency => L3AggIntent::Frequency {
+            accuracy: intent_accuracy,
+        },
+    };
+
+    let scan = QueryExpr::Scan {
+        source: Source::TimeSeries {
+            metric: w.metric_name.clone(),
+        },
+        label_filters: w
+            .label_filters
+            .iter()
+            .map(|(k, v)| crate::intent_algebra::LabelFilter {
+                label: k.clone(),
+                equals: v.clone(),
+            })
+            .collect(),
+        schema: Schema::with_time_index(
+            vec![
+                Column {
+                    name: "ts".into(),
+                    dtype: DataType::Timestamp,
+                    nullable: false,
+                },
+                Column {
+                    name: "value".into(),
+                    dtype: DataType::Float64,
+                    nullable: false,
+                },
+            ],
+            0,
+            vec![vec![0]],
+        ),
+    };
+    let windowed = QueryExpr::Window {
+        kind: WindowKind::Sliding,
+        size: w.time_window,
+        slide: None,
+        child: Box::new(scan),
+    };
+    let aggregate = QueryExpr::Aggregate {
+        by: vec![],
+        aggs: vec![intent],
+        having: None,
+        child: Box::new(windowed),
+    };
+
+    bind_query_expr(&aggregate, accuracy).ok()
+}
+
 pub struct RulesPlanner {
     pub valid_for: Duration,
     pub sketch_defaults: SketchDefaults,
