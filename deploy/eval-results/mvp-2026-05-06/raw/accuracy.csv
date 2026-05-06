@@ -1,0 +1,145 @@
+cell,kind,query,t,duration_ms,plan_id,truth,answer,error,recall,n_truth_samples
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:21.715935Z,55.70109997643158,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:21.862673Z,2.3200889700092375,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:22.062835Z,2.3949400056153536,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:23.321056Z,1060.5369490222074,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:23.322973Z,1.808827044442296,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:23.523059Z,1.8097780412063003,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:23.723712Z,2.39178299671039,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:23.923465Z,2.0677740103565156,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:25.210852Z,1089.3618990085088,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:25.212213Z,1.2691100127995014,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:25.414210Z,3.1388200004585087,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:25.750032Z,138.83912505116314,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:25.813243Z,1.9916290184482932,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:27.160288Z,1148.9441369776614,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:27.173895Z,13.505672046449035,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:27.362699Z,2.2005540085956454,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:27.562587Z,1.996129984036088,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:27.762393Z,1.722543966025114,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:29.059589Z,1098.8305589999072,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:29.061023Z,1.3530689757317305,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:29.262178Z,2.3922050022520125,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:29.462456Z,2.591359952930361,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:29.726957Z,67.02237902209163,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:30.879322Z,1019.2885740543716,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:30.881249Z,1.8276619957759976,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:31.081875Z,2.336931007448584,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:31.281740Z,2.023120003286749,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:31.481315Z,1.5287690330296755,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:32.794803Z,1114.944242988713,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:32.813782Z,18.881005002185702,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:32.997579Z,2.5456129806116223,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:33.198020Z,2.684244012925774,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:33.397922Z,2.3240349837578833,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:34.782209Z,1186.516176967416,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:34.783521Z,1.2301959795877337,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:34.984730Z,2.3176440154202282,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:35.185169Z,2.6360639603808522,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:35.384909Z,2.2948109544813633,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:36.815912Z,1233.2152660237625,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:36.840822Z,24.810911039821804,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:37.025916Z,9.798080020118505,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:37.218849Z,2.6298920274712145,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:37.417437Z,1.2035660329274833,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:38.747237Z,1130.8625459787436,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:38.748722Z,1.3955169706605375,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:38.950232Z,2.7427139575593174,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:39.150226Z,2.6226380141451955,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:39.350040Z,2.3559959954582155,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:40.653149Z,1105.3967910120264,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:40.702190Z,48.93402801826596,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:40.857355Z,3.976146981585771,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:41.055281Z,1.8364270217716694,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:41.256280Z,2.719139971304685,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:42.573418Z,1119.8055850109085,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:42.627493Z,53.97791601717472,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:42.776173Z,2.5145550025627017,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:42.975847Z,2.145220001693815,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:43.176448Z,2.6437880005687475,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:44.762815Z,1388.9731999952346,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:44.764377Z,1.4710199902765453,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:44.965402Z,2.3730979883112013,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:45.165993Z,2.8478140011429787,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:45.365617Z,2.3956020013429224,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:47.207511Z,1644.2128460039385,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:47.209003Z,1.3944259844720364,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:47.409835Z,2.1326260175555944,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:47.719456Z,111.67271999875084,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:47.810147Z,2.266247000079602,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:49.534380Z,1526.4228470041417,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:49.535793Z,1.3216279912739992,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:49.736719Z,2.121313998941332,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:49.936857Z,2.192038984503597,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:50.137374Z,2.5977720506489277,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:51.622253Z,1287.4021410243586,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:51.674281Z,51.92611104575917,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:51.825136Z,2.6488580042496324,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:52.024770Z,2.2451780387200415,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:52.225142Z,2.538219967391342,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:53.711050Z,1288.3759149699472,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:53.737213Z,26.06483199633658,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:53.913550Z,2.2787610068917274,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:54.123095Z,11.718535039108247,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:54.313968Z,2.52507597906515,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:55.845991Z,1334.491916000843,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:55.876423Z,30.315455980598927,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:56.048800Z,2.5464550126343966,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:56.248596Z,2.2601669770665467,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:56.447537Z,1.1624190374277532,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:56:57.931867Z,1285.3989680297673,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:56:57.933440Z,1.4765799860469997,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:58.134649Z,2.5357550475746393,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:56:58.509514Z,177.33662901446223,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:56:58.533415Z,1.1919550015591085,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:00.131811Z,1399.4855530327186,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:00.133214Z,1.314185035880655,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:00.334147Z,2.1389579633250833,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:00.534154Z,2.0436689956113696,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:00.734123Z,1.9522560178302228,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:02.183105Z,1250.8645780035295,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:02.350564Z,167.35808900557458,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:02.385830Z,2.5047060335054994,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:02.744230Z,160.81680095521733,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:02.785428Z,1.9622539984993637,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:04.394649Z,1411.0858149942942,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:04.396360Z,1.6128169954754412,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:04.712777Z,117.89527500513941,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:04.796510Z,1.5831909840926528,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:04.997858Z,2.811023034155369,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:06.509937Z,1314.7821880411357,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:06.511428Z,1.3966690166853368,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:06.736215Z,26.07972000259906,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:06.912533Z,2.290902950335294,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:07.112730Z,2.386673993896693,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:08.732281Z,1421.8704639934003,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:08.902253Z,169.87728199455887,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:08.934309Z,1.8540809978730977,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:09.134306Z,1.7412389861419797,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:09.334870Z,2.2208429872989655,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:10.907765Z,1375.032301992178,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:10.909570Z,1.6960349748842418,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:11.110505Z,2.5024130009114742,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:11.310263Z,2.2000319440849125,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:11.509597Z,1.480187987908721,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:13.224807Z,1516.6079509654082,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:13.226293Z,1.396309002302587,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:13.427196Z,2.181639021728188,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:13.718715Z,93.62221701303497,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:13.828314Z,3.12891200883314,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:15.556049Z,1530.764890019782,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:15.557907Z,1.747460977640003,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:15.758550Z,2.2779990104027092,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:15.958835Z,2.467096026521176,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:16.158617Z,2.179472998250276,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:17.928230Z,1571.7192299780436,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:17.929883Z,1.555750030092895,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:18.130523Z,2.0766910165548325,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:18.330787Z,2.2566289990209043,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:18.530205Z,1.595395035110414,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:20.504469Z,1775.76615504222,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929
+raw,topk,"topk(10, http_requests_total)",2026-05-06T16:57:20.622517Z,117.9414420039393,p879bcc3fb0a19fea,"[""{\""node\"": \""n01\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z1\""}"", ""{\""node\"": \""n02\"", \""pod\"": \""pod-0",[],,0.0000,1519929
+raw,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:20.829229Z,124.57059603184462,p879bcc3fb0a19fea,102.417852,,,,1519651
+raw,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:57:20.906645Z,1.9215680076740682,p879bcc3fb0a19fea,20.085299,,,,1519651
+raw,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:57:21.106799Z,1.9963289960287511,p879bcc3fb0a19fea,1519929.000000,,,,1519929
+raw,count_unique,count(http_requests_total),2026-05-06T16:57:22.775610Z,1470.7184059661813,p879bcc3fb0a19fea,10000,10000,0.000000,,1519929

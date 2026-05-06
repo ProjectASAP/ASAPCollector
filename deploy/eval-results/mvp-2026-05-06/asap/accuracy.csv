@@ -1,0 +1,145 @@
+cell,kind,query,t,duration_ms,plan_id,truth,answer,error,recall,n_truth_samples
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:07.030623Z,24.43796000443399,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:07.207949Z,1.681295980233699,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:07.408433Z,2.0958069944754243,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:08.702394Z,1095.9806509781629,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:08.703865Z,1.3781050220131874,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:08.904603Z,2.033710014075041,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:09.105336Z,2.64415901619941,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:09.305334Z,2.566203009337187,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:10.591112Z,1088.3113489835523,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:10.592611Z,1.41805101884529,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:10.793603Z,2.3142669815570116,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:10.992844Z,1.4929220196790993,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:11.194228Z,2.787830017041415,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:12.491523Z,1099.8955139657483,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:12.493067Z,1.4371760189533234,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:12.694265Z,2.52232002094388,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:12.893289Z,1.5173570136539638,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:13.093763Z,1.9035349832847714,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:14.429479Z,1137.5576260033995,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:14.668926Z,239.35229500057176,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:14.670411Z,1.3930730056017637,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:14.872329Z,3.2025810214690864,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:15.071547Z,2.3386829998344183,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:16.213290Z,943.9887170447037,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:16.361670Z,148.28106499044225,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:16.415655Z,2.156700997147709,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:16.615468Z,1.8962519825436175,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:16.816190Z,2.5133229792118073,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:18.093360Z,1079.6270539867692,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:18.212469Z,119.01308904634789,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:18.296562Z,2.992014051415026,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:18.497020Z,3.1529469997622073,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:18.696457Z,2.4671959690749645,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:19.927866Z,1033.827065024525,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:19.929295Z,1.3353449758142233,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:20.130605Z,2.4903499870561063,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:20.331251Z,3.0861200066283345,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:20.530315Z,2.08134000422433,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:21.771837Z,1043.5264480183832,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:21.884927Z,112.99364396836609,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:21.973894Z,1.8777869991026819,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:22.174732Z,2.61696899542585,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:22.374324Z,2.165807003621012,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:23.634688Z,1062.457458989229,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:23.636142Z,1.365702017210424,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:23.836825Z,1.9680060213431716,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:24.037134Z,2.1663999650627375,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:24.237246Z,2.200374030508101,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:25.636741Z,1201.6288579907268,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:25.674036Z,37.19721897505224,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:25.840141Z,3.2040640362538397,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:26.039171Z,2.15747399488464,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:26.239832Z,2.7104640030302107,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:27.591114Z,1153.9274179958738,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:27.593396Z,2.1881309803575277,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:27.794210Z,2.9293359839357436,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:27.993311Z,1.9553220481611788,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:28.194179Z,2.786217024549842,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:29.608536Z,1217.0558390207589,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:29.609970Z,1.3488190015777946,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:29.810674Z,1.9721239805221558,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:30.010294Z,1.5101939789019525,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:30.210518Z,1.6586040146648884,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:31.547860Z,1138.9057110063732,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:31.689925Z,141.9725840096362,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:31.750110Z,2.0704289781861007,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:31.964384Z,16.258866991847754,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:32.150723Z,2.468759019393474,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:33.434984Z,1086.6823560209014,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:33.436405Z,1.3322890154086053,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:33.637471Z,2.2552270093001425,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:33.837282Z,1.982231973670423,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:34.036775Z,1.4045950374566019,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:35.507286Z,1271.825706004165,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:35.508889Z,1.4893650077283382,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:35.710083Z,2.5621550157666206,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:35.909662Z,2.066040993668139,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:36.109922Z,2.234238025266677,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:37.507974Z,1200.237915967591,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:37.509354Z,1.2932950048707426,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:37.711383Z,3.175648977048695,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:37.910371Z,2.1189399994909763,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:38.110942Z,2.5895360158756375,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:39.574861Z,1266.4895170019008,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:39.576304Z,1.3511739671230316,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:39.776287Z,1.256675983313471,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:39.976233Z,1.1281540500931442,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:40.176248Z,1.0711170034483075,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:41.566305Z,1191.052258014679,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:41.567905Z,1.5174580039456487,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:41.768435Z,1.960070978384465,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:41.969713Z,3.139553009532392,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:42.170117Z,3.43000004068017,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:44.216329Z,1849.5772799942642,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:44.217876Z,1.457776001188904,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:44.418621Z,2.0940430113114417,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:44.618679Z,2.015425998251885,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:44.819116Z,2.373380004428327,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:46.380837Z,1364.0022440231405,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:46.382381Z,1.44107302185148,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:46.582657Z,1.6252900240942836,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:46.783556Z,2.427140949293971,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:46.982672Z,1.4816999901086092,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:48.506914Z,1325.6236420129426,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:48.508279Z,1.2740889796987176,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:48.709685Z,2.539011009503156,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:48.909367Z,2.1651769638992846,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:49.109732Z,2.4334219633601606,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:50.778691Z,1471.279070014134,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:50.869252Z,90.46136197866872,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:50.980997Z,2.1111859823577106,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:51.181653Z,2.6650279760360718,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:51.380717Z,1.6798439901322126,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:52.979232Z,1400.1146070077084,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:52.980986Z,1.655958010815084,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:53.180854Z,1.465059001930058,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:53.380578Z,1.1463779956102371,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:53.581047Z,1.5342500410042703,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:55.197436Z,1417.8620669990778,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:55.198875Z,1.3476379681378603,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:55.399902Z,2.266277966555208,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:55.599469Z,1.7546539893373847,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:55.799813Z,2.0108669996261597,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:57.406272Z,1408.4019910078496,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:57.765246Z,358.8740089908242,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:57.775741Z,10.40788902901113,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:50:57.967609Z,2.1747249993495643,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:50:58.167593Z,2.087050990667194,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:50:59.876449Z,1510.8780569862574,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:50:59.878412Z,1.8625379889272153,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:51:00.078806Z,2.125401981174946,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:51:00.279149Z,2.3856229963712394,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:51:00.479818Z,2.9697130084969103,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:51:02.157697Z,1480.7498309528455,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:51:02.160253Z,2.4627280072309077,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:51:02.360065Z,2.162522985599935,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:51:02.560302Z,2.3290060344152153,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:51:02.760799Z,2.7300009969621897,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:51:04.701410Z,1743.242820026353,p9e9c1d3f25883440,10000,10000,0.000000,,1509929
+asap,topk,"topk(10, http_requests_total)",2026-05-06T16:51:04.702893Z,1.394326041918248,p9e9c1d3f25883440,"[""{\""node\"": \""n00\"", \""pod\"": \""pod-000\"", \""rack\"": \""r06\"", \""zone\"": \""z0\""}"", ""{\""node\"": \""n10\"", \""pod\"": \""pod-0",[],,0.0000,1509929
+asap,quantile,"quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:51:04.903677Z,2.0639970316551626,p9e9c1d3f25883440,102.038802,,,,1509650
+asap,quantile,"quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])",2026-05-06T16:51:05.107981Z,6.320602027699351,p9e9c1d3f25883440,20.108696,,,,1509650
+asap,sum,sum_over_time(http_requests_total[1m]),2026-05-06T16:51:05.304688Z,2.9378830222412944,p9e9c1d3f25883440,1509929.000000,,,,1509929
+asap,count_unique,count(http_requests_total),2026-05-06T16:51:07.026437Z,1524.6043640072457,p9e9c1d3f25883440,10000,10000,0.000000,,1509929

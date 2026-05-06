@@ -42,6 +42,10 @@ RUN apt-get update && \
 COPY --from=backend-src        . ASAPQuery-backend
 COPY --from=asap-precompute-rs . ASAPCollector/asap-precompute-rs
 COPY --from=asap-sketchlib     . asap_sketchlib
+# Phase-3 cold-engine: backend's `asap-query-engine/Cargo.toml`
+# path-deps `asap-gorilla = { path = "../../ASAPCollector/asap-gorilla" }`.
+# Mirrors the asap-precompute-rs pattern.
+COPY --from=asap-gorilla       . ASAPCollector/asap-gorilla
 
 RUN cd ASAPQuery-backend && cargo build --release --bin precompute_engine
 
