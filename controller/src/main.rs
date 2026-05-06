@@ -12,6 +12,7 @@ mod replan;
 mod runtime_samples;
 mod store;
 mod types;
+mod types_v2;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -216,6 +217,14 @@ async fn main() {
                 latency_sla:     None,
                 sketch_type:     None,
                 workload:        types::WorkloadCharacteristics::default(),
+                // design.md alignment: defaults preserve legacy behaviour.
+                id:               None,
+                language:         None,
+                accuracy:         None,
+                dollars:          None,
+                deployment_model: None,
+                shape:            types_v2::QueryShape::default(),
+                data:             types_v2::DataShape::default(),
             };
             match analyzer.analyze(spec) {
                 Ok(wl) => {
@@ -1083,6 +1092,13 @@ mod api_tests {
             latency_sla:     None,
             sketch_type:     None,
             workload:        types::WorkloadCharacteristics::default(),
+            id:               None,
+            language:         None,
+            accuracy:         None,
+            dollars:          None,
+            deployment_model: None,
+            shape:            types_v2::QueryShape::default(),
+            data:             types_v2::DataShape::default(),
         };
         let wl = analyzer.analyze(spec).unwrap();
         let wc = types::WorkloadCharacteristics::default();
@@ -1204,6 +1220,13 @@ mod api_tests {
             latency_sla:     None,
             sketch_type:     None,
             workload:        types::WorkloadCharacteristics::default(),
+            id:               None,
+            language:         None,
+            accuracy:         None,
+            dollars:          None,
+            deployment_model: None,
+            shape:            types_v2::QueryShape::default(),
+            data:             types_v2::DataShape::default(),
         };
         let wl = analyzer.analyze(spec).unwrap();
         let wc = types::WorkloadCharacteristics::default();

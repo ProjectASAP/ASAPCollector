@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::query_parser;
 use crate::types::{AggType, QueryWorkload, SketchType, WorkloadCharacteristics};
+use crate::types_v2::{AccuracyTarget, DataShape, QueryId, QueryLanguage, QueryShape};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -52,7 +53,58 @@ pub struct QuerySpec {
     /// bandwidth comparison. Omit to use conservative defaults.
     #[serde(default)]
     pub workload:       WorkloadCharacteristics,
+
+    // ── design.md alignment: new fields, defaulted for back-compat ────────
+    //
+    // These fields converge `QuerySpec` toward the typed schema in
+    // `controller/docs/design.md` §6 `core::workload`. Each is defaulted
+    // so the existing JSON API surface (POST /api/v1/plan handlers,
+    // pre-population from `workloads.yaml`, the test fixtures elsewhere
+    // in the controller) keeps working without supplying them. The
+    // planner does not yet consume these — see `Analyzer::analyze` for
+    // the L1 cross-product validation that does fire today.
+
+    /// Stable identifier preserved across replan cycles. Optional;
+    /// auto-derived from `metric_name + accuracy_sla` if omitted
+    /// (existing API callers don't supply this).
+    #[serde(default)]
+    pub id: Option<QueryId>,
+
+    /// Source language. Inferred from `query_string` syntax / parser
+    /// dispatch when omitted (existing API callers default to PromQL
+    /// behavior, which matches today's `query_parser::parse_query`).
+    #[serde(default)]
+    pub language: Option<QueryLanguage>,
+
+    /// Typed accuracy target. When present, takes precedence over the
+    /// legacy `accuracy_sla: f64` field. When absent, the legacy field
+    /// is converted to `Epsilon(1.0 - accuracy_sla)` (or `Exact` when
+    /// `accuracy_sla == 1.0`).
+    #[serde(default)]
+    pub accuracy: Option<AccuracyTarget>,
+
+    /// Per-evaluation $ budget. Optional; the cost model picks freely
+    /// when unset.
+    #[serde(default)]
+    pub dollars: Option<f64>,
+
+    /// Deployment-model routing hint. Optional; defaults to the model
+    /// bound to the inbound HTTP route.
+    #[serde(default)]
+    pub deployment_model: Option<String>,
+
+    /// Evaluation cadence shape. Defaults to `OneShot`.
+    #[serde(default = "default_query_shape")]
+    pub shape: QueryShape,
+
+    /// Source data shape. Defaults to `AppendOnlyStream` (the
+    /// asap-collector / asap-query default).
+    #[serde(default = "default_data_shape")]
+    pub data: DataShape,
 }
+
+fn default_query_shape() -> QueryShape { QueryShape::default() }
+fn default_data_shape()  -> DataShape  { DataShape::default()  }
 
 pub struct Analyzer;
 
@@ -63,6 +115,50 @@ impl Analyzer {
         if !(0.0..=1.0).contains(&spec.accuracy_sla) {
             return Err(anyhow!("accuracy_sla must be in [0,1], got {}", spec.accuracy_sla));
         }
+
+        // ── design.md L1: shape × data cross-product check ─────────────────
+        // The cross-product table in design.md §6 enumerates which
+        // (shape, data) combinations the planner accepts. The two
+        // hard rejections are at L1 because they have no semantically
+        // valid plan: a streaming query over a static dataset, and a
+        // streaming query over a mutable relation (no retraction-aware
+        // sketches in the catalog yet). Everything else is accepted
+        // here — downstream rule firing can still narrow further.
+        match (&spec.shape, &spec.data) {
+            (QueryShape::Streaming, DataShape::Batch) => {
+                return Err(anyhow!(
+                    "QueryShape::Streaming over DataShape::Batch is rejected at L1: \
+                     no semantically valid plan (no stream over a static dataset). \
+                     See controller/docs/design.md §6 cross-product table."
+                ));
+            }
+            (QueryShape::Streaming, DataShape::Mutable) => {
+                return Err(anyhow!(
+                    "QueryShape::Streaming over DataShape::Mutable is rejected at L1: \
+                     no retraction-aware sketches in the catalog yet. \
+                     See controller/docs/design.md §6 cross-product table."
+                ));
+            }
+            _ => {}
+        }
+
+        // ── design.md accuracy precedence: typed `accuracy` > legacy ───────
+        // When the caller supplies `accuracy: Some(AccuracyTarget)` it
+        // takes precedence. Otherwise the legacy `accuracy_sla: f64`
+        // field is translated into the typed form. The downstream
+        // planner currently consumes the legacy `f64` field; we keep
+        // it populated either way so cost-model behaviour does not
+        // regress for callers that supply the new field. Once the
+        // planner switches to consuming `AccuracyTarget` directly
+        // (separate downstream PR), this back-translation stops being
+        // needed.
+        let resolved_accuracy = spec.accuracy.clone()
+            .unwrap_or_else(|| AccuracyTarget::from_legacy_accuracy_sla(spec.accuracy_sla));
+        let accuracy_sla = match &resolved_accuracy {
+            AccuracyTarget::Exact => 1.0,
+            AccuracyTarget::Epsilon(eps)            => (1.0 - eps).clamp(0.0, 1.0),
+            AccuracyTarget::EpsilonDelta { eps, .. } => (1.0 - eps).clamp(0.0, 1.0),
+        };
 
         // ── Step 1: parse query_string if provided ─────────────────────────
         let parsed = spec.query_string.as_deref()
@@ -142,6 +238,16 @@ impl Analyzer {
         let exact_required = parsed.as_ref().map(|p| p.exact_required).unwrap_or(false);
         let quantiles       = parsed.as_ref().map(|p| p.quantiles.clone()).unwrap_or_default();
 
+        // Note: `(planner not yet using this)` — these are populated for
+        // downstream consumers but the planner / cost model still keys
+        // off `accuracy_sla`, `time_window`, `aggregations`, etc. The
+        // L4-aware downstream PR will switch the cost model to read
+        // `resolved_accuracy`, the L5 stage allocator to gate on
+        // `spec.shape`, and the leaf planner to gate on `spec.data`.
+        let _ = (&resolved_accuracy, &spec.shape, &spec.data,
+                 &spec.id, &spec.language, &spec.dollars,
+                 &spec.deployment_model);
+
         Ok(QueryWorkload {
             metric_name,
             label_filters:        merged_filters,
@@ -149,7 +255,7 @@ impl Analyzer {
             aggregations,
             time_window,
             repeat_every,
-            accuracy_sla:         spec.accuracy_sla,
+            accuracy_sla,
             latency_sla,
             sketch_type_override: spec.sketch_type,
             exact_required,
@@ -244,6 +350,14 @@ mod tests {
             latency_sla:    Some("10m".into()),
             sketch_type:    None,
             workload:       Default::default(),
+            // design.md alignment: defaults preserve legacy behaviour.
+            id:               None,
+            language:         None,
+            accuracy:         None,
+            dollars:          None,
+            deployment_model: None,
+            shape:            QueryShape::default(),
+            data:             DataShape::default(),
         }
     }
 
@@ -360,6 +474,14 @@ mod tests {
             latency_sla:     None,
             sketch_type:     None,
             workload:        Default::default(),
+            // design.md alignment: defaults preserve legacy behaviour.
+            id:               None,
+            language:         None,
+            accuracy:         None,
+            dollars:          None,
+            deployment_model: None,
+            shape:            QueryShape::default(),
+            data:             DataShape::default(),
         }
     }
 
@@ -449,5 +571,130 @@ mod tests {
         assert_eq!(w.time_window,  Duration::from_secs(300));
         assert!(!w.exact_required);
         assert!(w.quantiles.is_empty());
+    }
+
+    // ── design.md alignment tests ─────────────────────────────────────────────
+
+    /// Typed `accuracy: Some(Epsilon(0.05))` overrides the legacy
+    /// `accuracy_sla: 0.99` (which would translate to `Epsilon(0.01)`),
+    /// and the resolved value flows through to `QueryWorkload.accuracy_sla`.
+    #[test]
+    fn typed_accuracy_overrides_legacy_accuracy_sla() {
+        let mut spec = basic_spec();
+        spec.accuracy_sla = 0.99;                          // legacy: ε = 0.01
+        spec.accuracy     = Some(AccuracyTarget::Epsilon(0.05));
+        let w = Analyzer::new().analyze(spec).unwrap();
+        // The resolved 1.0 - 0.05 = 0.95 must reach the QueryWorkload, not
+        // the legacy 0.99.
+        assert!((w.accuracy_sla - 0.95).abs() < 1e-9, "got {}", w.accuracy_sla);
+    }
+
+    /// Typed `accuracy: Some(Exact)` clamps the SLA to 1.0 regardless of
+    /// the legacy field's value.
+    #[test]
+    fn typed_accuracy_exact_clamps_to_one() {
+        let mut spec = basic_spec();
+        spec.accuracy_sla = 0.5;
+        spec.accuracy     = Some(AccuracyTarget::Exact);
+        let w = Analyzer::new().analyze(spec).unwrap();
+        assert_eq!(w.accuracy_sla, 1.0);
+    }
+
+    /// L1 rejects `(QueryShape::Streaming, DataShape::Batch)` per the
+    /// `design.md` §6 cross-product table.
+    #[test]
+    fn l1_rejects_streaming_over_batch() {
+        let mut spec = basic_spec();
+        spec.shape = QueryShape::Streaming;
+        spec.data  = DataShape::Batch;
+        let err = Analyzer::new().analyze(spec).unwrap_err().to_string();
+        assert!(err.contains("Streaming") && err.contains("Batch"),
+                "expected the error to name the rejected combination: {err}");
+    }
+
+    /// L1 rejects `(QueryShape::Streaming, DataShape::Mutable)` — no
+    /// retraction-aware sketches in the catalog yet.
+    #[test]
+    fn l1_rejects_streaming_over_mutable() {
+        let mut spec = basic_spec();
+        spec.shape = QueryShape::Streaming;
+        spec.data  = DataShape::Mutable;
+        let err = Analyzer::new().analyze(spec).unwrap_err().to_string();
+        assert!(err.contains("Streaming") && err.contains("Mutable"),
+                "expected the error to name the rejected combination: {err}");
+    }
+
+    /// `(QueryShape::Streaming, DataShape::AppendOnlyStream)` — the
+    /// canonical streaming case — is accepted.
+    #[test]
+    fn l1_accepts_streaming_over_append_only_stream() {
+        let mut spec = basic_spec();
+        spec.shape = QueryShape::Streaming;
+        spec.data  = DataShape::AppendOnlyStream;
+        assert!(Analyzer::new().analyze(spec).is_ok());
+    }
+
+    /// JSON without any of the new fields parses correctly via serde —
+    /// the existing `/api/v1/plan` HTTP API surface keeps working
+    /// byte-for-byte. Fields default to `None` / `OneShot` /
+    /// `AppendOnlyStream` per the `#[serde(default)]` annotations.
+    #[test]
+    fn json_back_compat_omitting_new_fields() {
+        let json = r#"{
+            "metric_name":   "request_latency",
+            "aggregations":  ["quantile"],
+            "time_window":   "5m",
+            "accuracy_sla":  0.99
+        }"#;
+        let spec: QuerySpec = serde_json::from_str(json).unwrap();
+        assert!(spec.id.is_none());
+        assert!(spec.language.is_none());
+        assert!(spec.accuracy.is_none());
+        assert!(spec.dollars.is_none());
+        assert!(spec.deployment_model.is_none());
+        assert_eq!(spec.shape, QueryShape::OneShot);
+        assert_eq!(spec.data,  DataShape::AppendOnlyStream);
+        // And the analyzer accepts it.
+        let w = Analyzer::new().analyze(spec).unwrap();
+        assert_eq!(w.metric_name, "request_latency");
+        // Legacy accuracy_sla=0.99 round-trips through resolution
+        // (no typed `accuracy` supplied → translate from legacy →
+        // Epsilon(0.01) → back to 1 - 0.01 = 0.99).
+        assert!((w.accuracy_sla - 0.99).abs() < 1e-9, "got {}", w.accuracy_sla);
+    }
+
+    /// JSON *with* the new fields parses correctly — the wire schema
+    /// is forward-compatible with callers that supply them. Exercises the
+    /// adjacently-tagged `AccuracyTarget` form (`kind` + `value`) and the
+    /// internally-tagged `QueryShape::Periodic` form.
+    #[test]
+    fn json_forward_compat_supplying_new_fields() {
+        let json = r#"{
+            "metric_name":      "request_latency",
+            "aggregations":     ["quantile"],
+            "time_window":      "5m",
+            "accuracy_sla":     0.5,
+            "id":               "q-001",
+            "language":         "prom_ql",
+            "accuracy":         { "kind": "epsilon", "value": 0.02 },
+            "dollars":          0.001,
+            "deployment_model": "asaplifecycle",
+            "shape":            { "kind": "periodic", "every": { "secs": 60, "nanos": 0 } },
+            "data":             "batch"
+        }"#;
+        let spec: QuerySpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec.id.as_ref().unwrap().as_str(), "q-001");
+        assert_eq!(spec.language, Some(QueryLanguage::PromQL));
+        assert_eq!(spec.accuracy, Some(AccuracyTarget::Epsilon(0.02)));
+        assert_eq!(spec.dollars, Some(0.001));
+        assert_eq!(spec.deployment_model.as_deref(), Some("asaplifecycle"));
+        assert!(matches!(spec.shape, QueryShape::Periodic { .. }));
+        assert_eq!(spec.data, DataShape::Batch);
+        // Periodic + Batch is accepted at L1 (scheduled batch report row
+        // in the design.md cross-product table).
+        let w = Analyzer::new().analyze(spec).unwrap();
+        // typed `accuracy: Epsilon(0.02)` overrode the legacy 0.5 →
+        // resolved accuracy_sla in the workload is 1.0 - 0.02 = 0.98.
+        assert!((w.accuracy_sla - 0.98).abs() < 1e-9, "got {}", w.accuracy_sla);
     }
 }
