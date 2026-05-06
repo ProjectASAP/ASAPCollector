@@ -120,7 +120,20 @@ class PlanIdTracker:
             return
         # Look for either `asap_active_plan_id` or `asap_plan_id` in
         # the prom-text exposition. A common pattern is:
-        #   asap_active_plan_id{plan_id="p_dd99_60s_keepall"} 1
+        #   asap_active_plan_id{metric="...",plan_id="p_dd99_60s_keepall"} 1
+        #
+        # The controller exposes one (metric, plan_id) tuple per
+        # registered workload metric. To detect a re-plan event
+        # robustly we collect ALL tuples in this scrape and form a
+        # stable canonical string ("m1=p1;m2=p2;..."). A change in
+        # ANY metric's plan_id flips the canonical, which is what
+        # plan_transition.py needs to fire `t_plan_ready`. Picking
+        # only the first line (earlier behaviour) was order-
+        # dependent because the GaugeVec is reset+repopulated every
+        # scrape and HashMap iteration order across scrapes is not
+        # stable in Rust — the tracker would flip-flop between
+        # metrics' ids without any actual replan happening.
+        pairs: list[tuple[str, str]] = []
         for line in body.splitlines():
             line = line.strip()
             if line.startswith("#") or not line:
@@ -128,10 +141,16 @@ class PlanIdTracker:
             for needle in ("asap_active_plan_id", "asap_plan_id"):
                 if line.startswith(needle):
                     pid = self._extract_plan_id(line)
-                    if pid is not None:
-                        with self._lock:
-                            self._latest = pid
-                        return
+                    if pid is None:
+                        continue
+                    metric = self._extract_label(line, "metric") or "_"
+                    pairs.append((metric, pid))
+                    break
+        if not pairs:
+            return
+        canonical = ";".join(f"{m}={p}" for m, p in sorted(pairs))
+        with self._lock:
+            self._latest = canonical
 
     @staticmethod
     def _extract_plan_id(line: str) -> str | None:
@@ -141,6 +160,18 @@ class PlanIdTracker:
         if i < 0:
             return None
         i += len('plan_id="')
+        j = line.find('"', i)
+        if j < 0:
+            return None
+        return line[i:j]
+
+    @staticmethod
+    def _extract_label(line: str, label: str) -> str | None:
+        needle = f'{label}="'
+        i = line.find(needle)
+        if i < 0:
+            return None
+        i += len(needle)
         j = line.find('"', i)
         if j < 0:
             return None

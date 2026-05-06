@@ -413,10 +413,27 @@ def main() -> int:
     p.add_argument(
         "--bytes-sample-window",
         type=float,
-        default=5.0,
+        default=15.0,
         help="seconds between the two docker-stats samples used to compute "
         "producer_bytes_out_per_s. Too short and the tx counter barely moves; "
-        "too long and the sweep gets expensive per baseline.",
+        "too long and the sweep gets expensive per baseline. Bumped to 15 s "
+        "from 5 s on 2026-05-06 to close the HLL N=1 NaN gap (4 of 12 HLL "
+        "cells in the 60-cell sweep had agent_cpu / rss / in / out = NaN "
+        "because the 5 s window landed between agent flushes during cell "
+        "teardown).",
+    )
+    p.add_argument(
+        "--bytes-sample-warmup",
+        type=float,
+        default=0.0,
+        help="If >0, take an extra `docker stats` sample this many "
+        "seconds before the first measurement window and discard it. "
+        "Pairs with --bytes-sample-window: a freshly-restarted "
+        "container's first `docker stats` snapshot can include a "
+        "skewed cumulative counter (low rx/tx because the container "
+        "hasn't yet flushed its first batch); the warm-up evicts that "
+        "stale snapshot so the first delta is over a fully-running "
+        "container.",
     )
     p.add_argument(
         "--producer-container",
@@ -481,7 +498,22 @@ def main() -> int:
     # baselines that don't emit the patched-processor counters.
     # Single two-sample pass (separated by --bytes-sample-window)
     # avoids three trips through `docker stats`.
+    #
+    # Optional warm-up: take + discard one snapshot before the
+    # measurement pair, so the first sample isn't taken at t=0
+    # of a freshly-started container (whose net rx/tx counters
+    # haven't yet seen a flush). HLL N=1 cells in the 60-cell
+    # sweep showed agent_cpu/rss/in/out = NaN because the 5 s
+    # measurement window landed in a flush-quiet interval; the
+    # warm-up + 15 s window combination closes that gap.
     try:
+        if args.bytes_sample_warmup > 0:
+            try:
+                _ = docker_stats()
+                time.sleep(args.bytes_sample_warmup)
+                _ = docker_stats()
+            except Exception as e:
+                print(f"# bytes-sample-warmup probe failed: {e}", file=sys.stderr)
         stats = docker_stats_with_bytes_rate(args.bytes_sample_window)
 
         backend = stats.get("docker-compose-backend-1") or {}

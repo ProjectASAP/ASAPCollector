@@ -1,0 +1,18 @@
+[
+    {
+        "kind": "quantile",
+        "promql": "quantile_over_time(0.99, http_requests_total_latency_ms_kll[1m])"
+    },
+    {
+        "kind": "quantile",
+        "promql": "quantile_over_time(0.5, http_requests_total_latency_ms_kll[1m])"
+    },
+    {
+        "kind": "quantile",
+        "promql": "quantile by (zone) (0.99, http_requests_total_latency_ms_kll)"
+    },
+    {
+        "kind": "quantile",
+        "promql": "quantile by (zone) (0.5, http_requests_total_latency_ms_kll)"
+    }
+]

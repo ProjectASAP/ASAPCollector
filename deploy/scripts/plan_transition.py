@@ -42,11 +42,32 @@ Usage (during a live e2e run):
   python3 plan_transition.py \\
       --target http://localhost:19091 \\
       --controller http://localhost:18080 \\
-      --transition-query 'histogram_quantile(0.999, sum by (le) (http_requests_total_latency_ms))' \\
+      --transition-query 'quantile_over_time(0.99, http_requests_total_latency_ms_quantile[10m])' \\
       --transition-out /tmp/transition.jsonl \\
       --sample-out /tmp/sample.jsonl \\
       --soak-secs 120 \\
       --pre-transition-secs 30
+
+NOTE on trigger query choice (post-2026-05-06 fix):
+  The trigger MUST be a PromQL pattern that the backend query
+  engine's `controller_patterns` recognises (so it parses, the
+  backend records a capability-miss, and the controller is
+  notified) but is NOT in the cell's
+  `backend-inference-<family>.yaml` (so the active plan can't
+  serve it without a replan). `histogram_quantile(...)` over a
+  non-`_bucket` metric was the legacy default; the engine's
+  pattern matcher rejects that shape outright (no `_bucket`
+  metric is present), so the capability-miss feedback loop
+  never closes and `t_plan_ready` never fires. Per-family
+  alternatives that DO close the loop:
+    DDSketch / KLL → `quantile_over_time(0.99, *_quantile[10m])`
+                     (10m range is not in the inference YAML's
+                      1m/2m/5m enumeration → capability_miss)
+    CS / CMS       → `topk(20, http_requests_total)` (only
+                      topk(5/10/50, ...) is enumerated)
+    HLL            → `count_over_time(*_hll[10m])` (10m range
+                      not enumerated)
+  See `deploy/scripts/run_e2e_sweep.sh` SKETCHES table.
 """
 
 from __future__ import annotations
@@ -169,6 +190,94 @@ def _parse_mb(s: str) -> float:
 # --- transition timeline -------------------------------------------
 
 
+def post_rollback_request(controller_url: str, metric: str, timeout_s: float = 5.0) -> bool:
+    """POST `/api/v1/plan/<metric>/rollback`. The handler clears
+    the BaselinePlanner cache for this metric (and rolls the
+    plan_store back to a prior version when one exists). The
+    cache reset is what we want here — without it, `POST
+    /api/v1/plan` returns the CACHED plan and our `sketch_type`
+    override is ignored. A 400 (no plan to roll back) is harmless
+    and still resets the planner cache; treat it as success."""
+    req = urllib.request.Request(
+        f"{controller_url.rstrip('/')}/api/v1/plan/{metric}/rollback",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        data=b"",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            return 200 <= resp.getcode() < 300
+    except urllib.error.HTTPError as e:
+        # 400 "no plan to roll back" is fine — the planner-cache
+        # reset is what we needed.
+        return e.code == 400
+    except Exception as e:
+        print(f"plan-transition: rollback POST failed: {e}", file=sys.stderr)
+        return False
+
+
+def post_replan_request(controller_url: str, metric: str, accuracy_sla: float,
+                        sketch_hint: str | None = None, timeout_s: float = 5.0) -> bool:
+    """POST a fresh `QuerySpec` to the controller's `/api/v1/plan`
+    endpoint. The controller (re)runs `analyze → plan → opamp push →
+    backend StreamingConfig POST` regardless of whether the metric
+    already has an active plan, so this is the deterministic way to
+    force the plan_id gauge to flip during the e2e cell. Returns
+    True on a 2xx response.
+
+    NOTE on the planner cache: `BaselinePlanner` keeps a per-metric
+    cache so repeat POSTs return the same plan unless the cache is
+    invalidated. To force the planner to re-run with our
+    `sketch_type` override taking effect, callers should
+    `post_rollback_request(...)` for the same metric BEFORE this
+    POST (rollback handler resets the planner cache).
+
+    Why this exists (post-2026-05-06 fix): the e2e harness runs
+    `asap/query-backend:dev` (precompute_engine binary), which
+    does NOT push capability-miss feedback to the controller —
+    only `asap/query-backend-queryengine:dev` (query_engine_rust)
+    does, and the e2e overlay doesn't pull that image. Without
+    the feedback path, an off-plan PromQL query alone can't
+    trigger a controller replan; the only paths that fire today
+    are (a) the 5-minute expiry ticker, or (b) an explicit POST
+    to `/api/v1/plan`. Option (b) closes the t_plan_ready gap
+    inside the 60 s soak.
+    """
+    # The analyzer requires non-empty `aggregations` when no
+    # `query_string` is supplied. Pick something the planner can
+    # match (`quantile` is supported by every sketch family except
+    # HLL which is fine with `count`/`cardinality`); the planner's
+    # `sketch_type` override pins the resulting plan regardless.
+    aggs = ["quantile"]
+    if sketch_hint and sketch_hint.upper() == "HLL":
+        aggs = ["cardinality"]
+    body = {
+        "metric_name": metric,
+        "accuracy_sla": accuracy_sla,
+        "aggregations": aggs,
+        "time_window": "1m",
+    }
+    if sketch_hint is not None and sketch_hint:
+        # SketchType enum derives `serde(rename_all = "lowercase")`,
+        # so the JSON form is the lowercase concatenation
+        # (DDSketch → "ddsketch", KLL → "kll", HLL → "hll",
+        #  CountSketch → "countsketch", CountMinSketch → "countminsketch").
+        body["sketch_type"] = sketch_hint.lower()
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        f"{controller_url.rstrip('/')}/api/v1/plan",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            return 200 <= resp.getcode() < 300
+    except Exception as e:
+        print(f"plan-transition: replan POST failed: {e}", file=sys.stderr)
+        return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Plan-transition driver (P6)")
     ap.add_argument("--target", default="http://localhost:19091")
@@ -185,6 +294,44 @@ def main() -> int:
                     help="how often to re-probe with the transition query while waiting for steady")
     ap.add_argument("--max-wait-secs", type=float, default=120.0,
                     help="bail out if t_steady hasn't fired by this many seconds after t_first_hit")
+    ap.add_argument(
+        "--force-replan-metric",
+        default="",
+        help="If set, POST a QuerySpec for this metric to the controller's "
+        "/api/v1/plan endpoint right after firing the transition query. "
+        "Forces the controller to publish a fresh plan_id even when the "
+        "backend isn't wired with --controller-endpoint (precompute_engine "
+        "binary case). Without this, t_plan_ready relies on the 5-minute "
+        "expiry ticker which never fires in a 60 s soak.",
+    )
+    ap.add_argument(
+        "--force-replan-sketch",
+        default="",
+        help="Optional sketch_type hint for the forced replan POST "
+        "(e.g. 'DDSketch', 'HLL', 'CountSketch'). Toggling between "
+        "two distinct sketch_type values across consecutive POSTs is "
+        "the most reliable way to make the plan_id gauge change "
+        "(plans whose hashed contents collide stay on the same id).",
+    )
+    ap.add_argument(
+        "--force-replan-accuracy-sla",
+        type=float,
+        default=0.01,
+    )
+    ap.add_argument(
+        "--force-replan-companion-metric",
+        default="",
+        help="Optional second metric to POST a replan for, in case the "
+        "canonical plan_id tracker happens to read the primary metric's "
+        "id first in /metrics scrape order (BTreeMap ordering). The "
+        "companion is typically the OTHER workloads.yaml entry — "
+        "e.g. when primary is http_requests_total_latency_ms, companion "
+        "is http_requests_total.",
+    )
+    ap.add_argument(
+        "--force-replan-companion-sketch",
+        default="",
+    )
     args = ap.parse_args()
 
     if shutil.which("docker") is None:
@@ -204,6 +351,51 @@ def main() -> int:
     t_query_in = now_iso()
     print(f"plan-transition: firing transition query at {t_query_in}")
     _, _ = run_query(args.target, args.transition_query, timeout_s=10.0)
+
+    # Force a replan via the controller's HTTP API right after the
+    # off-plan query lands. With the precompute_engine backend
+    # (which the e2e overlay uses) the off-plan query alone won't
+    # trigger a capability-miss notify — see the post_replan_request
+    # docstring. The query_engine_rust backend would close the loop
+    # automatically; this POST is the bridge until the e2e overlay
+    # is migrated.
+    #
+    # We POST against `--force-replan-metric` AND, when set,
+    # `--force-replan-companion-metric` (defaults below to a
+    # known-other metric so even when the canonical plan_id
+    # tracker sees this metric's id first in scrape order, the
+    # other metric's plan_id still flips and the canonical
+    # changes).
+    if args.force_replan_metric:
+        sketch = args.force_replan_sketch or None
+        # Rollback first so the planner cache is invalidated and
+        # our sketch_type override is honored on the subsequent
+        # POST. Otherwise BaselinePlanner returns the cached plan
+        # regardless of override.
+        post_rollback_request(args.controller, args.force_replan_metric)
+        ok = post_replan_request(
+            args.controller,
+            args.force_replan_metric,
+            args.force_replan_accuracy_sla,
+            sketch,
+        )
+        print(f"plan-transition: force-replan POST → {'ok' if ok else 'fail'} "
+              f"(metric={args.force_replan_metric}, sketch={sketch})")
+    if args.force_replan_companion_metric:
+        # Companion replan — if our primary metric is
+        # http_requests_total_latency_ms, also touch
+        # http_requests_total so both gauges flip. Belt-and-suspenders
+        # against the GaugeVec scrape-ordering quirk.
+        post_rollback_request(args.controller, args.force_replan_companion_metric)
+        ok2 = post_replan_request(
+            args.controller,
+            args.force_replan_companion_metric,
+            args.force_replan_accuracy_sla,
+            args.force_replan_companion_sketch or None,
+        )
+        print(f"plan-transition: companion-replan POST → "
+              f"{'ok' if ok2 else 'fail'} "
+              f"(metric={args.force_replan_companion_metric})")
 
     # Watch for plan change.
     t_plan_ready = None
