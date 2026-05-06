@@ -432,6 +432,77 @@ async fn handle_plan(
         ).await;
     }
 
+    // ── Phase B (MVP v6): typed L5 stage_split → per-stage emitter ────────────
+    // Behind the `USE_TYPED_STAGE_SPLIT` env-var gate so existing
+    // controller behaviour is unchanged unless explicitly opted in.
+    // When enabled, the workload is bound to a `SketchExpr`, the typed
+    // L5 path produces a `HashMap<StageId, StageConfig>`, and each
+    // per-stage config is materialised into wire bytes via the emitters
+    // in `config::stage_config`. Phase C will plumb deployment-aware
+    // endpoint resolution + a real backend POST.
+    if planner::stage_split::typed_stage_split_enabled() {
+        if let Some(sketch_expr) = planner::rules::bind_workload_typed(&workload) {
+            if let Some(configs) = planner::stage_split::split_typed_three_stage(&sketch_expr) {
+                for (stage_id, stage_cfg) in configs {
+                    match stage_cfg {
+                        crate::stage_split::StageConfig::Edge(edge) => {
+                            match config::emit_edge_yaml(&edge, &st.opamp_endpoint) {
+                                Ok(yaml) => {
+                                    let hash = short_hash(&yaml);
+                                    info!(
+                                        stage = "edge", bytes = yaml.len(),
+                                        "[USE_TYPED_STAGE_SPLIT] pushing typed edge YAML"
+                                    );
+                                    st.opamp.push_to_role(
+                                        AgentRole::Agent,
+                                        RemoteConfig { config_hash: hash, yaml },
+                                    ).await;
+                                }
+                                Err(e) => warn!(error = %e, "emit_edge_yaml failed"),
+                            }
+                        }
+                        crate::stage_split::StageConfig::Gateway(gw) => {
+                            // No `AgentRole::Gateway` exists today
+                            // (Phase C adds it). Log the YAML so the
+                            // demo overlay can pick it up via stdout
+                            // until Phase C wires the role.
+                            match config::emit_gateway_yaml(&gw, &st.opamp_endpoint) {
+                                Ok(yaml) => info!(
+                                    stage = "gateway", bytes = yaml.len(),
+                                    yaml = %yaml,
+                                    "[USE_TYPED_STAGE_SPLIT] gateway YAML emitted (push deferred to Phase C)"
+                                ),
+                                Err(e) => warn!(error = %e, "emit_gateway_yaml failed"),
+                            }
+                        }
+                        crate::stage_split::StageConfig::Backend(be) => {
+                            match config::emit_backend_config_json(&be) {
+                                Ok(json_doc) => info!(
+                                    stage = "backend",
+                                    aggregations = be.aggregations.len(),
+                                    readouts = be.readouts.len(),
+                                    json = %json_doc,
+                                    "[USE_TYPED_STAGE_SPLIT] backend streaming-config JSON emitted (push deferred to Phase C)"
+                                ),
+                                Err(e) => warn!(error = %e, "emit_backend_config_json failed"),
+                            }
+                            // Mention stage_id so `match` arms aren't
+                            // collapsed into untagged log lines if the
+                            // tracing filter drops the per-arm event.
+                            let _ = stage_id;
+                        }
+                    }
+                }
+            } else {
+                warn!(
+                    metric = %workload.metric_name,
+                    "[USE_TYPED_STAGE_SPLIT] split_typed_three_stage returned None; \
+                     legacy plan output unaffected"
+                );
+            }
+        }
+    }
+
     // ── Update scrape-endpoint sketch types and agent→metric mapping ──────────
     let sketch_type = plan.agent_config.sketch_type.clone();
     for agent_id in st.opamp.connected_agents().await {
