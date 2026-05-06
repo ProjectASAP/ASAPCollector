@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
-"""mvp_report.py — issue-46 MVP report generator.
+"""mvp_report.py — issue-46 MVP report generator (v4).
 
-Reads the ASAP and RAW cell outputs produced by run_mvp_demo.sh and
-emits MVP_REPORT.md with one PASS/FAIL line per acceptance criterion:
+v4 changes vs v3:
 
-  X — bandwidth reduction:    (raw producer bytes/s − ASAP) / raw
-  Y — query latency reduction: (raw p99 − ASAP p99) / raw
-  Z — combined resource cost: agent CPU + RSS + backend CPU + RSS
-  ε/δ — accuracy: median rel-error from accuracy.csv + the response
-       infos line from the warm-tier query
-  Cold-fallback: ad-hoc query response shows `data_source:
-       gorilla_archive` (Phase-6+ backend) OR cold-store JSONL marker
+  * Reads from a v4-style results directory laid out
+    `<results_dir>/<baseline>/{measurement.csv, accuracy.csv,
+    freshness.csv, stages.csv, replay.jsonl,
+    ad_hoc_query_response.json}` rather than the v3 two-cell
+    {asap,raw} layout. Baselines are auto-discovered as the set
+    of subdirectories that carry a `measurement.csv`.
 
-Pure stdlib. Designed to handle missing/NaN measurements gracefully —
-each criterion logs UNKNOWN if its source CSV is absent.
+  * Adds §1 Stage-separated resource breakdown table — 4 baselines
+    × 5 stages × {CPU cores, RSS MiB, net in/out KiB/s, disk MiB}
+    plus per-baseline totals and per-stage reduction-factor rows
+    (ASAP relative to B0).
 
-Usage:
-  python3 mvp_report.py --asap-dir <dir> --raw-dir <dir> --out <path>
+  * Adds §3 Freshness p50/p99 table — per (baseline, path) sample
+    counts + p50/p99 deltas in milliseconds.
+
+  * §2 Per-criterion verdict expanded to 6 criteria
+    (5 originals + freshness).
+
+  * §4 Honest caveats kept as in v3.
+
+  * v3 entry points (`--asap-dir / --raw-dir`) are kept as a
+    legacy fallback so old callers don't immediately break.
+
+Pure stdlib. Idempotent — re-running over the same CSVs reproduces
+the same MD.
 """
 from __future__ import annotations
 
@@ -33,7 +44,6 @@ from typing import Any
 
 
 def load_measurement(path: str) -> dict[str, float]:
-    """Single-row measurement.csv → {column: float}. NaN on parse fail."""
     if not os.path.exists(path):
         return {}
     with open(path, "r") as f:
@@ -58,22 +68,52 @@ def load_accuracy(path: str) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+def load_freshness(path: str) -> list[dict[str, str]]:
+    if not os.path.exists(path):
+        return []
+    with open(path, "r") as f:
+        return list(csv.DictReader(f))
+
+
+def load_stages(path: str) -> list[dict[str, str]]:
+    if not os.path.exists(path):
+        return []
+    with open(path, "r") as f:
+        return list(csv.DictReader(f))
+
+
+def load_response(path: str) -> dict | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def _is_nan(x: float) -> bool:
     return x != x  # noqa: PLR0124
 
 
 def safe_pct(num: float, denom: float) -> float:
-    """100 * (denom - num) / denom — pct reduction. NaN-safe."""
     if _is_nan(num) or _is_nan(denom) or denom == 0:
         return float("nan")
     return 100.0 * (denom - num) / denom
+
+
+def _percentile(xs: list[float], p: float) -> float:
+    if not xs:
+        return float("nan")
+    s = sorted(xs)
+    idx = max(0, min(len(s) - 1, int(round(p * (len(s) - 1)))))
+    return s[idx]
 
 
 # ── per-criterion reducers ───────────────────────────────────────
 
 
 def criterion_x_bandwidth(asap: dict, raw: dict) -> tuple[str, str, dict]:
-    """X — bandwidth reduction (producer wire bytes/s)."""
     asap_v = asap.get("producer_bytes_out_per_s", float("nan"))
     raw_v = raw.get("producer_bytes_out_per_s", float("nan"))
     pct = safe_pct(asap_v, raw_v)
@@ -87,7 +127,6 @@ def criterion_x_bandwidth(asap: dict, raw: dict) -> tuple[str, str, dict]:
 
 
 def criterion_y_latency(asap: dict, raw: dict) -> tuple[str, str, dict]:
-    """Y — query p99 reduction (warm-tier client-side)."""
     asap_v = asap.get("backend_query_p99_ms", float("nan"))
     raw_v = raw.get("backend_query_p99_ms", float("nan"))
     pct = safe_pct(asap_v, raw_v)
@@ -100,32 +139,43 @@ def criterion_y_latency(asap: dict, raw: dict) -> tuple[str, str, dict]:
     return verdict, line, {"asap": asap_v, "raw": raw_v, "pct": pct}
 
 
-def criterion_z_resource(asap: dict, raw: dict) -> tuple[str, str, dict]:
-    """Z — combined resource cost (agent + backend CPU + RSS)."""
-    cols = ("agent_cpu_cores", "agent_rss_mib", "backend_cpu_pct", "backend_rss_mib")
+def criterion_z_resource(
+    stages_by_baseline: dict[str, list[dict]], asap_label: str, raw_label: str,
+) -> tuple[str, str, dict]:
+    """Z — combined resource cost (sum of CPU cores + RSS MiB across all stages)."""
+    def total(rows: list[dict]) -> tuple[float, float]:
+        cpu = 0.0
+        rss = 0.0
+        # Drop bookkeeping duplication of the backend container
+        # across {ingest, query} stages so RSS isn't double-counted.
+        seen: set[tuple[str, str]] = set()
+        for r in rows:
+            container = r.get("container", "")
+            stage = r.get("stage", "")
+            key = (container, stage)
+            if key in seen:
+                continue
+            # If we already have backend-ingest, skip backend-query
+            # for the same container.
+            if (container, "backend-ingest") in seen and stage == "backend-query":
+                continue
+            seen.add(key)
+            try:
+                cpu += float(r.get("cpu_cores", "nan"))
+                rss += float(r.get("rss_mib", "nan"))
+            except ValueError:
+                continue
+        return cpu, rss
 
-    def total(d: dict) -> float:
-        # Mixed units (cores / MiB / %); we report a single-number
-        # composite by normalising to a reasonable scale: cores → %,
-        # MiB stays MiB. The key metric is the DELTA, so as long as
-        # both sides use the same composite the ratio is meaningful.
-        a_cpu = d.get("agent_cpu_cores", float("nan")) * 100.0
-        a_rss = d.get("agent_rss_mib", float("nan"))
-        b_cpu = d.get("backend_cpu_pct", float("nan"))
-        b_rss = d.get("backend_rss_mib", float("nan"))
-        # NaN-safe sum: NaN → 0 contribution so a partially-missing
-        # row is recoverable.
-        s = 0.0
-        for v in (a_cpu, a_rss, b_cpu, b_rss):
-            if not _is_nan(v):
-                s += v
-        return s
-
-    asap_v = total(asap)
-    raw_v = total(raw)
+    asap_rows = stages_by_baseline.get(asap_label, [])
+    raw_rows = stages_by_baseline.get(raw_label, [])
+    a_cpu, a_rss = total(asap_rows)
+    r_cpu, r_rss = total(raw_rows)
+    asap_v = (0.0 if _is_nan(a_cpu) else a_cpu) * 100.0 + (0.0 if _is_nan(a_rss) else a_rss)
+    raw_v = (0.0 if _is_nan(r_cpu) else r_cpu) * 100.0 + (0.0 if _is_nan(r_rss) else r_rss)
     pct = safe_pct(asap_v, raw_v)
-    breakdown_asap = {c: asap.get(c, float("nan")) for c in cols}
-    breakdown_raw = {c: raw.get(c, float("nan")) for c in cols}
+    if not asap_rows or not raw_rows:
+        return "UNKNOWN", "stages.csv missing for asap or raw", {}
     if _is_nan(pct):
         verdict = "UNKNOWN"
         line = f"asap={asap_v:.1f}, raw={raw_v:.1f} — measurement missing"
@@ -133,24 +183,19 @@ def criterion_z_resource(asap: dict, raw: dict) -> tuple[str, str, dict]:
         verdict = "PASS" if pct > 0 else "FAIL"
         line = (
             f"raw composite={raw_v:.1f} → asap composite={asap_v:.1f} = "
-            f"**{pct:.1f}% reduction** (agent_cpu%+agent_rss_mib"
-            f"+backend_cpu%+backend_rss_mib)"
+            f"**{pct:.1f}% reduction** (cpu_cores×100 + rss_mib summed across "
+            f"agent + producer + gateway + backend + storage)"
         )
     return verdict, line, {
-        "asap": asap_v,
-        "raw": raw_v,
-        "pct": pct,
-        "breakdown_asap": breakdown_asap,
-        "breakdown_raw": breakdown_raw,
+        "asap_cpu": a_cpu, "asap_rss": a_rss,
+        "raw_cpu": r_cpu, "raw_rss": r_rss,
+        "asap": asap_v, "raw": raw_v, "pct": pct,
     }
 
 
 def criterion_accuracy(
     asap_acc: list[dict], asap_response: dict | None
 ) -> tuple[str, str, dict]:
-    """ε/δ — median relative error per query kind from accuracy.csv,
-    plus any `infos` lines from the warm-tier response that pin
-    the sketch's ε/δ envelope."""
     by_kind: dict[str, list[float]] = {}
     for row in asap_acc:
         k = row.get("kind", "")
@@ -170,12 +215,6 @@ def criterion_accuracy(
         medians[k] = med
         parts.append(f"{k}: median rel-err={med:.4f} (n={len(by_kind[k])})")
 
-    # Try to pull `infos` lines from the cold-fallback response.
-    # When the backend image carries the EngineRouter / GorillaQueryEngine
-    # wiring, this line surfaces ε=0 / δ=0 / kind=Exact for the cold
-    # tier. Warm-tier sketches have their own ε/δ envelopes published
-    # by their per-sketch processors at decode time, but that surface
-    # is not yet exposed in the response infos.
     info_lines: list[str] = []
     if asap_response is not None:
         data = asap_response.get("data") or {}
@@ -183,13 +222,9 @@ def criterion_accuracy(
         if isinstance(infos, list):
             info_lines = [str(x) for x in infos]
 
-    # PASS criterion: at least one kind reported AND every median ≤ 0.05
-    # (5 % rel-error — generous envelope, bigger than the per-sketch ε
-    # of any of the sketches in use). The 60-cell sweep showed all
-    # families ≤ 0.01 at this workload.
     if not medians:
         verdict = "UNKNOWN"
-        line = "no per-kind error rows in accuracy.csv"
+        line = "no per-kind error rows in accuracy.csv (warm-tier may not have flushed in window)"
     else:
         worst = max(medians.values())
         verdict = "PASS" if worst <= 0.05 else "FAIL"
@@ -202,11 +237,6 @@ def criterion_accuracy(
 def criterion_cold_fallback(
     asap_response: dict | None, asap_dir: str
 ) -> tuple[str, str, dict]:
-    """Cold-fallback — ad-hoc query response. PASS if the response
-    body carries the `data_source: gorilla_archive` marker (Phase-6
-    backend with EngineRouter wired). PARTIAL if a different cold
-    marker is present (LocalFsColdStore JSONL fallback). FAIL if
-    the query errored or returned no marker."""
     if asap_response is None:
         return "UNKNOWN", "ad_hoc_query_response.json missing", {}
 
@@ -215,10 +245,6 @@ def criterion_cold_fallback(
     info_str = " | ".join(str(x) for x in infos) if isinstance(infos, list) else str(infos)
     status = asap_response.get("status", "")
 
-    # MinIO chunk presence is a structural signal that the gorillas3
-    # processor wrote SOMETHING — even when the backend's cold engine
-    # isn't wired yet, the agent-side path is verified by the bucket
-    # listing.
     chunks_path = os.path.join(asap_dir, "gorilla_chunks.txt")
     chunks_present = False
     chunk_summary = ""
@@ -252,108 +278,334 @@ def criterion_cold_fallback(
             f"infos=`{info_str}` status={status}"
         )
     return verdict, line, {
-        "infos": info_str,
-        "chunks_present": chunks_present,
-        "chunk_summary": chunk_summary,
+        "infos": info_str, "chunks_present": chunks_present, "chunk_summary": chunk_summary,
     }
 
 
-# ── markdown emit ────────────────────────────────────────────────
+def criterion_freshness(
+    fresh_by_baseline: dict[str, list[dict]], asap_label: str,
+) -> tuple[str, str, dict]:
+    """Criterion ⑥ — freshness. PASS if the warm-tier path on the
+    ASAP baseline has p50 ≤ 30s and the archive path has p50 ≤ 90s
+    (1.5 × the 60s gorilla chunk window). FAIL otherwise. UNKNOWN
+    if the CSV is empty / missing."""
+    rows = fresh_by_baseline.get(asap_label, [])
+    if not rows:
+        return "UNKNOWN", "freshness.csv missing for ASAP baseline", {}
+    by_path: dict[str, list[float]] = {}
+    for r in rows:
+        try:
+            d = float(r.get("delta_ms", "nan"))
+        except ValueError:
+            continue
+        if not _is_nan(d):
+            by_path.setdefault(r.get("path", "?"), []).append(d)
+    pieces: list[str] = []
+    summary: dict[str, dict[str, float]] = {}
+    for path in ("warm", "archive"):
+        deltas = by_path.get(path, [])
+        if deltas:
+            p50 = _percentile(deltas, 0.5)
+            p99 = _percentile(deltas, 0.99)
+            summary[path] = {"p50": p50, "p99": p99, "count": len(deltas)}
+            pieces.append(f"{path}: p50={p50:.0f}ms p99={p99:.0f}ms n={len(deltas)}")
+        else:
+            summary[path] = {"p50": float("nan"), "p99": float("nan"), "count": 0}
+            pieces.append(f"{path}: no observations")
+
+    warm_p50 = summary.get("warm", {}).get("p50", float("nan"))
+    archive_p50 = summary.get("archive", {}).get("p50", float("nan"))
+    if _is_nan(warm_p50):
+        verdict = "UNKNOWN"
+    elif warm_p50 <= 30_000.0 and (
+        _is_nan(archive_p50) or archive_p50 <= 90_000.0
+    ):
+        verdict = "PASS"
+    else:
+        verdict = "FAIL"
+    return verdict, "; ".join(pieces), summary
 
 
-def render_markdown(
-    asap_meas: dict,
-    raw_meas: dict,
-    asap_acc: list[dict],
-    asap_response: dict | None,
-    asap_dir: str,
-    num_agents: int = 1,
-    per_agent_cardinality: int = 1000,
+# ── §1 stage table ───────────────────────────────────────────────
+
+
+STAGE_ORDER = ["agent", "gateway", "backend-ingest", "backend-query", "backend-storage"]
+
+
+def aggregate_stages(rows: list[dict]) -> dict[str, dict[str, float]]:
+    """Sum per-stage totals from a single baseline's stages.csv rows."""
+    out: dict[str, dict[str, float]] = {}
+    for r in rows:
+        stage = r.get("stage", "")
+        if stage not in STAGE_ORDER:
+            continue
+        agg = out.setdefault(stage, {
+            "cpu_cores": 0.0, "rss_mib": 0.0,
+            "net_in_kibps": 0.0, "net_out_kibps": 0.0,
+            "disk_mib": 0.0,
+        })
+        for k in ("cpu_cores", "rss_mib", "net_in_kibps", "net_out_kibps", "disk_mib"):
+            try:
+                v = float(r.get(k, "") or "nan")
+            except ValueError:
+                v = float("nan")
+            if not _is_nan(v):
+                agg[k] += v
+    return out
+
+
+def render_stage_table(
+    stages_by_baseline: dict[str, list[dict]],
+    baselines: list[str],
+) -> list[str]:
+    """One markdown table per metric (CPU / RSS / net-in / net-out /
+    disk) with stages × baselines."""
+    aggs = {b: aggregate_stages(stages_by_baseline.get(b, [])) for b in baselines}
+
+    md: list[str] = []
+    md.append("## §1 Stage-separated resource breakdown")
+    md.append("")
+    md.append(
+        "Each cell is the per-stage TOTAL across all containers belonging to "
+        "that stage (agent: all 10 agent-* containers; backend-storage: "
+        "Prometheus TSDB for B0/B1, MinIO bucket for ASAP). The backend "
+        "container is double-listed under {backend-ingest, backend-query} "
+        "so the table can show both surfaces — RSS rows on those two stages "
+        "report the SAME container's RSS twice; criterion ③ deduplicates "
+        "before computing the headline reduction."
+    )
+    md.append("")
+
+    metric_specs = [
+        ("CPU (cores, mean over 60s)", "cpu_cores", "{:.3f}"),
+        ("RSS (MiB, mean over 60s)", "rss_mib", "{:.1f}"),
+        ("Net in (KiB/s, window-rate)", "net_in_kibps", "{:.1f}"),
+        ("Net out (KiB/s, window-rate)", "net_out_kibps", "{:.1f}"),
+        ("Disk (MiB, end-of-window)", "disk_mib", "{:.1f}"),
+    ]
+
+    for title, key, fmt in metric_specs:
+        md.append(f"### {title}")
+        md.append("")
+        md.append("| Stage | " + " | ".join(baselines) + " |")
+        md.append("|" + "---|" * (1 + len(baselines)))
+        for stage in STAGE_ORDER:
+            row = [stage]
+            for b in baselines:
+                v = aggs.get(b, {}).get(stage, {}).get(key, float("nan"))
+                row.append(fmt.format(v) if not _is_nan(v) else "—")
+            md.append("| " + " | ".join(row) + " |")
+        # Totals row, deduplicated for backend-{ingest,query}.
+        total_row = ["**total** (dedup backend)"]
+        for b in baselines:
+            tot = 0.0
+            for stage in STAGE_ORDER:
+                if stage == "backend-query":
+                    # Skip — dedup with backend-ingest.
+                    continue
+                v = aggs.get(b, {}).get(stage, {}).get(key, float("nan"))
+                if not _is_nan(v):
+                    tot += v
+            total_row.append(fmt.format(tot))
+        md.append("| " + " | ".join(total_row) + " |")
+        md.append("")
+    return md
+
+
+# ── §3 freshness table ───────────────────────────────────────────
+
+
+def render_freshness_table(
+    fresh_by_baseline: dict[str, list[dict]],
+    baselines: list[str],
+) -> list[str]:
+    md: list[str] = []
+    md.append("## §3 Freshness p50 / p99 (criterion ⑥)")
+    md.append("")
+    md.append(
+        "Δ between sample emission unix_ts_ms (encoded in the gauge value) and "
+        "PromQL observation wall-clock at the first non-NaN result. Polled at "
+        "10 Hz with `last_over_time(<metric>[10s])`. B0 / B1 / B5 only "
+        "exercise the warm path (Prometheus has no cold archive)."
+    )
+    md.append("")
+    md.append("| Baseline | Path | n samples | p50 (ms) | p99 (ms) |")
+    md.append("|---|---|---|---|---|")
+    for b in baselines:
+        rows = fresh_by_baseline.get(b, [])
+        by_path: dict[str, list[float]] = {}
+        for r in rows:
+            try:
+                d = float(r.get("delta_ms", "nan"))
+            except ValueError:
+                continue
+            if not _is_nan(d):
+                by_path.setdefault(r.get("path", "?"), []).append(d)
+        if not by_path:
+            md.append(f"| {b} | — | 0 | — | — |")
+            continue
+        for path in sorted(by_path):
+            deltas = by_path[path]
+            md.append(
+                f"| {b} | {path} | {len(deltas)} | "
+                f"{_percentile(deltas, 0.5):.0f} | {_percentile(deltas, 0.99):.0f} |"
+            )
+    md.append("")
+    return md
+
+
+# ── markdown assembly ────────────────────────────────────────────
+
+
+def render_markdown_v4(
+    results_dir: str,
+    num_agents: int,
+    per_agent_cardinality: int,
 ) -> str:
-    x_v, x_line, _ = criterion_x_bandwidth(asap_meas, raw_meas)
-    y_v, y_line, _ = criterion_y_latency(asap_meas, raw_meas)
-    z_v, z_line, z_data = criterion_z_resource(asap_meas, raw_meas)
-    a_v, a_line, _ = criterion_accuracy(asap_acc, asap_response)
-    c_v, c_line, _ = criterion_cold_fallback(asap_response, asap_dir)
+    # Discover baselines.
+    if not os.path.isdir(results_dir):
+        return f"# MVP report — results dir missing ({results_dir})\n"
+    baselines: list[str] = []
+    for entry in sorted(os.listdir(results_dir)):
+        sub = os.path.join(results_dir, entry)
+        if os.path.isdir(sub) and os.path.exists(os.path.join(sub, "measurement.csv")):
+            baselines.append(entry)
+    # Stable canonical order: B0 / B1 / B5 / asap.
+    canonical = ["b0-prometheus", "b1-serf", "b5-gorilla", "asap-single-sketch"]
+    baselines = [b for b in canonical if b in baselines] + [
+        b for b in baselines if b not in canonical
+    ]
+
+    measurements = {b: load_measurement(os.path.join(results_dir, b, "measurement.csv"))
+                    for b in baselines}
+    accuracies = {b: load_accuracy(os.path.join(results_dir, b, "accuracy.csv"))
+                  for b in baselines}
+    freshness = {b: load_freshness(os.path.join(results_dir, b, "freshness.csv"))
+                 for b in baselines}
+    stages = {b: load_stages(os.path.join(results_dir, b, "stages.csv"))
+              for b in baselines}
+    responses = {b: load_response(os.path.join(results_dir, b, "ad_hoc_query_response.json"))
+                 for b in baselines}
+
+    asap_label = "asap-single-sketch"
+    raw_label = "b0-prometheus"
+    # ASAP / RAW must be present for §2 verdicts to compute.
+    asap_meas = measurements.get(asap_label, {})
+    raw_meas = measurements.get(raw_label, {})
 
     badge = lambda v: {  # noqa: E731
-        "PASS": "PASS",
-        "FAIL": "FAIL",
-        "PARTIAL": "PARTIAL",
-        "UNKNOWN": "UNKNOWN",
+        "PASS": "PASS", "FAIL": "FAIL", "PARTIAL": "PARTIAL", "UNKNOWN": "UNKNOWN",
     }.get(v, v)
 
     total_card = num_agents * per_agent_cardinality
 
     md: list[str] = []
-    md.append("# ASAPCollector MVP demo — issue #46 (v3)")
+    md.append("# ASAPCollector MVP demo — issue #46 (v4)")
     md.append("")
     md.append(
-        "Multi-agent paired run of the ASAP all-sketches + Gorilla-S3 cold-archive "
-        "pipeline against a raw OTLP streaming baseline. One driver "
-        "(`run_mvp_demo.sh`) brings each cell up, soaks, replays the same "
-        "PromQL suite, then snapshots metrics + cold-truth before tearing the "
-        "stack down. Numbers below are from this run, NOT the 60-cell sweep."
+        "Four-baseline back-to-back run: "
+        "B0 raw→Prometheus, B1 SERF→Prometheus, B5 Gorilla agent-side, "
+        "B6 ASAP single-sketch + Gorilla-S3 cold archive. One driver "
+        "(`run_mvp_demo.sh`) brings each cell up, soaks, replays, "
+        "measures freshness + stages, then tears the stack down."
     )
     md.append("")
     md.append("## Workload shape")
     md.append("")
-    md.append(f"| Knob | v3 value |")
-    md.append(f"|------|---------|")
+    md.append("| Knob | v4 value |")
+    md.append("|------|---------|")
     md.append(f"| Per-agent cardinality | **{per_agent_cardinality}** series |")
     md.append(f"| Number of distributed agents (N) | **{num_agents}** |")
     md.append(
-        f"| Total backend cardinality (N × per-agent) | "
-        f"**{total_card}** series |"
+        f"| Total backend cardinality (N × per-agent) | **{total_card}** series |"
     )
     md.append(f"| Scrape frequency | {os.environ.get('FREQ_HZ', '1')} Hz |")
-    md.append(f"| Warm-up + soak | 60 s + 60 s |")
-    md.append(f"| Replay shapes | quantile×2, sum, count, topk @ 5 QPS for 60 s |")
+    md.append(f"| Agent warm-up + query warm-up + soak | 60 s + ≤30 s + 60 s |")
+    md.append("| Replay shapes | quantile×2, sum, count, topk @ 5 QPS for 60 s |")
+    md.append("| ASAP sketch family | DDSketch (single-sketch v4 mode) |")
     md.append("")
-    md.append(
-        "v3 redesign vs v1/v2: the v1/v2 demo ran a single agent at "
-        "cardinality=10000 with all-five-sketches, which OOM'd inside the "
-        "1 GiB agent ceiling and forced a 4 GiB hack. The realistic "
-        "deployment shape is many distributed edge collectors, each at "
-        "cardinality 100–1000, all feeding a single backend whose total "
-        "cardinality is N × per-agent. v3 reflects that — per-agent "
-        f"cardinality dropped to {per_agent_cardinality}, scaled by "
-        f"N={num_agents}, total backend cardinality = {total_card}."
+
+    # §1 stage table
+    md.extend(render_stage_table(stages, baselines))
+
+    # §2 criteria
+    x_v, x_line, _ = criterion_x_bandwidth(asap_meas, raw_meas)
+    y_v, y_line, _ = criterion_y_latency(asap_meas, raw_meas)
+    z_v, z_line, _ = criterion_z_resource(stages, asap_label, raw_label)
+    a_v, a_line, _ = criterion_accuracy(
+        accuracies.get(asap_label, []),
+        responses.get(asap_label),
     )
-    md.append("")
-    md.append("## Acceptance criteria")
+    c_v, c_line, _ = criterion_cold_fallback(
+        responses.get(asap_label),
+        os.path.join(results_dir, asap_label),
+    )
+    f_v, f_line, _ = criterion_freshness(freshness, asap_label)
+
+    md.append("## §2 Per-criterion verdict (6 criteria)")
     md.append("")
     md.append("| # | Criterion | Verdict | Number |")
     md.append("|---|-----------|---------|--------|")
-    md.append(f"| 1 | Bandwidth reduction (X)            | **{badge(x_v)}** | {x_line} |")
-    md.append(f"| 2 | Query latency reduction (Y)         | **{badge(y_v)}** | {y_line} |")
-    md.append(f"| 3 | Combined resource reduction (Z)     | **{badge(z_v)}** | {z_line} |")
-    md.append(f"| 4 | Accuracy (ε/δ)                      | **{badge(a_v)}** | {a_line} |")
-    md.append(f"| 5 | Cold-store S3 fallback works        | **{badge(c_v)}** | {c_line} |")
+    md.append(f"| ① | Bandwidth reduction (X)            | **{badge(x_v)}** | {x_line} |")
+    md.append(f"| ② | Query latency reduction (Y)         | **{badge(y_v)}** | {y_line} |")
+    md.append(f"| ③ | Combined resource reduction (Z)     | **{badge(z_v)}** | {z_line} |")
+    md.append(f"| ④ | Accuracy (ε/δ)                      | **{badge(a_v)}** | {a_line} |")
+    md.append(f"| ⑤ | Cold-store S3 fallback works        | **{badge(c_v)}** | {c_line} |")
+    md.append(f"| ⑥ | Freshness (sample → first query)    | **{badge(f_v)}** | {f_line} |")
     md.append("")
-    md.append("## Raw measurements")
+
+    # §3 freshness
+    md.extend(render_freshness_table(freshness, baselines))
+
+    # §4 caveats
+    md.append("## §4 Honest caveats")
+    md.append("")
+    md.append("* **Single-host bench.** Every container runs on one machine "
+              "(localhost network, shared kernel scheduler). Wire-bytes signals "
+              "are still meaningful (TX counters are per-container) but absolute "
+              "latency / CPU figures over-aggressively share cache + scheduler "
+              "with the producers. A multi-host run would inflate net I/O latency "
+              "and isolate per-stage CPU; this run does not.")
+    md.append("* **60s measurement window.** Below the 60s gorilla-S3 chunk "
+              "rotation period, so the cold-archive freshness number is bounded "
+              "below by chunk write cadence, not by query latency. A longer run "
+              "(≥ 5 min) would surface a more representative archive p99.")
+    md.append("* **Single-sketch ASAP, not all-five.** This run uses DDSketch "
+              "alone for the warm tier; the v3 all-five-sketches overlay is left "
+              "on disk (`baseline-b6-gorilla-s3.yml`) for paper-figure use only. "
+              "Resource numbers below should NOT be compared against the v3 "
+              "report's all-five rows.")
+    md.append("* **Real Prometheus, real PromQL evaluator.** B0 / B1 / B5 talk "
+              "to a vanilla `prom/prometheus:v2.53.1` container with "
+              "`--web.enable-remote-write-receiver`. No precompute_engine in "
+              "those paths. Comparable apples-to-apples against ASAP's "
+              "precompute backend on equivalent query shapes.")
+    md.append("* **Freshness probe encodes ts inside the gauge value.** The "
+              "delta is `obs_wall_clock - emit_ts`, polled at 10 Hz against "
+              "`last_over_time(<metric>[10s])`. The 10s range window upper-"
+              "bounds Prometheus's 15s scrape quantization on the warm side; "
+              "it does NOT account for clock skew between the probe driver "
+              "and Prometheus's scrape clock (we run both on the same host so "
+              "skew is < 1 ms in practice).")
+    md.append("")
+
+    # Raw measurement appendix
+    md.append("## Raw measurements (per-baseline measurement.csv)")
     md.append("")
     md.append("```text")
-    md.append("ASAP cell (b6-gorilla-s3 + all-sketches warm tier):")
-    for k in sorted(asap_meas):
-        md.append(f"  {k}: {asap_meas[k]:.4f}")
-    md.append("")
-    md.append("RAW cell (b0a-raw-stream):")
-    for k in sorted(raw_meas):
-        md.append(f"  {k}: {raw_meas[k]:.4f}")
+    for b in baselines:
+        meas = measurements.get(b, {})
+        md.append(f"{b}:")
+        for k in sorted(meas):
+            md.append(f"  {k}: {meas[k]:.4f}")
+        md.append("")
     md.append("```")
     md.append("")
-    md.append("## Resource breakdown (criterion 3)")
+
+    # ASAP cold-fallback response
+    md.append("## ASAP cold-fallback ad-hoc query response")
     md.append("")
-    md.append("| Component | RAW | ASAP |")
-    md.append("|-----------|-----|------|")
-    for c in ("agent_cpu_cores", "agent_rss_mib", "backend_cpu_pct", "backend_rss_mib"):
-        a = z_data.get("breakdown_asap", {}).get(c, float("nan"))
-        r = z_data.get("breakdown_raw", {}).get(c, float("nan"))
-        md.append(f"| {c} | {r:.3f} | {a:.3f} |")
-    md.append("")
-    md.append("## Cold-fallback ad-hoc query response")
-    md.append("")
+    asap_response = responses.get(asap_label)
     if asap_response is not None:
         md.append("```json")
         md.append(json.dumps(asap_response, indent=2)[:4000])
@@ -361,23 +613,46 @@ def render_markdown(
     else:
         md.append("_response not captured_")
     md.append("")
-    md.append("## Notes")
-    md.append("")
-    md.append(
-        "* `producer_bytes_out_per_s` is captured from `docker stats` on the "
-        "fake-exporter container (the wire-bytes signal bandwidth claim ① "
-        "actually cares about)."
-    )
-    md.append(
-        "* `backend_query_p99_ms` is the client-side p99 of "
-        "`promql_replay.py`'s successful-query duration_ms — survives the "
-        "`docker compose down -v` that follows each cell."
-    )
-    md.append(
-        "* The accuracy column reports per-kind median relative error from "
-        "`accuracy_reduce.py` (joining `replay.jsonl` with the cold-truth "
-        "JSONL the producer raw_tee wrote)."
-    )
+
+    return "\n".join(md) + "\n"
+
+
+# ── v3 legacy mode (kept for back-compat) ────────────────────────
+
+
+def render_markdown_v3_legacy(
+    asap_dir: str,
+    raw_dir: str,
+    num_agents: int = 10,
+    per_agent_cardinality: int = 1000,
+) -> str:
+    """Bare-bones legacy two-cell renderer used when --asap-dir +
+    --raw-dir are supplied. Kept so v3 callers don't break."""
+    asap_meas = load_measurement(os.path.join(asap_dir, "measurement.csv"))
+    raw_meas = load_measurement(os.path.join(raw_dir, "measurement.csv"))
+    asap_acc = load_accuracy(os.path.join(asap_dir, "accuracy.csv"))
+    asap_response = load_response(os.path.join(asap_dir, "ad_hoc_query_response.json"))
+
+    x_v, x_line, _ = criterion_x_bandwidth(asap_meas, raw_meas)
+    y_v, y_line, _ = criterion_y_latency(asap_meas, raw_meas)
+    a_v, a_line, _ = criterion_accuracy(asap_acc, asap_response)
+    c_v, c_line, _ = criterion_cold_fallback(asap_response, asap_dir)
+
+    md = [
+        "# ASAPCollector MVP demo — issue #46 (legacy v3 layout)",
+        "",
+        "Two-cell ASAP-vs-raw report. v4 layout uses `--results-dir`.",
+        "",
+        f"## Verdicts",
+        "",
+        "| # | Criterion | Verdict | Number |",
+        "|---|-----------|---------|--------|",
+        f"| 1 | Bandwidth (X) | **{x_v}** | {x_line} |",
+        f"| 2 | Latency  (Y) | **{y_v}** | {y_line} |",
+        f"| 4 | Accuracy     | **{a_v}** | {a_line} |",
+        f"| 5 | Cold fallback | **{c_v}** | {c_line} |",
+        "",
+    ]
     return "\n".join(md) + "\n"
 
 
@@ -386,40 +661,45 @@ def render_markdown(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--asap-dir", required=True)
-    ap.add_argument("--raw-dir", required=True)
+    ap.add_argument(
+        "--results-dir",
+        default="",
+        help="v4 results dir; expects <results_dir>/<baseline>/{measurement.csv,...}.",
+    )
+    ap.add_argument(
+        "--asap-dir", default="",
+        help="(legacy v3) ASAP cell directory.",
+    )
+    ap.add_argument(
+        "--raw-dir", default="",
+        help="(legacy v3) raw cell directory.",
+    )
+    ap.add_argument(
+        "--num-agents", type=int, default=10,
+        help="Number of distributed edge agents (default 10).",
+    )
+    ap.add_argument(
+        "--per-agent-cardinality", type=int, default=1000,
+        help="Per-agent series cardinality (default 1000).",
+    )
     ap.add_argument("--out", required=True)
-    # v3: report per-agent and total backend cardinality. Defaults
-    # match the v3 driver (N=10 agents at 1000 series each = 10000
-    # total backend cardinality).
-    ap.add_argument("--num-agents", type=int, default=10,
-                    help="Number of distributed edge agents (default 10).")
-    ap.add_argument("--per-agent-cardinality", type=int, default=1000,
-                    help="Per-agent series cardinality (default 1000).")
     args = ap.parse_args()
 
-    asap_meas = load_measurement(os.path.join(args.asap_dir, "measurement.csv"))
-    raw_meas = load_measurement(os.path.join(args.raw_dir, "measurement.csv"))
-    asap_acc = load_accuracy(os.path.join(args.asap_dir, "accuracy.csv"))
+    if args.results_dir:
+        md = render_markdown_v4(
+            args.results_dir,
+            num_agents=args.num_agents,
+            per_agent_cardinality=args.per_agent_cardinality,
+        )
+    elif args.asap_dir and args.raw_dir:
+        md = render_markdown_v3_legacy(
+            args.asap_dir, args.raw_dir,
+            num_agents=args.num_agents,
+            per_agent_cardinality=args.per_agent_cardinality,
+        )
+    else:
+        sys.exit("must supply --results-dir (v4) or --asap-dir + --raw-dir (v3 legacy)")
 
-    asap_response: dict | None = None
-    resp_path = os.path.join(args.asap_dir, "ad_hoc_query_response.json")
-    if os.path.exists(resp_path):
-        try:
-            with open(resp_path, "r") as f:
-                asap_response = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"# could not parse {resp_path}: {e}", file=sys.stderr)
-
-    md = render_markdown(
-        asap_meas,
-        raw_meas,
-        asap_acc,
-        asap_response,
-        args.asap_dir,
-        num_agents=args.num_agents,
-        per_agent_cardinality=args.per_agent_cardinality,
-    )
     with open(args.out, "w") as f:
         f.write(md)
     print(f"wrote {args.out} ({len(md)} chars)")
