@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
-# run_mvp_demo.sh — issue-46 MVP demo driver. Single cell, single
-# script. Drives two paired runs (ASAP all-sketches + Gorilla-S3
-# cold archive vs raw OTLP streaming) and emits the X/Y/Z deltas
-# the MVP_REPORT.md tabulates.
+# run_mvp_demo.sh — issue-46 MVP demo driver.
 #
-# Workload (single cell, fixed):
-#   N=1 agent, scrape window 1s, cardinality 10000 series,
-#   sketch=ddsketch+KLL+HLL+CS+CMS warm tier, gorillas3 cold tier.
+# v3 redesign (cardinality + multi-agent): the v1/v2 demo ran a single
+# agent at cardinality=10000 with the all-five-sketches overlay, which
+# OOM'd inside the 1 GiB agent ceiling and forced a 4 GiB hack. That
+# was beyond the design point. The realistic deployment is many
+# distributed edge collectors, each at cardinality 100–1000, all
+# feeding a single backend whose total cardinality is N × per-agent.
+# So v3 defaults to:
+#
+#   * per-agent cardinality = 1000 series (CARD=1000)
+#   * N=10 agents (NUM_AGENTS=10) → total backend cardinality = 10000
+#   * the agent mem_limit hack from v2 is dropped — at 1000 per agent
+#     the all-five-sketches working set fits inside the 1 GiB ceiling
+#     `agents-N10.yml` ships with.
+#
+# Drives two paired runs (ASAP all-sketches + Gorilla-S3 cold archive
+# vs raw OTLP streaming) and emits the X/Y/Z deltas the MVP_REPORT
+# tabulates.
 #
 # Steps:
 #   1. ASAP cell — `baseline-b6-gorilla-s3.yml` overlay. Brings up
@@ -15,23 +26,30 @@
 #   2. RAW cell — `baseline-b0a-raw-stream.yml` overlay. Same workload,
 #      same soak, same replay queries. Provides the X/Y/Z denominator.
 #   3. Reduce — call `mvp_report.py` to compute deltas + write
-#      `MVP_REPORT.md`.
+#      `MVP_REPORT_v3.md`.
 #
 # Usage:
 #   bash deploy/scripts/run_mvp_demo.sh
 #
 # Output:
-#   deploy/eval-results/mvp-2026-05-06/{
-#       asap/{measurement.csv, accuracy.csv, replay.jsonl, ad_hoc_query_response.json},
-#       raw/{measurement.csv, accuracy.csv, replay.jsonl},
-#       MVP_REPORT.md
-#   }
+#   deploy/eval-results/${OUT_BASE}/
+#     asap/{measurement.csv, accuracy.csv, replay.jsonl, ad_hoc_query_response.json}
+#     raw/{measurement.csv, accuracy.csv, replay.jsonl}
+#     MVP_REPORT_v3.md
 set -euo pipefail
 
 # ── knobs ────────────────────────────────────────────────────────
 WARMUP_S="${WARMUP_S:-60}"
 SOAK_S="${SOAK_S:-60}"
-CARD="${CARD:-10000}"
+# Per-agent cardinality. v3 default = 1000 (was 10000 in v2). The
+# realistic deployment shape is many edge collectors each at
+# 100–1000; the all-five-sketches working set at 10000 / agent was
+# beyond the design point and OOM'd inside the 1 GiB ceiling.
+CARD="${CARD:-1000}"
+# Number of distributed edge agents. v3 default = 10 (was 1 in v1/v2).
+# Total backend cardinality = NUM_AGENTS × CARD = 10000 by default,
+# matching the paper's claim about backend-side aggregate cardinality.
+NUM_AGENTS="${NUM_AGENTS:-10}"
 FREQ_HZ="${FREQ_HZ:-1}"             # 1 Hz scrape (1s window)
 SDK_WINDOW="${SDK_WINDOW:-1000ms}"
 QPS="${QPS:-5}"
@@ -52,8 +70,8 @@ HOST_PROM_PORT="9090"
 SWEEP_WAIT_CAP_S="${SWEEP_WAIT_CAP_S:-3600}"
 # OUT_BASE may be overridden via env so re-runs (e.g. after a backend
 # rebuild) land in a sibling directory instead of clobbering the
-# original artifacts. The default matches the original PR #287 layout.
-OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-2026-05-06}"
+# original artifacts. v3 uses a sibling directory by default.
+OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-2026-05-06-v3}"
 ASAP_DIR="${OUT_BASE}/asap"
 RAW_DIR="${OUT_BASE}/raw"
 
@@ -120,12 +138,12 @@ teardown() {
 run_cell() {
     # Args: cell_label cell_dir overlay_yaml agent_config
     local label="$1" dir="$2" overlay="$3" agent_cfg="$4"
-    log "── cell: ${label} (${overlay} + ${agent_cfg}) ──"
+    log "── cell: ${label} (${overlay} + ${agent_cfg}, N=${NUM_AGENTS} agents) ──"
     mkdir -p "$dir"
 
     local -a COMPOSE_ARGS=(
         -f base.yml
-        -f agents-N1.yml
+        -f "agents-N${NUM_AGENTS}.yml"
         -f "$overlay"
         -f e2e-overlay.yml
     )
@@ -188,7 +206,7 @@ run_cell() {
     python3 "${SCRIPT_DIR}/measure-baseline.py" \
         --prom "http://localhost:${HOST_PROM_PORT}" \
         --baseline "${label}" \
-        --scale "N1" \
+        --scale "N${NUM_AGENTS}" \
         --rate "$FREQ_HZ" \
         --cardinality "$CARD" \
         --replay-jsonl "${dir}/replay.jsonl" \
@@ -241,11 +259,13 @@ run_cell "asap-allsketch-gs3" "$ASAP_DIR" \
 run_cell "raw-stream"          "$RAW_DIR"  \
     "baseline-b0a-raw-stream.yml" "sketchcol-agent-b0a-raw-stream.yaml"
 
-# ── Reduce → MVP_REPORT.md ───────────────────────────────────────
-log "── reducing → MVP_REPORT.md ──"
+# ── Reduce → MVP_REPORT_v3.md ────────────────────────────────────
+log "── reducing → MVP_REPORT_v3.md ──"
 python3 "${SCRIPT_DIR}/mvp_report.py" \
     --asap-dir "$ASAP_DIR" \
     --raw-dir  "$RAW_DIR" \
-    --out      "${OUT_BASE}/MVP_REPORT.md"
+    --num-agents "$NUM_AGENTS" \
+    --per-agent-cardinality "$CARD" \
+    --out      "${OUT_BASE}/MVP_REPORT_v3.md"
 
-log "MVP demo complete. Report: ${OUT_BASE}/MVP_REPORT.md"
+log "MVP demo complete. Report: ${OUT_BASE}/MVP_REPORT_v3.md"

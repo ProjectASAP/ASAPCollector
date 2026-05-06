@@ -1,0 +1,43 @@
+# Per-metric storage-backend routing table — issue #46 MVP demo.
+#
+# The backend's HTTP query handler consults this on every PromQL
+# instant query. For each metric listed below, the handler dispatches
+# through `EngineRouter` to the named storage backend (e.g. cold
+# Gorilla-S3 archive); unlisted metrics fall through to `default`
+# (which itself defaults to `sketch_warm_tier` — the existing
+# warm-tier sketch path served by `SimpleEngine`).
+#
+# Why this file exists: in the v2 MVP demo the backend bypassed
+# `EngineRouter` for every query because `StreamingConfig::from_yaml_data`
+# always defaults the per-metric `storage_backend` axis to
+# `sketch_warm_tier`. The streaming engine's OTLP-ingest path doesn't
+# see Gorilla data anyway (the agent's `gorillas3processor` writes
+# chunks directly to S3), so the fix lives in this separate routing
+# layer instead of teaching the streaming-config loader about it.
+# Loaded by the backend via `--backend-storage-routing` (alias env var
+# `ASAP_BACKEND_STORAGE_ROUTING`).
+#
+# Schema:
+#   default: <storage_backend>           (optional; default = sketch_warm_tier)
+#   metrics:
+#     <metric_name>: <storage_backend>
+#
+# Valid `storage_backend` values mirror `asap_types::StorageBackend`:
+#   sketch_warm_tier      — warm-tier sketches (SimpleEngine)
+#   gorilla_s3_archive    — cold archive (GorillaQueryEngine)
+#   cold_jsonl_fallback   — local-FS JSONL fallback
+#   double_write          — both warm + archive (DoubleWrite)
+
+default: sketch_warm_tier
+metrics:
+  # The MVP demo's ad-hoc cold-fallback probe is `count(http_requests_total)`,
+  # a PromQL shape the warm-tier inference table doesn't cover.
+  # Routing it to the Gorilla-S3 archive engine makes the response
+  # carry `data_source: gorilla_archive`, which is the byte-comparable
+  # signal criterion ⑤ demands.
+  http_requests_total: gorilla_s3_archive
+
+  # The replay suite's quantile probes hit the latency-quantile
+  # variant; route it to the same cold archive so the v3 demo can
+  # surface end-to-end Gorilla dispatch on quantile shapes too.
+  http_requests_total_latency_ms_quantile: gorilla_s3_archive

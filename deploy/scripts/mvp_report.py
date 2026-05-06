@@ -267,6 +267,8 @@ def render_markdown(
     asap_acc: list[dict],
     asap_response: dict | None,
     asap_dir: str,
+    num_agents: int = 1,
+    per_agent_cardinality: int = 1000,
 ) -> str:
     x_v, x_line, _ = criterion_x_bandwidth(asap_meas, raw_meas)
     y_v, y_line, _ = criterion_y_latency(asap_meas, raw_meas)
@@ -281,21 +283,42 @@ def render_markdown(
         "UNKNOWN": "UNKNOWN",
     }.get(v, v)
 
+    total_card = num_agents * per_agent_cardinality
+
     md: list[str] = []
-    md.append("# ASAPCollector MVP demo — issue #46")
+    md.append("# ASAPCollector MVP demo — issue #46 (v3)")
     md.append("")
     md.append(
-        "Single-cell paired run of the ASAP all-sketches + Gorilla-S3 cold-archive "
+        "Multi-agent paired run of the ASAP all-sketches + Gorilla-S3 cold-archive "
         "pipeline against a raw OTLP streaming baseline. One driver "
         "(`run_mvp_demo.sh`) brings each cell up, soaks, replays the same "
         "PromQL suite, then snapshots metrics + cold-truth before tearing the "
         "stack down. Numbers below are from this run, NOT the 60-cell sweep."
     )
     md.append("")
+    md.append("## Workload shape")
+    md.append("")
+    md.append(f"| Knob | v3 value |")
+    md.append(f"|------|---------|")
+    md.append(f"| Per-agent cardinality | **{per_agent_cardinality}** series |")
+    md.append(f"| Number of distributed agents (N) | **{num_agents}** |")
     md.append(
-        "Workload: N=1 agent · 1 Hz scrape · cardinality 10000 · soak 60s + "
-        f"warm-up 60s. Replay queries: 5 PromQL shapes (quantile×2, sum, "
-        f"count, topk) at 5 QPS for 60s."
+        f"| Total backend cardinality (N × per-agent) | "
+        f"**{total_card}** series |"
+    )
+    md.append(f"| Scrape frequency | {os.environ.get('FREQ_HZ', '1')} Hz |")
+    md.append(f"| Warm-up + soak | 60 s + 60 s |")
+    md.append(f"| Replay shapes | quantile×2, sum, count, topk @ 5 QPS for 60 s |")
+    md.append("")
+    md.append(
+        "v3 redesign vs v1/v2: the v1/v2 demo ran a single agent at "
+        "cardinality=10000 with all-five-sketches, which OOM'd inside the "
+        "1 GiB agent ceiling and forced a 4 GiB hack. The realistic "
+        "deployment shape is many distributed edge collectors, each at "
+        "cardinality 100–1000, all feeding a single backend whose total "
+        "cardinality is N × per-agent. v3 reflects that — per-agent "
+        f"cardinality dropped to {per_agent_cardinality}, scaled by "
+        f"N={num_agents}, total backend cardinality = {total_card}."
     )
     md.append("")
     md.append("## Acceptance criteria")
@@ -366,6 +389,13 @@ def main() -> int:
     ap.add_argument("--asap-dir", required=True)
     ap.add_argument("--raw-dir", required=True)
     ap.add_argument("--out", required=True)
+    # v3: report per-agent and total backend cardinality. Defaults
+    # match the v3 driver (N=10 agents at 1000 series each = 10000
+    # total backend cardinality).
+    ap.add_argument("--num-agents", type=int, default=10,
+                    help="Number of distributed edge agents (default 10).")
+    ap.add_argument("--per-agent-cardinality", type=int, default=1000,
+                    help="Per-agent series cardinality (default 1000).")
     args = ap.parse_args()
 
     asap_meas = load_measurement(os.path.join(args.asap_dir, "measurement.csv"))
@@ -381,7 +411,15 @@ def main() -> int:
         except (json.JSONDecodeError, OSError) as e:
             print(f"# could not parse {resp_path}: {e}", file=sys.stderr)
 
-    md = render_markdown(asap_meas, raw_meas, asap_acc, asap_response, args.asap_dir)
+    md = render_markdown(
+        asap_meas,
+        raw_meas,
+        asap_acc,
+        asap_response,
+        args.asap_dir,
+        num_agents=args.num_agents,
+        per_agent_cardinality=args.per_agent_cardinality,
+    )
     with open(args.out, "w") as f:
         f.write(md)
     print(f"wrote {args.out} ({len(md)} chars)")
