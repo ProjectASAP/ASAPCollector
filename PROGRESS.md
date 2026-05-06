@@ -2,6 +2,38 @@
 
 _Last updated: 2026-05-06._
 
+## Headline §5 evidence — 60-cell paired sweep (2026-05-06)
+
+`deploy/eval-results/headline-2026-05-06/` — full §5 evidence pack
+from the paired 2026-05-05 sweep
+(`sketchcol-sweep-20260505-204002` DDSketch+KLL × 24 cells +
+`sketchcol-sweep-cont-20260505-230219` CMS+CS+HLL × 36 cells, 60
+cells total). Per-cell summary CSV
+(`accuracy-summary.csv`, 240 rows = 60 cells × 4 query kinds), full
+17,539-row accuracy join (`accuracy.csv.gz`), verdict + four §5
+PNGs (`plots/{pareto_acc_vs_thru,bandwidth_vs_n,query_latency_cdf,
+transition_timeline}.png`), and the three reduce/plot/stats scripts
+needed to reproduce them. The matching paper edits land
+\S\,5.5 \emph{Five-claim 60-cell verdict} in
+`Super_resolution_ingestion_with_sketching_VLDB_or_SIGMOD/Evaluation.tex`.
+
+Five-claim verdict: PASS on bandwidth (DDSketch+delta is 1000× KLL,
+269× CS, 129× CMS, 223× HLL on producer wire bytes/s p50–p99); PASS
+on producer/agent CPU+RSS bound across the full grid; PARTIAL on
+warm-tier query latency (4-of-5 query kinds p99 ≤ 327 ms on every
+cell; \texttt{count(metric)} is the outlier and pulls the
+mixed-query p99 to 3.2–4.5 s — root cause is a per-overlay
+inference-YAML naming gap, **not** a system property; documented
+follow-up); FAIL on plan-transition reactivity in this sweep
+(0/60 cells reached `t_plan_ready` — the harness is on the
+single-plan-shot controller, not the L4-IR replanner; documented
+follow-up); PASS on per-family accuracy envelope (median quantile
+relative error ≤ 0.01 on all five sketches; cardinality exact).
+
+The README in the eval-results dir documents the two open issues
+explicitly so the paper edits can carry the matching follow-up
+language.
+
 ## Phase 6 done — Gorilla-S3 cold-engine end-to-end test (2026-05-06)
 
 Outstanding follow-up: Gorilla-S3 e2e shipped. `integration/gorilla_s3_e2e/`

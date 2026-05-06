@@ -1,0 +1,57 @@
+
+## CLAIM 1 — Bandwidth (producer wire bytes/s and agent_out_kib/s) by sketch family
+family     cells   prod_p50_Bps   prod_p99_Bps   agentout_p50_KiB/s   agentout_p99_KiB/s
+ddsketch      12          717.6         4283.5                3.988               42.149
+kll           11       750334.2     19985808.6                2.491               46.834
+cs            12       193288.1       255388.3                4.224               42.147
+cms           12        92526.6       116678.2                4.223               42.147
+hll           12            0.0       159927.8               41.758               46.831
+
+## CLAIM 2 — Producer CPU + agent RSS
+family      p50_cpu_cores  p99_cpu_cores  p50_agent_rss  p99_agent_rss
+ddsketch            2.179          6.673          271.3          974.0
+kll                 1.237          4.660          270.2          883.2
+cs                  1.660          2.802          273.5          967.9
+cms                 1.408          3.869          274.1          968.2
+hll                 1.492          1.944         1055.0         1057.4
+
+## CLAIM 3 — Query latency (client-side p50/p99 ms, all queries vs excluding count(metric))
+family        all_p50    all_p99   excl_count_p50   excl_count_p99
+ddsketch          2.2     4410.3              2.1            326.6
+kll               2.3     3601.2              2.0            158.6
+cs                1.9     4179.4              1.7            188.4
+cms               1.9     3168.8              1.7            183.1
+hll               2.3     4514.1              2.1            266.7
+
+## CLAIM 4 — Plan transitions captured
+family      cells    has_t_query_in_only   has_t_steady
+ddsketch       12                     12              0
+kll            11                     11              0
+cs             12                     12              0
+cms            12                     12              0
+hll            12                     12              0
+
+## CLAIM 5 — Accuracy by family + kind (median relative error / median recall, # samples)
+family     kind              med_err   med_recall      n
+ddsketch   quantile           0.0047          nan     29
+ddsketch   count_unique       0.0000          nan    566
+ddsketch   sum                   nan          nan      0
+ddsketch   topk                  nan       0.0000    577
+kll        quantile           0.0066          nan     30
+kll        count_unique       0.0000          nan    541
+kll        sum                   nan          nan      0
+kll        topk                  nan       0.0000    577
+cs         quantile           0.0093          nan     10
+cs         count_unique       0.0000          nan    807
+cs         sum                   nan          nan      0
+cs         topk                  nan       0.0000    808
+cms        quantile           0.0086          nan     39
+cms        count_unique       0.0000          nan    929
+cms        sum                   nan          nan      0
+cms        topk                  nan       0.0000    929
+hll        quantile           0.0099          nan     26
+hll        count_unique       0.0000          nan    579
+hll        sum                   nan          nan      0
+hll        topk                  nan       0.0000    613
+
+# all count_unique queries: median relative error = 0, n=3422
