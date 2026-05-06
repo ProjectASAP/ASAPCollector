@@ -1,0 +1,196 @@
+# MVP v6 multi-stage topology overlay
+#
+# Layers:
+#
+#   10 fake-exporter  (×100-500 series each → 1K-5K SDK total)
+#         │ OTLP/4317
+#         ▼
+#    2 agents          (×~5K series → 10K aggregate)
+#         │ OTLP/4317
+#         ▼
+#    1 gateway         (10K aggregated; sketch fan-in merge processors)
+#         │ OTLP/4317
+#         ▼
+#    1 backend         (precompute_engine)
+#                      + Prometheus :9090 (B0 baseline only — receives via
+#                        prometheusremotewrite from gateway when overlay
+#                        invoked with PROMETHEUS_BASELINE=1)
+#
+# Drives the controller-driven multi-stage demo for issue #46.
+# See docs/spec-mvp-v6-controller-driven-multi-stage-demo.md.
+#
+# Compose stack:
+#   docker compose \
+#       -f deploy/docker-compose/base.yml \
+#       -f deploy/docker-compose/mvp-v6-multi-stage.yml \
+#       up -d
+#
+# Knobs:
+#   PER_AGENT_CARDINALITY   # default 500; total = N_PRODUCERS × this
+#   N_PRODUCERS             # default 10 (split 5+5 between agent-A / agent-B)
+#   ASAP_SKETCH_FAMILY      # default ddsketch (overridden per-metric by
+#                             controller-emitted configs once Phase B lands)
+
+x-fake-exporter: &fake-exporter-base
+  image: asap/fake-exporter:dev
+  depends_on:
+    - controller
+  environment:
+    EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+    EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+    EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+    EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+
+x-agent: &agent-base
+  image: asap/sketchcol:dev
+  depends_on:
+    - gateway
+    - controller
+  command:
+    - "--config=/etc/otel/config.yaml"
+  deploy:
+    resources:
+      limits:
+        cpus: "1.5"
+        memory: 1536M
+
+services:
+
+  # ─────────────────────────────── 10 fake-exporters ─────────────────────────
+  # Five fan into agent-a, five fan into agent-b. Each emits its own
+  # "shard" of cardinality so the producer-side cardinality is
+  # PER_AGENT_CARDINALITY × N_PRODUCERS at the gateway.
+
+  producer-a-1:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-a:4317"
+      EXPORTER_PRODUCER_ID: "p-a-1"
+  producer-a-2:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-a:4317"
+      EXPORTER_PRODUCER_ID: "p-a-2"
+  producer-a-3:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-a:4317"
+      EXPORTER_PRODUCER_ID: "p-a-3"
+  producer-a-4:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-a:4317"
+      EXPORTER_PRODUCER_ID: "p-a-4"
+  producer-a-5:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-a:4317"
+      EXPORTER_PRODUCER_ID: "p-a-5"
+
+  producer-b-1:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-b:4317"
+      EXPORTER_PRODUCER_ID: "p-b-1"
+  producer-b-2:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-b:4317"
+      EXPORTER_PRODUCER_ID: "p-b-2"
+  producer-b-3:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-b:4317"
+      EXPORTER_PRODUCER_ID: "p-b-3"
+  producer-b-4:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-b:4317"
+      EXPORTER_PRODUCER_ID: "p-b-4"
+  producer-b-5:
+    <<: *fake-exporter-base
+    environment:
+      EXPORTER_TARGET: "agent-b:4317"
+      EXPORTER_PRODUCER_ID: "p-b-5"
+
+  # ─────────────────────────────── 2 agents ──────────────────────────────────
+  # Each agent runs the controller-emitted edge config. Until Phase B
+  # lands, AGENT_CONFIG defaults to the existing all-sketches overlay
+  # so the topology is testable. Phase E swaps these to the
+  # controller-emitted YAMLs.
+
+  agent-a:
+    <<: *agent-base
+    hostname: agent-a
+    environment:
+      AGENT_ID: "agent-a"
+      CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
+      ASAP_SKETCH_FAMILY: "${ASAP_SKETCH_FAMILY:-ddsketch}"
+    volumes:
+      - ../configs/${AGENT_CONFIG_A:-sketchcol-agent-b6-asap-single-sketch.yaml}:/etc/otel/config.yaml:ro
+
+  agent-b:
+    <<: *agent-base
+    hostname: agent-b
+    environment:
+      AGENT_ID: "agent-b"
+      CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
+      ASAP_SKETCH_FAMILY: "${ASAP_SKETCH_FAMILY:-ddsketch}"
+    volumes:
+      - ../configs/${AGENT_CONFIG_B:-sketchcol-agent-b6-asap-single-sketch.yaml}:/etc/otel/config.yaml:ro
+
+  # ─────────────────────────────── 1 gateway ─────────────────────────────────
+  # The base.yml gateway is a pass-through OTLP collector. v6 wants
+  # the gateway to run sketch-merge processors per the controller's
+  # plan (label-aggregation-at-instant query class). For the
+  # pre-work this overlay just declares the gateway service and
+  # mounts a placeholder gateway config; Phase C swaps the
+  # placeholder with the controller-emitted gateway YAML.
+
+  gateway:
+    image: asap/sketchcol:dev
+    hostname: gateway
+    command:
+      - "--config=/etc/otel/config.yaml"
+    volumes:
+      - ../configs/${GATEWAY_CONFIG:-sketchcol-gateway-mvp-v6-placeholder.yaml}:/etc/otel/config.yaml:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+
+  # ─────────────────────────────── B0 baseline Prometheus ────────────────────
+  # Brought up only when invoked with PROMETHEUS_BASELINE=1. Receives
+  # raw remote-write from the gateway when criterion ① bandwidth
+  # comparison is being measured.
+
+  prometheus-b0:
+    image: prom/prometheus:v2.55.0
+    hostname: prometheus-b0
+    profiles: ["b0"]   # `--profile b0` to enable
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=2h"
+    ports:
+      - "19090:9090"
+    volumes:
+      - ../configs/prometheus-with-remote-write.yml:/etc/prometheus/prometheus.yml:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1536M
+
+  # ─────────────────────────────── pre-work placeholder ──────────────────────
+  # Override the base.yml fake-exporter so it doesn't run alongside
+  # the 10 producers above (would double-count cardinality).
+
+  fake-exporter:
+    image: alpine:3.19
+    command: ["sh", "-c", "echo 'mvp-v6 overlay disables base fake-exporter; producers-a/b run instead' && sleep infinity"]
+    depends_on: []
+    environment:
+      OVERRIDDEN_BY: "mvp-v6-multi-stage.yml"
