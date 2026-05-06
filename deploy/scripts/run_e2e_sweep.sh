@@ -93,12 +93,29 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # pattern the query engine recognises (so it parses) but NOT in
 # the per-family backend-inference-*.yaml (so it forces a
 # capability-miss → controller replan → t_plan_ready fires).
+#
+# Sketch-type pinning rationale:
+#   force_replan_sketch is the SAME family as the cell's
+#   primary sketch (DDSketch cell → DDSketch override). This is
+#   counter-intuitive — wouldn't a different family flip more
+#   plan fields? — but a SAME-family override still produces a
+#   different plan_id hash because valid_until is part of the
+#   hash and a fresh plan has valid_until = now + 10m. Crucially,
+#   keeping the family pinned means the agent's metric_suffix
+#   does NOT change (DDSketch agent stays "_quantile", not
+#   "_kll"), so the replay client's queries continue to hit the
+#   warm tier post-replan. Without this, the post-replan replay
+#   queries returned empty results because the agent had been
+#   reconfigured to a different metric_suffix.
+#
+# The companion (other workloads.yaml metric) is also pinned to
+# the cell's family — same rationale.
 SKETCHES=(
-    "ddsketch:sketchcol-agent-b3-delta.yaml:dd-delta:quantile::queries-e2e.json:quantile_over_time(0.99, http_requests_total_latency_ms_quantile[10m]):http_requests_total_latency_ms:DDSketch:KLL:http_requests_total:HLL:CountSketch"
-    "kll:sketchcol-agent-kll-direct.yaml:kll-full:quantile:e2e-overlay-kll.yml:queries-e2e-kll.json:quantile_over_time(0.99, http_requests_total_latency_ms_kll[10m]):http_requests_total_latency_ms:KLL:DDSketch:http_requests_total:HLL:CountSketch"
-    "cs:sketchcol-agent-cs-direct.yaml:cs-delta:topk:e2e-overlay-cs.yml:queries-e2e-cs.json:topk(20, http_requests_total):http_requests_total:CountSketch:CountMinSketch:http_requests_total_latency_ms:DDSketch:KLL"
-    "cms:sketchcol-agent-cms-direct.yaml:cms-delta:topk:e2e-overlay-cms.yml:queries-e2e-cms.json:topk(20, http_requests_total):http_requests_total:CountMinSketch:CountSketch:http_requests_total_latency_ms:DDSketch:KLL"
-    "hll:sketchcol-agent-hll-direct.yaml:hll-delta:count_unique:e2e-overlay-hll.yml:queries-e2e-hll.json:count_over_time(http_requests_total_hll[10m]):http_requests_total:HLL:HLL:http_requests_total_latency_ms:DDSketch:KLL"
+    "ddsketch:sketchcol-agent-b3-delta.yaml:dd-delta:quantile::queries-e2e.json:quantile_over_time(0.99, http_requests_total_latency_ms_quantile[10m]):http_requests_total_latency_ms:DDSketch:DDSketch:http_requests_total:DDSketch:DDSketch"
+    "kll:sketchcol-agent-kll-direct.yaml:kll-full:quantile:e2e-overlay-kll.yml:queries-e2e-kll.json:quantile_over_time(0.99, http_requests_total_latency_ms_kll[10m]):http_requests_total_latency_ms:KLL:KLL:http_requests_total:KLL:KLL"
+    "cs:sketchcol-agent-cs-direct.yaml:cs-delta:topk:e2e-overlay-cs.yml:queries-e2e-cs.json:topk(20, http_requests_total):http_requests_total:CountSketch:CountSketch:http_requests_total_latency_ms:CountSketch:CountSketch"
+    "cms:sketchcol-agent-cms-direct.yaml:cms-delta:topk:e2e-overlay-cms.yml:queries-e2e-cms.json:topk(20, http_requests_total):http_requests_total:CountMinSketch:CountMinSketch:http_requests_total_latency_ms:CountMinSketch:CountMinSketch"
+    "hll:sketchcol-agent-hll-direct.yaml:hll-delta:count_unique:e2e-overlay-hll.yml:queries-e2e-hll.json:count_over_time(http_requests_total_hll[10m]):http_requests_total:HLL:HLL:http_requests_total_latency_ms:HLL:HLL"
 )
 
 NS=(1 10)
