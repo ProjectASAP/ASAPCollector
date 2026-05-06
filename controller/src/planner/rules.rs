@@ -42,9 +42,10 @@ pub fn typed_sketch_algebra_enabled() -> bool {
 /// typed path (multi-intent, raw-required, or no aggregations) — the
 /// caller should then fall back to the legacy `plan()` output.
 ///
-/// Additive — no existing call site invokes this. See module-level
-/// `ENV_USE_TYPED_SKETCH_ALGEBRA` for the opt-in gate.
-#[allow(dead_code)]
+/// Phase B (MVP v6) wires `main::handle_plan` to call this whenever
+/// the parallel `USE_TYPED_STAGE_SPLIT` gate is enabled — the bound
+/// `SketchExpr` is then fed into `planner::stage_split::split_typed_three_stage`
+/// + the per-stage emitters in `config::stage_config`.
 pub fn bind_workload_typed(
     w: &QueryWorkload,
 ) -> Option<crate::sketch_algebra::SketchExpr> {
