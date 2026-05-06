@@ -8,7 +8,7 @@ supplements with `docker stats` for containers that don't
 self-report (backend + the producer / fake-exporter, and — added
 2026-05-05 for paper blocker #3 — every agent container, so the
 raw / Gorilla / Serf baselines that don't emit
-`otelcol_datacollector_processor_*_bytes_total` still produce
+`otelcol_asapcollector_processor_*_bytes_total` still produce
 on-the-wire bandwidth figures). Producer-side
 columns were added 2026-04-23 to support the three-axis SDK
 aggregation sweep — see
@@ -21,7 +21,7 @@ Column-by-column provenance is documented in
 
   * `agent_in_kib_per_s` / `agent_out_kib_per_s` — sketch
     baselines source these from the patched processor's
-    `otelcol_datacollector_processor_input_bytes_total` /
+    `otelcol_asapcollector_processor_input_bytes_total` /
     `…_output_bytes_total` (in-process protobuf bytes). Raw +
     Gorilla baselines have no such counter so the script falls
     back to `docker stats` net rx / tx for the agent container,
@@ -248,7 +248,7 @@ QUERIES: dict[str, str] = {
     "agent_in_kib_per_s": (
         "avg by (agent_id) ("
         "  sum by (agent_id) ("
-        "    rate(otelcol_datacollector_processor_input_bytes_total"
+        "    rate(otelcol_asapcollector_processor_input_bytes_total"
         "         {{job=\"agents\"}}[{w}])"
         "  )"
         ") / 1024"
@@ -256,7 +256,7 @@ QUERIES: dict[str, str] = {
     "agent_out_kib_per_s": (
         "avg by (agent_id) ("
         "  sum by (agent_id) ("
-        "    rate(otelcol_datacollector_processor_output_bytes_total"
+        "    rate(otelcol_asapcollector_processor_output_bytes_total"
         "         {{job=\"agents\"}}[{w}])"
         "  )"
         ") / 1024"

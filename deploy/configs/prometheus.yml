@@ -58,7 +58,7 @@ scrape_configs:
   #
   #   :8890  - SELF-telemetry: otelcol runtime counters +
   #            per-processor input/output bytes, throughput,
-  #            CPU, RSS (`otelcol_datacollector_processor_*`
+  #            CPU, RSS (`otelcol_asapcollector_processor_*`
   #            family, produced by the patched processors'
   #            `enable_self_monitoring: true`). This is the
   #            CPU/bandwidth data source.

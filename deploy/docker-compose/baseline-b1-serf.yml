@@ -11,7 +11,7 @@
 # stacks with the AGENT_CONFIG-driven mount from agents-N*.yml.
 #
 # Container-only tmpfs — bytes-written is read from
-# `otelcol_datacollector_processor_output_bytes_total{processor_type="serf"}`
+# `otelcol_asapcollector_processor_output_bytes_total{processor_type="serf"}`
 # on :8890, not from host disk.
 
 x-serf-volume: &serf-volume

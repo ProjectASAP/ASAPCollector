@@ -17,7 +17,7 @@
 # compose overlay to keep it off the host disk. Size accounting
 # via `du -sb /var/tmp/asap-serf-out` inside the container, or
 # via the serfprocessor's self-telemetry
-# `otelcol_datacollector_processor_output_bytes_total`.
+# `otelcol_asapcollector_processor_output_bytes_total`.
 receivers:
   otlp:
     protocols:
