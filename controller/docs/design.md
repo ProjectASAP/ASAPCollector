@@ -832,6 +832,22 @@ pub trait DeploymentModel {
 
 ### `core::workload`
 
+> **Implementation status (this PR).** The new types `QueryLanguage`,
+> `AccuracyTarget`, `QueryShape`, `DataShape`, `QueryId`, `BindingName`,
+> and a `WorkloadPlan` container live in `controller/src/types_v2.rs`.
+> `analyzer::QuerySpec` carries the new fields (`id`, `language`,
+> `accuracy`, `dollars`, `deployment_model`, `shape`, `data`) as
+> `#[serde(default)]` additions; defaults preserve legacy behaviour for
+> existing `POST /api/v1/plan` callers and the `workloads.yaml`
+> pre-population path. `Analyzer::analyze` enforces the L1 cross-product
+> rejections (`Streaming × Batch`, `Streaming × Mutable`) from the table
+> below and resolves typed `accuracy` over legacy `accuracy_sla` with
+> the typed form taking precedence. The fields are not yet load-bearing
+> in `replan.rs` / `planner/` cost or binding decisions — that's a
+> separate downstream PR. `WorkloadPlan` is a container only; the CSE
+> pass that populates `bindings` is deferred until the L3 algebra grows
+> `LetBinding` / `Ref`.
+
 One public type for every kind of input:
 
 ```rust
