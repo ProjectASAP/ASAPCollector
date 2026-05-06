@@ -52,9 +52,11 @@ pub mod decoder;
 pub mod encoder;
 pub mod error;
 pub mod index;
+pub mod postings;
 
 pub use block::{SeriesChunk, SeriesMeta, BLOCK_VERSION, HEADER_LEN, MAGIC};
 pub use decoder::{DecodedHeader, GorillaDecoder, SampleIter};
 pub use encoder::{write_block, GorillaEncoder};
 pub use error::{DecodeError, EncodeError};
 pub use index::{IndexEntry, IndexFile, INDEX_SCHEMA_VERSION};
+pub use postings::{Postings, PostingsBuilder, SeriesId, POSTINGS_MAGIC, POSTINGS_VERSION};

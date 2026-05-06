@@ -39,6 +39,9 @@ fn encode_then_index_then_decode() {
         sample_count: samples.len() as u32,
         label_hash: label_hash(&labels),
         size_bytes: chunk_bytes.len() as u32,
+        object_key: None,
+        byte_offset: None,
+        byte_length: None,
     });
 
     // 3. Round-trip the index.
