@@ -395,6 +395,14 @@ func main() {
 		window, aggName, os.Getenv("EXPORTER_SDK_PROJECTION"),
 	)
 
+	// MVP v6 freshness probes — three timestamp-encoded counters that
+	// run alongside the primary workload (synthetic or trace replay).
+	// Disabled with EXPORTER_FRESHNESS_PROBES=off. See probes.go for
+	// the protocol + the spec at
+	// docs/spec-mvp-v6-controller-driven-multi-stage-demo.md §⑥.
+	stopProbes := startFreshnessProbes(ctx, meter)
+	defer stopProbes()
+
 	if traceFile != "" {
 		runTraceReplay(ctx, meter, metricName, traceFile, rt)
 	} else {
