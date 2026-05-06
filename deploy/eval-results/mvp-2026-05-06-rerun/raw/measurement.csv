@@ -1,0 +1,2 @@
+baseline,scale,rate,cardinality,producer_cpu_cores,producer_rss_mib,producer_bytes_out_per_s,agent_cpu_cores,agent_rss_mib,agent_in_kib_per_s,agent_out_kib_per_s,agent_points_per_s,gateway_cpu_cores,gateway_rss_mib,gateway_points_per_s,gateway_out_series_per_s,backend_cpu_pct,backend_rss_mib,backend_samples_per_s,backend_query_p99_ms
+raw-stream,N1,1,1000,0.035,67.450,17653.413,0.007,211.500,18.352,18.352,2000.000,0.005,209.355,1000.000,1000.000,1.730,368.300,1000.000,181.304

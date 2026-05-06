@@ -1,0 +1,6 @@
+[2026-05-06 17:25:23 UTC]   501B STANDARD default/http_requests_total/2026/05/06/17/index.json
+[2026-05-06 17:24:23 UTC] 745KiB STANDARD default/http_requests_total/2026/05/06/17/part-1778088263-000000.gor
+[2026-05-06 17:25:23 UTC] 757KiB STANDARD default/http_requests_total/2026/05/06/17/part-1778088323-000000.gor
+[2026-05-06 17:25:23 UTC]   514B STANDARD default/http_requests_total_latency_ms/2026/05/06/17/index.json
+[2026-05-06 17:24:23 UTC] 1.0MiB STANDARD default/http_requests_total_latency_ms/2026/05/06/17/part-1778088263-000001.gor
+[2026-05-06 17:25:23 UTC] 1.0MiB STANDARD default/http_requests_total_latency_ms/2026/05/06/17/part-1778088323-000001.gor

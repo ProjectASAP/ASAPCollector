@@ -50,7 +50,10 @@ HOST_CONTROLLER_PORT="18080"
 HOST_PROM_PORT="9090"
 
 SWEEP_WAIT_CAP_S="${SWEEP_WAIT_CAP_S:-3600}"
-OUT_BASE="${REPO_ROOT}/deploy/eval-results/mvp-2026-05-06"
+# OUT_BASE may be overridden via env so re-runs (e.g. after a backend
+# rebuild) land in a sibling directory instead of clobbering the
+# original artifacts. The default matches the original PR #287 layout.
+OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-2026-05-06}"
 ASAP_DIR="${OUT_BASE}/asap"
 RAW_DIR="${OUT_BASE}/raw"
 
@@ -139,7 +142,18 @@ run_cell() {
        EXPORTER_SDK_WINDOW="$SDK_WINDOW" \
        docker compose "${COMPOSE_ARGS[@]}" up -d) > "${dir}/up.log" 2>&1
 
-    # Warm-up.
+    # Stack-settle (mirrors `run_e2e_sweep.sh`'s `sleep 8`). Without
+    # this the warm-up loop would race the gateway / backend
+    # readiness checks; sketch ingest only starts once the OTLP
+    # gRPC port is bound.
+    log "  stack settle..."
+    sleep 8
+
+    # Warm-up phase — let the warm-tier sketch accumulators fill and
+    # the gorillas3 processor write its first chunk to MinIO before
+    # the measurement window opens. Without this, the replay queries
+    # hit empty warm tier and the cold-fallback ad-hoc query lands
+    # before any chunks exist in MinIO.
     log "  warm-up ${WARMUP_S}s..."
     sleep "$WARMUP_S"
 

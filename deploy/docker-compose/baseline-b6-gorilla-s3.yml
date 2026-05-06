@@ -31,6 +31,19 @@ services:
     labels:
       asap.baseline: "b6-gorilla-s3"
 
+  # Agent runs all five sketches + gorillas3 simultaneously at
+  # cardinality=10000 / 1 Hz scrape — the default 1024 MiB limit
+  # in `agents-N1.yml` is below the working set and trips
+  # OOMKilled (exit 137) before the first 60 s window closes
+  # (gorillas3 never gets to flush a chunk to MinIO). Bump the
+  # ceiling for the MVP demo so the cold-tier path actually runs.
+  agent-1:
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4096M
+
   # Additive bucket-seed for the Gorilla-S3 cold tier. base.yml's
   # `minio-setup` only creates the `raw` bucket (used by the
   # producer raw_tee + LocalFsColdStore JSONL fallback); the
