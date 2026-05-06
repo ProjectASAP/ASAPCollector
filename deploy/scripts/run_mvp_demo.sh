@@ -429,7 +429,7 @@ COMPACTOR_ENDPOINT="${COMPACTOR_ENDPOINT:-http://localhost:9000}"
 COMPACTOR_ACCESS_KEY="${COMPACTOR_ACCESS_KEY:-asap}"
 COMPACTOR_SECRET_KEY="${COMPACTOR_SECRET_KEY:-asap-local-only}"
 COMPACTOR_TENANT="${COMPACTOR_TENANT:-default}"
-COMPACTOR_BIN="${COMPACTOR_BIN:-${REPO_ROOT}/compactor/target/release/asap-compactor}"
+COMPACTOR_BIN="${COMPACTOR_BIN:-${REPO_ROOT}/compactor/target/release/gorilla-compactor}"
 
 # Pre-compactor object listing (count + total bytes).
 list_minio_objects() {

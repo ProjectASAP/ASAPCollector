@@ -1,5 +1,5 @@
 [package]
-name = "asap-compactor"
+name = "gorilla-compactor"
 version = "0.1.0"
 edition = "2021"
 description = "ASAP S3 cold-store compactor — concat-only block merger for the GorillaQueryEngine archive tier (mvp/v5)."
@@ -14,13 +14,13 @@ license = "MIT"
 # `byte_offset` + `byte_length` within the merged file so the
 # backend can issue `Range: bytes=START-END` partial reads.
 #
-# See `src/lib.rs` and `docs/design-asap-compactor.md` for the full
+# See `src/lib.rs` and `docs/design-gorilla-compactor.md` for the full
 # rationale (and why decode + re-encode is the WRONG optimization
 # for MVP).
 
 [[bin]]
-name = "asap-compactor"
-path = "src/bin/asap-compactor.rs"
+name = "gorilla-compactor"
+path = "src/bin/gorilla-compactor.rs"
 
 [dependencies]
 # Sibling-checkout path-dep mirrors the backend's pattern in

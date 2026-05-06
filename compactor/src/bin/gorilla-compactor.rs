@@ -1,4 +1,4 @@
-//! `asap-compactor` — concat-only compactor binary.
+//! `gorilla-compactor` — concat-only compactor binary.
 //!
 //! Walks an S3-compatible bucket under `--tenant`, plans + executes
 //! compaction groups, prints metrics on stdout and a JSON summary on
@@ -11,13 +11,13 @@ use clap::Parser;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use asap_compactor::{
+use gorilla_compactor::{
     CompactionPlan, CompactionThresholds, Compactor, CompactorConfig, ObjectStore,
 };
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "asap-compactor",
+    name = "gorilla-compactor",
     about = "Concat-only S3 cold-store compactor for the ASAP GorillaQueryEngine archive tier."
 )]
 struct Cli {
@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
         dry_run = cli.dry_run,
         threshold_count = cli.threshold_count,
         threshold_hours = cli.threshold_hours,
-        "asap-compactor: starting"
+        "gorilla-compactor: starting"
     );
 
     let plan = CompactionPlan::discover(
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         groups = plan.groups.len(),
         deferred = plan.deferred.len(),
-        "asap-compactor: discovered plan"
+        "gorilla-compactor: discovered plan"
     );
 
     let compactor = Compactor::new(
@@ -142,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
         })).collect::<Vec<_>>(),
     });
     std::fs::write(&cli.out, serde_json::to_string_pretty(&summary)?)?;
-    info!(out = cli.out.as_str(), "asap-compactor: wrote summary");
+    info!(out = cli.out.as_str(), "gorilla-compactor: wrote summary");
     println!("{}", compactor.metrics().render_prometheus());
     Ok(())
 }
@@ -192,12 +192,12 @@ impl ObjectStore for S3RealObjectStore {
     async fn list_prefix(
         &self,
         prefix: &str,
-    ) -> Result<Vec<String>, asap_compactor::ObjectStoreError> {
+    ) -> Result<Vec<String>, gorilla_compactor::ObjectStoreError> {
         let pages = self
             .bucket
             .list(prefix.to_string(), None)
             .await
-            .map_err(|e| asap_compactor::ObjectStoreError::Backend(format!("s3 list {prefix}: {e}")))?;
+            .map_err(|e| gorilla_compactor::ObjectStoreError::Backend(format!("s3 list {prefix}: {e}")))?;
         let mut out = Vec::new();
         for page in pages {
             for obj in page.contents {
@@ -207,17 +207,17 @@ impl ObjectStore for S3RealObjectStore {
         Ok(out)
     }
 
-    async fn get_object(&self, key: &str) -> Result<Vec<u8>, asap_compactor::ObjectStoreError> {
+    async fn get_object(&self, key: &str) -> Result<Vec<u8>, gorilla_compactor::ObjectStoreError> {
         let resp = self
             .bucket
             .get_object(key)
             .await
-            .map_err(|e| asap_compactor::ObjectStoreError::Backend(format!("s3 get {key}: {e}")))?;
+            .map_err(|e| gorilla_compactor::ObjectStoreError::Backend(format!("s3 get {key}: {e}")))?;
         if resp.status_code() == 404 {
-            return Err(asap_compactor::ObjectStoreError::NotFound(key.to_string()));
+            return Err(gorilla_compactor::ObjectStoreError::NotFound(key.to_string()));
         }
         if !(200..300).contains(&resp.status_code()) {
-            return Err(asap_compactor::ObjectStoreError::Backend(format!(
+            return Err(gorilla_compactor::ObjectStoreError::Backend(format!(
                 "s3 get {key}: status {}",
                 resp.status_code()
             )));
@@ -230,22 +230,22 @@ impl ObjectStore for S3RealObjectStore {
         key: &str,
         offset: u64,
         length: u64,
-    ) -> Result<Vec<u8>, asap_compactor::ObjectStoreError> {
+    ) -> Result<Vec<u8>, gorilla_compactor::ObjectStoreError> {
         let end = offset + length - 1;
         let resp = self
             .bucket
             .get_object_range(key, offset, Some(end))
             .await
             .map_err(|e| {
-                asap_compactor::ObjectStoreError::Backend(format!(
+                gorilla_compactor::ObjectStoreError::Backend(format!(
                     "s3 range get {key} {offset}..{length}: {e}"
                 ))
             })?;
         if resp.status_code() == 404 {
-            return Err(asap_compactor::ObjectStoreError::NotFound(key.to_string()));
+            return Err(gorilla_compactor::ObjectStoreError::NotFound(key.to_string()));
         }
         if !(200..300).contains(&resp.status_code()) {
-            return Err(asap_compactor::ObjectStoreError::Backend(format!(
+            return Err(gorilla_compactor::ObjectStoreError::Backend(format!(
                 "s3 range get {key}: status {}",
                 resp.status_code()
             )));
@@ -257,31 +257,31 @@ impl ObjectStore for S3RealObjectStore {
         &self,
         key: &str,
         body: Vec<u8>,
-    ) -> Result<(), asap_compactor::ObjectStoreError> {
+    ) -> Result<(), gorilla_compactor::ObjectStoreError> {
         self.bucket
             .put_object(key, &body)
             .await
-            .map_err(|e| asap_compactor::ObjectStoreError::Backend(format!("s3 put {key}: {e}")))?;
+            .map_err(|e| gorilla_compactor::ObjectStoreError::Backend(format!("s3 put {key}: {e}")))?;
         Ok(())
     }
 
-    async fn delete_object(&self, key: &str) -> Result<(), asap_compactor::ObjectStoreError> {
+    async fn delete_object(&self, key: &str) -> Result<(), gorilla_compactor::ObjectStoreError> {
         self.bucket
             .delete_object(key)
             .await
-            .map_err(|e| asap_compactor::ObjectStoreError::Backend(format!("s3 delete {key}: {e}")))?;
+            .map_err(|e| gorilla_compactor::ObjectStoreError::Backend(format!("s3 delete {key}: {e}")))?;
         Ok(())
     }
 
     async fn object_exists(
         &self,
         key: &str,
-    ) -> Result<bool, asap_compactor::ObjectStoreError> {
+    ) -> Result<bool, gorilla_compactor::ObjectStoreError> {
         let (_data, code) = self
             .bucket
             .head_object(key)
             .await
-            .map_err(|e| asap_compactor::ObjectStoreError::Backend(format!("s3 head {key}: {e}")))?;
+            .map_err(|e| gorilla_compactor::ObjectStoreError::Backend(format!("s3 head {key}: {e}")))?;
         Ok(code != 404)
     }
 }

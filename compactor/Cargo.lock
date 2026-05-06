@@ -77,25 +77,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "asap-compactor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "asap-gorilla",
- "async-trait",
- "chrono",
- "clap",
- "rust-s3",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "asap-gorilla"
 version = "0.1.0"
 dependencies = [
@@ -582,6 +563,25 @@ dependencies = [
  "r-efi 6.0.0",
  "wasip2",
  "wasip3",
+]
+
+[[package]]
+name = "gorilla-compactor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "asap-gorilla",
+ "async-trait",
+ "chrono",
+ "clap",
+ "rust-s3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
