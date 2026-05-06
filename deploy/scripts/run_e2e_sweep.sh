@@ -217,6 +217,18 @@ for sk in "${SKETCHES[@]}"; do
                     FORCE_SKETCH="$FORCE_REPLAN_SKETCH_B"
                     COMP_SKETCH="$COMPANION_SKETCH_B"
                 fi
+                # `--max-wait-secs 30` (default 120 s) caps the
+                # post-replan probe budget. The forced replan
+                # changes the agent's sketch_type which renames
+                # the emitted metric (e.g. *_quantile → *_kll
+                # when we hint KLL), so the original transition
+                # query never matches the new metric and
+                # `t_first_hit` never fires. Without this cap each
+                # cell would block 240+ s on retry budgets.
+                # `t_plan_ready` is the success criterion for
+                # claim ④; t_first_hit / t_steady are nice-to-have
+                # signals that need a separate trigger-query vs
+                # new-plan-metric pairing PR.
                 python3 "${SCRIPT_DIR}/plan_transition.py" \
                     --target http://localhost:19091 \
                     --controller http://localhost:18080 \
@@ -225,6 +237,7 @@ for sk in "${SKETCHES[@]}"; do
                     --sample-out "${CELL_DIR}/sample.jsonl" \
                     --soak-secs "$SOAK_S" \
                     --pre-transition-secs "$PRE_TRANSITION_S" \
+                    --max-wait-secs 30 \
                     --force-replan-metric "${FORCE_REPLAN_METRIC:-}" \
                     --force-replan-sketch "${FORCE_SKETCH:-}" \
                     --force-replan-companion-metric "${COMPANION_METRIC:-}" \
