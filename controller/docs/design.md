@@ -876,6 +876,48 @@ impl PhysicalPlanner for LifecyclePlanner {
 }
 ```
 
+> **Implementation status (Phase E).** The typed L5 framework lives in
+> `controller/src/stage_split/` (this PR):
+> - `stage_id.rs` — `StageId` enum (`Edge`/`Gateway`/`Backend`) +
+>   `Topology` enum. Phase E ships only `Topology::ThreeStage`; the
+>   `SingleStage` / `ZeroStage` variants surface as future-proofing
+>   stubs that error cleanly via `AllocateError::UnsupportedTopology`.
+> - `colored_dag.rs` — `ColoredDag { topology, nodes, edges }` IR, the
+>   allocator's output. `cut_edges()` exposes cross-stage edges for
+>   future wire-format insertion (Phase G+).
+> - `allocator.rs` — `StageAllocator::allocate(expr, topology) ->
+>   Result<ColoredDag, AllocateError>`. Implements the §6
+>   batched-queries colouring rules: `Logical(Scan/Window/Aggregate)`
+>   + `SketchAgg` → Edge; `SketchMerge` → Gateway; `SketchEstimate` →
+>   Backend; `LetBinding`/`Ref` colour by their bound expression's
+>   stage. The L3 `Aggregate{exact}` (e.g. `Max`) reachable through
+>   `Logical` colours Edge — the design.md "root of q3" backend
+>   placement is exercised when the same exact aggregation appears
+>   *above* a SketchMerge sibling structure (a Phase G enhancement
+>   that adds an explicit `Logical(Merge)` SketchExpr variant for the
+>   gateway hop).
+> - `emitter.rs` — `Emitter` trait + `ThreeStageEmitter` that lowers
+>   `ColoredDag` → `HashMap<StageId, StageConfig>`. `StageConfig`
+>   carries the structural facts each downstream consumer needs:
+>   - `Edge` → `EdgeStageConfig { source_metric, label_filters,
+>     window_secs, sketch_processors, exporter_target }`. Sketch
+>     processor names follow the catalog (`kllprocessor`,
+>     `ddsketchprocessor`, `hllprocessor`, `countminsketchprocessor`,
+>     `countsketchprocessor`).
+>   - `Gateway` → `GatewayStageConfig { otlp_receiver_port,
+>     merge_processors, exporter_target }`.
+>   - `Backend` → `BackendStageConfig { aggregations, readouts }` —
+>     the aggregation_id ↔ (sketch_kind, params) mapping the backend's
+>     `OtlpReceiver` + readout catalog need.
+>
+> The typed path is opt-in via the `USE_TYPED_STAGE_SPLIT` env var
+> consulted by `controller/src/planner/stage_split.rs::split_typed_three_stage`;
+> existing untyped callers (`split_expr_by_stage`) continue to run
+> unchanged. OpAMP push (`crate::opamp::OpampServer::push_to_role`)
+> and backend `StreamingConfig` POST (`crate::backend_client`) wiring
+> against the typed `StageConfig` is downstream (Phase G+) — Phase E
+> ships only the structured per-stage output, not the wire push.
+
 ### `core::plan` — shared traits bridging layers
 
 ```rust
