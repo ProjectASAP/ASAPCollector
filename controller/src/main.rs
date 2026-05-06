@@ -13,6 +13,7 @@ mod query_language;
 mod query_parser;
 mod replan;
 mod runtime_samples;
+mod sketch_algebra;
 mod store;
 mod types;
 mod types_v2;

@@ -649,6 +649,20 @@ Two type-system invariants make L4 robust:
 
 **Sketches are data-model-agnostic by construction.** KLL / CMS / HLL / DDSketch ingest a stream of values. That stream can come from a time-series window (`Source::TimeSeries`) or a table column (`Source::Table`); the sketch doesn't know or care. So `BindKllOnQuantile` works identically regardless of `Source`.
 
+#### Implementation status
+
+**Phase C** (`feat(controller): Phase C — sketch_algebra L4 IR (SketchExpr + Bind* rules)`) lands the typed `SketchExpr` IR + `Bind*` rules in `controller/src/sketch_algebra/`. Module layout:
+
+- `sketch_expr.rs` — `SketchExpr` enum (`Logical` / `SketchAgg` / `SketchEstimate` / `SketchMerge` / `LetBinding` / `Ref`).
+- `params.rs` — `SketchKind` + per-family `SketchParams` (`KllParams{k}`, `DDSketchParams{alpha}`, `HllParams{precision}`, `CmsParams{w,d}`, `CountSketchParams{w,d,with_heap}`).
+- `schema.rs` — `SketchStateSchema` with the `(SketchKind, SketchParams)` field-type and the catalog-capability flags (`mergeable` / `subtractable` / `deletable`).
+- `rules/{bind_kll_quantile, bind_ddsketch_quantile, bind_cms_count, bind_cms_topk, bind_hll_cardinality}.rs` — five `Bind*` rules implementing the `Rule` trait.
+- `lower.rs` — `bind_query_expr(&QueryExpr, AccuracyTarget) -> Result<SketchExpr, BindingError>`.
+
+**Scope reduction.** The variant set ships the subset DC + PromQL needs. `SketchJoin`, `SketchSubtract`, `SketchDelete` from the spec above are intentionally *not* surfaced yet — they're gated on rules that haven't landed. Adding them is purely additive.
+
+**Planner-side migration is opt-in.** `controller/src/planner/rules.rs` exposes `bind_workload_typed(&QueryWorkload) -> Option<SketchExpr>` and an env-var gate `USE_TYPED_SKETCH_ALGEBRA=1`. Existing call sites continue to use the legacy untyped binding path (`algebra::directory::sketch_type_for_agg`); the typed path runs in parallel for callers that opt in. **Phase E** (stage_split refactor) is the natural migration point at which the typed path becomes the only path.
+
 ### `core::lower` — L1 → L2 → L3 passes
 
 One pass per language, each producing the same `intent_algebra::QueryExpr`:
