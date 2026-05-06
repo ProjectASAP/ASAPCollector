@@ -485,6 +485,15 @@ Per-node input/output spec — the stable contract for L3 nodes (full implementa
 | `WindowFunc { func, partition_by, order_by, frame }` | one input schema; every field in `partition_by` / `order_by` must be present | the input schema extended with one new column carrying the analytic-function output (named after `func`, typed per `func`) |
 | `BinaryOp { op, vector_match }` | two input schemas — left and right operands. PromQL vector-match constraints (`on`/`ignoring` + `group_left`/`group_right`) govern label-set compatibility | for arithmetic/comparison `op`: the left input's schema with the value column re-typed to the result of `op`; for boolean `op` (`and`, `or`, `unless`): the left input's schema with a boolean value column |
 
+##### Implementation status
+
+Phase F (in `controller/src/intent_algebra/schema.rs` + `controller/src/intent_algebra/cse.rs`) lands the load-bearing consumer of `Schema::unique_keys`:
+
+- `cse_reuse_is_legal(producer_schema, consumer_count) -> Result<(), CseError>` — the gatekeeper. Two `QueryExpr::Ref` consumers may share a producer only when the producer's output schema has a non-empty `unique_keys` set and the consumer count is ≥ 2. This is the proof point that `unique_keys` is load-bearing — without it, the deduper conservatively refuses to share and reuse "drops on the floor" (this section, line ~1356).
+- `dedupe_subtrees(roots) -> CseWorkloadPlan` — basic implementation of the workload-level CSE pass for the literal "≥2 root queries with identical sub-expressions" case (the batched-queries example, line ~1256). Detects shared `Aggregate` children, gates on `cse_reuse_is_legal`, hoists into a `LetBinding`. Richer detection (alpha-equivalence, schema-merge across compatible-but-not-identical shapes, recursive nested CSE) is downstream — Phase F lands the gate + the basic case so the cost-model side has something to credit.
+
+The full general CSE algorithm (the optimisation half) remains future work.
+
 #### DAG schema, DB schema, sketch catalog — three distinct metadata sources
 
 These three are sometimes conflated and shouldn't be. Only the first two are *schemas* (descriptions of stream / table shape); the sketch catalog is a *registry* of available primitives, not a description of a stream:
@@ -560,7 +569,8 @@ Follow-up phases:
 
 - **Phase C** — wire `Analyzer::analyze` to also produce a `QueryExpr` alongside `QueryWorkload`, populate `WorkloadPlan::roots` from the lowered roots.
 - **Phase D** — workload-level CSE pass (`core::lower::workload::dedupe_subtrees`) that hoists shared sub-DAGs into `WorkloadPlan::bindings`, leaning on `Schema::unique_keys` for legality (the batched-queries example above).
-- **Phase E/F** — L4 `SketchExpr` IR (`core::sketch_algebra`) + L4 binding rules.
+- **Phase E** — L4 `SketchExpr` IR (`core::sketch_algebra`) + L4 binding rules.
+- **Phase F** *(this PR)* — `CostModel::workload_cost` + `Schema::unique_keys`-based CSE legality. See the per-section "Implementation status" notes under `core::cost` and the "Schema flow" table below for what shipped / what's deferred.
 
 ### `core::sketch_algebra` — Layer 4 IR (`SketchExpr`)
 
@@ -1027,6 +1037,17 @@ pub struct WorkloadCost {
 ```
 
 The reuse model is not sketch-specific: any primitive that is costly to build once and cheap to query (sketches, materialized aggregates, cached scan results, future wavelet summaries) plugs into the same `ReusedComponent` accounting.
+
+#### Implementation status
+
+Phase F (in `controller/src/planner/cost_model.rs`) lands the workload-cost shape that pairs with the `Schema::unique_keys`-based CSE legality gate above:
+
+- `workload_cost(plan: &WorkloadCostPlan<'_>) -> Result<WorkloadCost, QueryExprError>` — walks the L3 IR DAG (`intent_algebra::QueryExpr`) post-order, memoises by `LetBinding` name, credits each shared producer once across consumers. Returns `WorkloadCost { total_dollars, per_root_breakdown, reused_savings }` — the `reused_savings` field exposes the gap between the bundled total and the naive sum-over-roots, so EXPLAIN can show what shared-producer credit was worth.
+- `WorkloadCostPlan { bindings, roots }` — the cost-model's view of `types_v2::WorkloadPlan` carrying real `&QueryExpr` references rather than the `QueryExprPlaceholder` JSON-wire string. Collapses into `types_v2::WorkloadPlan` when the placeholder is swapped for live `QueryExpr` downstream.
+
+Per-node cost primitives at L3 (`node_cost_scan`, `node_cost_window`, `node_cost_aggregate`, `intent_cost`) are coarse-but-monotonic placeholders calibrated against schema width and intent kind. Calibration against real benchmarks is downstream; what Phase F pins is the *shape* — costs are positive, additive over sub-trees, and the savings invariant `bundled_total ≤ naive_sum` holds with `savings = naive_sum − bundled_total`.
+
+Not yet shipped at L3 cost (deferred): the `total_latency` field, the per-plan `Contribution` split (Phase F's `per_root_breakdown` carries one `f64` per root, not the full latency / dollars / accuracy tuple), and the `ReusedComponent` enumeration (savings are reported as a scalar, not as a per-component vector — the per-component breakdown is downstream when more producer kinds (sketches, materialized aggregates) become candidates for sharing). The L4 `score` / `score_with` path above remains the per-plan dollars / latency / memory cost; the L3 `workload_cost` is the bundled-plan credit on top.
 
 ### `core::emit`
 
