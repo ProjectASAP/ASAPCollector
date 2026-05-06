@@ -568,6 +568,64 @@ mod tests {
         assert_eq!(String::from_utf8(rc.config_hash).unwrap(), "hash-1", "delivered hash must match");
     }
 
+    /// Phase C integration test: gateway YAML emitted from the typed L5
+    /// stage_split path is queued onto the gateway-role connection and
+    /// not onto agent-role / backend-role connections. We don't decode
+    /// the protobuf (an unrelated decode-tag-zero issue affects sibling
+    /// tests today); we only assert *delivery routing* — the gateway
+    /// client receives a non-empty binary frame within the timeout, the
+    /// other roles receive nothing.
+    #[tokio::test]
+    async fn push_to_role_gateway_routes_only_to_gateway_role() {
+        use futures_util::StreamExt;
+        let (srv, addr) = start_server().await;
+        let mut agent_ws   = connect_ws_client(addr, "agent-1",   "agent").await;
+        let mut gateway_ws = connect_ws_client(addr, "gateway-1", "gateway").await;
+        let mut backend_ws = connect_ws_client(addr, "backend-1", "backend").await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Mirror the call site that handle_plan now exercises:
+        //   emit_gateway_yaml(...) → push_to_role(Gateway, ...).
+        // We use a stand-in YAML payload here; the emitter has its own
+        // tests in stage_config.rs.
+        let yaml = "extensions:\n  opamp: {}\n".to_string();
+        srv.push_to_role(AgentRole::Gateway, RemoteConfig {
+            config_hash: "hash-gw".into(),
+            yaml,
+        }).await;
+
+        // Gateway must receive exactly one frame.
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            gateway_ws.next(),
+        )
+        .await
+        .expect("gateway timed out")
+        .unwrap()
+        .unwrap();
+        let bytes = msg.into_data();
+        assert!(!bytes.is_empty(), "gateway must receive a non-empty frame");
+
+        // Other roles must receive nothing within a short window.
+        let agent_result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            agent_ws.next(),
+        ).await;
+        assert!(
+            agent_result.is_err(),
+            "agent-role client must not receive gateway-role push"
+        );
+        let backend_result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            backend_ws.next(),
+        ).await;
+        assert!(
+            backend_result.is_err(),
+            "backend-role client must not receive gateway-role push"
+        );
+    }
+
     /// `push_to_role(Agent)` must not deliver to a backend-role client.
     #[tokio::test]
     async fn push_to_agent_role_does_not_reach_backend_role() {

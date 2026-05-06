@@ -484,28 +484,65 @@ async fn handle_plan(
                             }
                         }
                         crate::stage_split::StageConfig::Gateway(gw) => {
-                            // No `AgentRole::Gateway` exists today
-                            // (Phase C adds it). Log the YAML so the
-                            // demo overlay can pick it up via stdout
-                            // until Phase C wires the role.
+                            // Phase C: AgentRole::Gateway is now wired
+                            // through the OpAMP role-routing path, so
+                            // the gateway YAML is pushed to gateway-role
+                            // collectors the same way the edge YAML is
+                            // pushed to agent-role collectors above.
                             match config::emit_gateway_yaml(&gw, &st.opamp_endpoint) {
-                                Ok(yaml) => info!(
-                                    stage = "gateway", bytes = yaml.len(),
-                                    yaml = %yaml,
-                                    "[USE_TYPED_STAGE_SPLIT] gateway YAML emitted (push deferred to Phase C)"
-                                ),
+                                Ok(yaml) => {
+                                    let hash = short_hash(&yaml);
+                                    info!(
+                                        stage = "gateway", bytes = yaml.len(),
+                                        "[USE_TYPED_STAGE_SPLIT] pushing typed gateway YAML"
+                                    );
+                                    st.opamp.push_to_role(
+                                        AgentRole::Gateway,
+                                        RemoteConfig { config_hash: hash, yaml },
+                                    ).await;
+                                }
                                 Err(e) => warn!(error = %e, "emit_gateway_yaml failed"),
                             }
                         }
                         crate::stage_split::StageConfig::Backend(be) => {
+                            // Phase C: post the typed L5 streaming-config
+                            // JSON to ASAPQuery-backend via the shared
+                            // BackendClient when configured. Without a
+                            // configured endpoint this still no-ops
+                            // silently — same fire-and-forget contract
+                            // as the existing Replanner path.
                             match config::emit_backend_config_json(&be) {
-                                Ok(json_doc) => info!(
-                                    stage = "backend",
-                                    aggregations = be.aggregations.len(),
-                                    readouts = be.readouts.len(),
-                                    json = %json_doc,
-                                    "[USE_TYPED_STAGE_SPLIT] backend streaming-config JSON emitted (push deferred to Phase C)"
-                                ),
+                                Ok(json_doc) => {
+                                    info!(
+                                        stage = "backend",
+                                        aggregations = be.aggregations.len(),
+                                        readouts = be.readouts.len(),
+                                        "[USE_TYPED_STAGE_SPLIT] posting typed backend JSON"
+                                    );
+                                    if let Some(client) = st.backend_client.as_ref() {
+                                        let body = json_doc.to_string();
+                                        match client.post_streaming_config_json(body).await {
+                                            Ok(()) => info!(
+                                                stage = "backend",
+                                                endpoint = %client.endpoint(),
+                                                "[USE_TYPED_STAGE_SPLIT] typed backend JSON push succeeded"
+                                            ),
+                                            Err(e) => warn!(
+                                                stage = "backend",
+                                                endpoint = %client.endpoint(),
+                                                error = %e,
+                                                "[USE_TYPED_STAGE_SPLIT] typed backend JSON push failed; \
+                                                 next replan cycle will retry"
+                                            ),
+                                        }
+                                    } else {
+                                        info!(
+                                            stage = "backend",
+                                            "[USE_TYPED_STAGE_SPLIT] no backend client configured; \
+                                             skipping JSON push (set CONTROLLER_BACKEND_ENDPOINT to enable)"
+                                        );
+                                    }
+                                }
                                 Err(e) => warn!(error = %e, "emit_backend_config_json failed"),
                             }
                             // Mention stage_id so `match` arms aren't
