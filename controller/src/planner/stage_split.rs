@@ -669,7 +669,8 @@ pub const ENV_USE_TYPED_STAGE_SPLIT: &str = "USE_TYPED_STAGE_SPLIT";
 /// per-stage descriptions, but the typed path's structural output is
 /// `crate::stage_split::StageConfig` (sketched against design.md §6),
 /// while the legacy path is the existing `StagedPlan` shape.
-#[allow(dead_code)]
+///
+/// Phase B (MVP v6) wires `main::handle_plan` to consult this gate.
 pub fn typed_stage_split_enabled() -> bool {
     matches!(
         std::env::var(ENV_USE_TYPED_STAGE_SPLIT).as_deref(),
@@ -683,10 +684,16 @@ pub fn typed_stage_split_enabled() -> bool {
 ///
 /// Returns `None` when the typed path errors out (unsupported topology
 /// shape, unresolved Ref, empty backend) — the caller should then fall
-/// back to the legacy `split_expr_by_stage` output. Additive — no
-/// existing call site invokes this. See `ENV_USE_TYPED_STAGE_SPLIT`
-/// for the opt-in gate.
-#[allow(dead_code)]
+/// back to the legacy `split_expr_by_stage` output.
+///
+/// Phase B (MVP v6) wires this into `main::handle_plan` behind the
+/// `USE_TYPED_STAGE_SPLIT` env-var gate. Each per-stage config the
+/// returned map carries is materialised into wire bytes by the
+/// emitters in [`crate::config::stage_config`] —
+/// [`crate::config::stage_config::emit_edge_yaml`] for `Edge`,
+/// [`crate::config::stage_config::emit_gateway_yaml`] for `Gateway`,
+/// [`crate::config::stage_config::emit_backend_config_json`] for
+/// `Backend`. Phase C plumbs deployment-aware endpoint resolution.
 pub fn split_typed_three_stage(
     expr: &crate::sketch_algebra::SketchExpr,
 ) -> Option<std::collections::HashMap<crate::stage_split::StageId, crate::stage_split::StageConfig>>
