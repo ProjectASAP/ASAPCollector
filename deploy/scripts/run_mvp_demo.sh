@@ -179,7 +179,6 @@ run_cell() {
         --cardinality "$CARD" \
         --replay-jsonl "${dir}/replay.jsonl" \
         --bytes-sample-window 15 \
-        --bytes-sample-warmup 3 \
         > "${dir}/measurement.csv" \
         2> "${dir}/measurement.log" || true
 
