@@ -54,10 +54,15 @@
 #   4. Freshness phase calls `run_freshness_phase.sh` which emits
 #      `freshness/{raw,warm,archive}.csv`.
 #
-#   5. Compactor phase invokes the `gorilla-compactor` binary at
-#      `${COMPACTOR_BIN}` with `--threshold-hours 0 --threshold-count 0`
-#      so even a 60s soak generates one merge candidate. Dry-run
-#      then live-run, capturing before/after MinIO listings.
+#   5. Compaction phase observes `thanos-compact` (running as a sidecar
+#      from `mvp-thanos-archive.yml`, Phase δ.1). The driver verifies
+#      the container is up + healthy, captures before/after `mc ls`
+#      listings on the MinIO bucket, and polls thanos-compact's
+#      `thanos_compact_iterations_total` metric to confirm at least
+#      one compaction sweep completed. The deleted `gorilla-compactor`
+#      Rust binary (concat-only) is replaced with thanos-compact's
+#      stock decode + re-encode flow, which produces better
+#      compression and downsampled tiers (raw / 5m / 1h) for free.
 #
 #   6. Per-edge bandwidth probe (`measure_per_edge_bandwidth.py`)
 #      runs alongside `measure_stages.py` so criterion ① gets a
@@ -79,7 +84,7 @@
 #           freshness/{raw.csv, warm.csv, archive.csv}
 #           ad-hoc/{<query>.json, ...}
 #       asap/
-#           (same shape as baseline/, plus compactor/)
+#           (same shape as baseline/, plus thanos-compact/)
 #       MVP_REPORT.md      (joined comparison report)
 #
 # Output layout (--mode baseline or --mode asap, single mode):
@@ -127,12 +132,26 @@ HOST_PROM_B0_PORT="${HOST_PROM_B0_PORT:-19090}"  # collides with backend ingest;
 
 OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-current}"
 REPORT_NAME="${REPORT_NAME:-MVP_REPORT.md}"
-COMPACTOR_BIN="${COMPACTOR_BIN:-${REPO_ROOT}/compactor/target/release/gorilla-compactor}"
-COMPACTOR_BUCKET="${COMPACTOR_BUCKET:-asap-gorilla}"
-COMPACTOR_ENDPOINT="${COMPACTOR_ENDPOINT:-http://localhost:9000}"
-COMPACTOR_ACCESS_KEY="${COMPACTOR_ACCESS_KEY:-asap}"
-COMPACTOR_SECRET_KEY="${COMPACTOR_SECRET_KEY:-asap-local-only}"
-COMPACTOR_TENANT="${COMPACTOR_TENANT:-default}"
+
+# Phase δ.1: gorilla-compactor was replaced by the stock thanos-compact
+# sidecar (see deploy/docker-compose/mvp-thanos-archive.yml). The
+# COMPACTOR_BIN env var path is gone — there is no separate Rust binary
+# to invoke. The MinIO bucket name moves to THANOS_BUCKET to match the
+# bucket the gorillas3processor + store-gateway already use.
+THANOS_BUCKET="${THANOS_BUCKET:-asap-gorilla-tsdb}"
+THANOS_ENDPOINT="${THANOS_ENDPOINT:-http://localhost:9000}"
+THANOS_ACCESS_KEY="${THANOS_ACCESS_KEY:-asap}"
+THANOS_SECRET_KEY="${THANOS_SECRET_KEY:-asap-local-only}"
+# Host-side HTTP port for thanos-compact's /-/healthy + /metrics. The
+# overlay does NOT publish 10904 to the host (no port collision risk
+# desired) so the driver hits it via `docker compose exec` /
+# `docker exec` instead.
+THANOS_COMPACT_HEALTH_PATH="${THANOS_COMPACT_HEALTH_PATH:-/-/healthy}"
+# How long Phase 7 waits for at least one compaction iteration before
+# giving up and recording a soft warning. Default 90s — thanos-compact
+# scans the bucket once at startup and again on its sync interval, so
+# 60-90s is enough for the first sweep to land on an empty/small bucket.
+THANOS_COMPACT_WAIT_S="${THANOS_COMPACT_WAIT_S:-90}"
 
 # CLI knob — selects which pipeline(s) run.
 MODE="${MODE:-both}"
@@ -206,14 +225,17 @@ parse_args() {
 
 ensure_out_dirs() {
     # Per-pipeline subdir (PIPELINE_OUT_BASE is set by
-    # run_one_pipeline() before this runs).
+    # run_one_pipeline() before this runs). Phase δ.1 renamed
+    # `compactor/` → `thanos-compact/` to reflect that compaction is
+    # now performed by the stock thanos-compact sidecar instead of
+    # the deleted gorilla-compactor Rust binary.
     mkdir -p \
         "${PIPELINE_OUT_BASE}" \
         "${PIPELINE_OUT_BASE}/controller-emitted-configs" \
         "${PIPELINE_OUT_BASE}/measurements" \
         "${PIPELINE_OUT_BASE}/freshness" \
         "${PIPELINE_OUT_BASE}/ad-hoc" \
-        "${PIPELINE_OUT_BASE}/compactor"
+        "${PIPELINE_OUT_BASE}/thanos-compact"
 }
 
 # Resolve which compose profile + service-list flags to pass for the
@@ -236,13 +258,11 @@ preflight() {
         echo "[error] 'docker compose' subcommand not available" >&2; exit 2
     fi
 
-    if [[ "${PIPELINE_LABEL}" == "asap" ]] && [[ ! -x "${COMPACTOR_BIN}" ]]; then
-        log "WARN: compactor binary missing at ${COMPACTOR_BIN}; "
-        log "      run \`cargo build --release -p gorilla-compactor\` "
-        log "      OR set COMPACTOR_BIN to the location of the built "
-        log "      binary. The compactor phase will be skipped with a "
-        log "      clear marker file rather than crashing."
-    fi
+    # Phase δ.1: gorilla-compactor binary was deleted; thanos-compact
+    # runs as a sidecar from mvp-thanos-archive.yml. No host-side
+    # binary to verify — the existence check moves into
+    # compactor_phase() (now: thanos_compact_phase) where it polls the
+    # docker compose service.
 
     # Best-effort: warn if the fake-exporter image is missing.
     # We do NOT fail here — the docker-compose `up` will surface
@@ -652,61 +672,130 @@ cold_fallback_phase() {
     fi
 }
 
-# Phase 6 — compactor (dry-run + live, concat-only).
+# Phase 6 — trigger and observe thanos-compact (Phase δ.1 replacement
+# for the deleted gorilla-compactor Rust binary).
+#
+# thanos-compact runs as a sidecar from mvp-thanos-archive.yml in
+# `--wait` mode (continuous loop). This phase:
+#   1. confirms the container is running + healthy
+#   2. captures `mc ls` of the MinIO bucket BEFORE the wait
+#   3. polls `thanos_compact_iterations_total` from /metrics until
+#      it increments (or THANOS_COMPACT_WAIT_S elapses)
+#   4. captures `mc ls` AFTER + the final /metrics snapshot
+#
+# Output files (consumed by mvp_report.py §5):
+#   thanos-compact/before.minio.jsonl   — pre-sweep object listing
+#   thanos-compact/after.minio.jsonl    — post-sweep object listing
+#   thanos-compact/metrics.before.txt   — iteration count at start
+#   thanos-compact/metrics.after.txt    — iteration count at end
+#   thanos-compact/health.txt           — /-/healthy snapshot
+#   thanos-compact/SKIPPED              — present iff phase bailed early
 compactor_phase() {
     if [[ "${PIPELINE_LABEL}" != "asap" ]]; then
-        log "Phase 6 compactor — n/a for baseline (no Gorilla-S3 archive); skipping"
+        log "Phase 6 thanos-compact — n/a for baseline (no archive tier); skipping"
         return 0
     fi
-    log "Phase 6 compactor (concat-only)"
-    local cdir="${PIPELINE_OUT_BASE}/compactor"
+    log "Phase 6 thanos-compact (decode + re-encode, sidecar-driven)"
+    local cdir="${PIPELINE_OUT_BASE}/thanos-compact"
 
-    if [[ ! -x "${COMPACTOR_BIN}" ]]; then
-        log "  [skip] compactor binary missing at ${COMPACTOR_BIN}"
-        echo "compactor binary missing at ${COMPACTOR_BIN}" \
+    # 1. Locate the running container. The compose project name follows
+    #    the COMPOSE_DIR's basename (`docker-compose`) per Compose v2's
+    #    project-name resolution; falling back to a name filter is
+    #    robust against any future project renames.
+    local compact_cont
+    compact_cont="$(docker ps \
+        --filter name=thanos-compact \
+        --filter status=running \
+        --format '{{.ID}}' | head -n1)"
+    if [[ -z "${compact_cont}" ]]; then
+        log "  [skip] no running thanos-compact container found"
+        echo "thanos-compact container not running" \
             > "${cdir}/SKIPPED"
         return 0
     fi
+    log "  thanos-compact container: ${compact_cont}"
 
-    # MinIO listing helper (before / after).
+    # 2. /-/healthy snapshot (best-effort).
+    if docker exec "${compact_cont}" \
+            wget -qO- "http://localhost:10904${THANOS_COMPACT_HEALTH_PATH}" \
+            > "${cdir}/health.txt" 2> "${cdir}/health.err"; then
+        log "  thanos-compact /-/healthy: OK"
+    else
+        log "  [warn] /-/healthy probe failed — see health.err"
+    fi
+
+    # 3. MinIO listing helper (before / after). Same `mc` image used
+    #    by the legacy compactor phase.
     list_minio_objects() {
         local out_path="$1"
         docker run --rm --network host --entrypoint sh minio/mc:latest -c \
-            "mc alias set asap ${COMPACTOR_ENDPOINT} ${COMPACTOR_ACCESS_KEY} ${COMPACTOR_SECRET_KEY} >/dev/null 2>&1; \
-             mc ls --recursive --json asap/${COMPACTOR_BUCKET} 2>/dev/null || true" \
+            "mc alias set asap ${THANOS_ENDPOINT} ${THANOS_ACCESS_KEY} ${THANOS_SECRET_KEY} >/dev/null 2>&1; \
+             mc ls --recursive --json asap/${THANOS_BUCKET} 2>/dev/null || true" \
             > "${out_path}" 2>"${out_path}.err" || true
     }
 
     list_minio_objects "${cdir}/before.minio.jsonl"
 
-    log "  compactor dry-run"
-    "${COMPACTOR_BIN}" \
-        --endpoint "${COMPACTOR_ENDPOINT}" \
-        --bucket "${COMPACTOR_BUCKET}" \
-        --tenant "${COMPACTOR_TENANT}" \
-        --access-key-id "${COMPACTOR_ACCESS_KEY}" \
-        --secret-access-key "${COMPACTOR_SECRET_KEY}" \
-        --threshold-count 0 \
-        --threshold-hours 0 \
-        --dry-run \
-        --out "${cdir}/dry_run.json" \
-        > "${cdir}/dry_run.log" 2>&1 || \
-            log "  [warn] compactor dry-run exited non-zero"
+    # 4. /metrics snapshot — extract iteration counter (before).
+    fetch_compact_metrics() {
+        local out_path="$1"
+        docker exec "${compact_cont}" \
+            wget -qO- "http://localhost:10904/metrics" \
+            > "${out_path}" 2>"${out_path}.err" || true
+    }
+    extract_iter_count() {
+        local metrics_path="$1"
+        # The Thanos exporter line looks like:
+        #   thanos_compact_iterations_total <count>
+        # Anchor on the metric name with a leading whitespace boundary
+        # so it doesn't match `_failed` or other suffixed variants.
+        grep -E '^thanos_compact_iterations_total[[:space:]]' \
+            "${metrics_path}" 2>/dev/null \
+            | tail -n1 \
+            | awk '{print $2}'
+    }
 
-    log "  compactor live run"
-    "${COMPACTOR_BIN}" \
-        --endpoint "${COMPACTOR_ENDPOINT}" \
-        --bucket "${COMPACTOR_BUCKET}" \
-        --tenant "${COMPACTOR_TENANT}" \
-        --access-key-id "${COMPACTOR_ACCESS_KEY}" \
-        --secret-access-key "${COMPACTOR_SECRET_KEY}" \
-        --threshold-count 0 \
-        --threshold-hours 0 \
-        --out "${cdir}/live_run.json" \
-        > "${cdir}/live_run.log" 2>&1 || \
-            log "  [warn] compactor live run exited non-zero"
+    fetch_compact_metrics "${cdir}/metrics.before.txt"
+    local iter_before
+    iter_before="$(extract_iter_count "${cdir}/metrics.before.txt")"
+    iter_before="${iter_before:-0}"
+    log "  thanos_compact_iterations_total (before): ${iter_before}"
 
+    # 5. Poll for one iteration to elapse (or wait-window expires).
+    log "  waiting up to ${THANOS_COMPACT_WAIT_S}s for one compaction sweep"
+    local started_iter; started_iter=$(date +%s)
+    local iter_now="${iter_before}"
+    while true; do
+        local now_iter; now_iter=$(date +%s)
+        local elapsed=$((now_iter - started_iter))
+        if (( elapsed >= THANOS_COMPACT_WAIT_S )); then
+            log "  [warn] wait window ${THANOS_COMPACT_WAIT_S}s elapsed without iteration increment"
+            break
+        fi
+        fetch_compact_metrics "${cdir}/metrics.poll.txt"
+        iter_now="$(extract_iter_count "${cdir}/metrics.poll.txt")"
+        iter_now="${iter_now:-0}"
+        # bash arithmetic; treat strings safely.
+        if [[ "${iter_now}" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+                && [[ "${iter_before}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            # awk handles fractional Prometheus float values cleanly.
+            local advanced
+            advanced="$(awk -v a="${iter_now}" -v b="${iter_before}" 'BEGIN{print (a+0 > b+0) ? 1 : 0}')"
+            if [[ "${advanced}" == "1" ]]; then
+                log "  thanos_compact_iterations_total advanced ${iter_before} → ${iter_now} after ${elapsed}s"
+                break
+            fi
+        fi
+        sleep 5
+    done
+
+    # 6. After-state captures.
+    fetch_compact_metrics "${cdir}/metrics.after.txt"
     list_minio_objects "${cdir}/after.minio.jsonl"
+    local iter_after
+    iter_after="$(extract_iter_count "${cdir}/metrics.after.txt")"
+    iter_after="${iter_after:-0}"
+    log "  thanos_compact_iterations_total (after): ${iter_after}"
 }
 
 # Phase 6.5 — fetch s3 cost tracker if backend exposes it.
