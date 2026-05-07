@@ -1,0 +1,79 @@
+# Gateway-side sketchcol config — MVP v6 placeholder
+#
+# Receives OTLP from agents, runs sketch-merge processors per the
+# label-aggregation-at-instant query class, exports to backend.
+#
+# This is a PLACEHOLDER until v6 Phase B's controller emitter
+# produces a real gateway YAML. The placeholder is shape-correct
+# (right receivers / processor types / exporter target) so the
+# multi-stage overlay can stand the gateway up; values are
+# defaults, not controller-planned.
+#
+# Pipeline:
+#
+#   agent-a / agent-b  ──OTLP──▶  gateway
+#                                    │
+#                          [merge processors]
+#                                    │
+#                                  backend
+#
+# Merge processors today are placeholders for the
+# `<sketch_kind>merge` processors in
+# opentelemetry-collector-contrib-patch/processor/. When Phase B's
+# emit_gateway_yaml fires, it will replace this YAML with the
+# controller-decided merge processor list.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Memory-limit processor — stop the gateway from OOMing under
+  # load surge before backpressure reaches the agents.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1536
+    spike_limit_mib: 256
+
+  # Batching for gateway → backend OTLP. Agents already batch;
+  # gateway-side batching shrinks backend ingestion overhead.
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  # PLACEHOLDER for sketch-merge processors. Phase B's
+  # emit_gateway_yaml will replace this YAML with one or more
+  # `<sketch_kind>merge` processors per the controller's plan.
+  # Today this YAML doesn't include a sketchmerge entry — the
+  # gateway just forwards. The plumbing is staged; the merge
+  # logic lands when the controller-emitted YAML drops in.
+
+exporters:
+  otlp/backend:
+    endpoint: backend:4317
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+
+service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8890
+      level: detailed
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/backend]
