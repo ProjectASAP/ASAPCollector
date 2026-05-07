@@ -1,0 +1,4 @@
+verify_thanos_sidecar: waiting for http://localhost:19092/-/healthy
+verify_thanos_sidecar: thanos-query healthy
+verify_thanos_sidecar: probing /api/v1/query?query=up
+verify_thanos_sidecar: ok — thanos-query <-> thanos-store-gateway <-> MinIO chain is wired
