@@ -334,27 +334,123 @@ posted on the issue-#46 comment thread:
 
 ## 2. Architecture summary (just enough to read the runbook)
 
+The demo runs **two architectures back-to-back on the same workload**
+so the issue-#46 criteria (X bandwidth reduction, Y query-latency
+reduction, Z combined-resource reduction, accuracy, cold-fallback,
+freshness) all fall out as A-vs-B comparisons. Same fake-exporter
+producers, same per-agent cardinality, same query classes, same soak
+duration — only the pipeline differs.
+
+### Baseline pipeline ("OTel → Prometheus")
+
+The minimal industry-standard observability stack the user would
+deploy today: stock OTel agents shipping every raw sample to a
+TSDB.
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
+│  BASELINE                                                                │
 │                                                                          │
-│  10 fake-exporter ─OTLP─▶ 2 agents ─OTLP─▶ 1 gateway ─OTLP─▶ 1 backend  │
-│   (1000 series each)      (sketch processors)  (sketch-merge)            │
-│                                                                          │
-│                                            └─Gorilla─▶ MinIO/S3          │
-│                                                                          │
-│  controller — plans (sketch family + stage placement) per metric         │
-│   from mvp-workload.yaml; emits per-runtime configs via OpAMP.        │
+│  10 fake-exporter  ──OTLP raw──▶  2 OTel agents  ──remote_write──▶       │
+│   (1000 series each)              (no aggregation;                       │
+│                                    forward as-is)                        │
+│                                          │                               │
+│                                          ▼                               │
+│                                   Prometheus  ◀─── PromQL queries        │
+│                                   (or VictoriaMetrics)                   │
+│                                   - TSDB: head block + WAL + chunks      │
+│                                   - PromQL evaluator                     │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
+
+   Resource axes measured (per-stage):
+     • OTel agent: CPU + RSS + net out
+     • Prometheus: CPU + RSS + on-disk chunk bytes + query CPU/RSS
+     • Wire bytes (agent → Prometheus)
+     • Query latency (PromQL HTTP p50 / p99)
 ```
 
-Three query classes the demo exercises:
+Compose overlay: `deploy/docker-compose/mvp-multi-stage.yml` brought
+up with the `b0` profile (`docker compose --profile b0 up`) which
+adds a Prometheus container with `--web.enable-remote-write-receiver`.
+The agents under this profile load `sketchcol-agent-b0-prometheus.yaml`,
+which configures a `prometheusremotewrite` exporter with no sketch
+processor in the chain.
+
+### ASAP pipeline (current architecture)
+
+The system this paper proposes: controller-planned sketches at the
+edge + gateway, exact archive on object storage, single PromQL surface
+served by the backend's `EngineRouter` dispatching warm vs. archive
+based on the query's shape.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  ASAP                                                                    │
+│                                                                          │
+│  10 fake-exporter ──OTLP──▶ 2 sketchcol agents ──OTLP──▶ 1 gateway       │
+│   (1000 series each)         (sketch processors:        (sketch-merge    │
+│                               ddsketch / kll / hll /     processors)     │
+│                               cs / cms — picked per             │        │
+│                               metric by controller)             │        │
+│                                                                  │       │
+│                                                                  │       │
+│                                              ┌───────────────────┘       │
+│                                              ▼                           │
+│                                    ASAPQuery-backend                     │
+│                                    - SimpleEngine (warm sketch tier)     │
+│                                    - GorillaQueryEngine (archive)        │
+│                                    - BackendStorageRouting               │
+│                                      dispatches per query shape          │
+│                                                                          │
+│                            ┌───────────────────┘                         │
+│                            ▼                                             │
+│                     gorillas3processor                                   │
+│                     (raw → Gorilla XOR chunks)                           │
+│                            │                                             │
+│                            ▼                                             │
+│                     MinIO (S3 local)  ◀── PromQL queries (count,         │
+│                                            topk, ad-hoc post-hoc rate)   │
+│                                                                          │
+│  controller — plans (sketch family + stage placement) per metric from    │
+│   mvp-workload.yaml; emits per-runtime configs via OpAMP.                │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+
+   Resource axes measured (per-stage; same as baseline):
+     • sketchcol agents: CPU + RSS + net in/out
+     • gateway: CPU + RSS + net in/out (sketch-merge fan-in)
+     • ASAPQuery-backend: CPU + RSS + warm-tier sketch-state RAM
+     • MinIO: on-disk Gorilla bytes + S3 PUT/GET counts
+     • Wire bytes per cut edge (sdk→agent / agent→gateway / gateway→backend / gateway→S3)
+     • Query latency per class (p50 / p99) — PromQL HTTP
+```
+
+### Comparison framing — what the demo measures
+
+Same workload runs through both pipelines; the report (`MVP_REPORT.md`,
+§1 stage-separated resource table + §2 verdict) reports both as
+side-by-side rows for each criterion:
+
+| # | Criterion (per #46) | Baseline figure | ASAP figure | Reduction |
+|---|---|---|---|---|
+| ① | Bandwidth | bytes/s on `agent → Prometheus` | bytes/s on each cut edge | X% |
+| ② | Aggregation query latency | Prometheus PromQL p50 / p99 | ASAPQuery-backend PromQL p50 / p99 (warm + archive) | Y% |
+| ③ | Combined e2e resource | Σ(OTel agent + Prometheus CPU/RSS/disk) | Σ(sketchcol + gateway + backend + MinIO) | Z% |
+| ④ | Accuracy | exact (raw samples in TSDB) | rel-err per query class within ε/δ envelope | bounded by sketch family |
+| ⑤ | Cold-fallback for ad-hoc queries | Prometheus answers anything natively | `data_source: gorilla_archive` for ad-hoc / post-hoc / cardinality queries | qualitative PASS |
+| ⑥ | Freshness | sample-to-query latency on TSDB ingest path | sample-to-query latency on warm + archive paths | per-path Δ |
+
+### Three query classes the demo exercises
+
 - **Window per series**: `quantile_over_time(0.99, latency[1m])`
 - **Label aggregation at instant**: `sum by (zone) (http_requests_total)`
 - **Combined**: `sum by (zone) (rate(http_requests_total[5m]))`
 
-Plus an ad-hoc cold-fallback probe: `count(http_requests_total{service="payments"})`
-that exercises the Gorilla-archive engine via the dual-routing table.
+Plus an ad-hoc cold-fallback probe:
+`count(http_requests_total{service="payments"})` — exercises the
+Gorilla-archive engine on the ASAP side via dual-routing; on the
+baseline side it's just another query Prometheus answers.
 
 ## 3. Compiling and building from source
 
