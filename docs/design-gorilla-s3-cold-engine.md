@@ -156,12 +156,16 @@ This design deliberately **does not**:
 
 ## 3. End-to-end architecture
 
-The current pipeline (sketch warm tier + cold-JSONL fallback)
-**does not change**. The Gorilla-S3 branch is **added** alongside
-the warm path, sharing the agent runtime + the backend's PromQL
-front-end, while owning its own codec, sink, store, and engine.
+The pipeline is two-tier: a sketch warm tier for cheap ε/δ-bounded
+answers and a Gorilla-S3 archive tier for exact answers. **Step-1
+of the JSONL deprecation refactor** (backend PR #95, collector PR
+#312) deleted the legacy local-FS cold-fallback leg
+(`LocalFsColdStore`, `parse_jsonl`, the gateway-side raw-tee, the
+`ColdJsonlFallback` `StorageBackend` variant); a capability miss
+in the warm tier surfaces as a 404 rather than a JSONL scan, and
+the only object-storage tier is the Gorilla archive.
 
-### 3.1 Block diagram (current + new)
+### 3.1 Block diagram (2-tier)
 
 ```
                 ┌──────────────────────────────────────────┐
@@ -179,69 +183,71 @@ front-end, while owning its own codec, sink, store, and engine.
    │     │  countminsketchprocessor / countsketchprocessor       │
    │     │      → builds per-window sketch  ─── WARM PATH ───┐  │
    │     │                                                    │  │
-   │     └─ gorillas3processor      [NEW]                     │  │
+   │     └─ gorillas3processor                                │  │
    │            → window → Gorilla XOR encode → S3 PUT        │  │
    │            → drop_original=true (stays at edge)          │  │
-   │                                                          │  │
-   │   raw-tee exporter (cold JSONL)        ─── FALLBACK ─┐   │  │
-   │            → MinIO/S3 raw JSONL                      │   │  │
-   └──────────────────────┬─────────────────┬─────────────┴───┴──┘
-                          │                 │             │   │
-                          │ OTLP            │ S3 PUT      │   │
-                          │ (sketches)      │ (gorilla)   │   │
-                          ▼                 ▼             │   │
-                ┌──────────────────┐  ┌──────────────────┐│   │
-                │  Gateway         │  │   S3 / MinIO     ││   │
-                │  (optional       │  │  / S3-compat     ││   │
-                │  spatial collapse│  │   (Gorilla       ││   │
-                │  + OTLP forward) │  │    chunks +      ││   │
-                └────────┬─────────┘  │    index.json)   ││   │
-                         │            └─────────┬────────┘│   │
-                         │ OTLP                 │         │   │
-                         ▼                      │         │   │
-   ┌──────────────────────────────────────────┐ │         │   │
-   │ ASAPQuery-backend                        │ │         │   │
-   │   ┌─────────────────────────────┐        │ │         │   │
-   │   │ OtlpReceiver                │        │ │         │   │
-   │   │   typed sketch decoders     │ ◄──────┘ │         │   │
-   │   │   (asap-precompute-rs)      │          │         │   │
-   │   └────────────┬────────────────┘          │         │   │
-   │                ▼                            │         │   │
-   │   ┌─────────────────────────────┐          │         │   │
-   │   │ Precompute engine workers    │          │         │   │
-   │   │   per (agg_id, group_key)    │          │         │   │
-   │   │   window panes               │          │         │   │
-   │   └────────────┬────────────────┘          │         │   │
-   │                ▼                            │         │   │
-   │   ┌─────────────────────────────┐          │         │   │
-   │   │ SimpleMapStore (warm sketch │          │         │   │
-   │   │ DB)                         │          │         │   │
-   │   └────────────┬────────────────┘          │         │   │
-   │                ▼                            │         │   │
-   │   ┌──────────────────────────────────────────────┐   │   │
-   │   │ SimpleEngine — PromQL/SQL/ElasticDSL surface │   │   │
-   │   │                                              │   │   │
-   │   │   capability_matching::find_compatible_     │   │   │
-   │   │     aggregation(metric, stat, …) →          │   │   │
-   │   │                                              │   │   │
-   │   │   ┌──────────────┐  ┌──────────────────────┐│   │   │
-   │   │   │ warm path:   │  │ Gorilla-S3 path:     ││   │   │
-   │   │   │ accumulator  │  │ GorillaQueryEngine   ││   │   │
-   │   │   │ .query_      │  │ .execute(…)  [NEW]   ││   │   │
-   │   │   │  statistic() │  │   ↓                  ││   │   │
-   │   │   │              │  │ GorillaS3ColdStore   ││   │   │
-   │   │   │              │  │ .list_chunks /       ││   │   │
-   │   │   │              │  │  .read_chunk  [NEW]  ││──┘   │
-   │   │   └──────┬───────┘  └──────────┬───────────┘│      │
-   │   │          │                     │            │      │
-   │   │          ▼                     ▼            │      │
-   │   │   warm-tier answer       exact answer       │      │
-   │   │   (accuracy: ε,δ)        (accuracy: 0,0)   │      │
-   │   │                                              │      │
-   │   │   cold-JSONL fallback (forwarding adapters / │      │
-   │   │   LocalFsColdStore) — UNCHANGED              │ ◄───┘
-   │   └──────────────────────────────────────────────┘
+   └──────────────────────┬─────────────────┬─────────────────┴──┘
+                          │                 │
+                          │ OTLP            │ S3 PUT
+                          │ (sketches)      │ (gorilla blocks +
+                          │                 │  index.json + postings)
+                          ▼                 ▼
+                ┌──────────────────┐  ┌──────────────────┐
+                │  Gateway         │  │   S3 / MinIO     │
+                │  (optional       │  │  / S3-compat     │
+                │  spatial collapse│  │   (Gorilla       │
+                │  + OTLP forward) │  │    chunks +      │
+                └────────┬─────────┘  │    index.json)   │
+                         │            └─────────┬────────┘
+                         │ OTLP                 │
+                         ▼                      │
+   ┌──────────────────────────────────────────┐ │
+   │ ASAPQuery-backend                        │ │
+   │   ┌─────────────────────────────┐        │ │
+   │   │ OtlpReceiver                │        │ │
+   │   │   typed sketch decoders     │        │ │
+   │   │   (asap-precompute-rs)      │        │ │
+   │   └────────────┬────────────────┘        │ │
+   │                ▼                          │ │
+   │   ┌─────────────────────────────┐        │ │
+   │   │ Precompute engine workers    │        │ │
+   │   │   per (agg_id, group_key)    │        │ │
+   │   │   window panes               │        │ │
+   │   └────────────┬────────────────┘        │ │
+   │                ▼                          │ │
+   │   ┌─────────────────────────────┐        │ │
+   │   │ SimpleMapStore (warm sketch │        │ │
+   │   │ DB)                         │        │ │
+   │   └────────────┬────────────────┘        │ │
+   │                ▼                          │ │
+   │   ┌──────────────────────────────────────────────┐
+   │   │ Per-metric BackendStorageRouting +           │
+   │   │ EngineRouter (routing/) — picks the engine   │
+   │   │ that owns the chosen storage tier.           │
+   │   │                                              │
+   │   │   ┌──────────────┐  ┌──────────────────────┐│
+   │   │   │ engines/     │  │ engines/gorilla:     ││
+   │   │   │ simple:      │  │ GorillaQueryEngine   ││
+   │   │   │ SimpleEngine │  │  .execute(…)         ││
+   │   │   │ (warm tier)  │  │   ↓                  ││
+   │   │   │              │  │ engines/gorilla/     ││
+   │   │   │              │  │ store::GorillaS3Store││
+   │   │   │              │  │  .list_chunks /      ││──┐
+   │   │   │              │  │  .read_chunk         ││  │
+   │   │   └──────┬───────┘  └──────────┬───────────┘│  │
+   │   │          │                     │            │  │
+   │   │          ▼                     ▼            │  │
+   │   │   warm-tier answer       exact answer       │  │
+   │   │   (accuracy: ε,δ)        (accuracy: 0,0)    │  │
+   │   │                                              │  │
+   │   │   capability miss → HTTP 404 (no JSONL       │  │
+   │   │   fallback after Step-1 deletion)            │  │
+   │   └──────────────────────────────────────────────┘  │
    └──────────────────────────────────────────────────────┘
+                                                          │
+                                                          │ S3 GET
+                                                          ▼
+                                          (back to S3 / MinIO above)
 
       ┌────────────────────────────────────────────────────┐
       │ Controller (5-layer pipeline — see §9)             │
