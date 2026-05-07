@@ -1,0 +1,10 @@
+[2026-05-07T19:14:54-04:00] freshness phase: path=raw probe=http_freshness_probe_raw endpoint=http://localhost:19090 out=/tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/baseline/freshness/raw.csv
+# v6 freshness probe — endpoint=http://localhost:19090 probe=http_freshness_probe_raw path=raw duration=60.0s poll=100ms
+freshness: path=raw attempted=600 got=0 p50=NA p99=NA
+[2026-05-07T19:15:54-04:00] freshness phase: path=warm probe=http_freshness_probe_warm endpoint=http://localhost:19090 out=/tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/baseline/freshness/warm.csv
+# v6 freshness probe — endpoint=http://localhost:19090 probe=http_freshness_probe_warm path=warm duration=60.0s poll=100ms
+freshness: path=warm attempted=600 got=0 p50=NA p99=NA
+[2026-05-07T19:16:54-04:00] freshness phase: path=archive probe=http_freshness_probe_archive endpoint=http://localhost:19090 out=/tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/baseline/freshness/archive.csv
+# v6 freshness probe — endpoint=http://localhost:19090 probe=http_freshness_probe_archive path=archive duration=60.0s poll=100ms
+freshness: path=archive attempted=600 got=0 p50=NA p99=NA
+[2026-05-07T19:17:54-04:00] freshness phase complete; CSVs in /tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/baseline/freshness
