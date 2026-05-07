@@ -172,7 +172,7 @@ variant is undefined (the kllprocessor's `Config.Validate` rejects
 |---|---|---|
 | `precompute_engine` binary | Receives sketch envelopes; serves PromQL HTTP | ✅ |
 | `SimpleEngine` | Warm-tier query engine over sketch state | ✅ implemented + tested (33 PromQL pattern matchers) |
-| `GorillaQueryEngine` | Archive-tier query engine over Gorilla chunks | ⚠️  curated PromQL subset implemented + tested (`sum / count / avg / min / max / rate / increase / quantile_over_time / topk`); full PromQL parity is open work — see `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md` |
+| `GorillaQueryEngine` | Archive-tier query engine over Gorilla chunks | ⚠️  curated PromQL subset implemented + tested (`sum / count / avg / min / max / rate / increase / quantile_over_time / topk`); full PromQL parity is open work — see `docs/design-archive-tier.md` |
 | `GorillaS3Store` | S3 fetcher with chunk-LRU cache | ✅ (Step-1 of the JSONL deprecation renamed `GorillaS3ColdStore` → `GorillaS3Store` — the only `Store` impl in the archive tier after the JSONL leg was deleted) |
 | `BackendStorageRouting` (multi-target) | Per-metric dispatch warm vs archive based on query shape | ✅ implemented + tested |
 | `s3_cost.rs` | Counts PUT/GET/HEAD/DELETE + bytes | ✅ exposed at `/internal/s3_cost.csv` |
@@ -218,7 +218,7 @@ against the component list:
 | Item | Tracking |
 |---|---|
 | ~~Delete `LocalFsColdStore` + JSONL gateway raw-tee + the `cost_model` cold-tier scan-bytes line item~~ | DONE (Step-1 of the JSONL deprecation — backend PR #95, collector PR #312) |
-| Full PromQL parity on `GorillaQueryEngine` via the Step-2 promotion to Prometheus-TSDB block format + Thanos store-gateway as the archive query engine | `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md` |
+| Full PromQL parity on `GorillaQueryEngine` via the Step-2 promotion to Prometheus-TSDB block format + Thanos store-gateway as the archive query engine | `docs/design-archive-tier.md` |
 | Repoint `accuracy_reduce.py` ground-truth lookup at the Gorilla archive engine (Step-1 deleted the JSONL path it used to read) | Same doc §"Open questions" |
 
 ## TL;DR
@@ -931,7 +931,7 @@ docker builder prune --all
 ## 10. Related runbooks and docs
 
 - `docs/comparison-asap-vs-databricks-pantheon-hydra.md` — architectural framing
-- `docs/design-gorilla-s3-cold-engine.md` — cold-engine wire format + module layout
+- `docs/design-archive-tier.md` — archive-tier wire format, bucket layout, three operational modes, and query-path dispatch
 - `docs/e2e-test-guide.md` — pytest-style smoke tests (smaller scope than the MVP demo)
 - `docs/eval-instrumentation-notes.md` — measurement methodology notes
 - `docs/control-plane-design.md` — controller pipeline (L1 → L5)
