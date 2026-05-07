@@ -930,8 +930,9 @@ docker builder prune --all
 
 ## 10. Related runbooks and docs
 
-- `docs/comparison-asap-vs-databricks-pantheon-hydra.md` — architectural framing
+- **[`docs/system-overview.md`](system-overview.md)** — **canonical current-state architecture reference** (start here if you want the full picture; this runbook is MVP-demo-scoped, system-overview covers all components, all three operational modes, all three edge runtimes, controller pipeline, deployment shapes, and operating-point math)
 - `docs/design-archive-tier.md` — archive-tier wire format, bucket layout, three operational modes, and query-path dispatch
+- `docs/comparison-asap-vs-databricks-pantheon-hydra.md` — architectural framing vs. Databricks Pantheon + Hydra
+- `docs/control-plane-design.md` — controller pipeline (L1 → L5)
 - `docs/e2e-test-guide.md` — pytest-style smoke tests (smaller scope than the MVP demo)
 - `docs/eval-instrumentation-notes.md` — measurement methodology notes
-- `docs/control-plane-design.md` — controller pipeline (L1 → L5)
