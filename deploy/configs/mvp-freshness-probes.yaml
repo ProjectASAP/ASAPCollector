@@ -1,4 +1,4 @@
-# MVP v6 freshness probe schema
+# MVP demo freshness probe schema
 #
 # Three synthetic counter metrics emitted by the fake-exporter at 1Hz.
 # Each emission carries a value of `unix_ts_ms_of_emission`
@@ -16,22 +16,20 @@
 #   - http_freshness_probe_warm      → routes to sketch warm tier
 #   - http_freshness_probe_archive   → routes to GorillaQueryEngine
 #
-# Plumbing notes (for Phase E implementer):
+# Plumbing notes:
 #
 # 1. fake-exporter must emit these three metrics. Today's
 #    fake-exporter (DataCollector/datasets_eval/) has fixed metric
 #    names. A small extension is required to add the three
-#    timestamp-encoded counters. Out of scope for the Phase D
-#    pre-work YAMLs — flag here so Phase E picks it up.
+#    timestamp-encoded counters.
 #
 # 2. agent-side routing — the warm/archive probes go through the
 #    sketchcol agent's pipeline; the raw probe is exported via
 #    `prometheusremotewrite` to the real Prometheus container in
-#    baseline-mvp-v6-multi-stage.yml.
+#    mvp-multi-stage.yml.
 #
-# 3. backend-storage-routing-mvp-v6.yaml maps the warm/archive
-#    probes to their respective tiers. Edit the routing file in
-#    Phase C/E when generating per-runtime configs.
+# 3. backend-storage-routing.yaml maps the warm/archive probes to
+#    their respective tiers.
 
 probes:
   - name: http_freshness_probe_raw
@@ -75,4 +73,4 @@ caveats:
   - "Single-host clock-sync assumed; safe for in-process comparisons."
   - "Archive freshness is bounded by gorillas3processor's flush window. \
      Don't expect sub-second archive freshness — that requires a \
-     streaming write path (e.g., Kafka), out of scope for v6."
+     streaming write path (e.g., Kafka), out of scope for the MVP demo."

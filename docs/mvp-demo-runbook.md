@@ -6,7 +6,7 @@ sketch + Gorilla-S3 pipeline against three canonical PromQL query classes
 and emits an `MVP_REPORT.md` with measured numbers per criterion.
 
 Architectural background lives in
-[`docs/spec-mvp-v6-controller-driven-multi-stage-demo.md`](spec-mvp-v6-controller-driven-multi-stage-demo.md);
+[`docs/spec-mvp-controller-driven-multi-stage-demo.md`](spec-mvp-controller-driven-multi-stage-demo.md);
 the comparison to Databricks Pantheon+Hydra is in
 [`docs/comparison-asap-vs-databricks-pantheon-hydra.md`](comparison-asap-vs-databricks-pantheon-hydra.md).
 
@@ -40,7 +40,7 @@ ingest-side bugs above are real follow-ups.
   is producing correct answers; we just can't compute relative error
   without ground truth)
 - **Impact**: ④ accuracy + §3 per-class rel-err render empty in
-  `MVP_REPORT_v6.md`
+  `MVP_REPORT.md`
 - **Root cause**: `deploy/scripts/accuracy_reduce.py` reads ground truth
   from `/var/asap/cold/raw/<metric>/YYYY/MM/DD/HH/part-N.jsonl`. The
   current backend image's gateway-side raw-tee exporter doesn't write
@@ -110,10 +110,10 @@ make -C deploy build-images || bash deploy/scripts/build-all.sh   # see §3 for 
 # 2. Run the demo
 COMPACTOR_BIN=$PWD/compactor/target/release/gorilla-compactor \
 USE_TYPED_STAGE_SPLIT=1 \
-bash deploy/scripts/run_mvp_demo_v6.sh
+bash deploy/scripts/run_mvp_demo.sh
 
 # 3. Read the report
-cat deploy/eval-results/mvp-v6-2026-05-06/MVP_REPORT_v6.md
+cat deploy/eval-results/mvp-current/MVP_REPORT.md
 ```
 
 Wall time: ~30-45 minutes for the demo run; ~10-15 minutes for the
@@ -231,7 +231,7 @@ deploy/eval-results/
 
 **The MVP demo's own outputs are NOT committed to the repo.** When you
 run the demo, the driver writes to
-`deploy/eval-results/mvp-v6-2026-05-06/` (overridable via `OUT_BASE`),
+`deploy/eval-results/mvp-current/` (overridable via `OUT_BASE`),
 but those files stay local to the runner — they are not pushed back.
 For a record of recent runs, read the most recent `MVP_REPORT.md`
 posted on the issue-#46 comment thread:
@@ -249,7 +249,7 @@ posted on the issue-#46 comment thread:
 │                                            └─Gorilla─▶ MinIO/S3          │
 │                                                                          │
 │  controller — plans (sketch family + stage placement) per metric         │
-│   from mvp-v6-workload.yaml; emits per-runtime configs via OpAMP.        │
+│   from mvp-workload.yaml; emits per-runtime configs via OpAMP.        │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -489,45 +489,45 @@ export ASAP_SKETCH_FAMILY=ddsketch             # default; overridden per-metric 
 export EXPORTER_FRESHNESS_PROBES=on            # emit timestamp-encoded probes
 
 # Run the demo SYNCHRONOUSLY (foreground). Wall time: ~30-45 min.
-bash deploy/scripts/run_mvp_demo_v6.sh
+bash deploy/scripts/run_mvp_demo.sh
 ```
 
 If you want to run it in the background and watch from another shell:
 
 ```bash
-nohup bash deploy/scripts/run_mvp_demo_v6.sh > /tmp/mvp-v6-run.log 2>&1 &
-echo $! > /tmp/mvp-v6.pid
+nohup bash deploy/scripts/run_mvp_demo.sh > /tmp/mvp-run.log 2>&1 &
+echo $! > /tmp/mvp.pid
 
 # poll for completion (blocks until report file appears OR demo PID exits)
-until [ -f deploy/eval-results/mvp-v6-2026-05-06/MVP_REPORT_v6.md ] || \
-      ! ps -p $(cat /tmp/mvp-v6.pid) > /dev/null 2>&1; do sleep 30; done
+until [ -f deploy/eval-results/mvp-current/MVP_REPORT.md ] || \
+      ! ps -p $(cat /tmp/mvp.pid) > /dev/null 2>&1; do sleep 30; done
 echo "demo done"
 ```
 
 ### What the demo does, phase by phase
 
-The driver runs eight phases (see `deploy/scripts/run_mvp_demo_v6.sh` for
+The driver runs eight phases (see `deploy/scripts/run_mvp_demo.sh` for
 the implementation):
 
 | Phase | Action |
 |---|---|
 | 0. Pre-flight | Verify images present; verify `gorilla-compactor` binary; clean stale containers |
-| 1. Stack-up | `docker compose up` against `base.yml + mvp-v6-multi-stage.yml`; mount `mvp-v6-workload.yaml` into controller; wait for OpAMP push to settle |
+| 1. Stack-up | `docker compose up` against `base.yml + mvp-multi-stage.yml`; mount `mvp-workload.yaml` into controller; wait for OpAMP push to settle |
 | 2. Warm-up | 60 s agent warm-up + 30 s query-side warm-up (poll `count_over_time(http_requests_total[1m])` until non-zero) |
 | 3. Measurements | Run `measure_stages.py` + `measure_per_edge_bandwidth.py` + `promql_replay.py` over 60 s soak with three query classes |
 | 4. Freshness | Run `run_freshness_phase.sh` against three probes (raw / warm / archive) → 3 CSVs |
 | 5. Ad-hoc queries | Fire label-predicate queries; capture postings filtering |
 | 6. Cold-fallback | Fire `count(http_requests_total{service="payments"})`; verify `data_source: gorilla_archive` |
 | 7. Compaction | `gorilla-compactor --threshold-hours 0 --threshold-count 0 --dry-run` then `--no-dry-run`; capture before/after object count + bytes |
-| 8. Report | Run `mvp_report_v6.py` over the captured CSVs to produce `MVP_REPORT_v6.md` |
+| 8. Report | Run `mvp_report.py` over the captured CSVs to produce `MVP_REPORT.md` |
 
 ## 5. Reading the output
 
 After the demo completes, the output directory tree is:
 
 ```
-deploy/eval-results/mvp-v6-2026-05-06/
-├── MVP_REPORT_v6.md            ← human-readable report (start here)
+deploy/eval-results/mvp-current/
+├── MVP_REPORT.md            ← human-readable report (start here)
 ├── ad-hoc/                     ← Phase 5 — ad-hoc query responses
 │   ├── label-api.json
 │   ├── label-status5xx.json
@@ -555,7 +555,7 @@ deploy/eval-results/mvp-v6-2026-05-06/
 └── teardown.log                ← docker compose down output
 ```
 
-`MVP_REPORT_v6.md` itself contains:
+`MVP_REPORT.md` itself contains:
 
 - **§1 Stage-separated resource table** — 5 stages × {CPU cores, RSS MiB, net in/out KiB/s, disk MiB}
 - **§2 Per-criterion verdict (6 criteria)** — PASS / FAIL / PARTIAL / UNKNOWN with measured numbers
@@ -622,7 +622,7 @@ when the postings or dual-routing features are missing from the running image (v
 ```bash
 cd ~/repos/ASAPCollector
 docker compose -f deploy/docker-compose/base.yml \
-               -f deploy/docker-compose/mvp-v6-multi-stage.yml \
+               -f deploy/docker-compose/mvp-multi-stage.yml \
                down -v
 # -v also removes the MinIO data volume; leave it off if you want to inspect
 # the Gorilla-S3 archive after the run.
@@ -646,7 +646,7 @@ docker builder prune --all
 |---|---|---|
 | `no such file or directory: ../../asap_sketchlib/Cargo.toml` during backend build | Repo layout doesn't have the three sibling clones | Re-clone in `~/repos/{ASAPCollector, ASAPQuery-backend, asap_sketchlib}` |
 | Backend log: `No matching pattern for http_freshness_probe_warm` | Backend image pre-dates PR #91 freshness pattern registration | `docker build --no-cache ...` per §3 |
-| `MVP_REPORT_v6.md` says §8 STATUS = `not-exercised` | `USE_TYPED_STAGE_SPLIT` not propagating | Check `docker exec controller env \| grep USE_TYPED`; re-export at the host shell |
+| `MVP_REPORT.md` says §8 STATUS = `not-exercised` | `USE_TYPED_STAGE_SPLIT` not propagating | Check `docker exec controller env \| grep USE_TYPED`; re-export at the host shell |
 | `freshness/{raw,warm,archive}.csv` empty | Probe encoder offset bug (§7) OR fake-exporter image lacks probes | Rebuild fake-exporter image; verify with the `grep -l` step in §3 |
 | `accuracy.csv` empty | No ground-truth dump (§7) | Documented; out of demo scope |
 | Demo agent dies at "stack settle" | Controller container not reachable; check `docker ps` and `docker compose logs controller` | Often a port collision; run `docker compose down -v` first |
@@ -654,7 +654,7 @@ docker builder prune --all
 
 ## 10. Related runbooks and docs
 
-- `docs/spec-mvp-v6-controller-driven-multi-stage-demo.md` — MVP demo spec
+- `docs/spec-mvp-controller-driven-multi-stage-demo.md` — MVP demo spec
 - `docs/comparison-asap-vs-databricks-pantheon-hydra.md` — architectural framing
 - `docs/design-gorilla-s3-cold-engine.md` — cold-engine wire format + module layout
 - `docs/e2e-test-guide.md` — pytest-style smoke tests (smaller scope than the MVP demo)

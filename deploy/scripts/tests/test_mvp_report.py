@@ -1,13 +1,14 @@
-"""Unit tests for mvp_report_v6.py.
+"""Unit tests for mvp_report.py.
 
-Hermetic — no compose stack, no docker. We synthesise a minimal v6
+Hermetic — no compose stack, no docker. We synthesise a minimal
 results directory layout and assert the generator produces the
 expected MD shape (per-section presence, per-criterion verdict
 formatting, idempotency).
 
 Synthesis policy: every numeric value in these fixtures is clearly
-SYNTHETIC (small round numbers, "MOCK" markers in comments). Phase F
-captures real numbers — these tests just exercise the renderer.
+SYNTHETIC (small round numbers, "MOCK" markers in comments). Real
+numbers come from the live run — these tests just exercise the
+renderer.
 """
 from __future__ import annotations
 
@@ -20,14 +21,14 @@ from pathlib import Path
 
 import pytest
 
-# Load mvp_report_v6.py without requiring an installed package.
+# Load mvp_report.py without requiring an installed package.
 HERE = Path(__file__).resolve().parent
-SCRIPT = HERE.parent / "mvp_report_v6.py"
-spec = importlib.util.spec_from_file_location("mvp_report_v6", SCRIPT)
+SCRIPT = HERE.parent / "mvp_report.py"
+spec = importlib.util.spec_from_file_location("mvp_report", SCRIPT)
 assert spec is not None and spec.loader is not None
-mvp_report_v6 = importlib.util.module_from_spec(spec)
-sys.modules["mvp_report_v6"] = mvp_report_v6
-spec.loader.exec_module(mvp_report_v6)
+mvp_report = importlib.util.module_from_spec(spec)
+sys.modules["mvp_report"] = mvp_report
+spec.loader.exec_module(mvp_report)
 
 
 # ── fixture builder ──────────────────────────────────────────────
@@ -50,7 +51,7 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
-    """Create a v6 results dir with synthetic CSVs.
+    """Create an MVP-demo results dir with synthetic CSVs.
 
     `kind` selects which fixture variant:
       - "happy"   — all sections populated, all criteria PASS
@@ -76,9 +77,9 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
              "cpu_cores", "rss_mib",
              "net_in_kibps", "net_out_kibps", "disk_mib"],
             [
-                ["mvp-v6", "agent",   "agent-a",  "0.10", "100.0", "10.0", "5.0",  ""],
-                ["mvp-v6", "agent",   "agent-b",  "0.10", "100.0", "10.0", "5.0",  ""],
-                ["mvp-v6", "gateway", "gateway",  "0.20", "200.0", "20.0", "15.0", ""],
+                ["mvp", "agent",   "agent-a",  "0.10", "100.0", "10.0", "5.0",  ""],
+                ["mvp", "agent",   "agent-b",  "0.10", "100.0", "10.0", "5.0",  ""],
+                ["mvp", "gateway", "gateway",  "0.20", "200.0", "20.0", "15.0", ""],
             ],
         )
         return root
@@ -93,12 +94,12 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
          "net_in_kibps", "net_out_kibps", "disk_mib"],
         [
             # 2 agents
-            ["mvp-v6", "agent",            "agent-a",  "0.10", "100.0", "10.0", "5.0",  "0"],
-            ["mvp-v6", "agent",            "agent-b",  "0.10", "100.0", "10.0", "5.0",  "0"],
-            ["mvp-v6", "gateway",          "gateway",  "0.20", "200.0", "20.0", "15.0", "0"],
-            ["mvp-v6", "backend-ingest",   "backend",  "0.30", "300.0", "30.0", "0.0",  "0"],
-            ["mvp-v6", "backend-query",    "backend",  "0.10", "300.0", "0.0",  "5.0",  "0"],
-            ["mvp-v6", "backend-storage",  "minio",    "0.05", "50.0",  "5.0",  "5.0",  "100.0"],
+            ["mvp", "agent",            "agent-a",  "0.10", "100.0", "10.0", "5.0",  "0"],
+            ["mvp", "agent",            "agent-b",  "0.10", "100.0", "10.0", "5.0",  "0"],
+            ["mvp", "gateway",          "gateway",  "0.20", "200.0", "20.0", "15.0", "0"],
+            ["mvp", "backend-ingest",   "backend",  "0.30", "300.0", "30.0", "0.0",  "0"],
+            ["mvp", "backend-query",    "backend",  "0.10", "300.0", "0.0",  "5.0",  "0"],
+            ["mvp", "backend-storage",  "minio",    "0.05", "50.0",  "5.0",  "5.0",  "100.0"],
         ],
     )
 
@@ -132,11 +133,11 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
         ["cell", "kind", "query", "t", "duration_ms", "plan_id",
          "truth", "answer", "error", "recall", "n_truth_samples"],
         [
-            ["mvp-v6", "quantile", "quantile_over_time(0.99, http_requests_total_latency_ms[1m])",
+            ["mvp", "quantile", "quantile_over_time(0.99, http_requests_total_latency_ms[1m])",
              "0", "5.0", "p1", "100", "101", "0.01", "", "1000"],
-            ["mvp-v6", "sum", "sum by (zone) (http_requests_total)",
+            ["mvp", "sum", "sum by (zone) (http_requests_total)",
              "0", "3.0", "p1", "5000", "5005", "0.001", "", "1000"],
-            ["mvp-v6", "sum", "sum by (zone) (rate(http_requests_total[5m]))",
+            ["mvp", "sum", "sum by (zone) (rate(http_requests_total[5m]))",
              "0", "4.0", "p1", "10", "10.05", "0.005", "", "1000"],
         ],
     )
@@ -194,8 +195,9 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
         '{"http_code":200,"time_total":0.012}'
     )
 
-    # MOCK postings exercise responses without v5 fields (most
-    # realistic state pre-v5-merge).
+    # MOCK postings exercise responses without the postings index
+    # fields (most realistic state when the backend image lacks the
+    # postings-aware engine).
     bare_resp = {
         "status": "success",
         "data": {"resultType": "vector", "result": [{"metric": {}, "value": [0, "1"]}]},
@@ -247,9 +249,9 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
 
 def test_renders_all_sections_for_happy_fixture(tmp_path):
     results = _build_results_dir(tmp_path, kind="happy")
-    out = tmp_path / "MVP_REPORT_v6.md"
+    out = tmp_path / "MVP_REPORT.md"
 
-    rc = mvp_report_v6.main([
+    rc = mvp_report.main([
         "--results-dir", str(results),
         "--num-producers", "10",
         "--per-agent-cardinality", "500",
@@ -308,7 +310,7 @@ def test_idempotent_rerun_produces_identical_md(tmp_path):
     out2 = tmp_path / "second.md"
 
     for out in (out1, out2):
-        rc = mvp_report_v6.main([
+        rc = mvp_report.main([
             "--results-dir", str(results),
             "--num-producers", "10",
             "--per-agent-cardinality", "500",
@@ -323,9 +325,9 @@ def test_sparse_fixture_renders_with_unknown_verdicts(tmp_path):
     """When most CSVs are missing, the renderer must still produce
     a complete MD — verdicts go UNKNOWN rather than raising."""
     results = _build_results_dir(tmp_path, kind="sparse")
-    out = tmp_path / "MVP_REPORT_v6.md"
+    out = tmp_path / "MVP_REPORT.md"
 
-    rc = mvp_report_v6.main([
+    rc = mvp_report.main([
         "--results-dir", str(results),
         "--num-producers", "10",
         "--per-agent-cardinality", "500",
@@ -341,15 +343,15 @@ def test_sparse_fixture_renders_with_unknown_verdicts(tmp_path):
 
     # Most criteria UNKNOWN due to missing CSVs.
     assert "UNKNOWN" in md
-    # v5-merge-pending markers present in §4 / §6.
-    assert "v5-merge-pending" in md or "v5 cost-tracker not present" in md
+    # merge-pending markers present in §4 / §6.
+    assert "merge-pending" in md or "cost-tracker not present" in md
 
 
 def test_fallback_status_renders_correctly(tmp_path):
     results = _build_results_dir(tmp_path, kind="fallback")
-    out = tmp_path / "MVP_REPORT_v6.md"
+    out = tmp_path / "MVP_REPORT.md"
 
-    rc = mvp_report_v6.main([
+    rc = mvp_report.main([
         "--results-dir", str(results),
         "--num-producers", "10",
         "--per-agent-cardinality", "500",
@@ -367,7 +369,7 @@ def test_missing_results_dir_returns_error_md(tmp_path):
     """If --results-dir doesn't exist, the renderer emits a
     self-explanatory MD rather than crashing."""
     out = tmp_path / "out.md"
-    rc = mvp_report_v6.main([
+    rc = mvp_report.main([
         "--results-dir", str(tmp_path / "does-not-exist"),
         "--num-producers", "10",
         "--per-agent-cardinality", "500",
@@ -389,23 +391,23 @@ def test_per_edge_mean_bytes_per_s():
         # malformed row (NaN-like) is dropped:
         {"edge": "edge_agent_to_gateway", "bytes_per_s": ""},
     ]
-    means = mvp_report_v6._per_edge_mean_bytes_per_s(rows)
+    means = mvp_report._per_edge_mean_bytes_per_s(rows)
     assert means["edge_sdk_to_agent"] == 150.0
     assert means["edge_agent_to_gateway"] == 50.0
 
 
 def test_classify_query_class():
-    assert mvp_report_v6._classify_query_class(
+    assert mvp_report._classify_query_class(
         {"query": "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"}
     ) == "window-per-series"
-    assert mvp_report_v6._classify_query_class(
+    assert mvp_report._classify_query_class(
         {"query": "sum by (zone) (http_requests_total)"}
     ) == "label-at-instant"
-    assert mvp_report_v6._classify_query_class(
+    assert mvp_report._classify_query_class(
         {"query": "sum by (zone) (rate(http_requests_total[5m]))"}
     ) == "combined-window-label"
     # Unknown query — None.
-    assert mvp_report_v6._classify_query_class({"query": "vector(1)"}) is None
+    assert mvp_report._classify_query_class({"query": "vector(1)"}) is None
 
 
 def test_count_minio_objects(tmp_path):
@@ -418,7 +420,7 @@ def test_count_minio_objects(tmp_path):
         # Malformed line skipped.
         "not-json",
     ]))
-    count, total = mvp_report_v6._count_minio_objects(str(p))
+    count, total = mvp_report._count_minio_objects(str(p))
     assert count == 2
     assert total == 300
 
@@ -428,6 +430,6 @@ def test_extract_int_from_response_handles_missing_field():
         "status": "success",
         "data": {"infos": ["chunks_scanned: 5", "data_source: warm"]},
     }
-    assert mvp_report_v6._extract_int_from_response(body, "chunks_scanned") == 5
-    assert mvp_report_v6._extract_int_from_response(body, "postings_filtered_series_count") is None
-    assert mvp_report_v6._extract_int_from_response(None, "anything") is None
+    assert mvp_report._extract_int_from_response(body, "chunks_scanned") == 5
+    assert mvp_report._extract_int_from_response(body, "postings_filtered_series_count") is None
+    assert mvp_report._extract_int_from_response(None, "anything") is None

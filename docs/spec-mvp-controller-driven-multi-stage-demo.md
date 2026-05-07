@@ -1,9 +1,12 @@
-# MVP v6 — controller-driven multi-stage end-to-end demo (issue #46)
+# MVP demo — controller-driven multi-stage end-to-end (issue #46)
 
 ## Status
 
-Spec, 2026-05-06. Not yet implemented. Builds on v4 (PR #290 merged) and v5
-(PR in flight as `mvp/v5-postings-compactor` + `mvp/v5-postings-aware-engine`).
+Spec, last updated 2026-05-06. The MVP demo described here is implemented
+in `deploy/scripts/run_mvp_demo.sh` (driver) and
+`deploy/scripts/mvp_report.py` (reducer), and is exercised end-to-end on
+the multi-stage compose overlay at
+`deploy/docker-compose/mvp-multi-stage.yml`.
 
 ## Goal
 
@@ -23,7 +26,7 @@ within the six MVP criteria.
 - **Production-scale cardinality** (1M+ series). Single-host bench at 10K
   total backend cardinality is the target, distributed across the topology
   per the production-pyramid pattern below.
-- **Cold/JSONL fallback.** v5's `data_source: gorilla_archive` confirmation
+- **Cold/JSONL fallback.** The `data_source: gorilla_archive` confirmation
   satisfies criterion ⑤. The cold-fallback JSONL path stays exactly as it is
   today and is exercised but not modified.
 
@@ -60,7 +63,7 @@ Distribution rationale (from real-world numbers):
 
 For the actual fake-exporter knob: each emits e.g. `card_per_agent=500` series
 across (`{node, pod, rack, zone}`-style label combos). Ten of them via N=10
-is the existing v4 mechanism.
+is the canonical mechanism.
 
 ## Three canonical query classes
 
@@ -85,7 +88,7 @@ matter. Each class has different sketch + stage-placement implications:
 ## Controller responsibility
 
 Input: a list of PromQL queries (a "workload manifest"). For the MVP this is
-a static file — `deploy/configs/mvp-v6-workload.yaml` — containing the three
+a static file — `deploy/configs/mvp-workload.yaml` — containing the three
 query classes above, mapped to the metrics they reference.
 
 Pipeline (already implemented in `controller/src/`):
@@ -106,9 +109,9 @@ L5 stage_split       StageAllocator + ThreeStageEmitter: assign each
 - Stage of placement (SDK / agent / gateway / backend)
 - Window `W`, label projection `L`, encoding triple
 
-Plan is materialised as **per-runtime config files** (mirroring how v4
-works): `sketchcol-agent-*.yaml` for agents, `sketchcol-gateway-*.yaml` for
-the gateway, `backend-storage-routing.yaml` for the backend's
+Plan is materialised as **per-runtime config files**:
+`sketchcol-agent-*.yaml` for agents, `sketchcol-gateway-*.yaml` for the
+gateway, `backend-storage-routing.yaml` for the backend's
 `EngineRouter`.
 
 For the MVP, we don't need the controller to *push* plans at runtime — we
@@ -127,7 +130,7 @@ serialise to runtime config YAMLs is unverified.** Three possibilities:
 
 (c) **It doesn't** — needs a new module. ~3-5 days.
 
-The first implementation step in v6 is to figure out which of (a)/(b)/(c) is
+The first implementation step is to figure out which of (a)/(b)/(c) is
 the case, by reading `controller/src/stage_split/` and the existing
 `workloads.yaml` codepath.
 
@@ -161,7 +164,7 @@ Compared against B0 (raw end-to-end via Prometheus remote_write) on the
 same workload, same cardinality split. Reported per-edge of the topology so
 the user can see which stage saved how much.
 
-Tooling: extend `measure_stages.py` (v4) to label per-edge bytes
+Tooling: `measure_stages.py` labels per-edge bytes
 (`edge=sdk_to_agent`, `edge=agent_to_gateway`, etc.).
 
 ### ② Aggregation query latency (Y)
@@ -181,8 +184,8 @@ Per-stage CPU + RSS + disk, summed across all containers per stage:
 vs. the same partition for B0 (where `backend-ingest/storage/query` is
 Prometheus + its TSDB on disk).
 
-Tooling: `measure_stages.py` (v4 already has stage labelling). Update to
-match the new topology (2 agents instead of 1).
+Tooling: `measure_stages.py` (already has stage labelling, configured
+for the multi-stage topology — 2 agents + 1 gateway + 1 backend).
 
 ### ④ Accuracy
 
@@ -191,8 +194,8 @@ Per-row relative error from the existing `accuracy_reduce.py`:
 - Sum-over-time exact (Count-Min within εδ)
 - Topk recall vs cold-tier truth
 
-Reported per query class. v4 fixed the NaN problem by adding query-side
-warm-up; that fix carries forward.
+Reported per query class. The driver applies query-side warm-up before
+the measurement window so the first poll never returns NaN.
 
 ### ⑤ Cold-store fallback for ad-hoc queries
 
@@ -200,7 +203,7 @@ Replay client fires an ad-hoc query that the warm tier cannot answer:
 - `count(http_requests_total{service="payments"})` on a metric the controller
   did NOT plan for warm-tier coverage of `service=payments`
 - The query routes via `BackendStorageRouting` to `GorillaQueryEngine`
-- Response includes `data_source: gorilla_archive` (verified in v4)
+- Response includes `data_source: gorilla_archive`
 - Latency reported
 
 ### ⑥ Freshness
@@ -231,19 +234,20 @@ Three probes (one per path), each routed to its respective tier:
 - `http_freshness_probe_archive` — Gorilla-archive (controller plan flags
   this metric `StorageBackend::GorillaS3`)
 
-The v4 freshness was UNKNOWN because the probe never reached Prometheus on
-B0/B1/B5 (gateway didn't forward it) and ASAP's sketch flush window hadn't
-fired in 60s. The v6 fixes:
-- Probe routing tested explicitly for all three paths during pre-flight.
+Common pitfalls the demo guards against (each was a real failure mode in
+earlier iterations):
+- Probe routing must be tested explicitly for all three paths during
+  pre-flight — otherwise probes silently never reach Prometheus on the
+  raw path or never settle in the warm path.
 - Sketch window for the freshness probe metric pinned at ≤ 1s.
-- Soak duration extended only as needed for the slowest path (probably the
+- Soak duration extended only as needed for the slowest path (the
   Gorilla-archive path, since chunks aren't queryable until the per-window
   flush lands in S3 — typically ≥ 60s).
 
 ## Demo workflow
 
 ```
-0. user authors mvp-v6-workload.yaml (3 queries, fixed)
+0. user authors mvp-workload.yaml (3 queries, fixed)
 1. controller reads workload + cost model
 2. controller emits per-runtime config files
 3. docker-compose up with the emitted configs
@@ -252,8 +256,8 @@ fired in 60s. The v6 fixes:
 6. 30s query-side warm-up (poll for non-zero on a representative metric)
 7. 60s measurement: replay client + freshness probes + measure_stages.py + s3_cost_tracker
 8. Cold-fallback ad-hoc query + verify data_source: gorilla_archive
-9. mvp_report.py emits MVP_REPORT_v6.md
-10. comment posted on issue #46 with v6 results
+9. mvp_report.py emits MVP_REPORT.md
+10. comment posted on issue #46 with the run's results
 ```
 
 ## Phased implementation
@@ -272,7 +276,7 @@ fired in 60s. The v6 fixes:
 
 ### Phase C — multi-agent + gateway-aggregation overlay (~2-3 days)
 
-- New compose overlay `mvp-v6-multi-stage.yml` with 10 fake-exporters,
+- Compose overlay `mvp-multi-stage.yml` with 10 fake-exporters,
   2 agents, 1 gateway, 1 backend, 1 MinIO, 1 Prometheus (B0 baseline only).
 - Gateway collector with sketch processors enabled (today's gateway is
   pass-through; needs the same processor config the agent uses, scoped to
@@ -282,15 +286,15 @@ fired in 60s. The v6 fixes:
 
 ### Phase D — workload + freshness wiring (~1 day)
 
-- `mvp-v6-workload.yaml` defining the three query classes
+- `mvp-workload.yaml` defining the three query classes
 - Three freshness probe metrics with proper routing (per Phase C overlay)
 - Replay client extended to fire all three query classes per measurement
   window
 
 ### Phase E — driver + report (~1 day)
 
-- `run_mvp_demo_v6.sh` driving Phases C+D end-to-end
-- `mvp_report.py` v6 with sections per criterion + per query class
+- `run_mvp_demo.sh` driving Phases C+D end-to-end
+- `mvp_report.py` with sections per criterion + per query class
 - Stage-separated bandwidth tooling (`measure_stages.py` extended for
   per-edge labelling)
 
@@ -298,20 +302,20 @@ fired in 60s. The v6 fixes:
 
 - Run end-to-end on the host
 - Verify the six criteria each have measured numbers
-- Post comment on issue #46 with `MVP_REPORT_v6.md` verbatim
+- Post comment on issue #46 with `MVP_REPORT.md` verbatim
 
 Total: **~1-2 weeks** of focused work, depending on Phase A's verdict on the
 controller emitter.
 
-## Dependencies on in-flight work
+## Dependencies
 
-- **v5-author** (postings + concat-compactor + cost tracker + label-predicate
-  ad-hoc queries) — substrate. Must be merged before v6 demo run, since v6's
-  ⑤ cold-fallback and ⑥ archive freshness need partial S3 reads + cost
-  measurement to be well-instrumented.
-- The cold-store JSONL deprecation work — orthogonal to v6; can ship later.
+- **Postings + concat-compactor + cost tracker + label-predicate
+  ad-hoc queries** — substrate. Required for ⑤ cold-fallback and ⑥
+  archive freshness, which need partial S3 reads + cost measurement to
+  be well-instrumented.
+- The cold-store JSONL deprecation work — orthogonal; can ship later.
 
-## What v6 does NOT verify (be honest about it)
+## What this MVP demo does NOT verify (be honest about it)
 
 - ❌ Dynamic plan transitions while the demo runs (one-shot static plan)
 - ❌ OpAMP hot reconfig (config baked into runtime startup)
@@ -319,9 +323,9 @@ controller emitter.
 - ❌ Multi-host federation (single-host)
 - ❌ PromQL completeness on the archive tier (curated subset only)
 
-These are flagged in the §Non-goals and `MVP_REPORT_v6.md`'s caveats section.
-The paper's §Eval discusses them under "future work" or "out of scope at
-demo scale".
+These are flagged in the §Non-goals and the `MVP_REPORT.md` caveats
+section. The paper's §Eval discusses them under "future work" or "out
+of scope at demo scale".
 
 ## Success criteria
 
@@ -329,26 +333,21 @@ demo scale".
 - Controller's stage-split visibly drives the demo (the per-runtime configs
   are observable as the controller's output, not hand-authored)
 - Three query classes all answered, per-class latency reported
-- v5 substrate (postings + compactor + cost tracker) actually exercised
-- Comment on issue #46 with `MVP_REPORT_v6.md` verbatim
-- Both v5 PRs and v6 PRs merged
+- Postings + compactor + cost tracker substrate actually exercised
+- Comment on issue #46 with `MVP_REPORT.md` verbatim
 
 ## Risks and mitigations
 
 | Risk | Mitigation |
 |---|---|
 | Controller's L5 doesn't have a config emitter (Phase A is (c)) | Build a thin emitter; track as a separate PR; Phase B's spec doc precedes implementation |
-| Gateway sketch processors don't load cleanly (today's gateway is pass-through) | Mirror the agent's `sketchcol-agent-b6-asap-single-sketch.yaml` config to a `sketchcol-gateway-mvp-v6.yaml`; if the binary doesn't load processor config, this becomes the blocker — escalate before Phase C |
+| Gateway sketch processors don't load cleanly (today's gateway is pass-through) | Mirror the agent's `sketchcol-agent-b6-asap-single-sketch.yaml` config to a gateway-side YAML; if the binary doesn't load processor config, this becomes the blocker — escalate before Phase C |
 | Sketch window flush timing causes ⑥ freshness UNKNOWN again | Pin window to ≤ 1s for the freshness probe metric; extend soak as needed for archive path |
-| Z resource doesn't show savings at 10K cardinality (v4 saw negative) | Honest report; explain in caveats that the savings are at higher cardinality where sketch state amortises better; cross-reference 60-cell sweep numbers |
+| Z resource doesn't show savings at 10K cardinality (sketch state has fixed overhead so small workloads can flip negative) | Honest report; explain in caveats that the savings are at higher cardinality where sketch state amortises better; cross-reference 60-cell sweep numbers |
 
 ## References
 
-- Issue #46 (updated): https://github.com/ProjectASAP/ASAPCollector/issues/46
-- v4 PR (merged): https://github.com/ProjectASAP/ASAPCollector/pull/290
-- v4 issue comment: https://github.com/ProjectASAP/ASAPCollector/issues/46#issuecomment-4391549654
-- v5 PRs (in flight): `mvp/v5-postings-compactor`,
-  `mvp/v5-postings-aware-engine`
+- Issue #46: https://github.com/ProjectASAP/ASAPCollector/issues/46
 - Comparison doc: `docs/comparison-asap-vs-databricks-pantheon-hydra.md`
 - Controller align design: `docs/control-plane-design.md`
 - Gorilla-S3 design: `docs/design-gorilla-s3-cold-engine.md`

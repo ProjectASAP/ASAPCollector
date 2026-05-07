@@ -4,7 +4,7 @@
 Two operating modes share this file. The mode is selected by which
 flags the caller passes; mixing them is rejected with a clear error.
 
-## v6 mode (preferred — see deploy/configs/mvp-v6-freshness-probes.yaml)
+## v6 mode (preferred — see deploy/configs/mvp-freshness-probes.yaml)
 
 Polls a Prometheus-style /api/v1/query endpoint for one of the three
 freshness probe metrics emitted by the fake-exporter (see
@@ -45,7 +45,7 @@ Output CSV (always written, even with zero samples)::
 
 A summary line (count, p50, p99) goes to stderr at exit.
 
-## v4 mode (legacy — preserved so run_mvp_demo.sh on origin/main keeps working)
+## v4 mode (legacy — preserved for older callers that still pass the v4 flag set)
 
 Pushes two synthetic gauges into an OTLP/HTTP receiver every 1s, then
 polls a PromQL backend every 100ms until the first non-NaN
@@ -239,10 +239,11 @@ def run_v6(args: argparse.Namespace) -> int:
 
 # == v4 (legacy) =====================================================
 #
-# Pre-existing v4 implementation, kept verbatim except for the
+# Pre-existing legacy implementation, kept verbatim except for the
 # rename of the helper functions to avoid namespace clashes with the
-# v6 helpers above. Phase E will retire this once the v6 driver is
-# canonical and run_mvp_demo.sh stops calling the v4 form.
+# v6 helpers above. The MVP driver (run_mvp_demo.sh) no longer calls
+# the legacy v4 form; the legacy mode is preserved here so older
+# callers / scripts that still pass the v4 flag set continue to work.
 
 
 def _otlp_metric_envelope(metric_name: str, value_ms: float, ts_ns: int) -> dict:

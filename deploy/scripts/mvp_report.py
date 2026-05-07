@@ -1,38 +1,40 @@
 #!/usr/bin/env python3
-"""mvp_report_v6.py — MVP v6 report generator.
+"""mvp_report.py — MVP demo report generator.
 
-Independent from `mvp_report.py` (v5). v6 differs in:
+Renders one Markdown report from the artefacts captured by
+`run_mvp_demo.sh` against the controller-driven multi-stage topology.
 
-  * **Single run, multi-stage topology.** v5 cycled four baselines
-    side-by-side; v6 captures one controller-driven cell. The B0
-    baseline number for criterion ① is read out of the same run's
-    Prometheus B0 snapshot when the b0 profile was active, otherwise
-    the cell shows "—" and the criterion gets verdict UNKNOWN.
+Highlights:
+
+  * **Single run, multi-stage topology.** One controller-driven cell.
+    The B0 baseline number for criterion ① is read out of the same
+    run's Prometheus B0 snapshot when the b0 profile was active,
+    otherwise the cell shows "—" and the criterion gets verdict
+    UNKNOWN.
 
   * **Six criteria with per-class breakdown.** §2's verdict rows
     cover bandwidth / latency / combined-resource / accuracy /
     cold-fallback / freshness. §3 breaks each query class out
     separately so the reader sees which sketch+stage the controller
-    chose for window / label / combined. v5 had four criteria.
+    chose for window / label / combined.
 
-  * **Stage table is per-stage TOTAL only** — no v5-style backend
-    {ingest,query} double-row trick. v6 wants the simpler
-    representation: agent / gateway / backend-ingest /
-    backend-storage / backend-query, one row each.
+  * **Stage table is per-stage TOTAL only.** Rows: agent / gateway /
+    backend-ingest / backend-storage / backend-query, one each.
 
   * **Per-edge bandwidth from `per_edge_bandwidth.csv`.** §1's
     bandwidth column reads the per-edge probe's mean bytes/s rather
     than docker stats' all-container-rolled-up netio.
 
-  * **Postings + compaction + S3-cost sections gated on v5 merge.**
-    If v5 hasn't merged the postings_filtered_series_count fields or
-    the s3_cost.csv endpoint, those sections render with a
-    "v5-merge-pending" marker rather than missing data.
+  * **Postings + compaction + S3-cost sections degrade gracefully.**
+    If the backend image lacks the postings_filtered_series_count
+    fields or the /internal/s3_cost.csv endpoint, those sections
+    render with a clear "merge-pending" marker rather than missing
+    data.
 
 Pure stdlib. Idempotent — re-running over the same CSVs reproduces
 the same MD.
 
-Input layout (v6):
+Input layout:
 
     <results_dir>/
         controller-emitted-configs/{STATUS,agent.bootstrap.yaml,...}
@@ -46,7 +48,7 @@ Input layout (v6):
 
 Output:
 
-    <results_dir>/MVP_REPORT_v6.md
+    <results_dir>/MVP_REPORT.md
 """
 from __future__ import annotations
 
@@ -146,7 +148,7 @@ def _read_jsonl(path: str) -> list[dict]:
 def _aggregate_stages(rows: list[dict]) -> dict[str, dict[str, float]]:
     """Sum per-stage totals across all containers in that stage.
 
-    v6's table is single-baseline; we sum to one row per stage.
+    The MVP demo's table is single-baseline; we sum to one row per stage.
     """
     out: dict[str, dict[str, float]] = {}
     for r in rows:
@@ -174,7 +176,7 @@ def render_section_1_stage_table(stages_rows: list[dict]) -> list[str]:
     md.append("")
     md.append(
         "Per-stage TOTAL across all containers in that stage. The "
-        "v6 multi-stage topology has 10 producer / 2 agent / 1 "
+        "Multi-stage topology has 10 producer / 2 agent / 1 "
         "gateway / 1 backend / 1 storage (MinIO) containers; the "
         "rows below reduce all relevant containers per stage to a "
         "single number. CPU is mean cores over the 60s window, RSS "
@@ -295,7 +297,7 @@ def criterion_latency(replay_rows: list[dict]) -> tuple[str, str, dict]:
         return "UNKNOWN", "replay.jsonl missing or empty", {}
     by_class = _per_class_latency_p50_p99(replay_rows)
     if not by_class:
-        return "UNKNOWN", "no replay rows matched a v6 query class", {}
+        return "UNKNOWN", "no replay rows matched a known query class", {}
     parts = []
     worst_p99 = 0.0
     for cls, _, _ in QUERY_CLASSES:
@@ -453,7 +455,7 @@ def render_section_3_per_class(
     md.append("")
     md.append(
         "Three canonical query classes from "
-        "`deploy/configs/mvp-v6-workload.yaml`. Sketch + stage "
+        "`deploy/configs/mvp-workload.yaml`. Sketch + stage "
         "assignments come from the controller-emitted configs (see "
         "§9 below); latency from `replay.jsonl`; accuracy from "
         "`accuracy.csv`."
@@ -482,7 +484,7 @@ def render_section_3_per_class(
     # Pre-canned plan annotation per class. The actual planner
     # output is captured in the controller-emitted configs; this
     # column shows the EXPECTED plan from
-    # mvp-v6-workload.yaml::assign_to_role.
+    # mvp-workload.yaml::assign_to_role.
     plan_annotation = {
         "window-per-series":     "DDSketch / agent",
         "label-at-instant":      "identity / gateway (sum-by-zone fan-in)",
@@ -522,7 +524,7 @@ def render_section_3_per_class(
 
 
 def _extract_int_from_response(body: dict | None, key: str) -> int | None:
-    """Look for the v5 postings field in the response infos / data."""
+    """Look for the postings field in the response infos / data."""
     if body is None:
         return None
     data = body.get("data") or {}
@@ -558,8 +560,7 @@ def render_section_4_postings(adhoc_dir: str) -> list[str]:
         ("topk_5xx_by_zone",  'topk(5, sum by (zone) (rate(http_requests_total{status=~"5.."}[5m])))'),
     ]
     md.append(
-        "Two ad-hoc queries with label predicates. Per the v5 "
-        "postings index: "
+        "Two ad-hoc queries with label predicates. Postings index: "
         "`postings_filtered_series_count` is the count of series "
         "that survived the predicate after sidecar lookup; the "
         "would-have-scanned column is the same metric WITHOUT the "
@@ -575,7 +576,7 @@ def render_section_4_postings(adhoc_dir: str) -> list[str]:
         would = _extract_int_from_response(body, "series_scanned_total")
         if matched is None and would is None:
             md.append(
-                f"| `{promql}` | — | — | v5-merge-pending (no postings field in response) |"
+                f"| `{promql}` | — | — | merge-pending (no postings field in response) |"
             )
         else:
             any_data = True
@@ -586,8 +587,8 @@ def render_section_4_postings(adhoc_dir: str) -> list[str]:
     md.append("")
     if not any_data:
         md.append(
-            "_v5 postings field not present on responses; rerun once "
-            "`#295 ASAPCollector` and `#90 ASAPQuery-backend` land._"
+            "_postings field not present on responses; rerun once "
+            "the postings-aware engine + sidecar PRs have landed._"
         )
         md.append("")
     return md
@@ -636,7 +637,7 @@ def render_section_5_compaction(compactor_dir: str) -> list[str]:
     before = _count_minio_objects(os.path.join(compactor_dir, "before.minio.jsonl"))
     after = _count_minio_objects(os.path.join(compactor_dir, "after.minio.jsonl"))
     md.append(
-        "Concat-only compactor (v5) byte-concatenates 6+ adjacent "
+        "Concat-only compactor byte-concatenates 6+ adjacent "
         "blocks ≥6h old into one merged object. **No decode / "
         "re-encode** — each source chunk remains an atomic Gorilla "
         "chunk inside the merged file. The new manifest records "
@@ -669,15 +670,15 @@ def render_section_6_cost(measurements_dir: str) -> list[str]:
     rows = _read_csv(os.path.join(measurements_dir, "s3_cost.csv"))
     if not rows:
         md.append(
-            "_v5 cost-tracker not present — `/internal/s3_cost.csv` "
-            "endpoint unavailable. Will populate once "
-            "`#90 ASAPQuery-backend` lands._"
+            "_cost-tracker not present — `/internal/s3_cost.csv` "
+            "endpoint unavailable. Will populate once the backend "
+            "exposes the internal cost-tracker endpoint._"
         )
         md.append("")
         return md
     md.append(
         "Counts of PUT / GET / HEAD / DELETE issued against MinIO "
-        "during the cell's measurement window (the v5 backend's "
+        "during the cell's measurement window (the backend's "
         "internal cost tracker)."
     )
     md.append("")
@@ -701,20 +702,19 @@ def render_section_7_caveats() -> list[str]:
     md.append("")
     md.append(
         "* **No dynamic replan.** The controller plans once at "
-        "startup off `mvp-v6-workload.yaml`. v6 does not exercise "
-        "the in-flight replan path — that's a follow-up."
+        "startup off `mvp-workload.yaml`. The MVP demo does not "
+        "exercise the in-flight replan path — that's a follow-up."
     )
     md.append(
         "* **No OpAMP hot reconfig under churn.** OpAMP push happens "
         "once per stage at boot; we don't kill an agent and verify "
-        "the controller re-pushes. v5's `ReplannerOpampGateway` "
-        "covers some of this; v6's typed-stage-split path doesn't."
+        "the controller re-pushes."
     )
     md.append(
         "* **10K series, not 1M.** Per-agent cardinality 500, 10 "
         "producers → 5K aggregate at the gateway. The 1M target "
         "needs the cardinality-redesign work plus a multi-host "
-        "topology — out of scope for v6."
+        "topology — out of scope for the MVP demo."
     )
     md.append(
         "* **Single host.** All containers share kernel scheduler "
@@ -723,16 +723,17 @@ def render_section_7_caveats() -> list[str]:
         "are loopback-flattered."
     )
     md.append(
-        "* **B0 Prometheus reference is opt-in.** The v6 driver "
-        "does NOT bring up B0 in the same compose stack as the "
-        "ASAP backend (port collision on 19090). To get an A-vs-B "
+        "* **B0 Prometheus reference is opt-in.** The driver does "
+        "NOT bring up B0 in the same compose stack as the ASAP "
+        "backend (port collision on 19090). To get an A-vs-B "
         "comparison row, run a separate B0 cycle and join the "
         "stages.csv files manually."
     )
     md.append(
-        "* **Postings + cost tracker gated on v5 merge.** Sections "
-        "§4 and §6 render with a `v5-merge-pending` marker until "
-        "PRs #295 (collector) and #90 (backend) land."
+        "* **Postings + cost tracker gated on backend image.** "
+        "Sections §4 and §6 render with a `merge-pending` marker "
+        "until the postings-aware engine and the cost-tracker "
+        "endpoint are exposed by the running backend image."
     )
     md.append("")
     return md
@@ -764,10 +765,10 @@ def render_section_8_emitted(cdir: str) -> list[str]:
     elif status == "fallback-placeholder":
         md.append(
             "Controller's typed-stage-split path returned None for "
-            "the v6 workload — the gateway and agents are running "
-            "the placeholder configs mounted by the compose overlay. "
-            "This is the v6 spec's fallback mode; criterion verdicts "
-            "in §2 are still meaningful."
+            "the workload — the gateway and agents are running the "
+            "placeholder configs mounted by the compose overlay. "
+            "This is the spec's documented fallback mode; criterion "
+            "verdicts in §2 are still meaningful."
         )
     elif status == "not-exercised":
         md.append(
@@ -802,13 +803,13 @@ def render_section_8_emitted(cdir: str) -> list[str]:
 # ── markdown assembly ────────────────────────────────────────────
 
 
-def render_markdown_v6(
+def render_markdown(
     results_dir: str,
     num_producers: int,
     per_agent_cardinality: int,
 ) -> str:
     if not os.path.isdir(results_dir):
-        return f"# MVP report v6 — results dir missing ({results_dir})\n"
+        return f"# MVP report — results dir missing ({results_dir})\n"
 
     measurements_dir = os.path.join(results_dir, "measurements")
     fresh_dir = os.path.join(results_dir, "freshness")
@@ -823,21 +824,21 @@ def render_markdown_v6(
     emitted_status = _read_emitted_status(emitted_dir)
 
     md: list[str] = []
-    md.append("# ASAPCollector MVP demo — issue #46 (v6, controller-driven multi-stage)")
+    md.append("# ASAPCollector MVP demo — issue #46 (controller-driven multi-stage)")
     md.append("")
     md.append(
         "Single-cell controller-driven run: 10 producers → 2 agents "
         "→ 1 gateway → 1 backend (+ MinIO archive). Controller plans "
-        "from `deploy/configs/mvp-v6-workload.yaml`; per-stage "
-        "configs are emitted via the typed-stage-split path "
+        "from `deploy/configs/mvp-workload.yaml`; per-stage configs "
+        "are emitted via the typed-stage-split path "
         "(`USE_TYPED_STAGE_SPLIT=1`). Six criteria + per-class "
         "latency + per-edge bandwidth in this report."
     )
     md.append("")
     md.append("## Workload shape")
     md.append("")
-    md.append("| Knob | v6 value |")
-    md.append("|------|---------|")
+    md.append("| Knob | Value |")
+    md.append("|------|-------|")
     md.append(f"| Per-agent cardinality | **{per_agent_cardinality}** |")
     md.append(f"| Number of producers | **{num_producers}** (×5 → agent-a, ×5 → agent-b) |")
     md.append(f"| Aggregate series at gateway | **{num_producers * per_agent_cardinality}** |")
@@ -906,7 +907,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--results-dir",
         required=True,
-        help="v6 run output directory (the one passed as OUT_BASE to run_mvp_demo_v6.sh).",
+        help="MVP run output directory (the one passed as OUT_BASE to run_mvp_demo.sh).",
     )
     ap.add_argument(
         "--num-producers",
@@ -923,11 +924,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--out",
         required=True,
-        help="Output MD path. Caller usually points this at <results_dir>/MVP_REPORT_v6.md.",
+        help="Output MD path. Caller usually points this at <results_dir>/MVP_REPORT.md.",
     )
     args = ap.parse_args(argv)
 
-    md = render_markdown_v6(
+    md = render_markdown(
         args.results_dir,
         num_producers=args.num_producers,
         per_agent_cardinality=args.per_agent_cardinality,

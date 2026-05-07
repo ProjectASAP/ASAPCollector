@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# run_mvp_demo_v6.sh — MVP v6 demo driver (controller-driven multi-stage).
+# run_mvp_demo.sh — MVP demo driver (controller-driven multi-stage).
 #
-# v6 differs from v5 (`run_mvp_demo.sh` — DO NOT MODIFY THAT FILE):
+# What this driver does:
 #
 #   1. Topology is fan-in: 10 producers → 2 agents → 1 gateway → 1
 #      backend (+ optional B0 Prometheus). The compose overlay is
-#      `deploy/docker-compose/mvp-v6-multi-stage.yml`. v5 had the
-#      classic linear N-agents → backend shape.
+#      `deploy/docker-compose/mvp-multi-stage.yml`.
 #
 #   2. Agent + gateway runtime configs are emitted by the controller
 #      (typed-stage-split path, behind `USE_TYPED_STAGE_SPLIT=1`)
@@ -16,10 +15,10 @@
 #      introspection endpoints. If the typed-stage-split path doesn't
 #      fire (Phase B/C wiring caveats), the driver logs the
 #      capture failure clearly and continues with the placeholder
-#      configs that mvp-v6-multi-stage.yml mounts as fallback.
+#      configs that mvp-multi-stage.yml mounts as fallback.
 #
 #   3. Three canonical query classes from
-#      `deploy/configs/mvp-v6-workload.yaml` exercise:
+#      `deploy/configs/mvp-workload.yaml` exercise:
 #        - window-per-series   (DDSketch p99 over 1m)
 #        - label-at-instant    (sum by zone, gateway fan-in)
 #        - combined            (rate over 5m + sum by zone)
@@ -27,10 +26,10 @@
 #      (`http_requests_total{service="payments"}` — assigned
 #      to role "archive").
 #
-#   4. Freshness phase calls `run_freshness_phase.sh` (Phase D
-#      driver) which emits `freshness/{raw,warm,archive}.csv`.
+#   4. Freshness phase calls `run_freshness_phase.sh` which emits
+#      `freshness/{raw,warm,archive}.csv`.
 #
-#   5. Compactor phase reuses v5's `gorilla-compactor` binary at
+#   5. Compactor phase invokes the `gorilla-compactor` binary at
 #      `${COMPACTOR_BIN}` with `--threshold-hours 0 --threshold-count 0`
 #      so even a 60s soak generates one merge candidate. Dry-run
 #      then live-run, capturing before/after MinIO listings.
@@ -41,10 +40,10 @@
 #        sdk→agent / agent→gateway / gateway→backend / gateway→s3.
 #
 # Usage:
-#   bash deploy/scripts/run_mvp_demo_v6.sh
+#   bash deploy/scripts/run_mvp_demo.sh
 #
 # Output:
-#   deploy/eval-results/mvp-v6-2026-05-06/{
+#   deploy/eval-results/mvp-current/{
 #       stack-up.log, controller-emitted-configs/,
 #       measurements/{stages.csv, per_edge_bandwidth.csv,
 #                     replay.jsonl, accuracy.csv},
@@ -52,7 +51,7 @@
 #       ad-hoc/{<query_label>.json},
 #       compactor/{dry_run.json, live_run.json,
 #                   before.minio.jsonl, after.minio.jsonl},
-#       MVP_REPORT_v6.md
+#       MVP_REPORT.md
 #   }
 set -euo pipefail
 
@@ -80,13 +79,13 @@ HOST_BACKEND_QUERY_PORT="${HOST_BACKEND_QUERY_PORT:-19091}"
 HOST_BACKEND_INGEST_PORT="${HOST_BACKEND_INGEST_PORT:-19090}"
 HOST_CONTROLLER_PORT="${HOST_CONTROLLER_PORT:-18080}"
 HOST_PROM_B0_PORT="${HOST_PROM_B0_PORT:-19090}"  # collides with backend ingest;
-# v6 multi-stage overlay republishes Prometheus B0 on 19090 only when
+# The multi-stage overlay republishes Prometheus B0 on 19090 only when
 # the `b0` profile is active (compose `--profile b0`). The driver does
 # NOT bring up B0 in the same compose stack as the backend on this
 # port; B0 mode is a separate cycle (see Phase 0 baseline_b0() below).
 
-OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-v6-2026-05-06}"
-REPORT_NAME="${REPORT_NAME:-MVP_REPORT_v6.md}"
+OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-current}"
+REPORT_NAME="${REPORT_NAME:-MVP_REPORT.md}"
 COMPACTOR_BIN="${COMPACTOR_BIN:-${REPO_ROOT}/compactor/target/release/gorilla-compactor}"
 COMPACTOR_BUCKET="${COMPACTOR_BUCKET:-asap-gorilla}"
 COMPACTOR_ENDPOINT="${COMPACTOR_ENDPOINT:-http://localhost:9000}"
@@ -95,7 +94,7 @@ COMPACTOR_SECRET_KEY="${COMPACTOR_SECRET_KEY:-asap-local-only}"
 COMPACTOR_TENANT="${COMPACTOR_TENANT:-default}"
 
 # ── helpers ──────────────────────────────────────────────────────
-log() { printf '[mvp v6] %s\n' "$*"; }
+log() { printf '[mvp] %s\n' "$*"; }
 
 ensure_out_dirs() {
     mkdir -p \
@@ -120,30 +119,28 @@ preflight() {
 
     if [[ ! -x "${COMPACTOR_BIN}" ]]; then
         log "WARN: compactor binary missing at ${COMPACTOR_BIN}; "
-        log "      Phase F can run \`cargo build --release -p gorilla-compactor\` "
-        log "      from the v5-merged tree, OR set COMPACTOR_BIN to the location "
-        log "      of the built binary. The compactor phase will be skipped "
-        log "      with a clear marker file rather than crashing."
+        log "      run \`cargo build --release -p gorilla-compactor\` "
+        log "      OR set COMPACTOR_BIN to the location of the built "
+        log "      binary. The compactor phase will be skipped with a "
+        log "      clear marker file rather than crashing."
     fi
 
-    # Best-effort: rebuild fake-exporter image if the freshness probe
-    # symbol is missing. This is an authored-mode driver; Phase F may
-    # rebuild on its own. We do NOT fail if the image is missing —
-    # the docker-compose `up` will surface that.
+    # Best-effort: warn if the fake-exporter image is missing.
+    # We do NOT fail here — the docker-compose `up` will surface
+    # that directly.
     if docker image inspect asap/fake-exporter:dev >/dev/null 2>&1; then
         log "  fake-exporter:dev image present"
     else
-        log "  fake-exporter:dev image NOT FOUND — Phase F will need: "
+        log "  fake-exporter:dev image NOT FOUND — run: "
         log "    docker build -t asap/fake-exporter:dev deploy/fake-exporter/"
     fi
 
-    # Clean any stale containers from a previous v6 run. Only
-    # matches v6-overlay containers — won't disturb a concurrent v5
-    # demo (different project name + different service set).
+    # Clean any stale containers from a previous run of the MVP
+    # overlay. Won't disturb other compose projects on the host.
     docker compose \
         --project-directory "${COMPOSE_DIR}" \
         -f "${COMPOSE_DIR}/base.yml" \
-        -f "${COMPOSE_DIR}/mvp-v6-multi-stage.yml" \
+        -f "${COMPOSE_DIR}/mvp-multi-stage.yml" \
         down -v --remove-orphans \
         > "${OUT_BASE}/preflight-down.log" 2>&1 || true
 }
@@ -162,21 +159,21 @@ bring_up_stack() {
         ASAP_SKETCH_FAMILY="${ASAP_SKETCH_FAMILY}" \
         docker compose \
             -f base.yml \
-            -f mvp-v6-multi-stage.yml \
+            -f mvp-multi-stage.yml \
             up -d
     ) > "${OUT_BASE}/stack-up.log" 2>&1
 
     log "  stack settle ${STACK_SETTLE_S}s (controller plan + OpAMP push)"
     sleep "${STACK_SETTLE_S}"
 
-    # ── v6.1 fix: trigger handle_plan() for the typed-stage-split path ───────
+    # Trigger handle_plan() for the typed-stage-split path.
     # The startup workload-registry pre-pop loop in controller/main.rs only
     # runs `planner.plan(&wl)`; the `USE_TYPED_STAGE_SPLIT` block lives
-    # inside `handle_plan()` (POST /api/v1/plan). v6 never POSTed, so the
-    # typed path was never reached and §8 STATUS came back `not-exercised`.
-    # v6.1 POSTs each canonical workload now that the OpAMP fabric is up,
-    # which exercises the emitter + the typed-backend JSON push.
-    log "  v6.1: POST /api/v1/plan for each canonical workload (exercise typed-stage-split)"
+    # inside `handle_plan()` (POST /api/v1/plan). Without an explicit POST
+    # the typed path is never reached and §8 STATUS comes back
+    # `not-exercised`. POST each canonical workload now that the OpAMP
+    # fabric is up — this exercises the emitter + the typed-backend JSON push.
+    log "  POST /api/v1/plan for each canonical workload (exercise typed-stage-split)"
     post_workload_plan() {
         local label="$1"; local promql="$2"; local accuracy="$3"; local metric="$4"
         local body
@@ -256,7 +253,7 @@ capture_emitted_configs() {
     fi
 
     # Per-metric typed config (one per workload entry — Phase B
-    # emitter output). The mvp-v6-workload.yaml has four entries.
+    # emitter output). The mvp-workload.yaml has four entries.
     for metric in \
         http_requests_total_latency_ms \
         http_requests_total ; do
@@ -280,8 +277,8 @@ capture_emitted_configs() {
     fi
 
     # Snapshot the placeholder gateway config for diffing.
-    if [[ -f "${REPO_ROOT}/deploy/configs/sketchcol-gateway-mvp-v6-placeholder.yaml" ]]; then
-        cp "${REPO_ROOT}/deploy/configs/sketchcol-gateway-mvp-v6-placeholder.yaml" \
+    if [[ -f "${REPO_ROOT}/deploy/configs/sketchcol-gateway-mvp-placeholder.yaml" ]]; then
+        cp "${REPO_ROOT}/deploy/configs/sketchcol-gateway-mvp-placeholder.yaml" \
             "${cdir}/gateway.placeholder.yaml"
     fi
 
@@ -289,10 +286,10 @@ capture_emitted_configs() {
     # is the failure mode the spec calls out as expected if Phase
     # B/C wiring has remaining caveats. We grep the controller logs
     # for the typed-stage-split tracing markers.
-    docker logs "$(cd "${COMPOSE_DIR}" && docker compose -f base.yml -f mvp-v6-multi-stage.yml ps -q controller 2>/dev/null | head -n1)" \
+    docker logs "$(cd "${COMPOSE_DIR}" && docker compose -f base.yml -f mvp-multi-stage.yml ps -q controller 2>/dev/null | head -n1)" \
         2> "${cdir}/controller.stderr" \
         > "${cdir}/controller.stdout" || true
-    # v6.1: Rust's tracing default writes to stdout, so the captured
+    # Rust's tracing default writes to stdout, so the captured
     # controller.stderr is often empty even when the typed-stage-split
     # path fires. Grep both files so STATUS reflects the true state.
     if grep -q "USE_TYPED_STAGE_SPLIT.*pushing typed" \
@@ -315,7 +312,7 @@ measure_phase() {
     local mdir="${OUT_BASE}/measurements"
     local backend_url="http://localhost:${HOST_BACKEND_QUERY_PORT}"
 
-    # Build the v6 replay query suite from mvp-v6-workload.yaml.
+    # Build the replay query suite from mvp-workload.yaml.
     # We keep the JSON adjacent to the run dir for reproducibility.
     cat > "${mdir}/replay-queries.json" <<'JSON'
 [
@@ -340,7 +337,7 @@ JSON
     # Stage probe (background).
     log "  measure_stages.py duration=${SOAK_S}s"
     python3 "${SCRIPT_DIR}/measure_stages.py" \
-        --baseline "mvp-v6" \
+        --baseline "mvp" \
         --duration "${SOAK_S}" \
         --out "${mdir}/stages.csv" \
         > "${mdir}/stages.log" 2>&1 &
@@ -363,7 +360,7 @@ JSON
     log "  accuracy reduce"
     local backend_cont
     backend_cont="$(cd "${COMPOSE_DIR}" && \
-        docker compose -f base.yml -f mvp-v6-multi-stage.yml ps -q backend 2>/dev/null | head -n1)"
+        docker compose -f base.yml -f mvp-multi-stage.yml ps -q backend 2>/dev/null | head -n1)"
     if [[ -n "${backend_cont}" ]]; then
         docker cp "${backend_cont}:/var/asap/cold/raw" "${mdir}/cold-truth" \
             > "${mdir}/cold-snapshot.log" 2>&1 || true
@@ -447,7 +444,7 @@ cold_fallback_phase() {
     fi
 }
 
-# Phase 6 — compactor (dry-run + live, concat-only from v5).
+# Phase 6 — compactor (dry-run + live, concat-only).
 compactor_phase() {
     log "Phase 6 compactor (concat-only)"
     local cdir="${OUT_BASE}/compactor"
@@ -500,16 +497,16 @@ compactor_phase() {
     list_minio_objects "${cdir}/after.minio.jsonl"
 }
 
-# Phase 6.5 — fetch v5 cost tracker if backend exposes it.
+# Phase 6.5 — fetch s3 cost tracker if backend exposes it.
 fetch_s3_cost_csv() {
-    log "Phase 6.5 fetch s3_cost.csv (v5 cost tracker)"
+    log "Phase 6.5 fetch s3_cost.csv"
     local cdir="${OUT_BASE}/measurements"
     local backend_url="http://localhost:${HOST_BACKEND_QUERY_PORT}"
     if curl -sf "${backend_url}/internal/s3_cost.csv" \
             > "${cdir}/s3_cost.csv" 2> "${cdir}/s3_cost.err"; then
         log "  s3_cost.csv captured"
     else
-        log "  [warn] /internal/s3_cost.csv unavailable (likely v5 not merged yet) — see s3_cost.err"
+        log "  [warn] /internal/s3_cost.csv unavailable — see s3_cost.err"
     fi
 }
 
@@ -520,22 +517,22 @@ teardown() {
         cd "${COMPOSE_DIR}"
         docker compose \
             -f base.yml \
-            -f mvp-v6-multi-stage.yml \
+            -f mvp-multi-stage.yml \
             down -v --remove-orphans
     ) > "${OUT_BASE}/teardown.log" 2>&1 || true
 }
 
-# Phase 8 — generate the v6 report.
+# Phase 8 — generate the MVP report.
 generate_report() {
-    local report_name="${REPORT_NAME:-MVP_REPORT_v6.md}"
+    local report_name="${REPORT_NAME:-MVP_REPORT.md}"
     log "Phase 8 generate ${report_name}"
-    python3 "${SCRIPT_DIR}/mvp_report_v6.py" \
+    python3 "${SCRIPT_DIR}/mvp_report.py" \
         --results-dir "${OUT_BASE}" \
         --num-producers "${N_PRODUCERS}" \
         --per-agent-cardinality "${PER_AGENT_CARDINALITY}" \
         --out "${OUT_BASE}/${report_name}" \
         > "${OUT_BASE}/report.log" 2>&1 || \
-            log "  [warn] mvp_report_v6.py exited non-zero — see report.log"
+            log "  [warn] mvp_report.py exited non-zero — see report.log"
 }
 
 # ── main ─────────────────────────────────────────────────────────
@@ -553,8 +550,8 @@ main() {
     teardown
     generate_report
 
-    local report_name="${REPORT_NAME:-MVP_REPORT_v6.md}"
-    log "MVP demo v6 complete. Report: ${OUT_BASE}/${report_name}"
+    local report_name="${REPORT_NAME:-MVP_REPORT.md}"
+    log "MVP demo complete. Report: ${OUT_BASE}/${report_name}"
 }
 
 main "$@"

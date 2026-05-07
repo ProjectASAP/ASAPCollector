@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""measure_per_edge_bandwidth.py — MVP v6 per-edge bandwidth probe.
+"""measure_per_edge_bandwidth.py — MVP demo per-edge bandwidth probe.
 
 Extends `measure_stages.py`'s `docker stats` net-rx/tx capture with
-per-edge labelling for the v6 multi-stage topology:
+per-edge labelling for the multi-stage topology:
 
     sdk → agent       (×10 producers → 2 agents)
     agent → gateway   (2 agents → 1 gateway)
@@ -12,7 +12,7 @@ per-edge labelling for the v6 multi-stage topology:
 Why this lives in its own script (vs. a flag on measure_stages.py):
 
     measure_stages.py emits ONE row per (baseline, stage, container)
-    summarising the whole window. The v6 report wants per-edge
+    summarising the whole window. The MVP report wants per-edge
     bytes/sec time-series so the headline can show "per-edge
     bandwidth", not just per-stage. Two outputs, two scripts.
 
@@ -35,7 +35,7 @@ Output CSV columns:
     edge_gateway_to_s3
 
 One row per (edge, sample) — i.e. ~60 rows per edge for a 60s run
-at 1Hz. Reduce to per-edge averages downstream (mvp_report_v6.py
+at 1Hz. Reduce to per-edge averages downstream (mvp_report.py
 handles this).
 
 Stdlib only. Calls `docker stats --no-stream` once per sample — same
@@ -61,13 +61,13 @@ import time
 from typing import Iterable
 
 
-# Edge container-set definitions for the v6 topology. The values
-# are role tags consumed by `_role_for_container` below.
+# Edge container-set definitions for the multi-stage topology. The
+# values are role tags consumed by `_role_for_container` below.
 #
 # Trade-off: keeping the edge → container mapping in this file
 # rather than parsing a YAML keeps the script stdlib-only. The
-# mapping mirrors mvp-v6-multi-stage.yml; if that overlay's
-# service names change, this script must follow.
+# mapping mirrors mvp-multi-stage.yml; if that overlay's service
+# names change, this script must follow.
 
 # Container role classifier. We match on the bare service name
 # stripped of compose's `<project>-<service>-<n>` suffix. For
@@ -95,11 +95,11 @@ def _role_for_container(name: str) -> str:
     if bare == "minio":
         return "minio"
     if bare.startswith("fake-exporter") or bare.startswith("fake_exporter"):
-        # base.yml's fake-exporter; under v6 overlay it's a stub
-        # alpine that does nothing, so its bytes-on-wire is ~0. Tag
-        # it as producer so a misconfiguration (overlay not active)
-        # still attributes to the right edge — better than silently
-        # under-counting.
+        # base.yml's fake-exporter; under the MVP overlay it's a
+        # stub alpine that does nothing, so its bytes-on-wire is ~0.
+        # Tag it as producer so a misconfiguration (overlay not
+        # active) still attributes to the right edge — better than
+        # silently under-counting.
         return "producer"
     return "other"
 
@@ -167,7 +167,7 @@ def docker_stats_snapshot() -> dict[str, tuple[float, float]]:
 #   - Agents fan out to gateway. Sum their TX (this overcounts
 #     by including the agent's own /metrics scrape from
 #     Prometheus, but that's negligible vs. OTLP traffic in the
-#     v6 topology).
+#     multi-stage topology).
 #   - Gateway fans out to backend AND s3. We can't distinguish
 #     the two from a single-NIC TX counter — so:
 #       edge_gateway_to_backend = backend.RX
