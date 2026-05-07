@@ -124,13 +124,26 @@ encoding.
 
 ### Sketch families (5 supported, byte-parity across runtimes)
 
-| Family | Wire variant | Cross-runtime parity | Backend accumulator |
-|---|---|---|---|
-| DDSketch | `Metric.data = DDSketch` | ✅ | ✅ |
-| KLL | `Metric.data = KLLSketch` | ✅ | ✅ |
-| HLL | `Metric.data = HLLSketch` | ✅ | ✅ |
-| CountSketch | `Metric.data = CountSketch` | ✅ | ✅ |
-| Count-Min Sketch | `Metric.data = CountMinSketch` | ✅ | ✅ |
+| Family | Wire variant | Cross-runtime parity | Backend accumulator | Default `delta_transmission` |
+|---|---|---|---|---|
+| DDSketch | `Metric.data = DDSketch` | ✅ | ✅ | `true` |
+| KLL | `Metric.data = KLLSketch` | ✅ | ✅ | n/a — no delta variant |
+| HLL | `Metric.data = HLLSketch` | ✅ | ✅ | `true` |
+| CountSketch | `Metric.data = CountSketch` | ✅ | ✅ | `true` |
+| Count-Min Sketch | `Metric.data = CountMinSketch` | ✅ | ✅ | `true` |
+
+Operational defaults (factory `createDefaultConfig` in
+`opentelemetry-collector-contrib-patch/processor/<family>processor/factory.go`,
+plus the controller's stage-emitter
+`controller/src/config/stage_config.rs::build_edge_processor_block`) ship
+delta-encoded transmission turned on for the four mergeable families:
+the per-window wire payload is the bucket / register / cell diff since
+the last flush, not the full sketch state. The `_quantile` latency-class
+is the only family where the wire payload is always full state — KLL's
+randomised compaction means two sketches over the same input history
+are not bit-identical and are not additively mergeable, so a delta
+variant is undefined (the kllprocessor's `Config.Validate` rejects
+`delta_transmission: true` outright; see `Implementation.tex`).
 
 ### Backend (`ASAPQuery-backend`)
 
@@ -773,6 +786,36 @@ For an end-to-end PASS picture, expect:
 | §4 | postings | non-zero `series matched` rows; `would have scanned` ≥ matched |
 | §5 | compaction | before > after on object count |
 | §8 | controller emitter | STATUS = `live` |
+
+### Bandwidth criterion ① — break-even depends on `samples_per_window`
+
+The bandwidth verdict is NOT a per-sketch property in isolation. Each
+sketch family has a per-series wire footprint dominated by a fixed
+`state_size` (DDSketch buckets, HLL registers, KLL sample buffer,
+Count-Sketch / Count-Min cell matrix); the per-window break-even
+versus raw scrape is governed by
+
+```
+samples_per_window = scrape_freq_hz × window_seconds
+break_even_samples ≈ state_size_bytes / per_sample_raw_bytes
+```
+
+For the demo's 60 s flush window:
+
+| `scrape_freq_hz` | `samples_per_window` | DDSketch | HLL | CountSketch | Count-Min |
+|---|---|---|---|---|---|
+| 1 Hz (legacy) | 60 | LOSE (~1200% inflation; below break-even) | LOSE (~5×) | LOSE (~133×) | LOSE |
+| **10 Hz (default)** | **600** | **WIN (delta)** | **WIN (~1.8× — past 330-sample HLL knee)** | LOSE (~13× — better but still loses) | WIN-adjacent |
+
+The MVP demo defaults to `EXPORTER_FREQ_HZ=10` (see `base.yml` and
+`mvp-multi-stage.yml`) so all four delta-capable families operate above
+their break-even where possible. KLL is omitted from the table (no
+delta variant; full-state cost per window).
+
+If a sweep cell ships at 1 Hz (legacy paths, or a host shell that
+overrides `EXPORTER_FREQ_HZ=1`), do NOT compare its bandwidth verdict
+against the 10 Hz numbers — the operating point is on the wrong side
+of every break-even curve.
 
 ## 7. Known issues — current state of the demo (2026-05-07)
 
