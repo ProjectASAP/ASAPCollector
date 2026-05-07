@@ -256,10 +256,15 @@ preflight() {
 
     # Clean any stale containers from a previous run of the MVP
     # overlay. Won't disturb other compose projects on the host.
+    # Step 2.4: also include the thanos-archive overlay so the
+    # store-gateway + thanos-query sidecars get torn down between
+    # cycles. The overlay is harmless to reference even in baseline
+    # mode (its services are just additive).
     docker compose \
         --project-directory "${COMPOSE_DIR}" \
         -f "${COMPOSE_DIR}/base.yml" \
         -f "${COMPOSE_DIR}/mvp-multi-stage.yml" \
+        -f "${COMPOSE_DIR}/mvp-thanos-archive.yml" \
         --profile b0 \
         down -v --remove-orphans \
         > "${PIPELINE_OUT_BASE}/preflight-down.log" 2>&1 || true
@@ -274,6 +279,15 @@ bring_up_stack() {
         compose_extra=(--profile b0)
     fi
 
+    # Step 2.4: layer the thanos-archive overlay only for the asap
+    # pipeline so the store-gateway + thanos-query sidecars come up
+    # alongside the backend. Baseline doesn't need a Thanos archive
+    # tier (it answers from the Prometheus container directly).
+    local archive_overlay=()
+    if [[ "${PIPELINE_LABEL}" == "asap" ]]; then
+        archive_overlay=(-f mvp-thanos-archive.yml)
+    fi
+
     (
         cd "${COMPOSE_DIR}"
         USE_TYPED_STAGE_SPLIT="${USE_TYPED_STAGE_SPLIT}" \
@@ -282,11 +296,13 @@ bring_up_stack() {
         EXPORTER_FRESHNESS_PROBES="${EXPORTER_FRESHNESS_PROBES}" \
         EXPORTER_FRESHNESS_PROBE_HZ="${EXPORTER_FRESHNESS_PROBE_HZ}" \
         ASAP_SKETCH_FAMILY="${ASAP_SKETCH_FAMILY}" \
+        ASAP_THANOS_QUERY_URL="${ASAP_THANOS_QUERY_URL:-http://thanos-query:10903}" \
         AGENT_CONFIG_A="${AGENT_CONFIG_A:-}" \
         AGENT_CONFIG_B="${AGENT_CONFIG_B:-}" \
         docker compose \
             -f base.yml \
             -f mvp-multi-stage.yml \
+            "${archive_overlay[@]}" \
             "${compose_extra[@]}" \
             up -d
     ) > "${PIPELINE_OUT_BASE}/compose-up.log" 2>&1
@@ -296,6 +312,23 @@ bring_up_stack() {
 
     log "  stack settle ${STACK_SETTLE_S}s (controller plan + OpAMP push)"
     sleep "${STACK_SETTLE_S}"
+
+    # Step 2.4: probe the Thanos archive sidecar for the asap pipeline.
+    # An empty bucket still yields status=success with an empty result
+    # vector — the goal is just to confirm the chain
+    # thanos-query → thanos-store-gateway → MinIO is wired before the
+    # demo starts firing real queries.
+    if [[ "${PIPELINE_LABEL}" == "asap" ]]; then
+        log "  verify thanos sidecar"
+        if bash "${SCRIPT_DIR}/verify_thanos_sidecar.sh" \
+                > "${PIPELINE_OUT_BASE}/thanos-sidecar-verify.log" 2>&1; then
+            log "    thanos sidecar healthy"
+            echo PASS > "${PIPELINE_OUT_BASE}/thanos-sidecar-verify.verdict"
+        else
+            log "  [warn] thanos sidecar verify failed — see thanos-sidecar-verify.log"
+            echo FAIL > "${PIPELINE_OUT_BASE}/thanos-sidecar-verify.verdict"
+        fi
+    fi
 
     if [[ "${PIPELINE_LABEL}" == "asap" ]]; then
         # Trigger handle_plan() for the typed-stage-split path.
@@ -562,6 +595,31 @@ ad_hoc_postings_phase() {
         'count(http_requests_total{service="api"})'
     fire_query "topk_5xx_by_zone" \
         'topk(5, sum by (zone) (rate(http_requests_total{status=~"5.."}[5m])))'
+
+    # Step 2.4: archive-only PromQL surface (Path A2 / Thanos engine).
+    # These queries were rejected by the legacy curated-subset
+    # GorillaQueryEngine; with ThanosForwardEngine the full Prometheus
+    # PromQL surface is available on the archive tier. Only fire on
+    # asap (baseline doesn't have a separate archive tier).
+    if [[ "${PIPELINE_LABEL}" == "asap" ]]; then
+        fire_query "archive_histogram_quantile_p99" \
+            'histogram_quantile(0.99, sum(rate(http_requests_total_latency_ms_bucket[5m])) by (le))'
+        fire_query "archive_delta_5m" \
+            'delta(http_requests_total[5m])'
+        # Force the archive engine via the X-ASAP-Engine override so
+        # we exercise the ThanosForwardEngine even if the storage
+        # router would have dispatched warm-tier.
+        log "  ad-hoc[archive_histogram_quantile_p99_via_thanos_archive]: forced via X-ASAP-Engine"
+        curl -sG -m 10 \
+            "${backend_url}/api/v1/query" \
+            -H 'X-ASAP-Engine: thanos_archive' \
+            --data-urlencode 'query=histogram_quantile(0.99, sum(rate(http_requests_total_latency_ms_bucket[5m])) by (le))' \
+            -o "${adir}/archive_histogram_quantile_p99_via_thanos_archive.json" \
+            -w '{"http_code":%{http_code},"time_total":%{time_total}}\n' \
+            > "${adir}/archive_histogram_quantile_p99_via_thanos_archive.curlstats" \
+            2> "${adir}/archive_histogram_quantile_p99_via_thanos_archive.curl.err" \
+            || log "    [warn] curl exited non-zero"
+    fi
 }
 
 # Phase 5 — cold-fallback verification (assigned-archive metric).
@@ -676,6 +734,7 @@ teardown() {
         docker compose \
             -f base.yml \
             -f mvp-multi-stage.yml \
+            -f mvp-thanos-archive.yml \
             --profile b0 \
             down -v --remove-orphans
     ) > "${PIPELINE_OUT_BASE}/compose-down.log" 2>&1 || true
