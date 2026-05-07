@@ -18,7 +18,7 @@ defined there; this doc references them and does not restate them.
 
 ## 1. Goal
 
-Ship a single OTAP-Rust binary `sketchotap` that includes all five
+Ship a single OTAP-Rust binary `asap-otap` that includes all five
 sketch types (DDSketch, KLL, HLL, CountSketch, CountMinSketch) as a
 unified `asap_sketches` receiver / processor plugin, using the same
 `asap-precompute-rs` runtime that the eventual `sketchvector`
@@ -34,9 +34,9 @@ at link time. End-state deployment story per
 
 ```
 host operator picks:
-  ─── existing OTel pipeline ─────► sketchcollector
-  ─── existing Telegraf pipeline ─► sketchtelegraf
-  ─── Arrow-native pipeline ──────► sketchotap
+  ─── existing OTel pipeline ─────► asap-otel
+  ─── existing Telegraf pipeline ─► asap-telegraf
+  ─── Arrow-native pipeline ──────► asap-otap
                                        ↓
                              same SketchEnvelope bytes
                                        ↓
@@ -44,9 +44,9 @@ host operator picks:
 ```
 
 Operators choose between the agents based on the telemetry pipeline
-they already operate; ASAP is indifferent. `sketchotap` is the right
+they already operate; ASAP is indifferent. `asap-otap` is the right
 choice when downstream consumers need Arrow-native ingest and
-`sketchtelegraf` / `sketchcollector` would force redundant
+`asap-telegraf` / `asap-otel` would force redundant
 serialization round-trips through OTLP-proto or Telegraf line
 protocol.
 
@@ -198,8 +198,8 @@ resource attributes that the runtime should include in series keys.
 
 **Pre-aggregated sketch input (KindEnvelope path).** When an OTAP
 upstream sends an already-aggregated sketch (typical multi-hop
-case: edge `sketchotap` flushes envelopes to a gateway
-`sketchotap` for re-aggregation), the envelope rides as a
+case: edge `asap-otap` flushes envelopes to a gateway
+`asap-otap` for re-aggregation), the envelope rides as a
 Strategy-B field on the per-row attribute child batch. Per the
 audit in
 [edge-framework §7.2](./design-asap-edge-framework.md#72-two-encoding-strategies),
@@ -287,9 +287,9 @@ mechanic; the layout deliberately mirrors the Telegraf / OTel
 sides so contributors moving between platforms see the same
 shape.
 
-## 7. Build pipeline — `build_sketchotap.sh`
+## 7. Build pipeline — `build_asap_otap.sh`
 
-Mirror `build_sketchcollector.sh` and `build_sketchtelegraf.sh`.
+Mirror `build_asap_otel.sh` and `build_asap_telegraf.sh`.
 Steps:
 
 1. Apply patches to the OTAP Dataflow submodule via
@@ -298,13 +298,13 @@ Steps:
 2. Resolve `[patch.crates-io]` / `[replace]` equivalent
    directives in OTAP's `Cargo.toml` (workspace root) for
    `asap-precompute-rs` and `asap_sketchlib` to local checkouts
-   (sibling repos), the same pattern `build_sketchcollector.sh`
-   uses for `sketchlib-go` and `build_sketchtelegraf.sh` uses
+   (sibling repos), the same pattern `build_asap_otel.sh`
+   uses for `sketchlib-go` and `build_asap_telegraf.sh` uses
    for `asap-precompute-go`.
 3. `cargo build --release` from the patched OTAP source tree.
-4. Output: `otap-dataflow/target/release/sketchotap` binary
-   (copied / symlinked to `otap/sketchotap` for parity with
-   `telegraf/sketchtelegraf`).
+4. Output: `otap-dataflow/target/release/asap-otap` binary
+   (copied / symlinked to `otap/asap-otap` for parity with
+   `telegraf/asap-telegraf`).
 
 **Key build-system decision.** OTAP Dataflow is a Cargo workspace;
 its plugin enumeration is generated at link time by `linkme`'s
@@ -322,7 +322,7 @@ Pseudo-script (illustrative; not the actual file):
 
 ```bash
 #!/usr/bin/env bash
-# build_sketchotap.sh — Build the sketchotap OTAP-Rust distribution.
+# build_asap_otap.sh — Build the asap-otap OTAP-Rust distribution.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -330,8 +330,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 2. Wire local checkouts via [patch.crates-io] in OTAP's workspace
 #    Cargo.toml (Cargo's equivalent of Go's replace directives) for
 #    asap-precompute-rs and asap_sketchlib.
-# 3. cargo build --release --bin sketchotap from the OTAP submodule.
-# 4. Output: otap-dataflow/target/release/sketchotap.
+# 3. cargo build --release --bin asap-otap from the OTAP submodule.
+# 4. Output: otap-dataflow/target/release/asap-otap.
 ```
 
 Estimated final length ~80 LoC including error handling and the
@@ -435,7 +435,7 @@ Field reference (one line each):
 | OTAP codec | `asap-precompute-rs/src/otap/` | ~400 (decode_batch, encode_batch, config, seriesattrs, schema lookup, tests) |
 | `asap_sketches` plugin | `otap-patch/plugins/asap_sketches/` | ~700 (Tokio async lifecycle, config translation, ticker wiring, control-channel task, factory + linkme entry, tests) |
 | `linkme` registration patch | `otap-patch/all/mod.rs` | ~10 |
-| Build script | `build_sketchotap.sh` | ~80 |
+| Build script | `build_asap_otap.sh` | ~80 |
 | **Total new** | | **~1200** |
 
 Compare to ~1500 LoC for the Telegraf side (per
@@ -461,7 +461,7 @@ workspace version `0.1.0`, `publish = false`, ~4 commits/day to
 the dataflow tree, breaking changes on the Extension System /
 capability registry / schema validators. Mitigation: pin a
 specific commit SHA in `.gitmodules` and document it in
-`build_sketchotap.sh`; plan a quarterly upgrade cadence with
+`build_asap_otap.sh`; plan a quarterly upgrade cadence with
 regression tests; isolate ASAP's runtime from OTAP API churn so
 only the `otap-patch/plugins/asap_sketches/` plugin takes the
 upgrade hit when OTAP refactors; document the upgrade workflow
@@ -470,7 +470,7 @@ parity → update SHA) in the plugin's README. **Current pin
 (Phase D, 2026-05-05):**
 [`29de46bb4dbff6e48b595459188f912b49373eed`](https://github.com/open-telemetry/otel-arrow/commit/29de46bb4dbff6e48b595459188f912b49373eed)
 on `main`, recorded in `.gitmodules` and inlined into
-`build_sketchotap.sh`'s header.
+`build_asap_otap.sh`'s header.
 
 **Arrow schema stability.** OTel-Arrow's `OtapArrowRecords` schema
 is settled but evolving (per the upstream `otel-arrow` repo's
@@ -488,8 +488,8 @@ behavior-preservation rule provided a strict gate). Correctness is
 established by (1) direct unit tests on the codec's `decode_batch`
 / `encode_batch` round trip, (2) plugin lifecycle tests against the
 in-tree OTAP `effect_handler` test utilities, and (3) **cross-host
-envelope parity**: a `sketchotap` agent and a `sketchcollector` /
-`sketchtelegraf` agent fed the same input stream MUST emit
+envelope parity**: a `asap-otap` agent and a `asap-otel` /
+`asap-telegraf` agent fed the same input stream MUST emit
 byte-identical `SketchEnvelope::payload` bytes. Phase E covers
 this — same shape as Phase 4 step E
 (`integration/parity/golden_test.go`); feed the same input, hash
@@ -502,7 +502,7 @@ must match across both implementations or a mixed fleet (some
 hosts emitting via Rust, some via Go) will produce divergent
 backend results. Issue #243 tracks the cross-language byte-parity
 work; it is a **hard prerequisite** for production fleet mixing.
-Until #243 closes, `sketchotap` deployments must be homogeneous
+Until #243 closes, `asap-otap` deployments must be homogeneous
 (all hosts in a controller plan on OTAP-Rust, or all on Telegraf /
 OTel), and cross-host parity tests must pin to one runtime rather
 than mix Go-encoded and Rust-encoded payloads in the same
@@ -533,10 +533,10 @@ verified; the design doc references it but does not redesign it.
 
 **No drop-in plugin ABI.** Per
 [edge-framework §7.4](./design-asap-edge-framework.md#74-integration-model)
-and R7. Distribution is via a custom-built binary (`sketchotap`),
+and R7. Distribution is via a custom-built binary (`asap-otap`),
 not by dropping a `.so` into a stock OTAP Dataflow install. No
 runtime plugin loader; users install the ASAP-flavored distro of
-OTAP. Same model as `sketchcollector` and `sketchtelegraf` already
+OTAP. Same model as `asap-otel` and `asap-telegraf` already
 follow.
 
 ## 11. Phase plan
@@ -546,8 +546,8 @@ follow.
 | **A** | This doc — design alignment, no code. | Reviewed; section §11 of the framework doc updated to point at this doc as the Phase-5 source. |
 | **B** | Codec implementation: `asap-precompute-rs/src/otap/` + minimal plugin shell that wires `decode_batch` / `encode_batch` against a stub `Precompute`. | `cargo test -p asap-precompute-rs --features otap` passes; plugin compiles. |
 | **C** | Full `asap_sketches` plugin: all five sketch types via `sketch_type` dispatch, control-channel Tokio task, `Wakeup`-driven flush, lifecycle. | OTAP-harness lifecycle tests pass for each `sketch_type`; round-trip raw input → envelope output preserves expected sketch counts. |
-| **D** | Build script (`build_sketchotap.sh`) + OTAP submodule patch (`otap-patch/all/mod.rs` registration). | `bash build_sketchotap.sh` produces a `sketchotap` binary that lists `asap_sketches` in its plugin registry. |
-| **E** _(optional)_ | Cross-host envelope parity test — `sketchotap` agent and `sketchcollector` / `sketchtelegraf` agents fed identical input emit byte-identical `SketchEnvelope::payload`s. | E2E test passes; backend PromQL output is identical regardless of which agent produced the data. **Gated on issue #243** for the cross-language case (Go vs Rust payload bytes); the homogeneous-Rust case (sketchotap vs sketchotap, varied input sources) does not need #243. |
+| **D** | Build script (`build_asap_otap.sh`) + OTAP submodule patch (`otap-patch/all/mod.rs` registration). | `bash build_asap_otap.sh` produces a `asap-otap` binary that lists `asap_sketches` in its plugin registry. |
+| **E** _(optional)_ | Cross-host envelope parity test — `asap-otap` agent and `asap-otel` / `asap-telegraf` agents fed identical input emit byte-identical `SketchEnvelope::payload`s. | E2E test passes; backend PromQL output is identical regardless of which agent produced the data. **Gated on issue #243** for the cross-language case (Go vs Rust payload bytes); the homogeneous-Rust case (asap-otap vs asap-otap, varied input sources) does not need #243. |
 
 Phase A is this PR. Phases B–D are sized at roughly 1 week each
 for an engineer familiar with the runtime + Tokio async; the
@@ -600,9 +600,9 @@ shipped in #241 / #242).
   mirrors.
 - [`telegraf-patch/`](../telegraf-patch/) — patch-overlay
   structure that `otap-patch/` mirrors.
-- [`build_sketchcollector.sh`](../build_sketchcollector.sh) and
-  [`build_sketchtelegraf.sh`](../build_sketchtelegraf.sh) —
-  build pipelines that `build_sketchotap.sh` mirrors.
+- [`build_asap_otel.sh`](../build_asap_otel.sh) and
+  [`build_asap_telegraf.sh`](../build_asap_telegraf.sh) —
+  build pipelines that `build_asap_otap.sh` mirrors.
 - Issue #243 — cross-language byte-parity tracker; hard
   prerequisite for production OTAP-Rust ↔ Telegraf / OTel
   fleet mixing.

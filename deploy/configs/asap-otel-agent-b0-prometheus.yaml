@@ -10,8 +10,8 @@
 #
 #   producer ──OTLP──▶ agent ──PRW──▶ Prometheus :9090
 #
-# The PRW exporter IS in the patched `asap/sketchcol:dev` builder
-# (see `opentelemetry-collector-contrib-patch/cmd/sketchcollector/
+# The PRW exporter IS in the patched `asap/asap-otel:dev` builder
+# (see `opentelemetry-collector-contrib-patch/cmd/asap-otel/
 # builder-config.yaml`), so no rebuild is required. PRW is
 # lossy for sketch-typed data points but B0's pipeline only
 # carries raw counters / gauges, so that's fine.

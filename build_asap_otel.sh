@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# build_sketchcollector.sh — Build the sketchcollector OpenTelemetry Collector distribution.
+# build_asap_otel.sh — Build the asap-otel OpenTelemetry Collector distribution.
 #
-# sketchcollector includes ALL sketch processors (ddsketch, KLL, HLL,
+# asap-otel includes ALL sketch processors (ddsketch, KLL, HLL,
 # countsketch, countminsketch) in a single binary.
 #
 # Usage:
-#   ./build_sketchcollector.sh            # builds sketchcollector
-#   ./build_sketchcollector.sh --skip-patches  # skip re-applying patches (if already applied)
+#   ./build_asap_otel.sh            # builds asap-otel
+#   ./build_asap_otel.sh --skip-patches  # skip re-applying patches (if already applied)
 #
 # The resulting binary is written to:
-#   opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector
+#   opentelemetry-collector-contrib-patch/cmd/asap-otel/asap-otel
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,14 +64,14 @@ echo ""
 
 # Step 3: Build
 PATCH_DIR="${ROOT_DIR}/opentelemetry-collector-contrib-patch"
-CONFIG="${PATCH_DIR}/cmd/sketchcollector/builder-config.yaml"
+CONFIG="${PATCH_DIR}/cmd/asap-otel/builder-config.yaml"
 
-echo "==> Building sketchcollector..."
+echo "==> Building asap-otel..."
 cd "${PATCH_DIR}"
 "${BUILDER}" --config "${CONFIG}"
 
 # Step 4: Add sketchlib-go replace (private module) and rebuild
-SKETCHCOL_DIR="${PATCH_DIR}/cmd/sketchcollector"
+ASAP_OTEL_DIR="${PATCH_DIR}/cmd/asap-otel"
 # OCB always re-emits go.mod with `sketchlib-go ... // indirect`
 # in the require block (every sketch processor pulls it in), so a
 # plain `grep -q sketchlib-go` matched even when no replace was
@@ -79,16 +79,16 @@ SKETCHCOL_DIR="${PATCH_DIR}/cmd/sketchcollector"
 # proxy / sumdb, pinning to whatever commit was published months
 # ago instead of the local checkout. Match the replace line
 # specifically.
-if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/sketchlib-go" "${SKETCHCOL_DIR}/go.mod" 2>/dev/null; then
-  echo "replace github.com/ProjectASAP/sketchlib-go => ${ROOT_DIR}/../sketchlib-go" >> "${SKETCHCOL_DIR}/go.mod"
+if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/sketchlib-go" "${ASAP_OTEL_DIR}/go.mod" 2>/dev/null; then
+  echo "replace github.com/ProjectASAP/sketchlib-go => ${ROOT_DIR}/../sketchlib-go" >> "${ASAP_OTEL_DIR}/go.mod"
 fi
-if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/asap-precompute-go" "${SKETCHCOL_DIR}/go.mod" 2>/dev/null; then
-  echo "replace github.com/ProjectASAP/asap-precompute-go => ${ROOT_DIR}/asap-precompute-go" >> "${SKETCHCOL_DIR}/go.mod"
+if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/asap-precompute-go" "${ASAP_OTEL_DIR}/go.mod" 2>/dev/null; then
+  echo "replace github.com/ProjectASAP/asap-precompute-go => ${ROOT_DIR}/asap-precompute-go" >> "${ASAP_OTEL_DIR}/go.mod"
 fi
 
-cd "${SKETCHCOL_DIR}"
-GONOSUMCHECK="github.com/ProjectASAP/*" GONOSUMDB="github.com/ProjectASAP/*" go build -o sketchcollector . 2>&1
+cd "${ASAP_OTEL_DIR}"
+GONOSUMCHECK="github.com/ProjectASAP/*" GONOSUMDB="github.com/ProjectASAP/*" go build -o asap-otel . 2>&1
 
-BINARY="${SKETCHCOL_DIR}/sketchcollector"
+BINARY="${ASAP_OTEL_DIR}/asap-otel"
 echo ""
 echo "Build successful: ${BINARY}"

@@ -1,6 +1,6 @@
 # All-sketches single-agent demo
 
-Paper §Architecture figure as a runnable deploy: one `sketchcol`
+Paper §Architecture figure as a runnable deploy: one `asap-otel`
 agent emits **all five** sketch families simultaneously into the
 backend, demonstrating "one agent → five concurrent sketch
 pipelines → backend serves five concurrent PromQL query families."
@@ -16,7 +16,7 @@ See `docs/paper-outline.md` §Architecture for the design rationale.
 
 ## Files
 
-- `sketchcol-agent-allsketches.yaml` — agent config with all five
+- `asap-otel-agent-allsketches.yaml` — agent config with all five
   sketch processors (`ddsketch`, `KLL`, `HLL`, `countsketch`,
   `countmin`) in one metrics pipeline, OTLP-forwarded to the
   backend.
@@ -27,7 +27,7 @@ See `docs/paper-outline.md` §Architecture for the design rationale.
 ## Run
 
 ```bash
-AGENT_CONFIG=sketchcol-agent-allsketches.yaml \
+AGENT_CONFIG=asap-otel-agent-allsketches.yaml \
   docker compose \
     -f deploy/docker-compose/base.yml \
     -f deploy/docker-compose/agents-N1.yml \

@@ -16,7 +16,7 @@
 # Dependency notes:
 #
 # - `asap-precompute-rs` is path-deped from the staged location.
-#   `build_sketchotap.sh` copies this manifest to
+#   `build_asap_otap.sh` copies this manifest to
 #   `<repo>/otel-arrow/rust/otap-dataflow/crates/asap-sketches-registry/Cargo.toml`
 #   at build time — five levels deep from the repo root, so the
 #   relative path back to `asap-precompute-rs/` is five `../` hops.
@@ -41,7 +41,7 @@ name = "asap_sketches_registry"
 path = "mod.rs"
 
 [dependencies]
-# Path-dep injected at staging time by `build_sketchotap.sh`. The
+# Path-dep injected at staging time by `build_asap_otap.sh`. The
 # literal path here resolves once the crate is copied into
 # `<otap>/crates/asap-sketches-registry/` — five levels deep from
 # the repo root (`<repo>/otel-arrow/rust/otap-dataflow/crates/asap-sketches-registry`),

@@ -10,7 +10,7 @@ The encoded GORILLA1 block layout is byte-compatible with the Phase 1 Rust
 
 ## When to use it
 
-Run on the **sketchcol agent** path when the controller's plan asks
+Run on the **asap-otel agent** path when the controller's plan asks
 the agent to land raw samples in cold-store rather than forward them
 to the gateway. The processor sets `drop_original: true` by default so
 the agent does not OTLP-forward the metric further.

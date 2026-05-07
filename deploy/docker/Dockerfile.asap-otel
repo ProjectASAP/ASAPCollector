@@ -1,4 +1,4 @@
-# Full sketchcol image — the ASAP-patched OpenTelemetry Collector
+# Full asap-otel image — the ASAP-patched OpenTelemetry Collector
 # with DDSketch / KLL / HLL / CountSketch / CountMinSketch
 # processors compiled in. This is the image the paper's B2
 # (hand-tuned sketches) and B3 (full ASAP) baselines need.
@@ -27,35 +27,35 @@
 # 2. Check out `ProjectASAP/sketchlib-go` at the sibling path
 #    `../sketchlib-go` (relative to the ASAPCollector repo). The
 #    OCB manifest's `replaces:` section points there as
-#    `../../../../sketchlib-go` from `cmd/sketchcollector/go.mod`.
+#    `../../../../sketchlib-go` from `cmd/asap-otel/go.mod`.
 #    Use `main` for a known-good API surface (NewFromState,
 #    SerializeMsgpack on all five sketches, DeserializeDelta).
 #
 # 3. Build the collector:
 #
 #      GOPRIVATE='github.com/ProjectASAP/*' \
-#        bash build_sketchcollector.sh --skip-patches
+#        bash build_asap_otel.sh --skip-patches
 #
 #    Binary lands at
-#    `opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector`.
+#    `opentelemetry-collector-contrib-patch/cmd/asap-otel/asap-otel`.
 #
 # 5. Build this image (the COPY below expects the binary to be
 #    present in the build context):
 #
-#      docker build -f deploy/docker/Dockerfile.sketchcol \
-#        -t asap/sketchcol:dev .
+#      docker build -f deploy/docker/Dockerfile.asap-otel \
+#        -t asap/asap-otel:dev .
 #
 # For a stock-otel fallback that skips all of this, use
-# `Dockerfile.sketchcol-stock` — covers B0 + B1 baselines only.
+# `Dockerfile.asap-otel-stock` — covers B0 + B1 baselines only.
 
 FROM debian:bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-COPY opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector \
-    /usr/local/bin/sketchcollector
+COPY opentelemetry-collector-contrib-patch/cmd/asap-otel/asap-otel \
+    /usr/local/bin/asap-otel
 
 EXPOSE 4317 4318 8888 9464
-ENTRYPOINT ["/usr/local/bin/sketchcollector"]
+ENTRYPOINT ["/usr/local/bin/asap-otel"]
 CMD ["--config=/etc/otel/config.yaml"]

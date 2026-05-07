@@ -15,10 +15,10 @@ them and does not restate them.
 
 ## 1. Goal
 
-Ship a single Telegraf binary `sketchtelegraf` that includes all five
+Ship a single Telegraf binary `asap-telegraf` that includes all five
 sketch types (DDSketch, KLL, HLL, CountSketch, CountMinSketch) as a
 unified `processors.allsketches` plugin, using the same
-`asap-precompute-go` runtime as the existing OTel `sketchcollector`
+`asap-precompute-go` runtime as the existing OTel `asap-otel`
 binary. Same wire format (`SketchEnvelope`), same backend ingest path,
 same controller plan delivery (HTTP poll), same Strategy-B carrier on
 egress.
@@ -30,8 +30,8 @@ pick. End-state deployment story per
 
 ```
 host operator picks:
-  ─── existing OTel pipeline ──► sketchcollector
-  ─── existing Telegraf pipeline ──► sketchtelegraf
+  ─── existing OTel pipeline ──► asap-otel
+  ─── existing Telegraf pipeline ──► asap-telegraf
                                        ↓
                              same SketchEnvelope bytes
                                        ↓
@@ -66,7 +66,7 @@ moving parts:
                    │  asap-precompute-go/  ── Layer 3 RUNTIME          │
                    │  asap-precompute-go/sketches/  ── sketch wrappers │
                    │  asap-precompute-go/controlchannel/  ── plan poll │
-                   │     (REUSED UNCHANGED from sketchcollector build) │
+                   │     (REUSED UNCHANGED from asap-otel build) │
                    └──────────────────────────────────────────────────┘
 ```
 
@@ -173,8 +173,8 @@ future work and tracked in the open-questions section.
 
 **Pre-aggregated sketch input (KindEnvelope path).** When a Telegraf
 input upstream sends an already-aggregated sketch (typical multi-hop
-case: an edge `sketchtelegraf` flushes envelopes to a gateway
-`sketchtelegraf` for re-aggregation), the envelope rides as a
+case: an edge `asap-telegraf` flushes envelopes to a gateway
+`asap-telegraf` for re-aggregation), the envelope rides as a
 Strategy-B field on the `telegraf.Metric`. The codec recognizes the
 well-known field name `_asap_envelope` (verbatim per
 [ADR-0003 §4](./adr/adr-0003-adapter-trait-and-control-channel.md#4-strategy-a-vs-strategy-b-encoding))
@@ -264,18 +264,18 @@ copy-overlay mechanic for older `aggregators/` patches; the new
 `processors/allsketches/` directory plugs into that same script
 without changes.
 
-## 7. Build pipeline — `build_sketchtelegraf.sh`
+## 7. Build pipeline — `build_asap_telegraf.sh`
 
-Mirror `build_sketchcollector.sh`. Steps:
+Mirror `build_asap_otel.sh`. Steps:
 
 1. Apply patches to the `telegraf` submodule via
    `restore_telegraf_patches.sh` (registers `allsketches` plugin
    into `plugins/processors/all/all.go`).
 2. Resolve `replace` directives for `asap-precompute-go` and
    `sketchlib-go` to local checkouts (sibling repos), the same
-   pattern `build_sketchcollector.sh` uses for `sketchlib-go`.
+   pattern `build_asap_otel.sh` uses for `sketchlib-go`.
 3. `go build` from the patched Telegraf source tree.
-4. Output: `telegraf/sketchtelegraf` binary.
+4. Output: `telegraf/asap-telegraf` binary.
 
 **Key build-system decision:** Telegraf has its own custom-build
 support (the `telegraf` repo includes a `--build_tags "custom"`
@@ -293,7 +293,7 @@ Pseudo-script (illustrative; not the actual file):
 
 ```bash
 #!/usr/bin/env bash
-# build_sketchtelegraf.sh
+# build_asap_telegraf.sh
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -315,9 +315,9 @@ fi
 
 # 3. Build
 cd "${TELEGRAF_DIR}"
-go build -o sketchtelegraf ./cmd/telegraf
+go build -o asap-telegraf ./cmd/telegraf
 
-echo "Build successful: ${TELEGRAF_DIR}/sketchtelegraf"
+echo "Build successful: ${TELEGRAF_DIR}/asap-telegraf"
 ```
 
 Estimated final length ~80 LoC including error handling and the
@@ -389,7 +389,7 @@ Field reference (one line each):
 
 ## 9. Reused vs new code
 
-**Reused unchanged from existing sketchcollector build:**
+**Reused unchanged from existing asap-otel build:**
 
 - `asap-precompute-go/` — Layer 3 runtime (windowing, snapshot
   caches, scheduler abstractions, matchers).
@@ -412,7 +412,7 @@ Field reference (one line each):
 | Telegraf codec | `asap-precompute-go/telegraf/` | ~500 (decode, encode, config, seriesattrs, tests) |
 | `allsketches` plugin | `telegraf-patch/processors/allsketches/` | ~800 (lifecycle glue, config translation, ticker wiring, factory, tests) |
 | `all.go` registration patch | `telegraf-patch/all/all.go` | ~10 |
-| Build script | `build_sketchtelegraf.sh` | ~80 |
+| Build script | `build_asap_telegraf.sh` | ~80 |
 | **Total new** | | **~1500** |
 
 Compare to ~4000 LoC the OTel side took before the runtime extraction
@@ -439,8 +439,8 @@ gate). Correctness is established by:
    trip.
 2. Plugin lifecycle tests against an in-memory `telegraf.Accumulator`
    (Telegraf's stock test harness).
-3. **Cross-host envelope parity**: a `sketchtelegraf` agent and a
-   `sketchcollector` agent fed the same input stream (e.g.
+3. **Cross-host envelope parity**: a `asap-telegraf` agent and a
+   `asap-otel` agent fed the same input stream (e.g.
    identical synthetic Prometheus scrape) MUST emit byte-identical
    `SketchEnvelope.payload` bytes. The backend ingest path, being
    strategy-blind, then produces identical PromQL output. This is
@@ -457,7 +457,7 @@ the `processors.StreamingProcessor` interface specifically has been
 stable since v1.10 (2019). Risk is low but non-zero — pin the
 submodule to a tagged release and bump on a quarterly cadence with a
 regression test before the upgrade lands. Same model
-`build_sketchcollector.sh` already uses for the OTel collector
+`build_asap_otel.sh` already uses for the OTel collector
 submodule.
 
 **Config-reload semantics.** Telegraf supports `--watch-config` and
@@ -484,7 +484,7 @@ it identically.
   variants (the way modified-OTLP carries DDSketch on the wire) have
   no Telegraf equivalent and aren't in scope.
 - **Trace data is not in Telegraf's domain.** ASAP's trace processing
-  (such as it is) lives entirely in the OTel side; `sketchtelegraf`
+  (such as it is) lives entirely in the OTel side; `asap-telegraf`
   is a metrics-only artifact.
 
 ## 11. Phase plan
@@ -494,8 +494,8 @@ it identically.
 | **A** | This doc — design alignment, no code. | Reviewed; section §11 of the framework doc updated to point at this doc as the Phase-4 source. |
 | **B** | Codec implementation: `asap-precompute-go/telegraf/` + minimal plugin shell that wires `Decode` / `Encode` against a stub `Precompute`. | `go test ./asap-precompute-go/telegraf/...` passes; plugin compiles. |
 | **C** | Full `allsketches` plugin: all five sketch types via `sketch_type` dispatch, control-channel goroutine, flush ticker, lifecycle. | Telegraf-harness unit tests pass for each `sketch_type`; round-trip raw input → envelope output preserves expected sketch counts. |
-| **D** | Build script (`build_sketchtelegraf.sh`) + Telegraf submodule patch (`telegraf-patch/all/all.go` registration). | `bash build_sketchtelegraf.sh` produces a `sketchtelegraf` binary that `--list-processors` includes `allsketches`. |
-| **E** | Cross-host envelope parity test — `sketchtelegraf` agent and `sketchcollector` agent fed identical input emit byte-identical `SketchEnvelope.payload`s. | E2E test passes; backend PromQL output is identical regardless of which agent produced the data. |
+| **D** | Build script (`build_asap_telegraf.sh`) + Telegraf submodule patch (`telegraf-patch/all/all.go` registration). | `bash build_asap_telegraf.sh` produces a `asap-telegraf` binary that `--list-processors` includes `allsketches`. |
+| **E** | Cross-host envelope parity test — `asap-telegraf` agent and `asap-otel` agent fed identical input emit byte-identical `SketchEnvelope.payload`s. | E2E test passes; backend PromQL output is identical regardless of which agent produced the data. |
 
 Phase A is this PR. Phase B–E are sized at roughly 1 week each for an
 engineer familiar with the runtime; the runtime extraction (ADR-0002)
@@ -530,5 +530,5 @@ dependency is already on `main`.
   reference codec shape that `asap-precompute-go/telegraf/` mirrors.
 - [`opentelemetry-collector-contrib-patch/`](../opentelemetry-collector-contrib-patch/)
   — patch-overlay structure that `telegraf-patch/` mirrors.
-- [`build_sketchcollector.sh`](../build_sketchcollector.sh) —
-  build pipeline that `build_sketchtelegraf.sh` mirrors.
+- [`build_asap_otel.sh`](../build_asap_otel.sh) —
+  build pipeline that `build_asap_telegraf.sh` mirrors.

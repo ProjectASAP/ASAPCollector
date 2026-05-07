@@ -218,7 +218,7 @@ OpAMP is an open protocol (defined by the OpenTelemetry project) for remotely ma
 ### OpAMP Clients — the Collectors + Supervisor
 
 - Each managed collector runs under the **OpenTelemetry Collector OpAMP Supervisor** binary, not as a standalone `opampextension`-only collector. The supervisor is the process that owns the long-lived WebSocket connection to the controller and the lifecycle of the child collector process.
-- Bootstrap config: `opentelemetry-collector-contrib/cmd/sketchcol/supervisor-config.yaml` — points the supervisor at `ws://localhost:4320/v1/opamp` and specifies the child collector binary path
+- Bootstrap config: `opentelemetry-collector-contrib/cmd/asap-otel-opamp/supervisor-config.yaml` — points the supervisor at `ws://localhost:4320/v1/opamp` and specifies the child collector binary path
 - On startup, the supervisor connects to the controller, receives a `ServerToAgent` message containing a `RemoteConfig`, merges it with the local base config, writes `effective.yaml`, and **restarts the child collector** so it picks up the new config
 - The embedded `opampextension` inside the collector binary reports health and current config hash back to the controller on the same socket
 
@@ -349,23 +349,23 @@ The controller is implemented in **Rust**, enabling direct in-process integratio
 
 ## Per-Runtime Emit Paths (Phase ε.1.5)
 
-Three edge runtimes ship with ASAP — `sketchcollector` (OTel-collector
-contrib build), `sketchotap` (otap-dataflow Rust runtime), and
-`sketchtelegraf` (Telegraf runtime). All three accept the same typed L5
+Three edge runtimes ship with ASAP — `asap-otel` (OTel-collector
+contrib build), `asap-otap` (otap-dataflow Rust runtime), and
+`asap-telegraf` (Telegraf runtime). All three accept the same typed L5
 [`EdgeStageConfig`] from the controller's stage_split emitter; each runtime
 has its own emit function in `controller/src/config/`:
 
 | Runtime | Emitter | Output format |
 |---|---|---|
-| `sketchcollector`  | `stage_config::emit_edge_yaml`        | OTel-collector YAML |
-| `sketchotap`       | `stage_config_otap::emit_otap_dag_yaml` | otap-dataflow DAG YAML (`version: otel_dataflow/v1`) |
-| `sketchtelegraf`   | `stage_config_telegraf::emit_telegraf_toml` | Telegraf TOML |
+| `asap-otel`  | `stage_config::emit_edge_yaml`        | OTel-collector YAML |
+| `asap-otap`       | `stage_config_otap::emit_otap_dag_yaml` | otap-dataflow DAG YAML (`version: otel_dataflow/v1`) |
+| `asap-telegraf`   | `stage_config_telegraf::emit_telegraf_toml` | Telegraf TOML |
 
 `config::emit_for_runtime(runtime, cfg, opamp_endpoint, prometheus_url)`
 dispatches by `AgentRuntime`. The runtime is reported by the agent on
-OpAMP `on_connect` via the `X-Agent-Runtime` header (`sketchcollector` /
-`sketchotap` / `sketchtelegraf`); when absent, the controller defaults
-to `Sketchcollector` so legacy agents keep working.
+OpAMP `on_connect` via the `X-Agent-Runtime` header (`asap-otel` /
+`asap-otap` / `asap-telegraf`); when absent, the controller defaults
+to `AsapOtel` so legacy agents keep working.
 
 ### Bootstrap and plan-push converge on the same emit pipeline
 
@@ -410,9 +410,9 @@ all three runtime emitters:
   egress to gateway; backend builds sketches at ingest.
 * **Mode 3 — `RawAtEdgePrometheusArchive`**: passthrough at edge,
   egress to Prometheus's archive.
-  * `sketchcollector`/`sketchotap` use OTLP HTTP to Prometheus's
+  * `asap-otel`/`asap-otap` use OTLP HTTP to Prometheus's
     native receiver at `/api/v1/otlp/v1/metrics`.
-  * `sketchtelegraf` uses `outputs.http` with the
+  * `asap-telegraf` uses `outputs.http` with the
     `prometheusremotewrite` serializer to `/api/v1/write`. Telegraf
     has no OTLP-HTTP serializer in the version we ship; remote-write
     lands in the same Prometheus TSDB so the storage outcome is

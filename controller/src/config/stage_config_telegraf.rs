@@ -1,7 +1,7 @@
 //! Phase ε.1.5 — Telegraf TOML emitter (per-runtime mirror of
 //! [`super::stage_config::emit_edge_yaml`]).
 //!
-//! `sketchtelegraf` is the Telegraf-runtime variant of the ASAP edge
+//! `asap-telegraf` is the Telegraf-runtime variant of the ASAP edge
 //! agent. Telegraf consumes TOML; the relevant plugins are:
 //!
 //! * `inputs.opentelemetry` — OTLP gRPC / HTTP receiver (port 4317 /
@@ -51,7 +51,7 @@ pub const DEFAULT_PROMETHEUS_REMOTE_WRITE_URL: &str =
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Build the Telegraf TOML for the `sketchtelegraf` runtime from a
+/// Build the Telegraf TOML for the `asap-telegraf` runtime from a
 /// typed L5 [`EdgeStageConfig`].
 ///
 /// `prometheus_remote_write_url` overrides the default Prometheus

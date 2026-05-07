@@ -71,7 +71,7 @@ func TestAdapter_Roundtrip_FloatPath(t *testing.T) {
 	// result back, and confirm we recover the same envelope. This is
 	// the round-trip test the codec spec calls for: it gates the
 	// encode/decode inverse property the upstream multi-hop case
-	// (edge sketchtelegraf → gateway sketchtelegraf) depends on.
+	// (edge asap-telegraf → gateway asap-telegraf) depends on.
 	a := NewAdapter(DefaultAdapterConfig())
 	env := &precompute.SketchEnvelope{
 		SchemaVersion: 1,

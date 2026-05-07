@@ -17,8 +17,8 @@
 #   minio-e2e          MinIO S3-compatible store, ports 29000/29001
 #   minio-setup-e2e    Seeds the `asap-gorilla` bucket the
 #                      gorillas3processor writes into
-#   sketchcol-e2e      Single sketchcol agent running
-#                      sketchcol-agent-gorillas3-tier.yaml — encodes
+#   asap-otel-e2e      Single asap-otel agent running
+#                      asap-otel-agent-gorillas3-tier.yaml — encodes
 #                      raw samples to GORILLA1 + writes 60s chunks
 #                      to MinIO
 #   backend-e2e        asap/query-backend:dev with the
@@ -27,7 +27,7 @@
 #
 # fake-exporter is intentionally NOT in the compose stack; the Go
 # test pushes the deterministic 100-sample fixture directly via OTLP
-# to sketchcol-e2e:24317. This is the only way to drive a fixed,
+# to asap-otel-e2e:24317. This is the only way to drive a fixed,
 # repeatable input — fake-exporter generates random data.
 
 version: "3.9"
@@ -75,12 +75,12 @@ services:
         mc anonymous set download asap/asap-gorilla
     logging: *default-logging
 
-  # Single sketchcol agent running the Phase-2 gorillas3 tier config.
+  # Single asap-otel agent running the Phase-2 gorillas3 tier config.
   # The OTLP receiver listens on 4317 (gRPC) + 4318 (HTTP); we expose
   # both on host 24317/24318 so the Go test can drive samples in
   # without going through a fake-exporter container.
-  sketchcol-e2e:
-    image: asap/sketchcol:dev
+  asap-otel-e2e:
+    image: asap/asap-otel:dev
     depends_on:
       minio-setup-e2e:
         condition: service_completed_successfully
@@ -89,7 +89,7 @@ services:
     volumes:
       # The Phase-2 config — drop_original=true, encode + PUT to MinIO.
       # Path is relative to the compose file's directory.
-      - ../../../deploy/configs/sketchcol-agent-gorillas3-tier.yaml:/etc/otel/config.yaml:ro
+      - ../../../deploy/configs/asap-otel-agent-gorillas3-tier.yaml:/etc/otel/config.yaml:ro
     environment:
       RUST_LOG: "info"
       # The processor config inside the YAML hardcodes minio:9000;

@@ -6,13 +6,13 @@
 # wrong now that the v4 demo expects EVERY baseline to share the
 # same Prometheus query surface. v4 layers Prometheus's remote-
 # write-receiver flag on the Prometheus container so the
-# `sketchcol-agent-b1-serf-prometheus.yaml` agent config (PRW
+# `asap-otel-agent-b1-serf-prometheus.yaml` agent config (PRW
 # exporter) has a sink. Without this flag the agent's PRW
 # requests would 404.
 #
 # Bring up via:
 #
-#   AGENT_CONFIG=sketchcol-agent-b1-serf-prometheus.yaml \
+#   AGENT_CONFIG=asap-otel-agent-b1-serf-prometheus.yaml \
 #     docker compose -f base.yml -f agents-N10.yml \
 #       -f baseline-b1-serf.yml up -d
 #
@@ -24,7 +24,7 @@
 # tmpfs (carries no host-disk dependency).
 #
 # v3-compat: legacy callers using
-# `AGENT_CONFIG=sketchcol-agent-b1-serf.yaml` still work — the
+# `AGENT_CONFIG=asap-otel-agent-b1-serf.yaml` still work — the
 # Prometheus flag is harmless when no PRW client connects.
 
 x-serf-volume: &serf-volume

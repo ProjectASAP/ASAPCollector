@@ -1,7 +1,7 @@
 # All-sketches single-agent demo overlay — paper §Architecture figure.
 #
-# Pairs with `deploy/configs/sketchcol-agent-allsketches.yaml`. One
-# sketchcol agent runs ALL FIVE sketch families (DDSketch + KLL +
+# Pairs with `deploy/configs/asap-otel-agent-allsketches.yaml`. One
+# asap-otel agent runs ALL FIVE sketch families (DDSketch + KLL +
 # HLL + CountSketch + CountMinSketch) concurrently in a single OTLP
 # pipeline; the backend (already mounting the all-sketches
 # `backend-inference.yaml` via base.yml) serves all five PromQL
@@ -13,7 +13,7 @@
 # is the YAML embodiment of the §3 architecture diagram for
 # walkthrough / demo purposes.
 #
-#   AGENT_CONFIG=sketchcol-agent-allsketches.yaml \
+#   AGENT_CONFIG=asap-otel-agent-allsketches.yaml \
 #     docker compose \
 #       -f deploy/docker-compose/base.yml \
 #       -f deploy/docker-compose/agents-N1.yml \

@@ -15,7 +15,7 @@
 #     single merged sketch per window per metric replaces N
 #     per-agent sketches.
 #
-# Requires the `asap/sketchcol:dev` image (built from
+# Requires the `asap/asap-otel:dev` image (built from
 # `opentelemetry-collector-contrib-patch/`).
 #
 # IMPORTANT: this config uses the SAME processors the agent uses

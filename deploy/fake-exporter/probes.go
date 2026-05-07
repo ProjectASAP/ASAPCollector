@@ -24,7 +24,7 @@
 //	http_freshness_probe_archive  → Gorilla-archive (gorillas3processor)
 //
 // Routing is determined entirely by metric name + agent / gateway
-// pipeline configs (see configs/sketchcol-agent-*-tier.yaml). The
+// pipeline configs (see configs/asap-otel-agent-*-tier.yaml). The
 // fake-exporter is path-agnostic; it simply emits the three counters.
 //
 // Env knobs:

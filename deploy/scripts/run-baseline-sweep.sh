@@ -31,7 +31,7 @@
 # env var) applies.
 #
 # The caller is responsible for having the compose stack's images
-# built (asap/sketchcol:dev, asap/query-backend:dev, asap/fake-
+# built (asap/asap-otel:dev, asap/query-backend:dev, asap/fake-
 # exporter:dev). Each iteration does a full `docker compose down`
 # to ensure a clean state.
 set -euo pipefail
@@ -79,13 +79,13 @@ for baseline in $BASELINES; do
 
       # Map baseline tag to AGENT_CONFIG filename.
       case "$baseline" in
-        b0a-raw-stream)  cfg="sketchcol-agent-b0a-raw-stream.yaml" ;;
-        b0b-raw-batched) cfg="sketchcol-agent-b0b-raw-batched.yaml" ;;
-        b1-serf)         cfg="sketchcol-agent-b1-serf.yaml" ;;
-        b2-full)         cfg="sketchcol-agent-b2-full.yaml" ;;
-        b3-delta)        cfg="sketchcol-agent-b3-delta.yaml" ;;
-        b4-tunable)      cfg="sketchcol-agent-b4-tunable.yaml" ;;
-        b5-gorilla)      cfg="sketchcol-agent-b5-gorilla.yaml" ;;
+        b0a-raw-stream)  cfg="asap-otel-agent-b0a-raw-stream.yaml" ;;
+        b0b-raw-batched) cfg="asap-otel-agent-b0b-raw-batched.yaml" ;;
+        b1-serf)         cfg="asap-otel-agent-b1-serf.yaml" ;;
+        b2-full)         cfg="asap-otel-agent-b2-full.yaml" ;;
+        b3-delta)        cfg="asap-otel-agent-b3-delta.yaml" ;;
+        b4-tunable)      cfg="asap-otel-agent-b4-tunable.yaml" ;;
+        b5-gorilla)      cfg="asap-otel-agent-b5-gorilla.yaml" ;;
         *) echo "unknown baseline: $baseline" >&2; exit 1 ;;
       esac
 

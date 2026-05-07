@@ -1,13 +1,13 @@
-# Phase 5 step E sketchcol agent config — minimal pipeline that exercises
+# Phase 5 step E asap-otel agent config — minimal pipeline that exercises
 # all five sketch processors against an OTLP-driven input and forwards
 # the emitted SketchEnvelope-carrying metrics to envelope-tap.
 #
-# Mirrors deploy/configs/sketchcol-agent-{ddsketch,kll,hll,cs,cms}-direct.yaml
+# Mirrors deploy/configs/asap-otel-agent-{ddsketch,kll,hll,cs,cms}-direct.yaml
 # but folds all five processors into one pipeline so a single golden
 # input drive exercises all five (the harness routes per-sketch by
 # metric name, set in the input fixture).
 #
-# Reset stamp ASAP_AGENT_ID=sketchcol on the resource so the
+# Reset stamp ASAP_AGENT_ID=asap-otel on the resource so the
 # envelope-tap can route per-agent captures without ambiguity.
 
 extensions: {}
@@ -23,7 +23,7 @@ processors:
     attributes:
       - action: upsert
         key: asap.agent_id
-        value: sketchcol
+        value: asap-otel
 
   DDSketch:
     mode: window

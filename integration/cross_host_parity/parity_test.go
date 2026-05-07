@@ -1,6 +1,6 @@
 // Phase 5 step E of the ASAP edge-framework migration: prove that
-// the three ASAP-flavored agents — sketchcol (OTel-Go), sketchotap
-// (OTAP-Rust), sketchtelegraf (Telegraf-Go) — emit byte-identical
+// the three ASAP-flavored agents — asap-otel (OTel-Go), asap-otap
+// (OTAP-Rust), asap-telegraf (Telegraf-Go) — emit byte-identical
 // SketchEnvelope.Payload bytes when fed the same deterministic input,
 // and that the backend's PromQL response is independent of which
 // agent produced the data.
@@ -33,12 +33,12 @@
 //     cross-checks the on-disk fixture against the inline regen so
 //     fixture drift surfaces immediately.
 //
-//   - MODE=binary — drive real sketchcol / sketchotap / sketchtelegraf
+//   - MODE=binary — drive real asap-otel / asap-otap / asap-telegraf
 //     containers via deploy/docker-compose/cross-host-parity.yml,
 //     capture the envelope bytes each one emits, and compare against
 //     the canonical bytes (and against each other). Requires pre-built
-//     container images: asap/sketchcol:dev, asap/sketchotap:dev,
-//     asap/sketchtelegraf:dev. See run_parity.sh for the orchestration.
+//     container images: asap/asap-otel:dev, asap/asap-otap:dev,
+//     asap/asap-telegraf:dev. See run_parity.sh for the orchestration.
 //
 // In MODE=fixture, the inline regen always runs — there is no silent
 // skip path. If sketchlib-go is unreachable the test fails loud with
@@ -81,9 +81,9 @@ func allSketchTargets() []sketchTarget {
 // agent labels the three ASAP-flavored agents; same names referenced
 // by deploy/docker-compose/cross-host-parity.yml.
 const (
-	agentSketchcol      = "sketchcol"
-	agentSketchotap     = "sketchotap"
-	agentSketchtelegraf = "sketchtelegraf"
+	agentSketchcol      = "asap-otel"
+	agentSketchotap     = "asap-otap"
+	agentSketchtelegraf = "asap-telegraf"
 )
 
 // goldenFixtureDir resolves to the path of the golden envelope files
@@ -142,15 +142,15 @@ func modeFromEnv() string {
 }
 
 // agentsUnderTest is the set Phase 5 step E covers in this PR. The
-// scope is two-way (sketchcol ↔ sketchotap), with sketchtelegraf as a
+// scope is two-way (asap-otel ↔ asap-otap), with asap-telegraf as a
 // best-effort third agent gated on CROSS_HOST_PARITY_INCLUDE_TELEGRAF.
 //
 // Telegraf's input format (line protocol) is structurally different
 // from OTLP, so the harness either needs an OTLP→line-protocol
 // translator or two parallel input fixtures. Phase 4 step E already
-// closes sketchcol↔sketchtelegraf at the codec level
+// closes asap-otel↔asap-telegraf at the codec level
 // (integration/cross-host-parity/), so the *new* claim Phase 5E
-// defends is the Go↔Rust pair (sketchcol ↔ sketchotap). Three-way
+// defends is the Go↔Rust pair (asap-otel ↔ asap-otap). Three-way
 // stays a quick add behind the env var.
 func agentsUnderTest() []string {
 	out := []string{agentSketchcol, agentSketchotap}

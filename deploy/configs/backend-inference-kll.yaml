@@ -17,7 +17,7 @@
 # pattern set is paired with an Increase-typed accumulator, not KLL.
 #
 # Metric: `http_requests_total_latency_ms_kll`. The KLL direct agent
-# overlay (`sketchcol-agent-kll-direct.yaml`) uses
+# overlay (`asap-otel-agent-kll-direct.yaml`) uses
 # `metric_suffix: "_kll"`.
 cleanup_policy:
   name: "circular_buffer"

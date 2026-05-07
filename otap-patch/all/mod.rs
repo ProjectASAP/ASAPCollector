@@ -32,7 +32,7 @@
 //! `From` / `Into` adapter was the §10 open-question Phase C
 //! deferred ("Phase D adds a thin `From`/`Into` adapter — no change
 //! to `flatten()`/`lift()` API needed."). For the §11 row D exit
-//! criterion ("a `sketchotap` binary that lists `asap_sketches` in
+//! criterion ("a `asap-otap` binary that lists `asap_sketches` in
 //! its plugin registry") the URN entry is what the registry
 //! inspection sees; the adapter only needs to be wireable, not yet
 //! semantically complete. Functional end-to-end binding is Phase E
@@ -232,7 +232,7 @@ pub fn create_asap_sketches_processor(
 /// will land in a follow-up alongside the cross-host parity test
 /// (Phase E). What Phase D delivers here is the registration that
 /// brings `asap_sketches` into the binary's plugin registry —
-/// confirmed by the §11 row D exit ("a `sketchotap` binary that
+/// confirmed by the §11 row D exit ("a `asap-otap` binary that
 /// lists `asap_sketches` in its plugin registry").
 ///
 /// The adapter holds the plugin instance so the `OtapPdata`

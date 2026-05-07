@@ -11,7 +11,7 @@
 #
 # Bring up via:
 #
-#   AGENT_CONFIG=sketchcol-agent-b6-asap-single-sketch.yaml \
+#   AGENT_CONFIG=asap-otel-agent-b6-asap-single-sketch.yaml \
 #     docker compose -f base.yml -f agents-N10.yml \
 #       -f baseline-b6-asap-single-sketch.yml -f e2e-overlay.yml \
 #       up -d

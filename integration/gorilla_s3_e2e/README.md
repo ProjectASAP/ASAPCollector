@@ -3,7 +3,7 @@
 End-to-end integration test for the full pipeline:
 
 ```
-fake-driver  ─OTLP─▶  sketchcol+gorillas3processor
+fake-driver  ─OTLP─▶  asap-otel+gorillas3processor
                           │  encode (Gorilla XOR-delta)
                           ▼
                        MinIO   ─list/get─▶  GorillaS3ColdStore
@@ -66,7 +66,7 @@ GORILLA_E2E_LIVE=1 go test -v -run TestGorillaS3End2End ./...
 
 The live test:
 
-1. Brings up `minio-e2e + sketchcol-e2e + backend-e2e` via
+1. Brings up `minio-e2e + asap-otel-e2e + backend-e2e` via
    `docker compose -p asap-gorilla-e2e -f docker-compose/e2e-overlay.yml up -d`.
 2. Pushes the 100-sample fixture via OTLP/HTTP to `127.0.0.1:24318/v1/metrics`.
 3. Waits 75s for the gorillas3processor's 60s window to flush.

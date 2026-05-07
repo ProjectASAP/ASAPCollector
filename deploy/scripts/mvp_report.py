@@ -1102,7 +1102,7 @@ def render_section_8_emitted(cdir: str) -> list[str]:
     elif status == "n/a-baseline":
         md.append(
             "Baseline pipeline has no controller — agents load "
-            "`sketchcol-agent-b0-prometheus.yaml` directly. This "
+            "`asap-otel-agent-b0-prometheus.yaml` directly. This "
             "section is not applicable to the baseline run."
         )
     else:
@@ -1270,7 +1270,7 @@ def render_markdown_dual(
     md.append("")
     md.append(
         "* **baseline** — `mvp-multi-stage.yml` + `--profile b0`; "
-        "agents load `sketchcol-agent-b0-prometheus.yaml`; storage "
+        "agents load `asap-otel-agent-b0-prometheus.yaml`; storage "
         "= Prometheus; queries hit Prometheus PromQL HTTP."
     )
     md.append(

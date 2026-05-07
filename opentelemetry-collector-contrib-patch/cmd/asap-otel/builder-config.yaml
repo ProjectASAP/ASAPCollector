@@ -1,4 +1,4 @@
-# cmd/sketchcollector/builder-config.yaml
+# cmd/asap-otel/builder-config.yaml
 # NOTE:
 # This builder configuration is NOT used to build any official binary.
 # To see the builder manifests used for official binaries,
@@ -8,11 +8,11 @@
 # https://github.com/open-telemetry/opentelemetry-collector-releases/tree/main/distributions/otelcol-contrib
 
 dist:
-  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/sketchcollector
-  name: sketchcollector
+  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/asap-otel
+  name: asap-otel
   description: Collector distribution including all sketch processors
   version: 0.141.0-dev
-  output_path: ./cmd/sketchcollector
+  output_path: ./cmd/asap-otel
 
 extensions:
   - gomod: go.opentelemetry.io/collector/extension/zpagesextension v0.141.0
@@ -324,8 +324,8 @@ replaces:
   # sketchlib-go is a private module; redirect to the sibling
   # checkout so the OCB-driven `go mod tidy` doesn't try to fetch
   # via sum.golang.org. Path is relative to the OCB-generated
-  # `cmd/sketchcollector/go.mod`, which lives 4 dirs deep under
-  # the ASAPCollector repo root (`./cmd/sketchcollector`); from
+  # `cmd/asap-otel/go.mod`, which lives 4 dirs deep under
+  # the ASAPCollector repo root (`./cmd/asap-otel`); from
   # there `../../../../sketchlib-go` lands on the sibling repo.
   # Without this replace the build pinned sketchlib-go to a stale
   # published commit and ApplyDelta / SerializeMsgpack /
@@ -334,8 +334,8 @@ replaces:
   # asap-precompute-go is a private module living as a sibling
   # subdirectory of this repo (ASAPCollector/asap-precompute-go).
   # Same redirect intent as sketchlib-go but a different path: the
-  # OCB-generated cmd/sketchcollector/go.mod lives 3 dirs deep under
-  # the ASAPCollector repo root (`./opentelemetry-collector-contrib-patch/cmd/sketchcollector`),
+  # OCB-generated cmd/asap-otel/go.mod lives 3 dirs deep under
+  # the ASAPCollector repo root (`./opentelemetry-collector-contrib-patch/cmd/asap-otel`),
   # so ../../../asap-precompute-go resolves to the in-repo subdirectory.
   # (sketchlib-go uses one extra `..` because it lives as a sibling
   # repo of ASAPCollector, one level up from this repo root.)

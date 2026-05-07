@@ -1,4 +1,4 @@
-# Gateway-side sketchcol config — MVP demo placeholder
+# Gateway-side asap-otel config — MVP demo placeholder
 #
 # Receives OTLP from agents, runs sketch-merge processors per the
 # label-aggregation-at-instant query class, exports to backend.

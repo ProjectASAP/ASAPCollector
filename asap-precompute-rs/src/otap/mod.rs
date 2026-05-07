@@ -77,7 +77,7 @@
 //!   plan changes, graceful drain on shutdown.
 //!
 //! The OTAP submodule wiring (linkme distributed-slice registration,
-//! `build_sketchotap.sh`, `otap-patch/all/mod.rs` patch) is **Phase D**
+//! `build_asap_otap.sh`, `otap-patch/all/mod.rs` patch) is **Phase D**
 //! per the §11 phase plan and is deliberately not touched here. The
 //! Phase C plugin lifecycle is exercised end-to-end via the
 //! `tests/otap_lifecycle.rs` harness.
@@ -86,7 +86,7 @@
 //!
 //! - `linkme` distributed-slice plugin registration in
 //!   `otap-patch/all/mod.rs`.
-//! - `build_sketchotap.sh`.
+//! - `build_asap_otap.sh`.
 //! - Cross-host envelope parity (Phase E).
 //! - `OtapArrowRecords` binding to the upstream Rust type — Phase D
 //!   wires [`records::OtapMetricRecords`] to the upstream

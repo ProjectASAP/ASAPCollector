@@ -36,7 +36,7 @@ This is the **control plane** side of the pipeline. The data plane — sketch by
 │        │ fork/exec + SIGTERM on config change           │
 │        ▼                                                │
 │ ┌──────────────────┐                                    │
-│ │  sketchcol       │  (the collector binary —           │
+│ │  asap-otel       │  (the collector binary —           │
 │ │  collector       │   countminsketchcol, ddsketchcol,  │
 │ │                  │   kllcol, hllcol, etc.)            │
 │ │  ┌────────────┐  │                                    │
@@ -82,7 +82,7 @@ The supervisor and the collector are **two separate OS processes** on the same h
 
 ### 2b. Supervisor side (Go binary)
 
-**Bootstrap config**: `opentelemetry-collector-contrib/cmd/sketchcol/supervisor-config.yaml`
+**Bootstrap config**: `opentelemetry-collector-contrib/cmd/asap-otel-opamp/supervisor-config.yaml`
 
 ```yaml
 server:
@@ -90,7 +90,7 @@ server:
   tls:
     insecure: true
 agent:
-  executable: ./sketchcol         # path to the collector binary
+  executable: ./asap-otel         # path to the collector binary
   description:
     non_identifying_attributes:
       role: agent                 # consumed by controller's push_to_role()
@@ -105,7 +105,7 @@ The supervisor:
 
 ### 2c. Collector side (Go binary)
 
-The collector binary (e.g. `sketchcol` built from `opentelemetry-collector-contrib/cmd/sketchcol`) runs the stock `opampextension`. Its role is **reporting**, not applying — the extension sends `AgentToServer` messages with:
+The collector binary (e.g. `asap-otel` built from `opentelemetry-collector-contrib/cmd/asap-otel`) runs the stock `opampextension`. Its role is **reporting**, not applying — the extension sends `AgentToServer` messages with:
 
 - Current `config_hash` (so the controller can confirm the push landed)
 - Agent health status (the supervisor's restart loop proves the new config is loadable)
@@ -141,9 +141,9 @@ Commit `4b196e1`'s testing surfaced one issue that is **not** fixed and is track
 
 > The controller must be aware of which sketch processors each collector binary supports, to avoid pushing a config with an unsupported processor type. E.g. pushing a KLL config to `countminsketchcol` (which only has countmin compiled in) causes the restarted collector to crash on config load.
 
-The current controller push path has no knowledge of binary capabilities. A supervisor advertising `role: agent` may be running any of `sketchcol`, `countminsketchcol`, `ddsketchcol`, `kllcol`, `hllcol`, etc.
+The current controller push path has no knowledge of binary capabilities. A supervisor advertising `role: agent` may be running any of `asap-otel`, `countminsketchcol`, `ddsketchcol`, `kllcol`, `hllcol`, etc.
 
-**Mitigation until this is fixed**: deploy homogeneous collector binaries per role, or run a single omnibus `sketchcol` that compiles in every sketch processor.
+**Mitigation until this is fixed**: deploy homogeneous collector binaries per role, or run a single omnibus `asap-otel` that compiles in every sketch processor.
 
 **Long-term fix**: extend the supervisor registration to include a `processors_available: [...]` list in `non_identifying_attributes`, and teach the controller's `push_to_role` to filter by that list before sending a config. See [`controller-optimization-problem.md`](controller-optimization-problem.md) for the broader capability-matching design.
 
@@ -195,7 +195,7 @@ The `#[ignore]` gate is important because the test depends on an external binary
 | Plan push REST handler | `controller/src/main.rs` | 310–404 |
 | On-connect callback | `controller/src/main.rs` | 133–159 |
 | Replanner push | `controller/src/replan.rs` | 123–178 |
-| Supervisor bootstrap config | `opentelemetry-collector-contrib/cmd/sketchcol/supervisor-config.yaml` | — |
-| Collector-with-opamp config | `opentelemetry-collector-contrib/cmd/sketchcol/config-with-opamp.yaml` | — |
+| Supervisor bootstrap config | `opentelemetry-collector-contrib/cmd/asap-otel-opamp/supervisor-config.yaml` | — |
+| Collector-with-opamp config | `opentelemetry-collector-contrib/cmd/asap-otel-opamp/config-with-opamp.yaml` | — |
 | Existing mock-client tests | `controller/src/main.rs` | 991–1238 |
 | Original supervisor e2e commit | `git show 4b196e1` | — |

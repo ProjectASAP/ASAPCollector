@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_parity.sh — Phase 5 step E orchestrator. Drives the canonical
 # golden input (golden_input/inputs.json) through each ASAP-flavored
-# agent — sketchcol, sketchotap, optionally sketchtelegraf — captures
+# agent — asap-otel, asap-otap, optionally asap-telegraf — captures
 # the SketchEnvelope.Payload bytes each one emits, and runs the Go
 # test in MODE=binary to assert byte-equality across pairs.
 #
@@ -27,13 +27,13 @@
 #
 #   - docker + docker compose v2 on PATH.
 #   - Pre-built images:
-#       asap/sketchcol:dev      (bash build_sketchcollector.sh +
-#                                docker build -f deploy/docker/Dockerfile.sketchcol)
-#       asap/sketchotap:dev     (bash build_sketchotap.sh +
-#                                docker build -f deploy/docker/Dockerfile.sketchotap)
-#       asap/sketchtelegraf:dev (only if --include-telegraf;
-#                                bash build_sketchtelegraf.sh +
-#                                Dockerfile.sketchtelegraf — see follow-up #1
+#       asap/asap-otel:dev      (bash build_asap_otel.sh +
+#                                docker build -f deploy/docker/Dockerfile.asap-otel)
+#       asap/asap-otap:dev     (bash build_asap_otap.sh +
+#                                docker build -f deploy/docker/Dockerfile.asap-otap)
+#       asap/asap-telegraf:dev (only if --include-telegraf;
+#                                bash build_asap_telegraf.sh +
+#                                Dockerfile.asap-telegraf — see follow-up #1
 #                                in PROGRESS.md, currently a follow-up).
 #       asap/query-backend:dev  (deploy/docker/Dockerfile.backend)
 #
@@ -162,9 +162,9 @@ if [[ ! -f "${COMPOSE_FILE}" ]]; then
 fi
 
 # Required images
-required_images=("asap/sketchcol:dev" "asap/sketchotap:dev" "asap/query-backend:dev")
+required_images=("asap/asap-otel:dev" "asap/asap-otap:dev" "asap/query-backend:dev")
 if (( INCLUDE_TELEGRAF == 1 )); then
-  required_images+=("asap/sketchtelegraf:dev")
+  required_images+=("asap/asap-telegraf:dev")
 fi
 missing_images=0
 for img in "${required_images[@]}"; do
@@ -177,17 +177,17 @@ for img in "${required_images[@]}"; do
 done
 if (( missing_images > 0 )); then
   log "Build the missing image(s) per Dockerfile.<name> headers:"
-  log "  bash build_sketchcollector.sh && docker build -f deploy/docker/Dockerfile.sketchcol  -t asap/sketchcol:dev  ."
-  log "  bash build_sketchotap.sh       && docker build -f deploy/docker/Dockerfile.sketchotap -t asap/sketchotap:dev ."
+  log "  bash build_asap_otel.sh && docker build -f deploy/docker/Dockerfile.asap-otel  -t asap/asap-otel:dev  ."
+  log "  bash build_asap_otap.sh       && docker build -f deploy/docker/Dockerfile.asap-otap -t asap/asap-otap:dev ."
   if (( INCLUDE_TELEGRAF == 1 )); then
-    log "  bash build_sketchtelegraf.sh   && docker build -f deploy/docker/Dockerfile.sketchtelegraf -t asap/sketchtelegraf:dev ."
+    log "  bash build_asap_telegraf.sh   && docker build -f deploy/docker/Dockerfile.asap-telegraf -t asap/asap-telegraf:dev ."
   fi
   log "  docker build -f deploy/docker/Dockerfile.backend -t asap/query-backend:dev ."
   exit 2
 fi
 
 # Compose profile selection: telegraf is gated by a profile so the
-# default invocation only spins up sketchcol + sketchotap.
+# default invocation only spins up asap-otel + asap-otap.
 profile_args=()
 if (( INCLUDE_TELEGRAF == 1 )); then
   profile_args+=("--profile" "telegraf")
@@ -211,8 +211,8 @@ docker compose -f "${COMPOSE_FILE}" "${profile_args[@]}" up -d >>"${LOG_FILE}" 2
 # `healthcheck:` blocks so this loop just polls the runtime status.
 log "Waiting for services to become healthy..."
 deadline=$(( $(date +%s) + 90 ))
-services=("sketchcol" "sketchotap" "envelope-tap" "query-backend")
-if (( INCLUDE_TELEGRAF == 1 )); then services+=("sketchtelegraf"); fi
+services=("asap-otel" "asap-otap" "envelope-tap" "query-backend")
+if (( INCLUDE_TELEGRAF == 1 )); then services+=("asap-telegraf"); fi
 while true; do
   ready=1
   for svc in "${services[@]}"; do

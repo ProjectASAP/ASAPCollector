@@ -1,26 +1,26 @@
 # integration/cross_host_parity
 
 Phase 5 step E (per `docs/design-asap-otap-rust-integration.md` §11
-row E): the three ASAP-flavored agents — `sketchcol` (OTel-Go),
-`sketchotap` (OTAP-Rust), `sketchtelegraf` (Telegraf-Go) — fed
+row E): the three ASAP-flavored agents — `asap-otel` (OTel-Go),
+`asap-otap` (OTAP-Rust), `asap-telegraf` (Telegraf-Go) — fed
 identical input emit byte-identical `SketchEnvelope.Payload`s, and
 the backend's PromQL output is identical regardless of which agent
 produced the data.
 
-## Scope of THIS PR — two-way (sketchcol ↔ sketchotap)
+## Scope of THIS PR — two-way (asap-otel ↔ asap-otap)
 
 The cross-language byte-parity gate (issue #243) closed
 2026-05-05 and is the prerequisite for the Go↔Rust comparison; the
-homogeneous-Rust case (sketchotap vs sketchotap, varied input
+homogeneous-Rust case (asap-otap vs asap-otap, varied input
 sources) does not need #243.
 
-This PR ships the **two-way** sketchcol ↔ sketchotap test as the
-default. The `sketchtelegraf` third agent is a one-flag opt-in
+This PR ships the **two-way** asap-otel ↔ asap-otap test as the
+default. The `asap-telegraf` third agent is a one-flag opt-in
 (`CROSS_HOST_PARITY_INCLUDE_TELEGRAF=1` or `--include-telegraf`)
 so the asymmetry around Telegraf's line-protocol input format
 doesn't block the Go↔Rust gate this PR is built around. Phase 4
 step E (`integration/cross-host-parity/`) already closes the
-sketchcol ↔ sketchtelegraf comparison at the in-process codec
+asap-otel ↔ asap-telegraf comparison at the in-process codec
 level; Phase 5E binary-mode coverage is a follow-up.
 
 ## How this layers on existing parity gates
@@ -30,7 +30,7 @@ level; Phase 5E binary-mode coverage is a follow-up.
 | `integration/parity/` | runtime ↔ legacy-OTel-processor envelope bytes | Phase 2 |
 | `integration/cross-host-parity/` | OTel-codec ↔ Telegraf-codec, both in-process Go runtime | Phase 4E |
 | `asap-precompute-rs/tests/cross_language_parity.rs` | Go runtime ↔ Rust runtime per-sketch wire format (issue #243) | Phase 5 prereq |
-| `integration/cross_host_parity/` (this dir) | sketchcol ↔ sketchotap agent-binary envelope bytes + PromQL | Phase 5E |
+| `integration/cross_host_parity/` (this dir) | asap-otel ↔ asap-otap agent-binary envelope bytes + PromQL | Phase 5E |
 
 The sketch-level cross-language gate (#243) ratifies that *each
 runtime* produces the canonical envelope bytes from goldenFloats /
@@ -69,8 +69,8 @@ bash integration/cross_host_parity/run_parity.sh --mode=binary
 bash integration/cross_host_parity/run_parity.sh --mode=binary --include-telegraf
 ```
 
-- Brings up `asap/sketchcol:dev` + `asap/sketchotap:dev` (+
-  `asap/sketchtelegraf:dev` if `--include-telegraf`) plus
+- Brings up `asap/asap-otel:dev` + `asap/asap-otap:dev` (+
+  `asap/asap-telegraf:dev` if `--include-telegraf`) plus
   `asap/query-backend:dev` and an envelope-tap container via
   `deploy/docker-compose/cross-host-parity.yml`.
 - Drives the canonical input from `golden_input/inputs.json` through
@@ -99,8 +99,8 @@ images cause a hard failure with the build commands in the message
 - `run_parity.sh` — orchestrator (mode dispatch, prereq check,
   Docker compose lifecycle, test invocation).
 - `configs/` — per-agent pipeline configs mounted into containers
-  in binary mode (sketchcol.yaml, sketchotap.yaml,
-  sketchtelegraf.toml).
+  in binary mode (asap-otel.yaml, asap-otap.yaml,
+  asap-telegraf.toml).
 - `captures/` — created at runtime by `run_parity.sh` in binary
   mode; gitignored.
 

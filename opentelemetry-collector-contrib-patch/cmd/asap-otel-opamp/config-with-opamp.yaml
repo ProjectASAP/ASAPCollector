@@ -3,7 +3,7 @@
 # The controller can push new configs to this collector at runtime via
 # the OpAMP WebSocket connection. No restart needed.
 #
-# Start: ./sketchcol --config file:config-with-opamp.yaml
+# Start: ./asap-otel --config file:config-with-opamp.yaml
 #
 # Environment variables:
 #   CONTROLLER_OPAMP_ENDPOINT:  WebSocket URL (default: ws://controller:4320/v1/opamp)

@@ -16,7 +16,7 @@
 #   docker compose -f base.yml -f agents-N10.yml up
 #   docker compose -f base.yml -f agents-N100.yml up
 #
-# See README.md for build prerequisites (the `sketchcol` agent
+# See README.md for build prerequisites (the `asap-otel` agent
 # image still needs its Dockerfile + processor binaries built;
 # tracked in PROGRESS.md).
 
@@ -172,7 +172,7 @@ services:
     #   gateway-aggregate-from-sketches.yaml  — merge already-sketched payloads
     # Override the mounted file via the GATEWAY_CONFIG env var,
     # same pattern agents use for AGENT_CONFIG.
-    image: asap/sketchcol:dev
+    image: asap/asap-otel:dev
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ../configs/${GATEWAY_CONFIG:-gateway.yaml}:/etc/otel/config.yaml:ro

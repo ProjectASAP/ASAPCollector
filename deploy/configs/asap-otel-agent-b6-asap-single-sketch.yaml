@@ -26,7 +26,7 @@
 # without a config swap (DDSketch / KLL — both quantile) by
 # templating the processor name on a single env. Switching to
 # HLL / CS / CMS requires picking a different agent config file
-# (sketchcol-agent-{hll,cs,cms}-direct.yaml — already on disk);
+# (asap-otel-agent-{hll,cs,cms}-direct.yaml — already on disk);
 # the single-sketch demo is documented to default to DDSketch
 # because that's the sketch the v4 query suite exercises.
 #

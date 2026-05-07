@@ -22,7 +22,7 @@ there; this doc references them and does not restate them.
 Ship a single Vector binary `sketchvector` that includes all five
 sketch types (DDSketch, KLL, HLL, CountSketch, CountMinSketch) as a
 unified `asap_sketches` Transform plugin, using the same
-`asap-precompute-rs` runtime that the `sketchotap` binary already
+`asap-precompute-rs` runtime that the `asap-otap` binary already
 shares. Same wire format (`SketchEnvelope`), same backend ingest
 path, same controller plan delivery (HTTP poll), same Strategy-B
 carrier on egress.
@@ -35,10 +35,10 @@ at link time behind a feature flag. End-state deployment story per
 
 ```
 host operator picks:
-  ─── existing OTel pipeline ─────► sketchcollector
-  ─── existing Telegraf pipeline ─► sketchtelegraf
+  ─── existing OTel pipeline ─────► asap-otel
+  ─── existing Telegraf pipeline ─► asap-telegraf
   ─── existing Vector pipeline ───► sketchvector       ← THIS DOC
-  ─── Arrow-native pipeline ──────► sketchotap
+  ─── Arrow-native pipeline ──────► asap-otap
                                        ↓
                              same SketchEnvelope bytes
                                        ↓
@@ -305,20 +305,20 @@ shape.
 
 ## 7. Build pipeline — `build_sketchvector.sh`
 
-Mirror `build_sketchcollector.sh`, `build_sketchtelegraf.sh`,
-and `build_sketchotap.sh`. Steps: (1) apply patches via
+Mirror `build_asap_otel.sh`, `build_asap_telegraf.sh`,
+and `build_asap_otap.sh`. Steps: (1) apply patches via
 `restore_vector_patches.sh` (registers `asap_sketches` in
 Vector's `transforms/mod.rs` under feature
 `transforms-asap-sketches`); (2) resolve `[patch.crates-io]` in
 Vector's workspace `Cargo.toml` for `asap-precompute-rs` and
 `asap_sketchlib` to local checkouts, the same pattern
-`build_sketchcollector.sh` uses for `sketchlib-go`; (3) `cargo
+`build_asap_otel.sh` uses for `sketchlib-go`; (3) `cargo
 build --release --bin vector --features
 transforms-asap-sketches` (Vector uses Cargo features for
 optional plugins; our flag follows the `transforms-<name>`
 convention); (4) output `vector/target/release/vector`
 copied / symlinked to `vector/sketchvector` for parity with
-`telegraf/sketchtelegraf`.
+`telegraf/asap-telegraf`.
 
 **Key build-system decision.** Vector's plugin enumeration is
 generated at link time by `inventory`'s distributed-slice
@@ -486,8 +486,8 @@ is greenfield. Correctness is established by (1) unit tests on
 the codec's `decode_event` / `encode_envelope` round trip, (2)
 plugin lifecycle tests against Vector's in-tree
 `vector_lib::test_util::components` harness, and (3) **cross-host
-envelope parity**: a `sketchvector` agent and a `sketchotap` /
-`sketchcollector` / `sketchtelegraf` agent fed the same input
+envelope parity**: a `sketchvector` agent and a `asap-otap` /
+`asap-otel` / `asap-telegraf` agent fed the same input
 stream MUST emit byte-identical `SketchEnvelope::payload` bytes.
 Phase E covers this — same shape as Phase 4 step E
 (`integration/parity/golden_test.go`).
@@ -518,8 +518,8 @@ sink (+33% overhead).
 [edge-framework §7.4](./design-asap-edge-framework.md#74-integration-model)
 and R7. Distribution is via a custom-built binary
 (`sketchvector`), not by dropping a `.so` into a stock Vector
-install. Same model as `sketchcollector`, `sketchtelegraf`, and
-`sketchotap`.
+install. Same model as `asap-otel`, `asap-telegraf`, and
+`asap-otap`.
 
 ## 11. Phase plan
 
@@ -529,7 +529,7 @@ install. Same model as `sketchcollector`, `sketchtelegraf`, and
 | **B** | Codec implementation: `asap-precompute-rs/src/vector/` + minimal plugin shell that wires `decode_event` / `encode_envelope` against a stub `Precompute`. | `cargo test -p asap-precompute-rs --features vector` passes; plugin compiles. |
 | **C** | Full `asap_sketches` Transform: all five sketch types via `sketch_type` dispatch, control-channel Tokio task, `map_with_expiration`-driven flush, lifecycle. | Vector-harness lifecycle tests pass for each `sketch_type`; round-trip raw input → envelope output preserves expected sketch counts. |
 | **D** | Build script (`build_sketchvector.sh`) + Vector submodule patch (`vector-patch/src/transforms/mod.rs` registration + feature flag). | `bash build_sketchvector.sh` produces a `sketchvector` binary that lists `asap_sketches` in its transforms registry. |
-| **E** _(optional)_ | Cross-host envelope parity test — `sketchvector` agent and `sketchotap` / `sketchcollector` / `sketchtelegraf` agents fed identical input emit byte-identical `SketchEnvelope::payload`s. | E2E test passes; backend PromQL output is identical regardless of which agent produced the data. **Gated on issue #243** for the cross-language case (Go vs Rust payload bytes); the homogeneous-Rust case (sketchvector vs sketchotap) does not need #243. |
+| **E** _(optional)_ | Cross-host envelope parity test — `sketchvector` agent and `asap-otap` / `asap-otel` / `asap-telegraf` agents fed identical input emit byte-identical `SketchEnvelope::payload`s. | E2E test passes; backend PromQL output is identical regardless of which agent produced the data. **Gated on issue #243** for the cross-language case (Go vs Rust payload bytes); the homogeneous-Rust case (sketchvector vs asap-otap) does not need #243. |
 
 Phase A is this PR. Phases B–D are sized at roughly 1 week each
 for an engineer familiar with the runtime + Tokio async; the
@@ -603,8 +603,8 @@ already on `main` (Phase 5 step A — #248).
   mirrors.
 - [`telegraf-patch/`](../telegraf-patch/) — patch-overlay
   structure that `vector-patch/` mirrors.
-- [`build_sketchcollector.sh`](../build_sketchcollector.sh) and
-  [`build_sketchtelegraf.sh`](../build_sketchtelegraf.sh) —
+- [`build_asap_otel.sh`](../build_asap_otel.sh) and
+  [`build_asap_telegraf.sh`](../build_asap_telegraf.sh) —
   build pipelines that `build_sketchvector.sh` mirrors.
 - Issue #243 — cross-language byte-parity tracker; hard
   prerequisite for production Vector ↔ Telegraf / OTel fleet

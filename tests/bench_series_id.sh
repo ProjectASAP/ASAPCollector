@@ -14,7 +14,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTROLLER_DIR="${ROOT}/controller"
-SKETCHCOL="${ROOT}/opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector"
+ASAP_OTEL="${ROOT}/opentelemetry-collector-contrib-patch/cmd/asap-otel/asap-otel"
 E2EBENCH_DIR="${ROOT}/opentelemetry-app"
 
 SERIES=500
@@ -51,7 +51,7 @@ trap cleanup EXIT
 
 CONTROLLER_BIN="${CONTROLLER_DIR}/target/release/controller"
 [[ ! -x "$CONTROLLER_BIN" ]] && { echo "ERROR: controller not built" >&2; exit 1; }
-[[ ! -x "$SKETCHCOL" ]]      && { echo "ERROR: sketchcollector not built" >&2; exit 1; }
+[[ ! -x "$ASAP_OTEL" ]]      && { echo "ERROR: asap-otel not built" >&2; exit 1; }
 
 # ── run_single: one benchmark run ────────────────────────────────────────────
 # Args: label enable_series_id sketch_type series
@@ -107,7 +107,7 @@ run_single() {
   echo "$CONFIG_YAML" > "${out_dir}/collector-config.yaml"
 
   # Start collector
-  "$SKETCHCOL" --config="${out_dir}/collector-config.yaml" > "${out_dir}/collector.log" 2>&1 &
+  "$ASAP_OTEL" --config="${out_dir}/collector-config.yaml" > "${out_dir}/collector.log" 2>&1 &
   COLLECTOR_PID=$!
 
   for i in $(seq 1 30); do

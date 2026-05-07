@@ -1,7 +1,7 @@
 // Package gorilla_s3_e2e is the Phase 6 (FINAL) end-to-end
 // integration test for the Gorilla-S3 cold-engine pipeline:
 //
-//	fake-driver  ─OTLP─▶  sketchcol+gorillas3processor
+//	fake-driver  ─OTLP─▶  asap-otel+gorillas3processor
 //	                          │  encode (Gorilla XOR-delta)
 //	                          ▼
 //	                       MinIO   ─list/get─▶  GorillaS3ColdStore
@@ -235,7 +235,7 @@ func TestGorillaS3End2End(t *testing.T) {
 		t.Fatalf("MinIO not reachable: %v", err)
 	}
 	if err := waitForTCP(ctx, fmt.Sprintf("127.0.0.1:%d", hostPortAgentOTLP), 90*time.Second); err != nil {
-		t.Fatalf("sketchcol-e2e OTLP gRPC port not reachable: %v", err)
+		t.Fatalf("asap-otel-e2e OTLP gRPC port not reachable: %v", err)
 	}
 	if err := waitForTCP(ctx, fmt.Sprintf("127.0.0.1:%d", hostPortBackendQuery), 90*time.Second); err != nil {
 		t.Fatalf("backend query port not reachable: %v", err)

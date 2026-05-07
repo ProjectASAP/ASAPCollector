@@ -81,7 +81,7 @@ ingest-side bugs above are real follow-ups.
   writes the chunk-header timestamp at byte offset `[5..9]` instead of
   `[9..13]`. The consumer parses the wrong four bytes and sees zero
 - **Fix path**: one-character offset patch staged on a follow-up
-  branch; takes effect after `asap/sketchcol:dev` is rebuilt via OCB
+  branch; takes effect after `asap/asap-otel:dev` is rebuilt via OCB
 - **Workaround**: none — freshness doesn't measure on this demo until
   the image is rebuilt
 
@@ -131,16 +131,16 @@ encoding.
 
 | Runtime | Language | Library | Status |
 |---|---|---|---|
-| `sketchcol` (OTel collector) | Go | `asap-precompute-go` | ✅ implemented + tested end-to-end (paired sweep) |
-| `sketchotap` (OTAP-Dataflow) | Rust | `asap-precompute-rs` | ✅ implemented; cross-host byte-parity test green |
-| `sketchtelegraf` (Telegraf input) | Go | `asap-precompute-go` | ✅ implemented; envelope byte-parity verified |
+| `asap-otel` (OTel collector) | Go | `asap-precompute-go` | ✅ implemented + tested end-to-end (paired sweep) |
+| `asap-otap` (OTAP-Dataflow) | Rust | `asap-precompute-rs` | ✅ implemented; cross-host byte-parity test green |
+| `asap-telegraf` (Telegraf input) | Go | `asap-precompute-go` | ✅ implemented; envelope byte-parity verified |
 
 ### Common precompute / chunk libraries
 
 | Library | Used by | Status |
 |---|---|---|
-| `asap-precompute-go` | `sketchcol`, `sketchtelegraf` | ✅ implemented |
-| `asap-precompute-rs` | `sketchotap`, ASAPQuery-backend ingest path | ✅ implemented |
+| `asap-precompute-go` | `asap-otel`, `asap-telegraf` | ✅ implemented |
+| `asap-precompute-rs` | `asap-otap`, ASAPQuery-backend ingest path | ✅ implemented |
 | `asap-gorilla` (Rust encoder/decoder, postings, chunk index) | `gorillas3processor` (via Go-shim), backend `GorillaQueryEngine` | ✅ implemented + tested (39 unit tests pass; cross-language byte parity with the Go gorillas3processor). Phase δ.1 deleted `gorilla-compactor`; archive-tier compaction is handled by stock `thanos-compact` instead. |
 
 ### Sketch families (5 supported, byte-parity across runtimes)
@@ -210,7 +210,7 @@ against the component list:
 | Gap | Component touched | Status |
 |---|---|---|
 | ④ accuracy reducer | repoint `accuracy_reduce.py` at the Gorilla archive engine (Step-1 deleted the JSONL ground-truth path it used to read) | ❌ not implemented; ~1d follow-up |
-| ⑥ freshness probe consumer | `gorillas3processor` chunk-header offset (`[5..9]` vs `[9..13]`) | ❌ encoder bug; one-character patch staged on a follow-up branch; takes effect after `asap/sketchcol:dev` rebuild |
+| ⑥ freshness probe consumer | `gorillas3processor` chunk-header offset (`[5..9]` vs `[9..13]`) | ❌ encoder bug; one-character patch staged on a follow-up branch; takes effect after `asap/asap-otel:dev` rebuild |
 | Image-cache stickiness | Backend Docker layer cache | ⚠️  operational gotcha; pass `--no-cache` |
 
 ### Planned (not yet implemented)
@@ -407,7 +407,7 @@ TSDB.
 Compose overlay: `deploy/docker-compose/mvp-multi-stage.yml` brought
 up with the `b0` profile (`docker compose --profile b0 up`) which
 adds a Prometheus container with `--web.enable-remote-write-receiver`.
-The agents under this profile load `sketchcol-agent-b0-prometheus.yaml`,
+The agents under this profile load `asap-otel-agent-b0-prometheus.yaml`,
 which configures a `prometheusremotewrite` exporter with no sketch
 processor in the chain.
 
@@ -422,7 +422,7 @@ based on the query's shape.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  ASAP                                                                    │
 │                                                                          │
-│  10 fake-exporter ──OTLP──▶ 2 sketchcol agents ──OTLP──▶ 1 gateway       │
+│  10 fake-exporter ──OTLP──▶ 2 asap-otel agents ──OTLP──▶ 1 gateway       │
 │   (1000 series each)         (sketch processors:        (sketch-merge    │
 │                               ddsketch / kll / hll /     processors)     │
 │                               cs / cms — picked per             │        │
@@ -452,7 +452,7 @@ based on the query's shape.
 └──────────────────────────────────────────────────────────────────────────┘
 
    Resource axes measured (per-stage; same as baseline):
-     • sketchcol agents: CPU + RSS + net in/out
+     • asap-otel agents: CPU + RSS + net in/out
      • gateway: CPU + RSS + net in/out (sketch-merge fan-in)
      • ASAPQuery-backend: CPU + RSS + warm-tier sketch-state RAM
      • MinIO: on-disk Gorilla bytes + S3 PUT/GET counts
@@ -470,7 +470,7 @@ side-by-side rows for each criterion:
 |---|---|---|---|---|
 | ① | Bandwidth | bytes/s on `agent → Prometheus` | bytes/s on each cut edge | X% |
 | ② | Aggregation query latency | Prometheus PromQL p50 / p99 | ASAPQuery-backend PromQL p50 / p99 (warm + archive) | Y% |
-| ③ | Combined e2e resource | Σ(OTel agent + Prometheus CPU/RSS/disk) | Σ(sketchcol + gateway + backend + MinIO) | Z% |
+| ③ | Combined e2e resource | Σ(OTel agent + Prometheus CPU/RSS/disk) | Σ(asap-otel + gateway + backend + MinIO) | Z% |
 | ④ | Accuracy | exact (raw samples in TSDB) | rel-err per query class within ε/δ envelope | bounded by sketch family |
 | ⑤ | Cold-fallback for ad-hoc queries | Prometheus answers anything natively | `data_source: gorilla_archive` for ad-hoc / post-hoc / cardinality queries | qualitative PASS |
 | ⑥ | Freshness | sample-to-query latency on TSDB ingest path | sample-to-query latency on warm + archive paths | per-path Δ |
@@ -530,7 +530,7 @@ exercise.
 2. asap-gorilla                  (cargo, Rust crate)         }   sanity
 3. controller binary             (cargo)
 4. asap/controller:dev           (Docker image)              } runtime
-5. asap/sketchcol:dev            (OCB + Docker)              }   images
+5. asap/asap-otel:dev            (OCB + Docker)              }   images
 6. asap/fake-exporter:dev        (Docker image)              }
 7. asap/query-backend:dev        (Docker image, multi-context)
 ```
@@ -590,7 +590,7 @@ docker build -t asap/controller:dev .
 docker image ls asap/controller:dev
 ```
 
-### Step 5 — `asap/sketchcol:dev` (agent + gateway use the same image)
+### Step 5 — `asap/asap-otel:dev` (agent + gateway use the same image)
 
 This is a two-step build: first OCB compiles the patched OpenTelemetry
 Collector binary; then the Dockerfile packages it.
@@ -600,15 +600,15 @@ cd ~/repos/ASAPCollector
 
 # OCB (OpenTelemetry Collector Builder) generates the binary by stitching
 # together the patched processors listed in builder-config.yaml.
-bash opentelemetry-collector-contrib-patch/cmd/sketchcollector/build.sh
+bash opentelemetry-collector-contrib-patch/cmd/asap-otel/build.sh
 
 # Wrap the binary in the runtime image
 docker build \
-    -t asap/sketchcol:dev \
-    -f opentelemetry-collector-contrib-patch/cmd/sketchcollector/Dockerfile \
+    -t asap/asap-otel:dev \
+    -f opentelemetry-collector-contrib-patch/cmd/asap-otel/Dockerfile \
     .
 
-docker image ls asap/sketchcol:dev
+docker image ls asap/asap-otel:dev
 ```
 
 See `docs/design-asap-edge-framework.md` for OCB build details and
@@ -698,9 +698,9 @@ cd ~/repos/ASAPCollector
 
 # Docker images
 docker build -t asap/controller:dev controller/
-bash opentelemetry-collector-contrib-patch/cmd/sketchcollector/build.sh
-docker build -t asap/sketchcol:dev \
-    -f opentelemetry-collector-contrib-patch/cmd/sketchcollector/Dockerfile .
+bash opentelemetry-collector-contrib-patch/cmd/asap-otel/build.sh
+docker build -t asap/asap-otel:dev \
+    -f opentelemetry-collector-contrib-patch/cmd/asap-otel/Dockerfile .
 docker build -t asap/fake-exporter:dev deploy/fake-exporter/
 DOCKER_BUILDKIT=1 docker build -f deploy/docker/Dockerfile.backend \
     --build-context backend-src=$HOME/repos/ASAPQuery-backend \
@@ -880,7 +880,7 @@ header at byte offset `[5..9]` instead of `[9..13]`. The `last_over_time`
 consumer parses the wrong four bytes and sees zero values, so freshness
 deltas are computed against bogus emission timestamps and the CSVs come up
 empty. **Fix**: a one-character offset patch staged on a follow-up branch;
-takes effect after rebuilding `asap/sketchcol:dev` from the patched binary
+takes effect after rebuilding `asap/asap-otel:dev` from the patched binary
 via OCB.
 
 ### Backend image cache stickiness

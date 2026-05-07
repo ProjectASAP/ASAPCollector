@@ -3,7 +3,7 @@
 # `backend-streaming.yaml` / `backend-inference.yaml` mounts with
 # KLL-specific aggregations + query patterns.
 #
-#   AGENT_CONFIG=sketchcol-agent-kll-direct.yaml \
+#   AGENT_CONFIG=asap-otel-agent-kll-direct.yaml \
 #   docker compose -f base.yml -f agents-N1.yml \
 #                  -f baseline-b3-delta.yml -f e2e-overlay.yml \
 #                  -f e2e-overlay-kll.yml up -d

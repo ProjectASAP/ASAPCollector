@@ -1,4 +1,4 @@
-# Phase 5 step E sketchtelegraf agent config — Telegraf pipeline with
+# Phase 5 step E asap-telegraf agent config — Telegraf pipeline with
 # the unified `allsketches` processor (Phase 4 step C) instantiated
 # five times. Driven by line-protocol over http_listener_v2 from the
 # envelope-tap driver.
@@ -28,7 +28,7 @@
     "*" = ["*"]
   [[processors.override.tags]]
     key = "asap.agent_id"
-    value = "sketchtelegraf"
+    value = "asap-telegraf"
 
 [[processors.allsketches]]
   sketch_type = "ddsketch"

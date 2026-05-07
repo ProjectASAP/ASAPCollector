@@ -235,7 +235,7 @@ ASAPCollector/
 
 - Cross-repo dependency added: Go OTel patches now pull in
   `github.com/ProjectASAP/asap-precompute-go`. The build
-  pipeline (`build_sketchcollector.sh`) needs to handle two
+  pipeline (`build_asap_otel.sh`) needs to handle two
   module sources.
 - Test surface doubles temporarily during the migration: each
   function moves through a "duplicated, behavior-verified, then

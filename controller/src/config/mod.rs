@@ -25,43 +25,61 @@ use anyhow::Result;
 /// Phase ε.1.5 — which edge runtime an agent identifies as.
 ///
 /// Today every agent the controller has built for runs the OTel-collector
-/// (`Sketchcollector`); Phase ε.1.5 adds the two new runtime variants the
+/// (`AsapOtel`); Phase ε.1.5 adds the two new runtime variants the
 /// per-runtime emitters target. The runtime is reported by the agent on
 /// OpAMP `on_connect` (header `X-Agent-Runtime`); when absent (legacy
-/// agents) the controller defaults to `Sketchcollector` so the existing
+/// agents) the controller defaults to `AsapOtel` so the existing
 /// behaviour is preserved.
 ///
 /// Phase ε.1.5 commits the enum + emit-dispatch function. Threading the
 /// runtime through OpAMP `on_connect` and into the typed L5 emit path
 /// is a follow-up — the emitters can be exercised in isolation today
 /// (the Phase ε.1.5 test suite does exactly that).
+///
+/// Naming history: the variants were originally `Sketchcollector` /
+/// `Sketchotap` / `Sketchtelegraf`; the rename to `AsapOtel` /
+/// `AsapOtap` / `AsapTelegraf` (PR `refactor/rename-edge-runtimes-...`)
+/// drops the v0 `sketch*` prefix in favour of the symmetric `asap-*`
+/// namespace. `from_header` accepts both forms during transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum AgentRuntime {
     /// Default — OTel-collector contrib build (existing behaviour).
-    Sketchcollector,
+    AsapOtel,
     /// otap-dataflow Rust runtime.
-    Sketchotap,
+    AsapOtap,
     /// Telegraf runtime.
-    Sketchtelegraf,
+    AsapTelegraf,
 }
 
 impl Default for AgentRuntime {
     fn default() -> Self {
-        AgentRuntime::Sketchcollector
+        AgentRuntime::AsapOtel
     }
 }
 
 impl AgentRuntime {
     /// Parse an `X-Agent-Runtime` header value. Recognises
-    /// `sketchcollector` / `sketchotap` / `sketchtelegraf`
+    /// `asap-otel` / `asap-otap` / `asap-telegraf`
     /// (case-insensitive); any other value (including the empty string)
-    /// defaults to `Sketchcollector` so legacy agents keep working.
+    /// defaults to `AsapOtel` so legacy agents keep working.
+    ///
+    /// Backwards compatibility (transitional, deprecated):
+    /// the v0 strings `sketchcollector` / `sketchotap` / `sketchtelegraf`
+    /// are still accepted and parse to the corresponding new variant so
+    /// agents pinned to an older image keep working through the rollout.
+    /// TODO(remove-after-2026-Q3): drop the v0 aliases once all deployed
+    /// agents have rebuilt against the new image tags.
     pub fn from_header(value: &str) -> Self {
         match value.trim().to_lowercase().as_str() {
-            "sketchotap" | "otap" => AgentRuntime::Sketchotap,
-            "sketchtelegraf" | "telegraf" => AgentRuntime::Sketchtelegraf,
-            _ => AgentRuntime::Sketchcollector,
+            "asap-otap" | "otap" => AgentRuntime::AsapOtap,
+            "asap-telegraf" | "telegraf" => AgentRuntime::AsapTelegraf,
+            "asap-otel" => AgentRuntime::AsapOtel,
+            // Deprecated v0 aliases — accepted for transition only.
+            "sketchotap" => AgentRuntime::AsapOtap,
+            "sketchtelegraf" => AgentRuntime::AsapTelegraf,
+            "sketchcollector" => AgentRuntime::AsapOtel,
+            _ => AgentRuntime::AsapOtel,
         }
     }
 }
@@ -72,10 +90,10 @@ impl AgentRuntime {
 /// override which we pass through `prometheus_url`.
 ///
 /// `prometheus_url` is the Mode-3 destination override:
-///   * `Sketchcollector` → ignored (the OTel-collector emitter already
+///   * `AsapOtel` → ignored (the OTel-collector emitter already
 ///     reads `${ASAP_PROMETHEUS_OTLP_URL}` at runtime);
-///   * `Sketchotap`      → OTLP HTTP URL passed to `emit_otap_dag_yaml`;
-///   * `Sketchtelegraf`  → remote-write URL passed to `emit_telegraf_toml`.
+///   * `AsapOtap`      → OTLP HTTP URL passed to `emit_otap_dag_yaml`;
+///   * `AsapTelegraf`  → remote-write URL passed to `emit_telegraf_toml`.
 pub fn emit_for_runtime(
     runtime: AgentRuntime,
     cfg: &EdgeStageConfig,
@@ -83,9 +101,9 @@ pub fn emit_for_runtime(
     prometheus_url: Option<&str>,
 ) -> Result<String> {
     match runtime {
-        AgentRuntime::Sketchcollector => emit_edge_yaml(cfg, opamp_endpoint),
-        AgentRuntime::Sketchotap => emit_otap_dag_yaml(cfg, opamp_endpoint, prometheus_url),
-        AgentRuntime::Sketchtelegraf => emit_telegraf_toml(cfg, prometheus_url),
+        AgentRuntime::AsapOtel => emit_edge_yaml(cfg, opamp_endpoint),
+        AgentRuntime::AsapOtap => emit_otap_dag_yaml(cfg, opamp_endpoint, prometheus_url),
+        AgentRuntime::AsapTelegraf => emit_telegraf_toml(cfg, prometheus_url),
     }
 }
 
@@ -95,21 +113,34 @@ mod runtime_tests {
 
     #[test]
     fn agent_runtime_from_header_recognises_three_values() {
-        assert_eq!(AgentRuntime::from_header("sketchcollector"), AgentRuntime::Sketchcollector);
-        assert_eq!(AgentRuntime::from_header("sketchotap"), AgentRuntime::Sketchotap);
-        assert_eq!(AgentRuntime::from_header("sketchtelegraf"), AgentRuntime::Sketchtelegraf);
+        assert_eq!(AgentRuntime::from_header("asap-otel"), AgentRuntime::AsapOtel);
+        assert_eq!(AgentRuntime::from_header("asap-otap"), AgentRuntime::AsapOtap);
+        assert_eq!(AgentRuntime::from_header("asap-telegraf"), AgentRuntime::AsapTelegraf);
     }
 
     #[test]
     fn agent_runtime_from_header_short_aliases() {
-        assert_eq!(AgentRuntime::from_header("otap"), AgentRuntime::Sketchotap);
-        assert_eq!(AgentRuntime::from_header("telegraf"), AgentRuntime::Sketchtelegraf);
+        assert_eq!(AgentRuntime::from_header("otap"), AgentRuntime::AsapOtap);
+        assert_eq!(AgentRuntime::from_header("telegraf"), AgentRuntime::AsapTelegraf);
     }
 
     #[test]
-    fn agent_runtime_from_header_default_is_sketchcollector() {
-        assert_eq!(AgentRuntime::from_header(""), AgentRuntime::Sketchcollector);
-        assert_eq!(AgentRuntime::from_header("garbage"), AgentRuntime::Sketchcollector);
+    fn agent_runtime_from_header_default_is_asap_otel() {
+        assert_eq!(AgentRuntime::from_header(""), AgentRuntime::AsapOtel);
+        assert_eq!(AgentRuntime::from_header("garbage"), AgentRuntime::AsapOtel);
+    }
+
+    #[test]
+    fn agent_runtime_from_header_accepts_legacy_v0_strings() {
+        // Legacy strings the controller emitted/accepted before the
+        // sketchcol/sketchotap/sketchtelegraf → asap-otel/asap-otap/asap-telegraf
+        // rename. Kept for transitional backwards compatibility so an
+        // agent pinned to an older image keeps getting a typed plan.
+        // TODO(remove-after-2026-Q3): drop these aliases.
+        assert_eq!(AgentRuntime::from_header("sketchcollector"), AgentRuntime::AsapOtel);
+        assert_eq!(AgentRuntime::from_header("Sketchcollector"), AgentRuntime::AsapOtel);
+        assert_eq!(AgentRuntime::from_header("sketchotap"), AgentRuntime::AsapOtap);
+        assert_eq!(AgentRuntime::from_header("sketchtelegraf"), AgentRuntime::AsapTelegraf);
     }
 
     #[test]
@@ -136,10 +167,10 @@ mod runtime_tests {
         };
 
         let collector = emit_for_runtime(
-            AgentRuntime::Sketchcollector, &cfg, "ws://ctrl/v1/opamp", None,
+            AgentRuntime::AsapOtel, &cfg, "ws://ctrl/v1/opamp", None,
         ).expect("collector emit ok");
         let direct = emit_edge_yaml(&cfg, "ws://ctrl/v1/opamp").expect("direct emit ok");
-        assert_eq!(collector, direct, "Sketchcollector dispatch must equal emit_edge_yaml");
+        assert_eq!(collector, direct, "AsapOtel dispatch must equal emit_edge_yaml");
     }
 
     #[test]
@@ -158,7 +189,7 @@ mod runtime_tests {
             warm_passthrough_metrics: Vec::new(),
         };
         let yaml = emit_for_runtime(
-            AgentRuntime::Sketchotap, &cfg, "ws://ctrl/v1/opamp", None,
+            AgentRuntime::AsapOtap, &cfg, "ws://ctrl/v1/opamp", None,
         ).expect("otap emit ok");
         // OTAP-specific token.
         assert!(yaml.contains("otel_dataflow/v1"), "expected OTAP DAG version\n{yaml}");
@@ -180,7 +211,7 @@ mod runtime_tests {
             warm_passthrough_metrics: Vec::new(),
         };
         let toml = emit_for_runtime(
-            AgentRuntime::Sketchtelegraf, &cfg, "ws://ctrl/v1/opamp", None,
+            AgentRuntime::AsapTelegraf, &cfg, "ws://ctrl/v1/opamp", None,
         ).expect("telegraf emit ok");
         // Telegraf-specific token.
         assert!(toml.contains("[[inputs.opentelemetry]]"), "expected Telegraf TOML header\n{toml}");

@@ -1,6 +1,6 @@
 # Baseline B6 — Gorilla-S3 cold-engine tier (issue-46 MVP demo).
 #
-#   AGENT_CONFIG=sketchcol-agent-b6-gorilla-s3.yaml \
+#   AGENT_CONFIG=asap-otel-agent-b6-gorilla-s3.yaml \
 #     docker compose -f base.yml -f agents-N1.yml \
 #       -f baseline-b6-gorilla-s3.yml -f e2e-overlay.yml up -d
 #

@@ -1,6 +1,6 @@
 # Baseline B5 v4 — Gorilla XOR + raw forward to real Prometheus.
 #
-# v4 (issue #46) variant of `sketchcol-agent-b5-gorilla.yaml`. The
+# v4 (issue #46) variant of `asap-otel-agent-b5-gorilla.yaml`. The
 # v3 Gorilla config used `drop_original: true` so nothing reached
 # the gateway / backend / Prometheus — bandwidth was measured
 # entirely against bytes-on-disk under /var/tmp/asap-gorilla-out.
@@ -27,7 +27,7 @@
 #                       │
 #                       └─raw forward──▶ Prometheus :9090/api/v1/write
 #
-# Mirrors `sketchcol-agent-b1-serf-prometheus.yaml` exactly (apart
+# Mirrors `asap-otel-agent-b1-serf-prometheus.yaml` exactly (apart
 # from the processor name) so the demo's Prometheus-fed freshness
 # and accuracy paths see identical inputs across B0/B1/B5.
 

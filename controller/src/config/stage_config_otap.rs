@@ -1,7 +1,7 @@
 //! Phase ε.1.5 — OTAP Dataflow DAG YAML emitter (per-runtime mirror of
 //! [`super::stage_config::emit_edge_yaml`]).
 //!
-//! `sketchotap` uses the otap-dataflow Rust runtime; its config surface is
+//! `asap-otap` uses the otap-dataflow Rust runtime; its config surface is
 //! a DAG YAML where `nodes.<name>.type` is a registered plugin URN
 //! (e.g. `receiver:otlp`, `exporter:otlp_http`,
 //! `urn:otel:exporter:otlp_http`). The OTLP HTTP exporter ships in
@@ -106,7 +106,7 @@ struct Connection {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/// Build the OTAP-Dataflow DAG YAML for the `sketchotap` runtime from a
+/// Build the OTAP-Dataflow DAG YAML for the `asap-otap` runtime from a
 /// typed L5 [`EdgeStageConfig`].
 ///
 /// `opamp_endpoint` is the controller's WebSocket URL; reserved for a

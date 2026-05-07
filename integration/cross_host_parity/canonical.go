@@ -1,7 +1,7 @@
 // Package crosshostparity reproduces the cross-language byte-parity
 // gate (#243) canonical envelope bytes inline. These are the exact
-// bytes each ASAP-flavored agent — sketchcol (OTel-Go), sketchotap
-// (OTAP-Rust), sketchtelegraf (Telegraf-Go) — MUST emit when fed the
+// bytes each ASAP-flavored agent — asap-otel (OTel-Go), asap-otap
+// (OTAP-Rust), asap-telegraf (Telegraf-Go) — MUST emit when fed the
 // canonical golden_input/inputs.json fixture.
 //
 // Why duplicate the integration/parity/golden_test.go logic here:

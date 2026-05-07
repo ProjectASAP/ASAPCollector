@@ -80,7 +80,7 @@ ASAP is a controller-planned, sketch-based, three-tier observability stack:
 
 - **Edge runtimes**: sketches (DDSketch, KLL, HLL, CountSketch, Count-Min
   Sketch) embedded in the OpenTelemetry SDK and three collector binaries
-  (`sketchcol` Go, `sketchotap` Rust, `sketchtelegraf` Go) with
+  (`asap-otel` Go, `asap-otap` Rust, `asap-telegraf` Go) with
   bit-identical wire format. Agents emit sparse **delta-of-sketch** envelopes
   over a modified-OTLP wire.
 - **Controller**: observes the live PromQL query log and plans, per metric, a

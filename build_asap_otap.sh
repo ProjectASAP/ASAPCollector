@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# build_sketchotap.sh — Build the sketchotap OTAP-Rust distribution.
+# build_asap_otap.sh — Build the asap-otap OTAP-Rust distribution.
 #
-# sketchotap is upstream OTAP Dataflow (the OpenTelemetry next-gen
+# asap-otap is upstream OTAP Dataflow (the OpenTelemetry next-gen
 # Arrow-native streaming engine, in-tree at
 # `otel-arrow/rust/otap-dataflow/`) with the unified `asap_sketches`
 # processor wired into its `linkme` plugin registry. One binary, all
@@ -9,8 +9,8 @@
 # — see docs/design-asap-otap-rust-integration.md §3 for the
 # rationale).
 #
-# This script mirrors `build_sketchcollector.sh` (Phase 4 step D for
-# OTel) and `build_sketchtelegraf.sh` (Phase 4 step D for Telegraf).
+# This script mirrors `build_asap_otel.sh` (Phase 4 step D for
+# OTel) and `build_asap_telegraf.sh` (Phase 4 step D for Telegraf).
 # Steps:
 #
 #   1. Initialize the `otel-arrow` submodule (pinned in `.gitmodules`).
@@ -27,14 +27,14 @@
 #      for `otap_df_contrib_nodes` / `otap_df_core_nodes`).
 #   5. `cargo build --release --bin df_engine` from the patched OTAP
 #      source tree.
-#   6. Copy the binary to `otel-arrow/rust/otap-dataflow/target/release/sketchotap`
+#   6. Copy the binary to `otel-arrow/rust/otap-dataflow/target/release/asap-otap`
 #      so the rest of the toolchain (Dockerfile, deploy scripts) can
 #      address the right name. (OTAP upstream renames take several
 #      release cycles to land; copying is cheaper than carrying a
 #      [[bin]] rename in our patch.)
 #
 # Output:
-#   otel-arrow/rust/otap-dataflow/target/release/sketchotap
+#   otel-arrow/rust/otap-dataflow/target/release/asap-otap
 #
 # ## Plugin-registry inspection
 #
@@ -46,12 +46,12 @@
 # and does NOT print the system info banner — use `-h`. Check the
 # registration with:
 #
-#   ./otel-arrow/rust/otap-dataflow/target/release/sketchotap -h \
+#   ./otel-arrow/rust/otap-dataflow/target/release/asap-otap -h \
 #     | grep asap_sketches
 #
 # A successful build prints `urn:asap:processor:asap_sketches` under
 # the "Available Component URNs: Processors:" line. The §11 row D
-# exit criterion ("a `sketchotap` binary that lists `asap_sketches`
+# exit criterion ("a `asap-otap` binary that lists `asap_sketches`
 # in its plugin registry") corresponds to this output.
 #
 # ## Prereqs
@@ -68,7 +68,7 @@
 #
 # ## Env vars
 #
-# Mirroring `build_sketchcollector.sh`'s "inline env vars to remove a
+# Mirroring `build_asap_otel.sh`'s "inline env vars to remove a
 # footgun" treatment of `GOPRIVATE` / `GOTOOLCHAIN`, this script sets
 # the Rust-side equivalents in-script:
 #
@@ -81,8 +81,8 @@
 #
 # ## Usage
 #
-#   ./build_sketchotap.sh                 # builds sketchotap
-#   ./build_sketchotap.sh --skip-patches  # skip re-applying patches
+#   ./build_asap_otap.sh                 # builds asap-otap
+#   ./build_asap_otap.sh --skip-patches  # skip re-applying patches
 #                                         # (useful for fast incremental
 #                                         # rebuilds after editing the
 #                                         # registration crate)
@@ -106,7 +106,7 @@ PATCH_DIR="${ROOT_DIR}/otap-patch"
 REGISTRATION_SRC_DIR="${PATCH_DIR}/all"
 REGISTRATION_DEST_DIR="${OTAP_WORKSPACE_DIR}/crates/asap-sketches-registry"
 
-# Inline env vars per the convention `build_sketchcollector.sh`
+# Inline env vars per the convention `build_asap_otel.sh`
 # established (PROGRESS.md follow-up #7: "inline env vars into script
 # removes a footgun for new contributors"). Cargo respects them when
 # inherited from the parent shell.
@@ -214,15 +214,15 @@ if [[ "${SKIP_PATCHES}" == false ]]; then
 fi
 
 # Step 6: Build.
-echo "==> Building sketchotap (cargo build --release --bin df_engine)..."
+echo "==> Building asap-otap (cargo build --release --bin df_engine)..."
 cd "${OTAP_WORKSPACE_DIR}"
 cargo build --release --bin df_engine
 
-# Step 7: Copy the binary under the sketchotap name so downstream
+# Step 7: Copy the binary under the asap-otap name so downstream
 # tooling (Dockerfile, deploy scripts) addresses the canonical name
 # without depending on an upstream Cargo.toml edit.
 SRC_BIN="${OTAP_WORKSPACE_DIR}/target/release/df_engine"
-DEST_BIN="${OTAP_WORKSPACE_DIR}/target/release/sketchotap"
+DEST_BIN="${OTAP_WORKSPACE_DIR}/target/release/asap-otap"
 if [[ ! -x "${SRC_BIN}" ]]; then
   echo "Build completed but binary not found at ${SRC_BIN}" >&2
   exit 1

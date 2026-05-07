@@ -44,7 +44,7 @@ driven by a per-sketch-family wire-cost break-even table
               │               │                   │        ▼
               ▼               ▼                   ▼   ┌──────────────────────┐
         ┌──────────┐   ┌──────────────┐    ┌────────────────┐                │
-        │sketchcol │   │ sketchotap   │    │ sketchtelegraf │                │
+        │asap-otel │   │ asap-otap   │    │ asap-telegraf │                │
         │(Go)      │   │ (Rust, OTAP) │    │ (Go, Telegraf) │                │
         └────┬─────┘   └───────┬──────┘    └────────┬───────┘                │
              │                 │                    │                        │
@@ -125,23 +125,23 @@ Source of break-even constants: `controller/src/planner/wire_cost.rs`
 
 All three runtimes consume the same precompute libraries (Go and
 Rust ports are byte-parity-tested — see §8). The runtime pick is
-deployment-shaped: `sketchcol` for OTel-Collector-native deployments,
-`sketchotap` for high-throughput OTAP/Arrow pipelines, `sketchtelegraf`
+deployment-shaped: `asap-otel` for OTel-Collector-native deployments,
+`asap-otap` for high-throughput OTAP/Arrow pipelines, `asap-telegraf`
 for Telegraf-native sites.
 
 | Runtime | Lang | Library | Status | Mode 1 emit (sketch envelopes) | Mode 3 emit (raw → Prometheus) |
 |---|---|---|---|---|---|
-| `sketchcol` | Go | `asap-precompute-go` | shipped | Embedded sketch processors → otlphttp exporter | `otlphttp/prometheus` exporter to `/api/v1/otlp/v1/metrics` |
-| `sketchotap` | Rust | `asap-precompute-rs` | shipped | OTAP DAG nodes → `urn:otel:exporter:otlp_http` | OTAP passthrough → `exporter:otlp_http` |
-| `sketchtelegraf` | Go | `asap-precompute-go` | shipped | Telegraf processor → `outputs.opentelemetry` | `outputs.http` with `data_format = "prometheusremotewrite"` (the shipped Telegraf otel plugin is gRPC-only — HTTP-postable Prometheus remote-write keeps the path lossless) |
+| `asap-otel` | Go | `asap-precompute-go` | shipped | Embedded sketch processors → otlphttp exporter | `otlphttp/prometheus` exporter to `/api/v1/otlp/v1/metrics` |
+| `asap-otap` | Rust | `asap-precompute-rs` | shipped | OTAP DAG nodes → `urn:otel:exporter:otlp_http` | OTAP passthrough → `exporter:otlp_http` |
+| `asap-telegraf` | Go | `asap-precompute-go` | shipped | Telegraf processor → `outputs.opentelemetry` | `outputs.http` with `data_format = "prometheusremotewrite"` (the shipped Telegraf otel plugin is gRPC-only — HTTP-postable Prometheus remote-write keeps the path lossless) |
 
 Sources:
 - `controller/src/config/stage_config.rs` (`emit_edge_yaml` for
-  sketchcol)
+  asap-otel)
 - `controller/src/config/stage_config_otap.rs` (`emit_otap_dag_yaml`
-  for sketchotap)
+  for asap-otap)
 - `controller/src/config/stage_config_telegraf.rs`
-  (`emit_telegraf_toml` for sketchtelegraf)
+  (`emit_telegraf_toml` for asap-telegraf)
 
 The sketch-processor logic itself is the same observation-loop in
 both libraries (`asap-precompute-go/precompute.go`,
@@ -168,8 +168,8 @@ inputs.
 | **Count-Sketch** | 17 | Estimated frequencies that need signed estimators | `aggregate_count_sketch` (cell-sum merge) | ε(N), δ(d) bounded | **5,004** (delta-encoded sparse cells) |
 
 Cross-runtime parity: identical input → byte-identical
-`SerializePortable` envelope from any of `sketchcol`,
-`sketchotap`, or `sketchtelegraf`. Verified via golden-fixture
+`SerializePortable` envelope from any of `asap-otel`,
+`asap-otap`, or `asap-telegraf`. Verified via golden-fixture
 parity tests under `integration/cross-host-parity/` and
 `integration/parity/`.
 
@@ -298,9 +298,9 @@ collapsed to `otlp` / `otlphttp` only (no separate
 
 | Emitter | Output | Consumer |
 |---|---|---|
-| `emit_edge_yaml` | otelcol-contrib YAML | `sketchcol` agent |
-| `emit_otap_dag_yaml` | OTAP DAG YAML | `sketchotap` agent |
-| `emit_telegraf_toml` | Telegraf TOML | `sketchtelegraf` agent |
+| `emit_edge_yaml` | otelcol-contrib YAML | `asap-otel` agent |
+| `emit_otap_dag_yaml` | OTAP DAG YAML | `asap-otap` agent |
+| `emit_telegraf_toml` | Telegraf TOML | `asap-telegraf` agent |
 | `emit_gateway_yaml` | otelcol-contrib YAML (gateway role) | gateway |
 | `emit_backend_config_json` | StreamingConfig JSON | backend `/api/v1/streaming-config` |
 | `emit_backend_storage_routing` (and `…_with_prometheus` for Mode 3) | BackendStorageRouting JSON | backend `/api/v1/storage_routing` |
@@ -320,7 +320,7 @@ collapsed to `otlp` / `otlphttp` only (no separate
   freshly-started agent reads at boot. Under
   `USE_TYPED_STAGE_SPLIT=1` the handler runs the same typed L5
   pipeline as `POST /api/v1/plan` and emits per the
-  `X-Agent-Runtime` header (defaults to `Sketchcollector`). The
+  `X-Agent-Runtime` header (defaults to `AsapOtel`). The
   handler walks the `WorkloadRegistry` (or the `X-Agent-ID`-keyed
   pinned plan if present) and dispatches through `emit_for_runtime`,
   so bootstrap-fetched configs already carry Phase 3.2.5's
@@ -418,8 +418,8 @@ SketchEnvelope {
 ### Cross-language byte parity gate
 
 Same input → byte-identical `SerializePortable` envelope from any
-of the three runtimes (`sketchcol`, `sketchotap`,
-`sketchtelegraf`). This is enforced by:
+of the three runtimes (`asap-otel`, `asap-otap`,
+`asap-telegraf`). This is enforced by:
 
 - `asap-precompute-go/envelope_test.go` — Go-side golden fixtures
 - `asap-precompute-rs/src/envelope.rs` (and tests) — Rust-side
@@ -448,9 +448,9 @@ one host:
 ```
 10 producers
   ↓
-2 agents (sketchcol)
+2 agents (asap-otel)
   ↓
-1 gateway (sketchcol with gorillas3processor)
+1 gateway (asap-otel with gorillas3processor)
   ↓
 1 backend (ASAPQuery-backend)
   ↓
@@ -586,10 +586,10 @@ Tracked, in flight, or explicitly out of scope today.
   wire format details, and the JSONL → Path-A2 consolidation history
   (merged from the older `design-jsonl-deprecation-…` and
   `design-gorilla-s3-cold-engine` docs in PR #325).
-- **`docs/design-asap-edge-framework.md`** — sketchcol agent design.
-- **`docs/design-asap-otap-rust-integration.md`** — sketchotap agent
+- **`docs/design-asap-edge-framework.md`** — asap-otel agent design.
+- **`docs/design-asap-otap-rust-integration.md`** — asap-otap agent
   design.
-- **`docs/design-asap-telegraf-integration.md`** — sketchtelegraf
+- **`docs/design-asap-telegraf-integration.md`** — asap-telegraf
   agent design.
 - **`docs/control-plane-design.md`** — controller architecture; OpAMP
   and HTTP-push plumbing.

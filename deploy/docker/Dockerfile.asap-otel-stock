@@ -1,14 +1,14 @@
-# Fallback sketchcol image — a stock otel-collector-contrib
-# retagged as `asap/sketchcol:dev`. Runs WITHOUT the ASAP-patched
+# Fallback asap-otel image — a stock otel-collector-contrib
+# retagged as `asap/asap-otel:dev`. Runs WITHOUT the ASAP-patched
 # sketch processors (DDSketch / KLL / HLL / CountSketch /
 # CountMinSketch), so this image is only enough to exercise:
 #
 #   * B0 baseline (Prometheus native, no sketches at all)
-#   * B1 baseline (raw-forward — `sketchcol` replaced by a
+#   * B1 baseline (raw-forward — `asap-otel` replaced by a
 #     passthrough processor, which a stock collector already is)
 #
 # For B2 (hand-tuned sketches) and B3 (full ASAP), use
-# `Dockerfile.sketchcol` which runs the full patched build —
+# `Dockerfile.asap-otel` which runs the full patched build —
 # requires `git submodule update --init` + the
 # `ProjectASAP/sketchlib-go` sibling repo checked out.
 #

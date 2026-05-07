@@ -1,6 +1,6 @@
 # Baseline B1 v4 — Serf XOR + raw forward to real Prometheus.
 #
-# v4 (issue #46) variant of `sketchcol-agent-b1-serf.yaml`. The
+# v4 (issue #46) variant of `asap-otel-agent-b1-serf.yaml`. The
 # v3 SERF config used `drop_original: true` so nothing reached
 # the gateway / backend / Prometheus — bandwidth was measured
 # entirely against bytes-on-disk under /var/tmp/asap-serf-out.

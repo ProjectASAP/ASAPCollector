@@ -2,7 +2,7 @@
 # series_id_e2e_test.sh — Integration test for series_id UID registry
 #
 # Verifies the register → elide → rehydrate round-trip:
-#   1. Start controller + sketchcollector with enable_series_id: true
+#   1. Start controller + asap-otel with enable_series_id: true
 #   2. Send metrics via e2esdkbench (first export sends full attributes)
 #   3. Verify the collector assigns series_ids (SeriesAssignment in response)
 #   4. Verify subsequent exports omit attributes (bandwidth reduction)
@@ -19,7 +19,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTROLLER_DIR="${ROOT}/controller"
-SKETCHCOL="${ROOT}/opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector"
+ASAP_OTEL="${ROOT}/opentelemetry-collector-contrib-patch/cmd/asap-otel/asap-otel"
 E2EBENCH_DIR="${ROOT}/opentelemetry-app"
 
 SERIES=50
@@ -66,9 +66,9 @@ fi
 if [[ ! -x "$CONTROLLER_BIN" ]]; then
   echo "ERROR: controller binary not found at ${CONTROLLER_BIN}" >&2; exit 1
 fi
-if [[ ! -x "$SKETCHCOL" ]]; then
-  echo "ERROR: sketchcollector binary not found at ${SKETCHCOL}" >&2
-  echo "       Run: ${ROOT}/build_sketchcollector.sh" >&2; exit 1
+if [[ ! -x "$ASAP_OTEL" ]]; then
+  echo "ERROR: asap-otel binary not found at ${ASAP_OTEL}" >&2
+  echo "       Run: ${ROOT}/build_asap_otel.sh" >&2; exit 1
 fi
 
 # ── Step 2: Start controller + collector ──────────────────────────────────────
@@ -122,8 +122,8 @@ else
 fi
 
 # ── Step 3: Start collector ───────────────────────────────────────────────────
-echo "==> [Step 3] Starting sketchcollector..."
-"$SKETCHCOL" \
+echo "==> [Step 3] Starting asap-otel..."
+"$ASAP_OTEL" \
   --config="http://localhost:8080/api/v1/config/series_id_test" \
   > "${OUTPUT_DIR}/collector.log" 2>&1 &
 COLLECTOR_PID=$!
@@ -210,7 +210,7 @@ echo ""
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo "==> Logs saved to: ${OUTPUT_DIR}/"
 echo "    controller.log        — controller stdout/stderr"
-echo "    collector.log         — sketchcollector stdout/stderr"
+echo "    collector.log         — asap-otel stdout/stderr"
 echo "    collector-config.yaml — generated config with enable_series_id"
 echo ""
 

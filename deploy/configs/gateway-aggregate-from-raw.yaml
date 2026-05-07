@@ -9,9 +9,9 @@
 #   - The controller has placed sketching at the gateway in this
 #     deploy's plan (see ASAPController).
 #
-# Requires the `asap/sketchcol:dev` image (built from
+# Requires the `asap/asap-otel:dev` image (built from
 # `opentelemetry-collector-contrib-patch/` via the OCB manifest
-# at `cmd/sketchcollector/builder-config-sketches.yaml`).
+# at `cmd/asap-otel/builder-config-sketches.yaml`).
 #
 # This file enables DDSketch as the canonical example. To enable
 # KLL / HLL / CountSketch / CMS, uncomment the matching processor

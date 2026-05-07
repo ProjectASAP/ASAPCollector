@@ -4,7 +4,7 @@
 #   Path 1 (fast): OTLP → sketch processor → OTLP to backend
 #   Path 2 (backup): OTLP → batch → S3 (gzip OTLP JSON)
 #
-# Start: ./sketchcol --config file:config-dual-path.yaml
+# Start: ./asap-otel --config file:config-dual-path.yaml
 #
 # Environment variables:
 #   S3_BUCKET:          S3 bucket name (default: telemetry-raw-backup)

@@ -126,7 +126,7 @@ services:
   # tighter or looser windows.
   #
   # CPU concurrency: --compact.concurrency=1 bounds CPU on the demo
-  # host (single-host topology shares cores with sketchcol agents +
+  # host (single-host topology shares cores with asap-otel agents +
   # backend). Bump to 2-4 on dedicated hosts.
   #
   # Lifecycle: --wait runs thanos-compact in a continuous loop instead
