@@ -104,7 +104,13 @@ processors:
     mode: window
     window_duration: 30s
     transmit_sketch: true
-    delta_transmission: false
+    # Delta-encoded transmission (DDSketch + HLL + CountSketch +
+    # Count-Min default) — only buckets that changed since the last
+    # flush travel on the wire. Matches the processor factory's
+    # `DeltaTransmission: true` default; pinned here for clarity so
+    # the all-sketches demo doesn't accidentally regress to
+    # full-state if the default ever flips back.
+    delta_transmission: true
     enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
     metric_suffix: "_quantile"
@@ -115,6 +121,14 @@ processors:
   # header comment for the wire-format disambiguation rationale).
   # Decoded by the backend's
   # `DatasketchesKLLAccumulator::from_msgpack_bytes`.
+  #
+  # NO delta_transmission flag for KLL: KLL uses randomised
+  # compaction so two sketches over the same input history are not
+  # bit-identical and not linearly mergeable. KLL has no delta
+  # variant and the wire payload is always full state. See
+  # `kllprocessor/config.go::Config.Validate` (rejects
+  # `delta_transmission: true`) and `Implementation.tex`
+  # ("KLL has no delta variant and matches its full cost").
   KLL:
     mode: window
     window_duration: 30s
@@ -133,6 +147,10 @@ processors:
     mode: window
     window_duration: 30s
     transmit_sketch: true
+    # Delta-encoded transmission default — only registers that
+    # increased since the last flush travel on the wire (max
+    # semantics). Matches the processor factory default.
+    delta_transmission: true
     enable_self_monitoring: true
     encoding: msgpack
     metric_suffix: "_hll"
@@ -149,6 +167,10 @@ processors:
     epsilon: 0.01
     delta: 0.01
     transmit_sketch: true
+    # Delta-encoded transmission default — only cells that changed
+    # by ≥ delta_threshold since the last flush travel on the wire.
+    # Matches the processor factory default.
+    delta_transmission: true
     enable_self_monitoring: true
     encoding: msgpack
 
@@ -167,6 +189,10 @@ processors:
     rows: 5
     columns: 1024
     transmit_sketch: true
+    # Delta-encoded transmission default — only cells that changed
+    # by ≥ delta_threshold since the last flush travel on the wire.
+    # Matches the processor factory default.
+    delta_transmission: true
     enable_self_monitoring: true
     encoding: msgpack
 

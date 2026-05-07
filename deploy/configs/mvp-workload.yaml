@@ -9,6 +9,29 @@
 # controller/src/config/workloads.rs::WorkloadEntry.
 #
 # Each entry is one PromQL query class the demo will exercise.
+#
+# ── Operating-point assumptions for the bandwidth verdict ─────────
+#
+# Agents run at 10 Hz scrape (`EXPORTER_FREQ_HZ=10`, see
+# `deploy/docker-compose/base.yml` and `mvp-multi-stage.yml`); each
+# series therefore produces 600 samples per 60 s flush window. The
+# break-even against raw scrape depends on `samples_per_window`
+# (≈ `state_size_bytes / per_sample_raw_bytes`); at 600 samples the
+# four delta-capable families (DDSketch / HLL / CountSketch /
+# Count-Min) sit above or close to their break-even curves.
+#
+# The controller's plan emitter
+# (`controller/src/config/stage_config.rs::build_edge_processor_block`)
+# accordingly sets `delta_transmission: true` for those four families
+# in the wire YAML it pushes to each agent. KLL is the only family
+# without a delta variant (`Implementation.tex`: "KLL has no delta
+# variant and matches its full cost"), so its wire payload is always
+# full state — the controller does NOT emit `delta_transmission` for
+# KLL because the kllprocessor's `Config.Validate` rejects
+# `delta_transmission: true` outright.
+#
+# See `docs/mvp-demo-runbook.md` §"Bandwidth criterion ① — break-even
+# depends on samples_per_window" for the per-family table.
 
 # 1. WINDOW AGGREGATION PER SERIES — DDSketch family
 #    Inner: per-series quantile over a 1m sliding window.
