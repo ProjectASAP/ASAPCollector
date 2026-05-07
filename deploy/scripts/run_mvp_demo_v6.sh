@@ -292,10 +292,15 @@ capture_emitted_configs() {
     docker logs "$(cd "${COMPOSE_DIR}" && docker compose -f base.yml -f mvp-v6-multi-stage.yml ps -q controller 2>/dev/null | head -n1)" \
         2> "${cdir}/controller.stderr" \
         > "${cdir}/controller.stdout" || true
-    if grep -q "USE_TYPED_STAGE_SPLIT.*pushing typed" "${cdir}/controller.stderr" 2>/dev/null; then
+    # v6.1: Rust's tracing default writes to stdout, so the captured
+    # controller.stderr is often empty even when the typed-stage-split
+    # path fires. Grep both files so STATUS reflects the true state.
+    if grep -q "USE_TYPED_STAGE_SPLIT.*pushing typed" \
+            "${cdir}/controller.stdout" "${cdir}/controller.stderr" 2>/dev/null; then
         log "    controller logs show typed-stage-split push events — emitter LIVE"
         echo "live" > "${cdir}/STATUS"
-    elif grep -q "split_typed_three_stage returned None" "${cdir}/controller.stderr" 2>/dev/null; then
+    elif grep -q "split_typed_three_stage returned None" \
+            "${cdir}/controller.stdout" "${cdir}/controller.stderr" 2>/dev/null; then
         log "    [warn] controller's typed-stage-split returned None — falling back to placeholder"
         echo "fallback-placeholder" > "${cdir}/STATUS"
     else

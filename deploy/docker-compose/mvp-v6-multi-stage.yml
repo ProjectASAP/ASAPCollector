@@ -204,7 +204,7 @@ services:
       # actually pushes the emitted streaming-config JSON instead of
       # silently logging "no backend client configured". Required for
       # §8 STATUS=live in the v6.1 demo.
-      CONTROLLER_BACKEND_ENDPOINT: "${CONTROLLER_BACKEND_ENDPOINT:-http://backend:9091}"
+      CONTROLLER_BACKEND_ENDPOINT: "${CONTROLLER_BACKEND_ENDPOINT:-http://backend:9091/api/v1/streaming-config}"
     volumes:
       - ../configs/mvp-v6-workload.yaml:/etc/asap/mvp-v6-workload.yaml:ro
 
