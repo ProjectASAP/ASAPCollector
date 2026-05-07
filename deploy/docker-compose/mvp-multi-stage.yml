@@ -17,7 +17,7 @@
 #                        invoked with PROMETHEUS_BASELINE=1)
 #
 # Drives the controller-driven multi-stage demo for issue #46.
-# See docs/spec-mvp-controller-driven-multi-stage-demo.md.
+# See docs/mvp-demo-runbook.md.
 #
 # Compose stack:
 #   docker compose \

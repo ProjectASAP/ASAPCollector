@@ -5,9 +5,7 @@ The demo exercises the controller-planned, multi-stage,
 sketch + Gorilla-S3 pipeline against three canonical PromQL query classes
 and emits an `MVP_REPORT.md` with measured numbers per criterion.
 
-Architectural background lives in
-[`docs/spec-mvp-controller-driven-multi-stage-demo.md`](spec-mvp-controller-driven-multi-stage-demo.md);
-the comparison to Databricks Pantheon+Hydra is in
+The comparison to Databricks Pantheon+Hydra is in
 [`docs/comparison-asap-vs-databricks-pantheon-hydra.md`](comparison-asap-vs-databricks-pantheon-hydra.md).
 
 ## Current status
@@ -488,6 +486,38 @@ Plus an ad-hoc cold-fallback probe:
 Gorilla-archive engine on the ASAP side via dual-routing; on the
 baseline side it's just another query Prometheus answers.
 
+### Freshness probe protocol (criterion ⑥)
+
+Three synthetic counters (`http_freshness_probe_{raw,warm,archive}`)
+encode the Unix-epoch-ms emission timestamp as the cumulative
+counter value. Each is routed to a different serving tier so the
+demo measures Δ = (query response ts) − (sample emission ts) on
+the raw / warm / archive paths independently.
+
+Mechanic (assumes single-host clock sync):
+
+1. Fake-exporter emits the counter with cumulative value =
+   `now_ms` at each tick (default 1 Hz; `FRESHNESS_PROBE_HZ`).
+2. Replay client polls `last_over_time(http_freshness_probe_*[10s])`
+   every 100 ms.
+3. On first non-empty response: Δ = `poll_response_ts_ms − observed_value`.
+4. Repeat for ≥ 60 samples per path; report p50, p99, count.
+
+Pitfalls the demo guards against (each was a real failure mode in
+earlier iterations):
+
+- Probe routing must be tested explicitly for all three paths during
+  pre-flight — otherwise probes silently never reach Prometheus on
+  the raw path or never settle in the warm path.
+- Sketch window for the freshness probe metric pinned at ≤ 1 s.
+- Soak duration extended only as needed for the slowest path (the
+  archive path, since chunks aren't queryable until the per-window
+  flush lands in S3 — typically ≥ 60 s).
+
+The encoder offset bug documented in §7 is what currently puts ⑥
+on UNKNOWN; once the encoder writes the timestamp at the correct
+byte offset, the protocol above measures Δ end-to-end.
+
 ## 3. Compiling and building from source
 
 There are four build artifacts. Build them in this order — the backend
@@ -900,7 +930,6 @@ docker builder prune --all
 
 ## 10. Related runbooks and docs
 
-- `docs/spec-mvp-controller-driven-multi-stage-demo.md` — MVP demo spec
 - `docs/comparison-asap-vs-databricks-pantheon-hydra.md` — architectural framing
 - `docs/design-gorilla-s3-cold-engine.md` — cold-engine wire format + module layout
 - `docs/e2e-test-guide.md` — pytest-style smoke tests (smaller scope than the MVP demo)

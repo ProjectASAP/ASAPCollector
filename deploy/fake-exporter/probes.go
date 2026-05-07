@@ -3,8 +3,8 @@
 // most recent emission.
 //
 // See deploy/configs/mvp-v6-freshness-probes.yaml and
-// docs/spec-mvp-v6-controller-driven-multi-stage-demo.md §⑥
-// Freshness for the protocol.
+// docs/mvp-demo-runbook.md §"Freshness probe protocol (criterion ⑥)"
+// for the protocol.
 //
 // Mechanic:
 //
