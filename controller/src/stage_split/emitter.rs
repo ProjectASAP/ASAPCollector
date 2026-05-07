@@ -126,6 +126,36 @@ pub struct EdgeStageConfig {
     /// in); emitters produce the abstract `Self` and downstream code
     /// fills in `gateway:4317` / similar.
     pub exporter_target: ExportTarget,
+    /// Phase ε.1 — Mode 3 routing destinations, when one or more
+    /// `RawAtEdgePrometheusArchive` nodes coloured to this edge stage.
+    /// Each entry produces a separate `otlphttp/prometheus` exporter +
+    /// pipeline tagged `asap.mode=prometheus_archive` so the agent's
+    /// routing processor dispatches per-metric.
+    ///
+    /// Empty list = no Mode 3 metrics → no `otlphttp/prometheus`
+    /// exporter is emitted (the YAML is identical to Phase β).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prometheus_archive_metrics: Vec<PrometheusArchiveMetric>,
+}
+
+/// Phase ε.1 — one Mode-3 metric the agent forwards to Prometheus's
+/// native OTLP receiver. The agent's `routing` processor matches on
+/// `attributes["asap.mode"] == "prometheus_archive"` and dispatches to
+/// the `otlphttp/prometheus` exporter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrometheusArchiveMetric {
+    /// Metric name as it appears at the edge.
+    pub metric: String,
+    /// Optional window — informational; Prometheus stores raw samples
+    /// regardless. The L5 emitter uses this to pick a scrape interval
+    /// consistent with the planner's intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_secs: Option<u64>,
+    /// Resource-attribute label projection — labels Prometheus's
+    /// `otlp.promote_resource_attributes` will promote. Defaults to
+    /// `["service.name", "service.namespace", "service.instance.id"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub label_proj: Vec<String>,
 }
 
 /// One sketch processor configured at an edge agent.
@@ -195,6 +225,30 @@ pub struct BackendAggregation {
     /// per-aggregation `Sketch` instance (KLL with the right `k`,
     /// DDSketch with the right `alpha`, etc.).
     pub sketch_params: SketchParams,
+    /// Phase ε.1 — what shape the backend ingests for this
+    /// aggregation. Mode 1 (sketch at edge) / sketch_envelope is the
+    /// default (the wire payload is a sketch state already). Mode 2
+    /// (raw at edge → sketch at backend) sets this to `raw` so the
+    /// backend builds the sketch from raw OTLP samples at ingest. The
+    /// backend's `StreamingConfig` consumer interprets the field —
+    /// Phase ε.2 implements the raw-input ingest path.
+    #[serde(default)]
+    pub aggregation_input: AggregationInput,
+}
+
+/// Phase ε.1 — what wire shape the backend ingests for an aggregation.
+/// Determines whether the backend builds the sketch from raw samples
+/// (Mode 2) or accepts pre-built sketch state from upstream (Mode 1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregationInput {
+    /// Mode 1 — backend receives sketch state envelopes (gateway-merged
+    /// or direct from edge). The default for legacy plans.
+    #[default]
+    SketchEnvelope,
+    /// Mode 2 — backend receives raw OTLP samples and builds the sketch
+    /// at ingest. New in Phase ε.1; ingest path lands in Phase ε.2.
+    Raw,
 }
 
 /// One readout entry — what the backend's inference YAML asks for.
@@ -261,6 +315,7 @@ impl Emitter for ThreeStageEmitter {
             window_secs: None,
             sketch_processors: Vec::new(),
             exporter_target: ExportTarget::Stage(StageId::Gateway),
+            prometheus_archive_metrics: Vec::new(),
         };
         let mut backend_aggregations: Vec<BackendAggregation> = Vec::new();
         let mut gateway_processors: Vec<GatewayMergeProcessor> = Vec::new();
@@ -321,6 +376,8 @@ impl Emitter for ThreeStageEmitter {
                         aggregation_id,
                         sketch_kind: sketch_type.clone(),
                         sketch_params: params.clone(),
+                        // Mode 1 — sketch built at edge, ships envelope.
+                        aggregation_input: AggregationInput::SketchEnvelope,
                     });
                 }
                 // Gateway: SketchMerge over edge sketches → one merge
@@ -349,6 +406,44 @@ impl Emitter for ThreeStageEmitter {
                     readouts.push(BackendReadout {
                         aggregation_id: aid,
                         op: op.clone(),
+                    });
+                }
+                // ── Phase ε.1 Mode 3: edge raw → Prometheus OTLP receiver.
+                // Records a `PrometheusArchiveMetric` so the L5 emitter
+                // adds the `otlphttp/prometheus` exporter + routing
+                // pipeline. Backend gets a `prometheus_remote` storage
+                // routing target (no aggregation entry).
+                (
+                    SketchExpr::RawAtEdgePrometheusArchive {
+                        metric,
+                        window,
+                        label_proj,
+                    },
+                    StageId::Edge,
+                ) => {
+                    edge.prometheus_archive_metrics.push(PrometheusArchiveMetric {
+                        metric: metric.clone(),
+                        window_secs: window.map(|d| d.as_secs()),
+                        label_proj: label_proj.clone(),
+                    });
+                }
+                // ── Phase ε.1 Mode 2: edge raw → backend builds sketch.
+                // Edge-side: no sketch processor. Backend-side: a
+                // BackendAggregation with the family the backend will
+                // build at ingest. The aggregation_input=raw flag is
+                // emitted by `emit_backend_config_json`.
+                (
+                    SketchExpr::RawAtEdgeSketchAtBackend { family, params, .. },
+                    StageId::Edge,
+                ) => {
+                    let aid = format!("agg{next_agg_index}");
+                    next_agg_index += 1;
+                    backend_aggregations.push(BackendAggregation {
+                        aggregation_id: aid,
+                        sketch_kind: family.clone(),
+                        sketch_params: params.clone(),
+                        // Mode 2 — backend builds sketch from raw OTLP.
+                        aggregation_input: AggregationInput::Raw,
                     });
                 }
                 _ => {}

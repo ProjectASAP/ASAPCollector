@@ -549,6 +549,14 @@ fn collect_sketch_kinds(expr: &SketchExpr) -> Vec<SketchKind> {
                 walk(child, out);
             }
             SketchExpr::Logical(_) | SketchExpr::Ref { .. } => {}
+            // Phase ε.1 — the new placement variants don't carry a
+            // SketchAgg child the legacy walk recognises. Mode 2 records
+            // its own family directly; Mode 3 has no sketch at all.
+            SketchExpr::RawAtEdgeSketchAtBackend { family, child, .. } => {
+                out.push(family.clone());
+                walk(child, out);
+            }
+            SketchExpr::RawAtEdgePrometheusArchive { .. } => {}
         }
     }
     walk(expr, &mut out);
@@ -572,6 +580,13 @@ fn binding_is_archive(expr: &SketchExpr) -> bool {
             binding_is_archive(expr) || binding_is_archive(child)
         }
         SketchExpr::Ref { .. } => false,
+        // Phase ε.1 — Mode 3 routes to the prometheus_remote engine
+        // (its own engine ID), which the L5 emitter handles via
+        // emit_backend_storage_routing rather than the warm-vs-archive
+        // gate this helper guards. Treat as not-archive: this helper is
+        // about cold-tier scan-vs-warm-tier-sketch decisions, not Mode 3.
+        SketchExpr::RawAtEdgeSketchAtBackend { child, .. } => binding_is_archive(child),
+        SketchExpr::RawAtEdgePrometheusArchive { .. } => false,
     }
 }
 

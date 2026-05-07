@@ -1,0 +1,81 @@
+# Phase ε.1 — Prometheus configured as the Mode-3 archive engine.
+#
+# The ASAP controller routes low-sample-per-window / low-cardinality
+# metrics to "Mode 3 (RawAtEdgePrometheusArchive)" — the agent ships raw
+# OTLP samples directly to Prometheus's native OTLP receiver, and the
+# ASAPQuery backend HTTP-forwards Mode-3 PromQL queries to this
+# Prometheus instance via the `prometheus_remote` engine (Phase ε.2
+# wires the engine on the backend; Phase ε.1 commits the deploy-side
+# config).
+#
+# Activation
+# ----------
+# Prometheus 2.47+ exposes a native OTLP HTTP receiver at
+# `/api/v1/otlp/v1/metrics`. Activate with the CLI flag:
+#
+#     prometheus \
+#         --config.file=/etc/prometheus/prometheus-otlp-receiver.yml \
+#         --web.enable-otlp-receiver \
+#         --enable-feature=otlp-deltatocumulative
+#
+# The compose overlay `mvp-multi-stage.yml` (or a sibling
+# `mvp-prometheus-archive.yml`) must inject these flags on the
+# Prometheus service. Without `--web.enable-otlp-receiver`, OTLP
+# requests are rejected with 404 and the agent's `otlphttp/prometheus`
+# exporter spams retry warnings.
+#
+# `--enable-feature=otlp-deltatocumulative` converts OTel delta-encoded
+# counters / sums (the SDK default) to Prometheus's cumulative model on
+# the receive path. Without it, agents must run an opentelemetry-
+# collector `cumulativetodelta` processor before exporting — extra
+# moving part the architecture deliberately avoids.
+#
+# Edge agent side
+# ---------------
+# The agent's emitted YAML (`controller::config::stage_config::emit_edge_yaml`
+# with `prometheus_archive_metrics` populated) carries an
+# `otlphttp/prometheus` exporter pointing at the path below. The default
+# host:port is `prometheus:9090`; the `${ASAP_PROMETHEUS_OTLP_URL}`
+# env var lets the deploy team redirect to an alternate Prometheus /
+# Mimir / Cortex receiver without editing the emitted YAML.
+#
+# Backend side
+# ------------
+# The controller emits a `BackendStorageRouting` JSON (via
+# `emit_backend_storage_routing_with_prometheus`) that adds a
+# `prometheus_remote` engine row for every Mode-3 metric. Phase ε.2
+# implements the engine: an HTTP forwarder that proxies queries to
+# `${ASAP_PROMETHEUS_QUERY_URL:-http://prometheus:9090}/api/v1/query`.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+storage:
+  tsdb:
+    # OTel SDKs may push samples with monotonically-non-increasing
+    # timestamps after a network blip / agent restart; Prometheus's
+    # default OOO window is 0 (rejects non-monotone). 30 m matches the
+    # `mvp-thanos-archive.yml` overlay's existing OOO config — we want
+    # the same tolerance for Mode-3 ingest as we do for warm-tier
+    # backfills.
+    out_of_order_time_window: 30m
+
+otlp:
+  # Resource attributes the OTLP ingest path promotes to Prometheus
+  # labels. The defaults match the OTel resource semantic conventions —
+  # `service.name` becomes `service_name`, etc. (Prometheus rewrites
+  # `.` → `_` per the `target_info` model). Adding `k8s.cluster.name` /
+  # `k8s.namespace.name` here makes per-cluster / per-namespace labels
+  # available to the `prometheus_remote` engine's PromQL queries.
+  promote_resource_attributes:
+    - service.instance.id
+    - service.name
+    - service.namespace
+    - k8s.cluster.name
+    - k8s.namespace.name
+
+# No `scrape_configs:` — Phase ε.1 uses Prometheus only as a push-mode
+# OTLP receiver. If the deploy team also wants Prometheus to scrape its
+# own `/metrics` for self-telemetry, add a scrape job here with the
+# usual `job_name: prometheus` shape.
