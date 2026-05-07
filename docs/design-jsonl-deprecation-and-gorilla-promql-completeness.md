@@ -1,124 +1,79 @@
-# JSONL deprecation + always-archive Gorilla-S3 + PromQL-complete query engine
+# Archive-tier consolidation: delete JSONL cold-fallback + PromQL completeness on `GorillaQueryEngine`
 
 ## Status
 
-Design proposal. 2026-05-06.
+Active. 2026-05-07. Two outstanding work items targeted at the Gorilla
+archive tier:
 
-Not yet scheduled. Targets a single combined work track rather than three
-loose follow-ups; Implementation phase 3 (PromQL completeness) is the
-multi-week piece — phase 1 + 2 alone are days, not weeks.
+1. **Delete the JSONL cold-fallback path.** It is now unreachable under
+   normal flow because dual-routing (`BackendStorageRouting`) routes every
+   metric to either the warm tier or the Gorilla archive based on query
+   shape. JSONL is dead code waiting to be removed.
+2. **Make `GorillaQueryEngine` PromQL-complete.** Today's engine handles
+   a curated subset; reviewers asking "is this an exact-PromQL backend"
+   will push back unless the subset is widened or the engine vendors a
+   reference implementation.
+
+## What's already on main
+
+The earlier version of this doc proposed three phases. Two of them have
+effectively shipped via different mechanisms; only the third remains as
+substantial open work:
+
+| Originally proposed | What actually shipped |
+|---|---|
+| **Phase 1: always-archive every metric at the gateway.** Pitched as a config knob (`archive_all: true`) flipped on per region. | Multi-target `BackendStorageRouting` (PR #91): a single metric routes to BOTH `sketch_warm_tier` AND `gorilla_s3_archive` based on the query shape. Effectively "always-archive" for any metric configured with the archive target. |
+| **Phase 2: delete the JSONL path.** Small follow-on once Phase 1 was on. | Not yet done; carried forward as **§"Delete JSONL"** below. |
+| **Phase 3: PromQL completeness on `GorillaQueryEngine`.** Three sub-paths (vendor `prometheus/promql`, pure-Rust evaluator, curated subset). | Not yet done; the curated subset has expanded slightly — postings filtering (PR #295), partial S3 reads via `byte_offset`/`byte_length` (PR #295), `gorilla-compactor` concat-only block consolidation (PR #295), freshness pattern registration (PR #91). The full PromQL surface is still future work. |
+
+The architectural validation has been published on issue #46 across
+multiple iterations; the current verdict and known gaps are summarised
+in `docs/mvp-demo-runbook.md`.
 
 ## Goal
 
-Collapse ASAP's three-tier serving stack from
-`{warm sketch | exact archive | cold-fallback raw JSONL}` down to
-`{warm sketch | exact archive}`, where the exact archive tier is a
-PromQL-complete query engine over Gorilla-XOR chunks on S3 that subsumes
-the role JSONL plays today.
+Two outstanding items, in order:
 
-## Non-goals
+### 1. Delete the JSONL cold-fallback path
 
-- Replacing the warm sketch tier or its `(ε, δ, kind)` accuracy contract.
-- Changing the agent → backend wire format. Sketch envelopes remain the
-  bandwidth-efficient hot path; this work only changes what the *cold*
-  half of the stack looks like.
-- Federation across regions. Out of scope here; tracked separately.
+The `LocalFsColdStore` impl, the `cold_store::format::parse_jsonl`
+reader, the gateway-side raw-tee exporter, the
+`StorageBackend::ColdJsonlFallback` enum variant, and the
+`cold-tier scan bytes` line item in `cost_model` are all reachable by
+dead code. Under the current routing scheme (every metric in
+`backend-storage-routing.yaml` is mapped to either warm or archive), no
+query path ever hits the JSONL reader unless configured deliberately.
+Deleting it:
 
-## Motivation
+- collapses 3-tier framing to 2-tier in design + paper prose
+- removes ~500 LOC of JSONL parsing + tolerance-of-torn-trailing-line
+  + pin-tests-guarding-the-tolerance
+- removes the gateway raw-tee exporter from the OTel collector patch set
+- shrinks the `cost_model`'s axis count by 1
 
-The current cold-fallback tier is a raw-JSONL store written by a
-gateway-side raw-tee exporter. It exists for the genuine surprise case —
-a query the controller didn't predict and the archive isn't configured to
-hold. In practice it has three problems:
+The risk is that a metric *not in the routing table* would have nothing
+to fall through to. Mitigations:
 
-1. **Uncompressed.** JSONL is roughly 5–10× the on-disk size of the same
-   data encoded as Gorilla XOR chunks. We pay for a third copy of every
-   metric we already keep elsewhere.
-2. **Functional duplicate.** The Gorilla-S3 archive tier serves the same
-   role — exact retention queryable on demand — for metrics the controller
-   has flagged. Two paths, one purpose.
-3. **Per-metric opt-in.** Today the archive is opt-in (controller flips
-   `StorageBackend::GorillaS3` on a metric); the JSONL fallback is the
-   universal default. If we want one tier instead of two, that tier must
-   be the universal default.
+- Add a unit test that fails compilation if any controller-emitted plan
+  produces a metric without a routing-table entry
+- The `EngineRouter` returns a clear error ("no engine configured for
+  metric X") rather than silently dropping; this becomes a
+  deployment-validation step, not a runtime-behavior change
 
-Databricks' Hydra (see `docs/comparison-asap-vs-databricks-pantheon-hydra.md`)
-is a useful reference: they always-stream every raw metric to a lakehouse
-on object storage, regardless of any aggregation rule decisions. The
-"always-archive" pattern decouples surprise-query coverage from the
-archive-opt-in plan.
+### 2. PromQL completeness on `GorillaQueryEngine`
 
-## Proposal
-
-Three phases, sequential. Each ships independently with its own PR.
-
-### Phase 1 — always-archive at the gateway
-
-Make every metric land in Gorilla-S3 by default, regardless of the
-controller's plan.
-
-**What changes:**
-- A new gateway-side processor (or extension of the existing
-  `gorillas3processor`) writes every scalar metric to S3 as Gorilla chunks,
-  not just metrics flagged with `StorageBackend::GorillaS3`.
-- The `drop_original` knob remains, but its semantics change: when set, the
-  metric is dropped from the OTLP forward path but still written to the
-  archive. When unset, it goes to *both* the OTLP forward path and the
-  archive (double-write — already a first-class mode in `Design.tex`).
-- The controller plan can still mark a metric `SketchWarmTier` (do not
-  archive — for transient or sensitive metrics where lossless retention
-  is undesirable) as an explicit override, but this becomes the exception
-  rather than the rule.
-
-**Why this is small:** the `gorillas3processor` already exists and is
-exercised by `b6-gorilla-s3` overlays. The change is broadening which
-metrics enter the processor, plus a config knob.
-
-**Estimated cost:** 1–2 days. One small PR in ASAPCollector.
-
-### Phase 2 — delete the JSONL path
-
-Once Phase 1 is in production, the JSONL path becomes unused for any
-metric written through the new gateway. We can then delete it cleanly.
-
-**What gets deleted:**
-- `asap-query-engine/src/drivers/query/fallback/cold_store/local_fs.rs`
-  (the `LocalFsColdStore` impl)
-- `asap-query-engine/src/drivers/query/fallback/cold_store/format.rs`
-  (`parse_jsonl` + the torn-trailing-line tolerance + the pin tests
-  guarding it)
-- The gateway raw-tee exporter (`opentelemetry-collector-contrib-patch/exporter/coldstoreexporter` if present;
-  audit before deletion)
-- `Design.tex` §"Cold-fallback tier" — replaced by a single "exact archive
-  tier" subsection
-- `Implementation.tex` §Backend query engine cold-fallback prose
-- The `cold-tier scan bytes` line item in `cost_model`
-- The `StorageBackend::ColdJsonlFallback` enum variant
-
-**What we keep as a graceful-degradation fallback:**
-- `capability_matching` should still produce a sensible error when both
-  the warm tier and the archive can't answer (e.g., a query against a
-  metric that explicitly opted out of archiving). The error should be
-  loud, not a silent fall-through to a removed path.
-
-**Estimated cost:** 1–2 days. Small PRs in ASAPQuery-backend (delete
-code, update tests, update docs) and ASAPCollector (delete exporter,
-update overlays).
-
-### Phase 3 — PromQL completeness on `GorillaQueryEngine`
-
-Today's engine handles a curated subset:
+Today's engine handles:
 - Streaming-additive: `sum / count / avg / min / max / rate / increase`
 - Buffered: `quantile_over_time / topk`
 
-For the archive tier to truly subsume JSONL, the engine must cover the
-full PromQL surface: anything Prometheus or VictoriaMetrics can answer,
-the engine should answer too. Concretely the missing pieces include:
+For the archive tier to be a full replacement for "raw on a real TSDB",
+the engine must cover everything Prometheus or VictoriaMetrics covers:
 - `histogram_quantile`
 - Range-vector functions: `delta / deriv / predict_linear / holt_winters /
   idelta / irate / resets / changes`
-- Aggregations with `by / without`: `group / stddev / stdvar / count_values
-  / bottomk` (and the existing aggregations grouped, not just whole-set)
+- Aggregations with `by / without`: `group / stddev / stdvar /
+  count_values / bottomk` (and the existing aggregations grouped, not
+  just whole-set)
 - Vector matching: `or / and / unless` with `on / ignoring`,
   `group_left / group_right`
 - Scalar/vector coercions: `absent / scalar / vector`
@@ -126,8 +81,7 @@ the engine should answer too. Concretely the missing pieces include:
 - Subquery expansion: `rate(x[5m])[1h:1m]` syntax
 - Lookback-delta semantics matching Prometheus exactly
 
-This is **a lot**. Three implementation paths, with different cost
-profiles:
+Three implementation paths:
 
 #### Path A — vendor Prometheus' `promql` package (recommended)
 
@@ -135,27 +89,27 @@ Run a Go sidecar exposing Prometheus' `promql` package as the evaluator;
 expose Gorilla-decoded chunks to it via a custom `storage.Queryable`
 implementation that decodes chunks from S3 on demand.
 
-- **Cost:** medium. ~2 weeks: the sidecar wrapper, a Rust ↔ Go RPC
-  surface, the `Queryable` adapter, integration tests against
-  Prometheus' `promql_test` suite.
-- **Pro:** correctness by construction — Prometheus' parser+evaluator is
+- **Cost**: medium. ~2 weeks: the sidecar wrapper, a Rust ↔ Go RPC
+  surface (or have the sidecar talk to S3 directly), the `Queryable`
+  adapter, integration tests against Prometheus' `promql_test` suite.
+- **Pro**: correctness by construction — Prometheus' parser+evaluator is
   the reference implementation. PromQL semantics quirks (lookback-delta,
   subquery expansion, vector matching) come for free.
-- **Pro:** changes to the Prometheus query engine (new functions,
-  performance fixes) flow in by version-bumping the dependency.
-- **Con:** adds a Go process to the Rust backend deployment. Operational
-  surface widens.
+- **Pro**: changes to the Prometheus query engine flow in by
+  version-bumping the dependency.
+- **Con**: adds a Go process to the Rust backend deployment.
+  Operational surface widens.
 
 #### Path B — pure-Rust evaluator over [`promql-parser`](https://crates.io/crates/promql-parser)
 
 Use the existing Rust `promql-parser` crate for the AST; write the
 evaluator in Rust, calling into `asap-gorilla` for chunk decoding.
 
-- **Cost:** high. ~4–6 weeks: the evaluator is the bulk of Prometheus'
+- **Cost**: high. ~4–6 weeks: the evaluator is the bulk of Prometheus'
   ~12k LOC, with quirks. Need to match Prometheus' lookback-delta and
   subquery semantics exactly to avoid silent wrong answers.
-- **Pro:** all-Rust deployment.
-- **Con:** correctness risk. Silent semantic divergence from Prometheus
+- **Pro**: all-Rust deployment.
+- **Con**: correctness risk. Silent semantic divergence from Prometheus
   is the failure mode reviewers care about most; we'd need a thorough
   cross-implementation test corpus to claim parity.
 
@@ -167,130 +121,161 @@ most common range-vector functions; document the unsupported surface
 explicitly and have `capability_matching` return a clear error for
 queries outside it.
 
-- **Cost:** low. ~1 week.
-- **Pro:** ships fast; matches the engine's actual usage today, since
-  warm-tier handles most queries.
-- **Con:** "exact PromQL on the archive tier" becomes "exact PromQL for a
-  subset of queries on the archive tier"; reviewers may push back.
+- **Cost**: low. ~1 week.
+- **Pro**: ships fast; matches the engine's actual usage today, since
+  the warm tier handles most queries.
+- **Con**: "exact PromQL on the archive tier" becomes "exact PromQL for
+  a subset of queries on the archive tier"; reviewers may push back.
 
-**Recommendation:** **Path A**. The cost of silent wrong answers from a
+**Recommendation: Path A.** The cost of silent wrong answers from a
 homegrown PromQL evaluator is high; vendoring the reference
 implementation is the only way to claim parity defensibly. The Go
 sidecar adds operational surface but is a known pattern (Thanos itself
 embeds Prometheus' query engine). If the deadline forces a short-term
-ship, Path C unblocks Phase 1 + 2 deletion while Path A lands as a
+ship, Path C unblocks JSONL deletion + paper framing; Path A lands as a
 follow-up — but the paper should say so honestly.
 
-**Estimated cost:** 1–2 weeks (Path A); 1 week (Path C as bridge).
+If we adopt Path A, an interesting bonus: ASAP's archive layout could
+be made compatible with the **Prometheus block format**, which would
+let Thanos' `store gateway` query the archive directly. See the
+"Prometheus-block layout" discussion in
+`docs/comparison-asap-vs-databricks-pantheon-hydra.md` for that
+direction.
+
+## Non-goals
+
+- Replacing the warm sketch tier or its `(ε, δ, kind)` accuracy
+  contract.
+- Changing the agent → backend wire format. Sketch envelopes remain the
+  bandwidth-efficient hot path.
+- Federation across regions. Tracked separately.
+- Compaction beyond what already shipped. The current
+  `gorilla-compactor` (PR #295) is concat-only — byte-concatenates
+  source chunks into one merged S3 object, rewrites the chunk manifest
+  with `byte_offset` + `byte_length`. Future-work decode + re-encode
+  for the additional 10–30% Gorilla compression is noted but not
+  proposed here.
 
 ## Storage layout (no change)
 
-Phase 1's broadening doesn't change the chunk format. Existing layout in
-`Design.tex` §"Storage tiers — Gorilla archive tier" stands:
+Gorilla archive blocks already live at:
 
 ```
 <tenant>/<metric>/YYYY/MM/DD/HH/part-NNNNNN.gor
 <tenant>/<metric>/YYYY/MM/DD/HH/index.json
+<tenant>/<metric>/YYYY/MM/DD/HH/postings-v1.json   # added by PR #295
 ```
 
-`index.json` is best-effort pruning; chunks are self-describing
-(magic + schema_version + encoder_version + flags + time bounds + sample
-count + payload length + header CRC32C + UTF-8 metric name + sorted-JSON
-labelset + Gorilla body + payload CRC32C).
+Chunks are self-describing (magic + schema_version + encoder_version +
+flags + time bounds + sample count + payload length + header CRC32C +
+UTF-8 metric name + sorted-JSON labelset + Gorilla body + payload
+CRC32C). `index.json` chunk manifest carries `byte_offset` +
+`byte_length` per chunk so the engine can issue `Range: bytes=` partial
+reads.
 
-## Wire format (no change)
+Path A would either:
+- Have the Go sidecar read the same Gorilla layout (via a shared
+  decoder), or
+- Promote the layout to Prometheus-block-compatible (chunks file +
+  Prometheus index file + meta.json) so off-the-shelf Thanos can read
+  it.
 
-The agent → backend wire stays modified-OTLP with delta-of-sketch
-envelopes. The change is gateway → S3 (broadened), not source → backend.
+The second option is more work but simplifies the integration story
+substantially — the sidecar becomes "Thanos store gateway pointing at
+our blocks" rather than "custom adapter".
 
 ## `cost_model` update
 
-The Layer-4 cost model already has line items for warm sketch state RAM,
-Gorilla S3 PUT/GET counts, edge CPU, and bandwidth on each cut edge. The
-"cold-tier scan bytes" line item is removed; queries that miss the warm
-tier are evaluated through the archive engine, so the cost model unifies
-to "warm sketch share + Gorilla scan share".
+The Layer-4 cost model already costs warm sketch state RAM, Gorilla S3
+PUT/GET counts, edge CPU, and bandwidth on each cut edge. After
+§"Delete JSONL" the `cold-tier scan bytes` line item is removed;
+queries that miss the warm tier are evaluated through the archive
+engine. The cost model unifies to "warm sketch share + Gorilla scan
+share".
 
-## Migration path
+## Migration
 
-1. Phase 1 ships behind a config flag (`gorillas3processor: { archive_all: true }`)
-   defaulting to `false`. Operators flip it on for a region, observe.
-2. After verification, default flips to `true`. JSONL exporter still
-   running but its output is increasingly unused.
-3. Phase 2 ships: JSONL exporter removed from the gateway, JSONL reader
-   removed from the backend, `StorageBackend::ColdJsonlFallback` enum
-   variant removed, capability_matching tightened.
-4. Phase 3 ships: `GorillaQueryEngine` becomes PromQL-complete.
-
-A rollback escape exists at every step: Phase 1 is a config flip; Phase 2
-is a code revert (the patch lives in git history); Phase 3 is additive
-(extending coverage doesn't break existing queries).
+JSONL deletion is mechanical; no migration. The Path A integration is
+additive — the curated-subset engine continues to serve queries it
+knows about, and Path A's Go sidecar handles the rest. If the sidecar
+is unreachable (deploy failure), the engine returns a clear error and
+queries fail loudly rather than silently.
 
 ## Paper impact
 
-`Design.tex`, `Implementation.tex`, `Evaluation.tex`,
-`abstract.tex`, `Introduction.tex`:
-- Replace "three-tier" framing with "two-tier" everywhere: warm sketch +
-  exact archive.
-- Drop the "no data cliff via JSONL" prose; replace with "the archive tier
-  is the universal fallback — surprise queries get an exact answer in
-  bounded time rather than a JSONL scan".
-- §RelatedWork: lean into the Hydra-style always-archive parallel; cite the
-  comparison doc.
+`Design.tex`, `Implementation.tex`, `Evaluation.tex`, `abstract.tex`,
+`Introduction.tex`:
+- Replace 3-tier framing with 2-tier everywhere: warm sketch + exact
+  archive.
+- Drop the "no data cliff via JSONL" prose; the dual-routing setup
+  ensures every metric has a routable answer in bounded time.
+- §RelatedWork: lean into the Hydra-style always-streaming parallel
+  (already in `docs/comparison-asap-vs-databricks-pantheon-hydra.md`)
+  and add a "ASAP archive-tier blocks could be Prometheus-block-format
+  for off-the-shelf Thanos compatibility" line.
 
-`design-gorilla-s3-cold-engine.md`:
+`docs/design-gorilla-s3-cold-engine.md`:
 - Update §"e2e architecture" diagram to reflect the two-tier shape.
-- Add a §"PromQL completeness" section pointing to this doc.
 
-`docs/comparison-asap-vs-databricks-pantheon-hydra.md`:
-- The "Open question — cold-fallback JSONL deprecation" section in that
-  doc is satisfied by this doc; cross-link.
+`docs/mvp-demo-runbook.md`:
+- §"Out of scope for the demo" — drop the JSONL line once §"Delete
+  JSONL" lands.
 
 ## Open questions
 
 1. **Tenant isolation.** S3 per-tenant prefix or per-tenant bucket? The
    current `<tenant>/<metric>/…` layout assumes prefix isolation; for
-   strong tenant isolation we may need per-tenant buckets, which changes
-   the controller's plan-target signalling.
-2. **Sensitive-metric exemption.** Some metrics (e.g., user-PII counters)
-   should never land in the archive at all. The controller plan already
-   has a `SketchWarmTier`-only mode; we need to surface this clearly to
-   the Phase 1 broadcaster.
+   strong tenant isolation we may need per-tenant buckets, which
+   changes the controller's plan-target signalling.
+2. **Sensitive-metric exemption.** Some metrics (e.g.\ user-PII counters)
+   should never land in the archive at all. The
+   `BackendStorageRouting` table can express "warm-only" via
+   single-target — verify this is surfaced clearly to the controller
+   plan emitter.
 3. **Long-range query cost on the archive.** A 30-day range query
    without warm-tier coverage means decoding 30 days of chunks. The
-   chunk-LRU cache helps for hot queries; cold queries still scan. Worth
-   characterising before claiming "exact PromQL on demand" in the paper.
+   chunk-LRU cache helps for hot queries; cold queries still scan.
+   Worth characterising before claiming "exact PromQL on demand" in
+   the paper.
 4. **Backend image swap (Path A).** If we vendor Prometheus' `promql`,
-   the `precompute_engine` Docker image gains a Go process. Operators
-   running the existing image need an upgrade path. Probably worth a
-   companion image
+   the deployment gains a Go process. Operators running the existing
+   image need an upgrade path. A companion image
    `asap/query-backend-with-promql:dev` alongside the existing
    `asap/query-backend:dev` for staged rollout.
 
 ## Sequencing relative to the paper deadline
 
-For the paper deadline (VLDB / SIGMOD), the plausible scope is:
-- **Ship Phase 1 + Phase 2 as combined PR** (~2–3 days). Paper drops
-  the cold-fallback tier description entirely. Cost model simplifies.
-- **Phase 3 lands as Path C** (curated subset extension, ~1 week) so the
-  paper can claim "exact PromQL on the archive tier for the queries we
-  exercise" honestly, with a "future work: Path A integration with
-  Prometheus' query engine" note.
-- **Path A as post-deadline follow-up.** Two weeks of engineering;
+Realistic scope:
+
+- **Ship §"Delete JSONL"** (~1-2 days). Paper drops the cold-fallback
+  tier description entirely. Cost model simplifies. The architecture
+  diagram in §Design becomes 2 tiers.
+- **Path C** (~1 week) — extend the curated subset for the queries
+  exercised by the demo + the queries the paper explicitly cites.
+  Document the unsupported surface in a "future work" note.
+- **Path A as post-deadline follow-up.** ~2 weeks of engineering;
   reviewers who push back on Path C get the answer "we have a working
   Path C today and Path A in flight, here's the design doc".
+
+If timeline allows, **Path A directly** is the cleanest end-state — the
+paper's archive-tier claim can then say "exact PromQL via Prometheus'
+reference query engine over Gorilla-XOR chunks on object storage,
+analogous to Thanos store gateway over their block format."
 
 ## References
 
 - Comparison doc: `docs/comparison-asap-vs-databricks-pantheon-hydra.md`
 - Original Gorilla-S3 design: `docs/design-gorilla-s3-cold-engine.md`
+- MVP demo runbook: `docs/mvp-demo-runbook.md`
 - Paper §Design tier description:
   `Super_resolution_ingestion_with_sketching_VLDB_or_SIGMOD/Design.tex`
 - Prometheus `promql` package:
   https://github.com/prometheus/prometheus/tree/main/promql
-- VictoriaMetrics `metricsql` parser:
+- VictoriaMetrics `metricsql`:
   https://github.com/VictoriaMetrics/metricsql
 - Rust `promql-parser`:
   https://crates.io/crates/promql-parser
+- Thanos store gateway:
+  https://thanos.io/tip/components/store.md/
 - Databricks Hydra blog:
   https://www.databricks.com/blog/10-trillion-samples-day-scaling-beyond-traditional-monitoring-infra-databricks
