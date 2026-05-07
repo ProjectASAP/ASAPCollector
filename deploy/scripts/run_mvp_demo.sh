@@ -99,7 +99,13 @@ set -euo pipefail
 STACK_SETTLE_S="${STACK_SETTLE_S:-60}"
 AGENT_WARMUP_S="${AGENT_WARMUP_S:-60}"
 QUERY_WARMUP_S="${QUERY_WARMUP_S:-30}"
-SOAK_S="${SOAK_S:-60}"
+# SOAK_S bumped from 60s to 300s so thanos-compact has ≥2 TSDB blocks per
+# (metric, group) to actually merge. At 60s × 10 Hz × 1000 series/agent the
+# block count was right at the boundary; thanos-compact needs adjacent blocks
+# to demonstrate compaction effects in §6 of the report.
+SOAK_S="${SOAK_S:-300}"
+# FRESHNESS_DURATION_S stays at 60s — the freshness probe poll loop only needs
+# enough samples for a meaningful p50/p99, not a long bucket warmup.
 FRESHNESS_DURATION_S="${FRESHNESS_DURATION_S:-60}"
 QPS="${QPS:-5}"
 PER_AGENT_CARDINALITY="${PER_AGENT_CARDINALITY:-500}"
@@ -148,10 +154,14 @@ THANOS_SECRET_KEY="${THANOS_SECRET_KEY:-asap-local-only}"
 # `docker exec` instead.
 THANOS_COMPACT_HEALTH_PATH="${THANOS_COMPACT_HEALTH_PATH:-/-/healthy}"
 # How long Phase 7 waits for at least one compaction iteration before
-# giving up and recording a soft warning. Default 90s — thanos-compact
-# scans the bucket once at startup and again on its sync interval, so
-# 60-90s is enough for the first sweep to land on an empty/small bucket.
-THANOS_COMPACT_WAIT_S="${THANOS_COMPACT_WAIT_S:-90}"
+# giving up and recording a soft warning. Bumped from 90s to 300s —
+# thanos-compact does an initial bucket scan + a default 5-minute sync
+# interval before the first compaction sweep, so 90s undershoots on a
+# fresh empty bucket. 300s gives the first sweep enough headroom to
+# produce a non-zero `thanos_compact_iterations_total` increment that
+# §6 of the report consumes; bump higher (300-600s) if running on a
+# very small bucket where compaction has nothing to do yet.
+THANOS_COMPACT_WAIT_S="${THANOS_COMPACT_WAIT_S:-300}"
 
 # CLI knob — selects which pipeline(s) run.
 MODE="${MODE:-both}"
