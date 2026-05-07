@@ -2,41 +2,22 @@
 """mvp_report.py — MVP demo report generator.
 
 Renders one Markdown report from the artefacts captured by
-`run_mvp_demo.sh` against the controller-driven multi-stage topology.
+`run_mvp_demo.sh`. Supports two layouts:
 
-Highlights:
+  * **Dual-mode (preferred for issue #46 verdict matrix):** the
+    results dir contains both `baseline/` and `asap/` subdirectories
+    (`run_mvp_demo.sh --mode both`). The report renders side-by-side
+    rows for each criterion + a reduction column (X/Y/Z numbers per
+    the runbook table).
 
-  * **Single run, multi-stage topology.** One controller-driven cell.
-    The B0 baseline number for criterion ① is read out of the same
-    run's Prometheus B0 snapshot when the b0 profile was active,
-    otherwise the cell shows "—" and the criterion gets verdict
-    UNKNOWN.
+  * **Single-mode (back-compat):** the results dir contains a single
+    pipeline's artefacts at the top level (legacy layout) OR exactly
+    one of `baseline/` / `asap/` is populated. The report degrades
+    gracefully to the original single-pipeline rendering.
 
-  * **Six criteria with per-class breakdown.** §2's verdict rows
-    cover bandwidth / latency / combined-resource / accuracy /
-    cold-fallback / freshness. §3 breaks each query class out
-    separately so the reader sees which sketch+stage the controller
-    chose for window / label / combined.
+In both layouts the per-pipeline subdir shape is:
 
-  * **Stage table is per-stage TOTAL only.** Rows: agent / gateway /
-    backend-ingest / backend-storage / backend-query, one each.
-
-  * **Per-edge bandwidth from `per_edge_bandwidth.csv`.** §1's
-    bandwidth column reads the per-edge probe's mean bytes/s rather
-    than docker stats' all-container-rolled-up netio.
-
-  * **Postings + compaction + S3-cost sections degrade gracefully.**
-    If the backend image lacks the postings_filtered_series_count
-    fields or the /internal/s3_cost.csv endpoint, those sections
-    render with a clear "merge-pending" marker rather than missing
-    data.
-
-Pure stdlib. Idempotent — re-running over the same CSVs reproduces
-the same MD.
-
-Input layout:
-
-    <results_dir>/
+    <pipeline-dir>/
         controller-emitted-configs/{STATUS,agent.bootstrap.yaml,...}
         measurements/{stages.csv, per_edge_bandwidth.csv,
                        replay.jsonl, accuracy.csv, s3_cost.csv}
@@ -46,9 +27,10 @@ Input layout:
         compactor/{dry_run.json, live_run.json,
                     before.minio.jsonl, after.minio.jsonl, SKIPPED?}
 
-Output:
+Pure stdlib. Idempotent — re-running over the same CSVs reproduces
+the same MD.
 
-    <results_dir>/MVP_REPORT.md
+Output: `<results_dir>/MVP_REPORT.md`.
 """
 from __future__ import annotations
 
@@ -142,6 +124,56 @@ def _read_jsonl(path: str) -> list[dict]:
     return out
 
 
+def _fmt_num(v: float, fmt: str, missing: str = "—") -> str:
+    if _is_nan(v):
+        return missing
+    return fmt.format(v)
+
+
+def _reduction_pct(baseline: float, target: float) -> float:
+    """Return (baseline - target) / baseline as a fraction.
+
+    Sign convention: positive = target REDUCES the metric vs. baseline
+    (lower is better, e.g. bandwidth, latency, resource). NaN if
+    baseline missing or zero.
+    """
+    if _is_nan(baseline) or _is_nan(target) or baseline == 0:
+        return float("nan")
+    return (baseline - target) / baseline
+
+
+# ── per-pipeline data bag ───────────────────────────────────────
+
+
+class PipelineData:
+    """All the artefacts loaded for a single pipeline run.
+
+    Constructed once per pipeline (baseline + asap) in dual-mode and
+    once in single-mode. Keeps the renderers free of file-system
+    accesses.
+    """
+
+    def __init__(self, root: str, label: str):
+        self.label = label
+        self.root = root
+        self.measurements_dir = os.path.join(root, "measurements")
+        self.fresh_dir = os.path.join(root, "freshness")
+        self.adhoc_dir = os.path.join(root, "ad-hoc")
+        self.compactor_dir = os.path.join(root, "compactor")
+        self.emitted_dir = os.path.join(root, "controller-emitted-configs")
+
+        self.stages_rows = _read_csv(os.path.join(self.measurements_dir, "stages.csv"))
+        self.edge_rows = _read_csv(os.path.join(self.measurements_dir, "per_edge_bandwidth.csv"))
+        self.accuracy_rows = _read_csv(os.path.join(self.measurements_dir, "accuracy.csv"))
+        self.replay_rows = _read_jsonl(os.path.join(self.measurements_dir, "replay.jsonl"))
+        self.emitted_status = _read_text(os.path.join(self.emitted_dir, "STATUS")).strip() or "unknown"
+
+    @property
+    def is_populated(self) -> bool:
+        """True if there's any per-pipeline data on disk."""
+        return any((self.stages_rows, self.edge_rows, self.replay_rows))
+
+
 # ── §1 stage-separated resource table ────────────────────────────
 
 
@@ -195,19 +227,80 @@ def render_section_1_stage_table(stages_rows: list[dict]) -> list[str]:
     md.append("|---|---|---|---|---|---|")
     for stage in STAGE_ORDER:
         d = aggs.get(stage, {})
-
-        def fmt(key: str, fmt_str: str) -> str:
-            v = d.get(key, float("nan"))
-            return fmt_str.format(v) if not _is_nan(v) else "—"
-
         md.append(
             "| {stage} | {cpu} | {rss} | {nin} | {nout} | {disk} |".format(
                 stage=stage,
-                cpu=fmt("cpu_cores", "{:.3f}"),
-                rss=fmt("rss_mib", "{:.1f}"),
-                nin=fmt("net_in_kibps", "{:.1f}"),
-                nout=fmt("net_out_kibps", "{:.1f}"),
-                disk=fmt("disk_mib", "{:.1f}"),
+                cpu=_fmt_num(d.get("cpu_cores", float("nan")), "{:.3f}"),
+                rss=_fmt_num(d.get("rss_mib", float("nan")), "{:.1f}"),
+                nin=_fmt_num(d.get("net_in_kibps", float("nan")), "{:.1f}"),
+                nout=_fmt_num(d.get("net_out_kibps", float("nan")), "{:.1f}"),
+                disk=_fmt_num(d.get("disk_mib", float("nan")), "{:.1f}"),
+            )
+        )
+    md.append("")
+    return md
+
+
+def render_section_1_stage_table_dual(
+    base: PipelineData,
+    asap: PipelineData,
+) -> list[str]:
+    """Dual-mode §1: TWO rows per stage (baseline / asap) + reduction."""
+    md: list[str] = []
+    md.append("## §1 Stage-separated resource table (baseline vs ASAP)")
+    md.append("")
+    md.append(
+        "Per-stage TOTAL across all containers in that stage, side-by-"
+        "side for baseline (OTel→Prometheus) vs ASAP (controller-"
+        "driven sketches + Gorilla-S3). Reduction column is "
+        "(baseline − asap) / baseline. Positive = ASAP uses fewer "
+        "resources at that stage."
+    )
+    md.append("")
+
+    base_aggs = _aggregate_stages(base.stages_rows)
+    asap_aggs = _aggregate_stages(asap.stages_rows)
+    if not base_aggs and not asap_aggs:
+        md.append("_stages.csv missing for both pipelines — no rows to render_")
+        md.append("")
+        return md
+
+    md.append(
+        "| Stage | Pipeline | CPU (cores) | RSS (MiB) | "
+        "Net in (KiB/s) | Net out (KiB/s) | Disk (MiB) |"
+    )
+    md.append("|---|---|---|---|---|---|---|")
+    for stage in STAGE_ORDER:
+        b = base_aggs.get(stage, {})
+        a = asap_aggs.get(stage, {})
+        md.append(
+            "| {s} | baseline | {cpu} | {rss} | {nin} | {nout} | {disk} |".format(
+                s=stage,
+                cpu=_fmt_num(b.get("cpu_cores", float("nan")), "{:.3f}"),
+                rss=_fmt_num(b.get("rss_mib", float("nan")), "{:.1f}"),
+                nin=_fmt_num(b.get("net_in_kibps", float("nan")), "{:.1f}"),
+                nout=_fmt_num(b.get("net_out_kibps", float("nan")), "{:.1f}"),
+                disk=_fmt_num(b.get("disk_mib", float("nan")), "{:.1f}"),
+            )
+        )
+        md.append(
+            "| {s} | asap     | {cpu} | {rss} | {nin} | {nout} | {disk} |".format(
+                s=stage,
+                cpu=_fmt_num(a.get("cpu_cores", float("nan")), "{:.3f}"),
+                rss=_fmt_num(a.get("rss_mib", float("nan")), "{:.1f}"),
+                nin=_fmt_num(a.get("net_in_kibps", float("nan")), "{:.1f}"),
+                nout=_fmt_num(a.get("net_out_kibps", float("nan")), "{:.1f}"),
+                disk=_fmt_num(a.get("disk_mib", float("nan")), "{:.1f}"),
+            )
+        )
+        # Reduction row.
+        reductions = []
+        for k in ("cpu_cores", "rss_mib", "net_in_kibps", "net_out_kibps", "disk_mib"):
+            r = _reduction_pct(b.get(k, float("nan")), a.get(k, float("nan")))
+            reductions.append(_fmt_num(r * 100.0, "{:+.1f}%") if not _is_nan(r) else "—")
+        md.append(
+            "| {s} | _reduction_ | {0} | {1} | {2} | {3} | {4} |".format(
+                *reductions, s=stage
             )
         )
     md.append("")
@@ -442,6 +535,168 @@ def criterion_freshness(fresh_dir: str) -> tuple[str, str, dict]:
     return verdict, "; ".join(parts), summary
 
 
+# ── §2 dual-mode ─────────────────────────────────────────────────
+
+
+def render_section_2_verdict_dual(
+    base: PipelineData,
+    asap: PipelineData,
+) -> list[str]:
+    """Dual-mode §2: per-criterion baseline-vs-asap + reduction column.
+
+    Reduction sign convention: positive = ASAP wins (lower is
+    better). For accuracy we don't compute a reduction — both
+    pipelines have separate semantics (baseline = exact-by-
+    construction, ASAP = bounded sketch error).
+    """
+    md: list[str] = []
+    md.append("## §2 Per-criterion verdict (baseline vs ASAP)")
+    md.append("")
+    md.append(
+        "Five empirical claims from issue #46. Reduction is "
+        "(baseline − asap) / baseline; positive = ASAP wins."
+    )
+    md.append("")
+
+    # ① Bandwidth — per cut edge.
+    base_means = _per_edge_mean_bytes_per_s(base.edge_rows)
+    asap_means = _per_edge_mean_bytes_per_s(asap.edge_rows)
+
+    md.append("### ① Bandwidth (mean B/s per cut edge)")
+    md.append("")
+    md.append("| Edge | Baseline B/s | ASAP B/s | Reduction |")
+    md.append("|---|---|---|---|")
+    any_bw = False
+    for e in EDGE_ORDER:
+        b = base_means.get(e, float("nan"))
+        a = asap_means.get(e, float("nan"))
+        r = _reduction_pct(b, a)
+        if not _is_nan(b) or not _is_nan(a):
+            any_bw = True
+        md.append(
+            "| {edge} | {b} | {a} | {r} |".format(
+                edge=e,
+                b=_fmt_num(b, "{:.1f}"),
+                a=_fmt_num(a, "{:.1f}"),
+                r=_fmt_num(r * 100.0, "{:+.1f}%") if not _is_nan(r) else "—",
+            )
+        )
+    md.append("")
+    bw_verdict = (
+        "UNKNOWN" if not any_bw else
+        "PASS" if any(
+            _reduction_pct(base_means.get(e, float("nan")),
+                           asap_means.get(e, float("nan"))) > 0
+            for e in EDGE_ORDER
+        ) else "FAIL"
+    )
+    md.append(f"**Verdict ①:** {bw_verdict}")
+    md.append("")
+
+    # ② Query latency — per query class.
+    md.append("### ② Query latency (p99 per class)")
+    md.append("")
+    md.append("| Class | Baseline p99 (ms) | ASAP p99 (ms) | Reduction |")
+    md.append("|---|---|---|---|")
+    base_lat = _per_class_latency_p50_p99(base.replay_rows)
+    asap_lat = _per_class_latency_p50_p99(asap.replay_rows)
+    any_lat = False
+    for cls, _, _ in QUERY_CLASSES:
+        b_p99 = base_lat.get(cls, {}).get("p99", float("nan"))
+        a_p99 = asap_lat.get(cls, {}).get("p99", float("nan"))
+        r = _reduction_pct(b_p99, a_p99)
+        if not _is_nan(b_p99) or not _is_nan(a_p99):
+            any_lat = True
+        md.append(
+            "| {cls} | {b} | {a} | {r} |".format(
+                cls=cls,
+                b=_fmt_num(b_p99, "{:.1f}"),
+                a=_fmt_num(a_p99, "{:.1f}"),
+                r=_fmt_num(r * 100.0, "{:+.1f}%") if not _is_nan(r) else "—",
+            )
+        )
+    md.append("")
+    lat_verdict = "UNKNOWN" if not any_lat else "CAPTURED"
+    md.append(f"**Verdict ②:** {lat_verdict}")
+    md.append("")
+
+    # ③ Combined resource — Σ stages CPU + RSS.
+    base_aggs = _aggregate_stages(base.stages_rows)
+    asap_aggs = _aggregate_stages(asap.stages_rows)
+    base_cpu = sum(d.get("cpu_cores", 0.0) for d in base_aggs.values())
+    base_rss = sum(d.get("rss_mib", 0.0) for d in base_aggs.values())
+    asap_cpu = sum(d.get("cpu_cores", 0.0) for d in asap_aggs.values())
+    asap_rss = sum(d.get("rss_mib", 0.0) for d in asap_aggs.values())
+    md.append("### ③ Combined e2e resource (Σ stages)")
+    md.append("")
+    md.append("| Metric | Baseline | ASAP | Δ (asap − baseline) | Reduction |")
+    md.append("|---|---|---|---|---|")
+    cpu_delta = asap_cpu - base_cpu
+    rss_delta = asap_rss - base_rss
+    cpu_red = _reduction_pct(base_cpu, asap_cpu)
+    rss_red = _reduction_pct(base_rss, asap_rss)
+    md.append(
+        f"| total CPU cores | {base_cpu:.3f} | {asap_cpu:.3f} | {cpu_delta:+.3f} | "
+        f"{_fmt_num(cpu_red * 100.0, '{:+.1f}%') if not _is_nan(cpu_red) else '—'} |"
+    )
+    md.append(
+        f"| total RSS MiB | {base_rss:.1f} | {asap_rss:.1f} | {rss_delta:+.1f} | "
+        f"{_fmt_num(rss_red * 100.0, '{:+.1f}%') if not _is_nan(rss_red) else '—'} |"
+    )
+    md.append("")
+    res_verdict = "UNKNOWN" if (not base_aggs and not asap_aggs) else "CAPTURED"
+    md.append(f"**Verdict ③:** {res_verdict}  (sign convention: ASAP `Δ` rendered with sign)")
+    md.append("")
+
+    # ④ Accuracy — ASAP-only (baseline = exact by construction).
+    acc_v, acc_line, _ = criterion_accuracy(asap.accuracy_rows)
+    md.append("### ④ Accuracy (ASAP only — baseline is exact by construction)")
+    md.append("")
+    md.append(f"**Verdict ④:** {acc_v}  · {acc_line}")
+    md.append("")
+
+    # ⑤ Cold-fallback — ASAP only.
+    cold_v, cold_line, _ = criterion_cold_fallback(asap.adhoc_dir)
+    md.append("### ⑤ Cold-fallback (gorilla_archive marker — ASAP only)")
+    md.append("")
+    md.append(f"**Verdict ⑤:** {cold_v}  · {cold_line}")
+    md.append("")
+
+    # ⑥ Freshness — per-path Δ. Show baseline + asap side by side.
+    md.append("### ⑥ Freshness (p50 per path)")
+    md.append("")
+    md.append("| Path | Baseline p50 (ms) | ASAP p50 (ms) | Δ (asap − baseline) |")
+    md.append("|---|---|---|---|")
+    base_fr_summary: dict[str, dict[str, float]] = {}
+    asap_fr_summary: dict[str, dict[str, float]] = {}
+    _, _, base_fr_summary = criterion_freshness(base.fresh_dir)  # type: ignore
+    _, _, asap_fr_summary = criterion_freshness(asap.fresh_dir)  # type: ignore
+    if not isinstance(base_fr_summary, dict):
+        base_fr_summary = {}
+    if not isinstance(asap_fr_summary, dict):
+        asap_fr_summary = {}
+    any_fr = False
+    for path in ("raw", "warm", "archive"):
+        b = base_fr_summary.get(path, {}).get("p50", float("nan"))
+        a = asap_fr_summary.get(path, {}).get("p50", float("nan"))
+        d = (a - b) if (not _is_nan(a) and not _is_nan(b)) else float("nan")
+        if not _is_nan(b) or not _is_nan(a):
+            any_fr = True
+        md.append(
+            "| {p} | {b} | {a} | {d} |".format(
+                p=path,
+                b=_fmt_num(b, "{:.0f}"),
+                a=_fmt_num(a, "{:.0f}"),
+                d=_fmt_num(d, "{:+.0f}"),
+            )
+        )
+    md.append("")
+    md.append(f"**Verdict ⑥:** {'CAPTURED' if any_fr else 'UNKNOWN'}")
+    md.append("")
+
+    return md
+
+
 # ── §3 per-query-class breakdown ────────────────────────────────
 
 
@@ -499,9 +754,6 @@ def render_section_3_per_class(
         errs = acc_by_kind.get(kind, [])
         med_err = statistics.median(errs) if errs else float("nan")
 
-        def fmt(v: float, fmt_str: str) -> str:
-            return fmt_str.format(v) if not _is_nan(v) else "—"
-
         plan_note = plan_annotation.get(cls, "—")
         if emitted_status != "live":
             plan_note += "  *(plan from workload spec; emitter " + emitted_status + ")*"
@@ -510,9 +762,9 @@ def render_section_3_per_class(
             "| {cls} | {plan} | {p50} | {p99} | {err} | {n} |".format(
                 cls=cls,
                 plan=plan_note,
-                p50=fmt(p50, "{:.1f}"),
-                p99=fmt(p99, "{:.1f}"),
-                err=fmt(med_err, "{:.4f}"),
+                p50=_fmt_num(p50, "{:.1f}"),
+                p99=_fmt_num(p99, "{:.1f}"),
+                err=_fmt_num(med_err, "{:.4f}"),
                 n=n,
             )
         )
@@ -696,7 +948,7 @@ def render_section_6_cost(measurements_dir: str) -> list[str]:
 # ── §7 honest caveats ─────────────────────────────────────────────
 
 
-def render_section_7_caveats() -> list[str]:
+def render_section_7_caveats(dual_mode: bool = False) -> list[str]:
     md: list[str] = []
     md.append("## §7 Honest caveats (non-goals)")
     md.append("")
@@ -722,13 +974,23 @@ def render_section_7_caveats() -> list[str]:
         "meaningful (TX/RX is per-container) but absolute latencies "
         "are loopback-flattered."
     )
-    md.append(
-        "* **B0 Prometheus reference is opt-in.** The driver does "
-        "NOT bring up B0 in the same compose stack as the ASAP "
-        "backend (port collision on 19090). To get an A-vs-B "
-        "comparison row, run a separate B0 cycle and join the "
-        "stages.csv files manually."
-    )
+    if dual_mode:
+        md.append(
+            "* **Sequential pipelines, not side-by-side.** The "
+            "baseline and ASAP cycles run back-to-back with a full "
+            "`docker compose down -v` + 10s settle between them. "
+            "Side-by-side execution would contaminate per-pipeline "
+            "resource numbers (both stacks consume host CPU + RAM at "
+            "the same time), so the driver explicitly serialises."
+        )
+    else:
+        md.append(
+            "* **B0 Prometheus reference is opt-in.** The driver does "
+            "NOT bring up B0 in the same compose stack as the ASAP "
+            "backend (port collision on 19090). To get an A-vs-B "
+            "comparison row, run `--mode both` so the driver does "
+            "two cycles with full teardown between."
+        )
     md.append(
         "* **Postings + cost tracker gated on backend image.** "
         "Sections §4 and §6 render with a `merge-pending` marker "
@@ -777,6 +1039,12 @@ def render_section_8_emitted(cdir: str) -> list[str]:
             "or the workload didn't bind to a SketchExpr. Phase F "
             "should set USE_TYPED_STAGE_SPLIT=1 in the compose env."
         )
+    elif status == "n/a-baseline":
+        md.append(
+            "Baseline pipeline has no controller — agents load "
+            "`sketchcol-agent-b0-prometheus.yaml` directly. This "
+            "section is not applicable to the baseline run."
+        )
     else:
         md.append(
             "Emitter status unknown — controller-emitted-configs/STATUS "
@@ -803,31 +1071,49 @@ def render_section_8_emitted(cdir: str) -> list[str]:
 # ── markdown assembly ────────────────────────────────────────────
 
 
-def render_markdown(
-    results_dir: str,
+def _detect_layout(results_dir: str) -> str:
+    """Return one of: 'dual', 'baseline-only', 'asap-only', 'legacy'.
+
+    'dual'         — both `baseline/` and `asap/` subdirs populated
+    'baseline-only'— only `baseline/` subdir populated
+    'asap-only'    — only `asap/` subdir populated
+    'legacy'       — neither subdir present; results_dir IS the
+                      pipeline root (current single-mode behaviour)
+    """
+    base_dir = os.path.join(results_dir, "baseline")
+    asap_dir = os.path.join(results_dir, "asap")
+    base_pop = os.path.isdir(base_dir) and os.path.isdir(
+        os.path.join(base_dir, "measurements"))
+    asap_pop = os.path.isdir(asap_dir) and os.path.isdir(
+        os.path.join(asap_dir, "measurements"))
+    if base_pop and asap_pop:
+        return "dual"
+    if base_pop:
+        return "baseline-only"
+    if asap_pop:
+        return "asap-only"
+    return "legacy"
+
+
+def render_markdown_single(
+    pipeline_root: str,
     num_producers: int,
     per_agent_cardinality: int,
+    label_for_header: str = "single-cell",
 ) -> str:
-    if not os.path.isdir(results_dir):
-        return f"# MVP report — results dir missing ({results_dir})\n"
+    """Render the original single-pipeline report. Used both for
+    legacy layout (results_dir == pipeline_root) and for the single-
+    populated-subdir fallback."""
+    if not os.path.isdir(pipeline_root):
+        return f"# MVP report — results dir missing ({pipeline_root})\n"
 
-    measurements_dir = os.path.join(results_dir, "measurements")
-    fresh_dir = os.path.join(results_dir, "freshness")
-    adhoc_dir = os.path.join(results_dir, "ad-hoc")
-    compactor_dir = os.path.join(results_dir, "compactor")
-    emitted_dir = os.path.join(results_dir, "controller-emitted-configs")
-
-    stages_rows = _read_csv(os.path.join(measurements_dir, "stages.csv"))
-    edge_rows = _read_csv(os.path.join(measurements_dir, "per_edge_bandwidth.csv"))
-    accuracy_rows = _read_csv(os.path.join(measurements_dir, "accuracy.csv"))
-    replay_rows = _read_jsonl(os.path.join(measurements_dir, "replay.jsonl"))
-    emitted_status = _read_emitted_status(emitted_dir)
+    p = PipelineData(pipeline_root, label_for_header)
 
     md: list[str] = []
     md.append("# ASAPCollector MVP demo — issue #46 (controller-driven multi-stage)")
     md.append("")
     md.append(
-        "Single-cell controller-driven run: 10 producers → 2 agents "
+        f"Single-pipeline run ({label_for_header}): 10 producers → 2 agents "
         "→ 1 gateway → 1 backend (+ MinIO archive). Controller plans "
         "from `deploy/configs/mvp-workload.yaml`; per-stage configs "
         "are emitted via the typed-stage-split path "
@@ -847,15 +1133,15 @@ def render_markdown(
     md.append(f"| Replay shapes | window/label/combined @ 5 QPS for 60s |")
     md.append("")
 
-    md.extend(render_section_1_stage_table(stages_rows))
+    md.extend(render_section_1_stage_table(p.stages_rows))
 
     # §2 verdict table.
-    bw_v, bw_line, _ = criterion_bandwidth(edge_rows)
-    lat_v, lat_line, _ = criterion_latency(replay_rows)
-    res_v, res_line, _ = criterion_combined_resource(stages_rows)
-    acc_v, acc_line, _ = criterion_accuracy(accuracy_rows)
-    cold_v, cold_line, _ = criterion_cold_fallback(adhoc_dir)
-    fresh_v, fresh_line, _ = criterion_freshness(fresh_dir)
+    bw_v, bw_line, _ = criterion_bandwidth(p.edge_rows)
+    lat_v, lat_line, _ = criterion_latency(p.replay_rows)
+    res_v, res_line, _ = criterion_combined_resource(p.stages_rows)
+    acc_v, acc_line, _ = criterion_accuracy(p.accuracy_rows)
+    cold_v, cold_line, _ = criterion_cold_fallback(p.adhoc_dir)
+    fresh_v, fresh_line, _ = criterion_freshness(p.fresh_dir)
 
     md.append("## §2 Per-criterion verdict (6 criteria)")
     md.append("")
@@ -869,21 +1155,21 @@ def render_markdown(
     md.append(f"| 6 | Freshness (p50/p99 per path) | **{fresh_v}** | {fresh_line} |")
     md.append("")
 
-    md.extend(render_section_3_per_class(replay_rows, accuracy_rows, emitted_status))
-    md.extend(render_section_4_postings(adhoc_dir))
-    md.extend(render_section_5_compaction(compactor_dir))
-    md.extend(render_section_6_cost(measurements_dir))
-    md.extend(render_section_7_caveats())
-    md.extend(render_section_8_emitted(emitted_dir))
+    md.extend(render_section_3_per_class(p.replay_rows, p.accuracy_rows, p.emitted_status))
+    md.extend(render_section_4_postings(p.adhoc_dir))
+    md.extend(render_section_5_compaction(p.compactor_dir))
+    md.extend(render_section_6_cost(p.measurements_dir))
+    md.extend(render_section_7_caveats(dual_mode=False))
+    md.extend(render_section_8_emitted(p.emitted_dir))
 
     # Per-edge bandwidth appendix.
     md.append("## Appendix A — per-edge bandwidth")
     md.append("")
     md.append("| Edge | Mean B/s | Samples |")
     md.append("|---|---|---|")
-    means = _per_edge_mean_bytes_per_s(edge_rows)
+    means = _per_edge_mean_bytes_per_s(p.edge_rows)
     counts: dict[str, int] = {}
-    for r in edge_rows:
+    for r in p.edge_rows:
         try:
             float(r.get("bytes_per_s", "") or "nan")
         except ValueError:
@@ -897,6 +1183,137 @@ def render_markdown(
     md.append("")
 
     return "\n".join(md) + "\n"
+
+
+def render_markdown_dual(
+    results_dir: str,
+    num_producers: int,
+    per_agent_cardinality: int,
+) -> str:
+    """Render the dual-mode comparison report (baseline + asap)."""
+    base = PipelineData(os.path.join(results_dir, "baseline"), "baseline")
+    asap = PipelineData(os.path.join(results_dir, "asap"), "asap")
+
+    md: list[str] = []
+    md.append("# ASAPCollector MVP demo — issue #46 (baseline vs ASAP)")
+    md.append("")
+    md.append(
+        "Dual-pipeline run: same workload, same fake-exporter "
+        "producers, same per-agent cardinality, same query classes, "
+        "same soak duration — only the pipeline differs. Pipelines "
+        "run **sequentially** with a full `docker compose down -v` "
+        "between them so per-pipeline resource numbers don't "
+        "contaminate each other."
+    )
+    md.append("")
+    md.append("Pipelines compared:")
+    md.append("")
+    md.append(
+        "* **baseline** — `mvp-multi-stage.yml` + `--profile b0`; "
+        "agents load `sketchcol-agent-b0-prometheus.yaml`; storage "
+        "= Prometheus; queries hit Prometheus PromQL HTTP."
+    )
+    md.append(
+        "* **asap** — `mvp-multi-stage.yml` default profile; "
+        "controller-driven sketch + Gorilla-S3; queries hit the "
+        "ASAPQuery-backend's BackendStorageRouting."
+    )
+    md.append("")
+    md.append("## Workload shape")
+    md.append("")
+    md.append("| Knob | Value |")
+    md.append("|------|-------|")
+    md.append(f"| Per-agent cardinality | **{per_agent_cardinality}** |")
+    md.append(f"| Number of producers | **{num_producers}** (×5 → agent-a, ×5 → agent-b) |")
+    md.append(f"| Aggregate series at gateway | **{num_producers * per_agent_cardinality}** |")
+    md.append(f"| Sketch family (default) | DDSketch (overridden per-metric by controller) |")
+    md.append(f"| Stack settle + warm-up + soak | 60s + 60s + 60s (each pipeline) |")
+    md.append(f"| Replay shapes | window/label/combined @ 5 QPS for 60s |")
+    md.append("")
+
+    # §1 dual-mode stage table.
+    md.extend(render_section_1_stage_table_dual(base, asap))
+    # §2 dual-mode verdict (5 empirical claims + accuracy + cold +
+    # freshness).
+    md.extend(render_section_2_verdict_dual(base, asap))
+    # §3 ASAP-only per-class breakdown (the 3 query classes are an
+    # ASAP-side concept; baseline answers all 3 from Prometheus
+    # natively).
+    md.append("## §3 Per-query-class breakdown (ASAP)")
+    md.append("")
+    md.extend(render_section_3_per_class(
+        asap.replay_rows, asap.accuracy_rows, asap.emitted_status,
+    ))
+    # §4..§6 are ASAP-only by construction.
+    md.append("_§4..§6 below cover the ASAP pipeline only — postings filtering, "
+              "concat-only compaction, and S3-ops cost are ASAP architectural "
+              "concepts that have no baseline counterpart._")
+    md.append("")
+    md.extend(render_section_4_postings(asap.adhoc_dir))
+    md.extend(render_section_5_compaction(asap.compactor_dir))
+    md.extend(render_section_6_cost(asap.measurements_dir))
+    # §7 caveats (dual-mode wording).
+    md.extend(render_section_7_caveats(dual_mode=True))
+    # §8 emitter status — only meaningful for ASAP.
+    md.append("## §8 Controller-emitted runtime configs (ASAP pipeline)")
+    md.append("")
+    md.extend(render_section_8_emitted(asap.emitted_dir)[2:])  # strip duplicate header
+
+    # Appendix A — per-edge bandwidth, side-by-side.
+    md.append("## Appendix A — per-edge bandwidth (baseline vs ASAP)")
+    md.append("")
+    md.append("| Edge | Baseline mean B/s | ASAP mean B/s | Baseline samples | ASAP samples |")
+    md.append("|---|---|---|---|---|")
+    base_means = _per_edge_mean_bytes_per_s(base.edge_rows)
+    asap_means = _per_edge_mean_bytes_per_s(asap.edge_rows)
+    base_counts: dict[str, int] = {}
+    asap_counts: dict[str, int] = {}
+    for r in base.edge_rows:
+        base_counts[r.get("edge", "?")] = base_counts.get(r.get("edge", "?"), 0) + 1
+    for r in asap.edge_rows:
+        asap_counts[r.get("edge", "?")] = asap_counts.get(r.get("edge", "?"), 0) + 1
+    for e in EDGE_ORDER:
+        bm = base_means.get(e, float("nan"))
+        am = asap_means.get(e, float("nan"))
+        md.append(
+            f"| {e} | {_fmt_num(bm, '{:.1f}')} | {_fmt_num(am, '{:.1f}')} | "
+            f"{base_counts.get(e, 0)} | {asap_counts.get(e, 0)} |"
+        )
+    md.append("")
+
+    return "\n".join(md) + "\n"
+
+
+def render_markdown(
+    results_dir: str,
+    num_producers: int,
+    per_agent_cardinality: int,
+) -> str:
+    """Top-level dispatch — selects single vs dual rendering based
+    on the on-disk layout."""
+    if not os.path.isdir(results_dir):
+        return f"# MVP report — results dir missing ({results_dir})\n"
+
+    layout = _detect_layout(results_dir)
+    if layout == "dual":
+        return render_markdown_dual(results_dir, num_producers, per_agent_cardinality)
+    if layout == "baseline-only":
+        return render_markdown_single(
+            os.path.join(results_dir, "baseline"),
+            num_producers, per_agent_cardinality,
+            label_for_header="baseline",
+        )
+    if layout == "asap-only":
+        return render_markdown_single(
+            os.path.join(results_dir, "asap"),
+            num_producers, per_agent_cardinality,
+            label_for_header="asap",
+        )
+    # Legacy: results_dir IS the pipeline root.
+    return render_markdown_single(
+        results_dir, num_producers, per_agent_cardinality,
+        label_for_header="single-cell",
+    )
 
 
 # ── main ─────────────────────────────────────────────────────────
