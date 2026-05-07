@@ -24,8 +24,12 @@ In both layouts the per-pipeline subdir shape is:
         freshness/{raw.csv, warm.csv, archive.csv}
         ad-hoc/{count_api_series.json, topk_5xx_by_zone.json,
                 cold_payments.json, cold_payments.verdict, ...}
-        compactor/{dry_run.json, live_run.json,
-                    before.minio.jsonl, after.minio.jsonl, SKIPPED?}
+        thanos-compact/{before.minio.jsonl, after.minio.jsonl,
+                         metrics.before.txt, metrics.after.txt,
+                         health.txt, SKIPPED?}
+            (Phase δ.1: replaced the legacy `compactor/` subdir which
+             held the deleted gorilla-compactor binary's artefacts;
+             thanos-compact now drives archive-tier compaction.)
 
 Pure stdlib. Idempotent — re-running over the same CSVs reproduces
 the same MD.
@@ -159,7 +163,10 @@ class PipelineData:
         self.measurements_dir = os.path.join(root, "measurements")
         self.fresh_dir = os.path.join(root, "freshness")
         self.adhoc_dir = os.path.join(root, "ad-hoc")
-        self.compactor_dir = os.path.join(root, "compactor")
+        # Phase δ.1: subdir renamed compactor/ → thanos-compact/. The
+        # `compactor_dir` attribute name is kept for renderer
+        # back-compat; only the on-disk path moved.
+        self.compactor_dir = os.path.join(root, "thanos-compact")
         self.emitted_dir = os.path.join(root, "controller-emitted-configs")
 
         self.stages_rows = _read_csv(os.path.join(self.measurements_dir, "stages.csv"))
@@ -875,26 +882,69 @@ def _count_minio_objects(jsonl_path: str) -> tuple[int, int]:
     return (count, total_bytes)
 
 
+def _extract_compact_iter_count(metrics_path: str) -> float:
+    """Parse `thanos_compact_iterations_total` out of a Prometheus
+    text-format /metrics dump. Returns NaN if the line is missing.
+
+    Phase δ.1: replaces the legacy gorilla-compactor `dry_run.json`
+    structured output. thanos-compact exposes its sweep counter via
+    /metrics in the standard Prometheus exposition format."""
+    if not os.path.exists(metrics_path):
+        return float("nan")
+    try:
+        with open(metrics_path, "r") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                # `thanos_compact_iterations_total <count>` (no labels).
+                if line.startswith("thanos_compact_iterations_total "):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            return float(parts[1])
+                        except ValueError:
+                            return float("nan")
+    except OSError:
+        return float("nan")
+    return float("nan")
+
+
 def render_section_5_compaction(compactor_dir: str) -> list[str]:
+    """§5 Compaction effect — Phase δ.1 thanos-compact replacement.
+
+    The directory layout is `thanos-compact/` (renamed from
+    `compactor/`). thanos-compact runs continuously in `--wait` mode;
+    Phase 6 of the driver captures one before/after snapshot pair plus
+    the iteration counter."""
     md: list[str] = []
     md.append("## §5 Compaction effect")
     md.append("")
     skipped = os.path.exists(os.path.join(compactor_dir, "SKIPPED"))
     if skipped:
         reason = _read_text(os.path.join(compactor_dir, "SKIPPED")).strip()
-        md.append(f"_Compactor SKIPPED: {reason}_")
+        md.append(f"_thanos-compact SKIPPED: {reason}_")
         md.append("")
         return md
 
     before = _count_minio_objects(os.path.join(compactor_dir, "before.minio.jsonl"))
     after = _count_minio_objects(os.path.join(compactor_dir, "after.minio.jsonl"))
+
+    iter_before = _extract_compact_iter_count(
+        os.path.join(compactor_dir, "metrics.before.txt"))
+    iter_after = _extract_compact_iter_count(
+        os.path.join(compactor_dir, "metrics.after.txt"))
+
     md.append(
-        "Concat-only compactor byte-concatenates 6+ adjacent "
-        "blocks ≥6h old into one merged object. **No decode / "
-        "re-encode** — each source chunk remains an atomic Gorilla "
-        "chunk inside the merged file. The new manifest records "
-        "each chunk's `byte_offset` + `byte_length` so the backend "
-        "can issue `Range:` partial reads."
+        "Phase δ.1: archive-tier compaction is now performed by the "
+        "stock **`thanos-compact`** sidecar (replacing the deleted "
+        "`gorilla-compactor` Rust binary). Unlike the previous "
+        "concat-only design, thanos-compact does **decode + "
+        "re-encode** — that's a real CPU cost during compaction "
+        "sweeps, but it gives better compression on top of block "
+        "consolidation, plus downsampled tiers (raw / 5m / 1h) "
+        "for free. Storage savings reported below therefore include "
+        "both block-count consolidation AND re-encoded compression."
     )
     md.append("")
     md.append("| Stage | Object count | Total bytes |")
@@ -903,12 +953,22 @@ def render_section_5_compaction(compactor_dir: str) -> list[str]:
     md.append(f"| after  | {after[0]}  | {after[1]} |")
     md.append("")
 
-    dry = _read_json(os.path.join(compactor_dir, "dry_run.json"))
-    if isinstance(dry, dict):
-        eligible = dry.get("eligible_blocks") or dry.get("blocks") or []
-        if isinstance(eligible, list):
-            md.append(f"Dry-run plan: {len(eligible)} merge candidate(s).")
-            md.append("")
+    if not _is_nan(iter_before) or not _is_nan(iter_after):
+        md.append(
+            f"`thanos_compact_iterations_total`: "
+            f"{_fmt_num(iter_before, '{:.0f}')} → "
+            f"{_fmt_num(iter_after, '{:.0f}')} "
+            f"(at least one sweep observed during the demo window if "
+            f"the `after` value > `before`)."
+        )
+        md.append("")
+    else:
+        md.append(
+            "_thanos-compact `/metrics` snapshot not captured — see "
+            "`thanos-compact/metrics.before.err` and "
+            "`thanos-compact/metrics.after.err`._"
+        )
+        md.append("")
     return md
 
 

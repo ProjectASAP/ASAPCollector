@@ -143,7 +143,7 @@ encoding.
 |---|---|---|
 | `asap-precompute-go` | `sketchcol`, `sketchtelegraf` | ✅ implemented |
 | `asap-precompute-rs` | `sketchotap`, ASAPQuery-backend ingest path | ✅ implemented |
-| `asap-gorilla` (Rust encoder/decoder, postings, chunk index) | `gorillas3processor` (via Go-shim), backend `GorillaQueryEngine`, `gorilla-compactor` | ✅ implemented + tested (39 unit tests pass; cross-language byte parity with the Go gorillas3processor) |
+| `asap-gorilla` (Rust encoder/decoder, postings, chunk index) | `gorillas3processor` (via Go-shim), backend `GorillaQueryEngine` | ✅ implemented + tested (39 unit tests pass; cross-language byte parity with the Go gorillas3processor). Phase δ.1 deleted `gorilla-compactor`; archive-tier compaction is handled by stock `thanos-compact` instead. |
 
 ### Sketch families (5 supported, byte-parity across runtimes)
 
@@ -189,7 +189,7 @@ variant is undefined (the kllprocessor's `Config.Validate` rejects
 | Chunk format (self-describing) | Magic + schema_version + flags + time bounds + sample count + CRC32C + labelset + Gorilla body | ✅ |
 | Per-block manifest (`index.json`) | Lists chunks with `byte_offset` + `byte_length` | ✅ enables `Range:` partial S3 reads |
 | Postings index (`postings-v1.json`) | `label_name=value → series_ids` | ✅ implemented; consumed by `GorillaQueryEngine` for label-predicate filtering |
-| `gorilla-compactor` binary | Concat-only block consolidation (≥6 hourly blocks → 1 day-block) | ✅ implemented + tested (idempotent; partial-read verified) |
+| `thanos-compact` sidecar | Archive-tier block compaction (decode + re-encode; downsamples raw / 5m / 1h tiers) | ✅ deployed via `mvp-thanos-archive.yml` (Phase δ.1; replaces the deleted `gorilla-compactor` Rust binary) |
 
 ### Controller (5-layer pipeline)
 
@@ -233,12 +233,12 @@ git clone -b main git@github.com:ProjectASAP/asap_sketchlib.git ~/repos/asap_ske
 
 cd ~/repos/ASAPCollector
 
-# 1. Build the four dev images and the gorilla-compactor binary
+# 1. Build the four dev images
+#    (Phase δ.1: gorilla-compactor binary deleted; thanos-compact runs
+#    as a sidecar from mvp-thanos-archive.yml — no separate binary needed)
 make -C deploy build-images || bash deploy/scripts/build-all.sh   # see §3 for explicit commands
-( cd compactor && cargo build --release )
 
 # 2. Run the demo
-COMPACTOR_BIN=$PWD/compactor/target/release/gorilla-compactor \
 USE_TYPED_STAGE_SPLIT=1 \
 bash deploy/scripts/run_mvp_demo.sh
 
@@ -265,7 +265,7 @@ one-time image builds.
 | Docker engine | 24.0+ | Container runtime |
 | Docker BuildKit | (default in 24.0+) | `DOCKER_BUILDKIT=1` named build contexts |
 | Docker Compose v2 | 2.20+ | `docker compose ...` (NOT `docker-compose`) |
-| Rust toolchain | 1.90+ | `gorilla-compactor`, backend image build, controller |
+| Rust toolchain | 1.90+ | backend image build, controller (Phase δ.1: `gorilla-compactor` Rust binary deleted; replaced by stock `thanos-compact` sidecar) |
 | Go toolchain | 1.22+ | `fake-exporter`, `gorillas3processor`, OCB build |
 | Python | 3.10+ | Measurement / report scripts |
 | protoc | 3.21+ | prost-build in the backend Cargo crates |
@@ -490,7 +490,7 @@ baseline side it's just another query Prometheus answers.
 
 ## 3. Compiling and building from source
 
-There are five build artifacts. Build them in this order — the backend
+There are four build artifacts. Build them in this order — the backend
 image build context references the Rust crates that the earlier steps
 exercise.
 
@@ -499,12 +499,18 @@ exercise.
 1. asap-precompute-rs            (cargo, Rust crate)         } compile-time
 2. asap-gorilla                  (cargo, Rust crate)         }   sanity
 3. controller binary             (cargo)
-4. gorilla-compactor binary      (cargo)
-5. asap/controller:dev           (Docker image)              } runtime
-6. asap/sketchcol:dev            (OCB + Docker)              }   images
-7. asap/fake-exporter:dev        (Docker image)              }
-8. asap/query-backend:dev        (Docker image, multi-context)
+4. asap/controller:dev           (Docker image)              } runtime
+5. asap/sketchcol:dev            (OCB + Docker)              }   images
+6. asap/fake-exporter:dev        (Docker image)              }
+7. asap/query-backend:dev        (Docker image, multi-context)
 ```
+
+> **Phase δ.1 (2026-05-07)**: the `gorilla-compactor` Rust binary that
+> previous runbook revisions built as Step 4 has been deleted.
+> Archive-tier block compaction is now performed by the stock
+> `thanos-compact` container (declared in
+> `deploy/docker-compose/mvp-thanos-archive.yml`); no separate binary
+> needs to be built.
 
 Total wall: ~15-30 min on a clean machine; ~3-5 min on a warm
 incremental build.
@@ -546,30 +552,7 @@ cargo test --release  # 482+ pass / ~10 pre-existing fail (out of scope)
 ls target/release/controller
 ```
 
-### Step 4 — `gorilla-compactor` (used at demo Phase 7)
-
-```bash
-cd ~/repos/ASAPCollector/compactor
-cargo build --release
-cargo test --release  # 11 tests should pass
-ls target/release/gorilla-compactor
-```
-
-If your `/` partition is small, redirect Cargo's target dir to a larger
-volume:
-
-```bash
-export CARGO_TARGET_DIR=/data2/$USER/cargo-target
-cd ~/repos/ASAPCollector/compactor && cargo build --release
-ls $CARGO_TARGET_DIR/release/gorilla-compactor
-```
-
-The driver's `COMPACTOR_BIN` env var defaults to
-`$REPO_ROOT/compactor/target/release/gorilla-compactor`; export
-`COMPACTOR_BIN=$CARGO_TARGET_DIR/release/gorilla-compactor` if you
-redirected.
-
-### Step 5 — `asap/controller:dev` Docker image
+### Step 4 — `asap/controller:dev` Docker image
 
 ```bash
 cd ~/repos/ASAPCollector/controller
@@ -577,7 +560,7 @@ docker build -t asap/controller:dev .
 docker image ls asap/controller:dev
 ```
 
-### Step 6 — `asap/sketchcol:dev` (agent + gateway use the same image)
+### Step 5 — `asap/sketchcol:dev` (agent + gateway use the same image)
 
 This is a two-step build: first OCB compiles the patched OpenTelemetry
 Collector binary; then the Dockerfile packages it.
@@ -601,7 +584,7 @@ docker image ls asap/sketchcol:dev
 See `docs/design-asap-edge-framework.md` for OCB build details and
 `builder-config.yaml` semantics.
 
-### Step 7 — `asap/fake-exporter:dev` (with freshness probes)
+### Step 6 — `asap/fake-exporter:dev` (with freshness probes)
 
 ```bash
 cd ~/repos/ASAPCollector/deploy/fake-exporter
@@ -616,7 +599,7 @@ docker run --rm asap/fake-exporter:dev sh -c \
     echo "WARNING: image lacks freshness probes — rebuild after PR #299"
 ```
 
-### Step 8 — `asap/query-backend:dev` (multi-context Docker build)
+### Step 7 — `asap/query-backend:dev` (multi-context Docker build)
 
 The backend image stitches together four sibling source trees as
 BuildKit named build-contexts. Each context is a separate
@@ -666,7 +649,7 @@ docker run --rm asap/query-backend:dev sh -c \
 If the grep returns nothing, the cache hit on a stale layer; rebuild
 with `--no-cache`.
 
-### One-shot build (all 5 images + 2 binaries)
+### One-shot build (all 4 images + 1 binary)
 
 Wrap the steps above in a script for repeatability:
 
@@ -677,10 +660,11 @@ set -euxo pipefail
 cd ~/repos/ASAPCollector
 
 # Rust crates (compile sanity + cache warm-up)
+# Phase δ.1: gorilla-compactor crate deleted (replaced by thanos-compact
+# sidecar); only asap-precompute-rs / asap-gorilla / controller remain.
 ( cd asap-precompute-rs && cargo build --release )
 ( cd asap-gorilla       && cargo build --release )
 ( cd controller         && cargo build --release )
-( cd compactor          && cargo build --release )
 
 # Docker images
 docker build -t asap/controller:dev controller/
@@ -707,7 +691,8 @@ cd ~/repos/ASAPCollector
 
 # Defaults are reasonable; override only if you need to:
 export USE_TYPED_STAGE_SPLIT=1                 # fire the typed stage-split path
-export COMPACTOR_BIN=$PWD/compactor/target/release/gorilla-compactor
+# Phase δ.1: COMPACTOR_BIN env var was removed — thanos-compact runs as
+# a compose sidecar, no host-side binary path is needed.
 export OUT_BASE=$PWD/deploy/eval-results       # default
 export PER_AGENT_CARDINALITY=500               # 500 × 10 producers = 5K aggregate
 export NUM_PRODUCERS=10                         # spread across 2 agents (5 + 5)
@@ -737,14 +722,14 @@ the implementation):
 
 | Phase | Action |
 |---|---|
-| 0. Pre-flight | Verify images present; verify `gorilla-compactor` binary; clean stale containers |
+| 0. Pre-flight | Verify images present; clean stale containers (Phase δ.1: gorilla-compactor binary check removed — thanos-compact sidecar comes up with the rest of the stack) |
 | 1. Stack-up | `docker compose up` against `base.yml + mvp-multi-stage.yml`; mount `mvp-workload.yaml` into controller; wait for OpAMP push to settle |
 | 2. Warm-up | 60 s agent warm-up + 30 s query-side warm-up (poll `count_over_time(http_requests_total[1m])` until non-zero) |
 | 3. Measurements | Run `measure_stages.py` + `measure_per_edge_bandwidth.py` + `promql_replay.py` over 60 s soak with three query classes |
 | 4. Freshness | Run `run_freshness_phase.sh` against three probes (raw / warm / archive) → 3 CSVs |
 | 5. Ad-hoc queries | Fire label-predicate queries; capture postings filtering |
 | 6. Cold-fallback | Fire `count(http_requests_total{service="payments"})`; verify `data_source: gorilla_archive` |
-| 7. Compaction | `gorilla-compactor --threshold-hours 0 --threshold-count 0 --dry-run` then `--no-dry-run`; capture before/after object count + bytes |
+| 7. Compaction | Verify `thanos-compact` sidecar is healthy; capture before/after `mc ls` listing of the MinIO archive bucket; poll `thanos_compact_iterations_total` from `/metrics` to confirm at least one compaction sweep completed (Phase δ.1) |
 | 8. Report | Run `mvp_report.py` over the captured CSVs to produce `MVP_REPORT.md` |
 
 ## 5. Reading the output
@@ -758,9 +743,12 @@ deploy/eval-results/mvp-current/
 │   ├── label-api.json
 │   ├── label-status5xx.json
 │   └── cold_payments.json      ← criterion ⑤: look for "data_source: gorilla_archive"
-├── compactor/                  ← Phase 7
-│   ├── compactor-plan.log      ← --dry-run output
-│   └── compactor.log           ← actual compaction stats
+├── thanos-compact/             ← Phase 7 (Phase δ.1: renamed from compactor/)
+│   ├── before.minio.jsonl      ← MinIO bucket listing pre-sweep
+│   ├── after.minio.jsonl       ← MinIO bucket listing post-sweep
+│   ├── metrics.before.txt      ← thanos-compact /metrics scrape
+│   ├── metrics.after.txt       ← thanos-compact /metrics scrape
+│   └── health.txt              ← thanos-compact /-/healthy snapshot
 ├── controller-emitted-configs/ ← Phase 1 — what the controller pushed to each runtime
 │   ├── STATUS                  ← live / fallback-placeholder / not-exercised
 │   ├── agent.bootstrap.yaml
@@ -888,7 +876,9 @@ Cargo / Docker caches:
 
 ```bash
 # free the cargo build cache (large)
-rm -rf ~/repos/ASAPCollector/compactor/target
+# Phase δ.1: gorilla-compactor crate deleted; the only Rust target dirs
+# left are asap-precompute-rs/, asap-gorilla/, and controller/.
+rm -rf ~/repos/ASAPCollector/{asap-precompute-rs,asap-gorilla,controller}/target
 # or, if you set CARGO_TARGET_DIR:
 rm -rf $CARGO_TARGET_DIR
 

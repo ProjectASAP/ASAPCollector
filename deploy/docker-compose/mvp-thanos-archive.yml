@@ -1,4 +1,5 @@
-# MVP archive-tier overlay: Thanos store-gateway + thanos-query sidecar
+# MVP archive-tier overlay: Thanos store-gateway + thanos-query +
+# thanos-compact sidecars.
 #
 # Layer in addition to base.yml + mvp-multi-stage.yml:
 #
@@ -11,8 +12,10 @@
 #   thanos-store-gateway (this file)
 #         │ S3
 #         ▼
-#   MinIO bucket asap-gorilla-tsdb
-#         (populated by Step 2.1's gorillas3processor block writes)
+#   MinIO bucket asap-gorilla-tsdb       ◀── thanos-compact (this file)
+#         (populated by Step 2.1's gorillas3processor block writes;
+#          consolidated by thanos-compact in Phase δ.1, replacing the
+#          deleted gorilla-compactor Rust binary)
 #
 # Compose stack:
 #   docker compose \
@@ -103,5 +106,65 @@ services:
           cpus: "1.0"
           memory: 768M
 
+  # ─────────────────────────────── thanos-compact ────────────────────────────
+  # Phase δ.1: archive-tier block compactor. Replaces the deleted
+  # gorilla-compactor Rust binary with the stock Thanos compactor —
+  # the established Prometheus-ecosystem tool for compacting TSDB
+  # blocks under an object store. Reads/writes the same MinIO bucket
+  # (asap-gorilla-tsdb) that gorillas3processor populates via Step 2.1
+  # and that the store-gateway above reads.
+  #
+  # Compaction model: thanos-compact does decode + re-encode (NOT the
+  # previous concat-only design). That's a real CPU cost during
+  # compaction sweeps, but it's the standard production approach and
+  # gives better compression + downsampling tiers (raw / 5m / 1h)
+  # for free.
+  #
+  # Retention defaults: the three --retention.resolution-* flags below
+  # set raw=30d / 5m=180d / 1h=1y. These match Thanos's documented
+  # production defaults. Tune if the demo's storage budget calls for
+  # tighter or looser windows.
+  #
+  # CPU concurrency: --compact.concurrency=1 bounds CPU on the demo
+  # host (single-host topology shares cores with sketchcol agents +
+  # backend). Bump to 2-4 on dedicated hosts.
+  #
+  # Lifecycle: --wait runs thanos-compact in a continuous loop instead
+  # of one-shot mode, so the Phase 7 driver can poll its /metrics
+  # endpoint for thanos_compact_iterations_total to confirm at least
+  # one sweep has completed.
+  thanos-compact:
+    image: quay.io/thanos/thanos:v0.41.0
+    hostname: thanos-compact
+    # Same root-user rationale as thanos-store-gateway above: the
+    # named-volume mount needs to be writable by the entrypoint.
+    user: "0"
+    command:
+      - "compact"
+      - "--objstore.config-file=/etc/thanos/objstore.yaml"
+      - "--data-dir=/var/thanos/compact"
+      - "--retention.resolution-raw=30d"
+      - "--retention.resolution-5m=180d"
+      - "--retention.resolution-1h=1y"
+      - "--compact.concurrency=1"
+      - "--wait"
+      - "--http-address=0.0.0.0:10904"
+    volumes:
+      - ../configs/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro
+      - thanos-compact-data:/var/thanos/compact
+    depends_on:
+      - minio
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:10904/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+
 volumes:
   thanos-store-data:
+  thanos-compact-data:
