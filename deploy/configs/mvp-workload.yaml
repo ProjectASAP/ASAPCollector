@@ -1,4 +1,4 @@
-# MVP v6 controller input — three canonical query classes
+# MVP demo controller input — three canonical query classes
 #
 # Read by the controller at startup (env: CONTROLLER_WORKLOADS,
 # default ./workloads.yaml). The controller's L1 query_language →
@@ -39,9 +39,9 @@
 
 # 4. AD-HOC COLD-FALLBACK PROBE — exercises Gorilla archive tier
 #    Metric is configured StorageBackend::GorillaS3 in
-#    backend-storage-routing-mvp-v6.yaml so the warm tier doesn't
-#    cover it; the query forces routing to GorillaQueryEngine.
-#    Drives criterion ⑤ verification (data_source: gorilla_archive).
+#    backend-storage-routing.yaml so the warm tier doesn't cover
+#    it; the query forces routing to GorillaQueryEngine. Drives
+#    criterion ⑤ verification (data_source: gorilla_archive).
 - metric_name: http_requests_total
   query_string: "count(http_requests_total{service=\"payments\"})"
   accuracy_sla: 0.0

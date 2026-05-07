@@ -1,13 +1,13 @@
-# Gateway-side sketchcol config — MVP v6 placeholder
+# Gateway-side sketchcol config — MVP demo placeholder
 #
 # Receives OTLP from agents, runs sketch-merge processors per the
 # label-aggregation-at-instant query class, exports to backend.
 #
-# This is a PLACEHOLDER until v6 Phase B's controller emitter
-# produces a real gateway YAML. The placeholder is shape-correct
-# (right receivers / processor types / exporter target) so the
-# multi-stage overlay can stand the gateway up; values are
-# defaults, not controller-planned.
+# This is a PLACEHOLDER used until the controller's emitter pushes
+# a real gateway YAML. The placeholder is shape-correct (right
+# receivers / processor types / exporter target) so the multi-stage
+# overlay can stand the gateway up; values are defaults, not
+# controller-planned.
 #
 # Pipeline:
 #
@@ -19,9 +19,9 @@
 #
 # Merge processors today are placeholders for the
 # `<sketch_kind>merge` processors in
-# opentelemetry-collector-contrib-patch/processor/. When Phase B's
-# emit_gateway_yaml fires, it will replace this YAML with the
-# controller-decided merge processor list.
+# opentelemetry-collector-contrib-patch/processor/. The
+# controller's emit_gateway_yaml path replaces this YAML with the
+# controller-decided merge processor list once exercised.
 
 receivers:
   otlp:

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# run_freshness_phase.sh — drive the three MVP v6 freshness probe
+# run_freshness_phase.sh — drive the three MVP demo freshness probe
 # paths sequentially, one CSV per path.
 #
 # Each path's freshness is measured by polling a Prometheus-style
 # /api/v1/query endpoint for the corresponding probe metric emitted
 # by the fake-exporter (see deploy/fake-exporter/probes.go and
-# deploy/configs/mvp-v6-freshness-probes.yaml). Per-path delta math
+# deploy/configs/mvp-freshness-probes.yaml). Per-path delta math
 # is in deploy/scripts/measure_freshness.py.
 #
 # Three paths:
@@ -29,14 +29,14 @@
 # Usage:
 #
 #   run_freshness_phase.sh \
-#       --out-dir /tmp/mvp-v6-run-$(date +%s) \
+#       --out-dir /tmp/mvp-run-$(date +%s) \
 #       --duration 60 \
 #       --poll-interval-ms 100 \
 #       --raw-endpoint http://prometheus-b0:9090 \
 #       --warm-endpoint http://backend:8080 \
 #       --archive-endpoint http://backend:8080
 #
-# All flags have defaults that match the v6 demo's compose stack;
+# All flags have defaults that match the demo's compose stack;
 # typical invocation is just:
 #
 #   run_freshness_phase.sh --out-dir /tmp/run
@@ -51,10 +51,10 @@ MEASURE_SCRIPT="${SCRIPT_DIR}/measure_freshness.py"
 OUT_DIR=""
 DURATION=60
 POLL_INTERVAL_MS=100
-# Defaults match the docker-compose service names used by the v6
-# multi-stage overlay (see baseline-mvp-v6-multi-stage.yml — Phase E
-# wires this). Override with the flags below if you're running
-# outside the compose stack (e.g. host-mode against published ports).
+# Defaults match the docker-compose service names used by the
+# multi-stage overlay (see deploy/docker-compose/mvp-multi-stage.yml).
+# Override with the flags below if you're running outside the compose
+# stack (e.g. host-mode against published ports).
 RAW_ENDPOINT="${ASAP_FRESHNESS_RAW_ENDPOINT:-http://prometheus-b0:9090}"
 WARM_ENDPOINT="${ASAP_FRESHNESS_WARM_ENDPOINT:-http://backend:8080}"
 ARCHIVE_ENDPOINT="${ASAP_FRESHNESS_ARCHIVE_ENDPOINT:-http://backend:8080}"

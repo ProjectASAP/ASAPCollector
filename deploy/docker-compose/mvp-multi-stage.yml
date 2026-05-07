@@ -1,4 +1,4 @@
-# MVP v6 multi-stage topology overlay
+# MVP demo multi-stage topology overlay
 #
 # Layers:
 #
@@ -17,19 +17,19 @@
 #                        invoked with PROMETHEUS_BASELINE=1)
 #
 # Drives the controller-driven multi-stage demo for issue #46.
-# See docs/spec-mvp-v6-controller-driven-multi-stage-demo.md.
+# See docs/spec-mvp-controller-driven-multi-stage-demo.md.
 #
 # Compose stack:
 #   docker compose \
 #       -f deploy/docker-compose/base.yml \
-#       -f deploy/docker-compose/mvp-v6-multi-stage.yml \
+#       -f deploy/docker-compose/mvp-multi-stage.yml \
 #       up -d
 #
 # Knobs:
 #   PER_AGENT_CARDINALITY   # default 500; total = N_PRODUCERS × this
 #   N_PRODUCERS             # default 10 (split 5+5 between agent-A / agent-B)
 #   ASAP_SKETCH_FAMILY      # default ddsketch (overridden per-metric by
-#                             controller-emitted configs once Phase B lands)
+#                             controller-emitted configs)
 
 x-fake-exporter: &fake-exporter-base
   image: asap/fake-exporter:dev
@@ -40,11 +40,11 @@ x-fake-exporter: &fake-exporter-base
     EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
     EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
     EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-    # Phase D freshness probes (criterion ⑥) — explicit propagation
-    # so the producer-* services emit the three timestamp-encoded
-    # counters regardless of what the host shell exports. Default is
-    # `on` in probes.go, but v6 saw empty CSVs because the env wasn't
-    # explicitly threaded; v6.1 makes it deterministic.
+    # Freshness probes (criterion ⑥) — explicit propagation so the
+    # producer-* services emit the three timestamp-encoded counters
+    # regardless of what the host shell exports. Default is `on` in
+    # probes.go; thread it deterministically here so the CSVs are
+    # populated even when the host shell is silent.
     EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
     EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
 
@@ -71,11 +71,12 @@ services:
   # NOTE on the per-producer environment block: YAML's `<<:` merge key
   # does NOT deep-merge nested mappings, and docker-compose treats
   # the per-service `environment` map as a complete override of any
-  # anchor-supplied `environment`. v6 inherited only the keys
-  # explicitly listed below; the anchor's EXPORTER_RATE /
-  # EXPORTER_CARDINALITY / EXPORTER_FREQ_HZ / EXPORTER_FRESHNESS_*
-  # never reached the containers. v6.1 inlines the full env per
-  # producer so freshness probes and the workload knobs propagate.
+  # anchor-supplied `environment`. The full env is therefore inlined
+  # per producer so the EXPORTER_RATE / EXPORTER_CARDINALITY /
+  # EXPORTER_FREQ_HZ / EXPORTER_FRESHNESS_* knobs propagate
+  # deterministically (a previous attempt that relied on the anchor
+  # silently dropped them inside the containers, producing empty
+  # freshness CSVs).
   #
   # Each producer pulls the host-shell env (which the driver script
   # exports) via Compose's `${VAR:-default}` interpolation.
@@ -192,27 +193,27 @@ services:
       EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
 
   # ─────────────────────────────── controller workload mount ────────────────
-  # Controller reads the v6 workload manifest at startup so its plan
-  # covers the three canonical query classes from
-  # mvp-v6-workload.yaml. Phase B's emitter consumes the resulting plan.
+  # Controller reads the MVP workload manifest at startup so its plan
+  # covers the three canonical query classes from mvp-workload.yaml.
+  # The typed-stage-split emitter consumes the resulting plan.
 
   controller:
     environment:
-      CONTROLLER_WORKLOADS: "/etc/asap/mvp-v6-workload.yaml"
+      CONTROLLER_WORKLOADS: "/etc/asap/mvp-workload.yaml"
       USE_TYPED_STAGE_SPLIT: "${USE_TYPED_STAGE_SPLIT:-1}"
-      # Phase C plumbing — when set, the typed-stage-split Backend arm
-      # actually pushes the emitted streaming-config JSON instead of
-      # silently logging "no backend client configured". Required for
-      # §8 STATUS=live in the v6.1 demo.
+      # When set, the typed-stage-split Backend arm actually pushes
+      # the emitted streaming-config JSON instead of silently logging
+      # "no backend client configured". Required for §8 STATUS=live
+      # in the demo.
       CONTROLLER_BACKEND_ENDPOINT: "${CONTROLLER_BACKEND_ENDPOINT:-http://backend:9091/api/v1/streaming-config}"
     volumes:
-      - ../configs/mvp-v6-workload.yaml:/etc/asap/mvp-v6-workload.yaml:ro
+      - ../configs/mvp-workload.yaml:/etc/asap/mvp-workload.yaml:ro
 
-  # ─────────────────────────────── backend (v6.1 wiring) ─────────────────────
+  # ─────────────────────────────── backend ───────────────────────────────────
   # The base.yml backend block omits the per-metric routing table and
-  # the GorillaQueryEngine env block. v6 needed both: the cold-archive
-  # marker for criterion ⑤, and the per-tier routing for the
-  # http_freshness_probe_{warm,archive} probes (criterion ⑥).
+  # the GorillaQueryEngine env block. The MVP demo needs both: the
+  # cold-archive marker for criterion ⑤, and the per-tier routing for
+  # the http_freshness_probe_{warm,archive} probes (criterion ⑥).
   # Mirrors the wiring already proven in
   # `baseline-b6-asap-single-sketch.yml`.
   backend:
@@ -279,12 +280,12 @@ services:
       - ../configs/${AGENT_CONFIG_B:-sketchcol-agent-b6-asap-single-sketch.yaml}:/etc/otel/config.yaml:ro
 
   # ─────────────────────────────── 1 gateway ─────────────────────────────────
-  # The base.yml gateway is a pass-through OTLP collector. v6 wants
-  # the gateway to run sketch-merge processors per the controller's
-  # plan (label-aggregation-at-instant query class). For the
-  # pre-work this overlay just declares the gateway service and
-  # mounts a placeholder gateway config; Phase C swaps the
-  # placeholder with the controller-emitted gateway YAML.
+  # The base.yml gateway is a pass-through OTLP collector. The MVP
+  # demo wants the gateway to run sketch-merge processors per the
+  # controller's plan (label-aggregation-at-instant query class).
+  # This overlay declares the gateway service and mounts a
+  # placeholder gateway config; the controller-emitted gateway YAML
+  # replaces the placeholder once the typed-stage-split path fires.
 
   gateway:
     image: asap/sketchcol:dev
@@ -292,7 +293,7 @@ services:
     command:
       - "--config=/etc/otel/config.yaml"
     volumes:
-      - ../configs/${GATEWAY_CONFIG:-sketchcol-gateway-mvp-v6-placeholder.yaml}:/etc/otel/config.yaml:ro
+      - ../configs/${GATEWAY_CONFIG:-sketchcol-gateway-mvp-placeholder.yaml}:/etc/otel/config.yaml:ro
     deploy:
       resources:
         limits:
@@ -329,7 +330,7 @@ services:
 
   fake-exporter:
     image: alpine:3.19
-    command: ["sh", "-c", "echo 'mvp-v6 overlay disables base fake-exporter; producers-a/b run instead' && sleep infinity"]
+    command: ["sh", "-c", "echo 'mvp overlay disables base fake-exporter; producers-a/b run instead' && sleep infinity"]
     depends_on: []
     environment:
-      OVERRIDDEN_BY: "mvp-v6-multi-stage.yml"
+      OVERRIDDEN_BY: "mvp-multi-stage.yml"
