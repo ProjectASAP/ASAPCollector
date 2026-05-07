@@ -1,49 +1,36 @@
 # MVP demo runbook — issue #46
 
 Step-by-step instructions for running the ASAP MVP demo on a single host.
-The demo exercises the controller-planned, multi-stage, sketch + Gorilla-S3
-pipeline against three canonical PromQL query classes and emits a
-`MVP_REPORT_v6.md` with measured numbers per criterion.
+The demo exercises the controller-planned, multi-stage,
+sketch + Gorilla-S3 pipeline against three canonical PromQL query classes
+and emits an `MVP_REPORT.md` with measured numbers per criterion.
 
-This runbook describes the **v7-state demo** (the current head of `main` as
-of 2026-05-07). Architectural background lives in
+Architectural background lives in
 [`docs/spec-mvp-v6-controller-driven-multi-stage-demo.md`](spec-mvp-v6-controller-driven-multi-stage-demo.md);
 the comparison to Databricks Pantheon+Hydra is in
 [`docs/comparison-asap-vs-databricks-pantheon-hydra.md`](comparison-asap-vs-databricks-pantheon-hydra.md).
 
-## Current status (2026-05-07)
+## Current status
 
 The MVP demo is **runnable end-to-end and exercises the controller-driven,
 multi-stage architecture**, but two ingest-side bugs leave criteria ④ and
 ⑥ reporting UNKNOWN even when their routing layers are working correctly.
 
-### Latest verdict (from v7 issue-#46 comment)
+### Verdict
 
 | # | Criterion | Verdict | What works | What doesn't |
 |---|---|---|---|---|
-| ① | Bandwidth (per-edge) | **FAIL** | per-edge B/s captured for sdk→agent / agent→gateway / gateway→backend / gateway→s3 | absolute reduction over a B0 baseline not reported (no apples-to-apples comparison row at this cardinality) |
-| ② | Query latency (p50 / p99) | **PASS** | window p99=5.2 ms, label p99=7.2 ms, combined p99=1.8 ms — all 3 query classes inside the 10ms envelope | — |
-| ③ | Combined resource | **CAPTURED** | per-stage CPU + RSS + net + disk reported | reduction-vs-B0 row depends on B0 cell which is opt-in (port collision) |
-| ④ | Accuracy (rel-err per class) | **UNKNOWN** | dispatch + warm-tier eval correct (verified via direct curl) | `accuracy_reduce.py` needs cold-tier ground-truth stream that the backend doesn't write |
-| ⑤ | Cold-fallback (`gorilla_archive`) | **PASS** | `data_source: gorilla_archive` in `cold_payments.json`; chunks land in MinIO; dual-routing dispatches `count` queries to archive engine | — |
+| ① | Bandwidth (per-edge) | **FAIL** | per-edge B/s captured for sdk→agent / agent→gateway / gateway→backend / gateway→s3 | absolute reduction over a raw-Prometheus baseline not reported (no apples-to-apples comparison row at this cardinality) |
+| ② | Query latency (p50 / p99) | **PASS** | window p99 = 5.2 ms, label p99 = 7.2 ms, combined p99 = 1.8 ms — all three query classes inside the 10 ms envelope | — |
+| ③ | Combined resource | **CAPTURED** | per-stage CPU + RSS + net + disk reported | reduction-vs-baseline row depends on a raw-Prometheus baseline cell which is opt-in (port collision) |
+| ④ | Accuracy (rel-err per class) | **UNKNOWN** | dispatch + warm-tier eval correct (verified via direct curl) | `accuracy_reduce.py` needs a cold-tier ground-truth stream that the backend doesn't write |
+| ⑤ | Cold-fallback (`gorilla_archive`) | **PASS** | `data_source: gorilla_archive` in `cold_payments.json`; chunks land in MinIO; dual-routing dispatches `count` queries to the archive engine | — |
 | ⑥ | Freshness (probe Δ) | **UNKNOWN** | freshness pattern registered in backend; routing yaml correct; producer envs propagate | agent's `gorillas3processor.encoder.go` writes chunk-header timestamp at byte offset `[5..9]` instead of `[9..13]`; consumer reads bogus emission timestamps so deltas come up zero |
 | §8 | Controller emitter STATUS | **`live`** | typed-stage-split fires; controller writes per-stage configs; `entries=4 multi_target_entries=1` in startup log | — |
 
-### History (commits / PRs that got us here)
-
-| Iteration | What it shipped | Issue-#46 comment |
-|---|---|---|
-| v1-v2 (PR #287, #288) | Initial MVP with single-cell topology | precompute_engine binary mismatch surfaced |
-| v3 (PR #289) | Per-metric backend routing; cardinality redesign 1000-per-agent × N=10 | `data_source: gorilla_archive` first confirmed |
-| v4 (PR #290) | 4-baseline (B0 raw-Prometheus / B1 SERF / B5 Gorilla / ASAP); stage-separated resource | freshness UNKNOWN due to probe routing |
-| v5 (PRs #295, #90) | Postings index + chunk byte-ranges + concat-only `gorilla-compactor` + S3 cost tracker; 7th criterion (label-predicate latency) PASS | small-cardinality FAIL on ① ③ |
-| v6 (PR #300) | Multi-stage topology (10 producer / 2 agent / 1 gateway / 1 backend); controller-driven plan emission spec | §8 STATUS not-exercised; ⑤ FAIL |
-| v6.1 (PR #301) | Fixed typed-stage-split fire path + backend image cache + freshness routing yaml | §8 STATUS now `live`; ⑤ PASS; ④ regressed (single-axis routing trade-off) |
-| v7 (PRs #91, #92, #93, #302) | Backend dual-routing per metric + freshness pattern registration | routing layer end-to-end correct; two ingest-side bugs surfaced |
-
-The verdict trajectory is monotonic in the architectural validation
-(everything to do with planning, routing, and multi-stage placement
-demonstrably works) but the two ingest-side bugs above are real follow-ups.
+The architectural validation is solid (everything to do with planning,
+routing, and multi-stage placement demonstrably works); the two
+ingest-side bugs above are real follow-ups.
 
 ### Open gaps (severity × impact × fix path)
 
@@ -61,7 +48,7 @@ demonstrably works) but the two ingest-side bugs above are real follow-ups.
 - **Fix path**: backend-side raw-tee exporter wired to the cold-store
   path. ~1-day code change in either ASAPCollector's gateway exporter
   config OR a new `coldstoreexporter` patched processor. Out of scope
-  for the v6/v7 driver layer
+  for this demo
 - **Workaround**: paper-quality accuracy numbers live in the headline
   60-cell sweep at `deploy/eval-results/headline-2026-05-06/accuracy.csv`,
   which uses a different ground-truth path
@@ -75,9 +62,8 @@ demonstrably works) but the two ingest-side bugs above are real follow-ups.
 - **Root cause**: `opentelemetry-collector-contrib-patch/processor/gorillas3processor/encoder.go`
   writes the chunk-header timestamp at byte offset `[5..9]` instead of
   `[9..13]`. The consumer parses the wrong four bytes and sees zero
-- **Fix path**: one-character offset patch staged on the v7 branch
-  (`mvp/v7-rerun`); takes effect after `asap/sketchcol:dev` is rebuilt
-  via OCB
+- **Fix path**: one-character offset patch staged on a follow-up
+  branch; takes effect after `asap/sketchcol:dev` is rebuilt via OCB
 - **Workaround**: none — freshness doesn't measure on this demo until
   the image is rebuilt
 
@@ -89,14 +75,14 @@ demonstrably works) but the two ingest-side bugs above are real follow-ups.
 - **Root cause**: Docker BuildKit caches Cargo build layers
   aggressively; the cache key doesn't always invalidate when a path-dep
   changes
-- **Fix path**: pass `--no-cache` to `docker build` after any v5/v7
-  backend PR. Verify via the `strings | grep` snippet in §3
+- **Fix path**: pass `--no-cache` to `docker build` after any backend
+  PR. Verify via the `strings | grep` snippet in §3
 - **Workaround**: documented; users now know to verify
 
 #### Out of scope for the demo (deferred)
 
 - **Dynamic plan transitions** while the demo runs — controller plans
-  once at startup. v5's `ReplannerOpampGateway` covers some of this
+  once at startup. The `ReplannerOpampGateway` covers some of this
   in unit tests but isn't exercised by the MVP demo
 - **OpAMP hot reconfig under churn** — not exercised
 - **1M+ cardinality** — the demo runs at 5-10K aggregate, single host
@@ -105,7 +91,7 @@ demonstrably works) but the two ingest-side bugs above are real follow-ups.
   (Sum / Count / Avg / Min / Max / Rate / Increase + Quantile / TopK)
   covers the demo's queries but not full Prometheus parity. See
   `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md`
-  Path A (vendor `prometheus/promql`) for the tracking direction
+  Path A for the tracking direction
 
 ## TL;DR
 
@@ -240,17 +226,15 @@ paper — don't delete or commit over them:
 ```
 deploy/eval-results/
 ├── headline-2026-05-06/        ← 60-cell paired sweep (paper headline)
-├── headline-2026-05-06-postfix/ ← post-fix subset re-runs
-└── mvp-2026-05-06-rerun/        ← v2 single-cell MVP rerun
+└── headline-2026-05-06-postfix/ ← post-fix subset re-runs
 ```
 
 **The MVP demo's own outputs are NOT committed to the repo.** When you
 run the demo, the driver writes to
 `deploy/eval-results/mvp-v6-2026-05-06/` (overridable via `OUT_BASE`),
 but those files stay local to the runner — they are not pushed back.
-For a record of the most recent v3/v4/v5/v6/v6.1/v7 runs, read the
-issue-#46 comment thread; each iteration's `MVP_REPORT_*.md` is posted
-verbatim there:
+For a record of recent runs, read the most recent `MVP_REPORT.md`
+posted on the issue-#46 comment thread:
 
   https://github.com/ProjectASAP/ASAPCollector/issues/46
 
@@ -445,7 +429,7 @@ DOCKER_BUILDKIT=1 docker build --no-cache \
     .
 ```
 
-Verify the freshly-built image actually has v5+v7 features:
+Verify the freshly-built image has the postings + dual-routing features:
 
 ```bash
 docker run --rm asap/query-backend:dev sh -c \
@@ -587,7 +571,7 @@ deploy/eval-results/mvp-v6-2026-05-06/
 
 For an end-to-end PASS picture, expect:
 
-| § | Criterion | Expected on a clean v7+ run |
+| § | Criterion | Expected on a clean run |
 |---|---|---|
 | §2 | ① bandwidth (per-edge) | per-edge B/s reported; FAIL acceptable at 5K cardinality |
 | §2 | ② query latency | PASS — p99 ≤ 10ms across all three query classes |
@@ -604,7 +588,7 @@ For an end-to-end PASS picture, expect:
 
 The architecture works at the dispatch and planning layers. Two ingest-side
 bugs surface as UNKNOWN/empty data even when the routing is correct.
-These are documented honestly in the v7 issue-#46 comment:
+These are documented in the §"Current status" verdict above:
 
 ### ④ accuracy reducer needs ground-truth dump
 
@@ -612,8 +596,8 @@ These are documented honestly in the v7 issue-#46 comment:
 ground-truth JSONL stream the backend is supposed to write at
 `/var/asap/cold/raw/`. The current backend image doesn't write that stream,
 so `accuracy.csv` lands empty even though the warm-tier engine returns
-correct answers. **Fix**: backend-side raw-tee writer (out of scope for the
-v6 driver/compose layer).
+correct answers. **Fix**: backend-side raw-tee writer (out of scope for
+the demo's driver/compose layer).
 
 ### ⑥ freshness probe encoder offset
 
@@ -627,10 +611,10 @@ via OCB.
 
 ### Backend image cache stickiness
 
-`docker build` aggressively caches Cargo build layers. After v5+ backend
-PRs merged, simple rebuilds returned the same image SHA even though the
-source had changed. **Workaround**: pass `--no-cache` to `docker build`
-when the v5/v7 features are missing from the running image (verify via the
+`docker build` aggressively caches Cargo build layers. After backend
+PRs merge, simple rebuilds can return the same image SHA even though the
+source has changed. **Workaround**: pass `--no-cache` to `docker build`
+when the postings or dual-routing features are missing from the running image (verify via the
 `strings | grep` snippet in §3).
 
 ## 8. Cleanup
@@ -664,30 +648,13 @@ docker builder prune --all
 | Backend log: `No matching pattern for http_freshness_probe_warm` | Backend image pre-dates PR #91 freshness pattern registration | `docker build --no-cache ...` per §3 |
 | `MVP_REPORT_v6.md` says §8 STATUS = `not-exercised` | `USE_TYPED_STAGE_SPLIT` not propagating | Check `docker exec controller env \| grep USE_TYPED`; re-export at the host shell |
 | `freshness/{raw,warm,archive}.csv` empty | Probe encoder offset bug (§7) OR fake-exporter image lacks probes | Rebuild fake-exporter image; verify with the `grep -l` step in §3 |
-| `accuracy.csv` empty | No ground-truth dump (§7) | Documented; out of v6/v7 scope |
+| `accuracy.csv` empty | No ground-truth dump (§7) | Documented; out of demo scope |
 | Demo agent dies at "stack settle" | Controller container not reachable; check `docker ps` and `docker compose logs controller` | Often a port collision; run `docker compose down -v` first |
 | OOM kill during the soak | `PER_AGENT_CARDINALITY` too high for the host RAM budget | Lower to 250 or run on a 32 GB host |
 
-## 10. Reproducing the historical reports
+## 10. Related runbooks and docs
 
-The v3, v4, v5, v6, v6.1, and v7 reports are all preserved in
-`deploy/eval-results/`. Each has its own `MVP_REPORT_*.md` and CSVs. To
-re-run any historical version, check out the corresponding tag/branch and
-run that branch's driver — the topology, knobs, and report format have
-shifted across versions:
-
-```bash
-git log --oneline --grep "mvp v" deploy/scripts/run_mvp_demo*.sh
-```
-
-Or just look at the issue-#46 comment thread on GitHub:
-https://github.com/ProjectASAP/ASAPCollector/issues/46
-
-Each comment posts the corresponding `MVP_REPORT_v*.md` verbatim.
-
-## 11. Related runbooks and docs
-
-- `docs/spec-mvp-v6-controller-driven-multi-stage-demo.md` — full v6 spec
+- `docs/spec-mvp-v6-controller-driven-multi-stage-demo.md` — MVP demo spec
 - `docs/comparison-asap-vs-databricks-pantheon-hydra.md` — architectural framing
 - `docs/design-gorilla-s3-cold-engine.md` — cold-engine wire format + module layout
 - `docs/e2e-test-guide.md` — pytest-style smoke tests (smaller scope than the MVP demo)
