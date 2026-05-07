@@ -41,14 +41,14 @@ ingest-side bugs above are real follow-ups.
   without ground truth)
 - **Impact**: ④ accuracy + §3 per-class rel-err render empty in
   `MVP_REPORT.md`
-- **Root cause**: `deploy/scripts/accuracy_reduce.py` reads ground truth
-  from `/var/asap/cold/raw/<metric>/YYYY/MM/DD/HH/part-N.jsonl`. The
-  current backend image's gateway-side raw-tee exporter doesn't write
-  there
-- **Fix path**: backend-side raw-tee exporter wired to the cold-store
-  path. ~1-day code change in either ASAPCollector's gateway exporter
-  config OR a new `coldstoreexporter` patched processor. Out of scope
-  for this demo
+- **Root cause**: pre-Step-1 the accuracy reducer read ground truth
+  from `/var/asap/cold/raw/<metric>/YYYY/MM/DD/HH/part-N.jsonl`,
+  written by the gateway-side raw-tee. Step-1 of the JSONL
+  deprecation deleted that path; the surviving ground-truth source
+  is the Gorilla archive on MinIO/S3 (`gorillas3processor` writes
+  Gorilla blocks, `GorillaQueryEngine` reads them back exactly)
+- **Fix path**: point `accuracy_reduce.py` at the archive engine
+  instead of the deleted JSONL layout. Out of scope for this demo
 - **Workaround**: paper-quality accuracy numbers live in the headline
   60-cell sweep at `deploy/eval-results/headline-2026-05-06/accuracy.csv`,
   which uses a different ground-truth path
@@ -91,7 +91,9 @@ ingest-side bugs above are real follow-ups.
   (Sum / Count / Avg / Min / Max / Rate / Increase + Quantile / TopK)
   covers the demo's queries but not full Prometheus parity. See
   `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md`
-  Path A for the tracking direction
+  Path A for the tracking direction. Step-2 of the JSONL deprecation
+  promotes the archive blocks to Prometheus-TSDB block format so
+  Thanos store-gateway can answer the long tail of PromQL natively
 
 ## Component status (implemented / tested / planned)
 
@@ -137,10 +139,9 @@ encoding.
 | `precompute_engine` binary | Receives sketch envelopes; serves PromQL HTTP | ✅ |
 | `SimpleEngine` | Warm-tier query engine over sketch state | ✅ implemented + tested (33 PromQL pattern matchers) |
 | `GorillaQueryEngine` | Archive-tier query engine over Gorilla chunks | ⚠️  curated PromQL subset implemented + tested (`sum / count / avg / min / max / rate / increase / quantile_over_time / topk`); full PromQL parity is open work — see `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md` |
-| `GorillaS3ColdStore` | S3 fetcher with chunk-LRU cache | ✅ |
+| `GorillaS3Store` | S3 fetcher with chunk-LRU cache | ✅ (Step-1 of the JSONL deprecation renamed `GorillaS3ColdStore` → `GorillaS3Store` — the only `Store` impl in the archive tier after the JSONL leg was deleted) |
 | `BackendStorageRouting` (multi-target) | Per-metric dispatch warm vs archive based on query shape | ✅ implemented + tested |
-| `LocalFsColdStore` (raw JSONL fallback) | Last-resort fallback | ⚠️  implemented but slated for deletion — unreachable under multi-target routing |
-| `s3_cost_tracker` | Counts PUT/GET/HEAD/DELETE + bytes | ✅ exposed at `/internal/s3_cost.csv` |
+| `s3_cost.rs` | Counts PUT/GET/HEAD/DELETE + bytes | ✅ exposed at `/internal/s3_cost.csv` |
 | Freshness pattern (`http_freshness_probe_*`) | Backend can answer `last_over_time` on probes | ✅ pattern registered |
 
 ### Gorilla archive on object storage (MinIO / S3)
@@ -174,7 +175,7 @@ against the component list:
 
 | Gap | Component touched | Status |
 |---|---|---|
-| ④ accuracy reducer | gateway-side raw-tee exporter into `/var/asap/cold/raw/` | ❌ not implemented; backend has no ground-truth dump path. ~1d follow-up |
+| ④ accuracy reducer | repoint `accuracy_reduce.py` at the Gorilla archive engine (Step-1 deleted the JSONL ground-truth path it used to read) | ❌ not implemented; ~1d follow-up |
 | ⑥ freshness probe consumer | `gorillas3processor` chunk-header offset (`[5..9]` vs `[9..13]`) | ❌ encoder bug; one-character patch staged on a follow-up branch; takes effect after `asap/sketchcol:dev` rebuild |
 | Image-cache stickiness | Backend Docker layer cache | ⚠️  operational gotcha; pass `--no-cache` |
 
@@ -182,10 +183,9 @@ against the component list:
 
 | Item | Tracking |
 |---|---|
-| Delete `LocalFsColdStore` + JSONL gateway raw-tee + the `cost_model` cold-tier scan-bytes line item | `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md` §"Delete JSONL" |
-| Full PromQL parity on `GorillaQueryEngine` (vendor `prometheus/promql` via Go sidecar — Path A recommended) | Same doc §"PromQL completeness" |
-| Backend-side raw-tee writer for accuracy ground-truth | Same doc §"Open questions" |
-| Promote archive-tier blocks to Prometheus-block-format so off-the-shelf Thanos `store gateway` can answer queries | Cross-ref `docs/comparison-asap-vs-databricks-pantheon-hydra.md` |
+| ~~Delete `LocalFsColdStore` + JSONL gateway raw-tee + the `cost_model` cold-tier scan-bytes line item~~ | DONE (Step-1 of the JSONL deprecation — backend PR #95, collector PR #312) |
+| Full PromQL parity on `GorillaQueryEngine` via the Step-2 promotion to Prometheus-TSDB block format + Thanos store-gateway as the archive query engine | `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md` |
+| Repoint `accuracy_reduce.py` ground-truth lookup at the Gorilla archive engine (Step-1 deleted the JSONL path it used to read) | Same doc §"Open questions" |
 
 ## TL;DR
 
