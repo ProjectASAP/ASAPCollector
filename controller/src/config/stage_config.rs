@@ -41,8 +41,8 @@ use std::collections::HashMap;
 use crate::sketch_algebra::params::{SketchKind, SketchParams};
 use crate::sketch_algebra::sketch_expr::EstimateOp;
 use crate::stage_split::emitter::{
-    AggregationInput, BackendAggregation, BackendReadout, BackendStageConfig, EdgeSketchProcessor,
-    EdgeStageConfig, ExportTarget, GatewayMergeProcessor, GatewayStageConfig,
+    AggregationInput, ArchiveTierMetric, BackendAggregation, BackendReadout, BackendStageConfig,
+    EdgeSketchProcessor, EdgeStageConfig, ExportTarget, GatewayMergeProcessor, GatewayStageConfig,
     PrometheusArchiveMetric,
 };
 use crate::stage_split::stage_id::StageId;
@@ -107,15 +107,74 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
     // `emitter::edge_processor_name`) and the param block is built from
     // the typed `SketchParams` payload.
     let mut processors: HashMap<String, Value> = HashMap::new();
-    let mut pipeline_processors: Vec<String> = Vec::new();
+    let mut sketch_pipeline_processors: Vec<String> = Vec::new();
     for sp in &cfg.sketch_processors {
         let block = build_edge_processor_block(sp, cfg.window_secs, &cfg.label_filters);
         // Use the processor_name verbatim as the YAML key — matches the
         // factory `Type` strings the patched OTel-contrib build registers
         // (see `opentelemetry-collector-contrib-patch/processor/*processor/factory.go`).
         processors.insert(sp.processor_name.clone(), block);
-        pipeline_processors.push(sp.processor_name.clone());
+        sketch_pipeline_processors.push(sp.processor_name.clone());
     }
+
+    // ── Phase 3.2.5 Bug (a): Gorilla-S3 archive processor block ──────────────
+    // When the plan includes any archive-tier metric (a freshness-probe
+    // archive metric, a `RawAtEdgePrometheusArchive` Mode-3 metric, or
+    // any other metric the routing table claims `gorilla_s3_archive`
+    // for), the agent's pipeline MUST run the `gorillas3` processor so
+    // the metric's samples land in MinIO. Without this, freshness probes
+    // (and any other archive-bound metric) never reach the cold tier and
+    // the warm-tier engine's `last_over_time(...)` returns empty.
+    //
+    // Config matches `deploy/configs/sketchcol-agent-b6-asap-single-sketch.yaml`
+    // — `block_format: prometheus_tsdb` so the Thanos store-gateway can
+    // read the emitted blocks; `drop_original: false` so the metric also
+    // flows downstream to the warm-tier sketch / OTLP exporter; the
+    // `window_interval` is the smallest `window_secs` declared on any
+    // archive-tier metric (defaults to 60s).
+    let has_archive_tier = !cfg.archive_tier_metrics.is_empty();
+    if has_archive_tier {
+        let window_secs: u64 = cfg
+            .archive_tier_metrics
+            .iter()
+            .filter_map(|m| m.window_secs)
+            .min()
+            .unwrap_or(60);
+        let gorillas3_yaml = format!(
+            "window_interval: {window_secs}s\n\
+drop_original: false\n\
+endpoint: \"${{ASAP_MINIO_ENDPOINT:-http://minio:9000}}\"\n\
+bucket: \"${{ASAP_GORILLA_BUCKET:-asap-gorilla}}\"\n\
+region: us-east-1\n\
+use_ssl: false\n\
+access_key_id: \"${{ASAP_MINIO_ACCESS_KEY:-asap}}\"\n\
+secret_access_key: \"${{ASAP_MINIO_SECRET_KEY:-asap-local-only}}\"\n\
+prefix_template: \"{{tenant}}/{{metric}}/{{YYYY}}/{{MM}}/{{DD}}/{{HH}}/\"\n\
+tenant: \"${{ASAP_TENANT:-default}}\"\n\
+max_retries: 3\n\
+retry_backoff: 1s\n\
+upload_timeout: 30s\n\
+block_format: prometheus_tsdb\n\
+tsdb_bucket: \"${{ASAP_GORILLA_TSDB_BUCKET:-asap-gorilla-tsdb}}\"\n\
+tsdb_block_duration: {window_secs}s\n",
+        );
+        let gorillas3: Value = serde_yaml::from_str(&gorillas3_yaml)
+            .context("parse gorillas3 processor block")?;
+        processors.insert("gorillas3".to_string(), gorillas3);
+    }
+
+    // Pipeline-processor list for the warm-tier path. Order matches
+    // `sketchcol-agent-b6-asap-single-sketch.yaml`: gorillas3 runs FIRST
+    // so the cold-tier write happens on the raw sample BEFORE the sketch
+    // processor mutates / suffix-renames the metric stream.
+    let warm_tier_processors: Vec<String> = {
+        let mut v = Vec::new();
+        if has_archive_tier {
+            v.push("gorillas3".to_string());
+        }
+        v.extend(sketch_pipeline_processors.iter().cloned());
+        v
+    };
 
     // ── Exporters ─────────────────────────────────────────────────────────────
     // Edge always exports to the gateway. ExportTarget gets resolved to
@@ -127,6 +186,8 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
         [(exporter_key.clone(), exporter_val)].into();
     let mut pipelines: HashMap<String, Pipeline> = HashMap::new();
 
+    let has_prometheus_archive = !cfg.prometheus_archive_metrics.is_empty();
+
     // ── Phase ε.1 Mode 3: per-Prometheus-archive metric, add a separate
     // `otlphttp/prometheus` exporter + a `metrics/prometheus_archive`
     // pipeline, plus a `routing` processor on the main pipeline that
@@ -136,7 +197,6 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
     // `metrics_endpoint` URL hits Prometheus's native OTLP receiver
     // (https://github.com/prometheus/prometheus/pull/12873) — Prom 2.47+
     // with `--web.enable-otlp-receiver`.
-    let has_prometheus_archive = !cfg.prometheus_archive_metrics.is_empty();
     if has_prometheus_archive {
         // Exporter: OTLP HTTP to Prometheus's native receiver. The path
         // is the canonical `/api/v1/otlp/v1/metrics`. The OTel collector's
@@ -160,13 +220,14 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
         processors.insert("routing".to_string(), routing);
 
         // Two named pipelines:
-        //   `metrics/warm_tier`        — sketch processors → otlp/backend
+        //   `metrics/warm_tier`        — gorillas3 (if archive) +
+        //                                 sketch processors → otlp/backend
         //   `metrics/prometheus_archive` — passthrough → otlphttp/prometheus
         pipelines.insert(
             "metrics/warm_tier".to_string(),
             Pipeline {
                 receivers: vec!["otlp".into()],
-                processors: pipeline_processors.clone(),
+                processors: warm_tier_processors.clone(),
                 exporters: vec![exporter_key.clone()],
             },
         );
@@ -191,12 +252,14 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
             },
         );
     } else {
-        // Legacy single-pipeline case (Mode 1 / Mode 2 only).
+        // No routing — single pipeline with the warm-tier processor
+        // chain (gorillas3 if archive_tier_metrics non-empty, then
+        // sketches).
         pipelines.insert(
             "metrics".to_string(),
             Pipeline {
                 receivers: vec!["otlp".into()],
-                processors: pipeline_processors,
+                processors: warm_tier_processors,
                 exporters: vec![exporter_key],
             },
         );
@@ -842,6 +905,7 @@ mod tests {
             }],
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
+            archive_tier_metrics: Vec::new(),
         }
     }
 
@@ -1575,6 +1639,14 @@ mod tests {
                 window_secs: Some(60),
                 label_proj: vec!["service.name".to_string()],
             }],
+            // RawAtEdgePrometheusArchive auto-populates the archive
+            // tier list as well (Phase 3.2.5): the Mode-3 metric also
+            // lands in the Gorilla-S3 archive so the warm-tier engine
+            // can serve last_over_time(...) queries.
+            archive_tier_metrics: vec![ArchiveTierMetric {
+                metric: "http_requests_total".to_string(),
+                window_secs: Some(60),
+            }],
         };
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
 
@@ -1643,5 +1715,97 @@ mod tests {
             !yaml.contains("metrics/warm_tier"),
             "no Mode 3 → main pipeline keeps the legacy `metrics:` name\n{yaml}"
         );
+        // Phase 3.2.5 — without archive_tier_metrics no gorillas3 block.
+        assert!(
+            !yaml.contains("gorillas3"),
+            "no archive tier → no gorillas3 processor\n{yaml}"
+        );
     }
+
+    // ── Phase 3.2.5 Bug (a) — gorillas3 in the emitted edge YAML ────────────
+
+    /// Bug (a): when at least one archive-tier metric is configured the
+    /// emitted YAML MUST include the `gorillas3` processor block + the
+    /// processor MUST be in the warm-tier pipeline. Without this freshness
+    /// probes (and any other archive-bound metric) never reach MinIO so
+    /// the warm-tier engine's `last_over_time(...)` returns empty.
+    #[test]
+    fn phase_3_2_5_bug_a_archive_tier_metrics_emit_gorillas3_processor() {
+        let mut cfg = ddsketch_edge_cfg();
+        cfg.archive_tier_metrics = vec![ArchiveTierMetric {
+            metric: "http_freshness_probe_archive".to_string(),
+            window_secs: Some(5),
+        }];
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        // Processor block surfaced at the top level.
+        assert!(
+            yaml.contains("gorillas3:"),
+            "missing gorillas3 processor block\n{yaml}"
+        );
+        // Critical knobs the gorillas3processor's Config requires + the
+        // ones the demo overlay inherits via env override.
+        assert!(
+            yaml.contains("block_format: prometheus_tsdb"),
+            "gorillas3 must emit prometheus_tsdb blocks for the Thanos sidecar\n{yaml}"
+        );
+        assert!(
+            yaml.contains("tsdb_bucket"),
+            "gorillas3 needs a TSDBBucket so the Thanos store-gateway can read the blocks\n{yaml}"
+        );
+        assert!(
+            yaml.contains("ASAP_MINIO_ENDPOINT"),
+            "endpoint should be env-overridable for the deploy team\n{yaml}"
+        );
+        // `drop_original: false` so the metric ALSO flows downstream
+        // through the warm-tier sketch / OTLP exporter (without this
+        // the warm tier never sees the metric).
+        assert!(
+            yaml.contains("drop_original: false"),
+            "drop_original must be false so warm-tier sketches still see the metric\n{yaml}"
+        );
+        // Processor name in the pipeline list.
+        assert!(
+            yaml.contains("- gorillas3"),
+            "gorillas3 must appear in the warm-tier pipeline processors\n{yaml}"
+        );
+        // window_interval picked up from the smallest declared
+        // window_secs — 5 here, matching the freshness-probe spec.
+        assert!(
+            yaml.contains("window_interval: 5s"),
+            "gorillas3 window_interval must reflect the smallest archive-tier window\n{yaml}"
+        );
+    }
+
+    /// Bug (a) corollary: gorillas3 runs BEFORE the sketch processor in
+    /// the warm-tier pipeline so the cold-tier write happens on raw
+    /// samples — mirrors `sketchcol-agent-b6-asap-single-sketch.yaml`'s
+    /// canonical `[gorillas3, ddsketch, batch]` ordering.
+    #[test]
+    fn phase_3_2_5_bug_a_gorillas3_runs_before_sketch_in_pipeline() {
+        let mut cfg = ddsketch_edge_cfg();
+        cfg.archive_tier_metrics = vec![ArchiveTierMetric {
+            metric: "http_freshness_probe_archive".to_string(),
+            window_secs: Some(5),
+        }];
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        // Find the pipeline processor list — should contain gorillas3
+        // ahead of ddsketchprocessor in the serialized order. Robust
+        // search: locate the `processors:` block under the metrics
+        // pipeline and check substring positions.
+        let pipeline_idx = yaml.find("metrics:\n").unwrap_or_default();
+        let after_pipeline = &yaml[pipeline_idx..];
+        let g_idx = after_pipeline
+            .find("- gorillas3")
+            .expect("- gorillas3 missing in pipeline");
+        let s_idx = after_pipeline
+            .find("- ddsketchprocessor")
+            .expect("- ddsketchprocessor missing in pipeline");
+        assert!(
+            g_idx < s_idx,
+            "gorillas3 must come BEFORE ddsketchprocessor in the warm pipeline\n{yaml}"
+        );
+    }
+
 }
