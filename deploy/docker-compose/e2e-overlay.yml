@@ -3,27 +3,24 @@
 # `-f` flag so it can override env / volumes / commands.
 #
 # What it adds:
-#   1. A shared `cold-store` volume mounted into both fake-exporter
-#      (writes raw JSONL ground truth via P4 raw_tee) and backend
-#      (reads via LocalFsColdStore, the §5.2 cold path).
-#   2. EXPORTER_RAW_TEE_ROOT  → fake-exporter writes ground truth.
-#   3. EXPORTER_CONTROL_ADDR  → fake-exporter exposes the swappable
+#   1. EXPORTER_CONTROL_ADDR  → fake-exporter exposes the swappable
 #      filter HTTP control endpoint (P2).
-#   4. ASAP_COLD_STORE_ROOT   → backend reads the cold store at the
-#      same mountpoint.
-#   5. --cold-store-root + --forward-unsupported-queries on the
-#      backend command line so capability-misses route through the
-#      cold path before falling back to Prom.
-#   6. Mounts deploy/configs/workloads.yaml into the controller and
+#   2. Mounts deploy/configs/workloads.yaml into the controller and
 #      sets CONTROLLER_WORKLOADS to point at it. Without this the
 #      controller's startup log says "workloads file not found; using
 #      empty registry" and never publishes a plan id, so
 #      plan_transition.py sees `before_plan: null / after_plan: null`.
-#   7. Sets CONTROLLER_BACKEND_ENDPOINT so the controller's replanner
+#   3. Sets CONTROLLER_BACKEND_ENDPOINT so the controller's replanner
 #      pushes StreamingConfig YAML to the backend on every plan
 #      change. The backend's hot-reload handler is on the query port
 #      (9091) at /api/v1/streaming-config — same surface the planner
 #      tests in `controller/src/backend_client.rs` exercise.
+#
+# Step-1 of the JSONL deprecation removed the cold-store volume +
+# raw-tee + `--cold-store-root` wiring. The §5.2 LocalFsColdStore
+# fallback was deleted in the backend at the same commit; the
+# surviving fallback chain is just Prometheus
+# (`--forward-unsupported-queries`).
 #
 # Wire it as:
 #
@@ -68,25 +65,8 @@ services:
     volumes:
       - ../configs/gateway-otlp-forward.yaml:/etc/otelcol-contrib/config.yaml:ro
 
-  # One-shot init: chown the cold-store volume so the
-  # distroless `nonroot` user (uid 65532) inside fake-exporter
-  # can write into it. Compose-level `init: true` doesn't help —
-  # this is about volume ownership, not PID 1 reaping.
-  cold-store-init:
-    image: busybox:1.36
-    command:
-      - sh
-      - -c
-      - "mkdir -p /var/asap/cold/raw && chown -R 65532:65532 /var/asap/cold && chmod 0775 /var/asap/cold && echo 'cold-store initialised'"
-    volumes:
-      - cold-store:/var/asap/cold
-
   fake-exporter:
-    depends_on:
-      cold-store-init:
-        condition: service_completed_successfully
     environment:
-      EXPORTER_RAW_TEE_ROOT: "/var/asap/cold"
       EXPORTER_CONTROL_ADDR: "0.0.0.0:7700"
       EXPORTER_INSTANCE_ID: "${EXPORTER_INSTANCE_ID:-fake-1}"
       # When this overlay is in the chain, the producer talks to
@@ -94,19 +74,15 @@ services:
       # overlay does the same; we leave it alone here.
     ports:
       - "17700:7700"   # POST /control/projection from the host
-    volumes:
-      - cold-store:/var/asap/cold
 
   backend:
     environment:
-      ASAP_COLD_STORE_ROOT: "/var/asap/cold"
       RUST_LOG: "info,query_engine_rust::drivers::ingest=debug,query_engine_rust::engines=debug,query_engine_rust::precompute_engine=debug"
     command:
       - "--streaming-config=/etc/asap/streaming.yaml"
       - "--inference-config=/etc/asap/inference.yaml"
       - "--ingest-port=9090"
       - "--query-port=9091"
-      - "--cold-store-root=/var/asap/cold"
       - "--forward-unsupported-queries"
       - "--prometheus-server=http://prometheus:9090"
       - "--enable-otel-ingest"
@@ -117,8 +93,4 @@ services:
       - "14380:4317"   # backend OTLP gRPC (host 14380 → container 4317; gateway already owns 14317)
       - "14381:4318"   # backend OTLP HTTP
     volumes:
-      - cold-store:/var/asap/cold:ro
       - ../configs/backend-inference.yaml:/etc/asap/inference.yaml:ro
-
-volumes:
-  cold-store:
