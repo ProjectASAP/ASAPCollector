@@ -597,6 +597,15 @@ fn intent_cost(intent: &AggIntent) -> f64 {
         AggIntent::TopK { .. } => 25.0,
         AggIntent::Frequency { .. } => 15.0,
         AggIntent::Rate { .. } | AggIntent::Increase { .. } => 8.0,
+        // Phase β archive-only intents — priced as a cold-tier scan
+        // rather than a streaming aggregate. Higher than `Sum` (the engine
+        // must read the raw archive) but lower than the sketch intents
+        // (no per-sample sketch update on the hot path). Tightening this
+        // is a follow-up once real measurements land.
+        intent if intent.archive_only() => 12.0,
+        // Defensive fallback — any future intent that isn't archive-only
+        // and doesn't match an explicit arm prices as a generic aggregate.
+        _ => 5.0,
     }
 }
 

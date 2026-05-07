@@ -373,3 +373,190 @@ fn let_binding_ref_through_sketch_dag() {
     let back: SketchExpr = serde_json::from_str(&json).unwrap();
     assert_eq!(expr, back);
 }
+
+// ── Phase β: pattern-migration coverage ───────────────────────────────────────
+//
+// The five PromQL pattern shapes defined in `asap-planner-rs/src/planner/
+// patterns.rs` each have a controller L3/L4 equivalent. These tests are the
+// per-shape cross-reference asserting the L1→L3→L4 path produces a
+// matching binding without going back through asap-planner-rs.
+
+/// `ONLY_TEMPORAL` — `quantile_over_time(0.99, m[5m])`.
+/// asap-planner-rs path: ONLY_TEMPORAL pattern 1 → KLL/DDSketch sketch.
+/// Controller path: `Aggregate{Quantile{0.99}}` over `Window` →
+/// `BindKllOnQuantile` (or DDSketch) → `SketchAgg{KLL/DDSketch}`.
+#[test]
+fn phase_b_pattern_only_temporal_quantile_binds_to_sketch() {
+    let expr = QueryExpr::Aggregate {
+        by: vec![],
+        aggs: vec![AggIntent::Quantile {
+            q: 0.99,
+            accuracy: AccuracyTarget::Epsilon(0.01),
+        }],
+        having: None,
+        child: Box::new(windowed_scan()),
+    };
+    let bound = bind_query_expr(&expr, AccuracyTarget::Epsilon(0.01)).unwrap();
+    match bound {
+        SketchExpr::SketchEstimate { op, child } => {
+            assert!(matches!(op, EstimateOp::Quantile { .. }));
+            match *child {
+                SketchExpr::SketchAgg { sketch_type, .. } => {
+                    assert!(matches!(
+                        sketch_type,
+                        SketchKind::Kll | SketchKind::DDSketch
+                    ));
+                }
+                other => panic!("expected SketchAgg under SketchEstimate, got {other:?}"),
+            }
+        }
+        other => panic!("expected SketchEstimate, got {other:?}"),
+    }
+}
+
+/// `ONLY_TEMPORAL` — `sum_over_time(m[5m])` (and the count/avg/min/max
+/// variants that legacy `single_query.rs` accepts).
+/// Controller path: `Aggregate{Sum}` over `Window` → no warm-tier rule
+/// fires (no streaming sum sketch); falls through to `Logical`. The
+/// existing `algebra::directory` / `algebra::physical` engine handles the
+/// exact aggregate.
+#[test]
+fn phase_b_pattern_only_temporal_sum_falls_through_to_logical() {
+    let expr = QueryExpr::Aggregate {
+        by: vec![],
+        aggs: vec![AggIntent::Sum],
+        having: None,
+        child: Box::new(windowed_scan()),
+    };
+    let bound = bind_query_expr(&expr, AccuracyTarget::Epsilon(0.01)).unwrap();
+    // Sum is exact → no SketchAgg, just a Logical pass-through.
+    assert!(matches!(bound, SketchExpr::Logical(_)));
+}
+
+/// `ONLY_SPATIAL` — `sum by (host) (m)`.
+/// Controller path: `Aggregate{Sum, by=[host]}` over a bare `Scan` (no
+/// `Window`). Sum is exact → Logical pass-through. The point of the test
+/// is the by-clause survives binding intact.
+#[test]
+fn phase_b_pattern_only_spatial_aggregate_preserves_by_clause() {
+    let expr = QueryExpr::Aggregate {
+        by: vec![1], // service column
+        aggs: vec![AggIntent::Sum],
+        having: None,
+        child: Box::new(ts_scan()),
+    };
+    let bound = bind_query_expr(&expr, AccuracyTarget::Epsilon(0.01)).unwrap();
+    match bound {
+        SketchExpr::Logical(QueryExpr::Aggregate { by, .. }) => {
+            assert_eq!(by, vec![1]);
+        }
+        other => panic!("expected Logical(Aggregate), got {other:?}"),
+    }
+}
+
+/// `ONE_TEMPORAL_ONE_SPATIAL` — `sum by (host) (rate(m[5m]))`.
+/// Controller path: combined `Aggregate{Sum, by=[host]}` over `Window` —
+/// the L3 algebra captures both axes natively without needing the legacy
+/// pattern's `One*One*` enum.
+#[test]
+fn phase_b_pattern_temporal_and_spatial_combined() {
+    let expr = QueryExpr::Aggregate {
+        by: vec![1],
+        aggs: vec![AggIntent::Rate {
+            window: Duration::from_secs(300),
+        }],
+        having: None,
+        child: Box::new(windowed_scan()),
+    };
+    let bound = bind_query_expr(&expr, AccuracyTarget::Epsilon(0.01)).unwrap();
+    // Rate has no warm-tier sketch family today — expect Logical.
+    assert!(matches!(bound, SketchExpr::Logical(_)));
+}
+
+/// `histogram_quantile(φ, …)` — Phase β archive-only addition (not in
+/// `patterns.rs`'s 5 entries; the legacy planner refused these via
+/// `is_supported() == false`). Controller path: `BindArchiveOnly` matches
+/// → `Logical` pass-through, and the L5 emitter / Phase α routing reads
+/// `AggIntent::archive_only() == true` to flag the StreamingConfig entry
+/// for the archive tier.
+#[test]
+fn phase_b_pattern_histogram_quantile_routes_to_archive() {
+    let intent = AggIntent::HistogramQuantile { q: 0.99 };
+    assert!(intent.archive_only(), "Phase β intent must flag archive");
+    let expr = QueryExpr::Aggregate {
+        by: vec![],
+        aggs: vec![intent.clone()],
+        having: None,
+        child: Box::new(windowed_scan()),
+    };
+    let bound = bind_query_expr(&expr, AccuracyTarget::Epsilon(0.01)).unwrap();
+    // The archive-only rule's output is a Logical pass-through carrying
+    // the original Aggregate. Downstream emitters check archive_only().
+    match bound {
+        SketchExpr::Logical(QueryExpr::Aggregate { aggs, .. }) => {
+            assert_eq!(aggs, vec![intent]);
+        }
+        other => panic!("expected Logical(Aggregate(HistogramQuantile)), got {other:?}"),
+    }
+}
+
+/// Cross-cutting: every Phase β archive-only intent reaches
+/// `bind_query_expr` and lands as a `Logical` pass-through whose contents
+/// the L5 emitter can route via `archive_only()`. Mirrors Phase γ's
+/// "delete asap-planner-rs without losing coverage" goal — none of these
+/// raise an error or panic; all produce a valid L4 expression.
+#[test]
+fn phase_b_archive_only_intents_round_trip_through_binder() {
+    let intents = vec![
+        AggIntent::HistogramQuantile { q: 0.5 },
+        AggIntent::Absent,
+        AggIntent::Present,
+        AggIntent::Delta {
+            window: Duration::from_secs(60),
+        },
+        AggIntent::Deriv {
+            window: Duration::from_secs(60),
+        },
+        AggIntent::PredictLinear {
+            window: Duration::from_secs(300),
+            ahead: Duration::from_secs(60),
+        },
+        AggIntent::HoltWinters {
+            window: Duration::from_secs(300),
+            smoothing_factor: 0.3,
+            trend_factor: 0.3,
+        },
+        AggIntent::Idelta {
+            window: Duration::from_secs(60),
+        },
+        AggIntent::Irate {
+            window: Duration::from_secs(60),
+        },
+        AggIntent::Resets {
+            window: Duration::from_secs(300),
+        },
+        AggIntent::Changes {
+            window: Duration::from_secs(300),
+        },
+    ];
+    for intent in intents {
+        let expr = QueryExpr::Aggregate {
+            by: vec![],
+            aggs: vec![intent.clone()],
+            having: None,
+            child: Box::new(windowed_scan()),
+        };
+        let bound =
+            bind_query_expr(&expr, AccuracyTarget::Epsilon(0.01)).expect("bind should succeed");
+        match bound {
+            SketchExpr::Logical(QueryExpr::Aggregate { aggs, .. }) => {
+                assert_eq!(aggs.len(), 1);
+                assert!(
+                    aggs[0].archive_only(),
+                    "{intent:?} should preserve archive_only() flag through bind"
+                );
+            }
+            other => panic!("expected Logical(Aggregate({intent:?})), got {other:?}"),
+        }
+    }
+}
