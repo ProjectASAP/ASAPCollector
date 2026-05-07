@@ -93,6 +93,100 @@ ingest-side bugs above are real follow-ups.
   `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md`
   Path A for the tracking direction
 
+## Component status (implemented / tested / planned)
+
+The MVP demo's intent: sketches feed the warm tier in
+`ASAPQuery-backend` and are answered by an in-process query engine;
+Gorilla-XOR-compressed raw chunks feed an archive tier on MinIO (S3
+local) and are answered by a separate query engine that decodes the
+chunks on demand. The shared compute lives in two reusable libraries
+(`asap-precompute-{go,rs}` and `asap-gorilla`) so OTel / OTAP /
+Telegraf edge runtimes can plug into the same wire format and chunk
+encoding.
+
+### Edge runtimes (consume the common precompute libraries)
+
+| Runtime | Language | Library | Status |
+|---|---|---|---|
+| `sketchcol` (OTel collector) | Go | `asap-precompute-go` | ✅ implemented + tested end-to-end (paired sweep) |
+| `sketchotap` (OTAP-Dataflow) | Rust | `asap-precompute-rs` | ✅ implemented; cross-host byte-parity test green |
+| `sketchtelegraf` (Telegraf input) | Go | `asap-precompute-go` | ✅ implemented; envelope byte-parity verified |
+
+### Common precompute / chunk libraries
+
+| Library | Used by | Status |
+|---|---|---|
+| `asap-precompute-go` | `sketchcol`, `sketchtelegraf` | ✅ implemented |
+| `asap-precompute-rs` | `sketchotap`, ASAPQuery-backend ingest path | ✅ implemented |
+| `asap-gorilla` (Rust encoder/decoder, postings, chunk index) | `gorillas3processor` (via Go-shim), backend `GorillaQueryEngine`, `gorilla-compactor` | ✅ implemented + tested (39 unit tests pass; cross-language byte parity with the Go gorillas3processor) |
+
+### Sketch families (5 supported, byte-parity across runtimes)
+
+| Family | Wire variant | Cross-runtime parity | Backend accumulator |
+|---|---|---|---|
+| DDSketch | `Metric.data = DDSketch` | ✅ | ✅ |
+| KLL | `Metric.data = KLLSketch` | ✅ | ✅ |
+| HLL | `Metric.data = HLLSketch` | ✅ | ✅ |
+| CountSketch | `Metric.data = CountSketch` | ✅ | ✅ |
+| Count-Min Sketch | `Metric.data = CountMinSketch` | ✅ | ✅ |
+
+### Backend (`ASAPQuery-backend`)
+
+| Component | Role | Status |
+|---|---|---|
+| `precompute_engine` binary | Receives sketch envelopes; serves PromQL HTTP | ✅ |
+| `SimpleEngine` | Warm-tier query engine over sketch state | ✅ implemented + tested (33 PromQL pattern matchers) |
+| `GorillaQueryEngine` | Archive-tier query engine over Gorilla chunks | ⚠️  curated PromQL subset implemented + tested (`sum / count / avg / min / max / rate / increase / quantile_over_time / topk`); full PromQL parity is open work — see `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md` |
+| `GorillaS3ColdStore` | S3 fetcher with chunk-LRU cache | ✅ |
+| `BackendStorageRouting` (multi-target) | Per-metric dispatch warm vs archive based on query shape | ✅ implemented + tested |
+| `LocalFsColdStore` (raw JSONL fallback) | Last-resort fallback | ⚠️  implemented but slated for deletion — unreachable under multi-target routing |
+| `s3_cost_tracker` | Counts PUT/GET/HEAD/DELETE + bytes | ✅ exposed at `/internal/s3_cost.csv` |
+| Freshness pattern (`http_freshness_probe_*`) | Backend can answer `last_over_time` on probes | ✅ pattern registered |
+
+### Gorilla archive on object storage (MinIO / S3)
+
+| Component | Role | Status |
+|---|---|---|
+| MinIO container | S3-compatible local object store | ✅ deployed in compose |
+| `gorillas3processor` (Go) | Edge processor: encode raw → Gorilla chunks → S3 PUT | ✅ implemented + tested |
+| Chunk format (self-describing) | Magic + schema_version + flags + time bounds + sample count + CRC32C + labelset + Gorilla body | ✅ |
+| Per-block manifest (`index.json`) | Lists chunks with `byte_offset` + `byte_length` | ✅ enables `Range:` partial S3 reads |
+| Postings index (`postings-v1.json`) | `label_name=value → series_ids` | ✅ implemented; consumed by `GorillaQueryEngine` for label-predicate filtering |
+| `gorilla-compactor` binary | Concat-only block consolidation (≥6 hourly blocks → 1 day-block) | ✅ implemented + tested (idempotent; partial-read verified) |
+
+### Controller (5-layer pipeline)
+
+| Layer | Role | Status |
+|---|---|---|
+| L1 `query_language` | Parse PromQL → AST | ✅ |
+| L2 `logical_plan` | AST → logical operators | ✅ |
+| L3 `intent_algebra` | `AggIntent` + `QueryExpr` DAG + Schema | ✅ |
+| L4 `sketch_algebra` | `SketchExpr` + `Bind*` rules | ✅ |
+| L5 `stage_split` | `StageAllocator` + `ThreeStageEmitter` | ✅ |
+| Per-runtime config emitter (`emit_edge_yaml` / `emit_gateway_yaml` / `emit_backend_config_json`) | Plan → per-stage YAML | ✅ implemented + tested (gated by `USE_TYPED_STAGE_SPLIT=1`) |
+| OpAMP push to agent / gateway / backend | Push emitted configs at startup | ✅ — STATUS = `live` confirmed in demo runs |
+| Cost model (`workload_cost`) | Tier-spanning unit cost: warm RAM, S3 PUT/GET, edge CPU, cut-edge bandwidth | ✅ |
+
+### What's NOT working end-to-end (known gaps)
+
+These are the same gaps captured in §"Open gaps" above. Recapping
+against the component list:
+
+| Gap | Component touched | Status |
+|---|---|---|
+| ④ accuracy reducer | gateway-side raw-tee exporter into `/var/asap/cold/raw/` | ❌ not implemented; backend has no ground-truth dump path. ~1d follow-up |
+| ⑥ freshness probe consumer | `gorillas3processor` chunk-header offset (`[5..9]` vs `[9..13]`) | ❌ encoder bug; one-character patch staged on a follow-up branch; takes effect after `asap/sketchcol:dev` rebuild |
+| Image-cache stickiness | Backend Docker layer cache | ⚠️  operational gotcha; pass `--no-cache` |
+
+### Planned (not yet implemented)
+
+| Item | Tracking |
+|---|---|
+| Delete `LocalFsColdStore` + JSONL gateway raw-tee + the `cost_model` cold-tier scan-bytes line item | `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md` §"Delete JSONL" |
+| Full PromQL parity on `GorillaQueryEngine` (vendor `prometheus/promql` via Go sidecar — Path A recommended) | Same doc §"PromQL completeness" |
+| Backend-side raw-tee writer for accuracy ground-truth | Same doc §"Open questions" |
+| Promote archive-tier blocks to Prometheus-block-format so off-the-shelf Thanos `store gateway` can answer queries | Cross-ref `docs/comparison-asap-vs-databricks-pantheon-hydra.md` |
+
 ## TL;DR
 
 ```bash
