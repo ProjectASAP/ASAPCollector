@@ -545,6 +545,60 @@ async fn handle_plan(
                                 }
                                 Err(e) => warn!(error = %e, "emit_backend_config_json failed"),
                             }
+
+                            // Phase α (MVP): emit per-metric storage
+                            // routing table from the same typed L5
+                            // BackendStageConfig, and POST it to the
+                            // backend's `/api/v1/storage_routing`
+                            // endpoint via the BackendClient sibling
+                            // method. The classification rules live in
+                            // `config::stage_config::emit_backend_storage_routing`
+                            // — see that function's doc-comment for the
+                            // sketch-family → query-shape mapping.
+                            //
+                            // One workload = one metric in this loop;
+                            // the emitted JSON has a single-element
+                            // `metrics:` array. The backend's
+                            // `RoutingTable::from_json_payload` swap is
+                            // additive — Phase α posts one metric per
+                            // plan-emit; Phase β / γ may switch to a
+                            // cumulative table when the controller
+                            // gains a multi-workload planning surface.
+                            let plans = vec![(workload.metric_name.clone(), &be)];
+                            match config::emit_backend_storage_routing(&plans) {
+                                Ok(routing_doc) => {
+                                    info!(
+                                        stage = "backend",
+                                        metric = %workload.metric_name,
+                                        "[USE_TYPED_STAGE_SPLIT] posting storage-routing JSON"
+                                    );
+                                    if let Some(client) = st.backend_client.as_ref() {
+                                        let body = routing_doc.to_string();
+                                        match client.post_storage_routing_json(body).await {
+                                            Ok(()) => info!(
+                                                stage = "backend",
+                                                metric = %workload.metric_name,
+                                                "[USE_TYPED_STAGE_SPLIT] storage-routing JSON push succeeded"
+                                            ),
+                                            Err(e) => warn!(
+                                                stage = "backend",
+                                                metric = %workload.metric_name,
+                                                error = %e,
+                                                "[USE_TYPED_STAGE_SPLIT] storage-routing JSON push failed; \
+                                                 next replan cycle will retry"
+                                            ),
+                                        }
+                                    } else {
+                                        info!(
+                                            stage = "backend",
+                                            "[USE_TYPED_STAGE_SPLIT] no backend client configured; \
+                                             skipping storage-routing JSON push"
+                                        );
+                                    }
+                                }
+                                Err(e) => warn!(error = %e, "emit_backend_storage_routing failed"),
+                            }
+
                             // Mention stage_id so `match` arms aren't
                             // collapsed into untagged log lines if the
                             // tracing filter drops the per-arm event.

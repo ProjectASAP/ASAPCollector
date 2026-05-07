@@ -130,6 +130,69 @@ impl BackendClient {
             ))
         }
     }
+
+    /// Phase α (MVP) sibling of [`Self::post_streaming_config_json`]:
+    /// POSTs the controller-emitted `BackendStorageRouting` JSON
+    /// document to the backend's `POST /api/v1/storage_routing`
+    /// endpoint. The backend hot-loads the routing table and the next
+    /// instant query consults the new table.
+    ///
+    /// Endpoint resolution: the field [`Self::endpoint`] is the
+    /// controller's configured streaming-config endpoint (e.g.
+    /// `http://backend.svc:8088/api/v1/streaming-config`). We rewrite
+    /// the path component from `/api/v1/streaming-config` to
+    /// `/api/v1/storage_routing` so operators only configure one
+    /// `CONTROLLER_BACKEND_ENDPOINT` env var and both pushes land at
+    /// the same backend host. URLs that don't end in
+    /// `/api/v1/streaming-config` are passed through unchanged
+    /// (a test-mode escape hatch — the unit test below builds a
+    /// mock URL ending in `/storage_routing` directly).
+    pub async fn post_storage_routing_json(&self, json: String) -> Result<()> {
+        let url = derive_storage_routing_url(&self.endpoint);
+        debug!(
+            endpoint = %url,
+            json_bytes = json.len(),
+            "posting storage-routing JSON to ASAPQuery-backend"
+        );
+        let resp = self
+            .http
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(json)
+            .send()
+            .await
+            .context("failed to POST storage-routing JSON to backend")?;
+
+        let status = resp.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            Err(anyhow::anyhow!(
+                "backend returned {} for storage-routing JSON POST: {}",
+                status,
+                body
+            ))
+        }
+    }
+}
+
+/// Map a streaming-config endpoint URL to the sibling storage-routing
+/// endpoint by rewriting the trailing path component. URLs that don't
+/// end with `/api/v1/streaming-config` (or `/api/v1/streaming_config` —
+/// either spelling is supported) pass through unchanged so tests can
+/// inject a mock-server URL directly.
+fn derive_storage_routing_url(endpoint: &str) -> String {
+    const STREAMING_PATH_DASH: &str = "/api/v1/streaming-config";
+    const STREAMING_PATH_UNDERSCORE: &str = "/api/v1/streaming_config";
+    const ROUTING_PATH: &str = "/api/v1/storage_routing";
+    if let Some(stripped) = endpoint.strip_suffix(STREAMING_PATH_DASH) {
+        return format!("{stripped}{ROUTING_PATH}");
+    }
+    if let Some(stripped) = endpoint.strip_suffix(STREAMING_PATH_UNDERSCORE) {
+        return format!("{stripped}{ROUTING_PATH}");
+    }
+    endpoint.to_string()
 }
 
 /// Fire-and-forget convenience helper used by the replanner. Logs
@@ -257,5 +320,99 @@ mod tests {
         assert!(result.is_err(), "expected error on 400, got {result:?}");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("400"), "error msg should mention 400: {msg}");
+    }
+
+    /// Phase α: storage-routing-URL derivation rewrites the path
+    /// component when the configured endpoint ends in
+    /// `/api/v1/streaming-config`, leaving everything else untouched.
+    #[test]
+    fn storage_routing_url_rewrites_streaming_path() {
+        assert_eq!(
+            derive_storage_routing_url("http://backend:8088/api/v1/streaming-config"),
+            "http://backend:8088/api/v1/storage_routing"
+        );
+        assert_eq!(
+            derive_storage_routing_url("http://backend:8088/api/v1/streaming_config"),
+            "http://backend:8088/api/v1/storage_routing"
+        );
+    }
+
+    #[test]
+    fn storage_routing_url_preserves_unknown_paths_for_tests() {
+        // Test escape hatch — a mock-server URL pointing directly at
+        // `/api/v1/storage_routing` already passes through unchanged.
+        assert_eq!(
+            derive_storage_routing_url("http://127.0.0.1:1/api/v1/storage_routing"),
+            "http://127.0.0.1:1/api/v1/storage_routing"
+        );
+        // Unrelated path passes through too — no surprise rewriting.
+        assert_eq!(
+            derive_storage_routing_url("http://x/foo"),
+            "http://x/foo"
+        );
+    }
+
+    /// Phase α: full happy path. A mock backend hosts the storage
+    /// routing endpoint; the client POSTs the controller-emitted JSON
+    /// and the body round-trips verbatim. Mirrors `json_post_round_trips_body`.
+    async fn start_mock_routing_backend(
+        sink: SharedSink,
+        status: axum::http::StatusCode,
+    ) -> String {
+        let app = Router::new()
+            .route(
+                "/api/v1/storage_routing",
+                post(
+                    move |State(sink): State<SharedSink>, body: axum::body::Bytes| async move {
+                        let json = String::from_utf8_lossy(&body).to_string();
+                        sink.0.lock().unwrap().push(json);
+                        status
+                    },
+                ),
+            )
+            .with_state(sink);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Return the streaming-config URL — the client will rewrite
+        // the path before issuing the POST.
+        format!("http://{addr}/api/v1/streaming-config")
+    }
+
+    #[tokio::test]
+    async fn storage_routing_post_round_trips_body_via_url_rewrite() {
+        let sink = SharedSink(StdArc::new(Mutex::new(Vec::new())));
+        let url = start_mock_routing_backend(sink.clone(), axum::http::StatusCode::OK).await;
+
+        let client = BackendClient::new(url);
+        let json =
+            r#"{"default_engine":"sketch_warm_tier","metrics":[{"name":"x","targets":[]}]}"#
+                .to_string();
+        client
+            .post_storage_routing_json(json.clone())
+            .await
+            .expect("routing post ok");
+
+        let received = sink.0.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0], json);
+    }
+
+    #[tokio::test]
+    async fn storage_routing_post_non_2xx_is_error() {
+        let sink = SharedSink(StdArc::new(Mutex::new(Vec::new())));
+        let url = start_mock_routing_backend(
+            sink.clone(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        )
+        .await;
+        let client = BackendClient::new(url);
+        let result = client.post_storage_routing_json("{}".to_string()).await;
+        assert!(result.is_err(), "expected error on 500, got {result:?}");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("500"), "error msg should mention 500: {msg}");
     }
 }
