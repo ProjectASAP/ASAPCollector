@@ -589,10 +589,27 @@ freshness_phase() {
     log "Phase 3 freshness probes [${PIPELINE_LABEL}]"
     # The fake-exporter has been emitting probes the whole time
     # (EXPORTER_FRESHNESS_PROBES=on); this phase is poll-only.
+    #
+    # Phase 3.2.5 Bug (c): the raw probe is intentionally polled at
+    # Prometheus B0 (HOST_PROM_B0_PORT=19090), NOT the backend
+    # (HOST_BACKEND_QUERY_PORT=19091). Per `mvp-freshness-probes.yaml`:
+    # "raw probe is exported via prometheusremotewrite to the real
+    # Prometheus container" — the raw path's storage IS Prometheus
+    # B0, regardless of which pipeline (baseline / asap) is currently
+    # running. In baseline mode prometheus-b0 is up under
+    # `--profile b0` and the probe lands there directly; in asap mode
+    # B0 is not running and the raw poll returns empty (the asap
+    # topology doesn't carry a raw-storage tier — that's the whole
+    # point of comparing baseline-vs-asap freshness).
+    #
+    # Warm / archive endpoints stay on PIPELINE_QUERY_PORT — both
+    # paths route through the backend's storage-routing table to
+    # whichever tier the backend has wired (warm sketch in asap, b0
+    # Prometheus in baseline).
     bash "${SCRIPT_DIR}/run_freshness_phase.sh" \
         --out-dir "${PIPELINE_OUT_BASE}" \
         --duration "${FRESHNESS_DURATION_S}" \
-        --raw-endpoint "${ASAP_FRESHNESS_RAW_ENDPOINT:-http://localhost:${PIPELINE_QUERY_PORT}}" \
+        --raw-endpoint "${ASAP_FRESHNESS_RAW_ENDPOINT:-http://localhost:${HOST_PROM_B0_PORT}}" \
         --warm-endpoint "${ASAP_FRESHNESS_WARM_ENDPOINT:-http://localhost:${PIPELINE_QUERY_PORT}}" \
         --archive-endpoint "${ASAP_FRESHNESS_ARCHIVE_ENDPOINT:-http://localhost:${PIPELINE_QUERY_PORT}}" \
         > "${PIPELINE_OUT_BASE}/freshness/run.log" 2>&1 || \
