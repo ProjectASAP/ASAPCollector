@@ -41,8 +41,9 @@ use std::collections::HashMap;
 use crate::sketch_algebra::params::{SketchKind, SketchParams};
 use crate::sketch_algebra::sketch_expr::EstimateOp;
 use crate::stage_split::emitter::{
-    BackendAggregation, BackendReadout, BackendStageConfig, EdgeSketchProcessor, EdgeStageConfig,
-    ExportTarget, GatewayMergeProcessor, GatewayStageConfig,
+    AggregationInput, BackendAggregation, BackendReadout, BackendStageConfig, EdgeSketchProcessor,
+    EdgeStageConfig, ExportTarget, GatewayMergeProcessor, GatewayStageConfig,
+    PrometheusArchiveMetric,
 };
 use crate::stage_split::stage_id::StageId;
 
@@ -122,6 +123,85 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
     // documented hostnames the demo overlay (Phase C) will provision.
     let (exporter_key, exporter_val) = build_otlp_exporter("gateway", &cfg.exporter_target);
 
+    let mut exporters: HashMap<String, Value> =
+        [(exporter_key.clone(), exporter_val)].into();
+    let mut pipelines: HashMap<String, Pipeline> = HashMap::new();
+
+    // ── Phase ε.1 Mode 3: per-Prometheus-archive metric, add a separate
+    // `otlphttp/prometheus` exporter + a `metrics/prometheus_archive`
+    // pipeline, plus a `routing` processor on the main pipeline that
+    // dispatches by `attributes["asap.mode"]`. The agent's controller
+    // emits `asap.mode = "prometheus_archive"` as an attribute on each
+    // Mode-3 metric so the routing match key is in-band. The
+    // `metrics_endpoint` URL hits Prometheus's native OTLP receiver
+    // (https://github.com/prometheus/prometheus/pull/12873) — Prom 2.47+
+    // with `--web.enable-otlp-receiver`.
+    let has_prometheus_archive = !cfg.prometheus_archive_metrics.is_empty();
+    if has_prometheus_archive {
+        // Exporter: OTLP HTTP to Prometheus's native receiver. The path
+        // is the canonical `/api/v1/otlp/v1/metrics`. The OTel collector's
+        // `otlphttp` exporter uses a `metrics_endpoint` field for the
+        // full URL (the `endpoint` field auto-appends `/v1/metrics` per
+        // OTel SDK convention; we use `metrics_endpoint` to be explicit
+        // and match the Prom path verbatim).
+        let prom_exporter_yaml = "metrics_endpoint: \"${ASAP_PROMETHEUS_OTLP_URL:-http://prometheus:9090/api/v1/otlp/v1/metrics}\"\nencoding: proto\ntls:\n  insecure: true\n";
+        let prom_exporter: Value = serde_yaml::from_str(prom_exporter_yaml)
+            .context("parse otlphttp/prometheus exporter block")?;
+        exporters.insert("otlphttp/prometheus".to_string(), prom_exporter);
+
+        // Routing processor — dispatches per-metric to the right
+        // pipeline based on `asap.mode`. `warm_tier` is the default
+        // (covers the existing sketch-at-edge / merge / passthrough
+        // pipeline). Phase ε.1 ships only the routing table, leaving
+        // the existing main pipeline intact.
+        let routing_yaml = "from_attribute: asap.mode\ndefault_pipelines: [metrics/warm_tier]\ntable:\n  - value: prometheus_archive\n    pipelines: [metrics/prometheus_archive]\n";
+        let routing: Value = serde_yaml::from_str(routing_yaml)
+            .context("parse routing processor block")?;
+        processors.insert("routing".to_string(), routing);
+
+        // Two named pipelines:
+        //   `metrics/warm_tier`        — sketch processors → otlp/backend
+        //   `metrics/prometheus_archive` — passthrough → otlphttp/prometheus
+        pipelines.insert(
+            "metrics/warm_tier".to_string(),
+            Pipeline {
+                receivers: vec!["otlp".into()],
+                processors: pipeline_processors.clone(),
+                exporters: vec![exporter_key.clone()],
+            },
+        );
+        pipelines.insert(
+            "metrics/prometheus_archive".to_string(),
+            Pipeline {
+                receivers: vec!["otlp".into()],
+                processors: Vec::new(),
+                exporters: vec!["otlphttp/prometheus".to_string()],
+            },
+        );
+        // Main `metrics` pipeline keeps the receiver + routing only —
+        // this is what the OTel routing connector pattern expects (one
+        // entry pipeline that fans out via the routing processor's
+        // table).
+        pipelines.insert(
+            "metrics".to_string(),
+            Pipeline {
+                receivers: vec!["otlp".into()],
+                processors: vec!["routing".to_string()],
+                exporters: vec![exporter_key.clone(), "otlphttp/prometheus".to_string()],
+            },
+        );
+    } else {
+        // Legacy single-pipeline case (Mode 1 / Mode 2 only).
+        pipelines.insert(
+            "metrics".to_string(),
+            Pipeline {
+                receivers: vec!["otlp".into()],
+                processors: pipeline_processors,
+                exporters: vec![exporter_key],
+            },
+        );
+    }
+
     // ── OpAMP extension ───────────────────────────────────────────────────────
     let opamp_ext: Value = serde_yaml::from_str(&format!(
         "server:\n  ws:\n    endpoint: \"{opamp_endpoint}\"\n"
@@ -133,18 +213,10 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
         extensions: [("opamp".to_string(), opamp_ext)].into(),
         receivers: [("otlp".to_string(), otlp_receiver)].into(),
         processors,
-        exporters: [(exporter_key.clone(), exporter_val)].into(),
+        exporters,
         service: ServiceSection {
             extensions: vec!["opamp".into()],
-            pipelines: [(
-                "metrics".to_string(),
-                Pipeline {
-                    receivers: vec!["otlp".into()],
-                    processors: pipeline_processors,
-                    exporters: vec![exporter_key],
-                },
-            )]
-            .into(),
+            pipelines,
         },
     };
 
@@ -313,6 +385,50 @@ pub fn emit_backend_storage_routing(
     let mut metrics_json: Vec<JsonValue> = Vec::with_capacity(metric_plans.len());
     for (metric_name, backend_cfg) in metric_plans {
         metrics_json.push(build_routing_entry(metric_name, backend_cfg));
+    }
+    Ok(json!({
+        "default_engine": "sketch_warm_tier",
+        "metrics": metrics_json,
+    }))
+}
+
+/// Phase ε.1 — same as [`emit_backend_storage_routing`] but also
+/// emits `prometheus_remote` engine entries for Mode 3 metrics.
+///
+/// Mode-3 metrics have NO `BackendStageConfig` entry (the backend doesn't
+/// own the storage; Prometheus does). They surface here as plain metric
+/// names paired with a single `prometheus_remote` target. The backend's
+/// HTTP query handler consults the routing table at request time and
+/// HTTP-forwards Mode-3 queries to
+/// `${ASAP_PROMETHEUS_QUERY_URL:-http://prometheus:9090}/api/v1/query`.
+///
+/// Phase ε.2 implements the `prometheus_remote` engine on the backend
+/// (the HTTP forwarder); Phase ε.1 only commits the routing wire shape.
+///
+/// `mode3_metrics` is the list of metric names the planner routed to
+/// Prometheus archive this cycle. Each yields a single-target row with
+/// `engine: prometheus_remote` and no shape filter (Prom answers
+/// everything for these metrics, exact ε = 0).
+pub fn emit_backend_storage_routing_with_prometheus(
+    metric_plans: &[(String, &BackendStageConfig)],
+    mode3_metrics: &[String],
+) -> Result<JsonValue> {
+    let mut metrics_json: Vec<JsonValue> =
+        Vec::with_capacity(metric_plans.len() + mode3_metrics.len());
+    for (metric_name, backend_cfg) in metric_plans {
+        metrics_json.push(build_routing_entry(metric_name, backend_cfg));
+    }
+    for metric_name in mode3_metrics {
+        // Mode 3 — Prometheus owns the storage. Single target,
+        // engine=prometheus_remote, no shape filter (all PromQL shapes
+        // route through the backend's HTTP forwarder).
+        metrics_json.push(json!({
+            "name": metric_name,
+            "targets": [
+                { "engine": "prometheus_remote" }
+            ],
+            "asap_mode": "prometheus_archive",
+        }));
     }
     Ok(json!({
         "default_engine": "sketch_warm_tier",
@@ -619,10 +735,20 @@ fn build_gateway_merge_block(mp: &GatewayMergeProcessor) -> Value {
 /// Build one aggregation row in the backend streaming-config JSON.
 fn build_backend_aggregation_json(agg: &BackendAggregation) -> JsonValue {
     let parameters = sketch_params_to_json(&agg.sketch_params);
+    // Phase ε.1 — surface `aggregation_input` so the backend's
+    // `StreamingConfig` consumer knows whether the wire payload is a
+    // pre-built sketch envelope (Mode 1) or raw OTLP samples the backend
+    // builds the sketch from at ingest (Mode 2). Phase ε.2 adds the
+    // raw-input ingest path; Phase ε.1 only commits the wire shape.
+    let aggregation_input = match agg.aggregation_input {
+        AggregationInput::SketchEnvelope => "sketch_envelope",
+        AggregationInput::Raw => "raw",
+    };
     json!({
         "aggregationId": agg.aggregation_id,
         "aggregationType": sketch_kind_to_backend_type(&agg.sketch_kind),
         "parameters": parameters,
+        "aggregationInput": aggregation_input,
     })
 }
 
@@ -715,6 +841,7 @@ mod tests {
                 aggregation_id: "agg0".to_string(),
             }],
             exporter_target: ExportTarget::Stage(StageId::Gateway),
+            prometheus_archive_metrics: Vec::new(),
         }
     }
 
@@ -905,11 +1032,13 @@ mod tests {
                     aggregation_id: "agg0".into(),
                     sketch_kind: SketchKind::DDSketch,
                     sketch_params: SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
+                    aggregation_input: AggregationInput::SketchEnvelope,
                 },
                 BackendAggregation {
                     aggregation_id: "agg1".into(),
                     sketch_kind: SketchKind::Hll,
                     sketch_params: SketchParams::Hll(HllParams { precision: 14 }),
+                    aggregation_input: AggregationInput::SketchEnvelope,
                 },
             ],
             readouts: vec![
@@ -952,11 +1081,13 @@ mod tests {
                         d: 5,
                         with_heap: true,
                     }),
+                    aggregation_input: AggregationInput::SketchEnvelope,
                 },
                 BackendAggregation {
                     aggregation_id: "agg1".into(),
                     sketch_kind: SketchKind::Cms,
                     sketch_params: SketchParams::Cms(CmsParams { w: 4096, d: 4 }),
+                    aggregation_input: AggregationInput::SketchEnvelope,
                 },
             ],
             readouts: vec![
@@ -1016,6 +1147,7 @@ mod tests {
                 aggregation_id: "agg0".into(),
                 sketch_kind: kind.clone(),
                 sketch_params: params,
+                aggregation_input: AggregationInput::SketchEnvelope,
             }],
             readouts: vec![BackendReadout {
                 aggregation_id: "agg0".into(),
@@ -1323,6 +1455,7 @@ mod tests {
                 aggregation_id: "phase_b_agg0".into(),
                 sketch_kind: SketchKind::Kll,
                 sketch_params: SketchParams::Kll(KllParams { k: 200 }),
+                aggregation_input: AggregationInput::SketchEnvelope,
             }],
             readouts: vec![BackendReadout {
                 aggregation_id: "phase_b_agg0".into(),
@@ -1338,5 +1471,177 @@ mod tests {
         assert_eq!(v["aggregations"][0]["parameters"]["k"], 200);
         assert_eq!(v["readouts"][0]["op"], "quantile");
         assert_eq!(v["readouts"][0]["q"], 0.99);
+    }
+
+    // ── Phase ε.1: three-mode wire shape tests ────────────────────────────
+
+    /// Mode 1 (sketch at edge) keeps the existing aggregation_input
+    /// default — `sketch_envelope` — so legacy plans round-trip
+    /// unchanged.
+    #[test]
+    fn phase_eps1_mode1_aggregation_input_is_sketch_envelope() {
+        let cfg = BackendStageConfig {
+            aggregations: vec![BackendAggregation {
+                aggregation_id: "agg0".into(),
+                sketch_kind: SketchKind::DDSketch,
+                sketch_params: SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
+                aggregation_input: AggregationInput::SketchEnvelope,
+            }],
+            readouts: vec![],
+        };
+        let v = emit_backend_config_json(&cfg).expect("emit ok");
+        assert_eq!(v["aggregations"][0]["aggregationInput"], "sketch_envelope");
+    }
+
+    /// Mode 2 (raw at edge → sketch at backend) sets
+    /// `aggregation_input: raw` so the backend builds the sketch from
+    /// raw OTLP samples at ingest. Phase ε.2 implements the raw-input
+    /// ingest path on the backend.
+    #[test]
+    fn phase_eps1_mode2_aggregation_input_is_raw() {
+        let cfg = BackendStageConfig {
+            aggregations: vec![BackendAggregation {
+                aggregation_id: "agg0".into(),
+                sketch_kind: SketchKind::DDSketch,
+                sketch_params: SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
+                aggregation_input: AggregationInput::Raw,
+            }],
+            readouts: vec![],
+        };
+        let v = emit_backend_config_json(&cfg).expect("emit ok");
+        assert_eq!(v["aggregations"][0]["aggregationInput"], "raw");
+    }
+
+    /// Mode 3 (Prometheus archive) — the routing emitter adds a
+    /// `prometheus_remote` engine target for the metric. The backend's
+    /// HTTP query handler HTTP-forwards the matching PromQL queries to
+    /// `${ASAP_PROMETHEUS_QUERY_URL}/api/v1/query`. Phase ε.2 registers
+    /// the engine on the backend.
+    #[test]
+    fn phase_eps1_mode3_storage_routing_emits_prometheus_remote() {
+        // No backend-side aggregations for mode 3 — Prometheus owns it.
+        let mode3 = vec!["http_requests_total".to_string()];
+        let v =
+            emit_backend_storage_routing_with_prometheus(&[], &mode3).expect("emit ok");
+        let metrics = v["metrics"].as_array().unwrap();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0]["name"], "http_requests_total");
+        let targets = metrics[0]["targets"].as_array().unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0]["engine"], "prometheus_remote");
+        // No shape filter — Prometheus serves every PromQL shape.
+        assert!(targets[0].get("applies_to_query_shape").is_none());
+        // `asap_mode` annotation surfaces so operators can see why a
+        // metric routes off warm tier.
+        assert_eq!(metrics[0]["asap_mode"], "prometheus_archive");
+    }
+
+    /// Mode 1 + Mode 3 mixed in one cycle — warm-tier metric AND
+    /// Prometheus-archive metric coexist in one routing JSON.
+    #[test]
+    fn phase_eps1_mixed_mode1_and_mode3_share_one_routing_table() {
+        let ddsketch = backend_cfg_with_kind(SketchKind::DDSketch);
+        let plans: Vec<(String, &BackendStageConfig)> =
+            vec![("latency_seconds".into(), &ddsketch)];
+        let mode3 = vec!["http_requests_total".to_string()];
+        let v = emit_backend_storage_routing_with_prometheus(&plans, &mode3).expect("emit ok");
+        let metrics = v["metrics"].as_array().unwrap();
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(metrics[0]["name"], "latency_seconds");
+        // Mode-1 entry — full warm/archive routing.
+        let m1_targets = metrics[0]["targets"].as_array().unwrap();
+        assert_eq!(m1_targets[0]["engine"], "sketch_warm_tier");
+        assert_eq!(m1_targets[1]["engine"], "thanos_archive");
+        // Mode-3 entry — single prometheus_remote target.
+        assert_eq!(metrics[1]["name"], "http_requests_total");
+        let m3_targets = metrics[1]["targets"].as_array().unwrap();
+        assert_eq!(m3_targets.len(), 1);
+        assert_eq!(m3_targets[0]["engine"], "prometheus_remote");
+    }
+
+    /// Mode 3 emit_edge_yaml — produces a YAML with `otlphttp/prometheus`
+    /// exporter pointing at `/api/v1/otlp/v1/metrics`, plus the routing
+    /// processor that dispatches per-metric on `asap.mode`.
+    #[test]
+    fn phase_eps1_mode3_edge_yaml_has_otlphttp_prometheus_exporter() {
+        let cfg = EdgeStageConfig {
+            source_metric: Some("http_requests_total".to_string()),
+            label_filters: Vec::new(),
+            window_secs: Some(60),
+            sketch_processors: Vec::new(),
+            exporter_target: ExportTarget::Stage(StageId::Gateway),
+            prometheus_archive_metrics: vec![PrometheusArchiveMetric {
+                metric: "http_requests_total".to_string(),
+                window_secs: Some(60),
+                label_proj: vec!["service.name".to_string()],
+            }],
+        };
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        // Exporter — Prometheus's native OTLP receiver, full path.
+        assert!(
+            yaml.contains("otlphttp/prometheus:"),
+            "missing otlphttp/prometheus exporter\n{yaml}"
+        );
+        assert!(
+            yaml.contains("/api/v1/otlp/v1/metrics"),
+            "exporter should hit Prometheus's native OTLP path\n{yaml}"
+        );
+        assert!(
+            yaml.contains("ASAP_PROMETHEUS_OTLP_URL"),
+            "endpoint should be env-overridable for the deploy team\n{yaml}"
+        );
+        // `encoding: proto` — the Prometheus OTLP receiver expects
+        // protobuf-encoded OTLP HTTP, not JSON.
+        assert!(
+            yaml.contains("encoding: proto"),
+            "encoding should be proto\n{yaml}"
+        );
+
+        // Routing processor — dispatches by `asap.mode`.
+        assert!(
+            yaml.contains("routing:"),
+            "missing routing processor\n{yaml}"
+        );
+        assert!(
+            yaml.contains("from_attribute: asap.mode"),
+            "routing should dispatch by asap.mode\n{yaml}"
+        );
+        assert!(
+            yaml.contains("prometheus_archive"),
+            "routing must match prometheus_archive value\n{yaml}"
+        );
+
+        // Two named pipelines + the routing entry pipeline.
+        assert!(
+            yaml.contains("metrics/prometheus_archive:"),
+            "missing metrics/prometheus_archive pipeline\n{yaml}"
+        );
+        assert!(
+            yaml.contains("metrics/warm_tier:"),
+            "missing metrics/warm_tier pipeline\n{yaml}"
+        );
+    }
+
+    /// When no Mode 3 metrics are configured, the edge YAML stays
+    /// single-pipeline (no routing processor, no otlphttp/prometheus
+    /// exporter) — preserves the existing Phase β layout for backward
+    /// compatibility.
+    #[test]
+    fn phase_eps1_no_mode3_edge_yaml_unchanged_from_phase_b() {
+        let cfg = ddsketch_edge_cfg();
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+        assert!(
+            !yaml.contains("otlphttp/prometheus"),
+            "no Mode 3 → no otlphttp/prometheus\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("metrics/prometheus_archive"),
+            "no Mode 3 → no archive pipeline\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("metrics/warm_tier"),
+            "no Mode 3 → main pipeline keeps the legacy `metrics:` name\n{yaml}"
+        );
     }
 }
