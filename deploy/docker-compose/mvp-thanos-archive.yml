@@ -38,6 +38,11 @@ services:
   thanos-store-gateway:
     image: quay.io/thanos/thanos:v0.41.0
     hostname: thanos-store-gateway
+    # Run as root so the named volume's default-root-owned mount
+    # at /var/thanos/store is writable by the entrypoint. The
+    # upstream image's USER=nobody can't mkdir under a fresh
+    # docker-managed volume otherwise.
+    user: "0"
     command:
       - "store"
       - "--objstore.config-file=/etc/thanos/objstore.yaml"
@@ -76,10 +81,12 @@ services:
   thanos-query:
     image: quay.io/thanos/thanos:v0.41.0
     hostname: thanos-query
+    # `--store` was renamed to `--endpoint` in v0.39+; v0.41 dropped
+    # the alias entirely.
     command:
       - "query"
       - "--http-address=0.0.0.0:10903"
-      - "--store=thanos-store-gateway:10901"
+      - "--endpoint=thanos-store-gateway:10901"
       - "--query.replica-label=replica"
     ports:
       - "19092:10903"   # Prometheus-compatible HTTP API for backend forwarder

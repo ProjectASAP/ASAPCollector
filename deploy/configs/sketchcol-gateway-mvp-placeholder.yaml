@@ -70,8 +70,13 @@ exporters:
 service:
   telemetry:
     metrics:
-      address: 0.0.0.0:8890
       level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890
   pipelines:
     metrics:
       receivers: [otlp]
