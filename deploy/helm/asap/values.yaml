@@ -6,7 +6,7 @@ agents:
   # reduction curves. The chart templates a Deployment with
   # `replicas: {{ .Values.agents.count }}`.
   count: 10
-  image: "asap/sketchcol:dev"
+  image: "asap/asap-otel:dev"
   # "realistic edge"
   resources:
     requests:

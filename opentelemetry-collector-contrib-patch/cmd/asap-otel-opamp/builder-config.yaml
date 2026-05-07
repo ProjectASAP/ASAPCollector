@@ -1,21 +1,25 @@
-# Unified sketch collector — includes ALL sketch processors.
+# OpAMP-supervised variant of the asap-otel runtime — includes ALL
+# sketch processors + opampextension + S3 backup. Distinct from the
+# production `cmd/asap-otel/` builder-config (which is the image
+# baseline `asap/asap-otel:dev` builds from); this one is the
+# OpAMP-supervisor proof of concept.
 #
 # Build with:
 #   go install go.opentelemetry.io/collector/cmd/builder@latest
 #   builder --config builder-config.yaml
 #
 # Start with controller-generated config:
-#   ./sketchcol --config "http://controller:8080/api/v1/collector-config/agent"
+#   ./asap-otel-opamp --config "http://controller:8080/api/v1/collector-config/agent"
 #
 # Or with a static file:
-#   ./sketchcol --config file:./config.yaml
+#   ./asap-otel-opamp --config file:./config.yaml
 
 dist:
-  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/sketchcol
-  name: sketchcol
-  description: Unified collector with all sketch processors + OpAMP + S3 backup
+  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/asap-otel-opamp
+  name: asap-otel-opamp
+  description: OpAMP-supervised asap-otel collector with all sketch processors + S3 backup
   version: 0.141.0-dev
-  output_path: ./cmd/sketchcol/dist
+  output_path: ./cmd/asap-otel-opamp/dist
 
 extensions:
   # OpAMP: controller can push config updates to running collectors

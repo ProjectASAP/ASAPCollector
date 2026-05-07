@@ -5,7 +5,7 @@ The ASAP-patched `metrics.proto` adds five sketch message types (`DDSketch`,
 `*DataPoint` and `*Encoding` enums on top of upstream
 [`opentelemetry-proto` v1.9.0]. The Go bindings under
 `gen/go/go.opentelemetry.io/proto/otlp/` are committed to this repo so the
-fake-exporter / sketchcol Docker builds don't have to reinvent a protoc
+fake-exporter / asap-otel Docker builds don't have to reinvent a protoc
 toolchain at build time. The `replace` directives in
 `opentelemetry-go-patch/exporters/otlp/otlpmetric/{otlpmetricgrpc,otlpmetrichttp}/go.mod`
 and `deploy/fake-exporter/go.mod` point at this gen tree.

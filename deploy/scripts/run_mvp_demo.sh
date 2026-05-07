@@ -10,7 +10,7 @@
 # only the agent + storage backend differs:
 #
 #   * baseline (--mode baseline): mvp-multi-stage.yml `b0` profile.
-#     Agents load `sketchcol-agent-b0-prometheus.yaml` (no sketch
+#     Agents load `asap-otel-agent-b0-prometheus.yaml` (no sketch
 #     processors). Storage = Prometheus container; queries hit
 #     Prometheus's PromQL HTTP surface on 19090.
 #
@@ -180,7 +180,7 @@ Usage: $(basename "$0") [--mode {baseline|asap|both}] [--out-base DIR]
 
   --mode baseline   Run baseline pipeline only (mvp-multi-stage.yml
                     --profile b0; agents load
-                    sketchcol-agent-b0-prometheus.yaml; queries hit
+                    asap-otel-agent-b0-prometheus.yaml; queries hit
                     Prometheus on \${HOST_PROM_B0_PORT}).
   --mode asap       Run asap pipeline only (default profile;
                     controller-driven sketches + Gorilla-S3 archive).
@@ -494,8 +494,8 @@ capture_emitted_configs() {
     fi
 
     # Snapshot the placeholder gateway config for diffing.
-    if [[ -f "${REPO_ROOT}/deploy/configs/sketchcol-gateway-mvp-placeholder.yaml" ]]; then
-        cp "${REPO_ROOT}/deploy/configs/sketchcol-gateway-mvp-placeholder.yaml" \
+    if [[ -f "${REPO_ROOT}/deploy/configs/asap-otel-gateway-mvp-placeholder.yaml" ]]; then
+        cp "${REPO_ROOT}/deploy/configs/asap-otel-gateway-mvp-placeholder.yaml" \
             "${cdir}/gateway.placeholder.yaml"
     fi
 
@@ -872,7 +872,7 @@ teardown() {
 }
 
 # Inter-mode settle + straggler check. Called between baseline and
-# asap cycles when --mode both. Verifies no `mvp` / `sketchcol` /
+# asap cycles when --mode both. Verifies no `mvp` / `asap-otel` /
 # `prometheus` containers remain so the next cycle starts clean.
 inter_mode_settle_and_verify() {
     log "Inter-mode settle ${INTER_MODE_SETTLE_S}s + straggler check"
@@ -880,7 +880,7 @@ inter_mode_settle_and_verify() {
     # Capture any straggler container names matching the MVP topology.
     local stragglers_file="${OUT_BASE}/inter-mode-stragglers.txt"
     docker ps -a --format '{{.Names}}' \
-        | grep -E 'mvp|sketchcol|prometheus|gateway|backend|agent-|producer-|controller|minio' \
+        | grep -E 'mvp|asap-otel|prometheus|gateway|backend|agent-|producer-|controller|minio' \
         > "${stragglers_file}" 2>/dev/null || true
     if [[ -s "${stragglers_file}" ]]; then
         log "  [warn] stragglers detected after baseline teardown:"
@@ -902,8 +902,8 @@ run_one_pipeline() {
     PIPELINE_OUT_BASE="${OUT_BASE}/${label}"
     if [[ "${label}" == "baseline" ]]; then
         PIPELINE_QUERY_PORT="${HOST_PROM_B0_PORT}"
-        export AGENT_CONFIG_A="sketchcol-agent-b0-prometheus.yaml"
-        export AGENT_CONFIG_B="sketchcol-agent-b0-prometheus.yaml"
+        export AGENT_CONFIG_A="asap-otel-agent-b0-prometheus.yaml"
+        export AGENT_CONFIG_B="asap-otel-agent-b0-prometheus.yaml"
     else
         # asap — controller emits per-stage configs; the AGENT_CONFIG_*
         # fall back to the all-sketches placeholder mounted in the

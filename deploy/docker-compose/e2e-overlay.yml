@@ -24,7 +24,7 @@
 #
 # Wire it as:
 #
-#   AGENT_CONFIG=sketchcol-agent-b3-delta.yaml \
+#   AGENT_CONFIG=asap-otel-agent-b3-delta.yaml \
 #   docker compose \
 #     -f base.yml \
 #     -f agents-N1.yml \

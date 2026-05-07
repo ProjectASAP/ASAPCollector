@@ -17,7 +17,7 @@
 //!   registers the plugin with the OTAP runtime.
 //! - Patches to `otap-patch/all/mod.rs` to bring the slice into
 //!   the host binary's link scope.
-//! - `build_sketchotap.sh` build script.
+//! - `build_asap_otap.sh` build script.
 //!
 //! See [`asap-precompute-rs/src/otap/lifecycle.rs`](../../../asap-precompute-rs/src/otap/lifecycle.rs)
 //! for the actual plugin runtime; the Phase D code here is just an

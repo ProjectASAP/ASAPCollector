@@ -6,14 +6,14 @@
 # to share the same Prometheus query surface (criterion ⑥
 # freshness probes the warm tier via Prometheus). v4 layers the
 # Prometheus remote-write-receiver flag so the
-# `sketchcol-agent-b5-gorilla-prometheus.yaml` agent config (PRW
+# `asap-otel-agent-b5-gorilla-prometheus.yaml` agent config (PRW
 # exporter) has a sink.  Without this flag the agent's PRW
 # requests would 404 and the freshness/accuracy CSVs would carry
 # NaN for B5.
 #
 # Bring up via:
 #
-#   AGENT_CONFIG=sketchcol-agent-b5-gorilla-prometheus.yaml \
+#   AGENT_CONFIG=asap-otel-agent-b5-gorilla-prometheus.yaml \
 #     docker compose -f base.yml -f agents-N10.yml \
 #       -f baseline-b5-gorilla.yml up -d
 #
@@ -23,7 +23,7 @@
 # container-only tmpfs (carries no host-disk dependency).
 #
 # v3-compat: legacy callers using
-# `AGENT_CONFIG=sketchcol-agent-b5-gorilla.yaml` still work — the
+# `AGENT_CONFIG=asap-otel-agent-b5-gorilla.yaml` still work — the
 # Prometheus flag is harmless when no PRW client connects.
 
 services:

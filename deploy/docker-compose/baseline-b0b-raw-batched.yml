@@ -3,7 +3,7 @@
 # aggregation budget of B1/B2/B3/B5 so the comparison is
 # apples-to-apples on time granularity.
 #
-#   AGENT_CONFIG=sketchcol-agent-b0b-raw-batched.yaml \
+#   AGENT_CONFIG=asap-otel-agent-b0b-raw-batched.yaml \
 #     docker compose -f base.yml -f agents-N1.yml \
 #       -f baseline-b0b-raw-batched.yml up -d
 

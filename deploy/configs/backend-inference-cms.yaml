@@ -19,7 +19,7 @@
 # `compatible_agg_types` table in `capability_matching.rs`).
 #
 # Metric: `http_requests_total` (no suffix). The CMS direct agent
-# overlay (`sketchcol-agent-cms-direct.yaml`) uses
+# overlay (`asap-otel-agent-cms-direct.yaml`) uses
 # `metric_name: "http_requests_total"` and preserves the raw name
 # end-to-end.
 cleanup_policy:

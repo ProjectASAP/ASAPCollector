@@ -24,7 +24,7 @@
 #    timestamp-encoded counters.
 #
 # 2. agent-side routing — the warm/archive probes go through the
-#    sketchcol agent's pipeline; the raw probe is exported via
+#    asap-otel agent's pipeline; the raw probe is exported via
 #    `prometheusremotewrite` to the real Prometheus container in
 #    mvp-multi-stage.yml.
 #

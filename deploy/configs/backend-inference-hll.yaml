@@ -16,7 +16,7 @@
 # cardinality sketch — no value semantics).
 #
 # Metric: `http_requests_total_hll` / `http_requests_total_latency_ms_hll`
-# — the HLL direct agent overlay (`sketchcol-agent-hll-direct.yaml`)
+# — the HLL direct agent overlay (`asap-otel-agent-hll-direct.yaml`)
 # uses `metric_suffix: "_hll"`, so the backend-side metric name
 # is the suffixed form.
 cleanup_policy:

@@ -1,35 +1,34 @@
-# Baseline B5 v4 — Gorilla XOR + raw forward to real Prometheus.
+# Baseline B1 v4 — Serf XOR + raw forward to real Prometheus.
 #
-# v4 (issue #46) variant of `sketchcol-agent-b5-gorilla.yaml`. The
-# v3 Gorilla config used `drop_original: true` so nothing reached
+# v4 (issue #46) variant of `asap-otel-agent-b1-serf.yaml`. The
+# v3 SERF config used `drop_original: true` so nothing reached
 # the gateway / backend / Prometheus — bandwidth was measured
-# entirely against bytes-on-disk under /var/tmp/asap-gorilla-out.
+# entirely against bytes-on-disk under /var/tmp/asap-serf-out.
 # That makes apples-to-apples comparison against B0
 # (raw-OTel-to-Prometheus) and the ASAP single-sketch baseline
-# impossible because the Gorilla path doesn't expose any signals
-# downstream of the agent — in particular, criterion ⑥ freshness
-# probes that read from Prometheus get NaN.
+# impossible because the SERF path doesn't expose any signals
+# downstream of the agent.
 #
-# v4 keeps the Gorilla processor running (so its CPU / RSS / output-
+# v4 keeps the SERF processor running (so its CPU / RSS / output-
 # bytes self-telemetry is still recorded for the resource table),
 # but flips `drop_original: false` and forwards the raw stream
 # via `prometheusremotewrite` to the real Prometheus on
-# :9090/api/v1/write — same sink as B0/B1. Bandwidth column for
-# B5 = wire bytes from agent → Prometheus PLUS the Gorilla-written
-# blob bytes (a structural cost the Gorilla baseline pays in
+# :9090/api/v1/write — same sink as B0. Bandwidth column for B1
+# = wire bytes from agent → Prometheus PLUS the SERF-written
+# blob bytes (a structural cost the SERF baseline pays in
 # addition to the wire bytes). The query side (Prometheus
-# evaluator) is then identical to B0/B1, isolating the Gorilla
-# XOR CPU / RSS overhead as the only delta.
+# evaluator) is then identical to B0, isolating the SERF
+# CPU / RSS overhead as the only delta.
 #
 # Pipeline:
 #
-#   producer ──OTLP──▶ agent ──gorilla──▶ /var/tmp/asap-gorilla-out
+#   producer ──OTLP──▶ agent ──serf──▶ /var/tmp/asap-serf-out
 #                       │
 #                       └─raw forward──▶ Prometheus :9090/api/v1/write
 #
-# Mirrors `sketchcol-agent-b1-serf-prometheus.yaml` exactly (apart
-# from the processor name) so the demo's Prometheus-fed freshness
-# and accuracy paths see identical inputs across B0/B1/B5.
+# The SERF processor sits BEFORE batch so it sees per-arrival
+# points (matches v3 behaviour); the PRW exporter only sees the
+# raw stream because SERF's output isn't on the OTLP graph.
 
 extensions:
   opamp:
@@ -48,12 +47,14 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
-  gorilla:
+  serf:
     # 60s window matches the v3 sketch-baseline aggregation budget.
     window_interval: 60s
+    compression: xor
+    max_diff: 0.0
     # v4: forward raw downstream so PRW can sink to Prometheus.
     drop_original: false
-    local_dir: /var/tmp/asap-gorilla-out
+    local_dir: /var/tmp/asap-serf-out
 
   batch:
     timeout: 1s
@@ -74,10 +75,10 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      # gorilla first (writes blob, passes raw through), then batch +
+      # serf first (writes blob, passes raw through), then batch +
       # PRW so the same data Prometheus would see in B0 also lands
-      # in B5 — the Gorilla baseline only ADDS overhead.
-      processors: [gorilla, batch]
+      # in B1 — the SERF baseline only ADDS overhead.
+      processors: [serf, batch]
       exporters: [prometheusremotewrite]
 
   telemetry:

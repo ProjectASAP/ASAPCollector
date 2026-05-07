@@ -100,7 +100,7 @@ workload + SLAs.
            │
            ▼
 ┌──────────────────────────────────────────┐
-│  Edge OTel collector  (sketchcol)        │
+│  Edge OTel collector  (asap-otel)        │
 │  ├─ sketch processors (CMS/KLL/HLL/DDS)  │
 │  │  per (metric, labels, window)         │
 │  ├─→ agent→gateway (sketches, OTLP)      │

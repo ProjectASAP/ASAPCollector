@@ -42,7 +42,7 @@ Arbitrary N:
 
 ### What comes up
 
-`base.yml` defines 8 services; the agent overlays add N × sketchcol
+`base.yml` defines 8 services; the agent overlays add N × asap-otel
 agent containers. Host ports:
 
 | Port (host) | Service | Why |
@@ -110,10 +110,10 @@ keep — the YAML is checked exact-string at request time by
 
 | Overlay | Backend-side metric name | Why |
 |---|---|---|
-| `backend-inference.yaml` | `http_requests_total_latency_ms_quantile` (KLL/DDSketch quantile patterns), `http_requests_total` (CMS/CountSketch/HLL Sum/Count/Topk patterns) | Default deploy uses `gateway-aggregate-from-raw.yaml` → DDSketch → `metric_suffix: "_quantile"`. Sum/Count/Topk patterns target the raw counter forwarded unsuffixed by CMS/CountSketch processors (see `sketchcol-agent-{cms,cs}-direct.yaml`). |
+| `backend-inference.yaml` | `http_requests_total_latency_ms_quantile` (KLL/DDSketch quantile patterns), `http_requests_total` (CMS/CountSketch/HLL Sum/Count/Topk patterns) | Default deploy uses `gateway-aggregate-from-raw.yaml` → DDSketch → `metric_suffix: "_quantile"`. Sum/Count/Topk patterns target the raw counter forwarded unsuffixed by CMS/CountSketch processors (see `asap-otel-agent-{cms,cs}-direct.yaml`). |
 | `backend-inference-cms.yaml`, `-cs.yaml` | `http_requests_total` | CMS / CountSketch direct agents preserve the raw metric name (no `metric_suffix`). |
-| `backend-inference-hll.yaml` | `http_requests_total_hll`, `http_requests_total_latency_ms_hll` | `sketchcol-agent-hll-direct.yaml` adds `metric_suffix: "_hll"`. |
-| `backend-inference-kll.yaml` | `http_requests_total_latency_ms_kll` | `sketchcol-agent-kll-direct.yaml` adds `metric_suffix: "_kll"`. |
+| `backend-inference-hll.yaml` | `http_requests_total_hll`, `http_requests_total_latency_ms_hll` | `asap-otel-agent-hll-direct.yaml` adds `metric_suffix: "_hll"`. |
+| `backend-inference-kll.yaml` | `http_requests_total_latency_ms_kll` | `asap-otel-agent-kll-direct.yaml` adds `metric_suffix: "_kll"`. |
 
 #### Open gap: `histogram_quantile(φ, …)` is NOT covered
 
@@ -152,7 +152,7 @@ before kicking off the 60-cell sweep to catch wiring regressions.
 #    frequency low — the b3-delta overlay's 100k×100Hz default
 #    can blow past the OTLP exporter's 64 MiB max message size on
 #    the first window, even with delta_transmission=true.
-AGENT_CONFIG=sketchcol-agent-b3-delta.yaml \
+AGENT_CONFIG=asap-otel-agent-b3-delta.yaml \
 EXPORTER_CARDINALITY=1000 EXPORTER_FREQ_HZ=10 \
 docker compose \
     -f deploy/docker-compose/base.yml \

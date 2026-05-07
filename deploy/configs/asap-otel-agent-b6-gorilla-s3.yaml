@@ -62,7 +62,7 @@ processors:
     upload_timeout: 30s
 
   # ── Warm tier: all-sketches (paper §Architecture). ───────────────
-  # Same five-sketch lineup as `sketchcol-agent-allsketches.yaml`.
+  # Same five-sketch lineup as `asap-otel-agent-allsketches.yaml`.
   ddsketch:
     mode: window
     window_duration: 30s

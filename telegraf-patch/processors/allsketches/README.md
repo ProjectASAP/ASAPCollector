@@ -22,7 +22,7 @@ shape.
 
 Each `sketch_type` is dispatched through
 [`asap-precompute-go/sketches/`](../../../asap-precompute-go/sketches),
-which is the same wrapper the OTel `sketchcollector` build uses — so
+which is the same wrapper the OTel `asap-otel` build uses — so
 both hosts emit byte-identical `SketchEnvelope` payloads when fed the
 same input.
 

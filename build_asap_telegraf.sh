@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# build_sketchtelegraf.sh — Build the sketchtelegraf Telegraf distribution.
+# build_asap_telegraf.sh — Build the asap-telegraf Telegraf distribution.
 #
-# sketchtelegraf is upstream Telegraf with the ASAP allsketches
+# asap-telegraf is upstream Telegraf with the ASAP allsketches
 # processor wired in (one plugin, all five sketch types — see
 # docs/design-asap-telegraf-integration.md §3). The build:
 #
@@ -12,11 +12,11 @@
 #      instead of the module proxy.
 #   3. Runs `go build` on telegraf/cmd/telegraf.
 #
-# Output: telegraf/sketchtelegraf
+# Output: telegraf/asap-telegraf
 #
 # Usage:
-#   ./build_sketchtelegraf.sh                  # builds sketchtelegraf
-#   ./build_sketchtelegraf.sh --skip-patches   # skip re-applying patches
+#   ./build_asap_telegraf.sh                  # builds asap-telegraf
+#   ./build_asap_telegraf.sh --skip-patches   # skip re-applying patches
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,7 +50,7 @@ fi
 # Defensive grep: after `go build` writes back a `// indirect` require
 # entry, a plain `grep -q sketchlib-go` matches even when no replace is
 # present. Match the replace line specifically (mirroring
-# build_sketchcollector.sh).
+# build_asap_otel.sh).
 #
 # A bare `replace` without a `require` makes Go refuse the build with
 # "module … is replaced but not required" — the unified `allsketches`
@@ -84,10 +84,10 @@ cd "${TELEGRAF_DIR}"
 GONOSUMCHECK="github.com/ProjectASAP/*" GONOSUMDB="github.com/ProjectASAP/*" \
 	go mod tidy
 
-echo "==> Building sketchtelegraf..."
+echo "==> Building asap-telegraf..."
 GONOSUMCHECK="github.com/ProjectASAP/*" GONOSUMDB="github.com/ProjectASAP/*" \
-	go build -o sketchtelegraf ./cmd/telegraf
+	go build -o asap-telegraf ./cmd/telegraf
 
-BINARY="${TELEGRAF_DIR}/sketchtelegraf"
+BINARY="${TELEGRAF_DIR}/asap-telegraf"
 echo ""
 echo "Build successful: ${BINARY}"

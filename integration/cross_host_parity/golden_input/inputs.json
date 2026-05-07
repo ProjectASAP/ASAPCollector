@@ -5,8 +5,8 @@
     "integration/parity/golden_test.go and",
     "asap-precompute-rs/tests/cross_language_parity.rs::deterministic_floats.",
     "These are the inputs the cross-language byte-parity gate (issue #243)",
-    "is built on; Phase 5 step E reuses them so sketchcol-, sketchotap-,",
-    "and sketchtelegraf-emitted envelope payloads have a single shared",
+    "is built on; Phase 5 step E reuses them so asap-otel-, asap-otap-,",
+    "and asap-telegraf-emitted envelope payloads have a single shared",
     "byte target."
   ],
   "ddsketch": {

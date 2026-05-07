@@ -2,14 +2,14 @@
 # agents, drops a few internal labels, forwards to the backend
 # over OTLP. No sketch aggregation at this tier.
 #
-# IMPORTANT: this config requires the `asap/sketchcol:dev` image
+# IMPORTANT: this config requires the `asap/asap-otel:dev` image
 # (NOT stock `otel/opentelemetry-collector-contrib:0.108.0`).
 # Stock contrib's pdata silently drops typed sketch data points
 # (DDSketch / KLLSketch / HLLSketch / CountSketch / CountMinSketch
 # on Metric.data tags 13–17) via `ConsumeUnknown` during the
 # OTLP-receive → in-memory → OTLP-export round-trip — see
 # `opentelemetry-collector/pdata/internal/generated_proto_metric.go`
-# `default: proto.ConsumeUnknown(...)`. The sketchcol image is
+# `default: proto.ConsumeUnknown(...)`. The asap-otel image is
 # built from `opentelemetry-collector-contrib-patch/` which has
 # the patched proto + pdata that knows tags 13–17. Forwarder mode
 # uses none of the sketch processors — the patched build is
@@ -73,8 +73,8 @@ exporters:
     sending_queue:
       enabled: true
   # NB: prometheusremotewriteexporter is NOT in the patched
-  # `asap/sketchcol:dev` builder (see
-  # `opentelemetry-collector-contrib-patch/cmd/sketchcollector/builder-config.yaml`).
+  # `asap/asap-otel:dev` builder (see
+  # `opentelemetry-collector-contrib-patch/cmd/asap-otel/builder-config.yaml`).
   # Adding it back means listing the exporter in the manifest and
   # rebuilding. Today's sketch-native pipeline doesn't need it —
   # the typed sketch path goes via OTLP straight to the backend.

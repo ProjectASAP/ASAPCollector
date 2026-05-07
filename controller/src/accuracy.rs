@@ -19,7 +19,7 @@
 //!   verify it actually meets the SLA.
 //! * surfaces the bound to downstream systems (backend via
 //!   `/api/v1/plan` response; dashboards via
-//!   `sketchcol_processor_accuracy_epsilon` gauge) without the
+//!   `asap_otel_processor_accuracy_epsilon` gauge) without the
 //!   caller re-deriving from scratch.
 //!
 //! ## Bounds we encode

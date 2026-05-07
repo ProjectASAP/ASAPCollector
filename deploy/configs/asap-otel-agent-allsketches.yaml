@@ -1,7 +1,7 @@
 # All-sketches single-agent demo config — paper §Architecture figure.
 #
 # This config is the YAML embodiment of the architecture diagram in
-# `docs/paper-outline.md` §Architecture: ONE sketchcol agent runs ALL
+# `docs/paper-outline.md` §Architecture: ONE asap-otel agent runs ALL
 # FIVE sketch families (DDSketch + KLL + HLL + CountSketch +
 # CountMinSketch) concurrently in a single OTLP metrics pipeline, so
 # the backend can serve ALL FIVE PromQL query families
@@ -10,8 +10,8 @@
 #
 # This is paper-figure / architecture-demo material, NOT §5
 # evaluation data. The per-sketch direct configs
-# (`sketchcol-agent-{cs,cms,hll,kll}-direct.yaml` plus
-# `sketchcol-agent-b3-delta.yaml`) are what the §5 sweep
+# (`asap-otel-agent-{cs,cms,hll,kll}-direct.yaml` plus
+# `asap-otel-agent-b3-delta.yaml`) are what the §5 sweep
 # (`run_e2e_sweep.sh`) drives — each cell isolates one sketch so
 # per-family resource numbers (CPU, bytes/s, accuracy) are
 # attributable. Production deployments likewise pick ONE sketch per
@@ -81,7 +81,7 @@ extensions:
       ws:
         endpoint: ws://controller:4320/v1/opamp
         # Header-based agent identification — see
-        # `sketchcol-agent-b3-delta-direct.yaml` for the rationale
+        # `asap-otel-agent-b3-delta-direct.yaml` for the rationale
         # (controller's OpAMP server uses X-Agent-ID, not the
         # InstanceUid carried in the OpAMP message body).
         headers:

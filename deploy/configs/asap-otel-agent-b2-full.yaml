@@ -1,4 +1,4 @@
-# Per-agent sketchcol pipeline config — receives OTLP from a
+# Per-agent asap-otel pipeline config — receives OTLP from a
 # workload producer, runs the ASAP sketch processors, forwards
 # the sketched output to the gateway, and exposes self-telemetry
 # for Prometheus.

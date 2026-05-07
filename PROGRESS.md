@@ -6,8 +6,8 @@ _Last updated: 2026-05-06._
 
 `deploy/eval-results/headline-2026-05-06/` — full §5 evidence pack
 from the paired 2026-05-05 sweep
-(`sketchcol-sweep-20260505-204002` DDSketch+KLL × 24 cells +
-`sketchcol-sweep-cont-20260505-230219` CMS+CS+HLL × 36 cells, 60
+(`asap-otel-sweep-20260505-204002` DDSketch+KLL × 24 cells +
+`asap-otel-sweep-cont-20260505-230219` CMS+CS+HLL × 36 cells, 60
 cells total). Per-cell summary CSV
 (`accuracy-summary.csv`, 240 rows = 60 cells × 4 query kinds), full
 17,539-row accuracy join (`accuracy.csv.gz`), verdict + four §5
@@ -38,7 +38,7 @@ language.
 
 Outstanding follow-up: Gorilla-S3 e2e shipped. `integration/gorilla_s3_e2e/`
 lands the FINAL phase of the cold-engine work — drives the full pipeline
-(fake-driver → sketchcol+gorillas3processor → MinIO → GorillaS3ColdStore →
+(fake-driver → asap-otel+gorillas3processor → MinIO → GorillaS3ColdStore →
 GorillaQueryEngine → backend HTTP) on a sibling docker-compose project
 (`asap-gorilla-e2e` on 29xxx ports) so it never collides with the host
 sweep stack. Default run is fixture-only (`go test ./...` skips the live
@@ -54,8 +54,8 @@ when the backend HTTP server still wires `Arc<SimpleEngine>` directly
 
 ## All-sketches single-agent demo config (2026-05-05, paper §Architecture)
 
-`deploy/configs/sketchcol-agent-allsketches.yaml` (+
-`baseline-allsketches.yml` overlay, README) — one sketchcol agent
+`deploy/configs/asap-otel-agent-allsketches.yaml` (+
+`baseline-allsketches.yml` overlay, README) — one asap-otel agent
 runs all five sketch families concurrently (`[ddsketch, KLL, HLL,
 countsketch, countmin, batch]`) so backend serves all five PromQL
 query families from a single agent. Paper-figure / architecture-demo
@@ -67,10 +67,10 @@ story.
 ## Phase 5 step E done — cross-host envelope + PromQL parity (2026-05-05)
 
 `integration/cross_host_parity/` lands the agent-binary-level parity
-gate that §11 row E specifies: sketchcol (OTel-Go) ↔ sketchotap
+gate that §11 row E specifies: asap-otel (OTel-Go) ↔ asap-otap
 (OTAP-Rust) emit byte-identical `SketchEnvelope.Payload`s for the
 canonical golden input across all five sketch families;
-sketchtelegraf opt-in via `--include-telegraf`. Fixture mode
+asap-telegraf opt-in via `--include-telegraf`. Fixture mode
 reproduces the canonical bytes inline (no Docker / submodules / agent
 binaries needed); binary mode (`run_parity.sh --mode=binary`) drives
 real images via `deploy/docker-compose/cross-host-parity.yml` and
@@ -185,7 +185,7 @@ pending (separate from this work).
 Building on the all-five-sketch wire path from 2026-04-30, this
 session closes the loop from agent emit → gateway preserve → backend
 decode → store → PromQL answer. After this work, a single
-`asap/sketchcol:dev` binary supports any controller-chosen sketch
+`asap/asap-otel:dev` binary supports any controller-chosen sketch
 combination, in any single-pipeline shape, with delta transmission,
 end-to-end PromQL queries returning real values.
 
@@ -269,7 +269,7 @@ known reason it shouldn't pass.
 
 ## All-five-sketch runtime e2e verification (2026-04-30)
 
-PromQL → controller → agent (sketchcol) → backend (precompute_engine) →
+PromQL → controller → agent (asap-otel) → backend (precompute_engine) →
 PromQL response, end-to-end through the modified-OTLP wire format
 (typed `Metric.data = {DDSketch | KLLSketch | HLLSketch | CountSketch
 | CountMinSketch}` data points, not Gauge-with-payload). One soak
@@ -310,7 +310,7 @@ sweep harness (P5–P9) drives.
   Topk / Count / Sum for CountSketch; **Count / Sum (no-key) for
   CMS** with the min-row-sum estimator (this PR).
 - **Build glue**: the OCB v0.141.0 builder file is now
-  `cmd/sketchcollector/builder-config-sketches.yaml` (renamed from
+  `cmd/asap-otel/builder-config-sketches.yaml` (renamed from
   `builder-config-ddonly.yaml`); compiles all five sketch
   processors plus `opampextension`.
 
@@ -344,7 +344,7 @@ controller → plan push → agent sketch + backend query → accuracy
 |---|---|---|
 | P1. Wire `ASAP_COLD_STORE_ROOT` in `asap-query-engine/main.rs` | ✅ 2026-04-30 | `--cold-store-root` flag (env `ASAP_COLD_STORE_ROOT`) selects `prometheus_promql_with_cold`; 4 unit tests |
 | P2. Hot-reload View `AttributeFilter` (mid-run projection swap) | ✅ 2026-04-30 | `deploy/fake-exporter/swappable_filter.go` — atomic.Pointer-backed filter wired into `Stream.AttributeFilter`; `POST /control/projection` HTTP endpoint; 5 tests incl. race + e2e through ManualReader. **No SDK patch was needed**: the SDK's `aggregate.Builder.filter` closure dispatches through the function value, so atomic-state inside the filter is observable on the next measurement. |
-| P3. Build deploy images + N=1 b3-delta smoke run | ✅ 2026-04-30 | All four images (`asap/{controller,query-backend,fake-exporter,sketchcol}:dev`) build cleanly and `docker compose up` stands up the full stack. Verified: backend logs cold-tier fallback enabled; raw-tee writes ground-truth JSONL with the right path layout; swappable-filter HTTP swap returns `{"applied":"zone"}`. The earlier warm-tier limitation (gateway PRW dropping typed sketches) is now resolved by the OTLP-end-to-end path landed in the deploy follow-up — see follow-up #1 below. |
+| P3. Build deploy images + N=1 b3-delta smoke run | ✅ 2026-04-30 | All four images (`asap/{controller,query-backend,fake-exporter,asap-otel}:dev`) build cleanly and `docker compose up` stands up the full stack. Verified: backend logs cold-tier fallback enabled; raw-tee writes ground-truth JSONL with the right path layout; swappable-filter HTTP swap returns `{"applied":"zone"}`. The earlier warm-tier limitation (gateway PRW dropping typed sketches) is now resolved by the OTLP-end-to-end path landed in the deploy follow-up — see follow-up #1 below. |
 | P4. Ground-truth tee from fake-exporter to MinIO raw JSONL | ✅ 2026-04-30 | `deploy/fake-exporter/raw_tee.go` — atomic.Pointer-style hour-bucketed JSONL writer matching the Rust `RawSample` wire format byte-for-byte. 8 unit tests incl. concurrent-writer race + format anchor + per-instance file naming. Wired into `runSynthetic` + `runTraceReplay`; controlled by `EXPORTER_RAW_TEE_ROOT` env. e2e overlay mounts a shared `cold-store` Docker volume into both fake-exporter (writer) and backend (reader). |
 | P5. PromQL replay client with plan-id tagging | ✅ 2026-04-30 | `deploy/scripts/promql_replay.py` — fires PromQL at backend `:19091` at fixed QPS, captures p50/p99 + result vector per query, tags every line of the JSONL log with the controller's currently-published `plan_id` (1 Hz polling thread). Smoke-tested: 17 queries / 6 s, p50 2.4 ms, p99 1.3 s (cold-fallback dominated). |
 | P6. Plan-transition driver + 1 Hz CPU/bandwidth sampler | ✅ 2026-04-30 | `deploy/scripts/plan_transition.py` — fires a query the active plan can't answer; tracks `t_query_in / t_plan_ready / t_first_hit / t_steady` against the controller's plan-id stream; `DockerStatsSampler` dumps 1 Hz cpu/mem/net per container to a separate JSONL. Imports + smoke-tests pass. |
@@ -360,7 +360,7 @@ controller → plan push → agent sketch + backend query → accuracy
 #    `asap/*:dev` images built (see deploy/docker/Dockerfile.* —
 #    backend uses --build-context backend-src=...).
 # 2. Single-cell smoke run:
-AGENT_CONFIG=sketchcol-agent-b3-delta.yaml docker compose \
+AGENT_CONFIG=asap-otel-agent-b3-delta.yaml docker compose \
     -f deploy/docker-compose/base.yml \
     -f deploy/docker-compose/agents-N1.yml \
     -f deploy/docker-compose/baseline-b3-delta.yml \
@@ -413,7 +413,7 @@ deploy/scripts/run_e2e_sweep.sh --out-dir /tmp/sweep-$(date +%s) --soak-secs 120
    collector (the same build the agents already use). The
    patched build's pdata knows tags 13–17 and round-trips them
    intact. `deploy/docker-compose/base.yml`'s gateway service now
-   uses `image: asap/sketchcol:dev` (was stock 0.108). Three
+   uses `image: asap/asap-otel:dev` (was stock 0.108). Three
    gateway configs in `deploy/configs/`:
    - `gateway.yaml` — pure forwarder (default).
    - `gateway-aggregate-from-raw.yaml` — gateway runs sketch
@@ -504,7 +504,7 @@ deploy/scripts/run_e2e_sweep.sh --out-dir /tmp/sweep-$(date +%s) --soak-secs 120
    drift from the engine. Add a self-check that runs the same
    query against the cold truth via the engine itself, where
    feasible.
-7. **`build_sketchcollector.sh` env vars are external.** The
+7. **`build_asap_otel.sh` env vars are external.** The
    script needs `GOPRIVATE='github.com/ProjectASAP/*'
    GOTOOLCHAIN=auto` to actually build (sketchlib-go's
    private-module + Go toolchain auto-upgrade). Inlining these
@@ -606,8 +606,8 @@ use `SerializeToBytes`; CMS uses a per-snapshot gob of
   `gen-agents.sh` for arbitrary `N`.
 - 7 baseline overlays: `b0a-raw-stream`, `b0b-raw-batched`,
   `b1-serf`, `b2-full`, `b3-delta`, `b4-tunable`, `b5-gorilla`.
-- 5 Dockerfiles under `deploy/docker/`: `sketchcol`,
-  `sketchcol-stock`, `backend`, `controller`, `fake-exporter`.
+- 5 Dockerfiles under `deploy/docker/`: `asap-otel`,
+  `asap-otel-stock`, `backend`, `controller`, `fake-exporter`.
 - `deploy/helm/asap/`: `Chart.yaml` + `values.yaml` with the
   paper's resource envelope (0.5 CPU / 512 Mi per agent).
   Templates not yet written.
@@ -774,7 +774,7 @@ plots that only require a producer + collector pair. Landed via
 - **OpAMP stress test at `N = 100+` agents.** Currently tested
   with ~dozen; proper stress test needed for the scalability
   story.
-- **Sketch-processor CPU offload.** Edge sketchcol processors
+- **Sketch-processor CPU offload.** Edge asap-otel processors
   update sketches on the data-plane thread. Worker-pool +
   lock-free ring buffer for higher ingest rates on
   resource-constrained edge nodes.
@@ -811,7 +811,7 @@ Load generator — deploy/fake-exporter/ (OTel-SDK-instrumented app)
         │
         │ OTLP gRPC
         ▼
-Agent OTel collector (sketchcol)
+Agent OTel collector (asap-otel)
   ├── receiver/otlpreceiver
   ├── processor/{dd,kll,cs,cms,hll}sketchprocessor
   ├── processor/batchprocessor
@@ -832,6 +832,6 @@ ASAPQuery backend (sketchDB + PromQL surface)
 Controller — DataCollector/controller/
   observes: query workload, SLAs, agent metrics
   decides:  per-metric (W, L, agg_type) triple
-  pushes:   OpAMP → agent sketchcol config
+  pushes:   OpAMP → agent asap-otel config
             HTTP  → backend streaming config
 ```

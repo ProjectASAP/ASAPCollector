@@ -1,17 +1,17 @@
-# Full sketchotap image — the ASAP-patched OTAP-Rust (`df_engine`)
+# Full asap-otap image — the ASAP-patched OTAP-Rust (`df_engine`)
 # distribution with the unified `asap_sketches` processor wired into
 # its `linkme` plugin registry. Phase 5 step D output (per
 # docs/design-asap-otap-rust-integration.md §11 row D).
 #
 # ## Build model: host-build, container-ship
 #
-# Mirrors `Dockerfile.sketchcol` and the operator workflow Phase 4
-# step D ships for `sketchtelegraf`. The patched OTAP submodule
+# Mirrors `Dockerfile.asap-otel` and the operator workflow Phase 4
+# step D ships for `asap-telegraf`. The patched OTAP submodule
 # depends on a sibling `asap-precompute-rs` checkout (path-dep at
 # `../asap-precompute-rs/` from the staged registration crate); doing
 # the full Cargo build inside Docker would require either mounting
 # that sibling into the BuildKit context or vendoring it into the
-# image, both of which complicate iteration. Like the `sketchcol`
+# image, both of which complicate iteration. Like the `asap-otel`
 # parallel, this Dockerfile is just a runtime stage that wraps the
 # pre-built binary.
 #
@@ -23,23 +23,23 @@
 #      git submodule update --init --recursive otel-arrow
 #
 # 2. Build the binary (sets the GOPRIVATE-equivalent Cargo env vars
-#    inline — see build_sketchotap.sh's "Env vars" section):
+#    inline — see build_asap_otap.sh's "Env vars" section):
 #
-#      bash build_sketchotap.sh
+#      bash build_asap_otap.sh
 #
 #    Binary lands at
-#    `otel-arrow/rust/otap-dataflow/target/release/sketchotap`.
+#    `otel-arrow/rust/otap-dataflow/target/release/asap-otap`.
 #    Verify the plugin registry:
 #
-#      ./otel-arrow/rust/otap-dataflow/target/release/sketchotap -h \
+#      ./otel-arrow/rust/otap-dataflow/target/release/asap-otap -h \
 #        | grep asap_sketches
 #    # Expects: ...urn:asap:processor:asap_sketches...
 #
 # 3. Build this image (the COPY below expects the binary to be
 #    present in the build context):
 #
-#      docker build -f deploy/docker/Dockerfile.sketchotap \
-#        -t asap/sketchotap:dev .
+#      docker build -f deploy/docker/Dockerfile.asap-otap \
+#        -t asap/asap-otap:dev .
 #
 # ## Runtime config
 #
@@ -54,8 +54,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-COPY otel-arrow/rust/otap-dataflow/target/release/sketchotap \
-    /usr/local/bin/sketchotap
+COPY otel-arrow/rust/otap-dataflow/target/release/asap-otap \
+    /usr/local/bin/asap-otap
 
 # The OTAP runtime exposes its admin/HTTP server on the
 # `--http-admin-bind` address (no fixed default); receivers/exporters
@@ -63,5 +63,5 @@ COPY otel-arrow/rust/otap-dataflow/target/release/sketchotap \
 # / OTAP gRPC + HTTP ports so a stock pipeline config "just works."
 EXPOSE 4317 4318 8888
 
-ENTRYPOINT ["/usr/local/bin/sketchotap"]
+ENTRYPOINT ["/usr/local/bin/asap-otap"]
 CMD ["--config=/etc/otap/config.yaml"]

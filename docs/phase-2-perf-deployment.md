@@ -67,7 +67,7 @@ dependency), so no local fix was needed for the OCB build to succeed.
 The only environmental fixup was a symlink `/tmp/sketchlib-go ->
 /home/zeying/repos/sketchlib-go`, because the OCB-emitted go.mod uses
 `../../../../sketchlib-go` from the build dir at
-`/tmp/preshim-worktree/.../cmd/sketchcollector/`. Both fixups are
+`/tmp/preshim-worktree/.../cmd/asap-otel/`. Both fixups are
 build-host-local — nothing was committed.
 
 ### Procedure
@@ -75,11 +75,11 @@ build-host-local — nothing was committed.
 For each commit:
 
 1. `git worktree add` at the commit, init submodules, run
-   `./build_sketchcollector.sh` to produce a fresh
-   `sketchcollector` binary.
+   `./build_asap_otel.sh` to produce a fresh
+   `asap-otel` binary.
 2. Copy that binary into the main repo's
-   `opentelemetry-collector-contrib-patch/cmd/sketchcollector/` and
-   `docker build -f deploy/docker/Dockerfile.sketchcol`. Tag
+   `opentelemetry-collector-contrib-patch/cmd/asap-otel/` and
+   `docker build -f deploy/docker/Dockerfile.asap-otel`. Tag
    appropriately, swap onto `:dev`, then
    `docker compose ... up -d --force-recreate agent-1 gateway` so only
    the agent + gateway tier get re-imaged. Producer / backend /
@@ -198,7 +198,7 @@ with both micro and deployment-level confirmation.
   families × 12 cells × ≥ 2 min each ≥ 2 h wall-clock) and out of
   scope for this audit.
 - **No `-race`, no profiling overhead.** Plain release build via
-  `Dockerfile.sketchcol`.
+  `Dockerfile.asap-otel`.
 
 ## Gaps in the existing harness
 
@@ -254,7 +254,7 @@ listed at the end as standing follow-ups.
 3. **No per-observation latency emission from the deployed shim —
    FIXED in PR #246 (DDSketch only) + follow-up.** ADR-0002's
    binding metric is per-observation `Observe` p99, which the
-   deployed sketchcollector previously didn't expose as a Prom
+   deployed asap-otel previously didn't expose as a Prom
    histogram (Phase 2.11A measured it in `testing.B` only).
 
    Resolution:
@@ -328,19 +328,19 @@ cd /tmp/preshim-worktree
 git submodule update --init --recursive opentelemetry-collector \
   opentelemetry-collector-contrib opentelemetry-proto
 ln -sfn /home/zeying/repos/sketchlib-go /tmp/sketchlib-go
-GOPRIVATE='github.com/ProjectASAP/*' bash build_sketchcollector.sh
+GOPRIVATE='github.com/ProjectASAP/*' bash build_asap_otel.sh
 
 # build pre-shim docker image
-cp /tmp/preshim-worktree/opentelemetry-collector-contrib-patch/cmd/sketchcollector/sketchcollector \
-   $REPO/opentelemetry-collector-contrib-patch/cmd/sketchcollector/
+cp /tmp/preshim-worktree/opentelemetry-collector-contrib-patch/cmd/asap-otel/asap-otel \
+   $REPO/opentelemetry-collector-contrib-patch/cmd/asap-otel/
 cd $REPO
-docker build -f deploy/docker/Dockerfile.sketchcol -t asap/sketchcol:preshim .
+docker build -f deploy/docker/Dockerfile.asap-otel -t asap/asap-otel:preshim .
 
 # swap onto :dev tag, recreate just agent + gateway, soak, measure
-docker tag asap/sketchcol:dev asap/sketchcol:postshim-saved
-docker tag asap/sketchcol:preshim asap/sketchcol:dev
+docker tag asap/asap-otel:dev asap/asap-otel:postshim-saved
+docker tag asap/asap-otel:preshim asap/asap-otel:dev
 cd $REPO/deploy/docker-compose
-AGENT_CONFIG=sketchcol-agent-b3-delta.yaml docker compose \
+AGENT_CONFIG=asap-otel-agent-b3-delta.yaml docker compose \
   -f base.yml -f agents-N1.yml -f baseline-b3-delta.yml \
   up -d --no-deps --force-recreate agent-1 gateway
 sleep 200  # 2 m for rate window + 80 s margin
@@ -353,7 +353,7 @@ python3 $REPO/deploy/scripts/measure-baseline.py \
   --window 2m --bytes-sample-window 10
 
 # restore post-shim and re-measure (or just keep the prior post-shim numbers)
-docker tag asap/sketchcol:postshim-saved asap/sketchcol:dev
+docker tag asap/asap-otel:postshim-saved asap/asap-otel:dev
 docker compose ... up -d --no-deps --force-recreate agent-1 gateway
 # (etc.)
 ```

@@ -4,7 +4,7 @@
 # In production, mount_path would be an S3 Files mount point
 # (e.g. /mnt/s3/my-metrics-bucket). For local testing, any directory works.
 #
-# Start: ./sketchcol --config file:config-s3files.yaml
+# Start: ./asap-otel --config file:config-s3files.yaml
 
 receivers:
   otlp:

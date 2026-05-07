@@ -5,7 +5,7 @@
 **Audience:** anyone asking "can the pipeline answer this query today, and
 where is the work done?"
 **Scope:** the current implementation of the end-to-end pipeline
-`workloads → OTel sketchcol → OTLP → ASAPQuery-backend precompute engine →
+`workloads → OTel asap-otel → OTLP → ASAPQuery-backend precompute engine →
 SimpleMapStore → query engine`.
 
 > This is a **catalog**, not a compilation reference. For the query →
@@ -27,9 +27,9 @@ SimpleMapStore → query engine`.
                                   │  raw metric streams
                                   ▼
       ┌──────────────────────────────────────────────────────┐
-      │ ASAPCollector OTel sketchcol                         │
+      │ ASAPCollector OTel asap-otel                         │
       │   (ddsketchcol / kllcol / countminsketchcol /        │
-      │    countsketchcol / hllcol / sketchcol / ... )       │
+      │    countsketchcol / hllcol / asap-otel / ... )       │
       │                                                      │
       │   • builds per-window, per-group sketches at edge    │
       │   • emits via MODIFIED OTLP proto as first-class     │
@@ -91,7 +91,7 @@ SimpleMapStore → query engine`.
       └──────────────────────────────────────────────────────┘
 ```
 
-Labels survive two coordinate systems. The OTel sketchcol receives
+Labels survive two coordinate systems. The OTel asap-otel receives
 full metric attributes and decides which it keeps as partition keys
 (the grouping the sketch is built per). The precompute engine then
 applies its own `grouping_labels` from `AggregationConfig` to produce
@@ -123,7 +123,7 @@ sketch bytes, and an encoding tag.
 | `ddsketchprocessor` | `DDSketch` | DDSketch buckets + min/max | Emits via `pmetric.MetricTypeDDSketch`; `DDSKETCH_ENCODING_PROTO` full or `DDSKETCH_ENCODING_PROTO_DELTA` delta; window-aligned, per-resource partitioning; lossless extrema are first-class typed fields, not derived |
 | `kllprocessor` | `KLLSketch` | KLL levels | Emits via `pmetric.MetricTypeKLLSketch`; `KLL_SKETCH_ENCODING_PROTO` |
 | `hllprocessor` | `HLLSketch` | HLL registers | Emits via `pmetric.MetricTypeHLLSketch`; supports full + `HLL_SKETCH_ENCODING_DELTA` delta |
-| `sketchcol` (meta) | any of the above | multiplex | Mounts multiple sketch processors in one collector image; all still emit via modified-OTLP variants |
+| `asap-otel` (meta) | any of the above | multiplex | Mounts multiple sketch processors in one collector image; all still emit via modified-OTLP variants |
 
 Each data point also carries an optional `series_id` (with the
 invariant "exactly one of `series_id != 0` or `attributes` populated")
@@ -152,9 +152,9 @@ standard-OTLP clients that cannot speak the modified proto; none of
 the modern processors use it.
 
 A worked deployment that exercises every processor at once lives in
-[`deploy/configs/sketchcol-agent-allsketches.yaml`](../deploy/configs/sketchcol-agent-allsketches.yaml)
+[`deploy/configs/asap-otel-agent-allsketches.yaml`](../deploy/configs/asap-otel-agent-allsketches.yaml)
 (PR [#271](https://github.com/ProjectASAP/ASAPCollector/pull/271),
-2026-05-06): a single `sketchcol` agent runs all five sketch
+2026-05-06): a single `asap-otel` agent runs all five sketch
 families (`[ddsketch, KLL, HLL, countsketch, countmin, batch]`) in
 one OTLP pipeline and feeds the unified `backend-inference.yaml`,
 giving the paper §architecture demo "one agent, all five PromQL
@@ -318,7 +318,7 @@ it into a longer backend window (e.g. 5 min) by merging consecutive
 sketches into the pane covering the 5 min slot:
 
 ```
-  OTel sketchcol         OTLP         Precompute engine                    Store
+  OTel asap-otel         OTLP         Precompute engine                    Store
   ─────────────          ────         ─────────────────                    ─────
   every 10 s:
     CMS[0s..10s]   ──▶                merge → sketch_panes[300s] (pane 0)
@@ -765,7 +765,7 @@ the canonical envelope flow.
 
 So the current state is:
 
-1. ASAPCollector sketchcol emits via `Metric.data = KLLSketch{…}` (or
+1. ASAPCollector asap-otel emits via `Metric.data = KLLSketch{…}` (or
    one of the other native variants) on the modified OTLP wire,
    with byte-identical envelope contents whether the agent runs the
    Go (`sketchlib-go`) or Rust (`asap_sketchlib`) edge runtime
@@ -1759,7 +1759,7 @@ Alternative architectures remain viable for specific workloads:
      AND drift between full and delta paths within the same format.
 
    Ground rules: protobuf stays the default everywhere; MessagePack
-   is opt-in per metric at the sketchcol processor config; **both
+   is opt-in per metric at the asap-otel processor config; **both
    formats support both full and delta transmission with no
    asymmetry**; the OTLP envelope itself always stays protobuf;
    every sketch type must support both encodings (no
@@ -1837,7 +1837,7 @@ Alternative architectures remain viable for specific workloads:
   [`ASAPQuery-backend/docs/design-phase3-asap-precompute-rs.md`](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/design-phase3-asap-precompute-rs.md)
   (PR #76, 2026-05-05).
 - **All-sketch demo agent**:
-  [`deploy/configs/sketchcol-agent-allsketches.yaml`](../deploy/configs/sketchcol-agent-allsketches.yaml)
+  [`deploy/configs/asap-otel-agent-allsketches.yaml`](../deploy/configs/asap-otel-agent-allsketches.yaml)
   (PR #271) — one agent runs all five sketch families concurrently,
   pairs with the unified `backend-inference.yaml`.
 

@@ -126,7 +126,7 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
     // (and any other archive-bound metric) never reach the cold tier and
     // the warm-tier engine's `last_over_time(...)` returns empty.
     //
-    // Config matches `deploy/configs/sketchcol-agent-b6-asap-single-sketch.yaml`
+    // Config matches `deploy/configs/asap-otel-agent-b6-asap-single-sketch.yaml`
     // — `block_format: prometheus_tsdb` so the Thanos store-gateway can
     // read the emitted blocks; `drop_original: false` so the metric also
     // flows downstream to the warm-tier sketch / OTLP exporter; the
@@ -164,7 +164,7 @@ tsdb_block_duration: {window_secs}s\n",
     }
 
     // Pipeline-processor list for the warm-tier path. Order matches
-    // `sketchcol-agent-b6-asap-single-sketch.yaml`: gorillas3 runs FIRST
+    // `asap-otel-agent-b6-asap-single-sketch.yaml`: gorillas3 runs FIRST
     // so the cold-tier write happens on the raw sample BEFORE the sketch
     // processor mutates / suffix-renames the metric stream.
     let warm_tier_processors: Vec<String> = {
@@ -1878,7 +1878,7 @@ mod tests {
 
     /// Bug (a) corollary: gorillas3 runs BEFORE the sketch processor in
     /// the warm-tier pipeline so the cold-tier write happens on raw
-    /// samples — mirrors `sketchcol-agent-b6-asap-single-sketch.yaml`'s
+    /// samples — mirrors `asap-otel-agent-b6-asap-single-sketch.yaml`'s
     /// canonical `[gorillas3, ddsketch, batch]` ordering.
     #[test]
     fn phase_3_2_5_bug_a_gorillas3_runs_before_sketch_in_pipeline() {

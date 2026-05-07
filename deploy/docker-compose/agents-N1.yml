@@ -6,17 +6,17 @@
 #   fake-exporter ──OTLP──▶ agent-1 ──OTLP──▶ gateway ──promRW──▶ backend
 #                   :4317            :4317           :9090
 #
-# The agent mounts `sketchcol-agent.yaml` and runs DDSketch + HLL
+# The agent mounts `asap-otel-agent.yaml` and runs DDSketch + HLL
 # on the pipeline, so the bytes reaching the gateway are already
 # sketched (bandwidth-reduction signal).
 
 x-agent: &agent-base
-  image: asap/sketchcol:dev
+  image: asap/asap-otel:dev
   depends_on:
     - gateway
     - controller
   # Agents are configured via the mounted sketch pipeline; overriding
-  # the entrypoint isn't needed — the patched sketchcollector binary
+  # the entrypoint isn't needed — the patched asap-otel binary
   # is the default.
   command:
     - "--config=/etc/otel/config.yaml"
@@ -26,7 +26,7 @@ x-agent: &agent-base
     # paper baselines' compose overlays (baseline-b*.yml) set
     # it before `docker compose up`. Compose expands the
     # ${VAR:-default} syntax at container start.
-    - ../configs/${AGENT_CONFIG:-sketchcol-agent-b2-full.yaml}:/etc/otel/config.yaml:ro
+    - ../configs/${AGENT_CONFIG:-asap-otel-agent-b2-full.yaml}:/etc/otel/config.yaml:ro
   environment:
     CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
     # Runtime-samples push endpoint — sketch-runtime sends
@@ -49,7 +49,7 @@ services:
       CONTROLLER_OPAMP_URL: "ws://controller:4320/v1/opamp"
       SKETCH_RUNTIME_GRPC_ENDPOINT: "http://controller:4321"
       RUST_LOG: "info"
-      # Consumed by sketchcol-agent-b4-tunable.yaml; other
+      # Consumed by asap-otel-agent-b4-tunable.yaml; other
       # baselines ignore it. Default 60s.
       SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 

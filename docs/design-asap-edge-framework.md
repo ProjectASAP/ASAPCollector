@@ -5,7 +5,7 @@ work tracked in [`PROGRESS.md`](../PROGRESS.md)._
 
 ## 1. Motivation
 
-The repo is named `ASAPCollector`, the binary is `sketchcollector`,
+The repo is named `ASAPCollector`, the binary is `asap-otel`,
 and the bulk of the code today lives under
 `opentelemetry-collector-contrib-patch/`. That framing misleads
 contributors and users alike: the reusable artifact isn't "an OTel
@@ -31,8 +31,8 @@ build.** The framework's core deliverable is the Layer 3 runtime
 normal Go module / Rust crate that any project can depend on.
 Each Layer-4 adapter is a thin glue crate that pulls Layer 3 in
 as a library dependency. The end-user-visible artifact for each
-host platform is a custom-built binary (`sketchcollector`,
-`sketchtelegraf`, `sketchvector`, `sketchotap`) that links the
+host platform is a custom-built binary (`asap-otel`,
+`asap-telegraf`, `sketchvector`, `asap-otap`) that links the
 upstream platform + Layer 3 library + Layer 4 adapter together at
 build time, using each platform's official compile-in extension
 mechanism (OCB / build tags / `inventory::submit!` / `linkme`).
@@ -513,10 +513,10 @@ Per-platform compile-in mechanism (all Tier 2):
 
 | Platform | Mechanism | Distribution unit |
 |---|---|---|
-| **OTel Collector** | OCB (OpenTelemetry Collector Builder) reads `builder-config.yaml`, compiles in custom processors at build time. ASAPCollector already does this. | `sketchcollector` |
-| **Telegraf** | `plugins/processors/all/allsketches.go` build-tag overlay registering the unified `processors.allsketches` plugin. | `sketchtelegraf` |
+| **OTel Collector** | OCB (OpenTelemetry Collector Builder) reads `builder-config.yaml`, compiles in custom processors at build time. ASAPCollector already does this. | `asap-otel` |
+| **Telegraf** | `plugins/processors/all/allsketches.go` build-tag overlay registering the unified `processors.allsketches` plugin. | `asap-telegraf` |
 | **Vector** | In-tree feature flag + `inventory::submit!` registration in a path-dependency Cargo workspace. | `sketchvector` |
-| **OTAP Dataflow** | `linkme` distributed-slice compile-time registration; the project README states "current system is compile-time only." | `sketchotap` |
+| **OTAP Dataflow** | `linkme` distributed-slice compile-time registration; the project README states "current system is compile-time only." | `asap-otap` |
 
 User-facing mental model: "I install the ASAP-flavored distro of
 $platform" — same as installing Datadog Agent (vendor-repackaged
@@ -528,7 +528,7 @@ later."
 Net consequence: ASAP's deployment story across all four
 platforms is "we ship a binary." No platform user ever runs
 `docker pull telegraf:latest` and adds ASAP after the fact —
-they pull `sketchtelegraf:latest` directly. The LoC estimates in
+they pull `asap-telegraf:latest` directly. The LoC estimates in
 §7.3 reflect this — they include build/feature plumbing (Cargo
 workspace edits, OCB manifest entries, `linkme` registration
 boilerplate, build-tag wiring) that naive "just write a plugin"

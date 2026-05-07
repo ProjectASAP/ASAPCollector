@@ -19,7 +19,7 @@
 # does not back rank statistics).
 #
 # Metric: `http_requests_total` (no suffix). The CountSketch direct
-# agent overlay (`sketchcol-agent-cs-direct.yaml`) preserves the raw
+# agent overlay (`asap-otel-agent-cs-direct.yaml`) preserves the raw
 # metric name through the processor.
 cleanup_policy:
   name: "circular_buffer"

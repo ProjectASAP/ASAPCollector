@@ -1,7 +1,7 @@
 # Baseline B4 selector — delta sketch with tunable window
 # granularity via $SKETCH_WINDOW.  window-sweep.
 #
-#   SKETCH_WINDOW=10s AGENT_CONFIG=sketchcol-agent-b4-tunable.yaml \
+#   SKETCH_WINDOW=10s AGENT_CONFIG=asap-otel-agent-b4-tunable.yaml \
 #     docker compose -f base.yml -f agents-N1.yml \
 #       -f baseline-b4-tunable.yml up -d
 #

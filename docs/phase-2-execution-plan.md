@@ -290,7 +290,7 @@ shape from the previous). 2.10–2.11 gate the phase exit.
   path. After Phase 2, those paths still work (the processor
   packages still exist; they just call a new module). The new
   `asap-precompute-go` module needs to be added to OCB's `gomod`
-  list. Mitigation: 2.5 includes `build_sketchcollector.sh`
+  list. Mitigation: 2.5 includes `build_asap_otel.sh`
   smoke run before merge.
 
 ## Phase exit criterion (blocking)

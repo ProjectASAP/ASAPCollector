@@ -69,11 +69,11 @@ decode_projection() {
 }
 
 # The b0a-raw-stream overlay is the workload-shape neutral choice —
-# its sketchcol config is OTLP → batch(1s) → OTLP, which keeps the
+# its asap-otel config is OTLP → batch(1s) → OTLP, which keeps the
 # agent from doing anything interesting on top of whatever the SDK
 # already emitted. This isolates the SDK-side axis under study.
 BASELINE_OVERLAY="baseline-b0a-raw-stream.yml"
-AGENT_CONFIG="sketchcol-agent-b0a-raw-stream.yaml"
+AGENT_CONFIG="asap-otel-agent-b0a-raw-stream.yaml"
 
 head=1
 for window in "${WINDOWS_ARR[@]}"; do

@@ -30,11 +30,11 @@
 # any sketch-path signal.
 
 dist:
-  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/sketchcollector
-  name: sketchcollector
-  description: Sketchcollector with DDSketch + KLL + HLL + CountSketch + CountMinSketch (e2e harness)
+  module: github.com/open-telemetry/opentelemetry-collector-contrib/cmd/asap-otel
+  name: asap-otel
+  description: AsapOtel with DDSketch + KLL + HLL + CountSketch + CountMinSketch (e2e harness)
   version: 0.141.0-dev-sketches
-  output_path: ./cmd/sketchcollector
+  output_path: ./cmd/asap-otel
 
 extensions:
   # OpAMP extension: lets the agent subscribe to remote configs

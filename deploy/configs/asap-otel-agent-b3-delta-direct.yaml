@@ -81,7 +81,7 @@ service:
     logs:
       level: info
     # Self-telemetry pull exporter removed: the minimal
-    # sketchcollector build (`builder-config-sketches.yaml`) doesn't
+    # asap-otel build (`builder-config-sketches.yaml`) doesn't
     # include the `prometheus` exporter component, so referencing it
     # here makes the collector fail to start. Self-telemetry isn't
     # required for the e2e demo; processor self-telemetry still

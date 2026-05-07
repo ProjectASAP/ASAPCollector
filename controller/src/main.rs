@@ -788,14 +788,14 @@ async fn handle_get_config(
 /// | `USE_TYPED_STAGE_SPLIT` | path |
 /// | --- | --- |
 /// | unset / `0` | **legacy** — emit a default-DDSketch [`AgentCollectorConfig`] via [`generate_agent_config`]. Backwards-compat with deployments that haven't migrated to the typed L5 emitters. |
-/// | `1` / `true` / `yes` | **typed** — pick the agent's pinned workload (when `X-Agent-ID` is supplied and the replanner has a prior assignment), or fall back to the first agent-role entry in [`WorkloadRegistry`]. Run the typed L5 pipeline (`bind_workload_typed` → `split_typed_three_stage`) and emit the Edge stage config via [`emit_for_runtime`] — dispatched by the `X-Agent-Runtime` header (defaults to `Sketchcollector`). When the typed path errors out (no workload, unsupported topology, no Edge stage in the per-stage map) it falls back to the legacy emitter so the bootstrap never returns a 500 just because the typed path has a gap. |
+/// | `1` / `true` / `yes` | **typed** — pick the agent's pinned workload (when `X-Agent-ID` is supplied and the replanner has a prior assignment), or fall back to the first agent-role entry in [`WorkloadRegistry`]. Run the typed L5 pipeline (`bind_workload_typed` → `split_typed_three_stage`) and emit the Edge stage config via [`emit_for_runtime`] — dispatched by the `X-Agent-Runtime` header (defaults to `AsapOtel`). When the typed path errors out (no workload, unsupported topology, no Edge stage in the per-stage map) it falls back to the legacy emitter so the bootstrap never returns a 500 just because the typed path has a gap. |
 ///
 /// ## Why this matters
 ///
 /// Without the typed path, fresh agents connecting at startup miss
 /// Phase 3.2.5's `gorillas3` archive emit + warm-passthrough routing
-/// processor, the per-runtime dispatch from Phase ε.1.5 (sketchcol vs
-/// sketchotap vs sketchtelegraf), and Phase ε.1's three operational
+/// processor, the per-runtime dispatch from Phase ε.1.5 (asap-otel vs
+/// asap-otap vs asap-telegraf), and Phase ε.1's three operational
 /// modes — they only see those once `handle_plan` is later invoked.
 /// Mirroring `handle_plan`'s typed pipeline here means bootstrap and
 /// plan-push converge on the same emitted YAML.
@@ -804,7 +804,7 @@ async fn handle_bootstrap_agent_config(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     // Phase ε.1.5 — runtime dispatch from the X-Agent-Runtime header.
-    // Defaults to `Sketchcollector` for legacy agents that don't send
+    // Defaults to `AsapOtel` for legacy agents that don't send
     // the header so the existing OTel-collector contrib build keeps
     // working with no client-side changes.
     let runtime = headers
@@ -1892,18 +1892,18 @@ mod api_tests {
         );
     }
 
-    /// `X-Agent-Runtime: sketchotap` → emitter dispatches through
+    /// `X-Agent-Runtime: asap-otap` → emitter dispatches through
     /// `emit_otap_dag_yaml` rather than the OTel-collector emit. The
     /// output shape is YAML-but-not-OTel — we identify it by the
     /// otap-dataflow DAG version token.
     #[tokio::test]
-    async fn bootstrap_typed_path_sketchotap_runtime_dispatch() {
+    async fn bootstrap_typed_path_asap_otap_runtime_dispatch() {
         let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
 
         let (_, app, tmp) = test_app_with_workload("rtt_otap", 0.01);
         let req = Request::builder()
             .uri("/api/v1/collector-config/agent")
-            .header("X-Agent-Runtime", "sketchotap")
+            .header("X-Agent-Runtime", "asap-otap")
             .body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1914,20 +1914,20 @@ mod api_tests {
         // Mirrors the assertion in `config::runtime_tests::emit_for_runtime_otap_yields_dag_yaml`.
         assert!(
             yaml.contains("otel_dataflow/v1"),
-            "sketchotap runtime should produce the otap-dataflow DAG YAML:\n{yaml}"
+            "asap-otap runtime should produce the otap-dataflow DAG YAML:\n{yaml}"
         );
     }
 
-    /// `X-Agent-Runtime: sketchtelegraf` → emitter dispatches through
+    /// `X-Agent-Runtime: asap-telegraf` → emitter dispatches through
     /// `emit_telegraf_toml` and produces TOML rather than YAML.
     #[tokio::test]
-    async fn bootstrap_typed_path_sketchtelegraf_runtime_dispatch() {
+    async fn bootstrap_typed_path_asap_telegraf_runtime_dispatch() {
         let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
 
         let (_, app, tmp) = test_app_with_workload("rtt_tg", 0.01);
         let req = Request::builder()
             .uri("/api/v1/collector-config/agent")
-            .header("X-Agent-Runtime", "sketchtelegraf")
+            .header("X-Agent-Runtime", "asap-telegraf")
             .body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1938,7 +1938,7 @@ mod api_tests {
         // Telegraf fingerprint — see `config::runtime_tests::emit_for_runtime_telegraf_yields_toml`.
         assert!(
             toml.contains("[[inputs.opentelemetry]]"),
-            "sketchtelegraf runtime should produce Telegraf TOML:\n{toml}"
+            "asap-telegraf runtime should produce Telegraf TOML:\n{toml}"
         );
     }
 

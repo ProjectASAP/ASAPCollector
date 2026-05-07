@@ -594,7 +594,7 @@ and one Prometheus-ingest API surface removed.
   — warm-tier `SimpleEngine`; sibling of the archive engines.
 - `deploy/docker-compose/mvp-thanos-archive.yml` — Thanos
   store-gateway + thanos-query + thanos compact sidecar wiring.
-- `deploy/configs/sketchcol-agent-b5-gorilla.yaml` — local-FS
+- `deploy/configs/asap-otel-agent-b5-gorilla.yaml` — local-FS
   baseline config for the archive-tier processor (for the
   b5-gorilla benchmark variant).
 

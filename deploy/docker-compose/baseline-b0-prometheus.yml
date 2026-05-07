@@ -12,7 +12,7 @@
 #
 # Bring up via:
 #
-#   AGENT_CONFIG=sketchcol-agent-b0-prometheus.yaml \
+#   AGENT_CONFIG=asap-otel-agent-b0-prometheus.yaml \
 #     docker compose -f base.yml -f agents-N10.yml \
 #       -f baseline-b0-prometheus.yml up -d
 #

@@ -1,10 +1,10 @@
-# Phase 5 step E sketchotap agent config — OTAP Dataflow pipeline with
+# Phase 5 step E asap-otap agent config — OTAP Dataflow pipeline with
 # the unified asap_sketches plugin instantiated five times (one per
-# sketch family). Drives identical knobs to the sketchcol config so
+# sketch family). Drives identical knobs to the asap-otel config so
 # byte-parity at the SketchEnvelope.Payload level holds.
 #
 # Shape mirrors otap-patch/plugins/asap_sketches/sample.toml. OTAP
-# accepts YAML or TOML; using YAML here for parity with the sketchcol
+# accepts YAML or TOML; using YAML here for parity with the asap-otel
 # config above.
 
 receivers:
@@ -21,7 +21,7 @@ processors:
       attributes:
         - action: upsert
           key: asap.agent_id
-          value: sketchotap
+          value: asap-otap
 
   - id: asap_ddsketch
     plugin: asap_sketches

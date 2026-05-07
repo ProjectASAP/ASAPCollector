@@ -36,7 +36,7 @@ for the design rationale; in particular:
   The plugin shell here documents the user-facing configuration;
   the binary-level `linkme` registration is **deliberately
   deferred** to Phase D per the §11 phase plan.
-- **Phase D** (next) — `build_sketchotap.sh` build script and
+- **Phase D** (next) — `build_asap_otap.sh` build script and
   `otap-patch/all/mod.rs` `linkme` distributed-slice registration.
   Phase D adds `Cargo.toml` + `src/lib.rs` here once the OTAP
   submodule binding is wired in.

@@ -111,11 +111,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # The companion (other workloads.yaml metric) is also pinned to
 # the cell's family — same rationale.
 SKETCHES=(
-    "ddsketch:sketchcol-agent-b3-delta.yaml:dd-delta:quantile::queries-e2e.json:quantile_over_time(0.99, http_requests_total_latency_ms_quantile[10m]):http_requests_total_latency_ms:DDSketch:DDSketch:http_requests_total:DDSketch:DDSketch"
-    "kll:sketchcol-agent-kll-direct.yaml:kll-full:quantile:e2e-overlay-kll.yml:queries-e2e-kll.json:quantile_over_time(0.99, http_requests_total_latency_ms_kll[10m]):http_requests_total_latency_ms:KLL:KLL:http_requests_total:KLL:KLL"
-    "cs:sketchcol-agent-cs-direct.yaml:cs-delta:topk:e2e-overlay-cs.yml:queries-e2e-cs.json:topk(20, http_requests_total):http_requests_total:CountSketch:CountSketch:http_requests_total_latency_ms:CountSketch:CountSketch"
-    "cms:sketchcol-agent-cms-direct.yaml:cms-delta:topk:e2e-overlay-cms.yml:queries-e2e-cms.json:topk(20, http_requests_total):http_requests_total:CountMinSketch:CountMinSketch:http_requests_total_latency_ms:CountMinSketch:CountMinSketch"
-    "hll:sketchcol-agent-hll-direct.yaml:hll-delta:count_unique:e2e-overlay-hll.yml:queries-e2e-hll.json:count_over_time(http_requests_total_hll[10m]):http_requests_total:HLL:HLL:http_requests_total_latency_ms:HLL:HLL"
+    "ddsketch:asap-otel-agent-b3-delta.yaml:dd-delta:quantile::queries-e2e.json:quantile_over_time(0.99, http_requests_total_latency_ms_quantile[10m]):http_requests_total_latency_ms:DDSketch:DDSketch:http_requests_total:DDSketch:DDSketch"
+    "kll:asap-otel-agent-kll-direct.yaml:kll-full:quantile:e2e-overlay-kll.yml:queries-e2e-kll.json:quantile_over_time(0.99, http_requests_total_latency_ms_kll[10m]):http_requests_total_latency_ms:KLL:KLL:http_requests_total:KLL:KLL"
+    "cs:asap-otel-agent-cs-direct.yaml:cs-delta:topk:e2e-overlay-cs.yml:queries-e2e-cs.json:topk(20, http_requests_total):http_requests_total:CountSketch:CountSketch:http_requests_total_latency_ms:CountSketch:CountSketch"
+    "cms:asap-otel-agent-cms-direct.yaml:cms-delta:topk:e2e-overlay-cms.yml:queries-e2e-cms.json:topk(20, http_requests_total):http_requests_total:CountMinSketch:CountMinSketch:http_requests_total_latency_ms:CountMinSketch:CountMinSketch"
+    "hll:asap-otel-agent-hll-direct.yaml:hll-delta:count_unique:e2e-overlay-hll.yml:queries-e2e-hll.json:count_over_time(http_requests_total_hll[10m]):http_requests_total:HLL:HLL:http_requests_total_latency_ms:HLL:HLL"
 )
 
 NS=(1 10)
