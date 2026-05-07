@@ -391,6 +391,7 @@ mod tests {
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         }
     }
 
@@ -403,6 +404,7 @@ mod tests {
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         }
     }
 
@@ -419,6 +421,7 @@ mod tests {
                 label_proj: vec!["service.name".to_string()],
             }],
             archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         }
     }
 

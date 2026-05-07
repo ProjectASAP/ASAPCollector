@@ -175,6 +175,18 @@ tsdb_block_duration: {window_secs}s\n",
         v.extend(sketch_pipeline_processors.iter().cloned());
         v
     };
+    // Pipeline-processor list for the warm-passthrough path (Bug b):
+    // gorillas3 still runs (the metric still wants to land in the
+    // archive) but the sketch processor is bypassed so the metric name
+    // is preserved end-to-end. Empty when no archive tier and no
+    // sketches — passthrough = receiver → exporter.
+    let warm_passthrough_processors: Vec<String> = {
+        let mut v = Vec::new();
+        if has_archive_tier {
+            v.push("gorillas3".to_string());
+        }
+        v
+    };
 
     // ── Exporters ─────────────────────────────────────────────────────────────
     // Edge always exports to the gateway. ExportTarget gets resolved to
@@ -187,16 +199,26 @@ tsdb_block_duration: {window_secs}s\n",
     let mut pipelines: HashMap<String, Pipeline> = HashMap::new();
 
     let has_prometheus_archive = !cfg.prometheus_archive_metrics.is_empty();
+    let has_warm_passthrough = !cfg.warm_passthrough_metrics.is_empty();
 
-    // ── Phase ε.1 Mode 3: per-Prometheus-archive metric, add a separate
-    // `otlphttp/prometheus` exporter + a `metrics/prometheus_archive`
-    // pipeline, plus a `routing` processor on the main pipeline that
-    // dispatches by `attributes["asap.mode"]`. The agent's controller
-    // emits `asap.mode = "prometheus_archive"` as an attribute on each
-    // Mode-3 metric so the routing match key is in-band. The
-    // `metrics_endpoint` URL hits Prometheus's native OTLP receiver
-    // (https://github.com/prometheus/prometheus/pull/12873) — Prom 2.47+
-    // with `--web.enable-otlp-receiver`.
+    // ── Phase ε.1 Mode 3 / Phase 3.2.5 Bug (b) — per-pipeline routing ─────
+    // Two routing axes can fire from a single edge agent:
+    //
+    //   * Phase ε.1: Mode-3 metrics carry `asap.mode = prometheus_archive`
+    //     as a data-point attribute and dispatch to the Prometheus OTLP
+    //     receiver via a separate `otlphttp/prometheus` exporter.
+    //   * Phase 3.2.5 Bug (b): warm-passthrough metrics (the freshness
+    //     probes) need to bypass the family-specific sketch processor so
+    //     the metric name is preserved end-to-end. They dispatch by
+    //     metric name, NOT by `asap.mode` (so we don't have to teach the
+    //     fake-exporter to set an extra attribute on top of the name).
+    //
+    // When ONLY the Phase ε.1 Mode-3 axis is active we emit the legacy
+    // `from_attribute: asap.mode` form to keep the wire shape stable.
+    // When the warm-passthrough axis is active (alone or together with
+    // Mode 3) we emit the OTTL-statement form (`route() where ...`)
+    // which lets a single routing processor dispatch by both axes from
+    // a single table.
     if has_prometheus_archive {
         // Exporter: OTLP HTTP to Prometheus's native receiver. The path
         // is the canonical `/api/v1/otlp/v1/metrics`. The OTel collector's
@@ -208,12 +230,87 @@ tsdb_block_duration: {window_secs}s\n",
         let prom_exporter: Value = serde_yaml::from_str(prom_exporter_yaml)
             .context("parse otlphttp/prometheus exporter block")?;
         exporters.insert("otlphttp/prometheus".to_string(), prom_exporter);
+    }
 
-        // Routing processor — dispatches per-metric to the right
-        // pipeline based on `asap.mode`. `warm_tier` is the default
-        // (covers the existing sketch-at-edge / merge / passthrough
-        // pipeline). Phase ε.1 ships only the routing table, leaving
-        // the existing main pipeline intact.
+    if has_warm_passthrough {
+        // ── Phase 3.2.5 Bug (b): warm-passthrough routing ───────────────────
+        // The freshness probes are timestamp counters by design — the
+        // wire value `unix_ts_ms_of_emission` IS the freshness signal,
+        // so they MUST flow through the warm tier with their original
+        // metric name preserved. The DDSketch processor's `_quantile`
+        // suffix would rename `http_freshness_probe_warm` to
+        // `http_freshness_probe_warm_quantile` and break the replay
+        // client's `last_over_time(http_freshness_probe_warm[10s])`
+        // query.
+        //
+        // The fix: a `routing` processor with OTTL `route()` statements
+        // dispatches by metric name. Listed metrics route to
+        // `metrics/warm_passthrough` (gorillas3 → exporter, NO sketch);
+        // everything else takes the regular `metrics/warm_tier` path
+        // (gorillas3 → sketches → exporter). Phase ε.1's Mode-3 entry
+        // (matching `attributes["asap.mode"]`) is folded into the same
+        // table when prometheus_archive is also configured.
+        let mut table_entries: Vec<String> = Vec::new();
+        for metric in &cfg.warm_passthrough_metrics {
+            table_entries.push(format!(
+                "  - statement: 'route() where metric.name == \"{metric}\"'\n    pipelines: [metrics/warm_passthrough]"
+            ));
+        }
+        if has_prometheus_archive {
+            table_entries.push(
+                "  - statement: 'route() where attributes[\"asap.mode\"] == \"prometheus_archive\"'\n    pipelines: [metrics/prometheus_archive]".to_string(),
+            );
+        }
+        let routing_yaml = format!(
+            "default_pipelines: [metrics/warm_tier]\ntable:\n{}\n",
+            table_entries.join("\n"),
+        );
+        let routing: Value = serde_yaml::from_str(&routing_yaml)
+            .context("parse routing processor block (OTTL form)")?;
+        processors.insert("routing".to_string(), routing);
+
+        pipelines.insert(
+            "metrics/warm_tier".to_string(),
+            Pipeline {
+                receivers: vec!["otlp".into()],
+                processors: warm_tier_processors.clone(),
+                exporters: vec![exporter_key.clone()],
+            },
+        );
+        pipelines.insert(
+            "metrics/warm_passthrough".to_string(),
+            Pipeline {
+                receivers: vec!["otlp".into()],
+                processors: warm_passthrough_processors.clone(),
+                exporters: vec![exporter_key.clone()],
+            },
+        );
+        if has_prometheus_archive {
+            pipelines.insert(
+                "metrics/prometheus_archive".to_string(),
+                Pipeline {
+                    receivers: vec!["otlp".into()],
+                    processors: Vec::new(),
+                    exporters: vec!["otlphttp/prometheus".to_string()],
+                },
+            );
+        }
+        let mut entry_exporters = vec![exporter_key.clone()];
+        if has_prometheus_archive {
+            entry_exporters.push("otlphttp/prometheus".to_string());
+        }
+        pipelines.insert(
+            "metrics".to_string(),
+            Pipeline {
+                receivers: vec!["otlp".into()],
+                processors: vec!["routing".to_string()],
+                exporters: entry_exporters,
+            },
+        );
+    } else if has_prometheus_archive {
+        // Legacy Phase ε.1 routing — `from_attribute: asap.mode`.
+        // Preserved as-is so the wire shape stays stable for the
+        // (warm_passthrough_metrics empty) cases that already exist.
         let routing_yaml = "from_attribute: asap.mode\ndefault_pipelines: [metrics/warm_tier]\ntable:\n  - value: prometheus_archive\n    pipelines: [metrics/prometheus_archive]\n";
         let routing: Value = serde_yaml::from_str(routing_yaml)
             .context("parse routing processor block")?;
@@ -906,6 +1003,7 @@ mod tests {
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         }
     }
 
@@ -1647,6 +1745,7 @@ mod tests {
                 metric: "http_requests_total".to_string(),
                 window_secs: Some(60),
             }],
+            warm_passthrough_metrics: Vec::new(),
         };
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
 
@@ -1808,4 +1907,112 @@ mod tests {
         );
     }
 
+    // ── Phase 3.2.5 Bug (b) — warm-tier passthrough routing ─────────────────
+
+    /// Bug (b): freshness probes (and other counters whose value IS
+    /// the signal) must bypass the family-specific sketch processor so
+    /// the metric name is preserved end-to-end. The L5 emitter adds a
+    /// `routing` processor with OTTL `route()` statements that dispatch
+    /// listed metrics to a `metrics/warm_passthrough` pipeline; everything
+    /// else takes `metrics/warm_tier` as before.
+    #[test]
+    fn phase_3_2_5_bug_b_warm_passthrough_routes_around_sketch() {
+        let mut cfg = ddsketch_edge_cfg();
+        cfg.archive_tier_metrics = vec![ArchiveTierMetric {
+            metric: "http_freshness_probe_warm".to_string(),
+            window_secs: Some(1),
+        }];
+        cfg.warm_passthrough_metrics = vec!["http_freshness_probe_warm".to_string()];
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        // Routing processor present, dispatches by metric name (OTTL form).
+        assert!(yaml.contains("routing:"), "missing routing processor\n{yaml}");
+        assert!(
+            yaml.contains("route() where metric.name == \"http_freshness_probe_warm\""),
+            "routing must match on metric.name\n{yaml}"
+        );
+        assert!(
+            yaml.contains("metrics/warm_passthrough"),
+            "warm_passthrough pipeline target must be referenced\n{yaml}"
+        );
+
+        // Both pipelines exist.
+        assert!(
+            yaml.contains("metrics/warm_tier:"),
+            "missing metrics/warm_tier pipeline\n{yaml}"
+        );
+        assert!(
+            yaml.contains("metrics/warm_passthrough:"),
+            "missing metrics/warm_passthrough pipeline\n{yaml}"
+        );
+
+        // Critical assertion: the warm_passthrough pipeline does NOT
+        // reference the family-specific sketch processor — that's the
+        // whole point of routing around DDSketch.
+        let passthrough_idx = yaml
+            .find("metrics/warm_passthrough:")
+            .expect("warm_passthrough section not found");
+        // Slice to the next pipeline (or end of file).
+        let after = &yaml[passthrough_idx..];
+        let next_pipeline_offset = after[1..]
+            .find("metrics/")
+            .map(|x| x + 1)
+            .unwrap_or(after.len());
+        let passthrough_section = &after[..next_pipeline_offset];
+        assert!(
+            !passthrough_section.contains("ddsketchprocessor"),
+            "warm_passthrough pipeline must NOT include ddsketchprocessor (the bug we're fixing)\n{yaml}"
+        );
+        // ... but it SHOULD still include gorillas3 so the metric
+        // lands in the archive (the warm engine queries it from
+        // there).
+        assert!(
+            passthrough_section.contains("gorillas3"),
+            "warm_passthrough pipeline still routes through gorillas3 for archive write\n{yaml}"
+        );
+    }
+
+    /// Bug (b) corollary: warm_passthrough composes cleanly with the
+    /// Phase ε.1 prometheus_archive routing — single routing processor
+    /// with both an `asap.mode` and a `metric.name` table entry.
+    #[test]
+    fn phase_3_2_5_bug_b_warm_passthrough_composes_with_prometheus_archive() {
+        let mut cfg = ddsketch_edge_cfg();
+        cfg.archive_tier_metrics = vec![ArchiveTierMetric {
+            metric: "http_freshness_probe_warm".to_string(),
+            window_secs: Some(1),
+        }];
+        cfg.warm_passthrough_metrics = vec!["http_freshness_probe_warm".to_string()];
+        cfg.prometheus_archive_metrics = vec![PrometheusArchiveMetric {
+            metric: "http_requests_total".to_string(),
+            window_secs: Some(60),
+            label_proj: Vec::new(),
+        }];
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        // OTTL form gives us a single routing processor that handles
+        // both dispatch axes.
+        assert!(
+            yaml.contains("route() where metric.name"),
+            "must dispatch by metric name (warm_passthrough)\n{yaml}"
+        );
+        assert!(
+            yaml.contains("attributes[\\\"asap.mode\\\"]")
+                || yaml.contains("attributes['asap.mode']")
+                || yaml.contains("attributes[\"asap.mode\"]"),
+            "must dispatch by asap.mode (prometheus_archive)\n{yaml}"
+        );
+        assert!(
+            yaml.contains("metrics/prometheus_archive:"),
+            "prometheus_archive pipeline still emitted\n{yaml}"
+        );
+        assert!(
+            yaml.contains("metrics/warm_passthrough:"),
+            "warm_passthrough pipeline still emitted\n{yaml}"
+        );
+        assert!(
+            yaml.contains("metrics/warm_tier:"),
+            "warm_tier (default) pipeline still emitted\n{yaml}"
+        );
+    }
 }

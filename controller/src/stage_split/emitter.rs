@@ -155,6 +155,22 @@ pub struct EdgeStageConfig {
     /// can answer `last_over_time(...)`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub archive_tier_metrics: Vec<ArchiveTierMetric>,
+    /// Phase 3.2.5 — metrics that must be carried through the
+    /// warm-tier pipeline WITHOUT the family-specific sketch processor
+    /// renaming them. The freshness probes are timestamp counters by
+    /// design (the wire value `unix_ts_ms_of_emission` IS the freshness
+    /// signal); the DDSketch processor's `_quantile` suffix would
+    /// rename `http_freshness_probe_warm` to
+    /// `http_freshness_probe_warm_quantile` and break the replay
+    /// client's `last_over_time(http_freshness_probe_warm[10s])` query.
+    ///
+    /// When non-empty the L5 emitter adds a `routing` processor that
+    /// dispatches by `metric.name`: matching metrics route to a
+    /// `metrics/warm_passthrough` pipeline (gorillas3 if archive is
+    /// declared, then exporter — NO sketch processor); everything
+    /// else takes the existing `metrics/warm_tier` pipeline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warm_passthrough_metrics: Vec<String>,
 }
 
 /// Phase 3.2.5 — one archive-tier metric the agent should land in
@@ -355,6 +371,7 @@ impl Emitter for ThreeStageEmitter {
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         };
         let mut backend_aggregations: Vec<BackendAggregation> = Vec::new();
         let mut gateway_processors: Vec<GatewayMergeProcessor> = Vec::new();

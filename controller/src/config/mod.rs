@@ -132,6 +132,7 @@ mod runtime_tests {
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         };
 
         let collector = emit_for_runtime(
@@ -154,6 +155,7 @@ mod runtime_tests {
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         };
         let yaml = emit_for_runtime(
             AgentRuntime::Sketchotap, &cfg, "ws://ctrl/v1/opamp", None,
@@ -175,6 +177,7 @@ mod runtime_tests {
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         };
         let toml = emit_for_runtime(
             AgentRuntime::Sketchtelegraf, &cfg, "ws://ctrl/v1/opamp", None,
