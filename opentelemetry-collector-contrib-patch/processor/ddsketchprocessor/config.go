@@ -81,6 +81,13 @@ func createDefaultConfig() component.Config {
 		MetricSuffix:         "_ddsketch",
 		EnableSelfMonitoring: true,
 		TransmitSketch:       true,
+		// Delta-encoded transmission is the operational default for the
+		// MVP demo: at 10 Hz × 60 s = 600 samples/window the per-window
+		// wire footprint is dominated by sketch state size, so emitting
+		// only the bucket diff since the last flush (instead of the full
+		// state) keeps DDSketch comfortably above the bandwidth break-even
+		// versus raw scrape. DeltaThreshold defaults to 1 in validate().
+		DeltaTransmission: true,
 	}
 }
 

@@ -5,6 +5,22 @@ import (
 	"time"
 )
 
+// TestDefaultDeltaTransmissionTrue asserts that the factory's default
+// Config has `DeltaTransmission: true`. CountSketch's per-window wire
+// footprint is dominated by the d×w cell matrix; emitting only cells
+// that changed since the last flush (instead of the full matrix) is
+// the difference between a ~133× bandwidth loss (full-state at
+// 1 Hz × 60 s) and ~13× (delta at 10 Hz × 60 s). This regression test
+// exists so a future factory edit can't silently flip the default
+// back to full-state. See the doc comment on `createDefaultConfig`
+// for the operating-point math.
+func TestDefaultDeltaTransmissionTrue(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	if !cfg.DeltaTransmission {
+		t.Fatalf("expected DeltaTransmission=true by default, got %v", cfg.DeltaTransmission)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	if err := cfg.Validate(); err != nil {

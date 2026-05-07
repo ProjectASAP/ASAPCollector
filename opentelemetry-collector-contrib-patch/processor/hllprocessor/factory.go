@@ -18,6 +18,16 @@ func createDefaultConfig() component.Config {
 		DropOriginal:         true,
 		MetricSuffix:         "",
 		EnableSelfMonitoring: true,
+		// Delta-encoded transmission is the operational default for the
+		// MVP demo: HLL's per-window wire footprint is dominated by the
+		// fixed-size register array, so emitting only registers that
+		// increased since the last flush (instead of the full state) is
+		// the difference between losing and winning bandwidth versus raw
+		// at 10 Hz × 60 s = 600 samples/window.
+		// Note: DeltaTransmission requires TransmitSketch=true; this
+		// default is harmless when the operator leaves TransmitSketch=false
+		// (the encoder only consults DeltaTransmission on the sketch path).
+		DeltaTransmission: true,
 	}
 }
 

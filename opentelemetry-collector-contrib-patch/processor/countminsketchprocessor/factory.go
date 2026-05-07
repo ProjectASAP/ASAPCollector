@@ -33,6 +33,14 @@ func createDefaultConfig() component.Config {
 		DropOriginal:         false,
 		GroupBy:              []string{},
 		WindowDuration:       10 * time.Second,
+		// Delta-encoded transmission is the operational default for the
+		// MVP demo: Count-Min's per-window wire footprint is dominated
+		// by the d×w cell matrix, so emitting only cells that changed
+		// since the last flush (instead of the full matrix) keeps the
+		// bandwidth verdict on the right side of break-even at the
+		// 10 Hz × 60 s = 600 samples/window operating point.
+		// DeltaThreshold defaults to 1.0 in Validate().
+		DeltaTransmission: true,
 	}
 }
 
