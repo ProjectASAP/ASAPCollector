@@ -135,16 +135,86 @@ one-time image builds.
 
 ## 1. Prerequisites
 
-### Software
+### Hardware
 
-- **Docker** with BuildKit (`DOCKER_BUILDKIT=1`) and Compose v2
-  (`docker compose ...`, not `docker-compose`).
-- **Rust** 1.90+ (for `gorilla-compactor` and the backend image build).
-- **Go** 1.22+ (only required if you re-build the OTel collector binaries
-  via OCB — most users use the pre-built `asap/sketchcol:dev` image).
-- **Python** 3.10+ with `requests`, `pyyaml` (for the
-  driver's measurement scripts).
-- ~16 GB RAM, ~30 GB free disk for the multi-baseline run.
+- ~16 GB RAM (24 GB if you build all images from scratch).
+- ~30 GB free disk for image layers + eval-results outputs.
+- x86_64 Linux is the tested target. macOS arm64 should work but isn't
+  CI-tested.
+
+### Software dependencies (versions matter — pin where possible)
+
+| Tool | Min version | Used for |
+|---|---|---|
+| Docker engine | 24.0+ | Container runtime |
+| Docker BuildKit | (default in 24.0+) | `DOCKER_BUILDKIT=1` named build contexts |
+| Docker Compose v2 | 2.20+ | `docker compose ...` (NOT `docker-compose`) |
+| Rust toolchain | 1.90+ | `gorilla-compactor`, backend image build, controller |
+| Go toolchain | 1.22+ | `fake-exporter`, `gorillas3processor`, OCB build |
+| Python | 3.10+ | Measurement / report scripts |
+| protoc | 3.21+ | prost-build in the backend Cargo crates |
+| jq | 1.6+ | Driver scripts parse PromQL responses |
+| curl | 7.81+ | Driver scripts hit the controller's HTTP API |
+| git | 2.34+ | Cloning the sibling repos with worktrees |
+
+#### Linux (Debian / Ubuntu) — one-shot install
+
+```bash
+# Docker engine + Compose v2 (Docker's official APT repo)
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+    sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) \
+       signed-by=/etc/apt/keyrings/docker.gpg] \
+       https://download.docker.com/linux/ubuntu \
+       $(lsb_release -cs) stable" | \
+    sudo tee /etc/apt/sources.list.d/docker.list
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io \
+                        docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker $USER   # log out + back in for group to take effect
+
+# Build toolchain + helpers
+sudo apt-get install -y build-essential pkg-config libssl-dev \
+                        protobuf-compiler git jq curl python3-pip
+
+# Rust (rustup; pin to 1.90+)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    --default-toolchain 1.90.0 --profile minimal
+source $HOME/.cargo/env
+
+# Go 1.22+ (skip if already installed)
+GO_VERSION=1.22.5
+curl -L https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz | \
+    sudo tar -C /usr/local -xz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+
+# Python deps (the driver scripts expect these)
+pip install --user requests pyyaml
+```
+
+#### macOS (Homebrew)
+
+```bash
+brew install docker docker-compose rust go protobuf jq python@3.11 git
+brew install --cask docker  # Docker Desktop, includes engine + Compose
+pip3 install --user requests pyyaml
+```
+
+#### Verify the toolchain
+
+```bash
+docker version | head -3
+docker compose version
+rustc --version  # ≥ 1.90
+go version       # ≥ 1.22
+protoc --version
+python3 --version
+jq --version
+```
 
 ### Repo layout
 
@@ -161,25 +231,28 @@ repos as siblings — the canonical dev layout — is REQUIRED:
 └── asap_sketchlib/             ← path-dep'd by both
 ```
 
-### Existing eval-results subtrees
+### Eval-results layout
 
-The repository ships with prior runs in `deploy/eval-results/`. Don't
-delete or commit over these — they're durable evidence pointed at from
-the paper:
+The repository ships with **paper-quality prior runs** in
+`deploy/eval-results/`. These are durable evidence pointed at from the
+paper — don't delete or commit over them:
 
 ```
 deploy/eval-results/
-├── headline-2026-05-06/        ← 60-cell paired sweep (paper-quality)
+├── headline-2026-05-06/        ← 60-cell paired sweep (paper headline)
 ├── headline-2026-05-06-postfix/ ← post-fix subset re-runs
-├── mvp-2026-05-06/              ← v3 / v4 single-cell MVPs
-├── mvp-v4-2026-05-06/           ← v4 4-baseline MVP
-├── mvp-v5-2026-05-06/           ← v5 postings + compactor MVP
-├── mvp-v6-2026-05-06/           ← v6 controller-driven multi-stage MVP
-└── mvp-v6-1-2026-05-06/         ← v6.1 fix-and-rerun
+└── mvp-2026-05-06-rerun/        ← v2 single-cell MVP rerun
 ```
 
-The driver writes its output to `deploy/eval-results/mvp-v6-2026-05-06/`
-by default; override via `OUT_BASE` env var.
+**The MVP demo's own outputs are NOT committed to the repo.** When you
+run the demo, the driver writes to
+`deploy/eval-results/mvp-v6-2026-05-06/` (overridable via `OUT_BASE`),
+but those files stay local to the runner — they are not pushed back.
+For a record of the most recent v3/v4/v5/v6/v6.1/v7 runs, read the
+issue-#46 comment thread; each iteration's `MVP_REPORT_*.md` is posted
+verbatim there:
+
+  https://github.com/ProjectASAP/ASAPCollector/issues/46
 
 ## 2. Architecture summary (just enough to read the runbook)
 
@@ -205,77 +278,217 @@ Three query classes the demo exercises:
 Plus an ad-hoc cold-fallback probe: `count(http_requests_total{service="payments"})`
 that exercises the Gorilla-archive engine via the dual-routing table.
 
-## 3. Building images and the compactor binary
+## 3. Compiling and building from source
 
-### `asap/controller:dev`
+There are five build artifacts. Build them in this order — the backend
+image build context references the Rust crates that the earlier steps
+exercise.
+
+```
+0. Clone the three sibling repos at ~/repos (one-time)
+1. asap-precompute-rs            (cargo, Rust crate)         } compile-time
+2. asap-gorilla                  (cargo, Rust crate)         }   sanity
+3. controller binary             (cargo)
+4. gorilla-compactor binary      (cargo)
+5. asap/controller:dev           (Docker image)              } runtime
+6. asap/sketchcol:dev            (OCB + Docker)              }   images
+7. asap/fake-exporter:dev        (Docker image)              }
+8. asap/query-backend:dev        (Docker image, multi-context)
+```
+
+Total wall: ~15-30 min on a clean machine; ~3-5 min on a warm
+incremental build.
+
+### Step 0 — clone
+
+```bash
+mkdir -p ~/repos && cd ~/repos
+git clone -b main git@github.com:ProjectASAP/ASAPCollector.git
+git clone -b main git@github.com:ProjectASAP/ASAPQuery-backend.git
+git clone -b main git@github.com:ProjectASAP/asap_sketchlib.git
+```
+
+### Step 1 — `asap-precompute-rs` (compile sanity)
+
+```bash
+cd ~/repos/ASAPCollector/asap-precompute-rs
+cargo build --release
+cargo test --release  # ~10 unit tests should pass
+```
+
+If this fails, `asap_sketchlib` isn't sitting at `../../asap_sketchlib/`
+or its Cargo.toml is broken. Re-clone or re-check the layout.
+
+### Step 2 — `asap-gorilla` (compile sanity)
+
+```bash
+cd ~/repos/ASAPCollector/asap-gorilla
+cargo build --release
+cargo test --release  # 39 tests should pass (encoder/decoder + postings)
+```
+
+### Step 3 — controller binary (used by `asap/controller:dev`)
+
+```bash
+cd ~/repos/ASAPCollector/controller
+cargo build --release
+cargo test --release  # 482+ pass / ~10 pre-existing fail (out of scope)
+ls target/release/controller
+```
+
+### Step 4 — `gorilla-compactor` (used at demo Phase 7)
+
+```bash
+cd ~/repos/ASAPCollector/compactor
+cargo build --release
+cargo test --release  # 11 tests should pass
+ls target/release/gorilla-compactor
+```
+
+If your `/` partition is small, redirect Cargo's target dir to a larger
+volume:
+
+```bash
+export CARGO_TARGET_DIR=/data2/$USER/cargo-target
+cd ~/repos/ASAPCollector/compactor && cargo build --release
+ls $CARGO_TARGET_DIR/release/gorilla-compactor
+```
+
+The driver's `COMPACTOR_BIN` env var defaults to
+`$REPO_ROOT/compactor/target/release/gorilla-compactor`; export
+`COMPACTOR_BIN=$CARGO_TARGET_DIR/release/gorilla-compactor` if you
+redirected.
+
+### Step 5 — `asap/controller:dev` Docker image
 
 ```bash
 cd ~/repos/ASAPCollector/controller
 docker build -t asap/controller:dev .
+docker image ls asap/controller:dev
 ```
 
-### `asap/sketchcol:dev` (agent + gateway use the same image)
+### Step 6 — `asap/sketchcol:dev` (agent + gateway use the same image)
+
+This is a two-step build: first OCB compiles the patched OpenTelemetry
+Collector binary; then the Dockerfile packages it.
 
 ```bash
 cd ~/repos/ASAPCollector
+
+# OCB (OpenTelemetry Collector Builder) generates the binary by stitching
+# together the patched processors listed in builder-config.yaml.
 bash opentelemetry-collector-contrib-patch/cmd/sketchcollector/build.sh
-docker build -t asap/sketchcol:dev -f opentelemetry-collector-contrib-patch/cmd/sketchcollector/Dockerfile .
+
+# Wrap the binary in the runtime image
+docker build \
+    -t asap/sketchcol:dev \
+    -f opentelemetry-collector-contrib-patch/cmd/sketchcollector/Dockerfile \
+    .
+
+docker image ls asap/sketchcol:dev
 ```
 
-(The OCB build produces the binary; the Dockerfile wraps it. See
-`docs/design-asap-edge-framework.md` for OCB details.)
+See `docs/design-asap-edge-framework.md` for OCB build details and
+`builder-config.yaml` semantics.
 
-### `asap/fake-exporter:dev` (with freshness probes)
+### Step 7 — `asap/fake-exporter:dev` (with freshness probes)
 
 ```bash
 cd ~/repos/ASAPCollector/deploy/fake-exporter
+
+# Pure Go build — no extra setup beyond `go` on PATH
 docker build -t asap/fake-exporter:dev .
-# Verify the freshness probe metrics are baked in:
-docker run --rm asap/fake-exporter:dev grep -l http_freshness_probe_raw probes.go || \
-    echo "WARNING: image does not include freshness probes; rebuild after #299"
+docker image ls asap/fake-exporter:dev
+
+# Verify the freshness probe metrics from PR #299 are baked in:
+docker run --rm asap/fake-exporter:dev sh -c \
+    'grep -l http_freshness_probe_raw probes.go' || \
+    echo "WARNING: image lacks freshness probes — rebuild after PR #299"
 ```
 
-### `asap/query-backend:dev`
+### Step 8 — `asap/query-backend:dev` (multi-context Docker build)
 
-The backend image needs all four sibling repos as build contexts:
+The backend image stitches together four sibling source trees as
+BuildKit named build-contexts. Each context is a separate
+`COPY --from=...` in `deploy/docker/Dockerfile.backend`:
 
 ```bash
 cd ~/repos/ASAPCollector
+
+DOCKER_BUILDKIT=1 docker build \
+    -f deploy/docker/Dockerfile.backend \
+    --build-context backend-src=$HOME/repos/ASAPQuery-backend \
+    --build-context asap-precompute-rs=$PWD/asap-precompute-rs \
+    --build-context asap-sketchlib=$HOME/repos/asap_sketchlib \
+    --build-context asap-gorilla=$PWD/asap-gorilla \
+    -t asap/query-backend:dev \
+    .
+```
+
+The build runs `cargo build --release --bin precompute_engine` inside a
+`rust:1.90-bookworm` builder stage, then copies the binary into a
+`debian:bookworm-slim` runtime stage. Wall: 4-8 min cold, 30-60 s warm.
+
+**Cache stickiness gotcha**: if you've previously built this image and
+a backend PR has since merged, Docker's Cargo layer cache may produce
+the same image SHA even though the source has changed. Force a clean
+rebuild:
+
+```bash
+DOCKER_BUILDKIT=1 docker build --no-cache \
+    -f deploy/docker/Dockerfile.backend \
+    --build-context backend-src=$HOME/repos/ASAPQuery-backend \
+    --build-context asap-precompute-rs=$PWD/asap-precompute-rs \
+    --build-context asap-sketchlib=$HOME/repos/asap_sketchlib \
+    --build-context asap-gorilla=$PWD/asap-gorilla \
+    -t asap/query-backend:dev \
+    .
+```
+
+Verify the freshly-built image actually has v5+v7 features:
+
+```bash
+docker run --rm asap/query-backend:dev sh -c \
+    'strings /usr/local/bin/precompute_engine | \
+     grep -E "postings_filtered|gorilla_archive|s3_cost" | head -5'
+```
+
+If the grep returns nothing, the cache hit on a stale layer; rebuild
+with `--no-cache`.
+
+### One-shot build (all 5 images + 2 binaries)
+
+Wrap the steps above in a script for repeatability:
+
+```bash
+cat > /tmp/asap-build-all.sh <<'BASH'
+#!/usr/bin/env bash
+set -euxo pipefail
+cd ~/repos/ASAPCollector
+
+# Rust crates (compile sanity + cache warm-up)
+( cd asap-precompute-rs && cargo build --release )
+( cd asap-gorilla       && cargo build --release )
+( cd controller         && cargo build --release )
+( cd compactor          && cargo build --release )
+
+# Docker images
+docker build -t asap/controller:dev controller/
+bash opentelemetry-collector-contrib-patch/cmd/sketchcollector/build.sh
+docker build -t asap/sketchcol:dev \
+    -f opentelemetry-collector-contrib-patch/cmd/sketchcollector/Dockerfile .
+docker build -t asap/fake-exporter:dev deploy/fake-exporter/
 DOCKER_BUILDKIT=1 docker build -f deploy/docker/Dockerfile.backend \
     --build-context backend-src=$HOME/repos/ASAPQuery-backend \
     --build-context asap-precompute-rs=$PWD/asap-precompute-rs \
     --build-context asap-sketchlib=$HOME/repos/asap_sketchlib \
     --build-context asap-gorilla=$PWD/asap-gorilla \
     -t asap/query-backend:dev .
+
+echo "OK — all artifacts built"
+BASH
+bash /tmp/asap-build-all.sh
 ```
-
-If you're seeing stale-image symptoms (e.g.\ no `gorilla_archive` marker
-in cold-fallback responses, no `postings_filtered_series_count` field),
-add `--no-cache` to bust the layer cache:
-
-```bash
-DOCKER_BUILDKIT=1 docker build --no-cache -f deploy/docker/Dockerfile.backend ... -t asap/query-backend:dev .
-```
-
-Verify the image has the v5+v7 features:
-
-```bash
-docker run --rm asap/query-backend:dev sh -c \
-    'strings /usr/local/bin/precompute_engine | grep -E "postings_filtered|gorilla_archive|s3_cost" | head -5'
-```
-
-### `gorilla-compactor` (Rust binary, runs outside the Docker stack)
-
-```bash
-cd ~/repos/ASAPCollector/compactor
-cargo build --release
-ls -la target/release/gorilla-compactor
-# (or set CARGO_TARGET_DIR=/data2/zeying/cargo-target if your / partition is small)
-```
-
-The driver's `COMPACTOR_BIN` env var defaults to
-`$REPO_ROOT/compactor/target/release/gorilla-compactor`. Override if you
-built elsewhere.
 
 ## 4. Running the demo
 
