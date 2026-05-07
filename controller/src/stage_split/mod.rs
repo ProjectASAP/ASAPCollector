@@ -47,8 +47,8 @@ mod tests;
 pub use allocator::{AllocateError, StageAllocator};
 pub use colored_dag::{ColoredDag, ColoredNode, NodeId};
 pub use emitter::{
-    BackendAggregation, BackendReadout, BackendStageConfig, EdgeSketchProcessor, EdgeStageConfig,
-    EmitError, Emitter, ExportTarget, GatewayMergeProcessor, GatewayStageConfig, StageConfig,
-    ThreeStageEmitter,
+    ArchiveTierMetric, BackendAggregation, BackendReadout, BackendStageConfig, EdgeSketchProcessor,
+    EdgeStageConfig, EmitError, Emitter, ExportTarget, GatewayMergeProcessor, GatewayStageConfig,
+    PrometheusArchiveMetric, StageConfig, ThreeStageEmitter,
 };
 pub use stage_id::{StageId, Topology};

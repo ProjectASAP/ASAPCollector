@@ -136,6 +136,60 @@ pub struct EdgeStageConfig {
     /// exporter is emitted (the YAML is identical to Phase β).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prometheus_archive_metrics: Vec<PrometheusArchiveMetric>,
+    /// Phase 3.2.5 — archive-tier metrics that should flow through the
+    /// `gorillas3` processor at the edge agent (write a Gorilla-S3
+    /// chunk + Prometheus TSDB block to MinIO so the warm-tier query
+    /// engine and the Thanos store-gateway can both serve them).
+    ///
+    /// Empty list = no archive-tier metrics → no `gorillas3` processor
+    /// block in the emitted YAML (matches pre-Phase 3.2.5 behaviour
+    /// for plans that route nothing to the archive).
+    ///
+    /// Populated by [`ThreeStageEmitter`] from any `Logical(Scan)` /
+    /// `RawAtEdgePrometheusArchive` node whose metric is on the
+    /// archive list (e.g. the freshness probes), and from explicit
+    /// out-of-DAG opt-ins by callers that don't go through stage-split
+    /// (the freshness probe path is the canonical example: it doesn't
+    /// drop a `SketchExpr` node, but the agent still has to land its
+    /// counter samples in MinIO so the Gorilla-S3 / Thanos archive
+    /// can answer `last_over_time(...)`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archive_tier_metrics: Vec<ArchiveTierMetric>,
+    /// Phase 3.2.5 — metrics that must be carried through the
+    /// warm-tier pipeline WITHOUT the family-specific sketch processor
+    /// renaming them. The freshness probes are timestamp counters by
+    /// design (the wire value `unix_ts_ms_of_emission` IS the freshness
+    /// signal); the DDSketch processor's `_quantile` suffix would
+    /// rename `http_freshness_probe_warm` to
+    /// `http_freshness_probe_warm_quantile` and break the replay
+    /// client's `last_over_time(http_freshness_probe_warm[10s])` query.
+    ///
+    /// When non-empty the L5 emitter adds a `routing` processor that
+    /// dispatches by `metric.name`: matching metrics route to a
+    /// `metrics/warm_passthrough` pipeline (gorillas3 if archive is
+    /// declared, then exporter — NO sketch processor); everything
+    /// else takes the existing `metrics/warm_tier` pipeline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warm_passthrough_metrics: Vec<String>,
+}
+
+/// Phase 3.2.5 — one archive-tier metric the agent should land in
+/// MinIO via the `gorillas3` processor (Gorilla-S3 chunks + Prometheus
+/// TSDB blocks for the Thanos store-gateway). The `metric` field is
+/// used both for the controller-side bookkeeping and (downstream) for
+/// the gorillas3 processor's per-metric prefix template — but the
+/// processor today flushes every series it sees, so the field is
+/// informational at the YAML layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchiveTierMetric {
+    /// Metric name as it appears at the edge.
+    pub metric: String,
+    /// Optional flush window in seconds. Mirrors the planner's
+    /// `gorilla_window_secs` (see `mvp-freshness-probes.yaml`); the
+    /// L5 emitter uses the smallest non-None entry to size the
+    /// `gorillas3.window_interval` knob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_secs: Option<u64>,
 }
 
 /// Phase ε.1 — one Mode-3 metric the agent forwards to Prometheus's
@@ -316,6 +370,8 @@ impl Emitter for ThreeStageEmitter {
             sketch_processors: Vec::new(),
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
+            archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         };
         let mut backend_aggregations: Vec<BackendAggregation> = Vec::new();
         let mut gateway_processors: Vec<GatewayMergeProcessor> = Vec::new();
@@ -425,6 +481,16 @@ impl Emitter for ThreeStageEmitter {
                         metric: metric.clone(),
                         window_secs: window.map(|d| d.as_secs()),
                         label_proj: label_proj.clone(),
+                    });
+                    // Phase 3.2.5 (Bug a): Mode-3 metrics also land in
+                    // the Gorilla-S3 archive so the warm-tier
+                    // sketch-engine and the Thanos store-gateway can
+                    // both serve them. The `gorillas3` processor block
+                    // is emitted by the L5 emitter when this list is
+                    // non-empty.
+                    edge.archive_tier_metrics.push(ArchiveTierMetric {
+                        metric: metric.clone(),
+                        window_secs: window.map(|d| d.as_secs()),
                     });
                 }
                 // ── Phase ε.1 Mode 2: edge raw → backend builds sketch.

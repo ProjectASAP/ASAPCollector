@@ -311,6 +311,8 @@ mod tests {
             }],
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
+            archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         }
     }
 
@@ -322,6 +324,8 @@ mod tests {
             sketch_processors: Vec::new(),
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
+            archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         }
     }
 
@@ -337,6 +341,8 @@ mod tests {
                 window_secs: Some(60),
                 label_proj: vec!["service.name".to_string()],
             }],
+            archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         }
     }
 
@@ -468,6 +474,8 @@ mod tests {
             }],
             exporter_target: ExportTarget::Stage(StageId::Gateway),
             prometheus_archive_metrics: Vec::new(),
+            archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
         };
         let toml = emit_telegraf_toml(&cfg, None).expect("emit ok");
         assert!(toml.contains("k = 200"), "k not propagated\n{toml}");
