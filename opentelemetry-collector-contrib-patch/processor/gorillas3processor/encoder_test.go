@@ -196,11 +196,19 @@ type decodedSeries struct {
 
 func decodeChunk(t *testing.T, data []byte) []decodedSeries {
 	t.Helper()
-	require.True(t, len(data) >= 9, "chunk too small for header")
-	require.Equal(t, chunkMagic, string(data[:4]))
-	require.Equal(t, byte(chunkVersion), data[4])
-	seriesCount := binary.LittleEndian.Uint32(data[5:9])
-	off := 9
+	// Outer GORILLA1 block layout (must match asap-gorilla::block::HEADER_LEN = 13):
+	//   [8]   magic        "GORILLA1"
+	//   [1]   version      chunkVersion
+	//   [4]   uint32 LE    seriesCount
+	// Pre-v7 this helper read the magic as 4 bytes and the seriesCount
+	// at offset [5:9], which mismatched both the writer and the
+	// asap-gorilla decoder. Aligned now so a regression in either
+	// direction (writer offset OR helper offset) fails this test.
+	require.True(t, len(data) >= 13, "chunk too small for header")
+	require.Equal(t, chunkMagic, string(data[:8]))
+	require.Equal(t, byte(chunkVersion), data[8])
+	seriesCount := binary.LittleEndian.Uint32(data[9:13])
+	off := 13
 	out := make([]decodedSeries, 0, seriesCount)
 	for i := uint32(0); i < seriesCount; i++ {
 		metaLen := binary.LittleEndian.Uint16(data[off : off+2])
@@ -334,4 +342,70 @@ func TestEncodeMultipleMetricsSplitChunks(t *testing.T) {
 	require.Len(t, chunks, 2, "different metrics should split into separate chunks")
 	names := []string{chunks[0].metricName, chunks[1].metricName}
 	assert.ElementsMatch(t, []string{"cpu", "mem"}, names)
+}
+
+// TestChunkHeaderByteLayoutMatchesGorillaDecoder is a regression guard for
+// the v7 fix in `buildChunks`: the GORILLA1 block header must place the
+// magic at [0:8], the version at [8], and the seriesCount at [9:13] —
+// the exact offsets the `asap-gorilla::decoder::GorillaDecoder::from_reader`
+// path reads (see `asap-gorilla/src/decoder.rs` and `block.rs::HEADER_LEN`).
+// Pre-v7 the encoder wrote seriesCount at [5:9], which clobbered bytes
+// 5..8 of the magic and the version byte; the consumer side rejected
+// every chunk with `BadMagic`, surfacing as empty `last_over_time`
+// freshness deltas. Round-tripping the chunk through the test-only
+// decoder additionally proves the timestamp/value streams are intact.
+func TestChunkHeaderByteLayoutMatchesGorillaDecoder(t *testing.T) {
+	const n = 5
+	base := time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC).UnixNano()
+	pts := makePoints(n, base, int64(time.Second), func(i int) float64 { return float64(i) + 0.5 })
+	series := map[seriesKey]*seriesBuffer{
+		{metricName: "http_freshness_probe_emitted_at", attributesKey: "host=h;"}: {
+			attributes: map[string]string{"host": "h"},
+			points:     pts,
+		},
+		{metricName: "http_freshness_probe_emitted_at", attributesKey: "host=i;"}: {
+			attributes: map[string]string{"host": "i"},
+			points:     pts,
+		},
+	}
+	chunks, err := buildChunks(series, 0)
+	require.NoError(t, err)
+	require.Len(t, chunks, 1, "two series of the same metric should pack into one chunk")
+
+	data := chunks[0].data
+	require.GreaterOrEqual(t, len(data), 13, "chunk must contain a 13-byte header")
+
+	// 1. Magic at [0:8] — full "GORILLA1", not a 4-byte prefix.
+	assert.Equal(t, chunkMagic, string(data[:8]),
+		"magic must be at [0:8]; matches asap-gorilla::block::MAGIC + HEADER_LEN")
+	// 2. Version at byte 8.
+	assert.Equal(t, byte(chunkVersion), data[8],
+		"version must be at byte 8; matches asap-gorilla decoder header[8]")
+	// 3. seriesCount at [9:13] — the v7 fix.
+	gotSeriesCount := binary.LittleEndian.Uint32(data[9:13])
+	assert.Equal(t, uint32(2), gotSeriesCount,
+		"seriesCount must be at [9:13]; matches asap-gorilla decoder header[9..13]")
+
+	// 4. Negative assertion: bytes [5:9] must NOT contain the
+	//    seriesCount. Pre-v7 they did, which clobbered the magic
+	//    suffix + version. Asserting on the magic suffix is the
+	//    cleanest way to express the invariant.
+	assert.Equal(t, "LA1", string(data[5:8]),
+		"bytes 5..8 must remain magic suffix; pre-v7 these were overwritten with seriesCount")
+	assert.Equal(t, byte(chunkVersion), data[8],
+		"byte 8 must remain version; pre-v7 the seriesCount low byte landed here")
+
+	// 5. Round-trip the body and confirm timestamps decode at the
+	//    sample values we encoded. If the writer ever drifts out of
+	//    sync with the test helper, the body offset will land in a
+	//    different field and either explode or return garbage.
+	got := decodeChunk(t, data)
+	require.Len(t, got, 2)
+	for _, ds := range got {
+		require.Len(t, ds.tss, n)
+		for i := 0; i < n; i++ {
+			assert.Equal(t, base+int64(i)*int64(time.Second), ds.tss[i], "ts %d", i)
+			assert.Equal(t, float64(i)+0.5, ds.vals[i], "v %d", i)
+		}
+	}
 }
