@@ -347,6 +347,43 @@ The controller is implemented in **Rust**, enabling direct in-process integratio
 
 ---
 
+## Per-Runtime Emit Paths (Phase ε.1.5)
+
+Three edge runtimes ship with ASAP — `sketchcollector` (OTel-collector
+contrib build), `sketchotap` (otap-dataflow Rust runtime), and
+`sketchtelegraf` (Telegraf runtime). All three accept the same typed L5
+[`EdgeStageConfig`] from the controller's stage_split emitter; each runtime
+has its own emit function in `controller/src/config/`:
+
+| Runtime | Emitter | Output format |
+|---|---|---|
+| `sketchcollector`  | `stage_config::emit_edge_yaml`        | OTel-collector YAML |
+| `sketchotap`       | `stage_config_otap::emit_otap_dag_yaml` | otap-dataflow DAG YAML (`version: otel_dataflow/v1`) |
+| `sketchtelegraf`   | `stage_config_telegraf::emit_telegraf_toml` | Telegraf TOML |
+
+`config::emit_for_runtime(runtime, cfg, opamp_endpoint, prometheus_url)`
+dispatches by `AgentRuntime`. The runtime is reported by the agent on
+OpAMP `on_connect` via the `X-Agent-Runtime` header (`sketchcollector` /
+`sketchotap` / `sketchtelegraf`); when absent, the controller defaults
+to `Sketchcollector` so legacy agents keep working.
+
+All three modes from Phase ε.1's [`BindMode`] enum are supported by
+all three runtime emitters:
+
+* **Mode 1 — `SketchAtEdge`**: sketch processor at the edge, OTLP
+  egress to gateway.
+* **Mode 2 — `RawAtEdgeSketchAtBackend`**: passthrough at edge, OTLP
+  egress to gateway; backend builds sketches at ingest.
+* **Mode 3 — `RawAtEdgePrometheusArchive`**: passthrough at edge,
+  egress to Prometheus's archive.
+  * `sketchcollector`/`sketchotap` use OTLP HTTP to Prometheus's
+    native receiver at `/api/v1/otlp/v1/metrics`.
+  * `sketchtelegraf` uses `outputs.http` with the
+    `prometheusremotewrite` serializer to `/api/v1/write`. Telegraf
+    has no OTLP-HTTP serializer in the version we ship; remote-write
+    lands in the same Prometheus TSDB so the storage outcome is
+    identical (only the wire framing differs).
+
 ## Out of Scope (for now)
 
 - ML-based workload prediction
