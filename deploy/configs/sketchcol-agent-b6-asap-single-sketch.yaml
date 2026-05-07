@@ -55,6 +55,13 @@ processors:
   # ── Cold tier: Gorilla-S3 archive write ──────────────────────────
   # `drop_original: false` lets the raw metric pass through to the
   # warm-tier sketch.
+  #
+  # Step 2.4: emit Prometheus TSDB blocks (block_format: prometheus_tsdb)
+  # into a dedicated `asap-gorilla-tsdb` bucket so the Thanos
+  # store-gateway sidecar in mvp-thanos-archive.yml can read them. The
+  # `asap` (legacy) layout is no longer needed once Path A2 is the
+  # default archive engine — the in-process Rust GorillaQueryEngine is
+  # only kept registered when ASAP_THANOS_QUERY_URL is unset.
   gorillas3:
     window_interval: 60s
     drop_original: false
@@ -69,6 +76,12 @@ processors:
     max_retries: 3
     retry_backoff: 1s
     upload_timeout: 30s
+    block_format: prometheus_tsdb
+    tsdb_bucket: asap-gorilla-tsdb
+    tsdb_block_duration: 60s
+    tsdb_external_labels:
+      cluster: asap-mvp
+      replica: a
 
   # ── Warm tier: SINGLE sketch (DDSketch by default). ──────────────
   # DDSketch — relative-error quantile family. Output suffix

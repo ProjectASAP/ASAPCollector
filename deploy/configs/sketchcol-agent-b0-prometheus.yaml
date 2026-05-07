@@ -51,7 +51,11 @@ exporters:
   # resource-info synthetic series that would otherwise flood
   # Prometheus with one extra series per resource attribute set.
   prometheusremotewrite:
-    endpoint: "http://prometheus:9090/api/v1/write"
+    # Step 2.4: target prometheus-b0 (mvp-multi-stage's `--profile b0`
+    # service that runs with `--web.enable-remote-write-receiver`).
+    # The base.yml `prometheus` doesn't have remote-write enabled, so
+    # writing there returns 404 + drops every batch.
+    endpoint: "http://prometheus-b0:9090/api/v1/write"
     tls:
       insecure: true
     target_info:

@@ -217,6 +217,17 @@ services:
   # Mirrors the wiring already proven in
   # `baseline-b6-asap-single-sketch.yml`.
   backend:
+    # Step 2.4: drop the legacy host-:19090 PRW-ingest publish so
+    # baseline mode (which brings up `prometheus-b0` on host:19090)
+    # doesn't collide with the backend container at boot. The MVP
+    # demo only ever issues queries through the host:19091 PromQL
+    # surface; nobody relies on remote-write straight to the backend
+    # in this stack. Asap mode still gets full functionality because
+    # the gateway/agents reach the backend over the intra-docker
+    # network at backend:9090, which is unaffected by what's
+    # *published* to the host.
+    ports: !override
+      - "19091:9091"   # PromQL-compatible HTTP query surface
     environment:
       ASAP_SKETCH_FAMILY: "${ASAP_SKETCH_FAMILY:-ddsketch}"
       ASAP_GORILLA_S3_ENDPOINT: "http://minio:9000"
