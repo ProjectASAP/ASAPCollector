@@ -16,6 +16,22 @@ The MVP demo is **runnable end-to-end and exercises the controller-driven,
 multi-stage architecture**, but two ingest-side bugs leave criteria ④ and
 ⑥ reporting UNKNOWN even when their routing layers are working correctly.
 
+**Path A2 (Thanos archive engine) is verified end-to-end as of Step 2.4
+(2026-05-07).** The backend's `ThanosForwardEngine` HTTP-forwards archive
+queries to a co-located `thanos-query` sidecar that reads
+Prometheus-TSDB blocks (Gorilla-XOR chunks) on MinIO via
+`thanos store-gateway`. The Step 2.4 e2e demo confirmed:
+`histogram_quantile` over the archive matches a hand-computed reference
+exactly; 4 TSDB blocks land in MinIO; the thanos-query sidecar is
+healthy. The full Prometheus PromQL surface (including
+`histogram_quantile`, `delta`, vector matching, etc.) is now answered
+exactly by the archive tier — these query shapes were rejected by the
+prior curated-subset `GorillaQueryEngine` and are the qualitative win
+of the Path-A2 consolidation. The two regressions documented below
+(④ warm-tier null-answer; ⑥ probe-encoding) predate Path A2 and are
+NOT Path-A2-induced; the `gorilla-compactor` binary is now obsoleted
+by `thanos compact` on its normal schedule.
+
 ### Verdict
 
 | # | Criterion | Verdict | What works | What doesn't |
@@ -45,10 +61,14 @@ ingest-side bugs above are real follow-ups.
   from `/var/asap/cold/raw/<metric>/YYYY/MM/DD/HH/part-N.jsonl`,
   written by the gateway-side raw-tee. Step-1 of the JSONL
   deprecation deleted that path; the surviving ground-truth source
-  is the Gorilla archive on MinIO/S3 (`gorillas3processor` writes
-  Gorilla blocks, `GorillaQueryEngine` reads them back exactly)
-- **Fix path**: point `accuracy_reduce.py` at the archive engine
-  instead of the deleted JSONL layout. Out of scope for this demo
+  is the Gorilla-XOR-encoded Prometheus-TSDB archive on MinIO/S3
+  (`gorillas3processor` writes TSDB blocks; the backend's
+  `ThanosForwardEngine` reads them back exactly via `thanos-query`
+  + `thanos store-gateway` running Prometheus' reference
+  `promql.Engine`)
+- **Fix path**: point `accuracy_reduce.py` at the
+  `ThanosForwardEngine` HTTP path instead of the deleted JSONL layout.
+  Out of scope for this demo
 - **Workaround**: paper-quality accuracy numbers live in the headline
   60-cell sweep at `deploy/eval-results/headline-2026-05-06/accuracy.csv`,
   which uses a different ground-truth path
@@ -87,13 +107,16 @@ ingest-side bugs above are real follow-ups.
 - **OpAMP hot reconfig under churn** — not exercised
 - **1M+ cardinality** — the demo runs at 5-10K aggregate, single host
 - **Multi-host federation** — not designed for; single-host bench only
-- **PromQL completeness on the archive tier** — current curated subset
+- **PromQL completeness on the archive tier** — RESOLVED by Path A2
+  (Step 2.1--2.4, 2026-05-07). The archive tier now serves the full
+  Prometheus PromQL surface via Prometheus' embedded `promql.Engine`
+  inside `thanos-query`. The previous curated subset
   (Sum / Count / Avg / Min / Max / Rate / Increase + Quantile / TopK)
-  covers the demo's queries but not full Prometheus parity. See
-  `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md`
-  Path A for the tracking direction. Step-2 of the JSONL deprecation
-  promotes the archive blocks to Prometheus-TSDB block format so
-  Thanos store-gateway can answer the long tail of PromQL natively
+  was retired with the deletion of `asap-planner-rs` and the custom
+  `GorillaQueryEngine`; `histogram_quantile`, `delta` over arbitrary
+  windows, and vector matching now answer exactly through Thanos. The
+  `gorilla-compactor` binary is similarly obsoleted by `thanos
+  compact` on its normal schedule
 
 ## Component status (implemented / tested / planned)
 
