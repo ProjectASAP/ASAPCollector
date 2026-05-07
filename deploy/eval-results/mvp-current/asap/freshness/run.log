@@ -1,610 +1,1810 @@
-[2026-05-07T17:32:48-04:00] freshness phase: path=raw probe=http_freshness_probe_raw endpoint=http://localhost:19091 out=/tmp/asap-step2-4-worktree/deploy/eval-results/mvp-current/asap/freshness/raw.csv
-# v6 freshness probe — endpoint=http://localhost:19091 probe=http_freshness_probe_raw path=raw duration=60.0s poll=100ms
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
-[warn] query non-success: No result for query
+[2026-05-07T19:31:23-04:00] freshness phase: path=raw probe=http_freshness_probe_raw endpoint=http://localhost:19090 out=/tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/asap/freshness/raw.csv
+# v6 freshness probe — endpoint=http://localhost:19090 probe=http_freshness_probe_raw path=raw duration=60.0s poll=100ms
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
 freshness: path=raw attempted=600 got=0 p50=NA p99=NA
-[2026-05-07T17:33:48-04:00] freshness phase: path=warm probe=http_freshness_probe_warm endpoint=http://localhost:19091 out=/tmp/asap-step2-4-worktree/deploy/eval-results/mvp-current/asap/freshness/warm.csv
+[2026-05-07T19:32:23-04:00] freshness phase: path=warm probe=http_freshness_probe_warm endpoint=http://localhost:19091 out=/tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/asap/freshness/warm.csv
 # v6 freshness probe — endpoint=http://localhost:19091 probe=http_freshness_probe_warm path=warm duration=60.0s poll=100ms
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
 freshness: path=warm attempted=600 got=0 p50=NA p99=NA
-[2026-05-07T17:34:48-04:00] freshness phase: path=archive probe=http_freshness_probe_archive endpoint=http://localhost:19091 out=/tmp/asap-step2-4-worktree/deploy/eval-results/mvp-current/asap/freshness/archive.csv
+[2026-05-07T19:33:23-04:00] freshness phase: path=archive probe=http_freshness_probe_archive endpoint=http://localhost:19091 out=/tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/asap/freshness/archive.csv
 # v6 freshness probe — endpoint=http://localhost:19091 probe=http_freshness_probe_archive path=archive duration=60.0s poll=100ms
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
+[warn] query error: <urlopen error [Errno 111] Connection refused>
 freshness: path=archive attempted=600 got=0 p50=NA p99=NA
-[2026-05-07T17:35:48-04:00] freshness phase complete; CSVs in /tmp/asap-step2-4-worktree/deploy/eval-results/mvp-current/asap/freshness
+[2026-05-07T19:34:23-04:00] freshness phase complete; CSVs in /tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/asap/freshness

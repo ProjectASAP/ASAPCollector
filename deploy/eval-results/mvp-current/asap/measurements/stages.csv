@@ -1,9 +1,7 @@
 baseline,stage,container,cpu_cores,rss_mib,net_in_kibps,net_out_kibps,disk_mib
-asap,agent,docker-compose-agent-a-1,0.0035,98.02,3.20,49.83,
-asap,agent,docker-compose-agent-b-1,0.0034,99.60,3.23,49.83,
-asap,backend-ingest,docker-compose-backend-1,0.0068,30.30,92.64,2.17,
-asap,backend-query,docker-compose-backend-1,0.0068,30.30,92.64,2.17,
-asap,controller,docker-compose-controller-1,0.0002,4.43,0.26,0.86,
+asap,agent,docker-compose-agent-a-1,0.0053,191.03,3.15,3.96,
+asap,agent,docker-compose-agent-b-1,0.0040,198.03,3.14,3.98,
+asap,controller,docker-compose-controller-1,0.0002,4.50,0.32,0.89,
 asap,producer,docker-compose-fake-exporter-1,0.0000,0.79,0.00,0.00,
-asap,gateway,docker-compose-gateway-1,0.0003,33.59,0.03,0.08,
-asap,backend-storage,docker-compose-minio-1,0.0082,151.08,10.38,192.70,0.00
+asap,gateway,docker-compose-gateway-1,0.0004,32.54,0.03,0.07,
+asap,backend-storage,docker-compose-minio-1,0.0048,94.67,7.91,0.47,0.00

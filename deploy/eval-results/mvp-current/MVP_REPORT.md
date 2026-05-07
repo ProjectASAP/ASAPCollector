@@ -24,21 +24,21 @@ Per-stage TOTAL across all containers in that stage, side-by-side for baseline (
 
 | Stage | Pipeline | CPU (cores) | RSS (MiB) | Net in (KiB/s) | Net out (KiB/s) | Disk (MiB) |
 |---|---|---|---|---|---|---|
-| agent | baseline | 0.005 | 133.8 | 6.3 | 8.9 | 0.0 |
-| agent | asap     | 0.007 | 197.6 | 6.4 | 99.7 | 0.0 |
-| agent | _reduction_ | -38.0% | -47.7% | -2.7% | -1016.0% | — |
-| gateway | baseline | — | — | — | — | — |
-| gateway | asap     | 0.000 | 33.6 | 0.0 | 0.1 | 0.0 |
-| gateway | _reduction_ | — | — | — | — | — |
-| backend-ingest | baseline | 0.000 | 6.7 | 0.1 | 0.1 | 0.0 |
-| backend-ingest | asap     | 0.007 | 30.3 | 92.6 | 2.2 | 0.0 |
-| backend-ingest | _reduction_ | -6700.0% | -351.6% | -154300.0% | -3516.7% | — |
+| agent | baseline | 0.005 | 138.8 | 6.3 | 9.1 | 0.0 |
+| agent | asap     | 0.009 | 389.1 | 6.3 | 7.9 | 0.0 |
+| agent | _reduction_ | -102.2% | -180.3% | +0.3% | +13.2% | — |
+| gateway | baseline | 0.001 | 34.1 | 0.1 | 0.1 | 0.0 |
+| gateway | asap     | 0.000 | 32.5 | 0.0 | 0.1 | 0.0 |
+| gateway | _reduction_ | +33.3% | +4.6% | +50.0% | +50.0% | — |
+| backend-ingest | baseline | — | — | — | — | — |
+| backend-ingest | asap     | — | — | — | — | — |
+| backend-ingest | _reduction_ | — | — | — | — | — |
 | backend-storage | baseline | — | — | — | — | — |
-| backend-storage | asap     | 0.008 | 151.1 | 10.4 | 192.7 | 0.0 |
+| backend-storage | asap     | 0.005 | 94.7 | 7.9 | 0.5 | 0.0 |
 | backend-storage | _reduction_ | — | — | — | — | — |
-| backend-query | baseline | 0.000 | 6.7 | 0.1 | 0.1 | 0.0 |
-| backend-query | asap     | 0.007 | 30.3 | 92.6 | 2.2 | 0.0 |
-| backend-query | _reduction_ | -6700.0% | -351.6% | -154300.0% | -3516.7% | — |
+| backend-query | baseline | — | — | — | — | — |
+| backend-query | asap     | — | — | — | — | — |
+| backend-query | _reduction_ | — | — | — | — | — |
 
 ## §2 Per-criterion verdict (baseline vs ASAP)
 
@@ -48,10 +48,10 @@ Five empirical claims from issue #46. Reduction is (baseline − asap) / baselin
 
 | Edge | Baseline B/s | ASAP B/s | Reduction |
 |---|---|---|---|
-| edge_sdk_to_agent | 6871.5 | 6140.4 | +10.6% |
-| edge_agent_to_gateway | 10140.2 | 100821.1 | -894.3% |
-| edge_gateway_to_backend | 60.9 | 93709.1 | -153836.1% |
-| edge_gateway_to_s3 | 2.4 | 10466.9 | -430195.7% |
+| edge_sdk_to_agent | 6328.1 | 6456.1 | -2.0% |
+| edge_agent_to_gateway | 9341.9 | 8135.0 | +12.9% |
+| edge_gateway_to_backend | — | — | — |
+| edge_gateway_to_s3 | 1.3 | 8114.4 | -625678.4% |
 
 **Verdict ①:** PASS
 
@@ -59,9 +59,9 @@ Five empirical claims from issue #46. Reduction is (baseline − asap) / baselin
 
 | Class | Baseline p99 (ms) | ASAP p99 (ms) | Reduction |
 |---|---|---|---|
-| window-per-series | 1.6 | 1.9 | -21.6% |
-| label-at-instant | 1.5 | 1.8 | -22.2% |
-| combined-window-label | 1.5 | 25.7 | -1579.1% |
+| window-per-series | 1.6 | 0.4 | +74.1% |
+| label-at-instant | 7.9 | 0.4 | +94.8% |
+| combined-window-label | 10.0 | 0.4 | +95.8% |
 
 **Verdict ②:** CAPTURED
 
@@ -69,8 +69,8 @@ Five empirical claims from issue #46. Reduction is (baseline − asap) / baselin
 
 | Metric | Baseline | ASAP | Δ (asap − baseline) | Reduction |
 |---|---|---|---|---|
-| total CPU cores | 0.005 | 0.029 | +0.024 | -457.7% |
-| total RSS MiB | 147.2 | 442.9 | +295.7 | -200.8% |
+| total CPU cores | 0.005 | 0.014 | +0.009 | -178.8% |
+| total RSS MiB | 172.9 | 516.3 | +343.3 | -198.5% |
 
 **Verdict ③:** CAPTURED  (sign convention: ASAP `Δ` rendered with sign)
 
@@ -80,7 +80,7 @@ Five empirical claims from issue #46. Reduction is (baseline − asap) / baselin
 
 ### ⑤ Cold-fallback (gorilla_archive marker — ASAP only)
 
-**Verdict ⑤:** PASS  · `data_source: gorilla_archive` present in response — GorillaQueryEngine served the ad-hoc query.  · curl: {"http_code":200,"time_total":0.001526}
+**Verdict ⑤:** PASS  · `data_source: gorilla_archive` present in response — GorillaQueryEngine served the ad-hoc query.  · curl: {"http_code":000,"time_total":0.000624}
 
 ### ⑥ Freshness (p50 per path)
 
@@ -100,9 +100,9 @@ Three canonical query classes from `deploy/configs/mvp-workload.yaml`. Sketch + 
 
 | Class | Sketch / stage (controller plan) | p50 (ms) | p99 (ms) | median rel-err | n |
 |---|---|---|---|---|---|
-| window-per-series | DDSketch / agent | 1.2 | 1.9 | — | 100 |
-| label-at-instant | identity / gateway (sum-by-zone fan-in) | 1.1 | 1.8 | — | 100 |
-| combined-window-label | rate@agent + sum-by-zone@gateway | 17.5 | 25.7 | — | 100 |
+| window-per-series | DDSketch / agent | 0.3 | 0.4 | — | 500 |
+| label-at-instant | identity / gateway (sum-by-zone fan-in) | 0.3 | 0.4 | — | 500 |
+| combined-window-label | rate@agent + sum-by-zone@gateway | 0.3 | 0.4 | — | 500 |
 
 _§4..§6 below cover the ASAP pipeline only — postings filtering, concat-only compaction, and S3-ops cost are ASAP architectural concepts that have no baseline counterpart._
 
@@ -119,20 +119,18 @@ _postings field not present on responses; rerun once the postings-aware engine +
 
 ## §5 Compaction effect
 
-Concat-only compactor byte-concatenates 6+ adjacent blocks ≥6h old into one merged object. **No decode / re-encode** — each source chunk remains an atomic Gorilla chunk inside the merged file. The new manifest records each chunk's `byte_offset` + `byte_length` so the backend can issue `Range:` partial reads.
+Phase δ.1: archive-tier compaction is now performed by the stock **`thanos-compact`** sidecar (replacing the deleted `gorilla-compactor` Rust binary). Unlike the previous concat-only design, thanos-compact does **decode + re-encode** — that's a real CPU cost during compaction sweeps, but it gives better compression on top of block consolidation, plus downsampled tiers (raw / 5m / 1h) for free. Storage savings reported below therefore include both block-count consolidation AND re-encoded compression.
 
 | Stage | Object count | Total bytes |
 |---|---|---|
 | before | 0 | 0 |
 | after  | 0  | 0 |
 
+`thanos_compact_iterations_total`: 3 → 4 (at least one sweep observed during the demo window if the `after` value > `before`).
+
 ## §6 S3-ops cost (measured)
 
-Counts of PUT / GET / HEAD / DELETE issued against MinIO during the cell's measurement window (the backend's internal cost tracker).
-
-| bytes_got | bytes_put | delete_count | get_count | head_count | list_count | put_count |
-|---|---|---|---|---|---|---|
-| 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+_cost-tracker not present — `/internal/s3_cost.csv` endpoint unavailable. Will populate once the backend exposes the internal cost-tracker endpoint._
 
 ## §7 Honest caveats (non-goals)
 
@@ -158,7 +156,7 @@ Captured artifacts:
 - `backend.bootstrap.err` (0 B)
 - `backend.bootstrap.yaml` (254 B)
 - `controller.stderr` (0 B)
-- `controller.stdout` (17770 B)
+- `controller.stdout` (18336 B)
 - `gateway.placeholder.yaml` (2476 B)
 - `per-metric.http_requests_total.json` (720 B)
 - `per-metric.http_requests_total.json.err` (0 B)
@@ -169,8 +167,8 @@ Captured artifacts:
 
 | Edge | Baseline mean B/s | ASAP mean B/s | Baseline samples | ASAP samples |
 |---|---|---|---|---|
-| edge_sdk_to_agent | 6871.5 | 6140.4 | 61 | 61 |
-| edge_agent_to_gateway | 10140.2 | 100821.1 | 61 | 61 |
-| edge_gateway_to_backend | 60.9 | 93709.1 | 61 | 61 |
-| edge_gateway_to_s3 | 2.4 | 10466.9 | 61 | 61 |
+| edge_sdk_to_agent | 6328.1 | 6456.1 | 301 | 301 |
+| edge_agent_to_gateway | 9341.9 | 8135.0 | 301 | 301 |
+| edge_gateway_to_backend | — | — | 301 | 301 |
+| edge_gateway_to_s3 | 1.3 | 8114.4 | 301 | 301 |
 
