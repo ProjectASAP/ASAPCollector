@@ -1,0 +1,17 @@
+# Thanos object-store config for the MVP demo's archive tier.
+#
+# Points the Thanos store-gateway sidecar at the in-cluster MinIO that
+# the gorillas3processor (Step 2.1) populates with Prometheus-format
+# TSDB blocks (<ulid>/{chunks/, index, meta.json}).
+#
+# Credentials match base.yml's MinIO root credentials
+# (MINIO_ROOT_USER / MINIO_ROOT_PASSWORD); using `minioadmin/minioadmin`
+# would mismatch the rest of the stack.
+type: S3
+config:
+  bucket: asap-gorilla-tsdb
+  endpoint: minio:9000
+  access_key: asap
+  secret_key: asap-local-only
+  insecure: true
+  signature_version2: false
