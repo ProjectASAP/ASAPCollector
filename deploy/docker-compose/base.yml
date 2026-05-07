@@ -122,7 +122,7 @@ services:
     depends_on:
       - minio
     environment:
-      RUST_LOG: "info"
+      RUST_LOG: "${BACKEND_RUST_LOG:-info}"
       # Cold fallback points at MinIO; same JSONL layout
       # works against real S3 later with just a URL swap.
       ASAP_COLD_STORE_ENDPOINT: "http://minio:9000"

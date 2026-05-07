@@ -1,0 +1,790 @@
+[2026-05-07T00:59:44-04:00] freshness phase: path=raw probe=http_freshness_probe_raw endpoint=http://localhost:19091 out=/tmp/asap-v7-collector-worktree/deploy/eval-results/mvp-v7-2026-05-06/freshness/raw.csv
+# v6 freshness probe — endpoint=http://localhost:19091 probe=http_freshness_probe_raw path=raw duration=60.0s poll=100ms
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+[warn] query non-success: No result for query
+freshness: path=raw attempted=600 got=0 p50=NA p99=NA
+[2026-05-07T01:00:44-04:00] freshness phase: path=warm probe=http_freshness_probe_warm endpoint=http://localhost:19091 out=/tmp/asap-v7-collector-worktree/deploy/eval-results/mvp-v7-2026-05-06/freshness/warm.csv
+# v6 freshness probe — endpoint=http://localhost:19091 probe=http_freshness_probe_warm path=warm duration=60.0s poll=100ms
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+freshness: path=warm attempted=600 got=0 p50=NA p99=NA
+[2026-05-07T01:01:44-04:00] freshness phase: path=archive probe=http_freshness_probe_archive endpoint=http://localhost:19091 out=/tmp/asap-v7-collector-worktree/deploy/eval-results/mvp-v7-2026-05-06/freshness/archive.csv
+# v6 freshness probe — endpoint=http://localhost:19091 probe=http_freshness_probe_archive path=archive duration=60.0s poll=100ms
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+[warn] query error: HTTP Error 500: Internal Server Error
+freshness: path=archive attempted=600 got=0 p50=NA p99=NA
+[2026-05-07T01:02:44-04:00] freshness phase complete; CSVs in /tmp/asap-v7-collector-worktree/deploy/eval-results/mvp-v7-2026-05-06/freshness

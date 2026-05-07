@@ -1,0 +1,16 @@
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://controller:4320/v1/opamp
+processors:
+  ddsketch_merge:
+    group_by: []
+    mode: merge
+service:
+  extensions:
+  - opamp
+  pipelines:
+    metrics:
+      processors:
+      - ddsketch_merge
