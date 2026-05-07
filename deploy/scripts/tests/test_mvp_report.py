@@ -51,12 +51,32 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
-    """Create an MVP-demo results dir with synthetic CSVs.
+    """Create an MVP-demo results dir with synthetic CSVs (legacy
+    single-pipeline layout).
 
     `kind` selects which fixture variant:
       - "happy"   — all sections populated, all criteria PASS
       - "sparse"  — only stages.csv present; everything else missing
       - "fallback"— emitted-config STATUS = fallback-placeholder
+    """
+    return _build_pipeline_dir(root, kind=kind)
+
+
+def _build_pipeline_dir(
+    root: Path,
+    *,
+    kind: str = "happy",
+    cpu_scale: float = 1.0,
+    bandwidth_scale: float = 1.0,
+    latency_scale: float = 1.0,
+    emit_status: str | None = None,
+    include_compactor: bool = True,
+) -> Path:
+    """Build a single-pipeline results dir (the per-pipeline subdir
+    shape used by both legacy and dual layouts).
+
+    Knobs let the dual-mode test seed baseline > asap on resource
+    metrics so the reduction columns produce non-trivial numbers.
     """
     root.mkdir(parents=True, exist_ok=True)
     measurements = root / "measurements"
@@ -87,6 +107,7 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
     # ── happy + fallback share the same data; only STATUS differs.
 
     # MOCK stages: one row per stage, round numbers.
+    s = cpu_scale  # CPU + RSS multiplier (lets dual-mode seed baseline > asap).
     _write_csv(
         measurements / "stages.csv",
         ["baseline", "stage", "container",
@@ -94,12 +115,12 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
          "net_in_kibps", "net_out_kibps", "disk_mib"],
         [
             # 2 agents
-            ["mvp", "agent",            "agent-a",  "0.10", "100.0", "10.0", "5.0",  "0"],
-            ["mvp", "agent",            "agent-b",  "0.10", "100.0", "10.0", "5.0",  "0"],
-            ["mvp", "gateway",          "gateway",  "0.20", "200.0", "20.0", "15.0", "0"],
-            ["mvp", "backend-ingest",   "backend",  "0.30", "300.0", "30.0", "0.0",  "0"],
-            ["mvp", "backend-query",    "backend",  "0.10", "300.0", "0.0",  "5.0",  "0"],
-            ["mvp", "backend-storage",  "minio",    "0.05", "50.0",  "5.0",  "5.0",  "100.0"],
+            ["mvp", "agent",            "agent-a",  f"{0.10 * s:.4f}", f"{100.0 * s:.2f}", "10.0", "5.0",  "0"],
+            ["mvp", "agent",            "agent-b",  f"{0.10 * s:.4f}", f"{100.0 * s:.2f}", "10.0", "5.0",  "0"],
+            ["mvp", "gateway",          "gateway",  f"{0.20 * s:.4f}", f"{200.0 * s:.2f}", "20.0", "15.0", "0"],
+            ["mvp", "backend-ingest",   "backend",  f"{0.30 * s:.4f}", f"{300.0 * s:.2f}", "30.0", "0.0",  "0"],
+            ["mvp", "backend-query",    "backend",  f"{0.10 * s:.4f}", f"{300.0 * s:.2f}", "0.0",  "5.0",  "0"],
+            ["mvp", "backend-storage",  "minio",    f"{0.05 * s:.4f}", f"{50.0 * s:.2f}",  "5.0",  "5.0",  "100.0"],
         ],
     )
 
@@ -110,10 +131,10 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
     edge_rows: list[list] = []
     base_ts = 1_700_000_000_000
     edges = [
-        ("edge_sdk_to_agent",        1000.0),
-        ("edge_agent_to_gateway",     500.0),
-        ("edge_gateway_to_backend",   400.0),
-        ("edge_gateway_to_s3",        100.0),
+        ("edge_sdk_to_agent",        1000.0 * bandwidth_scale),
+        ("edge_agent_to_gateway",     500.0 * bandwidth_scale),
+        ("edge_gateway_to_backend",   400.0 * bandwidth_scale),
+        ("edge_gateway_to_s3",        100.0 * bandwidth_scale),
     ]
     for edge_label, bps in edges:
         for i in range(3):
@@ -145,9 +166,9 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
     # MOCK replay JSONL: 5 attempts per query class.
     replay_rows = []
     queries = [
-        ("quantile", "quantile_over_time(0.99, http_requests_total_latency_ms[1m])", 12.0),
-        ("sum",      "sum by (zone) (http_requests_total)",                            8.0),
-        ("sum",      "sum by (zone) (rate(http_requests_total[5m]))",                  9.0),
+        ("quantile", "quantile_over_time(0.99, http_requests_total_latency_ms[1m])", 12.0 * latency_scale),
+        ("sum",      "sum by (zone) (http_requests_total)",                            8.0 * latency_scale),
+        ("sum",      "sum by (zone) (rate(http_requests_total[5m]))",                  9.0 * latency_scale),
     ]
     for q_kind, q, base_lat in queries:
         for i in range(5):
@@ -207,33 +228,38 @@ def _build_results_dir(root: Path, *, kind: str = "happy") -> Path:
 
     # MOCK compactor: minio listing before and after, +1 object then
     # -5 objects (simulating concat of 6→1).
-    before_lines = []
-    for i in range(6):
-        before_lines.append(json.dumps({
-            "type": "file",
-            "key": f"raw/part-{i:04d}.gor",
-            "size": 1_000_000,
+    if include_compactor:
+        before_lines = []
+        for i in range(6):
+            before_lines.append(json.dumps({
+                "type": "file",
+                "key": f"raw/part-{i:04d}.gor",
+                "size": 1_000_000,
+            }))
+        after_lines = [
+            json.dumps({
+                "type": "file",
+                "key": "raw/merged-0000.gor",
+                "size": 6_000_000,
+            }),
+        ]
+        (compactor / "before.minio.jsonl").write_text("\n".join(before_lines))
+        (compactor / "after.minio.jsonl").write_text("\n".join(after_lines))
+        (compactor / "dry_run.json").write_text(json.dumps({
+            "eligible_blocks": [{"key": f"raw/part-{i:04d}.gor"} for i in range(6)],
+            "dry_run": True,
         }))
-    after_lines = [
-        json.dumps({
-            "type": "file",
-            "key": "raw/merged-0000.gor",
-            "size": 6_000_000,
-        }),
-    ]
-    (compactor / "before.minio.jsonl").write_text("\n".join(before_lines))
-    (compactor / "after.minio.jsonl").write_text("\n".join(after_lines))
-    (compactor / "dry_run.json").write_text(json.dumps({
-        "eligible_blocks": [{"key": f"raw/part-{i:04d}.gor"} for i in range(6)],
-        "dry_run": True,
-    }))
-    (compactor / "live_run.json").write_text(json.dumps({
-        "merged_blocks": 1,
-        "source_count": 6,
-    }))
+        (compactor / "live_run.json").write_text(json.dumps({
+            "merged_blocks": 1,
+            "source_count": 6,
+        }))
+    else:
+        (compactor / "SKIPPED").write_text("compactor not run for this pipeline\n")
 
     # MOCK emitted-config status.
-    if kind == "fallback":
+    if emit_status is not None:
+        (emitted / "STATUS").write_text(emit_status + "\n")
+    elif kind == "fallback":
         (emitted / "STATUS").write_text("fallback-placeholder\n")
     else:
         (emitted / "STATUS").write_text("live\n")
@@ -363,6 +389,173 @@ def test_fallback_status_renders_correctly(tmp_path):
     assert "Emitter status: **fallback-placeholder**" in md
     # The §3 plan annotations should mention the fallback state.
     assert "emitter fallback-placeholder" in md
+
+
+# ── dual-mode (baseline + asap subdirs) tests ────────────────────
+
+
+def _build_dual_results_dir(root: Path) -> Path:
+    """Build a results dir with BOTH baseline/ and asap/ subdirs.
+
+    Synthesised so reductions are non-trivial: baseline uses ~2x the
+    CPU + RSS, ~2x the bandwidth on egress edges, and ~3x the latency
+    of asap. Numbers are still deliberately tiny / round.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    base = root / "baseline"
+    asap = root / "asap"
+    _build_pipeline_dir(
+        base, kind="happy",
+        cpu_scale=2.0,            # baseline: 2x cpu + rss
+        bandwidth_scale=2.0,      # baseline: 2x bandwidth on every edge
+        latency_scale=3.0,        # baseline: 3x latency
+        emit_status="n/a-baseline",
+        include_compactor=False,
+    )
+    _build_pipeline_dir(
+        asap, kind="happy",
+        cpu_scale=1.0,
+        bandwidth_scale=1.0,
+        latency_scale=1.0,
+        emit_status="live",
+        include_compactor=True,
+    )
+    return root
+
+
+def test_dual_mode_renders_comparison_report(tmp_path):
+    """When both baseline/ and asap/ subdirs are populated, the
+    report must render the comparison layout: §1 has both rows per
+    stage + reduction, §2 lists the 6 criteria with ASAP-vs-baseline
+    columns + reduction percentages."""
+    results = _build_dual_results_dir(tmp_path)
+    out = tmp_path / "MVP_REPORT.md"
+
+    rc = mvp_report.main([
+        "--results-dir", str(results),
+        "--num-producers", "10",
+        "--per-agent-cardinality", "500",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    md = out.read_text()
+
+    # Header reflects dual-pipeline framing.
+    assert "baseline vs ASAP" in md
+    assert "Sequential" in md or "sequentially" in md  # caveat text
+
+    # §1 dual-mode markers.
+    assert "## §1 Stage-separated resource table (baseline vs ASAP)" in md
+    # Baseline + asap rows + reduction row appear for at least one stage.
+    assert "| baseline |" in md
+    assert "| asap     |" in md
+    assert "_reduction_" in md
+
+    # §2 dual-mode subsections — all five empirical claims + accuracy
+    # + cold-fallback + freshness are present.
+    for header in (
+        "## §2 Per-criterion verdict (baseline vs ASAP)",
+        "### ① Bandwidth (mean B/s per cut edge)",
+        "### ② Query latency (p99 per class)",
+        "### ③ Combined e2e resource (Σ stages)",
+        "### ④ Accuracy",
+        "### ⑤ Cold-fallback",
+        "### ⑥ Freshness",
+    ):
+        assert header in md, f"missing dual-mode section: {header!r}"
+
+    # Reduction columns must produce concrete numbers — baseline 2x
+    # cpu, asap 1x cpu → reduction ~+50%.
+    assert "+50.0%" in md or "+49." in md or "+50." in md
+
+    # All edges render in the bandwidth subsection.
+    for e in (
+        "edge_sdk_to_agent",
+        "edge_agent_to_gateway",
+        "edge_gateway_to_backend",
+        "edge_gateway_to_s3",
+    ):
+        assert e in md
+
+    # ASAP-only sections still render below the comparison.
+    assert "## §3 Per-query-class breakdown (ASAP)" in md
+    assert "## §4 Postings filtering effect" in md
+    assert "## §5 Compaction effect" in md
+    assert "## §6 S3-ops cost (measured)" in md
+
+    # §8 status — ASAP pipeline is live.
+    assert "Emitter status: **live**" in md
+
+    # Appendix A: dual-mode side-by-side per-edge bandwidth table.
+    assert "Appendix A — per-edge bandwidth (baseline vs ASAP)" in md
+
+
+def test_dual_mode_idempotent(tmp_path):
+    results = _build_dual_results_dir(tmp_path)
+    out1 = tmp_path / "first.md"
+    out2 = tmp_path / "second.md"
+    for out in (out1, out2):
+        rc = mvp_report.main([
+            "--results-dir", str(results),
+            "--num-producers", "10",
+            "--per-agent-cardinality", "500",
+            "--out", str(out),
+        ])
+        assert rc == 0
+    assert out1.read_text() == out2.read_text()
+
+
+def test_only_asap_subdir_falls_back_to_single_mode(tmp_path):
+    """If only asap/ is populated (e.g. user passed --mode asap), the
+    report must fall back to single-mode rendering — not crash, not
+    render the dual-mode comparison."""
+    asap = tmp_path / "asap"
+    _build_pipeline_dir(asap, kind="happy", emit_status="live")
+    out = tmp_path / "MVP_REPORT.md"
+
+    rc = mvp_report.main([
+        "--results-dir", str(tmp_path),
+        "--num-producers", "10",
+        "--per-agent-cardinality", "500",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    md = out.read_text()
+
+    # Single-mode header (no "baseline vs ASAP" framing).
+    assert "controller-driven multi-stage" in md
+    assert "Single-pipeline run (asap)" in md
+    # No dual-mode comparison subsection headers.
+    assert "## §2 Per-criterion verdict (baseline vs ASAP)" not in md
+
+
+def test_only_baseline_subdir_falls_back_to_single_mode(tmp_path):
+    base = tmp_path / "baseline"
+    _build_pipeline_dir(base, kind="happy", emit_status="n/a-baseline",
+                         include_compactor=False)
+    out = tmp_path / "MVP_REPORT.md"
+    rc = mvp_report.main([
+        "--results-dir", str(tmp_path),
+        "--num-producers", "10",
+        "--per-agent-cardinality", "500",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    md = out.read_text()
+    assert "Single-pipeline run (baseline)" in md
+    # baseline emit-status branch in §8.
+    assert "Baseline pipeline has no controller" in md
+
+
+def test_layout_detector():
+    # Empty dir → legacy.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        assert mvp_report._detect_layout(d) == "legacy"
+        os.makedirs(os.path.join(d, "baseline", "measurements"))
+        assert mvp_report._detect_layout(d) == "baseline-only"
+        os.makedirs(os.path.join(d, "asap", "measurements"))
+        assert mvp_report._detect_layout(d) == "dual"
 
 
 def test_missing_results_dir_returns_error_md(tmp_path):
