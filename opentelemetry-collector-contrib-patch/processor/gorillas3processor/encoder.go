@@ -294,7 +294,21 @@ func buildChunks(series map[seriesKey]*seriesBuffer, maxObjectBytes int64) ([]ch
 				return
 			}
 			buf := cur.Bytes()
-			binary.LittleEndian.PutUint32(buf[5:9], uint32(curSeries))
+			// v7 fix: write seriesCount at offset 9, not 5. The
+			// outer GORILLA1 block layout is:
+			//   [8]   magic        "GORILLA1"
+			//   [1]   version      chunkVersion
+			//   [4]   uint32 LE    seriesCount
+			// so the seriesCount slot is bytes 9..13. The pre-v7
+			// code wrote at bytes 5..9, overwriting bytes 5..7 of
+			// the magic and byte 8 (version) — every chunk that
+			// landed on S3 had a corrupted header that the
+			// asap-gorilla decoder rejected with "bad magic".
+			// Dropped-on-the-floor before v7 because no consumer
+			// tried to decode these chunks; v7's
+			// `last_over_time` query path on freshness probes
+			// surfaces it.
+			binary.LittleEndian.PutUint32(buf[9:13], uint32(curSeries))
 			data := make([]byte, len(buf))
 			copy(data, buf)
 			chunks = append(chunks, chunkInfo{

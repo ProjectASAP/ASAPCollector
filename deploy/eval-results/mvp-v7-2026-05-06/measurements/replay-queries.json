@@ -1,0 +1,5 @@
+[
+    {"kind": "quantile",     "promql": "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"},
+    {"kind": "sum",          "promql": "sum by (zone) (http_requests_total)"},
+    {"kind": "sum",          "promql": "sum by (zone) (rate(http_requests_total[5m]))"}
+]

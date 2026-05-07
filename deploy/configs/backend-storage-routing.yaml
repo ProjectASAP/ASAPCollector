@@ -1,11 +1,11 @@
 # Per-metric storage-backend routing table — issue #46 MVP demo.
 #
 # The backend's HTTP query handler consults this on every PromQL
-# instant query. For each metric listed below, the handler dispatches
-# through `EngineRouter` to the named storage backend (e.g. cold
-# Gorilla-S3 archive); unlisted metrics fall through to `default`
-# (which itself defaults to `sketch_warm_tier` — the existing
-# warm-tier sketch path served by `SimpleEngine`).
+# instant query. For each metric listed below, the handler classifies
+# the query's shape (count / topk / rate_post_hoc / quantile / sum /
+# last_over_time / other) from the parsed PromQL AST and dispatches
+# through `EngineRouter` to the matching target. Unlisted metrics fall
+# through to `default`.
 #
 # Why this file exists: in the v2 MVP demo the backend bypassed
 # `EngineRouter` for every query because `StreamingConfig::from_yaml_data`
@@ -17,46 +17,97 @@
 # Loaded by the backend via `--backend-storage-routing` (alias env var
 # `ASAP_BACKEND_STORAGE_ROUTING`).
 #
-# Schema:
-#   default: <storage_backend>           (optional; default = sketch_warm_tier)
-#   metrics:
-#     <metric_name>: <storage_backend>
+# v7 schema — two compatible forms (mix is fine):
+#
+#   default: <storage_backend>          (optional; default = sketch_warm_tier)
+#
+#   metrics:                            (v6.1 form — single-target per metric)
+#     <metric>: <storage_backend>
+#
+#   routes:                             (v7 form — multi-target per metric)
+#     - metric: <metric>
+#       targets:
+#         - backend: <storage_backend>             # default slot
+#         - backend: <storage_backend>
+#           applies_to_query_shape: [count, topk, rate_post_hoc]
 #
 # Valid `storage_backend` values mirror `asap_types::StorageBackend`:
 #   sketch_warm_tier      — warm-tier sketches (SimpleEngine)
 #   gorilla_s3_archive    — cold archive (GorillaQueryEngine)
 #   cold_jsonl_fallback   — local-FS JSONL fallback
 #   double_write          — both warm + archive (DoubleWrite)
+#
+# Valid `applies_to_query_shape` values: [count, topk, rate_post_hoc,
+#   quantile, sum, last_over_time, other]. Picking matches the
+#   parsed-PromQL classification in the backend's
+#   `data_model::classify_query_shape`.
 
 default: sketch_warm_tier
-metrics:
-  # The MVP demo's ad-hoc cold-fallback probe is
-  # `sum_over_time(http_requests_total[1m])` (or `count(...)`),
-  # PromQL shapes the GorillaQueryEngine planner supports.
-  # Routing here makes the response carry
-  # `data_source: gorilla_archive`, the byte-comparable signal
-  # criterion ⑤ demands.
-  http_requests_total: gorilla_s3_archive
 
-  # v4: revert the v3 route for the latency-quantile metric
-  # back to the warm tier. v3 routed it through gorilla_s3_archive
-  # too, which made every replay-suite quantile query land in the
-  # cold engine. The cold engine returned NaN for the empty/partial
-  # 60s window (gorillas3 writes 60s chunks; the first chunk is
-  # barely landing by query time), so the accuracy reducer couldn't
-  # compute relative error and criterion ④ surfaced as UNKNOWN. v4
-  # keeps the quantile metric on the warm tier (DDSketch / KLL
-  # accumulators served by SimpleEngine) so the reducer gets real
-  # numbers; criterion ⑤ still verifies cold-archive dispatch via
-  # `http_requests_total`.
-  http_requests_total_latency_ms_quantile: sketch_warm_tier
+# v7 dual-routing: http_requests_total fans out to TWO targets.
+# - The default slot (warm tier) catches predictable / planned
+#   queries — quantile_over_time(...), sum by (zone) (...), bare
+#   sum_over_time, etc. These are the criterion ④ accuracy queries
+#   the replay suite drives. Routing them to the warm tier means
+#   the SimpleEngine's DDSketch / KLL accumulators answer them; the
+#   accuracy reducer gets real numbers (no NaN from empty cold
+#   windows).
+# - The `[count, topk, rate_post_hoc]` slot routes ad-hoc / post-hoc
+#   queries to the cold archive. `count(http_requests_total{
+#   service="payments"})` is the criterion ⑤ probe — it surfaces
+#   `data_source: gorilla_archive` because the cold engine answers
+#   it. `topk(...)` and `rate(...)` shapes the warm tier doesn't
+#   precompute also drop into the archive's exact streaming path.
+#
+# v7 closes the v6.1 architectural gap: under v6.1 the same metric
+# was forced to one engine, so ④ and ⑤ were mutually exclusive
+# (quantile-on-warm OR count-on-archive, never both). With
+# dual-routing the trade-off is per-query-shape, which is the
+# right axis.
+routes:
+  - metric: http_requests_total
+    targets:
+      - backend: sketch_warm_tier
+        # default slot — every shape not explicitly claimed below
+        # routes here (Quantile, Sum, LastOverTime, Other).
+      - backend: gorilla_s3_archive
+        applies_to_query_shape: [count, topk, rate_post_hoc]
 
-  # v4 freshness probes (criterion ⑥). Two synthetic gauges emitted
-  # by `measure_freshness.py` push to agent-1's OTLP HTTP receiver;
-  # their values encode the unix_ts_ms at generation. The probe polls
-  # the backend for `last_over_time(<metric>[10s])` every 100 ms and
-  # records (observation_time - observed_value) as Δ. Splitting the
-  # metric name lets the routing table dispatch each probe down its
-  # own engine path so the freshness number is path-isolated.
-  http_freshness_probe_warm: sketch_warm_tier
-  http_freshness_probe_archive: gorilla_s3_archive
+  # v6 latency-quantile metric stays warm-tier-only. The cold
+  # engine returns NaN for empty / partial 60s windows
+  # (gorillas3processor flushes 60s chunks; the first chunk is
+  # barely landing by query time), so routing this to the cold
+  # archive killed criterion ④. Single-target; no v7 dual-routing
+  # needed.
+  - metric: http_requests_total_latency_ms_quantile
+    targets:
+      - backend: sketch_warm_tier
+
+  # v6 freshness probes (criterion ⑥). Both probes route to the
+  # cold archive in v7 — the v7 backend's GorillaQueryEngine learned
+  # `last_over_time(...)` (Change B) so it can serve these queries
+  # by returning the value of the largest-timestamp sample in the
+  # range. The fake-exporter encodes `unix_ts_ms_of_emission` in
+  # the cumulative counter value, so the replay client subtracts
+  # `(poll_ts - observed_value)` to get a per-path freshness delta.
+  #
+  # Path semantics in v7:
+  #   - http_freshness_probe_warm    routed via gorilla; the agent's
+  #     warm-tier sketchprocessor still ingests these probes
+  #     end-to-end, but the backend serves the query from the
+  #     gorillas3-written chunk in MinIO. The "warm" label on the
+  #     freshness path here reflects the agent-side processor
+  #     pipeline (sketchprocessor warm-tier ingest), not the
+  #     backend-side query engine. Splitting the warm-vs-archive
+  #     trade-off all the way down to the warm-tier query path
+  #     requires teaching SimpleEngine's pattern matcher about
+  #     last_over_time + raw counters; deferred to a follow-up.
+  #   - http_freshness_probe_archive routed via gorilla; the agent's
+  #     gorillas3processor writes directly to MinIO. End-to-end
+  #     archive path.
+  - metric: http_freshness_probe_warm
+    targets:
+      - backend: gorilla_s3_archive
+  - metric: http_freshness_probe_archive
+    targets:
+      - backend: gorilla_s3_archive

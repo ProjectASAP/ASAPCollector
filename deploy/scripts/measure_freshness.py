@@ -140,6 +140,14 @@ def query_once_v6(
         observed = float(val_pair[1])
     except (TypeError, ValueError):
         return response_ts_ms, None
+    # v7: GorillaQueryEngine returns `NaN` for empty windows (no
+    # chunks land yet, or the postings filter pruned everything
+    # away). Treat NaN identically to "no data" so downstream
+    # `int(observed)` doesn't blow up. The replay client will keep
+    # polling; the next tick's chunks may carry a real sample.
+    import math
+    if math.isnan(observed) or math.isinf(observed):
+        return response_ts_ms, None
     return response_ts_ms, observed
 
 

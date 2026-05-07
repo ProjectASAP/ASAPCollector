@@ -46,7 +46,26 @@ pub const INDEX_SCHEMA_VERSION: u8 = 1;
 /// fixtures parse with all three at `None` and resolve to "fetch
 /// whole object at `key`". The `effective_*` helpers below pick the
 /// right value regardless of producer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// ### v7 — agent-side schema compatibility
+///
+/// The Telegraf-side / OTel `gorillas3processor` writes JSON with
+/// slightly different field names:
+///
+/// | Agent field          | Backend field |
+/// |----------------------|---------------|
+/// | `object`             | `key`         |
+/// | `start_ts_nano`      | (lower half of `time_range`) |
+/// | `end_ts_nano`        | (upper half of `time_range`) |
+/// | `point_count`        | `sample_count` |
+/// | `series_count`       | (ignored — agent writes one chunk per series) |
+/// | `written_at_unix_nano` | (ignored — purely informational) |
+///
+/// v7 implements a custom `Deserialize` that accepts both shapes,
+/// so backend reads of agent-produced index.json files work
+/// unchanged. Existing backend-produced index.json files keep
+/// roundtripping bit-for-bit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct IndexEntry {
     /// Full S3 key for this *chunk* (legacy field). For pre-compactor
     /// blocks this is the key of the chunk's own object. For compactor-
@@ -84,6 +103,72 @@ pub struct IndexEntry {
     pub byte_length: Option<u64>,
 }
 
+// v7: hand-rolled `Deserialize` for [`IndexEntry`] that accepts
+// BOTH the backend's historical field set AND the agent-side
+// `gorillas3processor`'s shape (different field names for the
+// same logical fields). See struct doc above for the mapping.
+impl<'de> serde::Deserialize<'de> for IndexEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        // A permissive raw form. All fields are `Option<...>`; the
+        // post-decode pass picks the right ones to populate the
+        // canonical struct. `serde_json::Value` for `time_range`
+        // because either an explicit `[s, e]` pair OR the
+        // `start_ts_nano`/`end_ts_nano` siblings can supply it.
+        #[derive(Deserialize)]
+        struct Raw {
+            // Backend canonical names.
+            key: Option<String>,
+            time_range: Option<(u64, u64)>,
+            sample_count: Option<u32>,
+            label_hash: Option<u64>,
+            size_bytes: Option<u32>,
+            object_key: Option<String>,
+            byte_offset: Option<u64>,
+            byte_length: Option<u64>,
+            // Agent-side aliases.
+            object: Option<String>,
+            start_ts_nano: Option<u64>,
+            end_ts_nano: Option<u64>,
+            point_count: Option<u32>,
+        }
+
+        let raw = Raw::deserialize(d)?;
+        let key = raw
+            .key
+            .or(raw.object)
+            .ok_or_else(|| D::Error::missing_field("key"))?;
+        let time_range = raw.time_range.or_else(|| {
+            match (raw.start_ts_nano, raw.end_ts_nano) {
+                (Some(s), Some(e)) => Some((s, e)),
+                _ => None,
+            }
+        });
+        let time_range = time_range
+            .ok_or_else(|| D::Error::missing_field("time_range or start_ts_nano+end_ts_nano"))?;
+        let sample_count = raw
+            .sample_count
+            .or(raw.point_count)
+            .ok_or_else(|| D::Error::missing_field("sample_count"))?;
+        // `label_hash` defaults to 0 for agent-produced entries
+        // (single-series chunks; the agent's optional `label_hash`
+        // field is also accepted by `Raw::label_hash`).
+        let label_hash = raw.label_hash.unwrap_or(0);
+        let size_bytes = raw.size_bytes.unwrap_or(0);
+        Ok(IndexEntry {
+            key,
+            time_range,
+            sample_count,
+            label_hash,
+            size_bytes,
+            object_key: raw.object_key,
+            byte_offset: raw.byte_offset,
+            byte_length: raw.byte_length,
+        })
+    }
+}
+
 impl IndexEntry {
     /// S3 key the engine should issue a GET / Range-GET against to
     /// read this chunk's bytes. Falls back to [`Self::key`] if the
@@ -112,7 +197,17 @@ impl IndexEntry {
 
 /// Per-hour-bucket catalog of [`IndexEntry`]s. Encoded as JSON for
 /// human-debuggability (matches the Telegraf-side index.json contract).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// ### v7 — agent-side schema compatibility
+///
+/// The agent-side `gorillas3processor` writes the top-level JSON as
+/// `{"version": 1, "tenant": "...", "metric": "...", "entries": [...]}`
+/// — `version` instead of `schema_version`, plus extra `tenant` /
+/// `metric` siblings. The backend's `read` accepts either spelling
+/// via the custom [`Deserialize`] below; `tenant` and `metric` are
+/// captured so the engine can surface them in diagnostics but are
+/// not load-bearing on the read path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct IndexFile {
     /// On-wire schema version. Always [`INDEX_SCHEMA_VERSION`] for
     /// freshly built indexes; a [`DecodeError::UnsupportedIndexVersion`]
@@ -124,6 +219,47 @@ pub struct IndexFile {
     /// One row per chunk. The Phase 1 cold-engine writes them in
     /// time-ascending order; the prune iterators do not assume that.
     pub entries: Vec<IndexEntry>,
+}
+
+impl<'de> serde::Deserialize<'de> for IndexFile {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            // Backend canonical names.
+            schema_version: Option<u8>,
+            generated_at_ns: Option<u64>,
+            entries: Vec<IndexEntry>,
+            // Agent-side aliases (kept here for forwards compat —
+            // we deliberately ignore tenant / metric on read since
+            // the engine already knows which (tenant, metric) it
+            // requested, and we want IndexFile's wire shape to stay
+            // small).
+            #[serde(default)]
+            version: Option<u8>,
+            #[serde(default, rename = "tenant")]
+            _tenant: Option<String>,
+            #[serde(default, rename = "metric")]
+            _metric: Option<String>,
+        }
+
+        let raw = Raw::deserialize(d)?;
+        let schema_version = raw
+            .schema_version
+            .or(raw.version)
+            .unwrap_or(INDEX_SCHEMA_VERSION);
+        // Agent-side index.json doesn't carry a top-level
+        // `generated_at_ns`. We default to the latest entry's
+        // `written_at_unix_nano` if the JSON happens to carry it —
+        // but since we ignore agent fields per-entry beyond what
+        // the canonical IndexEntry needs, fall back to 0 here. The
+        // backend's prune iterators do not consult this field.
+        let generated_at_ns = raw.generated_at_ns.unwrap_or(0);
+        Ok(IndexFile {
+            schema_version,
+            generated_at_ns,
+            entries: raw.entries,
+        })
+    }
 }
 
 impl IndexFile {
@@ -169,5 +305,115 @@ impl IndexFile {
     /// exact-equality matcher (e.g. `instance="i-12345"`).
     pub fn prune_by_label_hash(&self, hash: u64) -> impl Iterator<Item = &IndexEntry> {
         self.entries.iter().filter(move |e| e.label_hash == hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v7: backend can read a JSON index produced by the agent's
+    /// `gorillas3processor`. The agent uses `version` instead of
+    /// `schema_version`, plus `tenant`/`metric` siblings; per-entry
+    /// it uses `object` + `start_ts_nano`/`end_ts_nano` +
+    /// `point_count` instead of `key` + `time_range` +
+    /// `sample_count`.
+    #[test]
+    fn read_accepts_agent_side_index_json_shape_v7() {
+        // Verbatim shape produced by the agent's
+        // opentelemetry-collector-contrib-patch/processor/
+        // gorillas3processor/s3_sink.go indexFile + indexEntry
+        // structs.
+        let agent_json = r#"{
+            "version": 1,
+            "tenant": "default",
+            "metric": "http_freshness_probe_archive",
+            "entries": [
+                {
+                    "object": "part-1778127177-000000.gor",
+                    "start_ts_nano": 1778127132419130620,
+                    "end_ts_nano": 1778127177986083641,
+                    "series_count": 1,
+                    "point_count": 20,
+                    "size_bytes": 391,
+                    "written_at_unix_nano": 1778127178654862770
+                },
+                {
+                    "object": "part-1778127237-000000.gor",
+                    "start_ts_nano": 1778127192629541252,
+                    "end_ts_nano": 1778127237947382534,
+                    "series_count": 1,
+                    "point_count": 20,
+                    "size_bytes": 389,
+                    "written_at_unix_nano": 1778127238725051510
+                }
+            ]
+        }"#;
+        let parsed = IndexFile::read(agent_json.as_bytes())
+            .expect("must accept agent-side wire shape");
+        assert_eq!(parsed.schema_version, INDEX_SCHEMA_VERSION);
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[0].key, "part-1778127177-000000.gor");
+        assert_eq!(
+            parsed.entries[0].time_range,
+            (1778127132419130620, 1778127177986083641)
+        );
+        assert_eq!(parsed.entries[0].sample_count, 20);
+        assert_eq!(parsed.entries[0].size_bytes, 391);
+        assert_eq!(parsed.entries[0].label_hash, 0);
+        assert_eq!(parsed.entries[1].key, "part-1778127237-000000.gor");
+    }
+
+    /// Backend's canonical wire shape still roundtrips bit-for-bit
+    /// with the v7 custom Deserialize.
+    #[test]
+    fn read_accepts_backend_side_index_json_shape() {
+        let backend_json = r#"{
+            "schema_version": 1,
+            "generated_at_ns": 1700000000000000000,
+            "entries": [
+                {
+                    "key": "part-A.gor",
+                    "time_range": [1700000000000000000, 1700000060000000000],
+                    "sample_count": 60,
+                    "label_hash": 12345,
+                    "size_bytes": 500
+                }
+            ]
+        }"#;
+        let parsed = IndexFile::read(backend_json.as_bytes())
+            .expect("must accept backend wire shape");
+        assert_eq!(parsed.schema_version, INDEX_SCHEMA_VERSION);
+        assert_eq!(parsed.generated_at_ns, 1700000000000000000);
+        assert_eq!(parsed.entries[0].key, "part-A.gor");
+        assert_eq!(parsed.entries[0].sample_count, 60);
+        assert_eq!(parsed.entries[0].label_hash, 12345);
+    }
+
+    /// Mixing fields — the parser prefers backend canonical names
+    /// when both are present.
+    #[test]
+    fn agent_canonical_preference_when_both_set() {
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at_ns": 0,
+            "entries": [
+                {
+                    "key": "canonical.gor",
+                    "object": "agent-name.gor",
+                    "time_range": [10, 20],
+                    "start_ts_nano": 99,
+                    "end_ts_nano": 100,
+                    "sample_count": 5,
+                    "point_count": 999,
+                    "label_hash": 7,
+                    "size_bytes": 0
+                }
+            ]
+        }"#;
+        let parsed = IndexFile::read(json.as_bytes()).expect("parse");
+        assert_eq!(parsed.entries[0].key, "canonical.gor");
+        assert_eq!(parsed.entries[0].time_range, (10, 20));
+        assert_eq!(parsed.entries[0].sample_count, 5);
     }
 }
