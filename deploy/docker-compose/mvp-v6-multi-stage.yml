@@ -40,6 +40,13 @@ x-fake-exporter: &fake-exporter-base
     EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
     EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
     EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+    # Phase D freshness probes (criterion ⑥) — explicit propagation
+    # so the producer-* services emit the three timestamp-encoded
+    # counters regardless of what the host shell exports. Default is
+    # `on` in probes.go, but v6 saw empty CSVs because the env wasn't
+    # explicitly threaded; v6.1 makes it deterministic.
+    EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+    EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
 
 x-agent: &agent-base
   image: asap/sketchcol:dev
@@ -61,57 +68,128 @@ services:
   # "shard" of cardinality so the producer-side cardinality is
   # PER_AGENT_CARDINALITY × N_PRODUCERS at the gateway.
 
+  # NOTE on the per-producer environment block: YAML's `<<:` merge key
+  # does NOT deep-merge nested mappings, and docker-compose treats
+  # the per-service `environment` map as a complete override of any
+  # anchor-supplied `environment`. v6 inherited only the keys
+  # explicitly listed below; the anchor's EXPORTER_RATE /
+  # EXPORTER_CARDINALITY / EXPORTER_FREQ_HZ / EXPORTER_FRESHNESS_*
+  # never reached the containers. v6.1 inlines the full env per
+  # producer so freshness probes and the workload knobs propagate.
+  #
+  # Each producer pulls the host-shell env (which the driver script
+  # exports) via Compose's `${VAR:-default}` interpolation.
   producer-a-1:
     <<: *fake-exporter-base
-    environment:
+    environment: &producer-env-a-1
       EXPORTER_TARGET: "agent-a:4317"
       EXPORTER_PRODUCER_ID: "p-a-1"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
   producer-a-2:
     <<: *fake-exporter-base
     environment:
       EXPORTER_TARGET: "agent-a:4317"
       EXPORTER_PRODUCER_ID: "p-a-2"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
   producer-a-3:
     <<: *fake-exporter-base
     environment:
       EXPORTER_TARGET: "agent-a:4317"
       EXPORTER_PRODUCER_ID: "p-a-3"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
   producer-a-4:
     <<: *fake-exporter-base
     environment:
       EXPORTER_TARGET: "agent-a:4317"
       EXPORTER_PRODUCER_ID: "p-a-4"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
   producer-a-5:
     <<: *fake-exporter-base
     environment:
       EXPORTER_TARGET: "agent-a:4317"
       EXPORTER_PRODUCER_ID: "p-a-5"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
 
   producer-b-1:
     <<: *fake-exporter-base
     environment:
       EXPORTER_TARGET: "agent-b:4317"
       EXPORTER_PRODUCER_ID: "p-b-1"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
   producer-b-2:
     <<: *fake-exporter-base
     environment:
       EXPORTER_TARGET: "agent-b:4317"
       EXPORTER_PRODUCER_ID: "p-b-2"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
   producer-b-3:
     <<: *fake-exporter-base
     environment:
       EXPORTER_TARGET: "agent-b:4317"
       EXPORTER_PRODUCER_ID: "p-b-3"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
   producer-b-4:
     <<: *fake-exporter-base
     environment:
       EXPORTER_TARGET: "agent-b:4317"
       EXPORTER_PRODUCER_ID: "p-b-4"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
   producer-b-5:
     <<: *fake-exporter-base
     environment:
       EXPORTER_TARGET: "agent-b:4317"
       EXPORTER_PRODUCER_ID: "p-b-5"
+      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
+      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
+      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
+      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
+      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
+      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
 
   # ─────────────────────────────── controller workload mount ────────────────
   # Controller reads the v6 workload manifest at startup so its plan
@@ -122,8 +200,57 @@ services:
     environment:
       CONTROLLER_WORKLOADS: "/etc/asap/mvp-v6-workload.yaml"
       USE_TYPED_STAGE_SPLIT: "${USE_TYPED_STAGE_SPLIT:-1}"
+      # Phase C plumbing — when set, the typed-stage-split Backend arm
+      # actually pushes the emitted streaming-config JSON instead of
+      # silently logging "no backend client configured". Required for
+      # §8 STATUS=live in the v6.1 demo.
+      CONTROLLER_BACKEND_ENDPOINT: "${CONTROLLER_BACKEND_ENDPOINT:-http://backend:9091/api/v1/streaming-config}"
     volumes:
       - ../configs/mvp-v6-workload.yaml:/etc/asap/mvp-v6-workload.yaml:ro
+
+  # ─────────────────────────────── backend (v6.1 wiring) ─────────────────────
+  # The base.yml backend block omits the per-metric routing table and
+  # the GorillaQueryEngine env block. v6 needed both: the cold-archive
+  # marker for criterion ⑤, and the per-tier routing for the
+  # http_freshness_probe_{warm,archive} probes (criterion ⑥).
+  # Mirrors the wiring already proven in
+  # `baseline-b6-asap-single-sketch.yml`.
+  backend:
+    environment:
+      ASAP_SKETCH_FAMILY: "${ASAP_SKETCH_FAMILY:-ddsketch}"
+      ASAP_GORILLA_S3_ENDPOINT: "http://minio:9000"
+      ASAP_GORILLA_S3_BUCKET: "asap-gorilla"
+      ASAP_GORILLA_S3_REGION: "us-east-1"
+      ASAP_GORILLA_S3_ACCESS_KEY_ID: "asap"
+      ASAP_GORILLA_S3_SECRET_ACCESS_KEY: "asap-local-only"
+      ASAP_GORILLA_S3_TENANT: "default"
+      ASAP_GORILLA_S3_USE_SSL: "false"
+      ASAP_GORILLA_S3_PREFIX_TEMPLATE: "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
+      ASAP_BACKEND_STORAGE_ROUTING: "/etc/asap/backend-storage-routing.yaml"
+    volumes:
+      - ../configs/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro
+
+  # Bucket-seed for the Gorilla-S3 cold tier (additive to base.yml's
+  # `minio-setup`). Without this the gorillas3 processor's first PUT
+  # fails with NoSuchBucket and no archive chunk ever lands on MinIO.
+  minio-setup-gorilla:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set asap http://minio:9000 asap asap-local-only &&
+        mc mb --ignore-existing asap/asap-gorilla &&
+        mc anonymous set download asap/asap-gorilla &&
+        echo "asap-gorilla bucket ready"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ─────────────────────────────── 2 agents ──────────────────────────────────
   # Each agent runs the controller-emitted edge config. Until Phase B

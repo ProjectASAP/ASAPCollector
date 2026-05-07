@@ -1,0 +1,99 @@
+[2m2026-05-07T00:21:34.250433Z[0m [32m INFO[0m [2mcontroller[0m[2m:[0m loaded sketch defaults [3mpath[0m[2m=[0msketch_params_default.yml
+[2m2026-05-07T00:21:34.250615Z[0m [32m INFO[0m [2mcontroller::config::workloads[0m[2m:[0m loaded workload registry [3mpath[0m[2m=[0m"/etc/asap/mvp-v6-workload.yaml" [3mcount[0m[2m=[0m4
+[2m2026-05-07T00:21:34.251548Z[0m [32m INFO[0m [2mcontroller[0m[2m:[0m ASAPQuery-backend StreamingConfig push enabled [3mendpoint[0m[2m=[0mhttp://backend:9091
+[2m2026-05-07T00:21:34.251682Z[0m [32m INFO[0m [2mcontroller[0m[2m:[0m OpAMP server listening on 0.0.0.0:4320
+[2m2026-05-07T00:21:34.251678Z[0m [32m INFO[0m [2mcontroller[0m[2m:[0m runtime-samples gRPC server listening on 0.0.0.0:4321
+[2m2026-05-07T00:21:34.251764Z[0m [32m INFO[0m [2mcontroller[0m[2m:[0m controller API listening on 0.0.0.0:8080
+[2m2026-05-07T00:21:35.503825Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent connected [3magent[0m[2m=[0magent-1 [3mrole[0m[2m=[0mAgent
+[2m2026-05-07T00:21:35.503851Z[0m [32m INFO[0m [2mcontroller::monitor[0m[2m:[0m adding scrape endpoint [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.503965Z[0m [32m INFO[0m [2mcontroller::replan[0m[2m:[0m pushed config to reconnecting agent [3magent[0m[2m=[0m"agent-1" [3mmetric[0m[2m=[0mhttp_requests_total_latency_ms
+[2m2026-05-07T00:21:35.504008Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m config pushed (OpAMP protobuf) [3magent[0m[2m=[0magent-1 [3mhash[0m[2m=[0mf849d0db55e301d4
+[2m2026-05-07T00:21:35.505067Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.505075Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported effective config [3magent[0m[2m=[0magent-1 [3mconfig_name[0m[2m=[0m [3mbytes[0m[2m=[0m3754 [3mpreview[0m[2m=[0mconnectors: {} ⏎ exporters: ⏎     otlp/backend: ⏎         balancer_name: "" ⏎         compression: none ⏎         endpoint: backend:4317 ⏎         retry_on_failure: ⏎        
+[2m2026-05-07T00:21:35.505079Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported remote-config status [3magent[0m[2m=[0magent-1 [3mstatus[0m[2m=[0m"Unset" [3mlast_hash[0m[2m=[0m
+[2m2026-05-07T00:21:35.505082Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mfalse
+[2m2026-05-07T00:21:35.505155Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.505174Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mfalse
+[2m2026-05-07T00:21:35.505279Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.505286Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:21:35.505307Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.505311Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:21:35.506830Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.506836Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported effective config [3magent[0m[2m=[0magent-1 [3mconfig_name[0m[2m=[0m [3mbytes[0m[2m=[0m3754 [3mpreview[0m[2m=[0mconnectors: {} ⏎ exporters: ⏎     otlp/backend: ⏎         balancer_name: "" ⏎         compression: none ⏎         endpoint: backend:4317 ⏎         retry_on_failure: ⏎        
+[2m2026-05-07T00:21:35.506839Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported remote-config status [3magent[0m[2m=[0magent-1 [3mstatus[0m[2m=[0m"Unset" [3mlast_hash[0m[2m=[0m
+[2m2026-05-07T00:21:35.506842Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:21:35.618659Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent connected [3magent[0m[2m=[0magent-1 [3mrole[0m[2m=[0mAgent
+[2m2026-05-07T00:21:35.618691Z[0m [32m INFO[0m [2mcontroller::monitor[0m[2m:[0m adding scrape endpoint [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.618782Z[0m [32m INFO[0m [2mcontroller::replan[0m[2m:[0m pushed config to reconnecting agent [3magent[0m[2m=[0m"agent-1" [3mmetric[0m[2m=[0mhttp_requests_total_latency_ms
+[2m2026-05-07T00:21:35.618811Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m config pushed (OpAMP protobuf) [3magent[0m[2m=[0magent-1 [3mhash[0m[2m=[0mf849d0db55e301d4
+[2m2026-05-07T00:21:35.620306Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.620314Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported effective config [3magent[0m[2m=[0magent-1 [3mconfig_name[0m[2m=[0m [3mbytes[0m[2m=[0m3754 [3mpreview[0m[2m=[0mconnectors: {} ⏎ exporters: ⏎     otlp/backend: ⏎         balancer_name: "" ⏎         compression: none ⏎         endpoint: backend:4317 ⏎         retry_on_failure: ⏎        
+[2m2026-05-07T00:21:35.620318Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported remote-config status [3magent[0m[2m=[0magent-1 [3mstatus[0m[2m=[0m"Unset" [3mlast_hash[0m[2m=[0m
+[2m2026-05-07T00:21:35.620320Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mfalse
+[2m2026-05-07T00:21:35.620367Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.620372Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mfalse
+[2m2026-05-07T00:21:35.620586Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.620590Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:21:35.622563Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:21:35.622578Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported effective config [3magent[0m[2m=[0magent-1 [3mconfig_name[0m[2m=[0m [3mbytes[0m[2m=[0m3754 [3mpreview[0m[2m=[0mconnectors: {} ⏎ exporters: ⏎     otlp/backend: ⏎         balancer_name: "" ⏎         compression: none ⏎         endpoint: backend:4317 ⏎         retry_on_failure: ⏎        
+[2m2026-05-07T00:21:35.622582Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported remote-config status [3magent[0m[2m=[0magent-1 [3mstatus[0m[2m=[0m"Unset" [3mlast_hash[0m[2m=[0m
+[2m2026-05-07T00:21:35.622585Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:22:05.507378Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:05.622743Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:34.259785Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:34.265507Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:35.507660Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:35.622835Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:44.989028Z[0m [32m INFO[0m [2mcontroller[0m[2m:[0m [USE_TYPED_STAGE_SPLIT] pushing typed edge YAML [3mstage[0m[2m=[0m"edge" [3mbytes[0m[2m=[0m717
+[2m2026-05-07T00:22:44.989046Z[0m [32m INFO[0m [2mcontroller[0m[2m:[0m [USE_TYPED_STAGE_SPLIT] posting typed backend JSON [3mstage[0m[2m=[0m"backend" [3maggregations[0m[2m=[0m1 [3mreadouts[0m[2m=[0m1
+[2m2026-05-07T00:22:44.989054Z[0m [34mDEBUG[0m [2mcontroller::backend_client[0m[2m:[0m posting streaming-config JSON to ASAPQuery-backend [3mendpoint[0m[2m=[0mhttp://backend:9091 [3mjson_bytes[0m[2m=[0m179
+[2m2026-05-07T00:22:44.989188Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m config pushed (OpAMP protobuf) [3magent[0m[2m=[0magent-1 [3mhash[0m[2m=[0mf849d0db55e301d4
+[2m2026-05-07T00:22:44.989203Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m config pushed (OpAMP protobuf) [3magent[0m[2m=[0magent-1 [3mhash[0m[2m=[0mdc3067cd2dc77f7d
+[2m2026-05-07T00:22:44.989893Z[0m [33m WARN[0m [2mcontroller[0m[2m:[0m [USE_TYPED_STAGE_SPLIT] typed backend JSON push failed; next replan cycle will retry [3mstage[0m[2m=[0m"backend" [3mendpoint[0m[2m=[0mhttp://backend:9091 [3merror[0m[2m=[0mbackend returned 404 Not Found for streaming-config JSON POST: 
+[2m2026-05-07T00:22:44.991840Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:44.991855Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported effective config [3magent[0m[2m=[0magent-1 [3mconfig_name[0m[2m=[0m [3mbytes[0m[2m=[0m3754 [3mpreview[0m[2m=[0mconnectors: {} ⏎ exporters: ⏎     otlp/backend: ⏎         balancer_name: "" ⏎         compression: none ⏎         endpoint: backend:4317 ⏎         retry_on_failure: ⏎        
+[2m2026-05-07T00:22:44.991860Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported remote-config status [3magent[0m[2m=[0magent-1 [3mstatus[0m[2m=[0m"Unset" [3mlast_hash[0m[2m=[0m
+[2m2026-05-07T00:22:44.991863Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:22:44.993277Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:44.993283Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported effective config [3magent[0m[2m=[0magent-1 [3mconfig_name[0m[2m=[0m [3mbytes[0m[2m=[0m3754 [3mpreview[0m[2m=[0mconnectors: {} ⏎ exporters: ⏎     otlp/backend: ⏎         balancer_name: "" ⏎         compression: none ⏎         endpoint: backend:4317 ⏎         retry_on_failure: ⏎        
+[2m2026-05-07T00:22:44.993286Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported remote-config status [3magent[0m[2m=[0magent-1 [3mstatus[0m[2m=[0m"Unset" [3mlast_hash[0m[2m=[0m
+[2m2026-05-07T00:22:44.993289Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:22:45.038592Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m config pushed (OpAMP protobuf) [3magent[0m[2m=[0magent-1 [3mhash[0m[2m=[0m0f3683897f2cb7f3
+[2m2026-05-07T00:22:45.040540Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:45.040552Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported effective config [3magent[0m[2m=[0magent-1 [3mconfig_name[0m[2m=[0m [3mbytes[0m[2m=[0m3754 [3mpreview[0m[2m=[0mconnectors: {} ⏎ exporters: ⏎     otlp/backend: ⏎         balancer_name: "" ⏎         compression: none ⏎         endpoint: backend:4317 ⏎         retry_on_failure: ⏎        
+[2m2026-05-07T00:22:45.040556Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported remote-config status [3magent[0m[2m=[0magent-1 [3mstatus[0m[2m=[0m"Unset" [3mlast_hash[0m[2m=[0m
+[2m2026-05-07T00:22:45.040558Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:22:45.093342Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m config pushed (OpAMP protobuf) [3magent[0m[2m=[0magent-1 [3mhash[0m[2m=[0m0f3683897f2cb7f3
+[2m2026-05-07T00:22:45.095823Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:45.095835Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported effective config [3magent[0m[2m=[0magent-1 [3mconfig_name[0m[2m=[0m [3mbytes[0m[2m=[0m3754 [3mpreview[0m[2m=[0mconnectors: {} ⏎ exporters: ⏎     otlp/backend: ⏎         balancer_name: "" ⏎         compression: none ⏎         endpoint: backend:4317 ⏎         retry_on_failure: ⏎        
+[2m2026-05-07T00:22:45.095841Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported remote-config status [3magent[0m[2m=[0magent-1 [3mstatus[0m[2m=[0m"Unset" [3mlast_hash[0m[2m=[0m
+[2m2026-05-07T00:22:45.095846Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:22:45.151110Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m config pushed (OpAMP protobuf) [3magent[0m[2m=[0magent-1 [3mhash[0m[2m=[0m0f3683897f2cb7f3
+[2m2026-05-07T00:22:45.152799Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:22:45.152809Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported effective config [3magent[0m[2m=[0magent-1 [3mconfig_name[0m[2m=[0m [3mbytes[0m[2m=[0m3754 [3mpreview[0m[2m=[0mconnectors: {} ⏎ exporters: ⏎     otlp/backend: ⏎         balancer_name: "" ⏎         compression: none ⏎         endpoint: backend:4317 ⏎         retry_on_failure: ⏎        
+[2m2026-05-07T00:22:45.152815Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent reported remote-config status [3magent[0m[2m=[0magent-1 [3mstatus[0m[2m=[0m"Unset" [3mlast_hash[0m[2m=[0m
+[2m2026-05-07T00:22:45.152819Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m agent health [3magent[0m[2m=[0magent-1 [3mhealthy[0m[2m=[0mtrue
+[2m2026-05-07T00:23:05.508782Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:23:15.153799Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:23:34.259306Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:23:34.264964Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:23:35.509713Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:23:45.153931Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:24:05.510593Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:24:15.154442Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:24:34.259105Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:24:34.265191Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:24:35.511005Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:24:45.154572Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:25:05.511370Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:25:15.154899Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:25:34.259738Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:25:34.268829Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:25:35.511518Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:25:45.155980Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:26:05.512346Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:26:15.156635Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:26:34.259069Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:26:34.264235Z[0m [33m WARN[0m [2mcontroller::monitor[0m[2m:[0m scrape failed: GET metrics [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:26:35.512968Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1
+[2m2026-05-07T00:26:45.157189Z[0m [32m INFO[0m [2mcontroller::opamp[0m[2m:[0m received AgentToServer (OpAMP protobuf) [3magent[0m[2m=[0magent-1

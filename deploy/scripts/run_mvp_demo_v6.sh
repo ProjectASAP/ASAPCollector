@@ -86,6 +86,7 @@ HOST_PROM_B0_PORT="${HOST_PROM_B0_PORT:-19090}"  # collides with backend ingest;
 # port; B0 mode is a separate cycle (see Phase 0 baseline_b0() below).
 
 OUT_BASE="${OUT_BASE:-${REPO_ROOT}/deploy/eval-results/mvp-v6-2026-05-06}"
+REPORT_NAME="${REPORT_NAME:-MVP_REPORT_v6.md}"
 COMPACTOR_BIN="${COMPACTOR_BIN:-${REPO_ROOT}/compactor/target/release/gorilla-compactor}"
 COMPACTOR_BUCKET="${COMPACTOR_BUCKET:-asap-gorilla}"
 COMPACTOR_ENDPOINT="${COMPACTOR_ENDPOINT:-http://localhost:9000}"
@@ -167,6 +168,42 @@ bring_up_stack() {
 
     log "  stack settle ${STACK_SETTLE_S}s (controller plan + OpAMP push)"
     sleep "${STACK_SETTLE_S}"
+
+    # ── v6.1 fix: trigger handle_plan() for the typed-stage-split path ───────
+    # The startup workload-registry pre-pop loop in controller/main.rs only
+    # runs `planner.plan(&wl)`; the `USE_TYPED_STAGE_SPLIT` block lives
+    # inside `handle_plan()` (POST /api/v1/plan). v6 never POSTed, so the
+    # typed path was never reached and §8 STATUS came back `not-exercised`.
+    # v6.1 POSTs each canonical workload now that the OpAMP fabric is up,
+    # which exercises the emitter + the typed-backend JSON push.
+    log "  v6.1: POST /api/v1/plan for each canonical workload (exercise typed-stage-split)"
+    post_workload_plan() {
+        local label="$1"; local promql="$2"; local accuracy="$3"; local metric="$4"
+        local body
+        body=$(printf '{"query_string":%s,"metric_name":%s,"accuracy_sla":%s,"aggregations":["quantile"],"time_window":"1m","latency_sla":null,"sketch_type":null}' \
+            "$(printf '%s' "$promql" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+            "$(printf '%s' "$metric" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+            "$accuracy")
+        local code
+        code=$(curl -sS -o "${OUT_BASE}/plan-post-${label}.json" -w '%{http_code}' \
+            -X POST "http://localhost:${HOST_CONTROLLER_PORT}/api/v1/plan" \
+            -H 'Content-Type: application/json' \
+            -d "$body" \
+            2> "${OUT_BASE}/plan-post-${label}.err" || true)
+        log "    POST /api/v1/plan ${label} → HTTP ${code}"
+    }
+    post_workload_plan window-per-series \
+        'quantile_over_time(0.99, http_requests_total_latency_ms[1m])' \
+        '0.01' 'http_requests_total_latency_ms'
+    post_workload_plan label-at-instant \
+        'sum by (zone) (http_requests_total)' \
+        '0.0' 'http_requests_total'
+    post_workload_plan combined-window-label \
+        'sum by (zone) (rate(http_requests_total[5m]))' \
+        '0.01' 'http_requests_total'
+    post_workload_plan cold-fallback-payments \
+        'count(http_requests_total{service="payments"})' \
+        '0.0' 'http_requests_total'
 
     log "  agent warm-up ${AGENT_WARMUP_S}s (sketches fill)"
     sleep "${AGENT_WARMUP_S}"
@@ -255,10 +292,15 @@ capture_emitted_configs() {
     docker logs "$(cd "${COMPOSE_DIR}" && docker compose -f base.yml -f mvp-v6-multi-stage.yml ps -q controller 2>/dev/null | head -n1)" \
         2> "${cdir}/controller.stderr" \
         > "${cdir}/controller.stdout" || true
-    if grep -q "USE_TYPED_STAGE_SPLIT.*pushing typed" "${cdir}/controller.stderr" 2>/dev/null; then
+    # v6.1: Rust's tracing default writes to stdout, so the captured
+    # controller.stderr is often empty even when the typed-stage-split
+    # path fires. Grep both files so STATUS reflects the true state.
+    if grep -q "USE_TYPED_STAGE_SPLIT.*pushing typed" \
+            "${cdir}/controller.stdout" "${cdir}/controller.stderr" 2>/dev/null; then
         log "    controller logs show typed-stage-split push events — emitter LIVE"
         echo "live" > "${cdir}/STATUS"
-    elif grep -q "split_typed_three_stage returned None" "${cdir}/controller.stderr" 2>/dev/null; then
+    elif grep -q "split_typed_three_stage returned None" \
+            "${cdir}/controller.stdout" "${cdir}/controller.stderr" 2>/dev/null; then
         log "    [warn] controller's typed-stage-split returned None — falling back to placeholder"
         echo "fallback-placeholder" > "${cdir}/STATUS"
     else
@@ -485,12 +527,13 @@ teardown() {
 
 # Phase 8 — generate the v6 report.
 generate_report() {
-    log "Phase 8 generate MVP_REPORT_v6.md"
+    local report_name="${REPORT_NAME:-MVP_REPORT_v6.md}"
+    log "Phase 8 generate ${report_name}"
     python3 "${SCRIPT_DIR}/mvp_report_v6.py" \
         --results-dir "${OUT_BASE}" \
         --num-producers "${N_PRODUCERS}" \
         --per-agent-cardinality "${PER_AGENT_CARDINALITY}" \
-        --out "${OUT_BASE}/MVP_REPORT_v6.md" \
+        --out "${OUT_BASE}/${report_name}" \
         > "${OUT_BASE}/report.log" 2>&1 || \
             log "  [warn] mvp_report_v6.py exited non-zero — see report.log"
 }
@@ -510,7 +553,8 @@ main() {
     teardown
     generate_report
 
-    log "MVP demo v6 complete. Report: ${OUT_BASE}/MVP_REPORT_v6.md"
+    local report_name="${REPORT_NAME:-MVP_REPORT_v6.md}"
+    log "MVP demo v6 complete. Report: ${OUT_BASE}/${report_name}"
 }
 
 main "$@"
