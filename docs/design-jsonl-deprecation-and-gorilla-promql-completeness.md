@@ -24,7 +24,7 @@ substantial open work:
 |---|---|
 | **Phase 1: always-archive every metric at the gateway.** Pitched as a config knob (`archive_all: true`) flipped on per region. | Multi-target `BackendStorageRouting` (PR #91): a single metric routes to BOTH `sketch_warm_tier` AND `gorilla_s3_archive` based on the query shape. Effectively "always-archive" for any metric configured with the archive target. |
 | **Phase 2: delete the JSONL path.** Small follow-on once Phase 1 was on. | Not yet done; carried forward as **§"Delete JSONL"** below. |
-| **Phase 3: PromQL completeness on `GorillaQueryEngine`.** Three sub-paths (vendor `prometheus/promql`, pure-Rust evaluator, curated subset). | Not yet done; the curated subset has expanded slightly — postings filtering (PR #295), partial S3 reads via `byte_offset`/`byte_length` (PR #295), `gorilla-compactor` concat-only block consolidation (PR #295), freshness pattern registration (PR #91). The full PromQL surface is still future work. |
+| **Phase 3: PromQL completeness on `GorillaQueryEngine`.** Three sub-paths (vendor `prometheus/promql`, pure-Rust evaluator, curated subset). | Resolved by Path A2 (Steps 2.1–2.4, 2026-05-07): `gorillas3processor` writes Prometheus-TSDB blocks straight to MinIO, a stock `thanos store-gateway` + `thanos-query` sidecar serves them via Prometheus' reference `promql.Engine`, and the `ThanosForwardEngine` HTTP-forwards archive-tier queries from the backend. The curated `GorillaQueryEngine` subset (postings filtering, partial S3 reads via `byte_offset`/`byte_length`) is no longer the load-bearing archive engine. Phase δ.1 (2026-05-07) followed up by deleting the legacy `gorilla-compactor` Rust binary; archive-tier compaction is now performed by stock `thanos compact` running as a sidecar. |
 
 The architectural validation has been published on issue #46 across
 multiple iterations; the current verdict and known gaps are summarised
@@ -149,12 +149,14 @@ direction.
 - Changing the agent → backend wire format. Sketch envelopes remain the
   bandwidth-efficient hot path.
 - Federation across regions. Tracked separately.
-- Compaction beyond what already shipped. The current
-  `gorilla-compactor` (PR #295) is concat-only — byte-concatenates
-  source chunks into one merged S3 object, rewrites the chunk manifest
-  with `byte_offset` + `byte_length`. Future-work decode + re-encode
-  for the additional 10–30% Gorilla compression is noted but not
-  proposed here.
+- Compaction policy. As of Phase δ.1 (2026-05-07) archive-tier
+  compaction is delegated to the stock `thanos compact` sidecar
+  (deployed via `deploy/docker-compose/mvp-thanos-archive.yml`). The
+  legacy concat-only `gorilla-compactor` Rust binary (PR #295) has
+  been deleted — Thanos compact already does decode + re-encode for
+  better compression on top of block consolidation, plus downsampled
+  tiers (raw / 5m / 1h) for free, and is the established
+  Prometheus-ecosystem tool for this exact job.
 
 ## Storage layout (no change)
 
