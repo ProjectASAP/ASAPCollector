@@ -127,6 +127,55 @@ pub enum SketchExpr {
         /// Bound name.
         name: BindingName,
     },
+
+    // ── Phase ε.1: three-mode placement variants ────────────────────────
+    //
+    // Phase ε.1 collapses the planner's raw-vs-sketch + edge-vs-backend
+    // axes into a single tri-mode selector. The two new variants name
+    // the two new placements; the existing `SketchAgg` corresponds to
+    // Mode 1 (sketch at edge). See `planner::wire_cost::BindMode`.
+    /// Mode 2 (Phase ε.1): no sketch processor at the edge — raw OTLP
+    /// forwards to the backend, which builds the sketch at ingest. The
+    /// `family` and `params` are the sketch the backend will build, so
+    /// the backend's `StreamingConfig` `aggregation_input` is `raw` for
+    /// this metric (Phase ε.2 implements the raw-input ingest path).
+    RawAtEdgeSketchAtBackend {
+        /// Sketch family the backend will build at ingest.
+        family: SketchKind,
+        /// Sketch parameters (validated by the catalog at bind time).
+        params: SketchParams,
+        /// Input sub-tree — typically `Logical(Window{...})` or
+        /// `Logical(Scan{...})`. Mirrors `SketchAgg`'s child field so the
+        /// L5 emitter's walk uniform.
+        child: Box<SketchExpr>,
+    },
+
+    /// Mode 3 (Phase ε.1): no sketch processor at the edge — raw OTLP
+    /// ships directly to Prometheus's native OTLP receiver at
+    /// `/api/v1/otlp/v1/metrics`. The backend HTTP-forwards queries to
+    /// Prometheus's `/api/v1/query` endpoint (the `prometheus_remote`
+    /// engine). Accuracy is exact (ε = 0) — Prometheus owns the raw
+    /// samples; no sketch math is involved.
+    ///
+    /// The variant carries enough projection info for the edge agent's
+    /// pipeline to ship the right metric with the right labels, and for
+    /// the backend's storage routing to claim the metric.
+    RawAtEdgePrometheusArchive {
+        /// Metric name as it appears at the edge (and in
+        /// `BackendStorageRouting`).
+        metric: String,
+        /// Optional window — when present, the planner pre-bucketed the
+        /// metric into windowed scrape data. Prometheus stores the raw
+        /// stream regardless; the field is informational for the L5
+        /// emitter so it can size scrape intervals consistently.
+        window: Option<std::time::Duration>,
+        /// Label projection — labels promoted from OTLP resource
+        /// attributes by Prometheus's
+        /// `otlp.promote_resource_attributes` config. Default
+        /// `["service.name", "service.namespace", "service.instance.id"]`
+        /// — see `deploy/configs/prometheus-otlp-receiver.yml`.
+        label_proj: Vec<String>,
+    },
 }
 
 impl SketchExpr {

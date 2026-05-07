@@ -165,6 +165,21 @@ impl ThreeStageWalker {
                 .get(name.as_str())
                 .copied()
                 .ok_or_else(|| AllocateError::UnresolvedRef(name.as_str().to_string()))?,
+
+            // ── Phase ε.1 Mode 2: raw at edge, sketch built at backend.
+            // Edge ships raw OTLP — we stage as Edge so the L5 emitter's
+            // edge-side YAML pipeline picks it up; the sketch construction
+            // itself happens at the backend (no edge sketch processor).
+            SketchExpr::RawAtEdgeSketchAtBackend { child, .. } => {
+                let (cid, _) = self.visit(child)?;
+                self.dag.edges.push((id, cid));
+                StageId::Edge
+            }
+
+            // ── Phase ε.1 Mode 3: raw at edge, ships directly to
+            // Prometheus's native OTLP receiver. The agent pipeline picks
+            // this up via `asap.mode=prometheus_archive` routing.
+            SketchExpr::RawAtEdgePrometheusArchive { .. } => StageId::Edge,
         };
 
         // Patch in the resolved stage now that children have been visited.
