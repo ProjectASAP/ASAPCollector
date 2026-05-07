@@ -228,12 +228,30 @@ services:
       ASAP_GORILLA_S3_USE_SSL: "false"
       ASAP_GORILLA_S3_PREFIX_TEMPLATE: "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
       ASAP_BACKEND_STORAGE_ROUTING: "/etc/asap/backend-storage-routing.yaml"
+      # Thanos archive-tier endpoint. When set, the backend's
+      # archive-tier dispatcher forwards `gorilla_archive`-routed
+      # queries to thanos-query (mvp-thanos-archive.yml overlay)
+      # instead of running the in-process Rust GorillaQueryEngine.
+      # The toggle itself lands with Step 2.3 (separate PR); the env
+      # knob is wired here so the next dispatch flips behavior
+      # without touching compose.
+      ASAP_THANOS_QUERY_URL: "${ASAP_THANOS_QUERY_URL:-http://thanos-query:10903}"
     volumes:
       - ../configs/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro
 
   # Bucket-seed for the Gorilla-S3 cold tier (additive to base.yml's
   # `minio-setup`). Without this the gorillas3 processor's first PUT
   # fails with NoSuchBucket and no archive chunk ever lands on MinIO.
+  #
+  # Also seeds `asap-gorilla-tsdb`, the Prometheus-format TSDB-block
+  # bucket consumed by the Thanos store-gateway sidecar in
+  # mvp-thanos-archive.yml. Step 2.1 will start writing blocks here
+  # once the gorillas3processor switches to TSDB block format; the
+  # bucket needs to exist *before* either thanos-store-gateway scans
+  # it or the processor PUTs into it. Note that compose's
+  # `depends_on` only waits for this service to *start* — Thanos
+  # tolerates an empty bucket and rescans on its sync interval, so a
+  # race here is self-healing rather than fatal.
   minio-setup-gorilla:
     image: minio/mc:latest
     depends_on:
@@ -246,7 +264,9 @@ services:
         mc alias set asap http://minio:9000 asap asap-local-only &&
         mc mb --ignore-existing asap/asap-gorilla &&
         mc anonymous set download asap/asap-gorilla &&
-        echo "asap-gorilla bucket ready"
+        mc mb --ignore-existing asap/asap-gorilla-tsdb &&
+        mc anonymous set download asap/asap-gorilla-tsdb &&
+        echo "asap-gorilla and asap-gorilla-tsdb buckets ready"
     logging:
       driver: json-file
       options:
