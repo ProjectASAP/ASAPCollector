@@ -22,6 +22,10 @@ type gorillaS3Processor struct {
 	window *windowState
 	sink   chunkSink
 
+	// mvp/step2.1: lazily-constructed Prometheus TSDB block builder.
+	// Nil when block_format=asap; non-nil when prometheus_tsdb|both.
+	tsdbBuilder *tsdbBlockBuilder
+
 	ticker  *time.Ticker
 	done    chan struct{}
 	wg      sync.WaitGroup
@@ -49,12 +53,21 @@ func (p *gorillaS3Processor) Start(ctx context.Context, _ component.Host) error 
 		}
 		p.sink = s
 	}
+	if p.cfg.EmitTSDB() && p.tsdbBuilder == nil {
+		p.tsdbBuilder = newTSDBBlockBuilder(
+			p.cfg.TSDBBlockDuration,
+			p.cfg.TSDBExternalLabels,
+			zapToSlog(p.logger),
+		)
+	}
 	p.logger.Info("Starting gorillas3 processor",
 		zap.Duration("window_interval", p.cfg.WindowInterval),
 		zap.String("bucket", p.cfg.Bucket),
+		zap.String("tsdb_bucket", p.cfg.TSDBBucket),
 		zap.String("endpoint", p.cfg.Endpoint),
 		zap.String("prefix_template", p.cfg.PrefixTemplate),
 		zap.Bool("drop_original", p.cfg.DropOriginal),
+		zap.String("block_format", string(p.cfg.BlockFormat)),
 	)
 	p.ticker = time.NewTicker(p.cfg.WindowInterval)
 	p.wg.Add(1)
@@ -163,19 +176,41 @@ func numberValue(dp pmetric.NumberDataPoint) (float64, bool) {
 
 // flushWindow encodes the buffered window into chunks and sends them
 // to the sink. Errors per-chunk are logged but do not abort the flush.
+//
+// mvp/step2.1: dispatches to one or both of:
+//   - the legacy ASAP GORILLA1 chunk + index.json + postings-v1.json
+//     layout (block_format=asap or both)
+//   - a Prometheus TSDB block under <tsdb-bucket>/<ulid>/ (block_format
+//     =prometheus_tsdb or both)
+//
+// Both paths consume the same in-memory snapshot. The TSDB path
+// makes a defensive copy of each series' points before sorting, so
+// the ASAP path's existing in-place sort is not affected.
 func (p *gorillaS3Processor) flushWindow(ctx context.Context) {
 	snapshot, _, latest := p.window.snapshot()
 	if len(snapshot) == 0 {
 		return
 	}
+	blockTime := latest
+	if blockTime.IsZero() {
+		blockTime = time.Now().UTC()
+	}
+	if p.cfg.EmitASAP() {
+		p.flushASAP(ctx, snapshot, blockTime)
+	}
+	if p.cfg.EmitTSDB() {
+		p.flushTSDB(ctx, snapshot)
+	}
+}
+
+// flushASAP emits the legacy GORILLA1 chunk + index.json + postings-v1.json
+// triplet for the supplied window. Behaviour is byte-identical to the
+// pre-step2.1 flushWindow.
+func (p *gorillaS3Processor) flushASAP(ctx context.Context, snapshot map[seriesKey]*seriesBuffer, blockTime time.Time) {
 	chunks, err := buildChunks(snapshot, p.cfg.MaxObjectBytes)
 	if err != nil {
 		p.logger.Error("gorillas3: build chunks failed", zap.Error(err))
 		return
-	}
-	blockTime := latest
-	if blockTime.IsZero() {
-		blockTime = time.Now().UTC()
 	}
 	// mvp/v5: precompute postings once for the whole window. The
 	// agent emits ONE `postings-v1.json` per (metric, hour-bucket)
@@ -270,6 +305,65 @@ func (p *gorillaS3Processor) flushWindow(ctx context.Context) {
 			zap.Int("bytes", len(body)),
 			zap.Int("series", len(bucket)))
 	}
+}
+
+// flushTSDB builds a Prometheus TSDB block from the supplied window
+// snapshot and uploads its files to the TSDB bucket. Errors are
+// logged; the caller continues. mvp/step2.1.
+func (p *gorillaS3Processor) flushTSDB(ctx context.Context, snapshot map[seriesKey]*seriesBuffer) {
+	if p.tsdbBuilder == nil {
+		// Tests call flushWindow without going through Start; fall
+		// back to constructing a builder lazily.
+		p.tsdbBuilder = newTSDBBlockBuilder(
+			p.cfg.TSDBBlockDuration,
+			p.cfg.TSDBExternalLabels,
+			zapToSlog(p.logger),
+		)
+	}
+	artifact, err := p.tsdbBuilder.build(ctx, snapshot)
+	if err != nil {
+		p.logger.Error("gorillas3: tsdb block build failed", zap.Error(err))
+		if p.monitor != nil {
+			p.monitor.putFailure(ctx)
+		}
+		return
+	}
+	if artifact == nil {
+		return
+	}
+	ulidStr := artifact.ULID.String()
+	if err := p.sink.PutTSDBBlock(ctx, ulidStr, artifact.Files); err != nil {
+		p.logger.Error("gorillas3: tsdb block upload failed",
+			zap.String("block", ulidStr),
+			zap.Uint64("series", artifact.NumSeries),
+			zap.Uint64("samples", artifact.NumSamples),
+			zap.Error(err),
+		)
+		if p.monitor != nil {
+			p.monitor.putFailure(ctx)
+		}
+		return
+	}
+	var totalBytes int
+	for _, b := range artifact.Files {
+		totalBytes += len(b)
+	}
+	if p.monitor != nil {
+		// Reuse chunkWritten as the most apt counter — a TSDB
+		// block is the moral equivalent of a flushed chunk in
+		// the new layout. Step 2.x can split if we need
+		// distinct counters.
+		p.monitor.chunkWritten(ctx, totalBytes, int(artifact.NumSamples))
+	}
+	p.logger.Info("gorillas3: tsdb block written",
+		zap.String("block", ulidStr),
+		zap.Int64("min_time_ms", artifact.MinTime),
+		zap.Int64("max_time_ms", artifact.MaxTime),
+		zap.Uint64("series", artifact.NumSeries),
+		zap.Uint64("samples", artifact.NumSamples),
+		zap.Int("bytes", totalBytes),
+		zap.Int("files", len(artifact.Files)),
+	)
 }
 
 // activeSeries is exposed to selfmonitor as the gauge callback.
