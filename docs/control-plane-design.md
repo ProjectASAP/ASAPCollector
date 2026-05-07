@@ -367,6 +367,40 @@ OpAMP `on_connect` via the `X-Agent-Runtime` header (`sketchcollector` /
 `sketchotap` / `sketchtelegraf`); when absent, the controller defaults
 to `Sketchcollector` so legacy agents keep working.
 
+### Bootstrap and plan-push converge on the same emit pipeline
+
+Two HTTP entry points feed agents their per-runtime config:
+
+* **`POST /api/v1/plan` → `handle_plan`** — invoked when a query is
+  registered (or replayed by the demo driver / replanner). Runs the
+  full L1–L5 controller pipeline and pushes the typed Edge YAML over
+  OpAMP to every connected agent-role collector.
+* **`GET /api/v1/collector-config/agent` → `handle_bootstrap_agent_config`**
+  — the static URL each freshly-started agent fetches at boot before
+  the OpAMP fabric is up. Reads the `X-Agent-Runtime` header,
+  resolves the agent's metric (pinned-via-`X-Agent-ID` first, then
+  the `WorkloadRegistry`'s first agent-role entry), runs the same
+  typed pipeline (`bind_workload_typed` → `split_typed_three_stage` →
+  `emit_for_runtime`), and returns the Edge YAML inline in the HTTP
+  response.
+
+Both paths are gated on `USE_TYPED_STAGE_SPLIT=1`. When the gate is
+off, both fall back to the legacy `generate_agent_config` emit
+(default DDSketch, no per-runtime dispatch, no archive-tier /
+warm-passthrough emit) — backwards-compatible with deployments that
+haven't migrated to the typed L5 emitters. When the typed path
+errors out (no workloads registered, unsupported topology), bootstrap
+also falls back to the legacy emit so a fresh agent never gets a
+500 just because the typed path hit a gap.
+
+The convergence is what guarantees an agent's *first* config — fetched
+before any `/api/v1/plan` POST happens — already reflects the
+Phase 3.2.5 fixes (`gorillas3` archive emit, warm-passthrough routing
+processor) and the Phase ε.1.5 per-runtime dispatch. Without this
+convergence the demo driver had to POST `/api/v1/plan` after stack-up
+to coerce the agent off its stale legacy bootstrap; with it, the POST
+is a safety belt rather than a load-bearing step.
+
 All three modes from Phase ε.1's [`BindMode`] enum are supported by
 all three runtime emitters:
 

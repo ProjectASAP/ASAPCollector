@@ -362,12 +362,26 @@ bring_up_stack() {
 
     if [[ "${PIPELINE_LABEL}" == "asap" ]]; then
         # Trigger handle_plan() for the typed-stage-split path.
-        # The startup workload-registry pre-pop loop in controller/main.rs only
-        # runs `planner.plan(&wl)`; the `USE_TYPED_STAGE_SPLIT` block lives
-        # inside `handle_plan()` (POST /api/v1/plan). Without an explicit POST
-        # the typed path is never reached and §8 STATUS comes back
-        # `not-exercised`. POST each canonical workload now that the OpAMP
-        # fabric is up — this exercises the emitter + the typed-backend JSON push.
+        #
+        # Historical context (Phase 3.3 driver workaround): the startup
+        # workload-registry pre-pop loop in controller/main.rs only runs
+        # `planner.plan(&wl)`; the `USE_TYPED_STAGE_SPLIT` block originally
+        # lived ONLY inside `handle_plan()` (POST /api/v1/plan). Without an
+        # explicit POST the typed path was never reached and §8 STATUS came
+        # back `not-exercised`. Phase 3.3 (#94) added these POSTs as a
+        # driver-side workaround.
+        #
+        # Phase ε.1.6 (PR "controller: port handle_bootstrap_agent_config to
+        # typed-stage-split path") moved the same typed pipeline into
+        # `handle_bootstrap_agent_config`, so a fresh agent fetching its
+        # initial config at startup now goes through the typed path
+        # without requiring a POST first. These POSTs are kept as a
+        # safety belt — they (a) exercise the typed-backend JSON push
+        # (`emit_backend_config_json` doesn't run on the bootstrap GET),
+        # (b) keep the demo robust against any future regression in the
+        # bootstrap path, and (c) populate the per-metric plan store so
+        # `/api/v1/config/<metric>` returns a non-empty config in the
+        # snapshot capture below.
         log "  POST /api/v1/plan for each canonical workload (exercise typed-stage-split)"
         post_workload_plan() {
             local label="$1"; local promql="$2"; local accuracy="$3"; local metric="$4"
