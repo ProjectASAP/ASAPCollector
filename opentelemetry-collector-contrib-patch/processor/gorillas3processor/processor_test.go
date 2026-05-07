@@ -19,10 +19,11 @@ import (
 
 // mockSink captures every PutChunk + PutPostings for assertion.
 type mockSink struct {
-	mu       sync.Mutex
-	chunks   []mockChunk
-	postings []mockPostings
-	fail     bool
+	mu         sync.Mutex
+	chunks     []mockChunk
+	postings   []mockPostings
+	tsdbBlocks []mockTSDBBlock
+	fail       bool
 }
 
 type mockChunk struct {
@@ -35,6 +36,12 @@ type mockChunk struct {
 type mockPostings struct {
 	key  string
 	data []byte
+}
+
+// mvp/step2.1: Prometheus TSDB block capture.
+type mockTSDBBlock struct {
+	ulid  string
+	files map[string][]byte
 }
 
 func (m *mockSink) PutChunk(ctx context.Context, key string, data []byte, hints chunkHints) error {
@@ -57,6 +64,20 @@ func (m *mockSink) PutPostings(ctx context.Context, key string, data []byte) err
 	return nil
 }
 
+func (m *mockSink) PutTSDBBlock(ctx context.Context, blockULID string, files map[string][]byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fail {
+		return errors.New("mock sink: induced failure")
+	}
+	clone := make(map[string][]byte, len(files))
+	for k, v := range files {
+		clone[k] = append([]byte(nil), v...)
+	}
+	m.tsdbBlocks = append(m.tsdbBlocks, mockTSDBBlock{ulid: blockULID, files: clone})
+	return nil
+}
+
 func (m *mockSink) Close() error { return nil }
 
 func (m *mockSink) chunkCount() int {
@@ -69,6 +90,12 @@ func (m *mockSink) postingsCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.postings)
+}
+
+func (m *mockSink) tsdbBlockCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.tsdbBlocks)
 }
 
 func buildTestMetrics(metricName string, n int, baseTime time.Time) pmetric.Metrics {
