@@ -153,3 +153,129 @@ fn reencode_telegraf_fixture_byte_identical_if_present() {
         "byte-parity violation: asap-gorilla bytes differ from Go fixture"
     );
 }
+
+// === Phase 3.2 — encoder offset audit regression guards =============
+//
+// Two negative tests that pin the canonical block-header offsets
+// against drift in EITHER direction (Rust decoder side or Go writer
+// side). Companion to the Go-side regression test
+// `TestChunkHeaderByteLayoutMatchesGorillaDecoder` in
+// `opentelemetry-collector-contrib-patch/processor/gorillas3processor/
+// encoder_test.go`, which pins the writer.
+//
+// Provenance: the v7 / Step 2.5 reports diagnosed a
+// `seriesCount @ [5..9]` regression in the Go writer that did not
+// reproduce on `origin/main` — the writer at
+// `gorillas3processor/encoder.go:311` writes at `[9..13]`, the
+// test-decoder helper at `encoder_test.go:210` reads at `[9..13]`,
+// and `decoder.rs:84` reads at `header[9..13]`. All three agree.
+// These tests make any future drift impossible to merge silently:
+//
+//   1. `decoder_rejects_pre_v7_seriescount_at_offset_5_9` — synthesizes
+//      a block with seriesCount written at the buggy `[5..9]` offset,
+//      then asserts that
+//      [`asap_gorilla::GorillaDecoder::from_reader`] rejects it with
+//      [`DecodeError::BadMagic`]. Direct documentation of the original
+//      bug's failure mode ("consumer rejected every chunk with
+//      BadMagic"; see `encoder.go:295-310`'s v7-fix comment).
+//
+//   2. `decoder_accepts_canonical_seriescount_at_offset_9_13` — the
+//      positive twin: same bytes but with seriesCount at the canonical
+//      offset, must decode cleanly.
+
+/// Build a synthetic single-series GORILLA1 block whose header
+/// places `series_count` at byte offset `series_count_offset`. Used
+/// to construct both the canonical (offset=9) and the pre-v7 buggy
+/// (offset=5) variants from a single helper.
+///
+/// The body is the same in both cases: one trivial series with a
+/// single sample. The point of the test is the header layout, not
+/// the body decode.
+fn synthesize_block_with_series_count_at(series_count_offset: usize, series_count: u32) -> Vec<u8> {
+    use asap_gorilla::{BLOCK_VERSION, MAGIC};
+    let mut buf = Vec::new();
+    // [0..8]   magic
+    buf.extend_from_slice(&MAGIC);
+    // [8]      version
+    buf.push(BLOCK_VERSION);
+    // [9..13]  seriesCount placeholder (canonical slot; may be
+    //          overwritten below).
+    buf.extend_from_slice(&[0u8; 4]);
+    assert_eq!(buf.len(), 13, "header must be 13 bytes long");
+
+    // Patch in `series_count` at the requested offset. For the
+    // canonical case this is a no-op rewrite of [9..13]; for the
+    // buggy case it writes into [5..9] and clobbers magic[5..8] +
+    // version (this is what the original encoder.go bug did).
+    let bytes = series_count.to_le_bytes();
+    buf[series_count_offset..series_count_offset + 4].copy_from_slice(&bytes);
+
+    // Append a minimal valid single-series body so a successful
+    // header parse can attempt to read at least the meta-len prefix.
+    // The shape mirrors `encodeSeriesBody` in encoder.go but is
+    // intentionally tiny — bodies aren't what we're testing here.
+    let meta_json = br#"{"metric_name":"m","attributes":{},"start_ts":0,"end_ts":0,"point_count":1}"#;
+    buf.extend_from_slice(&(meta_json.len() as u16).to_le_bytes()); // metaLen
+    buf.extend_from_slice(meta_json);
+    buf.extend_from_slice(&1u32.to_le_bytes()); // pointCount
+    buf.extend_from_slice(&0i64.to_le_bytes()); // firstTS
+    buf.extend_from_slice(&0u64.to_le_bytes()); // firstValBits
+    buf.extend_from_slice(&0u32.to_le_bytes()); // tsBitsLen=0
+    buf.extend_from_slice(&0u32.to_le_bytes()); // valBitsLen=0
+    buf
+}
+
+#[test]
+fn decoder_rejects_pre_v7_seriescount_at_offset_5_9() {
+    use asap_gorilla::DecodeError;
+
+    // Pre-v7 buggy layout: seriesCount written at byte offset 5,
+    // overwriting magic[5..8] + version. With series_count=1 (LE
+    // bytes 01 00 00 00), bytes 5..8 become 0x01,0x00,0x00 instead
+    // of "LA1", so the decoder MUST fail magic comparison.
+    let bytes = synthesize_block_with_series_count_at(5, 1);
+
+    // Sanity-check the synthesis: bytes 5..8 must NOT be "LA1".
+    assert_ne!(
+        &bytes[5..8],
+        b"LA1",
+        "synthesis bug: pre-v7 layout should clobber magic suffix",
+    );
+
+    // `expect_err` on the Result requires `T: Debug`, but
+    // `GorillaDecoder<&[u8]>` intentionally does not implement Debug
+    // (it owns a streaming reader). Match the Result directly.
+    match GorillaDecoder::from_reader(&bytes[..]) {
+        Err(DecodeError::BadMagic { .. }) => {
+            // Expected — this IS the original bug's failure mode.
+        }
+        Err(other) => panic!(
+            "expected BadMagic for pre-v7 buggy seriesCount offset; got {other:?}"
+        ),
+        Ok(_) => panic!(
+            "pre-v7 buggy layout MUST be rejected by the canonical decoder; \
+             a successful decode here means the regression guard is broken"
+        ),
+    }
+}
+
+#[test]
+fn decoder_accepts_canonical_seriescount_at_offset_9_13() {
+    // Canonical layout: seriesCount at byte offset 9 (the v7 fix).
+    // The decoder must parse the header successfully and report
+    // total_series=1.
+    let bytes = synthesize_block_with_series_count_at(9, 1);
+
+    // Sanity-check the synthesis: bytes 0..8 must remain "GORILLA1"
+    // and byte 8 must remain version=1.
+    assert_eq!(&bytes[..8], b"GORILLA1");
+    assert_eq!(bytes[8], asap_gorilla::BLOCK_VERSION);
+
+    let dec = GorillaDecoder::from_reader(&bytes[..])
+        .expect("canonical seriesCount@[9..13] layout must decode cleanly");
+    assert_eq!(
+        dec.total_series(),
+        1,
+        "decoder must read seriesCount=1 from offset [9..13]",
+    );
+}
