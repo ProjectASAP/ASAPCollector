@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -35,6 +35,7 @@ use algebra::{QueryOptimizer, SketchAllocator};
 use analyzer::{Analyzer, QuerySpec};
 use config::{generate_agent_config, generate_backend_config, build_precompute_jobs};
 use config::WorkloadRegistry;
+use config::{AgentRuntime, emit_for_runtime};
 use types::AgentCollectorConfig;
 use config::generate_backend_config_staged;
 use monitor::{Endpoint, Scraper, ScrapedData, Thresholds, Violation};
@@ -782,13 +783,73 @@ async fn handle_get_config(
 /// Collectors start with:
 ///   `./collector --config "http://controller:8080/api/v1/collector-config/agent"`
 ///
-/// Returns a minimal valid OTel Collector YAML with OTLP receiver + batch
-/// processor + prometheus exporter.  The controller can later push updated
-/// configs via OpAMP or the collector can re-fetch on reload.
+/// ## Behaviour matrix
+///
+/// | `USE_TYPED_STAGE_SPLIT` | path |
+/// | --- | --- |
+/// | unset / `0` | **legacy** — emit a default-DDSketch [`AgentCollectorConfig`] via [`generate_agent_config`]. Backwards-compat with deployments that haven't migrated to the typed L5 emitters. |
+/// | `1` / `true` / `yes` | **typed** — pick the agent's pinned workload (when `X-Agent-ID` is supplied and the replanner has a prior assignment), or fall back to the first agent-role entry in [`WorkloadRegistry`]. Run the typed L5 pipeline (`bind_workload_typed` → `split_typed_three_stage`) and emit the Edge stage config via [`emit_for_runtime`] — dispatched by the `X-Agent-Runtime` header (defaults to `Sketchcollector`). When the typed path errors out (no workload, unsupported topology, no Edge stage in the per-stage map) it falls back to the legacy emitter so the bootstrap never returns a 500 just because the typed path has a gap. |
+///
+/// ## Why this matters
+///
+/// Without the typed path, fresh agents connecting at startup miss
+/// Phase 3.2.5's `gorillas3` archive emit + warm-passthrough routing
+/// processor, the per-runtime dispatch from Phase ε.1.5 (sketchcol vs
+/// sketchotap vs sketchtelegraf), and Phase ε.1's three operational
+/// modes — they only see those once `handle_plan` is later invoked.
+/// Mirroring `handle_plan`'s typed pipeline here means bootstrap and
+/// plan-push converge on the same emitted YAML.
 async fn handle_bootstrap_agent_config(
     State(st): State<AppState>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
-    // Use a default DDSketch config as the bootstrap.
+    // Phase ε.1.5 — runtime dispatch from the X-Agent-Runtime header.
+    // Defaults to `Sketchcollector` for legacy agents that don't send
+    // the header so the existing OTel-collector contrib build keeps
+    // working with no client-side changes.
+    let runtime = headers
+        .get("X-Agent-Runtime")
+        .and_then(|v| v.to_str().ok())
+        .map(AgentRuntime::from_header)
+        .unwrap_or_default();
+
+    // Optional X-Agent-ID — when present, look up any pinned workload
+    // assignment via the replanner so bootstrap returns the same plan
+    // a subsequent OpAMP push would pin to. Avoids drift between the
+    // initial fetch and the first push.
+    let pinned_metric: Option<String> = headers
+        .get("X-Agent-ID")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    if planner::stage_split::typed_stage_split_enabled() {
+        match emit_bootstrap_typed(&st, runtime, pinned_metric.as_deref()).await {
+            Ok(yaml) => {
+                info!(
+                    runtime = ?runtime, bytes = yaml.len(),
+                    "[USE_TYPED_STAGE_SPLIT] emitted bootstrap config from typed path"
+                );
+                return (
+                    StatusCode::OK,
+                    [("content-type", "application/yaml")],
+                    yaml,
+                ).into_response();
+            }
+            Err(e) => {
+                warn!(
+                    runtime = ?runtime, error = %e,
+                    "[USE_TYPED_STAGE_SPLIT] typed bootstrap path failed; \
+                     falling back to legacy generate_agent_config"
+                );
+                // Fall through to legacy path below.
+            }
+        }
+    }
+
+    // Legacy path — default DDSketch bootstrap (unchanged Phase α
+    // behaviour). Serves as the backwards-compat fallback when the
+    // typed gate is off OR when the typed path can't satisfy the
+    // request (no workloads registered, unsupported topology, etc.).
     let cfg = AgentCollectorConfig {
         output_mode:          types::OutputMode::Sketch,
         sketch_type:          types::SketchType::DDSketch,
@@ -814,6 +875,75 @@ async fn handle_bootstrap_agent_config(
         ).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+/// Run the typed L5 pipeline against the workload registry / pinned plan
+/// and emit the Edge stage YAML for the given runtime.
+///
+/// Resolution order for "which workload does this agent get":
+///   1. `X-Agent-ID` lookup → `replanner.agent_to_metric()` mapping
+///      (the replanner's record of what plan the agent is currently
+///      pinned to). When this hits, bootstrap == replan-push.
+///   2. First agent-role entry in [`WorkloadRegistry`] — the same
+///      heuristic the OpAMP `on_connect` callback uses for unassigned
+///      agents.
+///
+/// Returns `Err` when none of the resolution paths land on a workload
+/// the typed path can bind, when `bind_workload_typed` declines the
+/// shape (multi-intent, raw-required, no aggregations), when stage
+/// allocation fails, or when the per-stage map has no `Edge` entry.
+/// The caller falls back to the legacy emitter on any error.
+async fn emit_bootstrap_typed(
+    st: &AppState,
+    runtime: AgentRuntime,
+    pinned_agent_id: Option<&str>,
+) -> anyhow::Result<String> {
+    use anyhow::{anyhow, Context};
+
+    // 1. Resolve the metric this bootstrap should target.
+    //    When the agent has a prior pinned assignment we honour it
+    //    (pre-existing on_connect contract). The replanner's
+    //    `agent_to_metric()` is the source of truth for this mapping.
+    let pinned_metric: Option<String> = if let Some(aid) = pinned_agent_id {
+        st.replanner
+            .agent_to_metric()
+            .read()
+            .await
+            .get(aid)
+            .cloned()
+    } else {
+        None
+    };
+
+    let metric = pinned_metric.or_else(|| {
+        st.workload_registry
+            .first_for_role("agent")
+            .map(|e| e.metric_name.clone())
+    }).ok_or_else(|| anyhow!("no agent-role workload available for bootstrap"))?;
+
+    // 2. Pull the pre-populated `QueryWorkload` from the workload
+    //    store. Startup pre-pop in `main()` puts every registry
+    //    entry's analyzed workload here.
+    let (workload, _wc) = st.workload_store.get(&metric)
+        .ok_or_else(|| anyhow!("workload store missing entry for `{metric}`"))?;
+
+    // 3. Run the typed L5 pipeline — same shape as `handle_plan`.
+    let sketch_expr = planner::rules::bind_workload_typed(&workload)
+        .ok_or_else(|| anyhow!("bind_workload_typed declined workload `{metric}`"))?;
+    let configs = planner::stage_split::split_typed_three_stage(&sketch_expr)
+        .ok_or_else(|| anyhow!("split_typed_three_stage returned None for `{metric}`"))?;
+
+    // 4. Pick the Edge stage config and emit per-runtime. The
+    //    bootstrap caller IS the edge agent — Gateway / Backend
+    //    configs go to other roles via OpAMP role-routing, not
+    //    through this handler.
+    let edge_cfg = configs.into_iter().find_map(|(_, cfg)| match cfg {
+        crate::stage_split::StageConfig::Edge(edge) => Some(edge),
+        _ => None,
+    }).ok_or_else(|| anyhow!("typed three-stage map has no Edge entry for `{metric}`"))?;
+
+    emit_for_runtime(runtime, &edge_cfg, &st.opamp_endpoint, None)
+        .with_context(|| format!("emit_for_runtime failed for `{metric}`"))
 }
 
 /// Bootstrap YAML config for backend (merge) collectors.
@@ -960,6 +1090,7 @@ fn test_app_with_backend(backend_url: Option<String>) -> (AppState, axum::Router
         .route("/api/v1/agents",                axum::routing::get(handle_agents))
         .route("/api/v1/cost-model",            axum::routing::get(handle_cost_model))
         .route("/api/v1/tco",                   axum::routing::post(handle_tco))
+        .route("/api/v1/collector-config/agent", axum::routing::get(handle_bootstrap_agent_config))
         .with_state(state.clone());
     (state, router)
 }
@@ -1594,5 +1725,244 @@ mod api_tests {
         // With higher Grafana pricing, before cost should be higher.
         assert!(body["before"]["ingestion_dollars"].as_f64().unwrap() > 0.0);
         assert!(body["monthly_savings_dollars"].as_f64().unwrap() > 0.0);
+    }
+
+    // ── Phase ε.1.5+ — handle_bootstrap_agent_config typed path ────────────────
+    //
+    // These tests verify the deep fix that ports the bootstrap handler
+    // off `generate_agent_config` and onto the typed-stage-split emit
+    // pipeline that `handle_plan` already uses. See the handler's
+    // doc-comment for the legacy ↔ typed behaviour matrix.
+
+    /// Serialises tests that mutate the `USE_TYPED_STAGE_SPLIT` env var
+    /// — `cargo test` runs tests in parallel by default and
+    /// `typed_stage_split_enabled()` reads the env on every call.
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII helper: set `USE_TYPED_STAGE_SPLIT=<value>` for the
+    /// lifetime of the returned guard, restoring the prior value
+    /// (or unsetting) on drop. Holds the test-wide ENV_GUARD mutex
+    /// so concurrent tests don't trample each other.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+        // Hold the mutex so concurrent tests serialise on env-var writes.
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let lock = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous, _lock: lock }
+        }
+        fn unset(key: &'static str) -> Self {
+            let lock = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous, _lock: lock }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    /// Build an `AppState` whose `workload_registry` + `workload_store`
+    /// + `plan_store` are pre-populated with one agent-role workload —
+    /// matches what `main()` does at startup.
+    ///
+    /// Returns the (state, router, registry-tempfile-path) triple. The
+    /// caller is responsible for cleaning up the tempfile.
+    fn test_app_with_workload(metric: &str, accuracy: f64) -> (AppState, axum::Router, String) {
+        // 1. Write a workload registry YAML to a tempfile so
+        //    `WorkloadRegistry::load` produces a registry with the
+        //    metric assigned to role=agent.
+        let yaml = format!(
+            "- metric_name: {metric}\n  accuracy_sla: {accuracy}\n  assign_to_role: agent\n",
+        );
+        let tmp_path = format!("/tmp/datacollector_bootstrap_test_{metric}.yaml");
+        std::fs::write(&tmp_path, yaml).unwrap();
+        let registry = Arc::new(WorkloadRegistry::load(&tmp_path));
+
+        // 2. Build a stock test_app (empty registry + empty stores).
+        let (mut state, _router) = test_app();
+
+        // 3. Pre-populate workload_store + plan_store the same way
+        //    main()'s startup loop does.
+        let analyzer = Analyzer::new();
+        let spec = analyzer::QuerySpec {
+            query_string:    None,
+            metric_name:     metric.to_string(),
+            label_filters:   Default::default(),
+            group_by_labels: vec![],
+            aggregations:    vec!["quantile".into()],
+            time_window:     "5m".into(),
+            repeat_every:    None,
+            accuracy_sla:    accuracy,
+            latency_sla:     None,
+            sketch_type:     None,
+            workload:        types::WorkloadCharacteristics::default(),
+            id:               None,
+            language:         None,
+            accuracy:         None,
+            dollars:          None,
+            deployment_model: None,
+            shape:            types_v2::QueryShape::default(),
+            data:             types_v2::DataShape::default(),
+        };
+        let wl = analyzer.analyze(spec).expect("analyze");
+        let wc = types::WorkloadCharacteristics::default();
+        let plan = state.planner.plan(&wl, Some(&wc));
+        state.store.set(metric, plan);
+        state.workload_store.set(metric, wl, wc);
+
+        // 4. Swap in the populated registry.
+        state.workload_registry = registry;
+
+        // 5. Rebuild the router with the updated state.
+        let router = axum::Router::new()
+            .route("/api/v1/plan",                  axum::routing::post(handle_plan))
+            .route("/api/v1/plan/pareto",           axum::routing::post(handle_pareto))
+            .route("/api/v1/plan/:metric",          axum::routing::get(handle_get_plan))
+            .route("/api/v1/plan/:metric/rollback", axum::routing::post(handle_rollback))
+            .route("/api/v1/plan/:metric/diff",     axum::routing::get(handle_plan_diff))
+            .route("/api/v1/agents",                axum::routing::get(handle_agents))
+            .route("/api/v1/cost-model",            axum::routing::get(handle_cost_model))
+            .route("/api/v1/tco",                   axum::routing::post(handle_tco))
+            .route("/api/v1/collector-config/agent",
+                axum::routing::get(handle_bootstrap_agent_config))
+            .with_state(state.clone());
+        (state, router, tmp_path)
+    }
+
+    /// Backwards-compat — when `USE_TYPED_STAGE_SPLIT` is unset the
+    /// handler must keep its legacy `generate_agent_config` shape
+    /// (default DDSketch, `processors.ddsketch`, `processors.batch`)
+    /// so deployments that haven't migrated keep working.
+    #[tokio::test]
+    async fn bootstrap_legacy_path_when_env_unset() {
+        let _env = EnvVarGuard::unset(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT);
+
+        let (_, app) = test_app();
+        let req = Request::builder()
+            .uri("/api/v1/collector-config/agent")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let yaml = String::from_utf8(body.to_vec()).unwrap();
+
+        // Legacy bootstrap fingerprint: a `ddsketch:` processor block
+        // (the typed Edge emit produces `ddsketchprocessor:` instead).
+        assert!(
+            yaml.contains("ddsketch:") && !yaml.contains("ddsketchprocessor:"),
+            "legacy bootstrap should emit ddsketch processor; got:\n{yaml}"
+        );
+    }
+
+    /// `USE_TYPED_STAGE_SPLIT=1` + a workload routed through the typed
+    /// L5 emit → the YAML is the typed Edge config (ddsketchprocessor)
+    /// rather than the legacy default DDSketch shape.
+    #[tokio::test]
+    async fn bootstrap_typed_path_when_env_set() {
+        let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
+
+        let (_, app, tmp) = test_app_with_workload("http_latency", 0.01);
+        let req = Request::builder()
+            .uri("/api/v1/collector-config/agent")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let yaml = String::from_utf8(body.to_vec()).unwrap();
+        std::fs::remove_file(&tmp).ok();
+
+        // Typed Edge fingerprint: `ddsketchprocessor:` (Phase 3.2.5
+        // names the processor explicitly so the routing emit + the
+        // archive emit can co-exist) — distinct from the legacy
+        // `ddsketch:` block.
+        assert!(
+            yaml.contains("ddsketchprocessor:"),
+            "typed bootstrap should emit `ddsketchprocessor:`:\n{yaml}"
+        );
+    }
+
+    /// `X-Agent-Runtime: sketchotap` → emitter dispatches through
+    /// `emit_otap_dag_yaml` rather than the OTel-collector emit. The
+    /// output shape is YAML-but-not-OTel — we identify it by the
+    /// otap-dataflow DAG version token.
+    #[tokio::test]
+    async fn bootstrap_typed_path_sketchotap_runtime_dispatch() {
+        let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
+
+        let (_, app, tmp) = test_app_with_workload("rtt_otap", 0.01);
+        let req = Request::builder()
+            .uri("/api/v1/collector-config/agent")
+            .header("X-Agent-Runtime", "sketchotap")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let yaml = String::from_utf8(body.to_vec()).unwrap();
+        std::fs::remove_file(&tmp).ok();
+
+        // Mirrors the assertion in `config::runtime_tests::emit_for_runtime_otap_yields_dag_yaml`.
+        assert!(
+            yaml.contains("otel_dataflow/v1"),
+            "sketchotap runtime should produce the otap-dataflow DAG YAML:\n{yaml}"
+        );
+    }
+
+    /// `X-Agent-Runtime: sketchtelegraf` → emitter dispatches through
+    /// `emit_telegraf_toml` and produces TOML rather than YAML.
+    #[tokio::test]
+    async fn bootstrap_typed_path_sketchtelegraf_runtime_dispatch() {
+        let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
+
+        let (_, app, tmp) = test_app_with_workload("rtt_tg", 0.01);
+        let req = Request::builder()
+            .uri("/api/v1/collector-config/agent")
+            .header("X-Agent-Runtime", "sketchtelegraf")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let toml = String::from_utf8(body.to_vec()).unwrap();
+        std::fs::remove_file(&tmp).ok();
+
+        // Telegraf fingerprint — see `config::runtime_tests::emit_for_runtime_telegraf_yields_toml`.
+        assert!(
+            toml.contains("[[inputs.opentelemetry]]"),
+            "sketchtelegraf runtime should produce Telegraf TOML:\n{toml}"
+        );
+    }
+
+    /// `USE_TYPED_STAGE_SPLIT=1` but the registry is empty → typed
+    /// path fails to resolve a workload and the handler falls back
+    /// to the legacy `generate_agent_config` emit. Bootstrap MUST
+    /// NOT 500 just because the typed path hit a gap.
+    #[tokio::test]
+    async fn bootstrap_typed_path_falls_back_to_legacy_when_no_workload() {
+        let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
+
+        let (_, app) = test_app(); // empty registry + empty stores
+        let req = Request::builder()
+            .uri("/api/v1/collector-config/agent")
+            .body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let yaml = String::from_utf8(body.to_vec()).unwrap();
+
+        // Legacy fingerprint — bare `ddsketch:` processor block.
+        assert!(
+            yaml.contains("ddsketch:") && !yaml.contains("ddsketchprocessor:"),
+            "fallback path should emit legacy ddsketch processor:\n{yaml}"
+        );
     }
 }

@@ -314,6 +314,21 @@ collapsed to `otlp` / `otlphttp` only (no separate
   `POST /api/v1/storage_routing` to the backend, via
   `controller/src/backend_client.rs`.
 
+### Bootstrap fetch surface
+
+- **`GET /api/v1/collector-config/agent`** — the static URL each
+  freshly-started agent reads at boot. Under
+  `USE_TYPED_STAGE_SPLIT=1` the handler runs the same typed L5
+  pipeline as `POST /api/v1/plan` and emits per the
+  `X-Agent-Runtime` header (defaults to `Sketchcollector`). The
+  handler walks the `WorkloadRegistry` (or the `X-Agent-ID`-keyed
+  pinned plan if present) and dispatches through `emit_for_runtime`,
+  so bootstrap-fetched configs already carry Phase 3.2.5's
+  `gorillas3` archive emit + warm-passthrough routing — no
+  `POST /api/v1/plan` post-startup nudge required. When the gate is
+  off (legacy deployments) the handler falls back to
+  `generate_agent_config` for backwards-compat.
+
 ---
 
 ## 7. Archive tier on MinIO + Thanos
