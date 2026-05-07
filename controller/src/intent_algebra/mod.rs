@@ -1,6 +1,31 @@
 //! Layer 3 IR — `core::intent_algebra` per `controller/docs/design.md` §6.
 //!
-//! Phase B introduces the L3 vocabulary the planner pivots on:
+//! ## Phase β cross-reference: asap-planner-rs PromQL patterns
+//!
+//! `ASAPQuery-backend/asap-planner-rs/src/planner/patterns.rs` defines five
+//! PromQL `PromQLPattern` shapes. Every one of those shapes maps onto an
+//! [`AggIntent`] kind here — this is the surface the controller's L3 layer
+//! exposes so Phase γ can delete the asap-planner-rs binary without losing
+//! coverage:
+//!
+//! | asap-planner-rs pattern (`patterns.rs`) | Controller L3 equivalent |
+//! |---|---|
+//! | `ONLY_TEMPORAL` quantile (`quantile_over_time(φ, m[range])`) | [`AggIntent::Quantile`] under [`QueryExpr::Window`] |
+//! | `ONLY_TEMPORAL` funcs (`{sum,count,avg,min,max}_over_time`, `rate`, `increase`) | [`AggIntent::Sum`] / [`AggIntent::Count`] / [`AggIntent::Avg`] / [`AggIntent::Min`] / [`AggIntent::Max`] under `Window`, plus [`AggIntent::Rate`] / [`AggIntent::Increase`] for the counter-reset variants |
+//! | `ONLY_SPATIAL` (`agg_op(metric)`) | `Aggregate{by, [intent]}` over a bare `Scan` (no `Window`) — the spatial `agg_op` is the [`AggIntent`] |
+//! | `ONE_TEMPORAL_ONE_SPATIAL` (`agg_op(temporal_func(m[range]))`) | combined `Aggregate{by, [intent]}` over a `Window` — single-rooted L3 captures both axes natively |
+//! | `histogram_quantile(φ, …)` (not a `patterns.rs` entry but the legacy planner refused these) | [`AggIntent::HistogramQuantile`] — flagged archive-only via [`AggIntent::archive_only`] |
+//!
+//! Phase β additionally lifts these archive-only intents from the legacy
+//! planner's "unsupported" branch into the L3 vocabulary so they get a
+//! StreamingConfig entry (routed to the cold tier rather than the warm
+//! sketch tier): [`AggIntent::HistogramQuantile`], [`AggIntent::Absent`],
+//! [`AggIntent::Present`], [`AggIntent::Delta`], [`AggIntent::Deriv`],
+//! [`AggIntent::PredictLinear`], [`AggIntent::HoltWinters`],
+//! [`AggIntent::Idelta`], [`AggIntent::Irate`], [`AggIntent::Resets`],
+//! [`AggIntent::Changes`].
+//!
+//! ## Phase B introduces the L3 vocabulary the planner pivots on:
 //!
 //! - [`AggIntent`] — what to compute, not how (no sketch types here;
 //!   sketch binding is L4).

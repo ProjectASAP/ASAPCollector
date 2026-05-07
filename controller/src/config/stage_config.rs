@@ -1185,4 +1185,81 @@ mod tests {
         assert_eq!(targets[0]["engine"], "sketch_warm_tier");
         assert_eq!(targets[1]["engine"], "thanos_archive");
     }
+
+    // ── Phase β: emit_backend_config_json snapshot for new pattern coverage ──
+    //
+    // The new archive-only L3 intents (HistogramQuantile, Absent, Delta, …)
+    // bind to `SketchExpr::Logical` rather than producing a `BackendAggregation`,
+    // so they correctly stay OUT of the warm-tier StreamingConfig the
+    // backend's SimpleEngine receives. Phase α wires the archive routing
+    // entry separately. This snapshot pins that contract.
+
+    /// Snapshot: an empty `BackendStageConfig` produces the canonical
+    /// `{"aggregations": [], "readouts": []}` shape — what the backend
+    /// receives when every intent in the workload is archive-only.
+    #[test]
+    fn phase_b_empty_warm_tier_snapshot_for_all_archive_only_workload() {
+        let cfg = BackendStageConfig {
+            aggregations: vec![],
+            readouts: vec![],
+        };
+        let v = emit_backend_config_json(&cfg).expect("emit ok");
+        let s = serde_json::to_string(&v).unwrap();
+        assert_eq!(s, r#"{"aggregations":[],"readouts":[]}"#);
+    }
+
+    /// Snapshot: every Phase β warm-tier-bound intent (KLL/DDSketch
+    /// quantile, HLL cardinality, CMS frequency, CountSketch topk) maps to
+    /// a stable `aggregationType` string the backend's `AggregationType::
+    /// FromStr` recognises. This is the contract the L4 → L5 → backend
+    /// pipeline relies on; pinning it here so a sketch-kind rename can't
+    /// silently break the backend.
+    #[test]
+    fn phase_b_backend_agg_type_strings_for_every_sketch_kind() {
+        let cases = vec![
+            (SketchKind::Kll, "DatasketchesKLL"),
+            (SketchKind::DDSketch, "DDSketch"),
+            (SketchKind::Hll, "HLL"),
+            (SketchKind::Cms, "CountMinSketch"),
+            (SketchKind::CountSketch, "CountSketch"),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(
+                sketch_kind_to_backend_type(&kind),
+                expected,
+                "sketch_kind_to_backend_type({kind:?}) drift — backend FromStr will reject"
+            );
+        }
+    }
+
+    /// Snapshot: aggregations + readouts together exhibit the
+    /// id-aliasing the backend uses to wire readouts back to their
+    /// producing aggregation. Pins the sort order + key names. Phase β
+    /// uses this as the wire-format anchor for the wider intent set —
+    /// the JSON shape is intent-orthogonal, so adding new intents to L3
+    /// can't drift this off so long as they bind through SketchKind /
+    /// SketchParams.
+    #[test]
+    fn phase_b_backend_json_aggregation_readout_alias_snapshot() {
+        let cfg = BackendStageConfig {
+            aggregations: vec![BackendAggregation {
+                aggregation_id: "phase_b_agg0".into(),
+                sketch_kind: SketchKind::Kll,
+                sketch_params: SketchParams::Kll(KllParams { k: 200 }),
+            }],
+            readouts: vec![BackendReadout {
+                aggregation_id: "phase_b_agg0".into(),
+                op: EstimateOp::Quantile { q: 0.99 },
+            }],
+        };
+        let v = emit_backend_config_json(&cfg).expect("emit ok");
+        // The id surfaces on both the agg and the readout, with the same
+        // key name — the backend looks the readout up by `aggregationId`.
+        assert_eq!(v["aggregations"][0]["aggregationId"], "phase_b_agg0");
+        assert_eq!(v["readouts"][0]["aggregationId"], "phase_b_agg0");
+        assert_eq!(v["aggregations"][0]["aggregationType"], "DatasketchesKLL");
+        assert_eq!(v["aggregations"][0]["parameters"]["k"], 200);
+        assert_eq!(v["readouts"][0]["op"], "quantile");
+        assert_eq!(v["readouts"][0]["q"], 0.99);
+    }
 }

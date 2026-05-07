@@ -95,6 +95,101 @@ pub enum AggIntent {
     Increase {
         window: Duration,
     },
+
+    // ── Archive-only intents (Phase β migration) ─────────────────────────
+    // Intents below have no warm-tier sketch family today; the L4 binder
+    // emits a `SketchExpr::Logical` pass-through and the L5 emitter routes
+    // them to the cold archive tier (Gorilla / Thanos). Adding a streaming
+    // sketch family for any of these is a follow-up — the L3 vocabulary
+    // captures the intent so the routing decision is layered above intent.
+    //
+    /// `histogram_quantile(φ, le_bucketed_metric)`. Operates on Prometheus
+    /// histogram buckets — semantically a quantile readout but the input
+    /// shape (per-bucket counter) requires bucket-aware aggregation that
+    /// the existing KLL / DDSketch rules don't model. Archive-only today.
+    HistogramQuantile {
+        q: f64,
+    },
+    /// `absent(vector_selector)` — 1 iff the selector matched no series in
+    /// the evaluation window, no value otherwise. Routed to archive: the
+    /// engine answers it directly off the index.
+    Absent,
+    /// `present_over_time(m[range])` — 1 iff the selector had at least one
+    /// sample in the window. Inverse of `Absent`. Archive-routed.
+    Present,
+    /// `delta(m[range])` — last − first sample within the window, NO
+    /// counter-reset adjustment. Distinct from [`AggIntent::Increase`].
+    Delta {
+        window: Duration,
+    },
+    /// `deriv(m[range])` — per-second derivative via simple linear
+    /// regression. Archive-routed (no streaming sketch).
+    Deriv {
+        window: Duration,
+    },
+    /// `predict_linear(m[range], t)` — linear-regression prediction `t`
+    /// seconds into the future. Archive-routed.
+    PredictLinear {
+        window: Duration,
+        ahead: Duration,
+    },
+    /// `holt_winters(m[range], sf, tf)` — exponential-smoothing forecast.
+    /// Archive-routed.
+    HoltWinters {
+        window: Duration,
+        smoothing_factor: f64,
+        trend_factor: f64,
+    },
+    /// `idelta(m[range])` — `last − second_to_last`, instant delta. No
+    /// streaming sketch.
+    Idelta {
+        window: Duration,
+    },
+    /// `irate(m[range])` — instant per-second rate computed from the last
+    /// two samples. Counter-reset adjusted but evaluated point-wise; not
+    /// the same as the streaming [`AggIntent::Rate`].
+    Irate {
+        window: Duration,
+    },
+    /// `resets(m[range])` — count of counter resets over the window.
+    /// Archive-routed.
+    Resets {
+        window: Duration,
+    },
+    /// `changes(m[range])` — count of value changes over the window.
+    /// Archive-routed.
+    Changes {
+        window: Duration,
+    },
+}
+
+impl AggIntent {
+    /// True iff this intent has no warm-tier (streaming sketch) binding
+    /// today. `false` means a `Bind*` rule may match. `true` means the
+    /// L5 emitter routes the intent to the cold-store / archive tier.
+    ///
+    /// Per Phase β orchestrator spec, the new `HistogramQuantile` plus the
+    /// PromQL functions that were previously refused outright by
+    /// `asap-planner-rs::single_query::is_supported()` (everything outside
+    /// the 5 patterns) all return `true` here. Adding a sketch family for
+    /// any of them is a future PR — flipping the flag to `false` is the
+    /// single point of change.
+    pub fn archive_only(&self) -> bool {
+        matches!(
+            self,
+            AggIntent::HistogramQuantile { .. }
+                | AggIntent::Absent
+                | AggIntent::Present
+                | AggIntent::Delta { .. }
+                | AggIntent::Deriv { .. }
+                | AggIntent::PredictLinear { .. }
+                | AggIntent::HoltWinters { .. }
+                | AggIntent::Idelta { .. }
+                | AggIntent::Irate { .. }
+                | AggIntent::Resets { .. }
+                | AggIntent::Changes { .. }
+        )
+    }
 }
 
 impl AggIntent {
@@ -163,6 +258,66 @@ impl AggIntent {
             AggIntent::Increase { .. } => Column {
                 name: "increase".into(),
                 dtype: DataType::Float64,
+                nullable: false,
+            },
+            // ── Archive-only intents (Phase β) ────────────────────────────
+            // Each carries a stable column name keyed on the intent kind so
+            // the StreamingConfig emitter and Phase α routing entry can
+            // locate them. All are Float64 except the boolean Absent /
+            // Present, which surface as Int64 (1 / 0) per PromQL convention.
+            AggIntent::HistogramQuantile { q } => Column {
+                name: format!("histogram_quantile_{}", quantile_suffix(*q)),
+                dtype: DataType::Float64,
+                nullable: false,
+            },
+            AggIntent::Absent => Column {
+                name: "absent".into(),
+                dtype: DataType::Int64,
+                nullable: false,
+            },
+            AggIntent::Present => Column {
+                name: "present".into(),
+                dtype: DataType::Int64,
+                nullable: false,
+            },
+            AggIntent::Delta { .. } => Column {
+                name: "delta".into(),
+                dtype: DataType::Float64,
+                nullable: false,
+            },
+            AggIntent::Deriv { .. } => Column {
+                name: "deriv".into(),
+                dtype: DataType::Float64,
+                nullable: false,
+            },
+            AggIntent::PredictLinear { .. } => Column {
+                name: "predict_linear".into(),
+                dtype: DataType::Float64,
+                nullable: false,
+            },
+            AggIntent::HoltWinters { .. } => Column {
+                name: "holt_winters".into(),
+                dtype: DataType::Float64,
+                nullable: false,
+            },
+            AggIntent::Idelta { .. } => Column {
+                name: "idelta".into(),
+                dtype: DataType::Float64,
+                nullable: false,
+            },
+            AggIntent::Irate { .. } => Column {
+                name: "irate".into(),
+                dtype: DataType::Float64,
+                nullable: false,
+            },
+            AggIntent::Resets { .. } => Column {
+                name: "resets".into(),
+                dtype: DataType::Int64,
+                nullable: false,
+            },
+            AggIntent::Changes { .. } => Column {
+                name: "changes".into(),
+                dtype: DataType::Int64,
                 nullable: false,
             },
         }
@@ -290,5 +445,166 @@ mod tests {
             AggIntent::Sum.output_column(&float_col).dtype,
             DataType::Float64
         ));
+    }
+
+    // ── Phase β archive-only intent tests ─────────────────────────────────
+
+    /// Every intent the legacy `asap-planner-rs::single_query::is_supported`
+    /// previously refused now lifts to L3 with `archive_only() == true`.
+    /// The negative cases are the warm-tier-bound intents — they must
+    /// continue to return false, otherwise the L4 binder would short-circuit
+    /// them to the cold tier.
+    #[test]
+    fn archive_only_flag_partitions_intents() {
+        // Archive-only — every Phase β migration target.
+        let archive: Vec<AggIntent> = vec![
+            AggIntent::HistogramQuantile { q: 0.99 },
+            AggIntent::Absent,
+            AggIntent::Present,
+            AggIntent::Delta {
+                window: Duration::from_secs(60),
+            },
+            AggIntent::Deriv {
+                window: Duration::from_secs(60),
+            },
+            AggIntent::PredictLinear {
+                window: Duration::from_secs(300),
+                ahead: Duration::from_secs(60),
+            },
+            AggIntent::HoltWinters {
+                window: Duration::from_secs(300),
+                smoothing_factor: 0.3,
+                trend_factor: 0.3,
+            },
+            AggIntent::Idelta {
+                window: Duration::from_secs(60),
+            },
+            AggIntent::Irate {
+                window: Duration::from_secs(60),
+            },
+            AggIntent::Resets {
+                window: Duration::from_secs(300),
+            },
+            AggIntent::Changes {
+                window: Duration::from_secs(300),
+            },
+        ];
+        for v in archive {
+            assert!(
+                v.archive_only(),
+                "{v:?} should be archive-only after Phase β migration"
+            );
+        }
+
+        // Warm-tier — must NOT be flagged archive-only or the L4 binder
+        // breaks.
+        let warm: Vec<AggIntent> = vec![
+            AggIntent::Count {
+                accuracy: AccuracyTarget::Exact,
+            },
+            AggIntent::Sum,
+            AggIntent::Min,
+            AggIntent::Max,
+            AggIntent::Avg,
+            AggIntent::Quantile {
+                q: 0.99,
+                accuracy: AccuracyTarget::Epsilon(0.01),
+            },
+            AggIntent::TopK {
+                k: 10,
+                accuracy: AccuracyTarget::Epsilon(0.05),
+            },
+            AggIntent::Cardinality {
+                accuracy: AccuracyTarget::EpsilonDelta {
+                    eps: 0.01,
+                    delta: 0.001,
+                },
+            },
+            AggIntent::Frequency {
+                accuracy: AccuracyTarget::Epsilon(0.01),
+            },
+            AggIntent::Rate {
+                window: Duration::from_secs(60),
+            },
+            AggIntent::Increase {
+                window: Duration::from_secs(300),
+            },
+        ];
+        for v in warm {
+            assert!(
+                !v.archive_only(),
+                "{v:?} is warm-tier and must not be archive-only"
+            );
+        }
+    }
+
+    #[test]
+    fn archive_only_intent_serde_roundtrip() {
+        let cases = vec![
+            AggIntent::HistogramQuantile { q: 0.99 },
+            AggIntent::Absent,
+            AggIntent::Present,
+            AggIntent::Delta {
+                window: Duration::from_secs(60),
+            },
+            AggIntent::Deriv {
+                window: Duration::from_secs(60),
+            },
+            AggIntent::PredictLinear {
+                window: Duration::from_secs(300),
+                ahead: Duration::from_secs(60),
+            },
+            AggIntent::HoltWinters {
+                window: Duration::from_secs(300),
+                smoothing_factor: 0.3,
+                trend_factor: 0.3,
+            },
+            AggIntent::Idelta {
+                window: Duration::from_secs(60),
+            },
+            AggIntent::Irate {
+                window: Duration::from_secs(60),
+            },
+            AggIntent::Resets {
+                window: Duration::from_secs(300),
+            },
+            AggIntent::Changes {
+                window: Duration::from_secs(300),
+            },
+        ];
+        for v in cases {
+            let json = serde_json::to_string(&v).unwrap();
+            let back: AggIntent = serde_json::from_str(&json).unwrap();
+            assert_eq!(v, back, "round-trip failed for {v:?}");
+        }
+    }
+
+    #[test]
+    fn archive_only_output_column_names() {
+        let v = col("value", DataType::Float64);
+        assert_eq!(
+            AggIntent::HistogramQuantile { q: 0.99 }
+                .output_column(&v)
+                .name,
+            "histogram_quantile_0_99"
+        );
+        assert_eq!(AggIntent::Absent.output_column(&v).name, "absent");
+        assert_eq!(AggIntent::Present.output_column(&v).name, "present");
+        assert_eq!(
+            AggIntent::Delta {
+                window: Duration::from_secs(60)
+            }
+            .output_column(&v)
+            .name,
+            "delta"
+        );
+        assert_eq!(
+            AggIntent::Resets {
+                window: Duration::from_secs(60)
+            }
+            .output_column(&v)
+            .name,
+            "resets"
+        );
     }
 }

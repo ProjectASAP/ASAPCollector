@@ -23,6 +23,7 @@
 
 #![allow(dead_code)]
 
+pub mod bind_archive_only;
 pub mod bind_cms_count;
 pub mod bind_cms_topk;
 pub mod bind_ddsketch_quantile;
@@ -63,6 +64,9 @@ pub fn dispatch(expr: &QueryExpr, accuracy: &AccuracyTarget) -> Option<SketchExp
         Box::new(bind_cms_count::BindCmsOnCount),
         Box::new(bind_cms_topk::BindCountSketchOnTopK),
         Box::new(bind_hll_cardinality::BindHllOnCardinality),
+        // Phase β: archive-only catch-all. Lowest priority — fires only
+        // when no warm-tier rule matches AND the intent is archive-only.
+        Box::new(bind_archive_only::BindArchiveOnly),
     ];
 
     let mut best: Option<(u16, SketchExpr)> = None;
