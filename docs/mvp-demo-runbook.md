@@ -11,6 +11,102 @@ of 2026-05-07). Architectural background lives in
 the comparison to Databricks Pantheon+Hydra is in
 [`docs/comparison-asap-vs-databricks-pantheon-hydra.md`](comparison-asap-vs-databricks-pantheon-hydra.md).
 
+## Current status (2026-05-07)
+
+The MVP demo is **runnable end-to-end and exercises the controller-driven,
+multi-stage architecture**, but two ingest-side bugs leave criteria ④ and
+⑥ reporting UNKNOWN even when their routing layers are working correctly.
+
+### Latest verdict (from v7 issue-#46 comment)
+
+| # | Criterion | Verdict | What works | What doesn't |
+|---|---|---|---|---|
+| ① | Bandwidth (per-edge) | **FAIL** | per-edge B/s captured for sdk→agent / agent→gateway / gateway→backend / gateway→s3 | absolute reduction over a B0 baseline not reported (no apples-to-apples comparison row at this cardinality) |
+| ② | Query latency (p50 / p99) | **PASS** | window p99=5.2 ms, label p99=7.2 ms, combined p99=1.8 ms — all 3 query classes inside the 10ms envelope | — |
+| ③ | Combined resource | **CAPTURED** | per-stage CPU + RSS + net + disk reported | reduction-vs-B0 row depends on B0 cell which is opt-in (port collision) |
+| ④ | Accuracy (rel-err per class) | **UNKNOWN** | dispatch + warm-tier eval correct (verified via direct curl) | `accuracy_reduce.py` needs cold-tier ground-truth stream that the backend doesn't write |
+| ⑤ | Cold-fallback (`gorilla_archive`) | **PASS** | `data_source: gorilla_archive` in `cold_payments.json`; chunks land in MinIO; dual-routing dispatches `count` queries to archive engine | — |
+| ⑥ | Freshness (probe Δ) | **UNKNOWN** | freshness pattern registered in backend; routing yaml correct; producer envs propagate | agent's `gorillas3processor.encoder.go` writes chunk-header timestamp at byte offset `[5..9]` instead of `[9..13]`; consumer reads bogus emission timestamps so deltas come up zero |
+| §8 | Controller emitter STATUS | **`live`** | typed-stage-split fires; controller writes per-stage configs; `entries=4 multi_target_entries=1` in startup log | — |
+
+### History (commits / PRs that got us here)
+
+| Iteration | What it shipped | Issue-#46 comment |
+|---|---|---|
+| v1-v2 (PR #287, #288) | Initial MVP with single-cell topology | precompute_engine binary mismatch surfaced |
+| v3 (PR #289) | Per-metric backend routing; cardinality redesign 1000-per-agent × N=10 | `data_source: gorilla_archive` first confirmed |
+| v4 (PR #290) | 4-baseline (B0 raw-Prometheus / B1 SERF / B5 Gorilla / ASAP); stage-separated resource | freshness UNKNOWN due to probe routing |
+| v5 (PRs #295, #90) | Postings index + chunk byte-ranges + concat-only `gorilla-compactor` + S3 cost tracker; 7th criterion (label-predicate latency) PASS | small-cardinality FAIL on ① ③ |
+| v6 (PR #300) | Multi-stage topology (10 producer / 2 agent / 1 gateway / 1 backend); controller-driven plan emission spec | §8 STATUS not-exercised; ⑤ FAIL |
+| v6.1 (PR #301) | Fixed typed-stage-split fire path + backend image cache + freshness routing yaml | §8 STATUS now `live`; ⑤ PASS; ④ regressed (single-axis routing trade-off) |
+| v7 (PRs #91, #92, #93, #302) | Backend dual-routing per metric + freshness pattern registration | routing layer end-to-end correct; two ingest-side bugs surfaced |
+
+The verdict trajectory is monotonic in the architectural validation
+(everything to do with planning, routing, and multi-stage placement
+demonstrably works) but the two ingest-side bugs above are real follow-ups.
+
+### Open gaps (severity × impact × fix path)
+
+#### Gap 1 — accuracy reducer needs ground-truth dump (criterion ④)
+
+- **Severity**: medium (verdict reads UNKNOWN, not FAIL — the warm engine
+  is producing correct answers; we just can't compute relative error
+  without ground truth)
+- **Impact**: ④ accuracy + §3 per-class rel-err render empty in
+  `MVP_REPORT_v6.md`
+- **Root cause**: `deploy/scripts/accuracy_reduce.py` reads ground truth
+  from `/var/asap/cold/raw/<metric>/YYYY/MM/DD/HH/part-N.jsonl`. The
+  current backend image's gateway-side raw-tee exporter doesn't write
+  there
+- **Fix path**: backend-side raw-tee exporter wired to the cold-store
+  path. ~1-day code change in either ASAPCollector's gateway exporter
+  config OR a new `coldstoreexporter` patched processor. Out of scope
+  for the v6/v7 driver layer
+- **Workaround**: paper-quality accuracy numbers live in the headline
+  60-cell sweep at `deploy/eval-results/headline-2026-05-06/accuracy.csv`,
+  which uses a different ground-truth path
+
+#### Gap 2 — freshness probe encoder offset (criterion ⑥)
+
+- **Severity**: low-medium (mechanical bug; one-character patch staged
+  on a follow-up branch)
+- **Impact**: ⑥ freshness reads UNKNOWN; `freshness/*.csv` files contain
+  zero rows (or rows with bogus deltas)
+- **Root cause**: `opentelemetry-collector-contrib-patch/processor/gorillas3processor/encoder.go`
+  writes the chunk-header timestamp at byte offset `[5..9]` instead of
+  `[9..13]`. The consumer parses the wrong four bytes and sees zero
+- **Fix path**: one-character offset patch staged on the v7 branch
+  (`mvp/v7-rerun`); takes effect after `asap/sketchcol:dev` is rebuilt
+  via OCB
+- **Workaround**: none — freshness doesn't measure on this demo until
+  the image is rebuilt
+
+#### Gap 3 — backend image cache stickiness (operational)
+
+- **Severity**: low (operational gotcha, not a correctness bug)
+- **Impact**: rebuilds after backend PRs merge can produce the same
+  image SHA, masking that the new code didn't actually land
+- **Root cause**: Docker BuildKit caches Cargo build layers
+  aggressively; the cache key doesn't always invalidate when a path-dep
+  changes
+- **Fix path**: pass `--no-cache` to `docker build` after any v5/v7
+  backend PR. Verify via the `strings | grep` snippet in §3
+- **Workaround**: documented; users now know to verify
+
+#### Out of scope for the demo (deferred)
+
+- **Dynamic plan transitions** while the demo runs — controller plans
+  once at startup. v5's `ReplannerOpampGateway` covers some of this
+  in unit tests but isn't exercised by the MVP demo
+- **OpAMP hot reconfig under churn** — not exercised
+- **1M+ cardinality** — the demo runs at 5-10K aggregate, single host
+- **Multi-host federation** — not designed for; single-host bench only
+- **PromQL completeness on the archive tier** — current curated subset
+  (Sum / Count / Avg / Min / Max / Rate / Increase + Quantile / TopK)
+  covers the demo's queries but not full Prometheus parity. See
+  `docs/design-jsonl-deprecation-and-gorilla-promql-completeness.md`
+  Path A (vendor `prometheus/promql`) for the tracking direction
+
 ## TL;DR
 
 ```bash
