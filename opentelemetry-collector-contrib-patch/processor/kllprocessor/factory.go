@@ -10,6 +10,27 @@ import (
 	"go.opentelemetry.io/collector/processor"
 )
 
+// createDefaultConfig builds the KLL processor's default Config.
+//
+// NOTE on delta-encoded transmission: KLL has no delta variant. KLL
+// uses a randomised compaction step to keep its sample buffer
+// bounded, which means two KLL sketches with the same input history
+// are not bit-identical and the sketches are not additively
+// mergeable in the linear sense the other four families
+// (DDSketch / HLL / CountSketch / Count-Min) are. Delta transmission
+// (sparse "what changed since the last flush" diff) is therefore not
+// defined for KLL — `Config.Validate` rejects `delta_transmission:
+// true` with an explicit error rather than silently falling back.
+//
+// The MVP demo's cross-family delta-by-default policy
+// (DDSketch / HLL / CountSketch / Count-Min default to
+// `DeltaTransmission: true`) intentionally omits KLL: KLL's wire
+// payload is always the full sketch state, and downstream tooling
+// budgets bandwidth for KLL accordingly.
+//
+// See `Implementation.tex` ("KLL has no delta variant and matches
+// its full cost") and the KLL bandwidth discussion in
+// `docs/mvp-demo-runbook.md` §"Verifying the verdict".
 func createDefaultConfig() component.Config {
 	return &Config{
 		Mode:                 ModeBatch,
@@ -22,6 +43,8 @@ func createDefaultConfig() component.Config {
 		ReadAsInt:            false,
 		MetricSuffix:         "",
 		EnableSelfMonitoring: true,
+		// DeltaTransmission deliberately left at the zero value (false):
+		// KLL has no delta variant (see the doc comment above).
 	}
 }
 

@@ -520,25 +520,45 @@ fn build_edge_processor_block(
     );
 
     // Family-specific params.
+    //
+    // `delta_transmission` is set to `true` for the four families
+    // that support sparse delta encoding (DDSketch, HLL, CountSketch,
+    // Count-Min). KLL deliberately does NOT get the flag — KLL uses
+    // randomised compaction and is not additively mergeable, so its
+    // wire payload is always full state. The KLL processor's
+    // `Config.Validate` rejects `delta_transmission: true` with an
+    // error rather than silently falling back; emitting the flag
+    // would break agent boot. See `Implementation.tex` ("KLL has
+    // no delta variant and matches its full cost") and
+    // `kllprocessor/config.go::Config.Validate`.
+    //
+    // The flag matches the four factories' `DeltaTransmission: true`
+    // defaults (see `factory.go` in each processor); we still emit
+    // it explicitly so the wire YAML doesn't depend on a factory
+    // default that could regress to full-state in a future build.
     match &sp.sketch_params {
         SketchParams::Kll(p) => {
             m.insert("k".into(), Value::Number((p.k as u64).into()));
             m.insert("encoding".into(), Value::String("msgpack".into()));
+            // No delta_transmission for KLL: see comment above.
         }
         SketchParams::DDSketch(p) => {
             m.insert(
                 "relative_accuracy".into(),
                 Value::Number(p.alpha.into()),
             );
+            m.insert("delta_transmission".into(), Value::Bool(true));
         }
         SketchParams::Hll(_p) => {
             // hllprocessor takes no precision knob in its Config (the
             // patched build hard-codes p=14); nothing further to set.
             m.insert("encoding".into(), Value::String("msgpack".into()));
+            m.insert("delta_transmission".into(), Value::Bool(true));
         }
         SketchParams::Cms(p) => {
             m.insert("rows".into(), Value::Number((p.d as u64).into()));
             m.insert("columns".into(), Value::Number((p.w as u64).into()));
+            m.insert("delta_transmission".into(), Value::Bool(true));
         }
         SketchParams::CountSketch(p) => {
             // Translate (w, d) to the legacy (epsilon, delta) surface
@@ -548,6 +568,7 @@ fn build_edge_processor_block(
             let delta = 2f64.powi(-(p.d as i32));
             m.insert("epsilon".into(), Value::Number(epsilon.into()));
             m.insert("delta".into(), Value::Number(delta.into()));
+            m.insert("delta_transmission".into(), Value::Bool(true));
         }
     }
 
@@ -749,6 +770,62 @@ mod tests {
         assert!(yaml.contains("k: 200"), "{yaml}");
         assert!(yaml.contains("aggregation_id: agg7"), "{yaml}");
         assert!(!yaml.contains("relative_accuracy"), "KLL must not carry alpha\n{yaml}");
+        // KLL has no delta variant: the kllprocessor's `Config.Validate`
+        // rejects `delta_transmission: true`. Make sure we don't emit
+        // the flag (a future regression that flips it on globally would
+        // break agent boot for KLL).
+        assert!(
+            !yaml.contains("delta_transmission"),
+            "KLL emit must NOT carry delta_transmission\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn edge_yaml_emits_delta_transmission_for_supported_families() {
+        // DDSketch / HLL / CountSketch / Count-Min all support sparse
+        // delta encoding — the controller emits `delta_transmission:
+        // true` so the per-window wire footprint is the bucket / cell
+        // diff, not the full sketch state. KLL deliberately omits the
+        // flag (see `edge_yaml_kll_uses_k_param`).
+        for (kind, processor_name, params) in [
+            (
+                SketchKind::DDSketch,
+                "ddsketchprocessor",
+                SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
+            ),
+            (
+                SketchKind::Hll,
+                "hllprocessor",
+                SketchParams::Hll(HllParams { precision: 14 }),
+            ),
+            (
+                SketchKind::CountSketch,
+                "countsketchprocessor",
+                SketchParams::CountSketch(CountSketchParams {
+                    w: 2048,
+                    d: 5,
+                    with_heap: true,
+                }),
+            ),
+            (
+                SketchKind::Cms,
+                "countminsketchprocessor",
+                SketchParams::Cms(CmsParams { w: 4096, d: 4 }),
+            ),
+        ] {
+            let mut cfg = ddsketch_edge_cfg();
+            cfg.sketch_processors[0] = EdgeSketchProcessor {
+                processor_name: processor_name.to_string(),
+                sketch_kind: kind,
+                sketch_params: params,
+                aggregation_id: "agg-delta".to_string(),
+            };
+            let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+            assert!(
+                yaml.contains("delta_transmission: true"),
+                "{processor_name:?} emit must carry delta_transmission: true\n{yaml}"
+            );
+        }
     }
 
     #[test]

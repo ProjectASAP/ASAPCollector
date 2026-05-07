@@ -2,6 +2,22 @@ package ddsketchprocessor
 
 import "testing"
 
+// TestDefaultDeltaTransmissionTrue asserts that the factory's default
+// Config has `DeltaTransmission: true`. Operationally this means the
+// per-window wire payload is the sparse bucket diff since the last
+// flush, not the full DDSketch state — without which the bandwidth
+// verdict at 10 Hz × 60 s collapses (full state at 1 Hz × 60 s is
+// what produced the v-final demo's -1201% bandwidth result). This
+// regression test exists so a future factory edit can't silently
+// flip the default back to full-state. See the doc comment on
+// `createDefaultConfig` for the operating-point math.
+func TestDefaultDeltaTransmissionTrue(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	if !cfg.DeltaTransmission {
+		t.Fatalf("expected DeltaTransmission=true by default, got %v", cfg.DeltaTransmission)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	if err := cfg.validate(); err != nil {

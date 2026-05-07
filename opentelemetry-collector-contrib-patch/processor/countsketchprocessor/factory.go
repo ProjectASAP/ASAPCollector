@@ -29,6 +29,18 @@ func createDefaultConfig() component.Config {
 		WindowDuration:       5 * time.Second,
 		TransmitSketch:       false,
 		EnableSelfMonitoring: true,
+		// Delta-encoded transmission is the operational default for the
+		// MVP demo. CountSketch's per-window wire footprint is dominated
+		// by the d×w cell matrix; emitting only cells that changed since
+		// the last flush (instead of the full matrix) shifts the
+		// bandwidth verdict from a ~133× loss (full-state at 1 Hz × 60 s)
+		// to ~13× (delta at 10 Hz × 60 s = 600 samples/window) — still
+		// loses at this scale knee, but by an order of magnitude less.
+		// DeltaThreshold defaults to 1.0 in Validate().
+		// Note: DeltaTransmission requires TransmitSketch=true; this
+		// default is harmless when the operator leaves TransmitSketch=false
+		// (the encoder only consults DeltaTransmission on the sketch path).
+		DeltaTransmission: true,
 	}
 }
 

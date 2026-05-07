@@ -91,7 +91,11 @@ processors:
     mode: window
     window_duration: 30s
     transmit_sketch: true
-    delta_transmission: false
+    # Delta-encoded transmission default — emit only buckets that
+    # changed since the last flush. Matches the processor factory's
+    # `DeltaTransmission: true` default; pinned here so the MVP
+    # demo's bandwidth verdict doesn't depend on factory defaults.
+    delta_transmission: true
     enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
     metric_suffix: "_quantile"
