@@ -38,6 +38,10 @@ chart pins.
 | `retry_backoff`   | `duration`     | `1s`                                          | Step for `(attempt+1) * retry_backoff`.                                                                                                     |
 | `upload_timeout`  | `duration`     | `30s`                                         | Per-PUT context timeout.                                                                                                                    |
 | `local_spool_dir` | `string`       | `""` (no spool)                               | Optional: when set, S3 PutObject failure spills the chunk to this directory.                                                                |
+| `block_format`    | `string`       | `asap`                                        | `asap` \| `prometheus_tsdb` \| `both`. Selects the cold-store on-disk layout. mvp/step2.1.                                                  |
+| `tsdb_bucket`     | `string`       | `""` (falls back to `bucket`)                 | Destination bucket for Prometheus TSDB blocks. Strongly recommended to use a separate bucket so the two layouts do not co-mingle.           |
+| `tsdb_block_duration` | `duration` | (== `window_interval`)                        | Block-writer block-size hint, in milliseconds. Aligns with the controller's per-window plan cadence.                                        |
+| `tsdb_external_labels` | `map[string]string` | `{}`                                | External labels added to every series in the emitted Prometheus block, e.g. `cluster: prod`.                                                |
 
 ## Example
 
@@ -58,10 +62,31 @@ processors:
 
 ## Object layout
 
+`block_format: asap` (default):
+
 ```
 <bucket>/<tenant>/<metric>/YYYY/MM/DD/HH/part-<unix>-<NNNNNN>.gor
 <bucket>/<tenant>/<metric>/YYYY/MM/DD/HH/index.json
+<bucket>/<tenant>/<metric>/YYYY/MM/DD/HH/postings-v1.json
 ```
+
+`block_format: prometheus_tsdb` (mvp/step2.1):
+
+```
+<tsdb_bucket>/<ULID>/chunks/000001     (Prometheus chunks file; XOR + delta-of-delta)
+<tsdb_bucket>/<ULID>/index             (Prometheus index file)
+<tsdb_bucket>/<ULID>/meta.json         (Prometheus block meta — uploaded LAST)
+```
+
+The block ULID encodes the wall-clock time of the flush — the high
+48 bits are millisecond-precision timestamp, the low 80 bits are
+random — so a `LIST` of `<tsdb_bucket>/` returns blocks in
+chronological order without an extra index. `meta.json` is uploaded
+last so a Thanos store-gateway scanning the bucket while the upload
+is in flight does not pick up a half-written block.
+
+`block_format: both` emits both layouts concurrently from the same
+window snapshot. Used during migration / verification only.
 
 Each chunk is one GORILLA1 block (one metric, one or more series). Header:
 

@@ -39,6 +39,18 @@ type chunkSink interface {
 	// bytes from `buildPostings`.
 	PutPostings(ctx context.Context, key string, data []byte) error
 
+	// PutTSDBBlock writes one Prometheus TSDB block to the
+	// configured TSDB bucket (or the primary bucket when
+	// `tsdb_bucket` is empty). The map keys are the relative
+	// object keys inside the block — typically `chunks/000001`,
+	// `index`, `meta.json` — the sink prepends the block ULID
+	// dir prefix. Implementations write all files atomically
+	// from the caller's POV; readers SHOULD see a complete block
+	// once the call returns.
+	//
+	// mvp/step2.1: only called when block_format ∈ {prometheus_tsdb, both}.
+	PutTSDBBlock(ctx context.Context, blockULID string, files map[string][]byte) error
+
 	// Close releases any client resources.
 	Close() error
 }
@@ -173,6 +185,95 @@ func (s *s3Sink) PutPostings(ctx context.Context, key string, data []byte) error
 		return err
 	}
 	return nil
+}
+
+// PutTSDBBlock uploads each file in the supplied block to the TSDB
+// bucket, prefixing keys with `<blockULID>/`. mvp/step2.1: writes
+// `meta.json` LAST so a Thanos store-gateway scanning the bucket
+// while the upload is in flight does not pick up a half-written
+// block (Thanos uses meta.json's existence as the readiness signal).
+func (s *s3Sink) PutTSDBBlock(ctx context.Context, blockULID string, files map[string][]byte) error {
+	if len(files) == 0 {
+		return nil
+	}
+	tsdbBucket := s.cfg.TSDBBucket
+	if tsdbBucket == "" {
+		tsdbBucket = s.cfg.Bucket
+	}
+	// Order: everything except meta.json first, then meta.json. We
+	// look for the meta.json key by suffix to be tolerant of either
+	// the "<ulid>/meta.json" full key form or the "meta.json" relative
+	// form callers might pass.
+	var metaKey string
+	otherKeys := make([]string, 0, len(files))
+	for k := range files {
+		if filepath.Base(k) == "meta.json" {
+			metaKey = k
+			continue
+		}
+		otherKeys = append(otherKeys, k)
+	}
+	for _, k := range otherKeys {
+		if err := s.putTSDBObject(ctx, tsdbBucket, blockULID, k, files[k]); err != nil {
+			return err
+		}
+	}
+	if metaKey != "" {
+		if err := s.putTSDBObject(ctx, tsdbBucket, blockULID, metaKey, files[metaKey]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// putTSDBObject is the per-file upload path for TSDB blocks.
+// `key` may already include the ulid prefix (callers reading from
+// the artifact map use that form); if not, we add it. The same
+// retry / spool fall-through path as chunk uploads applies.
+func (s *s3Sink) putTSDBObject(ctx context.Context, bucket, blockULID, key string, data []byte) error {
+	if !strings.HasPrefix(key, blockULID+"/") {
+		key = blockULID + "/" + key
+	}
+	contentType := "application/octet-stream"
+	if filepath.Base(key) == "meta.json" {
+		contentType = "application/json"
+	}
+	if err := s.putWithRetryToBucket(ctx, bucket, key, data, contentType); err != nil {
+		if s.spoolDir != "" {
+			if spErr := writeLocalSpool(s.spoolDir, key, data); spErr != nil {
+				return fmt.Errorf("tsdb put failed (%w) and spool failed (%v)", err, spErr)
+			}
+			return fmt.Errorf("tsdb put failed, spooled to %s: %w", s.spoolDir, err)
+		}
+		return err
+	}
+	return nil
+}
+
+// putWithRetryToBucket is the bucket-parameterised cousin of
+// putWithRetry. The default chunk path goes through the
+// `cfg.Bucket` shortcut; the TSDB path needs to target a different
+// bucket so we factor the retry loop here.
+func (s *s3Sink) putWithRetryToBucket(ctx context.Context, bucket, key string, data []byte, contentType string) error {
+	var lastErr error
+	for attempt := 0; attempt <= s.maxRetries; attempt++ {
+		cctx, cancel := context.WithTimeout(ctx, s.timeout)
+		_, err := s.client.PutObjectWithContext(cctx, &s3.PutObjectInput{
+			Bucket:      aws.String(bucket),
+			Key:         aws.String(key),
+			Body:        bytes.NewReader(data),
+			ContentType: aws.String(contentType),
+		})
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt < s.maxRetries {
+			time.Sleep(time.Duration(attempt+1) * s.backoff)
+		}
+	}
+	return fmt.Errorf("s3 put failed after %d retries: %w", s.maxRetries, lastErr)
 }
 
 func (s *s3Sink) Close() error { return nil }
