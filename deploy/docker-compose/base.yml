@@ -3,8 +3,8 @@
 # Brings up everything that's shared across the N ∈ {1, 10, 100}
 # agent-count overrides: the backend (ASAPQuery), the gateway
 # (OpenTelemetry aggregator), the controller, plus the infra
-# the evaluation pipes through — MinIO (S3-compatible raw
-# store for the cold-fallback tier), Prometheus (scrape
+# the evaluation pipes through — MinIO (S3-compatible store
+# for the Gorilla archive tier), Prometheus (scrape
 # target for every agent / backend / controller), and Grafana
 # (pre-wired with the backend + Prometheus data sources).
 #
@@ -29,7 +29,7 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
-  # ───────── raw S3-compatible store (cold fallback) ─────────
+  # ───────── S3-compatible store (Gorilla archive tier) ─────────
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -48,8 +48,11 @@ services:
       retries: 10
     logging: *default-logging
 
-  # Create the `raw` bucket + seed the layout the cold-fallback
-  # adapter expects (raw/<metric>/YYYY/MM/DD/HH/part-*.jsonl).
+  # Create the `raw` bucket on MinIO. Step-1 of the JSONL
+  # deprecation removed the JSONL `raw/<metric>/YYYY/MM/DD/HH/part-*.jsonl`
+  # seed layout; the surviving consumer is the gorilla-S3 archive
+  # processor (writes Gorilla blocks under the same bucket prefix
+  # but with the `.gor` extension and an `index.json` sidecar).
   minio-setup:
     image: minio/mc:latest
     depends_on:
@@ -123,12 +126,13 @@ services:
       - minio
     environment:
       RUST_LOG: "${BACKEND_RUST_LOG:-info}"
-      # Cold fallback points at MinIO; same JSONL layout
-      # works against real S3 later with just a URL swap.
-      ASAP_COLD_STORE_ENDPOINT: "http://minio:9000"
-      ASAP_COLD_STORE_BUCKET: "raw"
-      ASAP_COLD_STORE_ACCESS_KEY: "asap"
-      ASAP_COLD_STORE_SECRET_KEY: "asap-local-only"
+      # Step-1 of the JSONL deprecation removed the
+      # `ASAP_COLD_STORE_*` env-var family (the §5.2 LocalFsColdStore
+      # / ColdFallback adapter is gone). The surviving archive path
+      # is the Gorilla-S3 store, which reads its config from the
+      # `ASAP_GORILLA_S3_*` env-var family — set those in the
+      # baseline overlay (see `baseline-b6-gorilla-s3.yml`) when
+      # the deploy needs the archive engine.
       # Controller push URL for capability-miss notifications.
       ASAP_CONTROLLER_URL: "http://controller:8080/api/v1/plan"
     volumes:
