@@ -93,7 +93,7 @@ mounted inference YAML. Five overlays live in `deploy/configs/`:
 
 | YAML | Mounted by | Covers (PromQL families × ranges) | Entries |
 |---|---|---|---|
-| `backend-inference.yaml` | `e2e-overlay.yml`, `queryengine-overlay.yml` (default) | All 33 patterns from `ASAPQuery-backend` PR #79: spatial multi-quantile, `quantile_over_time(φ ∈ {0.5, 0.9, 0.95, 0.99}, …[1m\|2m\|5m])`, `sum_over_time` / `count_over_time` × wider ranges, `rate` / `increase`, spatial `count` / `sum` / `avg`, `topk(5\|10\|50, …)`. | 33 |
+| `backend-inference.yaml` | `e2e-overlay.yml` (default) | All 33 patterns from `ASAPQuery-backend` PR #79: spatial multi-quantile, `quantile_over_time(φ ∈ {0.5, 0.9, 0.95, 0.99}, …[1m\|2m\|5m])`, `sum_over_time` / `count_over_time` × wider ranges, `rate` / `increase`, spatial `count` / `sum` / `avg`, `topk(5\|10\|50, …)`. | 33 |
 | `backend-inference-cms.yaml` | `e2e-overlay-cms.yml` | CountMinSketch families: `{sum, count, avg}`, `{sum_over_time, count_over_time, rate, increase}` × `[1m, 2m, 5m]`. | 14 |
 | `backend-inference-cs.yaml` | `e2e-overlay-cs.yml` | CountSketch families: same as CMS plus `topk(5\|10\|50, …)`. | 16 |
 | `backend-inference-hll.yaml` | `e2e-overlay-hll.yml` | HLL cardinality families: spatial `count(metric_hll)` and `count_over_time(metric_hll[1m\|2m\|5m])` for both the counter (`http_requests_total_hll`) and gauge (`http_requests_total_latency_ms_hll`) flavours. | 8 |

@@ -11,7 +11,7 @@
 #    1 gateway         (10K aggregated; sketch fan-in merge processors)
 #         │ OTLP/4317
 #         ▼
-#    1 backend         (precompute_engine)
+#    1 backend         (query_engine_rust — workspace default binary)
 #                      + Prometheus :9090 (B0 baseline only — receives via
 #                        prometheusremotewrite from gateway when overlay
 #                        invoked with PROMETHEUS_BASELINE=1)

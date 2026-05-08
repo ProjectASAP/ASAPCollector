@@ -232,16 +232,15 @@ def post_replan_request(controller_url: str, metric: str, accuracy_sla: float,
     `post_rollback_request(...)` for the same metric BEFORE this
     POST (rollback handler resets the planner cache).
 
-    Why this exists (post-2026-05-06 fix): the e2e harness runs
-    `asap/query-backend:dev` (precompute_engine binary), which
-    does NOT push capability-miss feedback to the controller —
-    only `asap/query-backend-queryengine:dev` (query_engine_rust)
-    does, and the e2e overlay doesn't pull that image. Without
-    the feedback path, an off-plan PromQL query alone can't
-    trigger a controller replan; the only paths that fire today
-    are (a) the 5-minute expiry ticker, or (b) an explicit POST
-    to `/api/v1/plan`. Option (b) closes the t_plan_ready gap
-    inside the 60 s soak.
+    Why this exists (post-2026-05-06 fix): an off-plan PromQL
+    query alone may not always trigger a controller replan
+    inside the 60 s soak — the controller's `--controller-endpoint`
+    feedback path requires the controller to be reachable from the
+    backend AND for capability-miss notifications to fire on every
+    off-plan query. The deterministic paths that always fire are
+    (a) the 5-minute expiry ticker, or (b) an explicit POST to
+    `/api/v1/plan`. Option (b) closes the t_plan_ready gap
+    deterministically.
     """
     # The analyzer requires non-empty `aggregations` when no
     # `query_string` is supplied. Pick something the planner can
