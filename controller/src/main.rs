@@ -19,8 +19,10 @@ mod store;
 mod types;
 mod types_v2;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
@@ -47,6 +49,7 @@ use planner::tco;
 use algebra::physical::physical_plan_to_staged;
 use query_parser::parse_query_expr;
 use replan::Replanner;
+use stage_split::BackendStageConfig;
 use store::{PlanStore, WorkloadStore};
 use types::StageResourceBudgets;
 
@@ -78,6 +81,31 @@ struct AppState {
     /// `CONTROLLER_BACKEND_ENDPOINT` is unset, matching the
     /// pre-existing fire-and-forget contract.
     backend_client:    Option<Arc<backend_client::BackendClient>>,
+    /// Per-metric `BackendStageConfig` cache used to emit a
+    /// **cumulative** `BackendStorageRouting` JSON document on every
+    /// per-metric replan.
+    ///
+    /// Why this exists: `POST /api/v1/storage_routing` on the backend
+    /// is an atomic per-tenant SWAP — every push replaces the whole
+    /// tenant's routing table. The controller's pre-existing per-metric
+    /// post path emits a single-element `metrics:[…]` document per
+    /// `handle_plan` call, so when N metrics replan in sequence only
+    /// the last metric's entry survives in the backend's routing table.
+    /// That defaults the other N-1 metrics to `sketch_warm_tier`, which
+    /// has no warm-tier sketch state for archive-shape queries
+    /// (`count`, `topk`, `rate_post_hoc`, `histogram_quantile`,
+    /// `delta`, `deriv`, `absent`) → the backend returns empty / 404 →
+    /// the demo's accuracy reducer logs `archive_miss` for those metrics
+    /// even though gorillas3 wrote their TSDB blocks to MinIO and Thanos
+    /// has them indexed.
+    ///
+    /// The cache is a `HashMap<metric_name, BackendStageConfig>` keyed
+    /// by metric name. On every plan-emit cycle we update the entry for
+    /// the metric being planned and re-emit the storage-routing JSON
+    /// from the union of all currently-known plans, then push the
+    /// cumulative table. The next cycle's swap then preserves every
+    /// previously-seen metric's routing entry.
+    backend_routing_cache: Arc<Mutex<HashMap<String, BackendStageConfig>>>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -324,6 +352,8 @@ async fn main() {
     );
 
     let runtime_samples_store = runtime_samples::RuntimeSamplesStore::new(1024);
+    let backend_routing_cache: Arc<Mutex<HashMap<String, BackendStageConfig>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let state = AppState {
         analyzer:          Arc::new(Analyzer::new()),
         planner,
@@ -337,6 +367,7 @@ async fn main() {
         workload_registry: Arc::clone(&workload_registry),
         runtime_samples:   Arc::clone(&runtime_samples_store),
         backend_client:    backend_client_shared,
+        backend_routing_cache: Arc::clone(&backend_routing_cache),
     };
 
     // ── Background tasks ──────────────────────────────────────────────────────
@@ -574,21 +605,49 @@ async fn handle_plan(
                             // — see that function's doc-comment for the
                             // sketch-family → query-shape mapping.
                             //
-                            // One workload = one metric in this loop;
-                            // the emitted JSON has a single-element
-                            // `metrics:` array. The backend's
-                            // `RoutingTable::from_json_payload` swap is
-                            // additive — Phase α posts one metric per
-                            // plan-emit; Phase β / γ may switch to a
-                            // cumulative table when the controller
-                            // gains a multi-workload planning surface.
-                            let plans = vec![(workload.metric_name.clone(), &be)];
-                            match config::emit_backend_storage_routing(&plans) {
+                            // CRITICAL: the backend's
+                            // `POST /api/v1/storage_routing` handler is
+                            // an atomic per-tenant SWAP — every push
+                            // replaces the whole tenant's routing
+                            // table. We MUST emit the cumulative
+                            // routing JSON across every metric the
+                            // controller has planned to date, otherwise
+                            // each per-metric replan erases the routing
+                            // entries for every other metric and the
+                            // backend defaults them to
+                            // `sketch_warm_tier` (which has nothing for
+                            // archive-shape queries). That's the
+                            // `archive_miss` failure mode for
+                            // HLL/CountSketch/CountMin/KLL metrics in
+                            // the post-#345 demo runs even though
+                            // gorillas3 writes their TSDB blocks to
+                            // MinIO and Thanos has them indexed.
+                            //
+                            // We thread the per-metric `BackendStageConfig`
+                            // through `state.backend_routing_cache` so
+                            // a metric replan picks up an updated entry
+                            // for itself but preserves every previously
+                            // planned metric's entry.
+                            let cumulative_plans = {
+                                let mut cache = st.backend_routing_cache.lock().await;
+                                cache.insert(workload.metric_name.clone(), be.clone());
+                                cache
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect::<Vec<(String, BackendStageConfig)>>()
+                            };
+                            let routing_input: Vec<(String, &BackendStageConfig)> =
+                                cumulative_plans
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v))
+                                    .collect();
+                            match config::emit_backend_storage_routing(&routing_input) {
                                 Ok(routing_doc) => {
                                     info!(
                                         stage = "backend",
                                         metric = %workload.metric_name,
-                                        "[USE_TYPED_STAGE_SPLIT] posting storage-routing JSON"
+                                        cumulative_metrics = cumulative_plans.len(),
+                                        "[USE_TYPED_STAGE_SPLIT] posting cumulative storage-routing JSON"
                                     );
                                     if let Some(client) = st.backend_client.as_ref() {
                                         let body = routing_doc.to_string();
@@ -1187,6 +1246,7 @@ fn test_app_with_backend(backend_url: Option<String>) -> (AppState, axum::Router
         workload_registry: Arc::new(WorkloadRegistry::empty()),
         runtime_samples:   runtime_samples::RuntimeSamplesStore::new(64),
         backend_client,
+        backend_routing_cache: Arc::new(Mutex::new(HashMap::new())),
     };
     let router = axum::Router::new()
         .route("/api/v1/plan",                  axum::routing::post(handle_plan))
@@ -2421,6 +2481,152 @@ mod api_tests {
             assert!(
                 yaml.contains(&needle) || yaml.contains(&alt1) || yaml.contains(&alt2),
                 "missing routing rule for `{sketched}`\n{yaml}"
+            );
+        }
+    }
+
+    // ── Regression: archive tier covers all 5 sketched metrics ────────────────
+    //
+    // The backend's `POST /api/v1/storage_routing` handler is an atomic
+    // per-tenant SWAP — every push replaces the whole tenant's routing
+    // table. Pre-fix, `handle_plan` posted a single-element
+    // `metrics:[…]` document per call, so when the demo POSTed
+    // `/api/v1/plan` for each of the 5 sketched contract metrics in
+    // sequence, only the LAST metric's entry survived in the backend.
+    // The other 4 metrics defaulted to `sketch_warm_tier` (which has
+    // no warm-tier sketch state for archive-shape queries) → the
+    // demo's accuracy reducer logged `archive_miss` for those metrics
+    // even though gorillas3 wrote their TSDB blocks to MinIO and
+    // Thanos had them indexed.
+    //
+    // The fix wires `state.backend_routing_cache` so each
+    // `handle_plan` cycle posts the **cumulative** routing table.
+    // This regression test replays the demo's per-metric POST sequence
+    // against a mock backend, captures every body, and asserts the
+    // final swap covers all 5 sketched metrics simultaneously.
+    #[tokio::test]
+    async fn storage_routing_cumulative_push_covers_all_5_sketched_metrics() {
+        // Activate the typed-stage-split path (the only path that
+        // emits storage-routing JSON; the legacy path no-ops).
+        let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
+
+        // Mock backend that captures every storage-routing body.
+        // We re-use the mock pattern from `backend_client::tests` —
+        // an axum router that drains the request body into a shared
+        // sink. Mounted at the canonical `/api/v1/storage_routing`
+        // path so `BackendClient`'s URL-rewrite hits it directly.
+        type SinkInner = std::sync::Mutex<Vec<String>>;
+        let sink: Arc<SinkInner> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_capture = Arc::clone(&sink);
+        let mock_app = axum::Router::new()
+            .route(
+                "/api/v1/storage_routing",
+                axum::routing::post(move |body: axum::body::Bytes| {
+                    let sink = Arc::clone(&sink_capture);
+                    async move {
+                        let s = String::from_utf8_lossy(&body).to_string();
+                        sink.lock().unwrap().push(s);
+                        axum::http::StatusCode::OK
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+        // Brief settle so the bind is observable before the first POST.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Build an AppState with the backend pointed at the mock URL.
+        // Use the streaming-config alias so `BackendClient` derives
+        // the matching `/api/v1/storage_routing` URL.
+        let backend_url = format!("http://{addr}/api/v1/streaming-config");
+        let (state, _) = test_app_with_backend(Some(backend_url));
+
+        // Mount only `/api/v1/plan` — that's the path the demo
+        // exercises; we don't need bootstrap or other routes.
+        let app = axum::Router::new()
+            .route("/api/v1/plan", axum::routing::post(handle_plan))
+            .with_state(state.clone());
+
+        // The 5 sketched contract metrics from MVP §46. Each gets a
+        // separate POST /api/v1/plan, mirroring the demo's
+        // per-workload plan-emit cycle.
+        let sketched = [
+            "http_requests_total_latency_ms", // DDSketch
+            "request_size_bytes",             // KLL
+            "unique_users_per_min",           // HLL
+            "top_endpoint_qps",               // CountSketch
+            "endpoint_request_freq",          // CountMinSketch
+        ];
+
+        for m in &sketched {
+            let app = app.clone();
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/plan")
+                .header("content-type", "application/json")
+                .body(Body::from(plan_spec(m).to_string()))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "POST /api/v1/plan for `{m}` must return 200",
+            );
+        }
+
+        // Drain the mock sink: every plan-emit must have produced
+        // exactly one body (5 plans → 5 bodies).
+        let bodies = sink.lock().unwrap().clone();
+        assert_eq!(
+            bodies.len(),
+            sketched.len(),
+            "expected one storage-routing POST per plan; got {} bodies",
+            bodies.len(),
+        );
+
+        // The LAST captured body is the one the backend will leave
+        // installed (the swap is destructive — last write wins). It
+        // MUST list ALL 5 sketched metrics, otherwise the swap would
+        // erase the routing entries for the metrics planned earlier
+        // in the sequence and the backend would default them to
+        // `sketch_warm_tier` → archive_miss for those metrics' archive
+        // queries even though gorillas3's TSDB blocks are present in
+        // MinIO and Thanos has them indexed.
+        let last: serde_json::Value =
+            serde_json::from_str(bodies.last().unwrap()).expect("last body is valid JSON");
+        let metric_names: std::collections::BTreeSet<String> = last["metrics"]
+            .as_array()
+            .expect("metrics array")
+            .iter()
+            .map(|m| m["name"].as_str().unwrap().to_string())
+            .collect();
+        for m in &sketched {
+            assert!(
+                metric_names.contains(*m),
+                "final cumulative storage-routing table missing metric `{m}`; \
+                 contains only {metric_names:?}\nfull body: {}",
+                bodies.last().unwrap(),
+            );
+        }
+
+        // Each metric entry must carry a `thanos_archive` target — the
+        // archive-tier dispatch that lets backend forward archive-shape
+        // queries to Thanos. Without this target the metric falls back
+        // to `default_engine: sketch_warm_tier` and the archive miss
+        // reproduces.
+        for m in last["metrics"].as_array().unwrap() {
+            let targets = m["targets"].as_array().expect("targets array");
+            let engines: Vec<&str> = targets
+                .iter()
+                .map(|t| t["engine"].as_str().unwrap())
+                .collect();
+            assert!(
+                engines.contains(&"thanos_archive"),
+                "metric `{}` missing `thanos_archive` target; engines={engines:?}",
+                m["name"].as_str().unwrap(),
             );
         }
     }
