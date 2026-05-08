@@ -397,4 +397,126 @@ mod runtime_tests {
         // Telegraf-specific token.
         assert!(toml.contains("[[inputs.opentelemetry]]"), "expected Telegraf TOML header\n{toml}");
     }
+
+    // ── stitching-gap regression: registry walk binds all 6 contract metrics ──
+    //
+    // The 6 MVP contract metrics from `deploy/configs/mvp-workload.yaml` must
+    // every one bind through `collect_metric_to_family` so the routing
+    // table covers the full 5-sketch (DDSketch / KLL / HLL / CountSketch /
+    // CountMinSketch) shape, with `http_requests_total` declining to raw.
+    //
+    // Reproduces the live demo gap: 3 of 6 (HLL, CountSketch, CMS) silently
+    // drop because the analyzer pre-population path doesn't propagate
+    // `sketch_family_override` from the workload YAML into
+    // `QueryWorkload::sketch_type_override`.
+
+    /// Mimics the pre-population loop in `main()` — turns each
+    /// `WorkloadEntry` into a `QueryWorkload` via the shared `Analyzer`.
+    fn populate_store_from_registry(
+        registry: &WorkloadRegistry,
+        store: &WorkloadStore,
+    ) {
+        use crate::analyzer::{Analyzer, QuerySpec};
+        use crate::types;
+        use crate::types_v2;
+        let analyzer = Analyzer::new();
+        for entry in registry.entries() {
+            let spec = QuerySpec {
+                query_string:    entry.query_string.clone(),
+                metric_name:     entry.metric_name.clone(),
+                label_filters:   Default::default(),
+                group_by_labels: vec![],
+                aggregations:    vec!["quantile".into()],
+                time_window:     "5m".into(),
+                repeat_every:    None,
+                accuracy_sla:    entry.accuracy_sla,
+                latency_sla:     None,
+                sketch_type:     entry.sketch_family_override.clone(),
+                workload:        types::WorkloadCharacteristics::default(),
+                id:               None,
+                language:         None,
+                accuracy:         None,
+                dollars:          None,
+                deployment_model: None,
+                shape:            types_v2::QueryShape::default(),
+                data:             types_v2::DataShape::default(),
+            };
+            if let Ok(wl) = analyzer.analyze(spec) {
+                store.set(&entry.metric_name, wl, types::WorkloadCharacteristics::default());
+            }
+        }
+    }
+
+    #[test]
+    fn collect_metric_to_family_binds_all_six_contract_metrics_from_live_yaml() {
+        use crate::sketch_algebra::params::SketchKind;
+
+        // The 6 contract metrics reproduced inline (mirrors
+        // deploy/configs/mvp-workload.yaml entries 1, 5, 6, 7, 8 plus the
+        // raw-passthrough http_requests_total). Note we use the contract
+        // metric name `http_latency_ms` (the live YAML uses
+        // `http_requests_total_latency_ms` which falls back via AggType
+        // → DDSketch — but it's the metric-name variant that exercises
+        // classify_demo_metric for the DDSketch row).
+        let yaml = r#"
+- metric_name: http_latency_ms
+  query_string: "quantile_over_time(0.99, http_latency_ms[1m])"
+  accuracy_sla: 0.01
+  assign_to_role: agent
+- metric_name: http_requests_total
+  query_string: "count(http_requests_total)"
+  accuracy_sla: 0.0
+  assign_to_role: agent
+- metric_name: request_size_bytes
+  query_string: "quantile_over_time(0.99, request_size_bytes[1m])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: KLL
+- metric_name: unique_users_per_min
+  query_string: "count(unique_users_per_min)"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  sketch_family_override: HLL
+- metric_name: top_endpoint_qps
+  query_string: "topk(5, top_endpoint_qps)"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountSketch
+- metric_name: endpoint_request_freq
+  query_string: "rate(endpoint_request_freq[5m])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountMinSketch
+"#;
+        let entries: Vec<crate::config::workloads::WorkloadEntry> =
+            serde_yaml::from_str(yaml).expect("parse workload yaml");
+        assert_eq!(entries.len(), 6, "all 6 contract metrics must deserialize");
+
+        let registry = crate::config::workloads::WorkloadRegistry::from_entries(entries);
+        let store = WorkloadStore::new();
+        populate_store_from_registry(&registry, &store);
+
+        let map = collect_metric_to_family(&registry, &store);
+
+        // 5 sketched metrics + http_requests_total (raw, declines binding).
+        let expected: Vec<(&str, Option<SketchKind>)> = vec![
+            ("http_latency_ms",        Some(SketchKind::DDSketch)),
+            ("http_requests_total",    None),  // raw passthrough
+            ("request_size_bytes",     Some(SketchKind::Kll)),
+            ("unique_users_per_min",   Some(SketchKind::Hll)),
+            ("top_endpoint_qps",       Some(SketchKind::CountSketch)),
+            ("endpoint_request_freq",  Some(SketchKind::Cms)),
+        ];
+        for (metric, want) in &expected {
+            let got = map.get(*metric).cloned();
+            assert_eq!(
+                got, *want,
+                "metric {metric}: expected {want:?} in routing table, got {got:?}\n\
+                 full map: {map:?}",
+            );
+        }
+        // Routing table covers all 5 sketched metrics.
+        assert_eq!(map.len(), 5,
+            "routing table should have 5 entries (5 sketches; raw declines), got: {map:?}");
+    }
 }

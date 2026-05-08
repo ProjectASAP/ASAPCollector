@@ -218,6 +218,18 @@ async fn main() {
     let workload_registry = Arc::new(WorkloadRegistry::load(&workloads_path));
 
     // Pre-populate PlanStore from the registry so agents get a config immediately.
+    //
+    // Critical: thread `sketch_family_override` from each registry entry
+    // into the QuerySpec's `sketch_type` field — that's what populates
+    // `QueryWorkload::sketch_type_override`, which the typed planner
+    // (`bind_workload_typed`) reads to honour MVP §46 entries 5–8 (HLL /
+    // CountSketch / CountMinSketch). Without this stitch the workloads
+    // round-trip through the analyzer with a None override and the
+    // capability-matched default fires, but for the metrics whose
+    // statistic class doesn't match an `AggIntent` synthesizer (TopK in
+    // particular for `top_endpoint_qps`) the metric-name fallback in
+    // `classify_demo_metric` becomes the only path — and it works fine
+    // when the override is also threaded as a belt-and-braces guarantee.
     {
         let analyzer = Analyzer::new();
         for entry in workload_registry.entries() {
@@ -231,7 +243,7 @@ async fn main() {
                 repeat_every:    None,
                 accuracy_sla:    entry.accuracy_sla,
                 latency_sla:     None,
-                sketch_type:     None,
+                sketch_type:     entry.sketch_family_override.clone(),
                 workload:        types::WorkloadCharacteristics::default(),
                 // design.md alignment: defaults preserve legacy behaviour.
                 id:               None,
@@ -2248,6 +2260,167 @@ mod api_tests {
             assert!(
                 yaml.contains(&needle) || yaml.contains(&alt1) || yaml.contains(&alt2),
                 "missing routing rule for `{sketched}` — expected `route() where metric.name == \"{sketched}\"`\n{yaml}"
+            );
+        }
+    }
+
+    // ── Stitching-gap regression: live mvp-workload.yaml binds all 5 sketches ──
+    //
+    // Reproduces the live demo gap (3 of 6 contract metrics silently dropped
+    // because `WorkloadEntry` didn't carry `sketch_family_override` and
+    // `bind_workload_typed` early-returned on `exact_required` set by the
+    // bare-VectorSelector → Sum path that PromQL parsing applies inside
+    // `count(metric)` / `topk(K, metric)` / `rate(metric[5m])`).
+    //
+    // Loads workload entries shaped exactly like the deployed
+    // `deploy/configs/mvp-workload.yaml` MVP §46 rows (entries 5–8), pre-pops
+    // the workload store via the same code main() runs, and asserts the
+    // routing table emitted by the bootstrap GET endpoint covers all five
+    // sketched metrics.
+    fn test_app_with_live_mvp_workload_metrics() -> (AppState, axum::Router, String) {
+        // Mirror the YAML shape of `deploy/configs/mvp-workload.yaml` MVP §46
+        // entries — these are the exact strings that crashed in the live demo.
+        let yaml = r#"
+- metric_name: http_requests_total_latency_ms
+  query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"
+  accuracy_sla: 0.01
+  assign_to_role: agent
+- metric_name: http_requests_total
+  query_string: "count(http_requests_total{service=\"payments\"})"
+  accuracy_sla: 0.0
+  assign_to_role: agent
+- metric_name: request_size_bytes
+  query_string: "quantile_over_time(0.99, request_size_bytes[1m])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: KLL
+- metric_name: unique_users_per_min
+  query_string: "count(unique_users_per_min)"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  sketch_family_override: HLL
+- metric_name: top_endpoint_qps
+  query_string: "topk(5, top_endpoint_qps)"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountSketch
+- metric_name: endpoint_request_freq
+  query_string: "rate(endpoint_request_freq[5m])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountMinSketch
+"#;
+        let tmp_path = "/tmp/datacollector_live_mvp46_workload.yaml".to_string();
+        std::fs::write(&tmp_path, yaml).unwrap();
+        let registry = Arc::new(WorkloadRegistry::load(&tmp_path));
+
+        let (mut state, _router) = test_app();
+
+        let analyzer = Analyzer::new();
+        for entry in registry.entries() {
+            let spec = analyzer::QuerySpec {
+                query_string:    entry.query_string.clone(),
+                metric_name:     entry.metric_name.clone(),
+                label_filters:   Default::default(),
+                group_by_labels: vec![],
+                aggregations:    vec!["quantile".into()],
+                time_window:     "5m".into(),
+                repeat_every:    None,
+                accuracy_sla:    entry.accuracy_sla,
+                latency_sla:     None,
+                sketch_type:     entry.sketch_family_override.clone(),
+                workload:        types::WorkloadCharacteristics::default(),
+                id:               None,
+                language:         None,
+                accuracy:         None,
+                dollars:          None,
+                deployment_model: None,
+                shape:            types_v2::QueryShape::default(),
+                data:             types_v2::DataShape::default(),
+            };
+            if let Ok(wl) = analyzer.analyze(spec) {
+                let wc = types::WorkloadCharacteristics::default();
+                let plan = state.planner.plan(&wl, Some(&wc));
+                let metric_name = wl.metric_name.clone();
+                state.store.set(&metric_name, plan);
+                state.workload_store.set(&metric_name, wl, wc);
+            }
+        }
+
+        state.workload_registry = registry;
+
+        let router = axum::Router::new()
+            .route(
+                "/api/v1/collector-config/agent",
+                axum::routing::get(handle_bootstrap_agent_config),
+            )
+            .with_state(state.clone());
+        (state, router, tmp_path)
+    }
+
+    /// Pinning regression: the routing table emitted by the bootstrap
+    /// endpoint must cover all 5 sketched contract metrics — DDSketch
+    /// (`http_requests_total_latency_ms`), KLL (`request_size_bytes`),
+    /// HLL (`unique_users_per_min`), CountSketch (`top_endpoint_qps`),
+    /// CountMinSketch (`endpoint_request_freq`).
+    ///
+    /// Without the fix, this test fails with only 2 sketched routes
+    /// (DDSketch + KLL); HLL / CountSketch / CountMinSketch silently drop.
+    #[tokio::test]
+    async fn bootstrap_routing_table_covers_all_five_sketches_for_live_mvp_yaml() {
+        let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
+
+        let (state, app, tmp) = test_app_with_live_mvp_workload_metrics();
+
+        // ── Direct check: collect_metric_to_family produces 5 entries ────
+        let map = config::collect_metric_to_family(
+            &state.workload_registry,
+            &state.workload_store,
+        );
+        assert_eq!(
+            map.len(), 5,
+            "metric_to_family should have 5 sketched entries (raw declines), got {map:?}",
+        );
+        for (metric, want_family) in &[
+            ("http_requests_total_latency_ms", "DDSketch"),
+            ("request_size_bytes",             "Kll"),
+            ("unique_users_per_min",           "Hll"),
+            ("top_endpoint_qps",               "CountSketch"),
+            ("endpoint_request_freq",          "Cms"),
+        ] {
+            let got = map.get(*metric)
+                .map(|k| format!("{k:?}"))
+                .unwrap_or_else(|| "MISSING".into());
+            assert_eq!(
+                got, *want_family,
+                "metric_to_family[{metric}] expected {want_family}, got {got}\nmap: {map:?}",
+            );
+        }
+
+        // ── End-to-end check: routing rules in emitted YAML ───────────────
+        let req = Request::builder()
+            .uri("/api/v1/collector-config/agent")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let yaml = String::from_utf8(body.to_vec()).unwrap();
+        std::fs::remove_file(&tmp).ok();
+
+        for sketched in [
+            "http_requests_total_latency_ms",
+            "request_size_bytes",
+            "unique_users_per_min",
+            "top_endpoint_qps",
+            "endpoint_request_freq",
+        ] {
+            let needle = format!("metric.name == \\\"{sketched}\\\"");
+            let alt1 = format!("metric.name == \"{sketched}\"");
+            let alt2 = format!("metric.name=='{sketched}'");
+            assert!(
+                yaml.contains(&needle) || yaml.contains(&alt1) || yaml.contains(&alt2),
+                "missing routing rule for `{sketched}`\n{yaml}"
             );
         }
     }

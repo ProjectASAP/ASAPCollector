@@ -4,8 +4,10 @@
 //! controller can pre-populate the plan store and assign workloads to
 //! agents on connect without requiring an explicit HTTP `POST /api/v1/plan`.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tracing::{info, warn};
+
+use crate::types::SketchType;
 
 /// A single workload entry from the workloads YAML file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,10 +23,54 @@ pub struct WorkloadEntry {
     /// Role that should receive this workload (e.g. `"agent"`, `"backend"`).
     #[serde(default = "default_role")]
     pub assign_to_role: String,
+    /// Optional explicit sketch family override. When set, the planner pins
+    /// this family for the metric (modulo `(sketch, statistic)` validity
+    /// per `sketch_algebra::capability_matching::is_valid_pair`). Threaded
+    /// into `QueryWorkload::sketch_type_override` by the registry pre-pop
+    /// path so the typed L4 binding (`bind_workload_typed`) honours it.
+    ///
+    /// MVP-§46 contract entries 5–8 in `deploy/configs/mvp-workload.yaml`
+    /// rely on this field to pin HLL / CountSketch / CountMinSketch
+    /// against metrics whose name-classified statistic class is
+    /// `Cardinality` / `TopK` / `Frequency`.
+    #[serde(default, deserialize_with = "deserialize_sketch_family")]
+    pub sketch_family_override: Option<SketchType>,
+    /// Optional storage tier hint (e.g. `"warm"`, `"archive"`). Round-trips
+    /// silently for now — kept here so the YAML schema matches the
+    /// capability_matching agent's expected shape (no rename step at
+    /// integration). Not yet read by the planner.
+    #[serde(default)]
+    pub target_path: Option<String>,
 }
 
 fn default_accuracy_sla() -> f64 { 0.01 }
 fn default_role() -> String { "agent".into() }
+
+/// Case-insensitive `SketchType` deserialiser. The wire YAML in
+/// `deploy/configs/mvp-workload.yaml` spells the variants in mixed case
+/// (`KLL`, `HLL`, `CountSketch`, `CountMinSketch`, `DDSketch`) to match
+/// the capability-matching agent's schema, while `SketchType`'s
+/// `#[serde(rename_all = "lowercase")]` would otherwise reject those
+/// strings. Accepts both spellings.
+fn deserialize_sketch_family<'de, D>(deserializer: D) -> Result<Option<SketchType>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    let Some(s) = opt else { return Ok(None) };
+    let kind = match s.trim().to_ascii_lowercase().as_str() {
+        "ddsketch" => SketchType::DDSketch,
+        "kll" => SketchType::KLL,
+        "hll" => SketchType::HLL,
+        "countsketch" => SketchType::CountSketch,
+        "countminsketch" | "countmin" | "cms" => SketchType::CountMinSketch,
+        other => return Err(serde::de::Error::custom(format!(
+            "unknown sketch_family_override `{other}`; expected one of \
+             DDSketch / KLL / HLL / CountSketch / CountMinSketch"
+        ))),
+    };
+    Ok(Some(kind))
+}
 
 /// Registry of declarative workloads loaded from a YAML file.
 #[derive(Debug, Clone)]
@@ -56,6 +102,12 @@ impl WorkloadRegistry {
     /// Create an empty registry (no file).
     pub fn empty() -> Self {
         Self { entries: vec![] }
+    }
+
+    /// Create a registry from in-memory entries (useful for tests and
+    /// programmatic construction).
+    pub fn from_entries(entries: Vec<WorkloadEntry>) -> Self {
+        Self { entries }
     }
 
     /// Returns all workload entries.
@@ -125,23 +177,121 @@ mod tests {
                     query_string: None,
                     accuracy_sla: 0.01,
                     assign_to_role: "agent".into(),
+                    sketch_family_override: None,
+                    target_path: None,
                 },
                 WorkloadEntry {
                     metric_name: "b".into(),
                     query_string: None,
                     accuracy_sla: 0.05,
                     assign_to_role: "backend".into(),
+                    sketch_family_override: None,
+                    target_path: None,
                 },
                 WorkloadEntry {
                     metric_name: "c".into(),
                     query_string: None,
                     accuracy_sla: 0.02,
                     assign_to_role: "agent".into(),
+                    sketch_family_override: None,
+                    target_path: None,
                 },
             ],
         };
         assert_eq!(reg.for_role("agent").len(), 2);
         assert_eq!(reg.for_role("backend").len(), 1);
         assert_eq!(reg.first_for_role("agent").unwrap().metric_name, "a");
+    }
+
+    #[test]
+    fn deserialize_sketch_family_override_mixed_case() {
+        // The live wire YAML in `deploy/configs/mvp-workload.yaml` spells
+        // the override values in mixed case (KLL / HLL / CountSketch /
+        // CountMinSketch). Verify deserialization picks them up — without
+        // this, MVP §46 entries 5–8 silently drop their family override
+        // (the original stitching-gap symptom).
+        let yaml = r#"
+- metric_name: a
+  sketch_family_override: KLL
+- metric_name: b
+  sketch_family_override: HLL
+- metric_name: c
+  sketch_family_override: CountSketch
+- metric_name: d
+  sketch_family_override: CountMinSketch
+- metric_name: e
+  sketch_family_override: DDSketch
+- metric_name: f
+"#;
+        let entries: Vec<WorkloadEntry> = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[0].sketch_family_override, Some(SketchType::KLL));
+        assert_eq!(entries[1].sketch_family_override, Some(SketchType::HLL));
+        assert_eq!(entries[2].sketch_family_override, Some(SketchType::CountSketch));
+        assert_eq!(entries[3].sketch_family_override, Some(SketchType::CountMinSketch));
+        assert_eq!(entries[4].sketch_family_override, Some(SketchType::DDSketch));
+        assert_eq!(entries[5].sketch_family_override, None);
+    }
+
+    #[test]
+    fn deserialize_sketch_family_override_lowercase_aliases() {
+        // Lowercase / kebab-case spellings also accepted, plus the two
+        // CMS aliases (`countmin`, `cms`).
+        let yaml = r#"
+- metric_name: a
+  sketch_family_override: ddsketch
+- metric_name: b
+  sketch_family_override: countmin
+- metric_name: c
+  sketch_family_override: cms
+"#;
+        let entries: Vec<WorkloadEntry> = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entries[0].sketch_family_override, Some(SketchType::DDSketch));
+        assert_eq!(entries[1].sketch_family_override, Some(SketchType::CountMinSketch));
+        assert_eq!(entries[2].sketch_family_override, Some(SketchType::CountMinSketch));
+    }
+
+    #[test]
+    fn live_mvp_workload_yaml_loads_with_overrides() {
+        // Smoke-test the live deploy file. Confirms entries 5–8 carry
+        // their `sketch_family_override` after deserialization (the
+        // original stitching gap was this field being silently ignored
+        // by `serde`'s unknown-field default behaviour).
+        use std::path::PathBuf;
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop();
+        path.push("deploy/configs/mvp-workload.yaml");
+        if !path.exists() {
+            // Live file not in this checkout; skip silently.
+            return;
+        }
+        let registry = WorkloadRegistry::load(path.to_str().unwrap());
+        let by_name: std::collections::HashMap<&str, &WorkloadEntry> =
+            registry.entries().iter().map(|e| (e.metric_name.as_str(), e)).collect();
+
+        assert_eq!(
+            by_name.get("request_size_bytes")
+                .and_then(|e| e.sketch_family_override.clone()),
+            Some(SketchType::KLL),
+            "request_size_bytes must carry KLL override",
+        );
+        assert_eq!(
+            by_name.get("unique_users_per_min")
+                .and_then(|e| e.sketch_family_override.clone()),
+            Some(SketchType::HLL),
+            "unique_users_per_min must carry HLL override",
+        );
+        assert_eq!(
+            by_name.get("top_endpoint_qps")
+                .and_then(|e| e.sketch_family_override.clone()),
+            Some(SketchType::CountSketch),
+            "top_endpoint_qps must carry CountSketch override",
+        );
+        assert_eq!(
+            by_name.get("endpoint_request_freq")
+                .and_then(|e| e.sketch_family_override.clone()),
+            Some(SketchType::CountMinSketch),
+            "endpoint_request_freq must carry CountMinSketch override",
+        );
     }
 }
