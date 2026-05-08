@@ -542,11 +542,39 @@ pub fn emit_backend_config_json(cfg: &BackendStageConfig) -> Result<JsonValue> {
 pub fn emit_backend_storage_routing(
     metric_plans: &[(String, &BackendStageConfig)],
 ) -> Result<JsonValue> {
+    emit_backend_storage_routing_for_tenant(DEFAULT_TENANT, metric_plans)
+}
+
+/// Tenant id used when the deploy is single-tenant. Mirrors the
+/// backend's `crate::routing::DEFAULT_TENANT` (defined in
+/// `ASAPQuery-backend/asap-query-engine/src/routing/backend_storage_routing.rs`)
+/// — kept as a literal here so the controller doesn't take a build-time
+/// dependency on the backend crate just for one constant.
+pub const DEFAULT_TENANT: &str = "default";
+
+/// Per-tenant follow-up to PR #333 — emit a `BackendStorageRouting`
+/// JSON document scoped to a specific tenant. The single-tenant
+/// [`emit_backend_storage_routing`] entry point delegates to this
+/// with [`DEFAULT_TENANT`], preserving the existing single-tenant
+/// emit contract.
+///
+/// The emitted JSON adds a top-level `tenant: "<id>"` field. The
+/// backend's `BackendStorageRouting::from_json_payload` parser
+/// reads this field (defaulting to `"default"` when absent) and
+/// the `POST /api/v1/storage_routing` swap handler routes the swap
+/// to the named tenant's slot. Multi-tenant deployments emit one
+/// JSON per tenant; single-tenant deployments keep emitting with
+/// the default tenant and need no controller-side change.
+pub fn emit_backend_storage_routing_for_tenant(
+    tenant: &str,
+    metric_plans: &[(String, &BackendStageConfig)],
+) -> Result<JsonValue> {
     let mut metrics_json: Vec<JsonValue> = Vec::with_capacity(metric_plans.len());
     for (metric_name, backend_cfg) in metric_plans {
         metrics_json.push(build_routing_entry(metric_name, backend_cfg));
     }
     Ok(json!({
+        "tenant": tenant,
         "default_engine": "sketch_warm_tier",
         "metrics": metrics_json,
     }))
@@ -573,6 +601,22 @@ pub fn emit_backend_storage_routing_with_prometheus(
     metric_plans: &[(String, &BackendStageConfig)],
     mode3_metrics: &[String],
 ) -> Result<JsonValue> {
+    emit_backend_storage_routing_with_prometheus_for_tenant(
+        DEFAULT_TENANT,
+        metric_plans,
+        mode3_metrics,
+    )
+}
+
+/// Per-tenant variant of [`emit_backend_storage_routing_with_prometheus`].
+/// Mirrors [`emit_backend_storage_routing_for_tenant`] — adds a
+/// top-level `tenant: "<id>"` field; defaults preserve the existing
+/// single-tenant emit shape.
+pub fn emit_backend_storage_routing_with_prometheus_for_tenant(
+    tenant: &str,
+    metric_plans: &[(String, &BackendStageConfig)],
+    mode3_metrics: &[String],
+) -> Result<JsonValue> {
     let mut metrics_json: Vec<JsonValue> =
         Vec::with_capacity(metric_plans.len() + mode3_metrics.len());
     for (metric_name, backend_cfg) in metric_plans {
@@ -591,6 +635,7 @@ pub fn emit_backend_storage_routing_with_prometheus(
         }));
     }
     Ok(json!({
+        "tenant": tenant,
         "default_engine": "sketch_warm_tier",
         "metrics": metrics_json,
     }))
@@ -1337,6 +1382,57 @@ mod tests {
         assert_eq!(metrics[0]["name"], "http_request_duration_seconds");
     }
 
+    // ── Per-tenant routing emit tests (follow-up to PR #333) ──────────────
+
+    /// Single-tenant entry point — the convenience
+    /// [`emit_backend_storage_routing`] alias must keep emitting the
+    /// `default` tenant id so existing single-tenant deploys are
+    /// byte-compatible (modulo the new `tenant` field appearing).
+    #[test]
+    fn storage_routing_default_tenant_for_single_tenant_emit() {
+        let ddsketch = backend_cfg_with_kind(SketchKind::DDSketch);
+        let v = emit_backend_storage_routing(&[("latency".into(), &ddsketch)]).expect("emit ok");
+        assert_eq!(v["tenant"], DEFAULT_TENANT);
+    }
+
+    /// Per-tenant entry point — explicit `tenant` arg lands in the
+    /// emitted JSON's top-level `tenant` field. Other fields are
+    /// unchanged from the single-tenant emit, so the backend's
+    /// per-tenant swap routes to the named tenant's slot via the
+    /// body-tenant precedence rule.
+    #[test]
+    fn storage_routing_for_tenant_emits_explicit_tenant_field() {
+        let ddsketch = backend_cfg_with_kind(SketchKind::DDSketch);
+        let v = emit_backend_storage_routing_for_tenant(
+            "tenant-a",
+            &[("latency".into(), &ddsketch)],
+        )
+        .expect("emit ok");
+        assert_eq!(v["tenant"], "tenant-a");
+        assert_eq!(v["default_engine"], "sketch_warm_tier");
+        // Single metric, single warm + archive target shape — the
+        // per-tenant emit doesn't change the metric-side shape.
+        let metrics = v["metrics"].as_array().expect("metrics array");
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0]["name"], "latency");
+    }
+
+    /// Per-tenant variant of the prometheus-aware emit — tenant
+    /// scope must thread through Mode-3 metrics too.
+    #[test]
+    fn storage_routing_with_prometheus_for_tenant_emits_explicit_tenant_field() {
+        let mode3 = vec!["http_requests_total".to_string()];
+        let v = emit_backend_storage_routing_with_prometheus_for_tenant(
+            "tenant-b",
+            &[],
+            &mode3,
+        )
+        .expect("emit ok");
+        assert_eq!(v["tenant"], "tenant-b");
+        assert_eq!(v["metrics"][0]["name"], "http_requests_total");
+        assert_eq!(v["metrics"][0]["targets"][0]["engine"], "prometheus_remote");
+    }
+
     #[test]
     fn storage_routing_ddsketch_warm_serves_quantile_archive_serves_others() {
         let ddsketch = backend_cfg_with_kind(SketchKind::DDSketch);
@@ -1438,6 +1534,11 @@ mod tests {
         let s = serde_json::to_string_pretty(&v).expect("ser");
 
         // Pretty-print the snapshot for easy regression diffing.
+        // Per-tenant follow-up to PR #333: the top-level `tenant`
+        // field is now emitted (defaults to `"default"` for the
+        // single-tenant entry point). The `serde_json::Value` map
+        // serialises keys alphabetically, so `tenant` lands at the
+        // end of the document.
         let expected = r#"{
   "default_engine": "sketch_warm_tier",
   "metrics": [
@@ -1524,7 +1625,8 @@ mod tests {
         "max"
       ]
     }
-  ]
+  ],
+  "tenant": "default"
 }"#;
         assert_eq!(s, expected, "snapshot mismatch:\n{s}");
     }
