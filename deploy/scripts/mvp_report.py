@@ -698,7 +698,17 @@ def render_section_2_verdict_dual(
             )
         )
     md.append("")
-    md.append(f"**Verdict ⑥:** {'CAPTURED' if any_fr else 'UNKNOWN'}")
+    # Use the criterion's underlying PASS/FAIL/UNKNOWN evaluation
+    # (warm p50 ≤ 30s, archive optional ≤ 90s). The original
+    # CAPTURED/UNKNOWN rollup was a placeholder while ⑥ was
+    # blocked on probe routing — once the data lands we want the
+    # honest pass/fail signal to surface here too. ASAP-side gates
+    # the verdict because the warm-tier sketch is the under-test
+    # path; baseline raw is just the comparator.
+    asap_verdict, _, _ = criterion_freshness(asap.fresh_dir)  # type: ignore
+    if not any_fr:
+        asap_verdict = "UNKNOWN"
+    md.append(f"**Verdict ⑥:** {asap_verdict}")
     md.append("")
 
     return md

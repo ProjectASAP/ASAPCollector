@@ -52,6 +52,19 @@ services:
       - "--http-address=0.0.0.0:10902"
       - "--grpc-address=0.0.0.0:10901"
       - "--data-dir=/var/thanos/store"
+      # MVP demo cadence: the upstream default `--sync-block-duration`
+      # is 3 minutes, which races the demo's gorillas3processor flush
+      # cycle (60s) plus the freshness criterion's 30s warm-tier
+      # threshold — by the time the store-gateway notices the new
+      # block, the criterion has already evaluated against an empty
+      # archive. 30s sync keeps the demo honest: blocks land within
+      # the criterion's measurement window. Production deployments
+      # typically run with the 3-minute default because block
+      # freshness on the order of minutes is fine for read-heavy
+      # archive workloads — that's the configurability story, not
+      # an intrinsic Thanos limitation.
+      - "--sync-block-duration=30s"
+      - "--block-sync-concurrency=20"
     volumes:
       - ../configs/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro
       - thanos-store-data:/var/thanos/store

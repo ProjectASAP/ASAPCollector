@@ -937,10 +937,98 @@ async fn emit_bootstrap_typed(
     //    bootstrap caller IS the edge agent — Gateway / Backend
     //    configs go to other roles via OpAMP role-routing, not
     //    through this handler.
-    let edge_cfg = configs.into_iter().find_map(|(_, cfg)| match cfg {
+    let mut edge_cfg = configs.into_iter().find_map(|(_, cfg)| match cfg {
         crate::stage_split::StageConfig::Edge(edge) => Some(edge),
         _ => None,
     }).ok_or_else(|| anyhow!("typed three-stage map has no Edge entry for `{metric}`"))?;
+
+    // 5. Bootstrap-only plumbing: extend the typed Edge config with
+    //    metrics that the live planner doesn't see but the MVP demo
+    //    needs the agent to handle:
+    //
+    //    - Freshness probes (`http_freshness_probe_warm`,
+    //      `http_freshness_probe_archive`): demo plumbing, not user
+    //      metrics. The replay client polls the backend with
+    //      `last_over_time(http_freshness_probe_warm[10s])` to gauge
+    //      criterion ⑥. Without warm-passthrough routing the
+    //      DDSketch processor renames them to `_quantile`; without
+    //      gorillas3 archive write the warm engine has nothing to
+    //      look at.
+    //    - All non-archive workload-registry metrics: accuracy_reduce.py
+    //      asks the archive engine for the SAME PromQL the warm sketch
+    //      answered (criterion ④, archive-tier ground truth). If the
+    //      under-test metric isn't in the Gorilla-S3 archive, every
+    //      ground-truth query returns `archive_miss`. Adding the
+    //      metrics here makes the agent's gorillas3 processor write
+    //      them so the Thanos store-gateway can serve them later.
+    //
+    //    Both extensions are bootstrap-scope only — the live planner
+    //    stays free to plan per-metric without these defaults bleeding
+    //    in.
+    use crate::stage_split::emitter::ArchiveTierMetric;
+
+    let freshness_metrics = [
+        "http_freshness_probe_warm",
+        "http_freshness_probe_archive",
+    ];
+    // 10s flush window for the freshness probes — the criterion ⑥
+    // verdict gates on warm-tier p50 ≤ 30s, and the (`gorillas3`
+    // window + Thanos `--sync-block-duration` + ThanosForwardEngine
+    // dispatch) chain has to land inside that envelope. 60s would
+    // already burn the budget at the agent flush alone. 10s is the
+    // smallest window that still produces well-formed
+    // Prometheus-TSDB blocks (Thanos rejects sub-second
+    // `tsdb_block_duration`) and still aggregates enough samples per
+    // block for the store-gateway's per-block index to be useful.
+    //
+    // emit_edge_yaml takes the MIN across `archive_tier_metrics` for
+    // both `window_interval` and `tsdb_block_duration`, so this
+    // shrinks the cadence for the workload metrics added below too —
+    // intentional: a 10s flush gives the accuracy reducer (criterion
+    // ④) tighter ground-truth windows and the freshness probe
+    // (criterion ⑥) a tractable warm-tier latency at the cost of more
+    // S3 PUTs. The accuracy reducer's archive engine handles small
+    // blocks correctly because thanos-compact consolidates them into
+    // larger downsampled tiers per its retention defaults.
+    let freshness_window_secs: u64 = 10;
+    for m in freshness_metrics.iter() {
+        if !edge_cfg.archive_tier_metrics.iter().any(|a| a.metric == *m) {
+            edge_cfg.archive_tier_metrics.push(ArchiveTierMetric {
+                metric: (*m).to_string(),
+                window_secs: Some(freshness_window_secs),
+            });
+        }
+    }
+    // Both freshness probes need the warm-passthrough route so the
+    // DDSketch `_quantile` suffix doesn't break the replay client's
+    // `last_over_time(...)` query.
+    for m in freshness_metrics.iter() {
+        if !edge_cfg.warm_passthrough_metrics.iter().any(|s| s == m) {
+            edge_cfg.warm_passthrough_metrics.push((*m).to_string());
+        }
+    }
+
+    // Add all workload-registry metrics (deduplicated) to the archive
+    // tier so the accuracy reducer's archive ground truth has data
+    // for every replay row. 60s window matches the canonical demo
+    // gorillas3 flush cadence — emit_edge_yaml's MIN selection still
+    // takes the smaller `freshness_window_secs` above for the
+    // top-level processor knobs, this 60s is just informational
+    // bookkeeping per metric.
+    let workload_archive_window_secs: u64 = 60;
+    let mut seen: std::collections::HashSet<String> = edge_cfg
+        .archive_tier_metrics
+        .iter()
+        .map(|a| a.metric.clone())
+        .collect();
+    for entry in st.workload_registry.entries() {
+        if seen.insert(entry.metric_name.clone()) {
+            edge_cfg.archive_tier_metrics.push(ArchiveTierMetric {
+                metric: entry.metric_name.clone(),
+                window_secs: Some(workload_archive_window_secs),
+            });
+        }
+    }
 
     emit_for_runtime(runtime, &edge_cfg, &st.opamp_endpoint, None)
         .with_context(|| format!("emit_for_runtime failed for `{metric}`"))
