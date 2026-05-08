@@ -12,6 +12,21 @@
 //! | `top_endpoint_qps`      | CountSketch  | top-K                 |
 //! | `endpoint_request_freq` | CountMinSketch (CMS) | frequency     |
 //!
+//! Note that CountMinSketch ALSO supports top-K via the CMS-Heap pattern
+//! (Cormode & Muthukrishnan, 2005 — "An Improved Data Stream Summary: The
+//! Count-Min Sketch and its Applications"). The capability matrix below
+//! reflects this: CMS validly answers Frequency *and* TopK. CountSketch
+//! remains the canonical (unbiased) TopK pick — `pick_family` prefers it
+//! when no override is supplied — but a workload's
+//! `sketch_family_override` may still pin CountMin for a TopK metric.
+//!
+//! Backend gap: declaring CMS-supports-TopK here is a planner-side concern.
+//! The backend's actual "top-K from CountMin state" query path (the heap
+//! readout) is a separate workstream and is not yet implemented in
+//! `ASAPQuery-backend`. Until that lands, a planner-pinned CMS-for-TopK
+//! binding will produce a sketch the backend cannot extract heavy hitters
+//! from. Keep this caveat in mind when reviewing override-driven plans.
+//!
 //! The asap-common docstring (`asap-common/dependencies/rs/asap_types/src/
 //! capability_matching.rs` per the orchestrator spec) keeps this matrix
 //! as the single source of truth so the planner's `bind_workload_typed`
@@ -53,9 +68,10 @@ pub enum StatisticClass {
     Quantile,
     /// `count_distinct(x)` — only HLL is valid.
     Cardinality,
-    /// `topk(k, x)` — only CountSketch (with-heap) is valid in the MVP
-    /// catalog. Misra-Gries / SpaceSaving would extend the matrix but
-    /// are not part of Phase β.
+    /// `topk(k, x)` — CountSketch (with-heap) is the canonical pick, but
+    /// CountMinSketch (with-heap) is *also* valid via the CMS-Heap pattern
+    /// (Cormode & Muthukrishnan 2005). Misra-Gries / SpaceSaving would
+    /// extend the matrix but are not part of Phase β.
     TopK,
     /// `freq(x = k)` — only CMS (CountMinSketch) is valid in the MVP
     /// catalog. CountSketch could in principle answer it but the
@@ -112,10 +128,15 @@ pub enum AccuracyPreference {
 /// | KLL          | yes      | no          | no   | no        | no           |
 /// | HLL          | no       | yes         | no   | no        | no           |
 /// | CountSketch  | no       | no          | yes  | no        | no           |
-/// | CMS          | no       | no          | no   | yes       | no           |
+/// | CMS          | no       | no          | yes  | yes       | no           |
 ///
 /// `SumRateCount` has no valid sketch — the agent emits raw OTLP for
 /// those statistic classes (see [`pick_family`]).
+///
+/// CMS gains TopK validity via the CMS-Heap pattern (Cormode &
+/// Muthukrishnan 2005). NB: this is the planner-side capability
+/// declaration; the backend's "top-K from CountMin state" readout path
+/// is a separate workstream — see the module-level docs.
 pub fn is_valid_pair(sketch: SketchKind, statistic: StatisticClass) -> bool {
     use SketchKind::*;
     use StatisticClass::*;
@@ -124,6 +145,7 @@ pub fn is_valid_pair(sketch: SketchKind, statistic: StatisticClass) -> bool {
         | (Kll, Quantile)
         | (Hll, Cardinality)
         | (CountSketch, TopK)
+        | (Cms, TopK)
         | (Cms, Frequency) => true,
         _ => false,
     }
@@ -237,12 +259,28 @@ mod tests {
     }
 
     #[test]
-    fn cms_is_frequency_only() {
+    fn cms_supports_frequency_and_topk() {
+        // CMS validly answers Frequency (point-frequency, additive bound)
+        // AND TopK via the CMS-Heap pattern (Cormode & Muthukrishnan 2005).
         assert!(is_valid_pair(SketchKind::Cms, StatisticClass::Frequency));
+        assert!(is_valid_pair(SketchKind::Cms, StatisticClass::TopK));
         assert!(!is_valid_pair(SketchKind::Cms, StatisticClass::Quantile));
         assert!(!is_valid_pair(SketchKind::Cms, StatisticClass::Cardinality));
-        assert!(!is_valid_pair(SketchKind::Cms, StatisticClass::TopK));
         assert!(!is_valid_pair(SketchKind::Cms, StatisticClass::SumRateCount));
+    }
+
+    #[test]
+    fn countmin_supports_topk_capability() {
+        // Pin the new matrix entry: CMS validly answers TopK. The
+        // canonical pick remains CountSketch — see
+        // `pick_family_topk_picks_countsketch` — but the catalog now
+        // accepts a `sketch_family_override: CountMinSketch` for a
+        // TopK-shaped workload (CMS-Heap pattern, Cormode &
+        // Muthukrishnan 2005).
+        assert!(
+            is_valid_pair(SketchKind::Cms, StatisticClass::TopK),
+            "CMS should support TopK via the CMS-Heap pattern",
+        );
     }
 
     // ── pick_family — capability-matched defaults ─────────────────────────────

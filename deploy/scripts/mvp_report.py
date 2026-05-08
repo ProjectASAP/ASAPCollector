@@ -99,7 +99,16 @@ EDGE_ORDER = [
 #   HLL               — relative-error cardinality, ε ≤ 0.0325 (p=12)
 #   CountSketch       — top-K recall, ε ≥ 0.85 (recall is a HIGHER-is-
 #                       better metric — so the bound is an inequality
-#                       in the opposite direction)
+#                       in the opposite direction). The CMS-Heap
+#                       pattern (Cormode & Muthukrishnan 2005) means a
+#                       workload may legitimately bind `top_endpoint_qps`
+#                       to CountMinSketch instead — the planner accepts
+#                       either family for a TopK metric. CountSketch is
+#                       the canonical (unbiased) pick; the report row's
+#                       family label notes the alternative without
+#                       changing the recall bound (both families clear
+#                       the same recall threshold for a Zipfian heavy-
+#                       hitter workload).
 #   CountMinSketch    — additive-error frequency, ε / total ≤ 1/w. We
 #                       don't have a per-row `additive_err` column; we
 #                       reuse `rel_err` as a proxy and compare against
@@ -114,6 +123,17 @@ EDGE_ORDER = [
 
 SKETCH_FAMILIES = [
     # (family, metric_name, query_class_label, bound_text, bound_value, error_column)
+    #
+    # The top-K row's family label is intentionally "CountSketch" —
+    # the canonical (unbiased) pick and the contract-row default. A
+    # workload may instead bind `top_endpoint_qps` to CountMinSketch
+    # via the CMS-Heap pattern (Cormode & Muthukrishnan 2005) — the
+    # planner's capability matrix accepts either family for a TopK
+    # statistic. The recall bound (≥0.85) is identical for both
+    # families on the demo's Zipfian heavy-hitter workload, so the
+    # verdict logic is family-agnostic. `top_k_family_label()`
+    # detects the actual chosen family at render time when a
+    # workload spec is available.
     ("DDSketch",       "http_latency_ms",        "quantile",     "≤0.01",    0.01,   "rel_err"),
     ("KLL",            "request_size_bytes",     "quantile",     "≤0.005",   0.005,  "rel_err"),
     ("HLL",            "unique_users_per_min",   "cardinality",  "≤0.0325",  0.0325, "rel_err"),
@@ -121,6 +141,59 @@ SKETCH_FAMILIES = [
     ("CountMinSketch", "endpoint_request_freq",  "frequency",    "≤theoretical (1/w)", 0.02,  "rel_err"),
     ("raw",            "http_requests_total",    "sum_rate",     "exact (=0)", 0.0,  "rel_err"),
 ]
+
+# Family labels accepted for the top-K row. Both clear the same recall
+# bound on the demo's Zipfian workload; which one a given run actually
+# uses is determined by the workload spec's `sketch_family_override`.
+_TOPK_ACCEPTED_FAMILIES: tuple[str, ...] = ("CountSketch", "CountMinSketch")
+
+
+def top_k_family_label(workload_yaml_path: str | None = None) -> str:
+    """Return the rendered family label for the top-K row.
+
+    When `workload_yaml_path` is supplied AND the file declares a
+    `sketch_family_override` for `top_endpoint_qps`, the label reflects
+    the chosen family. Otherwise the canonical "CountSketch" label is
+    used (with a "(or CountMin via CMS-Heap)" annotation so the reader
+    knows the alternative is valid).
+    """
+    chosen = _detect_top_k_family(workload_yaml_path)
+    if chosen == "CountMinSketch":
+        return "CountMinSketch (CMS-Heap)"
+    if chosen == "CountSketch":
+        return "CountSketch"
+    # No spec available, or no override declared. Show the canonical
+    # pick + the alternative inline.
+    return "CountSketch (or CountMin via CMS-Heap)"
+
+
+def _detect_top_k_family(workload_yaml_path: str | None) -> str | None:
+    """Best-effort parse of `mvp-workload.yaml` to find which family
+    the workload pinned for `top_endpoint_qps`. Returns the family
+    string ("CountSketch" / "CountMinSketch") or None if no spec
+    available or the metric isn't pinned.
+    """
+    if not workload_yaml_path or not os.path.exists(workload_yaml_path):
+        return None
+    try:
+        with open(workload_yaml_path, "r") as f:
+            text = f.read()
+    except OSError:
+        return None
+    # Tiny, dependency-free YAML probe — we only need to find the
+    # `sketch_family_override` line under the `top_endpoint_qps` block.
+    in_block = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- metric_name:"):
+            in_block = "top_endpoint_qps" in stripped
+            continue
+        if in_block and stripped.startswith("sketch_family_override:"):
+            value = stripped.split(":", 1)[1].strip()
+            if value in _TOPK_ACCEPTED_FAMILIES:
+                return value
+            return None
+    return None
 
 # Reverse map: metric → family entry. Used by the accuracy renderer to
 # group accuracy.csv rows by family.

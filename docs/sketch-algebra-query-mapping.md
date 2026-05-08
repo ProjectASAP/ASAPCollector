@@ -59,7 +59,7 @@ The mapping depends on three context flags captured during AST traversal:
 |---|---|---|---|---|---|
 | `COUNT(*)` | ✗ | ✗ | ✗ | `Exact(Count)` | Global count; no sketch benefit |
 | `COUNT(*)` | ✓ | ✗ | ✗ | `CountMin` | Frequency per group |
-| `COUNT(*)` | ✓ | ✓ | ✗ | `CountSketch(k)` | Heavy-hitter top-K |
+| `COUNT(*)` | ✓ | ✓ | ✗ | `CountSketch(k)` | Heavy-hitter top-K (canonical, unbiased). `CountMin(k)`-with-heap is also valid via the CMS-Heap pattern (Cormode & Muthukrishnan 2005) — opt in via `sketch_family_override: CountMinSketch`. |
 | `COUNT(*)` WHERE pred | ✗ | ✗ | ✗ | `CountMin` | Push filter; sketch for predicate-key frequency |
 | `COUNT(DISTINCT col)` | ✗ | ✗ | ✗ | `HLL` | Global distinct count |
 | `COUNT(DISTINCT col)` | ✓ | ✗ | ✗ | `Hydra(HLL, keys)` | Per-group distinct count |

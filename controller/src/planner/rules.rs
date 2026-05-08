@@ -205,13 +205,85 @@ pub fn bind_workload_typed(
     // keeps the contract-row mapping deterministic — the dispatcher's
     // tie-break (DDSketch p=6 vs KLL p=5) cannot accidentally flip
     // `request_size_bytes`'s KLL pick to DDSketch.
-    match kind {
-        SketchKind::DDSketch => BindDDSketchOnQuantile.apply(&aggregate, &accuracy),
-        SketchKind::Kll => BindKllOnQuantile.apply(&aggregate, &accuracy),
-        SketchKind::Hll => BindHllOnCardinality.apply(&aggregate, &accuracy),
-        SketchKind::CountSketch => BindCountSketchOnTopK.apply(&aggregate, &accuracy),
-        SketchKind::Cms => BindCmsOnCount.apply(&aggregate, &accuracy),
+    //
+    // CMS+TopK note: when the picker selected `SketchKind::Cms` for a
+    // TopK statistic (only reachable today via a `sketch_family_override:
+    // CountMinSketch` on a TopK metric), we emit a CMS-with-heap binding
+    // inline. The CMS-Heap pattern (Cormode & Muthukrishnan 2005) gives
+    // a valid heavy-hitter sketch; the unbiased CountSketch remains the
+    // canonical pick when no override is supplied. The backend's "top-K
+    // from CountMin state" readout path is a separate workstream — see
+    // `sketch_algebra::capability_matching` module docs for the gap note.
+    match (kind, statistic) {
+        (SketchKind::DDSketch, _) => BindDDSketchOnQuantile.apply(&aggregate, &accuracy),
+        (SketchKind::Kll, _) => BindKllOnQuantile.apply(&aggregate, &accuracy),
+        (SketchKind::Hll, _) => BindHllOnCardinality.apply(&aggregate, &accuracy),
+        (SketchKind::CountSketch, _) => BindCountSketchOnTopK.apply(&aggregate, &accuracy),
+        (SketchKind::Cms, StatisticClass::TopK) => {
+            bind_cms_with_heap_on_topk(&aggregate, &accuracy)
+        }
+        (SketchKind::Cms, _) => BindCmsOnCount.apply(&aggregate, &accuracy),
     }
+}
+
+/// Bind `Aggregate{TopK{k, accuracy}}` to a CMS-with-heap sketch — the
+/// CMS-Heap pattern from Cormode & Muthukrishnan (2005). Mirrors the
+/// `(eps, delta) → (w, d)` mapping used by `BindCmsOnCount` and the
+/// `with_heap` flag pattern from `BindCountSketchOnTopK`. CountSketch
+/// remains the canonical (unbiased) TopK pick; this binder fires only
+/// when a workload override has explicitly selected `CountMinSketch` for
+/// a TopK metric.
+fn bind_cms_with_heap_on_topk(
+    expr: &crate::intent_algebra::QueryExpr,
+    accuracy: &crate::types_v2::AccuracyTarget,
+) -> Option<crate::sketch_algebra::SketchExpr> {
+    use crate::intent_algebra::{AggIntent, QueryExpr};
+    use crate::sketch_algebra::params::{CmsParams, SketchKind, SketchParams};
+    use crate::sketch_algebra::sketch_expr::{EstimateOp, SketchExpr};
+    use crate::types_v2::AccuracyTarget;
+
+    let (k_topk, intent_accuracy, child) = match expr {
+        QueryExpr::Aggregate {
+            aggs, child, by, ..
+        } if aggs.len() == 1 && by.is_empty() => match &aggs[0] {
+            AggIntent::TopK { k, accuracy } => (*k, accuracy.clone(), child),
+            _ => return None,
+        },
+        _ => return None,
+    };
+
+    if k_topk == 0 {
+        return None;
+    }
+
+    let (eps, delta) = match (accuracy, &intent_accuracy) {
+        (AccuracyTarget::Exact, _) | (_, AccuracyTarget::Exact) => return None,
+        (AccuracyTarget::Epsilon(a), AccuracyTarget::Epsilon(b)) => (a.min(*b), 0.01),
+        (AccuracyTarget::Epsilon(a), AccuracyTarget::EpsilonDelta { eps, delta })
+        | (AccuracyTarget::EpsilonDelta { eps, delta }, AccuracyTarget::Epsilon(a)) => {
+            (a.min(*eps), *delta)
+        }
+        (
+            AccuracyTarget::EpsilonDelta { eps: a, delta: da },
+            AccuracyTarget::EpsilonDelta { eps: b, delta: db },
+        ) => (a.min(*b), da.min(*db)),
+    };
+
+    if eps <= 0.0 || delta <= 0.0 || delta >= 1.0 {
+        return None;
+    }
+
+    let w = (std::f64::consts::E / eps).ceil() as u32;
+    let d = (1.0 / delta).ln().ceil() as u32;
+    let w = w.max(2);
+    let d = d.max(1);
+
+    Some(SketchExpr::estimate_over_agg(
+        EstimateOp::TopK { k: k_topk },
+        SketchKind::Cms,
+        SketchParams::Cms(CmsParams { w, d }),
+        (**child).clone(),
+    ))
 }
 
 pub struct RulesPlanner {
@@ -679,6 +751,37 @@ mod tests {
             extract_family(&bound),
             Some(SketchKind::DDSketch),
             "sketch_type_override=DDSketch should pin DDSketch despite the contract's KLL default",
+        );
+    }
+
+    #[test]
+    fn planner_accepts_countmin_override_for_topk_metric() {
+        // CMS-Heap pattern (Cormode & Muthukrishnan 2005): when a
+        // workload's `sketch_family_override` (=
+        // `sketch_type_override`) selects CountMinSketch for a TopK
+        // metric, the planner should accept it instead of falling
+        // back to the canonical CountSketch default.
+        let mut w = workload_for("top_endpoint_qps", AggType::Frequency);
+        w.sketch_type_override = Some(SketchType::CountMinSketch);
+        let bound = bind_workload_typed(&w)
+            .expect("CountMin override on a TopK metric should still bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::Cms),
+            "sketch_type_override=CountMinSketch on a TopK metric should pin CMS",
+        );
+    }
+
+    #[test]
+    fn planner_default_for_topk_remains_countsketch() {
+        // Without any override, the canonical pick for a TopK metric
+        // stays CountSketch — CMS-Heap is opt-in via override only.
+        let w = workload_for("top_endpoint_qps", AggType::Frequency);
+        let bound = bind_workload_typed(&w).expect("top_endpoint_qps must bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::CountSketch),
+            "default TopK pick must remain CountSketch (unbiased estimator)",
         );
     }
 
