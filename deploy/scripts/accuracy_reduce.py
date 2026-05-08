@@ -331,6 +331,14 @@ _SUM_OVER_TIME_RE = re.compile(
     r"sum_over_time\(\s*([\w_]+)\s*\[\s*[0-9smhd]+\s*\]\s*\)",
     re.IGNORECASE,
 )
+# frequency shape: `rate(metric[5m])` — per-series rate-of-change. CountMin
+# answers this from its frequency estimate (counter increments per window).
+# Comparison is against archive's exact rate per series; we report mean
+# absolute additive error across keys (the CMS theoretical bound is e/w).
+_RATE_RE = re.compile(
+    r"rate\(\s*([\w_]+)\s*\[\s*[0-9smhd]+\s*\]\s*\)",
+    re.IGNORECASE,
+)
 
 
 def parse_query(promql: str) -> tuple[str, dict] | None:
@@ -351,6 +359,8 @@ def parse_query(promql: str) -> tuple[str, dict] | None:
         return "sum", {"metric": m.group(1)}
     if (m := _SUM_OVER_TIME_RE.match(s)):
         return "sum", {"metric": m.group(1)}
+    if (m := _RATE_RE.match(s)):
+        return "frequency", {"metric": m.group(1)}
     return None
 
 
@@ -428,6 +438,28 @@ def extract_topk_keys(result, k: int) -> list[str]:
         m = el.get("metric") or {}
         keys.append(json.dumps(m, sort_keys=True))
     return keys
+
+
+def extract_per_series(result) -> dict[str, float]:
+    """Extract a {labels-key → value} dict from a PromQL vector result.
+    Used by `frequency` (rate-per-series) comparison: warm CountMin
+    estimate vs archive exact rate, key-by-key. Returns empty dict on
+    malformed input."""
+    out: dict[str, float] = {}
+    if not isinstance(result, list):
+        return out
+    for el in result:
+        if not isinstance(el, dict):
+            continue
+        labels = el.get("metric") or {}
+        v = el.get("value")
+        if not isinstance(v, list) or len(v) < 2:
+            continue
+        try:
+            out[json.dumps(labels, sort_keys=True)] = float(v[1])
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 # --- per-cell reducer ----------------------------------------------
@@ -556,6 +588,12 @@ def reduce_cell_via_archive(
                     sketch_keys = extract_topk_keys(warm_result, params["k"])
                     row["warm_answer"] = json.dumps(sketch_keys)[:120]
                     row["answer"] = row["warm_answer"]
+                elif kind == "frequency":
+                    warm_map = extract_per_series(warm_result)
+                    row["warm_answer"] = json.dumps(
+                        {k: round(v, 4) for k, v in list(warm_map.items())[:5]}
+                    )[:120]
+                    row["answer"] = row["warm_answer"]
                 else:
                     a = extract_scalar(warm_result)
                     if a is not None:
@@ -617,6 +655,35 @@ def reduce_cell_via_archive(
                     row["answer"] = row["warm_answer"]
                 if a is not None and t is not None:
                     rel = abs(a - t) / max(abs(t), 1.0)
+                    row["rel_err"] = _format_float(rel)
+                    row["error"] = row["rel_err"]
+            elif kind == "frequency":
+                # CountMin estimates per-key rate; archive returns exact
+                # per-series rate. Pair by labels-set key, compute mean
+                # absolute additive error across the intersection. The
+                # archive_answer / warm_answer columns hold a compact
+                # JSON snapshot (≤120 char) so the report can show what
+                # was compared without replaying the query.
+                truth_map = extract_per_series(archive_result)
+                warm_map = extract_per_series(warm_result)
+                row["archive_answer"] = json.dumps(
+                    {k: round(v, 4) for k, v in list(truth_map.items())[:5]}
+                )[:120]
+                row["warm_answer"] = json.dumps(
+                    {k: round(v, 4) for k, v in list(warm_map.items())[:5]}
+                )[:120]
+                row["truth"] = row["archive_answer"]
+                row["answer"] = row["warm_answer"]
+                shared = set(truth_map.keys()) & set(warm_map.keys())
+                if shared:
+                    # Mean additive error across overlapping keys, normalised
+                    # by the truth rate's typical magnitude so the column
+                    # stays comparable with rel_err for other kinds.
+                    abs_errs = [abs(warm_map[k] - truth_map[k]) for k in shared]
+                    truth_total = sum(truth_map[k] for k in shared) or 1.0
+                    rel = (sum(abs_errs) / len(abs_errs)) / max(
+                        truth_total / len(shared), 1.0
+                    )
                     row["rel_err"] = _format_float(rel)
                     row["error"] = row["rel_err"]
 
