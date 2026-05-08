@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Accuracy reducer (P8 — Phase-6 Fix 1: ground truth via Gorilla archive).
+"""Accuracy reducer (P8 — archive-engine ground truth, Phase ε.3).
 
 For each replay-client per-query row, the reducer obtains TWO answers
 for the same PromQL string:
@@ -7,19 +7,23 @@ for the same PromQL string:
   1. **Warm answer** (sketch, from `SimpleEngine`) — already captured
      in `replay.jsonl` by the replay client (this is the demo's
      under-test answer).
-  2. **Archive answer** (exact, from `GorillaQueryEngine`) — the
-     ground truth, fetched by re-issuing the same query against the
-     backend with the `X-ASAP-Engine: gorilla_archive` header set so
-     the dispatcher bypasses `BackendStorageRouting` and queries the
-     Gorilla chunks on MinIO directly.
+  2. **Archive answer** (exact, from `ThanosForwardEngine` /
+     `GorillaQueryEngine`) — the ground truth, fetched by re-issuing
+     the same query against the backend with the
+     `X-ASAP-Engine: <engine-id>` header set so the dispatcher
+     bypasses `BackendStorageRouting` and queries the archive tier
+     directly. Default engine id is `thanos_archive` (Step 2.3 /
+     PR #97 wired the backend's HTTP-forward to thanos-query for
+     full PromQL surface). `gorilla_archive` is still accepted for
+     legacy GorillaQueryEngine deploys.
 
-The Gorilla archive on MinIO IS exact retention — querying it for
-"the answer" is apples-to-apples with the warm sketch answer for the
-same PromQL string. This:
+The archive tier (Thanos sidecar over Gorilla-S3 chunks on MinIO) IS
+exact retention — querying it for "the answer" is apples-to-apples
+with the warm sketch answer for the same PromQL string. This:
 
   - removes the need for any new gateway raw-tee exporter
   - reuses the existing infrastructure (gorillas3processor +
-    `GorillaQueryEngine`)
+    thanos-query / GorillaQueryEngine)
   - validates both engines simultaneously (cross-checks the warm
     sketch answer against the archive's exact answer)
   - aligns with the JSONL deprecation design (see
@@ -106,7 +110,13 @@ from typing import Iterable
 # `X-ASAP-Engine` header bypasses `BackendStorageRouting` and
 # dispatches the query straight to the named engine (Phase-6 Fix 1).
 ENGINE_OVERRIDE_HEADER = "X-ASAP-Engine"
-DEFAULT_ARCHIVE_ENGINE_ID = "gorilla_archive"
+# Step 2.3 (PR #97) registered the ThanosForwardEngine under the
+# `thanos_archive` data-source-id. The legacy `gorilla_archive` slot
+# is still accepted (precompute_engine.rs registers both ids when
+# `ASAP_THANOS_QUERY_URL` is set) but the new default points at the
+# Thanos engine which has the full PromQL surface (the legacy
+# in-process Gorilla engine is curated-subset only).
+DEFAULT_ARCHIVE_ENGINE_ID = "thanos_archive"
 DEFAULT_BACKEND_URL = "http://localhost:19091"
 DEFAULT_ARCHIVE_TIMEOUT_S = 15.0
 
@@ -759,11 +769,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--use-jsonl",
+        "--use-jsonl-truth",
+        dest="use_jsonl",
         action="store_true",
         help=(
             "[transition-only] fall back to the legacy JSONL "
             "ground-truth tee. Default behaviour queries the backend's "
-            "Gorilla archive engine for apples-to-apples ground truth."
+            "archive engine (X-ASAP-Engine: thanos_archive by default) "
+            "for apples-to-apples ground truth."
         ),
     )
     args = ap.parse_args(argv)

@@ -139,7 +139,16 @@ services:
       - ../configs/backend-streaming.yaml:/etc/asap/streaming.yaml:ro
     command:
       - "--streaming-config=/etc/asap/streaming.yaml"
-      - "--ingest-port=9090"
+      # Phase ε.3 (Option-B validation): the deployed binary is
+      # `precompute_engine` (see deploy/docker/Dockerfile.backend),
+      # which has no `--ingest-port` flag — its only HTTP port is
+      # `--query-port`. Passing `--ingest-port=9090` makes clap exit
+      # with `unexpected argument` and the container crashes
+      # immediately, which is the root cause of the controller's
+      # `failed to POST streaming-config JSON to backend` /
+      # `Connection refused` failures captured in Phase 3.3's
+      # diagnostics. Ingest is OTLP-only (Prometheus remote-write
+      # was deleted in PR #100).
       - "--query-port=9091"
       # Warm-tier sketch ingest. Without this the OTel gateway's
       # PRW translator drops typed sketch data points
@@ -149,7 +158,6 @@ services:
       - "--otel-grpc-port=4317"
       - "--otel-http-port=4318"
     ports:
-      - "19090:9090"   # Prometheus remote-write ingest (legacy / direct PRW clients)
       - "19091:9091"   # PromQL-compatible HTTP query surface
       # OTLP ingest is intra-docker only (gateway → backend).
       # Expose externally if you want to skip the gateway and
