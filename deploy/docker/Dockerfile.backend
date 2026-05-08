@@ -1,5 +1,27 @@
 # Multi-stage build for the ASAPQuery backend.
 #
+# Builds and ships the workspace's default binary
+# (`query_engine_rust`, from `asap-query-engine/src/main.rs`) as
+# the runtime entry. This is the single, featureful backend
+# binary: warm-tier sketches, controller capability-miss
+# notifications, schema eviction, backfill worker, archive-tier
+# Gorilla / Thanos forwarding, Prometheus forwarding, and the
+# full storage routing surface.
+#
+# Background: this Dockerfile previously shipped the
+# `precompute_engine` `[[bin]]` from
+# `asap-query-engine/src/bin/precompute_engine.rs`, which had a
+# divergent clap flag set and parallel runtime wiring. Every new
+# `src/main.rs` feature had to be backported by hand (PR #105 hot
+# reload, PR #332's `--ingest-port` removal, etc.). The cleanup
+# PR aligning the deployed binary made the relevant flags on
+# `src/main.rs` optional with sensible defaults, added
+# `--query-port` / `--inference-config` / `--allowed-lateness-ms`
+# aliases, kept `--ingest-port` as a deprecated no-op for compose
+# backwards compatibility, and deleted `precompute_engine.rs`
+# entirely. The compose `command:` blocks in this repo continue
+# to work unchanged.
+#
 # The backend source lives in a separate private repo
 # (ProjectASAP/ASAPQuery-backend). We take it as a BuildKit
 # named build-context. Two additional path-deps live as siblings
@@ -47,14 +69,18 @@ COPY --from=asap-sketchlib     . asap_sketchlib
 # Mirrors the asap-precompute-rs pattern.
 COPY --from=asap-gorilla       . ASAPCollector/asap-gorilla
 
-RUN cd ASAPQuery-backend && cargo build --release --bin precompute_engine
+RUN cd ASAPQuery-backend && cargo build --release --bin query_engine_rust
 
 # Runtime image: binary + CA certs.
 FROM debian:bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/ASAPQuery-backend/target/release/precompute_engine \
+# Logs default to /var/log/asap (binary's --output-dir default);
+# create it so the binary can write its rolling log file without
+# the compose stack mounting a host volume.
+RUN mkdir -p /var/log/asap
+COPY --from=build /src/ASAPQuery-backend/target/release/query_engine_rust \
     /usr/local/bin/asap-query-backend
 
 ENV RUST_LOG=info \
