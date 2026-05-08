@@ -109,10 +109,24 @@ func (p *hllProcessor) Shutdown(ctx context.Context) error {
 	}
 }
 
-// ConsumeMetrics is the OTel pipeline entry. Batch grafts synthesized
-// output onto input md before forwarding; window observes only and
-// forwards input unchanged (PR #211 — chained sketch processors share
-// a single pipeline).
+// ConsumeMetrics is the OTel pipeline entry.
+//
+// Batch mode:
+//   - DropOriginal=true (default since the ① bandwidth FAIL fix):
+//     forwards ONLY the synthesized sketch output. The raw md is
+//     dropped from the outbound stream — it is already preserved
+//     upstream by gorillas3processor's archive write.
+//   - DropOriginal=false: grafts synthesized output onto md and
+//     forwards the union (legacy "originals + sketch summaries"
+//     shape).
+//
+// Window mode:
+//   - DropOriginal=true: observes md into per-name Precomputes and
+//     forwards an empty pmetric.Metrics so the raw md does not
+//     reach the next consumer. The ticker goroutine emits sketch
+//     output via FlushWindow on its own cadence (PR #211 still
+//     applies — chained sketch processors share a single pipeline).
+//   - DropOriginal=false: observes md and forwards md unchanged.
 func (p *hllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
 	p.recordInput(ctx, md)
 	if p.cfg.Mode == ModeBatch {
@@ -120,12 +134,25 @@ func (p *hllProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) e
 		if err != nil {
 			return err
 		}
+		if p.cfg.DropOriginal {
+			if out.ResourceMetrics().Len() == 0 {
+				return nil
+			}
+			p.recordOutput(ctx, out)
+			return p.nextConsumer.ConsumeMetrics(ctx, out)
+		}
 		appendMetrics(md, out)
 		p.recordOutput(ctx, md)
 		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	}
 	if err := p.observeAll(md); err != nil {
 		return err
+	}
+	if p.cfg.DropOriginal {
+		// Window mode: the FlushWindow tick goroutine forwards sketch
+		// output on its own cadence; the live ConsumeMetrics call must
+		// not also forward the raw md or the wire carries raw + sketch.
+		return nil
 	}
 	return p.nextConsumer.ConsumeMetrics(ctx, md)
 }

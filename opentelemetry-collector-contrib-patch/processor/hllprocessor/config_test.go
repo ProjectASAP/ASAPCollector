@@ -17,3 +17,18 @@ func TestDefaultDeltaTransmissionTrue(t *testing.T) {
 		t.Fatalf("expected DeltaTransmission=true by default, got %v", cfg.DeltaTransmission)
 	}
 }
+
+// TestDefaultDropOriginalTrue is the bandwidth-FAIL guard. The MVP
+// agent pipeline relies on the HLL cardinality summary REPLACING the
+// raw on the outbound stream — the raw is preserved upstream by the
+// gorillas3processor archive write. A future factory edit that flips
+// this default back to false would resurrect the ~11x agent→gateway
+// bandwidth blow-up the ① bandwidth FAIL fix addressed (especially
+// painful for high-cardinality unique-user inputs the HLL is sized
+// for).
+func TestDefaultDropOriginalTrue(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	if !cfg.DropOriginal {
+		t.Fatalf("expected DropOriginal=true by default, got %v (bandwidth-FAIL regression)", cfg.DropOriginal)
+	}
+}

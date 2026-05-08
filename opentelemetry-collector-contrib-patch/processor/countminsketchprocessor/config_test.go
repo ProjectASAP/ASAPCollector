@@ -20,6 +20,17 @@ func TestDefaultDeltaTransmissionTrue(t *testing.T) {
 	assert.True(t, cfg.DeltaTransmission, "expected DeltaTransmission=true by default")
 }
 
+// TestDefaultDropOriginalTrue is the bandwidth-FAIL guard. The MVP
+// agent pipeline relies on the sketch summary REPLACING the raw on
+// the outbound stream — the raw is preserved upstream by the
+// gorillas3processor archive write. A future factory edit that flips
+// this default back to false would resurrect the ~11x agent→gateway
+// bandwidth blow-up the ① bandwidth FAIL fix addressed.
+func TestDefaultDropOriginalTrue(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	assert.True(t, cfg.DropOriginal, "expected DropOriginal=true by default (bandwidth-FAIL regression)")
+}
+
 func TestConfigValidate(t *testing.T) {
 	// 1. Test Valid Config
 	cfg := &Config{

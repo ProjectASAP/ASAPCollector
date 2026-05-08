@@ -35,6 +35,7 @@ func makeGaugeMetrics(name string, values []float64) pmetric.Metrics {
 // cardinality gauge metric per input series with the expected suffix.
 func TestBatchModeCardinalityOutput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	require.NoError(t, cfg.Validate())
 
@@ -75,6 +76,7 @@ func TestBatchModeCardinalityOutput(t *testing.T) {
 // HLLSketch metric with properly populated data point fields.
 func TestBatchModeTransmitSketch(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = true
 	require.NoError(t, cfg.Validate())
@@ -116,6 +118,7 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 // TestBatchModeMetricSuffix verifies that a custom metric_suffix is applied.
 func TestBatchModeMetricSuffix(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.MetricSuffix = "_card"
 	require.NoError(t, cfg.Validate())
@@ -148,6 +151,7 @@ func TestBatchModeMetricSuffix(t *testing.T) {
 // after flushWindow is called, not on every ConsumeMetrics.
 func TestWindowModeFlush(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 10 * time.Minute // large enough to not auto-fire
 	require.NoError(t, cfg.Validate())
@@ -190,6 +194,7 @@ func TestWindowModeFlush(t *testing.T) {
 // within a window are merged into a single HLL before flush.
 func TestWindowModeMergesAcrossBatches(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 10 * time.Minute
 	require.NoError(t, cfg.Validate())
@@ -234,6 +239,7 @@ func TestWindowModeMergesAcrossBatches(t *testing.T) {
 // race under -race.
 func TestWindowModeRaceFree(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 10 * time.Minute
 	require.NoError(t, cfg.Validate())
@@ -258,6 +264,7 @@ func TestWindowModeRaceFree(t *testing.T) {
 // label values are merged into a single HLL sketch, and the output carries only those labels.
 func TestHLLAggregateByCollapsesSeries(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.AggregateBy = []string{"region"}
 	require.NoError(t, cfg.Validate())
@@ -325,6 +332,7 @@ func TestHLLAggregateByCollapsesSeries(t *testing.T) {
 // are included in the HLL sketch.
 func TestHLLLabelMatchersFilter(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.LabelMatchers = []LabelMatcher{{Key: "env", Value: "prod"}}
 	require.NoError(t, cfg.Validate())
@@ -368,4 +376,49 @@ func TestHLLLabelMatchersFilter(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, cardCount, "only the prod series should appear")
+}
+
+// TestDropOriginalDefault is the bandwidth-FAIL guard for HLL. With
+// the default config (DropOriginal=true) the processor MUST emit
+// the HLL cardinality summary as a REPLACEMENT for the raw input
+// metric. The raw must NOT appear on the outbound stream; it is
+// preserved only via the gorillas3 archive write upstream.
+func TestDropOriginalDefault(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	require.True(t, cfg.DropOriginal, "default DropOriginal must be true (bandwidth fix)")
+	cfg.Mode = ModeBatch
+	cfg.TransmitSketch = false
+	require.NoError(t, cfg.Validate())
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := makeGaugeMetrics("unique_users_per_min", []float64{1, 2, 3, 4, 5})
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+
+	// Sketch-only on the wire: raw "unique_users_per_min" must NOT
+	// appear; HLL cardinality summary "unique_users_per_min_hll_cardinality"
+	// MUST appear.
+	var foundRaw, foundCard bool
+	rms := out[0].ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				switch ms.At(k).Name() {
+				case "unique_users_per_min":
+					foundRaw = true
+				case "unique_users_per_min_hll_cardinality":
+					foundCard = true
+				}
+			}
+		}
+	}
+	assert.False(t, foundRaw,
+		"raw input metric must not be on the outbound stream when DropOriginal=true")
+	assert.True(t, foundCard, "expected HLL cardinality summary on outbound stream")
 }
