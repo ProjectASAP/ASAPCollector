@@ -839,3 +839,54 @@ def test_per_sketch_table_renders_in_dual_mode_report(tmp_path):
     # Aggregate ④ verdict line.
     assert "**Verdict ④:**" in md
     assert "6/6 families within bound" in md
+
+
+# ── top_k_family_label helper (CMS-Heap acceptance for top-K) ────
+
+
+def test_top_k_family_label_default_is_countsketch_alt():
+    """No workload spec: label should advertise both families (the
+    canonical CountSketch + the CMS-Heap alternative)."""
+    label = mvp_report.top_k_family_label(None)
+    assert "CountSketch" in label
+    assert "CountMin" in label, (
+        "default label should mention CMS-Heap alternative"
+    )
+
+
+def test_top_k_family_label_pinned_to_countsketch(tmp_path):
+    """Workload pins CountSketch — label is the canonical
+    CountSketch only."""
+    spec = tmp_path / "mvp-workload.yaml"
+    spec.write_text(
+        "- metric_name: top_endpoint_qps\n"
+        "  query_string: \"topk(5, top_endpoint_qps)\"\n"
+        "  sketch_family_override: CountSketch\n"
+    )
+    assert mvp_report.top_k_family_label(str(spec)) == "CountSketch"
+
+
+def test_top_k_family_label_pinned_to_countmin(tmp_path):
+    """Workload pins CountMinSketch — label reflects the CMS-Heap
+    pattern (CountMinSketch)."""
+    spec = tmp_path / "mvp-workload.yaml"
+    spec.write_text(
+        "- metric_name: top_endpoint_qps\n"
+        "  query_string: \"topk(5, top_endpoint_qps)\"\n"
+        "  sketch_family_override: CountMinSketch\n"
+    )
+    label = mvp_report.top_k_family_label(str(spec))
+    assert label.startswith("CountMinSketch")
+    assert "CMS-Heap" in label, "CMS pin should annotate CMS-Heap"
+
+
+def test_top_k_family_label_no_override_falls_back(tmp_path):
+    """Workload has the metric but no sketch_family_override —
+    falls back to the dual-family label."""
+    spec = tmp_path / "mvp-workload.yaml"
+    spec.write_text(
+        "- metric_name: top_endpoint_qps\n"
+        "  query_string: \"topk(5, top_endpoint_qps)\"\n"
+    )
+    label = mvp_report.top_k_family_label(str(spec))
+    assert "CountSketch" in label and "CountMin" in label
