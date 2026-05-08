@@ -32,15 +32,31 @@ pub fn typed_sketch_algebra_enabled() -> bool {
 /// IR, when callers want to inspect the typed binding alongside the
 /// legacy `CollectionPlan` output.
 ///
-/// Lowers the workload's first aggregation intent into an `AggIntent`
-/// (Phase C scope: single-intent workloads — workloads with multiple
-/// intents fall through to `None`), then calls
-/// `sketch_algebra::bind_query_expr` with the workload's accuracy SLA
-/// translated through `AccuracyTarget::from_legacy_accuracy_sla`.
+/// **Family-per-metric picker** (issue #46, MVP demo). The contract pins
+/// six metric→family rows (`http_latency_ms` → DDSketch, `request_size_bytes`
+/// → KLL, `unique_users_per_min` → HLL, `top_endpoint_qps` → CountSketch,
+/// `endpoint_request_freq` → CMS, `http_requests_total` → raw). The
+/// matching is done by [`sketch_algebra::capability_matching::
+/// classify_demo_metric`] for the contract rows, and falls back to the
+/// `AggType`-driven default (Quantile→DDSketch, Cardinality→HLL,
+/// Frequency→CMS) for any other metric name.
+///
+/// **`sketch_type_override` wins.** When the workload-spec carries a
+/// `sketch_type_override`, that field bypasses the capability-matched
+/// default and pins the family directly (modulo `(sketch, statistic)`
+/// validity — an override that violates the catalog is rejected and the
+/// fallback path runs). This is the spec's `sketch_family_override`
+/// behaviour.
+///
+/// **`SumRateCount` declines.** Metrics whose contract row is "raw
+/// passthrough" (`http_requests_total`) return `None` — the typed path
+/// has no sketch to bind, and the legacy `plan()` path produces the
+/// raw-passthrough `CollectionPlan`.
 ///
 /// Returns `None` when the workload shape is not yet supported by the
-/// typed path (multi-intent, raw-required, or no aggregations) — the
-/// caller should then fall back to the legacy `plan()` output.
+/// typed path (multi-intent, exact-required, raw-passthrough metric, or
+/// no aggregations) — the caller should then fall back to the legacy
+/// `plan()` output.
 ///
 /// Phase B (MVP v6) wires `main::handle_plan` to call this whenever
 /// the parallel `USE_TYPED_STAGE_SPLIT` gate is enabled — the bound
@@ -51,7 +67,15 @@ pub fn bind_workload_typed(
 ) -> Option<crate::sketch_algebra::SketchExpr> {
     use crate::intent_algebra::{AggIntent as L3AggIntent, QueryExpr, Schema, Source, WindowKind};
     use crate::intent_algebra::schema::{Column, DataType};
-    use crate::sketch_algebra::bind_query_expr;
+    use crate::sketch_algebra::capability_matching::{
+        classify_demo_metric, is_valid_pair, pick_family, AccuracyPreference, StatisticClass,
+    };
+    use crate::sketch_algebra::params::SketchKind;
+    use crate::sketch_algebra::rules::{
+        bind_cms_count::BindCmsOnCount, bind_cms_topk::BindCountSketchOnTopK,
+        bind_ddsketch_quantile::BindDDSketchOnQuantile, bind_hll_cardinality::BindHllOnCardinality,
+        bind_kll_quantile::BindKllOnQuantile, Rule,
+    };
     use crate::types_v2::AccuracyTarget;
 
     if w.exact_required {
@@ -60,6 +84,42 @@ pub fn bind_workload_typed(
     if w.aggregations.len() != 1 {
         return None;
     }
+
+    // ── Pick the (statistic class, accuracy preference) ──────────────
+    //
+    // Priority: workload-spec metric-name match → AggType-driven
+    // default. The metric-name match owns the demo contract rows; the
+    // AggType fallback covers everything else.
+    let (statistic, accuracy_pref) = classify_demo_metric(&w.metric_name)
+        .unwrap_or_else(|| match w.aggregations[0] {
+            AggType::Quantile => (StatisticClass::Quantile, AccuracyPreference::RelativeError),
+            AggType::Cardinality => (StatisticClass::Cardinality, AccuracyPreference::default()),
+            AggType::Frequency => (StatisticClass::Frequency, AccuracyPreference::default()),
+        });
+
+    // SumRateCount → no sketch (raw passthrough). Decline the typed
+    // binding so the caller falls back to the legacy raw plan.
+    if statistic == StatisticClass::SumRateCount {
+        return None;
+    }
+
+    // ── Resolve the SketchKind (override > capability-matched default) ─
+    //
+    // The workload-spec's `sketch_type_override` (= the spec's
+    // `sketch_family_override` per orchestrator contract) wins over the
+    // capability-matched pick, *provided* the override is valid for the
+    // statistic class. An invalid override (e.g. HLL for a Quantile
+    // workload) is silently dropped — the catalog-default family runs
+    // instead so the binding never produces a nonsense (sketch, stat)
+    // pair.
+    let override_kind: Option<SketchKind> = w
+        .sketch_type_override
+        .as_ref()
+        .map(|st| SketchKind::from(st.clone()));
+    let kind = match override_kind {
+        Some(k) if is_valid_pair(k.clone(), statistic) => k,
+        _ => pick_family(statistic, accuracy_pref)?,
+    };
 
     // QueryWorkload::accuracy_sla in the legacy planner is interpreted
     // directly as the ε bound (e.g. `0.01` ⇒ ε=0.01). The L3/L4 typed
@@ -71,17 +131,28 @@ pub fn bind_workload_typed(
     };
     let intent_accuracy = accuracy.clone();
 
-    let intent = match w.aggregations[0] {
-        AggType::Quantile => L3AggIntent::Quantile {
+    // Build the matching L3 `AggIntent` for the picked statistic class.
+    // TopK lacks an `AggType` enum entry today (the MVP-contract
+    // top_endpoint_qps metric is name-classified, not AggType-derived),
+    // so we synthesize a default k=10 — the same value the legacy
+    // PromQL `topk(10, …)` lowering uses.
+    let intent = match statistic {
+        StatisticClass::Quantile => L3AggIntent::Quantile {
             q: w.quantiles.first().copied().unwrap_or(0.99),
             accuracy: intent_accuracy,
         },
-        AggType::Cardinality => L3AggIntent::Cardinality {
+        StatisticClass::Cardinality => L3AggIntent::Cardinality {
             accuracy: intent_accuracy,
         },
-        AggType::Frequency => L3AggIntent::Frequency {
+        StatisticClass::Frequency => L3AggIntent::Frequency {
             accuracy: intent_accuracy,
         },
+        StatisticClass::TopK => L3AggIntent::TopK {
+            k: 10,
+            accuracy: intent_accuracy,
+        },
+        // SumRateCount handled above (early return).
+        StatisticClass::SumRateCount => unreachable!(),
     };
 
     let scan = QueryExpr::Scan {
@@ -126,7 +197,21 @@ pub fn bind_workload_typed(
         child: Box::new(windowed),
     };
 
-    bind_query_expr(&aggregate, accuracy).ok()
+    // ── Drive the picked family-specific `Bind*` rule ─────────────────
+    //
+    // Bypass the priority-based dispatcher: we have a definitive family
+    // pick from the capability matrix (or the `sketch_type_override`),
+    // so route directly to the rule that produces that family. This
+    // keeps the contract-row mapping deterministic — the dispatcher's
+    // tie-break (DDSketch p=6 vs KLL p=5) cannot accidentally flip
+    // `request_size_bytes`'s KLL pick to DDSketch.
+    match kind {
+        SketchKind::DDSketch => BindDDSketchOnQuantile.apply(&aggregate, &accuracy),
+        SketchKind::Kll => BindKllOnQuantile.apply(&aggregate, &accuracy),
+        SketchKind::Hll => BindHllOnCardinality.apply(&aggregate, &accuracy),
+        SketchKind::CountSketch => BindCountSketchOnTopK.apply(&aggregate, &accuracy),
+        SketchKind::Cms => BindCmsOnCount.apply(&aggregate, &accuracy),
+    }
 }
 
 pub struct RulesPlanner {
@@ -421,5 +506,220 @@ mod tests {
     fn gateway_passthrough() {
         let plan = RulesPlanner::new().plan(&workload(vec![AggType::Quantile]));
         assert!(plan.gateway_config.passthrough);
+    }
+
+    // ── Family-per-metric tests (issue #46 MVP demo contract) ─────────────────
+    //
+    // The shared MVP demo contract pins six metric→family rows. These tests
+    // drive each row through `bind_workload_typed` and assert the bound
+    // `SketchExpr` carries the expected sketch family. The contract:
+    //
+    // | metric                  | family       |
+    // |-------------------------|--------------|
+    // | `http_requests_total`   | raw (None)   |
+    // | `http_latency_ms`       | DDSketch     |
+    // | `request_size_bytes`    | KLL          |
+    // | `unique_users_per_min`  | HLL          |
+    // | `top_endpoint_qps`      | CountSketch  |
+    // | `endpoint_request_freq` | CMS          |
+
+    use crate::sketch_algebra::params::SketchKind;
+    use crate::sketch_algebra::sketch_expr::SketchExpr;
+
+    /// Walk the L4 binding output and pull out the `SketchAgg`'s family.
+    /// Returns `None` if no `SketchAgg` node is present (raw / pure
+    /// logical pass-through).
+    fn extract_family(expr: &SketchExpr) -> Option<SketchKind> {
+        match expr {
+            SketchExpr::SketchAgg { sketch_type, .. } => Some(sketch_type.clone()),
+            SketchExpr::SketchEstimate { child, .. } => extract_family(child),
+            SketchExpr::SketchMerge { children, .. } => {
+                children.iter().find_map(extract_family)
+            }
+            SketchExpr::LetBinding { expr, child, .. } => {
+                extract_family(expr).or_else(|| extract_family(child))
+            }
+            SketchExpr::Logical(_) | SketchExpr::Ref { .. } => None,
+            SketchExpr::RawAtEdgeSketchAtBackend { family, .. } => Some(family.clone()),
+            SketchExpr::RawAtEdgePrometheusArchive { .. } => None,
+        }
+    }
+
+    /// Build a workload with the given metric name + reasonable
+    /// AggType-driven default for the contract row. The metric-name match
+    /// in `classify_demo_metric` overrides the AggType for the
+    /// contract rows; the AggType still has to be a valid one (the enum
+    /// has no `TopK` variant, so for `top_endpoint_qps` we pass
+    /// `Frequency` and rely on the metric-name reclassification).
+    fn workload_for(metric: &str, agg: AggType) -> QueryWorkload {
+        QueryWorkload {
+            metric_name: metric.into(),
+            label_filters: HashMap::new(),
+            group_by_labels: vec![],
+            aggregations: vec![agg],
+            time_window: Duration::from_secs(300),
+            repeat_every: None,
+            accuracy_sla: 0.01,
+            latency_sla: None,
+            sketch_type_override: None,
+            exact_required: false,
+            quantiles: vec![],
+        }
+    }
+
+    #[test]
+    fn typed_binding_http_requests_total_is_raw_passthrough() {
+        // Contract: `http_requests_total` → raw passthrough (no sketch).
+        // The typed path declines (`bind_workload_typed` returns `None`)
+        // so the caller falls back to the legacy raw plan.
+        let w = workload_for("http_requests_total", AggType::Frequency);
+        let bound = bind_workload_typed(&w);
+        assert!(
+            bound.is_none(),
+            "http_requests_total should bind to None (raw passthrough); got {bound:?}",
+        );
+    }
+
+    #[test]
+    fn typed_binding_http_latency_ms_picks_ddsketch() {
+        // Contract: `http_latency_ms` → DDSketch (Quantile, rel-err).
+        let w = workload_for("http_latency_ms", AggType::Quantile);
+        let bound = bind_workload_typed(&w).expect("http_latency_ms must bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::DDSketch),
+            "http_latency_ms should bind to DDSketch (Quantile, rel-err)",
+        );
+    }
+
+    #[test]
+    fn typed_binding_request_size_bytes_picks_kll() {
+        // Contract: `request_size_bytes` → KLL (Quantile, rank-err).
+        // Note: this is the rank-err preference flip — without the
+        // metric-name reclassification, the priority-based dispatcher
+        // would pick DDSketch (priority 6 > KLL priority 5).
+        let w = workload_for("request_size_bytes", AggType::Quantile);
+        let bound = bind_workload_typed(&w).expect("request_size_bytes must bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::Kll),
+            "request_size_bytes should bind to KLL (Quantile, rank-err)",
+        );
+    }
+
+    #[test]
+    fn typed_binding_unique_users_per_min_picks_hll() {
+        // Contract: `unique_users_per_min` → HLL (Cardinality).
+        let w = workload_for("unique_users_per_min", AggType::Cardinality);
+        let bound = bind_workload_typed(&w).expect("unique_users_per_min must bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::Hll),
+            "unique_users_per_min should bind to HLL (Cardinality)",
+        );
+    }
+
+    #[test]
+    fn typed_binding_top_endpoint_qps_picks_countsketch() {
+        // Contract: `top_endpoint_qps` → CountSketch (TopK).
+        // The metric-name reclassification reroutes from the AggType
+        // default (Frequency → CMS) to the contract row (TopK →
+        // CountSketch).
+        let w = workload_for("top_endpoint_qps", AggType::Frequency);
+        let bound = bind_workload_typed(&w).expect("top_endpoint_qps must bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::CountSketch),
+            "top_endpoint_qps should bind to CountSketch (TopK)",
+        );
+    }
+
+    #[test]
+    fn typed_binding_endpoint_request_freq_picks_cms() {
+        // Contract: `endpoint_request_freq` → CMS (Frequency).
+        // The legacy AggType default for Frequency is *also* CMS via
+        // BindCmsOnCount, but the metric-name path goes through the
+        // capability-matching picker first — both produce CMS, the
+        // contract row ratifies it.
+        let w = workload_for("endpoint_request_freq", AggType::Frequency);
+        let bound = bind_workload_typed(&w).expect("endpoint_request_freq must bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::Cms),
+            "endpoint_request_freq should bind to CMS (Frequency)",
+        );
+    }
+
+    // ── sketch_type_override (= sketch_family_override) wins ──────────────────
+
+    #[test]
+    fn sketch_type_override_pins_kll_for_quantile_metric() {
+        // `http_latency_ms`'s contract row is DDSketch, but a workload
+        // override of `KLL` must win — both KLL and DDSketch are valid
+        // for Quantile per the capability matrix, so the override is
+        // honoured.
+        let mut w = workload_for("http_latency_ms", AggType::Quantile);
+        w.sketch_type_override = Some(SketchType::KLL);
+        let bound = bind_workload_typed(&w).expect("override should still bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::Kll),
+            "sketch_type_override=KLL should pin KLL despite the contract's DDSketch default",
+        );
+    }
+
+    #[test]
+    fn sketch_type_override_pins_ddsketch_for_quantile_metric() {
+        // `request_size_bytes`'s contract row is KLL (rank-err); a
+        // workload override of `DDSketch` flips it back to DDSketch.
+        let mut w = workload_for("request_size_bytes", AggType::Quantile);
+        w.sketch_type_override = Some(SketchType::DDSketch);
+        let bound = bind_workload_typed(&w).expect("override should still bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::DDSketch),
+            "sketch_type_override=DDSketch should pin DDSketch despite the contract's KLL default",
+        );
+    }
+
+    #[test]
+    fn invalid_sketch_type_override_falls_back_to_default() {
+        // HLL is NOT valid for a Quantile statistic — the capability
+        // matrix rejects the override, and the planner falls back to
+        // the contract-row default (DDSketch for `http_latency_ms`).
+        let mut w = workload_for("http_latency_ms", AggType::Quantile);
+        w.sketch_type_override = Some(SketchType::HLL);
+        let bound = bind_workload_typed(&w).expect("fallback should bind");
+        assert_eq!(
+            extract_family(&bound),
+            Some(SketchKind::DDSketch),
+            "invalid (HLL, Quantile) override should be rejected; planner falls back to DDSketch",
+        );
+    }
+
+    // ── Combined sweep: all 6 contract rows in one shot ───────────────────────
+
+    #[test]
+    fn all_six_contract_metrics_produce_expected_family() {
+        // Single test that drives the full contract row set through
+        // `bind_workload_typed` — this is the per-task acceptance test
+        // ("verify each produces the expected `SketchExpr` family").
+        let cases: Vec<(&str, AggType, Option<SketchKind>)> = vec![
+            ("http_requests_total", AggType::Frequency, None),
+            ("http_latency_ms", AggType::Quantile, Some(SketchKind::DDSketch)),
+            ("request_size_bytes", AggType::Quantile, Some(SketchKind::Kll)),
+            ("unique_users_per_min", AggType::Cardinality, Some(SketchKind::Hll)),
+            ("top_endpoint_qps", AggType::Frequency, Some(SketchKind::CountSketch)),
+            ("endpoint_request_freq", AggType::Frequency, Some(SketchKind::Cms)),
+        ];
+        for (metric, agg, expected) in cases {
+            let w = workload_for(metric, agg);
+            let bound = bind_workload_typed(&w);
+            let got = bound.as_ref().and_then(extract_family);
+            assert_eq!(
+                got, expected,
+                "metric {metric}: expected family {expected:?}, got {got:?}",
+            );
+        }
     }
 }

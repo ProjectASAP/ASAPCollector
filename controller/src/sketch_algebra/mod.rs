@@ -31,6 +31,7 @@
 
 #![allow(dead_code, unused_imports)]
 
+pub mod capability_matching;
 pub mod lower;
 pub mod params;
 pub mod rules;
@@ -41,6 +42,9 @@ pub mod sketch_expr;
 mod tests;
 
 // Re-exports — `crate::sketch_algebra::*` for downstream callers.
+pub use capability_matching::{
+    classify_demo_metric, is_valid_pair, pick_family, AccuracyPreference, StatisticClass,
+};
 pub use lower::{bind_query_expr, BindingError};
 pub use params::{
     CmsParams, CountSketchParams, DDSketchParams, HllParams, KllParams, SketchKind, SketchParams,

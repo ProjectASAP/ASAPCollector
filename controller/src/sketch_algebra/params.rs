@@ -68,6 +68,23 @@ impl From<SketchKind> for SketchType {
     }
 }
 
+/// Inverse of `From<SketchKind> for SketchType`. Round-trippable:
+/// `SketchKind::from(SketchType::from(k)) == k` for every variant. Used
+/// by `planner::rules::bind_workload_typed` to translate the legacy
+/// `QueryWorkload::sketch_type_override` field into the typed `SketchKind`
+/// the capability matrix consumes.
+impl From<SketchType> for SketchKind {
+    fn from(t: SketchType) -> Self {
+        match t {
+            SketchType::KLL => SketchKind::Kll,
+            SketchType::DDSketch => SketchKind::DDSketch,
+            SketchType::HLL => SketchKind::Hll,
+            SketchType::CountMinSketch => SketchKind::Cms,
+            SketchType::CountSketch => SketchKind::CountSketch,
+        }
+    }
+}
+
 /// L4 sketch parameters per family. Parameter names match the canonical
 /// sketch literature: `k` for KLL stream size, `alpha` for DDSketch
 /// relative-accuracy bound, `precision` for HLL register width, `(w, d)`
