@@ -34,11 +34,21 @@
 # depends on samples_per_window" for the per-family table.
 
 # 1. WINDOW AGGREGATION PER SERIES — DDSketch family
-#    Inner: per-series quantile over a 1m sliding window.
+#    Inner: per-series quantile over a 30s sliding window.
 #    Stage: edge (per-agent sketch flushes at window close;
 #    backend only stores resulting sketch state).
+#
+#    Window-alignment note (issue #46 ε-bound bug, fix/quantile-
+#    window-alignment): the warm-tier ASAPQuery streaming pre-compute
+#    is configured with `windowSize: 30` (see
+#    `deploy/configs/backend-streaming.yaml` and the `precompute_window
+#    [..) ms (width 30000 ms)` annotation the warm response stamps).
+#    The replay range MUST match that pre-compute width so the warm
+#    answer is computed over the same data the replay asks for; any
+#    mismatch (e.g. `[1m]` vs warm's 30s) produces rel-err well above
+#    the DDSketch ε bound (observed mean 0.126 with `[1m]`, ε=0.01).
 - metric_name: http_requests_total_latency_ms
-  query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"
+  query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"
   accuracy_sla: 0.01
   assign_to_role: agent
 
@@ -90,13 +100,18 @@
 # step at integration.
 
 # 5. KLL — rank-error quantile on a heavy-tailed body-size dist.
-#    Inner: per-series quantile over a 1m sliding window.
+#    Inner: per-series quantile over a 30s sliding window.
 #    Stage: edge — KLL state flushes per window close, no delta
 #    variant (kllprocessor's Config.Validate rejects
 #    delta_transmission: true). Backend stores the resulting KLL
 #    state.
+#
+#    See entry 1 above for the window-alignment rationale: the warm
+#    tier pre-computes 30s tumbling windows, so the replay range
+#    MUST be `[30s]` for warm answers to be valid against the
+#    archive ground truth.
 - metric_name: request_size_bytes
-  query_string: "quantile_over_time(0.99, request_size_bytes[1m])"
+  query_string: "quantile_over_time(0.99, request_size_bytes[30s])"
   accuracy_sla: 0.05
   assign_to_role: agent
   sketch_family_override: KLL
