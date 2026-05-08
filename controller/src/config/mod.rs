@@ -13,7 +13,9 @@ pub use backend::{generate_backend_config, generate_backend_config_staged};
 pub use precompute::{should_precompute, build_precompute_jobs, PrecomputeClient};
 pub use stage_config::{
     emit_backend_config_json, emit_backend_storage_routing,
-    emit_backend_storage_routing_with_prometheus, emit_edge_yaml, emit_gateway_yaml,
+    emit_backend_storage_routing_for_tenant, emit_backend_storage_routing_with_prometheus,
+    emit_backend_storage_routing_with_prometheus_for_tenant, emit_edge_yaml, emit_gateway_yaml,
+    DEFAULT_TENANT,
 };
 pub use stage_config_otap::emit_otap_dag_yaml;
 pub use stage_config_telegraf::emit_telegraf_toml;
