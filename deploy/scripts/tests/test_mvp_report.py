@@ -286,11 +286,14 @@ def test_renders_all_sections_for_happy_fixture(tmp_path):
     assert rc == 0
     md = out.read_text()
 
-    # Section headers — all 8 must be present.
+    # Section headers — all 8 must be present. §3 is now the
+    # per-sketch-family accuracy section; per-query-class breakdown
+    # lives under it as `### §3.1`.
     for header in (
         "## §1 Stage-separated resource table",
         "## §2 Per-criterion verdict (6 criteria)",
-        "## §3 Per-query-class breakdown",
+        "## §3 Accuracy (per sketch family)",
+        "### §3.1 Per-query-class breakdown",
         "## §4 Postings filtering effect",
         "## §5 Compaction effect",
         "## §6 S3-ops cost (measured)",
@@ -299,12 +302,13 @@ def test_renders_all_sections_for_happy_fixture(tmp_path):
     ):
         assert header in md, f"missing section header {header!r}"
 
-    # All 6 criteria rows present in §2.
+    # All 6 criteria rows present in §2. ④ is now the per-sketch
+    # rollup ("see §3" for the per-family detail).
     for marker in (
         "Bandwidth (per-edge B/s)",
         "Query latency (p50/p99 per class)",
         "Combined resource (sum of stages)",
-        "Accuracy (rel-err per class)",
+        "Accuracy (per sketch family, see §3)",
         "Cold-fallback (gorilla_archive marker)",
         "Freshness (p50/p99 per path)",
     ):
@@ -626,3 +630,212 @@ def test_extract_int_from_response_handles_missing_field():
     assert mvp_report._extract_int_from_response(body, "chunks_scanned") == 5
     assert mvp_report._extract_int_from_response(body, "postings_filtered_series_count") is None
     assert mvp_report._extract_int_from_response(None, "anything") is None
+
+
+# ── ④ per-sketch-family accuracy tests ──────────────────────────
+
+
+def _all_5_sketches_accuracy_rows() -> list[dict]:
+    """Synthetic accuracy.csv rows covering all 5 sketch families +
+    raw passthrough — every family within its bound (PASS aggregate).
+
+    Numbers are deliberately small / round: each rel-err sits below
+    its family's epsilon ceiling, top-K recall sits above 0.85, raw
+    is exactly equal.
+    """
+    return [
+        # DDSketch — http_latency_ms, ε ≤ 0.01
+        {"kind": "quantile", "query": "quantile_over_time(0.99, http_latency_ms[1m])",
+         "rel_err": "0.0042", "recall": ""},
+        {"kind": "quantile", "query": "quantile_over_time(0.99, http_latency_ms[1m])",
+         "rel_err": "0.0050", "recall": ""},
+        # KLL — request_size_bytes, ε ≤ 0.005 (rank-err proxy)
+        {"kind": "quantile", "query": "quantile_over_time(0.5, request_size_bytes[1m])",
+         "rel_err": "0.0030", "recall": ""},
+        {"kind": "quantile", "query": "quantile_over_time(0.5, request_size_bytes[1m])",
+         "rel_err": "0.0035", "recall": ""},
+        # HLL — unique_users_per_min, ε ≤ 0.0325
+        {"kind": "count_unique", "query": "count(unique_users_per_min)",
+         "rel_err": "0.018", "recall": ""},
+        # CountSketch — top_endpoint_qps, recall ≥ 0.85
+        {"kind": "topk", "query": "topk(5, top_endpoint_qps)",
+         "rel_err": "", "recall": "0.92"},
+        # CountMinSketch — endpoint_request_freq, additive proxy ≤ 0.02
+        {"kind": "sum", "query": "sum(endpoint_request_freq)",
+         "rel_err": "0.014", "recall": ""},
+        # raw — http_requests_total, exact
+        {"kind": "sum", "query": "sum(http_requests_total)",
+         "rel_err": "0.0", "recall": ""},
+    ]
+
+
+def test_criterion_accuracy_per_sketch_all_pass():
+    rows = _all_5_sketches_accuracy_rows()
+    aggregate, per_family, summary = mvp_report.criterion_accuracy_per_sketch(rows)
+    assert aggregate == "PASS"
+    assert "6/6" in summary
+    # 6 rows in the per-family table: 5 sketches + raw, in
+    # contract order.
+    families = [r["family"] for r in per_family]
+    assert families == [
+        "DDSketch", "KLL", "HLL", "CountSketch", "CountMinSketch", "raw",
+    ]
+    for r in per_family:
+        assert r["verdict"] == "PASS"
+
+
+def test_criterion_accuracy_per_sketch_one_family_fails():
+    """Push DDSketch over its 0.01 bound — aggregate must FAIL."""
+    rows = _all_5_sketches_accuracy_rows()
+    rows[0]["rel_err"] = "0.05"  # blow past ε = 0.01
+    rows[1]["rel_err"] = "0.06"
+    aggregate, per_family, _ = mvp_report.criterion_accuracy_per_sketch(rows)
+    assert aggregate == "FAIL"
+    by_family = {r["family"]: r["verdict"] for r in per_family}
+    assert by_family["DDSketch"] == "FAIL"
+    assert by_family["KLL"] == "PASS"
+    assert by_family["raw"] == "PASS"
+
+
+def test_criterion_accuracy_per_sketch_missing_family_unknown():
+    """No rows for HLL → that family is UNKNOWN → aggregate UNKNOWN."""
+    rows = [r for r in _all_5_sketches_accuracy_rows()
+            if "unique_users_per_min" not in r["query"]]
+    aggregate, per_family, _ = mvp_report.criterion_accuracy_per_sketch(rows)
+    assert aggregate == "UNKNOWN"
+    by_family = {r["family"]: r["verdict"] for r in per_family}
+    assert by_family["HLL"] == "UNKNOWN"
+    assert by_family["DDSketch"] == "PASS"
+
+
+def test_criterion_accuracy_per_sketch_raw_must_be_exact():
+    """A non-zero error on the raw row makes raw FAIL → aggregate FAIL."""
+    rows = _all_5_sketches_accuracy_rows()
+    # Replace raw row with non-zero error.
+    rows[-1] = {"kind": "sum", "query": "sum(http_requests_total)",
+                "rel_err": "0.001", "recall": ""}
+    aggregate, per_family, _ = mvp_report.criterion_accuracy_per_sketch(rows)
+    assert aggregate == "FAIL"
+    by_family = {r["family"]: r["verdict"] for r in per_family}
+    assert by_family["raw"] == "FAIL"
+
+
+def test_criterion_accuracy_per_sketch_empty_csv():
+    aggregate, per_family, summary = mvp_report.criterion_accuracy_per_sketch([])
+    assert aggregate == "UNKNOWN"
+    assert per_family == []
+    assert "empty" in summary
+
+
+def test_render_accuracy_per_sketch_table_shape():
+    """Verify the rendered ④ table has the expected 5+1 row shape."""
+    rows = _all_5_sketches_accuracy_rows()
+    _, per_family, _ = mvp_report.criterion_accuracy_per_sketch(rows)
+    md = mvp_report.render_accuracy_per_sketch_table(per_family)
+    # Header + separator + 6 family rows = 8 lines.
+    assert len(md) == 8
+    # Header columns.
+    assert "Sketch family" in md[0]
+    assert "Metric" in md[0]
+    assert "Query class" in md[0]
+    assert "ε bound" in md[0]
+    assert "Verdict" in md[0]
+    # Each family appears in its own row, in contract order.
+    assert "| DDSketch |" in md[2]
+    assert "| KLL |" in md[3]
+    assert "| HLL |" in md[4]
+    assert "| CountSketch |" in md[5]
+    assert "| CountMinSketch |" in md[6]
+    assert "| raw |" in md[7]
+
+
+def test_per_sketch_table_renders_in_single_mode_report(tmp_path):
+    """End-to-end: build a results dir whose accuracy.csv covers all
+    5 sketch families + raw, render the report, assert the §3
+    per-family table includes all 6 rows + an aggregate ④ verdict."""
+    results = _build_results_dir(tmp_path, kind="happy")
+    # Replace the synthetic accuracy.csv with one that has all 5
+    # sketch family metrics + raw — the 6-row contract.
+    rows = _all_5_sketches_accuracy_rows()
+    csv_rows = []
+    for r in rows:
+        csv_rows.append([
+            "mvp", r["kind"], r["query"], "0", "5.0", "p1",
+            "", "", r.get("rel_err", ""), r.get("recall", ""),
+            "", "ok", "", "", "", "", "",
+        ])
+    _write_csv(
+        results / "measurements" / "accuracy.csv",
+        ["cell", "kind", "query", "t", "duration_ms", "plan_id",
+         "warm_answer", "archive_answer", "rel_err", "recall",
+         "archive_query_latency_ms", "archive_status", "n_chunks_read",
+         "truth", "answer", "error", "n_truth_samples"],
+        csv_rows,
+    )
+
+    out = tmp_path / "MVP_REPORT.md"
+    rc = mvp_report.main([
+        "--results-dir", str(results),
+        "--num-producers", "10",
+        "--per-agent-cardinality", "500",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    md = out.read_text()
+
+    # §3 header for the per-sketch family table.
+    assert "## §3 Accuracy (per sketch family)" in md
+    # All 6 family rows present.
+    for fam in ("DDSketch", "KLL", "HLL", "CountSketch",
+                "CountMinSketch", "raw"):
+        assert f"| {fam} |" in md
+    # All 6 metric names present.
+    for metric in ("http_latency_ms", "request_size_bytes",
+                   "unique_users_per_min", "top_endpoint_qps",
+                   "endpoint_request_freq", "http_requests_total"):
+        assert metric in md
+    # Aggregate ④ verdict in the §2 table — PASS for this fixture
+    # (all families within bound).
+    assert "Accuracy (per sketch family, see §3)" in md
+    # 6/6 summary text in §2 row.
+    assert "6/6" in md
+
+
+def test_per_sketch_table_renders_in_dual_mode_report(tmp_path):
+    """Dual-mode: ④ section renders the per-family table inline."""
+    results = _build_dual_results_dir(tmp_path)
+    # Patch the asap-side accuracy.csv with all-5-sketch rows.
+    rows = _all_5_sketches_accuracy_rows()
+    csv_rows = []
+    for r in rows:
+        csv_rows.append([
+            "mvp", r["kind"], r["query"], "0", "5.0", "p1",
+            "", "", r.get("rel_err", ""), r.get("recall", ""),
+            "", "ok", "", "", "", "", "",
+        ])
+    _write_csv(
+        results / "asap" / "measurements" / "accuracy.csv",
+        ["cell", "kind", "query", "t", "duration_ms", "plan_id",
+         "warm_answer", "archive_answer", "rel_err", "recall",
+         "archive_query_latency_ms", "archive_status", "n_chunks_read",
+         "truth", "answer", "error", "n_truth_samples"],
+        csv_rows,
+    )
+
+    out = tmp_path / "MVP_REPORT.md"
+    rc = mvp_report.main([
+        "--results-dir", str(results),
+        "--num-producers", "10",
+        "--per-agent-cardinality", "500",
+        "--out", str(out),
+    ])
+    assert rc == 0
+    md = out.read_text()
+
+    assert "### ④ Accuracy (per sketch family)" in md
+    for fam in ("DDSketch", "KLL", "HLL", "CountSketch",
+                "CountMinSketch", "raw"):
+        assert f"| {fam} |" in md
+    # Aggregate ④ verdict line.
+    assert "**Verdict ④:**" in md
+    assert "6/6 families within bound" in md

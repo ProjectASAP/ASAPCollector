@@ -70,6 +70,66 @@ EDGE_ORDER = [
 ]
 
 
+# ── ④ accuracy: per-sketch-family contract ──────────────────────
+#
+# Shared across the parallel agents working on the MVP demo (see issue
+# #46). Each metric in `mvp-workload.yaml` binds to exactly one sketch
+# family with a known per-family accuracy bound. The ④ accuracy
+# verdict aggregates across all 6 (5 sketches + raw passthrough) — the
+# overall verdict is PASS only if EVERY family is within bound.
+#
+# Columns in `accuracy.csv` we read:
+#
+#   - kind  (quantile | topk | count_unique | sum | "")
+#   - query (the PromQL string — used to back-resolve which metric, and
+#            therefore which sketch family, the row belongs to)
+#   - rel_err (relative error — populated for quantile/count_unique/sum)
+#   - recall (top-K recall — populated for topk)
+#
+# Family bounds:
+#
+#   raw               — exact equality (rel_err == 0)
+#   DDSketch          — relative-error quantile, ε ≤ 0.01
+#   KLL               — rank-error quantile, ε ≤ 0.005 (1/k where
+#                       k=200 default). NB: today's reducer reports a
+#                       *value* relative-error for KLL queries; the
+#                       rank-error column is not surfaced. We document
+#                       the gap inline and check rel_err against the
+#                       same 0.005 threshold as a proxy.
+#   HLL               — relative-error cardinality, ε ≤ 0.0325 (p=12)
+#   CountSketch       — top-K recall, ε ≥ 0.85 (recall is a HIGHER-is-
+#                       better metric — so the bound is an inequality
+#                       in the opposite direction)
+#   CountMinSketch    — additive-error frequency, ε / total ≤ 1/w. We
+#                       don't have a per-row `additive_err` column; we
+#                       reuse `rel_err` as a proxy and compare against
+#                       a hardcoded ceiling (0.02 = 1/w with w=64) so
+#                       the cell renders without surfacing a stale
+#                       UNKNOWN. This is a documented approximation —
+#                       the reducer does not yet report w or total.
+#
+# `metric_name` keys match the workload contract; the renderer
+# extracts the metric out of the PromQL string in `query` because the
+# accuracy CSV has no dedicated metric column.
+
+SKETCH_FAMILIES = [
+    # (family, metric_name, query_class_label, bound_text, bound_value, error_column)
+    ("DDSketch",       "http_latency_ms",        "quantile",     "≤0.01",    0.01,   "rel_err"),
+    ("KLL",            "request_size_bytes",     "quantile",     "≤0.005",   0.005,  "rel_err"),
+    ("HLL",            "unique_users_per_min",   "cardinality",  "≤0.0325",  0.0325, "rel_err"),
+    ("CountSketch",    "top_endpoint_qps",       "top-K",        "≥0.85",    0.85,   "recall"),
+    ("CountMinSketch", "endpoint_request_freq",  "frequency",    "≤theoretical (1/w)", 0.02,  "rel_err"),
+    ("raw",            "http_requests_total",    "sum_rate",     "exact (=0)", 0.0,  "rel_err"),
+]
+
+# Reverse map: metric → family entry. Used by the accuracy renderer to
+# group accuracy.csv rows by family.
+_METRIC_TO_FAMILY: dict[str, tuple[str, str, str, str, float, str]] = {
+    metric: (family, metric, klass, bound, bv, col)
+    for (family, metric, klass, bound, bv, col) in SKETCH_FAMILIES
+}
+
+
 # ── tiny helpers ─────────────────────────────────────────────────
 
 
@@ -463,6 +523,181 @@ def criterion_accuracy(accuracy_rows: list[dict]) -> tuple[str, str, dict]:
     return verdict, "; ".join(parts), medians
 
 
+# ── ④ per-sketch-family accuracy ─────────────────────────────────
+
+
+def _row_metric_name(row: dict) -> str:
+    """Best-effort metric-name extraction from an accuracy.csv row.
+
+    The reducer doesn't emit a dedicated `metric` column, but the
+    PromQL `query` string contains the metric. We do a substring scan
+    for each metric in our contract — first hit wins. The contract's
+    metric names are distinct so substring collisions aren't a concern
+    in practice (the longest match would also work; substring scan is
+    enough for the 6 names we care about).
+    """
+    q = row.get("query", "") or ""
+    for metric in _METRIC_TO_FAMILY:
+        if metric in q:
+            return metric
+    return ""
+
+
+def _aggregate_family_rows(
+    accuracy_rows: list[dict],
+) -> dict[str, dict[str, Any]]:
+    """Group accuracy.csv rows by sketch family.
+
+    Returns a dict keyed by family name; values are
+    `{n: int, errors: [floats], recalls: [floats], metric: str}`.
+    """
+    by_family: dict[str, dict[str, Any]] = {}
+    for row in accuracy_rows:
+        metric = _row_metric_name(row)
+        if not metric:
+            continue
+        family, _metric, _kind, _bound, _bv, _col = _METRIC_TO_FAMILY[metric]
+        bag = by_family.setdefault(family, {
+            "metric": metric, "errors": [], "recalls": [], "n": 0,
+        })
+        bag["n"] += 1
+        for col, dest in (("rel_err", "errors"), ("recall", "recalls")):
+            raw = row.get(col, "")
+            if raw == "" or raw is None:
+                continue
+            try:
+                v = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if not _is_nan(v):
+                bag[dest].append(v)
+    return by_family
+
+
+def _family_verdict(
+    family: str,
+    bound_value: float,
+    error_column: str,
+    bag: dict[str, Any],
+) -> tuple[str, float, str]:
+    """Compute (verdict, observed_metric, formatted_observed) for a
+    single sketch family.
+
+    `error_column` selects which list in `bag` we reduce ("errors" for
+    rel_err / additive proxy, "recalls" for top-K).
+    """
+    if error_column == "recall":
+        recalls = bag.get("recalls") or []
+        if not recalls:
+            return "UNKNOWN", float("nan"), "—"
+        observed = statistics.median(recalls)
+        verdict = "PASS" if observed >= bound_value else "FAIL"
+        return verdict, observed, f"recall={observed:.3f}"
+    # rel_err / additive proxy paths.
+    errs = bag.get("errors") or []
+    if not errs:
+        return "UNKNOWN", float("nan"), "—"
+    observed = statistics.median(errs)
+    if family == "raw":
+        verdict = "PASS" if observed == 0.0 else "FAIL"
+        return verdict, observed, f"{observed:.4f}"
+    verdict = "PASS" if observed <= bound_value else "FAIL"
+    suffix = ""
+    if family == "KLL":
+        suffix = " (rank-err proxy: reducer reports value rel-err)"
+    elif family == "CountMinSketch":
+        suffix = " (additive proxy vs 1/w ≈ 0.02 ceiling)"
+    return verdict, observed, f"{observed:.4f}{suffix}"
+
+
+def criterion_accuracy_per_sketch(
+    accuracy_rows: list[dict],
+) -> tuple[str, list[dict], str]:
+    """Per-sketch-family ④ accuracy verdict.
+
+    Returns `(aggregate_verdict, per_family_rows, summary_line)`.
+
+    `per_family_rows` is one dict per family (in SKETCH_FAMILIES
+    order) with keys: `family`, `metric`, `query_class`, `n`,
+    `bound`, `observed`, `verdict`. The aggregate verdict bubbles
+    UP: any UNKNOWN family → UNKNOWN aggregate; any FAIL family →
+    FAIL aggregate; otherwise PASS.
+    """
+    if not accuracy_rows:
+        return "UNKNOWN", [], "accuracy.csv empty (warm tier may not have flushed)"
+
+    by_family = _aggregate_family_rows(accuracy_rows)
+    per_family_rows: list[dict] = []
+    n_pass = 0
+    n_fail = 0
+    n_unknown = 0
+    for family, metric, klass, bound, bound_value, error_column in SKETCH_FAMILIES:
+        bag = by_family.get(family) or {"metric": metric, "errors": [], "recalls": [], "n": 0}
+        verdict, _observed, observed_str = _family_verdict(
+            family, bound_value, error_column, bag,
+        )
+        if verdict == "PASS":
+            n_pass += 1
+        elif verdict == "FAIL":
+            n_fail += 1
+        else:
+            n_unknown += 1
+        per_family_rows.append({
+            "family": family,
+            "metric": metric,
+            "query_class": klass,
+            "n": int(bag.get("n", 0)),
+            "bound": bound,
+            "observed": observed_str,
+            "verdict": verdict,
+        })
+
+    if n_unknown > 0:
+        aggregate = "UNKNOWN"
+    elif n_fail > 0:
+        aggregate = "FAIL"
+    else:
+        aggregate = "PASS"
+    summary = (
+        f"{n_pass}/{len(SKETCH_FAMILIES)} families within bound; "
+        f"FAIL={n_fail} UNKNOWN={n_unknown}"
+    )
+    return aggregate, per_family_rows, summary
+
+
+def render_accuracy_per_sketch_table(
+    per_family_rows: list[dict],
+) -> list[str]:
+    """Render the §④ per-sketch-family table — 6 rows (5 sketches +
+    raw). Used by both single-mode and dual-mode renderers."""
+    md: list[str] = []
+    md.append(
+        "| Sketch family | Metric | Query class | n | "
+        "rel-err / recall | within ε bound? | Verdict |"
+    )
+    md.append("|---|---|---|---|---|---|---|")
+    for r in per_family_rows:
+        within = "—"
+        if r["verdict"] == "PASS":
+            within = f"yes ({r['bound']})"
+        elif r["verdict"] == "FAIL":
+            within = f"no ({r['bound']})"
+        else:
+            within = f"unknown ({r['bound']})"
+        md.append(
+            "| {family} | {metric} | {klass} | {n} | {obs} | {within} | {v} |".format(
+                family=r["family"],
+                metric=r["metric"],
+                klass=r["query_class"],
+                n=r["n"],
+                obs=r["observed"],
+                within=within,
+                v=r["verdict"],
+            )
+        )
+    return md
+
+
 def criterion_cold_fallback(adhoc_dir: str) -> tuple[str, str, dict]:
     response_path = os.path.join(adhoc_dir, "cold_payments.json")
     verdict_path = os.path.join(adhoc_dir, "cold_payments.verdict")
@@ -656,10 +891,26 @@ def render_section_2_verdict_dual(
     md.append("")
 
     # ④ Accuracy — ASAP-only (baseline = exact by construction).
-    acc_v, acc_line, _ = criterion_accuracy(asap.accuracy_rows)
-    md.append("### ④ Accuracy (ASAP only — baseline is exact by construction)")
+    # Per-sketch-family breakout: 5 sketch rows + 1 raw row. Aggregate
+    # verdict is PASS only if every family is within its bound; any
+    # UNKNOWN bubbles up to UNKNOWN, any FAIL bubbles up to FAIL.
+    acc_v, per_family_rows, acc_summary = criterion_accuracy_per_sketch(
+        asap.accuracy_rows,
+    )
+    md.append("### ④ Accuracy (per sketch family)")
     md.append("")
-    md.append(f"**Verdict ④:** {acc_v}  · {acc_line}")
+    md.append(
+        "ASAP-only — baseline is exact by construction. The table "
+        "breaks out one row per sketch family (DDSketch / KLL / HLL "
+        "/ CountSketch / CountMinSketch) plus a 6th `raw` row for "
+        "the passthrough metric. The aggregate verdict ④ is PASS "
+        "only if all 5 sketch families are within their per-family "
+        "ε bound AND raw is exactly equal."
+    )
+    md.append("")
+    md.extend(render_accuracy_per_sketch_table(per_family_rows))
+    md.append("")
+    md.append(f"**Verdict ④:** {acc_v}  · {acc_summary}")
     md.append("")
 
     # ⑤ Cold-fallback — ASAP only.
@@ -723,7 +974,7 @@ def render_section_3_per_class(
     emitted_status: str,
 ) -> list[str]:
     md: list[str] = []
-    md.append("## §3 Per-query-class breakdown")
+    md.append("### §3.1 Per-query-class breakdown")
     md.append("")
     md.append(
         "Three canonical query classes from "
@@ -1209,7 +1460,12 @@ def render_markdown_single(
     bw_v, bw_line, _ = criterion_bandwidth(p.edge_rows)
     lat_v, lat_line, _ = criterion_latency(p.replay_rows)
     res_v, res_line, _ = criterion_combined_resource(p.stages_rows)
-    acc_v, acc_line, _ = criterion_accuracy(p.accuracy_rows)
+    # ④ Aggregate verdict comes from the per-sketch-family rollup
+    # (PASS only if all 5 sketches within bound + raw exact). The
+    # per-family detail renders in §3 below.
+    acc_v, per_family_rows, acc_summary = criterion_accuracy_per_sketch(
+        p.accuracy_rows,
+    )
     cold_v, cold_line, _ = criterion_cold_fallback(p.adhoc_dir)
     fresh_v, fresh_line, _ = criterion_freshness(p.fresh_dir)
 
@@ -1220,11 +1476,31 @@ def render_markdown_single(
     md.append(f"| 1 | Bandwidth (per-edge B/s) | **{bw_v}** | {bw_line} |")
     md.append(f"| 2 | Query latency (p50/p99 per class) | **{lat_v}** | {lat_line} |")
     md.append(f"| 3 | Combined resource (sum of stages) | **{res_v}** | {res_line} |")
-    md.append(f"| 4 | Accuracy (rel-err per class) | **{acc_v}** | {acc_line} |")
+    md.append(
+        f"| 4 | Accuracy (per sketch family, see §3) | **{acc_v}** | "
+        f"{acc_summary} |"
+    )
     md.append(f"| 5 | Cold-fallback (gorilla_archive marker) | **{cold_v}** | {cold_line} |")
     md.append(f"| 6 | Freshness (p50/p99 per path) | **{fresh_v}** | {fresh_line} |")
     md.append("")
 
+    # §3 per-sketch accuracy detail (5 sketch rows + raw) +
+    # per-query-class breakdown.
+    md.append("## §3 Accuracy (per sketch family)")
+    md.append("")
+    md.append(
+        "Per-sketch ④ accuracy detail. The aggregate ④ verdict in "
+        "§2 PASS-iff-all-pass; rows below show each family's "
+        "observed error / recall against its hardcoded bound. The "
+        "6th `raw` row is the exact-passthrough metric."
+    )
+    md.append("")
+    md.extend(render_accuracy_per_sketch_table(per_family_rows))
+    md.append("")
+    md.append(f"**Verdict ④:** {acc_v}  · {acc_summary}")
+    md.append("")
+
+    # §3 (cont.) — per-query-class breakdown (the original §3).
     md.extend(render_section_3_per_class(p.replay_rows, p.accuracy_rows, p.emitted_status))
     md.extend(render_section_4_postings(p.adhoc_dir))
     md.extend(render_section_5_compaction(p.compactor_dir))
@@ -1311,9 +1587,14 @@ def render_markdown_dual(
     # natively).
     md.append("## §3 Per-query-class breakdown (ASAP)")
     md.append("")
-    md.extend(render_section_3_per_class(
+    # The single-mode renderer prefixes its row with `### §3.1` (so
+    # it doesn't collide with the per-sketch §3 above); strip that
+    # subheader here in dual-mode where the parent ## already labels
+    # this whole section.
+    sub = render_section_3_per_class(
         asap.replay_rows, asap.accuracy_rows, asap.emitted_status,
-    ))
+    )
+    md.extend(sub[2:] if sub and sub[0].startswith("### §3.1") else sub)
     # §4..§6 are ASAP-only by construction.
     md.append("_§4..§6 below cover the ASAP pipeline only — postings filtering, "
               "concat-only compaction, and S3-ops cost are ASAP architectural "
