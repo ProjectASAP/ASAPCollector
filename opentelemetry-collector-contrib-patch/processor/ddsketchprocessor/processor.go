@@ -105,11 +105,22 @@ func (p *ddsketchProcessor) Shutdown(ctx context.Context) error {
 	}
 }
 
-// ConsumeMetrics is the Layer-4 entry point. Batch mode synchronously
-// decodes → observes → ticks → encodes → merges into md → forwards.
-// Window mode observes-only on each call (state lives across calls);
-// the tick goroutine drives flushes. Input md is forwarded unchanged
-// in window mode so chained processors see the raw inputs (PR #211).
+// ConsumeMetrics is the Layer-4 entry point.
+//
+// Batch mode:
+//   - DropOriginal=true (default since the ① bandwidth FAIL fix):
+//     decodes → observes → ticks → encodes → forwards sketch-only.
+//     The raw md is dropped from the outbound stream — it is already
+//     preserved upstream by gorillas3processor's archive write.
+//   - DropOriginal=false: legacy "originals + sketch" shape; merges
+//     synthesized sketch metrics into md and forwards the union.
+//
+// Window mode:
+//   - DropOriginal=true: observes only on each call; the tick
+//     goroutine drives flushes via FlushWindow. Forwards an empty
+//     pmetric so the raw md does not reach the next consumer.
+//   - DropOriginal=false: input md is forwarded unchanged so chained
+//     processors see the raw inputs (PR #211).
 func (p *ddsketchProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
 	p.recordInput(ctx, md)
 	switch p.cfg.Mode {
@@ -124,16 +135,29 @@ func (p *ddsketchProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metri
 		if err := p.ProcessMetrics(ctx, md); err != nil {
 			return err
 		}
+		if p.cfg.DropOriginal {
+			// Window mode: FlushWindow tick goroutine forwards sketch
+			// output on its own cadence; the live ConsumeMetrics call
+			// must not also forward raw md or the wire carries
+			// raw + sketch.
+			return nil
+		}
 		return p.nextConsumer.ConsumeMetrics(ctx, md)
 	default:
 		return nil
 	}
 }
 
-// ProcessBatch is the synchronous decode → observe → tick → encode →
-// append-into-md path used by batch-mode ConsumeMetrics and exposed
-// as a public test hook (ADR-0002 §"Test API contract"). Returns md
-// with sketch/quantile metrics appended.
+// ProcessBatch is the synchronous decode → observe → tick → encode
+// path used by batch-mode ConsumeMetrics and exposed as a public test
+// hook (ADR-0002 §"Test API contract").
+//
+//   - DropOriginal=true (default): returns ONLY the synthesized sketch
+//     output (sketch envelopes when TransmitSketch=true, gauge-quantile
+//     metrics otherwise). The raw md is not included in the return so
+//     the outbound pmetric stream carries sketch-only.
+//   - DropOriginal=false: legacy shape — returns md with sketch /
+//     quantile metrics appended (originals + sketch summaries).
 func (p *ddsketchProcessor) ProcessBatch(_ context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	if md.ResourceMetrics().Len() == 0 {
 		return md, nil
@@ -142,7 +166,11 @@ func (p *ddsketchProcessor) ProcessBatch(_ context.Context, md pmetric.Metrics) 
 	if err := p.observeInto(md, batch); err != nil {
 		return md, err
 	}
-	mergeAppend(md, p.flushToMetrics(batch))
+	sketch := p.flushToMetrics(batch)
+	if p.cfg.DropOriginal {
+		return sketch, nil
+	}
+	mergeAppend(md, sketch)
 	return md, nil
 }
 

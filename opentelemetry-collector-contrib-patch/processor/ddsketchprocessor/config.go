@@ -68,6 +68,19 @@ type Config struct {
 	// DeltaThreshold is the minimum bucket count increase required to include
 	// a bucket in the delta payload. Defaults to 1 when DeltaTransmission=true.
 	DeltaThreshold uint64 `mapstructure:"delta_threshold"`
+
+	// DropOriginal controls whether the raw input metrics are dropped
+	// from the outbound pmetric stream so only the synthesized sketch
+	// summaries (or DDSketch envelopes) flow downstream. The MVP demo
+	// pipeline relies on DropOriginal=true so the agent→gateway and
+	// gateway→backend wire payload is sketch-only — the raw is already
+	// archived by the gorillas3processor that runs UPSTREAM in the
+	// pipeline. Operators that want the legacy "originals + sketch"
+	// shape (e.g. raw_passthrough debugging or downstream consumers
+	// that need both) must set drop_original: false explicitly in YAML.
+	//
+	// Defaults to true (set in createDefaultConfig).
+	DropOriginal bool `mapstructure:"drop_original"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -88,6 +101,14 @@ func createDefaultConfig() component.Config {
 		// state) keeps DDSketch comfortably above the bandwidth break-even
 		// versus raw scrape. DeltaThreshold defaults to 1 in validate().
 		DeltaTransmission: true,
+		// DropOriginal=true is the MVP-bandwidth default: the sketch
+		// summary (or DDSketch envelope) REPLACES the raw on the
+		// outbound pmetric stream. The raw remains available via the
+		// gorillas3processor archive write that runs UPSTREAM of this
+		// processor in the agent pipeline (see ① bandwidth FAIL fix).
+		// Operators that want the legacy "raw passthrough + sketch
+		// graft" shape must set drop_original: false explicitly.
+		DropOriginal: true,
 	}
 }
 

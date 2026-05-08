@@ -19,6 +19,7 @@ import (
 
 func TestProcessorAddsDDSketchMetric(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	// Use a minimal processor instance that only exercises batch aggregation.
 	proc := &ddsketchProcessor{
 		cfg:    cfg,
@@ -54,6 +55,7 @@ func TestProcessorAddsDDSketchMetric(t *testing.T) {
 
 func TestBatchModeGaugeInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
 	cfg.MetricSuffix = "_quantile"
@@ -95,6 +97,7 @@ func TestBatchModeGaugeInput(t *testing.T) {
 
 func TestWindowModeGaugeInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.TransmitSketch = false
 	cfg.MetricSuffix = "_quantile"
@@ -143,6 +146,7 @@ func TestWindowModeGaugeInput(t *testing.T) {
 
 func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.TransmitSketch = true
 	cfg.MetricSuffix = "_ddsketch"
@@ -261,6 +265,7 @@ func decodeSketch(t *testing.T, payload []byte) *ddsketch.DDSketch {
 // TestBatchModeDualInput verifies that batch mode correctly processes both Gauge and DDSketch inputs in the same batch.
 func TestBatchModeDualInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = true
 	cfg.MetricSuffix = "_ddsketch"
@@ -316,6 +321,7 @@ func TestBatchModeDualInput(t *testing.T) {
 // TestWindowModeDualInput verifies that window mode merges both Gauge and DDSketch inputs for the same metric.
 func TestWindowModeDualInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.TransmitSketch = true
 	cfg.MetricSuffix = "_ddsketch"
@@ -378,6 +384,7 @@ func TestWindowModeDualInput(t *testing.T) {
 // TestEmptyInput verifies that empty metrics do not cause panics and produce no output in window mode.
 func TestEmptyInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 60 * 60 * 24
 	sink := new(consumertest.MetricsSink)
@@ -397,6 +404,7 @@ func TestEmptyInput(t *testing.T) {
 // TestEmptyResourceMetrics verifies ResourceMetrics with zero ScopeMetrics is handled.
 func TestEmptyResourceMetrics(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	sink := new(consumertest.MetricsSink)
 	proc := newProcessor(cfg, zap.NewNop(), sink)
@@ -410,6 +418,7 @@ func TestEmptyResourceMetrics(t *testing.T) {
 // TestBatchModeNoStatePersistence verifies batch mode does not carry state across ConsumeMetrics calls.
 func TestBatchModeNoStatePersistence(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
 	cfg.MetricSuffix = "_quantile"
@@ -465,6 +474,7 @@ func getQuantileFromOutput(t *testing.T, md pmetric.Metrics, namePrefix string) 
 // TestMixedIntDoubleGauge verifies that Int and Double gauge datapoints are both accepted.
 func TestMixedIntDoubleGauge(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
 	cfg.Quantiles = []float64{0.5}
@@ -495,6 +505,7 @@ func TestMixedIntDoubleGauge(t *testing.T) {
 // TestWindowModeConcurrentConsume verifies concurrent ConsumeMetrics calls in window mode do not race.
 func TestWindowModeConcurrentConsume(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.TransmitSketch = true
 	cfg.WindowDuration = 60 * 60 * 24
@@ -543,6 +554,7 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 // TestWindowModeFlushDuringConsume verifies flush and ConsumeMetrics can run concurrently without race.
 func TestWindowModeFlushDuringConsume(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 1 // 1ns ticker for rapid flushes
 	cfg.TransmitSketch = true
@@ -566,6 +578,7 @@ func TestWindowModeFlushDuringConsume(t *testing.T) {
 // TestShutdownDuringConsume verifies Shutdown completes even when ConsumeMetrics is in progress.
 func TestShutdownDuringConsume(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 60 * 60 * 24
 	sink := new(consumertest.MetricsSink)
@@ -593,6 +606,7 @@ func TestShutdownDuringConsume(t *testing.T) {
 // aggregate_by label values are merged into one sketch, and output carries only those labels.
 func TestDDAggregateByCollapsesSeries(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
 	cfg.MetricSuffix = "_quantile"
@@ -675,6 +689,7 @@ func TestDDAggregateByCollapsesSeries(t *testing.T) {
 // label matchers are included in the sketch.
 func TestDDLabelMatchersFilterGauge(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
 	cfg.MetricSuffix = "_quantile"
@@ -728,6 +743,7 @@ func TestDDLabelMatchersFilterGauge(t *testing.T) {
 // mode with pre-aggregated DDSketch data points (mode 1: SDK sends sketches).
 func TestDDAggregateByWindowModeDDSketchInput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
+	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 24 * 60 * 60 * 1e9 // large: no auto-flush
 	cfg.TransmitSketch = false
@@ -803,4 +819,76 @@ func TestDDAggregateByWindowModeDDSketchInput(t *testing.T) {
 	// p50 of merged [10, 20]: DDSketch returns ~10 (rank 1 of 2); accept [9, 21].
 	assert.GreaterOrEqual(t, outDPs[0].DoubleValue(), 9.0)
 	assert.LessOrEqual(t, outDPs[0].DoubleValue(), 21.0)
+}
+
+// TestDropOriginalDefault is the bandwidth-FAIL guard. With the
+// default config (DropOriginal=true) the processor MUST emit the
+// sketch summary as a REPLACEMENT for the raw input metric, not as
+// an additional metric appended to the input. This prevents the
+// agent from shipping raw + sketch on the wire (the ① bandwidth FAIL
+// root cause).
+func TestDropOriginalDefault(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	require.True(t, cfg.DropOriginal, "default DropOriginal must be true (bandwidth fix)")
+	cfg.Mode = ModeBatch
+	cfg.TransmitSketch = false
+	cfg.MetricSuffix = "_quantile"
+	cfg.Quantiles = []float64{0.5}
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := pmetric.NewMetrics()
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	metric := sm.Metrics().AppendEmpty()
+	metric.SetName("http_requests_total_latency_ms")
+	g := metric.SetEmptyGauge()
+	dp := g.DataPoints().AppendEmpty()
+	dp.SetTimestamp(pcommon.Timestamp(2))
+	dp.SetDoubleValue(42)
+
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+	ms := out[0].ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	// EXACTLY ONE metric on the wire: the sketch summary. The raw
+	// "http_requests_total_latency_ms" must NOT be present.
+	require.Equal(t, 1, ms.Len(), "DropOriginal=true must emit sketch ONLY (no raw)")
+	assert.Equal(t, "http_requests_total_latency_ms_quantile", ms.At(0).Name())
+	for i := 0; i < ms.Len(); i++ {
+		assert.NotEqual(t, "http_requests_total_latency_ms", ms.At(i).Name(),
+			"raw input metric must not be on the outbound stream when DropOriginal=true")
+	}
+}
+
+// TestDropOriginalDefaultWindowMode verifies window-mode also drops
+// the raw md from ConsumeMetrics' forwarded output when
+// DropOriginal=true (the ticker goroutine's FlushWindow remains the
+// sole source of sketch output downstream).
+func TestDropOriginalDefaultWindowMode(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	require.True(t, cfg.DropOriginal)
+	cfg.Mode = ModeWindow
+	cfg.WindowDuration = 60 * 60 * 24 // disable ticker
+	cfg.TransmitSketch = true
+	cfg.MetricSuffix = "_ddsketch"
+
+	sink := new(consumertest.MetricsSink)
+	proc := newProcessor(cfg, zap.NewNop(), sink)
+
+	md := buildDDSketchMetrics(t)
+	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
+
+	// Window-mode + DropOriginal=true: raw md MUST NOT be forwarded.
+	require.Empty(t, sink.AllMetrics(), "window mode with DropOriginal=true must not forward raw md")
+
+	// FlushWindow still emits the sketch.
+	require.NoError(t, proc.FlushWindow(context.Background()))
+	out := sink.AllMetrics()
+	require.Len(t, out, 1)
+	ms := out[0].ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
+	require.Equal(t, 1, ms.Len())
+	assert.Equal(t, "request_latency_ddsketch", ms.At(0).Name())
 }

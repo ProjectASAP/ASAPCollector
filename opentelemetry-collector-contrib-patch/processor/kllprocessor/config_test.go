@@ -29,3 +29,18 @@ func TestDefaultDeltaTransmissionFalse(t *testing.T) {
 		t.Fatalf("default KLL config must validate: %v", err)
 	}
 }
+
+// TestDefaultDropOriginalTrue is the bandwidth-FAIL guard. The MVP
+// agent pipeline relies on the KLL sketch envelope REPLACING the raw
+// on the outbound stream — the raw is preserved upstream by the
+// gorillas3processor archive write. KLL is full-state per window
+// (no delta variant — see TestDefaultDeltaTransmissionFalse), so the
+// raw-passthrough ON TOP of full-state KLL would be the worst-case
+// wire payload of the five families. A future factory edit that
+// flips this default back to false would resurrect that worst-case.
+func TestDefaultDropOriginalTrue(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	if !cfg.DropOriginal {
+		t.Fatalf("expected DropOriginal=true by default, got %v (bandwidth-FAIL regression)", cfg.DropOriginal)
+	}
+}

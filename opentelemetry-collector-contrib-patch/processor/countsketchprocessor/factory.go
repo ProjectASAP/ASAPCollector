@@ -29,6 +29,14 @@ func createDefaultConfig() component.Config {
 		WindowDuration:       5 * time.Second,
 		TransmitSketch:       false,
 		EnableSelfMonitoring: true,
+		// DropOriginal=true is the MVP-bandwidth default: the sketch
+		// summary REPLACES the raw on the outbound pmetric stream. The
+		// raw remains available via the gorillas3processor archive write
+		// that runs UPSTREAM of this processor in the agent pipeline
+		// (see ① bandwidth FAIL fix). Operators that want the legacy
+		// "raw passthrough + sketch graft" shape must set
+		// drop_original: false explicitly in YAML.
+		DropOriginal: true,
 		// Delta-encoded transmission is the operational default for the
 		// MVP demo. CountSketch's per-window wire footprint is dominated
 		// by the d×w cell matrix; emitting only cells that changed since
