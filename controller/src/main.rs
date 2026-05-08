@@ -293,6 +293,11 @@ async fn main() {
         if let Some(client) = backend_client_shared.as_ref() {
             r = r.with_backend_client(Arc::clone(client));
         }
+        // Wire the workload registry so the typed-emit path
+        // (`USE_TYPED_STAGE_SPLIT`) can extend its edge stage config
+        // with the same archive-tier metrics the bootstrap GET path
+        // applies via `emit_bootstrap_typed`.
+        r = r.with_workload_registry(Arc::clone(&workload_registry));
         Arc::new(r)
     };
     // Bind the late-binding cells so callbacks can reach the replanner and registry.
@@ -964,71 +969,16 @@ async fn emit_bootstrap_typed(
     //
     //    Both extensions are bootstrap-scope only — the live planner
     //    stays free to plan per-metric without these defaults bleeding
-    //    in.
-    use crate::stage_split::emitter::ArchiveTierMetric;
-
-    let freshness_metrics = [
-        "http_freshness_probe_warm",
-        "http_freshness_probe_archive",
-    ];
-    // 10s flush window for the freshness probes — the criterion ⑥
-    // verdict gates on warm-tier p50 ≤ 30s, and the (`gorillas3`
-    // window + Thanos `--sync-block-duration` + ThanosForwardEngine
-    // dispatch) chain has to land inside that envelope. 60s would
-    // already burn the budget at the agent flush alone. 10s is the
-    // smallest window that still produces well-formed
-    // Prometheus-TSDB blocks (Thanos rejects sub-second
-    // `tsdb_block_duration`) and still aggregates enough samples per
-    // block for the store-gateway's per-block index to be useful.
-    //
-    // emit_edge_yaml takes the MIN across `archive_tier_metrics` for
-    // both `window_interval` and `tsdb_block_duration`, so this
-    // shrinks the cadence for the workload metrics added below too —
-    // intentional: a 10s flush gives the accuracy reducer (criterion
-    // ④) tighter ground-truth windows and the freshness probe
-    // (criterion ⑥) a tractable warm-tier latency at the cost of more
-    // S3 PUTs. The accuracy reducer's archive engine handles small
-    // blocks correctly because thanos-compact consolidates them into
-    // larger downsampled tiers per its retention defaults.
-    let freshness_window_secs: u64 = 10;
-    for m in freshness_metrics.iter() {
-        if !edge_cfg.archive_tier_metrics.iter().any(|a| a.metric == *m) {
-            edge_cfg.archive_tier_metrics.push(ArchiveTierMetric {
-                metric: (*m).to_string(),
-                window_secs: Some(freshness_window_secs),
-            });
-        }
-    }
-    // Both freshness probes need the warm-passthrough route so the
-    // DDSketch `_quantile` suffix doesn't break the replay client's
-    // `last_over_time(...)` query.
-    for m in freshness_metrics.iter() {
-        if !edge_cfg.warm_passthrough_metrics.iter().any(|s| s == m) {
-            edge_cfg.warm_passthrough_metrics.push((*m).to_string());
-        }
-    }
-
-    // Add all workload-registry metrics (deduplicated) to the archive
-    // tier so the accuracy reducer's archive ground truth has data
-    // for every replay row. 60s window matches the canonical demo
-    // gorillas3 flush cadence — emit_edge_yaml's MIN selection still
-    // takes the smaller `freshness_window_secs` above for the
-    // top-level processor knobs, this 60s is just informational
-    // bookkeeping per metric.
-    let workload_archive_window_secs: u64 = 60;
-    let mut seen: std::collections::HashSet<String> = edge_cfg
-        .archive_tier_metrics
+    //    in. The actual extension lives in the shared
+    //    [`config::extend_edge_with_demo_plumbing`] helper so the
+    //    typed-replan push path (`replan::Replanner::push_config_to_agent`)
+    //    can apply the same extension without duplicating the logic.
+    let registry_metrics = st
+        .workload_registry
+        .entries()
         .iter()
-        .map(|a| a.metric.clone())
-        .collect();
-    for entry in st.workload_registry.entries() {
-        if seen.insert(entry.metric_name.clone()) {
-            edge_cfg.archive_tier_metrics.push(ArchiveTierMetric {
-                metric: entry.metric_name.clone(),
-                window_secs: Some(workload_archive_window_secs),
-            });
-        }
-    }
+        .map(|e| e.metric_name.clone());
+    config::extend_edge_with_demo_plumbing(&mut edge_cfg, registry_metrics);
 
     emit_for_runtime(runtime, &edge_cfg, &st.opamp_endpoint, None)
         .with_context(|| format!("emit_for_runtime failed for `{metric}`"))

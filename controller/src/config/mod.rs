@@ -107,6 +107,89 @@ pub fn emit_for_runtime(
     }
 }
 
+/// 10s flush window for the freshness probes — see the comment in
+/// `emit_bootstrap_typed` (and the original PR #333) for the rationale.
+/// Smallest window that produces well-formed Prometheus-TSDB blocks
+/// while keeping criterion ⑥'s warm-tier p50 ≤ 30s budget.
+pub const FRESHNESS_PROBE_WINDOW_SECS: u64 = 10;
+
+/// 60s window for non-probe workload-registry metrics added to the
+/// archive tier so the accuracy reducer's archive engine has ground
+/// truth for every replay row.
+pub const WORKLOAD_ARCHIVE_WINDOW_SECS: u64 = 60;
+
+/// The two freshness probes — bootstrap/replan demo plumbing for
+/// criterion ⑥. Not user metrics. The replay client polls them via
+/// `last_over_time(http_freshness_probe_warm[10s])`; without
+/// warm-passthrough routing the DDSketch processor renames them to
+/// `_quantile`, and without `gorillas3` archive write the warm engine
+/// has nothing to look at.
+pub const FRESHNESS_PROBE_METRICS: &[&str] = &[
+    "http_freshness_probe_warm",
+    "http_freshness_probe_archive",
+];
+
+/// Bootstrap/replan-scope plumbing: extend an Edge stage config with
+/// the freshness-probe metrics (`http_freshness_probe_warm` /
+/// `http_freshness_probe_archive`) AND the workload-registry archive
+/// metrics so the agent's `gorillas3` processor writes them into the
+/// Gorilla-S3 / Thanos archive — required for criterion ⑥
+/// (freshness probe routing) and criterion ④ (archive ground truth).
+///
+/// Mutates `edge_cfg` in place. Idempotent — metrics already present
+/// in `archive_tier_metrics` / `warm_passthrough_metrics` are not
+/// duplicated.
+///
+/// Originally inlined in `main::emit_bootstrap_typed`; lifted here so
+/// the typed-replan path in `replan::Replanner` can apply the same
+/// extension without depending on private state in `main.rs`.
+///
+/// ## Scope note
+///
+/// The live planner stays free to plan per-metric without these
+/// defaults bleeding into its output — the helper is only invoked
+/// from the bootstrap GET path and the OpAMP-on-connect / replan
+/// push paths, both of which are demo-scope contracts.
+pub fn extend_edge_with_demo_plumbing(
+    edge_cfg: &mut EdgeStageConfig,
+    workload_registry_metrics: impl IntoIterator<Item = String>,
+) {
+    use crate::stage_split::emitter::ArchiveTierMetric;
+
+    // 1. Freshness probes → archive tier with the tight 10s window.
+    for m in FRESHNESS_PROBE_METRICS.iter() {
+        if !edge_cfg.archive_tier_metrics.iter().any(|a| a.metric == *m) {
+            edge_cfg.archive_tier_metrics.push(ArchiveTierMetric {
+                metric: (*m).to_string(),
+                window_secs: Some(FRESHNESS_PROBE_WINDOW_SECS),
+            });
+        }
+    }
+
+    // 2. Freshness probes → warm-passthrough so the DDSketch processor
+    //    doesn't rename them to `_quantile`.
+    for m in FRESHNESS_PROBE_METRICS.iter() {
+        if !edge_cfg.warm_passthrough_metrics.iter().any(|s| s == m) {
+            edge_cfg.warm_passthrough_metrics.push((*m).to_string());
+        }
+    }
+
+    // 3. All non-probe workload-registry metrics → archive tier (60s).
+    let mut seen: std::collections::HashSet<String> = edge_cfg
+        .archive_tier_metrics
+        .iter()
+        .map(|a| a.metric.clone())
+        .collect();
+    for metric in workload_registry_metrics {
+        if seen.insert(metric.clone()) {
+            edge_cfg.archive_tier_metrics.push(ArchiveTierMetric {
+                metric,
+                window_secs: Some(WORKLOAD_ARCHIVE_WINDOW_SECS),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod runtime_tests {
     use super::*;

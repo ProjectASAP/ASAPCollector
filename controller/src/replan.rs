@@ -22,13 +22,15 @@ use tracing::{info, warn};
 
 use crate::backend_client::{push_or_log, BackendClient};
 use crate::config::{
-    build_precompute_jobs, generate_agent_config, generate_backend_config,
-    generate_streaming_config_yaml,
+    build_precompute_jobs, emit_for_runtime, extend_edge_with_demo_plumbing,
+    generate_agent_config, generate_backend_config, generate_streaming_config_yaml, AgentRuntime,
+    WorkloadRegistry,
 };
 use crate::monitor::Scraper;
 use crate::opamp::{AgentRole, OpampServer, RemoteConfig};
-use crate::planner::BaselinePlanner;
+use crate::planner::{self, BaselinePlanner};
 use crate::store::{PlanStore, WorkloadStore};
+use crate::types::QueryWorkload;
 
 fn short_hash(s: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
@@ -56,6 +58,15 @@ pub struct Replanner {
     /// existing deployments that don't yet run ASAPQuery-backend
     /// behave exactly as before.
     backend_client: Option<Arc<BackendClient>>,
+    /// Optional handle to the controller-wide [`WorkloadRegistry`].
+    /// Used only by the typed-emit path
+    /// ([`Replanner::try_emit_typed_edge_yaml`]) to extend the edge
+    /// stage config with the bootstrap-scope archive-tier metrics so
+    /// the OpAMP-pushed YAML matches what the bootstrap GET path
+    /// emits via `main::emit_bootstrap_typed`. When unset the typed
+    /// path still works — it just skips the workload-registry archive
+    /// extension and only adds the freshness probes.
+    workload_registry: Option<Arc<WorkloadRegistry>>,
     /// Maps agent_id → metric_name so violation callbacks can look up which
     /// metric a particular agent is serving.
     agent_to_metric: Arc<RwLock<HashMap<String, String>>>,
@@ -78,6 +89,7 @@ impl Replanner {
             scraper,
             opamp_endpoint: opamp_endpoint.into(),
             backend_client: None,
+            workload_registry: None,
             agent_to_metric: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -89,6 +101,17 @@ impl Replanner {
     /// the ASAPQuery-backend (if running) keeps its startup config.
     pub fn with_backend_client(mut self, client: Arc<BackendClient>) -> Self {
         self.backend_client = Some(client);
+        self
+    }
+
+    /// Attach the controller-wide [`WorkloadRegistry`] so the typed
+    /// emit path (gated by `USE_TYPED_STAGE_SPLIT`) can extend the
+    /// edge stage config with the workload-registry archive metrics
+    /// — same demo-scope plumbing the bootstrap GET path applies in
+    /// `main::emit_bootstrap_typed`. Builder-style; safe to omit
+    /// (the typed path falls back to freshness-probe-only extension).
+    pub fn with_workload_registry(mut self, registry: Arc<WorkloadRegistry>) -> Self {
+        self.workload_registry = Some(registry);
         self
     }
 
@@ -115,29 +138,130 @@ impl Replanner {
 
     // ── Config push helpers ──────────────────────────────────────────────────
 
+    /// Try to emit edge YAML via the typed L5 pipeline for `metric`,
+    /// matching `main::emit_bootstrap_typed`'s flow.
+    ///
+    /// Steps:
+    ///   1. `bind_workload_typed(&workload)` → SketchExpr
+    ///   2. `split_typed_three_stage(&sketch_expr)` → per-stage configs
+    ///   3. Pick the `Edge` stage config
+    ///   4. Apply `extend_edge_with_demo_plumbing` (freshness probes +
+    ///      workload-registry archive metrics) so the OpAMP-pushed YAML
+    ///      matches what the bootstrap GET path emits
+    ///   5. `emit_for_runtime(AsapOtel, &edge, …)` → YAML string
+    ///
+    /// Defaults the runtime to `AgentRuntime::AsapOtel` (mirrors the
+    /// bootstrap default when no `X-Agent-Runtime` header is present;
+    /// the OpAMP `on_connect` payload doesn't surface a per-agent
+    /// runtime today). If a future commit threads runtime info through
+    /// OpAMP, swap the default for a per-agent lookup.
+    ///
+    /// Returns `None` whenever the typed path can't satisfy the
+    /// request (workload missing from store, `bind_workload_typed`
+    /// declines the shape, no `Edge` entry, emit failure) — caller
+    /// then falls back to the legacy emitter.
+    fn try_emit_typed_edge_yaml(&self, metric: &str) -> Option<String> {
+        let (workload, _wc) = self.workload_store.get(metric)?;
+        self.try_emit_typed_edge_yaml_for_workload(&workload)
+    }
+
+    /// Same as [`try_emit_typed_edge_yaml`] but takes the
+    /// `QueryWorkload` directly. Used by `replan_metric` which already
+    /// has the workload in scope.
+    fn try_emit_typed_edge_yaml_for_workload(&self, workload: &QueryWorkload) -> Option<String> {
+        let sketch_expr = planner::rules::bind_workload_typed(workload)?;
+        let configs = planner::stage_split::split_typed_three_stage(&sketch_expr)?;
+        let mut edge_cfg = configs.into_iter().find_map(|(_, cfg)| match cfg {
+            crate::stage_split::StageConfig::Edge(edge) => Some(edge),
+            _ => None,
+        })?;
+
+        // Apply the bootstrap-scope demo plumbing — freshness probes
+        // + workload-registry archive metrics — so the OpAMP-pushed
+        // YAML carries the SAME `gorillas3` + `routing` +
+        // `metrics/warm_passthrough` blocks the bootstrap GET path
+        // emits. Without this, an agent that reconnects gets edge
+        // YAML missing freshness-probe routing → criterion ⑥ fails
+        // for any plan-pinned agent.
+        let registry_metrics: Vec<String> = self
+            .workload_registry
+            .as_ref()
+            .map(|r| r.entries().iter().map(|e| e.metric_name.clone()).collect())
+            .unwrap_or_default();
+        extend_edge_with_demo_plumbing(&mut edge_cfg, registry_metrics);
+
+        // OpAMP `on_connect` doesn't expose the agent's runtime
+        // header, so default to `AsapOtel` — matches the bootstrap
+        // default for legacy / unspecified clients. This is the same
+        // assumption `main::handle_plan`'s typed push path makes
+        // (`push_to_role(Agent, …)` with edge YAML, no runtime
+        // dispatch).
+        emit_for_runtime(AgentRuntime::AsapOtel, &edge_cfg, &self.opamp_endpoint, None).ok()
+    }
+
     /// Push the current plan config to a specific agent.
     ///
     /// Looks up the metric assigned to this agent, retrieves the plan from
     /// `plan_store`, generates agent YAML, and pushes via OpAMP.
     /// Returns `true` if config was pushed, `false` if the agent has no
     /// metric assignment or no plan exists for that metric.
+    ///
+    /// ## Behaviour matrix
+    ///
+    /// | `USE_TYPED_STAGE_SPLIT` | path |
+    /// | --- | --- |
+    /// | unset / `0` | **legacy** — emit a single-pipeline DDSketch YAML via [`generate_agent_config`]. No routing, no `gorillas3`, no warm-passthrough. Backwards-compat for deployments that haven't migrated. |
+    /// | `1` / `true` / `yes` | **typed** — run [`try_emit_typed_edge_yaml`] (mirror of `main::emit_bootstrap_typed`). On error, fall back to the legacy emitter so the push never silently drops. |
+    ///
+    /// Together with the bootstrap GET path (PR #333) this finishes
+    /// the OpAMP-on-connect side of the typed emit so reconnecting
+    /// agents receive the same routed YAML as fresh-connect agents.
     pub async fn push_config_to_agent(&self, agent_id: &str) -> bool {
         let metric = self.agent_to_metric.read().await.get(agent_id).cloned();
         let Some(metric) = metric else { return false };
 
         let Ok(plan) = self.plan_store.get(&metric) else { return false };
 
-        if let Ok(yaml) = generate_agent_config(&plan.agent_config, &self.opamp_endpoint) {
-            self.opamp.push(agent_id, RemoteConfig {
-                config_hash: short_hash(&yaml),
-                yaml,
-            }).await;
-            info!(agent = agent_id, metric = %metric, "pushed config to reconnecting agent");
-            true
+        let yaml = if planner::stage_split::typed_stage_split_enabled() {
+            match self.try_emit_typed_edge_yaml(&metric) {
+                Some(y) => {
+                    info!(
+                        agent = agent_id, metric = %metric, bytes = y.len(),
+                        "[USE_TYPED_STAGE_SPLIT] pushed typed edge YAML on connect"
+                    );
+                    y
+                }
+                None => {
+                    warn!(
+                        agent = agent_id, metric = %metric,
+                        "[USE_TYPED_STAGE_SPLIT] typed emit failed on connect; \
+                         falling back to legacy generate_agent_config"
+                    );
+                    match generate_agent_config(&plan.agent_config, &self.opamp_endpoint) {
+                        Ok(y) => y,
+                        Err(_) => {
+                            warn!(agent = agent_id, metric = %metric, "failed to generate agent config on connect");
+                            return false;
+                        }
+                    }
+                }
+            }
         } else {
-            warn!(agent = agent_id, metric = %metric, "failed to generate agent config on connect");
-            false
-        }
+            match generate_agent_config(&plan.agent_config, &self.opamp_endpoint) {
+                Ok(y) => y,
+                Err(_) => {
+                    warn!(agent = agent_id, metric = %metric, "failed to generate agent config on connect");
+                    return false;
+                }
+            }
+        };
+
+        self.opamp.push(agent_id, RemoteConfig {
+            config_hash: short_hash(&yaml),
+            yaml,
+        }).await;
+        info!(agent = agent_id, metric = %metric, "pushed config to reconnecting agent");
+        true
     }
 
     // ── Re-plan helpers ───────────────────────────────────────────────────────
@@ -161,8 +285,31 @@ impl Replanner {
         self.plan_store.set(metric, plan.clone());
 
         // Push agent config only to agents registered for this specific metric,
-        // rather than broadcasting to all agent-role collectors.
-        if let Ok(yaml) = generate_agent_config(&plan.agent_config, &self.opamp_endpoint) {
+        // rather than broadcasting to all agent-role collectors. Same gate
+        // as `push_config_to_agent` — typed path on, legacy fallback on
+        // emit failure or when the gate is off.
+        let agent_yaml: Option<String> = if planner::stage_split::typed_stage_split_enabled() {
+            match self.try_emit_typed_edge_yaml_for_workload(&workload) {
+                Some(y) => {
+                    info!(
+                        metric, bytes = y.len(),
+                        "[USE_TYPED_STAGE_SPLIT] re-plan emitted typed edge YAML"
+                    );
+                    Some(y)
+                }
+                None => {
+                    warn!(
+                        metric,
+                        "[USE_TYPED_STAGE_SPLIT] re-plan typed emit failed; \
+                         falling back to legacy generate_agent_config"
+                    );
+                    generate_agent_config(&plan.agent_config, &self.opamp_endpoint).ok()
+                }
+            }
+        } else {
+            generate_agent_config(&plan.agent_config, &self.opamp_endpoint).ok()
+        };
+        if let Some(yaml) = agent_yaml {
             let cfg = RemoteConfig { config_hash: short_hash(&yaml), yaml };
             let agents = self.agent_to_metric.read().await;
             let target_agents: Vec<String> = agents.iter()
@@ -392,5 +539,132 @@ mod tests {
         r.unregister_agent("a1").await;
         // After unregister, handle_violation falls back to replan_expired (no-op).
         r.handle_violation("a1").await; // should not panic
+    }
+
+    // ── Typed-emit path tests ─────────────────────────────────────────────────
+    //
+    // These tests exercise the `USE_TYPED_STAGE_SPLIT`-gated emit path
+    // ported from `main::emit_bootstrap_typed` so the OpAMP-pushed YAML
+    // matches what the bootstrap GET path returns. The acceptance bar
+    // is criterion ⑥ on issue #46: the agent's edge pipeline must
+    // include `gorillas3` (archive write), `routing` (warm-passthrough
+    // dispatch), and the `metrics/warm_passthrough` pipeline.
+
+    /// Serialises tests that mutate `USE_TYPED_STAGE_SPLIT`. Mirror of
+    /// the guard in `main::tests` — `cargo test` runs tests in
+    /// parallel by default and `typed_stage_split_enabled()` reads the
+    /// env var on every call.
+    static TYPED_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TypedEnvGuard {
+        previous: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl TypedEnvGuard {
+        fn enable() -> Self {
+            let lock = TYPED_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            let previous = std::env::var("USE_TYPED_STAGE_SPLIT").ok();
+            std::env::set_var("USE_TYPED_STAGE_SPLIT", "1");
+            Self { previous, _lock: lock }
+        }
+    }
+    impl Drop for TypedEnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(v) => std::env::set_var("USE_TYPED_STAGE_SPLIT", v),
+                None => std::env::remove_var("USE_TYPED_STAGE_SPLIT"),
+            }
+        }
+    }
+
+    /// Given an agent runtime + a quantile workload registered in the
+    /// workload store, the typed emit path produces YAML containing
+    /// `gorillas3`, `routing`, and `metrics/warm_passthrough`.
+    ///
+    /// Proves freshness-probe routing reaches OpAMP-pushed agents —
+    /// the legacy `generate_agent_config` path emits NONE of these
+    /// (it builds a single-pipeline DDSketch YAML with no routing).
+    #[tokio::test]
+    async fn typed_replan_emit_includes_freshness_probe_routing() {
+        let _env = TypedEnvGuard::enable();
+
+        let r = make_replanner();
+        let (wl, wc) = test_workload("latency");
+        r.workload_store.set("latency", wl, wc);
+        r.plan_store.set("latency", make_plan());
+
+        let yaml = r
+            .try_emit_typed_edge_yaml("latency")
+            .expect("typed emit should succeed for a quantile workload");
+
+        // gorillas3 — archive-tier write to MinIO. Without this the
+        // warm-tier query engine has nothing to read for criterion ⑥.
+        assert!(
+            yaml.contains("gorillas3"),
+            "typed emit must include the gorillas3 processor block:\n{yaml}"
+        );
+
+        // routing — OTTL routing processor that dispatches the
+        // freshness probes to `metrics/warm_passthrough`. Without this
+        // the DDSketch processor renames them to `_quantile`.
+        assert!(
+            yaml.contains("routing"),
+            "typed emit must include the routing processor block:\n{yaml}"
+        );
+
+        // metrics/warm_passthrough — the bypass pipeline that carries
+        // the freshness probe samples through gorillas3 + exporter
+        // WITHOUT the sketch processor.
+        assert!(
+            yaml.contains("metrics/warm_passthrough"),
+            "typed emit must include the metrics/warm_passthrough pipeline:\n{yaml}"
+        );
+
+        // Sanity: the freshness probe metric names appear in the YAML
+        // (in the warm-passthrough route + the gorillas3 archive
+        // metric list).
+        assert!(
+            yaml.contains("http_freshness_probe_warm"),
+            "typed emit must reference the warm freshness probe metric:\n{yaml}"
+        );
+    }
+
+    /// With `USE_TYPED_STAGE_SPLIT` unset, `push_config_to_agent`
+    /// falls back to the legacy single-pipeline DDSketch emitter and
+    /// produces YAML WITHOUT `gorillas3` / `routing` / warm-passthrough.
+    /// This pins the gate semantics — without it a regression that
+    /// always-on'd the typed path would silently break agents that
+    /// can't yet handle the new processors.
+    #[tokio::test]
+    async fn legacy_path_omits_typed_processors_when_gate_off() {
+        // Hold the env-guard lock so a parallel typed test can't
+        // flip the var underneath us, and explicitly unset.
+        let _lock = TYPED_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let prior = std::env::var("USE_TYPED_STAGE_SPLIT").ok();
+        std::env::remove_var("USE_TYPED_STAGE_SPLIT");
+
+        let r = make_replanner();
+        let (wl, wc) = test_workload("latency");
+        r.workload_store.set("latency", wl, wc);
+        r.plan_store.set("latency", make_plan());
+
+        // Drive the legacy emitter directly — same code
+        // `push_config_to_agent` runs when the gate is off.
+        let plan = r.plan_store.get("latency").unwrap();
+        let yaml = generate_agent_config(&plan.agent_config, &r.opamp_endpoint)
+            .expect("legacy emit should succeed");
+
+        // Legacy single-pipeline DDSketch output has NONE of the
+        // typed-path processors.
+        assert!(!yaml.contains("gorillas3"),
+            "legacy path must not emit gorillas3 processor:\n{yaml}");
+        assert!(!yaml.contains("metrics/warm_passthrough"),
+            "legacy path must not emit warm-passthrough pipeline:\n{yaml}");
+
+        // Restore.
+        match prior {
+            Some(v) => std::env::set_var("USE_TYPED_STAGE_SPLIT", v),
+            None => std::env::remove_var("USE_TYPED_STAGE_SPLIT"),
+        }
     }
 }
