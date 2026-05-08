@@ -171,6 +171,23 @@ pub struct EdgeStageConfig {
     /// else takes the existing `metrics/warm_tier` pipeline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warm_passthrough_metrics: Vec<String>,
+    /// MVP §46 — per-metric → sketch-family mapping populated by the
+    /// planner from the workload spec. When non-empty, the L5 edge
+    /// emitter switches to the **5-sketch routing-connector** wire
+    /// shape: it loads all referenced sketch processors and uses the
+    /// OTel `routing` *connector* (NOT the deprecated routing
+    /// processor) to dispatch each metric to the right per-family
+    /// pipeline. Metrics absent from this map fall through to the
+    /// `metrics/raw_passthrough` default pipeline.
+    ///
+    /// The field is named `metric_to_family` and the value type is
+    /// [`SketchKind`] — agreed convention with the planner agent
+    /// shipping in parallel (`SketchFamily` is a controller-side
+    /// alias for `SketchKind` per `sketch_algebra::params`). Empty
+    /// map ⇒ legacy single-pipeline / Mode-3 / warm-passthrough wire
+    /// shapes are emitted unchanged (backward-compat).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metric_to_family: HashMap<String, SketchKind>,
 }
 
 /// Phase 3.2.5 — one archive-tier metric the agent should land in
@@ -372,6 +389,7 @@ impl Emitter for ThreeStageEmitter {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: HashMap::new(),
         };
         let mut backend_aggregations: Vec<BackendAggregation> = Vec::new();
         let mut gateway_processors: Vec<GatewayMergeProcessor> = Vec::new();

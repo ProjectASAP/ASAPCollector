@@ -313,6 +313,7 @@ mod tests {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         }
     }
 
@@ -326,6 +327,7 @@ mod tests {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         }
     }
 
@@ -343,6 +345,7 @@ mod tests {
             }],
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         }
     }
 
@@ -476,6 +479,7 @@ mod tests {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         };
         let toml = emit_telegraf_toml(&cfg, None).expect("emit ok");
         assert!(toml.contains("k = 200"), "k not propagated\n{toml}");

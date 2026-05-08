@@ -59,6 +59,16 @@ struct CollectorYaml {
     extensions: HashMap<String, Value>,
     receivers: HashMap<String, Value>,
     processors: HashMap<String, Value>,
+    /// OTel collector v0.106+ ships the `routing` component as a
+    /// **connector**, not a processor (`routingprocessor` was
+    /// deprecated and removed). Connectors live in their own
+    /// top-level block and are referenced as both an exporter (entry
+    /// pipeline) and a receiver (each downstream pipeline).
+    /// Empty for legacy single-pipeline / Mode-3 / warm-passthrough
+    /// emit paths — preserved by `skip_serializing_if` so the YAML
+    /// shape doesn't gain an empty `connectors: {}` block.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    connectors: HashMap<String, Value>,
     exporters: HashMap<String, Value>,
     service: ServiceSection,
 }
@@ -91,6 +101,25 @@ struct Pipeline {
 /// is syntactically valid and round-trips through Otel's loader for
 /// integration tests.
 pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<String> {
+    // ── MVP §46: 5-sketch routing-connector dispatch ───────────────────────
+    //
+    // When the planner has populated `cfg.metric_to_family` (the per-metric
+    // → SketchKind table sourced from the workload spec), we switch to the
+    // canonical 5-sketch routing-connector wire shape: all referenced
+    // sketch processors live at the top level, the OTel `routing`
+    // *connector* (NOT the deprecated routing processor) lives under
+    // `connectors:`, and a fan-out of per-family pipelines (DDSketch /
+    // KLL / HLL / CountSketch / CountMinSketch) plus a `raw_passthrough`
+    // default each consume from the connector. This is the shape the
+    // asap-otel binary's builder-config registers for OTel collector
+    // v0.106+ where `routingprocessor` was removed.
+    //
+    // Empty `metric_to_family` ⇒ legacy single-pipeline / Mode-3 /
+    // warm-passthrough emit paths kick in (preserved verbatim below).
+    if !cfg.metric_to_family.is_empty() {
+        return emit_edge_yaml_5sketch_routing(cfg, opamp_endpoint);
+    }
+
     // ── Receivers ─────────────────────────────────────────────────────────────
     // Edge agents accept OTLP gRPC on 4317 + HTTP on 4318. Phase B does
     // not yet plumb an alternate port through `EdgeStageConfig`; if/when
@@ -373,6 +402,9 @@ tsdb_block_duration: {window_secs}s\n",
         extensions: [("opamp".to_string(), opamp_ext)].into(),
         receivers: [("otlp".to_string(), otlp_receiver)].into(),
         processors,
+        // Legacy emit paths don't use the routing connector — see the
+        // MVP §46 dispatch at the top of `emit_edge_yaml`.
+        connectors: HashMap::new(),
         exporters,
         service: ServiceSection {
             extensions: vec!["opamp".into()],
@@ -431,6 +463,8 @@ pub fn emit_gateway_yaml(cfg: &GatewayStageConfig, opamp_endpoint: &str) -> Resu
         extensions: [("opamp".to_string(), opamp_ext)].into(),
         receivers: [("otlp".to_string(), otlp_receiver)].into(),
         processors,
+        // Gateway stage doesn't use the routing connector.
+        connectors: HashMap::new(),
         exporters: [(exporter_key.clone(), exporter_val)].into(),
         service: ServiceSection {
             extensions: vec!["opamp".into()],
@@ -764,6 +798,358 @@ fn build_routing_entry(metric_name: &str, cfg: &BackendStageConfig) -> JsonValue
     entry
 }
 
+// ── MVP §46: 5-sketch routing-connector edge YAML emitter ─────────────────
+//
+// CRITICAL CORRECTNESS NOTE (call out as a real bugfix, not a refactor):
+// the legacy `emit_edge_yaml` placed `routing` under `processors:`. That
+// is WRONG for OTel collector v0.106+ — the routing component was
+// deprecated as a processor and re-shipped as a *connector*. The
+// `routingprocessor` factory was removed in collector-contrib v0.106
+// and the asap-otel binary's `builder-config.yaml` registers
+// `routingconnector` instead. Emitting the old shape produces a YAML
+// that fails `confmap.Provider` validation on the agent at boot:
+//   `error decoding 'processors': unknown type: "routing"`.
+//
+// This function emits the canonical connector-form layout — see the
+// MVP §46 contract:
+//
+//   receivers:  { otlp }
+//   processors: { gorillas3?, batch, ddsketchprocessor, kllprocessor,
+//                 hllprocessor, countsketchprocessor,
+//                 countminsketchprocessor }
+//   connectors: { routing: { default_pipelines: [metrics/raw_passthrough],
+//                            table: [ ... per-metric route() statements ... ] } }
+//   exporters:  { otlp/backend, otlphttp/prometheus? }
+//
+//   service.pipelines:
+//     metrics:                          (entry — receivers: [otlp],
+//                                        exporters: [routing])
+//     metrics/raw_passthrough:          (default — receivers: [routing],
+//                                        processors: [gorillas3?, batch],
+//                                        exporters: [otlp/backend])
+//     metrics/{ddsketch,kll,hll,countsketch,countminsketch}_path:
+//                                       (per-family — receivers: [routing],
+//                                        processors: [gorillas3?,
+//                                                     <family>processor,
+//                                                     batch],
+//                                        exporters: [otlp/backend])
+//
+// `gorillas3` runs FIRST in every per-sketch pipeline (when an
+// archive tier is declared) so the raw sample lands in the cold
+// archive BEFORE the family-specific sketch processor mutates the
+// stream — same invariant the legacy emit path enforces.
+//
+// Phase ε.1 Mode-3 metrics (`prometheus_archive_metrics`) and Bug (b)
+// `warm_passthrough_metrics` (the freshness probes) are folded into
+// the routing table's `table:` and route to the `metrics/raw_passthrough`
+// pipeline — they intentionally bypass every sketch processor.
+fn emit_edge_yaml_5sketch_routing(
+    cfg: &EdgeStageConfig,
+    opamp_endpoint: &str,
+) -> Result<String> {
+    use crate::sketch_algebra::params::SketchKind;
+
+    let otlp_receiver: Value = serde_yaml::from_str(
+        "protocols:\n  grpc:\n    endpoint: \"0.0.0.0:4317\"\n  http:\n    endpoint: \"0.0.0.0:4318\"\n",
+    )
+    .context("parse static OTLP receiver block")?;
+
+    // ── Processors ─────────────────────────────────────────────────────────
+    //
+    // We always load all 5 sketch processors regardless of which metrics
+    // route to them — the planner agent's contract is that the agent
+    // can be retargeted at runtime via OpAMP without re-building, so a
+    // future plan that maps a new metric to (say) HLL must work without
+    // a config push that touches `processors:`.
+    let mut processors: HashMap<String, Value> = HashMap::new();
+
+    // Build per-family processor blocks. We pull from
+    // `cfg.sketch_processors` when an entry exists for that family
+    // (so the params + aggregation_id flow through), otherwise we
+    // synthesise a default-param block so the YAML always carries
+    // all 5 processor keys.
+    let mut family_to_proc: HashMap<SketchKind, &EdgeSketchProcessor> = HashMap::new();
+    for sp in &cfg.sketch_processors {
+        family_to_proc.insert(sp.sketch_kind.clone(), sp);
+    }
+
+    for kind in [
+        SketchKind::DDSketch,
+        SketchKind::Kll,
+        SketchKind::Hll,
+        SketchKind::CountSketch,
+        SketchKind::Cms,
+    ] {
+        let processor_name = sketch_kind_to_processor_name(&kind);
+        let block = if let Some(sp) = family_to_proc.get(&kind) {
+            build_edge_processor_block(sp, cfg.window_secs, &cfg.label_filters)
+        } else {
+            build_default_edge_processor_block(&kind, cfg.window_secs)
+        };
+        processors.insert(processor_name.to_string(), block);
+    }
+
+    // ── gorillas3 archive processor ────────────────────────────────────────
+    let has_archive_tier = !cfg.archive_tier_metrics.is_empty();
+    if has_archive_tier {
+        let window_secs: u64 = cfg
+            .archive_tier_metrics
+            .iter()
+            .filter_map(|m| m.window_secs)
+            .min()
+            .unwrap_or(60);
+        let gorillas3_yaml = format!(
+            "window_interval: {window_secs}s\n\
+drop_original: false\n\
+endpoint: \"${{ASAP_MINIO_ENDPOINT:-http://minio:9000}}\"\n\
+bucket: \"${{ASAP_GORILLA_BUCKET:-asap-gorilla}}\"\n\
+region: us-east-1\n\
+use_ssl: false\n\
+access_key_id: \"${{ASAP_MINIO_ACCESS_KEY:-asap}}\"\n\
+secret_access_key: \"${{ASAP_MINIO_SECRET_KEY:-asap-local-only}}\"\n\
+prefix_template: \"{{tenant}}/{{metric}}/{{YYYY}}/{{MM}}/{{DD}}/{{HH}}/\"\n\
+tenant: \"${{ASAP_TENANT:-default}}\"\n\
+max_retries: 3\n\
+retry_backoff: 1s\n\
+upload_timeout: 30s\n\
+block_format: prometheus_tsdb\n\
+tsdb_bucket: \"${{ASAP_GORILLA_TSDB_BUCKET:-asap-gorilla-tsdb}}\"\n\
+tsdb_block_duration: {window_secs}s\n",
+        );
+        let gorillas3: Value = serde_yaml::from_str(&gorillas3_yaml)
+            .context("parse gorillas3 processor block (5-sketch routing)")?;
+        processors.insert("gorillas3".to_string(), gorillas3);
+    }
+
+    // batch processor — every per-family pipeline ends in batch so the
+    // gateway sees properly framed OTLP. Defaults match
+    // `deploy/configs/asap-otel-agent-b6-asap-single-sketch.yaml`.
+    let batch_block: Value = serde_yaml::from_str(
+        "send_batch_size: 1024\ntimeout: 1s\n",
+    )
+    .context("parse batch processor block")?;
+    processors.insert("batch".to_string(), batch_block);
+
+    // ── Exporters ──────────────────────────────────────────────────────────
+    let (exporter_key, exporter_val) = build_otlp_exporter("gateway", &cfg.exporter_target);
+    let mut exporters: HashMap<String, Value> = [(exporter_key.clone(), exporter_val)].into();
+
+    let has_prometheus_archive = !cfg.prometheus_archive_metrics.is_empty();
+    if has_prometheus_archive {
+        let prom_exporter_yaml = "metrics_endpoint: \"${ASAP_PROMETHEUS_OTLP_URL:-http://prometheus:9090/api/v1/otlp/v1/metrics}\"\nencoding: proto\ntls:\n  insecure: true\n";
+        let prom_exporter: Value = serde_yaml::from_str(prom_exporter_yaml)
+            .context("parse otlphttp/prometheus exporter block")?;
+        exporters.insert("otlphttp/prometheus".to_string(), prom_exporter);
+    }
+
+    // ── Routing connector ──────────────────────────────────────────────────
+    //
+    // Build the OTTL `route()` table. Iterate the planner's
+    // `metric_to_family` map in deterministic order (sorted by metric
+    // name) so the YAML is stable across runs — `HashMap` iteration is
+    // not order-stable.
+    let mut metric_family_pairs: Vec<(&String, &SketchKind)> =
+        cfg.metric_to_family.iter().collect();
+    metric_family_pairs.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut table_entries: Vec<String> = Vec::new();
+    let mut referenced_pipelines: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+
+    for (metric, kind) in &metric_family_pairs {
+        let pipeline = sketch_kind_to_pipeline_name(kind);
+        table_entries.push(format!(
+            "  - statement: 'route() where metric.name == \"{metric}\"'\n    pipelines: [{pipeline}]"
+        ));
+        referenced_pipelines.insert(pipeline.to_string());
+    }
+
+    // Phase 3.2.5 Bug (b) — warm-passthrough freshness probes route to
+    // raw_passthrough (no sketch processor mutates the metric name).
+    for metric in &cfg.warm_passthrough_metrics {
+        table_entries.push(format!(
+            "  - statement: 'route() where metric.name == \"{metric}\"'\n    pipelines: [metrics/raw_passthrough]"
+        ));
+    }
+
+    // Phase ε.1 — Mode 3 prometheus-archive routing folds in via the
+    // `asap.mode` attribute axis. The dedicated
+    // `metrics/prometheus_archive` pipeline ships the metric to
+    // Prometheus's native OTLP receiver via `otlphttp/prometheus`.
+    if has_prometheus_archive {
+        table_entries.push(
+            "  - statement: 'route() where attributes[\"asap.mode\"] == \"prometheus_archive\"'\n    pipelines: [metrics/prometheus_archive]"
+                .to_string(),
+        );
+    }
+
+    let routing_yaml = format!(
+        "default_pipelines: [metrics/raw_passthrough]\ntable:\n{}\n",
+        table_entries.join("\n"),
+    );
+    let routing_block: Value = serde_yaml::from_str(&routing_yaml)
+        .context("parse routing connector block (5-sketch)")?;
+    let mut connectors: HashMap<String, Value> = HashMap::new();
+    connectors.insert("routing".to_string(), routing_block);
+
+    // ── Pipeline assembly ──────────────────────────────────────────────────
+    //
+    // Helper: per-family pipeline = `[gorillas3?, <family>processor, batch]`.
+    // gorillas3 runs FIRST so the cold-tier write happens on raw samples
+    // BEFORE the sketch processor mutates / suffix-renames the stream.
+    let make_sketch_pipeline = |family_proc: &str| -> Pipeline {
+        let mut procs: Vec<String> = Vec::new();
+        if has_archive_tier {
+            procs.push("gorillas3".to_string());
+        }
+        procs.push(family_proc.to_string());
+        procs.push("batch".to_string());
+        Pipeline {
+            receivers: vec!["routing".into()],
+            processors: procs,
+            exporters: vec![exporter_key.clone()],
+        }
+    };
+
+    let mut pipelines: HashMap<String, Pipeline> = HashMap::new();
+
+    // Entry pipeline — receivers: [otlp], exporters: [routing]
+    // (`routing` here is the connector, used as exporter for the entry
+    // stage). NO processors on the entry pipeline; the connector is
+    // responsible for fan-out.
+    pipelines.insert(
+        "metrics".to_string(),
+        Pipeline {
+            receivers: vec!["otlp".into()],
+            processors: Vec::new(),
+            exporters: vec!["routing".to_string()],
+        },
+    );
+
+    // Default raw_passthrough — gorillas3 (when archive declared) then
+    // batch. NO sketch processor — the raw counters land at the gateway
+    // verbatim. This is also the destination of warm_passthrough metrics
+    // (freshness probes).
+    let raw_passthrough = {
+        let mut procs: Vec<String> = Vec::new();
+        if has_archive_tier {
+            procs.push("gorillas3".to_string());
+        }
+        procs.push("batch".to_string());
+        Pipeline {
+            receivers: vec!["routing".into()],
+            processors: procs,
+            exporters: vec![exporter_key.clone()],
+        }
+    };
+    pipelines.insert("metrics/raw_passthrough".to_string(), raw_passthrough);
+
+    // Always emit all 5 per-family pipelines so the agent's pipeline
+    // graph is closed regardless of which families the table currently
+    // references — keeps the runtime swap (planner re-emits with a
+    // different `metric_to_family`) zero-touch on the pipeline graph.
+    for kind in [
+        SketchKind::DDSketch,
+        SketchKind::Kll,
+        SketchKind::Hll,
+        SketchKind::CountSketch,
+        SketchKind::Cms,
+    ] {
+        let proc_name = sketch_kind_to_processor_name(&kind);
+        let pipeline_name = sketch_kind_to_pipeline_name(&kind);
+        pipelines.insert(pipeline_name.to_string(), make_sketch_pipeline(proc_name));
+    }
+
+    // Phase ε.1 — Mode 3 prometheus-archive pipeline (raw passthrough
+    // to the Prometheus OTLP exporter). No sketch processors; only the
+    // Prometheus exporter target is referenced.
+    if has_prometheus_archive {
+        pipelines.insert(
+            "metrics/prometheus_archive".to_string(),
+            Pipeline {
+                receivers: vec!["routing".into()],
+                processors: Vec::new(),
+                exporters: vec!["otlphttp/prometheus".to_string()],
+            },
+        );
+    }
+
+    // ── OpAMP extension ────────────────────────────────────────────────────
+    let opamp_ext: Value = serde_yaml::from_str(&format!(
+        "server:\n  ws:\n    endpoint: \"{opamp_endpoint}\"\n"
+    ))
+    .context("parse opamp extension block")?;
+
+    let doc = CollectorYaml {
+        extensions: [("opamp".to_string(), opamp_ext)].into(),
+        receivers: [("otlp".to_string(), otlp_receiver)].into(),
+        processors,
+        connectors,
+        exporters,
+        service: ServiceSection {
+            extensions: vec!["opamp".into()],
+            pipelines,
+        },
+    };
+
+    serde_yaml::to_string(&doc).context("serialize edge stage config (5-sketch)")
+}
+
+/// Map a `SketchKind` to the OTel processor name registered by the
+/// patched contrib build's factory. Keep in sync with
+/// `crate::stage_split::emitter::edge_processor_name`.
+fn sketch_kind_to_processor_name(kind: &SketchKind) -> &'static str {
+    match kind {
+        SketchKind::DDSketch => "ddsketchprocessor",
+        SketchKind::Kll => "kllprocessor",
+        SketchKind::Hll => "hllprocessor",
+        SketchKind::CountSketch => "countsketchprocessor",
+        SketchKind::Cms => "countminsketchprocessor",
+    }
+}
+
+/// Map a `SketchKind` to its per-family pipeline name in the routing
+/// connector layout.
+fn sketch_kind_to_pipeline_name(kind: &SketchKind) -> &'static str {
+    match kind {
+        SketchKind::DDSketch => "metrics/ddsketch_path",
+        SketchKind::Kll => "metrics/kll_path",
+        SketchKind::Hll => "metrics/hll_path",
+        SketchKind::CountSketch => "metrics/countsketch_path",
+        SketchKind::Cms => "metrics/countminsketch_path",
+    }
+}
+
+/// Build a default-parameter processor block for a `SketchKind` when
+/// the planner's `metric_to_family` references a family that
+/// `cfg.sketch_processors` didn't enumerate. Defaults match the catalog
+/// values used by the planner's L4 rules so the wire shape is what the
+/// rest of the system expects when a metric is later re-routed onto
+/// this family.
+fn build_default_edge_processor_block(kind: &SketchKind, window_secs: Option<u64>) -> Value {
+    use crate::sketch_algebra::params::{
+        CmsParams, CountSketchParams, DDSketchParams, HllParams, KllParams,
+    };
+    let params = match kind {
+        SketchKind::DDSketch => SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
+        SketchKind::Kll => SketchParams::Kll(KllParams { k: 200 }),
+        SketchKind::Hll => SketchParams::Hll(HllParams { precision: 14 }),
+        SketchKind::CountSketch => SketchParams::CountSketch(CountSketchParams {
+            w: 2048,
+            d: 5,
+            with_heap: true,
+        }),
+        SketchKind::Cms => SketchParams::Cms(CmsParams { w: 4096, d: 4 }),
+    };
+    let synthetic = EdgeSketchProcessor {
+        processor_name: sketch_kind_to_processor_name(kind).to_string(),
+        sketch_kind: kind.clone(),
+        sketch_params: params,
+        aggregation_id: format!("agg_default_{}", sketch_kind_tag(kind)),
+    };
+    build_edge_processor_block(&synthetic, window_secs, &[])
+}
+
 /// Resolve an `ExportTarget` to a concrete `endpoint:port` string. Phase
 /// B uses documented placeholder hostnames (`gateway:4317`,
 /// `backend:4317`) for symbolic stages — Phase C plumbs a real
@@ -1049,6 +1435,7 @@ mod tests {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: HashMap::new(),
         }
     }
 
@@ -1848,6 +2235,7 @@ mod tests {
                 window_secs: Some(60),
             }],
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: HashMap::new(),
         };
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
 
@@ -2115,6 +2503,402 @@ mod tests {
         assert!(
             yaml.contains("metrics/warm_tier:"),
             "warm_tier (default) pipeline still emitted\n{yaml}"
+        );
+    }
+
+    // ── MVP §46: 5-sketch routing-connector edge YAML emit tests ──────────
+    //
+    // The new emit path activates when `cfg.metric_to_family` is
+    // non-empty. These tests pin:
+    //   * All 5 sketch processors in `processors:` regardless of which
+    //     metrics route to them (runtime swap → zero pipeline graph
+    //     change).
+    //   * `routing` in `connectors:` (NOT `processors:`) — the real
+    //     bugfix; `routingprocessor` was removed in OTel-collector
+    //     v0.106 so emitting it would fail agent boot.
+    //   * All 6 named pipelines: entry `metrics:` + 5 per-family
+    //     paths + `metrics/raw_passthrough` default.
+    //   * Each per-sketch pipeline starts with `gorillas3` when an
+    //     archive tier is declared (cold-tier write happens BEFORE
+    //     sketch mutation).
+    //   * Freshness-probe (warm-passthrough) routing folds into
+    //     `metrics/raw_passthrough` so the metric name is preserved
+    //     end-to-end.
+
+    /// Helper: build a 5-metric `EdgeStageConfig` covering every sketch
+    /// family per the canonical workload-spec table in MVP §46.
+    fn five_sketch_edge_cfg() -> EdgeStageConfig {
+        let mut metric_to_family: HashMap<String, SketchKind> = HashMap::new();
+        metric_to_family.insert("http_latency_ms".into(), SketchKind::DDSketch);
+        metric_to_family.insert("request_size_bytes".into(), SketchKind::Kll);
+        metric_to_family.insert("unique_users_per_min".into(), SketchKind::Hll);
+        metric_to_family.insert("top_endpoint_qps".into(), SketchKind::CountSketch);
+        metric_to_family.insert("endpoint_request_freq".into(), SketchKind::Cms);
+        // `http_requests_total` is intentionally NOT in this map — it
+        // falls through to the `metrics/raw_passthrough` default.
+        EdgeStageConfig {
+            source_metric: None,
+            label_filters: Vec::new(),
+            window_secs: Some(60),
+            sketch_processors: Vec::new(),
+            exporter_target: ExportTarget::Stage(StageId::Gateway),
+            prometheus_archive_metrics: Vec::new(),
+            archive_tier_metrics: Vec::new(),
+            warm_passthrough_metrics: Vec::new(),
+            metric_to_family,
+        }
+    }
+
+    #[test]
+    fn mvp46_emit_loads_all_5_sketch_processors() {
+        let cfg = five_sketch_edge_cfg();
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+        for proc in [
+            "ddsketchprocessor",
+            "kllprocessor",
+            "hllprocessor",
+            "countsketchprocessor",
+            "countminsketchprocessor",
+        ] {
+            assert!(
+                yaml.contains(&format!("{proc}:")),
+                "missing top-level processor key {proc}\n{yaml}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp46_routing_lives_in_connectors_not_processors() {
+        // The real bugfix: OTel collector v0.106+ removed
+        // `routingprocessor`; the routing component is now a
+        // `routingconnector`. We MUST emit it under `connectors:`.
+        let cfg = five_sketch_edge_cfg();
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        // Connectors block exists with a `routing:` entry.
+        assert!(
+            yaml.contains("connectors:"),
+            "missing top-level connectors block\n{yaml}"
+        );
+        let connectors_idx = yaml.find("connectors:").expect("connectors:");
+        let after_conn = &yaml[connectors_idx..];
+        // Find the next top-level section (one of receivers, processors,
+        // exporters, service, extensions) — `routing:` must appear before
+        // it.
+        let routing_idx = after_conn
+            .find("routing:")
+            .expect("routing: not found after connectors:");
+        // Heuristically check that `routing:` appears in the connectors
+        // block, not later under `service.pipelines` (where it'd appear
+        // as `- routing` not `routing:`).
+        let next_section = ["exporters:", "service:"]
+            .iter()
+            .filter_map(|s| after_conn.find(s))
+            .min()
+            .unwrap_or(after_conn.len());
+        assert!(
+            routing_idx < next_section,
+            "routing: must appear inside connectors block, not later\n{yaml}"
+        );
+
+        // Critical negative assertion: `routing` is NOT under
+        // `processors:`. The processors block lists only the sketch
+        // processors + gorillas3? + batch.
+        let processors_idx = yaml.find("processors:").expect("processors:");
+        let proc_end = yaml[processors_idx..]
+            .find("\nconnectors:")
+            .or_else(|| yaml[processors_idx..].find("\nexporters:"))
+            .map(|x| processors_idx + x)
+            .unwrap_or(yaml.len());
+        let processors_section = &yaml[processors_idx..proc_end];
+        assert!(
+            !processors_section.contains("routing:"),
+            "routing must NOT live under processors: (the v0.106 bug we're fixing)\n{processors_section}"
+        );
+    }
+
+    #[test]
+    fn mvp46_emits_all_6_named_pipelines() {
+        let cfg = five_sketch_edge_cfg();
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+        for pl in [
+            // Entry pipeline.
+            "metrics:",
+            // Default raw-passthrough.
+            "metrics/raw_passthrough:",
+            // 5 per-family pipelines.
+            "metrics/ddsketch_path:",
+            "metrics/kll_path:",
+            "metrics/hll_path:",
+            "metrics/countsketch_path:",
+            "metrics/countminsketch_path:",
+        ] {
+            assert!(
+                yaml.contains(pl),
+                "missing pipeline entry {pl}\n{yaml}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp46_entry_pipeline_routes_to_connector_not_processor() {
+        let cfg = five_sketch_edge_cfg();
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+        // Find the entry `metrics:` pipeline section (under
+        // service.pipelines) and verify it has `exporters: [routing]`
+        // and no processors list (or empty).
+        let pipelines_idx = yaml.find("pipelines:").expect("pipelines block");
+        let after = &yaml[pipelines_idx..];
+        // First `metrics:` (NOT `metrics/...`) section is the entry.
+        // Look for "    metrics:\n" pattern.
+        let entry_marker = "    metrics:\n";
+        let entry_idx = after.find(entry_marker).expect("metrics: entry");
+        let entry_section_end = after[entry_idx + entry_marker.len()..]
+            .find("    metrics/")
+            .map(|x| entry_idx + entry_marker.len() + x)
+            .unwrap_or(after.len());
+        let entry_section = &after[entry_idx..entry_section_end];
+        // `exporters: [routing]` — but serde_yaml may render the list
+        // long-form; tolerate both `- routing` and `[routing]`.
+        assert!(
+            entry_section.contains("- routing") || entry_section.contains("[routing]"),
+            "entry pipeline must export to the routing connector\n{entry_section}"
+        );
+    }
+
+    #[test]
+    fn mvp46_per_sketch_pipelines_have_gorillas3_first_when_archive_declared() {
+        let mut cfg = five_sketch_edge_cfg();
+        // Declare an archive-tier metric so gorillas3 is emitted.
+        cfg.archive_tier_metrics = vec![ArchiveTierMetric {
+            metric: "http_latency_ms".into(),
+            window_secs: Some(60),
+        }];
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        // gorillas3 processor block present.
+        assert!(yaml.contains("gorillas3:"), "missing gorillas3 block\n{yaml}");
+        assert!(
+            yaml.contains("block_format: prometheus_tsdb"),
+            "{yaml}"
+        );
+
+        // Each per-sketch pipeline starts with gorillas3 BEFORE the
+        // family processor. We slice the YAML per-pipeline section and
+        // check the relative order.
+        for (pipeline, family_proc) in [
+            ("metrics/ddsketch_path:", "ddsketchprocessor"),
+            ("metrics/kll_path:", "kllprocessor"),
+            ("metrics/hll_path:", "hllprocessor"),
+            ("metrics/countsketch_path:", "countsketchprocessor"),
+            ("metrics/countminsketch_path:", "countminsketchprocessor"),
+        ] {
+            let p_idx = yaml.find(pipeline).expect(pipeline);
+            // Section runs to the next `metrics/` header or end.
+            let after = &yaml[p_idx..];
+            let next_offset = after[1..]
+                .find("    metrics")
+                .map(|x| x + 1)
+                .unwrap_or(after.len());
+            let section = &after[..next_offset];
+            let g_idx = section
+                .find("- gorillas3")
+                .unwrap_or_else(|| panic!("gorillas3 missing in {pipeline}\n{section}"));
+            let f_idx = section
+                .find(&format!("- {family_proc}"))
+                .unwrap_or_else(|| panic!("{family_proc} missing in {pipeline}\n{section}"));
+            assert!(
+                g_idx < f_idx,
+                "gorillas3 must come BEFORE {family_proc} in {pipeline}\n{section}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp46_routing_table_dispatches_per_metric_to_correct_family() {
+        let cfg = five_sketch_edge_cfg();
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+        // Every metric in the contract dispatches via OTTL `route()`
+        // to its family pipeline. serde_yaml may render sequences
+        // either inline (`[metrics/x]`) or block-form (`- metrics/x`)
+        // depending on width; tolerate both.
+        for (metric, pipeline) in [
+            ("http_latency_ms", "metrics/ddsketch_path"),
+            ("request_size_bytes", "metrics/kll_path"),
+            ("unique_users_per_min", "metrics/hll_path"),
+            ("top_endpoint_qps", "metrics/countsketch_path"),
+            ("endpoint_request_freq", "metrics/countminsketch_path"),
+        ] {
+            let needle =
+                format!("route() where metric.name == \"{metric}\"");
+            let n_idx = yaml.find(&needle).unwrap_or_else(|| {
+                panic!("missing route() statement for {metric}\n{yaml}")
+            });
+            let near = &yaml[n_idx..n_idx.saturating_add(256).min(yaml.len())];
+            let inline = format!("[{pipeline}]");
+            let block = format!("- {pipeline}");
+            assert!(
+                near.contains(&inline) || near.contains(&block),
+                "{metric} should route to {pipeline}; got\n{near}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp46_default_pipeline_is_raw_passthrough() {
+        let cfg = five_sketch_edge_cfg();
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+        // Tolerate inline-vs-block list rendering — serde_yaml chooses
+        // based on width.
+        let inline = "default_pipelines: [metrics/raw_passthrough]";
+        let block = "default_pipelines:\n    - metrics/raw_passthrough";
+        let block2 = "default_pipelines:\n      - metrics/raw_passthrough";
+        assert!(
+            yaml.contains(inline) || yaml.contains(block) || yaml.contains(block2),
+            "routing must default to raw_passthrough so http_requests_total\
+             (and any unrouted metric) falls through without sketching\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn mvp46_warm_passthrough_routes_to_raw_passthrough_pipeline() {
+        // Freshness probes (Phase 3.2.5 Bug b) must bypass every sketch
+        // processor — they route to `metrics/raw_passthrough` so the
+        // metric name is preserved end-to-end.
+        let mut cfg = five_sketch_edge_cfg();
+        cfg.archive_tier_metrics = vec![ArchiveTierMetric {
+            metric: "http_freshness_probe_warm".into(),
+            window_secs: Some(1),
+        }];
+        cfg.warm_passthrough_metrics = vec!["http_freshness_probe_warm".into()];
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        let needle = "route() where metric.name == \"http_freshness_probe_warm\"";
+        let idx = yaml
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing freshness-probe route\n{yaml}"));
+        let near = &yaml[idx..idx.saturating_add(256).min(yaml.len())];
+        // serde_yaml renders sequences inline or block-form; tolerate both.
+        assert!(
+            near.contains("[metrics/raw_passthrough]")
+                || near.contains("- metrics/raw_passthrough"),
+            "warm_passthrough metric must route to raw_passthrough\n{near}"
+        );
+
+        // raw_passthrough pipeline must NOT include any family-specific
+        // sketch processor (the whole point of the bypass).
+        let pl_idx = yaml
+            .find("metrics/raw_passthrough:")
+            .expect("raw_passthrough pipeline");
+        let after = &yaml[pl_idx..];
+        let next_offset = after[1..]
+            .find("    metrics")
+            .map(|x| x + 1)
+            .unwrap_or(after.len());
+        let section = &after[..next_offset];
+        for forbidden in [
+            "ddsketchprocessor",
+            "kllprocessor",
+            "hllprocessor",
+            "countsketchprocessor",
+            "countminsketchprocessor",
+        ] {
+            assert!(
+                !section.contains(forbidden),
+                "raw_passthrough must NOT include {forbidden}\n{section}"
+            );
+        }
+        // ... but gorillas3 still runs (the metric still wants to land
+        // in the cold archive).
+        assert!(
+            section.contains("- gorillas3"),
+            "raw_passthrough still routes through gorillas3 for archive write\n{section}"
+        );
+    }
+
+    #[test]
+    fn mvp46_per_sketch_pipelines_use_routing_as_receiver() {
+        // The connector is referenced as both an exporter (entry
+        // pipeline) and a receiver (each per-family pipeline). This
+        // pins the receiver-side wiring.
+        let cfg = five_sketch_edge_cfg();
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+        for pipeline in [
+            "metrics/ddsketch_path:",
+            "metrics/kll_path:",
+            "metrics/hll_path:",
+            "metrics/countsketch_path:",
+            "metrics/countminsketch_path:",
+            "metrics/raw_passthrough:",
+        ] {
+            let p_idx = yaml.find(pipeline).expect(pipeline);
+            let after = &yaml[p_idx..];
+            let next_offset = after[1..]
+                .find("    metrics")
+                .map(|x| x + 1)
+                .unwrap_or(after.len());
+            let section = &after[..next_offset];
+            assert!(
+                section.contains("- routing") || section.contains("[routing]"),
+                "{pipeline} must consume from the routing connector\n{section}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp46_empty_metric_to_family_falls_back_to_legacy_emit() {
+        // Backward-compat invariant: when the planner hasn't populated
+        // metric_to_family, the emitter must produce the legacy
+        // single-pipeline shape (no connectors block, no per-family
+        // pipelines).
+        let cfg = ddsketch_edge_cfg();
+        assert!(
+            cfg.metric_to_family.is_empty(),
+            "ddsketch_edge_cfg fixture must keep metric_to_family empty"
+        );
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+        // No connectors block.
+        assert!(
+            !yaml.contains("connectors:"),
+            "legacy emit must NOT add connectors block\n{yaml}"
+        );
+        // No 5-sketch pipelines.
+        assert!(
+            !yaml.contains("metrics/ddsketch_path"),
+            "legacy emit keeps single-pipeline shape\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("metrics/raw_passthrough"),
+            "legacy emit keeps single-pipeline shape\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn mvp46_composes_with_prometheus_archive_mode3() {
+        // Mode 3 (Prometheus archive) folds into the same routing
+        // connector table — the `metrics/prometheus_archive` pipeline
+        // is added as an additional fan-out target.
+        let mut cfg = five_sketch_edge_cfg();
+        cfg.prometheus_archive_metrics = vec![PrometheusArchiveMetric {
+            metric: "http_requests_total".into(),
+            window_secs: Some(60),
+            label_proj: vec!["service.name".into()],
+        }];
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        assert!(
+            yaml.contains("metrics/prometheus_archive:"),
+            "Mode-3 pipeline must be added\n{yaml}"
+        );
+        assert!(
+            yaml.contains("otlphttp/prometheus:"),
+            "Mode-3 exporter must be added\n{yaml}"
+        );
+        assert!(
+            yaml.contains("attributes[\\\"asap.mode\\\"]")
+                || yaml.contains("attributes['asap.mode']")
+                || yaml.contains("attributes[\"asap.mode\"]"),
+            "routing table must dispatch by asap.mode for Mode 3\n{yaml}"
         );
     }
 }

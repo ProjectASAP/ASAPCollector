@@ -249,6 +249,7 @@ mod runtime_tests {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         };
 
         let collector = emit_for_runtime(
@@ -272,6 +273,7 @@ mod runtime_tests {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         };
         let yaml = emit_for_runtime(
             AgentRuntime::AsapOtap, &cfg, "ws://ctrl/v1/opamp", None,
@@ -294,6 +296,7 @@ mod runtime_tests {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         };
         let toml = emit_for_runtime(
             AgentRuntime::AsapTelegraf, &cfg, "ws://ctrl/v1/opamp", None,
