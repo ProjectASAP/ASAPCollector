@@ -392,6 +392,7 @@ mod tests {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         }
     }
 
@@ -405,6 +406,7 @@ mod tests {
             prometheus_archive_metrics: Vec::new(),
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         }
     }
 
@@ -422,6 +424,7 @@ mod tests {
             }],
             archive_tier_metrics: Vec::new(),
             warm_passthrough_metrics: Vec::new(),
+            metric_to_family: std::collections::HashMap::new(),
         }
     }
 
