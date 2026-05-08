@@ -1,4 +1,4 @@
-//! DDSketch wrapper over [`asap_sketchlib::sketches::DdSketch`].
+//! DDSketch wrapper over [`asap_sketchlib::wrapper::DdSketch`].
 //!
 //! Mirrors `asap-precompute-go/sketches/ddsketch.go`. Adapts the
 //! wire-format-aligned `DdSketch` struct to the host-neutral
@@ -7,7 +7,7 @@
 use asap_sketchlib::proto::sketchlib::{
     sketch_envelope, DdSketchState, SketchEnvelope as ProtoEnvelope,
 };
-use asap_sketchlib::sketches::DdSketch;
+use asap_sketchlib::wrapper::DdSketch;
 use prost::Message;
 
 use crate::observation::ObservationValue;

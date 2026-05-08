@@ -830,7 +830,7 @@ mod real_sketch {
     fn hll_factory() -> Box<dyn Fn() -> Box<dyn Sketch> + Send + Sync> {
         Box::new(|| {
             Box::new(HLLWrapper::new(
-                asap_sketchlib::sketches::HllVariant::Regular,
+                asap_sketchlib::wrapper::HllVariant::Regular,
                 12,
             )) as Box<dyn Sketch>
         })

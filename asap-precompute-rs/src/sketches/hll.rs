@@ -1,4 +1,4 @@
-//! HLL wrapper over [`asap_sketchlib::sketches::HllSketch`].
+//! HLL wrapper over [`asap_sketchlib::wrapper::HllSketch`].
 //!
 //! Mirrors `asap-precompute-go/sketches/hll.go`. HLL is the canonical
 //! [`CardinalitySketch`] implementation in this crate.
@@ -6,7 +6,7 @@
 use asap_sketchlib::proto::sketchlib::{
     sketch_envelope, HllVariant, HyperLogLogState, SketchEnvelope as ProtoEnvelope,
 };
-use asap_sketchlib::sketches::{HllSketch, HllVariant as RsHllVariant};
+use asap_sketchlib::wrapper::{HllSketch, HllVariant as RsHllVariant};
 use prost::Message;
 
 use crate::observation::ObservationValue;
