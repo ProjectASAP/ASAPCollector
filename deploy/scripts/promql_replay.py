@@ -12,7 +12,7 @@ Output schema (JSONL, one line per query attempt):
     {
         "ts": "2026-04-30T13:45:01.123Z",
         "query": "histogram_quantile(0.99, http_requests_total_latency_ms)",
-        "kind": "quantile",                # quantile | topk | count_unique | sum
+        "kind": "quantile",                # quantile | topk | count_unique | sum | frequency
         "duration_ms": 12.4,
         "status": "success",               # success | http_error | timeout | json_error
         "http_code": 200,
@@ -57,11 +57,24 @@ from typing import Any
 #
 # `kind` is the sketch family the query exercises so the reducer can
 # pick the right ground-truth function:
-#   - quantile      → DDSketch / KLL          → P-th quantile
-#   - topk          → CountSketch (heavy-hit) → top-K by frequency
-#   - count_unique  → HLL                     → distinct cardinality
-#   - sum           → Sum                     → exact, identity check
-QUERY_KINDS = {"quantile", "topk", "count_unique", "sum"}
+#   - quantile      → DDSketch / KLL                 → P-th quantile
+#   - topk          → CountSketch (heavy-hit)        → top-K by frequency
+#   - count_unique  → HLL                            → distinct cardinality
+#   - sum           → Sum                            → exact, identity check
+#   - frequency     → CountMinSketch (one-sided OE)  → per-key freq estimate
+#                                                       (typically `rate(...[5m])`)
+#
+# Result shape per kind (Prometheus PromQL JSON):
+#   - quantile      → instant vector of N series with float `value`
+#   - topk          → instant vector of K series (K=arg)
+#   - count_unique  → scalar / instant vector of 1
+#   - sum           → instant vector (sum_by) or matrix (sum_over_time)
+#   - frequency     → instant vector with per-series rate value
+#
+# The replay client is shape-agnostic — it logs `result_type` +
+# `result` verbatim. Validators / reducers downstream key on
+# `kind` to pick the right oracle function.
+QUERY_KINDS = {"quantile", "topk", "count_unique", "sum", "frequency"}
 
 
 def load_queries(path: str) -> list[dict[str, str]]:

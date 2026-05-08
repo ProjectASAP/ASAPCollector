@@ -69,3 +69,71 @@
   query_string: "count(http_requests_total{service=\"payments\"})"
   accuracy_sla: 0.0
   assign_to_role: archive
+
+# ── Five-sketch MVP coverage (issue #46) ──────────────────────────
+#
+# The four entries below register the new metrics emitted by the
+# fake-exporter's five-sketch workload (deploy/fake-exporter/
+# five_sketch_workload.go). Each entry pins a `sketch_family_override`
+# hint so the controller's planner picks the family the empirical
+# claim is scoped to (DDSketch claims rel-err on quantiles, KLL
+# claims rank-err, HLL claims cardinality, CountSketch claims
+# top-K, CountMinSketch claims one-sided frequency over-estimate).
+#
+# `target_path` records the storage tier the planner should
+# preferentially place each sketch in. Today's WorkloadEntry struct
+# (controller/src/config/workloads.rs) doesn't yet read these two
+# keys — `serde` ignores unknown fields by default, so they round-
+# trip silently until the parallel capability_matching + planner
+# work picks them up. The keys are spelled the same as the
+# capability_matching agent's expected schema so there's no rename
+# step at integration.
+
+# 5. KLL — rank-error quantile on a heavy-tailed body-size dist.
+#    Inner: per-series quantile over a 1m sliding window.
+#    Stage: edge — KLL state flushes per window close, no delta
+#    variant (kllprocessor's Config.Validate rejects
+#    delta_transmission: true). Backend stores the resulting KLL
+#    state.
+- metric_name: request_size_bytes
+  query_string: "quantile_over_time(0.99, request_size_bytes[1m])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: KLL
+  target_path: warm
+
+# 6. HLL — distinct-cardinality query over rotating user pool.
+#    Inner: count of distinct user_id values seen in the most
+#    recent emission window.
+#    Stage: edge HLL register-set, gateway merge (HLL mergeable).
+- metric_name: unique_users_per_min
+  query_string: "count(unique_users_per_min)"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  sketch_family_override: HLL
+  target_path: warm
+
+# 7. CountSketch — top-K over Zipfian endpoint distribution.
+#    Stage: edge CountSketch counters, gateway merge by sum of
+#    matching counter rows. The replay query is `topk(5, ...)`;
+#    the heavy hitters at the head of the Zipf tail dominate the
+#    top-K result.
+- metric_name: top_endpoint_qps
+  query_string: "topk(5, top_endpoint_qps)"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountSketch
+  target_path: warm
+
+# 8. CountMinSketch — frequency query over the same Zipfian
+#    endpoint distribution, but exercised through `rate(...[5m])`
+#    so the family scored is the one-sided over-estimator. The
+#    metric is split from top_endpoint_qps so per-family
+#    bandwidth + accuracy bookkeeping stays clean even though
+#    they share the same distribution shape on the producer side.
+- metric_name: endpoint_request_freq
+  query_string: "rate(endpoint_request_freq[5m])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountMinSketch
+  target_path: warm

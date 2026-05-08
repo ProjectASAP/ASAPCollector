@@ -10,7 +10,7 @@
 //     by the SDK config below.
 //
 //  2. Trace replay — reads a CSV of recorded `(ts_ms, series_id,
-//     value)` rows and emits at the recorded pace. The 
+//     value)` rows and emits at the recorded pace. The
 //     workload-credibility hook.
 //
 // Emitted metric families (both modes):
@@ -25,12 +25,12 @@
 //
 // ## Three-axis env config
 //
-//	EXPORTER_SDK_WINDOW        PeriodicReader interval. 
+//	EXPORTER_SDK_WINDOW        PeriodicReader interval.
 //	                           Duration string. Default "15s".
 //	EXPORTER_SDK_PROJECTION    Comma-separated attribute keys to keep
 //	                           inside the SDK aggregator. Everything
 //	                           not listed is dropped via View's
-//	                           AttributeFilter. 
+//	                           AttributeFilter.
 //	                              ""        keep all labels (orig card)
 //	                              "zone"    keep only zone (reduces card)
 //	                              "zone,rack,node,pod"  keep all four
@@ -448,6 +448,16 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 
 	labelSets := buildLabelSets(cardinality, zoneVals, rackVals, nodeVals, podVals)
 	period := time.Duration(float64(time.Second) / freqHz)
+
+	// Five-sketch MVP workload (issue #46) — emits the four new
+	// metrics (request_size_bytes / unique_users_per_min /
+	// top_endpoint_qps / endpoint_request_freq) that exercise KLL /
+	// HLL / CountSketch / CountMinSketch alongside the DDSketch +
+	// Sum signal already produced below. Gated by EXPORTER_FIVE_SKETCH
+	// (default on); reuses the same outer label schema as the
+	// existing counter so per-host fan-out is consistent.
+	stopFiveSketch := startFiveSketchWorkload(ctx, meter, labelSets, freqHz)
+	defer stopFiveSketch()
 
 	// Per-series goroutines mean each attribute set ticks on its own
 	// cadence — if we ever want to stagger frequencies per series
