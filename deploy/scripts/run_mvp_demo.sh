@@ -116,6 +116,17 @@ EXPORTER_FRESHNESS_PROBE_HZ="${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
 ASAP_SKETCH_FAMILY="${ASAP_SKETCH_FAMILY:-ddsketch}"
 USE_TYPED_STAGE_SPLIT="${USE_TYPED_STAGE_SPLIT:-1}"
 
+# Option-A driver-side `POST /api/v1/plan` workaround. Phase 3.2.5
+# (PR #328) added these POSTs after stack-up to force the controller
+# through the typed-stage-split path; PR #329 then ported the bootstrap
+# `handle_bootstrap_agent_config` handler to the SAME typed pipeline,
+# making the POSTs redundant for the bootstrap GET. The
+# Option-B-as-sole-path validation (this file's branch) defaults this
+# OFF so we can verify the bootstrap path actually carries the load.
+# Operators who want to keep the safety belt can set the env var to
+# `1` explicitly.
+ENABLE_OPTION_A_DRIVER_POST="${ENABLE_OPTION_A_DRIVER_POST:-0}"
+
 # Settle window between baseline teardown and asap bring-up. Gives
 # the kernel enough time to release per-container cgroup + iptables
 # state so the next compose `up` doesn't see stale resources.
@@ -361,55 +372,49 @@ bring_up_stack() {
     fi
 
     if [[ "${PIPELINE_LABEL}" == "asap" ]]; then
-        # Trigger handle_plan() for the typed-stage-split path.
+        # Option-A driver POST workaround — gated OFF by default for the
+        # Option-B-as-sole-path validation. Phase ε.1.6 (PR #329) ported
+        # `handle_bootstrap_agent_config` to the typed-stage-split
+        # pipeline so a fresh agent's bootstrap GET fires the same
+        # typed emitter path — no driver-side POST required. The
+        # bootstrap path is exercised the moment OpAMP delivers the
+        # first agent connection, BEFORE this branch executes.
         #
-        # Historical context (Phase 3.3 driver workaround): the startup
-        # workload-registry pre-pop loop in controller/main.rs only runs
-        # `planner.plan(&wl)`; the `USE_TYPED_STAGE_SPLIT` block originally
-        # lived ONLY inside `handle_plan()` (POST /api/v1/plan). Without an
-        # explicit POST the typed path was never reached and §8 STATUS came
-        # back `not-exercised`. Phase 3.3 (#94) added these POSTs as a
-        # driver-side workaround.
-        #
-        # Phase ε.1.6 (PR "controller: port handle_bootstrap_agent_config to
-        # typed-stage-split path") moved the same typed pipeline into
-        # `handle_bootstrap_agent_config`, so a fresh agent fetching its
-        # initial config at startup now goes through the typed path
-        # without requiring a POST first. These POSTs are kept as a
-        # safety belt — they (a) exercise the typed-backend JSON push
-        # (`emit_backend_config_json` doesn't run on the bootstrap GET),
-        # (b) keep the demo robust against any future regression in the
-        # bootstrap path, and (c) populate the per-metric plan store so
-        # `/api/v1/config/<metric>` returns a non-empty config in the
-        # snapshot capture below.
-        log "  POST /api/v1/plan for each canonical workload (exercise typed-stage-split)"
-        post_workload_plan() {
-            local label="$1"; local promql="$2"; local accuracy="$3"; local metric="$4"
-            local body
-            body=$(printf '{"query_string":%s,"metric_name":%s,"accuracy_sla":%s,"aggregations":["quantile"],"time_window":"1m","latency_sla":null,"sketch_type":null}' \
-                "$(printf '%s' "$promql" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-                "$(printf '%s' "$metric" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-                "$accuracy")
-            local code
-            code=$(curl -sS -o "${PIPELINE_OUT_BASE}/plan-post-${label}.json" -w '%{http_code}' \
-                -X POST "http://localhost:${HOST_CONTROLLER_PORT}/api/v1/plan" \
-                -H 'Content-Type: application/json' \
-                -d "$body" \
-                2> "${PIPELINE_OUT_BASE}/plan-post-${label}.err" || true)
-            log "    POST /api/v1/plan ${label} → HTTP ${code}"
-        }
-        post_workload_plan window-per-series \
-            'quantile_over_time(0.99, http_requests_total_latency_ms[1m])' \
-            '0.01' 'http_requests_total_latency_ms'
-        post_workload_plan label-at-instant \
-            'sum by (zone) (http_requests_total)' \
-            '0.0' 'http_requests_total'
-        post_workload_plan combined-window-label \
-            'sum by (zone) (rate(http_requests_total[5m]))' \
-            '0.01' 'http_requests_total'
-        post_workload_plan cold-fallback-payments \
-            'count(http_requests_total{service="payments"})' \
-            '0.0' 'http_requests_total'
+        # Set `ENABLE_OPTION_A_DRIVER_POST=1` to keep the safety belt
+        # (e.g., for regression debugging where you want to compare
+        # bootstrap-path vs POST-path side-by-side).
+        if [[ "${ENABLE_OPTION_A_DRIVER_POST}" == "1" ]]; then
+            log "  POST /api/v1/plan for each canonical workload (Option-A safety belt — typed-stage-split via handle_plan)"
+            post_workload_plan() {
+                local label="$1"; local promql="$2"; local accuracy="$3"; local metric="$4"
+                local body
+                body=$(printf '{"query_string":%s,"metric_name":%s,"accuracy_sla":%s,"aggregations":["quantile"],"time_window":"1m","latency_sla":null,"sketch_type":null}' \
+                    "$(printf '%s' "$promql" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+                    "$(printf '%s' "$metric" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
+                    "$accuracy")
+                local code
+                code=$(curl -sS -o "${PIPELINE_OUT_BASE}/plan-post-${label}.json" -w '%{http_code}' \
+                    -X POST "http://localhost:${HOST_CONTROLLER_PORT}/api/v1/plan" \
+                    -H 'Content-Type: application/json' \
+                    -d "$body" \
+                    2> "${PIPELINE_OUT_BASE}/plan-post-${label}.err" || true)
+                log "    POST /api/v1/plan ${label} → HTTP ${code}"
+            }
+            post_workload_plan window-per-series \
+                'quantile_over_time(0.99, http_requests_total_latency_ms[1m])' \
+                '0.01' 'http_requests_total_latency_ms'
+            post_workload_plan label-at-instant \
+                'sum by (zone) (http_requests_total)' \
+                '0.0' 'http_requests_total'
+            post_workload_plan combined-window-label \
+                'sum by (zone) (rate(http_requests_total[5m]))' \
+                '0.01' 'http_requests_total'
+            post_workload_plan cold-fallback-payments \
+                'count(http_requests_total{service="payments"})' \
+                '0.0' 'http_requests_total'
+        else
+            log "  Option-A driver POST is OFF (ENABLE_OPTION_A_DRIVER_POST=0) — Option-B bootstrap GET carries the load"
+        fi
     else
         log "  baseline pipeline — skipping controller plan POST (no controller-driven sketches)"
     fi
@@ -502,16 +507,26 @@ capture_emitted_configs() {
     # Detect "controller didn't actually emit a typed config" — this
     # is the failure mode the spec calls out as expected if Phase
     # B/C wiring has remaining caveats. We grep the controller logs
-    # for the typed-stage-split tracing markers.
+    # for the typed-stage-split tracing markers. With Option B
+    # (PR #329) the bootstrap GET path now fires the typed pipeline
+    # too, so a successful bootstrap path emits
+    # `[USE_TYPED_STAGE_SPLIT] emitted bootstrap config from typed
+    # path` BEFORE any `pushing typed` events from a later
+    # POST /api/v1/plan. Either marker is sufficient to call the
+    # emitter LIVE for verdict purposes.
     docker logs "$(cd "${COMPOSE_DIR}" && docker compose -f base.yml -f mvp-multi-stage.yml ps -q controller 2>/dev/null | head -n1)" \
         2> "${cdir}/controller.stderr" \
         > "${cdir}/controller.stdout" || true
     # Rust's tracing default writes to stdout, so the captured
     # controller.stderr is often empty even when the typed-stage-split
     # path fires. Grep both files so STATUS reflects the true state.
-    if grep -q "USE_TYPED_STAGE_SPLIT.*pushing typed" \
+    if grep -q "USE_TYPED_STAGE_SPLIT.*emitted bootstrap config from typed path" \
             "${cdir}/controller.stdout" "${cdir}/controller.stderr" 2>/dev/null; then
-        log "    controller logs show typed-stage-split push events — emitter LIVE"
+        log "    controller logs show typed bootstrap emit (Option-B path) — emitter LIVE at bootstrap"
+        echo "live-bootstrap" > "${cdir}/STATUS"
+    elif grep -q "USE_TYPED_STAGE_SPLIT.*pushing typed" \
+            "${cdir}/controller.stdout" "${cdir}/controller.stderr" 2>/dev/null; then
+        log "    controller logs show typed-stage-split push events (handle_plan) — emitter LIVE"
         echo "live" > "${cdir}/STATUS"
     elif grep -q "split_typed_three_stage returned None" \
             "${cdir}/controller.stdout" "${cdir}/controller.stderr" 2>/dev/null; then
@@ -573,26 +588,24 @@ JSON
     wait "${EDGE_PID}" || true
     log "  measurement window done"
 
-    # Accuracy reduce against the cold-store ground truth (asap only;
-    # baseline writes raw to Prometheus, not to a separate
-    # cold-store, so accuracy is exact-by-construction).
+    # Accuracy reduce — Path A2 ground truth via the archive engine
+    # (Step 2.3 / PR #97). The legacy `/var/asap/cold/raw/` JSONL tee
+    # is gone (deleted in PR #100 with the Prometheus remote-write
+    # ingest path), so the reducer now re-issues each replay PromQL
+    # against the backend with `X-ASAP-Engine: thanos_archive` to get
+    # the exact answer from the Thanos forward engine, then computes
+    # rel-err / recall vs. the warm-tier sketch answer the replay
+    # client recorded. Asap-only — baseline answers from Prometheus
+    # natively (no separate archive tier to compare against).
     if [[ "${PIPELINE_LABEL}" == "asap" ]]; then
-        log "  accuracy reduce"
-        local backend_cont
-        backend_cont="$(cd "${COMPOSE_DIR}" && \
-            docker compose -f base.yml -f mvp-multi-stage.yml ps -q backend 2>/dev/null | head -n1)"
-        if [[ -n "${backend_cont}" ]]; then
-            docker cp "${backend_cont}:/var/asap/cold/raw" "${mdir}/cold-truth" \
-                > "${mdir}/cold-snapshot.log" 2>&1 || true
-        fi
-        if [[ -d "${mdir}/cold-truth" ]]; then
-            python3 "${SCRIPT_DIR}/accuracy_reduce.py" \
-                --cell-dir "${mdir}" \
-                --out "${mdir}/accuracy.csv" \
-                > "${mdir}/accuracy.log" 2>&1 || true
-        else
-            log "  [warn] cold-truth snapshot not captured — accuracy.csv skipped"
-        fi
+        log "  accuracy reduce (X-ASAP-Engine: thanos_archive ground truth)"
+        python3 "${SCRIPT_DIR}/accuracy_reduce.py" \
+            --cell-dir "${mdir}" \
+            --backend "http://localhost:${PIPELINE_QUERY_PORT}" \
+            --archive-engine-id thanos_archive \
+            --out "${mdir}/accuracy.csv" \
+            > "${mdir}/accuracy.log" 2>&1 || \
+                log "    [warn] accuracy_reduce.py exited non-zero — see accuracy.log"
     else
         log "  baseline pipeline — accuracy is exact-by-construction (Prometheus raw); skipping accuracy_reduce"
     fi
