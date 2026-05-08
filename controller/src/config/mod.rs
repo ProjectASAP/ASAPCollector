@@ -22,6 +22,9 @@ pub use stage_config_telegraf::emit_telegraf_toml;
 pub use workloads::WorkloadRegistry;
 
 use crate::stage_split::emitter::EdgeStageConfig;
+use crate::sketch_algebra::SketchExpr;
+use crate::sketch_algebra::params::SketchKind;
+use crate::store::WorkloadStore;
 use anyhow::Result;
 
 /// Phase ε.1.5 — which edge runtime an agent identifies as.
@@ -190,6 +193,96 @@ pub fn extend_edge_with_demo_plumbing(
             });
         }
     }
+}
+
+// ── MVP §46: planner ↔ 5-sketch emitter stitching ──────────────────────────────
+//
+// PR #339 (planner) classifies a single metric and produces a `SketchExpr`
+// pinning a sketch family. PR #340 (emitter) gates the 5-sketch
+// routing-connector wire shape on `EdgeStageConfig::metric_to_family`
+// being non-empty. Until this stitch shipped, nothing populated the
+// HashMap — the typed bootstrap / replan paths emitted single-pipeline
+// YAML and the routing-connector path stayed dormant.
+//
+// `extract_root_sketch_kind` walks a `SketchExpr` tree and returns the
+// committed sketch family — looking through `SketchEstimate`,
+// `SketchAgg`, `SketchMerge`, `LetBinding`, and `RawAtEdgeSketchAtBackend`.
+// `SketchAgg::sketch_type` is the canonical source of truth (the typed
+// path's `Bind*` rules drop their family commitment here).
+//
+// `collect_metric_to_family` is the multi-metric loop: walk the workload
+// registry, run `bind_workload_typed` per metric, and collect the
+// committed family into the HashMap. Metrics that decline binding —
+// `http_requests_total` (raw passthrough), exact-required workloads,
+// multi-intent — are skipped, which is exactly the contract the
+// `emit_edge_yaml_5sketch_routing` path expects (absent metrics
+// fall through to `metrics/raw_passthrough`).
+
+/// Walk a `SketchExpr` tree and return the first `SketchAgg::sketch_type`
+/// (or the `RawAtEdgeSketchAtBackend::family` Mode-2 equivalent). The
+/// canonical shape produced by `bind_workload_typed` is
+/// `SketchEstimate { child: SketchAgg { sketch_type, … } }`, so this is
+/// effectively a one-level descent — but we walk recursively to stay
+/// robust against future shape changes (e.g. Bind* rules wrapping
+/// in `LetBinding` for fan-in shared sketches).
+///
+/// Returns `None` only for trees that carry no sketch commitment
+/// (`Logical`-only, unresolved `Ref`, raw Mode-3 archive). These map
+/// onto the raw-passthrough default pipeline in the routing emitter,
+/// which is correct.
+pub fn extract_root_sketch_kind(expr: &SketchExpr) -> Option<SketchKind> {
+    match expr {
+        SketchExpr::SketchAgg { sketch_type, .. } => Some(sketch_type.clone()),
+        SketchExpr::RawAtEdgeSketchAtBackend { family, .. } => Some(family.clone()),
+        SketchExpr::SketchEstimate { child, .. } => extract_root_sketch_kind(child),
+        SketchExpr::SketchMerge { children, .. } => {
+            children.iter().find_map(extract_root_sketch_kind)
+        }
+        SketchExpr::LetBinding { expr, child, .. } => {
+            extract_root_sketch_kind(expr).or_else(|| extract_root_sketch_kind(child))
+        }
+        SketchExpr::Logical(_)
+        | SketchExpr::Ref { .. }
+        | SketchExpr::RawAtEdgePrometheusArchive { .. } => None,
+    }
+}
+
+/// Walk every entry in `registry`, look the metric up in `workload_store`,
+/// run `planner::rules::bind_workload_typed` per workload, and assemble
+/// the `metric_to_family` HashMap that drives the 5-sketch
+/// routing-connector emit path in `emit_edge_yaml_5sketch_routing`.
+///
+/// Skipped:
+///   - Metrics absent from `workload_store` (registry pre-pop failed).
+///   - Metrics where `bind_workload_typed` declines (raw passthrough
+///     like `http_requests_total`, exact-required, multi-intent).
+///     These fall through to `metrics/raw_passthrough` in the emitter,
+///     which is the contract for raw / unsketched metrics.
+///
+/// The returned map drops directly into `EdgeStageConfig::metric_to_family`.
+/// Empty map ⇒ caller falls back to legacy single-pipeline emit (the
+/// `is_empty()` gate in `emit_edge_yaml`).
+pub fn collect_metric_to_family(
+    registry: &WorkloadRegistry,
+    workload_store: &WorkloadStore,
+) -> std::collections::HashMap<String, SketchKind> {
+    let mut out = std::collections::HashMap::new();
+    for entry in registry.entries() {
+        let Some((workload, _wc)) = workload_store.get(&entry.metric_name) else {
+            continue;
+        };
+        let Some(sketch_expr) = crate::planner::rules::bind_workload_typed(&workload) else {
+            // `http_requests_total` and other raw-passthrough metrics
+            // land here — correctly excluded so they fall through to
+            // the routing connector's default `metrics/raw_passthrough`
+            // pipeline in the emitter.
+            continue;
+        };
+        if let Some(kind) = extract_root_sketch_kind(&sketch_expr) {
+            out.insert(entry.metric_name.clone(), kind);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -22,9 +22,9 @@ use tracing::{info, warn};
 
 use crate::backend_client::{push_or_log, BackendClient};
 use crate::config::{
-    build_precompute_jobs, emit_for_runtime, extend_edge_with_demo_plumbing,
-    generate_agent_config, generate_backend_config, generate_streaming_config_yaml, AgentRuntime,
-    WorkloadRegistry,
+    build_precompute_jobs, collect_metric_to_family, emit_for_runtime,
+    extend_edge_with_demo_plumbing, generate_agent_config, generate_backend_config,
+    generate_streaming_config_yaml, AgentRuntime, WorkloadRegistry,
 };
 use crate::monitor::Scraper;
 use crate::opamp::{AgentRole, OpampServer, RemoteConfig};
@@ -189,6 +189,21 @@ impl Replanner {
             .map(|r| r.entries().iter().map(|e| e.metric_name.clone()).collect())
             .unwrap_or_default();
         extend_edge_with_demo_plumbing(&mut edge_cfg, registry_metrics);
+
+        // MVP §46 — stitch planner per-metric output into the emitter's
+        // `metric_to_family` map so the 5-sketch routing-connector wire
+        // shape activates on the OpAMP-pushed YAML too. Mirror of the
+        // bootstrap path's stitch in `main::emit_bootstrap_typed` —
+        // without this an agent that reconnects (or a metric that
+        // replans) gets a single-pipeline YAML, even though the
+        // bootstrap GET path it received first carried the routing
+        // connector. When `workload_registry` is None (test fixture),
+        // skip the stitch — the legacy single-pipeline emit still
+        // covers correctness for the metric being replanned.
+        if let Some(registry) = self.workload_registry.as_ref() {
+            edge_cfg.metric_to_family =
+                collect_metric_to_family(registry, &self.workload_store);
+        }
 
         // OpAMP `on_connect` doesn't expose the agent's runtime
         // header, so default to `AsapOtel` — matches the bootstrap

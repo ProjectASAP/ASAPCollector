@@ -920,21 +920,54 @@ async fn emit_bootstrap_typed(
         None
     };
 
-    let metric = pinned_metric.or_else(|| {
-        st.workload_registry
-            .first_for_role("agent")
-            .map(|e| e.metric_name.clone())
-    }).ok_or_else(|| anyhow!("no agent-role workload available for bootstrap"))?;
+    // Candidate metric resolution. When the agent has a prior pin, we
+    //    try it first — a pinned raw-passthrough metric (e.g.
+    //    `http_requests_total`) declines the typed bind, but the
+    //    bootstrap still needs to ship the 5-sketch routing-connector
+    //    edge config so OTHER metrics in the registry get processed.
+    //    Walk the registry until we find one the typed path accepts —
+    //    that gives us the edge_cfg shape — then populate
+    //    `metric_to_family` from the FULL registry (every binding
+    //    metric, not just the chosen one) below.
+    //
+    //    If pinned metric exists, it's the FIRST candidate; otherwise
+    //    walk every agent-role entry in the registry.
+    let candidates: Vec<String> = {
+        let mut v = Vec::new();
+        if let Some(p) = pinned_metric.clone() {
+            v.push(p);
+        }
+        for entry in st.workload_registry.entries() {
+            if !entry.assign_to_role.eq_ignore_ascii_case("agent") {
+                continue;
+            }
+            if !v.contains(&entry.metric_name) {
+                v.push(entry.metric_name.clone());
+            }
+        }
+        v
+    };
+    if candidates.is_empty() {
+        return Err(anyhow!("no agent-role workload available for bootstrap"));
+    }
 
-    // 2. Pull the pre-populated `QueryWorkload` from the workload
-    //    store. Startup pre-pop in `main()` puts every registry
-    //    entry's analyzed workload here.
-    let (workload, _wc) = st.workload_store.get(&metric)
-        .ok_or_else(|| anyhow!("workload store missing entry for `{metric}`"))?;
-
-    // 3. Run the typed L5 pipeline — same shape as `handle_plan`.
-    let sketch_expr = planner::rules::bind_workload_typed(&workload)
-        .ok_or_else(|| anyhow!("bind_workload_typed declined workload `{metric}`"))?;
+    // 2-3. Walk candidates: first metric that pre-populated the
+    //      workload store AND binds via the typed path provides the
+    //      base edge_cfg shape.
+    let mut chosen: Option<(String, crate::sketch_algebra::SketchExpr)> = None;
+    for cand in &candidates {
+        let Some((wl, _wc)) = st.workload_store.get(cand) else { continue };
+        if let Some(expr) = planner::rules::bind_workload_typed(&wl) {
+            chosen = Some((cand.clone(), expr));
+            break;
+        }
+    }
+    let (metric, sketch_expr) = chosen.ok_or_else(|| {
+        anyhow!(
+            "no registry metric binds via the typed path (all {} candidates declined)",
+            candidates.len()
+        )
+    })?;
     let configs = planner::stage_split::split_typed_three_stage(&sketch_expr)
         .ok_or_else(|| anyhow!("split_typed_three_stage returned None for `{metric}`"))?;
 
@@ -979,6 +1012,30 @@ async fn emit_bootstrap_typed(
         .iter()
         .map(|e| e.metric_name.clone());
     config::extend_edge_with_demo_plumbing(&mut edge_cfg, registry_metrics);
+
+    // 6. Stitch PR #339 (planner) → PR #340 (5-sketch routing emitter).
+    //
+    //    `bind_workload_typed` is per-metric. The 5-sketch routing-
+    //    connector edge wire shape needs every sketched metric mapped
+    //    to its committed family up-front so the emitter can build the
+    //    `routing` connector's `route() where metric.name == "…"`
+    //    statements. Walk the workload registry, classify each metric
+    //    via the planner, and drop the resulting HashMap into the
+    //    EdgeStageConfig before emit. Empty map ⇒ legacy single-
+    //    pipeline emit (raw-only deployment, registry empty, etc.).
+    //
+    //    Why this entry point: bootstrap is the place that already has
+    //    all of `(WorkloadRegistry, WorkloadStore, edge_cfg)` in scope.
+    //    Pushing the multi-metric loop down into
+    //    `split_typed_three_stage` would change its signature for one
+    //    caller (this one) and break the OpAMP-on-connect contract
+    //    where the agent IS pinned to a single metric. Replan path
+    //    (`replan::Replanner::try_emit_typed_edge_yaml_for_workload`)
+    //    applies the same stitch via the same shared helper.
+    edge_cfg.metric_to_family = config::collect_metric_to_family(
+        &st.workload_registry,
+        &st.workload_store,
+    );
 
     emit_for_runtime(runtime, &edge_cfg, &st.opamp_endpoint, None)
         .with_context(|| format!("emit_for_runtime failed for `{metric}`"))
@@ -2002,5 +2059,196 @@ mod api_tests {
             yaml.contains("ddsketch:") && !yaml.contains("ddsketchprocessor:"),
             "fallback path should emit legacy ddsketch processor:\n{yaml}"
         );
+    }
+
+    // ── MVP §46: planner ↔ 5-sketch emitter stitch (PR #339 ↔ PR #340) ─────────
+    //
+    // The acceptance contract: register the six contract metrics in the
+    // workload registry, hit the bootstrap GET endpoint, and verify the
+    // emitted YAML carries the 5-sketch routing-connector wire shape —
+    // every sketched metric routed to its family-specific pipeline,
+    // raw `http_requests_total` falling through to
+    // `metrics/raw_passthrough`.
+    //
+    // Without the stitch wired in `emit_bootstrap_typed`, the
+    // EdgeStageConfig.metric_to_family HashMap stays empty and the
+    // emitter falls back to single-pipeline DDSketch — none of the
+    // assertions below pass.
+
+    /// Build an AppState whose workload registry carries all six MVP §46
+    /// contract metrics, each pre-populated in the workload store with
+    /// `aggregations=["quantile"]`. The planner classifies by metric
+    /// name (`classify_demo_metric` wins over `aggregations[0]`) so the
+    /// dummy aggregation is fine.
+    ///
+    /// Returns the (state, router, registry-tempfile-path) triple. The
+    /// caller cleans up the tempfile.
+    fn test_app_with_six_contract_metrics() -> (AppState, axum::Router, String) {
+        // The 6 contract metrics from MVP §46.
+        let metrics = [
+            "http_requests_total",       // raw passthrough (no sketch)
+            "http_latency_ms",           // DDSketch
+            "request_size_bytes",        // KLL
+            "unique_users_per_min",      // HLL
+            "top_endpoint_qps",          // CountSketch
+            "endpoint_request_freq",     // CountMinSketch
+        ];
+
+        // 1. Materialise a workload-registry YAML covering all six.
+        let mut yaml = String::new();
+        for m in metrics.iter() {
+            yaml.push_str(&format!(
+                "- metric_name: {m}\n  accuracy_sla: 0.01\n  assign_to_role: agent\n",
+            ));
+        }
+        let tmp_path = "/tmp/datacollector_mvp46_six_metrics.yaml".to_string();
+        std::fs::write(&tmp_path, yaml).unwrap();
+        let registry = Arc::new(WorkloadRegistry::load(&tmp_path));
+
+        // 2. Stock test_app with empty stores, then hand-populate.
+        let (mut state, _router) = test_app();
+
+        // 3. Pre-populate workload_store + plan_store the same way
+        //    main()'s startup loop does.
+        let analyzer = Analyzer::new();
+        for m in metrics.iter() {
+            let spec = analyzer::QuerySpec {
+                query_string:    None,
+                metric_name:     (*m).into(),
+                label_filters:   Default::default(),
+                group_by_labels: vec![],
+                aggregations:    vec!["quantile".into()],
+                time_window:     "5m".into(),
+                repeat_every:    None,
+                accuracy_sla:    0.01,
+                latency_sla:     None,
+                sketch_type:     None,
+                workload:        types::WorkloadCharacteristics::default(),
+                id:               None,
+                language:         None,
+                accuracy:         None,
+                dollars:          None,
+                deployment_model: None,
+                shape:            types_v2::QueryShape::default(),
+                data:             types_v2::DataShape::default(),
+            };
+            let wl = analyzer.analyze(spec).expect("analyze");
+            let wc = types::WorkloadCharacteristics::default();
+            let plan = state.planner.plan(&wl, Some(&wc));
+            state.store.set(*m, plan);
+            state.workload_store.set(*m, wl, wc);
+        }
+
+        // 4. Swap in the populated registry.
+        state.workload_registry = registry;
+
+        // 5. Rebuild router with updated state.
+        let router = axum::Router::new()
+            .route(
+                "/api/v1/collector-config/agent",
+                axum::routing::get(handle_bootstrap_agent_config),
+            )
+            .with_state(state.clone());
+        (state, router, tmp_path)
+    }
+
+    /// Acceptance test: PR #339 (planner) ↔ PR #340 (emitter) stitch
+    /// produces the 5-sketch routing-connector wire shape when the
+    /// workload registry covers the six MVP §46 contract metrics.
+    ///
+    /// Asserts:
+    ///   - All 5 sketch processors loaded under `processors:`.
+    ///   - `routing` lives in `connectors:` (NOT `processors:`).
+    ///   - All 6 named pipelines emitted (raw_passthrough + 5 sketches).
+    ///   - Each metric routed to its expected pipeline via
+    ///     `route() where metric.name == "..."`.
+    #[tokio::test]
+    async fn bootstrap_emits_5sketch_routing_for_six_contract_metrics() {
+        let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
+
+        let (_, app, tmp) = test_app_with_six_contract_metrics();
+        let req = Request::builder()
+            .uri("/api/v1/collector-config/agent")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let yaml = String::from_utf8(body.to_vec()).unwrap();
+        std::fs::remove_file(&tmp).ok();
+
+        // ── Contract 1: all 5 sketch processors loaded ────────────────────
+        for proc in [
+            "ddsketchprocessor:",
+            "kllprocessor:",
+            "hllprocessor:",
+            "countsketchprocessor:",
+            "countminsketchprocessor:",
+        ] {
+            assert!(
+                yaml.contains(proc),
+                "missing top-level sketch processor `{proc}`\n{yaml}"
+            );
+        }
+
+        // ── Contract 2: routing in connectors, not processors ─────────────
+        let connectors_idx = yaml
+            .find("connectors:")
+            .expect("missing top-level connectors block");
+        let after_conn = &yaml[connectors_idx..];
+        assert!(
+            after_conn.contains("routing:"),
+            "missing `routing:` under connectors:\n{yaml}"
+        );
+        // Negative: routing is NOT under processors.
+        let processors_idx = yaml.find("processors:").expect("processors:");
+        let proc_end = yaml[processors_idx..]
+            .find("\nconnectors:")
+            .or_else(|| yaml[processors_idx..].find("\nexporters:"))
+            .map(|x| processors_idx + x)
+            .unwrap_or(yaml.len());
+        let processors_section = &yaml[processors_idx..proc_end];
+        assert!(
+            !processors_section.contains("routing:"),
+            "routing must NOT live under processors: (the v0.106 bug)\n\
+             processors_section:\n{processors_section}"
+        );
+
+        // ── Contract 3: all 6 named pipelines ─────────────────────────────
+        for pl in [
+            "metrics:",                       // entry
+            "metrics/raw_passthrough:",       // default for http_requests_total
+            "metrics/ddsketch_path:",         // http_latency_ms
+            "metrics/kll_path:",              // request_size_bytes
+            "metrics/hll_path:",              // unique_users_per_min
+            "metrics/countsketch_path:",      // top_endpoint_qps
+            "metrics/countminsketch_path:",   // endpoint_request_freq
+        ] {
+            assert!(
+                yaml.contains(pl),
+                "missing pipeline `{pl}`\n{yaml}"
+            );
+        }
+
+        // ── Contract 4: each sketched metric carries a route() statement ──
+        // The 5 sketched metrics must each have a `route() where
+        // metric.name == "..."` rule in the routing connector.
+        // `http_requests_total` (raw) does NOT need a rule — it falls
+        // through to the default `metrics/raw_passthrough` pipeline.
+        for sketched in [
+            "http_latency_ms",
+            "request_size_bytes",
+            "unique_users_per_min",
+            "top_endpoint_qps",
+            "endpoint_request_freq",
+        ] {
+            let needle = format!("metric.name == \\\"{sketched}\\\"");
+            let alt1 = format!("metric.name == \"{sketched}\"");
+            let alt2 = format!("metric.name=='{sketched}'");
+            assert!(
+                yaml.contains(&needle) || yaml.contains(&alt1) || yaml.contains(&alt2),
+                "missing routing rule for `{sketched}` — expected `route() where metric.name == \"{sketched}\"`\n{yaml}"
+            );
+        }
     }
 }
