@@ -107,7 +107,7 @@ SOAK_S="${SOAK_S:-300}"
 # FRESHNESS_DURATION_S stays at 60s — the freshness probe poll loop only needs
 # enough samples for a meaningful p50/p99, not a long bucket warmup.
 FRESHNESS_DURATION_S="${FRESHNESS_DURATION_S:-60}"
-QPS="${QPS:-5}"
+QPS="${QPS:-8}"
 PER_AGENT_CARDINALITY="${PER_AGENT_CARDINALITY:-500}"
 N_PRODUCERS="${N_PRODUCERS:-10}"
 EXPORTER_FREQ_HZ="${EXPORTER_FREQ_HZ:-10}"
@@ -546,11 +546,28 @@ measure_phase() {
 
     # Build the replay query suite from mvp-workload.yaml.
     # We keep the JSON adjacent to the run dir for reproducibility.
+    # Six query classes — one per sketch family registered in
+    # mvp-workload.yaml (issue #46 5-sketch coverage):
+    #
+    #   sum_rate     ↔ raw passthrough (http_requests_total)
+    #   quantile     ↔ DDSketch        (http_requests_total_latency_ms)
+    #   kll-quantile ↔ KLL             (request_size_bytes)
+    #   count_unique ↔ HLL             (unique_users_per_min)
+    #   topk         ↔ CountSketch     (top_endpoint_qps)
+    #   frequency    ↔ CountMinSketch  (endpoint_request_freq)
+    #
+    # Replay rotates round-robin at QPS=8 → ~1.3 QPS per class →
+    # ≥390 samples per class over the 300s soak (≥100 floor for
+    # accuracy reduction).
     cat > "${mdir}/replay-queries.json" <<'JSON'
 [
     {"kind": "quantile",     "promql": "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"},
     {"kind": "sum",          "promql": "sum by (zone) (http_requests_total)"},
-    {"kind": "sum",          "promql": "sum by (zone) (rate(http_requests_total[5m]))"}
+    {"kind": "sum",          "promql": "sum by (zone) (rate(http_requests_total[5m]))"},
+    {"kind": "quantile",     "promql": "quantile_over_time(0.99, request_size_bytes[1m])"},
+    {"kind": "count_unique", "promql": "count(unique_users_per_min)"},
+    {"kind": "topk",         "promql": "topk(5, top_endpoint_qps)"},
+    {"kind": "frequency",    "promql": "rate(endpoint_request_freq[5m])"}
 ]
 JSON
 
