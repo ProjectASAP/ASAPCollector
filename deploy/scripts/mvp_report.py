@@ -134,7 +134,7 @@ SKETCH_FAMILIES = [
     # verdict logic is family-agnostic. `top_k_family_label()`
     # detects the actual chosen family at render time when a
     # workload spec is available.
-    ("DDSketch",       "http_latency_ms",        "quantile",     "≤0.01",    0.01,   "rel_err"),
+    ("DDSketch",       "http_requests_total_latency_ms", "quantile",     "≤0.01",    0.01,   "rel_err"),
     ("KLL",            "request_size_bytes",     "quantile",     "≤0.005",   0.005,  "rel_err"),
     ("HLL",            "unique_users_per_min",   "cardinality",  "≤0.0325",  0.0325, "rel_err"),
     ("CountSketch",    "top_endpoint_qps",       "top-K",        "≥0.85",    0.85,   "recall"),
