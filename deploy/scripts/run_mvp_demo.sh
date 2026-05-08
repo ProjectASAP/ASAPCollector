@@ -401,7 +401,7 @@ bring_up_stack() {
                 log "    POST /api/v1/plan ${label} → HTTP ${code}"
             }
             post_workload_plan window-per-series \
-                'quantile_over_time(0.99, http_requests_total_latency_ms[1m])' \
+                'quantile_over_time(0.99, http_requests_total_latency_ms[30s])' \
                 '0.01' 'http_requests_total_latency_ms'
             post_workload_plan label-at-instant \
                 'sum by (zone) (http_requests_total)' \
@@ -559,12 +559,24 @@ measure_phase() {
     # Replay rotates round-robin at QPS=8 → ~1.3 QPS per class →
     # ≥390 samples per class over the 300s soak (≥100 floor for
     # accuracy reduction).
+    # Replay-range / warm-precompute alignment (issue #46 ε-bound
+    # bug, fix/quantile-window-alignment): the DDSketch (entry 1) and
+    # KLL (entry 4) quantiles use `[30s]` to match the warm tier's
+    # 30s pre-compute window (`windowSize: 30` in
+    # `deploy/configs/backend-streaming.yaml`). With the previous
+    # `[1m]` window, warm returned a quantile over 30s of data while
+    # the replay asked for 1m, producing rel-err well above the
+    # DDSketch ε=0.01 bound (mean 0.126 in headline-2026-05-06).
+    # Keep these `[30s]` values in lock-step with `mvp-workload.yaml`
+    # — the controller analyzer parses the same string to derive the
+    # planner's `time_window`, which in turn drives the agent's
+    # window_duration and the ASAPQuery aggregation `windowSize`.
     cat > "${mdir}/replay-queries.json" <<'JSON'
 [
-    {"kind": "quantile",     "promql": "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"},
+    {"kind": "quantile",     "promql": "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"},
     {"kind": "sum",          "promql": "sum by (zone) (http_requests_total)"},
     {"kind": "sum",          "promql": "sum by (zone) (rate(http_requests_total[5m]))"},
-    {"kind": "quantile",     "promql": "quantile_over_time(0.99, request_size_bytes[1m])"},
+    {"kind": "quantile",     "promql": "quantile_over_time(0.99, request_size_bytes[30s])"},
     {"kind": "count_unique", "promql": "count(unique_users_per_min)"},
     {"kind": "topk",         "promql": "topk(5, top_endpoint_qps)"},
     {"kind": "frequency",    "promql": "rate(endpoint_request_freq[5m])"}
