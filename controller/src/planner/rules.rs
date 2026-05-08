@@ -78,7 +78,21 @@ pub fn bind_workload_typed(
     };
     use crate::types_v2::AccuracyTarget;
 
-    if w.exact_required {
+    // Contract-row metrics (`classify_demo_metric` returns `Some`) and
+    // operator-supplied overrides both signal "this metric must be
+    // sketched". The parser's `exact_required` flag — set when a query
+    // bottoms out at a bare VectorSelector → `AggFunc::Sum`, or carries
+    // a `Sum`/`Rate`/`Increase`/`Delta` (e.g. `rate(metric[5m])`,
+    // `count(metric)` whose inner walk synthesizes a `Sum` over the
+    // VectorSelector) — must not short-circuit those signals. Without
+    // this carve-out, MVP §46 entries 5–8 (`unique_users_per_min` /
+    // `top_endpoint_qps` / `endpoint_request_freq`) parse to
+    // `exact_required: true` and the typed binder declines, so the
+    // 5-sketch routing emitter never sees them.
+    let metric_is_contract_row =
+        crate::sketch_algebra::capability_matching::classify_demo_metric(&w.metric_name).is_some();
+    let operator_pinned_sketch = w.sketch_type_override.is_some();
+    if w.exact_required && !metric_is_contract_row && !operator_pinned_sketch {
         return None;
     }
     if w.aggregations.len() != 1 {
