@@ -105,6 +105,22 @@ services:
       CONTROLLER_OPAMP_ADDR: "0.0.0.0:4320"
       CONTROLLER_GRPC_ADDR: "0.0.0.0:4321"
       RUST_LOG: "info,controller=debug"
+      # Activate the typed-stage-split path for every compose
+      # invocation that includes base.yml. Flipping this gate ON
+      # routes:
+      #   • Bootstrap GET /api/v1/collector-config/agent through the
+      #     typed pipeline (PR #329).
+      #   • OpAMP-on-connect agent config emission through the typed
+      #     pipeline (PR #334 — replan handler ported to typed).
+      #   • Per-metric sketch family routing across the five
+      #     supported families: DDSketch / KLL / HLL / CountSketch /
+      #     CountMinSketch (PR #339 + #340 + the parallel stitching
+      #     PR that wires the routing-connector into the emitted
+      #     pipeline).
+      # Operators can still override via shell env (e.g.
+      # `USE_TYPED_STAGE_SPLIT=0 docker compose up controller`) when
+      # the legacy free-form emitter is needed for A/B comparison.
+      USE_TYPED_STAGE_SPLIT: "${USE_TYPED_STAGE_SPLIT:-1}"
     ports:
       - "18080:8080"   # HTTP API (/api/v1/plan, /metrics for Prom scrape)
       - "14320:4320"   # OpAMP websocket
