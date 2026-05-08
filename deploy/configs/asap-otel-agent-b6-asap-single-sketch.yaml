@@ -48,6 +48,10 @@ receivers:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+        # 64 MiB so high-cardinality producer batches (e.g. 5K series ×
+        # 500 user_ids) don't trip the 4 MiB grpc default and get
+        # rejected by the agent. Mirrors the gateway receiver knob.
+        max_recv_msg_size_mib: 64
       http:
         endpoint: 0.0.0.0:4318
 

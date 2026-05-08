@@ -126,7 +126,7 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
     // that field is added, swap the literal here for a `cfg.otlp_port`
     // read.
     let otlp_receiver: Value = serde_yaml::from_str(
-        "protocols:\n  grpc:\n    endpoint: \"0.0.0.0:4317\"\n  http:\n    endpoint: \"0.0.0.0:4318\"\n",
+        "protocols:\n  grpc:\n    endpoint: \"0.0.0.0:4317\"\n    max_recv_msg_size_mib: 64\n  http:\n    endpoint: \"0.0.0.0:4318\"\n",
     )
     .context("parse static OTLP receiver block")?;
 
@@ -850,7 +850,7 @@ fn emit_edge_yaml_5sketch_routing(
     use crate::sketch_algebra::params::SketchKind;
 
     let otlp_receiver: Value = serde_yaml::from_str(
-        "protocols:\n  grpc:\n    endpoint: \"0.0.0.0:4317\"\n  http:\n    endpoint: \"0.0.0.0:4318\"\n",
+        "protocols:\n  grpc:\n    endpoint: \"0.0.0.0:4317\"\n    max_recv_msg_size_mib: 64\n  http:\n    endpoint: \"0.0.0.0:4318\"\n",
     )
     .context("parse static OTLP receiver block")?;
 
