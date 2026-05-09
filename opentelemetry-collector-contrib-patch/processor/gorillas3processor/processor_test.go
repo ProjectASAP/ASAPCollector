@@ -6,10 +6,15 @@ package gorillas3processor
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/tsdb"
+	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -98,6 +103,17 @@ func (m *mockSink) tsdbBlockCount() int {
 	return len(m.tsdbBlocks)
 }
 
+func writeMockTSDBBlock(t *testing.T, block mockTSDBBlock) string {
+	t.Helper()
+	root := t.TempDir()
+	for k, body := range block.files {
+		full := filepath.Join(root, filepath.FromSlash(k))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, body, 0o644))
+	}
+	return filepath.Join(root, block.ulid)
+}
+
 func buildTestMetrics(metricName string, n int, baseTime time.Time) pmetric.Metrics {
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()
@@ -146,7 +162,7 @@ func TestConsumeMetrics_PassThrough(t *testing.T) {
 	assert.Equal(t, 5, dps.Len())
 }
 
-func TestFlushWindow_WritesChunkOnTick(t *testing.T) {
+func TestFlushWindow_WritesTSDBBlockOnTick(t *testing.T) {
 	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
@@ -158,20 +174,18 @@ func TestFlushWindow_WritesChunkOnTick(t *testing.T) {
 
 	p.flushWindow(context.Background())
 
-	require.Equal(t, 1, sink.chunkCount())
-	c := sink.chunks[0]
-	assert.Contains(t, c.key, "tnt/cpu.usage/2026/05/06/")
-	assert.Contains(t, c.key, ".gor")
-	assert.Equal(t, "cpu.usage", c.hints.MetricName)
-	assert.Equal(t, "tnt", c.hints.Tenant)
-	assert.Equal(t, 1, c.hints.SeriesCount)
-	assert.Equal(t, 10, c.hints.PointCount)
-	// Decode the chunk to validate body.
-	got := decodeChunk(t, c.data)
+	require.Equal(t, 1, sink.tsdbBlockCount())
+	block := sink.tsdbBlocks[0]
+	require.NotEmpty(t, block.files)
+	blockDir := writeMockTSDBBlock(t, block)
+	opened, err := tsdb.OpenBlock(nil, blockDir, chunkenc.NewPool(), nil)
+	require.NoError(t, err)
+	defer opened.Close()
+
+	got := readAllSamples(t, opened)
 	require.Len(t, got, 1)
-	assert.Equal(t, "cpu.usage", got[0].meta.MetricName)
-	assert.Equal(t, 10, got[0].meta.PointCount)
-	// After flush, series buffer must be empty.
+	assert.Equal(t, "cpu.usage", got[0].labels.Get(labels.MetricName))
+	assert.Equal(t, 10, len(got[0].samples))
 	assert.Equal(t, int64(0), p.activeSeries())
 }
 
@@ -185,8 +199,7 @@ func TestFlushWindow_PutFailureLogged(t *testing.T) {
 	_, err := p.ConsumeMetrics(context.Background(), md)
 	require.NoError(t, err)
 	p.flushWindow(context.Background())
-	// No chunk recorded since sink failed.
-	assert.Equal(t, 0, sink.chunkCount())
+	assert.Equal(t, 0, sink.tsdbBlockCount())
 }
 
 func TestFlushWindow_EmptyNoOp(t *testing.T) {
@@ -194,7 +207,7 @@ func TestFlushWindow_EmptyNoOp(t *testing.T) {
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 	p.flushWindow(context.Background())
-	assert.Equal(t, 0, sink.chunkCount())
+	assert.Equal(t, 0, sink.tsdbBlockCount())
 }
 
 func TestShutdown_DrainsBufferedSamples(t *testing.T) {
@@ -210,7 +223,7 @@ func TestShutdown_DrainsBufferedSamples(t *testing.T) {
 	// Manually start the loop so shutdown can stop it cleanly.
 	require.NoError(t, p.Start(context.Background(), nil))
 	require.NoError(t, p.Shutdown(context.Background()))
-	assert.Equal(t, 1, sink.chunkCount(), "shutdown should drain buffered points")
+	assert.Equal(t, 1, sink.tsdbBlockCount(), "shutdown should drain buffered points")
 }
 
 func TestConsumeMetrics_SumType(t *testing.T) {
@@ -233,10 +246,15 @@ func TestConsumeMetrics_SumType(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), p.activeSeries())
 	p.flushWindow(context.Background())
-	require.Equal(t, 1, sink.chunkCount())
-	got := decodeChunk(t, sink.chunks[0].data)
+	require.Equal(t, 1, sink.tsdbBlockCount())
+	blockDir := writeMockTSDBBlock(t, sink.tsdbBlocks[0])
+	opened, err := tsdb.OpenBlock(nil, blockDir, chunkenc.NewPool(), nil)
+	require.NoError(t, err)
+	defer opened.Close()
+	got := readAllSamples(t, opened)
 	require.Len(t, got, 1)
-	assert.Equal(t, []float64{0, 100, 200}, got[0].vals)
+	require.Len(t, got[0].samples, 3)
+	assert.Equal(t, []float64{0, 100, 200}, []float64{got[0].samples[0].v, got[0].samples[1].v, got[0].samples[2].v})
 }
 
 func TestConsumeMetrics_HistogramSilentlyIgnored(t *testing.T) {
@@ -259,10 +277,7 @@ func TestConsumeMetrics_HistogramSilentlyIgnored(t *testing.T) {
 	assert.Equal(t, int64(0), p.activeSeries())
 }
 
-// mvp/v5: postings sidecar is emitted alongside the chunk on every
-// flush. The exact byte format is round-trip-tested in postings_test.go;
-// here we just pin the processor → sink call shape.
-func TestFlushWindow_EmitsPostingsSidecar(t *testing.T) {
+func TestFlushWindow_DoesNotEmitLegacyChunkOrPostings(t *testing.T) {
 	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
@@ -273,19 +288,80 @@ func TestFlushWindow_EmitsPostingsSidecar(t *testing.T) {
 	require.NoError(t, err)
 	p.flushWindow(context.Background())
 
-	require.Equal(t, 1, sink.chunkCount(), "expected one chunk")
-	require.Equal(t, 1, sink.postingsCount(), "expected one postings sidecar")
-	post := sink.postings[0]
-	assert.Contains(t, post.key, "tnt/cpu.usage/2026/05/06/")
-	assert.True(t, len(post.data) > 13, "postings body must include header+body+crc")
-	assert.Equal(t, []byte("POSTING1"), post.data[:8], "postings magic")
-	assert.Equal(t, byte(1), post.data[8], "postings version")
+	require.Equal(t, 0, sink.chunkCount())
+	require.Equal(t, 0, sink.postingsCount())
+	require.Equal(t, 1, sink.tsdbBlockCount())
+}
 
-	// Index entry must also pin the new compactor-extension fields:
-	// for a pre-compactor flush the chunk lives at `Object`, byte
-	// offset 0, byte length = SizeBytes.
-	c := sink.chunks[0]
-	assert.NotZero(t, c.hints.LabelHash, "single-series chunk should carry a non-zero label hash")
+func TestAgentRole_EmitsEncodedFragments(t *testing.T) {
+	cfg := &Config{
+		Role:                    ProcessorRoleAgent,
+		DeliveryMode:            DeliveryModeBestEffort,
+		WindowInterval:          time.Hour,
+		DropOriginal:            true,
+		TSDBReorderGrace:        time.Nanosecond,
+		FragmentSamplesPerChunk: 2,
+		SourceID:                "edge-a",
+	}
+	p := mkProcessor(t, cfg, nil)
+
+	base := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	out, err := p.ConsumeMetrics(context.Background(), buildTestMetrics("cpu.usage", 2, base))
+	require.NoError(t, err)
+
+	fragments, err := extractFragments(out)
+	require.NoError(t, err)
+	require.Len(t, fragments, 1)
+	assert.Equal(t, "cpu.usage", fragments[0].MetricName)
+	assert.Equal(t, "edge-a", fragments[0].Source)
+	assert.Equal(t, 2, fragments[0].Count)
+	assert.NotEmpty(t, fragments[0].Data)
+}
+
+func TestGatewayFragmentRole_FinalizesFragmentsToTSDBBlock(t *testing.T) {
+	edgeCfg := &Config{
+		Role:                    ProcessorRoleAgent,
+		DeliveryMode:            DeliveryModeBestEffort,
+		WindowInterval:          time.Hour,
+		DropOriginal:            true,
+		TSDBReorderGrace:        time.Nanosecond,
+		FragmentSamplesPerChunk: 2,
+		SourceID:                "edge-a",
+	}
+	edge := mkProcessor(t, edgeCfg, nil)
+
+	base := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	fragmentMetrics, err := edge.ConsumeMetrics(context.Background(), buildTestMetrics("cpu.usage", 4, base))
+	require.NoError(t, err)
+	fragments, err := extractFragments(fragmentMetrics)
+	require.NoError(t, err)
+	require.Len(t, fragments, 2)
+
+	gatewayCfg := &Config{
+		Role:           ProcessorRoleGatewayFragment,
+		DeliveryMode:   DeliveryModeBestEffort,
+		Bucket:         "asap-gorilla",
+		TSDBBucket:     "asap-tsdb",
+		WindowInterval: time.Hour,
+		DropOriginal:   true,
+	}
+	sink := &mockSink{}
+	gateway := mkProcessor(t, gatewayCfg, sink)
+
+	_, err = gateway.ConsumeMetrics(context.Background(), fragmentMetrics)
+	require.NoError(t, err)
+	gateway.flushWindow(context.Background())
+
+	require.Equal(t, 1, sink.tsdbBlockCount())
+	blockDir := writeMockTSDBBlock(t, sink.tsdbBlocks[0])
+	opened, err := tsdb.OpenBlock(nil, blockDir, chunkenc.NewPool(), nil)
+	require.NoError(t, err)
+	defer opened.Close()
+
+	got := readAllSamples(t, opened)
+	require.Len(t, got, 1)
+	assert.Equal(t, "cpu.usage", got[0].labels.Get(labels.MetricName))
+	require.Len(t, got[0].samples, 4)
 }
 
 func TestFactory_DefaultConfig(t *testing.T) {
@@ -294,6 +370,8 @@ func TestFactory_DefaultConfig(t *testing.T) {
 	assert.Equal(t, 60*time.Second, cfg.WindowInterval)
 	assert.True(t, cfg.DropOriginal)
 	assert.Equal(t, defaultPrefixTemplate, cfg.PrefixTemplate)
+	assert.Equal(t, ProcessorRoleGatewayRaw, cfg.Role)
+	assert.Equal(t, DeliveryModeDurableRaw, cfg.DeliveryMode)
 }
 
 func TestFactory_TypeRegistered(t *testing.T) {
