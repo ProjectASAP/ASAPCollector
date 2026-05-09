@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oklog/ulid/v2"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -329,6 +330,25 @@ func (p *gorillaS3Processor) flushTSDB(ctx context.Context, snapshot map[seriesK
 		return
 	}
 	if artifact == nil {
+		return
+	}
+	// mvp/issue46: surface OOB-dropped sample counts on every flush.
+	// We warn (not error) so operators see drift but the agent stays
+	// up; the counter feeds the same metric exporter the rest of the
+	// processor counters use.
+	if artifact.NumOOBDropped > 0 {
+		p.logger.Warn("gorillas3: tsdb out-of-bounds samples dropped",
+			zap.Uint64("dropped", artifact.NumOOBDropped),
+			zap.Uint64("appended", artifact.NumSamples),
+		)
+		if p.monitor != nil {
+			p.monitor.tsdbOOBDropped(ctx, artifact.NumOOBDropped)
+		}
+	}
+	if artifact.ULID == (ulid.ULID{}) {
+		// Pure drop-only artifact (every sample tripped OOB and
+		// no block was produced). Counter already incremented
+		// above; nothing to upload.
 		return
 	}
 	ulidStr := artifact.ULID.String()
