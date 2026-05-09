@@ -114,6 +114,44 @@ func writeMockTSDBBlock(t *testing.T, block mockTSDBBlock) string {
 	return filepath.Join(root, block.ulid)
 }
 
+type rtSeries struct {
+	labels  labels.Labels
+	samples []rtSample
+}
+
+type rtSample struct {
+	t int64
+	v float64
+}
+
+// readAllSamples opens a Prometheus TSDB block on disk and returns
+// the round-trip view of every (label, ts, value) tuple. Used by
+// tests that finalize a TSDB block via the live processor and want
+// to assert the canonical reader can re-derive the input.
+func readAllSamples(t *testing.T, block *tsdb.Block) []rtSeries {
+	t.Helper()
+	q, err := tsdb.NewBlockQuerier(block, block.MinTime(), block.MaxTime())
+	require.NoError(t, err)
+	defer q.Close()
+
+	var out []rtSeries
+	ss := q.Select(context.Background(), false, nil, labels.MustNewMatcher(labels.MatchRegexp, labels.MetricName, ".+"))
+	for ss.Next() {
+		s := ss.At()
+		ls := s.Labels()
+		var samples []rtSample
+		it := s.Iterator(nil)
+		for it.Next() == chunkenc.ValFloat {
+			ts, val := it.At()
+			samples = append(samples, rtSample{t: ts, v: val})
+		}
+		require.NoError(t, it.Err())
+		out = append(out, rtSeries{labels: ls, samples: samples})
+	}
+	require.NoError(t, ss.Err())
+	return out
+}
+
 func buildTestMetrics(metricName string, n int, baseTime time.Time) pmetric.Metrics {
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()

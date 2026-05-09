@@ -427,10 +427,16 @@ capture_emitted_configs() {
     fi
 
     # Per-metric typed config (one per workload entry — Phase B
-    # emitter output). The mvp-workload.yaml has four entries.
+    # emitter output). mvp-workload.yaml has 6 distinct metrics
+    # across 8 entries (http_requests_total appears in 3 query
+    # shapes: raw passthrough, gateway sum, cold archive probe).
     for metric in \
         http_requests_total_latency_ms \
-        http_requests_total ; do
+        http_requests_total \
+        request_size_bytes \
+        unique_users_per_min \
+        top_endpoint_qps \
+        endpoint_request_freq ; do
         local out="${cdir}/per-metric.${metric}.json"
         if curl -sf "${ctrl}/api/v1/config/${metric}" -o "${out}" \
                 2> "${out}.err"; then
@@ -498,18 +504,20 @@ measure_phase() {
 
     # Build the replay query suite from mvp-workload.yaml.
     # We keep the JSON adjacent to the run dir for reproducibility.
-    # Six query classes — one per sketch family registered in
-    # mvp-workload.yaml (issue #46 5-sketch coverage):
+    # Seven query classes — one per sketch family + the label-agg
+    # family appears in two shapes (issue #46 5-sketch + 3 canonical
+    # query classes):
     #
-    #   sum_rate     ↔ raw passthrough (http_requests_total)
-    #   quantile     ↔ DDSketch        (http_requests_total_latency_ms)
-    #   kll-quantile ↔ KLL             (request_size_bytes)
-    #   count_unique ↔ HLL             (unique_users_per_min)
-    #   topk         ↔ CountSketch     (top_endpoint_qps)
-    #   frequency    ↔ CountMinSketch  (endpoint_request_freq)
+    #   quantile         ↔ DDSketch         (http_requests_total_latency_ms)
+    #   sum-by-zone      ↔ raw passthrough  (http_requests_total)        [criterion ① label-at-instant]
+    #   combined-rate    ↔ raw passthrough  (http_requests_total)        [criterion ① combined window+label]
+    #   kll-quantile     ↔ KLL              (request_size_bytes)
+    #   count_unique     ↔ HLL              (unique_users_per_min)
+    #   topk             ↔ CountSketch      (top_endpoint_qps)
+    #   frequency        ↔ CountMinSketch   (endpoint_request_freq)
     #
-    # Replay rotates round-robin at QPS=8 → ~1.3 QPS per class →
-    # ≥390 samples per class over the 300s soak (≥100 floor for
+    # Replay rotates round-robin at QPS=8 → ~1.14 QPS per class →
+    # ≥340 samples per class over the 300s soak (≥100 floor for
     # accuracy reduction).
     # Replay-range / warm-precompute alignment (issue #46 ε-bound
     # bug, fix/quantile-window-alignment): the DDSketch (entry 1) and
