@@ -439,7 +439,7 @@ pub fn emit_gateway_yaml(cfg: &GatewayStageConfig, opamp_endpoint: &str) -> Resu
     //   * SketchKind::DDSketch    → `ddsketchmerge`
     //   * SketchKind::Kll         → `kllmerge`
     //   * SketchKind::Hll         → `hllmerge`
-    //   * SketchKind::Cms         → `countminmerge`
+    //   * SketchKind::Cms         → `countminsketchmerge`
     //   * SketchKind::CountSketch → `countsketchmerge`
     //
     // We honour `GatewayMergeProcessor::processor_name` if non-empty
@@ -1320,7 +1320,7 @@ fn build_edge_processor_block(
 /// Today the typed emitter populates every entry's `processor_name`
 /// with the placeholder `"sketchmergeprocessor"`; the patched contrib
 /// build instead has per-family merge processors:
-/// `kllmerge`, `ddsketchmerge`, `hllmerge`, `countminmerge`,
+/// `kllmerge`, `ddsketchmerge`, `hllmerge`, `countminsketchmerge`,
 /// `countsketchmerge`. We map the kind to the family-specific name
 /// here so the emitted YAML round-trips through the patched build.
 fn gateway_merge_processor_name(mp: &GatewayMergeProcessor) -> String {
@@ -1328,7 +1328,7 @@ fn gateway_merge_processor_name(mp: &GatewayMergeProcessor) -> String {
         SketchKind::Kll => "kllmerge".to_string(),
         SketchKind::DDSketch => "ddsketchmerge".to_string(),
         SketchKind::Hll => "hllmerge".to_string(),
-        SketchKind::Cms => "countminmerge".to_string(),
+        SketchKind::Cms => "countminsketchmerge".to_string(),
         SketchKind::CountSketch => "countsketchmerge".to_string(),
     }
 }

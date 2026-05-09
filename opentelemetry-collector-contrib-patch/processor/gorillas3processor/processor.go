@@ -565,3 +565,12 @@ func fragmentFromAttributes(attrs pcommon.Map) (gorilla.Fragment, bool, error) {
 	}
 	return fragment, true, nil
 }
+
+func attributesToMap(attrs pcommon.Map) map[string]string {
+	m := make(map[string]string, attrs.Len())
+	attrs.Range(func(k string, v pcommon.Value) bool {
+		m[k] = v.AsString()
+		return true
+	})
+	return m
+}
