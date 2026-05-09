@@ -36,9 +36,10 @@ This is the **control plane** side of the pipeline. The data plane — sketch by
 │        │ fork/exec + SIGTERM on config change           │
 │        ▼                                                │
 │ ┌──────────────────┐                                    │
-│ │  asap-otel       │  (the collector binary —           │
-│ │  collector       │   countminsketchcol, ddsketchcol,  │
-│ │                  │   kllcol, hllcol, etc.)            │
+│ │  asap-otel       │  (the unified collector binary —   │
+│ │  collector       │   every sketch processor compiled  │
+│ │                  │   in: countmin, ddsketch, kll,     │
+│ │                  │   hll, countsketch, serf, gorilla) │
 │ │  ┌────────────┐  │                                    │
 │ │  │ opamp-     │  │                                    │
 │ │  │ extension  │  │  (reports health + config_hash     │
@@ -135,17 +136,13 @@ If in-process hot-reload becomes available upstream, the supervisor layer can be
 
 ---
 
-## 4. Known gap: sketch-type capability matching
+## 4. Sketch-type capability matching
 
-Commit `4b196e1`'s testing surfaced one issue that is **not** fixed and is tracked as a follow-up:
+Commit `4b196e1`'s testing originally surfaced this as an open issue: the controller had to know which sketch processors a given collector binary supported, because pushing a KLL config to a per-sketch builder (e.g. an old `countminsketchcol` that only had countmin compiled in) would crash the restarted collector on config load.
 
-> The controller must be aware of which sketch processors each collector binary supports, to avoid pushing a config with an unsupported processor type. E.g. pushing a KLL config to `countminsketchcol` (which only has countmin compiled in) causes the restarted collector to crash on config load.
+The cleanup that consolidated all per-sketch builder dirs into the single unified `asap-otel` binary (cleanup PR #363) collapsed this problem: every supervisor advertising `role: agent` now runs `asap-otel`, and `asap-otel` compiles in every sketch processor. The controller's `push_to_role` only needs to ensure the YAML it pushes uses processor names the unified builder registered (`countminsketchprocessor`, `ddsketchprocessor`, `kllprocessor`, `hllprocessor`, `countsketchprocessor`, `serfprocessor`, `gorillaprocessor`, …), which it does by construction — these are the same names the controller's emit table uses when generating configs.
 
-The current controller push path has no knowledge of binary capabilities. A supervisor advertising `role: agent` may be running any of `asap-otel`, `countminsketchcol`, `ddsketchcol`, `kllcol`, `hllcol`, etc.
-
-**Mitigation until this is fixed**: deploy homogeneous collector binaries per role, or run a single omnibus `asap-otel` that compiles in every sketch processor.
-
-**Long-term fix**: extend the supervisor registration to include a `processors_available: [...]` list in `non_identifying_attributes`, and teach the controller's `push_to_role` to filter by that list before sending a config. See [`controller-optimization-problem.md`](controller-optimization-problem.md) for the broader capability-matching design.
+If a future deployment ever ships a stripped-down collector with a subset of processors, the supervisor registration can be extended to include a `processors_available: [...]` list in `non_identifying_attributes`, and `push_to_role` can filter by that list before sending. Not needed today.
 
 ---
 

@@ -28,8 +28,9 @@ SimpleMapStore → query engine`.
                                   ▼
       ┌──────────────────────────────────────────────────────┐
       │ ASAPCollector OTel asap-otel                         │
-      │   (ddsketchcol / kllcol / countminsketchcol /        │
-      │    countsketchcol / hllcol / asap-otel / ... )       │
+      │   (unified binary with every sketch processor        │
+      │    compiled in: ddsketch / kll / countmin /          │
+      │    countsketch / hll / serf / gorilla / ... )        │
       │                                                      │
       │   • builds per-window, per-group sketches at edge    │
       │   • emits via MODIFIED OTLP proto as first-class     │
@@ -292,12 +293,12 @@ surface.
 
 | Class | OTel op | Precompute merge | Stored accumulator | Query (PromQL) | Accuracy |
 |---|---|---|---|---|---|
-| **Q-C1. Frequency per group** | `countminsketchcol` → CMS per window | window-align + merge CMS cells | `CountMinSketchAccumulator` (keyed by agg labels) | `sum by (d) (count_over_time(m{f}[w]))` | ε=2/width, δ=1/2^depth |
-| **Q-C2. Top-K groups by count** | `countminsketchcol` with heap, or `countsketchcol` | merge cells + heap | `CountMinSketchWithHeapAccumulator` | `topk(k, sum by (d) (count_over_time(m{f}[w])))` | heap-bounded |
-| **Q-C3. Distinct groups / cardinality** | `hllcol` | OR of HLL registers | `HllAccumulator` / `SetAggregator` | `count by (d) (count_over_time(m{f}[w]))` *(see note in §2.3)* | σ ≈ 1.04/√m |
-| **Q-C4. Quantiles per group** | `kll` or `ddsketchcol` | merge KLL levels (or add DD buckets) | `DatasketchesKLLAccumulator` / `HydraKllSketchAccumulator` | `quantile_over_time(φ, m{f}[w]) by (d)` | KLL: ~1% rank error; DDSketch: relative ε |
-| **Q-C5. Median proxy for avg** | `kll` at φ=0.5 | merge KLL | `DatasketchesKLLAccumulator` | `avg_over_time(m{f}[w]) by (d)` | median ≠ mean; explicit opt-in |
-| **Q-C6. Exact min/max per group** | `ddsketchcol` lossless extrema (or `kllprocessor` tracking extrema) | `ExactMinMax` | `MinMaxAccumulator` / `MultipleMinMaxAccumulator` | `min_over_time`/`max_over_time(m{f}[w]) by (d)` | exact |
+| **Q-C1. Frequency per group** | `countminsketchprocessor` → CMS per window | window-align + merge CMS cells | `CountMinSketchAccumulator` (keyed by agg labels) | `sum by (d) (count_over_time(m{f}[w]))` | ε=2/width, δ=1/2^depth |
+| **Q-C2. Top-K groups by count** | `countminsketchprocessor` with heap, or `countsketchprocessor` | merge cells + heap | `CountMinSketchWithHeapAccumulator` | `topk(k, sum by (d) (count_over_time(m{f}[w])))` | heap-bounded |
+| **Q-C3. Distinct groups / cardinality** | `hllprocessor` | OR of HLL registers | `HllAccumulator` / `SetAggregator` | `count by (d) (count_over_time(m{f}[w]))` *(see note in §2.3)* | σ ≈ 1.04/√m |
+| **Q-C4. Quantiles per group** | `kllprocessor` or `ddsketchprocessor` | merge KLL levels (or add DD buckets) | `DatasketchesKLLAccumulator` / `HydraKllSketchAccumulator` | `quantile_over_time(φ, m{f}[w]) by (d)` | KLL: ~1% rank error; DDSketch: relative ε |
+| **Q-C5. Median proxy for avg** | `kllprocessor` at φ=0.5 | merge KLL | `DatasketchesKLLAccumulator` | `avg_over_time(m{f}[w]) by (d)` | median ≠ mean; explicit opt-in |
+| **Q-C6. Exact min/max per group** | `ddsketchprocessor` lossless extrema (or `kllprocessor` tracking extrema) | `ExactMinMax` | `MinMaxAccumulator` / `MultipleMinMaxAccumulator` | `min_over_time`/`max_over_time(m{f}[w]) by (d)` | exact |
 | **Q-C7. Exact sum per group** | raw metric passthrough (no sketch) | scalar accumulate | `SumAccumulator` / `MultipleSumAccumulator` | `sum_over_time(m{f}[w]) by (d)` | exact |
 | **Q-C8. Increase per group** | raw metric passthrough | increase accumulation | `IncreaseAccumulator` / `MultipleIncreaseAccumulator` | `increase(m{f}[w]) by (d)` | exact |
 | **Q-C9. Set change per group** | raw metric passthrough | delta set bookkeeping | `DeltaSetAggregatorAccumulator` | `changes(m{f}[w]) by (d)` | exact |
@@ -1007,8 +1008,8 @@ labels `[symbol, exchange, sectype]`, 5-minute tumbling windows.
   ```promql
   avg_over_time(financial.last_trade_price[5m]) by (symbol)
   ```
-- **DEBS Q3 — Top-K most active symbols per window.** `countsketchcol`
-  or `countminsketchcol` (heap=10), `aggregate_by=[symbol]`. Stored as
+- **DEBS Q3 — Top-K most active symbols per window.** `countsketchprocessor`
+  or `countminsketchprocessor` (heap=10), `aggregate_by=[symbol]`. Stored as
   `CountMinSketchWithHeapAccumulator`. Cross-agent collapse is the win
   — many gateways may stream the same symbols.
   ```promql
@@ -1036,7 +1037,7 @@ Datasets cited in [#47](https://github.com/ProjectASAP/ASAPCollector/issues/47):
 Google Cluster Trace, Alibaba Cluster Trace, Datadog BOOM, MIT Supercloud.
 
 - **Heavy-hitter HTTP routes by request count.** Each agent runs
-  `countminsketchcol` with heap on `(host, route)`, 10-second batches.
+  `asap-otel` with the `countminsketchprocessor` (heap on `(host, route)`), 10-second batches.
   Backend `grouping_labels=[route]` collapses across the entire fleet.
   This is the §4.5 cross-agent spatial collapse story in action: 1000
   hosts × 10 routes × every 10 s become **one CMS per route per
@@ -1061,7 +1062,7 @@ Google Cluster Trace, Alibaba Cluster Trace, Datadog BOOM, MIT Supercloud.
   count by (namespace) (count_over_time(container_running[1m]))
   ```
 - **Top noisy-neighbor pods by CPU per node per minute** (Google
-  Cluster Trace pattern). `countminsketchcol` heap on `(pod_id)`,
+  Cluster Trace pattern). `countminsketchprocessor` heap on `(pod_id)`,
   partitioned by `(node)`. Backend `grouping_labels=[node]`, 1-min
   tumbling. Useful as an alert input for scheduler eviction.
 
@@ -1077,7 +1078,7 @@ Pecan Street, UCI household power, NASA CMAPSS, PHM Society.
   quantile_over_time(0.95, household_power_watts[15m]) by (circuit)
   ```
 - **Top transformers by load per substation per hour.**
-  `countminsketchcol` (heap) on `(transformer_id)`. Backend
+  `countminsketchprocessor` (heap) on `(transformer_id)`. Backend
   `grouping_labels=[substation]`, 1-hour tumbling.
   ```promql
   topk(5, sum_over_time(transformer_load_kw[1h]) by (substation))
@@ -1092,7 +1093,7 @@ Pecan Street, UCI household power, NASA CMAPSS, PHM Society.
 5G high-frequency time-series dataset cited in
 [#47](https://github.com/ProjectASAP/ASAPCollector/issues/47).
 
-- **Top source IPs per cell per second.** `countminsketchcol` heap on
+- **Top source IPs per cell per second.** `countminsketchprocessor` heap on
   `src_ip`, 1-second batches per cell. Backend `grouping_labels=[cell_id]`,
   1-second tumbling. Output feeds straight into per-cell rate limiters.
   ```promql
@@ -1110,7 +1111,7 @@ Pecan Street, UCI household power, NASA CMAPSS, PHM Society.
 NYC Taxi, Uber Movement, MIMIC-IV waveforms (all from #47).
 
 - **Top busiest pickup zones per 5 minutes** (NYC Taxi).
-  `countsketchcol` heap on `pickup_zone`. 30-second agent batches,
+  `countsketchprocessor` heap on `pickup_zone`. 30-second agent batches,
   5-minute backend windows.
   ```promql
   topk(20, sum by (pickup_zone) (count_over_time(taxi_pickups_total[5m])))
@@ -1337,7 +1338,7 @@ WHERE Severity = 'ERROR' AND Timestamp > now() - INTERVAL 1 HOUR
 GROUP BY CustomerId ORDER BY errs DESC LIMIT 20;
 ```
 
-Maps to `countminsketchcol` (heap=20) on `customer_id`, backend
+Maps to `countminsketchprocessor` (heap=20) on `customer_id`, backend
 `grouping_labels=[]`, `window_size=3600s`, query
 `topk(20, sum by (customer_id) (count_over_time(error_logs[1h])))`.
 
@@ -1362,7 +1363,7 @@ idioms below all map cleanly.
 |---|---|
 | `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))` | `kllprocessor` per `(host, route)` 30 s, backend `grouping_labels=[route]` window 5 min, stored `DatasketchesKLL`. PromQL becomes `quantile_over_time(0.95, http_request_duration_seconds[5m]) by (route)` and **avoids shipping bucket vectors entirely** |
 | `rate(http_requests_total[5m])` | scalar passthrough → `Sum` / `Increase` accumulator per `(service)` |
-| `topk(10, sum by (instance) (rate(node_cpu_seconds_total[5m])))` | `countminsketchcol` heap on `(instance)`, backend `grouping_labels=[instance]`, query `topk(10, sum_over_time(node_cpu_seconds_total[5m]) by (instance))` |
+| `topk(10, sum by (instance) (rate(node_cpu_seconds_total[5m])))` | `countminsketchprocessor` heap on `(instance)`, backend `grouping_labels=[instance]`, query `topk(10, sum_over_time(node_cpu_seconds_total[5m]) by (instance))` |
 | `count(count_over_time(http_requests_total{status=~"5.."}[1h]))` (distinct error paths) | `hllprocessor` on `path`, backend `grouping_labels=[]`, window 1 h |
 | `quantile_over_time(0.99, mysql_query_duration_seconds[10m]) by (db_user)` | `kllprocessor` per `(host, db_user)`, backend `grouping_labels=[db_user]` window 10 min, query unchanged |
 | `bottomk(5, avg_over_time(node_disk_io_time_seconds_total[1h]) by (device))` | `kllprocessor` per `(host, device)`, backend `grouping_labels=[device]` window 1 h, query `bottomk(5, avg_over_time(node_disk_io_time_seconds_total[1h]) by (device))` |
@@ -1456,7 +1457,7 @@ where `pattern ∈ {nvlink-only, hca-only, mixed}`. Typical SRE queries:
 - **Communication-pattern breakdown** (frequency of nvlink vs hca vs
   mixed paths per job):
   ```yaml
-  OTel:     countminsketchcol per (host, job), 10s batches on pattern
+  OTel:     countminsketchprocessor per (host, job), 10s batches on pattern
   Backend:  aggregation_type=CountMinSketch
             grouping_labels=[job]
             aggregated_labels=[pattern]
@@ -1576,9 +1577,10 @@ single well-defined point:
 The archive lane uses the **Gorilla** time-series compression
 algorithm. Gorilla (from the Facebook paper) is lossless and achieves
 ~10× compression on timestamp-value pairs by delta-of-delta encoding
-timestamps and XOR-encoding float values. ASAPCollector ships a
-`gorillacol` under `opentelemetry-collector-contrib-patch/cmd/`, and
-the in-progress S3 Files work adds an **S3 Files mode** for the
+timestamps and XOR-encoding float values. ASAPCollector ships the
+`gorillaprocessor` (registered in the unified `asap-otel` builder
+config under `opentelemetry-collector-contrib-patch/cmd/asap-otel/`),
+and the in-progress S3 Files work adds an **S3 Files mode** for the
 Gorilla processor (see the #152 PR): the processor writes segmented
 files with S3-compatible partitioning, suitable for upload to S3 /
 MinIO / GCS.
