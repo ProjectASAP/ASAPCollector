@@ -50,10 +50,14 @@
 //
 //	EXPORTER_TARGET                OTLP/gRPC endpoint (default gateway:4317).
 //	EXPORTER_METRIC                base metric name (default http_requests_total).
-//	EXPORTER_CARDINALITY           synthetic: # distinct attribute sets (default 1000).
+//	EXPORTER_CARDINALITY           synthetic: # distinct attribute sets (default 500).
 //	                               Max is 4 × 10 × 25 × 10 = 10000 under the
 //	                               default schema; to go higher, widen the
 //	                               per-dim value counts below.
+//	                               Default lowered from 1000 → 500 so
+//	                               N_PRODUCERS=10 × CARDINALITY=500 lands
+//	                               at the ~5K-series aggregate gateway
+//	                               target (was 10K-25K+ pre-tune).
 //	EXPORTER_ZONE_VALS             # distinct zone values      (default 4).
 //	EXPORTER_RACK_VALS             # distinct rack values      (default 10).
 //	EXPORTER_NODE_VALS             # distinct node values      (default 25).
@@ -414,7 +418,7 @@ func main() {
 // × 2`; what becomes wire traffic is determined by the SDK View +
 // PeriodicReader config set up in main.
 func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
-	cardinality := envInt("EXPORTER_CARDINALITY", 1000)
+	cardinality := envInt("EXPORTER_CARDINALITY", 500)
 	freqHz := envFloat("EXPORTER_FREQ_HZ", 10.0)
 	zoneVals := envInt("EXPORTER_ZONE_VALS", 4)
 	rackVals := envInt("EXPORTER_RACK_VALS", 10)

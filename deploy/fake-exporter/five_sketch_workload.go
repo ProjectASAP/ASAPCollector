@@ -28,9 +28,11 @@
 //
 //   - `unique_users_per_min` (HLL): per-event Counter labelled with a
 //     synthetic `user_id` drawn from a rotating pool of size
-//     EXPORTER_FIVE_SKETCH_USER_POOL (default 1000, range
-//     500-2000). Cardinality of the active user set in any 1-minute
-//     window is the property HLL estimates.
+//     EXPORTER_FIVE_SKETCH_USER_POOL (default 100, range
+//     50-2000). Cardinality of the active user set in any 1-minute
+//     window is the property HLL estimates. The default was lowered
+//     from 1000 → 100 to keep the agent → gateway wire bandwidth
+//     bounded (HLL inner-label fan-out dominates SDK output rate).
 //
 //   - `top_endpoint_qps` (CountSketch): per-event Counter labelled
 //     with `endpoint` drawn Zipfian (s=1.2) over
@@ -55,7 +57,7 @@
 //	                                  (shared — drives the outer label set on every
 //	                                  five-sketch metric so they fan out per-host).
 //	EXPORTER_FIVE_SKETCH              on | off       (default on)
-//	EXPORTER_FIVE_SKETCH_USER_POOL    HLL user-id cardinality       (default 1000)
+//	EXPORTER_FIVE_SKETCH_USER_POOL    HLL user-id cardinality       (default 100)
 //	EXPORTER_FIVE_SKETCH_ENDPOINTS    Zipfian endpoint cardinality  (default 50)
 //	EXPORTER_FIVE_SKETCH_ZIPF_S       Zipfian s parameter            (default 1.2)
 //	EXPORTER_FIVE_SKETCH_USER_ROTATE  s — how often we rotate the user
@@ -118,9 +120,16 @@ func startFiveSketchWorkload(
 		return func() {}
 	}
 
-	userPool := envInt("EXPORTER_FIVE_SKETCH_USER_POOL", 1000)
-	if userPool < 500 {
-		userPool = 500
+	// Default lowered from 1000 → 100 (and floor lowered from 500 → 50)
+	// to keep agent → gateway bandwidth bounded; HLL inner-label fan-out
+	// (one series per user_id × outer label set) dominates SDK output.
+	// Aggregate target with N_PRODUCERS=10 × PER_AGENT_CARDINALITY=500
+	// is ~5K series at the gateway; userPool only widens the active
+	// user-id bucket inside that fan-out, so 100 is plenty for HLL to
+	// have something non-trivial to estimate.
+	userPool := envInt("EXPORTER_FIVE_SKETCH_USER_POOL", 100)
+	if userPool < 50 {
+		userPool = 50
 	}
 	if userPool > 2000 {
 		userPool = 2000
