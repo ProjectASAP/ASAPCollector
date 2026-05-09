@@ -1,0 +1,74 @@
+# MVP demo override — drop **both** `cpus` and `memory` from
+# `deploy.resources.limits` for every service that has them in
+# `mvp-multi-stage.yml` and `mvp-thanos-archive.yml`. Each `limits:`
+# block holds both knobs, so removing the block leaves containers
+# with no CPU cap and no memory cap (host-resource-bounded only).
+#
+# Why: the agent's 5-sketch fan-out + windowState buffer at any
+# meaningful cardinality (≥2k aggregate series) blows past the
+# 1.5 GiB hardcoded limit and gets OOM-killed (SIGKILL/137). Each
+# restart flushes a 1-ms-wide TSDB block — sustained windowed
+# aggregation never accumulates, so `count_over_time` / quantile
+# sketches end up with ~1 sample per series in S3.
+#
+# Apply with the existing chain (order matters — overrides last):
+#
+#   docker compose \
+#     -f deploy/docker-compose/base.yml \
+#     -f deploy/docker-compose/mvp-multi-stage.yml \
+#     -f deploy/docker-compose/mvp-thanos-archive.yml \
+#     -f deploy/docker-compose/mvp-no-resource-limits.yml \
+#     up -d
+#
+# Or as the final `-f` flag in `run_mvp_demo.sh`'s compose
+# invocation. The driver's command line is in `compose_args`
+# (search the script for `-f "${COMPOSE_DIR}/`).
+#
+# Side effects:
+#   - Containers can grow until host memory is exhausted. Don't
+#     run on a shared host without monitoring.
+#   - Useful for diagnosis (let the agent reach steady-state and
+#     measure where memory actually sits) and for paper sweeps
+#     where the hard cap distorts cost-per-sample numbers.
+#
+# This overlay does NOT change container images, configs, or
+# ports — it only nulls the `deploy.resources.limits` block.
+
+services:
+
+  # ─── mvp-multi-stage.yml: agents + gateway + prometheus-b0 ───────────
+  agent-a:
+    deploy:
+      resources:
+        limits: !reset null
+
+  agent-b:
+    deploy:
+      resources:
+        limits: !reset null
+
+  gateway:
+    deploy:
+      resources:
+        limits: !reset null
+
+  prometheus-b0:
+    deploy:
+      resources:
+        limits: !reset null
+
+  # ─── mvp-thanos-archive.yml: thanos-store / thanos-query / thanos-compact ─
+  thanos-store-gateway:
+    deploy:
+      resources:
+        limits: !reset null
+
+  thanos-query:
+    deploy:
+      resources:
+        limits: !reset null
+
+  thanos-compact:
+    deploy:
+      resources:
+        limits: !reset null

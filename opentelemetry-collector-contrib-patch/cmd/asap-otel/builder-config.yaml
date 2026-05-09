@@ -341,3 +341,12 @@ replaces:
   # (sketchlib-go uses one extra `..` because it lives as a sibling
   # repo of ASAPCollector, one level up from this repo root.)
   - github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
+  # asap-gorilla-go is a private module living as a sibling
+  # subdirectory of this repo (ASAPCollector/asap-gorilla-go).
+  # Same path arithmetic as asap-precompute-go: the OCB-generated
+  # cmd/asap-otel/go.mod lives 3 dirs deep under the ASAPCollector
+  # repo root, so ../../../asap-gorilla-go resolves to the in-repo
+  # subdirectory. The gorillas3processor's own go.mod has the same
+  # replace, but OCB does not transitively forward processor-level
+  # replaces — this entry is required at the binary's go.mod level.
+  - github.com/ProjectASAP/asap-gorilla-go => ../../../asap-gorilla-go
