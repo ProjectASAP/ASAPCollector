@@ -42,9 +42,9 @@
 #
 # # Usage
 #
-#   bash integration/cross_host_parity/run_parity.sh
-#   bash integration/cross_host_parity/run_parity.sh --mode=binary
-#   bash integration/cross_host_parity/run_parity.sh --mode=binary --include-telegraf
+#   bash integration/parity/agent-binary/run_parity.sh
+#   bash integration/parity/agent-binary/run_parity.sh --mode=binary
+#   bash integration/parity/agent-binary/run_parity.sh --mode=binary --include-telegraf
 #
 # # Output
 #
@@ -61,10 +61,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 COMPOSE_FILE="${REPO_ROOT}/deploy/docker-compose/cross-host-parity.yml"
 CAPTURE_DIR="${SCRIPT_DIR}/captures"
-GOLDEN_PARITY_DIR="${REPO_ROOT}/integration/parity/golden"
+GOLDEN_PARITY_DIR="${REPO_ROOT}/integration/parity/runtime-impl/golden"
 
 MODE="fixture"
 INCLUDE_TELEGRAF=0
@@ -103,7 +103,7 @@ log "Phase 5 step E run_parity.sh: mode=${MODE} include_telegraf=${INCLUDE_TELEG
 # cross-language gate's canonical envelope bytes inline via canonical.go
 # (sketchlib-go SerializePortable* helpers) and asserts byte-equality
 # across pairs — no Docker, no agent binaries. If
-# integration/parity/golden/*.bin is also present, the test cross-checks
+# integration/parity/runtime-impl/golden/*.bin is also present, the test cross-checks
 # the inline regen against the on-disk fixture and surfaces any drift.
 if [[ "${MODE}" == "fixture" ]]; then
   if [[ -d "${GOLDEN_PARITY_DIR}" ]]; then
@@ -121,7 +121,7 @@ if [[ "${MODE}" == "fixture" ]]; then
     log "On-disk gate fixtures absent under ${GOLDEN_PARITY_DIR}."
     log "  Inline regen drives the assertion. To enable the cross-check,"
     log "  regenerate fixtures with:"
-    log "    cd ${REPO_ROOT}/integration/parity && \\"
+    log "    cd ${REPO_ROOT}/integration/parity/runtime-impl && \\"
     log "      GOLDEN_REGEN=1 go test -run TestGenerateGoldenFixtures ./..."
   fi
   log "Running Go test in fixture mode..."

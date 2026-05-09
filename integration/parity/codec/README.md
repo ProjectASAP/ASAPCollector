@@ -1,10 +1,13 @@
-# integration/cross-host-parity
+# integration/parity/codec
 
 Phase 4 step E: prove `asap-precompute-go` produces byte-identical
 `SketchEnvelope` payloads regardless of whether observations come
 from OpenTelemetry's `pmetric.Metrics` (driven through the OTel
 codec) or Telegraf's `telegraf.Metric` (driven through the Telegraf
 codec).
+
+This is the **codec** layer of the three-gate parity pyramid (see
+[`../README.md`](../README.md) for the full layering).
 
 ## What this checks
 
@@ -33,7 +36,7 @@ asserts.
 ## Running
 
 ```
-cd integration/cross-host-parity
+cd integration/parity/codec
 go test -v ./...
 go test -race ./...
 ```
@@ -50,5 +53,5 @@ go test -race ./...
   `Precompute` instances.
 - `harness/runtime_telegraf.go` — same for Telegraf.
 - `harness/sketches.go` — test-only `precompute.Sketch` wrappers
-  (mirrors `integration/parity/harness/sketches.go`).
+  (mirrors `../runtime-impl/harness/sketches.go`).
 - `harness/diff.go` — envelope byte-comparison and structured diff.

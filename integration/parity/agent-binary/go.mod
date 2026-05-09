@@ -1,4 +1,4 @@
-module github.com/ProjectASAP/ASAPCollector/integration/cross_host_parity
+module github.com/ProjectASAP/ASAPCollector/integration/parity/agent-binary
 
 go 1.25.5
 
@@ -6,10 +6,11 @@ go 1.25.5
 //
 // In fixture mode the test reproduces the cross-language gate (#243)
 // canonical envelope bytes inline using sketchlib-go's
-// SerializePortable* helpers — the same calls integration/parity/
-// golden_test.go makes — and asserts byte-equality across agent pairs
-// against those bytes. This makes the test self-contained: it does
-// NOT depend on integration/parity/golden/*.bin being regenerated
+// SerializePortable* helpers — the same calls
+// integration/parity/runtime-impl/golden_test.go makes — and asserts
+// byte-equality across agent pairs against those bytes. This makes
+// the test self-contained: it does NOT depend on
+// integration/parity/runtime-impl/golden/*.bin being regenerated
 // separately. (Optional: if those fixtures ARE present, the test
 // also cross-checks that the inline regen agrees with the on-disk
 // fixture, surfacing a fixture-drift regression early.)
@@ -38,4 +39,4 @@ require (
 
 // sketchlib-go is a private module; the local sibling checkout lives
 // next to the ASAPCollector repo. Path is relative to this go.mod.
-replace github.com/ProjectASAP/sketchlib-go => ../../../sketchlib-go
+replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go

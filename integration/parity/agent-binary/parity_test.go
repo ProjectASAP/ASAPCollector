@@ -9,7 +9,7 @@
 //
 //   - integration/parity/ — runtime ↔ legacy-processor parity for
 //     asap-precompute-go (Phase 2 gate).
-//   - integration/cross-host-parity/ — OTel-codec ↔ Telegraf-codec
+//   - integration/parity/codec/ — OTel-codec ↔ Telegraf-codec
 //     parity, both driving asap-precompute-go in-process (Phase 4
 //     step E gate).
 //   - asap-precompute-rs/tests/cross_language_parity.rs — Rust
@@ -54,7 +54,7 @@ import (
 	"strings"
 	"testing"
 
-	crosshostparity "github.com/ProjectASAP/ASAPCollector/integration/cross_host_parity"
+	crosshostparity "github.com/ProjectASAP/ASAPCollector/integration/parity/agent-binary"
 )
 
 // sketchTarget is one of the five sketch families this test exercises.
@@ -97,12 +97,12 @@ const (
 func goldenFixtureDir(t *testing.T) (string, bool) {
 	t.Helper()
 	// Walk up from the test's working dir until we find
-	// integration/parity/golden. The cross_host_parity dir is a sibling
-	// of cross-host-parity and parity under integration/, so the
-	// relative path `../parity/golden` resolves cleanly.
+	// integration/parity/runtime-impl/golden. The agent-binary dir is a
+	// sibling of codec and runtime-impl under integration/parity/, so the
+	// relative path `../runtime-impl/golden` resolves cleanly.
 	candidates := []string{
-		filepath.Join("..", "parity", "golden"),
-		filepath.Join("..", "..", "integration", "parity", "golden"),
+		filepath.Join("..", "runtime-impl", "golden"),
+		filepath.Join("..", "..", "..", "integration", "parity", "runtime-impl", "golden"),
 	}
 	for _, c := range candidates {
 		abs, err := filepath.Abs(c)
@@ -149,7 +149,7 @@ func modeFromEnv() string {
 // from OTLP, so the harness either needs an OTLP→line-protocol
 // translator or two parallel input fixtures. Phase 4 step E already
 // closes asap-otel↔asap-telegraf at the codec level
-// (integration/cross-host-parity/), so the *new* claim Phase 5E
+// (integration/parity/codec/), so the *new* claim Phase 5E
 // defends is the Go↔Rust pair (asap-otel ↔ asap-otap). Three-way
 // stays a quick add behind the env var.
 func agentsUnderTest() []string {
@@ -227,10 +227,10 @@ func runFixtureMode(t *testing.T) {
 		t.Logf("on-disk gate fixtures present at %s; will cross-check "+
 			"inline regen against them.", dir)
 	} else {
-		t.Logf("on-disk gate fixtures absent (integration/parity/golden " +
+		t.Logf("on-disk gate fixtures absent (integration/parity/runtime-impl/golden " +
 			"sibling not found). Inline regen drives the assertion; the " +
 			"on-disk cross-check is skipped. Regenerate fixtures with:\n" +
-			"  cd integration/parity && GOLDEN_REGEN=1 \\\n" +
+			"  cd integration/parity/runtime-impl && GOLDEN_REGEN=1 \\\n" +
 			"    go test -run TestGenerateGoldenFixtures ./...")
 	}
 
@@ -256,7 +256,7 @@ func runFixtureMode(t *testing.T) {
 						t.Errorf("on-disk fixture %s drifted from inline "+
 							"regen: on-disk=%d bytes, regen=%d bytes, "+
 							"first-diff at offset %d. Regenerate fixtures "+
-							"with:\n  cd integration/parity && \\\n"+
+							"with:\n  cd integration/parity/runtime-impl && \\\n"+
 							"    GOLDEN_REGEN=1 go test -run "+
 							"TestGenerateGoldenFixtures ./...",
 							sk.fixtureName, len(onDisk), len(canonical),
@@ -415,7 +415,7 @@ func head(b []byte, n int) []byte {
 func TestCrossHostPromQLParity(t *testing.T) {
 	mode := modeFromEnv()
 
-	queriesPath := filepath.Join("..", "..", "deploy", "scripts", "queries-e2e.json")
+	queriesPath := filepath.Join("..", "..", "..", "deploy", "scripts", "queries-e2e.json")
 	qb, err := os.ReadFile(queriesPath)
 	if err != nil {
 		t.Fatalf("read queries-e2e.json: %v", err)

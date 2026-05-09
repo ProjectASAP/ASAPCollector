@@ -9,7 +9,7 @@
 //
 // Regenerate by running:
 //
-//	GOLDEN_REGEN=1 go test -run GenerateGolden ./integration/parity/...
+//	GOLDEN_REGEN=1 go test -run GenerateGolden ./integration/parity/runtime-impl/...
 //
 // Without GOLDEN_REGEN set, the generator acts as a self-check that
 // the Go side still produces the bytes currently checked in.

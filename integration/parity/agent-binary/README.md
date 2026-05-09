@@ -1,4 +1,4 @@
-# integration/cross_host_parity
+# integration/parity/agent-binary
 
 Phase 5 step E (per `docs/design-asap-otap-rust-integration.md` §11
 row E): the three ASAP-flavored agents — `asap-otel` (OTel-Go),
@@ -6,6 +6,9 @@ row E): the three ASAP-flavored agents — `asap-otel` (OTel-Go),
 identical input emit byte-identical `SketchEnvelope.Payload`s, and
 the backend's PromQL output is identical regardless of which agent
 produced the data.
+
+This is the **agent-binary** layer of the three-gate parity pyramid
+(see [`../README.md`](../README.md) for the full layering).
 
 ## Scope of THIS PR — two-way (asap-otel ↔ asap-otap)
 
@@ -18,19 +21,19 @@ This PR ships the **two-way** asap-otel ↔ asap-otap test as the
 default. The `asap-telegraf` third agent is a one-flag opt-in
 (`CROSS_HOST_PARITY_INCLUDE_TELEGRAF=1` or `--include-telegraf`)
 so the asymmetry around Telegraf's line-protocol input format
-doesn't block the Go↔Rust gate this PR is built around. Phase 4
-step E (`integration/cross-host-parity/`) already closes the
-asap-otel ↔ asap-telegraf comparison at the in-process codec
-level; Phase 5E binary-mode coverage is a follow-up.
+doesn't block the Go↔Rust gate this PR is built around. The codec
+gate (`../codec/`) already closes the asap-otel ↔ asap-telegraf
+comparison at the in-process codec level; Phase 5E binary-mode
+coverage is a follow-up.
 
 ## How this layers on existing parity gates
 
 | Gate | Scope | Phase |
 | --- | --- | --- |
-| `integration/parity/` | runtime ↔ legacy-OTel-processor envelope bytes | Phase 2 |
-| `integration/cross-host-parity/` | OTel-codec ↔ Telegraf-codec, both in-process Go runtime | Phase 4E |
+| `../runtime-impl/` | runtime ↔ legacy-OTel-processor envelope bytes | Phase 2 |
+| `../codec/` | OTel-codec ↔ Telegraf-codec, both in-process Go runtime | Phase 4E |
 | `asap-precompute-rs/tests/cross_language_parity.rs` | Go runtime ↔ Rust runtime per-sketch wire format (issue #243) | Phase 5 prereq |
-| `integration/cross_host_parity/` (this dir) | asap-otel ↔ asap-otap agent-binary envelope bytes + PromQL | Phase 5E |
+| `./` (this dir) | asap-otel ↔ asap-otap agent-binary envelope bytes + PromQL | Phase 5E |
 
 The sketch-level cross-language gate (#243) ratifies that *each
 runtime* produces the canonical envelope bytes from goldenFloats /
@@ -44,11 +47,11 @@ full receive-process-emit path.
 ### Fixture mode (default)
 
 ```
-bash integration/cross_host_parity/run_parity.sh
+bash integration/parity/agent-binary/run_parity.sh
 ```
 
 - Verifies the cross-language gate's golden envelope fixtures
-  (`integration/parity/golden/*.bin`) are present and non-empty.
+  (`../runtime-impl/golden/*.bin`) are present and non-empty.
 - Runs `parity_test.go` in `CROSS_HOST_PARITY_MODE=fixture`, which
   asserts byte-equality across pairs by re-loading the same canonical
   fixture for each agent (transitively valid because #243 already
@@ -65,8 +68,8 @@ path.
 ### Binary mode
 
 ```
-bash integration/cross_host_parity/run_parity.sh --mode=binary
-bash integration/cross_host_parity/run_parity.sh --mode=binary --include-telegraf
+bash integration/parity/agent-binary/run_parity.sh --mode=binary
+bash integration/parity/agent-binary/run_parity.sh --mode=binary --include-telegraf
 ```
 
 - Brings up `asap/asap-otel:dev` + `asap/asap-otap:dev` (+
@@ -94,7 +97,7 @@ images cause a hard failure with the build commands in the message
   (agent-pair, query) in binary mode.
 - `golden_input/inputs.json` — canonical input fixture mirroring
   `goldenFloats()` / `goldenHllKeys()` / `goldenCsKeys()` /
-  `goldenCmsKeys()` from `integration/parity/golden_test.go` and
+  `goldenCmsKeys()` from `../runtime-impl/golden_test.go` and
   `asap-precompute-rs/tests/cross_language_parity.rs`.
 - `run_parity.sh` — orchestrator (mode dispatch, prereq check,
   Docker compose lifecycle, test invocation).

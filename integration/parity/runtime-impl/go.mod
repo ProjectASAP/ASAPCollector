@@ -1,4 +1,4 @@
-module github.com/ProjectASAP/ASAPCollector/integration/parity
+module github.com/ProjectASAP/ASAPCollector/integration/parity/runtime-impl
 
 go 1.25.5
 
@@ -54,23 +54,23 @@ require (
 
 // Local checkouts for the host-neutral runtime, the patched OTel
 // collector core, and the 5 legacy sketch processors. Paths are
-// relative to integration/parity/. Mirrors the cascade used by the
-// per-processor go.mod files in
+// relative to integration/parity/runtime-impl/. Mirrors the cascade
+// used by the per-processor go.mod files in
 // opentelemetry-collector-contrib-patch/processor/.
-replace github.com/ProjectASAP/asap-precompute-go => ../../asap-precompute-go
+replace github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
 
-replace github.com/ProjectASAP/sketchlib-go => ../../../sketchlib-go
+replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
 
-replace go.opentelemetry.io/collector/pdata => ../../opentelemetry-collector/pdata
+replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata
 
-replace go.opentelemetry.io/collector/processor => ../../opentelemetry-collector/processor
+replace go.opentelemetry.io/collector/processor => ../../../opentelemetry-collector/processor
 
-replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddsketchprocessor => ../../opentelemetry-collector-contrib-patch/processor/ddsketchprocessor
+replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddsketchprocessor => ../../../opentelemetry-collector-contrib-patch/processor/ddsketchprocessor
 
-replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllprocessor => ../../opentelemetry-collector-contrib-patch/processor/kllprocessor
+replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllprocessor => ../../../opentelemetry-collector-contrib-patch/processor/kllprocessor
 
-replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllprocessor => ../../opentelemetry-collector-contrib-patch/processor/hllprocessor
+replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllprocessor => ../../../opentelemetry-collector-contrib-patch/processor/hllprocessor
 
-replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchprocessor => ../../opentelemetry-collector-contrib-patch/processor/countsketchprocessor
+replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchprocessor => ../../../opentelemetry-collector-contrib-patch/processor/countsketchprocessor
 
-replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor => ../../opentelemetry-collector-contrib-patch/processor/countminsketchprocessor
+replace github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor => ../../../opentelemetry-collector-contrib-patch/processor/countminsketchprocessor
