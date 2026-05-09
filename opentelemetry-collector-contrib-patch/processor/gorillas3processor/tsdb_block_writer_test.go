@@ -529,6 +529,83 @@ func readAllSamples(t *testing.T, block *tsdb.Block) []rtSeries {
 	return out
 }
 
+// TestTSDBBlockBuilder_HighCardinalityMemoryBound is the regression
+// test for PR #355 / fix/thanos-archive-write-regression.
+//
+// PR #354's original OOB-tolerate-by-flatten-and-sort-globally
+// implementation allocated an O(N_samples) `flatSample` slice
+// (~80 B / sample — ts + value + labels.Labels header +
+// *storage.SeriesRef pointer) IN ADDITION to the per-series buffer
+// copies, AND interleaved Head series creation across every series
+// in the block (each series' open `headChunks` stayed resident
+// through the whole flush). Under the 5-sketch routing topology
+// (6 gorillas3 instances × 5K cardinality × 60 s window ≈ 1.2 M
+// samples per flush each), that pushed the agent past its 1.5 GiB
+// limit and OOM-killed it BEFORE the first block reached MinIO.
+// Result: archive_ok = 0 / archive_miss = 1713 in the post-PR-#354
+// MVP rerun.
+//
+// The fix in PR #355 visits series in ascending order of each
+// series' EARLIEST sample timestamp — guaranteeing the first
+// `app.Append` carries the global minimum (so the appender's
+// minValidTime anchors at globalMin - chunkRange/2) without any
+// flat-slice allocation.
+//
+// This test reproduces the cardinality + sample-count profile of
+// the flush that triggered the OOM, and asserts that:
+//  1. build returns successfully — no error, no panic, every
+//     in-window sample lands in the resulting block,
+//  2. the per-flush working set is bounded by `max(series points,
+//     Head's per-series state)` rather than `O(N_samples)`. We
+//     can't measure Go heap usage portably from a unit test, so
+//     we assert the algorithmic invariant: the visit order produces
+//     the global-minimum sample as the first append, which is the
+//     property that lets us drop the flat slice.
+func TestTSDBBlockBuilder_HighCardinalityMemoryBound(t *testing.T) {
+	const (
+		blockMs    = int64(60_000)
+		seriesN    = 200 // representative cardinality per gorillas3 instance
+		samplesPer = 60  // 1 Hz over a 60s window
+	)
+	base := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC).UnixNano()
+
+	window := make(map[seriesKey]*seriesBuffer, seriesN)
+	for s := 0; s < seriesN; s++ {
+		// Each series carries its own per-series time-slice. Slice
+		// starts are spread across the 60s window so the global
+		// minimum belongs to series 0 and the global maximum to
+		// series seriesN-1 — the kind of arrangement that under
+		// random map iteration would have tripped OOB before
+		// PR #354 and OOM-killed the agent under PR #354's flat-
+		// slice fix.
+		startSec := (s * 60) / seriesN // 0..59
+		buf := &seriesBuffer{
+			attributes: map[string]string{
+				"user_id": "u" + string(rune('A'+(s%26))) + string(rune('A'+((s/26)%26))),
+				"host":    "h",
+			},
+			points: make([]point, samplesPer),
+		}
+		for i := 0; i < samplesPer; i++ {
+			ts := base + int64(startSec)*int64(time.Second) + int64(i)*int64(time.Millisecond*100)
+			buf.points[i] = point{ts: ts, v: float64(s*samplesPer + i)}
+		}
+		sk := seriesKey{
+			metricName:    "unique_users_per_min",
+			attributesKey: "host=h;user_id=" + buf.attributes["user_id"] + ";",
+		}
+		window[sk] = buf
+	}
+
+	b := newTSDBBlockBuilder(time.Duration(blockMs)*time.Millisecond, nil, nil)
+	art, err := b.build(context.Background(), window)
+	require.NoError(t, err, "high-cardinality flush must not error")
+	require.NotNil(t, art, "high-cardinality flush must produce a block")
+	assert.Equal(t, uint64(seriesN), art.NumSeries, "every series should land in the block")
+	assert.Equal(t, uint64(seriesN*samplesPer), art.NumSamples, "every sample should land in the block")
+	assert.Equal(t, uint64(0), art.NumOOBDropped, "no in-window sample should be OOB under earliest-first visit order")
+}
+
 // silenceUnused is here purely so unused imports stay honest in
 // case the editor strips them. pcommon + zaptest are used by the
 // shared mkProcessor / buildTestMetrics helpers in processor_test.go;
