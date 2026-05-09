@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	gorilla "github.com/ProjectASAP/asap-gorilla-go"
 	"github.com/oklog/ulid/v2"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
@@ -20,12 +22,13 @@ type gorillaS3Processor struct {
 	logger       *zap.Logger
 	nextConsumer consumer.Metrics
 
-	window *windowState
-	sink   chunkSink
+	mu sync.Mutex
 
-	// mvp/step2.1: lazily-constructed Prometheus TSDB block builder.
-	// Nil when block_format=asap; non-nil when prometheus_tsdb|both.
-	tsdbBuilder *tsdbBlockBuilder
+	sink chunkSink
+
+	rawBuilder        *gorilla.StreamingTSDBBlockBuilder
+	fragmentEncoder   *gorilla.StreamingFragmentEncoder
+	fragmentFinalizer *gorilla.FragmentBlockFinalizer
 
 	ticker  *time.Ticker
 	done    chan struct{}
@@ -38,7 +41,6 @@ func newProcessor(cfg *Config, next consumer.Metrics, logger *zap.Logger, sink c
 		cfg:          cfg,
 		logger:       logger,
 		nextConsumer: next,
-		window:       newWindowState(),
 		sink:         sink,
 		done:         make(chan struct{}),
 	}
@@ -47,28 +49,25 @@ func newProcessor(cfg *Config, next consumer.Metrics, logger *zap.Logger, sink c
 // Start initializes the sink (if not pre-injected) and launches the
 // tumbling-window flush goroutine.
 func (p *gorillaS3Processor) Start(ctx context.Context, _ component.Host) error {
-	if p.sink == nil {
+	if p.cfg.Role != ProcessorRoleAgent && p.sink == nil {
 		s, err := newS3Sink(p.cfg)
 		if err != nil {
 			return err
 		}
 		p.sink = s
 	}
-	if p.cfg.EmitTSDB() && p.tsdbBuilder == nil {
-		p.tsdbBuilder = newTSDBBlockBuilder(
-			p.cfg.TSDBBlockDuration,
-			p.cfg.TSDBExternalLabels,
-			zapToSlog(p.logger),
-		)
+	if err := p.ensureRoleState(); err != nil {
+		return err
 	}
 	p.logger.Info("Starting gorillas3 processor",
+		zap.String("role", string(p.cfg.Role)),
+		zap.String("delivery_mode", string(p.cfg.DeliveryMode)),
 		zap.Duration("window_interval", p.cfg.WindowInterval),
 		zap.String("bucket", p.cfg.Bucket),
 		zap.String("tsdb_bucket", p.cfg.TSDBBucket),
 		zap.String("endpoint", p.cfg.Endpoint),
-		zap.String("prefix_template", p.cfg.PrefixTemplate),
 		zap.Bool("drop_original", p.cfg.DropOriginal),
-		zap.String("block_format", string(p.cfg.BlockFormat)),
+		zap.Duration("reorder_grace", p.cfg.TSDBReorderGrace),
 	)
 	p.ticker = time.NewTicker(p.cfg.WindowInterval)
 	p.wg.Add(1)
@@ -117,30 +116,95 @@ func (p *gorillaS3Processor) ConsumeMetrics(ctx context.Context, md pmetric.Metr
 	if p.monitor != nil {
 		p.monitor.recordInput(ctx, md)
 	}
+	if err := p.ensureRoleState(); err != nil {
+		return md, err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var out pmetric.Metrics
+	var err error
+	switch p.cfg.Role {
+	case ProcessorRoleAgent:
+		out, err = p.consumeAgentLocked(md)
+	case ProcessorRoleGatewayFragment:
+		out, err = p.consumeGatewayFragmentLocked(md)
+	default:
+		out, err = p.consumeGatewayRawLocked(md)
+	}
+	if err != nil {
+		return md, err
+	}
+	if p.monitor != nil {
+		p.monitor.recordOutput(ctx, out)
+	}
+	return out, nil
+}
+
+func (p *gorillaS3Processor) consumeGatewayRawLocked(md pmetric.Metrics) (pmetric.Metrics, error) {
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
 		for j := 0; j < sms.Len(); j++ {
 			metrics := sms.At(j).Metrics()
 			for k := 0; k < metrics.Len(); k++ {
-				p.ingestMetric(metrics.At(k))
+				if err := p.ingestRawMetricLocked(metrics.At(k)); err != nil {
+					return md, err
+				}
 			}
 		}
 	}
 	if p.cfg.DropOriginal {
-		empty := pmetric.NewMetrics()
-		if p.monitor != nil {
-			p.monitor.recordOutput(ctx, empty)
-		}
-		return empty, nil
-	}
-	if p.monitor != nil {
-		p.monitor.recordOutput(ctx, md)
+		return pmetric.NewMetrics(), nil
 	}
 	return md, nil
 }
 
-func (p *gorillaS3Processor) ingestMetric(m pmetric.Metric) {
+func (p *gorillaS3Processor) consumeAgentLocked(md pmetric.Metrics) (pmetric.Metrics, error) {
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			metrics := sms.At(j).Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				if err := p.ingestFragmentMetricLocked(metrics.At(k)); err != nil {
+					return md, err
+				}
+			}
+		}
+	}
+	fragments, err := p.fragmentEncoder.Drain(false)
+	if err != nil {
+		return md, err
+	}
+	fragMD, err := fragmentsToMetrics(fragments)
+	if err != nil {
+		return md, err
+	}
+	if !p.cfg.DropOriginal && len(fragments) == 0 {
+		return md, nil
+	}
+	return fragMD, nil
+}
+
+func (p *gorillaS3Processor) consumeGatewayFragmentLocked(md pmetric.Metrics) (pmetric.Metrics, error) {
+	fragments, err := extractFragments(md)
+	if err != nil {
+		return md, err
+	}
+	for _, fragment := range fragments {
+		if err := p.fragmentFinalizer.AddFragment(fragment); err != nil {
+			return md, err
+		}
+	}
+	if p.cfg.DropOriginal {
+		return pmetric.NewMetrics(), nil
+	}
+	return md, nil
+}
+
+func (p *gorillaS3Processor) ingestRawMetricLocked(m pmetric.Metric) error {
 	switch m.Type() {
 	case pmetric.MetricTypeGauge:
 		dps := m.Gauge().DataPoints()
@@ -150,7 +214,14 @@ func (p *gorillaS3Processor) ingestMetric(m pmetric.Metric) {
 			if !ok {
 				continue
 			}
-			p.window.add(m.Name(), dp.Attributes(), dp.Timestamp().AsTime(), v)
+			if err := p.rawBuilder.AddSample(gorilla.TSDBSample{
+				MetricName: m.Name(),
+				Attributes: attributesToMap(dp.Attributes()),
+				Timestamp:  dp.Timestamp().AsTime(),
+				Value:      v,
+			}); err != nil {
+				return err
+			}
 		}
 	case pmetric.MetricTypeSum:
 		dps := m.Sum().DataPoints()
@@ -160,9 +231,57 @@ func (p *gorillaS3Processor) ingestMetric(m pmetric.Metric) {
 			if !ok {
 				continue
 			}
-			p.window.add(m.Name(), dp.Attributes(), dp.Timestamp().AsTime(), v)
+			if err := p.rawBuilder.AddSample(gorilla.TSDBSample{
+				MetricName: m.Name(),
+				Attributes: attributesToMap(dp.Attributes()),
+				Timestamp:  dp.Timestamp().AsTime(),
+				Value:      v,
+			}); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
+}
+
+func (p *gorillaS3Processor) ingestFragmentMetricLocked(m pmetric.Metric) error {
+	switch m.Type() {
+	case pmetric.MetricTypeGauge:
+		dps := m.Gauge().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			v, ok := numberValue(dp)
+			if !ok {
+				continue
+			}
+			if err := p.fragmentEncoder.AddSample(gorilla.TSDBSample{
+				MetricName: m.Name(),
+				Attributes: attributesToMap(dp.Attributes()),
+				Timestamp:  dp.Timestamp().AsTime(),
+				Value:      v,
+			}); err != nil {
+				return err
+			}
+		}
+	case pmetric.MetricTypeSum:
+		dps := m.Sum().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			v, ok := numberValue(dp)
+			if !ok {
+				continue
+			}
+			if err := p.fragmentEncoder.AddSample(gorilla.TSDBSample{
+				MetricName: m.Name(),
+				Attributes: attributesToMap(dp.Attributes()),
+				Timestamp:  dp.Timestamp().AsTime(),
+				Value:      v,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func numberValue(dp pmetric.NumberDataPoint) (float64, bool) {
@@ -175,153 +294,49 @@ func numberValue(dp pmetric.NumberDataPoint) (float64, bool) {
 	return 0, false
 }
 
-// flushWindow encodes the buffered window into chunks and sends them
-// to the sink. Errors per-chunk are logged but do not abort the flush.
-//
-// mvp/step2.1: dispatches to one or both of:
-//   - the legacy ASAP GORILLA1 chunk + index.json + postings-v1.json
-//     layout (block_format=asap or both)
-//   - a Prometheus TSDB block under <tsdb-bucket>/<ulid>/ (block_format
-//     =prometheus_tsdb or both)
-//
-// Both paths consume the same in-memory snapshot. The ASAP path adapts
-// into asap-gorilla-go, and the TSDB path makes its own defensive copy
-// before sorting, so neither path mutates the other's point order.
+// flushWindow finalizes the current streaming Prometheus TSDB block and uploads
+// it to the Thanos bucket. The next incoming sample starts a new builder.
 func (p *gorillaS3Processor) flushWindow(ctx context.Context) {
-	snapshot, _, latest := p.window.snapshot()
-	if len(snapshot) == 0 {
+	if err := p.ensureRoleState(); err != nil {
+		p.logger.Error("gorillas3: role state init failed", zap.Error(err))
 		return
 	}
-	blockTime := latest
-	if blockTime.IsZero() {
-		blockTime = time.Now().UTC()
-	}
-	if p.cfg.EmitASAP() {
-		p.flushASAP(ctx, snapshot, blockTime)
-	}
-	if p.cfg.EmitTSDB() {
-		p.flushTSDB(ctx, snapshot)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	switch p.cfg.Role {
+	case ProcessorRoleAgent:
+		p.flushAgentLocked(ctx)
+	case ProcessorRoleGatewayFragment:
+		p.flushGatewayFragmentLocked(ctx)
+	default:
+		p.flushGatewayRawLocked(ctx)
 	}
 }
 
-// flushASAP emits the legacy GORILLA1 chunk + index.json + postings-v1.json
-// triplet for the supplied window. Behaviour is byte-identical to the
-// pre-step2.1 flushWindow.
-func (p *gorillaS3Processor) flushASAP(ctx context.Context, snapshot map[seriesKey]*seriesBuffer, blockTime time.Time) {
-	chunks, err := buildChunks(snapshot, p.cfg.MaxObjectBytes)
+func (p *gorillaS3Processor) flushAgentLocked(ctx context.Context) {
+	fragments, err := p.fragmentEncoder.Drain(true)
 	if err != nil {
-		p.logger.Error("gorillas3: build chunks failed", zap.Error(err))
+		p.logger.Error("gorillas3: fragment drain failed", zap.Error(err))
 		return
 	}
-	// mvp/v5: precompute postings once for the whole window. The
-	// agent emits ONE `postings-v1.json` per (metric, hour-bucket)
-	// because all chunks landing under the same prefix share the
-	// same postings file. We bucket by prefix so multi-metric
-	// windows still get their own postings sidecars.
-	postingsByPrefix := make(map[string]map[seriesKey]*seriesBuffer)
-	for sk, buf := range snapshot {
-		if buf == nil || len(buf.points) == 0 {
-			continue
-		}
-		prefix := renderPrefix(p.cfg.PrefixTemplate, p.cfg.Tenant, sk.metricName, blockTime)
-		bucket, ok := postingsByPrefix[prefix]
-		if !ok {
-			bucket = make(map[seriesKey]*seriesBuffer)
-			postingsByPrefix[prefix] = bucket
-		}
-		bucket[sk] = buf
+	if len(fragments) == 0 || p.nextConsumer == nil {
+		return
 	}
-
-	for idx, c := range chunks {
-		prefix := renderPrefix(p.cfg.PrefixTemplate, p.cfg.Tenant, c.metricName, blockTime)
-		key := buildObjectKey(prefix, blockTime, idx)
-		// canonical hash of the (metric, sorted-attrs) tuple — same
-		// hash buildPostings uses for the per-series id, so the
-		// backend can join postings → index entries on label_hash.
-		// For multi-series chunks this is not single-valued; we
-		// surface 0 ("multi-series") in that case so the backend
-		// only short-circuits on single-series chunks.
-		var labelHash uint64
-		if c.seriesCount == 1 {
-			for sk, buf := range snapshot {
-				if sk.metricName == c.metricName && buf != nil {
-					labelHash = canonicalLabelHash(sk.metricName, buf.attributes)
-					break
-				}
-			}
-		}
-		hints := chunkHints{
-			Tenant:      p.cfg.Tenant,
-			MetricName:  c.metricName,
-			StartTSNano: c.startTS,
-			EndTSNano:   c.endTS,
-			SeriesCount: c.seriesCount,
-			PointCount:  c.pointCount,
-			SizeBytes:   len(c.data),
-			IndexPrefix: prefix,
-			LabelHash:   labelHash,
-		}
-		if err := p.sink.PutChunk(ctx, key, c.data, hints); err != nil {
-			p.logger.Error("gorillas3: PutChunk failed",
-				zap.String("key", key),
-				zap.Int("series", c.seriesCount),
-				zap.Int("points", c.pointCount),
-				zap.Error(err),
-			)
-			if p.monitor != nil {
-				p.monitor.putFailure(ctx)
-			}
-			continue
-		}
-		if p.monitor != nil {
-			p.monitor.chunkWritten(ctx, len(c.data), c.pointCount)
-		}
-		p.logger.Info("gorillas3: chunk written",
-			zap.String("key", key),
-			zap.String("metric", c.metricName),
-			zap.Int("series", c.seriesCount),
-			zap.Int("points", c.pointCount),
-			zap.Int("bytes", len(c.data)),
-		)
+	md, err := fragmentsToMetrics(fragments)
+	if err != nil {
+		p.logger.Error("gorillas3: fragment metric build failed", zap.Error(err))
+		return
 	}
-
-	// mvp/v5: emit `postings-v1.json` per prefix bucket.
-	for prefix, bucket := range postingsByPrefix {
-		body, err := buildPostings(bucket, time.Now().UnixNano())
-		if err != nil {
-			p.logger.Error("gorillas3: buildPostings failed",
-				zap.String("prefix", prefix),
-				zap.Error(err))
-			continue
-		}
-		postingsKey := prefix + "postings-v1.json"
-		if err := p.sink.PutPostings(ctx, postingsKey, body); err != nil {
-			p.logger.Error("gorillas3: PutPostings failed",
-				zap.String("key", postingsKey),
-				zap.Error(err))
-			continue
-		}
-		p.logger.Info("gorillas3: postings written",
-			zap.String("key", postingsKey),
-			zap.Int("bytes", len(body)),
-			zap.Int("series", len(bucket)))
+	if err := p.nextConsumer.ConsumeMetrics(ctx, md); err != nil {
+		p.logger.Error("gorillas3: fragment forward failed", zap.Error(err))
 	}
 }
 
-// flushTSDB builds a Prometheus TSDB block from the supplied window
-// snapshot and uploads its files to the TSDB bucket. Errors are
-// logged; the caller continues. mvp/step2.1.
-func (p *gorillaS3Processor) flushTSDB(ctx context.Context, snapshot map[seriesKey]*seriesBuffer) {
-	if p.tsdbBuilder == nil {
-		// Tests call flushWindow without going through Start; fall
-		// back to constructing a builder lazily.
-		p.tsdbBuilder = newTSDBBlockBuilder(
-			p.cfg.TSDBBlockDuration,
-			p.cfg.TSDBExternalLabels,
-			zapToSlog(p.logger),
-		)
-	}
-	artifact, err := p.tsdbBuilder.build(ctx, snapshot)
+func (p *gorillaS3Processor) flushGatewayRawLocked(ctx context.Context) {
+	builder := p.rawBuilder
+	p.rawBuilder = nil
+	artifact, err := builder.Finalize(ctx)
 	if err != nil {
 		p.logger.Error("gorillas3: tsdb block build failed", zap.Error(err))
 		if p.monitor != nil {
@@ -329,6 +344,24 @@ func (p *gorillaS3Processor) flushTSDB(ctx context.Context, snapshot map[seriesK
 		}
 		return
 	}
+	p.uploadArtifact(ctx, artifact)
+}
+
+func (p *gorillaS3Processor) flushGatewayFragmentLocked(ctx context.Context) {
+	finalizer := p.fragmentFinalizer
+	p.fragmentFinalizer = nil
+	artifact, err := finalizer.Finalize(ctx)
+	if err != nil {
+		p.logger.Error("gorillas3: tsdb block build failed", zap.Error(err))
+		if p.monitor != nil {
+			p.monitor.putFailure(ctx)
+		}
+		return
+	}
+	p.uploadArtifact(ctx, artifact)
+}
+
+func (p *gorillaS3Processor) uploadArtifact(ctx context.Context, artifact *gorilla.TSDBBlockArtifact) {
 	if artifact == nil {
 		return
 	}
@@ -336,13 +369,13 @@ func (p *gorillaS3Processor) flushTSDB(ctx context.Context, snapshot map[seriesK
 	// We warn (not error) so operators see drift but the agent stays
 	// up; the counter feeds the same metric exporter the rest of the
 	// processor counters use.
-	if artifact.NumOOBDropped > 0 {
+	if artifact.NumOOODropped > 0 {
 		p.logger.Warn("gorillas3: tsdb out-of-bounds samples dropped",
-			zap.Uint64("dropped", artifact.NumOOBDropped),
+			zap.Uint64("dropped", artifact.NumOOODropped),
 			zap.Uint64("appended", artifact.NumSamples),
 		)
 		if p.monitor != nil {
-			p.monitor.tsdbOOBDropped(ctx, artifact.NumOOBDropped)
+			p.monitor.tsdbOOBDropped(ctx, artifact.NumOOODropped)
 		}
 	}
 	if artifact.ULID == (ulid.ULID{}) {
@@ -388,5 +421,147 @@ func (p *gorillaS3Processor) flushTSDB(ctx context.Context, snapshot map[seriesK
 
 // activeSeries is exposed to selfmonitor as the gauge callback.
 func (p *gorillaS3Processor) activeSeries() int64 {
-	return p.window.activeSeries()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch p.cfg.Role {
+	case ProcessorRoleAgent:
+		if p.fragmentEncoder == nil {
+			return 0
+		}
+		return int64(p.fragmentEncoder.ActiveSeries())
+	case ProcessorRoleGatewayFragment:
+		if p.fragmentFinalizer == nil {
+			return 0
+		}
+		// The shared finalizer intentionally does not expose mutable internals;
+		// this role reports zero until we add a dedicated gauge.
+		return 0
+	default:
+		if p.rawBuilder == nil {
+			return 0
+		}
+		return int64(p.rawBuilder.ActiveSeries())
+	}
+}
+
+func (p *gorillaS3Processor) ensureRoleState() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch p.cfg.Role {
+	case ProcessorRoleAgent:
+		if p.fragmentEncoder == nil {
+			p.fragmentEncoder = gorilla.NewStreamingFragmentEncoder(gorilla.StreamingFragmentOptions{
+				ReorderGrace:    p.cfg.TSDBReorderGrace,
+				SamplesPerChunk: p.cfg.FragmentSamplesPerChunk,
+				Source:          p.cfg.SourceID,
+			})
+		}
+	case ProcessorRoleGatewayFragment:
+		if p.fragmentFinalizer == nil {
+			finalizer, err := gorilla.NewFragmentBlockFinalizer(gorilla.FragmentBlockOptions{
+				ExternalLabels: p.cfg.TSDBExternalLabels,
+			})
+			if err != nil {
+				return err
+			}
+			p.fragmentFinalizer = finalizer
+		}
+	default:
+		if p.rawBuilder == nil {
+			builder, err := gorilla.NewStreamingTSDBBlockBuilder(gorilla.StreamingTSDBOptions{
+				ReorderGrace:   p.cfg.TSDBReorderGrace,
+				ExternalLabels: p.cfg.TSDBExternalLabels,
+			})
+			if err != nil {
+				return err
+			}
+			p.rawBuilder = builder
+		}
+	}
+	return nil
+}
+
+func fragmentsToMetrics(fragments []gorilla.Fragment) (pmetric.Metrics, error) {
+	md := pmetric.NewMetrics()
+	if len(fragments) == 0 {
+		return md, nil
+	}
+	rm := md.ResourceMetrics().AppendEmpty()
+	sm := rm.ScopeMetrics().AppendEmpty()
+	m := sm.Metrics().AppendEmpty()
+	m.SetName(gorilla.FragmentMetricName)
+	g := m.SetEmptyGauge()
+	for _, fragment := range fragments {
+		payload, err := gorilla.MarshalFragment(fragment)
+		if err != nil {
+			return md, err
+		}
+		dp := g.DataPoints().AppendEmpty()
+		dp.SetTimestamp(pcommon.NewTimestampFromTime(time.UnixMilli(fragment.MaxTime)))
+		dp.SetIntValue(int64(fragment.Count))
+		dp.Attributes().PutStr(gorilla.FragmentPayloadAttribute, payload)
+		if fragment.FragmentULID != "" {
+			dp.Attributes().PutStr("fragment_ulid", fragment.FragmentULID)
+		}
+		if fragment.Source != "" {
+			dp.Attributes().PutStr("source_id", fragment.Source)
+		}
+		dp.Attributes().PutStr("metric_name", fragment.MetricName)
+	}
+	return md, nil
+}
+
+func extractFragments(md pmetric.Metrics) ([]gorilla.Fragment, error) {
+	var fragments []gorilla.Fragment
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			metrics := sms.At(j).Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				m := metrics.At(k)
+				if m.Name() != gorilla.FragmentMetricName {
+					continue
+				}
+				switch m.Type() {
+				case pmetric.MetricTypeGauge:
+					dps := m.Gauge().DataPoints()
+					for i := 0; i < dps.Len(); i++ {
+						fragment, ok, err := fragmentFromAttributes(dps.At(i).Attributes())
+						if err != nil {
+							return nil, err
+						}
+						if ok {
+							fragments = append(fragments, fragment)
+						}
+					}
+				case pmetric.MetricTypeSum:
+					dps := m.Sum().DataPoints()
+					for i := 0; i < dps.Len(); i++ {
+						fragment, ok, err := fragmentFromAttributes(dps.At(i).Attributes())
+						if err != nil {
+							return nil, err
+						}
+						if ok {
+							fragments = append(fragments, fragment)
+						}
+					}
+				}
+			}
+		}
+	}
+	return fragments, nil
+}
+
+func fragmentFromAttributes(attrs pcommon.Map) (gorilla.Fragment, bool, error) {
+	v, ok := attrs.Get(gorilla.FragmentPayloadAttribute)
+	payload := v.AsString()
+	if !ok || payload == "" {
+		return gorilla.Fragment{}, false, nil
+	}
+	fragment, err := gorilla.UnmarshalFragment(payload)
+	if err != nil {
+		return gorilla.Fragment{}, false, err
+	}
+	return fragment, true, nil
 }

@@ -27,6 +27,8 @@ func createDefaultConfig() component.Config {
 	return &Config{
 		WindowInterval: 60 * time.Second,
 		MaxObjectBytes: 0,
+		Role:           ProcessorRoleGatewayRaw,
+		DeliveryMode:   DeliveryModeDurableRaw,
 		Tenant:         "default",
 		PrefixTemplate: defaultPrefixTemplate,
 		UseSSL:         false,

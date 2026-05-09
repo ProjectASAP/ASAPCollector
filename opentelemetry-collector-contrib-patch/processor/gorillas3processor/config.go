@@ -24,35 +24,56 @@ import (
 const defaultPrefixTemplate = "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
 
 // BlockFormat selects the on-disk layout the processor emits to S3.
-//
-//   - "asap" (default): the legacy GORILLA1 chunk + index.json + postings-v1.json
-//     trio under a metric/hour-bucketed key prefix. Read by the
-//     `asap-gorilla` Rust crate and the backend's `engines/gorilla`
-//     query engine.
-//   - "prometheus_tsdb": one Prometheus TSDB block per flush window,
-//     written under a ULID-named directory in the configured TSDB
-//     bucket. Read by an off-the-shelf Thanos store-gateway. mvp/step2.1.
-//   - "both": emit both layouts concurrently. Used for migration /
-//     verification — the asap blocks land in the regular `Bucket`,
-//     the Prometheus blocks land in `TSDBBucket` (or `Bucket` if unset).
-//
-// Step 2.1 lands the writer + plumbing; Step 2.3 / 2.4 wire the
-// backend to query the Thanos sidecar.
+// Only "prometheus_tsdb" is supported: edge writes Prometheus TSDB block files,
+// S3/MinIO stores them, and Thanos store-gateway/query reads them.
 type BlockFormat string
 
 const (
-	BlockFormatASAP           BlockFormat = "asap"
 	BlockFormatPrometheusTSDB BlockFormat = "prometheus_tsdb"
-	BlockFormatBoth           BlockFormat = "both"
+)
+
+// ProcessorRole decides where this collector runs in the split pipeline.
+type ProcessorRole string
+
+const (
+	// ProcessorRoleGatewayRaw consumes raw metrics and builds TSDB blocks. Use
+	// this after a durable raw transport such as Kafka.
+	ProcessorRoleGatewayRaw ProcessorRole = "gateway_raw"
+	// ProcessorRoleAgent encodes raw metrics into compact fragment metrics. Use
+	// this on low-resource edge collectors for best-effort or durable-fragment
+	// delivery.
+	ProcessorRoleAgent ProcessorRole = "agent"
+	// ProcessorRoleGatewayFragment consumes fragment metrics and finalizes TSDB
+	// blocks. Use this after OTel/OTAP/Telegraf best-effort transport or after
+	// Kafka carrying fragments.
+	ProcessorRoleGatewayFragment ProcessorRole = "gateway_fragment"
+)
+
+// DeliveryMode documents the transport reliability envelope around the role.
+type DeliveryMode string
+
+const (
+	DeliveryModeBestEffort      DeliveryMode = "best_effort"
+	DeliveryModeDurableRaw      DeliveryMode = "durable_raw"
+	DeliveryModeDurableFragment DeliveryMode = "durable_fragment"
 )
 
 // Config is the gorillas3processor configuration. Fields mirror the
 // Telegraf-side `gorilla_s3` output plugin where applicable so the two
 // can share infra docs.
 type Config struct {
+	// Role selects the processor responsibility. Default gateway_raw preserves
+	// the existing "raw metrics in, TSDB block out" behavior and is also the
+	// recommended role after Kafka durable raw transport.
+	Role ProcessorRole `mapstructure:"role"`
+
+	// DeliveryMode is explicit operator documentation for the pipeline contract.
+	// The processor does not create Kafka topics; durable modes are achieved by
+	// placing Kafka before gateway_raw or between agent and gateway_fragment.
+	DeliveryMode DeliveryMode `mapstructure:"delivery_mode"`
+
 	// WindowInterval is the tumbling window duration. On each tick the
-	// processor encodes the buffered series, PUTs the chunk(s) to S3
-	// and updates the hour-bucket index.json. Default: 60s.
+	// processor drains its current raw builder or fragment finalizer.
 	WindowInterval time.Duration `mapstructure:"window_interval"`
 
 	// MaxObjectBytes caps a single chunk's size. When exceeded series
@@ -99,19 +120,19 @@ type Config struct {
 	// Phase 2 keeps this empty by default; operators opt in as needed.
 	LocalSpoolDir string `mapstructure:"local_spool_dir"`
 
-	// BlockFormat selects the cold-store on-disk layout. See the
-	// BlockFormat doc above for value semantics. Default "asap"
-	// keeps the existing Phase 2 behaviour byte-identical for
-	// backwards compatibility — no change unless the operator
-	// opts into "prometheus_tsdb" or "both".
+	// SourceID identifies the edge source in fragment metadata.
+	SourceID string `mapstructure:"source_id"`
+
+	// FragmentSamplesPerChunk controls how many samples the edge encoder packs
+	// into one XOR fragment before emitting it downstream.
+	FragmentSamplesPerChunk int `mapstructure:"fragment_samples_per_chunk"`
+
+	// BlockFormat selects the cold-store on-disk layout. Only
+	// "prometheus_tsdb" is supported; empty defaults to that value.
 	BlockFormat BlockFormat `mapstructure:"block_format"`
 
-	// TSDBBucket is the destination bucket for Prometheus TSDB
-	// blocks (block_format: prometheus_tsdb | both). When empty
-	// the processor falls back to Bucket — but the operator is
-	// strongly encouraged to use a separate bucket so the two
-	// layouts do not co-mingle (Thanos store-gateway treats every
-	// `<ulid>/meta.json` it sees as a block to load).
+	// TSDBBucket is the destination bucket for Prometheus TSDB blocks. When
+	// empty, gateway roles fall back to Bucket.
 	TSDBBucket string `mapstructure:"tsdb_bucket"`
 
 	// TSDBBlockDuration is the tumbling window over which samples
@@ -127,6 +148,12 @@ type Config struct {
 	// Prometheus block. Typical use: `{cluster: foo, replica: a}`.
 	// Step 2.3 is responsible for matching backend-side queries.
 	TSDBExternalLabels map[string]string `mapstructure:"tsdb_external_labels"`
+
+	// TSDBReorderGrace is the event-time lateness bound for per-series
+	// out-of-order samples. Samples are streamed into XOR chunks once they are
+	// older than max_observed_timestamp - tsdb_reorder_grace. Later samples
+	// behind already-written data are dropped and counted.
+	TSDBReorderGrace time.Duration `mapstructure:"tsdb_reorder_grace"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -154,7 +181,28 @@ func (c *Config) Validate() error {
 	if c.UploadTimeout <= 0 {
 		c.UploadTimeout = 30 * time.Second
 	}
-	if c.Bucket == "" {
+	switch c.Role {
+	case "":
+		c.Role = ProcessorRoleGatewayRaw
+	case ProcessorRoleGatewayRaw, ProcessorRoleAgent, ProcessorRoleGatewayFragment:
+		// ok
+	default:
+		return fmt.Errorf("gorillas3: invalid role %q (want gateway_raw|agent|gateway_fragment)", c.Role)
+	}
+	switch c.DeliveryMode {
+	case "":
+		switch c.Role {
+		case ProcessorRoleAgent, ProcessorRoleGatewayFragment:
+			c.DeliveryMode = DeliveryModeBestEffort
+		default:
+			c.DeliveryMode = DeliveryModeDurableRaw
+		}
+	case DeliveryModeBestEffort, DeliveryModeDurableRaw, DeliveryModeDurableFragment:
+		// ok
+	default:
+		return fmt.Errorf("gorillas3: invalid delivery_mode %q (want best_effort|durable_raw|durable_fragment)", c.DeliveryMode)
+	}
+	if c.Role != ProcessorRoleAgent && c.Bucket == "" {
 		return fmt.Errorf("gorillas3: bucket must be set")
 	}
 	if (c.AccessKeyID == "") != (c.SecretAccessKey == "") {
@@ -162,31 +210,34 @@ func (c *Config) Validate() error {
 	}
 	switch c.BlockFormat {
 	case "":
-		c.BlockFormat = BlockFormatASAP
-	case BlockFormatASAP, BlockFormatPrometheusTSDB, BlockFormatBoth:
+		c.BlockFormat = BlockFormatPrometheusTSDB
+	case BlockFormatPrometheusTSDB:
 		// ok
 	default:
-		return fmt.Errorf("gorillas3: invalid block_format %q (want asap|prometheus_tsdb|both)", c.BlockFormat)
+		return fmt.Errorf("gorillas3: invalid block_format %q (only prometheus_tsdb is supported)", c.BlockFormat)
 	}
 	if c.TSDBBlockDuration <= 0 {
 		c.TSDBBlockDuration = c.WindowInterval
 	}
-	if c.BlockFormat != BlockFormatASAP && c.TSDBBucket == "" {
+	if c.Role != ProcessorRoleAgent && c.TSDBBucket == "" {
 		// Default to Bucket, but warn-by-validate is impractical
 		// here; operators get a clean defaults.
 		c.TSDBBucket = c.Bucket
 	}
+	if c.TSDBReorderGrace < 0 {
+		return fmt.Errorf("gorillas3: tsdb_reorder_grace must be >= 0")
+	}
+	if c.TSDBReorderGrace == 0 {
+		c.TSDBReorderGrace = 2 * time.Second
+	}
+	if c.FragmentSamplesPerChunk < 0 {
+		return fmt.Errorf("gorillas3: fragment_samples_per_chunk must be >= 0")
+	}
 	return nil
-}
-
-// EmitASAP reports whether the processor should write the legacy
-// GORILLA1 cold-store layout for this flush.
-func (c *Config) EmitASAP() bool {
-	return c.BlockFormat == BlockFormatASAP || c.BlockFormat == BlockFormatBoth
 }
 
 // EmitTSDB reports whether the processor should write a Prometheus
 // TSDB block for this flush.
 func (c *Config) EmitTSDB() bool {
-	return c.BlockFormat == BlockFormatPrometheusTSDB || c.BlockFormat == BlockFormatBoth
+	return c.BlockFormat == BlockFormatPrometheusTSDB
 }

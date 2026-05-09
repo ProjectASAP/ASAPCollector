@@ -233,97 +233,19 @@ func TestFlushWindow_BlockFormatTSDB(t *testing.T) {
 	assert.True(t, hasChunks, "block must include chunks/000001")
 }
 
-// TestFlushWindow_BlockFormatBoth verifies that with block_format=both,
-// the processor emits BOTH the legacy ASAP triplet AND a Prometheus
-// TSDB block from the same window snapshot. Useful for migration.
-func TestFlushWindow_BlockFormatBoth(t *testing.T) {
-	cfg := &Config{
-		Bucket:         "asap-gorilla",
-		TSDBBucket:     "asap-tsdb",
-		WindowInterval: time.Hour,
-		DropOriginal:   true,
-		BlockFormat:    BlockFormatBoth,
-		Tenant:         "tnt",
-	}
-	sink := &mockSink{}
-	p := mkProcessor(t, cfg, sink)
-
-	base := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
-	md := buildTestMetrics("cpu.usage", 6, base)
-	_, err := p.ConsumeMetrics(context.Background(), md)
-	require.NoError(t, err)
-
-	p.flushWindow(context.Background())
-
-	assert.Equal(t, 1, sink.chunkCount(), "block_format=both must still emit asap chunk")
-	assert.Equal(t, 1, sink.postingsCount(), "block_format=both must still emit asap postings")
-	assert.Equal(t, 1, sink.tsdbBlockCount(), "block_format=both must also emit tsdb block")
-
-	// Prometheus block must round-trip via OpenBlock.
-	blk := sink.tsdbBlocks[0]
-	root := t.TempDir()
-	for k, body := range blk.files {
-		full := filepath.Join(root, filepath.FromSlash(k))
-		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
-		require.NoError(t, os.WriteFile(full, body, 0o644))
-	}
-	block, err := tsdb.OpenBlock(nil, filepath.Join(root, blk.ulid), chunkenc.NewPool(), nil)
-	require.NoError(t, err)
-	defer block.Close()
-
-	got := readAllSamples(t, block)
-	require.Len(t, got, 1)
-	assert.Equal(t, "cpu.usage", got[0].labels.Get(labels.MetricName))
-	assert.Equal(t, 6, len(got[0].samples))
-}
-
-// TestFlushWindow_BlockFormatASAPDefault asserts that the unconfigured
-// default (== "asap") preserves the pre-step2.1 byte-identical
-// behaviour: chunk + postings, no tsdb block.
-func TestFlushWindow_BlockFormatASAPDefault(t *testing.T) {
-	cfg := &Config{
-		Bucket:         "asap-gorilla",
-		WindowInterval: time.Hour,
-		DropOriginal:   true,
-		// BlockFormat unset → defaults to asap via Validate()
-	}
-	sink := &mockSink{}
-	p := mkProcessor(t, cfg, sink)
-	require.Equal(t, BlockFormatASAP, cfg.BlockFormat, "default block_format must be asap")
-
-	base := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
-	md := buildTestMetrics("cpu.usage", 4, base)
-	_, err := p.ConsumeMetrics(context.Background(), md)
-	require.NoError(t, err)
-
-	p.flushWindow(context.Background())
-
-	assert.Equal(t, 1, sink.chunkCount())
-	assert.Equal(t, 1, sink.postingsCount())
-	assert.Equal(t, 0, sink.tsdbBlockCount(), "default mode must NOT emit tsdb blocks")
-}
-
 // TestConfig_ValidateBlockFormat exercises the BlockFormat validation
 // branches.
 func TestConfig_ValidateBlockFormat(t *testing.T) {
-	// Default fills in asap.
+	// Default fills in prometheus_tsdb.
 	cfg := &Config{Bucket: "b"}
 	require.NoError(t, cfg.Validate())
-	assert.Equal(t, BlockFormatASAP, cfg.BlockFormat)
-	assert.True(t, cfg.EmitASAP())
-	assert.False(t, cfg.EmitTSDB())
+	assert.Equal(t, BlockFormatPrometheusTSDB, cfg.BlockFormat)
+	assert.True(t, cfg.EmitTSDB())
 
 	// prometheus_tsdb is accepted; TSDBBucket falls back to Bucket.
 	cfg = &Config{Bucket: "b", BlockFormat: BlockFormatPrometheusTSDB}
 	require.NoError(t, cfg.Validate())
 	assert.Equal(t, "b", cfg.TSDBBucket)
-	assert.False(t, cfg.EmitASAP())
-	assert.True(t, cfg.EmitTSDB())
-
-	// both is accepted.
-	cfg = &Config{Bucket: "b", TSDBBucket: "t", BlockFormat: BlockFormatBoth}
-	require.NoError(t, cfg.Validate())
-	assert.True(t, cfg.EmitASAP())
 	assert.True(t, cfg.EmitTSDB())
 
 	// Invalid value rejected.
