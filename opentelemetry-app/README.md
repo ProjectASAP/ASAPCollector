@@ -32,12 +32,6 @@ data point. The collector processor merges incoming sketches and emits query res
 | `--duration` | `60s` | Run duration (0 = forever) |
 | `--samples-per-interval` | `1` | Values recorded per series per window |
 
-### Running via bench.sh
-
-The benchmark script (`opentelemetry-collector-contrib-patch/cmd/bench.sh`) runs
-end-to-end benchmarks for all sketch types using `fakemetricload` as the SDK load
-generator. See the bench script for the full list of targets.
-
 ---
 
 ## SDK Pipeline Configuration Files
