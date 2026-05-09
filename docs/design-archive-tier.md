@@ -185,9 +185,8 @@ emitted at L5 of the 5-layer pipeline. The modes are:
   [warm-tier serve: SimpleEngine]
 ```
 
-- Edge runs a sketch processor (`ddsketchprocessor` /
-  `kllprocessor` / `hllprocessor` / `countminsketchprocessor` /
-  `countsketchprocessor`).
+- Edge runs a sketch processor component (`ddsketch` /
+  `KLL` / `HLL` / `countmin` / `countsketch`).
 - Wire bytes are sketch envelopes only; raw never crosses the wire.
 - Warm-tier `SimpleEngine` answers PromQL with `(ε, δ)`-bounded
   accuracy.

@@ -1,7 +1,0 @@
-[
-    {"kind": "quantile",     "promql": "quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])"},
-    {"kind": "quantile",     "promql": "quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])"},
-    {"kind": "sum",          "promql": "sum_over_time(http_requests_total[1m])"},
-    {"kind": "count_unique", "promql": "count(http_requests_total)"},
-    {"kind": "topk",         "promql": "topk(10, http_requests_total)"}
-]

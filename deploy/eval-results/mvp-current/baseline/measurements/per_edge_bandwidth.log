@@ -1,5 +1,0 @@
-# per-edge bandwidth probe — duration=300.0s period=1.0s out=/tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/baseline/measurements/per_edge_bandwidth.csv
-# wrote /tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/baseline/measurements/per_edge_bandwidth.csv (1204 rows)
-# edge=edge_agent_to_gateway samples=300 mean_bytes_per_s=9341.9
-# edge=edge_gateway_to_s3 samples=300 mean_bytes_per_s=1.3
-# edge=edge_sdk_to_agent samples=300 mean_bytes_per_s=6328.1

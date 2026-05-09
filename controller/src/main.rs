@@ -1089,7 +1089,7 @@ async fn emit_bootstrap_typed(
     //    `bind_workload_typed` is per-metric. The 5-sketch routing-
     //    connector edge wire shape needs every sketched metric mapped
     //    to its committed family up-front so the emitter can build the
-    //    `routing` connector's `route() where metric.name == "…"`
+    //    `routing` connector's per-metric OTTL condition
     //    statements. Walk the workload registry, classify each metric
     //    via the planner, and drop the resulting HashMap into the
     //    EdgeStageConfig before emit. Empty map ⇒ legacy single-
@@ -1710,8 +1710,8 @@ mod api_tests {
 
         // Verify the config has the expected sketch processor.
         assert!(
-            yaml_config.contains("ddsketchprocessor")
-                || yaml_config.contains("kllprocessor")
+            yaml_config.contains("ddsketch")
+                || yaml_config.contains("KLL")
                 || yaml_config.contains("KLL:"),
             "expected a sketch processor in the pushed config:\n{yaml_config}"
         );
@@ -2031,16 +2031,15 @@ mod api_tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let yaml = String::from_utf8(body.to_vec()).unwrap();
 
-        // Legacy bootstrap fingerprint: a `ddsketch:` processor block
-        // (the typed Edge emit produces `ddsketchprocessor:` instead).
+        // Legacy bootstrap fingerprint: a `ddsketch:` processor block.
         assert!(
-            yaml.contains("ddsketch:") && !yaml.contains("ddsketchprocessor:"),
+            yaml.contains("ddsketch:"),
             "legacy bootstrap should emit ddsketch processor; got:\n{yaml}"
         );
     }
 
     /// `USE_TYPED_STAGE_SPLIT=1` + a workload routed through the typed
-    /// L5 emit → the YAML is the typed Edge config (ddsketchprocessor)
+    /// L5 emit → the YAML is the typed Edge config (ddsketch)
     /// rather than the legacy default DDSketch shape.
     #[tokio::test]
     async fn bootstrap_typed_path_when_env_set() {
@@ -2056,13 +2055,10 @@ mod api_tests {
         let yaml = String::from_utf8(body.to_vec()).unwrap();
         std::fs::remove_file(&tmp).ok();
 
-        // Typed Edge fingerprint: `ddsketchprocessor:` (Phase 3.2.5
-        // names the processor explicitly so the routing emit + the
-        // archive emit can co-exist) — distinct from the legacy
-        // `ddsketch:` block.
+        // Typed Edge fingerprint: valid patched collector component id.
         assert!(
-            yaml.contains("ddsketchprocessor:"),
-            "typed bootstrap should emit `ddsketchprocessor:`:\n{yaml}"
+            yaml.contains("ddsketch:"),
+            "typed bootstrap should emit `ddsketch:`:\n{yaml}"
         );
     }
 
@@ -2135,7 +2131,7 @@ mod api_tests {
 
         // Legacy fingerprint — bare `ddsketch:` processor block.
         assert!(
-            yaml.contains("ddsketch:") && !yaml.contains("ddsketchprocessor:"),
+            yaml.contains("ddsketch:"),
             "fallback path should emit legacy ddsketch processor:\n{yaml}"
         );
     }
@@ -2240,7 +2236,7 @@ mod api_tests {
     ///   - `routing` lives in `connectors:` (NOT `processors:`).
     ///   - All 6 named pipelines emitted (raw_passthrough + 5 sketches).
     ///   - Each metric routed to its expected pipeline via
-    ///     `route() where metric.name == "..."`.
+    ///     `name == "..."`.
     #[tokio::test]
     async fn bootstrap_emits_5sketch_routing_for_six_contract_metrics() {
         let _env = EnvVarGuard::set(planner::stage_split::ENV_USE_TYPED_STAGE_SPLIT, "1");
@@ -2258,11 +2254,11 @@ mod api_tests {
 
         // ── Contract 1: all 5 sketch processors loaded ────────────────────
         for proc in [
-            "ddsketchprocessor:",
-            "kllprocessor:",
-            "hllprocessor:",
-            "countsketchprocessor:",
-            "countminsketchprocessor:",
+            "ddsketch:",
+            "KLL:",
+            "HLL:",
+            "countsketch:",
+            "countmin:",
         ] {
             assert!(
                 yaml.contains(proc),
@@ -2309,9 +2305,9 @@ mod api_tests {
             );
         }
 
-        // ── Contract 4: each sketched metric carries a route() statement ──
-        // The 5 sketched metrics must each have a `route() where
-        // metric.name == "..."` rule in the routing connector.
+        // ── Contract 4: each sketched metric carries an OTTL condition ──
+        // The 5 sketched metrics must each have a `name == "..."`
+        // rule in the routing connector.
         // `http_requests_total` (raw) does NOT need a rule — it falls
         // through to the default `metrics/raw_passthrough` pipeline.
         for sketched in [
@@ -2321,12 +2317,12 @@ mod api_tests {
             "top_endpoint_qps",
             "endpoint_request_freq",
         ] {
-            let needle = format!("metric.name == \\\"{sketched}\\\"");
-            let alt1 = format!("metric.name == \"{sketched}\"");
-            let alt2 = format!("metric.name=='{sketched}'");
+            let needle = format!("name == \\\"{sketched}\\\"");
+            let alt1 = format!("name == \"{sketched}\"");
+            let alt2 = format!("name=='{sketched}'");
             assert!(
                 yaml.contains(&needle) || yaml.contains(&alt1) || yaml.contains(&alt2),
-                "missing routing rule for `{sketched}` — expected `route() where metric.name == \"{sketched}\"`\n{yaml}"
+                "missing routing rule for `{sketched}` — expected `name == \"{sketched}\"`\n{yaml}"
             );
         }
     }
@@ -2482,9 +2478,9 @@ mod api_tests {
             "top_endpoint_qps",
             "endpoint_request_freq",
         ] {
-            let needle = format!("metric.name == \\\"{sketched}\\\"");
-            let alt1 = format!("metric.name == \"{sketched}\"");
-            let alt2 = format!("metric.name=='{sketched}'");
+            let needle = format!("name == \\\"{sketched}\\\"");
+            let alt1 = format!("name == \"{sketched}\"");
+            let alt2 = format!("name=='{sketched}'");
             assert!(
                 yaml.contains(&needle) || yaml.contains(&alt1) || yaml.contains(&alt2),
                 "missing routing rule for `{sketched}`\n{yaml}"

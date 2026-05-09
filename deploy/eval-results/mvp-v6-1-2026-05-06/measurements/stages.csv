@@ -1,7 +1,0 @@
-baseline,stage,container,cpu_cores,rss_mib,net_in_kibps,net_out_kibps,disk_mib
-mvp-v6,agent,docker-compose-agent-a-1,0.0043,75.08,3.27,53.37,
-mvp-v6,agent,docker-compose-agent-b-1,0.0034,74.59,3.28,53.29,
-mvp-v6,backend-ingest,docker-compose-backend-1,0.0055,28.79,92.96,1.78,
-mvp-v6,backend-query,docker-compose-backend-1,0.0055,28.79,92.96,1.78,
-mvp-v6,controller,docker-compose-controller-1,0.0002,4.63,0.26,0.86,
-mvp-v6,producer,docker-compose-fake-exporter-1,0.0000,0.79,0.00,0.00,

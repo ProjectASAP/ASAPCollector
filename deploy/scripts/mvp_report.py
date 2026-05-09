@@ -42,6 +42,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import statistics
 import sys
 from typing import Any
@@ -779,28 +780,44 @@ def criterion_cold_fallback(adhoc_dir: str) -> tuple[str, str, dict]:
     raw_text = _read_text(response_path)
     verdict_marker = _read_text(verdict_path).strip()
     curlstats = _read_text(curl_path).strip()
+    http_code = ""
+    if curlstats:
+        match = re.search(r'"http_code"\s*:\s*"?([0-9]{3})"?', curlstats)
+        if match:
+            http_code = match.group(1)
 
     if body is None and not raw_text:
         return "UNKNOWN", "cold_payments.json missing", {}
 
-    has_marker = "gorilla_archive" in raw_text
-    if has_marker:
+    has_marker = "thanos_archive" in raw_text or "gorilla_archive" in raw_text
+    http_ok = http_code == "200"
+    if has_marker and http_ok:
         verdict = "PASS"
         line = (
-            "`data_source: gorilla_archive` present in response — "
-            "GorillaQueryEngine served the ad-hoc query."
+            "archive `data_source` marker present with HTTP 200 — "
+            "archive engine served the ad-hoc query."
         )
+    elif has_marker and http_code:
+        verdict = "FAIL"
+        line = f"archive marker present but HTTP status was {http_code}"
+    elif verdict_marker == "PASS" and not http_ok:
+        verdict = "FAIL"
+        line = f"driver wrote PASS but cold-fallback HTTP status was {http_code or 'unknown'}"
     elif verdict_marker == "PASS":
         # Driver thought it was OK but the marker grep missed —
         # surface as PARTIAL.
         verdict = "PARTIAL"
-        line = "driver wrote PASS but no `gorilla_archive` marker found in body"
+        line = "driver wrote PASS but no archive marker found in body"
     else:
         verdict = "FAIL"
-        line = "no `gorilla_archive` marker in cold_payments.json"
+        line = "no archive `data_source` marker in cold_payments.json"
     if curlstats:
         line += f"  · curl: {curlstats}"
-    return verdict, line, {"has_marker": has_marker, "marker": verdict_marker}
+    return verdict, line, {
+        "has_marker": has_marker,
+        "marker": verdict_marker,
+        "http_code": http_code,
+    }
 
 
 def criterion_freshness(fresh_dir: str) -> tuple[str, str, dict]:
@@ -988,7 +1005,7 @@ def render_section_2_verdict_dual(
 
     # ⑤ Cold-fallback — ASAP only.
     cold_v, cold_line, _ = criterion_cold_fallback(asap.adhoc_dir)
-    md.append("### ⑤ Cold-fallback (gorilla_archive marker — ASAP only)")
+    md.append("### ⑤ Cold-fallback (archive marker + HTTP 200 — ASAP only)")
     md.append("")
     md.append(f"**Verdict ⑤:** {cold_v}  · {cold_line}")
     md.append("")
@@ -1553,7 +1570,7 @@ def render_markdown_single(
         f"| 4 | Accuracy (per sketch family, see §3) | **{acc_v}** | "
         f"{acc_summary} |"
     )
-    md.append(f"| 5 | Cold-fallback (gorilla_archive marker) | **{cold_v}** | {cold_line} |")
+    md.append(f"| 5 | Cold-fallback (archive marker + HTTP 200) | **{cold_v}** | {cold_line} |")
     md.append(f"| 6 | Freshness (p50/p99 per path) | **{fresh_v}** | {fresh_line} |")
     md.append("")
 

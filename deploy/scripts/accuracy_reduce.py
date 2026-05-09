@@ -60,11 +60,6 @@ Computes:
   - sum          → relative error vs archive's exact sum. Identity
                    check; any non-zero ε flags a bug.
 
-Backwards-compat: `--use-jsonl` flag retained during Fix-1 transition.
-When set, the reducer falls back to reading the per-cell `cold-truth/`
-JSONL stream produced by the (deprecated) raw_tee. The default path
-queries the backend's archive engine.
-
 Usage (per cell, default archive-truth path):
 
   python3 accuracy_reduce.py \\
@@ -79,12 +74,6 @@ Or in batch mode over a sweep root:
       --backend    http://localhost:19091 \\
       --out        /tmp/sweep/all.csv
 
-Or (transition-only) re-run against the legacy JSONL ground-truth tee:
-
-  python3 accuracy_reduce.py \\
-      --cell-dir /tmp/sweep/ddsketch_N1_w100ms_c10000 \\
-      --use-jsonl \\
-      --out      /tmp/sweep/ddsketch_N1_w100ms_c10000/accuracy.csv
 """
 
 from __future__ import annotations
@@ -92,7 +81,6 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
-import glob
 import json
 import math
 import os
@@ -102,8 +90,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections import Counter, defaultdict
-from typing import Iterable
 
 
 # Engine override surface mirrored on the backend HTTP handler. The
@@ -112,7 +98,7 @@ from typing import Iterable
 ENGINE_OVERRIDE_HEADER = "X-ASAP-Engine"
 # Step 2.3 (PR #97) registered the ThanosForwardEngine under the
 # `thanos_archive` data-source-id. The legacy `gorilla_archive` slot
-# is still accepted (precompute_engine.rs registers both ids when
+# is still accepted (query_engine_rust registers both ids when
 # `ASAP_THANOS_QUERY_URL` is set) but the new default points at the
 # Thanos engine which has the full PromQL surface (the legacy
 # in-process Gorilla engine is curated-subset only).
@@ -121,12 +107,12 @@ DEFAULT_BACKEND_URL = "http://localhost:19091"
 DEFAULT_ARCHIVE_TIMEOUT_S = 15.0
 
 
-# --- ground-truth via Gorilla archive query ------------------------
+# --- ground-truth via archive query --------------------------------
 
 
 class ArchiveTruthClient:
     """Re-issues the replay's PromQL string against the backend with
-    the `X-ASAP-Engine: gorilla_archive` header so the dispatcher
+    the `X-ASAP-Engine: <engine_id>` header so the dispatcher
     sends the query straight to the archive engine. Returns the same
     result-shape the replay client captured for the warm-tier path,
     plus the wall-clock duration for cost accounting.
@@ -219,13 +205,17 @@ class ArchiveTruthClient:
 
         # Verify the wire response actually came from the archive
         # engine. The backend annotates every response with a
-        # `data_source: <id>` info-line — if it doesn't say
-        # `gorilla_archive`, the override header didn't take effect
-        # (e.g., the backend predates Fix 1). Treat as
-        # `archive_error` so the operator notices.
+        # `data_source: <id>` info-line. New demos use `thanos_archive`;
+        # compatibility deployments may still surface the
+        # `gorilla_archive` alias for the same archive tier.
         infos = parsed.get("infos") or []
-        expected = f"data_source: {self.engine_id}"
-        if infos and not any(s == expected for s in infos):
+        accepted_ids = {self.engine_id}
+        if self.engine_id == "thanos_archive":
+            accepted_ids.add("gorilla_archive")
+        elif self.engine_id == "gorilla_archive":
+            accepted_ids.add("thanos_archive")
+        accepted_infos = {f"data_source: {engine_id}" for engine_id in accepted_ids}
+        if infos and not any(s in accepted_infos for s in infos):
             actual = next(
                 (s.split(": ", 1)[1] for s in infos if s.startswith("data_source: ")),
                 "<missing>",
@@ -235,7 +225,7 @@ class ArchiveTruthClient:
                 "result": None,
                 "latency_ms": latency_ms,
                 "error": (
-                    f"engine override ignored: expected data_source={self.engine_id}, "
+                    f"engine override ignored: expected data_source in {sorted(accepted_ids)}, "
                     f"got {actual} (backend likely predates Fix 1)"
                 ),
                 "n_chunks_read": None,
@@ -261,34 +251,6 @@ class ArchiveTruthClient:
             "n_chunks_read": None,
         }
 
-
-# --- legacy JSONL ground-truth loader (transition-only) ------------
-
-
-def iter_truth_samples(cold_truth_dir: str, metric: str) -> Iterable[dict]:
-    """Yield {ts_ms, labels, value} from every part-*.jsonl under
-    `<cold_truth_dir>/<metric>/...`. Tolerates a torn last line
-    (the writer might still be flushing when the snapshot was
-    taken). Used only when `--use-jsonl` is passed; the default
-    archive-truth path bypasses this entirely."""
-    pat = os.path.join(cold_truth_dir, metric, "*", "*", "*", "*", "part-*.jsonl")
-    files = sorted(glob.glob(pat))
-    if not files:
-        return
-    for path in files:
-        with open(path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    # Torn last line tolerated; everything else is
-                    # caller's problem.
-                    continue
-
-
 # --- query parsing -------------------------------------------------
 
 
@@ -301,10 +263,8 @@ _QUANTILE_HIST_RE = re.compile(
 # We treat the "_quantile" suffix as a sketch-projection naming convention; the
 # underlying ground truth is the raw metric without the suffix. Many of our
 # replay queries are warm-tier `quantile_over_time(φ, *_quantile[1m])` which
-# the engine routes to the DDSketch / KLL precompute output. The cold-truth
-# metric directory is the unsuffixed name (raw_tee writes one dir per
-# top-level metric). Handle both: reduce against the canonical
-# unsuffixed metric.
+# the engine routes to the DDSketch / KLL precompute output. Handle both:
+# reduce against the canonical unsuffixed metric.
 _QUANTILE_OVER_TIME_RE = re.compile(
     r"quantile_over_time\(\s*([0-9.]+)\s*,\s*([\w_]+?)(?:_quantile)?\s*\[\s*[0-9smhd]+\s*\]\s*\)",
     re.IGNORECASE,
@@ -318,15 +278,13 @@ _COUNT_UNIQUE_GROUP_RE = re.compile(
 )
 # count_unique shape #2 (post-#266 e2e queries): `count(metric)` — distinct
 # series count, equivalent to "how many time series exist for this metric".
-# `truth_count_unique(samples, by="series")` re-uses the labels-set as the
-# distinguishing key (computed in truth_count_distinct_series).
+# Archive results for this shape use the exact distinct series count.
 _COUNT_SERIES_RE = re.compile(r"^count\(\s*([\w_]+)\s*\)$", re.IGNORECASE)
 # sum shape #1 (legacy): `sum(metric)` — sum across all series.
 _SUM_INSTANT_RE = re.compile(r"^sum\(\s*([\w_]+)\s*\)$", re.IGNORECASE)
 # sum shape #2 (post-#266 e2e queries): `sum_over_time(metric[1m])` — sum
-# across the trailing 1m window for each series. Truth maps to total sum
-# across all samples in the cold-window since the replay queries an instant
-# at end-of-soak — the cold-truth set covers the full soak.
+# across the trailing 1m window for each series. The archive engine provides
+# the exact value for the same instant query.
 _SUM_OVER_TIME_RE = re.compile(
     r"sum_over_time\(\s*([\w_]+)\s*\[\s*[0-9smhd]+\s*\]\s*\)",
     re.IGNORECASE,
@@ -362,45 +320,6 @@ def parse_query(promql: str) -> tuple[str, dict] | None:
     if (m := _RATE_RE.match(s)):
         return "frequency", {"metric": m.group(1)}
     return None
-
-
-# --- ground-truth computers (legacy JSONL path) --------------------
-
-
-def truth_quantile(samples: list[dict], q: float) -> float:
-    if not samples:
-        return float("nan")
-    vals = sorted(s["value"] for s in samples)
-    if not vals:
-        return float("nan")
-    # Nearest-rank quantile. Matches what most sketches target,
-    # within ε tolerance.
-    n = len(vals)
-    idx = max(0, min(n - 1, int(q * n)))
-    return vals[idx]
-
-
-def truth_topk(samples: list[dict], k: int) -> list[tuple[str, float]]:
-    """Top-K by sum(value) with the full attribute set as the
-    grouping key. Returns sorted descending."""
-    bucket: Counter[str] = Counter()
-    for s in samples:
-        key = json.dumps(s.get("labels", {}), sort_keys=True)
-        bucket[key] += s["value"]
-    return bucket.most_common(k)
-
-
-def truth_count_unique(samples: list[dict], by: str) -> int:
-    if by == "__series__":
-        # Distinct series count: full labels-set as key. Mirrors what
-        # `count(metric)` returns in PromQL — number of distinct
-        # time series for the metric.
-        return len({json.dumps(s.get("labels", {}), sort_keys=True) for s in samples})
-    return len({s.get("labels", {}).get(by) for s in samples})
-
-
-def truth_sum(samples: list[dict]) -> float:
-    return sum(s["value"] for s in samples)
 
 
 # --- result extraction (PromQL → scalar / list) --------------------
@@ -510,10 +429,10 @@ def reduce_cell_via_archive(
     cell_label: str,
     archive_client: ArchiveTruthClient,
 ) -> int:
-    """Default Fix-1 path: ground truth comes from the Gorilla archive.
+    """Default path: ground truth comes from the archive engine.
 
     For each replay row we re-issue the same PromQL against the
-    backend with `X-ASAP-Engine: gorilla_archive`, parse the
+    backend with `X-ASAP-Engine: <archive engine id>`, parse the
     archive's answer, and compute relative error (or topk recall)
     against the warm-tier answer the replay client recorded.
     """
@@ -697,114 +616,6 @@ def reduce_cell_via_archive(
         )
     return n_rows
 
-
-def reduce_cell_via_jsonl(cell_dir: str, writer: csv.DictWriter, cell_label: str) -> int:
-    """Legacy v1 path: ground truth comes from the per-cell
-    `cold-truth/` JSONL stream produced by raw_tee. Retained behind
-    `--use-jsonl` for the Fix-1 transition.
-    """
-    replay_path = os.path.join(cell_dir, "replay.jsonl")
-    cold_root = os.path.join(cell_dir, "cold-truth")
-    if not os.path.exists(replay_path):
-        print(f"[skip] no replay.jsonl in {cell_dir}", file=sys.stderr)
-        return 0
-    if not os.path.isdir(cold_root):
-        print(f"[skip] no cold-truth/ in {cell_dir}", file=sys.stderr)
-        return 0
-
-    # Group truth samples by metric name. We don't ts-bucket
-    # because the replay queries are instant queries against the
-    # whole cold window — match that scope.
-    truth_by_metric: dict[str, list[dict]] = defaultdict(list)
-    metric_dirs = [
-        d for d in os.listdir(cold_root) if os.path.isdir(os.path.join(cold_root, d))
-    ]
-    for metric in metric_dirs:
-        for s in iter_truth_samples(cold_root, metric):
-            truth_by_metric[metric].append(s)
-
-    n_rows = 0
-    with open(replay_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            rec = json.loads(line)
-            parsed = parse_query(rec["query"])
-            if parsed is None:
-                continue
-            kind, params = parsed
-            metric = params.get("metric", "")
-            samples = truth_by_metric.get(metric, [])
-
-            row = {
-                "cell": cell_label,
-                "kind": kind,
-                "query": rec["query"],
-                "t": rec["ts"],
-                "duration_ms": rec.get("duration_ms"),
-                "plan_id": rec.get("plan_id"),
-                "warm_answer": "",
-                "archive_answer": "",
-                "rel_err": "",
-                "recall": "",
-                "archive_query_latency_ms": "",
-                "archive_status": "jsonl",
-                "n_chunks_read": "",
-                # legacy aliases
-                "n_truth_samples": len(samples),
-                "truth": "",
-                "answer": "",
-                "error": "",
-            }
-
-            if kind == "quantile":
-                t = truth_quantile(samples, params["q"])
-                a = extract_scalar(rec.get("result"))
-                row["truth"] = f"{t:.6f}" if t == t else ""  # nan check
-                row["archive_answer"] = row["truth"]
-                if a is not None and t == t:
-                    row["answer"] = f"{a:.6f}"
-                    row["warm_answer"] = row["answer"]
-                    row["error"] = f"{abs(a - t) / max(abs(t), 1.0):.6f}"
-                    row["rel_err"] = row["error"]
-            elif kind == "topk":
-                truth_pairs = truth_topk(samples, params["k"])
-                truth_keys = [k for k, _ in truth_pairs]
-                sketch_keys = extract_topk_keys(rec.get("result"), params["k"])
-                if truth_keys:
-                    overlap = len(set(truth_keys) & set(sketch_keys))
-                    row["recall"] = f"{overlap / len(truth_keys):.4f}"
-                row["truth"] = json.dumps(truth_keys)[:120]
-                row["answer"] = json.dumps(sketch_keys)[:120]
-                row["archive_answer"] = row["truth"]
-                row["warm_answer"] = row["answer"]
-            elif kind == "count_unique":
-                t = truth_count_unique(samples, params["by"])
-                a = extract_scalar(rec.get("result"))
-                row["truth"] = str(t)
-                row["archive_answer"] = row["truth"]
-                if a is not None:
-                    row["answer"] = f"{a:.0f}"
-                    row["warm_answer"] = row["answer"]
-                    row["error"] = f"{abs(a - t) / max(t, 1):.6f}"
-                    row["rel_err"] = row["error"]
-            elif kind == "sum":
-                t = truth_sum(samples)
-                a = extract_scalar(rec.get("result"))
-                row["truth"] = f"{t:.6f}"
-                row["archive_answer"] = row["truth"]
-                if a is not None:
-                    row["answer"] = f"{a:.6f}"
-                    row["warm_answer"] = row["answer"]
-                    row["error"] = f"{abs(a - t) / max(abs(t), 1.0):.6f}"
-                    row["rel_err"] = row["error"]
-
-            writer.writerow(row)
-            n_rows += 1
-    return n_rows
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Accuracy reducer (P8)")
     g = ap.add_mutually_exclusive_group(required=True)
@@ -816,7 +627,7 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("ASAP_BACKEND_URL", DEFAULT_BACKEND_URL),
         help=(
             "backend HTTP base URL — used to fetch ground truth via the "
-            "Gorilla archive engine (Phase-6 Fix 1). Honours "
+            "archive engine. Honours "
             "$ASAP_BACKEND_URL when --backend is unset."
         ),
     )
@@ -834,18 +645,6 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_ARCHIVE_TIMEOUT_S,
         help=f"per-archive-query timeout in seconds (default: {DEFAULT_ARCHIVE_TIMEOUT_S})",
     )
-    ap.add_argument(
-        "--use-jsonl",
-        "--use-jsonl-truth",
-        dest="use_jsonl",
-        action="store_true",
-        help=(
-            "[transition-only] fall back to the legacy JSONL "
-            "ground-truth tee. Default behaviour queries the backend's "
-            "archive engine (X-ASAP-Engine: thanos_archive by default) "
-            "for apples-to-apples ground truth."
-        ),
-    )
     args = ap.parse_args(argv)
 
     cells: list[tuple[str, str]] = []
@@ -857,30 +656,23 @@ def main(argv: list[str] | None = None) -> int:
             if os.path.isdir(full) and os.path.exists(os.path.join(full, "replay.jsonl")):
                 cells.append((full, entry))
 
-    archive_client: ArchiveTruthClient | None = None
-    if not args.use_jsonl:
-        archive_client = ArchiveTruthClient(
-            backend_url=args.backend,
-            engine_id=args.archive_engine_id,
-            timeout_s=args.archive_timeout,
-        )
-        print(
-            f"reduce: ground truth via {args.backend} "
-            f"(X-ASAP-Engine: {args.archive_engine_id})",
-            file=sys.stderr,
-        )
-    else:
-        print("reduce: ground truth via legacy JSONL tee (--use-jsonl)", file=sys.stderr)
+    archive_client = ArchiveTruthClient(
+        backend_url=args.backend,
+        engine_id=args.archive_engine_id,
+        timeout_s=args.archive_timeout,
+    )
+    print(
+        f"reduce: ground truth via {args.backend} "
+        f"(X-ASAP-Engine: {args.archive_engine_id})",
+        file=sys.stderr,
+    )
 
     total = 0
     with open(args.out, "w", newline="") as fout:
         w = csv.DictWriter(fout, fieldnames=FIELDS)
         w.writeheader()
         for cell_dir, label in cells:
-            if archive_client is not None:
-                rows = reduce_cell_via_archive(cell_dir, w, label, archive_client)
-            else:
-                rows = reduce_cell_via_jsonl(cell_dir, w, label)
+            rows = reduce_cell_via_archive(cell_dir, w, label, archive_client)
             print(f"[{label}] {rows} rows")
             total += rows
 

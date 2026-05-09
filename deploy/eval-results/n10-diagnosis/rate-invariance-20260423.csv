@@ -1,3 +1,0 @@
-baseline,scale,rate,cardinality,agent_cpu_cores,agent_rss_mib,agent_in_kib_per_s,agent_out_kib_per_s,agent_points_per_s,gateway_cpu_cores,gateway_rss_mib,gateway_points_per_s,gateway_out_series_per_s,backend_cpu_pct,backend_rss_mib,backend_samples_per_s,backend_query_p99_ms
-b0a-raw-stream,N1,1000,1000,nan,nan,nan,nan,nan,0.043,196.652,2000.000,2000.000,nan,nan,2001.000,nan
-b0a-rate10k,N1,10000,1000,nan,nan,nan,nan,nan,0.044,196.422,2000.000,2000.000,1.690,11.770,2001.000,nan

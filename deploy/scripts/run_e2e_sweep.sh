@@ -301,19 +301,6 @@ for sk in "${SKETCHES[@]}"; do
                     > "${CELL_DIR}/measurement.csv" \
                     2> "${CELL_DIR}/measurement.log" || true
 
-                # Snapshot the cold-store ground truth into the
-                # cell directory so the reducer doesn't need to
-                # re-scrape the live volume after teardown.
-                EXTRA_OVERLAY_PATHS=""
-                if [[ -n "$OVERLAY_YAML" ]]; then
-                    EXTRA_OVERLAY_PATHS="-f ${COMPOSE_DIR}/${OVERLAY_YAML}"
-                fi
-                BACKEND_CONT="$(docker compose -f "${COMPOSE_DIR}/base.yml" -f "$AGENTS_YAML" -f "${COMPOSE_DIR}/baseline-b3-delta.yml" -f "${COMPOSE_DIR}/e2e-overlay.yml" $EXTRA_OVERLAY_PATHS ps -q backend 2>/dev/null | head -n 1 || true)"
-                if [[ -n "$BACKEND_CONT" ]]; then
-                    docker cp "${BACKEND_CONT}:/var/asap/cold/raw" "${CELL_DIR}/cold-truth" \
-                        > "${CELL_DIR}/cold-snapshot.log" 2>&1 || true
-                fi
-
                 # Down with volume cleanup so the next cell starts
                 # cold.
                 (cd "$COMPOSE_DIR" && \
@@ -324,13 +311,6 @@ for sk in "${SKETCHES[@]}"; do
                     "${EXTRA_OVERLAY_ARGS[@]}" \
                     down -v) >> "${CELL_DIR}/down.log" 2>&1 || true
 
-                # Capacity check: ensure we don't run out of disk
-                # for the cold snapshot. 100k cardinality × 100ms
-                # scrape × 60s = ~60M raw events ≈ 4-6 GB JSONL.
-                if [[ -d "${CELL_DIR}/cold-truth" ]]; then
-                    SIZE=$(du -sh "${CELL_DIR}/cold-truth" 2>/dev/null | cut -f1 || true)
-                    echo "  cold-truth size: ${SIZE:-?}"
-                fi
                 echo "  cell done: ${CELL_DIR}"
             done
         done

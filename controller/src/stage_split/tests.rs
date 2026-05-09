@@ -10,17 +10,13 @@
 use std::time::Duration;
 
 use crate::intent_algebra::schema::{Column, DataType};
-use crate::intent_algebra::{
-    LabelFilter, QueryExpr, Schema, Source, WindowKind,
-};
+use crate::intent_algebra::{LabelFilter, QueryExpr, Schema, Source, WindowKind};
 use crate::sketch_algebra::params::{
     DDSketchParams, HllParams, KllParams, SketchKind, SketchParams,
 };
 use crate::sketch_algebra::sketch_expr::{EstimateOp, MergeAlgebra, SketchExpr};
 use crate::stage_split::allocator::StageAllocator;
-use crate::stage_split::emitter::{
-    EmitError, Emitter, StageConfig, ThreeStageEmitter,
-};
+use crate::stage_split::emitter::{EmitError, Emitter, StageConfig, ThreeStageEmitter};
 use crate::stage_split::stage_id::{StageId, Topology};
 use crate::types_v2::{AccuracyTarget, BindingName};
 
@@ -68,7 +64,10 @@ fn windowed_scan() -> QueryExpr {
         kind: WindowKind::Sliding,
         size: Duration::from_secs(300),
         slide: None,
-        child: Box::new(ts_scan("http_request_duration_seconds", Some(("service", "api")))),
+        child: Box::new(ts_scan(
+            "http_request_duration_seconds",
+            Some(("service", "api")),
+        )),
     }
 }
 
@@ -127,7 +126,9 @@ fn allocator_sketch_agg_under_scan_pinned_edge() {
         params: SketchParams::Hll(HllParams { precision: 14 }),
         child: Box::new(SketchExpr::Logical(ts_scan("events", None))),
     };
-    let dag = StageAllocator.allocate(&expr, Topology::ThreeStage).unwrap();
+    let dag = StageAllocator
+        .allocate(&expr, Topology::ThreeStage)
+        .unwrap();
     assert_eq!(dag.root().unwrap().stage, StageId::Edge);
     assert_eq!(dag.nodes[1].stage, StageId::Edge);
 }
@@ -165,7 +166,9 @@ fn allocator_let_binding_color_propagates() {
             }),
         }),
     };
-    let dag = StageAllocator.allocate(&bind, Topology::ThreeStage).unwrap();
+    let dag = StageAllocator
+        .allocate(&bind, Topology::ThreeStage)
+        .unwrap();
     let let_node = dag
         .nodes
         .iter()
@@ -194,7 +197,9 @@ fn allocator_ref_resolves_to_binding_stage() {
             }),
         }),
     };
-    let dag = StageAllocator.allocate(&bind, Topology::ThreeStage).unwrap();
+    let dag = StageAllocator
+        .allocate(&bind, Topology::ThreeStage)
+        .unwrap();
     let ref_node = dag
         .nodes
         .iter()
@@ -250,7 +255,9 @@ fn emitter_three_stage_emits_three_configs() {
         op: EstimateOp::Quantile { q: 0.99 },
         child: Box::new(merge),
     };
-    let dag = StageAllocator.allocate(&root, Topology::ThreeStage).unwrap();
+    let dag = StageAllocator
+        .allocate(&root, Topology::ThreeStage)
+        .unwrap();
     let configs = ThreeStageEmitter.emit_per_stage(&dag).unwrap();
     assert!(configs.contains_key(&StageId::Edge));
     assert!(configs.contains_key(&StageId::Gateway));
@@ -267,7 +274,7 @@ fn emitter_edge_config_has_correct_processor_kll() {
     match configs.get(&StageId::Edge).expect("edge config") {
         StageConfig::Edge(e) => {
             assert_eq!(e.sketch_processors.len(), 1);
-            assert_eq!(e.sketch_processors[0].processor_name, "kllprocessor");
+            assert_eq!(e.sketch_processors[0].processor_name, "KLL");
             assert_eq!(e.sketch_processors[0].sketch_kind, SketchKind::Kll);
             assert_eq!(
                 e.source_metric.as_deref(),
@@ -287,11 +294,13 @@ fn emitter_edge_config_has_correct_processor_ddsketch() {
         SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
         windowed_scan(),
     );
-    let dag = StageAllocator.allocate(&expr, Topology::ThreeStage).unwrap();
+    let dag = StageAllocator
+        .allocate(&expr, Topology::ThreeStage)
+        .unwrap();
     let configs = ThreeStageEmitter.emit_per_stage(&dag).unwrap();
     match configs.get(&StageId::Edge).expect("edge config") {
         StageConfig::Edge(e) => {
-            assert_eq!(e.sketch_processors[0].processor_name, "ddsketchprocessor");
+            assert_eq!(e.sketch_processors[0].processor_name, "ddsketch");
         }
         other => panic!("expected Edge config, got {other:?}"),
     }
@@ -384,7 +393,7 @@ fn end_to_end_quantile_workload() {
         StageConfig::Edge(e) => {
             assert_eq!(e.sketch_processors.len(), 3);
             for p in &e.sketch_processors {
-                assert_eq!(p.processor_name, "kllprocessor");
+                assert_eq!(p.processor_name, "KLL");
             }
         }
         _ => unreachable!(),

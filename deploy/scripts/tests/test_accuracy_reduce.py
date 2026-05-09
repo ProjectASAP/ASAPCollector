@@ -1,8 +1,8 @@
 """Unit tests for accuracy_reduce.py (Phase-6 Fix 1).
 
 Hermetic — we spin up a stub HTTP server that pretends to be the
-backend's Gorilla-archive engine (i.e., honours the
-`X-ASAP-Engine: gorilla_archive` header by returning a fixed exact
+backend's archive engine (i.e., honours the
+`X-ASAP-Engine: thanos_archive` header by returning a fixed exact
 answer for the queried PromQL).
 
 Synthesis policy: every numeric value is a small round number that's
@@ -37,7 +37,10 @@ spec.loader.exec_module(accuracy_reduce)
 # ── stub backend that pretends to be the archive engine ─────────────
 
 
-def _ok_vector(value: float, data_source: str = "gorilla_archive") -> bytes:
+def _ok_vector(
+    value: float,
+    data_source: str = accuracy_reduce.DEFAULT_ARCHIVE_ENGINE_ID,
+) -> bytes:
     """Prometheus instant-vector envelope with `data_source: <id>`
     info-line. Mirrors what the backend's query handler returns
     after `process_via_named_engine`."""
@@ -54,7 +57,7 @@ def _ok_vector(value: float, data_source: str = "gorilla_archive") -> bytes:
     return json.dumps(body).encode("utf-8")
 
 
-def _empty_vector(data_source: str = "gorilla_archive") -> bytes:
+def _empty_vector(data_source: str = accuracy_reduce.DEFAULT_ARCHIVE_ENGINE_ID) -> bytes:
     body = {
         "status": "success",
         "data": {"resultType": "vector", "result": []},
@@ -159,7 +162,7 @@ def _header_lookup(headers: dict, name: str) -> str | None:
 
 
 def test_archive_client_sends_override_header():
-    """The client MUST set `X-ASAP-Engine: gorilla_archive` on every
+    """The client MUST set `X-ASAP-Engine: thanos_archive` on every
     request — that's the whole point of Fix 1."""
     with _stub_backend(default_body=_ok_vector(42.0)) as (server, base_url):
         client = accuracy_reduce.ArchiveTruthClient(base_url)
@@ -213,7 +216,7 @@ def test_archive_client_treats_500_as_archive_error():
 
 def test_archive_client_flags_unexpected_data_source():
     """If the wire response lacks the expected `data_source:
-    gorilla_archive` info-line, the override didn't take effect
+    thanos_archive` info-line, the override didn't take effect
     (e.g., backend predates Fix 1). Flagged as archive_error."""
     body = _ok_vector(1.0, data_source="sketch_warm")  # WRONG engine
     with _stub_backend(default_body=body) as (_, base_url):
@@ -436,60 +439,6 @@ def test_csv_header_includes_fix1_columns(tmp_path):
         assert col in header, f"missing legacy column {col}: {header}"
 
 
-def test_use_jsonl_flag_falls_back_to_legacy_path(tmp_path):
-    """`--use-jsonl` reads from `cold-truth/` and skips the archive
-    fetch entirely. Proves the transition fallback works."""
-    cell_dir = tmp_path / "cell_jsonl"
-    cell_dir.mkdir()
-    _write_replay(
-        cell_dir,
-        [
-            {
-                "ts": "2026-05-06T12:00:00Z",
-                "query": "sum_over_time(foo[1m])",
-                "kind": "sum",
-                "duration_ms": 1.0,
-                "plan_id": "plan-jsonl",
-                "result": [{"metric": {}, "value": [1700000000, "20"]}],
-                "result_type": "vector",
-                "status": "success",
-            },
-        ],
-    )
-    # Synthesise a cold-truth/foo/.../part-0.jsonl with three samples
-    # summing to 20 → warm == truth → rel_err ≈ 0.
-    cold_dir = cell_dir / "cold-truth" / "foo" / "2026" / "05" / "06" / "12"
-    cold_dir.mkdir(parents=True)
-    samples = [{"ts_ms": 1700000000, "labels": {}, "value": v} for v in (5.0, 7.0, 8.0)]
-    with (cold_dir / "part-0.jsonl").open("w") as f:
-        for s in samples:
-            f.write(json.dumps(s) + "\n")
-
-    out_path = tmp_path / "accuracy.csv"
-    rc = accuracy_reduce.main(
-        [
-            "--cell-dir", str(cell_dir),
-            "--use-jsonl",
-            # backend URL is irrelevant when --use-jsonl is set
-            "--backend", "http://127.0.0.1:1",
-            "--out", str(out_path),
-        ]
-    )
-    assert rc == 0
-
-    rows = list(csv.DictReader(out_path.open()))
-    assert len(rows) == 1
-    r = rows[0]
-    assert r["archive_status"] == "jsonl"
-    assert float(r["truth"]) == pytest.approx(20.0)
-    assert float(r["answer"]) == pytest.approx(20.0)
-    assert float(r["error"]) == pytest.approx(0.0)
-    # New aliases mirror the legacy values.
-    assert r["archive_answer"] == r["truth"]
-    assert r["warm_answer"] == r["answer"]
-    assert r["rel_err"] == r["error"]
-
-
 def test_reduce_cell_topk_recall_against_archive(tmp_path):
     """topk recall: archive returns top-3 keys; warm sketch returns 2
     of them → recall = 2/3."""
@@ -527,7 +476,7 @@ def test_reduce_cell_topk_recall_against_archive(tmp_path):
                     {"metric": {"path": "/c"}, "value": [1700000000, "85"]},
                 ],
             },
-            "infos": ["data_source: gorilla_archive"],
+            "infos": [f"data_source: {accuracy_reduce.DEFAULT_ARCHIVE_ENGINE_ID}"],
         }
     ).encode("utf-8")
 

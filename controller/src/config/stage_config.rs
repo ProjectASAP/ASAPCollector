@@ -138,7 +138,12 @@ pub fn emit_edge_yaml(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<Str
     let mut processors: HashMap<String, Value> = HashMap::new();
     let mut sketch_pipeline_processors: Vec<String> = Vec::new();
     for sp in &cfg.sketch_processors {
-        let block = build_edge_processor_block(sp, cfg.window_secs, &cfg.label_filters);
+        let block = build_edge_processor_block(
+            sp,
+            cfg.window_secs,
+            &cfg.label_filters,
+            cfg.source_metric.as_deref(),
+        );
         // Use the processor_name verbatim as the YAML key — matches the
         // factory `Type` strings the patched OTel-contrib build registers
         // (see `opentelemetry-collector-contrib-patch/processor/*processor/factory.go`).
@@ -187,8 +192,8 @@ block_format: prometheus_tsdb\n\
 tsdb_bucket: \"${{ASAP_GORILLA_TSDB_BUCKET:-asap-gorilla-tsdb}}\"\n\
 tsdb_block_duration: {window_secs}s\n",
         );
-        let gorillas3: Value = serde_yaml::from_str(&gorillas3_yaml)
-            .context("parse gorillas3 processor block")?;
+        let gorillas3: Value =
+            serde_yaml::from_str(&gorillas3_yaml).context("parse gorillas3 processor block")?;
         processors.insert("gorillas3".to_string(), gorillas3);
     }
 
@@ -223,8 +228,7 @@ tsdb_block_duration: {window_secs}s\n",
     // documented hostnames the demo overlay (Phase C) will provision.
     let (exporter_key, exporter_val) = build_otlp_exporter("gateway", &cfg.exporter_target);
 
-    let mut exporters: HashMap<String, Value> =
-        [(exporter_key.clone(), exporter_val)].into();
+    let mut exporters: HashMap<String, Value> = [(exporter_key.clone(), exporter_val)].into();
     let mut pipelines: HashMap<String, Pipeline> = HashMap::new();
 
     let has_prometheus_archive = !cfg.prometheus_archive_metrics.is_empty();
@@ -341,8 +345,8 @@ tsdb_block_duration: {window_secs}s\n",
         // Preserved as-is so the wire shape stays stable for the
         // (warm_passthrough_metrics empty) cases that already exist.
         let routing_yaml = "from_attribute: asap.mode\ndefault_pipelines: [metrics/warm_tier]\ntable:\n  - value: prometheus_archive\n    pipelines: [metrics/prometheus_archive]\n";
-        let routing: Value = serde_yaml::from_str(routing_yaml)
-            .context("parse routing processor block")?;
+        let routing: Value =
+            serde_yaml::from_str(routing_yaml).context("parse routing processor block")?;
         processors.insert("routing".to_string(), routing);
 
         // Two named pipelines:
@@ -505,7 +509,11 @@ pub fn emit_backend_config_json(cfg: &BackendStageConfig) -> Result<JsonValue> {
         .map(build_backend_aggregation_json)
         .collect();
 
-    let readouts: Vec<JsonValue> = cfg.readouts.iter().map(build_backend_readout_json).collect();
+    let readouts: Vec<JsonValue> = cfg
+        .readouts
+        .iter()
+        .map(build_backend_readout_json)
+        .collect();
 
     Ok(json!({
         "aggregations": aggregations,
@@ -814,11 +822,10 @@ fn build_routing_entry(metric_name: &str, cfg: &BackendStageConfig) -> JsonValue
 // MVP §46 contract:
 //
 //   receivers:  { otlp }
-//   processors: { gorillas3?, batch, ddsketchprocessor, kllprocessor,
-//                 hllprocessor, countsketchprocessor,
-//                 countminsketchprocessor }
+//   processors: { gorillas3?, batch, ddsketch, KLL, HLL,
+//                 countsketch, countmin }
 //   connectors: { routing: { default_pipelines: [metrics/raw_passthrough],
-//                            table: [ ... per-metric route() statements ... ] } }
+//                            table: [ ... per-metric OTTL conditions ... ] } }
 //   exporters:  { otlp/backend, otlphttp/prometheus? }
 //
 //   service.pipelines:
@@ -843,10 +850,7 @@ fn build_routing_entry(metric_name: &str, cfg: &BackendStageConfig) -> JsonValue
 // `warm_passthrough_metrics` (the freshness probes) are folded into
 // the routing table's `table:` and route to the `metrics/raw_passthrough`
 // pipeline — they intentionally bypass every sketch processor.
-fn emit_edge_yaml_5sketch_routing(
-    cfg: &EdgeStageConfig,
-    opamp_endpoint: &str,
-) -> Result<String> {
+fn emit_edge_yaml_5sketch_routing(cfg: &EdgeStageConfig, opamp_endpoint: &str) -> Result<String> {
     use crate::sketch_algebra::params::SketchKind;
 
     let otlp_receiver: Value = serde_yaml::from_str(
@@ -865,7 +869,7 @@ fn emit_edge_yaml_5sketch_routing(
 
     // Build per-family processor blocks. We pull from
     // `cfg.sketch_processors` when an entry exists for that family
-    // (so the params + aggregation_id flow through), otherwise we
+    // (so the params flow through), otherwise we
     // synthesise a default-param block so the YAML always carries
     // all 5 processor keys.
     let mut family_to_proc: HashMap<SketchKind, &EdgeSketchProcessor> = HashMap::new();
@@ -881,10 +885,21 @@ fn emit_edge_yaml_5sketch_routing(
         SketchKind::Cms,
     ] {
         let processor_name = sketch_kind_to_processor_name(&kind);
+        let metric_name_hint = cfg
+            .metric_to_family
+            .iter()
+            .filter_map(|(metric, mapped)| {
+                if mapped == &kind {
+                    Some(metric.as_str())
+                } else {
+                    None
+                }
+            })
+            .min();
         let block = if let Some(sp) = family_to_proc.get(&kind) {
-            build_edge_processor_block(sp, cfg.window_secs, &cfg.label_filters)
+            build_edge_processor_block(sp, cfg.window_secs, &cfg.label_filters, metric_name_hint)
         } else {
-            build_default_edge_processor_block(&kind, cfg.window_secs)
+            build_default_edge_processor_block(&kind, cfg.window_secs, metric_name_hint)
         };
         processors.insert(processor_name.to_string(), block);
     }
@@ -924,10 +939,8 @@ tsdb_block_duration: {window_secs}s\n",
     // batch processor — every per-family pipeline ends in batch so the
     // gateway sees properly framed OTLP. Defaults match
     // `deploy/configs/asap-otel-agent-b6-asap-single-sketch.yaml`.
-    let batch_block: Value = serde_yaml::from_str(
-        "send_batch_size: 1024\ntimeout: 1s\n",
-    )
-    .context("parse batch processor block")?;
+    let batch_block: Value = serde_yaml::from_str("send_batch_size: 1024\ntimeout: 1s\n")
+        .context("parse batch processor block")?;
     processors.insert("batch".to_string(), batch_block);
 
     // memory_limiter processor — backpressure BEFORE gorillas3 so the
@@ -942,10 +955,9 @@ tsdb_block_duration: {window_secs}s\n",
     // every per-sketch pipeline (see `make_sketch_pipeline` below) —
     // limiting AFTER gorillas3 would mean the buffer has already
     // accreted on heap by the time the limiter rejects.
-    let memory_limiter_block: Value = serde_yaml::from_str(
-        "check_interval: 1s\nlimit_mib: 1280\nspike_limit_mib: 256\n",
-    )
-    .context("parse memory_limiter processor block")?;
+    let memory_limiter_block: Value =
+        serde_yaml::from_str("check_interval: 1s\nlimit_mib: 1280\nspike_limit_mib: 256\n")
+            .context("parse memory_limiter processor block")?;
     processors.insert("memory_limiter".to_string(), memory_limiter_block);
 
     // ── Exporters ──────────────────────────────────────────────────────────
@@ -962,7 +974,7 @@ tsdb_block_duration: {window_secs}s\n",
 
     // ── Routing connector ──────────────────────────────────────────────────
     //
-    // Build the OTTL `route()` table. Iterate the planner's
+    // Build the OTTL route table. Iterate the planner's
     // `metric_to_family` map in deterministic order (sorted by metric
     // name) so the YAML is stable across runs — `HashMap` iteration is
     // not order-stable.
@@ -977,7 +989,7 @@ tsdb_block_duration: {window_secs}s\n",
     for (metric, kind) in &metric_family_pairs {
         let pipeline = sketch_kind_to_pipeline_name(kind);
         table_entries.push(format!(
-            "  - statement: 'route() where metric.name == \"{metric}\"'\n    pipelines: [{pipeline}]"
+            "  - context: metric\n    condition: 'name == \"{metric}\"'\n    pipelines: [{pipeline}]"
         ));
         referenced_pipelines.insert(pipeline.to_string());
     }
@@ -986,7 +998,7 @@ tsdb_block_duration: {window_secs}s\n",
     // raw_passthrough (no sketch processor mutates the metric name).
     for metric in &cfg.warm_passthrough_metrics {
         table_entries.push(format!(
-            "  - statement: 'route() where metric.name == \"{metric}\"'\n    pipelines: [metrics/raw_passthrough]"
+            "  - context: metric\n    condition: 'name == \"{metric}\"'\n    pipelines: [metrics/raw_passthrough]"
         ));
     }
 
@@ -996,7 +1008,7 @@ tsdb_block_duration: {window_secs}s\n",
     // Prometheus's native OTLP receiver via `otlphttp/prometheus`.
     if has_prometheus_archive {
         table_entries.push(
-            "  - statement: 'route() where attributes[\"asap.mode\"] == \"prometheus_archive\"'\n    pipelines: [metrics/prometheus_archive]"
+            "  - context: datapoint\n    condition: 'attributes[\"asap.mode\"] == \"prometheus_archive\"'\n    pipelines: [metrics/prometheus_archive]"
                 .to_string(),
         );
     }
@@ -1005,8 +1017,8 @@ tsdb_block_duration: {window_secs}s\n",
         "default_pipelines: [metrics/raw_passthrough]\ntable:\n{}\n",
         table_entries.join("\n"),
     );
-    let routing_block: Value = serde_yaml::from_str(&routing_yaml)
-        .context("parse routing connector block (5-sketch)")?;
+    let routing_block: Value =
+        serde_yaml::from_str(&routing_yaml).context("parse routing connector block (5-sketch)")?;
     let mut connectors: HashMap<String, Value> = HashMap::new();
     connectors.insert("routing".to_string(), routing_block);
 
@@ -1125,11 +1137,11 @@ tsdb_block_duration: {window_secs}s\n",
 /// `crate::stage_split::emitter::edge_processor_name`.
 fn sketch_kind_to_processor_name(kind: &SketchKind) -> &'static str {
     match kind {
-        SketchKind::DDSketch => "ddsketchprocessor",
-        SketchKind::Kll => "kllprocessor",
-        SketchKind::Hll => "hllprocessor",
-        SketchKind::CountSketch => "countsketchprocessor",
-        SketchKind::Cms => "countminsketchprocessor",
+        SketchKind::DDSketch => "ddsketch",
+        SketchKind::Kll => "KLL",
+        SketchKind::Hll => "HLL",
+        SketchKind::CountSketch => "countsketch",
+        SketchKind::Cms => "countmin",
     }
 }
 
@@ -1151,7 +1163,11 @@ fn sketch_kind_to_pipeline_name(kind: &SketchKind) -> &'static str {
 /// values used by the planner's L4 rules so the wire shape is what the
 /// rest of the system expects when a metric is later re-routed onto
 /// this family.
-fn build_default_edge_processor_block(kind: &SketchKind, window_secs: Option<u64>) -> Value {
+fn build_default_edge_processor_block(
+    kind: &SketchKind,
+    window_secs: Option<u64>,
+    metric_name_hint: Option<&str>,
+) -> Value {
     use crate::sketch_algebra::params::{
         CmsParams, CountSketchParams, DDSketchParams, HllParams, KllParams,
     };
@@ -1172,7 +1188,7 @@ fn build_default_edge_processor_block(kind: &SketchKind, window_secs: Option<u64
         sketch_params: params,
         aggregation_id: format!("agg_default_{}", sketch_kind_tag(kind)),
     };
-    build_edge_processor_block(&synthetic, window_secs, &[])
+    build_edge_processor_block(&synthetic, window_secs, &[], metric_name_hint)
 }
 
 /// Resolve an `ExportTarget` to a concrete `endpoint:port` string. Phase
@@ -1193,9 +1209,7 @@ fn resolve_export_endpoint(default_host: &str, target: &ExportTarget) -> String 
 /// host portion used when the target is a symbolic stage role.
 fn build_otlp_exporter(default_host: &str, target: &ExportTarget) -> (String, Value) {
     let endpoint = resolve_export_endpoint(default_host, target);
-    let yaml = format!(
-        "endpoint: \"{endpoint}\"\ntls:\n  insecure: true\ncompression: none\n",
-    );
+    let yaml = format!("endpoint: \"{endpoint}\"\ntls:\n  insecure: true\ncompression: none\n",);
     (
         "otlp/backend".to_string(),
         serde_yaml::from_str(&yaml).expect("inline OTLP exporter yaml is valid"),
@@ -1210,16 +1224,14 @@ fn build_edge_processor_block(
     sp: &EdgeSketchProcessor,
     window_secs: Option<u64>,
     label_filters: &[(String, String)],
+    metric_name_hint: Option<&str>,
 ) -> Value {
     let mut m = Mapping::new();
 
     // Mode — `window` whenever a window landed on edge, else `batch`.
     if let Some(w) = window_secs {
         m.insert("mode".into(), Value::String("window".to_string()));
-        m.insert(
-            "window_duration".into(),
-            Value::String(format!("{w}s")),
-        );
+        m.insert("window_duration".into(), Value::String(format!("{w}s")));
     } else {
         m.insert("mode".into(), Value::String("batch".to_string()));
     }
@@ -1241,16 +1253,6 @@ fn build_edge_processor_block(
         m.insert("label_matchers".into(), Value::Sequence(matchers));
     }
 
-    // Aggregation ID — Phase B threads the typed
-    // `EdgeSketchProcessor::aggregation_id` through so the backend's
-    // OtlpReceiver can route the typed sketch state by id. This is a
-    // new field Phase C will register on each processor's `Config`
-    // struct in `opentelemetry-collector-contrib-patch/processor/`.
-    m.insert(
-        "aggregation_id".into(),
-        Value::String(sp.aggregation_id.clone()),
-    );
-
     // Family-specific params.
     //
     // `delta_transmission` is set to `true` for the four families
@@ -1271,25 +1273,30 @@ fn build_edge_processor_block(
     match &sp.sketch_params {
         SketchParams::Kll(p) => {
             m.insert("k".into(), Value::Number((p.k as u64).into()));
-            m.insert("encoding".into(), Value::String("msgpack".into()));
             // No delta_transmission for KLL: see comment above.
         }
         SketchParams::DDSketch(p) => {
-            m.insert(
-                "relative_accuracy".into(),
-                Value::Number(p.alpha.into()),
-            );
+            m.insert("relative_accuracy".into(), Value::Number(p.alpha.into()));
             m.insert("delta_transmission".into(), Value::Bool(true));
         }
         SketchParams::Hll(_p) => {
-            // hllprocessor takes no precision knob in its Config (the
+            // HLL takes no precision knob in its Config (the
             // patched build hard-codes p=14); nothing further to set.
             m.insert("encoding".into(), Value::String("msgpack".into()));
             m.insert("delta_transmission".into(), Value::Bool(true));
         }
         SketchParams::Cms(p) => {
+            m.insert(
+                "metric_name".into(),
+                Value::String(
+                    metric_name_hint
+                        .unwrap_or("endpoint_request_freq")
+                        .to_string(),
+                ),
+            );
             m.insert("rows".into(), Value::Number((p.d as u64).into()));
             m.insert("columns".into(), Value::Number((p.w as u64).into()));
+            m.insert("encoding".into(), Value::String("msgpack".into()));
             m.insert("delta_transmission".into(), Value::Bool(true));
         }
         SketchParams::CountSketch(p) => {
@@ -1300,17 +1307,10 @@ fn build_edge_processor_block(
             let delta = 2f64.powi(-(p.d as i32));
             m.insert("epsilon".into(), Value::Number(epsilon.into()));
             m.insert("delta".into(), Value::Number(delta.into()));
+            m.insert("encoding".into(), Value::String("msgpack".into()));
             m.insert("delta_transmission".into(), Value::Bool(true));
         }
     }
-
-    // Sketch-kind tag — defensive belt-and-braces for downstream
-    // consumers that key on the kind string rather than the variant
-    // tag of the params block.
-    m.insert(
-        "sketch_kind".into(),
-        Value::String(sketch_kind_tag(&sp.sketch_kind).to_string()),
-    );
 
     Value::Mapping(m)
 }
@@ -1451,7 +1451,7 @@ mod tests {
             label_filters: vec![("service".to_string(), "api".to_string())],
             window_secs: Some(60),
             sketch_processors: vec![EdgeSketchProcessor {
-                processor_name: "ddsketchprocessor".to_string(),
+                processor_name: "ddsketch".to_string(),
                 sketch_kind: SketchKind::DDSketch,
                 sketch_params: SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
                 aggregation_id: "agg0".to_string(),
@@ -1470,30 +1470,45 @@ mod tests {
             .expect("emit_edge_yaml ok");
 
         // Receiver block.
-        assert!(yaml.contains("receivers:"), "missing receivers section\n{yaml}");
+        assert!(
+            yaml.contains("receivers:"),
+            "missing receivers section\n{yaml}"
+        );
         assert!(yaml.contains("otlp:"), "missing otlp receiver key\n{yaml}");
         assert!(yaml.contains("4317"), "missing gRPC port\n{yaml}");
 
         // Processor key + pipeline ref.
+        assert!(yaml.contains("ddsketch:"), "missing ddsketch key\n{yaml}");
         assert!(
-            yaml.contains("ddsketchprocessor:"),
-            "missing ddsketchprocessor key\n{yaml}"
-        );
-        assert!(
-            yaml.contains("- ddsketchprocessor"),
-            "pipeline must reference ddsketchprocessor\n{yaml}"
+            yaml.contains("- ddsketch"),
+            "pipeline must reference ddsketch\n{yaml}"
         );
 
-        // Window + label filter + aggregation id surfaced.
-        assert!(yaml.contains("window_duration: 60s"), "missing window_duration\n{yaml}");
+        // Window + label filter surfaced.
+        assert!(
+            yaml.contains("window_duration: 60s"),
+            "missing window_duration\n{yaml}"
+        );
         assert!(yaml.contains("relative_accuracy"), "missing alpha\n{yaml}");
-        assert!(yaml.contains("aggregation_id: agg0"), "missing aggregation id\n{yaml}");
-        assert!(yaml.contains("key: service"), "missing label matcher key\n{yaml}");
-        assert!(yaml.contains("value: api"), "missing label matcher value\n{yaml}");
+        assert!(
+            yaml.contains("key: service"),
+            "missing label matcher key\n{yaml}"
+        );
+        assert!(
+            yaml.contains("value: api"),
+            "missing label matcher value\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("aggregation_id:") && !yaml.contains("sketch_kind:"),
+            "edge processor config must not emit planning-only fields rejected by OTel configs\n{yaml}"
+        );
 
         // Exporter — gateway.
         assert!(yaml.contains("otlp/backend:"), "missing exporter\n{yaml}");
-        assert!(yaml.contains("gateway:4317"), "exporter should target gateway\n{yaml}");
+        assert!(
+            yaml.contains("gateway:4317"),
+            "exporter should target gateway\n{yaml}"
+        );
 
         // OpAMP extension carries the controller endpoint.
         assert!(
@@ -1506,17 +1521,23 @@ mod tests {
     fn edge_yaml_kll_uses_k_param() {
         let mut cfg = ddsketch_edge_cfg();
         cfg.sketch_processors[0] = EdgeSketchProcessor {
-            processor_name: "kllprocessor".to_string(),
+            processor_name: "KLL".to_string(),
             sketch_kind: SketchKind::Kll,
             sketch_params: SketchParams::Kll(KllParams { k: 200 }),
             aggregation_id: "agg7".to_string(),
         };
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
-        assert!(yaml.contains("kllprocessor:"), "{yaml}");
+        assert!(yaml.contains("KLL:"), "{yaml}");
         assert!(yaml.contains("k: 200"), "{yaml}");
-        assert!(yaml.contains("aggregation_id: agg7"), "{yaml}");
-        assert!(!yaml.contains("relative_accuracy"), "KLL must not carry alpha\n{yaml}");
-        // KLL has no delta variant: the kllprocessor's `Config.Validate`
+        assert!(
+            !yaml.contains("relative_accuracy"),
+            "KLL must not carry alpha\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("encoding:"),
+            "KLL Config does not accept encoding\n{yaml}"
+        );
+        // KLL has no delta variant: the KLL's `Config.Validate`
         // rejects `delta_transmission: true`. Make sure we don't emit
         // the flag (a future regression that flips it on globally would
         // break agent boot for KLL).
@@ -1536,17 +1557,17 @@ mod tests {
         for (kind, processor_name, params) in [
             (
                 SketchKind::DDSketch,
-                "ddsketchprocessor",
+                "ddsketch",
                 SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
             ),
             (
                 SketchKind::Hll,
-                "hllprocessor",
+                "HLL",
                 SketchParams::Hll(HllParams { precision: 14 }),
             ),
             (
                 SketchKind::CountSketch,
-                "countsketchprocessor",
+                "countsketch",
                 SketchParams::CountSketch(CountSketchParams {
                     w: 2048,
                     d: 5,
@@ -1555,7 +1576,7 @@ mod tests {
             ),
             (
                 SketchKind::Cms,
-                "countminsketchprocessor",
+                "countmin",
                 SketchParams::Cms(CmsParams { w: 4096, d: 4 }),
             ),
         ] {
@@ -1575,12 +1596,33 @@ mod tests {
     }
 
     #[test]
+    fn edge_yaml_countmin_includes_required_metric_name() {
+        let mut cfg = ddsketch_edge_cfg();
+        cfg.source_metric = Some("endpoint_request_freq".to_string());
+        cfg.sketch_processors[0] = EdgeSketchProcessor {
+            processor_name: "countmin".to_string(),
+            sketch_kind: SketchKind::Cms,
+            sketch_params: SketchParams::Cms(CmsParams { w: 4096, d: 4 }),
+            aggregation_id: "agg-cms".to_string(),
+        };
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+        assert!(yaml.contains("countmin:"), "{yaml}");
+        assert!(
+            yaml.contains("metric_name: endpoint_request_freq"),
+            "{yaml}"
+        );
+    }
+
+    #[test]
     fn edge_yaml_batch_mode_when_no_window() {
         let mut cfg = ddsketch_edge_cfg();
         cfg.window_secs = None;
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
         assert!(yaml.contains("mode: batch"), "{yaml}");
-        assert!(!yaml.contains("window_duration"), "batch mode must not have window_duration\n{yaml}");
+        assert!(
+            !yaml.contains("window_duration"),
+            "batch mode must not have window_duration\n{yaml}"
+        );
     }
 
     fn ddsketch_gateway_cfg() -> GatewayStageConfig {
@@ -1603,7 +1645,10 @@ mod tests {
         // Family-specific merge name (NOT the placeholder).
         assert!(yaml.contains("ddsketchmerge:"), "{yaml}");
         assert!(yaml.contains("- ddsketchmerge"), "{yaml}");
-        assert!(!yaml.contains("sketchmergeprocessor"), "placeholder must be replaced\n{yaml}");
+        assert!(
+            !yaml.contains("sketchmergeprocessor"),
+            "placeholder must be replaced\n{yaml}"
+        );
 
         // Receiver bound to declared port.
         assert!(yaml.contains("0.0.0.0:4317"), "{yaml}");
@@ -1639,8 +1684,14 @@ mod tests {
         let yaml = emit_gateway_yaml(&cfg, "ws://c/").expect("emit ok");
         assert!(yaml.contains("kllmerge:"), "{yaml}");
         assert!(yaml.contains("hllmerge:"), "{yaml}");
-        assert!(yaml.contains("- kllmerge"), "pipeline missing kll merge\n{yaml}");
-        assert!(yaml.contains("- hllmerge"), "pipeline missing hll merge\n{yaml}");
+        assert!(
+            yaml.contains("- kllmerge"),
+            "pipeline missing kll merge\n{yaml}"
+        );
+        assert!(
+            yaml.contains("- hllmerge"),
+            "pipeline missing hll merge\n{yaml}"
+        );
     }
 
     #[test]
@@ -1815,11 +1866,9 @@ mod tests {
     #[test]
     fn storage_routing_for_tenant_emits_explicit_tenant_field() {
         let ddsketch = backend_cfg_with_kind(SketchKind::DDSketch);
-        let v = emit_backend_storage_routing_for_tenant(
-            "tenant-a",
-            &[("latency".into(), &ddsketch)],
-        )
-        .expect("emit ok");
+        let v =
+            emit_backend_storage_routing_for_tenant("tenant-a", &[("latency".into(), &ddsketch)])
+                .expect("emit ok");
         assert_eq!(v["tenant"], "tenant-a");
         assert_eq!(v["default_engine"], "sketch_warm_tier");
         // Single metric, single warm + archive target shape — the
@@ -1834,12 +1883,8 @@ mod tests {
     #[test]
     fn storage_routing_with_prometheus_for_tenant_emits_explicit_tenant_field() {
         let mode3 = vec!["http_requests_total".to_string()];
-        let v = emit_backend_storage_routing_with_prometheus_for_tenant(
-            "tenant-b",
-            &[],
-            &mode3,
-        )
-        .expect("emit ok");
+        let v = emit_backend_storage_routing_with_prometheus_for_tenant("tenant-b", &[], &mode3)
+            .expect("emit ok");
         assert_eq!(v["tenant"], "tenant-b");
         assert_eq!(v["metrics"][0]["name"], "http_requests_total");
         assert_eq!(v["metrics"][0]["targets"][0]["engine"], "prometheus_remote");
@@ -2197,8 +2242,7 @@ mod tests {
     fn phase_eps1_mode3_storage_routing_emits_prometheus_remote() {
         // No backend-side aggregations for mode 3 — Prometheus owns it.
         let mode3 = vec!["http_requests_total".to_string()];
-        let v =
-            emit_backend_storage_routing_with_prometheus(&[], &mode3).expect("emit ok");
+        let v = emit_backend_storage_routing_with_prometheus(&[], &mode3).expect("emit ok");
         let metrics = v["metrics"].as_array().unwrap();
         assert_eq!(metrics.len(), 1);
         assert_eq!(metrics[0]["name"], "http_requests_total");
@@ -2217,8 +2261,7 @@ mod tests {
     #[test]
     fn phase_eps1_mixed_mode1_and_mode3_share_one_routing_table() {
         let ddsketch = backend_cfg_with_kind(SketchKind::DDSketch);
-        let plans: Vec<(String, &BackendStageConfig)> =
-            vec![("latency_seconds".into(), &ddsketch)];
+        let plans: Vec<(String, &BackendStageConfig)> = vec![("latency_seconds".into(), &ddsketch)];
         let mode3 = vec!["http_requests_total".to_string()];
         let v = emit_backend_storage_routing_with_prometheus(&plans, &mode3).expect("emit ok");
         let metrics = v["metrics"].as_array().unwrap();
@@ -2405,7 +2448,7 @@ mod tests {
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
 
         // Find the pipeline processor list — should contain gorillas3
-        // ahead of ddsketchprocessor in the serialized order. Robust
+        // ahead of ddsketch in the serialized order. Robust
         // search: locate the `processors:` block under the metrics
         // pipeline and check substring positions.
         let pipeline_idx = yaml.find("metrics:\n").unwrap_or_default();
@@ -2414,11 +2457,11 @@ mod tests {
             .find("- gorillas3")
             .expect("- gorillas3 missing in pipeline");
         let s_idx = after_pipeline
-            .find("- ddsketchprocessor")
-            .expect("- ddsketchprocessor missing in pipeline");
+            .find("- ddsketch")
+            .expect("- ddsketch missing in pipeline");
         assert!(
             g_idx < s_idx,
-            "gorillas3 must come BEFORE ddsketchprocessor in the warm pipeline\n{yaml}"
+            "gorillas3 must come BEFORE ddsketch in the warm pipeline\n{yaml}"
         );
     }
 
@@ -2441,7 +2484,10 @@ mod tests {
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
 
         // Routing processor present, dispatches by metric name (OTTL form).
-        assert!(yaml.contains("routing:"), "missing routing processor\n{yaml}");
+        assert!(
+            yaml.contains("routing:"),
+            "missing routing processor\n{yaml}"
+        );
         assert!(
             yaml.contains("route() where metric.name == \"http_freshness_probe_warm\""),
             "routing must match on metric.name\n{yaml}"
@@ -2475,8 +2521,8 @@ mod tests {
             .unwrap_or(after.len());
         let passthrough_section = &after[..next_pipeline_offset];
         assert!(
-            !passthrough_section.contains("ddsketchprocessor"),
-            "warm_passthrough pipeline must NOT include ddsketchprocessor (the bug we're fixing)\n{yaml}"
+            !passthrough_section.contains("ddsketch"),
+            "warm_passthrough pipeline must NOT include ddsketch (the bug we're fixing)\n{yaml}"
         );
         // ... but it SHOULD still include gorillas3 so the metric
         // lands in the archive (the warm engine queries it from
@@ -2554,7 +2600,7 @@ mod tests {
     /// family per the canonical workload-spec table in MVP §46.
     fn five_sketch_edge_cfg() -> EdgeStageConfig {
         let mut metric_to_family: HashMap<String, SketchKind> = HashMap::new();
-        metric_to_family.insert("http_latency_ms".into(), SketchKind::DDSketch);
+        metric_to_family.insert("http_requests_total_latency_ms".into(), SketchKind::DDSketch);
         metric_to_family.insert("request_size_bytes".into(), SketchKind::Kll);
         metric_to_family.insert("unique_users_per_min".into(), SketchKind::Hll);
         metric_to_family.insert("top_endpoint_qps".into(), SketchKind::CountSketch);
@@ -2578,13 +2624,7 @@ mod tests {
     fn mvp46_emit_loads_all_5_sketch_processors() {
         let cfg = five_sketch_edge_cfg();
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
-        for proc in [
-            "ddsketchprocessor",
-            "kllprocessor",
-            "hllprocessor",
-            "countsketchprocessor",
-            "countminsketchprocessor",
-        ] {
+        for proc in ["ddsketch", "KLL", "HLL", "countsketch", "countmin"] {
             assert!(
                 yaml.contains(&format!("{proc}:")),
                 "missing top-level processor key {proc}\n{yaml}"
@@ -2658,10 +2698,7 @@ mod tests {
             "metrics/countsketch_path:",
             "metrics/countminsketch_path:",
         ] {
-            assert!(
-                yaml.contains(pl),
-                "missing pipeline entry {pl}\n{yaml}"
-            );
+            assert!(yaml.contains(pl), "missing pipeline entry {pl}\n{yaml}");
         }
     }
 
@@ -2696,27 +2733,27 @@ mod tests {
         let mut cfg = five_sketch_edge_cfg();
         // Declare an archive-tier metric so gorillas3 is emitted.
         cfg.archive_tier_metrics = vec![ArchiveTierMetric {
-            metric: "http_latency_ms".into(),
+            metric: "http_requests_total_latency_ms".into(),
             window_secs: Some(60),
         }];
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
 
         // gorillas3 processor block present.
-        assert!(yaml.contains("gorillas3:"), "missing gorillas3 block\n{yaml}");
         assert!(
-            yaml.contains("block_format: prometheus_tsdb"),
-            "{yaml}"
+            yaml.contains("gorillas3:"),
+            "missing gorillas3 block\n{yaml}"
         );
+        assert!(yaml.contains("block_format: prometheus_tsdb"), "{yaml}");
 
         // Each per-sketch pipeline starts with gorillas3 BEFORE the
         // family processor. We slice the YAML per-pipeline section and
         // check the relative order.
         for (pipeline, family_proc) in [
-            ("metrics/ddsketch_path:", "ddsketchprocessor"),
-            ("metrics/kll_path:", "kllprocessor"),
-            ("metrics/hll_path:", "hllprocessor"),
-            ("metrics/countsketch_path:", "countsketchprocessor"),
-            ("metrics/countminsketch_path:", "countminsketchprocessor"),
+            ("metrics/ddsketch_path:", "ddsketch"),
+            ("metrics/kll_path:", "KLL"),
+            ("metrics/hll_path:", "HLL"),
+            ("metrics/countsketch_path:", "countsketch"),
+            ("metrics/countminsketch_path:", "countmin"),
         ] {
             let p_idx = yaml.find(pipeline).expect(pipeline);
             // Section runs to the next `metrics/` header or end.
@@ -2748,7 +2785,7 @@ mod tests {
         // the agent at ~3 min under sustained load.
         let mut cfg = five_sketch_edge_cfg();
         cfg.archive_tier_metrics = vec![ArchiveTierMetric {
-            metric: "http_latency_ms".into(),
+            metric: "http_requests_total_latency_ms".into(),
             window_secs: Some(60),
         }];
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
@@ -2803,22 +2840,22 @@ mod tests {
     fn mvp46_routing_table_dispatches_per_metric_to_correct_family() {
         let cfg = five_sketch_edge_cfg();
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
-        // Every metric in the contract dispatches via OTTL `route()`
+        // Every metric in the contract dispatches via routingconnector OTTL
+        // conditions.
         // to its family pipeline. serde_yaml may render sequences
         // either inline (`[metrics/x]`) or block-form (`- metrics/x`)
         // depending on width; tolerate both.
         for (metric, pipeline) in [
-            ("http_latency_ms", "metrics/ddsketch_path"),
+            ("http_requests_total_latency_ms", "metrics/ddsketch_path"),
             ("request_size_bytes", "metrics/kll_path"),
             ("unique_users_per_min", "metrics/hll_path"),
             ("top_endpoint_qps", "metrics/countsketch_path"),
             ("endpoint_request_freq", "metrics/countminsketch_path"),
         ] {
-            let needle =
-                format!("route() where metric.name == \"{metric}\"");
-            let n_idx = yaml.find(&needle).unwrap_or_else(|| {
-                panic!("missing route() statement for {metric}\n{yaml}")
-            });
+            let needle = format!("name == \"{metric}\"");
+            let n_idx = yaml
+                .find(&needle)
+                .unwrap_or_else(|| panic!("missing routing condition for {metric}\n{yaml}"));
             let near = &yaml[n_idx..n_idx.saturating_add(256).min(yaml.len())];
             let inline = format!("[{pipeline}]");
             let block = format!("- {pipeline}");
@@ -2858,7 +2895,7 @@ mod tests {
         cfg.warm_passthrough_metrics = vec!["http_freshness_probe_warm".into()];
         let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
 
-        let needle = "route() where metric.name == \"http_freshness_probe_warm\"";
+        let needle = "name == \"http_freshness_probe_warm\"";
         let idx = yaml
             .find(needle)
             .unwrap_or_else(|| panic!("missing freshness-probe route\n{yaml}"));
@@ -2881,13 +2918,7 @@ mod tests {
             .map(|x| x + 1)
             .unwrap_or(after.len());
         let section = &after[..next_offset];
-        for forbidden in [
-            "ddsketchprocessor",
-            "kllprocessor",
-            "hllprocessor",
-            "countsketchprocessor",
-            "countminsketchprocessor",
-        ] {
+        for forbidden in ["ddsketch", "KLL", "HLL", "countsketch", "countmin"] {
             assert!(
                 !section.contains(forbidden),
                 "raw_passthrough must NOT include {forbidden}\n{section}"

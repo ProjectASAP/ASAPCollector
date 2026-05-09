@@ -304,7 +304,7 @@ mod tests {
             label_filters: Vec::new(),
             window_secs: Some(60),
             sketch_processors: vec![EdgeSketchProcessor {
-                processor_name: "ddsketchprocessor".to_string(),
+                processor_name: "ddsketch".to_string(),
                 sketch_kind: SketchKind::DDSketch,
                 sketch_params: SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
                 aggregation_id: "agg0".to_string(),
@@ -470,7 +470,7 @@ mod tests {
             label_filters: Vec::new(),
             window_secs: Some(60),
             sketch_processors: vec![EdgeSketchProcessor {
-                processor_name: "kllprocessor".to_string(),
+                processor_name: "KLL".to_string(),
                 sketch_kind: SketchKind::Kll,
                 sketch_params: SketchParams::Kll(KllParams { k: 200 }),
                 aggregation_id: "agg0".to_string(),

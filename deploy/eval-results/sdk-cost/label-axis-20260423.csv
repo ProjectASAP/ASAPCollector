@@ -1,6 +1,0 @@
-baseline,scale,rate,cardinality,producer_cpu_cores,producer_rss_mib,producer_bytes_out_per_s,agent_cpu_cores,agent_rss_mib,agent_in_kib_per_s,agent_out_kib_per_s,agent_points_per_s,gateway_cpu_cores,gateway_rss_mib,gateway_points_per_s,gateway_out_series_per_s,backend_cpu_pct,backend_rss_mib,backend_samples_per_s,backend_query_p99_ms
-w60s-l:-add-full,N1,,1000,0.217,66.840,5.847,nan,nan,nan,nan,nan,0.001,151.016,nan,nan,0.010,6.508,nan,nan
-"w60s-lzone,rack,node-add-full",N1,,1000,0.526,58.620,5.849,nan,nan,nan,nan,nan,0.001,150.285,nan,nan,0.020,6.496,nan,nan
-"w60s-lzone,rack-add-full",N1,,1000,0.749,33.710,5.848,nan,nan,nan,nan,nan,0.001,150.477,nan,nan,0.030,6.488,nan,nan
-w60s-lzone-add-full,N1,,1000,0.817,33.890,5.848,nan,nan,nan,nan,nan,0.001,149.820,nan,nan,0.020,6.516,nan,nan
-w60s-l--add-full,N1,,1000,0.616,34.030,5.845,nan,nan,nan,nan,nan,0.001,150.281,nan,nan,0.020,6.500,nan,nan
