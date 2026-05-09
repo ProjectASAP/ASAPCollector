@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -328,6 +329,169 @@ func TestConfig_ValidateBlockFormat(t *testing.T) {
 	// Invalid value rejected.
 	cfg = &Config{Bucket: "b", BlockFormat: BlockFormat("nonsense")}
 	require.Error(t, cfg.Validate())
+}
+
+// TestTSDBBlockBuilder_RotatingCardinalityNoOOB pins the issue#46
+// regression. Models the fake-exporter PR#338 `unique_users_per_min`
+// rotating user_id pool: each user is "active" only during a
+// non-overlapping slice of the 60s window. Before the fix, the
+// Head's appender locked `minValidTime` at
+// `firstAppendedSampleTs - chunkRange/2`. With random map iteration
+// order over `window`, if the first-visited series held samples in
+// e.g. the [40..55s] slice, the floor became 10s and any
+// subsequent series with samples at t<10s tripped
+// `storage.ErrOutOfBounds`.
+//
+// The fix flattens all samples across series and sorts globally by
+// timestamp ascending, guaranteeing the first-appended sample has
+// the smallest ts in the entire window. After the fix, the floor
+// is `min(window) - 30s` which sits below every other sample in
+// the window. We loop 50 times to make accidental success
+// statistically improbable across Go's randomised map iteration.
+func TestTSDBBlockBuilder_RotatingCardinalityNoOOB(t *testing.T) {
+	const blockMs = int64(60_000)
+	base := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC).UnixNano()
+
+	// 8 users, each active in a non-overlapping 7s slice of the
+	// 60s window: u0=[0..6s], u1=[7..13s], ..., u7=[49..55s].
+	mkSeries := func(uIdx int, uid string, vBase float64) (seriesKey, *seriesBuffer) {
+		const sliceWidth = 7
+		startSec := uIdx * sliceWidth
+		buf := &seriesBuffer{
+			attributes: map[string]string{"user_id": uid, "host": "h"},
+			points:     make([]point, sliceWidth),
+		}
+		for i := 0; i < sliceWidth; i++ {
+			ts := base + int64(startSec+i)*int64(time.Second)
+			buf.points[i] = point{ts: ts, v: vBase + float64(i)}
+		}
+		return seriesKey{metricName: "unique_users_per_min", attributesKey: "host=h;user_id=" + uid + ";"}, buf
+	}
+
+	for trial := 0; trial < 50; trial++ {
+		window := make(map[seriesKey]*seriesBuffer)
+		for u := 0; u < 8; u++ {
+			sk, buf := mkSeries(u, "u"+string(rune('a'+u)), float64(u)*100)
+			window[sk] = buf
+		}
+		b := newTSDBBlockBuilder(time.Duration(blockMs)*time.Millisecond, nil, nil)
+		art, err := b.build(context.Background(), window)
+		require.NoError(t, err, "trial %d: build must not error on rotating-cardinality input", trial)
+		require.NotNil(t, art, "trial %d: artifact must not be nil", trial)
+		assert.Equal(t, uint64(0), art.NumOOBDropped, "trial %d: no in-window samples should be dropped", trial)
+		assert.Equal(t, uint64(8), art.NumSeries, "trial %d: expected 8 series in block", trial)
+		assert.Equal(t, uint64(8*7), art.NumSamples, "trial %d: expected 56 samples in block", trial)
+	}
+}
+
+// TestTSDBBlockBuilder_WideTimestampSpanNoOOB verifies that even a
+// 5-minute span between the earliest and latest samples in a
+// single window builds cleanly — global sort anchors the
+// appender's minValidTime at the smallest ts (- chunkRange/2), so
+// every later sample fits regardless of cross-series interleaving.
+// This is the operator-visible contract: the agent's window
+// buffer can hold whatever the upstream OTLP push schedule
+// produces and we'll still emit a valid TSDB block.
+func TestTSDBBlockBuilder_WideTimestampSpanNoOOB(t *testing.T) {
+	const blockMs = int64(60_000)
+	base := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC).UnixNano()
+	wayBack := base - 5*60*int64(time.Second) // 5min before base
+
+	window := map[seriesKey]*seriesBuffer{
+		{metricName: "m", attributesKey: "host=now;"}: {
+			attributes: map[string]string{"host": "now"},
+			points: []point{
+				{ts: base, v: 1},
+				{ts: base + int64(time.Second), v: 2},
+				{ts: base + 2*int64(time.Second), v: 3},
+			},
+		},
+		{metricName: "m", attributesKey: "host=rogue;"}: {
+			attributes: map[string]string{"host": "rogue"},
+			points: []point{
+				{ts: wayBack, v: 100},
+			},
+		},
+	}
+
+	b := newTSDBBlockBuilder(time.Duration(blockMs)*time.Millisecond, nil, nil)
+	art, err := b.build(context.Background(), window)
+	require.NoError(t, err, "build must tolerate wide-gap samples without error")
+	require.NotNil(t, art, "artifact must not be nil")
+	assert.Equal(t, uint64(2), art.NumSeries, "both series end up in the block")
+	// Every sample fits because the rogue (oldest) is appended
+	// first and anchors minValidTime at wayBack-30s.
+	assert.Equal(t, uint64(0), art.NumOOBDropped, "no drops with global-sort")
+	assert.Equal(t, uint64(4), art.NumSamples)
+}
+
+// TestFlushTSDB_OOBDoesNotCrashProcessor wires the rotating-cardinality
+// scenario through the full processor flush path and asserts:
+//  1. flushWindow returns without panic / fatal log,
+//  2. the tsdb block IS uploaded (no series silently lost),
+//  3. all 8 series and all 96 samples land in the block.
+func TestFlushTSDB_OOBDoesNotCrashProcessor(t *testing.T) {
+	cfg := &Config{
+		Bucket:            "asap-gorilla",
+		TSDBBucket:        "asap-tsdb",
+		WindowInterval:    time.Hour,
+		TSDBBlockDuration: 60 * time.Second,
+		DropOriginal:      true,
+		BlockFormat:       BlockFormatPrometheusTSDB,
+		Tenant:            "tnt",
+	}
+	sink := &mockSink{}
+	p := mkProcessor(t, cfg, sink)
+
+	// Build 8 series of `unique_users_per_min`-style data, each
+	// active in a non-overlapping 7s slice of the 60s window.
+	// Pre-fix this triggered OOB because the appender's
+	// minValidTime locked at firstAppendedTs - 30s, which (for
+	// any slice starting > 30s) would reject samples in earlier
+	// slices.
+	base := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	const sliceWidth = 7
+	for u := 0; u < 8; u++ {
+		md := pmetric.NewMetrics()
+		rm := md.ResourceMetrics().AppendEmpty()
+		sm := rm.ScopeMetrics().AppendEmpty()
+		m := sm.Metrics().AppendEmpty()
+		m.SetName("unique_users_per_min")
+		g := m.SetEmptyGauge()
+		for i := 0; i < sliceWidth; i++ {
+			dp := g.DataPoints().AppendEmpty()
+			off := time.Duration(u*sliceWidth+i) * time.Second
+			dp.SetTimestamp(pcommon.NewTimestampFromTime(base.Add(off)))
+			dp.SetDoubleValue(float64(u*100 + i))
+			dp.Attributes().PutStr("user_id", "u"+string(rune('a'+u)))
+			dp.Attributes().PutStr("host", "h")
+		}
+		_, err := p.ConsumeMetrics(context.Background(), md)
+		require.NoError(t, err)
+	}
+
+	p.flushWindow(context.Background())
+	require.Equal(t, 1, sink.tsdbBlockCount(), "expected one tsdb block")
+	blk := sink.tsdbBlocks[0]
+	require.NotEmpty(t, blk.files)
+
+	// Round-trip and count.
+	root := t.TempDir()
+	for k, body := range blk.files {
+		full := filepath.Join(root, filepath.FromSlash(k))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, body, 0o644))
+	}
+	block, err := tsdb.OpenBlock(nil, filepath.Join(root, blk.ulid), chunkenc.NewPool(), nil)
+	require.NoError(t, err)
+	defer block.Close()
+	got := readAllSamples(t, block)
+	require.Len(t, got, 8, "expected 8 distinct series in the block")
+	totalSamples := 0
+	for _, s := range got {
+		totalSamples += len(s.samples)
+	}
+	assert.Equal(t, 8*sliceWidth, totalSamples, "expected all 56 samples to land in the block")
 }
 
 // readAllSamples opens every series in a block and returns the

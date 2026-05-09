@@ -27,7 +27,11 @@ type monitor struct {
 	s3PutFailures      metric.Int64Counter
 	chunkBytesWritten  metric.Int64Counter
 	chunkPointsWritten metric.Int64Counter
-	addOpt             metric.AddOption
+	// mvp/issue46: TSDB samples rejected by the Prometheus Head's
+	// out-of-bounds check during flush. Non-fatal (we drop the
+	// sample and keep going) but the operator wants to see it.
+	tsdbOOBSamples metric.Int64Counter
+	addOpt         metric.AddOption
 }
 
 func newMonitor(settings component.TelemetrySettings, processorID string, activeSeriesFn selfmonitor.ActiveSeriesFunc, logger *zap.Logger) *monitor {
@@ -82,6 +86,16 @@ func newMonitor(settings component.TelemetrySettings, processorID string, active
 	} else if logger != nil {
 		logger.Warn("gorillas3processor: chunk_points counter init failed", zap.Error(err))
 	}
+	// mvp/issue46
+	if c, err := meter.Int64Counter(
+		"gorillas3_tsdb_oob_samples_dropped_total",
+		metric.WithDescription("Number of samples dropped by the Prometheus TSDB Head with storage.ErrOutOfBounds during flush. Non-fatal."),
+		metric.WithUnit("{datapoint}"),
+	); err == nil {
+		m.tsdbOOBSamples = c
+	} else if logger != nil {
+		logger.Warn("gorillas3processor: tsdb_oob_samples counter init failed", zap.Error(err))
+	}
 
 	m.addOpt = metric.WithAttributeSet(attribute.NewSet(
 		attribute.String("processor.id", processorID),
@@ -124,6 +138,15 @@ func (m *monitor) putFailure(ctx context.Context) {
 		return
 	}
 	m.s3PutFailures.Add(ctx, 1, m.addOpt)
+}
+
+// tsdbOOBDropped records samples rejected with
+// `storage.ErrOutOfBounds` during a TSDB flush. mvp/issue46.
+func (m *monitor) tsdbOOBDropped(ctx context.Context, n uint64) {
+	if m == nil || m.tsdbOOBSamples == nil || n == 0 {
+		return
+	}
+	m.tsdbOOBSamples.Add(ctx, int64(n), m.addOpt)
 }
 
 func (m *monitor) shutdown() {
