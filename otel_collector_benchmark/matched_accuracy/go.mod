@@ -8,9 +8,8 @@ require (
 	github.com/caio/go-tdigest v3.1.0+incompatible
 )
 
-// Mirror the local-replace pattern used by
-//   opentelemetry-collector-contrib-patch/cmd/countminsketchcol/builder-config.yaml
-// so the build does not require network access for the in-house sketch library.
+// Local replace so the build does not require network access for the
+// in-house sketch library. Adjust the path if your checkout lives elsewhere.
 replace github.com/ProjectASAP/sketchlib-go => /home/zeying/repos/sketchlib-go
 
 require (

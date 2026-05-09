@@ -5,14 +5,12 @@
 #   1. Verifies or installs Go (>= MIN_GO_VERSION) to /usr/local/go
 #   2. Adds Go and GOPATH/bin to PATH for the current shell and ~/.bashrc
 #   3. Installs the OCB (OpenTelemetry Collector Builder) binary at the
-#      version required to build the ddsketchcol distribution
+#      version required to build the asap-otel distribution
 #   4. Initialises git submodules (if not already done)
-#   5. Applies all patch overlays to the submodules
 #
 # Usage:
 #   ./setup.sh              # full setup
 #   ./setup.sh --no-go      # skip Go installation (if already managed externally)
-#   ./setup.sh --no-patches # skip patch application
 #
 # Safe to re-run: each step is skipped if already satisfied.
 
@@ -23,19 +21,17 @@ set -euo pipefail
 MIN_GO_VERSION="1.25.4"
 # Go toolchain version to install when Go is absent or below the minimum.
 GO_INSTALL_VERSION="1.26.0"
-# OCB version that matches the ddsketchcol distribution target (v0.141.0).
+# OCB version that matches the asap-otel distribution target (v0.141.0).
 OCB_VERSION="0.141.0"
 # ─────────────────────────────────────────────────────────────────────────────
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_GO=true
-APPLY_PATCHES=true
 
 # Parse flags
 for arg in "$@"; do
   case "$arg" in
     --no-go)      INSTALL_GO=false ;;
-    --no-patches) APPLY_PATCHES=false ;;
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -182,31 +178,6 @@ else
   success "Submodules up-to-date."
 fi
 
-# ─── Step 5: Apply patch overlays ────────────────────────────────────────────
-
-section "Applying patch overlays to submodules"
-
-if [[ "$APPLY_PATCHES" == false ]]; then
-  info "Skipping patch application (--no-patches)."
-else
-  info "Restoring opentelemetry-collector patches ..."
-  bash "${ROOT_DIR}/restore_otel_collector_patches.sh"
-
-  info "Restoring opentelemetry-collector-contrib patches ..."
-  bash "${ROOT_DIR}/restore_otel_collector_contrib_patches.sh"
-
-  info "Restoring opentelemetry-proto patches ..."
-  bash "${ROOT_DIR}/restore_otel_proto_patches.sh"
-
-  info "Restoring opentelemetry-go patches ..."
-  bash "${ROOT_DIR}/restore_otel_client_patches.sh"
-
-  info "Restoring telegraf patches ..."
-  bash "${ROOT_DIR}/restore_telegraf_patches.sh"
-
-  success "All patch overlays applied."
-fi
-
 # ─── Done ────────────────────────────────────────────────────────────────────
 
 echo
@@ -217,8 +188,8 @@ echo " Go:      $(go version)"
 echo " OCB:     $("${OCB_BINARY}" version 2>&1)"
 echo " Builder: ${OCB_BINARY}"
 echo ""
-echo " To build ddsketchcol:"
-echo "   ./build_ddsketchcol.sh --skip-patches"
+echo " To build asap-otel:"
+echo "   ./build_asap_otel.sh"
 echo ""
 if [[ "$ADDED_TO_BASHRC" == true ]]; then
   echo " NOTE: Run 'source ~/.bashrc' to make Go available in new terminals."

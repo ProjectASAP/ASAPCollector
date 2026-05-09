@@ -209,67 +209,14 @@ In both modes, the collector receives standard OTLP Gauge metrics from this load
 Batch mode shows the complementary behavior: it keeps the originals and appends quantile metrics, so the exporter sends roughly 4× as many points as the receiver accepts (one original + three quantiles per sample). For that mode the script reports an **Output/Input Ratio** instead of a loss percentage.
 
 **Running Benchmarks:**
-```bash
-# Run benchmarks from the cmd directory
-cd opentelemetry-collector-contrib-patch/cmd
 
-# NOP Processor
-./bench.sh nopcol
-
-# CountSketch Processor
-./bench.sh countsketchcol
-
-# CountSketch Processor (batch mode)
-./bench.sh countsketchcol-batch
-
-# CountSketch Processor (window mode)
-./bench.sh countsketchcol-window
-
-# CountMinSketch Processor (batch/window)
-./bench.sh countminsketchcol-batch
-./bench.sh countminsketchcol-window
-
-# KLL Processor (legacy single config)
-./bench.sh kll
-
-# KLL Processor (batch mode)
-./bench.sh kll-batch
-
-# KLL Processor (window mode)
-./bench.sh kll-window
-
-# DDSketch Processor (batch mode)
-./bench.sh ddsketchcol-batch
-
-# DDSketch Processor (window mode)
-./bench.sh ddsketchcol-window
-```
-
-**Note:** All processors use the centralized benchmark script located at `opentelemetry-collector-contrib-patch/cmd/bench.sh`.
-
-### Building CountMinSketch
-
-The CountMinSketch processor depends on `github.com/ProjectASAP/sketchlib-go`. To build and run CountMinSketch benchmarks (`countminsketchcol-batch`, `countminsketchcol-window`), make that module available to Go, for example with a local replace to `../sketchlib-go`:
-
-1. **Set Go environment variables** so the module can be fetched directly when you are not using a local replace:
-   ```bash
-   export GOPRIVATE="github.com/ProjectASAP/*"
-   export GONOSUMDB="github.com/ProjectASAP/*"
-   ```
-
-2. **Point the module to the local checkout** if you want an offline build in this workspace:
-   ```bash
-   go mod edit -replace=github.com/ProjectASAP/sketchlib-go=../sketchlib-go
-   ```
-
-3. Run the benchmark as usual:
-   ```bash
-   cd opentelemetry-collector-contrib-patch/cmd
-   ./bench.sh countminsketchcol-batch
-   ./bench.sh countminsketchcol-window
-   ```
-
-Once the build succeeds, you can capture batch-mode results and add them to the CountMinSketch section using the same table format as CountSketch and KLL (including the Output/Input Ratio column).
+The per-sketch collector binaries (`nopcol`, `countsketchcol`, `countminsketchcol`,
+`ddsketchcol`, `hllcol`) and the per-mode `bench.sh nopcol|countsketchcol|...`
+wrapper used to capture the historical results above have been removed. All
+sketch processors now ship in the unified `asap-otel` distribution at
+`opentelemetry-collector-contrib-patch/cmd/asap-otel/`; build it with
+`./build_asap_otel.sh` from the repo root and run it with the appropriate
+config from that directory.
 
 ## Comparative Analysis
 

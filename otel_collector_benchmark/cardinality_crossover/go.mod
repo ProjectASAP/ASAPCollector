@@ -19,8 +19,6 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-// Mirror the `replaces:` pattern from
-// opentelemetry-collector-contrib-patch/cmd/countminsketchcol/builder-config.yaml:
-//   - github.com/ProjectASAP/sketchlib-go => ../../../../../sketchlib-go
-// Here the path is computed from THIS module's location.
+// Local replace to the sibling sketchlib-go checkout. The path is computed
+// from THIS module's location (otel_collector_benchmark/cardinality_crossover/).
 replace github.com/ProjectASAP/sketchlib-go => ../../../sketchlib-go

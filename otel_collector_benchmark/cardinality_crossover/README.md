@@ -77,9 +77,9 @@ cd otel_collector_benchmark/cardinality_crossover
 go build ./...
 ```
 
-The module's `go.mod` uses a `replace` directive to local
-`/home/zeying/repos/sketchlib-go/` (mirroring the pattern in
-`opentelemetry-collector-contrib-patch/cmd/countminsketchcol/builder-config.yaml`).
+The module's `go.mod` uses a `replace` directive that points
+`github.com/ProjectASAP/sketchlib-go` at the sibling checkout
+(`../../../sketchlib-go`).
 
 ## Run
 

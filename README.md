@@ -79,7 +79,7 @@
 ## Initial Setup
 
 After cloning, run the one-time setup script to install Go, the OCB builder,
-initialise submodules, and apply all patch overlays:
+and initialise submodules:
 
 ```bash
 ./setup.sh
@@ -97,7 +97,6 @@ The script is safe to re-run: each step is skipped when already satisfied.
 | Flag | Effect |
 |---|---|
 | `--no-go` | Skip Go download/installation |
-| `--no-patches` | Skip applying patch overlays to submodules |
 
 ---
 
@@ -145,15 +144,7 @@ git submodule update --init --recursive
 telegraf/                     # upstream InfluxData Telegraf checkout
 telegraf-patch/               # tracked overlay of our custom Telegraf changes
 telegraf_benchmarks/          # local benchmark harness that uses the submodule
-backup_telegraf_patches.sh    # copies modified submodule files into telegraf-patch/
-restore_telegraf_patches.sh   # reapplies tracked patches back into telegraf/
 ```
-
-Use the restore → edit → backup flow here as well:
-1. Run `./restore_telegraf_patches.sh` after cloning or resetting the submodule.
-2. Hack and test directly inside `telegraf/`.
-3. Run `./backup_telegraf_patches.sh` so the overlay captures every modified file
-   before committing.
 
 ## Working with the OpenTelemetry submodule
 
@@ -168,24 +159,7 @@ opentelemetry-go-patch/                 # tracked overlay of our SDK changes
 opentelemetry-collector-patch/          # tracked overlay of collector-core tweaks
 opentelemetry-collector-contrib-patch/  # tracked overlay of contrib-only tweaks
 opentelemetry-proto-patch/              # tracked overlay of proto changes
-
-backup_otel_*.sh / restore_otel_*.sh    # helper scripts that sync overlays <-> submodules
 ```
-
-#### Workflow
-
-1. After cloning (or whenever submodules are reset), run `./restore_otel_patches.sh`
-   from the repo root. This copies the tracked overlay files into their matching
-   submodules so our custom code is available locally.
-2. Make changes inside the actual submodule directories (for example,
-   `opentelemetry-collector/...`). Build, test, and iterate directly against the
-   upstream layout.
-3. Before committing, run `./backup_otel_patches.sh`. The script copies every
-   modified file reported by `git status` inside the submodules into the
-   corresponding `*-patch/` overlay, which is what we check in.
-4. Repeat the restore → edit → backup cycle whenever upstream commits are pulled
-   in via `git submodule update --remote` so that local patches are always
-   reapplied cleanly.
 
 ## Build and Test Cheat Sheet
 
@@ -215,47 +189,32 @@ make gen-go
 ### Collector-contrib distributions (opentelemetry-collector-contrib-patch)
 
 > **Important:** The OCB builder version must match the distribution target version.
-> The `ddsketchcol` distribution targets v0.141.0, so OCB v0.141.0 is required.
+> The `asap-otel` distribution targets v0.141.0, so OCB v0.141.0 is required.
 > Using a newer builder (e.g. v0.147.0) injects incompatible runtime sub-modules.
-
-Patches must be applied to the submodules before building because the custom
-DDSketch types (in `opentelemetry-collector-patch/pdata/`) are not committed
-directly to the submodules.
 
 #### Quick build (recommended)
 
-Use the provided script from the repo root — it handles patch application and
-builder version automatically:
+Use the provided script from the repo root — it handles the builder version
+automatically:
 
 ```bash
-./build_ddsketchcol.sh
-```
-
-To skip re-applying patches if they were already applied:
-
-```bash
-./build_ddsketchcol.sh --skip-patches
+./build_asap_otel.sh
 ```
 
 The binary is written to:
 ```
-opentelemetry-collector-contrib-patch/cmd/ddsketchcol/ddsketchcol
+opentelemetry-collector-contrib-patch/cmd/asap-otel/asap-otel
 ```
 
 #### Manual build steps
 
 ```bash
-# 1. Apply patches to submodules
-./restore_otel_collector_patches.sh
-./restore_otel_collector_contrib_patches.sh
-./restore_otel_proto_patches.sh
-
-# 2. Install the matching OCB builder version
+# 1. Install the matching OCB builder version
 go install go.opentelemetry.io/collector/cmd/builder@v0.141.0
 
-# 3. Build
+# 2. Build
 cd opentelemetry-collector-contrib-patch
-builder --config ./cmd/ddsketchcol/builder-config.yaml
+builder --config ./cmd/asap-otel/builder-config.yaml
 ```
 
 ### Go SDK / exporters (opentelemetry-go)

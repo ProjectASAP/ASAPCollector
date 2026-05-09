@@ -68,22 +68,11 @@ impl AgentRuntime {
     /// `asap-otel` / `asap-otap` / `asap-telegraf`
     /// (case-insensitive); any other value (including the empty string)
     /// defaults to `AsapOtel` so legacy agents keep working.
-    ///
-    /// Backwards compatibility (transitional, deprecated):
-    /// the v0 strings `sketchcollector` / `sketchotap` / `sketchtelegraf`
-    /// are still accepted and parse to the corresponding new variant so
-    /// agents pinned to an older image keep working through the rollout.
-    /// TODO(remove-after-2026-Q3): drop the v0 aliases once all deployed
-    /// agents have rebuilt against the new image tags.
     pub fn from_header(value: &str) -> Self {
         match value.trim().to_lowercase().as_str() {
             "asap-otap" | "otap" => AgentRuntime::AsapOtap,
             "asap-telegraf" | "telegraf" => AgentRuntime::AsapTelegraf,
             "asap-otel" => AgentRuntime::AsapOtel,
-            // Deprecated v0 aliases — accepted for transition only.
-            "sketchotap" => AgentRuntime::AsapOtap,
-            "sketchtelegraf" => AgentRuntime::AsapTelegraf,
-            "sketchcollector" => AgentRuntime::AsapOtel,
             _ => AgentRuntime::AsapOtel,
         }
     }
@@ -306,19 +295,6 @@ mod runtime_tests {
     fn agent_runtime_from_header_default_is_asap_otel() {
         assert_eq!(AgentRuntime::from_header(""), AgentRuntime::AsapOtel);
         assert_eq!(AgentRuntime::from_header("garbage"), AgentRuntime::AsapOtel);
-    }
-
-    #[test]
-    fn agent_runtime_from_header_accepts_legacy_v0_strings() {
-        // Legacy strings the controller emitted/accepted before the
-        // sketchcol/sketchotap/sketchtelegraf → asap-otel/asap-otap/asap-telegraf
-        // rename. Kept for transitional backwards compatibility so an
-        // agent pinned to an older image keeps getting a typed plan.
-        // TODO(remove-after-2026-Q3): drop these aliases.
-        assert_eq!(AgentRuntime::from_header("sketchcollector"), AgentRuntime::AsapOtel);
-        assert_eq!(AgentRuntime::from_header("Sketchcollector"), AgentRuntime::AsapOtel);
-        assert_eq!(AgentRuntime::from_header("sketchotap"), AgentRuntime::AsapOtap);
-        assert_eq!(AgentRuntime::from_header("sketchtelegraf"), AgentRuntime::AsapTelegraf);
     }
 
     #[test]

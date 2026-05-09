@@ -112,8 +112,7 @@ type indexFile struct {
 
 // s3Sink is the production aws-sdk-go-v1 implementation. We pick the
 // v1 SDK to stay consistent with the existing telegraf gorilla_s3
-// output and the gorillaprocessor sibling — same dependency surface,
-// same retry/multipart logic patterns.
+// output — same dependency surface, same retry/multipart logic patterns.
 type s3Sink struct {
 	cfg          *Config
 	client       *s3.S3

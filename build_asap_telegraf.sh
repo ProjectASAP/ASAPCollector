@@ -5,26 +5,23 @@
 # processor wired in (one plugin, all five sketch types — see
 # docs/design-asap-telegraf-integration.md §3). The build:
 #
-#   1. Applies telegraf-patch/ overlay onto the telegraf submodule
-#      (registers allsketches in plugins/processors/all/).
-#   2. Adds local replace directives for asap-precompute-go and
+#   1. Adds local replace directives for asap-precompute-go and
 #      sketchlib-go so the build resolves them from sibling checkouts
 #      instead of the module proxy.
-#   3. Runs `go build` on telegraf/cmd/telegraf.
+#   2. Runs `go build` on telegraf/cmd/telegraf.
 #
 # Output: telegraf/asap-telegraf
 #
 # Usage:
 #   ./build_asap_telegraf.sh                  # builds asap-telegraf
-#   ./build_asap_telegraf.sh --skip-patches   # skip re-applying patches
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-SKIP_PATCHES=false
 for arg in "$@"; do
 	case "$arg" in
-		--skip-patches) SKIP_PATCHES=true ;;
+		--skip-patches) ;;  # accepted for backward compatibility — no-op now
+		                    # that patch overlays have been removed.
 		*) echo "Unknown argument: $arg" >&2; exit 1 ;;
 	esac
 done
@@ -32,13 +29,6 @@ done
 TELEGRAF_DIR="${ROOT_DIR}/telegraf"
 SKETCHLIB_GO_DIR="${ROOT_DIR}/../sketchlib-go"
 ASAP_PRECOMPUTE_GO_DIR="${ROOT_DIR}/asap-precompute-go"
-
-# Step 1: Apply patches to the telegraf submodule
-if [[ "${SKIP_PATCHES}" == false ]]; then
-	echo "==> Applying patches to telegraf submodule..."
-	bash "${ROOT_DIR}/restore_telegraf_patches.sh"
-	echo ""
-fi
 
 if [[ ! -d "${TELEGRAF_DIR}/cmd/telegraf" ]]; then
 	echo "Telegraf submodule not initialized at ${TELEGRAF_DIR} — run 'git submodule update --init telegraf'" >&2

@@ -32,13 +32,16 @@ from compare_crosskey import (
 
 PATCH_CMD = REPO_ROOT / "opentelemetry-collector-contrib-patch" / "cmd"
 
+_ASAP_OTEL_BIN = PATCH_CMD / "asap-otel" / "asap-otel"
 DEFAULT_COLLECTOR_PATHS = {
-    "ddsketch": PATCH_CMD / "ddsketchcol" / "ddsketchcol",
+    # All sketch types now ship in the unified asap-otel distribution; only
+    # `kll/KLL` is still produced as a standalone binary by `cmd/kll/`.
+    "ddsketch": _ASAP_OTEL_BIN,
     "kll": PATCH_CMD / "kll" / "KLL",
-    "hll": PATCH_CMD / "hllcol" / "HLL",
-    "countsketch": PATCH_CMD / "countsketchcol" / "dist" / "countsketchcol",
-    "countminsketch": PATCH_CMD / "countminsketchcol" / "dist" / "countminsketchcol",
-    "nop": PATCH_CMD / "nopcol" / "dist" / "nopcol",
+    "hll": _ASAP_OTEL_BIN,
+    "countsketch": _ASAP_OTEL_BIN,
+    "countminsketch": _ASAP_OTEL_BIN,
+    "nop": _ASAP_OTEL_BIN,
 }
 
 PROMETHEUS_METRICS_URL = os.environ.get("PROMETHEUS_METRICS_URL", "http://localhost:8889/metrics")

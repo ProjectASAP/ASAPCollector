@@ -22,9 +22,9 @@
 #                    stock build.
 #
 # Compared to the canonical `builder-config.yaml`, this minimal
-# manifest excludes serfprocessor + gorillaprocessor (paper
-# baselines for non-sketch encodings; not needed for sketch e2e)
-# and the long tail of extension/exporter/receiver/connector
+# manifest excludes serfprocessor (paper baseline for non-sketch
+# encodings; not needed for sketch e2e) and the long tail of
+# extension/exporter/receiver/connector
 # entries that the upstream config carries by default. Trimming
 # them keeps the build fast and the binary small without losing
 # any sketch-path signal.
