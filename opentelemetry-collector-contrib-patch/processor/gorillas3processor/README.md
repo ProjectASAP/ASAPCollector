@@ -4,9 +4,10 @@ Phase 2 of the Gorilla-S3-cold-engine. Compresses incoming Gauge / Sum
 metrics with Gorilla XOR-delta encoding on a tumbling window and PUTs
 the resulting chunks to an S3-compatible object store (AWS S3, MinIO).
 
-The encoded GORILLA1 block layout is byte-compatible with the Phase 1 Rust
-`asap-gorilla` decoder and the Telegraf `gorilla_s3` output plugin
-(which carries pre-encoded payloads with the same body shape).
+The encoded GORILLA1 block layout is produced by `asap-gorilla-go` and is
+byte-compatible with the Rust `asap-gorilla-rust` decoder and the Telegraf
+`gorilla_s3` output plugin, which carries pre-encoded payloads with the same
+body shape.
 
 ## When to use it
 
@@ -91,7 +92,7 @@ window snapshot. Used during migration / verification only.
 Each chunk is one GORILLA1 block (one metric, one or more series). Header:
 
 ```
-[4]   "GORILLA1"
+[8]   "GORILLA1"
 [1]   version (1)
 [4]   uint32 LE  series_count
 ```

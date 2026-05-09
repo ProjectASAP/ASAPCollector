@@ -1,10 +1,14 @@
-# asap-gorilla
+# asap-gorilla-rust
 
-`asap-gorilla` is the Rust mirror of the canonical `GORILLA1` block
-format defined by the Go `gorillaprocessor` plugin under
-[`opentelemetry-collector-contrib-patch/processor/gorillaprocessor/`](../opentelemetry-collector-contrib-patch/processor/gorillaprocessor/).
-Bytes written by either side are interchangeable — that is the
+`asap-gorilla-rust` is the canonical Rust implementation of the
+`GORILLA1` block format. Its Go sibling is
+[`asap-gorilla-go`](../asap-gorilla-go/), which runtime edge collectors
+and processors use directly instead of carrying their own Gorilla encoder
+copies. Bytes written by either side are interchangeable — that is the
 byte-parity contract this crate is built around.
+
+The Cargo package name remains `asap-gorilla` for existing downstream
+path dependencies; the repository path is `asap-gorilla-rust`.
 
 This is **Phase 1** of the Gorilla-S3-cold-engine: the encoder, the
 decoder, and the per-hour `index.json` catalog. Subsequent phases wire
@@ -99,10 +103,10 @@ let samples: Vec<_> = dec.samples().collect::<Result<Vec<_>, _>>().unwrap();
 
 ## Byte-parity caveat
 
-The Go `gorillaprocessor` JSON-encodes its label set from a Go
-`map[string]string`, whose iteration order is randomized. That makes
-its `meta_json` blob (and therefore its block bytes) non-deterministic
-even for identical inputs. `asap-gorilla` deliberately strengthens the
+The Go implementation JSON-encodes its label set from a Go
+`map[string]string`, whose iteration order is randomized. That makes its
+`meta_json` blob (and therefore its block bytes) non-deterministic even
+for identical inputs. `asap-gorilla-rust` deliberately strengthens the
 contract by serializing labels through a `BTreeMap`, so its output is
 deterministic and byte-stable.
 

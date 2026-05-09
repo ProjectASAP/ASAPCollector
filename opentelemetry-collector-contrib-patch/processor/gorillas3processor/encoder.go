@@ -4,12 +4,7 @@
 package gorillas3processor
 
 import (
-	"bytes"
-	"encoding/binary"
-	"encoding/json"
-	"fmt"
-	"math"
-	"sort"
+	gorilla "github.com/ProjectASAP/asap-gorilla-go"
 )
 
 // chunkMagic is the 8-byte magic that prefixes every encoded chunk.
@@ -49,135 +44,27 @@ type seriesMeta struct {
 	PointCount int               `json:"point_count"`
 }
 
-// gorillaTimestampEncoder implements delta-of-delta with Gorilla
-// 0 / 10+7 / 110+9 / 1110+12 / 1111+64 buckets.
-type gorillaTimestampEncoder struct {
-	bw        *bitWriter
-	prevTS    int64
-	prevDelta int64
-	firstSet  bool
-}
-
-func newTsEncoder() *gorillaTimestampEncoder { return &gorillaTimestampEncoder{bw: newBitWriter()} }
-
-func (e *gorillaTimestampEncoder) push(ts int64) {
-	if !e.firstSet {
-		e.prevTS = ts
-		e.prevDelta = 0
-		e.firstSet = true
-		return
-	}
-	delta := ts - e.prevTS
-	dd := delta - e.prevDelta
-	switch {
-	case dd == 0:
-		e.bw.writeBit(0)
-	case fitsInSignedBits(dd, 7):
-		e.bw.writeBits(0b10, 2)
-		e.bw.writeBits(uint64(dd)&((1<<7)-1), 7)
-	case fitsInSignedBits(dd, 9):
-		e.bw.writeBits(0b110, 3)
-		e.bw.writeBits(uint64(dd)&((1<<9)-1), 9)
-	case fitsInSignedBits(dd, 12):
-		e.bw.writeBits(0b1110, 4)
-		e.bw.writeBits(uint64(dd)&((1<<12)-1), 12)
-	default:
-		e.bw.writeBits(0b1111, 4)
-		e.bw.writeBits(uint64(dd), 64)
-	}
-	e.prevTS = ts
-	e.prevDelta = delta
-}
-
-func (e *gorillaTimestampEncoder) bytes() ([]byte, uint32) {
-	b := e.bw.bytes()
-	return b, uint32(len(b) * 8)
-}
-
-// gorillaValueEncoder is the Gorilla XOR float64 encoder.
-type gorillaValueEncoder struct {
-	bw             *bitWriter
-	prev           uint64
-	prevSet        bool
-	leadingZeros   uint8
-	trailingZeros  uint8
-	havePrevWindow bool
-}
-
-func newValEncoder() *gorillaValueEncoder { return &gorillaValueEncoder{bw: newBitWriter()} }
-
-func (e *gorillaValueEncoder) push(v float64) {
-	vb := math.Float64bits(v)
-	if !e.prevSet {
-		e.prev = vb
-		e.prevSet = true
-		e.leadingZeros = 0
-		e.trailingZeros = 0
-		e.havePrevWindow = false
-		return
-	}
-	x := e.prev ^ vb
-	if x == 0 {
-		e.bw.writeBit(0)
-		e.prev = vb
-		return
-	}
-	e.bw.writeBit(1)
-
-	lz := leadingZeros64(x)
-	tz := trailingZeros64(x)
-	sig := 64 - lz - tz
-
-	if e.havePrevWindow && lz >= e.leadingZeros && tz >= e.trailingZeros {
-		e.bw.writeBit(0)
-		e.bw.writeBits(x>>uint(e.trailingZeros), uint8(64-int(e.leadingZeros)-int(e.trailingZeros)))
-	} else {
-		e.bw.writeBit(1)
-		lz5 := lz
-		if lz5 > 31 {
-			lz5 = 31
-		}
-		e.bw.writeBits(uint64(lz5), 5)
-		if sig == 0 {
-			sig = 64
-		}
-		sig6 := uint8(sig - 1)
-		e.bw.writeBits(uint64(sig6), 6)
-		e.bw.writeBits(x>>uint(tz), uint8(sig))
-		e.leadingZeros = lz
-		e.trailingZeros = tz
-		e.havePrevWindow = true
-	}
-	e.prev = vb
-}
-
-func (e *gorillaValueEncoder) bytes() ([]byte, uint32) {
-	b := e.bw.bytes()
-	return b, uint32(len(b) * 8)
-}
-
-// sortAndEncode sorts the points by timestamp (in place) and encodes them.
+// sortAndEncode adapts the processor-local point shape to asap-gorilla-go.
 // Returns the first ts/value (raw) plus the bit-packed delta-of-delta and
 // XOR streams.
 func sortAndEncode(points []point) (firstTS int64, firstValBits uint64, tsBits []byte, tsBitsLen uint32, valBits []byte, valBitsLen uint32) {
 	if len(points) == 0 {
 		return 0, 0, nil, 0, nil, 0
 	}
-	sort.Slice(points, func(i, j int) bool { return points[i].ts < points[j].ts })
-
-	firstTS = points[0].ts
-	firstValBits = math.Float64bits(points[0].v)
-
-	tsEnc := newTsEncoder()
-	valEnc := newValEncoder()
-
-	for _, p := range points {
-		tsEnc.push(p.ts)
-		valEnc.push(p.v)
+	adapted := make([]gorilla.Point, len(points))
+	for i, p := range points {
+		adapted[i] = gorilla.Point{TimestampUnixNano: p.ts, Value: p.v}
 	}
-	tsBits, tsBitsLen = tsEnc.bytes()
-	valBits, valBitsLen = valEnc.bytes()
-	return
+	encoded, _ := gorilla.SortAndEncode(adapted)
+	for i, p := range adapted {
+		points[i] = point{ts: p.TimestampUnixNano, v: p.Value}
+	}
+	return encoded.FirstTimestampUnixNano,
+		encoded.FirstValueBits,
+		encoded.TimestampBits,
+		encoded.TimestampBitLen,
+		encoded.ValueBits,
+		encoded.ValueBitLen
 }
 
 // chunkInfo captures metadata about one written chunk for indexing.
@@ -204,34 +91,16 @@ type chunkInfo struct {
 //	uint32 LE  valBitsLen
 //	[ceil(valBitsLen/8)] valBits
 func encodeSeriesBody(key seriesKey, buf *seriesBuffer) ([]byte, int64, int64, error) {
-	firstTS, firstValBits, tsBits, tsBitsLen, valBits, valBitsLen := sortAndEncode(buf.points)
-	startTS := buf.points[0].ts
-	endTS := buf.points[len(buf.points)-1].ts
-	meta := seriesMeta{
-		MetricName: key.metricName,
-		Attributes: buf.attributes,
-		StartTS:    startTS,
-		EndTS:      endTS,
-		PointCount: len(buf.points),
+	series := gorilla.Series{
+		MetricName:    key.metricName,
+		Attributes:    buf.attributes,
+		AttributesKey: key.attributesKey,
+		Points:        make([]gorilla.Point, len(buf.points)),
 	}
-	mb, err := json.Marshal(meta)
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("gorillas3: marshal metadata: %w", err)
+	for i, p := range buf.points {
+		series.Points[i] = gorilla.Point{TimestampUnixNano: p.ts, Value: p.v}
 	}
-	if len(mb) > math.MaxUint16 {
-		return nil, 0, 0, fmt.Errorf("gorillas3: metadata too large for series %s", key.metricName)
-	}
-	var sb bytes.Buffer
-	_ = binary.Write(&sb, binary.LittleEndian, uint16(len(mb)))
-	sb.Write(mb)
-	_ = binary.Write(&sb, binary.LittleEndian, uint32(len(buf.points)))
-	_ = binary.Write(&sb, binary.LittleEndian, uint64(firstTS))
-	_ = binary.Write(&sb, binary.LittleEndian, firstValBits)
-	_ = binary.Write(&sb, binary.LittleEndian, tsBitsLen)
-	sb.Write(tsBits)
-	_ = binary.Write(&sb, binary.LittleEndian, valBitsLen)
-	sb.Write(valBits)
-	return sb.Bytes(), startTS, endTS, nil
+	return gorilla.EncodeSeriesBody(series)
 }
 
 // buildChunks groups series-bodies by metric name, packs them into
@@ -245,112 +114,39 @@ func encodeSeriesBody(key seriesKey, buf *seriesBuffer) ([]byte, int64, int64, e
 //
 // followed by seriesCount series bodies (encodeSeriesBody output).
 func buildChunks(series map[seriesKey]*seriesBuffer, maxObjectBytes int64) ([]chunkInfo, error) {
-	// Group keys by metric.
-	byMetric := map[string][]seriesKey{}
-	for k, buf := range series {
+	input := make([]gorilla.Series, 0, len(series))
+	for key, buf := range series {
 		if buf == nil || len(buf.points) == 0 {
 			continue
 		}
-		byMetric[k.metricName] = append(byMetric[k.metricName], k)
-	}
-	metricNames := make([]string, 0, len(byMetric))
-	for n := range byMetric {
-		metricNames = append(metricNames, n)
-	}
-	sort.Strings(metricNames)
-
-	const headerOverhead = 8 + 1 + 4 // magic + version + seriesCount
-
-	var chunks []chunkInfo
-	for _, metric := range metricNames {
-		keys := byMetric[metric]
-		sort.Slice(keys, func(i, j int) bool { return keys[i].attributesKey < keys[j].attributesKey })
-
-		var (
-			cur          bytes.Buffer
-			curSeries    int
-			curPoints    int
-			curRaw       int64
-			curStart     int64
-			curEnd       int64
-			curStartInit bool
-			curSize      int64
-		)
-		writeHeader := func() {
-			cur.Reset()
-			cur.WriteString(chunkMagic)
-			cur.WriteByte(chunkVersion)
-			_ = binary.Write(&cur, binary.LittleEndian, uint32(0))
-			curSeries = 0
-			curPoints = 0
-			curRaw = 0
-			curStart = 0
-			curEnd = 0
-			curStartInit = false
-			curSize = headerOverhead
+		points := make([]gorilla.Point, len(buf.points))
+		for i, p := range buf.points {
+			points[i] = gorilla.Point{TimestampUnixNano: p.ts, Value: p.v}
 		}
-		flush := func() {
-			if curSeries == 0 {
-				return
-			}
-			buf := cur.Bytes()
-			// v7 fix: write seriesCount at offset 9, not 5. The
-			// outer GORILLA1 block layout is:
-			//   [8]   magic        "GORILLA1"
-			//   [1]   version      chunkVersion
-			//   [4]   uint32 LE    seriesCount
-			// so the seriesCount slot is bytes 9..13. The pre-v7
-			// code wrote at bytes 5..9, overwriting bytes 5..7 of
-			// the magic and byte 8 (version) — every chunk that
-			// landed on S3 had a corrupted header that the
-			// asap-gorilla decoder rejected with "bad magic".
-			// Dropped-on-the-floor before v7 because no consumer
-			// tried to decode these chunks; v7's
-			// `last_over_time` query path on freshness probes
-			// surfaces it.
-			binary.LittleEndian.PutUint32(buf[9:13], uint32(curSeries))
-			data := make([]byte, len(buf))
-			copy(data, buf)
-			chunks = append(chunks, chunkInfo{
-				metricName:  metric,
-				startTS:     curStart,
-				endTS:       curEnd,
-				seriesCount: curSeries,
-				pointCount:  curPoints,
-				rawBytes:    curRaw,
-				data:        data,
-			})
-			writeHeader()
-		}
-
-		writeHeader()
-		for _, key := range keys {
-			body, startTS, endTS, err := encodeSeriesBody(key, series[key])
-			if err != nil {
-				return nil, err
-			}
-			if maxObjectBytes > 0 && curSeries > 0 && curSize+int64(len(body)) > maxObjectBytes {
-				flush()
-			}
-			cur.Write(body)
-			curSeries++
-			curPoints += series[key].PointCountSafe()
-			curRaw += int64(series[key].PointCountSafe()) * 16
-			if !curStartInit || startTS < curStart {
-				curStart = startTS
-				curStartInit = true
-			}
-			if endTS > curEnd {
-				curEnd = endTS
-			}
-			curSize += int64(len(body))
-			if maxObjectBytes > 0 && curSize >= maxObjectBytes {
-				flush()
-			}
-		}
-		flush()
+		input = append(input, gorilla.Series{
+			MetricName:    key.metricName,
+			Attributes:    buf.attributes,
+			AttributesKey: key.attributesKey,
+			Points:        points,
+		})
 	}
-	return chunks, nil
+	chunks, err := gorilla.BuildMetricChunks(input, maxObjectBytes)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]chunkInfo, len(chunks))
+	for i, c := range chunks {
+		out[i] = chunkInfo{
+			metricName:  c.MetricName,
+			startTS:     c.StartTSNano,
+			endTS:       c.EndTSNano,
+			seriesCount: c.SeriesCount,
+			pointCount:  c.PointCount,
+			rawBytes:    c.RawBytes,
+			data:        c.Data,
+		}
+	}
+	return out, nil
 }
 
 // PointCountSafe returns the number of points in the buffer, guarding

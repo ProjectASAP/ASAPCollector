@@ -184,9 +184,9 @@ func numberValue(dp pmetric.NumberDataPoint) (float64, bool) {
 //   - a Prometheus TSDB block under <tsdb-bucket>/<ulid>/ (block_format
 //     =prometheus_tsdb or both)
 //
-// Both paths consume the same in-memory snapshot. The TSDB path
-// makes a defensive copy of each series' points before sorting, so
-// the ASAP path's existing in-place sort is not affected.
+// Both paths consume the same in-memory snapshot. The ASAP path adapts
+// into asap-gorilla-go, and the TSDB path makes its own defensive copy
+// before sorting, so neither path mutates the other's point order.
 func (p *gorillaS3Processor) flushWindow(ctx context.Context) {
 	snapshot, _, latest := p.window.snapshot()
 	if len(snapshot) == 0 {

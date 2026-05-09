@@ -3,20 +3,19 @@ name = "asap-gorilla"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.74"
-description = "Gorilla XOR-delta block format encoder + decoder. Byte-compatible with the Telegraf-side / opentelemetry-collector-contrib `gorillaprocessor` block layout."
+description = "Rust Gorilla XOR-delta block format encoder + decoder. Byte-compatible with asap-gorilla-go and the runtime edge processors."
 license = "MIT"
 
-# Phase 1 of the Gorilla-S3-cold-engine. Consumed by:
+# Canonical Rust implementation for the Gorilla-S3-cold-engine. Consumed by:
 #   - `ASAPQuery-backend` (later phases) via path-dep / git URL,
 #     to back the GorillaQueryEngine reading cold S3 chunks.
 #   - Future Rust edge agents that produce blocks directly without the
 #     OTel-collector-contrib `gorillaprocessor` Go path.
 #
 # The block layout we encode/decode here is the canonical "GORILLA1"
-# format defined by `opentelemetry-collector-contrib-patch/processor/
-# gorillaprocessor/{compress,encoder,bitwriter}.go`. Bytes written by
-# either side are interchangeable; see `tests/golden/regen.sh` for the
-# Telegraf/Go-side fixture regeneration recipe.
+# format shared with `asap-gorilla-go`. Runtime edge collectors and
+# processors should depend on that Go module instead of carrying private
+# encoder copies. Bytes written by either implementation are interchangeable.
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
