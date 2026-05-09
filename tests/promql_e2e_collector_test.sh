@@ -114,7 +114,7 @@ if [[ ! -x "$CONTROLLER_BIN" ]]; then
   exit 1
 fi
 if [[ "$PLAN_ONLY" == false && ! -x "$ASAP_OTEL" ]]; then
-  echo "ERROR: asap-otel binary not found at ${DDSKETCHCOL}" >&2
+  echo "ERROR: asap-otel binary not found at ${ASAP_OTEL}" >&2
   echo "       Run: ${ROOT}/build_asap_otel.sh, or use --plan-only" >&2
   exit 1
 fi

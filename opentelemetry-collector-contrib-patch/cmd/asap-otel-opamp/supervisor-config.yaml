@@ -29,4 +29,4 @@ storage:
   directory: /tmp/opamp-supervisor
 
 agent:
-  executable: ./countminsketchcol
+  executable: ./asap-otel-opamp

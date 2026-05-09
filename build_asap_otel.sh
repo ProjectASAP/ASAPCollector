@@ -16,12 +16,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REQUIRED_OCB_VERSION="v0.141.0"
 OCB_MODULE="go.opentelemetry.io/collector/cmd/builder"
-SKIP_PATCHES=false
 
 # Parse arguments
 for arg in "$@"; do
   case "$arg" in
-    --skip-patches) SKIP_PATCHES=true ;;
+    --skip-patches) ;;  # accepted for backward compatibility — no-op now that
+                        # patch overlays have been removed.
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -45,16 +45,6 @@ find_or_install_builder() {
   GOBIN="${gobin}" go install "${OCB_MODULE}@${REQUIRED_OCB_VERSION}"
   echo "${gobin}/builder"
 }
-
-# Step 1: Apply patches to submodules
-if [[ "${SKIP_PATCHES}" == false ]]; then
-  echo "==> Applying patches to submodules..."
-  cd "${ROOT_DIR}"
-  bash restore_otel_collector_patches.sh
-  bash restore_otel_collector_contrib_patches.sh
-  bash restore_otel_proto_patches.sh
-  echo ""
-fi
 
 # Step 2: Locate the correct builder
 echo "==> Locating OCB ${REQUIRED_OCB_VERSION}..."

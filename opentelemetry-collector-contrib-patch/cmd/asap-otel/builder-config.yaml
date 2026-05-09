@@ -173,11 +173,6 @@ processors:
   # Paper baseline B1: Serf (ASAP XOR-with-quantization).
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/serfprocessor v0.141.0
     path: ./processor/serfprocessor
-  # Paper baseline B5: Gorilla (Facebook TSDB XOR — lossless).
-  # Separate baseline from Serf because Serf defaults to quantized
-  # encoding. Same binary bundling + config-selection pattern.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/gorillaprocessor v0.141.0
-    path: ./processor/gorillaprocessor
   # Gorilla-S3 cold-engine processor (Phase 2). Encodes raw Gauge/Sum
   # samples with Gorilla XOR-delta on a tumbling window and PUTs the
   # resulting ASGB chunks to MinIO/S3. `drop_original: true` keeps
