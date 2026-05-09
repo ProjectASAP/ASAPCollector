@@ -89,6 +89,37 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
+  # ── memory_limiter — backpressure BEFORE gorillas3 ───────────────────
+  #
+  # Follow-up to PR #355's gorillas3 archive-write fix: even with
+  # `window_interval: 5s`, the agent was OOM-killed (exit 137) after
+  # ~3 minutes under sustained load. Six per-family pipelines × 5
+  # producers × ~30 K events / s overshoots the 1.5 GiB cgroup limit
+  # at peak before the gorillas3 ticker reaps the windowState buffer.
+  #
+  # The OpenTelemetry Collector's `memory_limiter` processor refuses
+  # incoming data when RSS crosses a soft threshold, applying
+  # backpressure to upstream senders rather than crashing. It MUST be
+  # the FIRST processor in every per-sketch pipeline so it sees the
+  # batch BEFORE gorillas3 buffers it into the in-memory windowState
+  # — limiting after gorillas3 would mean the buffer has already
+  # accreted on heap by the time the limiter rejects.
+  #
+  # Threshold rationale: agent cgroup is 1536 MiB. We pick
+  #   limit_mib       = 1280  (≈ 80 % of cgroup)
+  #   spike_limit_mib = 256   (≈ 17 % of cgroup; mirrors the gateway)
+  # so the limiter starts shedding load at 1024 MiB soft / 1280 MiB
+  # hard, leaving 256 MiB of headroom under the cgroup ceiling for
+  # short bursts. The gateway placeholder uses the same shape
+  # (`asap-otel-gateway-mvp-placeholder.yaml` ships
+  # `limit_mib: 1536, spike_limit_mib: 256`) — gateway has its own
+  # 2 GiB cgroup so 1536 is safe there; agent has 1.5 GiB so we drop
+  # to 1280.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1280
+    spike_limit_mib: 256
+
   # ── Cold tier: Gorilla-S3 archive write ──────────────────────────────
   # Runs FIRST in every per-family pipeline so the cold-tier write
   # happens on raw samples BEFORE the sketch processor mutates / suffix-
@@ -287,40 +318,43 @@ service:
       receivers: [otlp]
       exporters: [routing]
 
-    # Default raw-passthrough — gorillas3 then batch. NO sketch
-    # processor; raw counters land at the gateway verbatim. Also the
-    # destination of warm/archive freshness probes (their metric name
-    # is preserved end-to-end).
+    # Default raw-passthrough — memory_limiter then gorillas3 then
+    # batch. NO sketch processor; raw counters land at the gateway
+    # verbatim. Also the destination of warm/archive freshness probes
+    # (their metric name is preserved end-to-end). memory_limiter MUST
+    # come first so backpressure rejects incoming batches BEFORE
+    # gorillas3 buffers them into windowState.
     metrics/raw_passthrough:
       receivers: [routing]
-      processors: [gorillas3, batch]
+      processors: [memory_limiter, gorillas3, batch]
       exporters: [otlp/backend]
 
-    # Per-family pipelines. Each starts with gorillas3 (cold-tier write
-    # on raw samples) BEFORE the sketch processor mutates the stream.
+    # Per-family pipelines. Each starts with memory_limiter (drop /
+    # refuse on heap pressure) then gorillas3 (cold-tier write on raw
+    # samples) BEFORE the sketch processor mutates the stream.
     metrics/ddsketch_path:
       receivers: [routing]
-      processors: [gorillas3, ddsketch, batch]
+      processors: [memory_limiter, gorillas3, ddsketch, batch]
       exporters: [otlp/backend]
 
     metrics/kll_path:
       receivers: [routing]
-      processors: [gorillas3, KLL, batch]
+      processors: [memory_limiter, gorillas3, KLL, batch]
       exporters: [otlp/backend]
 
     metrics/hll_path:
       receivers: [routing]
-      processors: [gorillas3, HLL, batch]
+      processors: [memory_limiter, gorillas3, HLL, batch]
       exporters: [otlp/backend]
 
     metrics/countsketch_path:
       receivers: [routing]
-      processors: [gorillas3, countsketch, batch]
+      processors: [memory_limiter, gorillas3, countsketch, batch]
       exporters: [otlp/backend]
 
     metrics/countminsketch_path:
       receivers: [routing]
-      processors: [gorillas3, countmin, batch]
+      processors: [memory_limiter, gorillas3, countmin, batch]
       exporters: [otlp/backend]
 
   telemetry:

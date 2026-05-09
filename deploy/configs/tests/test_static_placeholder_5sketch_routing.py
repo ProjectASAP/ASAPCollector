@@ -190,11 +190,16 @@ class TestStaticPlaceholder5SketchRouting(unittest.TestCase):
             "entry pipeline must have no processors (connector fan-out)",
         )
 
-    # 6. Each per-sketch pipeline has gorillas3 first ──────────────────
-    def test_each_per_sketch_pipeline_has_gorillas3_first(self):
-        # gorillas3 runs FIRST so the cold-tier write happens on raw
-        # samples BEFORE the sketch processor mutates / suffix-renames
-        # the stream.
+    # 6. Each per-sketch pipeline has memory_limiter first, gorillas3 second ─
+    def test_each_per_sketch_pipeline_has_memory_limiter_first(self):
+        # Follow-up to PR #355's gorillas3 archive-write fix: even with
+        # `window_interval: 5s` the agent was OOM-killed (exit 137) after
+        # ~3 min under sustained load. memory_limiter MUST be the first
+        # processor in every per-sketch pipeline so backpressure refuses
+        # incoming batches BEFORE gorillas3 buffers them into the
+        # in-memory windowState — limiting after gorillas3 would mean
+        # the buffer has already accreted by the time the limiter
+        # rejects.
         pipelines = self.doc["service"]["pipelines"]
         for pl_name, expected_family in zip(SKETCH_PIPELINES, SKETCH_PROCESSORS):
             pl = pipelines[pl_name]
@@ -206,8 +211,15 @@ class TestStaticPlaceholder5SketchRouting(unittest.TestCase):
             )
             self.assertEqual(
                 procs[0],
+                "memory_limiter",
+                f"{pl_name}: memory_limiter must run FIRST (apply "
+                f"backpressure before gorillas3 buffers into "
+                f"windowState — fixes agent OOM at ~3 min); got {procs!r}",
+            )
+            self.assertEqual(
+                procs[1],
                 "gorillas3",
-                f"{pl_name}: gorillas3 must run FIRST (cold-tier write "
+                f"{pl_name}: gorillas3 must run SECOND (cold-tier write "
                 f"on raw samples before sketch mutation); got {procs!r}",
             )
             self.assertIn(
@@ -229,18 +241,50 @@ class TestStaticPlaceholder5SketchRouting(unittest.TestCase):
                 f"{pl_name}: receivers must be the routing connector",
             )
 
+    # 6b. memory_limiter processor block exists with chosen threshold ──
+    def test_memory_limiter_processor_block_present(self):
+        processors = self.doc.get("processors", {})
+        self.assertIn(
+            "memory_limiter",
+            processors,
+            "missing top-level memory_limiter processor — needed to "
+            "apply backpressure before agent hits the 1.5 GiB cgroup "
+            "ceiling and gets OOM-killed (exit 137)",
+        )
+        block = processors["memory_limiter"]
+        # Threshold rationale: agent cgroup is 1536 MiB, so we pick
+        # limit_mib: 1280 (≈ 80 % of cgroup) and spike_limit_mib: 256.
+        self.assertEqual(
+            block.get("limit_mib"),
+            1280,
+            "memory_limiter.limit_mib must be 1280 (≈ 80 % of agent's "
+            "1536 MiB cgroup) — leaves 256 MiB headroom for short bursts",
+        )
+        self.assertEqual(
+            block.get("spike_limit_mib"),
+            256,
+            "memory_limiter.spike_limit_mib must be 256 (mirrors gateway shape)",
+        )
+        self.assertEqual(
+            block.get("check_interval"),
+            "1s",
+            "memory_limiter.check_interval must be 1s for tight feedback",
+        )
+
     # 7. Raw passthrough pipeline shape ────────────────────────────────
     def test_raw_passthrough_pipeline_shape(self):
         raw = self.doc["service"]["pipelines"]["metrics/raw_passthrough"]
         self.assertEqual(raw.get("receivers"), ["routing"])
-        # No sketch processor; gorillas3 + batch only.
+        # memory_limiter first, then gorillas3, then batch — no sketch
+        # processor, so the metric name lands at the gateway verbatim.
         procs = raw.get("processors", [])
         self.assertEqual(
             procs,
-            ["gorillas3", "batch"],
-            "raw_passthrough must be [gorillas3, batch] only — no "
-            "sketch processor, so the metric name lands at the gateway "
-            "verbatim",
+            ["memory_limiter", "gorillas3", "batch"],
+            "raw_passthrough must be [memory_limiter, gorillas3, batch] "
+            "— memory_limiter first to apply backpressure before "
+            "gorillas3 buffers into windowState; no sketch processor "
+            "so the metric name lands at the gateway verbatim",
         )
 
     # 8. routing component is wired to NO sketch processor name ────────
