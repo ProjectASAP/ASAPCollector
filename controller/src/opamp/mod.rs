@@ -533,6 +533,15 @@ mod tests {
         ws
     }
 
+    fn decode_server_to_agent_frame(data: &[u8]) -> opamp_proto::ServerToAgent {
+        let payload = if !data.is_empty() && data[0] == 0 {
+            &data[1..]
+        } else {
+            data
+        };
+        opamp_proto::ServerToAgent::decode(payload).expect("valid protobuf")
+    }
+
     /// `push_to_role` delivers a RemoteConfig to a connected agent-role client.
     #[tokio::test]
     async fn push_to_role_delivers_yaml_to_agent_role() {
@@ -559,7 +568,7 @@ mod tests {
 
         // Decode standard OpAMP protobuf binary frame.
         let data = msg.into_data();
-        let sta = opamp_proto::ServerToAgent::decode(data.as_ref()).expect("valid protobuf");
+        let sta = decode_server_to_agent_frame(data.as_ref());
         let rc = sta.remote_config.expect("should have remote_config");
         let config = rc.config.expect("should have config");
         let file = config.config_map.get("").expect("should have empty-key entry");
@@ -651,7 +660,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let data = msg.into_data();
-        let sta = opamp_proto::ServerToAgent::decode(data.as_ref()).expect("valid protobuf");
+        let sta = decode_server_to_agent_frame(data.as_ref());
         let rc = sta.remote_config.expect("should have remote_config");
         assert_eq!(String::from_utf8(rc.config_hash).unwrap(), "hash-agent");
 
