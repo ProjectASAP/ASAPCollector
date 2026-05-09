@@ -296,37 +296,15 @@ is intentionally hardcoded and should not be changed.
 
 ---
 
-## Benchmark targets
+## Benchmark harness
 
-```bash
-cd opentelemetry-collector-contrib-patch
+The legacy per-collector `cmd/bench.sh` harness was removed alongside the
+`serfcol` / `gorillacol` / per-sketch builder dirs (cleanup PR #363). Re-run
+the Serf comparisons through the unified `asap-otel` build with a config file
+selecting the relevant processor pipeline; the `serfprocessor` itself is still
+in the patched contrib tree (`opentelemetry-collector-contrib-patch/processor/serfprocessor/`)
+and registered in `cmd/asap-otel/builder-config.yaml`.
 
-# Mode 1 — Local archival benchmarks
-./cmd/bench.sh gorillacol              # Gorilla XOR baseline (lossless)
-./cmd/bench.sh serfcol                 # Serf XOR  (max_diff=1e-3, adjust_digit=0)
-./cmd/bench.sh serfcol-qt              # Serf Qt   (max_diff=1e-3)
-
-# max_diff parameter sweep (XOR)
-./cmd/bench.sh serfcol-1e2             # Serf XOR  max_diff=1e-2 (loose)
-./cmd/bench.sh serfcol-1e4             # Serf XOR  max_diff=1e-4 (tight)
-
-# max_diff parameter sweep (Qt)
-./cmd/bench.sh serfcol-qt-1e2          # Serf Qt   max_diff=1e-2 (loose)
-./cmd/bench.sh serfcol-qt-1e4          # Serf Qt   max_diff=1e-4 (tight)
-
-# adjust_digit example (XOR, adjust_digit=100, for metrics ~80–120)
-./cmd/bench.sh serfcol-adj
-
-# Mode 2 — Transmission benchmarks (agent compress → network → backend decompress)
-./cmd/bench.sh serf-transmission-xor   # Serf XOR transmission pipeline
-./cmd/bench.sh serf-transmission-qt    # Serf Qt  transmission pipeline
-```
-
-Mode 2 benchmarks measure:
-- **Bandwidth**: `serf_exporter_bytes_sent_total` bytes/sec (compressed wire size)
-- **Agent CPU/memory**: from agent telemetry at `http://localhost:8888/metrics`
-- **Backend CPU/memory**: from backend telemetry at `http://localhost:8890/metrics`
-- **Agent throughput**: OTLP metric points received per second
-- **Backend throughput**: decoded metric points forwarded per second
-
-Results written to `otel_collector_benchmark/benchmark_results/{processor}/`.
+Bandwidth / CPU / throughput measurements now share the MVP demo's
+`measure_stages.py` and `measure_per_edge_bandwidth.py` instrumentation
+under `deploy/scripts/`.
