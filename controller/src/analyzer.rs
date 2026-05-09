@@ -152,12 +152,11 @@ impl Analyzer {
         // planner switches to consuming `AccuracyTarget` directly
         // (separate downstream PR), this back-translation stops being
         // needed.
-        let resolved_accuracy = spec.accuracy.clone()
-            .unwrap_or_else(|| AccuracyTarget::from_legacy_accuracy_sla(spec.accuracy_sla));
-        let accuracy_sla = match &resolved_accuracy {
-            AccuracyTarget::Exact => 1.0,
-            AccuracyTarget::Epsilon(eps)            => (1.0 - eps).clamp(0.0, 1.0),
-            AccuracyTarget::EpsilonDelta { eps, .. } => (1.0 - eps).clamp(0.0, 1.0),
+        let accuracy_sla = match &spec.accuracy {
+            Some(AccuracyTarget::Exact) => 1.0,
+            Some(AccuracyTarget::Epsilon(eps)) => (1.0 - eps).clamp(0.0, 1.0),
+            Some(AccuracyTarget::EpsilonDelta { eps, .. }) => (1.0 - eps).clamp(0.0, 1.0),
+            None => spec.accuracy_sla,
         };
 
         // ── Step 1: parse query_string if provided ─────────────────────────
@@ -242,9 +241,9 @@ impl Analyzer {
         // downstream consumers but the planner / cost model still keys
         // off `accuracy_sla`, `time_window`, `aggregations`, etc. The
         // L4-aware downstream PR will switch the cost model to read
-        // `resolved_accuracy`, the L5 stage allocator to gate on
+        // `spec.accuracy`, the L5 stage allocator to gate on
         // `spec.shape`, and the leaf planner to gate on `spec.data`.
-        let _ = (&resolved_accuracy, &spec.shape, &spec.data,
+        let _ = (&spec.accuracy, &spec.shape, &spec.data,
                  &spec.id, &spec.language, &spec.dollars,
                  &spec.deployment_model);
 

@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn lower_promql_cardinality() {
         let parsed = parse_query(
-            "count(count_over_time(active_users{env=\"prod\"}[5m]) by (user_id))",
+            "count by (user_id) (count_over_time(active_users{env=\"prod\"}[5m]))",
         )
         .expect("parse");
         let expr = lower_parsed_query(&parsed, AccuracyTarget::Epsilon(0.01)).expect("lower");

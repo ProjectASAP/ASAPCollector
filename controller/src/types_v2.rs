@@ -43,6 +43,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum QueryLanguage {
     /// Prometheus query language. Parsed via `promql-parser`.
+    #[serde(rename = "prom_ql", alias = "prom_q_l")]
     PromQL,
     /// SQL. Parsed via `sqlparser`.
     Sql,

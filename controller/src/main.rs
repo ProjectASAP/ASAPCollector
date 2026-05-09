@@ -1576,8 +1576,13 @@ mod api_tests {
          .expect("ws error");
         match msg {
             Message::Binary(data) => {
+                let payload = if !data.is_empty() && data[0] == 0 {
+                    &data[1..]
+                } else {
+                    data.as_slice()
+                };
                 let sta = <crate::opamp::opamp_proto::ServerToAgent as prost::Message>::decode(
-                    data.as_slice(),
+                    payload,
                 ).expect("decode ServerToAgent");
                 let rc = sta.remote_config.expect("remote_config present");
                 let cm = rc.config.expect("config present");
@@ -1705,7 +1710,9 @@ mod api_tests {
 
         // Verify the config has the expected sketch processor.
         assert!(
-            yaml_config.contains("ddsketch:") || yaml_config.contains("KLL:"),
+            yaml_config.contains("ddsketchprocessor")
+                || yaml_config.contains("kllprocessor")
+                || yaml_config.contains("KLL:"),
             "expected a sketch processor in the pushed config:\n{yaml_config}"
         );
         // Verify OpAMP extension is present.

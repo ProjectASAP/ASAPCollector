@@ -328,7 +328,7 @@ fn apply_delta_decision_with(
 // the lint baseline clean — mirrors the module-wide allowance on
 // `intent_algebra/mod.rs` while Phase B sat consumer-less.
 #[allow(unused_imports)]
-use crate::intent_algebra::{AggIntent, QueryExpr, QueryExprError, Schema};
+use crate::intent_algebra::{AggIntent, BindingScope, QueryExpr, QueryExprError, Schema};
 #[allow(unused_imports)]
 use crate::types_v2::{BindingName, QueryId};
 
@@ -406,9 +406,12 @@ pub fn workload_cost(plan: &WorkloadCostPlan<'_>) -> Result<WorkloadCost, QueryE
     // 1. Cost each binding once. Bindings shadow earlier bindings in
     //    forward order (mirrors `LetBinding`'s lexical-scope semantics).
     let mut binding_costs: HashMap<String, f64> = HashMap::new();
+    let mut schema_scope = BindingScope::new();
     for (name, expr) in &plan.bindings {
-        let cost = subtree_cost(expr, &binding_costs)?;
+        let cost = subtree_cost(expr, &binding_costs, &schema_scope)?;
+        let schema = expr.output_schema_in(&schema_scope)?;
         binding_costs.insert(name.as_str().to_owned(), cost);
+        schema_scope = schema_scope.with(name.clone(), schema);
     }
 
     // 2. Cost each root in the bindings scope. `Ref` lookups charge 0.0
@@ -420,13 +423,13 @@ pub fn workload_cost(plan: &WorkloadCostPlan<'_>) -> Result<WorkloadCost, QueryE
     for (qid, root) in &plan.roots {
         // "What the bundled plan charges this root" — refs and
         // workload-level bindings are free here.
-        let bundled_contribution = subtree_cost_bundled(root, &binding_costs)?;
+        let bundled_contribution = subtree_cost_bundled(root, &binding_costs, &schema_scope)?;
         bundled_root_total += bundled_contribution;
         // "What this root would cost if it owned the whole sub-DAG"
         // — every binding it references is paid for in full. Used
         // only for breakdown reporting; the bundled total above is
         // the actual cost.
-        let standalone = subtree_cost_standalone(root, &binding_costs)?;
+        let standalone = subtree_cost_standalone(root, &binding_costs, &schema_scope)?;
         per_root_breakdown.push((qid.clone(), standalone));
     }
 
@@ -454,6 +457,7 @@ pub fn workload_cost(plan: &WorkloadCostPlan<'_>) -> Result<WorkloadCost, QueryE
 fn subtree_cost_bundled(
     expr: &QueryExpr,
     binding_costs: &HashMap<String, f64>,
+    schema_scope: &BindingScope,
 ) -> Result<f64, QueryExprError> {
     match expr {
         QueryExpr::Ref { name } => {
@@ -469,24 +473,26 @@ fn subtree_cost_bundled(
         }
         QueryExpr::Scan { schema, .. } => Ok(node_cost_scan(schema)),
         QueryExpr::Window { child, .. } => {
-            let cs = subtree_cost_bundled(child, binding_costs)?;
-            let in_schema = child.output_schema()?;
+            let cs = subtree_cost_bundled(child, binding_costs, schema_scope)?;
+            let in_schema = child.output_schema_in(schema_scope)?;
             Ok(node_cost_window(&in_schema) + cs)
         }
         QueryExpr::Aggregate {
             by, aggs, child, ..
         } => {
-            let cs = subtree_cost_bundled(child, binding_costs)?;
-            let in_schema = child.output_schema()?;
+            let cs = subtree_cost_bundled(child, binding_costs, schema_scope)?;
+            let in_schema = child.output_schema_in(schema_scope)?;
             Ok(node_cost_aggregate(by, aggs, &in_schema) + cs)
         }
         QueryExpr::LetBinding { name, expr, child } => {
             // Within-query LetBinding — same shared-credit logic. Cost
             // `expr` once, expose it under `name`, then walk `child`.
             let mut extended = binding_costs.clone();
-            let bind_cost = subtree_cost(expr, binding_costs)?;
+            let bind_cost = subtree_cost(expr, binding_costs, schema_scope)?;
+            let bound_schema = expr.output_schema_in(schema_scope)?;
+            let extended_scope = schema_scope.with(name.clone(), bound_schema);
             extended.insert(name.as_str().to_owned(), bind_cost);
-            let child_cost = subtree_cost_bundled(child, &extended)?;
+            let child_cost = subtree_cost_bundled(child, &extended, &extended_scope)?;
             Ok(bind_cost + child_cost)
         }
     }
@@ -500,6 +506,7 @@ fn subtree_cost_bundled(
 fn subtree_cost_standalone(
     expr: &QueryExpr,
     binding_costs: &HashMap<String, f64>,
+    schema_scope: &BindingScope,
 ) -> Result<f64, QueryExprError> {
     match expr {
         QueryExpr::Ref { name } => binding_costs
@@ -508,22 +515,24 @@ fn subtree_cost_standalone(
             .ok_or_else(|| QueryExprError::UnresolvedRef(name.as_str().into())),
         QueryExpr::Scan { schema, .. } => Ok(node_cost_scan(schema)),
         QueryExpr::Window { child, .. } => {
-            let cs = subtree_cost_standalone(child, binding_costs)?;
-            let in_schema = child.output_schema()?;
+            let cs = subtree_cost_standalone(child, binding_costs, schema_scope)?;
+            let in_schema = child.output_schema_in(schema_scope)?;
             Ok(node_cost_window(&in_schema) + cs)
         }
         QueryExpr::Aggregate {
             by, aggs, child, ..
         } => {
-            let cs = subtree_cost_standalone(child, binding_costs)?;
-            let in_schema = child.output_schema()?;
+            let cs = subtree_cost_standalone(child, binding_costs, schema_scope)?;
+            let in_schema = child.output_schema_in(schema_scope)?;
             Ok(node_cost_aggregate(by, aggs, &in_schema) + cs)
         }
         QueryExpr::LetBinding { name, expr, child } => {
             let mut extended = binding_costs.clone();
-            let bind_cost = subtree_cost(expr, binding_costs)?;
+            let bind_cost = subtree_cost(expr, binding_costs, schema_scope)?;
+            let bound_schema = expr.output_schema_in(schema_scope)?;
+            let extended_scope = schema_scope.with(name.clone(), bound_schema);
             extended.insert(name.as_str().to_owned(), bind_cost);
-            let child_cost = subtree_cost_standalone(child, &extended)?;
+            let child_cost = subtree_cost_standalone(child, &extended, &extended_scope)?;
             Ok(bind_cost + child_cost)
         }
     }
@@ -536,11 +545,12 @@ fn subtree_cost_standalone(
 fn subtree_cost(
     expr: &QueryExpr,
     binding_costs: &HashMap<String, f64>,
+    schema_scope: &BindingScope,
 ) -> Result<f64, QueryExprError> {
     // Same shape as standalone — bindings are walked in their own
     // scope where outer bindings are visible (workload-level bindings
     // can reference earlier ones).
-    subtree_cost_standalone(expr, binding_costs)
+    subtree_cost_standalone(expr, binding_costs, schema_scope)
 }
 
 // ── Per-node cost primitives ─────────────────────────────────────────────────
@@ -693,7 +703,7 @@ mod workload_cost_tests {
         let wc = workload_cost(&plan).unwrap();
 
         // Per-root breakdown reports the standalone cost of `q`.
-        let standalone = subtree_cost_standalone(&q, &HashMap::new()).unwrap();
+        let standalone = subtree_cost_standalone(&q, &HashMap::new(), &BindingScope::new()).unwrap();
         assert_eq!(wc.per_root_breakdown.len(), 1);
         assert_eq!(wc.per_root_breakdown[0].0, QueryId::new("q1"));
         assert!((wc.per_root_breakdown[0].1 - standalone).abs() < 1e-9);
@@ -715,8 +725,8 @@ mod workload_cost_tests {
         };
         let wc = workload_cost(&plan).unwrap();
 
-        let s1 = subtree_cost_standalone(&q1, &HashMap::new()).unwrap();
-        let s2 = subtree_cost_standalone(&q2, &HashMap::new()).unwrap();
+        let s1 = subtree_cost_standalone(&q1, &HashMap::new(), &BindingScope::new()).unwrap();
+        let s2 = subtree_cost_standalone(&q2, &HashMap::new(), &BindingScope::new()).unwrap();
         assert!((wc.total_dollars - (s1 + s2)).abs() < 1e-9);
         assert!(wc.reused_savings.abs() < 1e-9);
         assert_eq!(wc.per_root_breakdown.len(), 2);
@@ -744,7 +754,7 @@ mod workload_cost_tests {
         let wc = workload_cost(&plan).unwrap();
 
         // The shared-producer cost contribution.
-        let shared_cost = subtree_cost(&shared, &HashMap::new()).unwrap();
+        let shared_cost = subtree_cost(&shared, &HashMap::new(), &BindingScope::new()).unwrap();
         // Naive sum-over-roots = each root pays for its full subtree
         // including the shared sub-DAG.
         let naive_sum: f64 = wc.per_root_breakdown.iter().map(|(_, c)| *c).sum();
@@ -792,7 +802,7 @@ mod workload_cost_tests {
         };
         let wc = workload_cost(&plan).unwrap();
 
-        let shared_cost = subtree_cost(&shared, &HashMap::new()).unwrap();
+        let shared_cost = subtree_cost(&shared, &HashMap::new(), &BindingScope::new()).unwrap();
         // Two consumers of `w` ⇒ one duplicated copy avoided ⇒
         // savings ≈ shared_cost (not 2 × shared_cost).
         assert!(
@@ -828,7 +838,7 @@ mod workload_cost_tests {
             ],
         };
         let wc = workload_cost(&plan).unwrap();
-        let shared_cost = subtree_cost(&shared, &HashMap::new()).unwrap();
+        let shared_cost = subtree_cost(&shared, &HashMap::new(), &BindingScope::new()).unwrap();
         assert!(
             (wc.reused_savings - 2.0 * shared_cost).abs() < 1e-9,
             "three consumers should save 2× shared_cost ({}); got {}",
