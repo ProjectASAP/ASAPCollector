@@ -1,45 +1,77 @@
-# Agent config — issue #46 v4 single-sketch ASAP demo.
+# Agent static placeholder — 5-sketch routing-connector pipeline.
 #
-# Replaces the v3 "all-five sketches at once" agent config with ONE
-# sketch (DDSketch by default; switchable via the
-# ${ASAP_SKETCH_FAMILY:-ddsketch} env var) plus the gorillas3
-# processor for the cold archive. This matches the realistic
-# production deployment: the controller picks ONE sketch family
-# per (metric, query family, workload) on its plan; running all
-# five at once was paper-figure material, NOT v4 §5 evaluation.
+# ── Why this file exists ──────────────────────────────────────────────
 #
-# Pipeline (single OTLP metrics):
+# PR #350's report flagged a real OpAMP-push gap: the controller emits
+# the typed 5-sketch routing-connector YAML correctly, but the agent
+# never APPLIES the OpAMP RemoteConfig push at runtime. The
+# effective-config preview keeps showing the static bootstrap YAML
+# loaded from this file, and the agent stays on whatever pipeline this
+# file declares.
 #
-#   raw OTLP ──▶ gorillas3 ──▶ MinIO (asap-gorilla bucket; cold)
-#                 │
-#                 └──▶ <SKETCH> ──▶ batch ──▶ otlp/backend (warm)
+# Previously this file declared a single `[gorillas3, ddsketch, batch]`
+# pipeline ("issue #46 v4 single-sketch ASAP demo"), so the running
+# agent only ever ran ONE sketch (DDSketch) regardless of how many
+# sketch families the controller plan picked. KLL / HLL / CountSketch /
+# CountMinSketch processors never ran, breaking the §3 architecture
+# story (one agent → five concurrent sketch pipelines → backend serves
+# five concurrent query families).
 #
-# Selecting the sketch family:
+# The fix in this PR: make the static placeholder match the EXACT shape
+# the controller's typed bootstrap emits via
+# `emit_edge_yaml_5sketch_routing` (controller/src/config/stage_config.rs).
+# That way, even without OpAMP-push, agents start with all 5 sketch
+# processors loaded + the routing connector + per-sketch pipelines, and
+# the running pipeline graph matches what the controller plan claims.
 #
-#   ASAP_SKETCH_FAMILY=ddsketch   # default — quantile (rel-error)
-#   ASAP_SKETCH_FAMILY=kll        # quantile (rank-error)
-#   ASAP_SKETCH_FAMILY=hll        # cardinality
-#   ASAP_SKETCH_FAMILY=countsketch
-#   ASAP_SKETCH_FAMILY=countmin
+# ── Wire shape (mirrors controller emit) ─────────────────────────────
 #
-# This file is wired to switch between exactly TWO families
-# without a config swap (DDSketch / KLL — both quantile) by
-# templating the processor name on a single env. Switching to
-# HLL / CS / CMS requires picking a different agent config file
-# (asap-otel-agent-{hll,cs,cms}-direct.yaml — already on disk);
-# the single-sketch demo is documented to default to DDSketch
-# because that's the sketch the v4 query suite exercises.
+#   receivers.otlp           — gRPC :4317 + HTTP :4318, max 64 MiB
+#   processors.gorillas3     — cold-tier archive write
+#   processors.{ddsketch, KLL, HLL, countsketch, countmin}
+#   processors.batch         — coalesce per-pipeline output
+#   connectors.routing       — OTel v0.106 connector (NOT processor)
+#   exporters.otlp/backend   — gateway:4317
 #
-# IMPORTANT: even with `ASAP_SKETCH_FAMILY` unset, this config
-# only enables ONE sketch processor. The other four are
-# conspicuously absent — that's the point of this baseline vs
-# the v3 all-five-sketches one.
+#   service.pipelines:
+#     metrics:                     receivers:[otlp]    exporters:[routing]
+#     metrics/raw_passthrough:     receivers:[routing] processors:[gorillas3, batch]              exporters:[otlp/backend]
+#     metrics/ddsketch_path:       receivers:[routing] processors:[gorillas3, ddsketch, batch]    exporters:[otlp/backend]
+#     metrics/kll_path:            receivers:[routing] processors:[gorillas3, KLL, batch]         exporters:[otlp/backend]
+#     metrics/hll_path:            receivers:[routing] processors:[gorillas3, HLL, batch]         exporters:[otlp/backend]
+#     metrics/countsketch_path:    receivers:[routing] processors:[gorillas3, countsketch, batch] exporters:[otlp/backend]
+#     metrics/countminsketch_path: receivers:[routing] processors:[gorillas3, countmin, batch]    exporters:[otlp/backend]
+#
+# Processor key names match the IDs the patched contrib build's
+# `factory.go` registers — verified by `asap-otel components`:
+#   ddsketch   KLL   HLL   countsketch   countmin   gorillas3   batch
+# (NOT the Rust controller-side `*processor` aliases used in
+# `controller/src/config/stage_config.rs::sketch_kind_to_processor_name`;
+# those don't appear in the agent's component registry, so the
+# controller-emitted YAML can't be loaded either — that's the residual
+# half of #350 that has to be fixed in the controller emitter and is
+# out of scope for this PR. This static placeholder uses the registered
+# names so it actually loads and the running pipeline matches the
+# documented shape.)
+#
+# All 5 per-family pipelines are pre-declared so a controller replan
+# that retargets a metric onto a new family is zero-touch on the
+# pipeline graph (only the routing-connector table changes).
+#
+# IMPORTANT: `routing` MUST live under `connectors:`, not `processors:`.
+# OTel collector v0.106 removed the deprecated `routingprocessor`; the
+# routing component is now a `routingconnector`. Emitting it under
+# `processors:` would fail agent boot.
 
 extensions:
   opamp:
     server:
       ws:
         endpoint: ws://controller:4320/v1/opamp
+        # Header-based agent identification — see
+        # `asap-otel-agent-b3-delta-direct.yaml` for the rationale
+        # (controller's OpAMP server uses X-Agent-ID, not the
+        # InstanceUid carried in the OpAMP message body).
         headers:
           X-Agent-ID: "agent-1"
 
@@ -50,22 +82,28 @@ receivers:
         endpoint: 0.0.0.0:4317
         # 64 MiB so high-cardinality producer batches (e.g. 5K series ×
         # 500 user_ids) don't trip the 4 MiB grpc default and get
-        # rejected by the agent. Mirrors the gateway receiver knob.
+        # rejected by the agent. Mirrors the gateway receiver knob and
+        # the controller emit.
         max_recv_msg_size_mib: 64
       http:
         endpoint: 0.0.0.0:4318
 
 processors:
-  # ── Cold tier: Gorilla-S3 archive write ──────────────────────────
-  # `drop_original: false` lets the raw metric pass through to the
-  # warm-tier sketch.
+  # ── Cold tier: Gorilla-S3 archive write ──────────────────────────────
+  # Runs FIRST in every per-family pipeline so the cold-tier write
+  # happens on raw samples BEFORE the sketch processor mutates / suffix-
+  # renames the stream. `drop_original: false` lets the raw metric pass
+  # through to the warm-tier sketch processor on each path.
   #
-  # Step 2.4: emit Prometheus TSDB blocks (block_format: prometheus_tsdb)
-  # into a dedicated `asap-gorilla-tsdb` bucket so the Thanos
-  # store-gateway sidecar in mvp-thanos-archive.yml can read them. The
-  # `asap` (legacy) layout is no longer needed once Path A2 is the
-  # default archive engine — the in-process Rust GorillaQueryEngine is
-  # only kept registered when ASAP_THANOS_QUERY_URL is unset.
+  # `block_format: prometheus_tsdb` + dedicated `asap-gorilla-tsdb`
+  # bucket so the Thanos store-gateway sidecar in
+  # mvp-thanos-archive.yml can read the blocks (Path A2).
+  #
+  # Endpoint / bucket / creds match the `mvp-multi-stage.yml` defaults.
+  # The controller's typed emit uses `${VAR:-default}` shell-style
+  # fallbacks; the OTel v0.106 confmap rejects that form
+  # (`invalid uri: "VAR:-..."`), so the static placeholder pins the
+  # same defaults verbatim.
   gorillas3:
     window_interval: 60s
     drop_original: false
@@ -83,46 +121,183 @@ processors:
     block_format: prometheus_tsdb
     tsdb_bucket: asap-gorilla-tsdb
     tsdb_block_duration: 60s
-    tsdb_external_labels:
-      cluster: asap-mvp
-      replica: a
 
-  # ── Warm tier: SINGLE sketch (DDSketch by default). ──────────────
-  # DDSketch — relative-error quantile family. Output suffix
-  # `_quantile` matches `backend-inference.yaml` for the warm-tier
-  # routing of `quantile_over_time(...)`.
+  # ── DDSketch — quantile family (relative-error). ─────────────────────
+  # Note: the controller emit decorates each processor with
+  # `aggregation_id` + `sketch_kind` keys — those aren't in the patched
+  # contrib build's `Config` struct (only the family-specific knobs are
+  # accepted), so the static placeholder omits them. This is the
+  # residual half of #350 that must be fixed in the controller emit;
+  # this PR's job is to give agents a static config that ACTUALLY
+  # LOADS with all 5 sketch processors active.
   ddsketch:
     mode: window
-    window_duration: 30s
+    window_duration: 60s
     transmit_sketch: true
-    # Delta-encoded transmission default — emit only buckets that
-    # changed since the last flush. Matches the processor factory's
-    # `DeltaTransmission: true` default; pinned here so the MVP
-    # demo's bandwidth verdict doesn't depend on factory defaults.
-    delta_transmission: true
     enable_self_monitoring: true
+    delta_transmission: true
     quantiles: [0.5, 0.9, 0.99]
     metric_suffix: "_quantile"
 
+  # ── KLL — quantile family (rank-error). ──────────────────────────────
+  # NO `delta_transmission` for KLL: KLL uses randomised compaction so
+  # two sketches over the same input history are not bit-identical and
+  # not linearly mergeable. The KLL processor's `Config.Validate`
+  # rejects `delta_transmission: true` with an error rather than
+  # silently falling back; emitting the flag would break agent boot.
+  KLL:
+    mode: window
+    window_duration: 60s
+    k: 200
+    transmit_sketch: true
+    enable_self_monitoring: true
+    quantiles: [0.5, 0.9, 0.99]
+    # KLL processor's `Config` struct has no `encoding` key — KLL is
+    # always serialised as msgpack (DataSketches stream format), and
+    # the processor rejects unknown keys.
+    metric_suffix: "_quantile"
+
+  # ── HLL — cardinality family. ────────────────────────────────────────
+  # The patched contrib build hard-codes precision p=14, so no
+  # precision knob appears in the Config struct.
+  HLL:
+    mode: window
+    window_duration: 60s
+    transmit_sketch: true
+    enable_self_monitoring: true
+    delta_transmission: true
+    encoding: msgpack
+    metric_suffix: "_hll"
+
+  # ── CountSketch — heavy-hitter / frequency family. ───────────────────
+  countsketch:
+    mode: window
+    window_duration: 60s
+    epsilon: 0.01
+    delta: 0.01
+    transmit_sketch: true
+    enable_self_monitoring: true
+    delta_transmission: true
+    encoding: msgpack
+
+  # ── CountMinSketch — additive frequency family. ──────────────────────
+  # `metric_name` is required by the patched countminsketch processor's
+  # Config (it does not auto-process every series). Pinned to the
+  # canonical workload metric `endpoint_request_freq` per MVP §46.
+  countmin:
+    mode: window
+    window_duration: 60s
+    metric_name: "endpoint_request_freq"
+    rows: 4
+    columns: 4096
+    transmit_sketch: true
+    enable_self_monitoring: true
+    delta_transmission: true
+    encoding: msgpack
+
   batch:
-    timeout: 1s
     send_batch_size: 1024
+    timeout: 1s
+
+connectors:
+  # ── Routing connector (OTel v0.106 — NOT a processor). ───────────────
+  #
+  # OTTL `route()` table mirrors the controller's canonical
+  # `metric_to_family` map (see MVP §46 — five workload-spec metrics).
+  # Any metric NOT matched here falls through to the default
+  # `metrics/raw_passthrough` pipeline, where the cold-tier write still
+  # happens and the raw counter lands at the gateway verbatim.
+  #
+  # The freshness-probe metrics (warm/archive) explicitly route to
+  # `metrics/raw_passthrough` so their metric NAME is preserved end-to-
+  # end (no sketch processor suffixes them).
+  routing:
+    # `context: metric` on each table entry — required so OTTL paths
+    # resolve against the metric scope (where `name` is the metric
+    # name). The default `resource` context only exposes resource
+    # attributes; without `context: metric` the connector errors at
+    # build time with "segment 'name' from path 'name' is not a valid
+    # path nor a valid OTTL keyword for the resource context". The
+    # `condition:` form is the per-entry OTTL boolean (mutually
+    # exclusive with `statement:`); we use `condition:` so the
+    # routing decision is a pure boolean dispatch on the metric name.
+    default_pipelines: [metrics/raw_passthrough]
+    table:
+      - context: metric
+        condition: 'name == "http_requests_total_latency_ms"'
+        pipelines: [metrics/ddsketch_path]
+      - context: metric
+        condition: 'name == "request_size_bytes"'
+        pipelines: [metrics/kll_path]
+      - context: metric
+        condition: 'name == "unique_users_per_min"'
+        pipelines: [metrics/hll_path]
+      - context: metric
+        condition: 'name == "top_endpoint_qps"'
+        pipelines: [metrics/countsketch_path]
+      - context: metric
+        condition: 'name == "endpoint_request_freq"'
+        pipelines: [metrics/countminsketch_path]
+      - context: metric
+        condition: 'name == "http_freshness_probe_warm"'
+        pipelines: [metrics/raw_passthrough]
+      - context: metric
+        condition: 'name == "http_freshness_probe_archive"'
+        pipelines: [metrics/raw_passthrough]
 
 exporters:
   otlp/backend:
-    endpoint: backend:4317
+    endpoint: gateway:4317
     tls:
       insecure: true
+    # Backend's tonic gRPC server doesn't accept gzip-compressed bodies
+    # — keep compression off (mirrors the per-sketch direct configs).
     compression: none
 
 service:
   extensions: [opamp]
   pipelines:
+    # Entry pipeline — receivers: [otlp], exporters: [routing] (the
+    # connector). NO processors on the entry pipeline; the routing
+    # connector is responsible for fan-out to the per-family pipelines.
     metrics:
       receivers: [otlp]
-      # gorillas3 first — cold-tier write happens on raw input
-      # before the sketch processor mutates the stream.
+      exporters: [routing]
+
+    # Default raw-passthrough — gorillas3 then batch. NO sketch
+    # processor; raw counters land at the gateway verbatim. Also the
+    # destination of warm/archive freshness probes (their metric name
+    # is preserved end-to-end).
+    metrics/raw_passthrough:
+      receivers: [routing]
+      processors: [gorillas3, batch]
+      exporters: [otlp/backend]
+
+    # Per-family pipelines. Each starts with gorillas3 (cold-tier write
+    # on raw samples) BEFORE the sketch processor mutates the stream.
+    metrics/ddsketch_path:
+      receivers: [routing]
       processors: [gorillas3, ddsketch, batch]
+      exporters: [otlp/backend]
+
+    metrics/kll_path:
+      receivers: [routing]
+      processors: [gorillas3, KLL, batch]
+      exporters: [otlp/backend]
+
+    metrics/hll_path:
+      receivers: [routing]
+      processors: [gorillas3, HLL, batch]
+      exporters: [otlp/backend]
+
+    metrics/countsketch_path:
+      receivers: [routing]
+      processors: [gorillas3, countsketch, batch]
+      exporters: [otlp/backend]
+
+    metrics/countminsketch_path:
+      receivers: [routing]
+      processors: [gorillas3, countmin, batch]
       exporters: [otlp/backend]
 
   telemetry:
