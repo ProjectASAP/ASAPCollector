@@ -32,24 +32,50 @@
 // indexes by series ref. See `appendWindow`.
 //
 // mvp/issue46: The "across series order does not matter" claim above
-// turned out to be WRONG. The Head's `appendableMinValidTime` is
-// `max(MaxTime - chunkRange/2, minValidTime)`. Once any sample is
-// appended, MaxTime advances; subsequent samples whose timestamp is
-// older than (MaxTime - chunkRange/2) are rejected with
-// `storage.ErrOutOfBounds`. With a 60s chunkRange that's a 30s
-// floor. If we visit series in random map-iteration order — say
-// series A (latest sample @t=58s) before series B (earliest sample
-// @t=0s) — appending A pushes MaxTime to 58s, then B's t=0 sample
-// is < 58-30 = 28s → OOB. PR#338's high-cardinality rotating series
-// (`unique_users_per_min`, `top_endpoint_qps`) made this trip on
-// every flush.
+// turned out to be WRONG. The Head's per-appender `minValidTime` is
+// FROZEN at appender-creation time and seeded by the first appended
+// sample via the `initAppender` bootstrap (`initTime(t) → headMaxt = t
+// → appender.minValidTime = t - chunkRange/2`). Subsequent samples
+// older than that initial floor are rejected with
+// `storage.ErrOutOfBounds`. If we visit series in random map-
+// iteration order — say series A (earliest sample @t=58s) before
+// series B (earliest sample @t=0s) — initAppender anchors at 58s,
+// the floor becomes 28s, and B's t=0s sample → OOB. PR#338's high-
+// cardinality rotating series (`unique_users_per_min`,
+// `top_endpoint_qps`) made this trip on every flush.
 //
-// Fix: collect every (labels, ts, v) tuple in the window, sort the
-// FLAT list globally by timestamp ascending, then drive Append. This
-// keeps MaxTime growing monotonically across the entire flush so no
-// in-window sample falls behind the appendableMinValidTime floor.
+// PR#354 originally fixed this by flattening every (labels, ts, v)
+// tuple into one slice, globally sorting by timestamp, then driving
+// Append from the sorted flat list. Correct, but it allocates an
+// O(N_samples) array (~80 B per slot — ts+value+labels.Labels header
+// + *SeriesRef pointer) IN ADDITION to the existing per-series buffer
+// copies, AND it interleaves Head series creation across every series
+// in the block — so every series' open `headChunks` stays resident
+// through the entire flush. With a 5 K-cardinality / 60 s window
+// that's 1.2 M samples × 80 B + 5 K simultaneously-open chunks → on
+// the order of 150 MiB of churn per flush per gorillas3 instance,
+// multiplied by the 6 gorillas3 instances the 5-sketch routing
+// topology spawns (one per per-family pipeline). Result: the flush
+// itself OOM-killed the agent at the 60 s tick, before any block
+// reached MinIO. See PR #355 / fix/thanos-archive-write-regression.
+//
+// Fix (PR #355): keep the per-series append path (no flat slice),
+// but *order the series visits* by each series' earliest sample
+// timestamp. That guarantees the very first call to `app.Append(...)`
+// carries the global minimum timestamp, anchoring
+// `appender.minValidTime` at `globalMin - chunkRange/2`. Every other
+// in-window sample is >= the global min, so it's >= the floor and
+// passes. Memory is bounded by the same working set the writer
+// already needed (one series' sorted points + Head's per-series
+// state) — no per-flush O(N_samples) flat slice.
+//
 // Late-arriving samples that genuinely fall outside the block window
-// are skipped (with a counter + warning), not crashed on. See #46.
+// (e.g. a stale point dredged up by an upstream replay > chunkRange/2
+// behind the new minimum) are still skipped via the OOB tolerance
+// `app.Append` returns from PR #354 — the appender is NOT rolled
+// back, the count is surfaced via
+// `gorillas3_tsdb_oob_samples_dropped_total` and a warn log, and the
+// agent stays up.
 
 package gorillas3processor
 
@@ -196,53 +222,56 @@ func (b *tsdbBlockBuilder) build(ctx context.Context, window map[seriesKey]*seri
 }
 
 // appendWindow drives `BlockWriter.Appender` over every (series,
-// point) pair. mvp/issue46:
+// point) pair. mvp/issue46 (rewritten under PR #355):
 //
-//   - All samples across all series are flattened and sorted
-//     globally by timestamp ascending. This keeps the Head's MaxTime
-//     advancing monotonically across the entire flush, so no
-//     in-window sample falls behind the (MaxTime - chunkRange/2)
-//     out-of-bounds floor.
-//   - `storage.ErrOutOfBounds` from `app.Append` is NOT treated as
-//     a fatal error. The sample is skipped, a counter is bumped,
-//     and the appender continues. This guards against late-arriving
-//     samples from an upstream agent flush window that genuinely
-//     fall outside the block window — we'd rather drop a handful of
-//     stale points than crash the whole agent.
+//   - Each series' points are sorted ascending in a local copy
+//     (preserves per-series monotonicity which the Head requires).
+//   - Series are visited in ascending order of each series' EARLIEST
+//     timestamp. The series carrying the global-minimum sample is
+//     visited first, so the very first `app.Append(...)` call seeds
+//     the Head's appender `minValidTime = globalMin - chunkRange/2`.
+//     Every other in-window sample is >= globalMin, so it's >= the
+//     floor and passes the head's OOB check.
+//   - This avoids both (a) the OOB-during-flush bug PR #354 was
+//     written to fix and (b) PR #354's O(N_samples) flat-slice
+//     allocation, which OOM-killed the agent at the first 60 s flush
+//     under 5-sketch routing (6 gorillas3 instances × 1.2 M samples
+//     each). See the `mvp/issue46` doc-block at top-of-file for the
+//     full reasoning.
+//   - `storage.ErrOutOfBounds` from `app.Append` is still NOT treated
+//     as fatal. The sample is skipped, the counter bumps, and the
+//     appender keeps going. This guards against genuinely late-
+//     arriving points (e.g. a replay > chunkRange/2 behind globalMin)
+//     so the agent stays up even if upstream sends a stale tail.
 //
-// Returns the number of samples dropped due to OOB (zero when the
-// fix above is sufficient and there are no genuinely-late samples).
+// Returns the number of samples dropped due to OOB (zero in the
+// common case where every series' points fall within
+// [globalMin, globalMin + windowSpan] and chunkRange/2 covers the
+// whole window).
 func (b *tsdbBlockBuilder) appendWindow(ctx context.Context, bw *tsdb.BlockWriter, window map[seriesKey]*seriesBuffer) (uint64, error) {
-	// flatSample carries one sample plus its target labelset and a
-	// shared seriesRef cell so successive Appends for the same
-	// series reuse the ref the Head returned us.
-	type flatSample struct {
-		ts  int64 // milliseconds since Unix epoch
-		v   float64
-		ls  labels.Labels
-		ref *storage.SeriesRef
+	// orderedSeries pairs a series key with its non-empty sorted
+	// points and the materialised labels.Labels — sorting by
+	// `firstTs` once gives us the visit order that anchors
+	// `appender.minValidTime` at the global-minimum sample.
+	type orderedSeries struct {
+		firstTs int64 // milliseconds since Unix epoch (smallest in series)
+		pts     []point
+		ls      labels.Labels
 	}
 
-	// Pre-sort each series' points (cheap; preserves the previous
-	// per-series-monotonic invariant the Head also requires) and
-	// allocate a shared ref pointer per series so cross-series
-	// interleaving still amortises Append's series lookup.
-	estTotal := 0
-	for _, buf := range window {
-		if buf != nil {
-			estTotal += len(buf.points)
-		}
-	}
-	flat := make([]flatSample, 0, estTotal)
-
+	// Pre-sort each series' points and capture each series' first
+	// (smallest) timestamp. We avoid an O(N_samples) flat slice —
+	// `series` is bounded by the cardinality of the window, not the
+	// total sample count.
+	series := make([]orderedSeries, 0, len(window))
 	for sk, buf := range window {
 		if buf == nil || len(buf.points) == 0 {
 			continue
 		}
 		ls := b.labelsFor(sk.metricName, buf.attributes)
-		// Defensive: tsdb rejects empty label sets; metric name
-		// always provides `__name__` so this never trips, but
-		// guard anyway.
+		// Defensive: tsdb rejects empty label sets; the metric
+		// name always provides `__name__` so this never trips,
+		// but guard anyway.
 		if ls.Len() == 0 {
 			continue
 		}
@@ -252,44 +281,46 @@ func (b *tsdbBlockBuilder) appendWindow(ctx context.Context, bw *tsdb.BlockWrite
 		pts := make([]point, len(buf.points))
 		copy(pts, buf.points)
 		sort.Slice(pts, func(i, j int) bool { return pts[i].ts < pts[j].ts })
-
-		ref := new(storage.SeriesRef)
-		for _, p := range pts {
-			// tsdb timestamps are milliseconds since Unix epoch.
-			flat = append(flat, flatSample{
-				ts:  p.ts / int64(time.Millisecond),
-				v:   p.v,
-				ls:  ls,
-				ref: ref,
-			})
-		}
+		series = append(series, orderedSeries{
+			firstTs: pts[0].ts / int64(time.Millisecond),
+			pts:     pts,
+			ls:      ls,
+		})
 	}
 
-	// Global sort by timestamp. Stable so that equal-timestamp
-	// samples within a single series keep their per-series order
-	// (which is already ascending after the per-series sort above).
-	sort.SliceStable(flat, func(i, j int) bool { return flat[i].ts < flat[j].ts })
+	// Visit series in ascending order of first-sample ts. The very
+	// first `app.Append` will therefore carry the global-minimum
+	// timestamp, anchoring the appender's minValidTime at
+	// `globalMin - chunkRange/2` so every other in-window sample
+	// passes the OOB check.
+	sort.Slice(series, func(i, j int) bool { return series[i].firstTs < series[j].firstTs })
 
 	app := bw.Appender(ctx)
 	var dropped uint64
-	for _, s := range flat {
-		r, err := app.Append(*s.ref, s.ls, s.ts, s.v)
-		if err != nil {
-			if errors.Is(err, storage.ErrOutOfBounds) {
-				// Sample is older than the Head's
-				// appendable floor — almost always a
-				// late-arriving point from a previous
-				// window. Drop it, count it, keep going.
-				// The Head remains usable after this
-				// return; the appender's transaction is
-				// not rolled back.
-				dropped++
-				continue
+	for _, s := range series {
+		var ref storage.SeriesRef
+		for _, p := range s.pts {
+			// tsdb timestamps are milliseconds since Unix epoch.
+			tms := p.ts / int64(time.Millisecond)
+			r, err := app.Append(ref, s.ls, tms, p.v)
+			if err != nil {
+				if errors.Is(err, storage.ErrOutOfBounds) {
+					// Sample is older than the
+					// Head's appendable floor —
+					// almost always a late-arriving
+					// point from a previous window.
+					// Drop it, count it, keep going.
+					// The Head remains usable after
+					// this return; the appender's
+					// transaction is not rolled back.
+					dropped++
+					continue
+				}
+				_ = app.Rollback()
+				return dropped, fmt.Errorf("tsdb appender.Append: %w", err)
 			}
-			_ = app.Rollback()
-			return dropped, fmt.Errorf("tsdb appender.Append: %w", err)
+			ref = r
 		}
-		*s.ref = r
 	}
 	if err := app.Commit(); err != nil {
 		return dropped, fmt.Errorf("tsdb appender.Commit: %w", err)

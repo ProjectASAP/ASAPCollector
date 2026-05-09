@@ -104,8 +104,31 @@ processors:
   # fallbacks; the OTel v0.106 confmap rejects that form
   # (`invalid uri: "VAR:-..."`), so the static placeholder pins the
   # same defaults verbatim.
+  #
+  # PR #355 / fix/thanos-archive-write-regression: window_interval
+  # is held at 5 s (was 60 s pre-fix). Each per-family pipeline owns
+  # an independent gorillas3 instance and an independent in-memory
+  # `windowState` buffer; PR #353 spawned six such instances (one
+  # per per-family pipeline) and PR #338's fake-exporter cardinality
+  # (5 producers × 500 user_ids × ~30 K events / s) means each window
+  # accretes ~30 MiB of buffered samples per second per pipeline.
+  # With six pipelines and a 60 s window, the in-memory working set
+  # alone overshot the agent's 1.5 GiB memory limit BEFORE the first
+  # flush ticker fired — the agent was OOM-killed and zero TSDB
+  # blocks ever reached MinIO (archive_ok = 0 in the post-PR-#354
+  # MVP rerun). At 5 s the per-pipeline window peaks around 150 MiB
+  # before the ticker reaps it, putting the steady-state aggregate
+  # comfortably inside the budget. The controller's typed emit uses
+  # 10 s, so the eventual OpAMP push will swing only 2× rather than
+  # 12× from the static placeholder; once the OpAMP path actually
+  # applies emitted YAML, the placeholder can converge to that value.
+  # `tsdb_block_duration` stays at 60 s so the produced blocks still
+  # span a full minute (each flush rolls a new sub-block; thanos-
+  # compact will merge them downstream), keeping the on-S3 layout
+  # compatible with the Thanos store-gateway sync interval and with
+  # the existing block consumer sweep cadence.
   gorillas3:
-    window_interval: 60s
+    window_interval: 5s
     drop_original: false
     endpoint: http://minio:9000
     bucket: asap-gorilla
