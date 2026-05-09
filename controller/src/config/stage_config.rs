@@ -930,6 +930,24 @@ tsdb_block_duration: {window_secs}s\n",
     .context("parse batch processor block")?;
     processors.insert("batch".to_string(), batch_block);
 
+    // memory_limiter processor — backpressure BEFORE gorillas3 so the
+    // collector refuses incoming batches when RSS crosses the soft
+    // threshold instead of OOM-killing the agent. Follow-up to PR #355
+    // (gorillas3 archive write fix): even with `window_interval: 5s`
+    // the agent was OOM-killed (exit 137) ~3 min into sustained load
+    // because six per-family in-memory windowState buffers can overshoot
+    // the 1.5 GiB cgroup ceiling at peak. Threshold = 1280 MiB / 256 MiB
+    // spike (≈ 80 % / 17 % of cgroup), mirrors gateway shape but scaled
+    // to the agent's smaller cgroup. MUST be the first processor in
+    // every per-sketch pipeline (see `make_sketch_pipeline` below) —
+    // limiting AFTER gorillas3 would mean the buffer has already
+    // accreted on heap by the time the limiter rejects.
+    let memory_limiter_block: Value = serde_yaml::from_str(
+        "check_interval: 1s\nlimit_mib: 1280\nspike_limit_mib: 256\n",
+    )
+    .context("parse memory_limiter processor block")?;
+    processors.insert("memory_limiter".to_string(), memory_limiter_block);
+
     // ── Exporters ──────────────────────────────────────────────────────────
     let (exporter_key, exporter_val) = build_otlp_exporter("gateway", &cfg.exporter_target);
     let mut exporters: HashMap<String, Value> = [(exporter_key.clone(), exporter_val)].into();
@@ -994,11 +1012,15 @@ tsdb_block_duration: {window_secs}s\n",
 
     // ── Pipeline assembly ──────────────────────────────────────────────────
     //
-    // Helper: per-family pipeline = `[gorillas3?, <family>processor, batch]`.
-    // gorillas3 runs FIRST so the cold-tier write happens on raw samples
-    // BEFORE the sketch processor mutates / suffix-renames the stream.
+    // Helper: per-family pipeline =
+    //   `[memory_limiter, gorillas3?, <family>processor, batch]`.
+    // memory_limiter runs FIRST so backpressure rejects incoming batches
+    // BEFORE gorillas3 buffers them into windowState. gorillas3 then
+    // does the cold-tier write on raw samples BEFORE the sketch
+    // processor mutates / suffix-renames the stream.
     let make_sketch_pipeline = |family_proc: &str| -> Pipeline {
         let mut procs: Vec<String> = Vec::new();
+        procs.push("memory_limiter".to_string());
         if has_archive_tier {
             procs.push("gorillas3".to_string());
         }
@@ -1026,12 +1048,15 @@ tsdb_block_duration: {window_secs}s\n",
         },
     );
 
-    // Default raw_passthrough — gorillas3 (when archive declared) then
-    // batch. NO sketch processor — the raw counters land at the gateway
-    // verbatim. This is also the destination of warm_passthrough metrics
-    // (freshness probes).
+    // Default raw_passthrough —
+    // `[memory_limiter, gorillas3?, batch]`. NO sketch processor — the
+    // raw counters land at the gateway verbatim. This is also the
+    // destination of warm_passthrough metrics (freshness probes).
+    // memory_limiter runs first so backpressure applies to the default
+    // route too.
     let raw_passthrough = {
         let mut procs: Vec<String> = Vec::new();
+        procs.push("memory_limiter".to_string());
         if has_archive_tier {
             procs.push("gorillas3".to_string());
         }
@@ -2710,6 +2735,66 @@ mod tests {
             assert!(
                 g_idx < f_idx,
                 "gorillas3 must come BEFORE {family_proc} in {pipeline}\n{section}"
+            );
+        }
+    }
+
+    #[test]
+    fn mvp46_per_sketch_pipelines_have_memory_limiter_first() {
+        // Follow-up to PR #355: every per-sketch pipeline (and the
+        // default raw_passthrough) MUST list `memory_limiter` as the
+        // FIRST processor so backpressure refuses incoming batches
+        // BEFORE gorillas3 buffers them — the previous shape OOM-killed
+        // the agent at ~3 min under sustained load.
+        let mut cfg = five_sketch_edge_cfg();
+        cfg.archive_tier_metrics = vec![ArchiveTierMetric {
+            metric: "http_latency_ms".into(),
+            window_secs: Some(60),
+        }];
+        let yaml = emit_edge_yaml(&cfg, "ws://c/").expect("emit ok");
+
+        // memory_limiter processor block present with the chosen
+        // threshold (1280 MiB ≈ 80 % of agent's 1536 MiB cgroup).
+        assert!(
+            yaml.contains("memory_limiter:"),
+            "missing top-level memory_limiter processor block\n{yaml}"
+        );
+        assert!(
+            yaml.contains("limit_mib: 1280"),
+            "memory_limiter must pin limit_mib: 1280 (agent cgroup is 1536 MiB)\n{yaml}"
+        );
+        assert!(
+            yaml.contains("spike_limit_mib: 256"),
+            "memory_limiter must pin spike_limit_mib: 256\n{yaml}"
+        );
+
+        // Each per-sketch pipeline (and raw_passthrough) lists
+        // memory_limiter as the FIRST processor — slice each section
+        // and assert relative ordering.
+        for (pipeline, family_proc) in [
+            ("metrics/raw_passthrough:", "gorillas3"),
+            ("metrics/ddsketch_path:", "gorillas3"),
+            ("metrics/kll_path:", "gorillas3"),
+            ("metrics/hll_path:", "gorillas3"),
+            ("metrics/countsketch_path:", "gorillas3"),
+            ("metrics/countminsketch_path:", "gorillas3"),
+        ] {
+            let p_idx = yaml.find(pipeline).expect(pipeline);
+            let after = &yaml[p_idx..];
+            let next_offset = after[1..]
+                .find("    metrics")
+                .map(|x| x + 1)
+                .unwrap_or(after.len());
+            let section = &after[..next_offset];
+            let m_idx = section
+                .find("- memory_limiter")
+                .unwrap_or_else(|| panic!("memory_limiter missing in {pipeline}\n{section}"));
+            let f_idx = section
+                .find(&format!("- {family_proc}"))
+                .unwrap_or_else(|| panic!("{family_proc} missing in {pipeline}\n{section}"));
+            assert!(
+                m_idx < f_idx,
+                "memory_limiter must come BEFORE {family_proc} in {pipeline}\n{section}"
             );
         }
     }
