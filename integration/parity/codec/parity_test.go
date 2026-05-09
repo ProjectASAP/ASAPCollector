@@ -14,7 +14,7 @@ package crosshostparity_test
 import (
 	"testing"
 
-	"github.com/ProjectASAP/ASAPCollector/integration/cross-host-parity/harness"
+	"github.com/ProjectASAP/ASAPCollector/integration/parity/codec/harness"
 )
 
 // TestCrossHostParity_AllSketches runs the full multi-sketch harness

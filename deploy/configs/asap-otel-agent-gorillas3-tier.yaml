@@ -1,9 +1,14 @@
-# Gorilla-S3 cold-engine tier (Phase 2 of the cold-engine integration).
+# Cold-path tier — gorillas3processor in `gateway_raw` role.
 #
-# Mirrors the b5-gorilla baseline shape but swaps the local-dir sink
-# for the S3-cold-engine `gorillas3` processor: encode raw samples
-# with Gorilla XOR-delta, write 60s chunks to MinIO, and DROP the
-# original metric so the agent does not OTLP-forward the bytes.
+# Direct raw-metric → Prometheus TSDB block emit. Suitable for the
+# single-collector cold-path layout (no upstream fragment edge agent;
+# this collector consumes raw OTLP and finalizes blocks itself).
+#
+# Output objects in MinIO:
+#
+#   <tsdb_bucket>/<ULID>/chunks/000001
+#   <tsdb_bucket>/<ULID>/index
+#   <tsdb_bucket>/<ULID>/meta.json   (uploaded last; readiness signal)
 #
 # Reuses the existing `minio` container in deploy/docker-compose/base.yml
 # (no overlay change needed). Bucket `asap-gorilla` must exist; the
@@ -28,18 +33,19 @@ receivers:
 
 processors:
   gorillas3:
+    role: gateway_raw
+    delivery_mode: durable_raw
     window_interval: 60s
     drop_original: true
     endpoint: http://minio:9000
     bucket: asap-gorilla
+    tsdb_bucket: asap-gorilla
     region: us-east-1
     use_ssl: false
     # MinIO root creds from base.yml. Replace with env-resolution in
     # production deploys (e.g. ${env:MINIO_ACCESS_KEY}).
     access_key_id: asap
     secret_access_key: asap-local-only
-    prefix_template: "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
-    tenant: default
     max_retries: 3
     retry_backoff: 1s
     upload_timeout: 30s

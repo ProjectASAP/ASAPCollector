@@ -1,4 +1,4 @@
-module github.com/ProjectASAP/ASAPCollector/integration/cross-host-parity
+module github.com/ProjectASAP/ASAPCollector/integration/parity/codec
 
 go 1.25.5
 
@@ -30,10 +30,11 @@ require (
 	golang.org/x/text v0.30.0 // indirect
 )
 
-// Local checkouts mirror the cascade used by integration/parity/.
-// Paths are relative to integration/cross-host-parity/.
-replace github.com/ProjectASAP/asap-precompute-go => ../../asap-precompute-go
+// Local checkouts mirror the cascade used by
+// integration/parity/runtime-impl/. Paths are relative to
+// integration/parity/codec/.
+replace github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
 
-replace github.com/ProjectASAP/sketchlib-go => ../../../sketchlib-go
+replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
 
-replace go.opentelemetry.io/collector/pdata => ../../opentelemetry-collector/pdata
+replace go.opentelemetry.io/collector/pdata => ../../../opentelemetry-collector/pdata

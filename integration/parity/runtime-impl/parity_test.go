@@ -6,13 +6,13 @@
 // shims that delegate to the runtime (Phase 2 steps 2.5–2.9).
 //
 // This file holds the test entry points; the harness logic lives in
-// integration/parity/harness/.
+// integration/parity/runtime-impl/harness/.
 package parity_test
 
 import (
 	"testing"
 
-	"github.com/ProjectASAP/ASAPCollector/integration/parity/harness"
+	"github.com/ProjectASAP/ASAPCollector/integration/parity/runtime-impl/harness"
 )
 
 // TestParity_AllSketches runs the full multi-metric harness once,

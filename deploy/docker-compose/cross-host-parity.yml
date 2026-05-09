@@ -46,11 +46,11 @@ services:
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       # Agent configs live next to the test driver under
-      # integration/cross_host_parity/configs/ — keeps Phase 5E's
+      # integration/parity/agent-binary/configs/ — keeps Phase 5E's
       # per-agent shape co-located with the harness that drives them
       # rather than scattered through deploy/configs/, which is owned
       # by the eval pipeline (agent #13).
-      - ../../integration/cross_host_parity/configs/asap-otel.yaml:/etc/otel/config.yaml:ro
+      - ../../integration/parity/agent-binary/configs/asap-otel.yaml:/etc/otel/config.yaml:ro
     environment:
       - ASAP_AGENT_ID=asap-otel
     networks:
@@ -64,7 +64,7 @@ services:
     container_name: parity-asap-otap
     command: ["--config=/etc/otap/config.yaml"]
     volumes:
-      - ../../integration/cross_host_parity/configs/asap-otap.yaml:/etc/otap/config.yaml:ro
+      - ../../integration/parity/agent-binary/configs/asap-otap.yaml:/etc/otap/config.yaml:ro
     environment:
       - ASAP_AGENT_ID=asap-otap
     networks:
@@ -78,7 +78,7 @@ services:
     container_name: parity-asap-telegraf
     command: ["--config=/etc/telegraf/telegraf.conf"]
     volumes:
-      - ../../integration/cross_host_parity/configs/asap-telegraf.toml:/etc/telegraf/telegraf.conf:ro
+      - ../../integration/parity/agent-binary/configs/asap-telegraf.toml:/etc/telegraf/telegraf.conf:ro
     environment:
       - ASAP_AGENT_ID=asap-telegraf
     networks:
@@ -106,8 +106,8 @@ services:
     container_name: parity-envelope-tap
     command: ["--mode=cross-host-parity-tap", "--capture-dir=/captures"]
     volumes:
-      - ../../integration/cross_host_parity/captures:/captures
-      - ../../integration/cross_host_parity/golden_input:/golden_input:ro
+      - ../../integration/parity/agent-binary/captures:/captures
+      - ../../integration/parity/agent-binary/golden_input:/golden_input:ro
       - ../scripts/queries-e2e.json:/queries-e2e.json:ro
     networks:
       - parity-net
