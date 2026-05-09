@@ -75,8 +75,16 @@
 #    backend-storage-routing.yaml so the warm tier doesn't cover
 #    it; the query forces routing to GorillaQueryEngine. Drives
 #    criterion ⑤ verification (data_source: gorilla_archive).
+#
+#    Predicate uses `zone="z0"` because the fake-exporter emits
+#    `zone, rack, node, pod` labels (see `deploy/fake-exporter/main.go`
+#    `attrSetsZRNP`); there is NO `service` label on the produced
+#    series, so the previous `service="payments"` selector matched
+#    zero series and surfaced as an empty (but HTTP-200) cold-tier
+#    response. `zone="z0"` matches roughly 1/4 of the produced
+#    series and exercises the same routing+engine code path.
 - metric_name: http_requests_total
-  query_string: "count(http_requests_total{service=\"payments\"})"
+  query_string: "count(http_requests_total{zone=\"z0\"})"
   accuracy_sla: 0.0
   assign_to_role: archive
 

@@ -48,7 +48,7 @@
 #        - label-at-instant    (sum by zone, gateway fan-in)
 #        - combined            (rate over 5m + sum by zone)
 #      plus a fourth ad-hoc cold-fallback probe
-#      (`http_requests_total{service="payments"}` — assigned
+#      (`http_requests_total{zone="z0"}` — assigned
 #      to role "archive").
 #
 #   4. Freshness phase calls `run_freshness_phase.sh` which emits
@@ -653,11 +653,16 @@ ad_hoc_postings_phase() {
             || log "    [warn] curl exited non-zero for ${label}"
     }
 
-    # The two postings-exercise queries from the spec.
+    # The two postings-exercise queries from the spec. Predicates
+    # match labels the fake-exporter actually emits (`zone, rack,
+    # node, pod` per `deploy/fake-exporter/main.go::attrSetsZRNP`) —
+    # the previous `service="api"` and `status=~"5.."` selectors
+    # match zero series since neither label exists in the produced
+    # data, masking the postings-filter exercise with empty results.
     fire_query "count_api_series" \
-        'count(http_requests_total{service="api"})'
+        'count(http_requests_total{zone="z0"})'
     fire_query "topk_5xx_by_zone" \
-        'topk(5, sum by (zone) (rate(http_requests_total{status=~"5.."}[5m])))'
+        'topk(5, sum by (zone) (rate(http_requests_total{rack=~"r0[0-3]"}[5m])))'
 
     # Step 2.4: archive-only PromQL surface (Path A2 / Thanos engine).
     # These queries were rejected by the legacy curated-subset
@@ -695,10 +700,17 @@ cold_fallback_phase() {
     local adir="${PIPELINE_OUT_BASE}/ad-hoc"
     local backend_url="http://localhost:${PIPELINE_QUERY_PORT}"
 
-    log "  cold[payments]: count(http_requests_total{service=\"payments\"})"
+    # Probe predicate uses `zone="z0"` because the fake-exporter
+    # emits zone/rack/node/pod labels — no `service` label exists,
+    # so the previous `service="payments"` selector always matched
+    # zero series and surfaced an empty (but HTTP-200) response that
+    # masked any real cold-path data (deploy/fake-exporter/main.go
+    # `attrSetsZRNP`). Keeping the file basename `cold_payments.*`
+    # for backwards compatibility with mvp_report.py's loader.
+    log "  cold[zone=z0]: count(http_requests_total{zone=\"z0\"})"
     curl -sG -m 10 \
         "${backend_url}/api/v1/query" \
-        --data-urlencode 'query=count(http_requests_total{service="payments"})' \
+        --data-urlencode 'query=count(http_requests_total{zone="z0"})' \
         -o "${adir}/cold_payments.json" \
         -w '{"http_code":%{http_code},"time_total":%{time_total}}\n' \
         > "${adir}/cold_payments.curlstats" \

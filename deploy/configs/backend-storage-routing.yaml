@@ -54,10 +54,14 @@ default: sketch_warm_tier
 #   windows).
 # - The `[count, topk, rate_post_hoc]` slot routes ad-hoc / post-hoc
 #   queries to the cold archive. `count(http_requests_total{
-#   service="payments"})` is the criterion ⑤ probe — it surfaces
+#   zone="z0"})` is the criterion ⑤ probe — it surfaces
 #   `data_source: gorilla_archive` because the cold engine answers
 #   it. `topk(...)` and `rate(...)` shapes the warm tier doesn't
 #   precompute also drop into the archive's exact streaming path.
+#   (Predicate uses `zone="z0"` rather than `service="payments"`
+#   because the fake-exporter emits `zone, rack, node, pod` —
+#   no `service` label is produced, so the older selector always
+#   matched zero series and masked the cold-engine traversal.)
 #
 # Per-query-shape dispatch is the right axis: a single-target form
 # would force ④ and ⑤ to be mutually exclusive (quantile-on-warm
