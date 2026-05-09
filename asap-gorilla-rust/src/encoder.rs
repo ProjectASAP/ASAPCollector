@@ -1,6 +1,5 @@
-//! Gorilla XOR-delta encoder. Bit-for-bit compatible with the Go
-//! `gorillaprocessor.{bitWriter, gorillaTimestampEncoder,
-//! gorillaValueEncoder}` implementations.
+//! Gorilla XOR-delta encoder. Bit-for-bit compatible with the
+//! `asap-gorilla-go` implementation used by runtime edge processors.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -8,7 +7,7 @@ use std::io::Write;
 use crate::block::{SeriesChunk, SeriesMeta, BLOCK_VERSION, MAGIC};
 use crate::error::EncodeError;
 
-/// Append-only bit packer. Mirrors the Go `bitWriter` exactly: bits
+/// Append-only bit packer. Mirrors `asap-gorilla-go` exactly: bits
 /// are packed MSB-first into each byte, and `bytes()` zero-pads to
 /// the next byte boundary.
 #[derive(Debug, Default)]

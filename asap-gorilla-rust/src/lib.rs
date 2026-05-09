@@ -1,10 +1,9 @@
 //! `asap-gorilla` — Gorilla XOR-delta block format encoder + decoder
 //! for the ASAP cold-store engine.
 //!
-//! This crate is the Rust mirror of the canonical `GORILLA1` block
-//! format defined by the Go `gorillaprocessor` plugin under
-//! `opentelemetry-collector-contrib-patch/processor/gorillaprocessor/`.
-//! Bytes written by either implementation are interchangeable; see
+//! This crate is the Rust implementation of the canonical `GORILLA1`
+//! block format shared with the Go `asap-gorilla-go` module. Bytes
+//! written by either implementation are interchangeable; see
 //! [`crate::block`] for the on-wire layout and `tests/byte_compat.rs`
 //! for the round-trip-against-fixtures contract.
 //!

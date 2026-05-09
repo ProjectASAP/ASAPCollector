@@ -3,6 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/goril
 go 1.24.0
 
 require (
+	github.com/ProjectASAP/asap-gorilla-go v0.0.0
 	github.com/aws/aws-sdk-go v1.55.6
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.47.0
@@ -41,6 +42,8 @@ replace github.com/open-telemetry/opentelemetry-collector-contrib/internal/filte
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl => ../../pkg/ottl
 
 replace github.com/open-telemetry/opentelemetry-collector-contrib/pkg/golden => ../../pkg/golden
+
+replace github.com/ProjectASAP/asap-gorilla-go => ../../../asap-gorilla-go
 
 retract (
 	v0.76.2
