@@ -1,7 +1,0 @@
-# stage probe — baseline=asap duration=300.0s period=1.0s
-# wrote /tmp/asap-phase-3-3-worktree/deploy/eval-results/mvp-current/asap/measurements/stages.csv (6 rows)
-# baseline=asap stage=agent containers=2 cpu_cores_total=0.009 rss_mib_total=389.1
-# baseline=asap stage=backend-storage containers=1 cpu_cores_total=0.005 rss_mib_total=94.7
-# baseline=asap stage=controller containers=1 cpu_cores_total=0.000 rss_mib_total=4.5
-# baseline=asap stage=gateway containers=1 cpu_cores_total=0.000 rss_mib_total=32.5
-# baseline=asap stage=producer containers=1 cpu_cores_total=0.000 rss_mib_total=0.8

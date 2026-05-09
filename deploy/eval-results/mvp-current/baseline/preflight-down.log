@@ -1,1 +1,0 @@
-time="2026-05-07T19:02:22-04:00" level=warning msg="/tmp/asap-phase-3-3-worktree/deploy/docker-compose/base.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"

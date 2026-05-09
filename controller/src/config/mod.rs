@@ -333,7 +333,7 @@ mod runtime_tests {
             label_filters: Vec::new(),
             window_secs: Some(60),
             sketch_processors: vec![EdgeSketchProcessor {
-                processor_name: "ddsketchprocessor".to_string(),
+                processor_name: "ddsketch".to_string(),
                 sketch_kind: SketchKind::DDSketch,
                 sketch_params: SketchParams::DDSketch(DDSketchParams { alpha: 0.01 }),
                 aggregation_id: "agg0".to_string(),

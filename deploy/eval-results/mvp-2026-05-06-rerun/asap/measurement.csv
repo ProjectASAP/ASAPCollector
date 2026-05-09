@@ -1,2 +1,0 @@
-baseline,scale,rate,cardinality,producer_cpu_cores,producer_rss_mib,producer_bytes_out_per_s,agent_cpu_cores,agent_rss_mib,agent_in_kib_per_s,agent_out_kib_per_s,agent_points_per_s,gateway_cpu_cores,gateway_rss_mib,gateway_points_per_s,gateway_out_series_per_s,backend_cpu_pct,backend_rss_mib,backend_samples_per_s,backend_query_p99_ms
-asap-allsketch-gs3,N1,1,1000,0.088,65.000,18802.617,0.033,955.504,3712.466,4455.991,2000.000,0.000,176.547,0.000,0.000,1.730,623.400,0.000,195.823

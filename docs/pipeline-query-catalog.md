@@ -1137,7 +1137,7 @@ The killer matrix-aggregation example.
 
 ```yaml
 # OTel side
-hllprocessor:
+HLL:
   partition_by: [pod, namespace, region]
   emit_window: 5m
 
@@ -1240,7 +1240,7 @@ read side joins ten symbols × two sketches = 20 lookups per query.
 Demonstrates extreme temporal merging.
 
 ```yaml
-hllprocessor:
+HLL:
   partition_by: [host, service, error_fingerprint]
   emit_window: 5m
 

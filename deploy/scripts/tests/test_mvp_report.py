@@ -207,7 +207,7 @@ def _build_pipeline_dir(
         "data": {
             "resultType": "vector",
             "result": [{"metric": {}, "value": [0, "42"]}],
-            "infos": ["data_source: gorilla_archive", "chunks_scanned: 3"],
+            "infos": ["data_source: thanos_archive", "chunks_scanned: 3"],
         },
     }
     (adhoc / "cold_payments.json").write_text(json.dumps(cold_resp))
@@ -309,7 +309,7 @@ def test_renders_all_sections_for_happy_fixture(tmp_path):
         "Query latency (p50/p99 per class)",
         "Combined resource (sum of stages)",
         "Accuracy (per sketch family, see §3)",
-        "Cold-fallback (gorilla_archive marker)",
+        "Cold-fallback (archive marker + HTTP 200)",
         "Freshness (p50/p99 per path)",
     ):
         assert marker in md, f"missing criterion {marker!r}"
@@ -644,10 +644,10 @@ def _all_5_sketches_accuracy_rows() -> list[dict]:
     is exactly equal.
     """
     return [
-        # DDSketch — http_latency_ms, ε ≤ 0.01
-        {"kind": "quantile", "query": "quantile_over_time(0.99, http_latency_ms[1m])",
+        # DDSketch — http_requests_total_latency_ms, ε ≤ 0.01
+        {"kind": "quantile", "query": "quantile_over_time(0.99, http_requests_total_latency_ms[1m])",
          "rel_err": "0.0042", "recall": ""},
-        {"kind": "quantile", "query": "quantile_over_time(0.99, http_latency_ms[1m])",
+        {"kind": "quantile", "query": "quantile_over_time(0.99, http_requests_total_latency_ms[1m])",
          "rel_err": "0.0050", "recall": ""},
         # KLL — request_size_bytes, ε ≤ 0.005 (rank-err proxy)
         {"kind": "quantile", "query": "quantile_over_time(0.5, request_size_bytes[1m])",
@@ -790,7 +790,7 @@ def test_per_sketch_table_renders_in_single_mode_report(tmp_path):
                 "CountMinSketch", "raw"):
         assert f"| {fam} |" in md
     # All 6 metric names present.
-    for metric in ("http_latency_ms", "request_size_bytes",
+    for metric in ("http_requests_total_latency_ms", "request_size_bytes",
                    "unique_users_per_min", "top_endpoint_qps",
                    "endpoint_request_freq", "http_requests_total"):
         assert metric in md

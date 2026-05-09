@@ -1,2 +1,0 @@
-[2m2026-05-07T00:29:22.209697Z[0m [32m INFO[0m [2mgorilla_compactor[0m[2m:[0m gorilla-compactor: starting [3mbucket[0m[2m=[0m"asap-gorilla" [3mendpoint[0m[2m=[0m"http://localhost:9000" [3mtenant[0m[2m=[0m"default/" [3mdry_run[0m[2m=[0mtrue [3mthreshold_count[0m[2m=[0m0 [3mthreshold_hours[0m[2m=[0m0
-Error: backend: s3 list default/: serde xml: invalid type: string "Port 9000 is for clickhouse-client program\nYou must use port 8123 for HTTP.\n", expected struct ListBucketResult

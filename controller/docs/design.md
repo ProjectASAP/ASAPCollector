@@ -901,9 +901,9 @@ impl PhysicalPlanner for LifecyclePlanner {
 >   carries the structural facts each downstream consumer needs:
 >   - `Edge` → `EdgeStageConfig { source_metric, label_filters,
 >     window_secs, sketch_processors, exporter_target }`. Sketch
->     processor names follow the catalog (`kllprocessor`,
->     `ddsketchprocessor`, `hllprocessor`, `countminsketchprocessor`,
->     `countsketchprocessor`).
+>     processor names follow the catalog (`KLL`,
+>     `ddsketch`, `HLL`, `countmin`,
+>     `countsketch`).
 >   - `Gateway` → `GatewayStageConfig { otlp_receiver_port,
 >     merge_processors, exporter_target }`.
 >   - `Backend` → `BackendStageConfig { aggregations, readouts }` —

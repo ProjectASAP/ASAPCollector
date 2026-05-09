@@ -116,17 +116,6 @@ EXPORTER_FRESHNESS_PROBE_HZ="${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
 ASAP_SKETCH_FAMILY="${ASAP_SKETCH_FAMILY:-ddsketch}"
 USE_TYPED_STAGE_SPLIT="${USE_TYPED_STAGE_SPLIT:-1}"
 
-# Option-A driver-side `POST /api/v1/plan` workaround. Phase 3.2.5
-# (PR #328) added these POSTs after stack-up to force the controller
-# through the typed-stage-split path; PR #329 then ported the bootstrap
-# `handle_bootstrap_agent_config` handler to the SAME typed pipeline,
-# making the POSTs redundant for the bootstrap GET. The
-# Option-B-as-sole-path validation (this file's branch) defaults this
-# OFF so we can verify the bootstrap path actually carries the load.
-# Operators who want to keep the safety belt can set the env var to
-# `1` explicitly.
-ENABLE_OPTION_A_DRIVER_POST="${ENABLE_OPTION_A_DRIVER_POST:-0}"
-
 # Settle window between baseline teardown and asap bring-up. Gives
 # the kernel enough time to release per-container cgroup + iptables
 # state so the next compose `up` doesn't see stale resources.
@@ -250,6 +239,11 @@ ensure_out_dirs() {
     # `compactor/` → `thanos-compact/` to reflect that compaction is
     # now performed by the stock thanos-compact sidecar instead of
     # the deleted gorilla-compactor Rust binary.
+    if [[ -z "${PIPELINE_OUT_BASE:-}" || "${PIPELINE_OUT_BASE}" == "/" ]]; then
+        echo "[error] refusing to clean unsafe PIPELINE_OUT_BASE='${PIPELINE_OUT_BASE:-}'" >&2
+        exit 2
+    fi
+    rm -rf "${PIPELINE_OUT_BASE}"
     mkdir -p \
         "${PIPELINE_OUT_BASE}" \
         "${PIPELINE_OUT_BASE}/controller-emitted-configs" \
@@ -372,49 +366,7 @@ bring_up_stack() {
     fi
 
     if [[ "${PIPELINE_LABEL}" == "asap" ]]; then
-        # Option-A driver POST workaround — gated OFF by default for the
-        # Option-B-as-sole-path validation. Phase ε.1.6 (PR #329) ported
-        # `handle_bootstrap_agent_config` to the typed-stage-split
-        # pipeline so a fresh agent's bootstrap GET fires the same
-        # typed emitter path — no driver-side POST required. The
-        # bootstrap path is exercised the moment OpAMP delivers the
-        # first agent connection, BEFORE this branch executes.
-        #
-        # Set `ENABLE_OPTION_A_DRIVER_POST=1` to keep the safety belt
-        # (e.g., for regression debugging where you want to compare
-        # bootstrap-path vs POST-path side-by-side).
-        if [[ "${ENABLE_OPTION_A_DRIVER_POST}" == "1" ]]; then
-            log "  POST /api/v1/plan for each canonical workload (Option-A safety belt — typed-stage-split via handle_plan)"
-            post_workload_plan() {
-                local label="$1"; local promql="$2"; local accuracy="$3"; local metric="$4"
-                local body
-                body=$(printf '{"query_string":%s,"metric_name":%s,"accuracy_sla":%s,"aggregations":["quantile"],"time_window":"1m","latency_sla":null,"sketch_type":null}' \
-                    "$(printf '%s' "$promql" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-                    "$(printf '%s' "$metric" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-                    "$accuracy")
-                local code
-                code=$(curl -sS -o "${PIPELINE_OUT_BASE}/plan-post-${label}.json" -w '%{http_code}' \
-                    -X POST "http://localhost:${HOST_CONTROLLER_PORT}/api/v1/plan" \
-                    -H 'Content-Type: application/json' \
-                    -d "$body" \
-                    2> "${PIPELINE_OUT_BASE}/plan-post-${label}.err" || true)
-                log "    POST /api/v1/plan ${label} → HTTP ${code}"
-            }
-            post_workload_plan window-per-series \
-                'quantile_over_time(0.99, http_requests_total_latency_ms[30s])' \
-                '0.01' 'http_requests_total_latency_ms'
-            post_workload_plan label-at-instant \
-                'sum by (zone) (http_requests_total)' \
-                '0.0' 'http_requests_total'
-            post_workload_plan combined-window-label \
-                'sum by (zone) (rate(http_requests_total[5m]))' \
-                '0.01' 'http_requests_total'
-            post_workload_plan cold-fallback-payments \
-                'count(http_requests_total{service="payments"})' \
-                '0.0' 'http_requests_total'
-        else
-            log "  Option-A driver POST is OFF (ENABLE_OPTION_A_DRIVER_POST=0) — Option-B bootstrap GET carries the load"
-        fi
+        log "  bootstrap GET is the workload/config path; no driver-side plan POST"
     else
         log "  baseline pipeline — skipping controller plan POST (no controller-driven sketches)"
     fi
@@ -731,7 +683,7 @@ cold_fallback_phase() {
         log "Phase 5 cold-fallback — n/a for baseline (Prometheus answers natively); skipping"
         return 0
     fi
-    log "Phase 5 cold-fallback verification (gorilla_archive marker)"
+    log "Phase 5 cold-fallback verification (archive marker + HTTP 200)"
     local adir="${PIPELINE_OUT_BASE}/ad-hoc"
     local backend_url="http://localhost:${PIPELINE_QUERY_PORT}"
 
@@ -745,12 +697,24 @@ cold_fallback_phase() {
         2> "${adir}/cold_payments.curl.err" \
         || log "    [warn] curl exited non-zero for cold_payments"
 
-    if grep -q '"data_source":"gorilla_archive"\|gorilla_archive' \
+    local http_code
+    http_code="$(python3 - "${adir}/cold_payments.curlstats" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("http_code", "000"))
+except Exception:
+    print("000")
+PY
+)"
+    if [[ "${http_code}" == "200" ]] && grep -Eq 'data_source[^A-Za-z0-9_]*(thanos_archive|gorilla_archive)|(thanos_archive|gorilla_archive)' \
             "${adir}/cold_payments.json" 2>/dev/null; then
-        log "  cold-fallback marker present (data_source: gorilla_archive)"
+        log "  cold-fallback archive marker present with HTTP 200"
         echo "PASS" > "${adir}/cold_payments.verdict"
+    elif [[ "${http_code}" != "200" ]]; then
+        log "  [warn] cold-fallback HTTP ${http_code} — see cold_payments.json"
+        echo "BAD_HTTP" > "${adir}/cold_payments.verdict"
     else
-        log "  [warn] no gorilla_archive marker in response — see cold_payments.json"
+        log "  [warn] no archive marker in response — see cold_payments.json"
         echo "MISSING" > "${adir}/cold_payments.verdict"
     fi
 }

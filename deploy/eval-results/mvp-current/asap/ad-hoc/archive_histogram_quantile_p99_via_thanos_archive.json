@@ -1,1 +1,0 @@
-{"accuracy":{"delta":0.0,"epsilon":0.0,"kind":"exact"},"data":{"result":[],"resultType":"vector"},"infos":["accuracy: ε=0, δ=0, kind=exact","data_source: thanos_archive"],"status":"success"}

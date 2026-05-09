@@ -1,7 +1,0 @@
-# stage probe — baseline=mvp-v6 duration=60.0s period=1.0s
-# wrote /tmp/asap-v6-1-fix-worktree/deploy/eval-results/mvp-v6-1-2026-05-06/measurements/stages.csv (6 rows)
-# baseline=mvp-v6 stage=agent containers=2 cpu_cores_total=0.008 rss_mib_total=149.7
-# baseline=mvp-v6 stage=backend-ingest containers=1 cpu_cores_total=0.005 rss_mib_total=28.8
-# baseline=mvp-v6 stage=backend-query containers=1 cpu_cores_total=0.005 rss_mib_total=28.8
-# baseline=mvp-v6 stage=controller containers=1 cpu_cores_total=0.000 rss_mib_total=4.6
-# baseline=mvp-v6 stage=producer containers=1 cpu_cores_total=0.000 rss_mib_total=0.8

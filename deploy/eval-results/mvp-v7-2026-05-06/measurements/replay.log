@@ -1,2 +1,0 @@
-replay: target=http://localhost:19091 qps=5.0 duration=90.0s queries=3 out=/tmp/asap-v7-collector-worktree/deploy/eval-results/mvp-v7-2026-05-06/measurements/replay.jsonl
-replay: completed 450 queries → /tmp/asap-v7-collector-worktree/deploy/eval-results/mvp-v7-2026-05-06/measurements/replay.jsonl

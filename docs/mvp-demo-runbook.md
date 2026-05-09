@@ -8,113 +8,13 @@ and emits an `MVP_REPORT.md` with measured numbers per criterion.
 The comparison to Databricks Pantheon+Hydra is in
 [`docs/comparison-asap-vs-databricks-pantheon-hydra.md`](comparison-asap-vs-databricks-pantheon-hydra.md).
 
-## Current status
+## Current Status
 
-The MVP demo is **runnable end-to-end and exercises the controller-driven,
-multi-stage architecture**, but two ingest-side bugs leave criteria ④ and
-⑥ reporting UNKNOWN even when their routing layers are working correctly.
+The MVP demo is runnable through `deploy/scripts/run_mvp_demo.sh`. Current runs should be evaluated from the freshly generated `OUT_BASE` report; committed historical artifacts under `deploy/eval-results/` have been removed and that directory is ignored to prevent stale PASS/UNKNOWN reports from being mistaken for source truth.
 
-**Path A2 (Thanos archive engine) is verified end-to-end as of Step 2.4
-(2026-05-07).** The backend's `ThanosForwardEngine` HTTP-forwards archive
-queries to a co-located `thanos-query` sidecar that reads
-Prometheus-TSDB blocks (Gorilla-XOR chunks) on MinIO via
-`thanos store-gateway`. The Step 2.4 e2e demo confirmed:
-`histogram_quantile` over the archive matches a hand-computed reference
-exactly; 4 TSDB blocks land in MinIO; the thanos-query sidecar is
-healthy. The full Prometheus PromQL surface (including
-`histogram_quantile`, `delta`, vector matching, etc.) is now answered
-exactly by the archive tier — these query shapes were rejected by the
-prior curated-subset `GorillaQueryEngine` and are the qualitative win
-of the Path-A2 consolidation. The two regressions documented below
-(④ warm-tier null-answer; ⑥ probe-encoding) predate Path A2 and are
-NOT Path-A2-induced; the `gorilla-compactor` binary is now obsoleted
-by `thanos compact` on its normal schedule.
+The accuracy reducer now uses the archive engine as ground truth by reissuing replay PromQL with `X-ASAP-Engine: thanos_archive`. The deleted `/var/asap/cold/raw` JSONL tee and `--use-jsonl` compatibility path are no longer part of the demo.
 
-### Verdict
-
-| # | Criterion | Verdict | What works | What doesn't |
-|---|---|---|---|---|
-| ① | Bandwidth (per-edge) | **FAIL** | per-edge B/s captured for sdk→agent / agent→gateway / gateway→backend / gateway→s3 | absolute reduction over a raw-Prometheus baseline not reported (no apples-to-apples comparison row at this cardinality) |
-| ② | Query latency (p50 / p99) | **PASS** | window p99 = 5.2 ms, label p99 = 7.2 ms, combined p99 = 1.8 ms — all three query classes inside the 10 ms envelope | — |
-| ③ | Combined resource | **CAPTURED** | per-stage CPU + RSS + net + disk reported | reduction-vs-baseline row depends on a raw-Prometheus baseline cell which is opt-in (port collision) |
-| ④ | Accuracy (rel-err per class) | **UNKNOWN** | dispatch + warm-tier eval correct (verified via direct curl) | `accuracy_reduce.py` needs a cold-tier ground-truth stream that the backend doesn't write |
-| ⑤ | Cold-fallback (`gorilla_archive`) | **PASS** | `data_source: gorilla_archive` in `cold_payments.json`; chunks land in MinIO; dual-routing dispatches `count` queries to the archive engine | — |
-| ⑥ | Freshness (probe Δ) | **UNKNOWN** | freshness pattern registered in backend; routing yaml correct; producer envs propagate | agent's `gorillas3processor.encoder.go` writes chunk-header timestamp at byte offset `[5..9]` instead of `[9..13]`; consumer reads bogus emission timestamps so deltas come up zero |
-| §8 | Controller emitter STATUS | **`live`** | typed-stage-split fires; controller writes per-stage configs; `entries=4 multi_target_entries=1` in startup log | — |
-
-The architectural validation is solid (everything to do with planning,
-routing, and multi-stage placement demonstrably works); the two
-ingest-side bugs above are real follow-ups.
-
-### Open gaps (severity × impact × fix path)
-
-#### Gap 1 — accuracy reducer needs ground-truth dump (criterion ④)
-
-- **Severity**: medium (verdict reads UNKNOWN, not FAIL — the warm engine
-  is producing correct answers; we just can't compute relative error
-  without ground truth)
-- **Impact**: ④ accuracy + §3 per-class rel-err render empty in
-  `MVP_REPORT.md`
-- **Root cause**: pre-Step-1 the accuracy reducer read ground truth
-  from `/var/asap/cold/raw/<metric>/YYYY/MM/DD/HH/part-N.jsonl`,
-  written by the gateway-side raw-tee. Step-1 of the JSONL
-  deprecation deleted that path; the surviving ground-truth source
-  is the Gorilla-XOR-encoded Prometheus-TSDB archive on MinIO/S3
-  (`gorillas3processor` writes TSDB blocks; the backend's
-  `ThanosForwardEngine` reads them back exactly via `thanos-query`
-  + `thanos store-gateway` running Prometheus' reference
-  `promql.Engine`)
-- **Fix path**: point `accuracy_reduce.py` at the
-  `ThanosForwardEngine` HTTP path instead of the deleted JSONL layout.
-  Out of scope for this demo
-- **Workaround**: paper-quality accuracy numbers live in the headline
-  60-cell sweep at `deploy/eval-results/headline-2026-05-06/accuracy.csv`,
-  which uses a different ground-truth path
-
-#### Gap 2 — freshness probe encoder offset (criterion ⑥)
-
-- **Severity**: low-medium (mechanical bug; one-character patch staged
-  on a follow-up branch)
-- **Impact**: ⑥ freshness reads UNKNOWN; `freshness/*.csv` files contain
-  zero rows (or rows with bogus deltas)
-- **Root cause**: `opentelemetry-collector-contrib-patch/processor/gorillas3processor/encoder.go`
-  writes the chunk-header timestamp at byte offset `[5..9]` instead of
-  `[9..13]`. The consumer parses the wrong four bytes and sees zero
-- **Fix path**: one-character offset patch staged on a follow-up
-  branch; takes effect after `asap/asap-otel:dev` is rebuilt via OCB
-- **Workaround**: none — freshness doesn't measure on this demo until
-  the image is rebuilt
-
-#### Gap 3 — backend image cache stickiness (operational)
-
-- **Severity**: low (operational gotcha, not a correctness bug)
-- **Impact**: rebuilds after backend PRs merge can produce the same
-  image SHA, masking that the new code didn't actually land
-- **Root cause**: Docker BuildKit caches Cargo build layers
-  aggressively; the cache key doesn't always invalidate when a path-dep
-  changes
-- **Fix path**: pass `--no-cache` to `docker build` after any backend
-  PR. Verify via the `strings | grep` snippet in §3
-- **Workaround**: documented; users now know to verify
-
-#### Out of scope for the demo (deferred)
-
-- **Dynamic plan transitions** while the demo runs — controller plans
-  once at startup. The `ReplannerOpampGateway` covers some of this
-  in unit tests but isn't exercised by the MVP demo
-- **OpAMP hot reconfig under churn** — not exercised
-- **1M+ cardinality** — the demo runs at 5-10K aggregate, single host
-- **Multi-host federation** — not designed for; single-host bench only
-- **PromQL completeness on the archive tier** — RESOLVED by Path A2
-  (Step 2.1--2.4, 2026-05-07). The archive tier now serves the full
-  Prometheus PromQL surface via Prometheus' embedded `promql.Engine`
-  inside `thanos-query`. The previous curated subset
-  (Sum / Count / Avg / Min / Max / Rate / Increase + Quantile / TopK)
-  was retired with the deletion of `asap-planner-rs` and the custom
-  `GorillaQueryEngine`; `histogram_quantile`, `delta` over arbitrary
-  windows, and vector matching now answer exactly through Thanos. The
-  `gorilla-compactor` binary is similarly obsoleted by `thanos
-  compact` on its normal schedule
+Cold fallback is considered passing only when `ad-hoc/cold_payments.curlstats` records HTTP 200 and the response carries an archive `data_source` marker (`thanos_archive`, or the legacy `gorilla_archive` alias). The driver-side `POST /api/v1/plan` workaround has been removed; bootstrap GET is the workload/config path exercised by the demo.
 
 ## Component status (implemented / tested / planned)
 
@@ -170,9 +70,10 @@ variant is undefined (the kllprocessor's `Config.Validate` rejects
 
 | Component | Role | Status |
 |---|---|---|
-| `precompute_engine` binary | Receives sketch envelopes; serves PromQL HTTP | ✅ |
+| `asap-query-backend` (`query_engine_rust`) binary | Receives sketch envelopes; serves PromQL HTTP | ✅ |
 | `SimpleEngine` | Warm-tier query engine over sketch state | ✅ implemented + tested (33 PromQL pattern matchers) |
-| `GorillaQueryEngine` | Archive-tier query engine over Gorilla chunks | ⚠️  curated PromQL subset implemented + tested (`sum / count / avg / min / max / rate / increase / quantile_over_time / topk`); full PromQL parity is open work — see `docs/design-archive-tier.md` |
+| `ThanosForwardEngine` | Archive-tier query engine over Prometheus TSDB blocks in MinIO via thanos-query/store-gateway | ✅ full PromQL surface for archive truth and cold fallback |
+| `GorillaQueryEngine` | Legacy alias / compatibility path over Gorilla chunks | ⚠️ kept for compatibility; current MVP archive truth defaults to `thanos_archive` |
 | `GorillaS3Store` | S3 fetcher with chunk-LRU cache | ✅ (Step-1 of the JSONL deprecation renamed `GorillaS3ColdStore` → `GorillaS3Store` — the only `Store` impl in the archive tier after the JSONL leg was deleted) |
 | `BackendStorageRouting` (multi-target) | Per-metric dispatch warm vs archive based on query shape | ✅ implemented + tested |
 | `s3_cost.rs` | Counts PUT/GET/HEAD/DELETE + bytes | ✅ exposed at `/internal/s3_cost.csv` |
@@ -209,8 +110,8 @@ against the component list:
 
 | Gap | Component touched | Status |
 |---|---|---|
-| ④ accuracy reducer | repoint `accuracy_reduce.py` at the Gorilla archive engine (Step-1 deleted the JSONL ground-truth path it used to read) | ❌ not implemented; ~1d follow-up |
-| ⑥ freshness probe consumer | `gorillas3processor` chunk-header offset (`[5..9]` vs `[9..13]`) | ❌ encoder bug; one-character patch staged on a follow-up branch; takes effect after `asap/asap-otel:dev` rebuild |
+| ④ accuracy reducer | query archive truth through `X-ASAP-Engine: thanos_archive` | ✅ implemented in `accuracy_reduce.py` |
+| ⑥ freshness probe consumer | `gorillas3processor` archive probe timestamps | ✅ driver/report expect fresh run artifacts; inspect generated freshness CSVs |
 | Image-cache stickiness | Backend Docker layer cache | ⚠️  operational gotcha; pass `--no-cache` |
 
 ### Planned (not yet implemented)
@@ -218,8 +119,7 @@ against the component list:
 | Item | Tracking |
 |---|---|
 | ~~Delete `LocalFsColdStore` + JSONL gateway raw-tee + the `cost_model` cold-tier scan-bytes line item~~ | DONE (Step-1 of the JSONL deprecation — backend PR #95, collector PR #312) |
-| Full PromQL parity on `GorillaQueryEngine` via the Step-2 promotion to Prometheus-TSDB block format + Thanos store-gateway as the archive query engine | `docs/design-archive-tier.md` |
-| Repoint `accuracy_reduce.py` ground-truth lookup at the Gorilla archive engine (Step-1 deleted the JSONL path it used to read) | Same doc §"Open questions" |
+| Continue deleting legacy `gorilla_archive` naming where it is only an alias and not an API compatibility requirement | `docs/design-archive-tier.md` |
 
 ## TL;DR
 
@@ -433,7 +333,7 @@ based on the query's shape.
 │                                              ▼                           │
 │                                    ASAPQuery-backend                     │
 │                                    - SimpleEngine (warm sketch tier)     │
-│                                    - GorillaQueryEngine (archive)        │
+│                                    - ThanosForwardEngine (archive)       │
 │                                    - BackendStorageRouting               │
 │                                      dispatches per query shape          │
 │                                                                          │
@@ -472,7 +372,7 @@ side-by-side rows for each criterion:
 | ② | Aggregation query latency | Prometheus PromQL p50 / p99 | ASAPQuery-backend PromQL p50 / p99 (warm + archive) | Y% |
 | ③ | Combined e2e resource | Σ(OTel agent + Prometheus CPU/RSS/disk) | Σ(asap-otel + gateway + backend + MinIO) | Z% |
 | ④ | Accuracy | exact (raw samples in TSDB) | rel-err per query class within ε/δ envelope | bounded by sketch family |
-| ⑤ | Cold-fallback for ad-hoc queries | Prometheus answers anything natively | `data_source: gorilla_archive` for ad-hoc / post-hoc / cardinality queries | qualitative PASS |
+| ⑤ | Cold-fallback for ad-hoc queries | Prometheus answers anything natively | `data_source: thanos_archive (or legacy gorilla_archive alias)` for ad-hoc / post-hoc / cardinality queries | qualitative PASS |
 | ⑥ | Freshness | sample-to-query latency on TSDB ingest path | sample-to-query latency on warm + archive paths | per-path Δ |
 
 ### Three query classes the demo exercises
@@ -514,9 +414,9 @@ earlier iterations):
   archive path, since chunks aren't queryable until the per-window
   flush lands in S3 — typically ≥ 60 s).
 
-The encoder offset bug documented in §7 is what currently puts ⑥
-on UNKNOWN; once the encoder writes the timestamp at the correct
-byte offset, the protocol above measures Δ end-to-end.
+The generated freshness CSVs are the source of truth for criterion ⑥;
+empty files indicate a current run problem, not an expected runbook
+exception.
 
 ## 3. Compiling and building from source
 
@@ -648,7 +548,7 @@ DOCKER_BUILDKIT=1 docker build \
     .
 ```
 
-The build runs `cargo build --release --bin precompute_engine` inside a
+The build runs `cargo build --release --bin asap-query-backend` inside a
 `rust:1.90-bookworm` builder stage, then copies the binary into a
 `debian:bookworm-slim` runtime stage. Wall: 4-8 min cold, 30-60 s warm.
 
@@ -672,8 +572,8 @@ Verify the freshly-built image has the postings + dual-routing features:
 
 ```bash
 docker run --rm asap/query-backend:dev sh -c \
-    'strings /usr/local/bin/precompute_engine | \
-     grep -E "postings_filtered|gorilla_archive|s3_cost" | head -5'
+    'strings /usr/local/bin/asap-query-backend | \
+     grep -E "postings_filtered|thanos_archive|s3_cost" | head -5'
 ```
 
 If the grep returns nothing, the cache hit on a stale layer; rebuild
@@ -758,7 +658,7 @@ the implementation):
 | 3. Measurements | Run `measure_stages.py` + `measure_per_edge_bandwidth.py` + `promql_replay.py` over 60 s soak with three query classes |
 | 4. Freshness | Run `run_freshness_phase.sh` against three probes (raw / warm / archive) → 3 CSVs |
 | 5. Ad-hoc queries | Fire label-predicate queries; capture postings filtering |
-| 6. Cold-fallback | Fire `count(http_requests_total{service="payments"})`; verify `data_source: gorilla_archive` |
+| 6. Cold-fallback | Fire `count(http_requests_total{service="payments"})`; verify `data_source: thanos_archive (or legacy gorilla_archive alias)` |
 | 7. Compaction | Verify `thanos-compact` sidecar is healthy; capture before/after `mc ls` listing of the MinIO archive bucket; poll `thanos_compact_iterations_total` from `/metrics` to confirm at least one compaction sweep completed (Phase δ.1) |
 | 8. Report | Run `mvp_report.py` over the captured CSVs to produce `MVP_REPORT.md` |
 
@@ -772,7 +672,7 @@ deploy/eval-results/mvp-current/
 ├── ad-hoc/                     ← Phase 5 — ad-hoc query responses
 │   ├── label-api.json
 │   ├── label-status5xx.json
-│   └── cold_payments.json      ← criterion ⑤: look for "data_source: gorilla_archive"
+│   └── cold_payments.json      ← criterion ⑤: look for "data_source: thanos_archive (or legacy gorilla_archive alias)"
 ├── thanos-compact/             ← Phase 7 (Phase δ.1: renamed from compactor/)
 │   ├── before.minio.jsonl      ← MinIO bucket listing pre-sweep
 │   ├── after.minio.jsonl       ← MinIO bucket listing post-sweep
@@ -821,7 +721,7 @@ For an end-to-end PASS picture, expect:
 | §2 | ② query latency | PASS — p99 ≤ 10ms across all three query classes |
 | §2 | ③ combined resource | CAPTURED |
 | §2 | ④ accuracy | PASS — rel-err inside ε envelope per query class |
-| §2 | ⑤ cold-fallback | PASS — `data_source: gorilla_archive` in `ad-hoc/cold_payments.json` |
+| §2 | ⑤ cold-fallback | PASS — `data_source: thanos_archive (or legacy gorilla_archive alias)` in `ad-hoc/cold_payments.json` |
 | §2 | ⑥ freshness | PASS — non-zero p50/p99 in `freshness/{raw,warm,archive}.csv` |
 | §3 | per-class rel-err | non-empty for all three classes |
 | §4 | postings | non-zero `series matched` rows; `would have scanned` ≥ matched |
@@ -858,38 +758,11 @@ overrides `EXPORTER_FREQ_HZ=1`), do NOT compare its bandwidth verdict
 against the 10 Hz numbers — the operating point is on the wrong side
 of every break-even curve.
 
-## 7. Known issues — current state of the demo (2026-05-07)
+## 7. Known Issues
 
-The architecture works at the dispatch and planning layers. Two ingest-side
-bugs surface as UNKNOWN/empty data even when the routing is correct.
-These are documented in the §"Current status" verdict above:
+No known stale-artifact blockers are documented in this runbook. A clean run should regenerate its own `OUT_BASE` tree, compute accuracy from the archive engine, and require HTTP 200 plus an archive marker for cold fallback.
 
-### ④ accuracy reducer needs ground-truth dump
-
-`accuracy_reduce.py` joins the replay client's per-query answers against a
-ground-truth JSONL stream the backend is supposed to write at
-`/var/asap/cold/raw/`. The current backend image doesn't write that stream,
-so `accuracy.csv` lands empty even though the warm-tier engine returns
-correct answers. **Fix**: backend-side raw-tee writer (out of scope for
-the demo's driver/compose layer).
-
-### ⑥ freshness probe encoder offset
-
-The agent's `gorillas3processor.encoder.go` writes the per-chunk timestamp
-header at byte offset `[5..9]` instead of `[9..13]`. The `last_over_time`
-consumer parses the wrong four bytes and sees zero values, so freshness
-deltas are computed against bogus emission timestamps and the CSVs come up
-empty. **Fix**: a one-character offset patch staged on a follow-up branch;
-takes effect after rebuilding `asap/asap-otel:dev` from the patched binary
-via OCB.
-
-### Backend image cache stickiness
-
-`docker build` aggressively caches Cargo build layers. After backend
-PRs merge, simple rebuilds can return the same image SHA even though the
-source has changed. **Workaround**: pass `--no-cache` to `docker build`
-when the postings or dual-routing features are missing from the running image (verify via the
-`strings | grep` snippet in §3).
+If a run reports UNKNOWN/FAIL, inspect the freshly generated `MVP_REPORT.md`, `asap/measurements/accuracy.log`, and `asap/ad-hoc/cold_payments.*` files from that same run.
 
 ## 8. Cleanup
 
@@ -923,8 +796,8 @@ docker builder prune --all
 | `no such file or directory: ../../asap_sketchlib/Cargo.toml` during backend build | Repo layout doesn't have the three sibling clones | Re-clone in `~/repos/{ASAPCollector, ASAPQuery-backend, asap_sketchlib}` |
 | Backend log: `No matching pattern for http_freshness_probe_warm` | Backend image pre-dates PR #91 freshness pattern registration | `docker build --no-cache ...` per §3 |
 | `MVP_REPORT.md` says §8 STATUS = `not-exercised` | `USE_TYPED_STAGE_SPLIT` not propagating | Check `docker exec controller env \| grep USE_TYPED`; re-export at the host shell |
-| `freshness/{raw,warm,archive}.csv` empty | Probe encoder offset bug (§7) OR fake-exporter image lacks probes | Rebuild fake-exporter image; verify with the `grep -l` step in §3 |
-| `accuracy.csv` empty | No ground-truth dump (§7) | Documented; out of demo scope |
+| `freshness/{raw,warm,archive}.csv` empty | Probe exporter/backend path did not produce observations | Rebuild fake-exporter image; verify with the `grep -l` step in §3 and inspect `freshness/run.log` |
+| `accuracy.csv` empty | Archive truth queries failed or replay produced no reducible rows | Inspect `asap/measurements/accuracy.log`; verify backend answers with `X-ASAP-Engine: thanos_archive` |
 | Demo agent dies at "stack settle" | Controller container not reachable; check `docker ps` and `docker compose logs controller` | Often a port collision; run `docker compose down -v` first |
 | OOM kill during the soak | `PER_AGENT_CARDINALITY` too high for the host RAM budget | Lower to 250 or run on a 32 GB host |
 

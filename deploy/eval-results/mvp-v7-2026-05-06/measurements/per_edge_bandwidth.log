@@ -1,6 +1,0 @@
-# per-edge bandwidth probe — duration=90.0s period=1.0s out=/tmp/asap-v7-collector-worktree/deploy/eval-results/mvp-v7-2026-05-06/measurements/per_edge_bandwidth.csv
-# wrote /tmp/asap-v7-collector-worktree/deploy/eval-results/mvp-v7-2026-05-06/measurements/per_edge_bandwidth.csv (364 rows)
-# edge=edge_agent_to_gateway samples=90 mean_bytes_per_s=113127.1
-# edge=edge_gateway_to_backend samples=90 mean_bytes_per_s=98521.9
-# edge=edge_gateway_to_s3 samples=90 mean_bytes_per_s=15299.0
-# edge=edge_sdk_to_agent samples=90 mean_bytes_per_s=6625.9

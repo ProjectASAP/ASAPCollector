@@ -65,10 +65,7 @@ pub trait Emitter {
     /// Lower a colored DAG into one [`StageConfig`] per occupied stage.
     /// Returns a map keyed by `StageId` for stable consumer access; any
     /// stage not occupied in the DAG is omitted.
-    fn emit_per_stage(
-        &self,
-        dag: &ColoredDag,
-    ) -> Result<HashMap<StageId, StageConfig>, EmitError>;
+    fn emit_per_stage(&self, dag: &ColoredDag) -> Result<HashMap<StageId, StageConfig>, EmitError>;
 }
 
 /// Per-stage emitter output for the DC three-stage topology.
@@ -232,8 +229,8 @@ pub struct PrometheusArchiveMetric {
 /// One sketch processor configured at an edge agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EdgeSketchProcessor {
-    /// OTel processor name — `kllprocessor`, `ddsketchprocessor`,
-    /// `hllprocessor`, etc. Maps 1:1 from `SketchKind`.
+    /// OTel processor component id — `KLL`, `ddsketch`, `HLL`,
+    /// `countmin`, etc. Maps 1:1 from `SketchKind`.
     pub processor_name: String,
     /// Sketch family (mirror of the `SketchAgg::sketch_type` field).
     pub sketch_kind: SketchKind,
@@ -359,19 +356,13 @@ pub struct ThreeStageEmitter;
 impl ThreeStageEmitter {
     /// Convenience alias for [`Emitter::emit_per_stage`] when callers
     /// already hold a `ThreeStageEmitter` value.
-    pub fn emit(
-        &self,
-        dag: &ColoredDag,
-    ) -> Result<HashMap<StageId, StageConfig>, EmitError> {
+    pub fn emit(&self, dag: &ColoredDag) -> Result<HashMap<StageId, StageConfig>, EmitError> {
         self.emit_per_stage(dag)
     }
 }
 
 impl Emitter for ThreeStageEmitter {
-    fn emit_per_stage(
-        &self,
-        dag: &ColoredDag,
-    ) -> Result<HashMap<StageId, StageConfig>, EmitError> {
+    fn emit_per_stage(&self, dag: &ColoredDag) -> Result<HashMap<StageId, StageConfig>, EmitError> {
         if dag.topology != Topology::ThreeStage {
             return Err(EmitError::UnsupportedTopology(
                 dag.topology,
@@ -495,11 +486,12 @@ impl Emitter for ThreeStageEmitter {
                     },
                     StageId::Edge,
                 ) => {
-                    edge.prometheus_archive_metrics.push(PrometheusArchiveMetric {
-                        metric: metric.clone(),
-                        window_secs: window.map(|d| d.as_secs()),
-                        label_proj: label_proj.clone(),
-                    });
+                    edge.prometheus_archive_metrics
+                        .push(PrometheusArchiveMetric {
+                            metric: metric.clone(),
+                            window_secs: window.map(|d| d.as_secs()),
+                            label_proj: label_proj.clone(),
+                        });
                     // Phase 3.2.5 (Bug a): Mode-3 metrics also land in
                     // the Gorilla-S3 archive so the warm-tier
                     // sketch-engine and the Thanos store-gateway can
@@ -516,10 +508,7 @@ impl Emitter for ThreeStageEmitter {
                 // BackendAggregation with the family the backend will
                 // build at ingest. The aggregation_input=raw flag is
                 // emitted by `emit_backend_config_json`.
-                (
-                    SketchExpr::RawAtEdgeSketchAtBackend { family, params, .. },
-                    StageId::Edge,
-                ) => {
+                (SketchExpr::RawAtEdgeSketchAtBackend { family, params, .. }, StageId::Edge) => {
                     let aid = format!("agg{next_agg_index}");
                     next_agg_index += 1;
                     backend_aggregations.push(BackendAggregation {
@@ -571,11 +560,11 @@ impl Emitter for ThreeStageEmitter {
 /// crates in `opentelemetry-collector-contrib`) already use.
 pub(crate) fn edge_processor_name(kind: &SketchKind) -> Result<String, EmitError> {
     Ok(match kind {
-        SketchKind::Kll => "kllprocessor".into(),
-        SketchKind::DDSketch => "ddsketchprocessor".into(),
-        SketchKind::Hll => "hllprocessor".into(),
-        SketchKind::Cms => "countminsketchprocessor".into(),
-        SketchKind::CountSketch => "countsketchprocessor".into(),
+        SketchKind::Kll => "KLL".into(),
+        SketchKind::DDSketch => "ddsketch".into(),
+        SketchKind::Hll => "HLL".into(),
+        SketchKind::Cms => "countmin".into(),
+        SketchKind::CountSketch => "countsketch".into(),
     })
 }
 
@@ -657,13 +646,17 @@ fn first_sketch_child_via_edges(
             }
             SketchExpr::Ref { name } => {
                 // Resolve the ref to its binding's expr id, then recurse.
-                if let Some(bid) = dag.nodes.iter().enumerate().find_map(|(i, n)| match &n.expr {
-                    SketchExpr::LetBinding { name: n2, .. } if n2 == name => Some(i),
-                    _ => None,
-                }) {
+                if let Some(bid) = dag
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, n)| match &n.expr {
+                        SketchExpr::LetBinding { name: n2, .. } if n2 == name => Some(i),
+                        _ => None,
+                    })
+                {
                     let bnode_id = crate::stage_split::colored_dag::NodeId(bid);
-                    if let Some(found) =
-                        first_sketch_child_via_edges(dag, bnode_id, sketch_agg_ids)
+                    if let Some(found) = first_sketch_child_via_edges(dag, bnode_id, sketch_agg_ids)
                     {
                         return Some(found);
                     }
