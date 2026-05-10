@@ -13,15 +13,16 @@
 # Output: telegraf/asap-telegraf
 #
 # Usage:
-#   ./build_asap_telegraf.sh                  # builds asap-telegraf
+#   ./build_asap_telegraf.sh                  # builds asap-telegraf (re-applies patches)
+#   ./build_asap_telegraf.sh --skip-patches   # skip re-applying patches
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+SKIP_PATCHES=false
 for arg in "$@"; do
 	case "$arg" in
-		--skip-patches) ;;  # accepted for backward compatibility — no-op now
-		                    # that patch overlays have been removed.
+		--skip-patches) SKIP_PATCHES=true ;;
 		*) echo "Unknown argument: $arg" >&2; exit 1 ;;
 	esac
 done
@@ -33,6 +34,14 @@ ASAP_PRECOMPUTE_GO_DIR="${ROOT_DIR}/asap-precompute-go"
 if [[ ! -d "${TELEGRAF_DIR}/cmd/telegraf" ]]; then
 	echo "Telegraf submodule not initialized at ${TELEGRAF_DIR} — run 'git submodule update --init telegraf'" >&2
 	exit 1
+fi
+
+# Step 1: Stage the allsketches plugin onto the Telegraf submodule
+# (telegraf-patch/ is the source-of-truth; submodule stays clean).
+if [[ "${SKIP_PATCHES}" == false ]]; then
+	echo "==> Applying patches to telegraf submodule..."
+	bash "${ROOT_DIR}/restore_telegraf_patches.sh"
+	echo ""
 fi
 
 # Step 2: Wire sibling checkouts via replace directives + require lines.
