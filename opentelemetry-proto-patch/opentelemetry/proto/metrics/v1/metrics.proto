@@ -289,6 +289,13 @@ message DDSketch {
   // aggregation_temporality describes if the aggregator reports delta changes
   // since last report time, or cumulative changes since a fixed start time.
   AggregationTemporality aggregation_temporality = 2;
+
+  // Refactor-2026-05: sketch instance config — DDSketch's relative
+  // accuracy (alpha). Sent ONCE per Metric emit (not per DataPoint),
+  // since this is a per-sketch-instance parameter, not per-window
+  // mutable state. Backend reads this into
+  // SketchInstanceMetadata.sketch_config on first sight and caches.
+  double relative_accuracy = 3;
 }
 
 // Summary metric data are used to convey quantile summaries,
@@ -307,54 +314,30 @@ message Summary {
 }
 
 // DDSketchDataPoint is a single data point that encodes a distribution using the DDSketch format.
+//
+// Refactor-2026-05: removed precomputed/duplicated fields (count, sum,
+// min, max) — they are derivable from the sketch payload, so storing
+// them per-DataPoint duplicates state and risks cache-invalidation
+// bugs. Field numbers reserved for forward/backward compat.
 message DDSketchDataPoint {
-  reserved 1;
+  reserved 1;                              // legacy "labels" (replaced by `attributes`)
+  reserved 4, 5, 6, 7, 12, 13, 14;        // refactor-2026-05: count, sum oneof, min oneof, max oneof — derivable from sketch state
 
   // The set of key/value pairs that uniquely identify the timeseries from
   // where this point belongs. The list MUST be omitted (or present but empty)
   // whenever `series_id` is non-zero, and MUST be populated when `series_id`
   // is zero so the receiver can mint a new entry.
-  // Attribute keys MUST be unique (it is not allowed to have more than one
-  // attribute with the same key).
-  // The behavior of software that receives duplicated keys can be unpredictable.
+  // Attribute keys MUST be unique. After group-by rollup at the agent's
+  // sketch processor, `attributes.keys()` IS the group-by KEY set;
+  // `attributes` (as a map) is the group-by VALUES for this series.
   repeated opentelemetry.proto.common.v1.KeyValue attributes = 9;
 
   // StartTimeUnixNano is optional but strongly encouraged, see the
   // the detailed comments above Metric.
-  //
-  // Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January
-  // 1970.
   fixed64 start_time_unix_nano = 2;
 
   // TimeUnixNano is required, see the detailed comments above Metric.
-  //
-  // Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January
-  // 1970.
   fixed64 time_unix_nano = 3;
-
-  // Count is the number of measurements that were aggregated into this sketch.
-  fixed64 count = 4;
-
-  // Sum is the total of all measurements aggregated for this sketch.
-  // At most one of the fields in this oneof may be set at a time.
-  oneof sum {
-    double sum_as_double = 5;
-    sfixed64 sum_as_int = 12;
-  }
-
-  // Min is the minimum value over (start_time, end_time]. Optional.
-  // At most one of the fields in this oneof may be set at a time.
-  oneof min {
-    double min_as_double = 6;
-    sfixed64 min_as_int = 13;
-  }
-
-  // Max is the maximum value over (start_time, end_time]. Optional.
-  // At most one of the fields in this oneof may be set at a time.
-  oneof max {
-    double max_as_double = 7;
-    sfixed64 max_as_int = 14;
-  }
 
   // Serialized DDSketch payload. The encoding is described by the encoding field.
   bytes sketch = 8;
@@ -373,6 +356,9 @@ message DDSketchDataPoint {
   // series_id references a collector-assigned series descriptor. Receivers MUST
   // reject the point unless exactly one of (`series_id` != 0, `attributes` populated)
   // is true.
+  // After Phase 5 (centralized resolver at asap-query-backend), this id
+  // is the BACKEND-assigned global identifier for `(metric_name, attributes)`,
+  // shared across all hops in the pipeline.
   uint64 series_id = 16;
 }
 
@@ -394,23 +380,22 @@ enum DDSketchEncoding {
 
 // KLLSketch represents the type of a metric that encodes measurements using the KLL quantile sketch.
 message KLLSketch {
-  // The time series data points.
   repeated KLLSketchDataPoint data_points = 1;
-
-  // aggregation_temporality describes if the aggregator reports delta changes
-  // since last report time, or cumulative changes since a fixed start time.
   AggregationTemporality aggregation_temporality = 2;
+
+  // Refactor-2026-05: KLL sketch parameter `k` — controls quantile
+  // error / space tradeoff. Sent once per Metric emit.
+  uint32 k = 3;
 }
 
 // KLLSketchDataPoint is a single data point that encodes a distribution using the KLL sketch format.
+//
+// Refactor-2026-05: removed count, sum, min, max — derivable from sketch state.
 message KLLSketchDataPoint {
+  reserved 4, 5, 6, 7;       // count, sum, min, max
   repeated opentelemetry.proto.common.v1.KeyValue attributes = 1;
   fixed64 start_time_unix_nano = 2;
   fixed64 time_unix_nano = 3;
-  fixed64 count = 4;
-  double sum = 5;
-  double min = 6;
-  double max = 7;
   bytes sketch = 8;
   KLLSketchEncoding encoding = 9;
   uint32 flags = 10;
@@ -432,24 +417,28 @@ enum KLLSketchEncoding {
 
 // CountSketch represents the type of a metric that encodes frequency estimations using CountSketch.
 message CountSketch {
-  // The time series data points.
   repeated CountSketchDataPoint data_points = 1;
-
-  // aggregation_temporality describes if the aggregator reports delta changes
-  // since last report time, or cumulative changes since a fixed start time.
   AggregationTemporality aggregation_temporality = 2;
+
+  // Refactor-2026-05: CountSketch matrix dimensions. depth × width.
+  // (epsilon, delta) deriveable: eps = sqrt(e/cols) for L2 estimation;
+  // delta ≈ 1/(2^(rows/2)). Backend computes these for display.
+  int32 rows = 3;     // depth
+  int32 cols = 4;     // width
 }
 
 // CountSketchDataPoint is a single data point encoding frequency estimations.
+//
+// Refactor-2026-05: removed `dimension` (legacy partition-key
+// descriptor — replaced by `attributes` keys = group-by labels);
+// removed `epsilon`/`delta` (derivable from container's rows/cols).
 message CountSketchDataPoint {
+  reserved 6, 7, 8;          // dimension, epsilon, delta
   repeated opentelemetry.proto.common.v1.KeyValue attributes = 1;
   fixed64 start_time_unix_nano = 2;
   fixed64 time_unix_nano = 3;
   bytes sketch = 4;
   CountSketchEncoding encoding = 5;
-  string dimension = 6;
-  double epsilon = 7;
-  double delta = 8;
   uint32 flags = 9;
   uint64 series_id = 10;
 }
@@ -470,24 +459,27 @@ enum CountSketchEncoding {
 
 // CountMinSketch represents the type of a metric encoding frequency estimations using CountMinSketch.
 message CountMinSketch {
-  // The time series data points.
   repeated CountMinSketchDataPoint data_points = 1;
-
-  // aggregation_temporality describes if the aggregator reports delta changes
-  // since last report time, or cumulative changes since a fixed start time.
   AggregationTemporality aggregation_temporality = 2;
+
+  // Refactor-2026-05: CMS matrix dimensions. depth × width.
+  // (epsilon, delta) deriveable: eps ≈ e/cols; delta ≈ exp(-rows).
+  int32 rows = 3;     // depth = ⌈ln(1/delta)⌉
+  int32 cols = 4;     // width = ⌈e/epsilon⌉
 }
 
 // CountMinSketchDataPoint is a single data point encoding frequency estimations.
+//
+// Refactor-2026-05: removed `sample_count` (derivable from sketch
+// row sums); removed `rows`/`cols` (lifted to parent container, sent
+// once per Metric emit instead of per DataPoint).
 message CountMinSketchDataPoint {
+  reserved 4, 7, 8;          // sample_count, rows, cols
   repeated opentelemetry.proto.common.v1.KeyValue attributes = 1;
   fixed64 start_time_unix_nano = 2;
   fixed64 time_unix_nano = 3;
-  uint64 sample_count = 4;
   bytes sketch = 5;
   CountMinSketchEncoding encoding = 6;
-  int32 rows = 7;
-  int32 cols = 8;
   uint32 flags = 9;
   uint64 series_id = 10;
 }
@@ -508,24 +500,27 @@ enum CountMinSketchEncoding {
 
 // HLLSketch represents the type of a metric that encodes cardinality estimations using HyperLogLog.
 message HLLSketch {
-  // The time series data points.
   repeated HLLSketchDataPoint data_points = 1;
-
-  // aggregation_temporality describes if the aggregator reports delta changes
-  // since last report time, or cumulative changes since a fixed start time.
   AggregationTemporality aggregation_temporality = 2;
+
+  // Refactor-2026-05: HLL register-bucket precision (= log2(register count)).
+  // Standard error ≈ 1.04 / sqrt(2^precision). Sent once per Metric emit.
+  uint32 precision = 3;
 }
 
 // HLLSketchDataPoint is a single data point encoding cardinality estimations.
+//
+// Refactor-2026-05: removed `count` (derivable from sketch register
+// state), removed `cardinality` (precomputed cache of
+// sketch.estimate() — let the receiver evaluate on demand to avoid
+// cache drift). `precision` lifted to parent container.
 message HLLSketchDataPoint {
+  reserved 4, 5, 8;          // count, cardinality, precision
   repeated opentelemetry.proto.common.v1.KeyValue attributes = 1;
   fixed64 start_time_unix_nano = 2;
   fixed64 time_unix_nano = 3;
-  uint64 count = 4;
-  uint64 cardinality = 5;
   bytes sketch = 6;
   HLLSketchEncoding encoding = 7;
-  uint32 precision = 8;
   uint32 flags = 9;
   uint64 series_id = 10;
 }

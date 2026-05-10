@@ -63,6 +63,17 @@ message ExportMetricsServiceResponse {
   // assignments and omit the associated attributes on subsequent exports once
   // a series_id is known.
   repeated SeriesAssignment series_assignments = 2;
+
+  // Refactor-2026-05: sids the receiver did NOT recognize in this Export.
+  // Sent when the receiver's series-id cache has diverged from the
+  // sender's (e.g., after backend restart without persistence, or any
+  // sid-cache eviction). Senders MUST evict the listed sids from their
+  // local cache; subsequent emits MUST re-attach `attributes` so the
+  // receiver can re-resolve and return fresh SeriesAssignments. This
+  // field is the universal recovery primitive — same code path that
+  // handles cold-start bootstrap also handles every cache-divergence
+  // failure mode.
+  repeated uint64 unknown_series_ids = 3;
 }
 
 message ExportMetricsPartialSuccess {

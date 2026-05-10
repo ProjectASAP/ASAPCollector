@@ -27,7 +27,7 @@ EXPORTER_TRACE_FILE=/trace/demo-trace.csv \
     -f base.yml -f agents-N1.yml -f baseline-b3-delta.yml up -d
 ```
 
-The compose stack already mounts `deploy/fake-exporter/traces/`
+The compose stack already mounts `deploy/fake-exporter/replay-data/`
 at `/trace/` in each fake-exporter container (see the
 `baseline-*-trace.yml` overlays).
 

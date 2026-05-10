@@ -54,7 +54,8 @@ func toPrecomputeConfig(cfg *Config, metricName string) *precompute.PrecomputeCo
 		DeltaTransmission: cfg.DeltaTransmission,
 		DeltaThreshold:    cfg.DeltaThreshold,
 		Encoding:          precompute.EncodingProtoFull,
-		MetricName:        metricName + cfg.MetricSuffix,
+		// Refactor-2026-05: precompute config carries the raw input name.
+		MetricName:        metricName,
 		Temporality:       int32(pmetric.AggregationTemporalityDelta),
 	}
 }

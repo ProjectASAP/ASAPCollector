@@ -171,14 +171,13 @@ func (p *hllProcessor) encodeCardinalityGauge(metrics pmetric.MetricSlice, input
 	}
 }
 
-// cardinalityMetricName returns the output metric name. Mirrors the
-// legacy emit's behavior: MetricSuffix overrides the implicit
-// "_hll_cardinality" suffix entirely.
+// cardinalityMetricName returns the output metric name. Refactor-2026-05:
+// the input metric name is preserved end-to-end. The HLL encoding lives
+// in the OTLP pdata.Metric variant tag (HLLSketch) for the
+// TransmitSketch=true emit path; the cardinality-gauge emit path keeps
+// the same name with the sketch type implicit in pdata.
 func (p *hllProcessor) cardinalityMetricName(base string) string {
-	if p.cfg.MetricSuffix != "" {
-		return base + p.cfg.MetricSuffix
-	}
-	return base + "_hll_cardinality"
+	return base
 }
 
 // labelsToAttrs copies host-neutral KeyValues into a pcommon.Map.

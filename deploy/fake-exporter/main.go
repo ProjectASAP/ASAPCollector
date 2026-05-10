@@ -451,6 +451,17 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 	}
 
 	labelSets := buildLabelSets(cardinality, zoneVals, rackVals, nodeVals, podVals)
+	// Multi-producer demos: prepend EXPORTER_PRODUCER_ID as a label so
+	// each producer's series stay distinct at the backend instead of
+	// collapsing onto the same {zone,rack,node,pod} buckets.
+	if pid := os.Getenv("EXPORTER_PRODUCER_ID"); pid != "" {
+		for i := range labelSets {
+			labelSets[i] = append(
+				[]attribute.KeyValue{attribute.String("producer_id", pid)},
+				labelSets[i]...,
+			)
+		}
+	}
 	period := time.Duration(float64(time.Second) / freqHz)
 
 	// Five-sketch MVP workload (issue #46) — emits the four new

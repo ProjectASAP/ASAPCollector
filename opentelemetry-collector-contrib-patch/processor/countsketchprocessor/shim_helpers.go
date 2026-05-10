@@ -228,7 +228,15 @@ func (p *countSketchProcessor) encodeGaugeMetrics(envs []*precompute.SketchEnvel
 	sm.Scope().SetName("otelcol/countsketch")
 	for _, env := range envs {
 		m := sm.Metrics().AppendEmpty()
-		m.SetName(outputMetricName)
+		// Refactor-2026-05: prefer input metric name from the
+		// envelope; fall back to outputMetricName only if the
+		// envelope arrived without a name (shouldn't happen in
+		// practice).
+		name := env.MetricName
+		if name == "" {
+			name = outputMetricName
+		}
+		m.SetName(name)
 		m.SetUnit("1")
 		gauge := m.SetEmptyGauge()
 		dp := gauge.DataPoints().AppendEmpty()

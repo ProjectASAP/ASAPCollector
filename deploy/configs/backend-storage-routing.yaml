@@ -68,13 +68,34 @@ default: sketch_warm_tier
 # OR count-on-archive, never both); the multi-target form lets a
 # single metric serve both classes from the engine each is best at.
 routes:
+  # Refactor-2026-05 (Phase 6): universal warm-first / archive-fallthrough
+  # for raw-named metrics. The warm tier serves any query where a
+  # registered SketchInstanceMetadata + sketch state hits (Phases 4-5);
+  # any miss — whether the controller hasn't planned for the query
+  # shape, or the sid is a ghost (registered identity whose state was
+  # merged away upstream), or backend's cache is empty after restart —
+  # falls through to gorilla_s3_archive (Thanos forward, raw archive).
+  #
+  # The previous per-shape allow-list (`[count, topk, rate_post_hoc]`)
+  # is removed; routing decisions are now entirely shape-agnostic at
+  # this layer. Per-shape selectivity at the runtime is determined by
+  # the warm tier's own SidLookup classification (Hit / Ghost /
+  # Unknown), not by a static YAML allow-list.
   - metric: http_requests_total
     targets:
       - backend: sketch_warm_tier
-        # default slot — every shape not explicitly claimed below
-        # routes here (Quantile, Sum, LastOverTime, Other).
+        # default slot — try warm tier for every shape
       - backend: gorilla_s3_archive
-        applies_to_query_shape: [count, topk, rate_post_hoc]
+        # universal fallthrough — runtime engages this slot whenever
+        # the warm tier returns SidLookup::Ghost or SidLookup::Unknown
+        # (and on capability mismatch, when the controller's plan
+        # didn't cover this query shape for this metric).
+        applies_to_query_shape: [count, topk, rate_post_hoc, quantile, sum, last_over_time, other]
+  - metric: http_requests_total_latency_ms
+    targets:
+      - backend: sketch_warm_tier
+      - backend: gorilla_s3_archive
+        applies_to_query_shape: [count, topk, rate_post_hoc, quantile, sum, last_over_time, other]
 
   # The latency-quantile metric stays warm-tier-only. The cold
   # engine returns NaN for empty / partial 60s windows

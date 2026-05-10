@@ -97,13 +97,14 @@ func (p *kllProcessor) encodeQuantileGauges(metrics pmetric.MetricSlice, inputNa
 }
 
 // sketchMetricName returns the output metric name for the
-// TransmitSketch=true path. Mirrors the legacy emit's behavior:
-// MetricSuffix overrides the implicit "_kll" suffix entirely.
+// TransmitSketch=true path. Refactor-2026-05: the input metric name
+// is preserved end-to-end. The KLL encoding lives in the OTLP
+// pdata.Metric variant tag (KLLSketch), so the downstream backend
+// can identify the encoding without a name suffix and PromQL fired
+// against the raw input metric name resolves directly against the
+// stored sketch state.
 func (p *kllProcessor) sketchMetricName(base string) string {
-	if p.cfg.MetricSuffix != "" {
-		return base + p.cfg.MetricSuffix
-	}
-	return base + "_kll"
+	return base
 }
 
 // labelsToAttrs copies host-neutral KeyValues into a pcommon.Map.

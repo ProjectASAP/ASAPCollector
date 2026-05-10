@@ -67,7 +67,7 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://controller:4320/v1/opamp
+        endpoint: ws://backend:4320/v1/opamp
         # Header-based agent identification — see
         # `asap-otel-agent-b3-delta-direct.yaml` for the rationale
         # (controller's OpAMP server uses X-Agent-ID, not the
@@ -84,7 +84,7 @@ receivers:
         # 500 user_ids) don't trip the 4 MiB grpc default and get
         # rejected by the agent. Mirrors the gateway receiver knob and
         # the controller emit.
-        max_recv_msg_size_mib: 64
+        max_recv_msg_size_mib: 4096
       http:
         endpoint: 0.0.0.0:4318
 

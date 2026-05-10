@@ -177,9 +177,16 @@ func stampDPMetadata(encoded pmetric.Metrics, envs []*precompute.SketchEnvelope)
 
 // appendSketchMetrics encodes envs as DDSketch-typed metrics and
 // merges them into out, in place where possible.
+//
+// Refactor-2026-05: metric name is PRESERVED from the input metric.
+// MetricSuffix is intentionally NOT applied — the sketch type is
+// carried by the OTLP pdata.Metric variant tag (DDSketch), so the
+// downstream backend can identify the encoding without a name suffix
+// and PromQL queries fired against the raw input metric name resolve
+// directly against the stored sketch state.
 func (p *ddsketchProcessor) appendSketchMetrics(out pmetric.Metrics, envs []*precompute.SketchEnvelope, inputName string) {
 	for _, env := range envs {
-		env.MetricName = inputName + p.cfg.MetricSuffix
+		env.MetricName = inputName
 	}
 	encoded, err := otelpre.Encode(envs, &otelpre.AdapterConfig{})
 	if err != nil {
@@ -204,7 +211,9 @@ func (p *ddsketchProcessor) appendQuantileMetrics(out pmetric.Metrics, envs []*p
 	otelpre.KeyValuesToAttributes(envs[0].ResourceLabels, rm.Resource().Attributes())
 	sm := rm.ScopeMetrics().AppendEmpty()
 	metric := sm.Metrics().AppendEmpty()
-	metric.SetName(inputName + p.cfg.MetricSuffix)
+	// Refactor-2026-05: name preserved from input (sketch encoding lives
+	// in the pdata variant tag, not in a name suffix).
+	metric.SetName(inputName)
 	dps := metric.SetEmptyGauge().DataPoints()
 	for _, env := range envs {
 		sk, err := decodeDDSketchEnvelope(env.Payload)
