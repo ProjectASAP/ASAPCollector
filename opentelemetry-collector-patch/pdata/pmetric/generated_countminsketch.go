@@ -10,7 +10,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/internal"
 )
 
-// CountMinSketch represents the type of a metric encoded with the Count-Min Sketch data structure.
+// CountMinSketch represents the type of a metric encoded using the Count-Min Sketch frequency estimation algorithm.
 //
 // This is a reference type, if passed by value and callee modifies it the
 // caller will see the modification.
@@ -39,6 +39,7 @@ func NewCountMinSketch() CountMinSketch {
 func (ms CountMinSketch) MoveTo(dest CountMinSketch) {
 	ms.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if ms.orig == dest.orig {
 		return
 	}
@@ -60,6 +61,28 @@ func (ms CountMinSketch) AggregationTemporality() AggregationTemporality {
 func (ms CountMinSketch) SetAggregationTemporality(v AggregationTemporality) {
 	ms.state.AssertMutable()
 	ms.orig.AggregationTemporality = internal.AggregationTemporality(v)
+}
+
+// Rows returns the rows associated with this CountMinSketch.
+func (ms CountMinSketch) Rows() int32 {
+	return ms.orig.Rows
+}
+
+// SetRows replaces the rows associated with this CountMinSketch.
+func (ms CountMinSketch) SetRows(v int32) {
+	ms.state.AssertMutable()
+	ms.orig.Rows = v
+}
+
+// Cols returns the cols associated with this CountMinSketch.
+func (ms CountMinSketch) Cols() int32 {
+	return ms.orig.Cols
+}
+
+// SetCols replaces the cols associated with this CountMinSketch.
+func (ms CountMinSketch) SetCols(v int32) {
+	ms.state.AssertMutable()
+	ms.orig.Cols = v
 }
 
 // CopyTo copies all properties from the current struct overriding the destination.

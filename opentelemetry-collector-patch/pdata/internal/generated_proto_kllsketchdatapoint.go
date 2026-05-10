@@ -9,7 +9,6 @@ package internal
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 	"sync"
 
 	"go.opentelemetry.io/collector/pdata/internal/json"
@@ -19,16 +18,12 @@ import (
 // KLLSketchDataPoint is a single data point that encodes a distribution using the KLL sketch format.
 type KLLSketchDataPoint struct {
 	Attributes        []KeyValue
-	SeriesID          uint64
 	StartTimeUnixNano uint64
 	TimeUnixNano      uint64
-	Count             uint64
-	Sum               float64
-	Min               float64
-	Max               float64
 	Sketch            []byte
 	Encoding          KLLSketchEncoding
 	Flags             uint32
+	SeriesID          uint64
 }
 
 var (
@@ -67,6 +62,7 @@ func DeleteKLLSketchDataPoint(orig *KLLSketchDataPoint, nullable bool) {
 }
 
 func CopyKLLSketchDataPoint(dest, src *KLLSketchDataPoint) *KLLSketchDataPoint {
+	// If copying to same object, just return.
 	if src == dest {
 		return dest
 	}
@@ -80,25 +76,17 @@ func CopyKLLSketchDataPoint(dest, src *KLLSketchDataPoint) *KLLSketchDataPoint {
 	}
 	dest.Attributes = CopyKeyValueSlice(dest.Attributes, src.Attributes)
 
-	dest.SeriesID = src.SeriesID
-
 	dest.StartTimeUnixNano = src.StartTimeUnixNano
 
 	dest.TimeUnixNano = src.TimeUnixNano
-
-	dest.Count = src.Count
-
-	dest.Sum = src.Sum
-
-	dest.Min = src.Min
-
-	dest.Max = src.Max
 
 	dest.Sketch = src.Sketch
 
 	dest.Encoding = src.Encoding
 
 	dest.Flags = src.Flags
+
+	dest.SeriesID = src.SeriesID
 
 	return dest
 }
@@ -109,6 +97,8 @@ func CopyKLLSketchDataPointSlice(dest, src []KLLSketchDataPoint) []KLLSketchData
 		newDest = make([]KLLSketchDataPoint, len(src))
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteKLLSketchDataPoint(&dest[i], false)
 		}
@@ -123,16 +113,22 @@ func CopyKLLSketchDataPointPtrSlice(dest, src []*KLLSketchDataPoint) []*KLLSketc
 	var newDest []*KLLSketchDataPoint
 	if cap(dest) < len(src) {
 		newDest = make([]*KLLSketchDataPoint, len(src))
+		// Copy old pointers to re-use.
 		copy(newDest, dest)
+		// Add new pointers for missing elements from len(dest) to len(srt).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewKLLSketchDataPoint()
 		}
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteKLLSketchDataPoint(dest[i], true)
 			dest[i] = nil
 		}
+		// Add new pointers for missing elements.
+		// This can happen when len(dest) < len(src) < cap(dest).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewKLLSketchDataPoint()
 		}
@@ -160,10 +156,6 @@ func (orig *KLLSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		}
 		dest.WriteArrayEnd()
 	}
-	if orig.SeriesID != uint64(0) {
-		dest.WriteObjectField("seriesID")
-		dest.WriteUint64(orig.SeriesID)
-	}
 	if orig.StartTimeUnixNano != uint64(0) {
 		dest.WriteObjectField("startTimeUnixNano")
 		dest.WriteUint64(orig.StartTimeUnixNano)
@@ -172,26 +164,12 @@ func (orig *KLLSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		dest.WriteObjectField("timeUnixNano")
 		dest.WriteUint64(orig.TimeUnixNano)
 	}
-	if orig.Count != uint64(0) {
-		dest.WriteObjectField("count")
-		dest.WriteUint64(orig.Count)
-	}
-	if orig.Sum != float64(0) {
-		dest.WriteObjectField("sum")
-		dest.WriteFloat64(orig.Sum)
-	}
-	if orig.Min != float64(0) {
-		dest.WriteObjectField("min")
-		dest.WriteFloat64(orig.Min)
-	}
-	if orig.Max != float64(0) {
-		dest.WriteObjectField("max")
-		dest.WriteFloat64(orig.Max)
-	}
+
 	if len(orig.Sketch) > 0 {
 		dest.WriteObjectField("sketch")
 		dest.WriteBytes(orig.Sketch)
 	}
+
 	if int32(orig.Encoding) != 0 {
 		dest.WriteObjectField("encoding")
 		dest.WriteInt32(int32(orig.Encoding))
@@ -199,6 +177,10 @@ func (orig *KLLSketchDataPoint) MarshalJSON(dest *json.Stream) {
 	if orig.Flags != uint32(0) {
 		dest.WriteObjectField("flags")
 		dest.WriteUint32(orig.Flags)
+	}
+	if orig.SeriesID != uint64(0) {
+		dest.WriteObjectField("seriesID")
+		dest.WriteUint64(orig.SeriesID)
 	}
 	dest.WriteObjectEnd()
 }
@@ -213,26 +195,18 @@ func (orig *KLLSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 				orig.Attributes[len(orig.Attributes)-1].UnmarshalJSON(iter)
 			}
 
-		case "seriesID", "series_id":
-			orig.SeriesID = iter.ReadUint64()
 		case "startTimeUnixNano", "start_time_unix_nano":
 			orig.StartTimeUnixNano = iter.ReadUint64()
 		case "timeUnixNano", "time_unix_nano":
 			orig.TimeUnixNano = iter.ReadUint64()
-		case "count":
-			orig.Count = iter.ReadUint64()
-		case "sum":
-			orig.Sum = iter.ReadFloat64()
-		case "min":
-			orig.Min = iter.ReadFloat64()
-		case "max":
-			orig.Max = iter.ReadFloat64()
 		case "sketch":
 			orig.Sketch = iter.ReadBytes()
 		case "encoding":
 			orig.Encoding = KLLSketchEncoding(iter.ReadEnumValue(KLLSketchEncoding_value))
 		case "flags":
 			orig.Flags = iter.ReadUint32()
+		case "seriesID", "series_id":
+			orig.SeriesID = iter.ReadUint64()
 		default:
 			iter.Skip()
 		}
@@ -253,18 +227,6 @@ func (orig *KLLSketchDataPoint) SizeProto() int {
 	if orig.TimeUnixNano != 0 {
 		n += 9
 	}
-	if orig.Count != 0 {
-		n += 9
-	}
-	if orig.Sum != 0 {
-		n += 9
-	}
-	if orig.Min != 0 {
-		n += 9
-	}
-	if orig.Max != 0 {
-		n += 9
-	}
 	l = len(orig.Sketch)
 	if l > 0 {
 		n += 1 + proto.Sov(uint64(l)) + l
@@ -282,18 +244,6 @@ func (orig *KLLSketchDataPoint) SizeProto() int {
 }
 
 func (orig *KLLSketchDataPoint) MarshalProto(buf []byte) int {
-	// Field numbers:
-	//  1=attributes (wire 2, tag=0x0a)
-	//  2=start_time_unix_nano (wire 1, tag=0x11)
-	//  3=time_unix_nano (wire 1, tag=0x19)
-	//  4=count (wire 1, tag=0x21)
-	//  5=sum (wire 1, tag=0x29)
-	//  6=min (wire 1, tag=0x31)
-	//  7=max (wire 1, tag=0x39)
-	//  8=sketch (wire 2, tag=0x42)
-	//  9=encoding (wire 0, tag=0x48)
-	// 10=flags (wire 0, tag=0x50)
-	// 11=series_id (wire 0, tag=0x58)
 	pos := len(buf)
 	var l int
 	_ = l
@@ -302,12 +252,7 @@ func (orig *KLLSketchDataPoint) MarshalProto(buf []byte) int {
 		pos -= l
 		pos = proto.EncodeVarint(buf, pos, uint64(l))
 		pos--
-		buf[pos] = 0x0a
-	}
-	if orig.SeriesID != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.SeriesID))
-		pos--
-		buf[pos] = 0x58
+		buf[pos] = 0xa
 	}
 	if orig.StartTimeUnixNano != 0 {
 		pos -= 8
@@ -320,30 +265,6 @@ func (orig *KLLSketchDataPoint) MarshalProto(buf []byte) int {
 		binary.LittleEndian.PutUint64(buf[pos:], uint64(orig.TimeUnixNano))
 		pos--
 		buf[pos] = 0x19
-	}
-	if orig.Count != 0 {
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], uint64(orig.Count))
-		pos--
-		buf[pos] = 0x21
-	}
-	if orig.Sum != 0 {
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], math.Float64bits(orig.Sum))
-		pos--
-		buf[pos] = 0x29
-	}
-	if orig.Min != 0 {
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], math.Float64bits(orig.Min))
-		pos--
-		buf[pos] = 0x31
-	}
-	if orig.Max != 0 {
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], math.Float64bits(orig.Max))
-		pos--
-		buf[pos] = 0x39
 	}
 	l = len(orig.Sketch)
 	if l > 0 {
@@ -363,6 +284,11 @@ func (orig *KLLSketchDataPoint) MarshalProto(buf []byte) int {
 		pos--
 		buf[pos] = 0x50
 	}
+	if orig.SeriesID != 0 {
+		pos = proto.EncodeVarint(buf, pos, uint64(orig.SeriesID))
+		pos--
+		buf[pos] = 0x58
+	}
 	return len(buf) - pos
 }
 
@@ -374,6 +300,7 @@ func (orig *KLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 	l := len(buf)
 	pos := 0
 	for pos < l {
+		// If in a group parsing, move to the next tag.
 		fieldNum, wireType, pos, err = proto.ConsumeTag(buf, pos)
 		if err != nil {
 			return err
@@ -405,6 +332,7 @@ func (orig *KLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.StartTimeUnixNano = uint64(num)
 
 		case 3:
@@ -416,51 +344,8 @@ func (orig *KLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.TimeUnixNano = uint64(num)
-
-		case 4:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Count", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Count = uint64(num)
-
-		case 5:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Sum", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Sum = math.Float64frombits(num)
-
-		case 6:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Min", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Min = math.Float64frombits(num)
-
-		case 7:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Max", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Max = math.Float64frombits(num)
 
 		case 8:
 			if wireType != proto.WireTypeLen {
@@ -486,6 +371,7 @@ func (orig *KLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.Encoding = KLLSketchEncoding(num)
 
 		case 10:
@@ -497,6 +383,7 @@ func (orig *KLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.Flags = uint32(num)
 
 		case 11:
@@ -508,8 +395,8 @@ func (orig *KLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
-			orig.SeriesID = uint64(num)
 
+			orig.SeriesID = uint64(num)
 		default:
 			pos, err = proto.ConsumeUnknown(buf, pos, wireType)
 			if err != nil {
@@ -523,16 +410,12 @@ func (orig *KLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 func GenTestKLLSketchDataPoint() *KLLSketchDataPoint {
 	orig := NewKLLSketchDataPoint()
 	orig.Attributes = []KeyValue{{}, *GenTestKeyValue()}
-	orig.SeriesID = uint64(13)
 	orig.StartTimeUnixNano = uint64(13)
 	orig.TimeUnixNano = uint64(13)
-	orig.Count = uint64(13)
-	orig.Sum = float64(3.1415926)
-	orig.Min = float64(1.0)
-	orig.Max = float64(13.0)
 	orig.Sketch = []byte{1, 2, 3}
-	orig.Encoding = KLLSketchEncoding(1)
+	orig.Encoding = KLLSketchEncoding(13)
 	orig.Flags = uint32(13)
+	orig.SeriesID = uint64(13)
 	return orig
 }
 

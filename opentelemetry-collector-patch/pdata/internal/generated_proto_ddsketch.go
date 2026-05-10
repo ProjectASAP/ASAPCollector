@@ -7,7 +7,9 @@
 package internal
 
 import (
+	"encoding/binary"
 	"fmt"
+	"math"
 	"sync"
 
 	"go.opentelemetry.io/collector/pdata/internal/json"
@@ -19,6 +21,7 @@ import (
 type DDSketch struct {
 	DataPoints             []*DDSketchDataPoint
 	AggregationTemporality AggregationTemporality
+	RelativeAccuracy       float64
 }
 
 var (
@@ -72,6 +75,8 @@ func CopyDDSketch(dest, src *DDSketch) *DDSketch {
 	dest.DataPoints = CopyDDSketchDataPointPtrSlice(dest.DataPoints, src.DataPoints)
 
 	dest.AggregationTemporality = src.AggregationTemporality
+
+	dest.RelativeAccuracy = src.RelativeAccuracy
 
 	return dest
 }
@@ -146,6 +151,10 @@ func (orig *DDSketch) MarshalJSON(dest *json.Stream) {
 		dest.WriteObjectField("aggregationTemporality")
 		dest.WriteInt32(int32(orig.AggregationTemporality))
 	}
+	if orig.RelativeAccuracy != float64(0) {
+		dest.WriteObjectField("relativeAccuracy")
+		dest.WriteFloat64(orig.RelativeAccuracy)
+	}
 	dest.WriteObjectEnd()
 }
 
@@ -161,6 +170,8 @@ func (orig *DDSketch) UnmarshalJSON(iter *json.Iterator) {
 
 		case "aggregationTemporality", "aggregation_temporality":
 			orig.AggregationTemporality = AggregationTemporality(iter.ReadEnumValue(AggregationTemporality_value))
+		case "relativeAccuracy", "relative_accuracy":
+			orig.RelativeAccuracy = iter.ReadFloat64()
 		default:
 			iter.Skip()
 		}
@@ -177,6 +188,9 @@ func (orig *DDSketch) SizeProto() int {
 	}
 	if orig.AggregationTemporality != 0 {
 		n += 1 + proto.Sov(uint64(orig.AggregationTemporality))
+	}
+	if orig.RelativeAccuracy != 0 {
+		n += 9
 	}
 	return n
 }
@@ -196,6 +210,12 @@ func (orig *DDSketch) MarshalProto(buf []byte) int {
 		pos = proto.EncodeVarint(buf, pos, uint64(orig.AggregationTemporality))
 		pos--
 		buf[pos] = 0x10
+	}
+	if orig.RelativeAccuracy != 0 {
+		pos -= 8
+		binary.LittleEndian.PutUint64(buf[pos:], math.Float64bits(orig.RelativeAccuracy))
+		pos--
+		buf[pos] = 0x19
 	}
 	return len(buf) - pos
 }
@@ -242,6 +262,18 @@ func (orig *DDSketch) UnmarshalProto(buf []byte) error {
 			}
 
 			orig.AggregationTemporality = AggregationTemporality(num)
+
+		case 3:
+			if wireType != proto.WireTypeI64 {
+				return fmt.Errorf("proto: wrong wireType = %d for field RelativeAccuracy", wireType)
+			}
+			var num uint64
+			num, pos, err = proto.ConsumeI64(buf, pos)
+			if err != nil {
+				return err
+			}
+
+			orig.RelativeAccuracy = math.Float64frombits(num)
 		default:
 			pos, err = proto.ConsumeUnknown(buf, pos, wireType)
 			if err != nil {
@@ -256,6 +288,7 @@ func GenTestDDSketch() *DDSketch {
 	orig := NewDDSketch()
 	orig.DataPoints = []*DDSketchDataPoint{{}, GenTestDDSketchDataPoint()}
 	orig.AggregationTemporality = AggregationTemporality(13)
+	orig.RelativeAccuracy = float64(3.1415926)
 	return orig
 }
 

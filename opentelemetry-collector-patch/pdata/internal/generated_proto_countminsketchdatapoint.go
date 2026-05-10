@@ -18,15 +18,12 @@ import (
 // CountMinSketchDataPoint is a single data point that encodes frequency estimations using Count-Min Sketch.
 type CountMinSketchDataPoint struct {
 	Attributes        []KeyValue
-	SeriesID          uint64
 	StartTimeUnixNano uint64
 	TimeUnixNano      uint64
-	SampleCount       uint64
 	Sketch            []byte
 	Encoding          CountMinSketchEncoding
-	Rows              int32
-	Cols              int32
 	Flags             uint32
+	SeriesID          uint64
 }
 
 var (
@@ -65,6 +62,7 @@ func DeleteCountMinSketchDataPoint(orig *CountMinSketchDataPoint, nullable bool)
 }
 
 func CopyCountMinSketchDataPoint(dest, src *CountMinSketchDataPoint) *CountMinSketchDataPoint {
+	// If copying to same object, just return.
 	if src == dest {
 		return dest
 	}
@@ -77,15 +75,18 @@ func CopyCountMinSketchDataPoint(dest, src *CountMinSketchDataPoint) *CountMinSk
 		dest = NewCountMinSketchDataPoint()
 	}
 	dest.Attributes = CopyKeyValueSlice(dest.Attributes, src.Attributes)
-	dest.SeriesID = src.SeriesID
+
 	dest.StartTimeUnixNano = src.StartTimeUnixNano
+
 	dest.TimeUnixNano = src.TimeUnixNano
-	dest.SampleCount = src.SampleCount
+
 	dest.Sketch = src.Sketch
+
 	dest.Encoding = src.Encoding
-	dest.Rows = src.Rows
-	dest.Cols = src.Cols
+
 	dest.Flags = src.Flags
+
+	dest.SeriesID = src.SeriesID
 
 	return dest
 }
@@ -96,6 +97,8 @@ func CopyCountMinSketchDataPointSlice(dest, src []CountMinSketchDataPoint) []Cou
 		newDest = make([]CountMinSketchDataPoint, len(src))
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteCountMinSketchDataPoint(&dest[i], false)
 		}
@@ -110,16 +113,22 @@ func CopyCountMinSketchDataPointPtrSlice(dest, src []*CountMinSketchDataPoint) [
 	var newDest []*CountMinSketchDataPoint
 	if cap(dest) < len(src) {
 		newDest = make([]*CountMinSketchDataPoint, len(src))
+		// Copy old pointers to re-use.
 		copy(newDest, dest)
+		// Add new pointers for missing elements from len(dest) to len(srt).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewCountMinSketchDataPoint()
 		}
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteCountMinSketchDataPoint(dest[i], true)
 			dest[i] = nil
 		}
+		// Add new pointers for missing elements.
+		// This can happen when len(dest) < len(src) < cap(dest).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewCountMinSketchDataPoint()
 		}
@@ -147,10 +156,6 @@ func (orig *CountMinSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		}
 		dest.WriteArrayEnd()
 	}
-	if orig.SeriesID != uint64(0) {
-		dest.WriteObjectField("seriesID")
-		dest.WriteUint64(orig.SeriesID)
-	}
 	if orig.StartTimeUnixNano != uint64(0) {
 		dest.WriteObjectField("startTimeUnixNano")
 		dest.WriteUint64(orig.StartTimeUnixNano)
@@ -159,29 +164,23 @@ func (orig *CountMinSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		dest.WriteObjectField("timeUnixNano")
 		dest.WriteUint64(orig.TimeUnixNano)
 	}
-	if orig.SampleCount != uint64(0) {
-		dest.WriteObjectField("sampleCount")
-		dest.WriteUint64(orig.SampleCount)
-	}
+
 	if len(orig.Sketch) > 0 {
 		dest.WriteObjectField("sketch")
 		dest.WriteBytes(orig.Sketch)
 	}
+
 	if int32(orig.Encoding) != 0 {
 		dest.WriteObjectField("encoding")
 		dest.WriteInt32(int32(orig.Encoding))
 	}
-	if orig.Rows != int32(0) {
-		dest.WriteObjectField("rows")
-		dest.WriteInt32(orig.Rows)
-	}
-	if orig.Cols != int32(0) {
-		dest.WriteObjectField("cols")
-		dest.WriteInt32(orig.Cols)
-	}
 	if orig.Flags != uint32(0) {
 		dest.WriteObjectField("flags")
 		dest.WriteUint32(orig.Flags)
+	}
+	if orig.SeriesID != uint64(0) {
+		dest.WriteObjectField("seriesID")
+		dest.WriteUint64(orig.SeriesID)
 	}
 	dest.WriteObjectEnd()
 }
@@ -195,24 +194,19 @@ func (orig *CountMinSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 				orig.Attributes = append(orig.Attributes, KeyValue{})
 				orig.Attributes[len(orig.Attributes)-1].UnmarshalJSON(iter)
 			}
-		case "seriesID", "series_id":
-			orig.SeriesID = iter.ReadUint64()
+
 		case "startTimeUnixNano", "start_time_unix_nano":
 			orig.StartTimeUnixNano = iter.ReadUint64()
 		case "timeUnixNano", "time_unix_nano":
 			orig.TimeUnixNano = iter.ReadUint64()
-		case "sampleCount", "sample_count":
-			orig.SampleCount = iter.ReadUint64()
 		case "sketch":
 			orig.Sketch = iter.ReadBytes()
 		case "encoding":
 			orig.Encoding = CountMinSketchEncoding(iter.ReadEnumValue(CountMinSketchEncoding_value))
-		case "rows":
-			orig.Rows = iter.ReadInt32()
-		case "cols":
-			orig.Cols = iter.ReadInt32()
 		case "flags":
 			orig.Flags = iter.ReadUint32()
+		case "seriesID", "series_id":
+			orig.SeriesID = iter.ReadUint64()
 		default:
 			iter.Skip()
 		}
@@ -220,17 +214,6 @@ func (orig *CountMinSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 }
 
 func (orig *CountMinSketchDataPoint) SizeProto() int {
-	// Field layout:
-	//  1=attributes (wire 2)
-	//  2=start_time_unix_nano (wire 1, I64)
-	//  3=time_unix_nano (wire 1, I64)
-	//  4=sample_count (wire 0)
-	//  5=sketch (wire 2)
-	//  6=encoding (wire 0)
-	//  7=rows (wire 0)
-	//  8=cols (wire 0)
-	//  9=flags (wire 0)
-	// 10=series_id (wire 0)
 	var n int
 	var l int
 	_ = l
@@ -244,21 +227,12 @@ func (orig *CountMinSketchDataPoint) SizeProto() int {
 	if orig.TimeUnixNano != 0 {
 		n += 9
 	}
-	if orig.SampleCount != 0 {
-		n += 1 + proto.Sov(uint64(orig.SampleCount))
-	}
 	l = len(orig.Sketch)
 	if l > 0 {
 		n += 1 + proto.Sov(uint64(l)) + l
 	}
 	if orig.Encoding != 0 {
 		n += 1 + proto.Sov(uint64(orig.Encoding))
-	}
-	if orig.Rows != 0 {
-		n += 1 + proto.Sov(uint64(orig.Rows))
-	}
-	if orig.Cols != 0 {
-		n += 1 + proto.Sov(uint64(orig.Cols))
 	}
 	if orig.Flags != 0 {
 		n += 1 + proto.Sov(uint64(orig.Flags))
@@ -270,17 +244,6 @@ func (orig *CountMinSketchDataPoint) SizeProto() int {
 }
 
 func (orig *CountMinSketchDataPoint) MarshalProto(buf []byte) int {
-	// Wire tag bytes:
-	//  1=attributes: 0x0a
-	//  2=start_time_unix_nano: 0x11
-	//  3=time_unix_nano: 0x19
-	//  4=sample_count: 0x20
-	//  5=sketch: 0x2a
-	//  6=encoding: 0x30
-	//  7=rows: 0x38
-	//  8=cols: 0x40
-	//  9=flags: 0x48
-	// 10=series_id: 0x50
 	pos := len(buf)
 	var l int
 	_ = l
@@ -289,12 +252,7 @@ func (orig *CountMinSketchDataPoint) MarshalProto(buf []byte) int {
 		pos -= l
 		pos = proto.EncodeVarint(buf, pos, uint64(l))
 		pos--
-		buf[pos] = 0x0a
-	}
-	if orig.SeriesID != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.SeriesID))
-		pos--
-		buf[pos] = 0x50
+		buf[pos] = 0xa
 	}
 	if orig.StartTimeUnixNano != 0 {
 		pos -= 8
@@ -307,11 +265,6 @@ func (orig *CountMinSketchDataPoint) MarshalProto(buf []byte) int {
 		binary.LittleEndian.PutUint64(buf[pos:], uint64(orig.TimeUnixNano))
 		pos--
 		buf[pos] = 0x19
-	}
-	if orig.SampleCount != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.SampleCount))
-		pos--
-		buf[pos] = 0x20
 	}
 	l = len(orig.Sketch)
 	if l > 0 {
@@ -326,20 +279,15 @@ func (orig *CountMinSketchDataPoint) MarshalProto(buf []byte) int {
 		pos--
 		buf[pos] = 0x30
 	}
-	if orig.Rows != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.Rows))
-		pos--
-		buf[pos] = 0x38
-	}
-	if orig.Cols != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.Cols))
-		pos--
-		buf[pos] = 0x40
-	}
 	if orig.Flags != 0 {
 		pos = proto.EncodeVarint(buf, pos, uint64(orig.Flags))
 		pos--
 		buf[pos] = 0x48
+	}
+	if orig.SeriesID != 0 {
+		pos = proto.EncodeVarint(buf, pos, uint64(orig.SeriesID))
+		pos--
+		buf[pos] = 0x50
 	}
 	return len(buf) - pos
 }
@@ -352,6 +300,7 @@ func (orig *CountMinSketchDataPoint) UnmarshalProto(buf []byte) error {
 	l := len(buf)
 	pos := 0
 	for pos < l {
+		// If in a group parsing, move to the next tag.
 		fieldNum, wireType, pos, err = proto.ConsumeTag(buf, pos)
 		if err != nil {
 			return err
@@ -383,6 +332,7 @@ func (orig *CountMinSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.StartTimeUnixNano = uint64(num)
 
 		case 3:
@@ -394,18 +344,8 @@ func (orig *CountMinSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
-			orig.TimeUnixNano = uint64(num)
 
-		case 4:
-			if wireType != proto.WireTypeVarint {
-				return fmt.Errorf("proto: wrong wireType = %d for field SampleCount", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeVarint(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.SampleCount = uint64(num)
+			orig.TimeUnixNano = uint64(num)
 
 		case 5:
 			if wireType != proto.WireTypeLen {
@@ -431,29 +371,8 @@ func (orig *CountMinSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.Encoding = CountMinSketchEncoding(num)
-
-		case 7:
-			if wireType != proto.WireTypeVarint {
-				return fmt.Errorf("proto: wrong wireType = %d for field Rows", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeVarint(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Rows = int32(num)
-
-		case 8:
-			if wireType != proto.WireTypeVarint {
-				return fmt.Errorf("proto: wrong wireType = %d for field Cols", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeVarint(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Cols = int32(num)
 
 		case 9:
 			if wireType != proto.WireTypeVarint {
@@ -464,6 +383,7 @@ func (orig *CountMinSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.Flags = uint32(num)
 
 		case 10:
@@ -475,8 +395,8 @@ func (orig *CountMinSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
-			orig.SeriesID = uint64(num)
 
+			orig.SeriesID = uint64(num)
 		default:
 			pos, err = proto.ConsumeUnknown(buf, pos, wireType)
 			if err != nil {
@@ -490,15 +410,12 @@ func (orig *CountMinSketchDataPoint) UnmarshalProto(buf []byte) error {
 func GenTestCountMinSketchDataPoint() *CountMinSketchDataPoint {
 	orig := NewCountMinSketchDataPoint()
 	orig.Attributes = []KeyValue{{}, *GenTestKeyValue()}
-	orig.SeriesID = uint64(13)
 	orig.StartTimeUnixNano = uint64(13)
 	orig.TimeUnixNano = uint64(13)
-	orig.SampleCount = uint64(100)
 	orig.Sketch = []byte{1, 2, 3}
-	orig.Encoding = CountMinSketchEncoding(1)
-	orig.Rows = int32(5)
-	orig.Cols = int32(2048)
+	orig.Encoding = CountMinSketchEncoding(13)
 	orig.Flags = uint32(13)
+	orig.SeriesID = uint64(13)
 	return orig
 }
 

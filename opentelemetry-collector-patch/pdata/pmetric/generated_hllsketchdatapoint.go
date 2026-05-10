@@ -40,6 +40,7 @@ func NewHLLSketchDataPoint() HLLSketchDataPoint {
 func (ms HLLSketchDataPoint) MoveTo(dest HLLSketchDataPoint) {
 	ms.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if ms.orig == dest.orig {
 		return
 	}
@@ -50,17 +51,6 @@ func (ms HLLSketchDataPoint) MoveTo(dest HLLSketchDataPoint) {
 // Attributes returns the Attributes associated with this HLLSketchDataPoint.
 func (ms HLLSketchDataPoint) Attributes() pcommon.Map {
 	return pcommon.Map(internal.NewMapWrapper(&ms.orig.Attributes, ms.state))
-}
-
-// SeriesID returns the seriesid associated with this HLLSketchDataPoint.
-func (ms HLLSketchDataPoint) SeriesID() uint64 {
-	return ms.orig.SeriesID
-}
-
-// SetSeriesID replaces the seriesid associated with this HLLSketchDataPoint.
-func (ms HLLSketchDataPoint) SetSeriesID(v uint64) {
-	ms.state.AssertMutable()
-	ms.orig.SeriesID = v
 }
 
 // StartTimestamp returns the starttimestamp associated with this HLLSketchDataPoint.
@@ -85,28 +75,6 @@ func (ms HLLSketchDataPoint) SetTimestamp(v pcommon.Timestamp) {
 	ms.orig.TimeUnixNano = uint64(v)
 }
 
-// Count returns the count associated with this HLLSketchDataPoint.
-func (ms HLLSketchDataPoint) Count() uint64 {
-	return ms.orig.Count
-}
-
-// SetCount replaces the count associated with this HLLSketchDataPoint.
-func (ms HLLSketchDataPoint) SetCount(v uint64) {
-	ms.state.AssertMutable()
-	ms.orig.Count = v
-}
-
-// Cardinality returns the cardinality associated with this HLLSketchDataPoint.
-func (ms HLLSketchDataPoint) Cardinality() uint64 {
-	return ms.orig.Cardinality
-}
-
-// SetCardinality replaces the cardinality associated with this HLLSketchDataPoint.
-func (ms HLLSketchDataPoint) SetCardinality(v uint64) {
-	ms.state.AssertMutable()
-	ms.orig.Cardinality = v
-}
-
 // Sketch returns the sketch associated with this HLLSketchDataPoint.
 func (ms HLLSketchDataPoint) Sketch() []byte {
 	return ms.orig.Sketch
@@ -129,17 +97,6 @@ func (ms HLLSketchDataPoint) SetEncoding(v HLLSketchEncoding) {
 	ms.orig.Encoding = internal.HLLSketchEncoding(v)
 }
 
-// Precision returns the precision associated with this HLLSketchDataPoint.
-func (ms HLLSketchDataPoint) Precision() uint32 {
-	return ms.orig.Precision
-}
-
-// SetPrecision replaces the precision associated with this HLLSketchDataPoint.
-func (ms HLLSketchDataPoint) SetPrecision(v uint32) {
-	ms.state.AssertMutable()
-	ms.orig.Precision = v
-}
-
 // Flags returns the flags associated with this HLLSketchDataPoint.
 func (ms HLLSketchDataPoint) Flags() DataPointFlags {
 	return DataPointFlags(ms.orig.Flags)
@@ -149,6 +106,17 @@ func (ms HLLSketchDataPoint) Flags() DataPointFlags {
 func (ms HLLSketchDataPoint) SetFlags(v DataPointFlags) {
 	ms.state.AssertMutable()
 	ms.orig.Flags = uint32(v)
+}
+
+// SeriesID returns the seriesid associated with this HLLSketchDataPoint.
+func (ms HLLSketchDataPoint) SeriesID() uint64 {
+	return ms.orig.SeriesID
+}
+
+// SetSeriesID replaces the seriesid associated with this HLLSketchDataPoint.
+func (ms HLLSketchDataPoint) SetSeriesID(v uint64) {
+	ms.state.AssertMutable()
+	ms.orig.SeriesID = v
 }
 
 // CopyTo copies all properties from the current struct overriding the destination.

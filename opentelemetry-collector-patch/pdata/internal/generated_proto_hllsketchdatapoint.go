@@ -18,15 +18,12 @@ import (
 // HLLSketchDataPoint is a single data point that encodes cardinality estimations using HyperLogLog.
 type HLLSketchDataPoint struct {
 	Attributes        []KeyValue
-	SeriesID          uint64
 	StartTimeUnixNano uint64
 	TimeUnixNano      uint64
-	Count             uint64
-	Cardinality       uint64
 	Sketch            []byte
 	Encoding          HLLSketchEncoding
-	Precision         uint32
 	Flags             uint32
+	SeriesID          uint64
 }
 
 var (
@@ -65,6 +62,7 @@ func DeleteHLLSketchDataPoint(orig *HLLSketchDataPoint, nullable bool) {
 }
 
 func CopyHLLSketchDataPoint(dest, src *HLLSketchDataPoint) *HLLSketchDataPoint {
+	// If copying to same object, just return.
 	if src == dest {
 		return dest
 	}
@@ -77,15 +75,18 @@ func CopyHLLSketchDataPoint(dest, src *HLLSketchDataPoint) *HLLSketchDataPoint {
 		dest = NewHLLSketchDataPoint()
 	}
 	dest.Attributes = CopyKeyValueSlice(dest.Attributes, src.Attributes)
-	dest.SeriesID = src.SeriesID
+
 	dest.StartTimeUnixNano = src.StartTimeUnixNano
+
 	dest.TimeUnixNano = src.TimeUnixNano
-	dest.Count = src.Count
-	dest.Cardinality = src.Cardinality
+
 	dest.Sketch = src.Sketch
+
 	dest.Encoding = src.Encoding
-	dest.Precision = src.Precision
+
 	dest.Flags = src.Flags
+
+	dest.SeriesID = src.SeriesID
 
 	return dest
 }
@@ -96,6 +97,8 @@ func CopyHLLSketchDataPointSlice(dest, src []HLLSketchDataPoint) []HLLSketchData
 		newDest = make([]HLLSketchDataPoint, len(src))
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteHLLSketchDataPoint(&dest[i], false)
 		}
@@ -110,16 +113,22 @@ func CopyHLLSketchDataPointPtrSlice(dest, src []*HLLSketchDataPoint) []*HLLSketc
 	var newDest []*HLLSketchDataPoint
 	if cap(dest) < len(src) {
 		newDest = make([]*HLLSketchDataPoint, len(src))
+		// Copy old pointers to re-use.
 		copy(newDest, dest)
+		// Add new pointers for missing elements from len(dest) to len(srt).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewHLLSketchDataPoint()
 		}
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteHLLSketchDataPoint(dest[i], true)
 			dest[i] = nil
 		}
+		// Add new pointers for missing elements.
+		// This can happen when len(dest) < len(src) < cap(dest).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewHLLSketchDataPoint()
 		}
@@ -147,10 +156,6 @@ func (orig *HLLSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		}
 		dest.WriteArrayEnd()
 	}
-	if orig.SeriesID != uint64(0) {
-		dest.WriteObjectField("seriesID")
-		dest.WriteUint64(orig.SeriesID)
-	}
 	if orig.StartTimeUnixNano != uint64(0) {
 		dest.WriteObjectField("startTimeUnixNano")
 		dest.WriteUint64(orig.StartTimeUnixNano)
@@ -159,29 +164,23 @@ func (orig *HLLSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		dest.WriteObjectField("timeUnixNano")
 		dest.WriteUint64(orig.TimeUnixNano)
 	}
-	if orig.Count != uint64(0) {
-		dest.WriteObjectField("count")
-		dest.WriteUint64(orig.Count)
-	}
-	if orig.Cardinality != uint64(0) {
-		dest.WriteObjectField("cardinality")
-		dest.WriteUint64(orig.Cardinality)
-	}
+
 	if len(orig.Sketch) > 0 {
 		dest.WriteObjectField("sketch")
 		dest.WriteBytes(orig.Sketch)
 	}
+
 	if int32(orig.Encoding) != 0 {
 		dest.WriteObjectField("encoding")
 		dest.WriteInt32(int32(orig.Encoding))
 	}
-	if orig.Precision != uint32(0) {
-		dest.WriteObjectField("precision")
-		dest.WriteUint32(orig.Precision)
-	}
 	if orig.Flags != uint32(0) {
 		dest.WriteObjectField("flags")
 		dest.WriteUint32(orig.Flags)
+	}
+	if orig.SeriesID != uint64(0) {
+		dest.WriteObjectField("seriesID")
+		dest.WriteUint64(orig.SeriesID)
 	}
 	dest.WriteObjectEnd()
 }
@@ -195,24 +194,19 @@ func (orig *HLLSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 				orig.Attributes = append(orig.Attributes, KeyValue{})
 				orig.Attributes[len(orig.Attributes)-1].UnmarshalJSON(iter)
 			}
-		case "seriesID", "series_id":
-			orig.SeriesID = iter.ReadUint64()
+
 		case "startTimeUnixNano", "start_time_unix_nano":
 			orig.StartTimeUnixNano = iter.ReadUint64()
 		case "timeUnixNano", "time_unix_nano":
 			orig.TimeUnixNano = iter.ReadUint64()
-		case "count":
-			orig.Count = iter.ReadUint64()
-		case "cardinality":
-			orig.Cardinality = iter.ReadUint64()
 		case "sketch":
 			orig.Sketch = iter.ReadBytes()
 		case "encoding":
 			orig.Encoding = HLLSketchEncoding(iter.ReadEnumValue(HLLSketchEncoding_value))
-		case "precision":
-			orig.Precision = iter.ReadUint32()
 		case "flags":
 			orig.Flags = iter.ReadUint32()
+		case "seriesID", "series_id":
+			orig.SeriesID = iter.ReadUint64()
 		default:
 			iter.Skip()
 		}
@@ -220,17 +214,6 @@ func (orig *HLLSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 }
 
 func (orig *HLLSketchDataPoint) SizeProto() int {
-	// Field layout:
-	//  1=attributes (wire 2)
-	//  2=start_time_unix_nano (wire 1, I64)
-	//  3=time_unix_nano (wire 1, I64)
-	//  4=count (wire 0)
-	//  5=cardinality (wire 0)
-	//  6=sketch (wire 2)
-	//  7=encoding (wire 0)
-	//  8=precision (wire 0)
-	//  9=flags (wire 0)
-	// 10=series_id (wire 0)
 	var n int
 	var l int
 	_ = l
@@ -244,21 +227,12 @@ func (orig *HLLSketchDataPoint) SizeProto() int {
 	if orig.TimeUnixNano != 0 {
 		n += 9
 	}
-	if orig.Count != 0 {
-		n += 1 + proto.Sov(uint64(orig.Count))
-	}
-	if orig.Cardinality != 0 {
-		n += 1 + proto.Sov(uint64(orig.Cardinality))
-	}
 	l = len(orig.Sketch)
 	if l > 0 {
 		n += 1 + proto.Sov(uint64(l)) + l
 	}
 	if orig.Encoding != 0 {
 		n += 1 + proto.Sov(uint64(orig.Encoding))
-	}
-	if orig.Precision != 0 {
-		n += 1 + proto.Sov(uint64(orig.Precision))
 	}
 	if orig.Flags != 0 {
 		n += 1 + proto.Sov(uint64(orig.Flags))
@@ -270,17 +244,6 @@ func (orig *HLLSketchDataPoint) SizeProto() int {
 }
 
 func (orig *HLLSketchDataPoint) MarshalProto(buf []byte) int {
-	// Wire tag bytes:
-	//  1=attributes: 0x0a
-	//  2=start_time_unix_nano: 0x11
-	//  3=time_unix_nano: 0x19
-	//  4=count: 0x20
-	//  5=cardinality: 0x28
-	//  6=sketch: 0x32
-	//  7=encoding: 0x38
-	//  8=precision: 0x40
-	//  9=flags: 0x48
-	// 10=series_id: 0x50
 	pos := len(buf)
 	var l int
 	_ = l
@@ -289,12 +252,7 @@ func (orig *HLLSketchDataPoint) MarshalProto(buf []byte) int {
 		pos -= l
 		pos = proto.EncodeVarint(buf, pos, uint64(l))
 		pos--
-		buf[pos] = 0x0a
-	}
-	if orig.SeriesID != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.SeriesID))
-		pos--
-		buf[pos] = 0x50
+		buf[pos] = 0xa
 	}
 	if orig.StartTimeUnixNano != 0 {
 		pos -= 8
@@ -307,16 +265,6 @@ func (orig *HLLSketchDataPoint) MarshalProto(buf []byte) int {
 		binary.LittleEndian.PutUint64(buf[pos:], uint64(orig.TimeUnixNano))
 		pos--
 		buf[pos] = 0x19
-	}
-	if orig.Count != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.Count))
-		pos--
-		buf[pos] = 0x20
-	}
-	if orig.Cardinality != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.Cardinality))
-		pos--
-		buf[pos] = 0x28
 	}
 	l = len(orig.Sketch)
 	if l > 0 {
@@ -331,15 +279,15 @@ func (orig *HLLSketchDataPoint) MarshalProto(buf []byte) int {
 		pos--
 		buf[pos] = 0x38
 	}
-	if orig.Precision != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.Precision))
-		pos--
-		buf[pos] = 0x40
-	}
 	if orig.Flags != 0 {
 		pos = proto.EncodeVarint(buf, pos, uint64(orig.Flags))
 		pos--
 		buf[pos] = 0x48
+	}
+	if orig.SeriesID != 0 {
+		pos = proto.EncodeVarint(buf, pos, uint64(orig.SeriesID))
+		pos--
+		buf[pos] = 0x50
 	}
 	return len(buf) - pos
 }
@@ -352,6 +300,7 @@ func (orig *HLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 	l := len(buf)
 	pos := 0
 	for pos < l {
+		// If in a group parsing, move to the next tag.
 		fieldNum, wireType, pos, err = proto.ConsumeTag(buf, pos)
 		if err != nil {
 			return err
@@ -383,6 +332,7 @@ func (orig *HLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.StartTimeUnixNano = uint64(num)
 
 		case 3:
@@ -394,29 +344,8 @@ func (orig *HLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.TimeUnixNano = uint64(num)
-
-		case 4:
-			if wireType != proto.WireTypeVarint {
-				return fmt.Errorf("proto: wrong wireType = %d for field Count", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeVarint(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Count = uint64(num)
-
-		case 5:
-			if wireType != proto.WireTypeVarint {
-				return fmt.Errorf("proto: wrong wireType = %d for field Cardinality", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeVarint(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Cardinality = uint64(num)
 
 		case 6:
 			if wireType != proto.WireTypeLen {
@@ -442,18 +371,8 @@ func (orig *HLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
-			orig.Encoding = HLLSketchEncoding(num)
 
-		case 8:
-			if wireType != proto.WireTypeVarint {
-				return fmt.Errorf("proto: wrong wireType = %d for field Precision", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeVarint(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Precision = uint32(num)
+			orig.Encoding = HLLSketchEncoding(num)
 
 		case 9:
 			if wireType != proto.WireTypeVarint {
@@ -464,6 +383,7 @@ func (orig *HLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.Flags = uint32(num)
 
 		case 10:
@@ -475,8 +395,8 @@ func (orig *HLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
-			orig.SeriesID = uint64(num)
 
+			orig.SeriesID = uint64(num)
 		default:
 			pos, err = proto.ConsumeUnknown(buf, pos, wireType)
 			if err != nil {
@@ -490,15 +410,12 @@ func (orig *HLLSketchDataPoint) UnmarshalProto(buf []byte) error {
 func GenTestHLLSketchDataPoint() *HLLSketchDataPoint {
 	orig := NewHLLSketchDataPoint()
 	orig.Attributes = []KeyValue{{}, *GenTestKeyValue()}
-	orig.SeriesID = uint64(13)
 	orig.StartTimeUnixNano = uint64(13)
 	orig.TimeUnixNano = uint64(13)
-	orig.Count = uint64(1000)
-	orig.Cardinality = uint64(500)
 	orig.Sketch = []byte{1, 2, 3}
-	orig.Encoding = HLLSketchEncoding(1)
-	orig.Precision = uint32(14)
+	orig.Encoding = HLLSketchEncoding(13)
 	orig.Flags = uint32(13)
+	orig.SeriesID = uint64(13)
 	return orig
 }
 

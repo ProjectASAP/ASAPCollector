@@ -19,8 +19,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/internal/json"
 )
 
-func TestCopyDDSketch(t *testing.T) {
-	for name, src := range genTestEncodingValuesDDSketch() {
+func TestCopyCountMinSketch(t *testing.T) {
+	for name, src := range genTestEncodingValuesCountMinSketch() {
 		for _, pooling := range []bool{true, false} {
 			t.Run(name+"/Pooling="+strconv.FormatBool(pooling), func(t *testing.T) {
 				prevPooling := UseProtoPooling.IsEnabled()
@@ -29,77 +29,77 @@ func TestCopyDDSketch(t *testing.T) {
 					require.NoError(t, featuregate.GlobalRegistry().Set(UseProtoPooling.ID(), prevPooling))
 				}()
 
-				dest := NewDDSketch()
-				CopyDDSketch(dest, src)
+				dest := NewCountMinSketch()
+				CopyCountMinSketch(dest, src)
 				assert.Equal(t, src, dest)
-				CopyDDSketch(dest, dest)
+				CopyCountMinSketch(dest, dest)
 				assert.Equal(t, src, dest)
 			})
 		}
 	}
 }
 
-func TestCopyDDSketchSlice(t *testing.T) {
-	src := []DDSketch{}
-	dest := []DDSketch{}
+func TestCopyCountMinSketchSlice(t *testing.T) {
+	src := []CountMinSketch{}
+	dest := []CountMinSketch{}
 	// Test CopyTo empty
-	dest = CopyDDSketchSlice(dest, src)
-	assert.Equal(t, []DDSketch{}, dest)
+	dest = CopyCountMinSketchSlice(dest, src)
+	assert.Equal(t, []CountMinSketch{}, dest)
 
 	// Test CopyTo larger slice
-	src = GenTestDDSketchSlice()
-	dest = CopyDDSketchSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchSlice(), dest)
+	src = GenTestCountMinSketchSlice()
+	dest = CopyCountMinSketchSlice(dest, src)
+	assert.Equal(t, GenTestCountMinSketchSlice(), dest)
 
 	// Test CopyTo same size slice
-	dest = CopyDDSketchSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchSlice(), dest)
+	dest = CopyCountMinSketchSlice(dest, src)
+	assert.Equal(t, GenTestCountMinSketchSlice(), dest)
 
 	// Test CopyTo smaller size slice
-	dest = CopyDDSketchSlice(dest, []DDSketch{})
+	dest = CopyCountMinSketchSlice(dest, []CountMinSketch{})
 	assert.Len(t, dest, 0)
 
 	// Test CopyTo larger slice with enough capacity
-	dest = CopyDDSketchSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchSlice(), dest)
+	dest = CopyCountMinSketchSlice(dest, src)
+	assert.Equal(t, GenTestCountMinSketchSlice(), dest)
 }
 
-func TestCopyDDSketchPtrSlice(t *testing.T) {
-	src := []*DDSketch{}
-	dest := []*DDSketch{}
+func TestCopyCountMinSketchPtrSlice(t *testing.T) {
+	src := []*CountMinSketch{}
+	dest := []*CountMinSketch{}
 	// Test CopyTo empty
-	dest = CopyDDSketchPtrSlice(dest, src)
-	assert.Equal(t, []*DDSketch{}, dest)
+	dest = CopyCountMinSketchPtrSlice(dest, src)
+	assert.Equal(t, []*CountMinSketch{}, dest)
 
 	// Test CopyTo larger slice
-	src = GenTestDDSketchPtrSlice()
-	dest = CopyDDSketchPtrSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchPtrSlice(), dest)
+	src = GenTestCountMinSketchPtrSlice()
+	dest = CopyCountMinSketchPtrSlice(dest, src)
+	assert.Equal(t, GenTestCountMinSketchPtrSlice(), dest)
 
 	// Test CopyTo same size slice
-	dest = CopyDDSketchPtrSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchPtrSlice(), dest)
+	dest = CopyCountMinSketchPtrSlice(dest, src)
+	assert.Equal(t, GenTestCountMinSketchPtrSlice(), dest)
 
 	// Test CopyTo smaller size slice
-	dest = CopyDDSketchPtrSlice(dest, []*DDSketch{})
+	dest = CopyCountMinSketchPtrSlice(dest, []*CountMinSketch{})
 	assert.Len(t, dest, 0)
 
 	// Test CopyTo larger slice with enough capacity
-	dest = CopyDDSketchPtrSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchPtrSlice(), dest)
+	dest = CopyCountMinSketchPtrSlice(dest, src)
+	assert.Equal(t, GenTestCountMinSketchPtrSlice(), dest)
 }
 
-func TestMarshalAndUnmarshalJSONDDSketchUnknown(t *testing.T) {
+func TestMarshalAndUnmarshalJSONCountMinSketchUnknown(t *testing.T) {
 	iter := json.BorrowIterator([]byte(`{"unknown": "string"}`))
 	defer json.ReturnIterator(iter)
-	dest := NewDDSketch()
+	dest := NewCountMinSketch()
 	dest.UnmarshalJSON(iter)
 	require.NoError(t, iter.Error())
-	assert.Equal(t, NewDDSketch(), dest)
+	assert.Equal(t, NewCountMinSketch(), dest)
 }
 
-func TestMarshalAndUnmarshalJSONDDSketch(t *testing.T) {
-	for name, src := range genTestEncodingValuesDDSketch() {
+func TestMarshalAndUnmarshalJSONCountMinSketch(t *testing.T) {
+	for name, src := range genTestEncodingValuesCountMinSketch() {
 		for _, pooling := range []bool{true, false} {
 			t.Run(name+"/Pooling="+strconv.FormatBool(pooling), func(t *testing.T) {
 				prevPooling := UseProtoPooling.IsEnabled()
@@ -115,35 +115,35 @@ func TestMarshalAndUnmarshalJSONDDSketch(t *testing.T) {
 
 				iter := json.BorrowIterator(stream.Buffer())
 				defer json.ReturnIterator(iter)
-				dest := NewDDSketch()
+				dest := NewCountMinSketch()
 				dest.UnmarshalJSON(iter)
 				require.NoError(t, iter.Error())
 
 				assert.Equal(t, src, dest)
-				DeleteDDSketch(dest, true)
+				DeleteCountMinSketch(dest, true)
 			})
 		}
 	}
 }
 
-func TestMarshalAndUnmarshalProtoDDSketchFailing(t *testing.T) {
-	for name, buf := range genTestFailingUnmarshalProtoValuesDDSketch() {
+func TestMarshalAndUnmarshalProtoCountMinSketchFailing(t *testing.T) {
+	for name, buf := range genTestFailingUnmarshalProtoValuesCountMinSketch() {
 		t.Run(name, func(t *testing.T) {
-			dest := NewDDSketch()
+			dest := NewCountMinSketch()
 			require.Error(t, dest.UnmarshalProto(buf))
 		})
 	}
 }
 
-func TestMarshalAndUnmarshalProtoDDSketchUnknown(t *testing.T) {
-	dest := NewDDSketch()
+func TestMarshalAndUnmarshalProtoCountMinSketchUnknown(t *testing.T) {
+	dest := NewCountMinSketch()
 	// message Test { required int64 field = 1313; } encoding { "field": "1234" }
 	require.NoError(t, dest.UnmarshalProto([]byte{0x88, 0x52, 0xD2, 0x09}))
-	assert.Equal(t, NewDDSketch(), dest)
+	assert.Equal(t, NewCountMinSketch(), dest)
 }
 
-func TestMarshalAndUnmarshalProtoDDSketch(t *testing.T) {
-	for name, src := range genTestEncodingValuesDDSketch() {
+func TestMarshalAndUnmarshalProtoCountMinSketch(t *testing.T) {
+	for name, src := range genTestEncodingValuesCountMinSketch() {
 		for _, pooling := range []bool{true, false} {
 			t.Run(name+"/Pooling="+strconv.FormatBool(pooling), func(t *testing.T) {
 				prevPooling := UseProtoPooling.IsEnabled()
@@ -156,53 +156,56 @@ func TestMarshalAndUnmarshalProtoDDSketch(t *testing.T) {
 				gotSize := src.MarshalProto(buf)
 				assert.Equal(t, len(buf), gotSize)
 
-				dest := NewDDSketch()
+				dest := NewCountMinSketch()
 				require.NoError(t, dest.UnmarshalProto(buf))
 
 				assert.Equal(t, src, dest)
-				DeleteDDSketch(dest, true)
+				DeleteCountMinSketch(dest, true)
 			})
 		}
 	}
 }
 
-func TestMarshalAndUnmarshalProtoViaProtobufDDSketch(t *testing.T) {
-	for name, src := range genTestEncodingValuesDDSketch() {
+func TestMarshalAndUnmarshalProtoViaProtobufCountMinSketch(t *testing.T) {
+	for name, src := range genTestEncodingValuesCountMinSketch() {
 		t.Run(name, func(t *testing.T) {
 			buf := make([]byte, src.SizeProto())
 			gotSize := src.MarshalProto(buf)
 			assert.Equal(t, len(buf), gotSize)
 
-			goDest := &gootlpmetrics.DDSketch{}
+			goDest := &gootlpmetrics.CountMinSketch{}
 			require.NoError(t, proto.Unmarshal(buf, goDest))
 
 			goBuf, err := proto.Marshal(goDest)
 			require.NoError(t, err)
 
-			dest := NewDDSketch()
+			dest := NewCountMinSketch()
 			require.NoError(t, dest.UnmarshalProto(goBuf))
 			assert.Equal(t, src, dest)
 		})
 	}
 }
 
-func genTestFailingUnmarshalProtoValuesDDSketch() map[string][]byte {
+func genTestFailingUnmarshalProtoValuesCountMinSketch() map[string][]byte {
 	return map[string][]byte{
 		"invalid_field":                          {0x02},
 		"DataPoints/wrong_wire_type":             {0xc},
 		"DataPoints/missing_value":               {0xa},
 		"AggregationTemporality/wrong_wire_type": {0x14},
 		"AggregationTemporality/missing_value":   {0x10},
-		"RelativeAccuracy/wrong_wire_type":       {0x1c},
-		"RelativeAccuracy/missing_value":         {0x19},
+		"Rows/wrong_wire_type":                   {0x1c},
+		"Rows/missing_value":                     {0x18},
+		"Cols/wrong_wire_type":                   {0x24},
+		"Cols/missing_value":                     {0x20},
 	}
 }
 
-func genTestEncodingValuesDDSketch() map[string]*DDSketch {
-	return map[string]*DDSketch{
-		"empty":                       NewDDSketch(),
-		"DataPoints/test":             {DataPoints: []*DDSketchDataPoint{{}, GenTestDDSketchDataPoint()}},
+func genTestEncodingValuesCountMinSketch() map[string]*CountMinSketch {
+	return map[string]*CountMinSketch{
+		"empty":                       NewCountMinSketch(),
+		"DataPoints/test":             {DataPoints: []*CountMinSketchDataPoint{{}, GenTestCountMinSketchDataPoint()}},
 		"AggregationTemporality/test": {AggregationTemporality: AggregationTemporality(13)},
-		"RelativeAccuracy/test":       {RelativeAccuracy: float64(3.1415926)},
+		"Rows/test":                   {Rows: int32(13)},
+		"Cols/test":                   {Cols: int32(13)},
 	}
 }

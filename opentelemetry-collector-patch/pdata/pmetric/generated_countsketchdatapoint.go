@@ -40,6 +40,7 @@ func NewCountSketchDataPoint() CountSketchDataPoint {
 func (ms CountSketchDataPoint) MoveTo(dest CountSketchDataPoint) {
 	ms.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if ms.orig == dest.orig {
 		return
 	}
@@ -50,17 +51,6 @@ func (ms CountSketchDataPoint) MoveTo(dest CountSketchDataPoint) {
 // Attributes returns the Attributes associated with this CountSketchDataPoint.
 func (ms CountSketchDataPoint) Attributes() pcommon.Map {
 	return pcommon.Map(internal.NewMapWrapper(&ms.orig.Attributes, ms.state))
-}
-
-// SeriesID returns the seriesid associated with this CountSketchDataPoint.
-func (ms CountSketchDataPoint) SeriesID() uint64 {
-	return ms.orig.SeriesID
-}
-
-// SetSeriesID replaces the seriesid associated with this CountSketchDataPoint.
-func (ms CountSketchDataPoint) SetSeriesID(v uint64) {
-	ms.state.AssertMutable()
-	ms.orig.SeriesID = v
 }
 
 // StartTimestamp returns the starttimestamp associated with this CountSketchDataPoint.
@@ -107,39 +97,6 @@ func (ms CountSketchDataPoint) SetEncoding(v CountSketchEncoding) {
 	ms.orig.Encoding = internal.CountSketchEncoding(v)
 }
 
-// Dimension returns the dimension associated with this CountSketchDataPoint.
-func (ms CountSketchDataPoint) Dimension() string {
-	return ms.orig.Dimension
-}
-
-// SetDimension replaces the dimension associated with this CountSketchDataPoint.
-func (ms CountSketchDataPoint) SetDimension(v string) {
-	ms.state.AssertMutable()
-	ms.orig.Dimension = v
-}
-
-// Epsilon returns the epsilon associated with this CountSketchDataPoint.
-func (ms CountSketchDataPoint) Epsilon() float64 {
-	return ms.orig.Epsilon
-}
-
-// SetEpsilon replaces the epsilon associated with this CountSketchDataPoint.
-func (ms CountSketchDataPoint) SetEpsilon(v float64) {
-	ms.state.AssertMutable()
-	ms.orig.Epsilon = v
-}
-
-// Delta returns the delta associated with this CountSketchDataPoint.
-func (ms CountSketchDataPoint) Delta() float64 {
-	return ms.orig.Delta
-}
-
-// SetDelta replaces the delta associated with this CountSketchDataPoint.
-func (ms CountSketchDataPoint) SetDelta(v float64) {
-	ms.state.AssertMutable()
-	ms.orig.Delta = v
-}
-
 // Flags returns the flags associated with this CountSketchDataPoint.
 func (ms CountSketchDataPoint) Flags() DataPointFlags {
 	return DataPointFlags(ms.orig.Flags)
@@ -149,6 +106,17 @@ func (ms CountSketchDataPoint) Flags() DataPointFlags {
 func (ms CountSketchDataPoint) SetFlags(v DataPointFlags) {
 	ms.state.AssertMutable()
 	ms.orig.Flags = uint32(v)
+}
+
+// SeriesID returns the seriesid associated with this CountSketchDataPoint.
+func (ms CountSketchDataPoint) SeriesID() uint64 {
+	return ms.orig.SeriesID
+}
+
+// SetSeriesID replaces the seriesid associated with this CountSketchDataPoint.
+func (ms CountSketchDataPoint) SetSeriesID(v uint64) {
+	ms.state.AssertMutable()
+	ms.orig.SeriesID = v
 }
 
 // CopyTo copies all properties from the current struct overriding the destination.

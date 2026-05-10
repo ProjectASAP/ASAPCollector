@@ -35,16 +35,20 @@ func (p *kllProcessor) encodeEnvelopes(metrics pmetric.MetricSlice, inputName st
 func (p *kllProcessor) encodeTypedSketch(metrics pmetric.MetricSlice, inputName string, envs []*precompute.SketchEnvelope, now pcommon.Timestamp) {
 	m := metrics.AppendEmpty()
 	m.SetName(p.sketchMetricName(inputName))
-	m.SetEmptyKLLSketch().SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+	parent := m.SetEmptyKLLSketch()
+	parent.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+	// Refactor-2026-05: KLL parameter k is sent once per Metric emit on
+	// the parent KLLSketch container instead of per DataPoint.
+	parent.SetK(uint32(p.cfg.K))
 	for _, env := range envs {
 		if env == nil || len(env.Payload) == 0 {
 			continue
 		}
-		dp := m.KLLSketch().DataPoints().AppendEmpty()
+		dp := parent.DataPoints().AppendEmpty()
 		labelsToAttrs(env.Labels, dp.Attributes())
-		dp.Attributes().PutInt("kll.k", int64(p.cfg.K))
 		dp.SetTimestamp(now)
-		dp.SetCount(env.Count)
+		// Refactor-2026-05: per-DP Count is removed; it is derivable
+		// from the sketch payload at the receiver.
 		dp.SetSketch(env.Payload)
 		dp.SetEncoding(pmetric.KLLSketchEncodingProto)
 	}

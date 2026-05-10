@@ -40,6 +40,7 @@ func NewCountMinSketchDataPoint() CountMinSketchDataPoint {
 func (ms CountMinSketchDataPoint) MoveTo(dest CountMinSketchDataPoint) {
 	ms.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if ms.orig == dest.orig {
 		return
 	}
@@ -50,17 +51,6 @@ func (ms CountMinSketchDataPoint) MoveTo(dest CountMinSketchDataPoint) {
 // Attributes returns the Attributes associated with this CountMinSketchDataPoint.
 func (ms CountMinSketchDataPoint) Attributes() pcommon.Map {
 	return pcommon.Map(internal.NewMapWrapper(&ms.orig.Attributes, ms.state))
-}
-
-// SeriesID returns the seriesid associated with this CountMinSketchDataPoint.
-func (ms CountMinSketchDataPoint) SeriesID() uint64 {
-	return ms.orig.SeriesID
-}
-
-// SetSeriesID replaces the seriesid associated with this CountMinSketchDataPoint.
-func (ms CountMinSketchDataPoint) SetSeriesID(v uint64) {
-	ms.state.AssertMutable()
-	ms.orig.SeriesID = v
 }
 
 // StartTimestamp returns the starttimestamp associated with this CountMinSketchDataPoint.
@@ -85,17 +75,6 @@ func (ms CountMinSketchDataPoint) SetTimestamp(v pcommon.Timestamp) {
 	ms.orig.TimeUnixNano = uint64(v)
 }
 
-// SampleCount returns the samplecount associated with this CountMinSketchDataPoint.
-func (ms CountMinSketchDataPoint) SampleCount() uint64 {
-	return ms.orig.SampleCount
-}
-
-// SetSampleCount replaces the samplecount associated with this CountMinSketchDataPoint.
-func (ms CountMinSketchDataPoint) SetSampleCount(v uint64) {
-	ms.state.AssertMutable()
-	ms.orig.SampleCount = v
-}
-
 // Sketch returns the sketch associated with this CountMinSketchDataPoint.
 func (ms CountMinSketchDataPoint) Sketch() []byte {
 	return ms.orig.Sketch
@@ -118,28 +97,6 @@ func (ms CountMinSketchDataPoint) SetEncoding(v CountMinSketchEncoding) {
 	ms.orig.Encoding = internal.CountMinSketchEncoding(v)
 }
 
-// Rows returns the rows associated with this CountMinSketchDataPoint.
-func (ms CountMinSketchDataPoint) Rows() int32 {
-	return ms.orig.Rows
-}
-
-// SetRows replaces the rows associated with this CountMinSketchDataPoint.
-func (ms CountMinSketchDataPoint) SetRows(v int32) {
-	ms.state.AssertMutable()
-	ms.orig.Rows = v
-}
-
-// Cols returns the cols associated with this CountMinSketchDataPoint.
-func (ms CountMinSketchDataPoint) Cols() int32 {
-	return ms.orig.Cols
-}
-
-// SetCols replaces the cols associated with this CountMinSketchDataPoint.
-func (ms CountMinSketchDataPoint) SetCols(v int32) {
-	ms.state.AssertMutable()
-	ms.orig.Cols = v
-}
-
 // Flags returns the flags associated with this CountMinSketchDataPoint.
 func (ms CountMinSketchDataPoint) Flags() DataPointFlags {
 	return DataPointFlags(ms.orig.Flags)
@@ -149,6 +106,17 @@ func (ms CountMinSketchDataPoint) Flags() DataPointFlags {
 func (ms CountMinSketchDataPoint) SetFlags(v DataPointFlags) {
 	ms.state.AssertMutable()
 	ms.orig.Flags = uint32(v)
+}
+
+// SeriesID returns the seriesid associated with this CountMinSketchDataPoint.
+func (ms CountMinSketchDataPoint) SeriesID() uint64 {
+	return ms.orig.SeriesID
+}
+
+// SetSeriesID replaces the seriesid associated with this CountMinSketchDataPoint.
+func (ms CountMinSketchDataPoint) SetSeriesID(v uint64) {
+	ms.state.AssertMutable()
+	ms.orig.SeriesID = v
 }
 
 // CopyTo copies all properties from the current struct overriding the destination.

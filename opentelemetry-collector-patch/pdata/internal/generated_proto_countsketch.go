@@ -18,6 +18,8 @@ import (
 type CountSketch struct {
 	DataPoints             []*CountSketchDataPoint
 	AggregationTemporality AggregationTemporality
+	Rows                   int32
+	Cols                   int32
 }
 
 var (
@@ -56,6 +58,7 @@ func DeleteCountSketch(orig *CountSketch, nullable bool) {
 }
 
 func CopyCountSketch(dest, src *CountSketch) *CountSketch {
+	// If copying to same object, just return.
 	if src == dest {
 		return dest
 	}
@@ -71,6 +74,10 @@ func CopyCountSketch(dest, src *CountSketch) *CountSketch {
 
 	dest.AggregationTemporality = src.AggregationTemporality
 
+	dest.Rows = src.Rows
+
+	dest.Cols = src.Cols
+
 	return dest
 }
 
@@ -80,6 +87,8 @@ func CopyCountSketchSlice(dest, src []CountSketch) []CountSketch {
 		newDest = make([]CountSketch, len(src))
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteCountSketch(&dest[i], false)
 		}
@@ -94,16 +103,22 @@ func CopyCountSketchPtrSlice(dest, src []*CountSketch) []*CountSketch {
 	var newDest []*CountSketch
 	if cap(dest) < len(src) {
 		newDest = make([]*CountSketch, len(src))
+		// Copy old pointers to re-use.
 		copy(newDest, dest)
+		// Add new pointers for missing elements from len(dest) to len(srt).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewCountSketch()
 		}
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteCountSketch(dest[i], true)
 			dest[i] = nil
 		}
+		// Add new pointers for missing elements.
+		// This can happen when len(dest) < len(src) < cap(dest).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewCountSketch()
 		}
@@ -136,6 +151,14 @@ func (orig *CountSketch) MarshalJSON(dest *json.Stream) {
 		dest.WriteObjectField("aggregationTemporality")
 		dest.WriteInt32(int32(orig.AggregationTemporality))
 	}
+	if orig.Rows != int32(0) {
+		dest.WriteObjectField("rows")
+		dest.WriteInt32(orig.Rows)
+	}
+	if orig.Cols != int32(0) {
+		dest.WriteObjectField("cols")
+		dest.WriteInt32(orig.Cols)
+	}
 	dest.WriteObjectEnd()
 }
 
@@ -151,6 +174,10 @@ func (orig *CountSketch) UnmarshalJSON(iter *json.Iterator) {
 
 		case "aggregationTemporality", "aggregation_temporality":
 			orig.AggregationTemporality = AggregationTemporality(iter.ReadEnumValue(AggregationTemporality_value))
+		case "rows":
+			orig.Rows = iter.ReadInt32()
+		case "cols":
+			orig.Cols = iter.ReadInt32()
 		default:
 			iter.Skip()
 		}
@@ -167,6 +194,12 @@ func (orig *CountSketch) SizeProto() int {
 	}
 	if orig.AggregationTemporality != 0 {
 		n += 1 + proto.Sov(uint64(orig.AggregationTemporality))
+	}
+	if orig.Rows != 0 {
+		n += 1 + proto.Sov(uint64(orig.Rows))
+	}
+	if orig.Cols != 0 {
+		n += 1 + proto.Sov(uint64(orig.Cols))
 	}
 	return n
 }
@@ -187,6 +220,16 @@ func (orig *CountSketch) MarshalProto(buf []byte) int {
 		pos--
 		buf[pos] = 0x10
 	}
+	if orig.Rows != 0 {
+		pos = proto.EncodeVarint(buf, pos, uint64(orig.Rows))
+		pos--
+		buf[pos] = 0x18
+	}
+	if orig.Cols != 0 {
+		pos = proto.EncodeVarint(buf, pos, uint64(orig.Cols))
+		pos--
+		buf[pos] = 0x20
+	}
 	return len(buf) - pos
 }
 
@@ -198,6 +241,7 @@ func (orig *CountSketch) UnmarshalProto(buf []byte) error {
 	l := len(buf)
 	pos := 0
 	for pos < l {
+		// If in a group parsing, move to the next tag.
 		fieldNum, wireType, pos, err = proto.ConsumeTag(buf, pos)
 		if err != nil {
 			return err
@@ -231,6 +275,30 @@ func (orig *CountSketch) UnmarshalProto(buf []byte) error {
 			}
 
 			orig.AggregationTemporality = AggregationTemporality(num)
+
+		case 3:
+			if wireType != proto.WireTypeVarint {
+				return fmt.Errorf("proto: wrong wireType = %d for field Rows", wireType)
+			}
+			var num uint64
+			num, pos, err = proto.ConsumeVarint(buf, pos)
+			if err != nil {
+				return err
+			}
+
+			orig.Rows = int32(num)
+
+		case 4:
+			if wireType != proto.WireTypeVarint {
+				return fmt.Errorf("proto: wrong wireType = %d for field Cols", wireType)
+			}
+			var num uint64
+			num, pos, err = proto.ConsumeVarint(buf, pos)
+			if err != nil {
+				return err
+			}
+
+			orig.Cols = int32(num)
 		default:
 			pos, err = proto.ConsumeUnknown(buf, pos, wireType)
 			if err != nil {
@@ -245,6 +313,8 @@ func GenTestCountSketch() *CountSketch {
 	orig := NewCountSketch()
 	orig.DataPoints = []*CountSketchDataPoint{{}, GenTestCountSketchDataPoint()}
 	orig.AggregationTemporality = AggregationTemporality(13)
+	orig.Rows = int32(13)
+	orig.Cols = int32(13)
 	return orig
 }
 

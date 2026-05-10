@@ -67,37 +67,33 @@ func (p *hllProcessor) encodeTypedSketch(metrics pmetric.MetricSlice, inputName 
 				p.logger.Debug("hllprocessor: msgpack re-encode failed; falling back to proto")
 			}
 		}
-		// Cardinality reconstruction: the legacy emit set
-		// dp.SetCardinality(uint64(series.sketch.Estimate())) from
-		// the live sketch object. The runtime drops the live handle
-		// after Tick, so we maintain a per-(metric, series-attrs)
-		// snapshot of the current proto state to recompute the
-		// estimate on each emit. On a full-state envelope we cache
-		// directly; on a delta-state envelope we apply onto the
-		// previous cached state (HLL max semantics) and re-cache.
+		// Refactor-2026-05: per-DP `count`, `cardinality`, and
+		// `precision` are removed from HLLSketchDataPoint:
+		//   - count is derivable from sketch register state at the
+		//     receiver;
+		//   - cardinality is a precomputed cache of sketch.estimate()
+		//     and would drift from the payload-derived value, so the
+		//     receiver evaluates it on demand;
+		//   - precision lifts to the parent HLLSketch container, sent
+		//     ONCE per Metric emit instead of duplicated per DP.
+		// The cardinality snapshot cache is still maintained because
+		// downstream consumers may eventually want it as an attribute,
+		// but it is no longer stamped onto the typed-sketch DP.
 		cardKey := inputName + "::" + precompute.AttributesKey(env.Labels, nil)
-		cardinality := p.updateCardSnapshot(cardKey, env.Payload, isDelta)
+		_ = p.updateCardSnapshot(cardKey, env.Payload, isDelta)
 		if !created {
 			m = metrics.AppendEmpty()
 			m.SetName(p.cardinalityMetricName(inputName))
-			m.SetEmptyHLLSketch().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+			parent := m.SetEmptyHLLSketch()
+			parent.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+			parent.SetPrecision(uint32(hll.HLLPrecision))
 			created = true
 		}
 		dp := m.HLLSketch().DataPoints().AppendEmpty()
 		labelsToAttrs(env.Labels, dp.Attributes())
 		dp.SetTimestamp(now)
-		// Legacy hllprocessor stamped Count from the accumulator in
-		// batch mode; in window mode the legacy emit set Count=0
-		// (its window store didn't track admit count separately).
-		// The runtime tracks admitted observations on env.Count, so
-		// batch parity is preserved (both pipelines set the same
-		// observation count). Window-mode delta tests don't assert
-		// on Count.
-		dp.SetCount(env.Count)
-		dp.SetCardinality(cardinality)
 		dp.SetSketch(payload)
 		dp.SetEncoding(encTag)
-		dp.SetPrecision(uint32(hll.HLLPrecision))
 	}
 }
 

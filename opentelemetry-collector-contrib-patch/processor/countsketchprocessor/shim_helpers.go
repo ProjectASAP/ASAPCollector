@@ -181,12 +181,19 @@ func (p *countSketchProcessor) encodeSketchMetrics(envs []*precompute.SketchEnve
 
 // stampDPMetadata walks the encoded pmetric output in encode-order
 // (groupOrder by ResourceLabels, envelopes within group preserved)
-// and copies legacy-typed CountSketchDataPoint fields onto each DP:
-// Dimension (the partition key), Epsilon, Delta, and the
-// PROTO_FULL-vs-PROTO_DELTA encoding tag (the runtime adapter always
-// writes Proto). Also stamps AggregationTemporality from the
-// envelope onto the parent CountSketch metric.
+// and stamps the CountSketch parent's AggregationTemporality plus
+// Rows/Cols (sketch matrix dimensions, sent ONCE per Metric emit
+// instead of duplicated per DataPoint as of refactor-2026-05) and
+// stamps each DP's Encoding tag.
+//
+// Refactor-2026-05: per-DP `dimension`, `epsilon`, `delta` are
+// removed from CountSketchDataPoint:
+//   - dimension was a legacy partition-key descriptor, now replaced
+//     by the attribute set on the DP (group-by labels);
+//   - epsilon/delta are derivable from rows/cols on the parent
+//     container, so they no longer ride per-DP.
 func (p *countSketchProcessor) stampDPMetadata(md pmetric.Metrics, envs []*precompute.SketchEnvelope) {
+	rows, cols := configDimensions(p.config)
 	idx := 0
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len() && idx < len(envs); i++ {
@@ -201,13 +208,12 @@ func (p *countSketchProcessor) stampDPMetadata(md pmetric.Metrics, envs []*preco
 				}
 				cs := m.CountSketch()
 				cs.SetAggregationTemporality(pmetric.AggregationTemporality(envs[idx].AggregationTemporality))
+				cs.SetRows(int32(rows))
+				cs.SetCols(int32(cols))
 				dps := cs.DataPoints()
 				for l := 0; l < dps.Len() && idx < len(envs); l++ {
 					dp := dps.At(l)
 					env := envs[idx]
-					dp.SetDimension(partitionKeyFromEnvelope(env, p.config))
-					dp.SetEpsilon(p.config.Epsilon)
-					dp.SetDelta(p.config.Delta)
 					dp.SetEncoding(hostNeutralToTypedEncoding(env.Encoding, p.config.Encoding))
 					idx++
 				}

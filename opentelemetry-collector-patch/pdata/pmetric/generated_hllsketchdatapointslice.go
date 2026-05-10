@@ -29,7 +29,7 @@ func newHLLSketchDataPointSlice(orig *[]*internal.HLLSketchDataPoint, state *int
 	return HLLSketchDataPointSlice{orig: orig, state: state}
 }
 
-// NewHLLSketchDataPointSlice creates a HLLSketchDataPointSlice with 0 elements.
+// NewHLLSketchDataPointSlice creates a HLLSketchDataPointSliceWrapper with 0 elements.
 // Can use "EnsureCapacity" to initialize with a given capacity.
 func NewHLLSketchDataPointSlice() HLLSketchDataPointSlice {
 	orig := []*internal.HLLSketchDataPoint(nil)
@@ -37,16 +37,29 @@ func NewHLLSketchDataPointSlice() HLLSketchDataPointSlice {
 }
 
 // Len returns the number of elements in the slice.
+//
+// Returns "0" for a newly instance created with "NewHLLSketchDataPointSlice()".
 func (es HLLSketchDataPointSlice) Len() int {
 	return len(*es.orig)
 }
 
 // At returns the element at the given index.
+//
+// This function is used mostly for iterating over all the values in the slice:
+//
+//	for i := 0; i < es.Len(); i++ {
+//	    e := es.At(i)
+//	    ... // Do something with the element
+//	}
 func (es HLLSketchDataPointSlice) At(i int) HLLSketchDataPoint {
 	return newHLLSketchDataPoint((*es.orig)[i], es.state)
 }
 
 // All returns an iterator over index-value pairs in the slice.
+//
+//	for i, v := range es.All() {
+//	    ... // Do something with index-value pair
+//	}
 func (es HLLSketchDataPointSlice) All() iter.Seq2[int, HLLSketchDataPoint] {
 	return func(yield func(int, HLLSketchDataPoint) bool) {
 		for i := 0; i < es.Len(); i++ {
@@ -58,6 +71,17 @@ func (es HLLSketchDataPointSlice) All() iter.Seq2[int, HLLSketchDataPoint] {
 }
 
 // EnsureCapacity is an operation that ensures the slice has at least the specified capacity.
+// 1. If the newCap <= cap then no change in capacity.
+// 2. If the newCap > cap then the slice capacity will be expanded to equal newCap.
+//
+// Here is how a new HLLSketchDataPointSlice can be initialized:
+//
+//	es := NewHLLSketchDataPointSlice()
+//	es.EnsureCapacity(4)
+//	for i := 0; i < 4; i++ {
+//	    e := es.AppendEmpty()
+//	    // Here should set all the values for e.
+//	}
 func (es HLLSketchDataPointSlice) EnsureCapacity(newCap int) {
 	es.state.AssertMutable()
 	oldCap := cap(*es.orig)
@@ -83,10 +107,12 @@ func (es HLLSketchDataPointSlice) AppendEmpty() HLLSketchDataPoint {
 func (es HLLSketchDataPointSlice) MoveAndAppendTo(dest HLLSketchDataPointSlice) {
 	es.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if es.orig == dest.orig {
 		return
 	}
 	if *dest.orig == nil {
+		// We can simply move the entire vector and avoid any allocations.
 		*dest.orig = *es.orig
 	} else {
 		*dest.orig = append(*dest.orig, *es.orig...)
@@ -103,13 +129,16 @@ func (es HLLSketchDataPointSlice) RemoveIf(f func(HLLSketchDataPoint) bool) {
 		if f(es.At(i)) {
 			internal.DeleteHLLSketchDataPoint((*es.orig)[i], true)
 			(*es.orig)[i] = nil
+
 			continue
 		}
 		if newLen == i {
+			// Nothing to move, element is at the right place.
 			newLen++
 			continue
 		}
 		(*es.orig)[newLen] = (*es.orig)[i]
+		// Cannot delete here since we just move the data(or pointer to data) to a different position in the slice.
 		(*es.orig)[i] = nil
 		newLen++
 	}
@@ -126,7 +155,8 @@ func (es HLLSketchDataPointSlice) CopyTo(dest HLLSketchDataPointSlice) {
 }
 
 // Sort sorts the HLLSketchDataPoint elements within HLLSketchDataPointSlice given the
-// provided less function.
+// provided less function so that two instances of HLLSketchDataPointSlice
+// can be compared.
 func (es HLLSketchDataPointSlice) Sort(less func(a, b HLLSketchDataPoint) bool) {
 	es.state.AssertMutable()
 	sort.SliceStable(*es.orig, func(i, j int) bool { return less(es.At(i), es.At(j)) })

@@ -18,6 +18,7 @@ import (
 type HLLSketch struct {
 	DataPoints             []*HLLSketchDataPoint
 	AggregationTemporality AggregationTemporality
+	Precision              uint32
 }
 
 var (
@@ -56,6 +57,7 @@ func DeleteHLLSketch(orig *HLLSketch, nullable bool) {
 }
 
 func CopyHLLSketch(dest, src *HLLSketch) *HLLSketch {
+	// If copying to same object, just return.
 	if src == dest {
 		return dest
 	}
@@ -71,6 +73,8 @@ func CopyHLLSketch(dest, src *HLLSketch) *HLLSketch {
 
 	dest.AggregationTemporality = src.AggregationTemporality
 
+	dest.Precision = src.Precision
+
 	return dest
 }
 
@@ -80,6 +84,8 @@ func CopyHLLSketchSlice(dest, src []HLLSketch) []HLLSketch {
 		newDest = make([]HLLSketch, len(src))
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteHLLSketch(&dest[i], false)
 		}
@@ -94,16 +100,22 @@ func CopyHLLSketchPtrSlice(dest, src []*HLLSketch) []*HLLSketch {
 	var newDest []*HLLSketch
 	if cap(dest) < len(src) {
 		newDest = make([]*HLLSketch, len(src))
+		// Copy old pointers to re-use.
 		copy(newDest, dest)
+		// Add new pointers for missing elements from len(dest) to len(srt).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewHLLSketch()
 		}
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteHLLSketch(dest[i], true)
 			dest[i] = nil
 		}
+		// Add new pointers for missing elements.
+		// This can happen when len(dest) < len(src) < cap(dest).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewHLLSketch()
 		}
@@ -136,6 +148,10 @@ func (orig *HLLSketch) MarshalJSON(dest *json.Stream) {
 		dest.WriteObjectField("aggregationTemporality")
 		dest.WriteInt32(int32(orig.AggregationTemporality))
 	}
+	if orig.Precision != uint32(0) {
+		dest.WriteObjectField("precision")
+		dest.WriteUint32(orig.Precision)
+	}
 	dest.WriteObjectEnd()
 }
 
@@ -151,6 +167,8 @@ func (orig *HLLSketch) UnmarshalJSON(iter *json.Iterator) {
 
 		case "aggregationTemporality", "aggregation_temporality":
 			orig.AggregationTemporality = AggregationTemporality(iter.ReadEnumValue(AggregationTemporality_value))
+		case "precision":
+			orig.Precision = iter.ReadUint32()
 		default:
 			iter.Skip()
 		}
@@ -167,6 +185,9 @@ func (orig *HLLSketch) SizeProto() int {
 	}
 	if orig.AggregationTemporality != 0 {
 		n += 1 + proto.Sov(uint64(orig.AggregationTemporality))
+	}
+	if orig.Precision != 0 {
+		n += 1 + proto.Sov(uint64(orig.Precision))
 	}
 	return n
 }
@@ -187,6 +208,11 @@ func (orig *HLLSketch) MarshalProto(buf []byte) int {
 		pos--
 		buf[pos] = 0x10
 	}
+	if orig.Precision != 0 {
+		pos = proto.EncodeVarint(buf, pos, uint64(orig.Precision))
+		pos--
+		buf[pos] = 0x18
+	}
 	return len(buf) - pos
 }
 
@@ -198,6 +224,7 @@ func (orig *HLLSketch) UnmarshalProto(buf []byte) error {
 	l := len(buf)
 	pos := 0
 	for pos < l {
+		// If in a group parsing, move to the next tag.
 		fieldNum, wireType, pos, err = proto.ConsumeTag(buf, pos)
 		if err != nil {
 			return err
@@ -231,6 +258,18 @@ func (orig *HLLSketch) UnmarshalProto(buf []byte) error {
 			}
 
 			orig.AggregationTemporality = AggregationTemporality(num)
+
+		case 3:
+			if wireType != proto.WireTypeVarint {
+				return fmt.Errorf("proto: wrong wireType = %d for field Precision", wireType)
+			}
+			var num uint64
+			num, pos, err = proto.ConsumeVarint(buf, pos)
+			if err != nil {
+				return err
+			}
+
+			orig.Precision = uint32(num)
 		default:
 			pos, err = proto.ConsumeUnknown(buf, pos, wireType)
 			if err != nil {
@@ -245,6 +284,7 @@ func GenTestHLLSketch() *HLLSketch {
 	orig := NewHLLSketch()
 	orig.DataPoints = []*HLLSketchDataPoint{{}, GenTestHLLSketchDataPoint()}
 	orig.AggregationTemporality = AggregationTemporality(13)
+	orig.Precision = uint32(13)
 	return orig
 }
 

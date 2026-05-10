@@ -19,8 +19,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/internal/json"
 )
 
-func TestCopyDDSketch(t *testing.T) {
-	for name, src := range genTestEncodingValuesDDSketch() {
+func TestCopyHLLSketch(t *testing.T) {
+	for name, src := range genTestEncodingValuesHLLSketch() {
 		for _, pooling := range []bool{true, false} {
 			t.Run(name+"/Pooling="+strconv.FormatBool(pooling), func(t *testing.T) {
 				prevPooling := UseProtoPooling.IsEnabled()
@@ -29,77 +29,77 @@ func TestCopyDDSketch(t *testing.T) {
 					require.NoError(t, featuregate.GlobalRegistry().Set(UseProtoPooling.ID(), prevPooling))
 				}()
 
-				dest := NewDDSketch()
-				CopyDDSketch(dest, src)
+				dest := NewHLLSketch()
+				CopyHLLSketch(dest, src)
 				assert.Equal(t, src, dest)
-				CopyDDSketch(dest, dest)
+				CopyHLLSketch(dest, dest)
 				assert.Equal(t, src, dest)
 			})
 		}
 	}
 }
 
-func TestCopyDDSketchSlice(t *testing.T) {
-	src := []DDSketch{}
-	dest := []DDSketch{}
+func TestCopyHLLSketchSlice(t *testing.T) {
+	src := []HLLSketch{}
+	dest := []HLLSketch{}
 	// Test CopyTo empty
-	dest = CopyDDSketchSlice(dest, src)
-	assert.Equal(t, []DDSketch{}, dest)
+	dest = CopyHLLSketchSlice(dest, src)
+	assert.Equal(t, []HLLSketch{}, dest)
 
 	// Test CopyTo larger slice
-	src = GenTestDDSketchSlice()
-	dest = CopyDDSketchSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchSlice(), dest)
+	src = GenTestHLLSketchSlice()
+	dest = CopyHLLSketchSlice(dest, src)
+	assert.Equal(t, GenTestHLLSketchSlice(), dest)
 
 	// Test CopyTo same size slice
-	dest = CopyDDSketchSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchSlice(), dest)
+	dest = CopyHLLSketchSlice(dest, src)
+	assert.Equal(t, GenTestHLLSketchSlice(), dest)
 
 	// Test CopyTo smaller size slice
-	dest = CopyDDSketchSlice(dest, []DDSketch{})
+	dest = CopyHLLSketchSlice(dest, []HLLSketch{})
 	assert.Len(t, dest, 0)
 
 	// Test CopyTo larger slice with enough capacity
-	dest = CopyDDSketchSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchSlice(), dest)
+	dest = CopyHLLSketchSlice(dest, src)
+	assert.Equal(t, GenTestHLLSketchSlice(), dest)
 }
 
-func TestCopyDDSketchPtrSlice(t *testing.T) {
-	src := []*DDSketch{}
-	dest := []*DDSketch{}
+func TestCopyHLLSketchPtrSlice(t *testing.T) {
+	src := []*HLLSketch{}
+	dest := []*HLLSketch{}
 	// Test CopyTo empty
-	dest = CopyDDSketchPtrSlice(dest, src)
-	assert.Equal(t, []*DDSketch{}, dest)
+	dest = CopyHLLSketchPtrSlice(dest, src)
+	assert.Equal(t, []*HLLSketch{}, dest)
 
 	// Test CopyTo larger slice
-	src = GenTestDDSketchPtrSlice()
-	dest = CopyDDSketchPtrSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchPtrSlice(), dest)
+	src = GenTestHLLSketchPtrSlice()
+	dest = CopyHLLSketchPtrSlice(dest, src)
+	assert.Equal(t, GenTestHLLSketchPtrSlice(), dest)
 
 	// Test CopyTo same size slice
-	dest = CopyDDSketchPtrSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchPtrSlice(), dest)
+	dest = CopyHLLSketchPtrSlice(dest, src)
+	assert.Equal(t, GenTestHLLSketchPtrSlice(), dest)
 
 	// Test CopyTo smaller size slice
-	dest = CopyDDSketchPtrSlice(dest, []*DDSketch{})
+	dest = CopyHLLSketchPtrSlice(dest, []*HLLSketch{})
 	assert.Len(t, dest, 0)
 
 	// Test CopyTo larger slice with enough capacity
-	dest = CopyDDSketchPtrSlice(dest, src)
-	assert.Equal(t, GenTestDDSketchPtrSlice(), dest)
+	dest = CopyHLLSketchPtrSlice(dest, src)
+	assert.Equal(t, GenTestHLLSketchPtrSlice(), dest)
 }
 
-func TestMarshalAndUnmarshalJSONDDSketchUnknown(t *testing.T) {
+func TestMarshalAndUnmarshalJSONHLLSketchUnknown(t *testing.T) {
 	iter := json.BorrowIterator([]byte(`{"unknown": "string"}`))
 	defer json.ReturnIterator(iter)
-	dest := NewDDSketch()
+	dest := NewHLLSketch()
 	dest.UnmarshalJSON(iter)
 	require.NoError(t, iter.Error())
-	assert.Equal(t, NewDDSketch(), dest)
+	assert.Equal(t, NewHLLSketch(), dest)
 }
 
-func TestMarshalAndUnmarshalJSONDDSketch(t *testing.T) {
-	for name, src := range genTestEncodingValuesDDSketch() {
+func TestMarshalAndUnmarshalJSONHLLSketch(t *testing.T) {
+	for name, src := range genTestEncodingValuesHLLSketch() {
 		for _, pooling := range []bool{true, false} {
 			t.Run(name+"/Pooling="+strconv.FormatBool(pooling), func(t *testing.T) {
 				prevPooling := UseProtoPooling.IsEnabled()
@@ -115,35 +115,35 @@ func TestMarshalAndUnmarshalJSONDDSketch(t *testing.T) {
 
 				iter := json.BorrowIterator(stream.Buffer())
 				defer json.ReturnIterator(iter)
-				dest := NewDDSketch()
+				dest := NewHLLSketch()
 				dest.UnmarshalJSON(iter)
 				require.NoError(t, iter.Error())
 
 				assert.Equal(t, src, dest)
-				DeleteDDSketch(dest, true)
+				DeleteHLLSketch(dest, true)
 			})
 		}
 	}
 }
 
-func TestMarshalAndUnmarshalProtoDDSketchFailing(t *testing.T) {
-	for name, buf := range genTestFailingUnmarshalProtoValuesDDSketch() {
+func TestMarshalAndUnmarshalProtoHLLSketchFailing(t *testing.T) {
+	for name, buf := range genTestFailingUnmarshalProtoValuesHLLSketch() {
 		t.Run(name, func(t *testing.T) {
-			dest := NewDDSketch()
+			dest := NewHLLSketch()
 			require.Error(t, dest.UnmarshalProto(buf))
 		})
 	}
 }
 
-func TestMarshalAndUnmarshalProtoDDSketchUnknown(t *testing.T) {
-	dest := NewDDSketch()
+func TestMarshalAndUnmarshalProtoHLLSketchUnknown(t *testing.T) {
+	dest := NewHLLSketch()
 	// message Test { required int64 field = 1313; } encoding { "field": "1234" }
 	require.NoError(t, dest.UnmarshalProto([]byte{0x88, 0x52, 0xD2, 0x09}))
-	assert.Equal(t, NewDDSketch(), dest)
+	assert.Equal(t, NewHLLSketch(), dest)
 }
 
-func TestMarshalAndUnmarshalProtoDDSketch(t *testing.T) {
-	for name, src := range genTestEncodingValuesDDSketch() {
+func TestMarshalAndUnmarshalProtoHLLSketch(t *testing.T) {
+	for name, src := range genTestEncodingValuesHLLSketch() {
 		for _, pooling := range []bool{true, false} {
 			t.Run(name+"/Pooling="+strconv.FormatBool(pooling), func(t *testing.T) {
 				prevPooling := UseProtoPooling.IsEnabled()
@@ -156,53 +156,53 @@ func TestMarshalAndUnmarshalProtoDDSketch(t *testing.T) {
 				gotSize := src.MarshalProto(buf)
 				assert.Equal(t, len(buf), gotSize)
 
-				dest := NewDDSketch()
+				dest := NewHLLSketch()
 				require.NoError(t, dest.UnmarshalProto(buf))
 
 				assert.Equal(t, src, dest)
-				DeleteDDSketch(dest, true)
+				DeleteHLLSketch(dest, true)
 			})
 		}
 	}
 }
 
-func TestMarshalAndUnmarshalProtoViaProtobufDDSketch(t *testing.T) {
-	for name, src := range genTestEncodingValuesDDSketch() {
+func TestMarshalAndUnmarshalProtoViaProtobufHLLSketch(t *testing.T) {
+	for name, src := range genTestEncodingValuesHLLSketch() {
 		t.Run(name, func(t *testing.T) {
 			buf := make([]byte, src.SizeProto())
 			gotSize := src.MarshalProto(buf)
 			assert.Equal(t, len(buf), gotSize)
 
-			goDest := &gootlpmetrics.DDSketch{}
+			goDest := &gootlpmetrics.HLLSketch{}
 			require.NoError(t, proto.Unmarshal(buf, goDest))
 
 			goBuf, err := proto.Marshal(goDest)
 			require.NoError(t, err)
 
-			dest := NewDDSketch()
+			dest := NewHLLSketch()
 			require.NoError(t, dest.UnmarshalProto(goBuf))
 			assert.Equal(t, src, dest)
 		})
 	}
 }
 
-func genTestFailingUnmarshalProtoValuesDDSketch() map[string][]byte {
+func genTestFailingUnmarshalProtoValuesHLLSketch() map[string][]byte {
 	return map[string][]byte{
 		"invalid_field":                          {0x02},
 		"DataPoints/wrong_wire_type":             {0xc},
 		"DataPoints/missing_value":               {0xa},
 		"AggregationTemporality/wrong_wire_type": {0x14},
 		"AggregationTemporality/missing_value":   {0x10},
-		"RelativeAccuracy/wrong_wire_type":       {0x1c},
-		"RelativeAccuracy/missing_value":         {0x19},
+		"Precision/wrong_wire_type":              {0x1c},
+		"Precision/missing_value":                {0x18},
 	}
 }
 
-func genTestEncodingValuesDDSketch() map[string]*DDSketch {
-	return map[string]*DDSketch{
-		"empty":                       NewDDSketch(),
-		"DataPoints/test":             {DataPoints: []*DDSketchDataPoint{{}, GenTestDDSketchDataPoint()}},
+func genTestEncodingValuesHLLSketch() map[string]*HLLSketch {
+	return map[string]*HLLSketch{
+		"empty":                       NewHLLSketch(),
+		"DataPoints/test":             {DataPoints: []*HLLSketchDataPoint{{}, GenTestHLLSketchDataPoint()}},
 		"AggregationTemporality/test": {AggregationTemporality: AggregationTemporality(13)},
-		"RelativeAccuracy/test":       {RelativeAccuracy: float64(3.1415926)},
+		"Precision/test":              {Precision: uint32(13)},
 	}
 }
