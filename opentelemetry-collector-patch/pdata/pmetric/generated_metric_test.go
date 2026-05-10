@@ -149,6 +149,54 @@ func TestMetric_Summary(t *testing.T) {
 	assert.Panics(t, func() { newMetric(internal.NewMetric(), sharedState).SetEmptySummary() })
 }
 
+func TestMetric_KLLSketch(t *testing.T) {
+	ms := NewMetric()
+	ms.SetEmptyKLLSketch()
+	assert.Equal(t, NewKLLSketch(), ms.KLLSketch())
+	ms.orig.GetData().(*internal.Metric_KLLSketch).KLLSketch = internal.GenTestKLLSketch()
+	assert.Equal(t, MetricTypeKLLSketch, ms.Type())
+	assert.Equal(t, generateTestKLLSketch(), ms.KLLSketch())
+	sharedState := internal.NewState()
+	sharedState.MarkReadOnly()
+	assert.Panics(t, func() { newMetric(internal.NewMetric(), sharedState).SetEmptyKLLSketch() })
+}
+
+func TestMetric_CountSketch(t *testing.T) {
+	ms := NewMetric()
+	ms.SetEmptyCountSketch()
+	assert.Equal(t, NewCountSketch(), ms.CountSketch())
+	ms.orig.GetData().(*internal.Metric_CountSketch).CountSketch = internal.GenTestCountSketch()
+	assert.Equal(t, MetricTypeCountSketch, ms.Type())
+	assert.Equal(t, generateTestCountSketch(), ms.CountSketch())
+	sharedState := internal.NewState()
+	sharedState.MarkReadOnly()
+	assert.Panics(t, func() { newMetric(internal.NewMetric(), sharedState).SetEmptyCountSketch() })
+}
+
+func TestMetric_CountMinSketch(t *testing.T) {
+	ms := NewMetric()
+	ms.SetEmptyCountMinSketch()
+	assert.Equal(t, NewCountMinSketch(), ms.CountMinSketch())
+	ms.orig.GetData().(*internal.Metric_CountMinSketch).CountMinSketch = internal.GenTestCountMinSketch()
+	assert.Equal(t, MetricTypeCountMinSketch, ms.Type())
+	assert.Equal(t, generateTestCountMinSketch(), ms.CountMinSketch())
+	sharedState := internal.NewState()
+	sharedState.MarkReadOnly()
+	assert.Panics(t, func() { newMetric(internal.NewMetric(), sharedState).SetEmptyCountMinSketch() })
+}
+
+func TestMetric_HLLSketch(t *testing.T) {
+	ms := NewMetric()
+	ms.SetEmptyHLLSketch()
+	assert.Equal(t, NewHLLSketch(), ms.HLLSketch())
+	ms.orig.GetData().(*internal.Metric_HLLSketch).HLLSketch = internal.GenTestHLLSketch()
+	assert.Equal(t, MetricTypeHLLSketch, ms.Type())
+	assert.Equal(t, generateTestHLLSketch(), ms.HLLSketch())
+	sharedState := internal.NewState()
+	sharedState.MarkReadOnly()
+	assert.Panics(t, func() { newMetric(internal.NewMetric(), sharedState).SetEmptyHLLSketch() })
+}
+
 func TestMetric_Metadata(t *testing.T) {
 	ms := NewMetric()
 	assert.Equal(t, pcommon.NewMap(), ms.Metadata())

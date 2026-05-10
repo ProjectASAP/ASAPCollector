@@ -34,7 +34,7 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://controller:4320/v1/opamp
+        endpoint: ws://backend:4320/v1/opamp
         headers:
           X-Agent-ID: "agent-1"
 
@@ -42,6 +42,7 @@ receivers:
   otlp:
     protocols:
       grpc:
+        max_recv_msg_size_mib: 4096
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
@@ -62,7 +63,7 @@ processors:
 
 exporters:
   prometheusremotewrite:
-    endpoint: "http://prometheus:9090/api/v1/write"
+    endpoint: "http://victoriametrics:8428/api/v1/write"
     tls:
       insecure: true
     target_info:

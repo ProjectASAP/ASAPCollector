@@ -91,7 +91,10 @@ func createDefaultConfig() component.Config {
 		WindowDuration:       60 * time.Second,
 		RelativeAccuracy:     0.01,
 		Quantiles:            []float64{0.5, 0.9, 0.99},
-		MetricSuffix:         "_ddsketch",
+		// Refactor-2026-05: default empty — name is preserved end-to-end.
+		// Any non-empty value set in YAML is now ignored at emit time
+		// (see shim_helpers.go) but is still parsed for backward compat.
+		MetricSuffix:         "",
 		EnableSelfMonitoring: true,
 		TransmitSketch:       true,
 		// Delta-encoded transmission is the operational default for the

@@ -151,6 +151,38 @@ func (d *Dictionary) Apply(assignments []Assignment) {
 	d.mu.Unlock()
 }
 
+// EvictByID removes any cached entries whose assigned series_id appears in
+// the provided list. The next emission referencing the same logical series
+// will fall back to attribute-carrying mode (sid=0 + populated attributes),
+// triggering a fresh resolution from the receiver.
+//
+// This is the universal recovery path for sid-cache divergence — used when
+// the receiver's response carries `unknown_series_ids` (refactor-2026-05).
+// Implementation walks every (source, entry) pair and clears the seriesID
+// cache slot if it matches a listed sid; the entry itself is retained so
+// subsequent annotateMetric() can repopulate via the next response.
+func (d *Dictionary) EvictByID(sids []uint64) {
+	if len(sids) == 0 {
+		return
+	}
+	want := make(map[uint64]struct{}, len(sids))
+	for _, s := range sids {
+		want[s] = struct{}{}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, src := range d.sources {
+		src.mu.Lock()
+		for _, entry := range src.entries {
+			if _, hit := want[entry.seriesID]; hit {
+				entry.seriesID = 0
+				entry.registered = false
+			}
+		}
+		src.mu.Unlock()
+	}
+}
+
 func (d *Dictionary) getOrCreateSource(key string) *sourceState {
 	d.mu.Lock()
 	defer d.mu.Unlock()

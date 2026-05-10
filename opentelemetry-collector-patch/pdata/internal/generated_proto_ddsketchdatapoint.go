@@ -9,99 +9,11 @@ package internal
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 	"sync"
 
 	"go.opentelemetry.io/collector/pdata/internal/json"
 	"go.opentelemetry.io/collector/pdata/internal/proto"
 )
-
-func (m *DDSketchDataPoint) GetSum() any {
-	if m != nil {
-		return m.Sum
-	}
-	return nil
-}
-
-type DDSketchDataPoint_SumAsDouble struct {
-	SumAsDouble float64
-}
-
-func (m *DDSketchDataPoint) GetSumAsDouble() float64 {
-	if v, ok := m.GetSum().(*DDSketchDataPoint_SumAsDouble); ok {
-		return v.SumAsDouble
-	}
-	return float64(0)
-}
-
-type DDSketchDataPoint_SumAsInt struct {
-	SumAsInt int64
-}
-
-func (m *DDSketchDataPoint) GetSumAsInt() int64 {
-	if v, ok := m.GetSum().(*DDSketchDataPoint_SumAsInt); ok {
-		return v.SumAsInt
-	}
-	return int64(0)
-}
-
-func (m *DDSketchDataPoint) GetMin() any {
-	if m != nil {
-		return m.Min
-	}
-	return nil
-}
-
-type DDSketchDataPoint_MinAsDouble struct {
-	MinAsDouble float64
-}
-
-func (m *DDSketchDataPoint) GetMinAsDouble() float64 {
-	if v, ok := m.GetMin().(*DDSketchDataPoint_MinAsDouble); ok {
-		return v.MinAsDouble
-	}
-	return float64(0)
-}
-
-type DDSketchDataPoint_MinAsInt struct {
-	MinAsInt int64
-}
-
-func (m *DDSketchDataPoint) GetMinAsInt() int64 {
-	if v, ok := m.GetMin().(*DDSketchDataPoint_MinAsInt); ok {
-		return v.MinAsInt
-	}
-	return int64(0)
-}
-
-func (m *DDSketchDataPoint) GetMax() any {
-	if m != nil {
-		return m.Max
-	}
-	return nil
-}
-
-type DDSketchDataPoint_MaxAsDouble struct {
-	MaxAsDouble float64
-}
-
-func (m *DDSketchDataPoint) GetMaxAsDouble() float64 {
-	if v, ok := m.GetMax().(*DDSketchDataPoint_MaxAsDouble); ok {
-		return v.MaxAsDouble
-	}
-	return float64(0)
-}
-
-type DDSketchDataPoint_MaxAsInt struct {
-	MaxAsInt int64
-}
-
-func (m *DDSketchDataPoint) GetMaxAsInt() int64 {
-	if v, ok := m.GetMax().(*DDSketchDataPoint_MaxAsInt); ok {
-		return v.MaxAsInt
-	}
-	return int64(0)
-}
 
 // DDSketchDataPoint is a single data point that encodes a distribution using the DDSketch format.
 type DDSketchDataPoint struct {
@@ -109,10 +21,6 @@ type DDSketchDataPoint struct {
 	SeriesID          uint64
 	StartTimeUnixNano uint64
 	TimeUnixNano      uint64
-	Count             uint64
-	Sum               any
-	Min               any
-	Max               any
 	Sketch            []byte
 	Encoding          DDSketchEncoding
 	Exemplars         []Exemplar
@@ -123,42 +31,6 @@ var (
 	protoPoolDDSketchDataPoint = sync.Pool{
 		New: func() any {
 			return &DDSketchDataPoint{}
-		},
-	}
-
-	ProtoPoolDDSketchDataPoint_SumAsDouble = sync.Pool{
-		New: func() any {
-			return &DDSketchDataPoint_SumAsDouble{}
-		},
-	}
-
-	ProtoPoolDDSketchDataPoint_SumAsInt = sync.Pool{
-		New: func() any {
-			return &DDSketchDataPoint_SumAsInt{}
-		},
-	}
-
-	ProtoPoolDDSketchDataPoint_MinAsDouble = sync.Pool{
-		New: func() any {
-			return &DDSketchDataPoint_MinAsDouble{}
-		},
-	}
-
-	ProtoPoolDDSketchDataPoint_MinAsInt = sync.Pool{
-		New: func() any {
-			return &DDSketchDataPoint_MinAsInt{}
-		},
-	}
-
-	ProtoPoolDDSketchDataPoint_MaxAsDouble = sync.Pool{
-		New: func() any {
-			return &DDSketchDataPoint_MaxAsDouble{}
-		},
-	}
-
-	ProtoPoolDDSketchDataPoint_MaxAsInt = sync.Pool{
-		New: func() any {
-			return &DDSketchDataPoint_MaxAsInt{}
 		},
 	}
 )
@@ -182,45 +54,6 @@ func DeleteDDSketchDataPoint(orig *DDSketchDataPoint, nullable bool) {
 
 	for i := range orig.Attributes {
 		DeleteKeyValue(&orig.Attributes[i], false)
-	}
-	switch ov := orig.Sum.(type) {
-	case *DDSketchDataPoint_SumAsDouble:
-		if UseProtoPooling.IsEnabled() {
-			ov.SumAsDouble = float64(0)
-			ProtoPoolDDSketchDataPoint_SumAsDouble.Put(ov)
-		}
-	case *DDSketchDataPoint_SumAsInt:
-		if UseProtoPooling.IsEnabled() {
-			ov.SumAsInt = int64(0)
-			ProtoPoolDDSketchDataPoint_SumAsInt.Put(ov)
-		}
-
-	}
-	switch ov := orig.Min.(type) {
-	case *DDSketchDataPoint_MinAsDouble:
-		if UseProtoPooling.IsEnabled() {
-			ov.MinAsDouble = float64(0)
-			ProtoPoolDDSketchDataPoint_MinAsDouble.Put(ov)
-		}
-	case *DDSketchDataPoint_MinAsInt:
-		if UseProtoPooling.IsEnabled() {
-			ov.MinAsInt = int64(0)
-			ProtoPoolDDSketchDataPoint_MinAsInt.Put(ov)
-		}
-
-	}
-	switch ov := orig.Max.(type) {
-	case *DDSketchDataPoint_MaxAsDouble:
-		if UseProtoPooling.IsEnabled() {
-			ov.MaxAsDouble = float64(0)
-			ProtoPoolDDSketchDataPoint_MaxAsDouble.Put(ov)
-		}
-	case *DDSketchDataPoint_MaxAsInt:
-		if UseProtoPooling.IsEnabled() {
-			ov.MaxAsInt = int64(0)
-			ProtoPoolDDSketchDataPoint_MaxAsInt.Put(ov)
-		}
-
 	}
 	for i := range orig.Exemplars {
 		DeleteExemplar(&orig.Exemplars[i], false)
@@ -253,74 +86,6 @@ func CopyDDSketchDataPoint(dest, src *DDSketchDataPoint) *DDSketchDataPoint {
 
 	dest.TimeUnixNano = src.TimeUnixNano
 
-	dest.Count = src.Count
-
-	switch t := src.Sum.(type) {
-	case *DDSketchDataPoint_SumAsDouble:
-		var ov *DDSketchDataPoint_SumAsDouble
-		if !UseProtoPooling.IsEnabled() {
-			ov = &DDSketchDataPoint_SumAsDouble{}
-		} else {
-			ov = ProtoPoolDDSketchDataPoint_SumAsDouble.Get().(*DDSketchDataPoint_SumAsDouble)
-		}
-		ov.SumAsDouble = t.SumAsDouble
-		dest.Sum = ov
-	case *DDSketchDataPoint_SumAsInt:
-		var ov *DDSketchDataPoint_SumAsInt
-		if !UseProtoPooling.IsEnabled() {
-			ov = &DDSketchDataPoint_SumAsInt{}
-		} else {
-			ov = ProtoPoolDDSketchDataPoint_SumAsInt.Get().(*DDSketchDataPoint_SumAsInt)
-		}
-		ov.SumAsInt = t.SumAsInt
-		dest.Sum = ov
-	default:
-		dest.Sum = nil
-	}
-	switch t := src.Min.(type) {
-	case *DDSketchDataPoint_MinAsDouble:
-		var ov *DDSketchDataPoint_MinAsDouble
-		if !UseProtoPooling.IsEnabled() {
-			ov = &DDSketchDataPoint_MinAsDouble{}
-		} else {
-			ov = ProtoPoolDDSketchDataPoint_MinAsDouble.Get().(*DDSketchDataPoint_MinAsDouble)
-		}
-		ov.MinAsDouble = t.MinAsDouble
-		dest.Min = ov
-	case *DDSketchDataPoint_MinAsInt:
-		var ov *DDSketchDataPoint_MinAsInt
-		if !UseProtoPooling.IsEnabled() {
-			ov = &DDSketchDataPoint_MinAsInt{}
-		} else {
-			ov = ProtoPoolDDSketchDataPoint_MinAsInt.Get().(*DDSketchDataPoint_MinAsInt)
-		}
-		ov.MinAsInt = t.MinAsInt
-		dest.Min = ov
-	default:
-		dest.Min = nil
-	}
-	switch t := src.Max.(type) {
-	case *DDSketchDataPoint_MaxAsDouble:
-		var ov *DDSketchDataPoint_MaxAsDouble
-		if !UseProtoPooling.IsEnabled() {
-			ov = &DDSketchDataPoint_MaxAsDouble{}
-		} else {
-			ov = ProtoPoolDDSketchDataPoint_MaxAsDouble.Get().(*DDSketchDataPoint_MaxAsDouble)
-		}
-		ov.MaxAsDouble = t.MaxAsDouble
-		dest.Max = ov
-	case *DDSketchDataPoint_MaxAsInt:
-		var ov *DDSketchDataPoint_MaxAsInt
-		if !UseProtoPooling.IsEnabled() {
-			ov = &DDSketchDataPoint_MaxAsInt{}
-		} else {
-			ov = ProtoPoolDDSketchDataPoint_MaxAsInt.Get().(*DDSketchDataPoint_MaxAsInt)
-		}
-		ov.MaxAsInt = t.MaxAsInt
-		dest.Max = ov
-	default:
-		dest.Max = nil
-	}
 	dest.Sketch = src.Sketch
 
 	dest.Encoding = src.Encoding
@@ -409,34 +174,6 @@ func (orig *DDSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		dest.WriteObjectField("timeUnixNano")
 		dest.WriteUint64(orig.TimeUnixNano)
 	}
-	if orig.Count != uint64(0) {
-		dest.WriteObjectField("count")
-		dest.WriteUint64(orig.Count)
-	}
-	switch orig := orig.Sum.(type) {
-	case *DDSketchDataPoint_SumAsDouble:
-		dest.WriteObjectField("sumAsDouble")
-		dest.WriteFloat64(orig.SumAsDouble)
-	case *DDSketchDataPoint_SumAsInt:
-		dest.WriteObjectField("sumAsInt")
-		dest.WriteInt64(orig.SumAsInt)
-	}
-	switch orig := orig.Min.(type) {
-	case *DDSketchDataPoint_MinAsDouble:
-		dest.WriteObjectField("minAsDouble")
-		dest.WriteFloat64(orig.MinAsDouble)
-	case *DDSketchDataPoint_MinAsInt:
-		dest.WriteObjectField("minAsInt")
-		dest.WriteInt64(orig.MinAsInt)
-	}
-	switch orig := orig.Max.(type) {
-	case *DDSketchDataPoint_MaxAsDouble:
-		dest.WriteObjectField("maxAsDouble")
-		dest.WriteFloat64(orig.MaxAsDouble)
-	case *DDSketchDataPoint_MaxAsInt:
-		dest.WriteObjectField("maxAsInt")
-		dest.WriteInt64(orig.MaxAsInt)
-	}
 
 	if len(orig.Sketch) > 0 {
 		dest.WriteObjectField("sketch")
@@ -480,81 +217,6 @@ func (orig *DDSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 			orig.StartTimeUnixNano = iter.ReadUint64()
 		case "timeUnixNano", "time_unix_nano":
 			orig.TimeUnixNano = iter.ReadUint64()
-		case "count":
-			orig.Count = iter.ReadUint64()
-
-		case "sumAsDouble", "sum_as_double":
-			{
-				var ov *DDSketchDataPoint_SumAsDouble
-				if !UseProtoPooling.IsEnabled() {
-					ov = &DDSketchDataPoint_SumAsDouble{}
-				} else {
-					ov = ProtoPoolDDSketchDataPoint_SumAsDouble.Get().(*DDSketchDataPoint_SumAsDouble)
-				}
-				ov.SumAsDouble = iter.ReadFloat64()
-				orig.Sum = ov
-			}
-
-		case "sumAsInt", "sum_as_int":
-			{
-				var ov *DDSketchDataPoint_SumAsInt
-				if !UseProtoPooling.IsEnabled() {
-					ov = &DDSketchDataPoint_SumAsInt{}
-				} else {
-					ov = ProtoPoolDDSketchDataPoint_SumAsInt.Get().(*DDSketchDataPoint_SumAsInt)
-				}
-				ov.SumAsInt = iter.ReadInt64()
-				orig.Sum = ov
-			}
-
-		case "minAsDouble", "min_as_double":
-			{
-				var ov *DDSketchDataPoint_MinAsDouble
-				if !UseProtoPooling.IsEnabled() {
-					ov = &DDSketchDataPoint_MinAsDouble{}
-				} else {
-					ov = ProtoPoolDDSketchDataPoint_MinAsDouble.Get().(*DDSketchDataPoint_MinAsDouble)
-				}
-				ov.MinAsDouble = iter.ReadFloat64()
-				orig.Min = ov
-			}
-
-		case "minAsInt", "min_as_int":
-			{
-				var ov *DDSketchDataPoint_MinAsInt
-				if !UseProtoPooling.IsEnabled() {
-					ov = &DDSketchDataPoint_MinAsInt{}
-				} else {
-					ov = ProtoPoolDDSketchDataPoint_MinAsInt.Get().(*DDSketchDataPoint_MinAsInt)
-				}
-				ov.MinAsInt = iter.ReadInt64()
-				orig.Min = ov
-			}
-
-		case "maxAsDouble", "max_as_double":
-			{
-				var ov *DDSketchDataPoint_MaxAsDouble
-				if !UseProtoPooling.IsEnabled() {
-					ov = &DDSketchDataPoint_MaxAsDouble{}
-				} else {
-					ov = ProtoPoolDDSketchDataPoint_MaxAsDouble.Get().(*DDSketchDataPoint_MaxAsDouble)
-				}
-				ov.MaxAsDouble = iter.ReadFloat64()
-				orig.Max = ov
-			}
-
-		case "maxAsInt", "max_as_int":
-			{
-				var ov *DDSketchDataPoint_MaxAsInt
-				if !UseProtoPooling.IsEnabled() {
-					ov = &DDSketchDataPoint_MaxAsInt{}
-				} else {
-					ov = ProtoPoolDDSketchDataPoint_MaxAsInt.Get().(*DDSketchDataPoint_MaxAsInt)
-				}
-				ov.MaxAsInt = iter.ReadInt64()
-				orig.Max = ov
-			}
-
 		case "sketch":
 			orig.Sketch = iter.ReadBytes()
 		case "encoding":
@@ -588,36 +250,6 @@ func (orig *DDSketchDataPoint) SizeProto() int {
 		n += 9
 	}
 	if orig.TimeUnixNano != 0 {
-		n += 9
-	}
-	if orig.Count != 0 {
-		n += 9
-	}
-	switch orig := orig.Sum.(type) {
-	case nil:
-		_ = orig
-		break
-	case *DDSketchDataPoint_SumAsDouble:
-		n += 9
-	case *DDSketchDataPoint_SumAsInt:
-		n += 9
-	}
-	switch orig := orig.Min.(type) {
-	case nil:
-		_ = orig
-		break
-	case *DDSketchDataPoint_MinAsDouble:
-		n += 9
-	case *DDSketchDataPoint_MinAsInt:
-		n += 9
-	}
-	switch orig := orig.Max.(type) {
-	case nil:
-		_ = orig
-		break
-	case *DDSketchDataPoint_MaxAsDouble:
-		n += 9
-	case *DDSketchDataPoint_MaxAsInt:
 		n += 9
 	}
 	l = len(orig.Sketch)
@@ -666,54 +298,6 @@ func (orig *DDSketchDataPoint) MarshalProto(buf []byte) int {
 		binary.LittleEndian.PutUint64(buf[pos:], uint64(orig.TimeUnixNano))
 		pos--
 		buf[pos] = 0x19
-	}
-	if orig.Count != 0 {
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], uint64(orig.Count))
-		pos--
-		buf[pos] = 0x21
-	}
-	switch orig := orig.Sum.(type) {
-	case *DDSketchDataPoint_SumAsDouble:
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], math.Float64bits(orig.SumAsDouble))
-		pos--
-		buf[pos] = 0x29
-
-	case *DDSketchDataPoint_SumAsInt:
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], uint64(orig.SumAsInt))
-		pos--
-		buf[pos] = 0x61
-
-	}
-	switch orig := orig.Min.(type) {
-	case *DDSketchDataPoint_MinAsDouble:
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], math.Float64bits(orig.MinAsDouble))
-		pos--
-		buf[pos] = 0x31
-
-	case *DDSketchDataPoint_MinAsInt:
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], uint64(orig.MinAsInt))
-		pos--
-		buf[pos] = 0x69
-
-	}
-	switch orig := orig.Max.(type) {
-	case *DDSketchDataPoint_MaxAsDouble:
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], math.Float64bits(orig.MaxAsDouble))
-		pos--
-		buf[pos] = 0x39
-
-	case *DDSketchDataPoint_MaxAsInt:
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], uint64(orig.MaxAsInt))
-		pos--
-		buf[pos] = 0x71
-
 	}
 	l = len(orig.Sketch)
 	if l > 0 {
@@ -810,126 +394,6 @@ func (orig *DDSketchDataPoint) UnmarshalProto(buf []byte) error {
 
 			orig.TimeUnixNano = uint64(num)
 
-		case 4:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Count", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-
-			orig.Count = uint64(num)
-
-		case 5:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field SumAsDouble", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			var ov *DDSketchDataPoint_SumAsDouble
-			if !UseProtoPooling.IsEnabled() {
-				ov = &DDSketchDataPoint_SumAsDouble{}
-			} else {
-				ov = ProtoPoolDDSketchDataPoint_SumAsDouble.Get().(*DDSketchDataPoint_SumAsDouble)
-			}
-			ov.SumAsDouble = math.Float64frombits(num)
-			orig.Sum = ov
-
-		case 12:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field SumAsInt", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			var ov *DDSketchDataPoint_SumAsInt
-			if !UseProtoPooling.IsEnabled() {
-				ov = &DDSketchDataPoint_SumAsInt{}
-			} else {
-				ov = ProtoPoolDDSketchDataPoint_SumAsInt.Get().(*DDSketchDataPoint_SumAsInt)
-			}
-			ov.SumAsInt = int64(num)
-			orig.Sum = ov
-
-		case 6:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field MinAsDouble", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			var ov *DDSketchDataPoint_MinAsDouble
-			if !UseProtoPooling.IsEnabled() {
-				ov = &DDSketchDataPoint_MinAsDouble{}
-			} else {
-				ov = ProtoPoolDDSketchDataPoint_MinAsDouble.Get().(*DDSketchDataPoint_MinAsDouble)
-			}
-			ov.MinAsDouble = math.Float64frombits(num)
-			orig.Min = ov
-
-		case 13:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field MinAsInt", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			var ov *DDSketchDataPoint_MinAsInt
-			if !UseProtoPooling.IsEnabled() {
-				ov = &DDSketchDataPoint_MinAsInt{}
-			} else {
-				ov = ProtoPoolDDSketchDataPoint_MinAsInt.Get().(*DDSketchDataPoint_MinAsInt)
-			}
-			ov.MinAsInt = int64(num)
-			orig.Min = ov
-
-		case 7:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field MaxAsDouble", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			var ov *DDSketchDataPoint_MaxAsDouble
-			if !UseProtoPooling.IsEnabled() {
-				ov = &DDSketchDataPoint_MaxAsDouble{}
-			} else {
-				ov = ProtoPoolDDSketchDataPoint_MaxAsDouble.Get().(*DDSketchDataPoint_MaxAsDouble)
-			}
-			ov.MaxAsDouble = math.Float64frombits(num)
-			orig.Max = ov
-
-		case 14:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field MaxAsInt", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			var ov *DDSketchDataPoint_MaxAsInt
-			if !UseProtoPooling.IsEnabled() {
-				ov = &DDSketchDataPoint_MaxAsInt{}
-			} else {
-				ov = ProtoPoolDDSketchDataPoint_MaxAsInt.Get().(*DDSketchDataPoint_MaxAsInt)
-			}
-			ov.MaxAsInt = int64(num)
-			orig.Max = ov
-
 		case 8:
 			if wireType != proto.WireTypeLen {
 				return fmt.Errorf("proto: wrong wireType = %d for field Sketch", wireType)
@@ -1000,10 +464,6 @@ func GenTestDDSketchDataPoint() *DDSketchDataPoint {
 	orig.SeriesID = uint64(13)
 	orig.StartTimeUnixNano = uint64(13)
 	orig.TimeUnixNano = uint64(13)
-	orig.Count = uint64(13)
-	orig.Sum = &DDSketchDataPoint_SumAsDouble{SumAsDouble: float64(3.1415926)}
-	orig.Min = &DDSketchDataPoint_MinAsDouble{MinAsDouble: float64(3.1415926)}
-	orig.Max = &DDSketchDataPoint_MaxAsDouble{MaxAsDouble: float64(3.1415926)}
 	orig.Sketch = []byte{1, 2, 3}
 	orig.Encoding = DDSketchEncoding(13)
 	orig.Exemplars = []Exemplar{{}, *GenTestExemplar()}

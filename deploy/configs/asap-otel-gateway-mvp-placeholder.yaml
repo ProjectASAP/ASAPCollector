@@ -58,6 +58,10 @@ exporters:
     endpoint: backend:4317
     tls:
       insecure: true
+    # Backend's OTLP receiver doesn't decompress gzip — disable client-side
+    # compression to avoid "rpc error: code = Unimplemented desc = Content is
+    # compressed with `gzip`" drops.
+    compression: none
     sending_queue:
       enabled: true
       num_consumers: 4

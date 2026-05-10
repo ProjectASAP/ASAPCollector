@@ -64,6 +64,17 @@ func (ms DDSketch) SetAggregationTemporality(v AggregationTemporality) {
 	ms.orig.AggregationTemporality = internal.AggregationTemporality(v)
 }
 
+// RelativeAccuracy returns the relativeaccuracy associated with this DDSketch.
+func (ms DDSketch) RelativeAccuracy() float64 {
+	return ms.orig.RelativeAccuracy
+}
+
+// SetRelativeAccuracy replaces the relativeaccuracy associated with this DDSketch.
+func (ms DDSketch) SetRelativeAccuracy(v float64) {
+	ms.state.AssertMutable()
+	ms.orig.RelativeAccuracy = v
+}
+
 // CopyTo copies all properties from the current struct overriding the destination.
 func (ms DDSketch) CopyTo(dest DDSketch) {
 	dest.state.AssertMutable()

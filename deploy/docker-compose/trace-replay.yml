@@ -10,7 +10,7 @@
 #       -f baseline-b3-delta.yml -f trace-replay.yml up -d
 #
 # The CSV is bind-mounted from the host repo at
-# `deploy/fake-exporter/traces/`. Drop your own preprocessed
+# `deploy/fake-exporter/replay-data/`. Drop your own preprocessed
 # Google-cluster-trace CSV in there (same schema as
 # `demo-trace.csv`) and point `EXPORTER_TRACE_FILE` at it to run
 # real workloads against the baselines.
@@ -22,4 +22,4 @@ services:
       EXPORTER_TRACE_SCALE: "${EXPORTER_TRACE_SCALE:-1.0}"
       EXPORTER_TRACE_LOOP: "${EXPORTER_TRACE_LOOP:-true}"
     volumes:
-      - ../fake-exporter/traces:/trace:ro
+      - ../fake-exporter/replay-data:/trace:ro

@@ -79,7 +79,7 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://controller:4320/v1/opamp
+        endpoint: ws://backend:4320/v1/opamp
         # Header-based agent identification — see
         # `asap-otel-agent-b3-delta-direct.yaml` for the rationale
         # (controller's OpAMP server uses X-Agent-ID, not the

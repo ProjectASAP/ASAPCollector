@@ -211,10 +211,22 @@ func genTestFailingUnmarshalProtoValuesMetric() map[string][]byte {
 		"DDSketch/wrong_wire_type": {0x6c},
 		"DDSketch/missing_value":   {0x6a},
 
-		"Summary/wrong_wire_type":  {0x5c},
-		"Summary/missing_value":    {0x5a},
-		"Metadata/wrong_wire_type": {0x64},
-		"Metadata/missing_value":   {0x62},
+		"Summary/wrong_wire_type": {0x5c},
+		"Summary/missing_value":   {0x5a},
+
+		"KLLSketch/wrong_wire_type": {0x74},
+		"KLLSketch/missing_value":   {0x72},
+
+		"CountSketch/wrong_wire_type": {0x7c},
+		"CountSketch/missing_value":   {0x7a},
+
+		"CountMinSketch/wrong_wire_type": {0x84, 0x1},
+		"CountMinSketch/missing_value":   {0x82, 0x1},
+
+		"HLLSketch/wrong_wire_type": {0x8c, 0x1},
+		"HLLSketch/missing_value":   {0x8a, 0x1},
+		"Metadata/wrong_wire_type":  {0x64},
+		"Metadata/missing_value":    {0x62},
 	}
 }
 
@@ -236,6 +248,14 @@ func genTestEncodingValuesMetric() map[string]*Metric {
 		"DDSketch/test":                {Data: &Metric_DDSketch{DDSketch: GenTestDDSketch()}},
 		"Summary/default":              {Data: &Metric_Summary{Summary: &Summary{}}},
 		"Summary/test":                 {Data: &Metric_Summary{Summary: GenTestSummary()}},
+		"KLLSketch/default":            {Data: &Metric_KLLSketch{KLLSketch: &KLLSketch{}}},
+		"KLLSketch/test":               {Data: &Metric_KLLSketch{KLLSketch: GenTestKLLSketch()}},
+		"CountSketch/default":          {Data: &Metric_CountSketch{CountSketch: &CountSketch{}}},
+		"CountSketch/test":             {Data: &Metric_CountSketch{CountSketch: GenTestCountSketch()}},
+		"CountMinSketch/default":       {Data: &Metric_CountMinSketch{CountMinSketch: &CountMinSketch{}}},
+		"CountMinSketch/test":          {Data: &Metric_CountMinSketch{CountMinSketch: GenTestCountMinSketch()}},
+		"HLLSketch/default":            {Data: &Metric_HLLSketch{HLLSketch: &HLLSketch{}}},
+		"HLLSketch/test":               {Data: &Metric_HLLSketch{HLLSketch: GenTestHLLSketch()}},
 		"Metadata/test":                {Metadata: []KeyValue{{}, *GenTestKeyValue()}},
 	}
 }

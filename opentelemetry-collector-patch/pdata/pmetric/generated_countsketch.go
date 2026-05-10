@@ -10,7 +10,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/internal"
 )
 
-// CountSketch represents the type of a metric encoded with the CountSketch data structure.
+// CountSketch represents the type of a metric encoded using the CountSketch frequency estimation algorithm.
 //
 // This is a reference type, if passed by value and callee modifies it the
 // caller will see the modification.
@@ -39,6 +39,7 @@ func NewCountSketch() CountSketch {
 func (ms CountSketch) MoveTo(dest CountSketch) {
 	ms.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if ms.orig == dest.orig {
 		return
 	}
@@ -60,6 +61,28 @@ func (ms CountSketch) AggregationTemporality() AggregationTemporality {
 func (ms CountSketch) SetAggregationTemporality(v AggregationTemporality) {
 	ms.state.AssertMutable()
 	ms.orig.AggregationTemporality = internal.AggregationTemporality(v)
+}
+
+// Rows returns the rows associated with this CountSketch.
+func (ms CountSketch) Rows() int32 {
+	return ms.orig.Rows
+}
+
+// SetRows replaces the rows associated with this CountSketch.
+func (ms CountSketch) SetRows(v int32) {
+	ms.state.AssertMutable()
+	ms.orig.Rows = v
+}
+
+// Cols returns the cols associated with this CountSketch.
+func (ms CountSketch) Cols() int32 {
+	return ms.orig.Cols
+}
+
+// SetCols replaces the cols associated with this CountSketch.
+func (ms CountSketch) SetCols(v int32) {
+	ms.state.AssertMutable()
+	ms.orig.Cols = v
 }
 
 // CopyTo copies all properties from the current struct overriding the destination.

@@ -40,6 +40,7 @@ func NewKLLSketchDataPoint() KLLSketchDataPoint {
 func (ms KLLSketchDataPoint) MoveTo(dest KLLSketchDataPoint) {
 	ms.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if ms.orig == dest.orig {
 		return
 	}
@@ -50,17 +51,6 @@ func (ms KLLSketchDataPoint) MoveTo(dest KLLSketchDataPoint) {
 // Attributes returns the Attributes associated with this KLLSketchDataPoint.
 func (ms KLLSketchDataPoint) Attributes() pcommon.Map {
 	return pcommon.Map(internal.NewMapWrapper(&ms.orig.Attributes, ms.state))
-}
-
-// SeriesID returns the seriesid associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) SeriesID() uint64 {
-	return ms.orig.SeriesID
-}
-
-// SetSeriesID replaces the seriesid associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) SetSeriesID(v uint64) {
-	ms.state.AssertMutable()
-	ms.orig.SeriesID = v
 }
 
 // StartTimestamp returns the starttimestamp associated with this KLLSketchDataPoint.
@@ -83,50 +73,6 @@ func (ms KLLSketchDataPoint) Timestamp() pcommon.Timestamp {
 func (ms KLLSketchDataPoint) SetTimestamp(v pcommon.Timestamp) {
 	ms.state.AssertMutable()
 	ms.orig.TimeUnixNano = uint64(v)
-}
-
-// Count returns the count associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) Count() uint64 {
-	return ms.orig.Count
-}
-
-// SetCount replaces the count associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) SetCount(v uint64) {
-	ms.state.AssertMutable()
-	ms.orig.Count = v
-}
-
-// Sum returns the sum associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) Sum() float64 {
-	return ms.orig.Sum
-}
-
-// SetSum replaces the sum associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) SetSum(v float64) {
-	ms.state.AssertMutable()
-	ms.orig.Sum = v
-}
-
-// Min returns the min associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) Min() float64 {
-	return ms.orig.Min
-}
-
-// SetMin replaces the min associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) SetMin(v float64) {
-	ms.state.AssertMutable()
-	ms.orig.Min = v
-}
-
-// Max returns the max associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) Max() float64 {
-	return ms.orig.Max
-}
-
-// SetMax replaces the max associated with this KLLSketchDataPoint.
-func (ms KLLSketchDataPoint) SetMax(v float64) {
-	ms.state.AssertMutable()
-	ms.orig.Max = v
 }
 
 // Sketch returns the sketch associated with this KLLSketchDataPoint.
@@ -160,6 +106,17 @@ func (ms KLLSketchDataPoint) Flags() DataPointFlags {
 func (ms KLLSketchDataPoint) SetFlags(v DataPointFlags) {
 	ms.state.AssertMutable()
 	ms.orig.Flags = uint32(v)
+}
+
+// SeriesID returns the seriesid associated with this KLLSketchDataPoint.
+func (ms KLLSketchDataPoint) SeriesID() uint64 {
+	return ms.orig.SeriesID
+}
+
+// SetSeriesID replaces the seriesid associated with this KLLSketchDataPoint.
+func (ms KLLSketchDataPoint) SetSeriesID(v uint64) {
+	ms.state.AssertMutable()
+	ms.orig.SeriesID = v
 }
 
 // CopyTo copies all properties from the current struct overriding the destination.

@@ -132,9 +132,13 @@ func patchEnvelopeMetadata(md pmetric.Metrics, obs []precompute.Observation) {
 				case pmetric.MetricTypeDDSketch:
 					dps := m.DDSketch().DataPoints()
 					temp := int32(m.DDSketch().AggregationTemporality())
+					// Refactor-2026-05: Count is no longer carried per-DP;
+					// the sketch payload itself is the canonical source.
+					// Only Temporality (still on the parent container) is
+					// stamped onto observation envelopes here.
 					for n := 0; n < dps.Len(); n++ {
+						_ = n
 						if idx < len(obs) && obs[idx].Value.Envelope != nil {
-							obs[idx].Value.Envelope.Count = dps.At(n).Count()
 							obs[idx].Value.Envelope.AggregationTemporality = temp
 						}
 						idx++
@@ -147,10 +151,15 @@ func patchEnvelopeMetadata(md pmetric.Metrics, obs []precompute.Observation) {
 
 // stampDPMetadata walks encoded in encode-order (RM groupOrder by
 // ResourceLabels, envelopes in slice order within each group) and
-// copies Count + Temporality from envs onto each DDSketch data point.
-// Also strips the runtime scope name so mergeAppend folds sketches
-// into the input's empty-scope SM.
-func stampDPMetadata(encoded pmetric.Metrics, envs []*precompute.SketchEnvelope) {
+// copies Temporality + RelativeAccuracy onto each DDSketch parent
+// container. Also strips the runtime scope name so mergeAppend folds
+// sketches into the input's empty-scope SM.
+//
+// Refactor-2026-05: per-DP Count was removed from DDSketchDataPoint;
+// it is derivable from the sketch payload, so we no longer stamp it.
+// RelativeAccuracy is now a parent-container field set per Metric
+// emit from the processor's configured alpha.
+func (p *ddsketchProcessor) stampDPMetadata(encoded pmetric.Metrics, envs []*precompute.SketchEnvelope) {
 	idx := 0
 	rms := encoded.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
@@ -167,9 +176,7 @@ func stampDPMetadata(encoded pmetric.Metrics, envs []*precompute.SketchEnvelope)
 				idx++
 				dst := m.DDSketch()
 				dst.SetAggregationTemporality(pmetric.AggregationTemporality(env.AggregationTemporality))
-				if dps := dst.DataPoints(); dps.Len() > 0 {
-					dps.At(0).SetCount(env.Count)
-				}
+				dst.SetRelativeAccuracy(p.cfg.RelativeAccuracy)
 			}
 		}
 	}
@@ -177,9 +184,16 @@ func stampDPMetadata(encoded pmetric.Metrics, envs []*precompute.SketchEnvelope)
 
 // appendSketchMetrics encodes envs as DDSketch-typed metrics and
 // merges them into out, in place where possible.
+//
+// Refactor-2026-05: metric name is PRESERVED from the input metric.
+// MetricSuffix is intentionally NOT applied — the sketch type is
+// carried by the OTLP pdata.Metric variant tag (DDSketch), so the
+// downstream backend can identify the encoding without a name suffix
+// and PromQL queries fired against the raw input metric name resolve
+// directly against the stored sketch state.
 func (p *ddsketchProcessor) appendSketchMetrics(out pmetric.Metrics, envs []*precompute.SketchEnvelope, inputName string) {
 	for _, env := range envs {
-		env.MetricName = inputName + p.cfg.MetricSuffix
+		env.MetricName = inputName
 	}
 	encoded, err := otelpre.Encode(envs, &otelpre.AdapterConfig{})
 	if err != nil {
@@ -188,7 +202,7 @@ func (p *ddsketchProcessor) appendSketchMetrics(out pmetric.Metrics, envs []*pre
 		}
 		return
 	}
-	stampDPMetadata(encoded, envs)
+	p.stampDPMetadata(encoded, envs)
 	mergeAppend(out, encoded)
 }
 
@@ -204,7 +218,9 @@ func (p *ddsketchProcessor) appendQuantileMetrics(out pmetric.Metrics, envs []*p
 	otelpre.KeyValuesToAttributes(envs[0].ResourceLabels, rm.Resource().Attributes())
 	sm := rm.ScopeMetrics().AppendEmpty()
 	metric := sm.Metrics().AppendEmpty()
-	metric.SetName(inputName + p.cfg.MetricSuffix)
+	// Refactor-2026-05: name preserved from input (sketch encoding lives
+	// in the pdata variant tag, not in a name suffix).
+	metric.SetName(inputName)
 	dps := metric.SetEmptyGauge().DataPoints()
 	for _, env := range envs {
 		sk, err := decodeDDSketchEnvelope(env.Payload)

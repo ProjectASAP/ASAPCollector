@@ -9,7 +9,6 @@ package internal
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 	"sync"
 
 	"go.opentelemetry.io/collector/pdata/internal/json"
@@ -19,15 +18,12 @@ import (
 // CountSketchDataPoint is a single data point that encodes frequency estimations using CountSketch.
 type CountSketchDataPoint struct {
 	Attributes        []KeyValue
-	SeriesID          uint64
 	StartTimeUnixNano uint64
 	TimeUnixNano      uint64
 	Sketch            []byte
 	Encoding          CountSketchEncoding
-	Dimension         string
-	Epsilon           float64
-	Delta             float64
 	Flags             uint32
+	SeriesID          uint64
 }
 
 var (
@@ -66,6 +62,7 @@ func DeleteCountSketchDataPoint(orig *CountSketchDataPoint, nullable bool) {
 }
 
 func CopyCountSketchDataPoint(dest, src *CountSketchDataPoint) *CountSketchDataPoint {
+	// If copying to same object, just return.
 	if src == dest {
 		return dest
 	}
@@ -78,15 +75,18 @@ func CopyCountSketchDataPoint(dest, src *CountSketchDataPoint) *CountSketchDataP
 		dest = NewCountSketchDataPoint()
 	}
 	dest.Attributes = CopyKeyValueSlice(dest.Attributes, src.Attributes)
-	dest.SeriesID = src.SeriesID
+
 	dest.StartTimeUnixNano = src.StartTimeUnixNano
+
 	dest.TimeUnixNano = src.TimeUnixNano
+
 	dest.Sketch = src.Sketch
+
 	dest.Encoding = src.Encoding
-	dest.Dimension = src.Dimension
-	dest.Epsilon = src.Epsilon
-	dest.Delta = src.Delta
+
 	dest.Flags = src.Flags
+
+	dest.SeriesID = src.SeriesID
 
 	return dest
 }
@@ -97,6 +97,8 @@ func CopyCountSketchDataPointSlice(dest, src []CountSketchDataPoint) []CountSket
 		newDest = make([]CountSketchDataPoint, len(src))
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteCountSketchDataPoint(&dest[i], false)
 		}
@@ -111,16 +113,22 @@ func CopyCountSketchDataPointPtrSlice(dest, src []*CountSketchDataPoint) []*Coun
 	var newDest []*CountSketchDataPoint
 	if cap(dest) < len(src) {
 		newDest = make([]*CountSketchDataPoint, len(src))
+		// Copy old pointers to re-use.
 		copy(newDest, dest)
+		// Add new pointers for missing elements from len(dest) to len(srt).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewCountSketchDataPoint()
 		}
 	} else {
 		newDest = dest[:len(src)]
+		// Cleanup the rest of the elements so GC can free the memory.
+		// This can happen when len(src) < len(dest) < cap(dest).
 		for i := len(src); i < len(dest); i++ {
 			DeleteCountSketchDataPoint(dest[i], true)
 			dest[i] = nil
 		}
+		// Add new pointers for missing elements.
+		// This can happen when len(dest) < len(src) < cap(dest).
 		for i := len(dest); i < len(src); i++ {
 			newDest[i] = NewCountSketchDataPoint()
 		}
@@ -148,10 +156,6 @@ func (orig *CountSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		}
 		dest.WriteArrayEnd()
 	}
-	if orig.SeriesID != uint64(0) {
-		dest.WriteObjectField("seriesID")
-		dest.WriteUint64(orig.SeriesID)
-	}
 	if orig.StartTimeUnixNano != uint64(0) {
 		dest.WriteObjectField("startTimeUnixNano")
 		dest.WriteUint64(orig.StartTimeUnixNano)
@@ -160,29 +164,23 @@ func (orig *CountSketchDataPoint) MarshalJSON(dest *json.Stream) {
 		dest.WriteObjectField("timeUnixNano")
 		dest.WriteUint64(orig.TimeUnixNano)
 	}
+
 	if len(orig.Sketch) > 0 {
 		dest.WriteObjectField("sketch")
 		dest.WriteBytes(orig.Sketch)
 	}
+
 	if int32(orig.Encoding) != 0 {
 		dest.WriteObjectField("encoding")
 		dest.WriteInt32(int32(orig.Encoding))
 	}
-	if orig.Dimension != "" {
-		dest.WriteObjectField("dimension")
-		dest.WriteString(orig.Dimension)
-	}
-	if orig.Epsilon != float64(0) {
-		dest.WriteObjectField("epsilon")
-		dest.WriteFloat64(orig.Epsilon)
-	}
-	if orig.Delta != float64(0) {
-		dest.WriteObjectField("delta")
-		dest.WriteFloat64(orig.Delta)
-	}
 	if orig.Flags != uint32(0) {
 		dest.WriteObjectField("flags")
 		dest.WriteUint32(orig.Flags)
+	}
+	if orig.SeriesID != uint64(0) {
+		dest.WriteObjectField("seriesID")
+		dest.WriteUint64(orig.SeriesID)
 	}
 	dest.WriteObjectEnd()
 }
@@ -196,8 +194,7 @@ func (orig *CountSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 				orig.Attributes = append(orig.Attributes, KeyValue{})
 				orig.Attributes[len(orig.Attributes)-1].UnmarshalJSON(iter)
 			}
-		case "seriesID", "series_id":
-			orig.SeriesID = iter.ReadUint64()
+
 		case "startTimeUnixNano", "start_time_unix_nano":
 			orig.StartTimeUnixNano = iter.ReadUint64()
 		case "timeUnixNano", "time_unix_nano":
@@ -206,14 +203,10 @@ func (orig *CountSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 			orig.Sketch = iter.ReadBytes()
 		case "encoding":
 			orig.Encoding = CountSketchEncoding(iter.ReadEnumValue(CountSketchEncoding_value))
-		case "dimension":
-			orig.Dimension = iter.ReadString()
-		case "epsilon":
-			orig.Epsilon = iter.ReadFloat64()
-		case "delta":
-			orig.Delta = iter.ReadFloat64()
 		case "flags":
 			orig.Flags = iter.ReadUint32()
+		case "seriesID", "series_id":
+			orig.SeriesID = iter.ReadUint64()
 		default:
 			iter.Skip()
 		}
@@ -221,17 +214,6 @@ func (orig *CountSketchDataPoint) UnmarshalJSON(iter *json.Iterator) {
 }
 
 func (orig *CountSketchDataPoint) SizeProto() int {
-	// Field layout:
-	//  1=attributes (wire 2)
-	//  2=start_time_unix_nano (wire 1, I64)
-	//  3=time_unix_nano (wire 1, I64)
-	//  4=sketch (wire 2)
-	//  5=encoding (wire 0)
-	//  6=dimension (wire 2)
-	//  7=epsilon (wire 1, I64)
-	//  8=delta (wire 1, I64)
-	//  9=flags (wire 0)
-	// 10=series_id (wire 0)
 	var n int
 	var l int
 	_ = l
@@ -252,16 +234,6 @@ func (orig *CountSketchDataPoint) SizeProto() int {
 	if orig.Encoding != 0 {
 		n += 1 + proto.Sov(uint64(orig.Encoding))
 	}
-	l = len(orig.Dimension)
-	if l > 0 {
-		n += 1 + proto.Sov(uint64(l)) + l
-	}
-	if orig.Epsilon != 0 {
-		n += 9
-	}
-	if orig.Delta != 0 {
-		n += 9
-	}
 	if orig.Flags != 0 {
 		n += 1 + proto.Sov(uint64(orig.Flags))
 	}
@@ -272,17 +244,6 @@ func (orig *CountSketchDataPoint) SizeProto() int {
 }
 
 func (orig *CountSketchDataPoint) MarshalProto(buf []byte) int {
-	// Wire tag bytes:
-	//  1=attributes: 0x0a
-	//  2=start_time_unix_nano: 0x11
-	//  3=time_unix_nano: 0x19
-	//  4=sketch: 0x22
-	//  5=encoding: 0x28
-	//  6=dimension: 0x32
-	//  7=epsilon: 0x39
-	//  8=delta: 0x41
-	//  9=flags: 0x48
-	// 10=series_id: 0x50
 	pos := len(buf)
 	var l int
 	_ = l
@@ -291,12 +252,7 @@ func (orig *CountSketchDataPoint) MarshalProto(buf []byte) int {
 		pos -= l
 		pos = proto.EncodeVarint(buf, pos, uint64(l))
 		pos--
-		buf[pos] = 0x0a
-	}
-	if orig.SeriesID != 0 {
-		pos = proto.EncodeVarint(buf, pos, uint64(orig.SeriesID))
-		pos--
-		buf[pos] = 0x50
+		buf[pos] = 0xa
 	}
 	if orig.StartTimeUnixNano != 0 {
 		pos -= 8
@@ -323,30 +279,15 @@ func (orig *CountSketchDataPoint) MarshalProto(buf []byte) int {
 		pos--
 		buf[pos] = 0x28
 	}
-	l = len(orig.Dimension)
-	if l > 0 {
-		pos -= l
-		copy(buf[pos:], orig.Dimension)
-		pos = proto.EncodeVarint(buf, pos, uint64(l))
-		pos--
-		buf[pos] = 0x32
-	}
-	if orig.Epsilon != 0 {
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], math.Float64bits(orig.Epsilon))
-		pos--
-		buf[pos] = 0x39
-	}
-	if orig.Delta != 0 {
-		pos -= 8
-		binary.LittleEndian.PutUint64(buf[pos:], math.Float64bits(orig.Delta))
-		pos--
-		buf[pos] = 0x41
-	}
 	if orig.Flags != 0 {
 		pos = proto.EncodeVarint(buf, pos, uint64(orig.Flags))
 		pos--
 		buf[pos] = 0x48
+	}
+	if orig.SeriesID != 0 {
+		pos = proto.EncodeVarint(buf, pos, uint64(orig.SeriesID))
+		pos--
+		buf[pos] = 0x50
 	}
 	return len(buf) - pos
 }
@@ -359,6 +300,7 @@ func (orig *CountSketchDataPoint) UnmarshalProto(buf []byte) error {
 	l := len(buf)
 	pos := 0
 	for pos < l {
+		// If in a group parsing, move to the next tag.
 		fieldNum, wireType, pos, err = proto.ConsumeTag(buf, pos)
 		if err != nil {
 			return err
@@ -390,6 +332,7 @@ func (orig *CountSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.StartTimeUnixNano = uint64(num)
 
 		case 3:
@@ -401,6 +344,7 @@ func (orig *CountSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.TimeUnixNano = uint64(num)
 
 		case 4:
@@ -427,41 +371,8 @@ func (orig *CountSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.Encoding = CountSketchEncoding(num)
-
-		case 6:
-			if wireType != proto.WireTypeLen {
-				return fmt.Errorf("proto: wrong wireType = %d for field Dimension", wireType)
-			}
-			var length int
-			length, pos, err = proto.ConsumeLen(buf, pos)
-			if err != nil {
-				return err
-			}
-			startPos := pos - length
-			orig.Dimension = string(buf[startPos:pos])
-
-		case 7:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Epsilon", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Epsilon = math.Float64frombits(num)
-
-		case 8:
-			if wireType != proto.WireTypeI64 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Delta", wireType)
-			}
-			var num uint64
-			num, pos, err = proto.ConsumeI64(buf, pos)
-			if err != nil {
-				return err
-			}
-			orig.Delta = math.Float64frombits(num)
 
 		case 9:
 			if wireType != proto.WireTypeVarint {
@@ -472,6 +383,7 @@ func (orig *CountSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
+
 			orig.Flags = uint32(num)
 
 		case 10:
@@ -483,8 +395,8 @@ func (orig *CountSketchDataPoint) UnmarshalProto(buf []byte) error {
 			if err != nil {
 				return err
 			}
-			orig.SeriesID = uint64(num)
 
+			orig.SeriesID = uint64(num)
 		default:
 			pos, err = proto.ConsumeUnknown(buf, pos, wireType)
 			if err != nil {
@@ -498,15 +410,12 @@ func (orig *CountSketchDataPoint) UnmarshalProto(buf []byte) error {
 func GenTestCountSketchDataPoint() *CountSketchDataPoint {
 	orig := NewCountSketchDataPoint()
 	orig.Attributes = []KeyValue{{}, *GenTestKeyValue()}
-	orig.SeriesID = uint64(13)
 	orig.StartTimeUnixNano = uint64(13)
 	orig.TimeUnixNano = uint64(13)
 	orig.Sketch = []byte{1, 2, 3}
-	orig.Encoding = CountSketchEncoding(1)
-	orig.Dimension = "row"
-	orig.Epsilon = float64(0.001)
-	orig.Delta = float64(0.01)
+	orig.Encoding = CountSketchEncoding(13)
 	orig.Flags = uint32(13)
+	orig.SeriesID = uint64(13)
 	return orig
 }
 

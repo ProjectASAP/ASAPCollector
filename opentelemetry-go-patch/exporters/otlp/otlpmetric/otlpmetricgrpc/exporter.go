@@ -86,6 +86,7 @@ func (e *Exporter) Export(ctx context.Context, rm *metricdata.ResourceMetrics) e
 	e.clientMu.Unlock()
 	if resp != nil {
 		applySeriesAssignments(e.seriesState, resp)
+		applyUnknownSeriesIds(e.seriesState, resp)
 	}
 	if upErr != nil {
 		if err == nil {
@@ -200,6 +201,36 @@ func applySeriesAssignments(dict *series.Dictionary, resp *colmetricpb.ExportMet
 		})
 	}
 	dict.Apply(assignments)
+}
+
+// applyUnknownSeriesIds reads response.UnknownSeriesIds (refactor-2026-05
+// addition; only present in patched proto builds) and evicts those sids
+// from the local series dictionary. The next emission referencing those
+// series will fall back to attribute-carrying mode and the receiver will
+// re-resolve. This is the universal recovery primitive for sid-cache
+// divergence (e.g., backend restart without persistence).
+func applyUnknownSeriesIds(dict *series.Dictionary, resp *colmetricpb.ExportMetricsServiceResponse) {
+	if resp == nil {
+		return
+	}
+	// Reflective access keeps the patched-vs-upstream proto build switchable.
+	getUnknown := reflect.ValueOf(resp).MethodByName("GetUnknownSeriesIds")
+	if !getUnknown.IsValid() {
+		return
+	}
+	res := getUnknown.Call(nil)
+	if len(res) != 1 || res[0].Kind() != reflect.Slice || res[0].Len() == 0 {
+		return
+	}
+	sids := make([]uint64, 0, res[0].Len())
+	for i := 0; i < res[0].Len(); i++ {
+		v := res[0].Index(i)
+		if v.Kind() != reflect.Uint64 {
+			continue
+		}
+		sids = append(sids, v.Uint())
+	}
+	dict.EvictByID(sids)
 }
 
 func callStringMethod(v reflect.Value, name string) string {

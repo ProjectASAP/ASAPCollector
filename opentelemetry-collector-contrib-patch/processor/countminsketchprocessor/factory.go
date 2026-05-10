@@ -25,7 +25,14 @@ func NewFactory() processor.Factory {
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		MetricName:           "countmin_sketch",
+		// Refactor-2026-05: empty default — output metric name is
+		// taken from each envelope's input metric name. The
+		// `if name == "" { name = p.cfg.MetricName }` fallback in
+		// shim_helpers.go remains as a safety net for envelopes
+		// that arrive without a name (shouldn't happen in practice
+		// since the precompute runtime tags every envelope with the
+		// input metric name).
+		MetricName:           "",
 		Rows:                 5,
 		Columns:              1024, // Power of two required by new lib
 		EnableSelfMonitoring: true,

@@ -53,6 +53,10 @@ var pmetric = &Package{
 		histogram,
 		exponentialHistogram,
 		ddsketch,
+		kllsketch,
+		hllsketch,
+		countsketch,
+		countminsketch,
 		summary,
 		numberDataPointSlice,
 		numberDataPoint,
@@ -62,6 +66,14 @@ var pmetric = &Package{
 		exponentialHistogramDataPoint,
 		ddsketchDataPointSlice,
 		ddsketchDataPoint,
+		kllsketchDataPointSlice,
+		kllsketchDataPoint,
+		hllsketchDataPointSlice,
+		hllsketchDataPoint,
+		countsketchDataPointSlice,
+		countsketchDataPoint,
+		countminsketchDataPointSlice,
+		countminsketchDataPoint,
 		bucketsValues,
 		summaryDataPointSlice,
 		summaryDataPoint,
@@ -73,6 +85,10 @@ var pmetric = &Package{
 	enums: []*proto.Enum{
 		aggregationTemporalityEnum,
 		ddsketchEncodingEnum,
+		kllsketchEncodingEnum,
+		hllsketchEncodingEnum,
+		countsketchEncodingEnum,
+		countminsketchEncodingEnum,
 	},
 }
 
@@ -243,6 +259,26 @@ var metric = &messageStruct{
 					protoID:       11,
 					returnMessage: summary,
 				},
+				&OneOfMessageValue{
+					fieldName:     "KLLSketch",
+					protoID:       14,
+					returnMessage: kllsketch,
+				},
+				&OneOfMessageValue{
+					fieldName:     "CountSketch",
+					protoID:       15,
+					returnMessage: countsketch,
+				},
+				&OneOfMessageValue{
+					fieldName:     "CountMinSketch",
+					protoID:       16,
+					returnMessage: countminsketch,
+				},
+				&OneOfMessageValue{
+					fieldName:     "HLLSketch",
+					protoID:       17,
+					returnMessage: hllsketch,
+				},
 			},
 		},
 		&SliceField{
@@ -351,6 +387,121 @@ var ddsketch = &messageStruct{
 			fieldName:  "AggregationTemporality",
 			protoID:    2,
 			returnType: aggregationTemporalityType,
+		},
+		&PrimitiveField{
+			fieldName: "RelativeAccuracy",
+			protoID:   3,
+			protoType: proto.TypeDouble,
+		},
+	},
+}
+
+var kllsketch = &messageStruct{
+	structName:    "KLLSketch",
+	description:   "// KLLSketch represents the type of a metric encoded using the KLL quantile sketch algorithm.",
+	protoName:     "KLLSketch",
+	upstreamProto: "gootlpmetrics.KLLSketch",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "DataPoints",
+			protoID:     1,
+			protoType:   proto.TypeMessage,
+			returnSlice: kllsketchDataPointSlice,
+		},
+		&TypedField{
+			fieldName:  "AggregationTemporality",
+			protoID:    2,
+			returnType: aggregationTemporalityType,
+		},
+		&PrimitiveField{
+			fieldName: "K",
+			protoID:   3,
+			protoType: proto.TypeUint32,
+		},
+	},
+}
+
+var hllsketch = &messageStruct{
+	structName:    "HLLSketch",
+	description:   "// HLLSketch represents the type of a metric encoded using HyperLogLog cardinality estimation.",
+	protoName:     "HLLSketch",
+	upstreamProto: "gootlpmetrics.HLLSketch",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "DataPoints",
+			protoID:     1,
+			protoType:   proto.TypeMessage,
+			returnSlice: hllsketchDataPointSlice,
+		},
+		&TypedField{
+			fieldName:  "AggregationTemporality",
+			protoID:    2,
+			returnType: aggregationTemporalityType,
+		},
+		&PrimitiveField{
+			fieldName: "Precision",
+			protoID:   3,
+			protoType: proto.TypeUint32,
+		},
+	},
+}
+
+var countsketch = &messageStruct{
+	structName:    "CountSketch",
+	description:   "// CountSketch represents the type of a metric encoded using the CountSketch frequency estimation algorithm.",
+	protoName:     "CountSketch",
+	upstreamProto: "gootlpmetrics.CountSketch",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "DataPoints",
+			protoID:     1,
+			protoType:   proto.TypeMessage,
+			returnSlice: countsketchDataPointSlice,
+		},
+		&TypedField{
+			fieldName:  "AggregationTemporality",
+			protoID:    2,
+			returnType: aggregationTemporalityType,
+		},
+		&PrimitiveField{
+			fieldName: "Rows",
+			protoID:   3,
+			protoType: proto.TypeInt32,
+		},
+		&PrimitiveField{
+			fieldName: "Cols",
+			protoID:   4,
+			protoType: proto.TypeInt32,
+		},
+	},
+}
+
+var countminsketch = &messageStruct{
+	structName:    "CountMinSketch",
+	description:   "// CountMinSketch represents the type of a metric encoded using the Count-Min Sketch frequency estimation algorithm.",
+	protoName:     "CountMinSketch",
+	upstreamProto: "gootlpmetrics.CountMinSketch",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "DataPoints",
+			protoID:     1,
+			protoType:   proto.TypeMessage,
+			returnSlice: countminsketchDataPointSlice,
+		},
+		&TypedField{
+			fieldName:  "AggregationTemporality",
+			protoID:    2,
+			returnType: aggregationTemporalityType,
+		},
+		&PrimitiveField{
+			fieldName: "Rows",
+			protoID:   3,
+			protoType: proto.TypeInt32,
+		},
+		&PrimitiveField{
+			fieldName: "Cols",
+			protoID:   4,
+			protoType: proto.TypeInt32,
 		},
 	},
 }
@@ -687,68 +838,6 @@ var ddsketchDataPoint = &messageStruct{
 			returnType:      timestampType,
 		},
 		&PrimitiveField{
-			fieldName: "Count",
-			protoID:   4,
-			protoType: proto.TypeFixed64,
-		},
-		&OneOfField{
-			typeName:        "DDSketchDataPointSumType",
-			originFieldName: "Sum",
-			testValueIdx:    0,
-			values: []oneOfValue{
-				&OneOfPrimitiveValue{
-					fieldName:       "Double",
-					protoID:         5,
-					originFieldName: "SumAsDouble",
-					protoType:       proto.TypeDouble,
-				},
-				&OneOfPrimitiveValue{
-					fieldName:       "Int",
-					protoID:         12,
-					originFieldName: "SumAsInt",
-					protoType:       proto.TypeSFixed64,
-				},
-			},
-		},
-		&OneOfField{
-			typeName:        "DDSketchDataPointMinType",
-			originFieldName: "Min",
-			testValueIdx:    0,
-			values: []oneOfValue{
-				&OneOfPrimitiveValue{
-					fieldName:       "Double",
-					protoID:         6,
-					originFieldName: "MinAsDouble",
-					protoType:       proto.TypeDouble,
-				},
-				&OneOfPrimitiveValue{
-					fieldName:       "Int",
-					protoID:         13,
-					originFieldName: "MinAsInt",
-					protoType:       proto.TypeSFixed64,
-				},
-			},
-		},
-		&OneOfField{
-			typeName:        "DDSketchDataPointMaxType",
-			originFieldName: "Max",
-			testValueIdx:    0,
-			values: []oneOfValue{
-				&OneOfPrimitiveValue{
-					fieldName:       "Double",
-					protoID:         7,
-					originFieldName: "MaxAsDouble",
-					protoType:       proto.TypeDouble,
-				},
-				&OneOfPrimitiveValue{
-					fieldName:       "Int",
-					protoID:         14,
-					originFieldName: "MaxAsInt",
-					protoType:       proto.TypeSFixed64,
-				},
-			},
-		},
-		&PrimitiveField{
 			fieldName: "Sketch",
 			protoID:   8,
 			protoType: proto.TypeBytes,
@@ -773,6 +862,238 @@ var ddsketchDataPoint = &messageStruct{
 				defaultVal: "0",
 				testVal:    "1",
 			},
+		},
+	},
+}
+
+var kllsketchDataPointSlice = &messageSlice{
+	structName:      "KLLSketchDataPointSlice",
+	elementNullable: true,
+	element:         kllsketchDataPoint,
+}
+
+var kllsketchDataPoint = &messageStruct{
+	structName:    "KLLSketchDataPoint",
+	description:   "// KLLSketchDataPoint is a single data point that encodes a distribution using the KLL sketch format.",
+	protoName:     "KLLSketchDataPoint",
+	upstreamProto: "gootlpmetrics.KLLSketchDataPoint",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "Attributes",
+			protoID:     1,
+			protoType:   proto.TypeMessage,
+			returnSlice: mapStruct,
+		},
+		&TypedField{
+			fieldName:       "StartTimestamp",
+			originFieldName: "StartTimeUnixNano",
+			protoID:         2,
+			returnType:      timestampType,
+		},
+		&TypedField{
+			fieldName:       "Timestamp",
+			originFieldName: "TimeUnixNano",
+			protoID:         3,
+			returnType:      timestampType,
+		},
+		&PrimitiveField{
+			fieldName: "Sketch",
+			protoID:   8,
+			protoType: proto.TypeBytes,
+		},
+		&TypedField{
+			fieldName:  "Encoding",
+			protoID:    9,
+			returnType: kllsketchEncodingType,
+		},
+		&TypedField{
+			fieldName: "Flags",
+			protoID:   10,
+			returnType: &TypedType{
+				structName: "DataPointFlags",
+				protoType:  proto.TypeUint32,
+				defaultVal: "0",
+				testVal:    "1",
+			},
+		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   11,
+			protoType: proto.TypeUint64,
+		},
+	},
+}
+
+var hllsketchDataPointSlice = &messageSlice{
+	structName:      "HLLSketchDataPointSlice",
+	elementNullable: true,
+	element:         hllsketchDataPoint,
+}
+
+var hllsketchDataPoint = &messageStruct{
+	structName:    "HLLSketchDataPoint",
+	description:   "// HLLSketchDataPoint is a single data point that encodes cardinality estimations using HyperLogLog.",
+	protoName:     "HLLSketchDataPoint",
+	upstreamProto: "gootlpmetrics.HLLSketchDataPoint",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "Attributes",
+			protoID:     1,
+			protoType:   proto.TypeMessage,
+			returnSlice: mapStruct,
+		},
+		&TypedField{
+			fieldName:       "StartTimestamp",
+			originFieldName: "StartTimeUnixNano",
+			protoID:         2,
+			returnType:      timestampType,
+		},
+		&TypedField{
+			fieldName:       "Timestamp",
+			originFieldName: "TimeUnixNano",
+			protoID:         3,
+			returnType:      timestampType,
+		},
+		&PrimitiveField{
+			fieldName: "Sketch",
+			protoID:   6,
+			protoType: proto.TypeBytes,
+		},
+		&TypedField{
+			fieldName:  "Encoding",
+			protoID:    7,
+			returnType: hllsketchEncodingType,
+		},
+		&TypedField{
+			fieldName: "Flags",
+			protoID:   9,
+			returnType: &TypedType{
+				structName: "DataPointFlags",
+				protoType:  proto.TypeUint32,
+				defaultVal: "0",
+				testVal:    "1",
+			},
+		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   10,
+			protoType: proto.TypeUint64,
+		},
+	},
+}
+
+var countsketchDataPointSlice = &messageSlice{
+	structName:      "CountSketchDataPointSlice",
+	elementNullable: true,
+	element:         countsketchDataPoint,
+}
+
+var countsketchDataPoint = &messageStruct{
+	structName:    "CountSketchDataPoint",
+	description:   "// CountSketchDataPoint is a single data point that encodes frequency estimations using CountSketch.",
+	protoName:     "CountSketchDataPoint",
+	upstreamProto: "gootlpmetrics.CountSketchDataPoint",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "Attributes",
+			protoID:     1,
+			protoType:   proto.TypeMessage,
+			returnSlice: mapStruct,
+		},
+		&TypedField{
+			fieldName:       "StartTimestamp",
+			originFieldName: "StartTimeUnixNano",
+			protoID:         2,
+			returnType:      timestampType,
+		},
+		&TypedField{
+			fieldName:       "Timestamp",
+			originFieldName: "TimeUnixNano",
+			protoID:         3,
+			returnType:      timestampType,
+		},
+		&PrimitiveField{
+			fieldName: "Sketch",
+			protoID:   4,
+			protoType: proto.TypeBytes,
+		},
+		&TypedField{
+			fieldName:  "Encoding",
+			protoID:    5,
+			returnType: countsketchEncodingType,
+		},
+		&TypedField{
+			fieldName: "Flags",
+			protoID:   9,
+			returnType: &TypedType{
+				structName: "DataPointFlags",
+				protoType:  proto.TypeUint32,
+				defaultVal: "0",
+				testVal:    "1",
+			},
+		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   10,
+			protoType: proto.TypeUint64,
+		},
+	},
+}
+
+var countminsketchDataPointSlice = &messageSlice{
+	structName:      "CountMinSketchDataPointSlice",
+	elementNullable: true,
+	element:         countminsketchDataPoint,
+}
+
+var countminsketchDataPoint = &messageStruct{
+	structName:    "CountMinSketchDataPoint",
+	description:   "// CountMinSketchDataPoint is a single data point that encodes frequency estimations using Count-Min Sketch.",
+	protoName:     "CountMinSketchDataPoint",
+	upstreamProto: "gootlpmetrics.CountMinSketchDataPoint",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "Attributes",
+			protoID:     1,
+			protoType:   proto.TypeMessage,
+			returnSlice: mapStruct,
+		},
+		&TypedField{
+			fieldName:       "StartTimestamp",
+			originFieldName: "StartTimeUnixNano",
+			protoID:         2,
+			returnType:      timestampType,
+		},
+		&TypedField{
+			fieldName:       "Timestamp",
+			originFieldName: "TimeUnixNano",
+			protoID:         3,
+			returnType:      timestampType,
+		},
+		&PrimitiveField{
+			fieldName: "Sketch",
+			protoID:   5,
+			protoType: proto.TypeBytes,
+		},
+		&TypedField{
+			fieldName:  "Encoding",
+			protoID:    6,
+			returnType: countminsketchEncodingType,
+		},
+		&TypedField{
+			fieldName: "Flags",
+			protoID:   9,
+			returnType: &TypedType{
+				structName: "DataPointFlags",
+				protoType:  proto.TypeUint32,
+				defaultVal: "0",
+				testVal:    "1",
+			},
+		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   10,
+			protoType: proto.TypeUint64,
 		},
 	},
 }
@@ -958,5 +1279,87 @@ var ddsketchEncodingEnum = &proto.Enum{
 	Fields: []*proto.EnumField{
 		{Name: "DDSKETCH_ENCODING_UNSPECIFIED", Value: 0},
 		{Name: "DDSKETCH_ENCODING_PROTO", Value: 1},
+		{Name: "DDSKETCH_ENCODING_PROTO_DELTA", Value: 2},
+		{Name: "DDSKETCH_ENCODING_MSGPACK", Value: 3},
+		{Name: "DDSKETCH_ENCODING_MSGPACK_DELTA", Value: 4},
+	},
+}
+
+var kllsketchEncodingType = &TypedType{
+	structName:  "KLLSketchEncoding",
+	protoType:   proto.TypeEnum,
+	messageName: "KLLSketchEncoding",
+	defaultVal:  "KLLSketchEncoding(0)",
+	testVal:     "KLLSketchEncoding(1)",
+}
+
+var kllsketchEncodingEnum = &proto.Enum{
+	Name:        "KLLSketchEncoding",
+	Description: "// KLLSketchEncoding identifies how the KLL sketch payload bytes are encoded.",
+	Fields: []*proto.EnumField{
+		{Name: "KLL_SKETCH_ENCODING_UNSPECIFIED", Value: 0},
+		{Name: "KLL_SKETCH_ENCODING_PROTO", Value: 1},
+		{Name: "KLL_SKETCH_ENCODING_MSGPACK", Value: 3},
+		{Name: "KLL_SKETCH_ENCODING_MSGPACK_DELTA", Value: 4},
+	},
+}
+
+var hllsketchEncodingType = &TypedType{
+	structName:  "HLLSketchEncoding",
+	protoType:   proto.TypeEnum,
+	messageName: "HLLSketchEncoding",
+	defaultVal:  "HLLSketchEncoding(0)",
+	testVal:     "HLLSketchEncoding(1)",
+}
+
+var hllsketchEncodingEnum = &proto.Enum{
+	Name:        "HLLSketchEncoding",
+	Description: "// HLLSketchEncoding identifies how the HLL sketch payload bytes are encoded.",
+	Fields: []*proto.EnumField{
+		{Name: "HLL_SKETCH_ENCODING_UNSPECIFIED", Value: 0},
+		{Name: "HLL_SKETCH_ENCODING_PROTO", Value: 1},
+		{Name: "HLL_SKETCH_ENCODING_DELTA", Value: 2},
+		{Name: "HLL_SKETCH_ENCODING_MSGPACK", Value: 3},
+		{Name: "HLL_SKETCH_ENCODING_MSGPACK_DELTA", Value: 4},
+	},
+}
+
+var countsketchEncodingType = &TypedType{
+	structName:  "CountSketchEncoding",
+	protoType:   proto.TypeEnum,
+	messageName: "CountSketchEncoding",
+	defaultVal:  "CountSketchEncoding(0)",
+	testVal:     "CountSketchEncoding(1)",
+}
+
+var countsketchEncodingEnum = &proto.Enum{
+	Name:        "CountSketchEncoding",
+	Description: "// CountSketchEncoding identifies how the CountSketch payload bytes are encoded.",
+	Fields: []*proto.EnumField{
+		{Name: "COUNT_SKETCH_ENCODING_UNSPECIFIED", Value: 0},
+		{Name: "COUNT_SKETCH_ENCODING_PROTO", Value: 1},
+		{Name: "COUNT_SKETCH_ENCODING_DELTA", Value: 2},
+		{Name: "COUNT_SKETCH_ENCODING_MSGPACK", Value: 3},
+		{Name: "COUNT_SKETCH_ENCODING_MSGPACK_DELTA", Value: 4},
+	},
+}
+
+var countminsketchEncodingType = &TypedType{
+	structName:  "CountMinSketchEncoding",
+	protoType:   proto.TypeEnum,
+	messageName: "CountMinSketchEncoding",
+	defaultVal:  "CountMinSketchEncoding(0)",
+	testVal:     "CountMinSketchEncoding(1)",
+}
+
+var countminsketchEncodingEnum = &proto.Enum{
+	Name:        "CountMinSketchEncoding",
+	Description: "// CountMinSketchEncoding identifies how the CountMinSketch payload bytes are encoded.",
+	Fields: []*proto.EnumField{
+		{Name: "COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED", Value: 0},
+		{Name: "COUNT_MIN_SKETCH_ENCODING_PROTO", Value: 1},
+		{Name: "COUNT_MIN_SKETCH_ENCODING_DELTA", Value: 2},
+		{Name: "COUNT_MIN_SKETCH_ENCODING_MSGPACK", Value: 3},
+		{Name: "COUNT_MIN_SKETCH_ENCODING_MSGPACK_DELTA", Value: 4},
 	},
 }

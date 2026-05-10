@@ -193,6 +193,8 @@ func genTestFailingUnmarshalProtoValuesDDSketch() map[string][]byte {
 		"DataPoints/missing_value":               {0xa},
 		"AggregationTemporality/wrong_wire_type": {0x14},
 		"AggregationTemporality/missing_value":   {0x10},
+		"RelativeAccuracy/wrong_wire_type":       {0x1c},
+		"RelativeAccuracy/missing_value":         {0x19},
 	}
 }
 
@@ -201,5 +203,6 @@ func genTestEncodingValuesDDSketch() map[string]*DDSketch {
 		"empty":                       NewDDSketch(),
 		"DataPoints/test":             {DataPoints: []*DDSketchDataPoint{{}, GenTestDDSketchDataPoint()}},
 		"AggregationTemporality/test": {AggregationTemporality: AggregationTemporality(13)},
+		"RelativeAccuracy/test":       {RelativeAccuracy: float64(3.1415926)},
 	}
 }

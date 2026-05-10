@@ -10,7 +10,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/internal"
 )
 
-// KLLSketch represents the type of a metric encoded with the KLL quantile sketch data structure.
+// KLLSketch represents the type of a metric encoded using the KLL quantile sketch algorithm.
 //
 // This is a reference type, if passed by value and callee modifies it the
 // caller will see the modification.
@@ -39,6 +39,7 @@ func NewKLLSketch() KLLSketch {
 func (ms KLLSketch) MoveTo(dest KLLSketch) {
 	ms.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if ms.orig == dest.orig {
 		return
 	}
@@ -60,6 +61,17 @@ func (ms KLLSketch) AggregationTemporality() AggregationTemporality {
 func (ms KLLSketch) SetAggregationTemporality(v AggregationTemporality) {
 	ms.state.AssertMutable()
 	ms.orig.AggregationTemporality = internal.AggregationTemporality(v)
+}
+
+// K returns the k associated with this KLLSketch.
+func (ms KLLSketch) K() uint32 {
+	return ms.orig.K
+}
+
+// SetK replaces the k associated with this KLLSketch.
+func (ms KLLSketch) SetK(v uint32) {
+	ms.state.AssertMutable()
+	ms.orig.K = v
 }
 
 // CopyTo copies all properties from the current struct overriding the destination.

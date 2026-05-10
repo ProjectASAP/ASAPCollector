@@ -76,6 +76,17 @@ func (m *Metric) GetDDSketch() *DDSketch {
 	return nil
 }
 
+type Metric_Summary struct {
+	Summary *Summary
+}
+
+func (m *Metric) GetSummary() *Summary {
+	if v, ok := m.GetData().(*Metric_Summary); ok {
+		return v.Summary
+	}
+	return nil
+}
+
 type Metric_KLLSketch struct {
 	KLLSketch *KLLSketch
 }
@@ -116,17 +127,6 @@ type Metric_HLLSketch struct {
 func (m *Metric) GetHLLSketch() *HLLSketch {
 	if v, ok := m.GetData().(*Metric_HLLSketch); ok {
 		return v.HLLSketch
-	}
-	return nil
-}
-
-type Metric_Summary struct {
-	Summary *Summary
-}
-
-func (m *Metric) GetSummary() *Summary {
-	if v, ok := m.GetData().(*Metric_Summary); ok {
-		return v.Summary
 	}
 	return nil
 }
@@ -178,6 +178,12 @@ var (
 		},
 	}
 
+	ProtoPoolMetric_Summary = sync.Pool{
+		New: func() any {
+			return &Metric_Summary{}
+		},
+	}
+
 	ProtoPoolMetric_KLLSketch = sync.Pool{
 		New: func() any {
 			return &Metric_KLLSketch{}
@@ -199,12 +205,6 @@ var (
 	ProtoPoolMetric_HLLSketch = sync.Pool{
 		New: func() any {
 			return &Metric_HLLSketch{}
-		},
-	}
-
-	ProtoPoolMetric_Summary = sync.Pool{
-		New: func() any {
-			return &Metric_Summary{}
 		},
 	}
 )
@@ -247,6 +247,10 @@ func DeleteMetric(orig *Metric, nullable bool) {
 		DeleteDDSketch(ov.DDSketch, true)
 		ov.DDSketch = nil
 		ProtoPoolMetric_DDSketch.Put(ov)
+	case *Metric_Summary:
+		DeleteSummary(ov.Summary, true)
+		ov.Summary = nil
+		ProtoPoolMetric_Summary.Put(ov)
 	case *Metric_KLLSketch:
 		DeleteKLLSketch(ov.KLLSketch, true)
 		ov.KLLSketch = nil
@@ -263,10 +267,6 @@ func DeleteMetric(orig *Metric, nullable bool) {
 		DeleteHLLSketch(ov.HLLSketch, true)
 		ov.HLLSketch = nil
 		ProtoPoolMetric_HLLSketch.Put(ov)
-	case *Metric_Summary:
-		DeleteSummary(ov.Summary, true)
-		ov.Summary = nil
-		ProtoPoolMetric_Summary.Put(ov)
 
 	}
 	for i := range orig.Metadata {
@@ -354,6 +354,17 @@ func CopyMetric(dest, src *Metric) *Metric {
 		CopyDDSketch(ov.DDSketch, t.DDSketch)
 		dest.Data = ov
 
+	case *Metric_Summary:
+		var ov *Metric_Summary
+		if !UseProtoPooling.IsEnabled() {
+			ov = &Metric_Summary{}
+		} else {
+			ov = ProtoPoolMetric_Summary.Get().(*Metric_Summary)
+		}
+		ov.Summary = NewSummary()
+		CopySummary(ov.Summary, t.Summary)
+		dest.Data = ov
+
 	case *Metric_KLLSketch:
 		var ov *Metric_KLLSketch
 		if !UseProtoPooling.IsEnabled() {
@@ -396,17 +407,6 @@ func CopyMetric(dest, src *Metric) *Metric {
 		}
 		ov.HLLSketch = NewHLLSketch()
 		CopyHLLSketch(ov.HLLSketch, t.HLLSketch)
-		dest.Data = ov
-
-	case *Metric_Summary:
-		var ov *Metric_Summary
-		if !UseProtoPooling.IsEnabled() {
-			ov = &Metric_Summary{}
-		} else {
-			ov = ProtoPoolMetric_Summary.Get().(*Metric_Summary)
-		}
-		ov.Summary = NewSummary()
-		CopySummary(ov.Summary, t.Summary)
 		dest.Data = ov
 
 	default:
@@ -510,6 +510,11 @@ func (orig *Metric) MarshalJSON(dest *json.Stream) {
 			dest.WriteObjectField("dDSketch")
 			orig.DDSketch.MarshalJSON(dest)
 		}
+	case *Metric_Summary:
+		if orig.Summary != nil {
+			dest.WriteObjectField("summary")
+			orig.Summary.MarshalJSON(dest)
+		}
 	case *Metric_KLLSketch:
 		if orig.KLLSketch != nil {
 			dest.WriteObjectField("kLLSketch")
@@ -529,11 +534,6 @@ func (orig *Metric) MarshalJSON(dest *json.Stream) {
 		if orig.HLLSketch != nil {
 			dest.WriteObjectField("hLLSketch")
 			orig.HLLSketch.MarshalJSON(dest)
-		}
-	case *Metric_Summary:
-		if orig.Summary != nil {
-			dest.WriteObjectField("summary")
-			orig.Summary.MarshalJSON(dest)
 		}
 	}
 	if len(orig.Metadata) > 0 {
@@ -625,6 +625,19 @@ func (orig *Metric) UnmarshalJSON(iter *json.Iterator) {
 				orig.Data = ov
 			}
 
+		case "summary":
+			{
+				var ov *Metric_Summary
+				if !UseProtoPooling.IsEnabled() {
+					ov = &Metric_Summary{}
+				} else {
+					ov = ProtoPoolMetric_Summary.Get().(*Metric_Summary)
+				}
+				ov.Summary = NewSummary()
+				ov.Summary.UnmarshalJSON(iter)
+				orig.Data = ov
+			}
+
 		case "kLLSketch", "kll_sketch":
 			{
 				var ov *Metric_KLLSketch
@@ -674,19 +687,6 @@ func (orig *Metric) UnmarshalJSON(iter *json.Iterator) {
 				}
 				ov.HLLSketch = NewHLLSketch()
 				ov.HLLSketch.UnmarshalJSON(iter)
-				orig.Data = ov
-			}
-
-		case "summary":
-			{
-				var ov *Metric_Summary
-				if !UseProtoPooling.IsEnabled() {
-					ov = &Metric_Summary{}
-				} else {
-					ov = ProtoPoolMetric_Summary.Get().(*Metric_Summary)
-				}
-				ov.Summary = NewSummary()
-				ov.Summary.UnmarshalJSON(iter)
 				orig.Data = ov
 			}
 
@@ -747,6 +747,11 @@ func (orig *Metric) SizeProto() int {
 			l = orig.DDSketch.SizeProto()
 			n += 1 + proto.Sov(uint64(l)) + l
 		}
+	case *Metric_Summary:
+		if orig.Summary != nil {
+			l = orig.Summary.SizeProto()
+			n += 1 + proto.Sov(uint64(l)) + l
+		}
 	case *Metric_KLLSketch:
 		if orig.KLLSketch != nil {
 			l = orig.KLLSketch.SizeProto()
@@ -766,11 +771,6 @@ func (orig *Metric) SizeProto() int {
 		if orig.HLLSketch != nil {
 			l = orig.HLLSketch.SizeProto()
 			n += 2 + proto.Sov(uint64(l)) + l
-		}
-	case *Metric_Summary:
-		if orig.Summary != nil {
-			l = orig.Summary.SizeProto()
-			n += 1 + proto.Sov(uint64(l)) + l
 		}
 	}
 	for i := range orig.Metadata {
@@ -849,6 +849,14 @@ func (orig *Metric) MarshalProto(buf []byte) int {
 			pos--
 			buf[pos] = 0x6a
 		}
+	case *Metric_Summary:
+		if orig.Summary != nil {
+			l = orig.Summary.MarshalProto(buf[:pos])
+			pos -= l
+			pos = proto.EncodeVarint(buf, pos, uint64(l))
+			pos--
+			buf[pos] = 0x5a
+		}
 	case *Metric_KLLSketch:
 		if orig.KLLSketch != nil {
 			l = orig.KLLSketch.MarshalProto(buf[:pos])
@@ -870,26 +878,20 @@ func (orig *Metric) MarshalProto(buf []byte) int {
 			l = orig.CountMinSketch.MarshalProto(buf[:pos])
 			pos -= l
 			pos = proto.EncodeVarint(buf, pos, uint64(l))
-			pos -= 2
+			pos--
+			buf[pos] = 0x1
+			pos--
 			buf[pos] = 0x82
-			buf[pos+1] = 0x01
 		}
 	case *Metric_HLLSketch:
 		if orig.HLLSketch != nil {
 			l = orig.HLLSketch.MarshalProto(buf[:pos])
 			pos -= l
 			pos = proto.EncodeVarint(buf, pos, uint64(l))
-			pos -= 2
-			buf[pos] = 0x8a
-			buf[pos+1] = 0x01
-		}
-	case *Metric_Summary:
-		if orig.Summary != nil {
-			l = orig.Summary.MarshalProto(buf[:pos])
-			pos -= l
-			pos = proto.EncodeVarint(buf, pos, uint64(l))
 			pos--
-			buf[pos] = 0x5a
+			buf[pos] = 0x1
+			pos--
+			buf[pos] = 0x8a
 		}
 	}
 	for i := len(orig.Metadata) - 1; i >= 0; i-- {
@@ -1068,6 +1070,29 @@ func (orig *Metric) UnmarshalProto(buf []byte) error {
 			}
 			orig.Data = ov
 
+		case 11:
+			if wireType != proto.WireTypeLen {
+				return fmt.Errorf("proto: wrong wireType = %d for field Summary", wireType)
+			}
+			var length int
+			length, pos, err = proto.ConsumeLen(buf, pos)
+			if err != nil {
+				return err
+			}
+			startPos := pos - length
+			var ov *Metric_Summary
+			if !UseProtoPooling.IsEnabled() {
+				ov = &Metric_Summary{}
+			} else {
+				ov = ProtoPoolMetric_Summary.Get().(*Metric_Summary)
+			}
+			ov.Summary = NewSummary()
+			err = ov.Summary.UnmarshalProto(buf[startPos:pos])
+			if err != nil {
+				return err
+			}
+			orig.Data = ov
+
 		case 14:
 			if wireType != proto.WireTypeLen {
 				return fmt.Errorf("proto: wrong wireType = %d for field KLLSketch", wireType)
@@ -1155,29 +1180,6 @@ func (orig *Metric) UnmarshalProto(buf []byte) error {
 			}
 			ov.HLLSketch = NewHLLSketch()
 			err = ov.HLLSketch.UnmarshalProto(buf[startPos:pos])
-			if err != nil {
-				return err
-			}
-			orig.Data = ov
-
-		case 11:
-			if wireType != proto.WireTypeLen {
-				return fmt.Errorf("proto: wrong wireType = %d for field Summary", wireType)
-			}
-			var length int
-			length, pos, err = proto.ConsumeLen(buf, pos)
-			if err != nil {
-				return err
-			}
-			startPos := pos - length
-			var ov *Metric_Summary
-			if !UseProtoPooling.IsEnabled() {
-				ov = &Metric_Summary{}
-			} else {
-				ov = ProtoPoolMetric_Summary.Get().(*Metric_Summary)
-			}
-			ov.Summary = NewSummary()
-			err = ov.Summary.UnmarshalProto(buf[startPos:pos])
 			if err != nil {
 				return err
 			}

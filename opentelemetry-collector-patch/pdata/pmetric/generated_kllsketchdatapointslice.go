@@ -29,7 +29,7 @@ func newKLLSketchDataPointSlice(orig *[]*internal.KLLSketchDataPoint, state *int
 	return KLLSketchDataPointSlice{orig: orig, state: state}
 }
 
-// NewKLLSketchDataPointSlice creates a KLLSketchDataPointSlice with 0 elements.
+// NewKLLSketchDataPointSlice creates a KLLSketchDataPointSliceWrapper with 0 elements.
 // Can use "EnsureCapacity" to initialize with a given capacity.
 func NewKLLSketchDataPointSlice() KLLSketchDataPointSlice {
 	orig := []*internal.KLLSketchDataPoint(nil)
@@ -37,16 +37,29 @@ func NewKLLSketchDataPointSlice() KLLSketchDataPointSlice {
 }
 
 // Len returns the number of elements in the slice.
+//
+// Returns "0" for a newly instance created with "NewKLLSketchDataPointSlice()".
 func (es KLLSketchDataPointSlice) Len() int {
 	return len(*es.orig)
 }
 
 // At returns the element at the given index.
+//
+// This function is used mostly for iterating over all the values in the slice:
+//
+//	for i := 0; i < es.Len(); i++ {
+//	    e := es.At(i)
+//	    ... // Do something with the element
+//	}
 func (es KLLSketchDataPointSlice) At(i int) KLLSketchDataPoint {
 	return newKLLSketchDataPoint((*es.orig)[i], es.state)
 }
 
 // All returns an iterator over index-value pairs in the slice.
+//
+//	for i, v := range es.All() {
+//	    ... // Do something with index-value pair
+//	}
 func (es KLLSketchDataPointSlice) All() iter.Seq2[int, KLLSketchDataPoint] {
 	return func(yield func(int, KLLSketchDataPoint) bool) {
 		for i := 0; i < es.Len(); i++ {
@@ -58,6 +71,17 @@ func (es KLLSketchDataPointSlice) All() iter.Seq2[int, KLLSketchDataPoint] {
 }
 
 // EnsureCapacity is an operation that ensures the slice has at least the specified capacity.
+// 1. If the newCap <= cap then no change in capacity.
+// 2. If the newCap > cap then the slice capacity will be expanded to equal newCap.
+//
+// Here is how a new KLLSketchDataPointSlice can be initialized:
+//
+//	es := NewKLLSketchDataPointSlice()
+//	es.EnsureCapacity(4)
+//	for i := 0; i < 4; i++ {
+//	    e := es.AppendEmpty()
+//	    // Here should set all the values for e.
+//	}
 func (es KLLSketchDataPointSlice) EnsureCapacity(newCap int) {
 	es.state.AssertMutable()
 	oldCap := cap(*es.orig)
@@ -83,10 +107,12 @@ func (es KLLSketchDataPointSlice) AppendEmpty() KLLSketchDataPoint {
 func (es KLLSketchDataPointSlice) MoveAndAppendTo(dest KLLSketchDataPointSlice) {
 	es.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if es.orig == dest.orig {
 		return
 	}
 	if *dest.orig == nil {
+		// We can simply move the entire vector and avoid any allocations.
 		*dest.orig = *es.orig
 	} else {
 		*dest.orig = append(*dest.orig, *es.orig...)
@@ -103,13 +129,16 @@ func (es KLLSketchDataPointSlice) RemoveIf(f func(KLLSketchDataPoint) bool) {
 		if f(es.At(i)) {
 			internal.DeleteKLLSketchDataPoint((*es.orig)[i], true)
 			(*es.orig)[i] = nil
+
 			continue
 		}
 		if newLen == i {
+			// Nothing to move, element is at the right place.
 			newLen++
 			continue
 		}
 		(*es.orig)[newLen] = (*es.orig)[i]
+		// Cannot delete here since we just move the data(or pointer to data) to a different position in the slice.
 		(*es.orig)[i] = nil
 		newLen++
 	}
@@ -126,7 +155,8 @@ func (es KLLSketchDataPointSlice) CopyTo(dest KLLSketchDataPointSlice) {
 }
 
 // Sort sorts the KLLSketchDataPoint elements within KLLSketchDataPointSlice given the
-// provided less function.
+// provided less function so that two instances of KLLSketchDataPointSlice
+// can be compared.
 func (es KLLSketchDataPointSlice) Sort(less func(a, b KLLSketchDataPoint) bool) {
 	es.state.AssertMutable()
 	sort.SliceStable(*es.orig, func(i, j int) bool { return less(es.At(i), es.At(j)) })

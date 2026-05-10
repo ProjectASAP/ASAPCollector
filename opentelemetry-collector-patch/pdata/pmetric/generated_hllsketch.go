@@ -10,7 +10,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/internal"
 )
 
-// HLLSketch represents the type of a metric encoded with the HyperLogLog sketch data structure.
+// HLLSketch represents the type of a metric encoded using HyperLogLog cardinality estimation.
 //
 // This is a reference type, if passed by value and callee modifies it the
 // caller will see the modification.
@@ -39,6 +39,7 @@ func NewHLLSketch() HLLSketch {
 func (ms HLLSketch) MoveTo(dest HLLSketch) {
 	ms.state.AssertMutable()
 	dest.state.AssertMutable()
+	// If they point to the same data, they are the same, nothing to do.
 	if ms.orig == dest.orig {
 		return
 	}
@@ -60,6 +61,17 @@ func (ms HLLSketch) AggregationTemporality() AggregationTemporality {
 func (ms HLLSketch) SetAggregationTemporality(v AggregationTemporality) {
 	ms.state.AssertMutable()
 	ms.orig.AggregationTemporality = internal.AggregationTemporality(v)
+}
+
+// Precision returns the precision associated with this HLLSketch.
+func (ms HLLSketch) Precision() uint32 {
+	return ms.orig.Precision
+}
+
+// SetPrecision replaces the precision associated with this HLLSketch.
+func (ms HLLSketch) SetPrecision(v uint32) {
+	ms.state.AssertMutable()
+	ms.orig.Precision = v
 }
 
 // CopyTo copies all properties from the current struct overriding the destination.

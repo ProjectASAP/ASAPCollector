@@ -148,16 +148,21 @@ func (p *cmsProcessor) encodeTypedSketch(metrics pmetric.MetricSlice, envs []*pr
 			m = metrics.AppendEmpty()
 			m.SetName(name)
 			m.SetUnit("1")
-			m.SetEmptyCountMinSketch().SetAggregationTemporality(
-				pmetric.AggregationTemporalityDelta)
+			parent := m.SetEmptyCountMinSketch()
+			parent.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+			// Refactor-2026-05: rows/cols are sketch-instance config —
+			// constant across all DPs in this Metric — so they lift to
+			// the parent CountMinSketch container, sent ONCE per emit
+			// instead of duplicated per DataPoint.
+			parent.SetRows(int32(p.cfg.Rows))
+			parent.SetCols(int32(p.cfg.Columns))
 			byName[name] = m
 		}
 		dp := m.CountMinSketch().DataPoints().AppendEmpty()
 		dp.SetTimestamp(pcommon.Timestamp(env.WindowEndMs * 1_000_000))
 		labelsToAttrs(env.Labels, dp.Attributes())
-		dp.SetSampleCount(env.Count)
-		dp.SetRows(int32(p.cfg.Rows))
-		dp.SetCols(int32(p.cfg.Columns))
+		// Refactor-2026-05: per-DP sample_count is removed; it is
+		// derivable from the sketch row sums at the receiver.
 		dp.SetSketch(env.Payload)
 		dp.SetEncoding(cmsEncodingFor(env.Encoding, p.cfg.Encoding))
 	}

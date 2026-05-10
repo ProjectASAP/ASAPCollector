@@ -35,16 +35,20 @@ func (p *kllProcessor) encodeEnvelopes(metrics pmetric.MetricSlice, inputName st
 func (p *kllProcessor) encodeTypedSketch(metrics pmetric.MetricSlice, inputName string, envs []*precompute.SketchEnvelope, now pcommon.Timestamp) {
 	m := metrics.AppendEmpty()
 	m.SetName(p.sketchMetricName(inputName))
-	m.SetEmptyKLLSketch().SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+	parent := m.SetEmptyKLLSketch()
+	parent.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+	// Refactor-2026-05: KLL parameter k is sent once per Metric emit on
+	// the parent KLLSketch container instead of per DataPoint.
+	parent.SetK(uint32(p.cfg.K))
 	for _, env := range envs {
 		if env == nil || len(env.Payload) == 0 {
 			continue
 		}
-		dp := m.KLLSketch().DataPoints().AppendEmpty()
+		dp := parent.DataPoints().AppendEmpty()
 		labelsToAttrs(env.Labels, dp.Attributes())
-		dp.Attributes().PutInt("kll.k", int64(p.cfg.K))
 		dp.SetTimestamp(now)
-		dp.SetCount(env.Count)
+		// Refactor-2026-05: per-DP Count is removed; it is derivable
+		// from the sketch payload at the receiver.
 		dp.SetSketch(env.Payload)
 		dp.SetEncoding(pmetric.KLLSketchEncodingProto)
 	}
@@ -97,13 +101,14 @@ func (p *kllProcessor) encodeQuantileGauges(metrics pmetric.MetricSlice, inputNa
 }
 
 // sketchMetricName returns the output metric name for the
-// TransmitSketch=true path. Mirrors the legacy emit's behavior:
-// MetricSuffix overrides the implicit "_kll" suffix entirely.
+// TransmitSketch=true path. Refactor-2026-05: the input metric name
+// is preserved end-to-end. The KLL encoding lives in the OTLP
+// pdata.Metric variant tag (KLLSketch), so the downstream backend
+// can identify the encoding without a name suffix and PromQL fired
+// against the raw input metric name resolves directly against the
+// stored sketch state.
 func (p *kllProcessor) sketchMetricName(base string) string {
-	if p.cfg.MetricSuffix != "" {
-		return base + p.cfg.MetricSuffix
-	}
-	return base + "_kll"
+	return base
 }
 
 // labelsToAttrs copies host-neutral KeyValues into a pcommon.Map.
