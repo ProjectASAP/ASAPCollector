@@ -5,8 +5,10 @@
 # countsketch, countminsketch) in a single binary.
 #
 # Usage:
-#   ./build_asap_otel.sh            # builds asap-otel
-#   ./build_asap_otel.sh --skip-patches  # skip re-applying patches (if already applied)
+#   ./build_asap_otel.sh            # builds asap-otel (re-applies patches)
+#   ./build_asap_otel.sh --skip-patches  # skip re-applying patches (faster
+#                                        # incremental rebuilds when the
+#                                        # submodule overlay is already current)
 #
 # The resulting binary is written to:
 #   opentelemetry-collector-contrib-patch/cmd/asap-otel/asap-otel
@@ -16,12 +18,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 REQUIRED_OCB_VERSION="v0.141.0"
 OCB_MODULE="go.opentelemetry.io/collector/cmd/builder"
+SKIP_PATCHES=false
 
 # Parse arguments
 for arg in "$@"; do
   case "$arg" in
-    --skip-patches) ;;  # accepted for backward compatibility — no-op now that
-                        # patch overlays have been removed.
+    --skip-patches) SKIP_PATCHES=true ;;
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -45,6 +47,21 @@ find_or_install_builder() {
   GOBIN="${gobin}" go install "${OCB_MODULE}@${REQUIRED_OCB_VERSION}"
   echo "${gobin}/builder"
 }
+
+# Step 1: Apply patch overlays onto the OTel submodules.
+#
+# The patch trees (opentelemetry-collector-patch/, -contrib-patch/,
+# opentelemetry-proto-patch/, opentelemetry-go-patch/) are the
+# source-of-truth for files we add to / replace in the upstream
+# submodules pinned at v0.141.0. The submodules themselves stay clean
+# (we never push these changes to upstream OTel); the restore scripts
+# stage the patch trees onto the submodules' working trees so OCB and
+# the patched processors' replace directives resolve.
+if [[ "${SKIP_PATCHES}" == false ]]; then
+  echo "==> Applying patches to submodules..."
+  bash "${ROOT_DIR}/restore_otel_patches.sh"
+  echo ""
+fi
 
 # Step 2: Locate the correct builder
 echo "==> Locating OCB ${REQUIRED_OCB_VERSION}..."
