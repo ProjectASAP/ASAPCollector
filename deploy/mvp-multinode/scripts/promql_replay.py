@@ -53,7 +53,10 @@ from typing import Any
 
 # A query in the input list looks like:
 #
-#   {"kind": "quantile", "promql": "histogram_quantile(0.99, ...)"}
+#   {"kind": "quantile", "metricsql": "histogram_quantile(0.99, ...)"}
+#
+# Schema migration: legacy files used `"promql"` for this field; the
+# loader still accepts `"promql"` as a fallback (see load_queries).
 #
 # `kind` is the sketch family the query exercises so the reducer can
 # pick the right ground-truth function:
@@ -84,11 +87,19 @@ def load_queries(path: str) -> list[dict[str, str]]:
         sys.exit(f"queries file must be a JSON list, got {type(loaded)}")
     out = []
     for i, q in enumerate(loaded):
-        if "promql" not in q or "kind" not in q:
-            sys.exit(f"queries[{i}] missing required 'promql' or 'kind' field")
+        # The demo now speaks MetricsQL (superset of PromQL — includes
+        # `distinct_over_time` etc.) and queries Hit VictoriaMetrics or
+        # the asap-query-backend's MetricsQL-compatible surface. The
+        # JSON schema key is `metricsql` to reflect that. We accept the
+        # legacy `promql` key as a fallback so external workload JSONs
+        # don't break mid-migration, but new files should use
+        # `metricsql`.
+        query_text = q.get("metricsql") or q.get("promql")
+        if not query_text or "kind" not in q:
+            sys.exit(f"queries[{i}] missing required 'metricsql' (or legacy 'promql') or 'kind' field")
         if q["kind"] not in QUERY_KINDS:
             sys.exit(f"queries[{i}].kind must be one of {QUERY_KINDS}, got {q['kind']!r}")
-        out.append({"kind": q["kind"], "promql": q["promql"]})
+        out.append({"kind": q["kind"], "metricsql": query_text})
     return out
 
 
@@ -299,10 +310,10 @@ def main() -> int:
                 q = queries[n % len(queries)]
                 n += 1
                 t_start = time.perf_counter()
-                dur_ms, res = run_query(args.target, q["promql"], args.timeout)
+                dur_ms, res = run_query(args.target, q["metricsql"], args.timeout)
                 rec = {
                     "ts": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
-                    "query": q["promql"],
+                    "query": q["metricsql"],
                     "kind": q["kind"],
                     "duration_ms": dur_ms,
                     "plan_id": tracker.latest() if tracker else None,

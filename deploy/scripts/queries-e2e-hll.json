@@ -1,14 +1,14 @@
 [
     {
         "kind": "cardinality",
-        "promql": "distinct_over_time(unique_users_per_min[1m])"
+        "metricsql": "distinct_over_time(unique_users_per_min[1m])"
     },
     {
         "kind": "cardinality",
-        "promql": "distinct_over_time(unique_users_per_min[2m])"
+        "metricsql": "distinct_over_time(unique_users_per_min[2m])"
     },
     {
         "kind": "cardinality",
-        "promql": "distinct_over_time(unique_users_per_min[5m])"
+        "metricsql": "distinct_over_time(unique_users_per_min[5m])"
     }
 ]
