@@ -94,10 +94,10 @@ mounted inference YAML. Five overlays live in `deploy/mvp-singlenode/configs/`:
 | YAML | Mounted by | Covers (PromQL families × ranges) | Entries |
 |---|---|---|---|
 | `backend-inference.yaml` | `e2e-overlay.yml` (default) | All 33 patterns from `ASAPQuery-backend` PR #79: spatial multi-quantile, `quantile_over_time(φ ∈ {0.5, 0.9, 0.95, 0.99}, …[1m\|2m\|5m])`, `sum_over_time` / `count_over_time` × wider ranges, `rate` / `increase`, spatial `count` / `sum` / `avg`, `topk(5\|10\|50, …)`. | 33 |
-| `backend-inference-cms.yaml` | `e2e-overlay-cms.yml` | CountMinSketch families: `{sum, count, avg}`, `{sum_over_time, count_over_time, rate, increase}` × `[1m, 2m, 5m]`. | 14 |
-| `backend-inference-cs.yaml` | `e2e-overlay-cs.yml` | CountSketch families: same as CMS plus `topk(5\|10\|50, …)`. | 16 |
-| `backend-inference-hll.yaml` | `e2e-overlay-hll.yml` | HLL cardinality families: spatial `count(metric_hll)` and `count_over_time(metric_hll[1m\|2m\|5m])` for both the counter (`http_requests_total_hll`) and gauge (`http_requests_total_latency_ms_hll`) flavours. | 8 |
-| `backend-inference-kll.yaml` | `e2e-overlay-kll.yml` | KLL rank-quantile families: spatial `quantile by (zone) (φ, …)` and `quantile_over_time(φ, metric_kll[1m\|2m\|5m])` × `φ ∈ {0.5, 0.9, 0.95, 0.99}`. | 16 |
+| `backend-inference-cms.yaml` | `e2e-overlay-family.yml` (with `FAMILY=cms`) | CountMinSketch families: `{sum, count, avg}`, `{sum_over_time, count_over_time, rate, increase}` × `[1m, 2m, 5m]`. | 14 |
+| `backend-inference-cs.yaml` | `e2e-overlay-family.yml` (with `FAMILY=cs`) | CountSketch families: same as CMS plus `topk(5\|10\|50, …)`. | 16 |
+| `backend-inference-hll.yaml` | `e2e-overlay-family.yml` (with `FAMILY=hll`) | HLL cardinality families: spatial `count(metric_hll)` and `count_over_time(metric_hll[1m\|2m\|5m])` for both the counter (`http_requests_total_hll`) and gauge (`http_requests_total_latency_ms_hll`) flavours. | 8 |
+| `backend-inference-kll.yaml` | `e2e-overlay-family.yml` (with `FAMILY=kll`) | KLL rank-quantile families: spatial `quantile by (zone) (φ, …)` and `quantile_over_time(φ, metric_kll[1m\|2m\|5m])` × `φ ∈ {0.5, 0.9, 0.95, 0.99}`. | 16 |
 
 This is the canonical paper-experiment pattern set (PR #79
 `tests/inference_yaml_pattern_coverage.rs` is the runtime contract).

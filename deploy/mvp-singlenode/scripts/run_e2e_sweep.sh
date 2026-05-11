@@ -112,10 +112,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # the cell's family — same rationale.
 SKETCHES=(
     "ddsketch:asap-otel-agent-b3-delta.yaml:dd-delta:quantile::queries-e2e.json:quantile_over_time(0.99, http_requests_total_latency_ms_quantile[10m]):http_requests_total_latency_ms:DDSketch:DDSketch:http_requests_total:DDSketch:DDSketch"
-    "kll:asap-otel-agent-kll-direct.yaml:kll-full:quantile:e2e-overlay-kll.yml:queries-e2e-kll.json:quantile_over_time(0.99, http_requests_total_latency_ms_kll[10m]):http_requests_total_latency_ms:KLL:KLL:http_requests_total:KLL:KLL"
-    "cs:asap-otel-agent-cs-direct.yaml:cs-delta:topk:e2e-overlay-cs.yml:queries-e2e-cs.json:topk(20, http_requests_total):http_requests_total:CountSketch:CountSketch:http_requests_total_latency_ms:CountSketch:CountSketch"
-    "cms:asap-otel-agent-cms-direct.yaml:cms-delta:topk:e2e-overlay-cms.yml:queries-e2e-cms.json:topk(20, http_requests_total):http_requests_total:CountMinSketch:CountMinSketch:http_requests_total_latency_ms:CountMinSketch:CountMinSketch"
-    "hll:asap-otel-agent-hll-direct.yaml:hll-delta:count_unique:e2e-overlay-hll.yml:queries-e2e-hll.json:count_over_time(http_requests_total_hll[10m]):http_requests_total:HLL:HLL:http_requests_total_latency_ms:HLL:HLL"
+    "kll:asap-otel-agent-kll-direct.yaml:kll-full:quantile:e2e-overlay-family.yml:queries-e2e-kll.json:quantile_over_time(0.99, http_requests_total_latency_ms_kll[10m]):http_requests_total_latency_ms:KLL:KLL:http_requests_total:KLL:KLL"
+    "cs:asap-otel-agent-cs-direct.yaml:cs-delta:topk:e2e-overlay-family.yml:queries-e2e-cs.json:topk(20, http_requests_total):http_requests_total:CountSketch:CountSketch:http_requests_total_latency_ms:CountSketch:CountSketch"
+    "cms:asap-otel-agent-cms-direct.yaml:cms-delta:topk:e2e-overlay-family.yml:queries-e2e-cms.json:topk(20, http_requests_total):http_requests_total:CountMinSketch:CountMinSketch:http_requests_total_latency_ms:CountMinSketch:CountMinSketch"
+    "hll:asap-otel-agent-hll-direct.yaml:hll-delta:count_unique:e2e-overlay-family.yml:queries-e2e-hll.json:count_over_time(http_requests_total_hll[10m]):http_requests_total:HLL:HLL:http_requests_total_latency_ms:HLL:HLL"
 )
 
 NS=(1 10)
@@ -163,9 +163,9 @@ for sk in "${SKETCHES[@]}"; do
                     "${COMPOSE_DIR}/gen-agents.sh" "$N" > "$AGENTS_YAML"
                 fi
 
-                # Per-family overlay: layer e2e-overlay-<family>.yml
+                # Per-family overlay: layer e2e-overlay-family.yml
                 # on top of e2e-overlay.yml so the backend mounts the
-                # right backend-{streaming,inference}-<family>.yaml.
+                # right backend-{streaming,inference}-${FAMILY}.yaml.
                 # When OVERLAY_YAML is empty, the default DDSketch
                 # mounts from e2e-overlay.yml win.
                 EXTRA_OVERLAY_ARGS=()
@@ -176,6 +176,7 @@ for sk in "${SKETCHES[@]}"; do
                 # Down any prior stack.
                 (cd "$COMPOSE_DIR" && \
                   AGENT_CONFIG="$AGENT_YAML" \
+                  FAMILY="$FAM" \
                   docker compose \
                     -f base.yml -f "$AGENTS_YAML" \
                     -f baseline-b3-delta.yml -f e2e-overlay.yml \
@@ -185,6 +186,7 @@ for sk in "${SKETCHES[@]}"; do
                 # Up.
                 (cd "$COMPOSE_DIR" && \
                   AGENT_CONFIG="$AGENT_YAML" \
+                  FAMILY="$FAM" \
                   EXPORTER_FREQ_HZ="$(echo "scale=2; 1000 / ${SCRAPE_MS}" | bc)" \
                   EXPORTER_CARDINALITY="$CARD" \
                   EXPORTER_SDK_WINDOW="${SCRAPE_MS}ms" \

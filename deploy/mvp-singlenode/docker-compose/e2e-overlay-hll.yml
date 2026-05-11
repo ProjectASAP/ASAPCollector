@@ -1,6 +1,0 @@
-# Per-sketch overlay for the HLL e2e verification.
-services:
-  backend:
-    volumes:
-      - ../configs/backend-streaming-hll.yaml:/etc/asap/streaming.yaml:ro
-      - ../configs/backend-inference-hll.yaml:/etc/asap/inference.yaml:ro
