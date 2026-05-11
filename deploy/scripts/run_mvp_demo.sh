@@ -969,6 +969,38 @@ generate_report() {
             log "  [warn] mvp_report.py exited non-zero — see report.log"
 }
 
+# Best-effort report renderer + docker teardown. Wired to the EXIT
+# trap so even a SIGTERM (e.g. an outer `timeout` cap firing during
+# Phase 6's thanos-compact 300s wait) still leaves an `MVP_REPORT.md`
+# behind, computed from whatever measurements ARE on disk.
+# Idempotent: subsequent invocations no-op via the `__report_rendered`
+# guard, so the explicit call at the bottom of `main` and the trap
+# don't double-render.
+__report_rendered=0
+finalize_on_exit() {
+    local code=$?
+    if (( __report_rendered == 0 )); then
+        __report_rendered=1
+        local report_name="${REPORT_NAME:-MVP_REPORT.md}"
+        if [[ -d "${OUT_BASE}" ]]; then
+            log "EXIT trap (code=${code}): best-effort ${report_name} render"
+            python3 "${SCRIPT_DIR}/mvp_report.py" \
+                --results-dir "${OUT_BASE}" \
+                --num-producers "${N_PRODUCERS:-?}" \
+                --per-agent-cardinality "${PER_AGENT_CARDINALITY:-?}" \
+                --out "${OUT_BASE}/${report_name}" \
+                > "${OUT_BASE}/report.log" 2>&1 || \
+                    log "  [warn] mvp_report.py exited non-zero — see report.log"
+        fi
+    fi
+    # Best-effort docker stack teardown on early exit. The normal
+    # `tear_down` calls inside `run_one_pipeline` handle the success
+    # path; this catches signal-induced exits during Phase 6 polling.
+    docker ps --filter "name=docker-compose" --format '{{.ID}}' 2>/dev/null \
+        | xargs -r docker stop --time 5 >/dev/null 2>&1 || true
+}
+trap finalize_on_exit EXIT
+
 # ── main ─────────────────────────────────────────────────────────
 main() {
     parse_args "$@"
@@ -990,6 +1022,7 @@ main() {
     esac
 
     generate_report
+    __report_rendered=1
 
     local report_name="${REPORT_NAME:-MVP_REPORT.md}"
     log "MVP demo complete. Report: ${OUT_BASE}/${report_name}"
