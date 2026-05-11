@@ -1,18 +1,14 @@
 [
     {
-        "kind": "count_unique",
-        "promql": "count(http_requests_total_latency_ms_hll)"
+        "kind": "cardinality",
+        "promql": "distinct_over_time(unique_users_per_min[1m])"
     },
     {
-        "kind": "count_unique",
-        "promql": "count_over_time(http_requests_total_latency_ms_hll[1m])"
+        "kind": "cardinality",
+        "promql": "distinct_over_time(unique_users_per_min[2m])"
     },
     {
-        "kind": "count_unique",
-        "promql": "count_over_time(http_requests_total_latency_ms_hll[2m])"
-    },
-    {
-        "kind": "count_unique",
-        "promql": "count_over_time(http_requests_total_latency_ms_hll[5m])"
+        "kind": "cardinality",
+        "promql": "distinct_over_time(unique_users_per_min[5m])"
     }
 ]

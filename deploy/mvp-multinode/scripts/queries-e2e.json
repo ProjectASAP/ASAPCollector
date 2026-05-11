@@ -1,15 +1,15 @@
 [
     {
         "kind": "quantile",
-        "promql": "quantile_over_time(0.99, http_requests_total_latency_ms_quantile[1m])"
+        "promql": "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"
     },
     {
         "kind": "quantile",
-        "promql": "quantile_over_time(0.5, http_requests_total_latency_ms_quantile[1m])"
+        "promql": "quantile_over_time(0.5, http_requests_total_latency_ms[1m])"
     },
     {
         "kind": "quantile",
-        "promql": "quantile by (zone) (0.99, http_requests_total_latency_ms_quantile)"
+        "promql": "quantile by (zone) (0.99, http_requests_total_latency_ms)"
     },
     {
         "kind": "sum",
