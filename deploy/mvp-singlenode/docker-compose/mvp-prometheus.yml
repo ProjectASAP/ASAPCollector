@@ -1,0 +1,130 @@
+# mvp-prometheus.yml — opt-in storage-backend swap from VictoriaMetrics
+# (the post-2g default) BACK to Prometheus.
+#
+# The 2g cleanup landed VictoriaMetrics as the default storage tier
+# (base.yml ships `victoriametrics`, mvp-multi-stage.yml ships
+# `victoriametrics-b0`). VM is the right default — lighter, faster,
+# speaks MetricsQL extensions (`distinct_over_time`) that the HLL
+# query workload uses, no flags needed for PRW + OTLP ingest.
+#
+# This overlay restores the Prometheus path for users who want it
+# (apples-to-apples baseline numbers vs the original architecture,
+# or compatibility with externally-deployed Prometheus instances).
+# It works by:
+#
+#   1. Disabling the VM services (`victoriametrics` + `victoriametrics-b0`)
+#      via profile reassignment so they're not selected by default.
+#   2. Adding the Prometheus equivalents with the same hostnames + host
+#      ports the agents already expect when AGENT_CONFIG_* points at
+#      the *-prometheus.yaml configs.
+#
+# # Usage
+#
+# ```bash
+# # Default (VictoriaMetrics):
+# docker compose \
+#     -f deploy/mvp-singlenode/docker-compose/base.yml \
+#     -f deploy/mvp-singlenode/docker-compose/mvp-multi-stage.yml \
+#     --profile b0 \
+#     up -d
+#
+# # Prometheus alternative (this overlay):
+# AGENT_CONFIG_A=asap-otel-agent-b0-prometheus.yaml \
+# AGENT_CONFIG_B=asap-otel-agent-b0-prometheus.yaml \
+# docker compose \
+#     -f deploy/mvp-singlenode/docker-compose/base.yml \
+#     -f deploy/mvp-singlenode/docker-compose/mvp-multi-stage.yml \
+#     -f deploy/mvp-singlenode/docker-compose/mvp-prometheus.yml \
+#     --profile b0 \
+#     up -d
+# ```
+#
+# For the asap-arm (ASAP sketches → backend → archive), pair this
+# overlay with `mvp-prometheus-archive.yml` instead of
+# `mvp-victoriametrics-archive.yml`.
+#
+# Phase 9 single-binary refactor (#373) is unaffected: the
+# `controller` service still runs from the `asap/query-backend:dev`
+# image with its `controller` binary entrypoint — that's defined in
+# `base.yml`, orthogonal to which metrics-storage backend is selected.
+
+services:
+  # Disable VictoriaMetrics by reassigning to a profile users
+  # never select. Docker Compose's profile field fully replaces
+  # (not merges) when an overlay redefines it, so this removes the
+  # service from every default-profile (no --profile) or --profile b0
+  # invocation that also passes this overlay.
+  victoriametrics:
+    # `!override` (not the default merge) forces this profile array to
+    # REPLACE the base's (which was `[b0]` for victoriametrics-b0 and
+    # `[]` for the always-on victoriametrics). Without !override
+    # compose would merge → `[b0, __disabled_...]` and VM still
+    # activates under --profile b0.
+    profiles: !override ["__disabled_when_prometheus_overlay__"]
+
+  victoriametrics-b0:
+    # `!override` (not the default merge) forces this profile array to
+    # REPLACE the base's (which was `[b0]` for victoriametrics-b0 and
+    # `[]` for the always-on victoriametrics). Without !override
+    # compose would merge → `[b0, __disabled_...]` and VM still
+    # activates under --profile b0.
+    profiles: !override ["__disabled_when_prometheus_overlay__"]
+
+  # Grafana's `depends_on: [victoriametrics]` in base.yml needs to
+  # re-target prometheus when VM is disabled (otherwise compose
+  # rejects the project as "depends on undefined service"). The
+  # grafana-datasources.yml mounted in base.yml points at
+  # `victoriametrics:8428`; when this overlay is active, point it at
+  # the prometheus config instead so the datasource matches.
+  grafana:
+    depends_on: !reset null
+    depends_on:
+      - prometheus
+    volumes: !reset null
+    volumes:
+      - ../configs/grafana-datasources-prometheus.yml:/etc/grafana/provisioning/datasources/ds.yml:ro
+
+  # ─────────────── generic Prometheus (replaces VM in base.yml) ───────────────
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    volumes:
+      - ../configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────── B0 baseline Prometheus (replaces VM-b0) ────────────────────
+  # Receives PRW from the B0 baseline agent (which pushes via the
+  # legacy `asap-otel-agent-b0-prometheus.yaml` config — set
+  # AGENT_CONFIG_A/B env vars accordingly).
+  prometheus-b0:
+    image: prom/prometheus:v2.55.0
+    hostname: prometheus-b0
+    profiles: ["b0"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=2h"
+    ports:
+      - "19090:9090"
+    volumes:
+      - ../configs/prometheus-with-remote-write.yml:/etc/prometheus/prometheus.yml:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: "2g"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

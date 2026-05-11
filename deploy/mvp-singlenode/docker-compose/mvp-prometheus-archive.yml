@@ -1,0 +1,57 @@
+# Phase ε.1 — Mode 3 (RawAtEdgePrometheusArchive) overlay.
+#
+# Brings up Prometheus 2.55 with the native OTLP receiver enabled so the
+# ASAP controller can route low-sample-per-window / low-cardinality
+# metrics directly to it (Mode 3) instead of building a sketch at the
+# edge or backend.
+#
+# Activation flag pair:
+#   --web.enable-otlp-receiver
+#       Enables `/api/v1/otlp/v1/metrics` HTTP endpoint. Required for
+#       agent's `otlphttp/prometheus` exporter to land samples.
+#
+#   --enable-feature=otlp-deltatocumulative
+#       Converts OTel SDK delta-encoded counters / sums to Prometheus's
+#       cumulative model on the receive path. Without this, agents
+#       would need a `cumulativetodelta` collector processor — extra
+#       moving part the architecture deliberately avoids.
+#
+# Layered on top of `mvp-multi-stage.yml`:
+#
+#   docker compose \
+#       -f deploy/mvp-singlenode/docker-compose/base.yml \
+#       -f deploy/mvp-singlenode/docker-compose/mvp-multi-stage.yml \
+#       -f deploy/mvp-singlenode/docker-compose/mvp-prometheus-archive.yml \
+#       up -d prometheus-archive
+#
+# The agent's emitted YAML (controller-driven) defaults to
+# `http://prometheus-archive:9090/api/v1/otlp/v1/metrics`; override via
+# `ASAP_PROMETHEUS_OTLP_URL` if your deployment uses a different
+# hostname / port.
+#
+# Backend forwarding:
+# The ASAPQuery backend's `prometheus_remote` engine (Phase ε.2) consults
+# `ASAP_PROMETHEUS_QUERY_URL` (default
+# `http://prometheus-archive:9090`) for query forwarding to
+# `/api/v1/query`. No separate config needed beyond this overlay.
+
+services:
+  prometheus-archive:
+    image: prom/prometheus:v2.55.0
+    hostname: prometheus-archive
+    command:
+      - "--config.file=/etc/prometheus/prometheus-otlp-receiver.yml"
+      - "--web.enable-otlp-receiver"
+      - "--enable-feature=otlp-deltatocumulative"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=2h"
+      - "--storage.tsdb.out-of-order-time-window=30m"
+    ports:
+      - "29090:9090"
+    volumes:
+      - ../configs/prometheus-otlp-receiver.yml:/etc/prometheus/prometheus-otlp-receiver.yml:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1536M
