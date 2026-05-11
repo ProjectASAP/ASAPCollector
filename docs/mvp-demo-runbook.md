@@ -633,6 +633,34 @@ export EXPORTER_FRESHNESS_PROBES=on            # emit timestamp-encoded probes
 bash deploy/scripts/run_mvp_demo.sh
 ```
 
+### Essential YAML configs the MVP demo touches
+
+Most files in `deploy/configs/` belong to baseline-sweep / alt-storage / experimental compose overlays. `run_mvp_demo.sh` (single-host) and `deploy/mvp-multinode/run_demo.sh` (4-node) only mount these:
+
+| File | Role | Mounted by |
+|---|---|---|
+| `configs/mvp-workload.yaml` | Controller workload spec — which metrics, what queries, sketch family per metric | controller |
+| `configs/backend-streaming.yaml` | Backend ingest schema | backend |
+| `configs/backend-storage-routing.yaml` | Warm-tier ↔ archive routing decisions | backend |
+| `configs/asap-otel-gateway-mvp-placeholder.yaml` | Gateway OTLP fan-in (sketches + raw → backend) | gateway (ASAP arm) |
+| `configs/asap-otel-agent-b0-prometheus.yaml` | Baseline-B0 agent (raw → Prometheus, no sketches) | agent (B0 arm) |
+| `configs/asap-otel-agent-b6-asap-single-sketch.yaml` | ASAP-arm agent (5 sketch processors + OTLP fwd) | agent (ASAP arm) |
+| `configs/prometheus-with-remote-write.yml` | B0 Prometheus scrape + remote-write | prometheus-b0 |
+| `configs/thanos-objstore.yaml` | Thanos sidecar / store-gateway / compact MinIO endpoint | thanos-* |
+| `configs/grafana-datasources.yml` | Grafana pre-wired datasources | grafana (optional) |
+
+For the 4-node demo, the `b1-serf-prometheus` agent config is also mounted when `--mode both`. Other files in `deploy/configs/` (e.g., `backend-streaming-{cms,cs,hll,kll}.yaml`, `asap-otel-agent-b{2,3,4,5}-*.yaml`, `gateway-aggregate-*.yaml`) are referenced by baseline-sweep overlays and ad-hoc experiments — not by the MVP demo itself.
+
+### Image set (single-binary post-#373)
+
+Three images, all built from this repo's root:
+
+| Image | Built from | Contains |
+|---|---|---|
+| `asap/asap-otel:dev` | `build_asap_otel.sh` | Patched OTel Collector with sketch processors |
+| `asap/fake-exporter:dev` | `docker build deploy/fake-exporter/` | OTLP load generator |
+| `asap/query-backend:dev` | `Dockerfile.backend` (multi-bin: see deploy/mvp-multinode/README.md for full command) | `asap-query-backend` (port 9091 / 4317 / 4318) AND `controller` (port 8080 / 4320 / 4321). Phase 9 single-binary refactor — no separate `asap/controller:dev` image. |
+
 If you want to run it in the background and watch from another shell:
 
 ```bash

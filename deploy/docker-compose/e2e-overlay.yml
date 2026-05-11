@@ -33,14 +33,16 @@
 #     up -d
 
 services:
-  # Override the controller's build stanza so it uses the pre-built
-  # image we tagged from the host (`asap/controller:dev`). The
-  # canonical compose `build:` rebuilds from source on every `up`,
-  # which is fine for clean checkouts but slow + blind to in-flight
-  # source edits we haven't committed.
+  # Phase-9 single-binary refactor (#373): the standalone
+  # `asap/controller:dev` image is gone. The controller binary now
+  # ships from `asap/query-backend:dev` (multi-bin build in
+  # Dockerfile.backend), and base.yml's controller service points
+  # at that image with an entrypoint override to
+  # /usr/local/bin/controller. This overlay's controller block kept
+  # for its environment + volume tweaks; the image: and build:
+  # overrides are no longer needed (base.yml already pins the
+  # right image, and there's no build stanza to neutralize).
   controller:
-    image: asap/controller:dev
-    build: !reset null
     environment:
       # Point the declarative workload registry parser at our
       # mounted YAML. Default lookup path is "workloads.yaml"
