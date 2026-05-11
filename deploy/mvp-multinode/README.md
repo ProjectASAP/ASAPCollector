@@ -83,18 +83,19 @@ Knobs (env-overridable, see `topology.env` for defaults):
 | Path | What |
 |---|---|
 | `topology.env` | Per-node IPs, hostnames, `--add-host` injections, image set, paths, soak knobs |
-| `run_demo.sh` | Main driver — per-arm bring-up / soak / teardown across all 4 nodes |
-| `autopilot.sh` | Wraps `run_demo.sh` with sweeps (e.g. cardinality grid, sketch-family grid) |
-| `validate_arm.sh` | Smoke-check a single arm without running the full demo |
-| `snapshot_resources.sh` | Per-container `docker stats` snapshot — used by run_demo.sh Phase 2 |
-| `measure_freshness.sh` | Probe-based freshness measurement — used by run_demo.sh Phase 3 |
-| `measure_nic_bw.sh` | Per-NIC `cat /sys/class/net/.../statistics` snapshot — fed into per-edge CSV |
-| `configs/` | Agent / gateway / backend / controller YAML configs (49 files) — rsync'd to each node at Phase 0 |
-| `scripts/` | Replay + reducer Python scripts shared with the single-host driver (rsync'd from `deploy/mvp-singlenode/scripts/` on every run) |
+| `scripts/run_demo.sh` | Main driver — per-arm bring-up / soak / teardown across all 4 nodes |
+| `scripts/run_demo_sweep.sh` | Wraps `run_demo.sh` with sweeps (e.g. cardinality grid, sketch-family grid) |
+| `scripts/validate_arm.sh` | Smoke-check a single arm without running the full demo |
+| `scripts/snapshot_resources.sh` | Per-container `docker stats` snapshot — used by run_demo.sh Phase 2 |
+| `scripts/measure_freshness.sh` | Probe-based freshness measurement — used by run_demo.sh Phase 3 |
+| `scripts/measure_nic_bw.sh` | Per-NIC `cat /sys/class/net/.../statistics` snapshot — fed into per-edge CSV |
+| `configs/{b0,b1,asap,shared}/` | Per-arm + shared YAML bundles — rsync'd to each node at Phase 0 |
+
+The per-node Python utilities (`metricsql_replay.py`, `measure_*.py`, `accuracy_reduce.py`, etc.) live in `deploy/mvp-singlenode/scripts/` and `run_demo.sh` rsyncs that directory to each node's `/mydata/mvp-multinode/scripts/` at bring-up. They are shared across the two demos.
 
 ## Differences vs the single-host driver
 
-| | `deploy/mvp-singlenode/scripts/run_mvp_demo.sh` | `deploy/mvp-multinode/run_demo.sh` |
+| | `deploy/mvp-singlenode/scripts/run_mvp_demo.sh` | `deploy/mvp-multinode/scripts/run_demo.sh` |
 |---|---|---|
 | Topology | All containers on one host | 4 nodes on 10.10.1.x |
 | Image distribution | Built once, used in place | `docker save | ssh load` to each node |

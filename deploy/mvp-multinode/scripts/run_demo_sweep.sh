@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# autopilot.sh — fully unattended sweep over B0 / B1 / ASAP, capturing
+# run_demo_sweep.sh — fully unattended sweep over B0 / B1 / ASAP, capturing
 # per-container resource snapshots + per-node NIC bandwidth + PromQL
 # query latency for each arm, then aggregating into a single report.
 #
@@ -20,11 +20,11 @@ RUN_DIR="${RUN_BASE}/${RUN_ID}"
 mkdir -p "${RUN_DIR}"
 SOAK="${SOAK_S:-60}"
 
-echo "[autopilot] RUN_ID=${RUN_ID}  SOAK=${SOAK}s  out=${RUN_DIR}" | tee -a "${RUN_DIR}/run.log"
-echo "[autopilot] workload: PER_AGENT_CARDINALITY=${PER_AGENT_CARDINALITY}  EXPORTER_FREQ_HZ=${EXPORTER_FREQ_HZ}  EXPORTER_SDK_AGG=${EXPORTER_SDK_AGG}  EXPORTER_SDK_WINDOW=${EXPORTER_SDK_WINDOW}  N_PRODUCERS_PER_NODE=${N_PRODUCERS_PER_NODE}" | tee -a "${RUN_DIR}/run.log"
+echo "[sweep] RUN_ID=${RUN_ID}  SOAK=${SOAK}s  out=${RUN_DIR}" | tee -a "${RUN_DIR}/run.log"
+echo "[sweep] workload: PER_AGENT_CARDINALITY=${PER_AGENT_CARDINALITY}  EXPORTER_FREQ_HZ=${EXPORTER_FREQ_HZ}  EXPORTER_SDK_AGG=${EXPORTER_SDK_AGG}  EXPORTER_SDK_WINDOW=${EXPORTER_SDK_WINDOW}  N_PRODUCERS_PER_NODE=${N_PRODUCERS_PER_NODE}" | tee -a "${RUN_DIR}/run.log"
 
 # ── ssh sync configs once ──
-echo "[autopilot] sync configs to all 4 nodes" | tee -a "${RUN_DIR}/run.log"
+echo "[sweep] sync configs to all 4 nodes" | tee -a "${RUN_DIR}/run.log"
 bash "${SCRIPT_DIR}/run_demo.sh" sync >> "${RUN_DIR}/run.log" 2>&1
 
 # ── replay queries ──
@@ -34,7 +34,7 @@ run_arm() {
     local arm=$1
     local out="${RUN_DIR}/${arm}"
     mkdir -p "${out}"
-    echo "[autopilot] === arm=${arm} starting ==="| tee -a "${RUN_DIR}/run.log"
+    echo "[sweep] === arm=${arm} starting ==="| tee -a "${RUN_DIR}/run.log"
 
     # tear down anything residual
     bash "${SCRIPT_DIR}/run_demo.sh" down >> "${RUN_DIR}/run.log" 2>&1 || true
@@ -42,7 +42,7 @@ run_arm() {
 
     # bring up
     bash "${SCRIPT_DIR}/run_demo.sh" up "${arm}" >> "${out}/up.log" 2>&1
-    echo "[autopilot] arm=${arm} brought up; warmup already happened in up()"  | tee -a "${RUN_DIR}/run.log"
+    echo "[sweep] arm=${arm} brought up; warmup already happened in up()"  | tee -a "${RUN_DIR}/run.log"
     sleep 5
 
     # determine query endpoint per arm (b0/b1 → prometheus, asap → backend)
@@ -88,7 +88,7 @@ run_arm() {
         NODE2_IP=${NODE2_IP} \
         bash "${SCRIPT_DIR}/validate_arm.sh" \
         > "${out}/validate.log" 2>&1 || \
-        echo "[autopilot] validate ${arm} non-fatal err — see ${out}/validate.log" \
+        echo "[sweep] validate ${arm} non-fatal err — see ${out}/validate.log" \
             | tee -a "${RUN_DIR}/run.log"
     cp -f "${out}/validate-${arm}.json" "${RUN_DIR}/" 2>/dev/null || true
     cp -f "${out}/validate-${arm}.md"   "${RUN_DIR}/" 2>/dev/null || true
@@ -98,17 +98,17 @@ run_arm() {
     ARM=${arm} OUT=${out} NODE2_IP=${NODE2_IP} N_SAMPLES=60 POLL_MS=100 \
         bash "${SCRIPT_DIR}/measure_freshness.sh" \
         > "${out}/freshness.log" 2>&1 || \
-        echo "[autopilot] freshness ${arm} non-fatal err — see ${out}/freshness.log" \
+        echo "[sweep] freshness ${arm} non-fatal err — see ${out}/freshness.log" \
             | tee -a "${RUN_DIR}/run.log"
     cp -f "${out}/freshness-${arm}.csv" "${RUN_DIR}/" 2>/dev/null || true
 
     # tear down
     bash "${SCRIPT_DIR}/run_demo.sh" down >> "${RUN_DIR}/run.log" 2>&1 || true
-    echo "[autopilot] === arm=${arm} done ===" | tee -a "${RUN_DIR}/run.log"
+    echo "[sweep] === arm=${arm} done ===" | tee -a "${RUN_DIR}/run.log"
 }
 
 for arm in b0 b1 asap; do
-    run_arm "${arm}" || echo "[autopilot] arm=${arm} FAILED but continuing" | tee -a "${RUN_DIR}/run.log"
+    run_arm "${arm}" || echo "[sweep] arm=${arm} FAILED but continuing" | tee -a "${RUN_DIR}/run.log"
 done
 
 # ── aggregate report ──
@@ -260,5 +260,5 @@ for q in all_q:
     print(f"| {q} | {fmt(bv)} | {fmt(b1V)} | {fmt(av)} | {rerr(bv,b1V)} | {rerr(bv,av)} |")
 EOF
 
-echo "[autopilot] FINAL report at: ${RUN_DIR}/MVP_REPORT.md"
-echo "[autopilot] all artefacts under: ${RUN_DIR}/"
+echo "[sweep] FINAL report at: ${RUN_DIR}/MVP_REPORT.md"
+echo "[sweep] all artefacts under: ${RUN_DIR}/"
