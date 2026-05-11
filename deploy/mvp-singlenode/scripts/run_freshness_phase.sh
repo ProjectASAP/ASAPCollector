@@ -10,9 +10,11 @@
 #
 # Three paths:
 #
-#   raw      → http://prometheus-b0:9090   (B0 Prometheus)
-#   warm     → http://backend:8080         (sketch warm tier)
-#   archive  → http://backend:8080         (Gorilla-archive)
+#   raw      → http://victoriametrics-b0:8428   (B0 VictoriaMetrics;
+#                                                was "prometheus-b0:9090"
+#                                                pre Step 2g 2026-05)
+#   warm     → http://backend:8080              (sketch warm tier)
+#   archive  → http://backend:8080              (Gorilla-archive)
 #
 # Outputs:
 #
@@ -32,7 +34,7 @@
 #       --out-dir /tmp/mvp-run-$(date +%s) \
 #       --duration 60 \
 #       --poll-interval-ms 100 \
-#       --raw-endpoint http://prometheus-b0:9090 \
+#       --raw-endpoint http://victoriametrics-b0:8428 \
 #       --warm-endpoint http://backend:8080 \
 #       --archive-endpoint http://backend:8080
 #
@@ -55,7 +57,7 @@ POLL_INTERVAL_MS=100
 # multi-stage overlay (see deploy/mvp-singlenode/docker-compose/mvp-multi-stage.yml).
 # Override with the flags below if you're running outside the compose
 # stack (e.g. host-mode against published ports).
-RAW_ENDPOINT="${ASAP_FRESHNESS_RAW_ENDPOINT:-http://prometheus-b0:9090}"
+RAW_ENDPOINT="${ASAP_FRESHNESS_RAW_ENDPOINT:-http://victoriametrics-b0:8428}"
 WARM_ENDPOINT="${ASAP_FRESHNESS_WARM_ENDPOINT:-http://backend:8080}"
 ARCHIVE_ENDPOINT="${ASAP_FRESHNESS_ARCHIVE_ENDPOINT:-http://backend:8080}"
 

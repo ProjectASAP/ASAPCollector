@@ -1,10 +1,15 @@
 apiVersion: 1
 
 datasources:
-  - name: Prometheus
+  # Step 2g (2026-05): the upstream metrics sink is now VictoriaMetrics
+  # (was Prometheus). VM is wire-compatible with the Prometheus
+  # datasource type — Grafana queries it through the same
+  # `/api/v1/query` HTTP API, so `type: prometheus` stays. Only the
+  # `url:` and the user-facing `name:` change.
+  - name: VictoriaMetrics
     type: prometheus
     access: proxy
-    url: http://prometheus:9090
+    url: http://victoriametrics:8428
     isDefault: true
     editable: false
 
@@ -12,7 +17,7 @@ datasources:
   # surface on port 9090; Grafana can query it as a second
   # Prometheus-type datasource. The evaluation latency CDF
   # panels switch between these two to produce the "backend vs
-  # upstream Prom" figure.
+  # upstream Prom/VM" figure.
   - name: ASAPQuery
     type: prometheus
     access: proxy

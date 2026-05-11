@@ -1453,8 +1453,9 @@ def render_section_8_emitted(cdir: str) -> list[str]:
     elif status == "n/a-baseline":
         md.append(
             "Baseline pipeline has no controller — agents load "
-            "`asap-otel-agent-b0-prometheus.yaml` directly. This "
-            "section is not applicable to the baseline run."
+            "`asap-otel-agent-b0-victoriametrics.yaml` directly "
+            "(was `…-b0-prometheus.yaml` pre Step 2g 2026-05). "
+            "This section is not applicable to the baseline run."
         )
     else:
         md.append(
@@ -1646,8 +1647,10 @@ def render_markdown_dual(
     md.append("")
     md.append(
         "* **baseline** — `mvp-multi-stage.yml` + `--profile b0`; "
-        "agents load `asap-otel-agent-b0-prometheus.yaml`; storage "
-        "= Prometheus; queries hit Prometheus PromQL HTTP."
+        "agents load `asap-otel-agent-b0-victoriametrics.yaml` "
+        "(was `…-b0-prometheus.yaml` pre Step 2g 2026-05); "
+        "storage = VictoriaMetrics (Prometheus-wire compatible); "
+        "queries hit VM's PromQL HTTP surface."
     )
     md.append(
         "* **asap** — `mvp-multi-stage.yml` default profile; "

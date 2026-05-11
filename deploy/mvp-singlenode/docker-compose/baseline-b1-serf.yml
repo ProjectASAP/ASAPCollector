@@ -1,14 +1,20 @@
 # Baseline B1 selector — Serf XOR compression (lossless Gorilla).
 #
-# v4 (issue #46) update: the v3 overlay was a pure no-op label
+# Step 2g (2026-05): VictoriaMetrics replaced the Prometheus
+# container; VM accepts PRW on `/api/v1/write` natively (no flag
+# required). The v4 `prometheus:` service override in this overlay
+# was injecting `--web.enable-remote-write-receiver` +
+# `--enable-feature=otlp-write-receiver` (Prometheus-only flags) and
+# remounting `prometheus-with-remote-write.yml` (which has been
+# deleted along with the other Prometheus config files). The
+# override has been dropped — VM in base.yml already serves the PRW
+# endpoint the B1 agent config needs.
+#
+# v4 (issue #46): the v3 overlay was a pure no-op label
 # (it set `asap.baseline: "b1-serf"` and nothing else) — fine
 # while SERF wrote to disk and bypassed the gateway/backend, but
 # wrong now that the v4 demo expects EVERY baseline to share the
-# same Prometheus query surface. v4 layers Prometheus's remote-
-# write-receiver flag on the Prometheus container so the
-# `asap-otel-agent-b1-serf-prometheus.yaml` agent config (PRW
-# exporter) has a sink. Without this flag the agent's PRW
-# requests would 404.
+# same upstream-metrics query surface.
 #
 # Bring up via:
 #
@@ -31,17 +37,3 @@ services:
   controller:
     labels:
       asap.baseline: "b1-serf"
-
-  prometheus:
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=24h"
-      - "--web.enable-lifecycle"
-      - "--web.enable-remote-write-receiver"
-      - "--enable-feature=otlp-write-receiver"
-    volumes:
-      - ../configs/prometheus-with-remote-write.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data-b1:/prometheus
-
-volumes:
-  prometheus-data-b1:

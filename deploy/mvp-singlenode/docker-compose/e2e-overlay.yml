@@ -86,7 +86,11 @@ services:
       - "--ingest-port=9090"
       - "--query-port=9091"
       - "--forward-unsupported-queries"
-      - "--prometheus-server=http://prometheus:9090"
+      # Step 2g (2026-05): Prometheus container was replaced with
+      # VictoriaMetrics; the `--prometheus-server` flag stays — it
+      # only requires a Prometheus-wire-compatible /api/v1/query
+      # surface, which VM provides on port 8428.
+      - "--prometheus-server=http://victoriametrics:8428"
       - "--enable-otel-ingest"
       - "--otel-grpc-port=4317"
       - "--otel-http-port=4318"

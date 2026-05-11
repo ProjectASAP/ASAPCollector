@@ -4,9 +4,21 @@
 # agent-count overrides: the backend (ASAPQuery), the gateway
 # (OpenTelemetry aggregator), the controller, plus the infra
 # the evaluation pipes through — MinIO (S3-compatible store
-# for the Gorilla archive tier), Prometheus (scrape
-# target for every agent / backend / controller), and Grafana
-# (pre-wired with the backend + Prometheus data sources).
+# for the Gorilla archive tier), VictoriaMetrics (Prometheus-
+# wire-compatible TSDB; accepts PRW + OTLP natively), and
+# Grafana (pre-wired with the backend + VictoriaMetrics data
+# sources).
+#
+# Step 2g (2026-05): the upstream Prometheus container was
+# replaced with VictoriaMetrics v1.105.0. VM accepts the same
+# `/api/v1/write` PRW protocol Prometheus did, plus OTLP HTTP at
+# `/opentelemetry/api/v1/push`, and serves PromQL on the same
+# port — so the agent PRW exporters, the Grafana datasource,
+# and the freshness probes keep working with only an endpoint
+# swap (s/prometheus:9090/victoriametrics:8428/). VM's native
+# listen port is 8428; the host-side port 9090 is preserved to
+# minimise blast radius for anything that hard-coded the host
+# port.
 #
 # Agent replicas live in `agents-N<K>.yml` overrides so the
 # same base can scale from 1 → 100 agents just by selecting a
@@ -67,17 +79,26 @@ services:
         mc anonymous set download asap/raw
     logging: *default-logging
 
-  # ───────── metrics source + scrape ─────────
-  prometheus:
-    image: prom/prometheus:v2.53.1
-    volumes:
-      - ../configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  # ───────── metrics sink (Prometheus-wire-compatible) ─────────
+  # Step 2g (2026-05): VictoriaMetrics replaces the legacy
+  # `prom/prometheus:v2.53.1` container. VM serves:
+  #   • PromQL on   :8428/api/v1/query
+  #   • PRW ingest  :8428/api/v1/write       (used to be Prometheus
+  #                                            with --web.enable-remote-write-receiver)
+  #   • OTLP HTTP   :8428/opentelemetry/api/v1/push  (used to be
+  #                                            Prometheus with
+  #                                            --web.enable-otlp-receiver)
+  # All three are wired by default — no config file needed. We keep
+  # the host-side port 9090 so any external tooling that hard-codes
+  # the host port (Grafana dashboards / driver scripts pinging the
+  # PromQL surface) keeps working.
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.105.0
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=24h"
-      - "--web.enable-lifecycle"
+      - "--httpListenAddr=:8428"
+      - "--retentionPeriod=24h"
     ports:
-      - "9090:9090"
+      - "9090:8428"
     logging: *default-logging
 
   grafana:
@@ -92,7 +113,7 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - prometheus
+      - victoriametrics
     logging: *default-logging
 
   # ───────── ASAP control / query plane ─────────
@@ -161,11 +182,13 @@ services:
       # Deployed binary is `query_engine_rust` (the workspace's
       # default, from `asap-query-engine/src/main.rs`); see
       # `deploy/docker/Dockerfile.backend`. Ingest is OTLP-only
-      # (Prometheus remote-write was deleted in PR #100), so the
-      # backend's only HTTP listener is the PromQL query surface
-      # — `--query-port=9091` (alias of `--http-port`, kept for
-      # compose backwards compatibility with the previous
-      # `precompute_engine` binary's flag spelling).
+      # (PRW ingest into the backend itself was deleted in PR #100;
+      # PRW from the agents now lands in the VictoriaMetrics
+      # container — phase ε.1 was previously Prometheus's
+      # remote-write-receiver), so the backend's only HTTP listener
+      # is the PromQL query surface — `--query-port=9091` (alias of
+      # `--http-port`, kept for compose backwards compatibility with
+      # the previous `precompute_engine` binary's flag spelling).
       - "--query-port=9091"
       # Warm-tier sketch ingest. Without this the OTel gateway's
       # PRW translator drops typed sketch data points

@@ -77,7 +77,11 @@ for baseline in $BASELINES; do
         echo "# === baseline=${baseline} rate=${rate} card=${card} ===" >&2
       fi
 
-      # Map baseline tag to AGENT_CONFIG filename.
+      # Map baseline tag to AGENT_CONFIG filename. Step 2g (2026-05)
+      # renamed the b0/b5 agent configs from `…-prometheus.yaml` to
+      # `…-victoriametrics.yaml` to match the VictoriaMetrics-backed
+      # sink (was Prometheus). The b1 file kept its historical name
+      # to avoid touching the b1 config which was already migrated.
       case "$baseline" in
         b0a-raw-stream)  cfg="asap-otel-agent-b0a-raw-stream.yaml" ;;
         b0b-raw-batched) cfg="asap-otel-agent-b0b-raw-batched.yaml" ;;
@@ -85,7 +89,7 @@ for baseline in $BASELINES; do
         b2-full)         cfg="asap-otel-agent-b2-full.yaml" ;;
         b3-delta)        cfg="asap-otel-agent-b3-delta.yaml" ;;
         b4-tunable)      cfg="asap-otel-agent-b4-tunable.yaml" ;;
-        b5-gorilla)      cfg="asap-otel-agent-b5-gorilla-prometheus.yaml" ;;
+        b5-gorilla)      cfg="asap-otel-agent-b5-gorilla-victoriametrics.yaml" ;;
         *) echo "unknown baseline: $baseline" >&2; exit 1 ;;
       esac
 

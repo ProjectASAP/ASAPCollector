@@ -21,7 +21,9 @@ chosen query layer.
 
 Three probes route via metric name to three different storage paths::
 
-    http_freshness_probe_raw      → Prometheus B0
+    http_freshness_probe_raw      → VictoriaMetrics B0
+                                    (was "Prometheus B0" pre Step 2g
+                                    2026-05; same Prometheus-wire API)
     http_freshness_probe_warm     → sketch warm tier (agent processor)
     http_freshness_probe_archive  → Gorilla-archive (gorillas3processor)
 
@@ -32,7 +34,7 @@ driver.
 Usage::
 
     measure_freshness.py \\
-        --query-endpoint http://prometheus-b0:9090 \\
+        --query-endpoint http://victoriametrics-b0:8428 \\
         --probe http_freshness_probe_raw \\
         --path-label raw \\
         --duration 60 \\

@@ -184,8 +184,10 @@ def docker_stats_with_bytes_rate(
         }
 
     Adds `window_s` of wall-clock overhead to the caller; worth it
-    because cAdvisor isn't in the compose stack (see
-    deploy/mvp-singlenode/configs/prometheus.yml — only OTel targets configured).
+    because cAdvisor isn't in the compose stack. (Pre Step 2g 2026-05
+    the scrape targets lived in `configs/prometheus.yml`; that file
+    is gone — VictoriaMetrics replaced Prometheus, and VM doesn't
+    need a scrape config for the demo's push-only data flow.)
     """
     t0 = time.monotonic()
     s0 = docker_stats()

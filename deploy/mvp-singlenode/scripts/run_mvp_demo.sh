@@ -10,9 +10,11 @@
 # only the agent + storage backend differs:
 #
 #   * baseline (--mode baseline): mvp-multi-stage.yml `b0` profile.
-#     Agents load `asap-otel-agent-b0-prometheus.yaml` (no sketch
-#     processors). Storage = Prometheus container; queries hit
-#     Prometheus's PromQL HTTP surface on 19090.
+#     Agents load `asap-otel-agent-b0-victoriametrics.yaml` (no sketch
+#     processors; was named `…-b0-prometheus.yaml` pre Step 2g).
+#     Storage = VictoriaMetrics container (Prometheus-wire-compatible,
+#     replaced the prom/prometheus image in Step 2g 2026-05); queries
+#     hit VM's PromQL HTTP surface on host port 19090.
 #
 #   * asap (--mode asap): mvp-multi-stage.yml default profile (the
 #     full ASAP topology). Sketchcol agents → gateway → backend →
@@ -129,8 +131,17 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 HOST_BACKEND_QUERY_PORT="${HOST_BACKEND_QUERY_PORT:-19091}"
 HOST_BACKEND_INGEST_PORT="${HOST_BACKEND_INGEST_PORT:-19090}"
 HOST_CONTROLLER_PORT="${HOST_CONTROLLER_PORT:-18080}"
-HOST_PROM_B0_PORT="${HOST_PROM_B0_PORT:-19090}"  # collides with backend ingest;
-# The multi-stage overlay republishes Prometheus B0 on 19090 only when
+# Step 2g (2026-05): the upstream-metrics B0 sink moved from
+# `prometheus-b0` (prom/prometheus) to `victoriametrics-b0`
+# (victoriametrics/victoria-metrics:v1.105.0). VM speaks the same
+# Prometheus-wire `/api/v1/query` + `/api/v1/write` HTTP API, so the
+# host-side port mapping was preserved as 19090 to minimise blast
+# radius for anything that hard-coded the port. The env var name was
+# renamed from HOST_PROM_B0_PORT → HOST_VM_B0_PORT; the legacy name
+# is still honoured for one release as a back-compat shim so existing
+# invocations keep working.
+HOST_VM_B0_PORT="${HOST_VM_B0_PORT:-${HOST_PROM_B0_PORT:-19090}}"  # collides with backend ingest;
+# The multi-stage overlay republishes VM-B0 on 19090 only when
 # the `b0` profile is active (compose `--profile b0`). Sequential
 # baseline/asap cycles with full teardown between them avoid the
 # collision — the asap stack is gone before B0 binds, and B0 is gone
@@ -180,8 +191,8 @@ Usage: $(basename "$0") [--mode {baseline|asap|both}] [--out-base DIR]
 
   --mode baseline   Run baseline pipeline only (mvp-multi-stage.yml
                     --profile b0; agents load
-                    asap-otel-agent-b0-prometheus.yaml; queries hit
-                    Prometheus on \${HOST_PROM_B0_PORT}).
+                    asap-otel-agent-b0-victoriametrics.yaml; queries
+                    hit VictoriaMetrics on \${HOST_VM_B0_PORT}).
   --mode asap       Run asap pipeline only (default profile;
                     controller-driven sketches + Gorilla-S3 archive).
   --mode both       Run baseline first, full teardown, then asap.
@@ -607,16 +618,18 @@ freshness_phase() {
     # (EXPORTER_FRESHNESS_PROBES=on); this phase is poll-only.
     #
     # Phase 3.2.5 Bug (c): the raw probe is intentionally polled at
-    # Prometheus B0 (HOST_PROM_B0_PORT=19090), NOT the backend
+    # the VictoriaMetrics B0 sink (HOST_VM_B0_PORT=19090; was
+    # HOST_PROM_B0_PORT pre Step 2g 2026-05), NOT the backend
     # (HOST_BACKEND_QUERY_PORT=19091). Per `mvp-freshness-probes.yaml`:
     # "raw probe is exported via prometheusremotewrite to the real
-    # Prometheus container" — the raw path's storage IS Prometheus
-    # B0, regardless of which pipeline (baseline / asap) is currently
-    # running. In baseline mode prometheus-b0 is up under
-    # `--profile b0` and the probe lands there directly; in asap mode
-    # B0 is not running and the raw poll returns empty (the asap
-    # topology doesn't carry a raw-storage tier — that's the whole
-    # point of comparing baseline-vs-asap freshness).
+    # upstream-metrics container" — the raw path's storage IS the
+    # B0 sink (Prometheus pre Step 2g, VM after), regardless of
+    # which pipeline (baseline / asap) is currently running. In
+    # baseline mode victoriametrics-b0 is up under `--profile b0`
+    # and the probe lands there directly; in asap mode B0 is not
+    # running and the raw poll returns empty (the asap topology
+    # doesn't carry a raw-storage tier — that's the whole point of
+    # comparing baseline-vs-asap freshness).
     #
     # Warm / archive endpoints stay on PIPELINE_QUERY_PORT — both
     # paths route through the backend's storage-routing table to
@@ -625,7 +638,7 @@ freshness_phase() {
     bash "${SCRIPT_DIR}/run_freshness_phase.sh" \
         --out-dir "${PIPELINE_OUT_BASE}" \
         --duration "${FRESHNESS_DURATION_S}" \
-        --raw-endpoint "${ASAP_FRESHNESS_RAW_ENDPOINT:-http://localhost:${HOST_PROM_B0_PORT}}" \
+        --raw-endpoint "${ASAP_FRESHNESS_RAW_ENDPOINT:-http://localhost:${HOST_VM_B0_PORT}}" \
         --warm-endpoint "${ASAP_FRESHNESS_WARM_ENDPOINT:-http://localhost:${PIPELINE_QUERY_PORT}}" \
         --archive-endpoint "${ASAP_FRESHNESS_ARCHIVE_ENDPOINT:-http://localhost:${PIPELINE_QUERY_PORT}}" \
         > "${PIPELINE_OUT_BASE}/freshness/run.log" 2>&1 || \
@@ -906,7 +919,7 @@ inter_mode_settle_and_verify() {
     # Capture any straggler container names matching the MVP topology.
     local stragglers_file="${OUT_BASE}/inter-mode-stragglers.txt"
     docker ps -a --format '{{.Names}}' \
-        | grep -E 'mvp|asap-otel|prometheus|gateway|backend|agent-|producer-|controller|minio' \
+        | grep -E 'mvp|asap-otel|prometheus|victoriametrics|gateway|backend|agent-|producer-|controller|minio' \
         > "${stragglers_file}" 2>/dev/null || true
     if [[ -s "${stragglers_file}" ]]; then
         log "  [warn] stragglers detected after baseline teardown:"
@@ -927,9 +940,13 @@ run_one_pipeline() {
     PIPELINE_LABEL="${label}"
     PIPELINE_OUT_BASE="${OUT_BASE}/${label}"
     if [[ "${label}" == "baseline" ]]; then
-        PIPELINE_QUERY_PORT="${HOST_PROM_B0_PORT}"
-        export AGENT_CONFIG_A="asap-otel-agent-b0-prometheus.yaml"
-        export AGENT_CONFIG_B="asap-otel-agent-b0-prometheus.yaml"
+        # Step 2g (2026-05): host port var renamed
+        # HOST_PROM_B0_PORT → HOST_VM_B0_PORT (VictoriaMetrics now
+        # the B0 sink); agent config renamed
+        # asap-otel-agent-b0-prometheus.yaml → asap-otel-agent-b0-victoriametrics.yaml.
+        PIPELINE_QUERY_PORT="${HOST_VM_B0_PORT}"
+        export AGENT_CONFIG_A="asap-otel-agent-b0-victoriametrics.yaml"
+        export AGENT_CONFIG_B="asap-otel-agent-b0-victoriametrics.yaml"
     else
         # asap — controller emits per-stage configs; the AGENT_CONFIG_*
         # fall back to the all-sketches placeholder mounted in the

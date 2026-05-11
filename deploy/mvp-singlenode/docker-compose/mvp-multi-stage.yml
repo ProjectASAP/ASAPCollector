@@ -12,9 +12,12 @@
 #         │ OTLP/4317
 #         ▼
 #    1 backend         (query_engine_rust — workspace default binary)
-#                      + Prometheus :9090 (B0 baseline only — receives via
-#                        prometheusremotewrite from gateway when overlay
-#                        invoked with PROMETHEUS_BASELINE=1)
+#                      + VictoriaMetrics :8428 (B0 baseline only —
+#                        receives via prometheusremotewrite from the
+#                        agents when overlay invoked with
+#                        `--profile b0`; was previously Prometheus
+#                        with --web.enable-remote-write-receiver,
+#                        replaced in Step 2g 2026-05)
 #
 # Drives the controller-driven multi-stage demo for issue #46.
 # See docs/mvp-demo-runbook.md.
@@ -218,14 +221,15 @@ services:
   # `baseline-b6-asap-single-sketch.yml`.
   backend:
     # Step 2.4: drop the legacy host-:19090 PRW-ingest publish so
-    # baseline mode (which brings up `prometheus-b0` on host:19090)
-    # doesn't collide with the backend container at boot. The MVP
-    # demo only ever issues queries through the host:19091 PromQL
-    # surface; nobody relies on remote-write straight to the backend
-    # in this stack. Asap mode still gets full functionality because
-    # the gateway/agents reach the backend over the intra-docker
-    # network at backend:9090, which is unaffected by what's
-    # *published* to the host.
+    # baseline mode (which brings up `victoriametrics-b0` on
+    # host:19090; was `prometheus-b0` pre Step 2g) doesn't collide
+    # with the backend container at boot. The MVP demo only ever
+    # issues queries through the host:19091 PromQL surface; nobody
+    # relies on remote-write straight to the backend in this stack.
+    # Asap mode still gets full functionality because the gateway/
+    # agents reach the backend over the intra-docker network at
+    # backend:9090, which is unaffected by what's *published* to the
+    # host.
     ports: !override
       - "19091:9091"   # PromQL-compatible HTTP query surface
     environment:
@@ -331,24 +335,26 @@ services:
           cpus: "2.0"
           memory: 2048M
 
-  # ─────────────────────────────── B0 baseline Prometheus ────────────────────
-  # Brought up only when invoked with PROMETHEUS_BASELINE=1. Receives
-  # raw remote-write from the gateway when criterion ① bandwidth
-  # comparison is being measured.
+  # ─────────────────────────────── B0 baseline VictoriaMetrics ───────────────
+  # Brought up only when invoked with `--profile b0`. Receives raw
+  # remote-write from the agents (B0/B1/B5 PRW configs) when
+  # criterion ① bandwidth comparison is being measured.
+  #
+  # Step 2g (2026-05): was `prometheus-b0` (prom/prometheus:v2.55.0
+  # with --web.enable-remote-write-receiver +
+  # prometheus-with-remote-write.yml scrape config). VM accepts the
+  # same PRW protocol on /api/v1/write natively — no config file
+  # required, CLI flags only.
 
-  prometheus-b0:
-    image: prom/prometheus:v2.55.0
-    hostname: prometheus-b0
+  victoriametrics-b0:
+    image: victoriametrics/victoria-metrics:v1.105.0
+    hostname: victoriametrics-b0
     profiles: ["b0"]   # `--profile b0` to enable
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--web.enable-remote-write-receiver"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=2h"
+      - "--httpListenAddr=:8428"
+      - "--retentionPeriod=2h"
     ports:
-      - "19090:9090"
-    volumes:
-      - ../configs/prometheus-with-remote-write.yml:/etc/prometheus/prometheus.yml:ro
+      - "19090:8428"
     deploy:
       resources:
         limits:

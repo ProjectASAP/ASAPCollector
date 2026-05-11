@@ -1,30 +1,36 @@
-# Baseline B1 v4 — Serf XOR + raw forward to real Prometheus.
+# Baseline B1 v4 — Serf XOR + raw forward to VictoriaMetrics.
+#
+# Step 2g (2026-05): the PRW sink is now VictoriaMetrics
+# (Prometheus-wire-compatible) instead of the legacy `prometheus`
+# container. The filename keeps the historical `-prometheus.yaml`
+# suffix for backwards compatibility with run-baseline-sweep.sh's
+# baseline-name → config-filename map; the endpoint inside the file
+# was already migrated in an earlier sub-step.
 #
 # v4 (issue #46) SERF baseline. The
 # v3 SERF config used `drop_original: true` so nothing reached
-# the gateway / backend / Prometheus — bandwidth was measured
-# entirely against bytes-on-disk under /var/tmp/asap-serf-out.
-# That makes apples-to-apples comparison against B0
-# (raw-OTel-to-Prometheus) and the ASAP single-sketch baseline
-# impossible because the SERF path doesn't expose any signals
-# downstream of the agent.
+# the gateway / backend / VM — bandwidth was measured entirely
+# against bytes-on-disk under /var/tmp/asap-serf-out. That makes
+# apples-to-apples comparison against B0 (raw-OTel-to-VM) and the
+# ASAP single-sketch baseline impossible because the SERF path
+# doesn't expose any signals downstream of the agent.
 #
 # v4 keeps the SERF processor running (so its CPU / RSS / output-
 # bytes self-telemetry is still recorded for the resource table),
 # but flips `drop_original: false` and forwards the raw stream
-# via `prometheusremotewrite` to the real Prometheus on
-# :9090/api/v1/write — same sink as B0. Bandwidth column for B1
-# = wire bytes from agent → Prometheus PLUS the SERF-written
-# blob bytes (a structural cost the SERF baseline pays in
-# addition to the wire bytes). The query side (Prometheus
-# evaluator) is then identical to B0, isolating the SERF
-# CPU / RSS overhead as the only delta.
+# via `prometheusremotewrite` to VictoriaMetrics on
+# :8428/api/v1/write — same sink as B0. Bandwidth column for B1
+# = wire bytes from agent → VM PLUS the SERF-written blob bytes
+# (a structural cost the SERF baseline pays in addition to the
+# wire bytes). The query side (VM PromQL evaluator) is then
+# identical to B0, isolating the SERF CPU / RSS overhead as the
+# only delta.
 #
 # Pipeline:
 #
 #   producer ──OTLP──▶ agent ──serf──▶ /var/tmp/asap-serf-out
 #                       │
-#                       └─raw forward──▶ Prometheus :9090/api/v1/write
+#                       └─raw forward──▶ VictoriaMetrics :8428/api/v1/write
 #
 # The SERF processor sits BEFORE batch so it sees per-arrival
 # points (matches v3 behaviour); the PRW exporter only sees the
