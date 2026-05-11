@@ -363,7 +363,7 @@ validation step, not a runtime-behaviour change.
 
 Archive-tier compaction is performed by the stock `thanos compact`
 binary running as a sidecar (deployed via
-`deploy/docker-compose/mvp-thanos-archive.yml`). It performs:
+`deploy/mvp-singlenode/docker-compose/mvp-thanos-archive.yml`). It performs:
 
 - **Block consolidation** with **decode + re-encode** — small blocks
   in the same time bucket are merged into one larger block, with
@@ -591,9 +591,9 @@ and one Prometheus-ingest API surface removed.
   chunk format; curated PromQL subset.
 - `ASAPQuery-backend/asap-query-engine/src/engines/simple_engine.rs`
   — warm-tier `SimpleEngine`; sibling of the archive engines.
-- `deploy/docker-compose/mvp-thanos-archive.yml` — Thanos
+- `deploy/mvp-singlenode/docker-compose/mvp-thanos-archive.yml` — Thanos
   store-gateway + thanos-query + thanos compact sidecar wiring.
-- `deploy/configs/asap-otel-agent-b5-gorilla.yaml` — local-FS
+- `deploy/mvp-singlenode/configs/asap-otel-agent-b5-gorilla.yaml` — local-FS
   baseline config for the archive-tier processor (for the
   b5-gorilla benchmark variant).
 

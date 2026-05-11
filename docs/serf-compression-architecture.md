@@ -307,4 +307,4 @@ and registered in `cmd/asap-otel/builder-config.yaml`.
 
 Bandwidth / CPU / throughput measurements now share the MVP demo's
 `measure_stages.py` and `measure_per_edge_bandwidth.py` instrumentation
-under `deploy/scripts/`.
+under `deploy/mvp-singlenode/scripts/`.

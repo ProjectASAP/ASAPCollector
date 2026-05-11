@@ -2,7 +2,7 @@
 
 CloudLab / multi-host driver for the MVP demo (issue #46). Runs the baseline (B0 Prometheus) and ASAP arms across 4 nodes on a 10 Gbps LAN, so wire-bytes per-edge counters reflect a real NIC instead of loopback.
 
-Single-host driver: `deploy/scripts/run_mvp_demo.sh` (runs all containers on one box; faster smoke iteration, but bandwidth claims are loopback-flattered).
+Single-host driver: `deploy/mvp-singlenode/scripts/run_mvp_demo.sh` (runs all containers on one box; faster smoke iteration, but bandwidth claims are loopback-flattered).
 
 ## Topology
 
@@ -90,16 +90,16 @@ Knobs (env-overridable, see `topology.env` for defaults):
 | `measure_freshness.sh` | Probe-based freshness measurement — used by run_demo.sh Phase 3 |
 | `measure_nic_bw.sh` | Per-NIC `cat /sys/class/net/.../statistics` snapshot — fed into per-edge CSV |
 | `configs/` | Agent / gateway / backend / controller YAML configs (49 files) — rsync'd to each node at Phase 0 |
-| `scripts/` | Replay + reducer Python scripts shared with the single-host driver (rsync'd from `deploy/scripts/` on every run) |
+| `scripts/` | Replay + reducer Python scripts shared with the single-host driver (rsync'd from `deploy/mvp-singlenode/scripts/` on every run) |
 
 ## Differences vs the single-host driver
 
-| | `deploy/scripts/run_mvp_demo.sh` | `deploy/mvp-multinode/run_demo.sh` |
+| | `deploy/mvp-singlenode/scripts/run_mvp_demo.sh` | `deploy/mvp-multinode/run_demo.sh` |
 |---|---|---|
 | Topology | All containers on one host | 4 nodes on 10.10.1.x |
 | Image distribution | Built once, used in place | `docker save | ssh load` to each node |
 | Bandwidth measurement | Loopback (flattered) | Real NIC counters per node |
-| Compose | `docker-compose` overlays under `deploy/docker-compose/` | Plain `docker run --network host` + `--add-host` (no compose, no overlay merging) |
+| Compose | `docker-compose` overlays under `deploy/mvp-singlenode/docker-compose/` | Plain `docker run --network host` + `--add-host` (no compose, no overlay merging) |
 | `MVP_REPORT.md` | Rendered by `mvp_report.py` (Phase 8) | Generated on node0 from aggregated per-node CSVs |
 
 Pick the single-host driver for fast iteration and PR-time smoke. Use the 4-node driver when bandwidth claims need to land on a real LAN.

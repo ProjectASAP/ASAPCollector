@@ -5,9 +5,9 @@ _Last updated: 2026-05-05 (paper blocker #3 closeout)._
 This is the column-by-column "what is this number, where does it
 come from, and why" reference for `deploy/eval-results/sweep-*.csv`
 (the file format produced by
-`deploy/scripts/measure-baseline.py` and chained together by
-`deploy/scripts/run-baseline-sweep.sh` /
-`deploy/scripts/run_e2e_sweep.sh`).
+`deploy/mvp-singlenode/scripts/measure-baseline.py` and chained together by
+`deploy/mvp-singlenode/scripts/run-baseline-sweep.sh` /
+`deploy/mvp-singlenode/scripts/run_e2e_sweep.sh`).
 
 The next person to add a column or interpret one in a paper figure
 should be able to land on this doc and understand the source of
@@ -161,12 +161,12 @@ that aren't in the CSV today.
    pass).
 2. If the source isn't universal across baselines, add a
    fallback to `FALLBACK_QUERIES` in
-   `deploy/scripts/measure-baseline.py` (or in `main()` for
+   `deploy/mvp-singlenode/scripts/measure-baseline.py` (or in `main()` for
    non-Prom fallbacks). Don't silently let the column NaN —
    one of the bandwidth-claim figures was unreproducible for a
    week because of exactly that.
 3. Add a row to the column map above. Mention any unit subtlety
    in the caveats section.
 4. Smoke-test by running
-   `deploy/scripts/run-baseline-sweep.sh DRIVE_QUERIES=1` and
+   `deploy/mvp-singlenode/scripts/run-baseline-sweep.sh DRIVE_QUERIES=1` and
    confirming the column has no NaN for any baseline.

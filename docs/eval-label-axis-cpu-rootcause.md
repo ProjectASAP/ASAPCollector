@@ -283,7 +283,7 @@ measurement. With the fix:
   — companion heap snapshots.
 - `opentelemetry-go-patch/sdk/metric/internal/aggregate/filter_cache_bench_test.go`
   — the bench that quantifies the per-call speedup.
-- `deploy/docker-compose/profile-overlay.yml` — the profile
+- `deploy/mvp-singlenode/docker-compose/profile-overlay.yml` — the profile
   capture overlay (off by default, opt-in for repro runs).
 
 ## Open question for the user

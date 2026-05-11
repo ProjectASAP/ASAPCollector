@@ -153,7 +153,7 @@ standard-OTLP clients that cannot speak the modified proto; none of
 the modern processors use it.
 
 A worked deployment that exercises every processor at once lives in
-[`deploy/configs/asap-otel-agent-allsketches.yaml`](../deploy/configs/asap-otel-agent-allsketches.yaml)
+[`deploy/mvp-singlenode/configs/asap-otel-agent-allsketches.yaml`](../deploy/mvp-singlenode/configs/asap-otel-agent-allsketches.yaml)
 (PR [#271](https://github.com/ProjectASAP/ASAPCollector/pull/271),
 2026-05-06): a single `asap-otel` agent runs all five sketch
 families (`[ddsketch, KLL, HLL, countsketch, countmin, batch]`) in
@@ -1839,7 +1839,7 @@ Alternative architectures remain viable for specific workloads:
   [`ASAPQuery-backend/docs/design-phase3-asap-precompute-rs.md`](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/design-phase3-asap-precompute-rs.md)
   (PR #76, 2026-05-05).
 - **All-sketch demo agent**:
-  [`deploy/configs/asap-otel-agent-allsketches.yaml`](../deploy/configs/asap-otel-agent-allsketches.yaml)
+  [`deploy/mvp-singlenode/configs/asap-otel-agent-allsketches.yaml`](../deploy/mvp-singlenode/configs/asap-otel-agent-allsketches.yaml)
   (PR #271) — one agent runs all five sketch families concurrently,
   pairs with the unified `backend-inference.yaml`.
 
