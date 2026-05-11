@@ -69,9 +69,9 @@ COPY --from=asap-sketchlib     . asap_sketchlib
 # Mirrors the asap-precompute-rs pattern.
 COPY --from=asap-gorilla-rust  . ASAPCollector/asap-gorilla-rust
 
-RUN cd ASAPQuery-backend && cargo build --release --bin query_engine_rust
+RUN cd ASAPQuery-backend && cargo build --release --bin query_engine_rust --bin controller
 
-# Runtime image: binary + CA certs.
+# Runtime image: binaries + CA certs.
 FROM debian:bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
@@ -82,10 +82,17 @@ RUN apt-get update && \
 RUN mkdir -p /var/log/asap
 COPY --from=build /src/ASAPQuery-backend/target/release/query_engine_rust \
     /usr/local/bin/asap-query-backend
+# Phase-9 single-binary refactor (2026-05): the controller crate
+# moved into ASAPQuery-backend, so the controller binary now ships
+# from this image too. base.yml's `controller:` service points at
+# `asap/query-backend:dev` and overrides ENTRYPOINT to
+# `/usr/local/bin/controller`.
+COPY --from=build /src/ASAPQuery-backend/target/release/controller \
+    /usr/local/bin/controller
 
 ENV RUST_LOG=info \
     ASAP_BACKEND_PORT=9090 \
     ASAP_BACKEND_METRICS_PORT=9465
 
-EXPOSE 9090 9465
+EXPOSE 9090 9465 8080 4320 4321
 ENTRYPOINT ["/usr/local/bin/asap-query-backend"]

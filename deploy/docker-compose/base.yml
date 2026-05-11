@@ -97,9 +97,12 @@ services:
 
   # ───────── ASAP control / query plane ─────────
   controller:
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.controller
+    # Phase-9 single-binary refactor (2026-05): the controller crate
+    # moved into ASAPQuery-backend; the asap/query-backend:dev image
+    # now ships both bins. Build instructions for that image are in
+    # the `backend:` block below.
+    image: asap/query-backend:dev
+    entrypoint: ["/usr/local/bin/controller"]
     environment:
       CONTROLLER_ADDR: "0.0.0.0:8080"
       CONTROLLER_OPAMP_ADDR: "0.0.0.0:4320"
