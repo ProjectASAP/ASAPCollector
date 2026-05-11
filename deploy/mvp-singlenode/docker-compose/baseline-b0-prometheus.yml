@@ -1,0 +1,42 @@
+# Baseline B0 — stock OTel → VictoriaMetrics (issue #46 v4 MVP).
+#
+# Step 2g (2026-05): was "stock OTel → real Prometheus". The Prometheus
+# container was replaced with VictoriaMetrics, which accepts PRW on
+# `/api/v1/write` natively (no `--web.enable-remote-write-receiver`
+# flag required) and serves PromQL on the same port. The
+# `prometheus:` service override in this overlay is therefore a
+# pure label-only no-op now — the VM container is already configured
+# correctly in base.yml.
+#
+# Realistic baseline that the paper compares ASAP against.
+# Pipeline:
+#
+#   producer ──OTLP──▶ agent ──PRW──▶ VictoriaMetrics :8428
+#
+# No precompute_engine in the loop. VM's own TSDB + PromQL
+# evaluator answer queries; the backend container is present
+# in `base.yml` but irrelevant to this baseline (the replay
+# client targets VM directly).
+#
+# Bring up via:
+#
+#   AGENT_CONFIG=asap-otel-agent-b0-victoriametrics.yaml \
+#     docker compose -f base.yml -f agents-N10.yml \
+#       -f baseline-b0-prometheus.yml up -d
+#
+# Notes:
+#   - VM in base.yml already accepts PRW + OTLP HTTP on :8428
+#     without any feature flags, so this overlay no longer needs
+#     to inject `--web.enable-remote-write-receiver` /
+#     `--enable-feature=otlp-write-receiver` onto the metrics
+#     service (those were Prometheus-only flags).
+#   - The fake-exporter still talks to `agent-1:4317` (set in
+#     agents-N10.yml). The PRW path activates inside the agent.
+#   - Ad-hoc queries during the demo target VM's :8428/api/v1/query
+#     (published on the host as :9090), NOT the precompute
+#     backend's :19091.
+
+services:
+  controller:
+    labels:
+      asap.baseline: "b0-prometheus"

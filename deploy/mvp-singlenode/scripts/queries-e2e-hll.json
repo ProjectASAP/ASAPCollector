@@ -1,0 +1,14 @@
+[
+    {
+        "kind": "cardinality",
+        "metricsql": "distinct_over_time(unique_users_per_min[1m])"
+    },
+    {
+        "kind": "cardinality",
+        "metricsql": "distinct_over_time(unique_users_per_min[2m])"
+    },
+    {
+        "kind": "cardinality",
+        "metricsql": "distinct_over_time(unique_users_per_min[5m])"
+    }
+]

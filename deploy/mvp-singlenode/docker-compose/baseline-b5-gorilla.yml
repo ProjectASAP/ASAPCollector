@@ -1,0 +1,33 @@
+# Baseline B5 selector — Gorilla XOR compression (lossless).
+#
+# Step 2g (2026-05): VictoriaMetrics replaced the Prometheus
+# container; VM accepts PRW on `/api/v1/write` natively. The v4
+# `prometheus:` service override in this overlay was injecting
+# `--web.enable-remote-write-receiver` +
+# `--enable-feature=otlp-write-receiver` (Prometheus-only flags) and
+# remounting `prometheus-with-remote-write.yml` (deleted with the
+# other Prometheus config files). The override has been dropped —
+# VM in base.yml already serves the PRW endpoint the B5 agent
+# config needs.
+#
+# v4 (issue #46): the v3 overlay was a pure no-op label — fine
+# while Gorilla wrote to disk and bypassed the gateway/backend,
+# but wrong now that the v4 demo expects EVERY baseline to share
+# the same upstream-metrics query surface (criterion ⑥ freshness
+# probes the warm tier via VM).
+#
+# Bring up via:
+#
+#   AGENT_CONFIG=asap-otel-agent-b5-gorilla-victoriametrics.yaml \
+#     docker compose -f base.yml -f agents-N10.yml \
+#       -f baseline-b5-gorilla.yml up -d
+#
+# Gorilla still writes compressed blobs to /var/tmp/asap-gorilla-out
+# inside each agent container; bytes-written are read from the
+# patched processor's self-telemetry on :8890. The blob volume is
+# container-only tmpfs (carries no host-disk dependency).
+
+services:
+  controller:
+    labels:
+      asap.baseline: "b5-gorilla"

@@ -1,0 +1,18 @@
+[
+    {
+        "kind": "topk",
+        "metricsql": "topk(10, http_requests_total)"
+    },
+    {
+        "kind": "count_unique",
+        "metricsql": "count(http_requests_total)"
+    },
+    {
+        "kind": "sum",
+        "metricsql": "sum_over_time(http_requests_total[1m])"
+    },
+    {
+        "kind": "sum",
+        "metricsql": "sum(http_requests_total)"
+    }
+]

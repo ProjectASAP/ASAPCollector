@@ -1,0 +1,96 @@
+# Baseline B0 — raw OTel → PRW into VictoriaMetrics.
+#
+# Step 2g (2026-05): was named `asap-otel-agent-b0-prometheus.yaml`
+# and sank into the real Prometheus container; now sinks into
+# VictoriaMetrics, which speaks the same Prometheus remote-write
+# protocol on `/api/v1/write` and serves the same PromQL HTTP API on
+# the same port. The agent-side pipeline is unchanged — the only
+# delta is the endpoint host:port.
+#
+# v4 (issue #46): the realistic stock-OTel deployment. The agent
+# runs an OTLP receiver, batches 1s, and exports via
+# `prometheusremotewrite` straight at the VictoriaMetrics
+# container's `/api/v1/write` endpoint. Storage + queries are
+# handled by VM's TSDB + PromQL evaluator — NO precompute_engine in
+# the loop. This is the apples-to-apples baseline the paper
+# compares ASAP against:
+#
+#   producer ──OTLP──▶ agent ──PRW──▶ VictoriaMetrics :8428
+#
+# The PRW exporter IS in the patched `asap/asap-otel:dev` builder
+# (see `opentelemetry-collector-contrib-patch/cmd/asap-otel/
+# builder-config.yaml`), so no rebuild is required. PRW is
+# lossy for sketch-typed data points but B0's pipeline only
+# carries raw counters / gauges, so that's fine.
+#
+# Bandwidth column for B0 = wire bytes from agent → VictoriaMetrics
+# (measured via docker stats net tx on the agent container).
+# Storage column = VM TSDB data-dir size (sampled by
+# `measure_stages.py`).
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://backend:4320/v1/opamp
+        headers:
+          X-Agent-ID: "agent-1"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        max_recv_msg_size_mib: 4096
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  # PRW directly to VictoriaMetrics's :8428 remote-write receiver.
+  # VM accepts the same `/api/v1/write` PRW protocol Prometheus's
+  # `--web.enable-remote-write-receiver` flag enabled — Step 2g
+  # (2026-05) replaced the legacy `prom/prometheus:v2.53.1` container
+  # with `victoriametrics/victoria-metrics:v1.105.0`, which serves
+  # PRW + OTLP + PromQL on the same port with no configuration.
+  #
+  # `target_info: enabled: false` suppresses the OTLP
+  # resource-info synthetic series that would otherwise flood VM
+  # with one extra series per resource attribute set.
+  prometheusremotewrite:
+    # Step 2.4 / Step 2g: target the `victoriametrics-b0` service
+    # (mvp-multi-stage's `--profile b0` service; was `prometheus-b0`
+    # pre Step 2g). VM accepts PRW on /api/v1/write natively without
+    # a `--web.enable-remote-write-receiver` flag. The base.yml
+    # `victoriametrics` service is equally valid as a sink — both
+    # listen on container :8428.
+    endpoint: "http://victoriametrics-b0:8428/api/v1/write"
+    tls:
+      insecure: true
+    target_info:
+      enabled: false
+    resource_to_telemetry_conversion:
+      enabled: false
+
+service:
+  extensions: [opamp]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheusremotewrite]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

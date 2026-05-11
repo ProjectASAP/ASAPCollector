@@ -1,0 +1,18 @@
+[
+    {
+        "kind": "quantile",
+        "metricsql": "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"
+    },
+    {
+        "kind": "quantile",
+        "metricsql": "quantile_over_time(0.5, http_requests_total_latency_ms[1m])"
+    },
+    {
+        "kind": "quantile",
+        "metricsql": "quantile by (zone) (0.99, http_requests_total_latency_ms)"
+    },
+    {
+        "kind": "sum",
+        "metricsql": "sum_over_time(http_requests_total[1m])"
+    }
+]

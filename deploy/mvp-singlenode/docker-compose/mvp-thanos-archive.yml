@@ -1,0 +1,183 @@
+# MVP archive-tier overlay: Thanos store-gateway + thanos-query +
+# thanos-compact sidecars.
+#
+# Layer in addition to base.yml + mvp-multi-stage.yml:
+#
+#   ASAPQuery-backend (archive-tier dispatcher, Step 2.3)
+#         │ HTTP /api/v1/query
+#         ▼
+#   thanos-query (this file — host port 19092 → 10903)
+#         │ gRPC StoreAPI
+#         ▼
+#   thanos-store-gateway (this file)
+#         │ S3
+#         ▼
+#   MinIO bucket asap-gorilla-tsdb       ◀── thanos-compact (this file)
+#         (populated by Step 2.1's gorillas3processor block writes;
+#          consolidated by thanos-compact in Phase δ.1, replacing the
+#          deleted gorilla-compactor Rust binary)
+#
+# Compose stack:
+#   docker compose \
+#       -f deploy/mvp-singlenode/docker-compose/base.yml \
+#       -f deploy/mvp-singlenode/docker-compose/mvp-multi-stage.yml \
+#       -f deploy/mvp-singlenode/docker-compose/mvp-thanos-archive.yml \
+#       up -d
+#
+# Pinning rationale: v0.41.0 is the latest stable Thanos release
+# (2026-02-12) at the time of authoring. The spec template suggested
+# v0.36.1 (2024-09); the up-to-date pin avoids dragging an 18-month-old
+# image when the OSS contract (objstore.yaml schema, store/query CLI
+# flags used here) is unchanged across that range.
+
+services:
+
+  # ─────────────────────────────── thanos-store-gateway ──────────────────────
+  # Reads TSDB blocks straight out of MinIO over the S3 protocol and
+  # exposes them via Thanos's gRPC StoreAPI for thanos-query to fan
+  # in. No local long-lived state — `data-dir` is just an LRU index
+  # cache that can be wiped between runs.
+
+  thanos-store-gateway:
+    image: quay.io/thanos/thanos:v0.41.0
+    hostname: thanos-store-gateway
+    # Run as root so the named volume's default-root-owned mount
+    # at /var/thanos/store is writable by the entrypoint. The
+    # upstream image's USER=nobody can't mkdir under a fresh
+    # docker-managed volume otherwise.
+    user: "0"
+    command:
+      - "store"
+      - "--objstore.config-file=/etc/thanos/objstore.yaml"
+      - "--http-address=0.0.0.0:10902"
+      - "--grpc-address=0.0.0.0:10901"
+      - "--data-dir=/var/thanos/store"
+      # MVP demo cadence: the upstream default `--sync-block-duration`
+      # is 3 minutes, which races the demo's gorillas3processor flush
+      # cycle (60s) plus the freshness criterion's 30s warm-tier
+      # threshold — by the time the store-gateway notices the new
+      # block, the criterion has already evaluated against an empty
+      # archive. 30s sync keeps the demo honest: blocks land within
+      # the criterion's measurement window. Production deployments
+      # typically run with the 3-minute default because block
+      # freshness on the order of minutes is fine for read-heavy
+      # archive workloads — that's the configurability story, not
+      # an intrinsic Thanos limitation.
+      - "--sync-block-duration=30s"
+      - "--block-sync-concurrency=20"
+    volumes:
+      - ../configs/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro
+      - thanos-store-data:/var/thanos/store
+    depends_on:
+      # NOTE: docker-compose's `depends_on` only waits for the
+      # listed services to *start*, not for the bucket-creation job
+      # to *complete*. The `minio-setup-gorilla-tsdb` step in
+      # mvp-multi-stage.yml is fast enough that the store-gateway's
+      # initial bucket scan typically races behind it; if it does
+      # race ahead, the store-gateway logs `NoSuchBucket` and retries
+      # on its sync interval. Step 2.4's e2e test should validate
+      # this ordering with the verify script.
+      - minio
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:10902/-/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1024M
+
+  # ─────────────────────────────── thanos-query ──────────────────────────────
+  # Stateless PromQL fan-out. Exposes the full Prometheus HTTP API
+  # surface on host port 19092 so the Rust backend's archive-tier
+  # dispatcher (Step 2.3) can forward queries unchanged.
+
+  thanos-query:
+    image: quay.io/thanos/thanos:v0.41.0
+    hostname: thanos-query
+    # `--store` was renamed to `--endpoint` in v0.39+; v0.41 dropped
+    # the alias entirely.
+    command:
+      - "query"
+      - "--http-address=0.0.0.0:10903"
+      - "--endpoint=thanos-store-gateway:10901"
+      - "--query.replica-label=replica"
+    ports:
+      - "19092:10903"   # Prometheus-compatible HTTP API for backend forwarder
+    depends_on:
+      - thanos-store-gateway
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:10903/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+
+  # ─────────────────────────────── thanos-compact ────────────────────────────
+  # Phase δ.1: archive-tier block compactor. Replaces the deleted
+  # gorilla-compactor Rust binary with the stock Thanos compactor —
+  # the established Prometheus-ecosystem tool for compacting TSDB
+  # blocks under an object store. Reads/writes the same MinIO bucket
+  # (asap-gorilla-tsdb) that gorillas3processor populates via Step 2.1
+  # and that the store-gateway above reads.
+  #
+  # Compaction model: thanos-compact does decode + re-encode (NOT the
+  # previous concat-only design). That's a real CPU cost during
+  # compaction sweeps, but it's the standard production approach and
+  # gives better compression + downsampling tiers (raw / 5m / 1h)
+  # for free.
+  #
+  # Retention defaults: the three --retention.resolution-* flags below
+  # set raw=30d / 5m=180d / 1h=1y. These match Thanos's documented
+  # production defaults. Tune if the demo's storage budget calls for
+  # tighter or looser windows.
+  #
+  # CPU concurrency: --compact.concurrency=1 bounds CPU on the demo
+  # host (single-host topology shares cores with asap-otel agents +
+  # backend). Bump to 2-4 on dedicated hosts.
+  #
+  # Lifecycle: --wait runs thanos-compact in a continuous loop instead
+  # of one-shot mode, so the Phase 7 driver can poll its /metrics
+  # endpoint for thanos_compact_iterations_total to confirm at least
+  # one sweep has completed.
+  thanos-compact:
+    image: quay.io/thanos/thanos:v0.41.0
+    hostname: thanos-compact
+    # Same root-user rationale as thanos-store-gateway above: the
+    # named-volume mount needs to be writable by the entrypoint.
+    user: "0"
+    command:
+      - "compact"
+      - "--objstore.config-file=/etc/thanos/objstore.yaml"
+      - "--data-dir=/var/thanos/compact"
+      - "--retention.resolution-raw=30d"
+      - "--retention.resolution-5m=180d"
+      - "--retention.resolution-1h=1y"
+      - "--compact.concurrency=1"
+      - "--wait"
+      - "--http-address=0.0.0.0:10904"
+    volumes:
+      - ../configs/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro
+      - thanos-compact-data:/var/thanos/compact
+    depends_on:
+      - minio
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:10904/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+
+volumes:
+  thanos-store-data:
+  thanos-compact-data:

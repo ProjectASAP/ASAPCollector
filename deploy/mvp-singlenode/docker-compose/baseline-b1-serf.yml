@@ -1,0 +1,39 @@
+# Baseline B1 selector — Serf XOR compression (lossless Gorilla).
+#
+# Step 2g (2026-05): VictoriaMetrics replaced the Prometheus
+# container; VM accepts PRW on `/api/v1/write` natively (no flag
+# required). The v4 `prometheus:` service override in this overlay
+# was injecting `--web.enable-remote-write-receiver` +
+# `--enable-feature=otlp-write-receiver` (Prometheus-only flags) and
+# remounting `prometheus-with-remote-write.yml` (which has been
+# deleted along with the other Prometheus config files). The
+# override has been dropped — VM in base.yml already serves the PRW
+# endpoint the B1 agent config needs.
+#
+# v4 (issue #46): the v3 overlay was a pure no-op label
+# (it set `asap.baseline: "b1-serf"` and nothing else) — fine
+# while SERF wrote to disk and bypassed the gateway/backend, but
+# wrong now that the v4 demo expects EVERY baseline to share the
+# same upstream-metrics query surface.
+#
+# Bring up via:
+#
+#   AGENT_CONFIG=asap-otel-agent-b1-serf-prometheus.yaml \
+#     docker compose -f base.yml -f agents-N10.yml \
+#       -f baseline-b1-serf.yml up -d
+#
+# Serf still writes compressed blobs to /var/tmp/asap-serf-out
+# inside each agent container; bytes-written are read from the
+# patched processor's
+# `otelcol_asapcollector_processor_output_bytes_total{processor_type="serf"}`
+# self-telemetry on :8890. The blob volume is container-only
+# tmpfs (carries no host-disk dependency).
+
+x-serf-volume: &serf-volume
+  volumes:
+    - /var/tmp/asap-serf-out
+
+services:
+  controller:
+    labels:
+      asap.baseline: "b1-serf"

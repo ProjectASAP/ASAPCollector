@@ -1,0 +1,23 @@
+# Per-family backend mounts for the e2e verification sweep.
+#
+# Layered on top of base.yml + e2e-overlay.yml. Replaces the
+# canonical (DDSketch) backend-streaming.yaml / backend-inference.yaml
+# mounts with the per-family pair — selected by the FAMILY env var.
+#
+# Usage:
+#
+#   FAMILY=cms \
+#   AGENT_CONFIG=asap-otel-agent-cms-direct.yaml \
+#   docker compose -f base.yml -f agents-N1.yml \
+#                  -f baseline-b3-delta.yml -f e2e-overlay.yml \
+#                  -f e2e-overlay-family.yml up -d
+#
+# FAMILY ∈ {cms, cs, hll, kll}. This file replaces the four
+# previous per-family overlays (e2e-overlay-{cms,cs,hll,kll}.yml)
+# which were byte-identical apart from the family slug.
+
+services:
+  backend:
+    volumes:
+      - ../configs/backend-streaming-${FAMILY}.yaml:/etc/asap/streaming.yaml:ro
+      - ../configs/backend-inference-${FAMILY}.yaml:/etc/asap/inference.yaml:ro

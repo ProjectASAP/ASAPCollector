@@ -1,6 +1,0 @@
-# Per-sketch overlay for CountMinSketch e2e verification.
-services:
-  backend:
-    volumes:
-      - ../configs/backend-streaming-cms.yaml:/etc/asap/streaming.yaml:ro
-      - ../configs/backend-inference-cms.yaml:/etc/asap/inference.yaml:ro

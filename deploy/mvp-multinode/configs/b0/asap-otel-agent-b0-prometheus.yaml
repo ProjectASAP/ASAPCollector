@@ -1,0 +1,85 @@
+# Baseline B0 — raw OTel → Prometheus remote-write (real Prometheus).
+#
+# v4 (issue #46): the realistic stock-OTel deployment. The agent
+# runs an OTLP receiver, batches 1s, and exports via
+# `prometheusremotewrite` straight at the real Prometheus
+# container's `/api/v1/write` endpoint. Storage + queries are
+# handled by Prometheus's TSDB + PromQL evaluator — NO
+# precompute_engine in the loop. This is the apples-to-apples
+# baseline the paper compares ASAP against:
+#
+#   producer ──OTLP──▶ agent ──PRW──▶ Prometheus :9090
+#
+# The PRW exporter IS in the patched `asap/asap-otel:dev` builder
+# (see `opentelemetry-collector-contrib-patch/cmd/asap-otel/
+# builder-config.yaml`), so no rebuild is required. PRW is
+# lossy for sketch-typed data points but B0's pipeline only
+# carries raw counters / gauges, so that's fine.
+#
+# Bandwidth column for B0 = wire bytes from agent → Prometheus
+# (measured via docker stats net tx on the agent container).
+# Storage column = Prometheus TSDB chunk dir size (sampled by
+# `measure_stages.py`).
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://backend:4320/v1/opamp
+        headers:
+          X-Agent-ID: "agent-1"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        max_recv_msg_size_mib: 4096
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  # PRW directly to the real Prometheus :9090 remote-write
+  # receiver. Prometheus v2.53.1 (the image base.yml ships) has
+  # the `--web.enable-remote-write-receiver` flag; the B0 overlay
+  # adds it.
+  #
+  # `target_info: enabled: false` suppresses the OTLP
+  # resource-info synthetic series that would otherwise flood
+  # Prometheus with one extra series per resource attribute set.
+  prometheusremotewrite:
+    # Step 2.4: target prometheus-b0 (mvp-multi-stage's `--profile b0`
+    # service that runs with `--web.enable-remote-write-receiver`).
+    # The base.yml `prometheus` doesn't have remote-write enabled, so
+    # writing there returns 404 + drops every batch.
+    endpoint: "http://victoriametrics:8428/api/v1/write"
+    tls:
+      insecure: true
+    target_info:
+      enabled: false
+    resource_to_telemetry_conversion:
+      enabled: false
+
+service:
+  extensions: [opamp]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheusremotewrite]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

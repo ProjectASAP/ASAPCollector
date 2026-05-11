@@ -1,0 +1,95 @@
+# Baseline B1 v4 — Serf XOR + raw forward to real Prometheus.
+#
+# v4 (issue #46) SERF baseline. The
+# v3 SERF config used `drop_original: true` so nothing reached
+# the gateway / backend / Prometheus — bandwidth was measured
+# entirely against bytes-on-disk under /var/tmp/asap-serf-out.
+# That makes apples-to-apples comparison against B0
+# (raw-OTel-to-Prometheus) and the ASAP single-sketch baseline
+# impossible because the SERF path doesn't expose any signals
+# downstream of the agent.
+#
+# v4 keeps the SERF processor running (so its CPU / RSS / output-
+# bytes self-telemetry is still recorded for the resource table),
+# but flips `drop_original: false` and forwards the raw stream
+# via `prometheusremotewrite` to the real Prometheus on
+# :9090/api/v1/write — same sink as B0. Bandwidth column for B1
+# = wire bytes from agent → Prometheus PLUS the SERF-written
+# blob bytes (a structural cost the SERF baseline pays in
+# addition to the wire bytes). The query side (Prometheus
+# evaluator) is then identical to B0, isolating the SERF
+# CPU / RSS overhead as the only delta.
+#
+# Pipeline:
+#
+#   producer ──OTLP──▶ agent ──serf──▶ /var/tmp/asap-serf-out
+#                       │
+#                       └─raw forward──▶ Prometheus :9090/api/v1/write
+#
+# The SERF processor sits BEFORE batch so it sees per-arrival
+# points (matches v3 behaviour); the PRW exporter only sees the
+# raw stream because SERF's output isn't on the OTLP graph.
+
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://backend:4320/v1/opamp
+        headers:
+          X-Agent-ID: "agent-1"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        max_recv_msg_size_mib: 4096
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  serf:
+    # 60s window matches the v3 sketch-baseline aggregation budget.
+    window_interval: 60s
+    compression: xor
+    max_diff: 0.0
+    # v4: forward raw downstream so PRW can sink to Prometheus.
+    drop_original: false
+    local_dir: /var/tmp/asap-serf-out
+
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  prometheusremotewrite:
+    endpoint: "http://victoriametrics:8428/api/v1/write"
+    tls:
+      insecure: true
+    target_info:
+      enabled: false
+    resource_to_telemetry_conversion:
+      enabled: false
+
+service:
+  extensions: [opamp]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      # serf first (writes blob, passes raw through), then batch +
+      # PRW so the same data Prometheus would see in B0 also lands
+      # in B1 — the SERF baseline only ADDS overhead.
+      processors: [serf, batch]
+      exporters: [prometheusremotewrite]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

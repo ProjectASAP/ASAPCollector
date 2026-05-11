@@ -28,7 +28,7 @@ throughput, RSS, or per-window output bytes.
 
 ### Stack
 
-`deploy/docker-compose/baseline-b3-delta.yml` over the shared `base.yml`
+`deploy/mvp-singlenode/docker-compose/baseline-b3-delta.yml` over the shared `base.yml`
 + `agents-N1.yml` overlay. B3-delta is the "delta sketch transmission,
 60 s window" baseline; it's the same combination Phase 2.11A's micro
 results care about, since the shim sits in the agent processor pipeline
@@ -48,11 +48,11 @@ fake-exporter is the only writer.
 
 The harness has two relevant scripts:
 
-- `deploy/scripts/measure-baseline.py` — instant Prometheus query for
+- `deploy/mvp-singlenode/scripts/measure-baseline.py` — instant Prometheus query for
   per-tier CPU / RSS / point rate / output bytes, plus a
   `docker stats` two-sample window for backend + producer numbers
   (script supplements Prom because cAdvisor isn't in the stack).
-- `deploy/scripts/run-baseline-sweep.sh` — orchestrator that brings the
+- `deploy/mvp-singlenode/scripts/run-baseline-sweep.sh` — orchestrator that brings the
   stack up, soaks for `SOAK_S` seconds, then invokes
   `measure-baseline.py`. We do not use the sweep wrapper here because
   the goal is one stack soak per commit, not the
@@ -229,8 +229,8 @@ listed at the end as standing follow-ups.
 
    Closing the gap properly requires either:
 
-   - **Replay path on the harness side.** Add an opt-in PromQL
-     replay client (the existing `deploy/scripts/promql_replay.py`
+   - **Replay path on the harness side.** Add an opt-in MetricsQL
+     replay client (the existing `deploy/mvp-singlenode/scripts/metricsql_replay.py`
      primitives are a starting point) that the sweep wrapper drives
      before the measurement window. This is its own feature with
      its own design questions (which queries to replay, at what
@@ -344,11 +344,11 @@ AGENT_CONFIG=asap-otel-agent-b3-delta.yaml docker compose \
   -f base.yml -f agents-N1.yml -f baseline-b3-delta.yml \
   up -d --no-deps --force-recreate agent-1 gateway
 sleep 200  # 2 m for rate window + 80 s margin
-python3 $REPO/deploy/scripts/measure-baseline.py \
+python3 $REPO/deploy/mvp-singlenode/scripts/measure-baseline.py \
   --baseline b3-delta-preshim --scale N1 --rate 1000 --cardinality 1000 \
   --window 2m --bytes-sample-window 10
 sleep 60
-python3 $REPO/deploy/scripts/measure-baseline.py \
+python3 $REPO/deploy/mvp-singlenode/scripts/measure-baseline.py \
   --baseline b3-delta-preshim-2 --scale N1 --rate 1000 --cardinality 1000 \
   --window 2m --bytes-sample-window 10
 
