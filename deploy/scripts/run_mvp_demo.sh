@@ -533,19 +533,19 @@ measure_phase() {
     # window_duration and the ASAPQuery aggregation `windowSize`.
     cat > "${mdir}/replay-queries.json" <<'JSON'
 [
-    {"kind": "quantile",     "promql": "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"},
-    {"kind": "sum",          "promql": "sum by (zone) (http_requests_total)"},
-    {"kind": "sum",          "promql": "sum by (zone) (rate(http_requests_total[5m]))"},
-    {"kind": "quantile",     "promql": "quantile_over_time(0.99, request_size_bytes[30s])"},
-    {"kind": "count_unique", "promql": "count(unique_users_per_min)"},
-    {"kind": "topk",         "promql": "topk(5, top_endpoint_qps)"},
-    {"kind": "frequency",    "promql": "rate(endpoint_request_freq[5m])"}
+    {"kind": "quantile",     "metricsql": "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"},
+    {"kind": "sum",          "metricsql": "sum by (zone) (http_requests_total)"},
+    {"kind": "sum",          "metricsql": "sum by (zone) (rate(http_requests_total[5m]))"},
+    {"kind": "quantile",     "metricsql": "quantile_over_time(0.99, request_size_bytes[30s])"},
+    {"kind": "count_unique", "metricsql": "count(unique_users_per_min)"},
+    {"kind": "topk",         "metricsql": "topk(5, top_endpoint_qps)"},
+    {"kind": "frequency",    "metricsql": "rate(endpoint_request_freq[5m])"}
 ]
 JSON
 
     # Replay (background).
     log "  replay (qps=${QPS} → ${backend_url})"
-    python3 "${SCRIPT_DIR}/promql_replay.py" \
+    python3 "${SCRIPT_DIR}/metricsql_replay.py" \
         --target "${backend_url}" \
         --controller "http://localhost:${HOST_CONTROLLER_PORT}" \
         --queries "${mdir}/replay-queries.json" \

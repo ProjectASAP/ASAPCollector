@@ -83,7 +83,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from promql_replay import PlanIdTracker, run_query
+from metricsql_replay import PlanIdTracker, run_query
 
 
 def now_iso() -> str:

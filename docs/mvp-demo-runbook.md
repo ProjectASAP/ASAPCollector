@@ -307,7 +307,7 @@ TSDB.
 Compose overlay: `deploy/docker-compose/mvp-multi-stage.yml` brought
 up with the `b0` profile (`docker compose --profile b0 up`) which
 adds a Prometheus container with `--web.enable-remote-write-receiver`.
-The agents under this profile load `asap-otel-agent-b0-prometheus.yaml`,
+The agents under this profile load `configs/b0/asap-otel-agent-b0-prometheus.yaml`,
 which configures a `prometheusremotewrite` exporter with no sketch
 processor in the chain.
 
@@ -639,14 +639,14 @@ Most files in `deploy/configs/` belong to baseline-sweep / alt-storage / experim
 
 | File | Role | Mounted by |
 |---|---|---|
-| `configs/mvp-workload.yaml` | Controller workload spec — which metrics, what queries, sketch family per metric | controller |
-| `configs/backend-streaming.yaml` | Backend ingest schema | backend |
-| `configs/backend-storage-routing.yaml` | Warm-tier ↔ archive routing decisions | backend |
-| `configs/asap-otel-gateway-mvp-placeholder.yaml` | Gateway OTLP fan-in (sketches + raw → backend) | gateway (ASAP arm) |
-| `configs/asap-otel-agent-b0-prometheus.yaml` | Baseline-B0 agent (raw → Prometheus, no sketches) | agent (B0 arm) |
-| `configs/asap-otel-agent-b6-asap-single-sketch.yaml` | ASAP-arm agent (5 sketch processors + OTLP fwd) | agent (ASAP arm) |
-| `configs/prometheus-with-remote-write.yml` | B0 Prometheus scrape + remote-write | prometheus-b0 |
-| `configs/thanos-objstore.yaml` | Thanos sidecar / store-gateway / compact MinIO endpoint | thanos-* |
+| `configs/asap/mvp-workload.yaml` | Controller workload spec — which metrics, what queries, sketch family per metric | controller |
+| `configs/asap/backend-streaming.yaml` | Backend ingest schema | backend |
+| `configs/asap/backend-storage-routing.yaml` | Warm-tier ↔ archive routing decisions | backend |
+| `configs/asap/asap-otel-gateway-mvp-placeholder.yaml` | Gateway OTLP fan-in (sketches + raw → backend) | gateway (ASAP arm) |
+| `configs/b0/asap-otel-agent-b0-prometheus.yaml` | Baseline-B0 agent (raw → Prometheus, no sketches) | agent (B0 arm) |
+| `configs/asap/asap-otel-agent-b6-asap-single-sketch.yaml` | ASAP-arm agent (5 sketch processors + OTLP fwd) | agent (ASAP arm) |
+| `configs/shared/prometheus-with-remote-write.yml` | B0 Prometheus scrape + remote-write | prometheus-b0 |
+| `configs/shared/thanos-objstore.yaml` | Thanos sidecar / store-gateway / compact MinIO endpoint | thanos-* |
 | `configs/grafana-datasources.yml` | Grafana pre-wired datasources | grafana (optional) |
 
 For the 4-node demo, the `b1-serf-prometheus` agent config is also mounted when `--mode both`. Other files in `deploy/configs/` (e.g., `backend-streaming-{cms,cs,hll,kll}.yaml`, `asap-otel-agent-b{2,3,4,5}-*.yaml`, `gateway-aggregate-*.yaml`) are referenced by baseline-sweep overlays and ad-hoc experiments — not by the MVP demo itself.
@@ -683,7 +683,7 @@ the implementation):
 | 0. Pre-flight | Verify images present; clean stale containers (Phase δ.1: gorilla-compactor binary check removed — thanos-compact sidecar comes up with the rest of the stack) |
 | 1. Stack-up | `docker compose up` against `base.yml + mvp-multi-stage.yml`; mount `mvp-workload.yaml` into controller; wait for OpAMP push to settle |
 | 2. Warm-up | 60 s agent warm-up + 30 s query-side warm-up (poll `count_over_time(http_requests_total[1m])` until non-zero) |
-| 3. Measurements | Run `measure_stages.py` + `measure_per_edge_bandwidth.py` + `promql_replay.py` over 60 s soak with three query classes |
+| 3. Measurements | Run `measure_stages.py` + `measure_per_edge_bandwidth.py` + `metricsql_replay.py` over 60 s soak with three query classes |
 | 4. Freshness | Run `run_freshness_phase.sh` against three probes (raw / warm / archive) → 3 CSVs |
 | 5. Ad-hoc queries | Fire label-predicate queries; capture postings filtering |
 | 6. Cold-fallback | Fire `count(http_requests_total{service="payments"})`; verify `data_source: thanos_archive (or legacy gorilla_archive alias)` |

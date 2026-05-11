@@ -357,7 +357,7 @@ def _client_p99_from_jsonl(path: str) -> float:
     "Success" here means `status == "success"` AND `http_code`
     is 2xx — covers the "Prometheus said OK but body said error"
     case where http is 200 but the JSON status is "error". The
-    e2e `promql_replay.py` writes one JSON object per line.
+    e2e `metricsql_replay.py` writes one JSON object per line.
     """
     durs: list[float] = []
     try:
@@ -453,7 +453,7 @@ def main() -> int:
     p.add_argument(
         "--replay-jsonl",
         default="",
-        help="path to promql_replay.py JSONL output. When set, "
+        help="path to metricsql_replay.py JSONL output. When set, "
         "backend_query_p99_ms is computed client-side (p99 of "
         "successful-query duration_ms) — survives the `docker compose "
         "down -v` that follows each sweep cell. Falls through to the "

@@ -18,7 +18,7 @@
 #   WINDOWS="5s 30s 60s 300s"             SKETCH_WINDOW sweep (B4 only)
 #   SOAK_S=120                            per-config soak seconds
 #   SCRIPT_DIR=.../deploy/scripts         override lookup path
-#   DRIVE_QUERIES=1                       run promql_replay during soak
+#   DRIVE_QUERIES=1                       run metricsql_replay during soak
 #                                         (lights up backend_query_p99_ms;
 #                                         requires e2e-overlay-style stack)
 #   QUERY_QPS=5                           QPS for the optional replay
@@ -126,7 +126,7 @@ for baseline in $BASELINES; do
       if (( DRIVE_QUERIES == 1 )); then
         replay_jsonl="${REPLAY_OUT_DIR}/replay-${tag}-${rate}-${card}.jsonl"
         echo "# driving queries qps=${QUERY_QPS} dur=${QUERY_DURATION_S}s → ${replay_jsonl}" >&2
-        python3 "${SCRIPT_DIR}/promql_replay.py" \
+        python3 "${SCRIPT_DIR}/metricsql_replay.py" \
           --target http://localhost:19091 \
           --controller http://localhost:18080 \
           --queries "${SCRIPT_DIR}/queries-e2e.json" \

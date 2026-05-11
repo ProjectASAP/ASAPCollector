@@ -168,7 +168,7 @@ until docker logs docker-compose-backend-1 2>&1 \
 
 # 3. Drive workload + plan-transition observability concurrently.
 mkdir -p /tmp/cell-smoke-e0
-python3 deploy/scripts/promql_replay.py \
+python3 deploy/scripts/metricsql_replay.py \
     --target http://localhost:19091 --controller http://localhost:18080 \
     --queries deploy/scripts/queries-e2e.json \
     --qps 5 --duration 60 \

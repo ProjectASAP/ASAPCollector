@@ -114,7 +114,7 @@ backend_up() {
         )
         docker_run_on "${NODE2_HOST}" \
             --name asap-prometheus \
-            -v /mydata/mvp-multinode/configs/prometheus-with-remote-write.yml:/etc/prometheus/prometheus.yml:ro \
+            -v /mydata/mvp-multinode/configs/shared/prometheus-with-remote-write.yml:/etc/prometheus/prometheus.yml:ro \
             prom/prometheus:v2.55.0 "${prom_args[@]}"
     fi
 
@@ -147,7 +147,7 @@ backend_up() {
         docker_run_on "${NODE2_HOST}" \
             --name asap-thanos-store-gateway \
             --user 0 \
-            -v /mydata/mvp-multinode/configs/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
+            -v /mydata/mvp-multinode/configs/shared/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
             quay.io/thanos/thanos:v0.41.0 \
             store \
             --objstore.config-file=/etc/thanos/objstore.yaml \
@@ -170,7 +170,7 @@ backend_up() {
         docker_run_on "${NODE2_HOST}" \
             --name asap-thanos-compact \
             --user 0 \
-            -v /mydata/mvp-multinode/configs/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
+            -v /mydata/mvp-multinode/configs/shared/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
             quay.io/thanos/thanos:v0.41.0 \
             compact \
             --objstore.config-file=/etc/thanos/objstore.yaml \
@@ -211,9 +211,9 @@ backend_up() {
             -e 'ASAP_GORILLA_S3_PREFIX_TEMPLATE={tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/' \
             -e ASAP_BACKEND_STORAGE_ROUTING=/etc/asap/backend-storage-routing.yaml \
             -e ASAP_THANOS_QUERY_URL=http://thanos-query:10903 \
-            -v /mydata/mvp-multinode/configs/backend-streaming.yaml:/etc/asap/streaming.yaml:ro \
-            -v /mydata/mvp-multinode/configs/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro \
-            -v /mydata/mvp-multinode/configs/mvp-workload.yaml:/etc/asap/mvp-workload.yaml:ro \
+            -v /mydata/mvp-multinode/configs/asap/backend-streaming.yaml:/etc/asap/streaming.yaml:ro \
+            -v /mydata/mvp-multinode/configs/asap/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro \
+            -v /mydata/mvp-multinode/configs/asap/mvp-workload.yaml:/etc/asap/mvp-workload.yaml:ro \
             asap/query-backend:dev \
             --streaming-config=/etc/asap/streaming.yaml \
             --query-port=9091 \
@@ -238,7 +238,7 @@ gateway_up() {
     log "node1 gateway up"
     docker_run_on "${NODE1_HOST}" \
         --name asap-gateway \
-        -v /mydata/mvp-multinode/configs/asap-otel-gateway-mvp-placeholder.yaml:/etc/otel/config.yaml:ro \
+        -v /mydata/mvp-multinode/configs/asap/asap-otel-gateway-mvp-placeholder.yaml:/etc/otel/config.yaml:ro \
         asap/asap-otel:dev \
         --config=/etc/otel/config.yaml
 }
@@ -253,9 +253,9 @@ agents_up() {
     local arm=$1
     local agent_cfg
     case "${arm}" in
-        b0)   agent_cfg=asap-otel-agent-b0-prometheus.yaml ;;
-        b1)   agent_cfg=asap-otel-agent-b1-serf-prometheus.yaml ;;
-        asap) agent_cfg=asap-otel-agent-b6-asap-single-sketch.yaml ;;
+        b0)   agent_cfg=b0/asap-otel-agent-b0-prometheus.yaml ;;
+        b1)   agent_cfg=b1/asap-otel-agent-b1-serf-prometheus.yaml ;;
+        asap) agent_cfg=asap/asap-otel-agent-b6-asap-single-sketch.yaml ;;
         *) die "unknown arm ${arm}" ;;
     esac
 
@@ -376,8 +376,8 @@ arm_measure() {
         query_endpoint="http://${NODE2_IP}:9090"
     fi
 
-    log "[measure ${arm}] PromQL replay against ${query_endpoint} for ${SOAK_S}s"
-    python3 "${ROOT}/deploy/scripts/promql_replay.py" \
+    log "[measure ${arm}] MetricsQL replay against ${query_endpoint} for ${SOAK_S}s"
+    python3 "${ROOT}/deploy/scripts/metricsql_replay.py" \
         --endpoint "${query_endpoint}" \
         --queries "${ROOT}/deploy/scripts/queries-e2e.json" \
         --duration "${SOAK_S}" \

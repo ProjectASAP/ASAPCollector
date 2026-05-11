@@ -229,8 +229,8 @@ listed at the end as standing follow-ups.
 
    Closing the gap properly requires either:
 
-   - **Replay path on the harness side.** Add an opt-in PromQL
-     replay client (the existing `deploy/scripts/promql_replay.py`
+   - **Replay path on the harness side.** Add an opt-in MetricsQL
+     replay client (the existing `deploy/scripts/metricsql_replay.py`
      primitives are a starting point) that the sweep wrapper drives
      before the measurement window. This is its own feature with
      its own design questions (which queries to replay, at what

@@ -1,4 +1,4 @@
-"""Tests for promql_replay.py — the PromQL replay client (P5).
+"""Tests for metricsql_replay.py — the MetricsQL replay client (P5).
 
 Contract under test:
 
@@ -29,12 +29,12 @@ import tempfile
 import unittest
 from unittest import mock
 
-# Make `import promql_replay` resolve from the scripts dir.
+# Make `import metricsql_replay` resolve from the scripts dir.
 SCRIPT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
-import promql_replay  # noqa: E402
+import metricsql_replay  # noqa: E402
 
 
 # ── load_queries ─────────────────────────────────────────────────
@@ -51,26 +51,34 @@ class TestLoadQueries(unittest.TestCase):
 
     def test_accepts_all_five_kinds(self) -> None:
         path = self._write([
-            {"kind": "quantile", "promql": "quantile_over_time(0.99, http_latency_ms[1m])"},
-            {"kind": "sum", "promql": "sum by (zone) (http_requests_total)"},
-            {"kind": "count_unique", "promql": "count(unique_users_per_min)"},
-            {"kind": "topk", "promql": "topk(5, top_endpoint_qps)"},
-            {"kind": "frequency", "promql": "rate(endpoint_request_freq[5m])"},
+            {"kind": "quantile", "metricsql": "quantile_over_time(0.99, http_latency_ms[1m])"},
+            {"kind": "sum", "metricsql": "sum by (zone) (http_requests_total)"},
+            {"kind": "count_unique", "metricsql": "count(unique_users_per_min)"},
+            {"kind": "topk", "metricsql": "topk(5, top_endpoint_qps)"},
+            {"kind": "frequency", "metricsql": "rate(endpoint_request_freq[5m])"},
         ])
-        got = promql_replay.load_queries(path)
+        got = metricsql_replay.load_queries(path)
         self.assertEqual(len(got), 5)
         self.assertEqual({q["kind"] for q in got},
                          {"quantile", "sum", "count_unique", "topk", "frequency"})
 
     def test_rejects_unknown_kind(self) -> None:
-        path = self._write([{"kind": "bogus", "promql": "x"}])
+        path = self._write([{"kind": "bogus", "metricsql": "x"}])
         with self.assertRaises(SystemExit):
-            promql_replay.load_queries(path)
+            metricsql_replay.load_queries(path)
 
     def test_rejects_missing_field(self) -> None:
-        path = self._write([{"kind": "sum"}])  # no promql
+        path = self._write([{"kind": "sum"}])  # no metricsql
         with self.assertRaises(SystemExit):
-            promql_replay.load_queries(path)
+            metricsql_replay.load_queries(path)
+
+    def test_accepts_legacy_promql_field(self) -> None:
+        # Back-compat: external workload JSONs may still use the
+        # pre-rename `promql` key. load_queries should accept it.
+        path = self._write([{"kind": "sum", "promql": "sum(http_requests_total)"}])
+        got = metricsql_replay.load_queries(path)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["metricsql"], "sum(http_requests_total)")
 
 
 # ── run_query result-shape parsing ────────────────────────────────
@@ -100,11 +108,11 @@ def _canned(body: dict, code: int = 200):
 
 
 class TestRunQueryShapes(unittest.TestCase):
-    """run_query parses each PromQL result-type the 5-sketch workload uses."""
+    """run_query parses each MetricsQL/PromQL result-type the 5-sketch workload uses."""
 
     def _patch_urlopen(self, body: dict):
         return mock.patch.object(
-            promql_replay.urllib.request,
+            metricsql_replay.urllib.request,
             "urlopen",
             return_value=_canned(body),
         )
@@ -120,7 +128,7 @@ class TestRunQueryShapes(unittest.TestCase):
             },
         }
         with self._patch_urlopen(body):
-            _, res = promql_replay.run_query("http://x", "q", 1.0)
+            _, res = metricsql_replay.run_query("http://x", "q", 1.0)
         self.assertEqual(res["status"], "success")
         self.assertEqual(res["result_type"], "vector")
         self.assertEqual(len(res["result"]), 1)
@@ -134,7 +142,7 @@ class TestRunQueryShapes(unittest.TestCase):
             },
         }
         with self._patch_urlopen(body):
-            _, res = promql_replay.run_query("http://x", "count(unique_users_per_min)", 1.0)
+            _, res = metricsql_replay.run_query("http://x", "count(unique_users_per_min)", 1.0)
         self.assertEqual(res["result_type"], "scalar")
         self.assertEqual(res["result"], [1715000000, "1234"])
 
@@ -150,7 +158,7 @@ class TestRunQueryShapes(unittest.TestCase):
             },
         }
         with self._patch_urlopen(body):
-            _, res = promql_replay.run_query("http://x", "topk(5, top_endpoint_qps)", 1.0)
+            _, res = metricsql_replay.run_query("http://x", "topk(5, top_endpoint_qps)", 1.0)
         self.assertEqual(res["result_type"], "vector")
         self.assertEqual(len(res["result"]), 5)
 
@@ -166,7 +174,7 @@ class TestRunQueryShapes(unittest.TestCase):
             },
         }
         with self._patch_urlopen(body):
-            _, res = promql_replay.run_query(
+            _, res = metricsql_replay.run_query(
                 "http://x", "rate(endpoint_request_freq[5m])", 1.0,
             )
         self.assertEqual(res["result_type"], "vector")
@@ -183,7 +191,7 @@ class TestRunQueryShapes(unittest.TestCase):
             },
         }
         with self._patch_urlopen(body):
-            _, res = promql_replay.run_query(
+            _, res = metricsql_replay.run_query(
                 "http://x", "sum by (zone) (http_requests_total)", 1.0,
             )
         self.assertEqual(res["result_type"], "vector")
@@ -204,9 +212,9 @@ class TestRunQueryShapes(unittest.TestCase):
             def __exit__(self, *_args) -> None:
                 return None
 
-        with mock.patch.object(promql_replay.urllib.request, "urlopen",
+        with mock.patch.object(metricsql_replay.urllib.request, "urlopen",
                                return_value=_BadResp()):
-            _, res = promql_replay.run_query("http://x", "q", 1.0)
+            _, res = metricsql_replay.run_query("http://x", "q", 1.0)
         self.assertEqual(res["status"], "json_error")
 
 

@@ -130,7 +130,7 @@ primary-path PromQL returns NaN for any cell where no queries
 were issued during the soak. That's not a bug, that's the
 metric's contract; just make sure the sweep driver issues some
 queries before reading the column. `run_e2e_sweep.sh` does this
-by default (it runs `promql_replay.py` for the full soak).
+by default (it runs `metricsql_replay.py` for the full soak).
 `run-baseline-sweep.sh` did NOT prior to 2026-05-05; the
 `DRIVE_QUERIES=1` opt-in flag added in this paper-blocker-#3
 work fills the gap.

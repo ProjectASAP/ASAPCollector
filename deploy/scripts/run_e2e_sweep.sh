@@ -82,7 +82,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # layered on top of e2e-overlay.yml. The default `e2e-overlay.yml`
 # (DDSketch) is used when overlay_yaml is empty.
 #
-# queries_file is the per-family promql_replay query suite, using
+# queries_file is the per-family metricsql_replay query suite, using
 # metric names that match the family's metric_suffix
 # (HLL → *_hll, KLL → *_kll, DDSketch → *_quantile, CS/CMS → raw).
 # Without per-family queries, the replay client's queries fell
@@ -214,7 +214,7 @@ for sk in "${SKETCHES[@]}"; do
                 # warm-tier accuracy claim ⑤ intact while still
                 # exercising claim ④.
                 CELL_QUERIES="${SCRIPT_DIR}/${QUERIES_FILE:-queries-e2e.json}"
-                python3 "${SCRIPT_DIR}/promql_replay.py" \
+                python3 "${SCRIPT_DIR}/metricsql_replay.py" \
                     --target http://localhost:19091 \
                     --controller http://localhost:18080 \
                     --queries "$CELL_QUERIES" \

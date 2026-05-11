@@ -50,9 +50,9 @@ run_arm() {
     else                            q_endpoint="http://${NODE2_IP}:9090"
     fi
 
-    # background: PromQL replay
+    # background: MetricsQL replay
     if [ -f "${QUERIES_JSON}" ]; then
-        timeout $((SOAK+10)) python3 "${ROOT}/deploy/scripts/promql_replay.py" \
+        timeout $((SOAK+10)) python3 "${ROOT}/deploy/scripts/metricsql_replay.py" \
             --target "${q_endpoint}" \
             --queries "${QUERIES_JSON}" \
             --duration "${SOAK}" \

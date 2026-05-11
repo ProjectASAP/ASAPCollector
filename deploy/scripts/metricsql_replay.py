@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""PromQL replay client for the e2e harness (P5).
+"""MetricsQL replay client for the e2e harness (P5).
 
-Fires PromQL queries at the backend's HTTP query surface
+Fires MetricsQL queries at the backend's HTTP query surface
 (`:19091/api/v1/query`) at a fixed QPS, captures wall-clock
 latency + result vector per attempt, and tags each line of the
 output JSONL log with the active plan id (polled from the
 controller's /metrics every second).
+
+MetricsQL is VictoriaMetrics' PromQL superset (adds
+`distinct_over_time` etc.). The replay client itself is
+language-agnostic — it just forwards the query string to the
+`/api/v1/query` endpoint — but the JSON schema and naming reflect
+that the demo workload is MetricsQL.
 
 Output schema (JSONL, one line per query attempt):
 
@@ -27,7 +33,7 @@ The reducer (P8) joins this against the raw-tee JSONL on
 
 Usage:
 
-    python3 promql_replay.py \\
+    python3 metricsql_replay.py \\
         --target http://localhost:19091 \\
         --controller http://localhost:18080 \\
         --queries queries.json \\
@@ -207,12 +213,12 @@ class PlanIdTracker:
 
 def run_query(
     target: str,
-    promql: str,
+    metricsql: str,
     timeout_s: float = 10.0,
 ) -> tuple[float, dict[str, Any]]:
     """Returns (duration_ms, result_dict). On any error the
     result_dict has a `status` key explaining what happened."""
-    qs = urllib.parse.urlencode({"query": promql})
+    qs = urllib.parse.urlencode({"query": metricsql})
     url = f"{target.rstrip('/')}/api/v1/query?{qs}"
     started = time.perf_counter()
     try:
@@ -268,13 +274,13 @@ def run_query(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="PromQL replay client (P5)")
+    ap = argparse.ArgumentParser(description="MetricsQL replay client (P5)")
     ap.add_argument("--target", default="http://localhost:19091",
-                    help="backend PromQL HTTP base URL")
+                    help="backend MetricsQL/PromQL HTTP base URL")
     ap.add_argument("--controller", default="http://localhost:18080",
                     help="controller base URL (for /metrics plan-id polling)")
     ap.add_argument("--queries", required=True,
-                    help="path to JSON list of {kind, promql} entries")
+                    help="path to JSON list of {kind, metricsql} entries")
     ap.add_argument("--qps", type=float, default=10.0,
                     help="aggregate query rate (rows-per-second across all queries)")
     ap.add_argument("--duration", type=float, default=60.0,

@@ -72,7 +72,7 @@ workload + SLAs.
      Backend p50 / p99 query latency is production-usable.
      Headline target: ≤2× warm-hot for cold-fallback;
      warm-tier is the headline number.
-     - *Evidence:* `deploy/scripts/promql_replay.py` (P5)
+     - *Evidence:* `deploy/scripts/metricsql_replay.py` (P5)
        captures p50 / p99 per query at fixed QPS; P9
        `query_latency_cdf.png` plot;
        `deploy/scripts/plan_transition.py` (P6)
