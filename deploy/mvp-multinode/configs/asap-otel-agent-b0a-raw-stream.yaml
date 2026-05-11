@@ -1,0 +1,47 @@
+# Baseline B0a — raw OTel streaming. Low-latency control:
+# every second, flush whatever raw samples arrived.
+#
+# Pipeline: OTLP in → batch(1s) → OTLP out to gateway.
+#
+# Pairs with B0b (raw OTel held 60s) so the baseline comparison can
+# show both the latency-optimized and the budget-matched raw
+# baselines. Everyone else in the matrix (B1/B2/B3/B5) holds
+# data for 60s; B0a is the one exception, kept as a reference
+# for what "native Prometheus scrape" looks like.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  otlp/gateway:
+    endpoint: gateway:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/gateway]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

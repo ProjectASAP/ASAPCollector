@@ -1,0 +1,7 @@
+# Eval artifacts — regenerated every run, never source of truth.
+# See README.md §"Where artifacts land" for the per-node layout.
+results/
+logs/
+autopilot.log
+*.pid
+*.bak

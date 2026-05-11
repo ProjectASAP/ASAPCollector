@@ -1,0 +1,93 @@
+# Baseline B5 v4 — Gorilla XOR + raw forward to real Prometheus.
+#
+# v4 (issue #46) variant of `asap-otel-agent-b5-gorilla.yaml`. The
+# v3 Gorilla config used `drop_original: true` so nothing reached
+# the gateway / backend / Prometheus — bandwidth was measured
+# entirely against bytes-on-disk under /var/tmp/asap-gorilla-out.
+# That makes apples-to-apples comparison against B0
+# (raw-OTel-to-Prometheus) and the ASAP single-sketch baseline
+# impossible because the Gorilla path doesn't expose any signals
+# downstream of the agent — in particular, criterion ⑥ freshness
+# probes that read from Prometheus get NaN.
+#
+# v4 keeps the Gorilla processor running (so its CPU / RSS / output-
+# bytes self-telemetry is still recorded for the resource table),
+# but flips `drop_original: false` and forwards the raw stream
+# via `prometheusremotewrite` to the real Prometheus on
+# :9090/api/v1/write — same sink as B0/B1. Bandwidth column for
+# B5 = wire bytes from agent → Prometheus PLUS the Gorilla-written
+# blob bytes (a structural cost the Gorilla baseline pays in
+# addition to the wire bytes). The query side (Prometheus
+# evaluator) is then identical to B0/B1, isolating the Gorilla
+# XOR CPU / RSS overhead as the only delta.
+#
+# Pipeline:
+#
+#   producer ──OTLP──▶ agent ──gorilla──▶ /var/tmp/asap-gorilla-out
+#                       │
+#                       └─raw forward──▶ Prometheus :9090/api/v1/write
+#
+# Mirrors `asap-otel-agent-b1-serf-prometheus.yaml` exactly (apart
+# from the processor name) so the demo's Prometheus-fed freshness
+# and accuracy paths see identical inputs across B0/B1/B5.
+
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://backend:4320/v1/opamp
+        headers:
+          X-Agent-ID: "agent-1"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  gorilla:
+    # 60s window matches the v3 sketch-baseline aggregation budget.
+    window_interval: 60s
+    # v4: forward raw downstream so PRW can sink to Prometheus.
+    drop_original: false
+    local_dir: /var/tmp/asap-gorilla-out
+
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  prometheusremotewrite:
+    endpoint: "http://prometheus:9090/api/v1/write"
+    tls:
+      insecure: true
+    target_info:
+      enabled: false
+    resource_to_telemetry_conversion:
+      enabled: false
+
+service:
+  extensions: [opamp]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      # gorilla first (writes blob, passes raw through), then batch +
+      # PRW so the same data Prometheus would see in B0 also lands
+      # in B5 — the Gorilla baseline only ADDS overhead.
+      processors: [gorilla, batch]
+      exporters: [prometheusremotewrite]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

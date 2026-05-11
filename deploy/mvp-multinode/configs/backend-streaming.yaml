@@ -1,0 +1,50 @@
+# e2e harness streaming-config — DDSketch aggregation now that
+# the agent emits sketchlib-go's `SketchEnvelope{DDSketchState}`
+# wire format and the backend's `DDSketchAccumulator` decodes it
+# directly.
+#
+# Refactor-2026-05: agent's ddsketchprocessor no longer appends a
+# "_quantile" suffix at emit. The metric name on the wire is the raw
+# input metric (`http_requests_total_latency_ms`,
+# `http_requests_total`); the DDSketch encoding is identified by the
+# OTLP pdata variant tag, not by a name suffix. Backend ingests the
+# sketch under the original name. PromQL fired against the raw name
+# resolves directly against the stored sketch state.
+aggregations:
+- aggregationId: 1
+  aggregationType: DDSketch
+  aggregationSubType: ''
+  labels:
+    grouping: [zone]
+    rollup: [rack, node, pod]
+    aggregated: []
+  metric: http_requests_total_latency_ms
+  parameters:
+    relativeAccuracy: 0.01
+  windowSize: 30
+  windowType: tumbling
+  spatialFilter: ''
+- aggregationId: 2
+  aggregationType: DDSketch
+  aggregationSubType: ''
+  labels:
+    grouping: [zone]
+    rollup: [rack, node, pod]
+    aggregated: []
+  metric: http_requests_total
+  parameters:
+    relativeAccuracy: 0.01
+  windowSize: 30
+  windowType: tumbling
+  spatialFilter: ''
+metrics:
+  http_requests_total_latency_ms:
+    - zone
+    - rack
+    - node
+    - pod
+  http_requests_total:
+    - zone
+    - rack
+    - node
+    - pod

@@ -1,0 +1,89 @@
+# Bootstrap config for controller→agent OpAMP loop. Agent boots
+# with this config, then subscribes to the controller's OpAMP
+# server and applies any pushed config updates at runtime
+# (`POST /api/v1/plan` triggers a push).
+#
+# B3 delta-sketch transmission, but with OTLP export pointed at the
+# backend directly (skipping the gateway whose stock-OTel
+# `prometheusremotewrite` translator drops DDSketch / HLLSketch
+# types). The patched backend's OTLP receiver
+# (`query_engine_rust::OtlpReceiver`) handles those types via the
+# proto patches in `opentelemetry-proto-patch/`. This is the
+# config the e2e harness uses for warm-tier sketch ingest.
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://backend:4320/v1/opamp
+        # The controller's OpAMP server requires an X-Agent-ID
+        # header to dispatch pushed configs to the right
+        # connection. Stock OTel opampextension carries InstanceUid
+        # in the OpAMP message body, which the controller doesn't
+        # consult; explicit header is required.
+        headers:
+          X-Agent-ID: "agent-1"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  ddsketch:
+    mode: window
+    window_duration: 30s
+    # transmit_sketch: true emits the full DDSketch state on the wire.
+    # The processor now uses sketchlib-go's `*DDSketch` instead of
+    # DataDog's `sketchpb.DDSketch`, so the bytes serialized by
+    # `SerializePortable() + proto.Marshal` are byte-compatible
+    # with the Rust backend's `asap_sketchlib::DDSketchState`
+    # decoder. The backend's `DDSketchAccumulator` reconstructs
+    # the sketch and answers `histogram_quantile(...)` from the
+    # merged sketch.
+    transmit_sketch: true
+    # Delta encoding is a follow-up — sketchlib-go's
+    # `DDSketchDelta` codec isn't generated yet (the Rust side has
+    # it via `asap_otel_proto::sketchlib::v1::DdSketchDelta`).
+    # Keep delta off for now; full state per window is fine at
+    # the demo's data rate.
+    delta_transmission: false
+    enable_self_monitoring: true
+    quantiles: [0.5, 0.9, 0.99]
+    metric_suffix: "_quantile"
+
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  otlp/backend:
+    endpoint: backend:4317
+    tls:
+      insecure: true
+    # Backend's tonic gRPC server doesn't accept gzip-compressed
+    # request bodies — it returns Unimplemented when the agent's
+    # default `gzip` compression is in effect, which silently
+    # drops every batch.
+    compression: none
+
+service:
+  extensions: [opamp]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [ddsketch, batch]
+      exporters: [otlp/backend]
+
+  telemetry:
+    logs:
+      level: info
+    # Self-telemetry pull exporter removed: the minimal
+    # asap-otel build (`builder-config-sketches.yaml`) doesn't
+    # include the `prometheus` exporter component, so referencing it
+    # here makes the collector fail to start. Self-telemetry isn't
+    # required for the e2e demo; processor self-telemetry still
+    # surfaces via each processor's `enable_self_monitoring: true`
+    # flag and the Prometheus listener that pure component owns.

@@ -1,0 +1,88 @@
+# Prometheus scrape config for the ASAP multi-agent stack.
+#
+# Architecture note: the **controller is the single aggregator**.
+# Agents push batched runtime samples to the controller via
+# `sketch-runtime`'s push pipeline (currently HTTP+JSONL; moving
+# to gRPC in a follow-up). The controller renders them as
+# per-(source, sketch, impl) gauges on `GET /metrics`, and Prom
+# scrapes that one endpoint to get every signal.
+#
+# No per-agent scrape is needed — label-keyed gauges on the
+# controller carry the equivalent data. Backend + gateway still
+# expose their own `/metrics` for query-latency + forwarded-bytes
+# that aren't in the sketch-runtime pipeline.
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ── Primary: controller aggregator ──────────────────────────
+  # `asap_runtime_*` gauges labelled {source, sketch, impl}
+  # come out of RuntimeSamplesStore via metrics_exposer.rs.
+  # Producer / agent CPU + bandwidth, query P99, accuracy,
+  # workload-drift response all land here.
+  - job_name: "controller"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["controller:8080"]
+
+  # ── Backend query-engine internals ──────────────────────────
+  # `asap_query_*` histograms (P99 query latency) +
+  # `asap_ingest_*` counters (bandwidth-served) come from
+  # the precompute_engine query server on the --query-port
+  # (9091 in docker-compose). Ingest port 9090 is data-only and
+  # does not expose /metrics.
+  - job_name: "backend"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:9091"]
+
+  # ── Gateway aggregator self-telemetry ───────────────────────
+  # Gateway's prometheus (scrape-style) exporter was removed —
+  # it couldn't translate DDSketch / HLLSketch types. Self-
+  # telemetry is on :8890 now. Gateway-tier CPU +
+  # forwarded-bytes figures come off this endpoint.
+  - job_name: "gateway"
+    static_configs:
+      - targets: ["gateway:8890"]
+
+  # ── Per-agent sketch processors + self-telemetry ────────────
+  # Each agent has two Prometheus surfaces:
+  #
+  #   :8889  - pipeline OUTPUT: the post-sketch OTLP data the
+  #            agent emits. Raw counters + gauges transit here;
+  #            sketch-typed (DDSketch / HLLSketch) metrics are
+  #            unreadable by the stock prom exporter — they flow
+  #            via OTLP → gateway → backend instead.
+  #
+  #   :8890  - SELF-telemetry: otelcol runtime counters +
+  #            per-processor input/output bytes, throughput,
+  #            CPU, RSS (`otelcol_asapcollector_processor_*`
+  #            family, produced by the patched processors'
+  #            `enable_self_monitoring: true`). This is the
+  #            CPU/bandwidth data source.
+  #
+  # We only scrape :8890. :8889 duplicates backend data without
+  # being sketch-readable. Extend the list when generating
+  # bigger agents-N<K>.yml via gen-agents.sh.
+  - job_name: "agents"
+    static_configs:
+      - targets:
+          - "agent-1:8890"
+          - "agent-2:8890"
+          - "agent-3:8890"
+          - "agent-4:8890"
+          - "agent-5:8890"
+          - "agent-6:8890"
+          - "agent-7:8890"
+          - "agent-8:8890"
+          - "agent-9:8890"
+          - "agent-10:8890"
+    relabel_configs:
+      # Keep the agent name as the `instance` label so
+      # Grafana dashboards can group by it.
+      - source_labels: [__address__]
+        target_label: agent_id
+        regex: "([^:]+):.*"
+        replacement: "$1"

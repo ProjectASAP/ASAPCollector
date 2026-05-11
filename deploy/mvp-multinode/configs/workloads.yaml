@@ -1,0 +1,76 @@
+# Declarative workload registry — read by the controller at startup
+# (env: CONTROLLER_WORKLOADS, default ./workloads.yaml).
+#
+# Schema (see controller/src/config/workloads.rs::WorkloadEntry):
+#
+#   - metric_name:    REQUIRED. Metric the planner targets. Must match a
+#                     name the producer actually emits (see
+#                     deploy/fake-exporter/main.go: `http_requests_total`
+#                     counter, `http_requests_total_latency_ms` gauge).
+#     query_string:   OPTIONAL. Raw PromQL/SQL parsed by the analyzer to
+#                     fill metric_name / aggregations / time_window /
+#                     group_by / label_filters when the explicit fields
+#                     are blank. The controller's main.rs currently
+#                     overrides `aggregations` with ["quantile"] for every
+#                     registry entry (see line ~212), so explicit
+#                     aggregations from query_string are not honored — the
+#                     query_string is recorded for traceability and so the
+#                     controller's PromQL parser at least exercises it.
+#                     If/when main.rs is changed to honor parsed
+#                     aggregations the right per-family aggregation is
+#                     already in the YAML.
+#     accuracy_sla:   OPTIONAL (default 0.01). Used by the cost-model
+#                     planner to pick a sketch (W, L, agg) that meets
+#                     the SLA at minimum bandwidth.
+#     assign_to_role: OPTIONAL (default "agent"). The OpAMP on_connect
+#                     callback uses `first_for_role("agent")` to assign
+#                     a workload to a fresh agent — the FIRST entry with
+#                     role=agent wins. Order matters here.
+#
+# Why an entry per query family in queries-e2e.json: each family
+# stresses a different sketch (DDSketch quantile, HLL cardinality, etc.).
+# The b3-delta agent config statically pins [ddsketch, HLL, batch], so
+# at runtime only DDSketch+HLL get exercised regardless of the registry
+# — but the registry is the only knob that flips
+# `before_plan`/`after_plan` from null in plan_transition.py. Without
+# at least one entry, the controller logs "workloads file not found;
+# using empty registry" and never publishes a plan id.
+
+# 1. quantile q=0.99 / q=0.50 — DDSketch family. Emitted as a Gauge by
+#    the producer (`http_requests_total_latency_ms`); the agent's
+#    b3-delta sketch processor turns it into a DDSketch, so
+#    quantile_over_time / histogram_quantile both end up routed to
+#    DDSketch::query_statistic at the backend. (We omit query_string
+#    here because the controller's PromQL parser rejects
+#    histogram_quantile over a non-`_bucket` metric — but main.rs
+#    hard-codes `aggregations: ["quantile"]` for every registry entry
+#    anyway, so the explicit metric_name is what actually drives the
+#    plan.)
+- metric_name: http_requests_total_latency_ms
+  accuracy_sla: 0.01
+  assign_to_role: agent
+
+# 2. count_unique by zone — HLL family. The b3-delta config pairs HLL
+#    with DDSketch in the same pipeline. group_by(zone) selects the
+#    cardinality-of-distinct-zones answer; HLL backs `count(count by
+#    (label) (...))` via Cardinality query_statistic.
+- metric_name: http_requests_total
+  query_string: "count(count by (zone) (http_requests_total))"
+  accuracy_sla: 0.01
+  assign_to_role: agent
+
+# 3. sum — CountMinSketch family (CMS estimates total inserts as the
+#    min row sum; see PROGRESS "Single-pipeline multi-sketch" note).
+#    Not exercised under b3-delta in the current cell; included so the
+#    full-sweep matrix (E3) can pick this up by toggling AGENT_CONFIG.
+- metric_name: http_requests_total
+  query_string: "sum(http_requests_total)"
+  accuracy_sla: 0.01
+  assign_to_role: backend
+
+# 4. topk — CountSketch family. As above: lives here for the sweep,
+#    not for the b3-delta cell.
+- metric_name: http_requests_total
+  query_string: "topk(10, http_requests_total)"
+  accuracy_sla: 0.05
+  assign_to_role: backend

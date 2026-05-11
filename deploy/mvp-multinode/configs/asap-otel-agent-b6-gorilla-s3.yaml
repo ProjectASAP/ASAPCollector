@@ -1,0 +1,139 @@
+# Agent config for the issue-46 MVP demo (baseline-b6-gorilla-s3.yml).
+#
+# Single OTLP metrics pipeline, double-write:
+#
+#   raw OTLP ──┬──▶ gorillas3  ──▶ MinIO (asap-gorilla bucket)
+#              │     drop_original=false: keep raw flowing into
+#              │     the warm-tier sketches below
+#              │
+#              ├──▶ ddsketch    ──▶ *_quantile typed datapoints
+#              ├──▶ KLL         ──▶ *_quantile typed datapoints
+#              ├──▶ HLL         ──▶ *_hll      typed datapoints
+#              ├──▶ countsketch ──▶ raw-named  typed datapoints
+#              ├──▶ countmin    ──▶ raw-named  typed datapoints
+#              │
+#              └──▶ batch ──▶ otlp/backend (warm tier)
+#
+# Cold tier (Gorilla-S3) is independent of the OTLP forward path —
+# the gorillas3 processor does not emit downstream when
+# drop_original=false (it only writes chunks to S3 + passes the
+# original metric through unchanged).
+#
+# This is the YAML embodiment of the "double-write" mode the
+# cold-engine design (PRs #280-#283 + backend #84-#87) describes:
+# warm tier stays cheap (sketches), cold tier captures everything
+# raw-encoded for exact ad-hoc queries.
+
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://backend:4320/v1/opamp
+        headers:
+          X-Agent-ID: "agent-1"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # ── Cold tier: Gorilla-S3 archive write ──────────────────────────
+  # `drop_original: false` lets the raw metric continue down the
+  # pipeline so the warm-tier sketches see the same input. The
+  # processor's S3 PUT is a side-effect; downstream consumers see
+  # the metric unchanged.
+  gorillas3:
+    window_interval: 60s
+    drop_original: false
+    endpoint: http://minio:9000
+    bucket: asap-gorilla
+    region: us-east-1
+    use_ssl: false
+    access_key_id: asap
+    secret_access_key: asap-local-only
+    prefix_template: "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
+    tenant: default
+    max_retries: 3
+    retry_backoff: 1s
+    upload_timeout: 30s
+
+  # ── Warm tier: all-sketches (paper §Architecture). ───────────────
+  # Same five-sketch lineup as `asap-otel-agent-allsketches.yaml`.
+  ddsketch:
+    mode: window
+    window_duration: 30s
+    transmit_sketch: true
+    delta_transmission: false
+    enable_self_monitoring: true
+    quantiles: [0.5, 0.9, 0.99]
+    metric_suffix: "_quantile"
+
+  KLL:
+    mode: window
+    window_duration: 30s
+    k: 200
+    transmit_sketch: true
+    enable_self_monitoring: true
+    quantiles: [0.5, 0.9, 0.99]
+    metric_suffix: "_quantile"
+
+  HLL:
+    mode: window
+    window_duration: 30s
+    transmit_sketch: true
+    enable_self_monitoring: true
+    metric_suffix: "_hll"
+
+  countsketch:
+    mode: window
+    window_duration: 30s
+    epsilon: 0.01
+    delta: 0.01
+    transmit_sketch: true
+    enable_self_monitoring: true
+
+  countmin:
+    mode: window
+    window_duration: 30s
+    metric_name: "http_requests_total"
+    rows: 5
+    columns: 1024
+    transmit_sketch: true
+    enable_self_monitoring: true
+
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  otlp/backend:
+    endpoint: backend:4317
+    tls:
+      insecure: true
+    compression: none
+
+service:
+  extensions: [opamp]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      # gorillas3 first so the cold-tier write happens on raw input
+      # before any sketch processor mutates the metric stream.
+      processors: [gorillas3, ddsketch, KLL, HLL, countsketch, countmin, batch]
+      exporters: [otlp/backend]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

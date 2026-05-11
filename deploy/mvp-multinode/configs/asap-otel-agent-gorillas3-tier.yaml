@@ -1,0 +1,77 @@
+# Cold-path tier — gorillas3processor in `gateway_raw` role.
+#
+# Direct raw-metric → Prometheus TSDB block emit. Suitable for the
+# single-collector cold-path layout (no upstream fragment edge agent;
+# this collector consumes raw OTLP and finalizes blocks itself).
+#
+# Output objects in MinIO:
+#
+#   <tsdb_bucket>/<ULID>/chunks/000001
+#   <tsdb_bucket>/<ULID>/index
+#   <tsdb_bucket>/<ULID>/meta.json   (uploaded last; readiness signal)
+#
+# Reuses the existing `minio` container in deploy/docker-compose/base.yml
+# (no overlay change needed). Bucket `asap-gorilla` must exist; the
+# minio-setup container only seeds `raw` for the cold-fallback adapter,
+# so add a second `mc mb asap/asap-gorilla` step in your overlay or
+# pre-create the bucket via `mc`.
+#
+# Selfmonitor counters published on :8890 (Prometheus pull):
+#   gorillas3_chunks_written_total
+#   gorillas3_chunk_bytes_written_total
+#   gorillas3_chunk_points_written_total
+#   gorillas3_s3_put_failures_total
+# plus the standard otelcol_asapcollector_processor_* counters from
+# the upstream selfmonitor.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  gorillas3:
+    role: gateway_raw
+    delivery_mode: durable_raw
+    window_interval: 60s
+    drop_original: true
+    endpoint: http://minio:9000
+    bucket: asap-gorilla
+    tsdb_bucket: asap-gorilla
+    region: us-east-1
+    use_ssl: false
+    # MinIO root creds from base.yml. Replace with env-resolution in
+    # production deploys (e.g. ${env:MINIO_ACCESS_KEY}).
+    access_key_id: asap
+    secret_access_key: asap-local-only
+    max_retries: 3
+    retry_backoff: 1s
+    upload_timeout: 30s
+
+exporters:
+  # The agent does not forward when drop_original=true, but a
+  # downstream pipeline component is still required so OCB validates
+  # the pipeline. We use `debug` to keep the wire-out side a no-op.
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [gorillas3]
+      exporters: [debug]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

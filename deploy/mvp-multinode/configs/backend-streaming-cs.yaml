@@ -1,0 +1,44 @@
+# CountSketch processor doesn't add a suffix in our build (the
+# `metric_suffix` config key isn't recognised), so the wire metric
+# names match the input: `http_requests_total` (Sum) and
+# `http_requests_total_latency_ms` (Gauge).
+aggregations:
+- aggregationId: 1
+  aggregationType: CountSketch
+  aggregationSubType: ''
+  labels:
+    grouping: [zone]
+    rollup: [rack, node, pod]
+    aggregated: []
+  metric: http_requests_total
+  parameters:
+    row_num: 5
+    col_num: 1024
+  windowSize: 30
+  windowType: tumbling
+  spatialFilter: ''
+- aggregationId: 2
+  aggregationType: CountSketch
+  aggregationSubType: ''
+  labels:
+    grouping: [zone]
+    rollup: [rack, node, pod]
+    aggregated: []
+  metric: http_requests_total_latency_ms
+  parameters:
+    row_num: 5
+    col_num: 1024
+  windowSize: 30
+  windowType: tumbling
+  spatialFilter: ''
+metrics:
+  http_requests_total:
+    - zone
+    - rack
+    - node
+    - pod
+  http_requests_total_latency_ms:
+    - zone
+    - rack
+    - node
+    - pod

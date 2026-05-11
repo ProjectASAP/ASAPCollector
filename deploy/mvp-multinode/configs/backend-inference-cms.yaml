@@ -1,0 +1,92 @@
+# Warm-tier dispatch table (CountMinSketch single-sketch overlay).
+#
+# Subset of `backend-inference.yaml` (which mirrors PR #79's
+# `inference_config.yaml`) restricted to the families that route to
+# the CountMinSketch accumulator:
+#
+#   * Spatial `sum` / `count` — Statistic::{Sum,Count} no-key
+#     fallback returns the min-row sum (canonical CMS total-event
+#     estimator). PROGRESS.md "All-five-sketch runtime e2e
+#     verification (2026-04-30)" verified
+#     `sum_over_time(http_requests_total[1m])` → 145735 with ε≈0.0027.
+#   * `sum_over_time` / `count_over_time` over [1m]/[2m]/[5m] —
+#     Statistic::Sum / Statistic::Count via
+#     `additive_frequency` accuracy envelope.
+#   * `rate` / `increase` — same family (delta arithmetic over Sum).
+#
+# `topk` / `histogram_quantile` / `quantile_over_time` excluded
+# (CMS does not back those statistics — see the
+# `compatible_agg_types` table in `capability_matching.rs`).
+#
+# Metric: `http_requests_total` (no suffix). The CMS direct agent
+# overlay (`asap-otel-agent-cms-direct.yaml`) uses
+# `metric_name: "http_requests_total"` and preserves the raw name
+# end-to-end.
+cleanup_policy:
+  name: "circular_buffer"
+metrics:
+  http_requests_total:
+  - zone
+  - rack
+  - node
+  - pod
+queries:
+# ── Spatial Sum / Count / Avg ─────────────────────────────────────────
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: sum(http_requests_total)
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: count(http_requests_total)
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: avg(http_requests_total)
+# ── sum_over_time / count_over_time × wider ranges ────────────────────
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: sum_over_time(http_requests_total[1m])
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: sum_over_time(http_requests_total[2m])
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: sum_over_time(http_requests_total[5m])
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: count_over_time(http_requests_total[1m])
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: count_over_time(http_requests_total[2m])
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: count_over_time(http_requests_total[5m])
+# ── rate / increase (delta arithmetic over Sum family) ────────────────
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: rate(http_requests_total[1m])
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: rate(http_requests_total[2m])
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: rate(http_requests_total[5m])
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: increase(http_requests_total[1m])
+- aggregations:
+  - aggregation_id: 1
+    num_aggregates_to_retain: 6
+  query: increase(http_requests_total[5m])

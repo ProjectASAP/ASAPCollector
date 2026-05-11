@@ -1,0 +1,162 @@
+# MVP demo controller input — three canonical query classes
+#
+# Read by the controller at startup (env: CONTROLLER_WORKLOADS,
+# default ./workloads.yaml). The controller's L1 query_language →
+# L5 stage_split pipeline plans sketches + stage placement based
+# on this workload.
+#
+# Schema mirrors deploy/configs/workloads.yaml. See
+# controller/src/config/workloads.rs::WorkloadEntry.
+#
+# Each entry is one PromQL query class the demo will exercise.
+#
+# ── Operating-point assumptions for the bandwidth verdict ─────────
+#
+# Agents run at 10 Hz scrape (`EXPORTER_FREQ_HZ=10`, see
+# `deploy/docker-compose/base.yml` and `mvp-multi-stage.yml`); each
+# series therefore produces 600 samples per 60 s flush window. The
+# break-even against raw scrape depends on `samples_per_window`
+# (≈ `state_size_bytes / per_sample_raw_bytes`); at 600 samples the
+# four delta-capable families (DDSketch / HLL / CountSketch /
+# Count-Min) sit above or close to their break-even curves.
+#
+# The controller's plan emitter
+# (`controller/src/config/stage_config.rs::build_edge_processor_block`)
+# accordingly sets `delta_transmission: true` for those four families
+# in the wire YAML it pushes to each agent. KLL is the only family
+# without a delta variant (`Implementation.tex`: "KLL has no delta
+# variant and matches its full cost"), so its wire payload is always
+# full state — the controller does NOT emit `delta_transmission` for
+# KLL because the kllprocessor's `Config.Validate` rejects
+# `delta_transmission: true` outright.
+#
+# See `docs/mvp-demo-runbook.md` §"Bandwidth criterion ① — break-even
+# depends on samples_per_window" for the per-family table.
+
+# 1. WINDOW AGGREGATION PER SERIES — DDSketch family
+#    Inner: per-series quantile over a 30s sliding window.
+#    Stage: edge (per-agent sketch flushes at window close;
+#    backend only stores resulting sketch state).
+#
+#    Window-alignment note (issue #46 ε-bound bug, fix/quantile-
+#    window-alignment): the warm-tier ASAPQuery streaming pre-compute
+#    is configured with `windowSize: 30` (see
+#    `deploy/configs/backend-streaming.yaml` and the `precompute_window
+#    [..) ms (width 30000 ms)` annotation the warm response stamps).
+#    The replay range MUST match that pre-compute width so the warm
+#    answer is computed over the same data the replay asks for; any
+#    mismatch (e.g. `[1m]` vs warm's 30s) produces rel-err well above
+#    the DDSketch ε bound (observed mean 0.126 with `[1m]`, ε=0.01).
+- metric_name: http_requests_total_latency_ms
+  query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"
+  accuracy_sla: 0.01
+  assign_to_role: agent
+
+# 2. LABEL AGGREGATION ACROSS SERIES AT ONE TIMESTAMP
+#    Outer: sum-by(zone) at instant. Inner: identity.
+#    Stage: gateway (cross-host fan-in merge); backend stores
+#    the merged sum-by-zone vector.
+- metric_name: http_requests_total
+  query_string: "sum by (zone) (http_requests_total)"
+  accuracy_sla: 0.0
+  assign_to_role: gateway
+
+# 3. COMBINED WINDOW + LABEL AGGREGATION
+#    Inner: rate per series over 5m. Outer: sum-by(zone).
+#    Stage: edge does rate (small per-series sliding window),
+#    gateway does sum-by-zone fan-in.
+- metric_name: http_requests_total
+  query_string: "sum by (zone) (rate(http_requests_total[5m]))"
+  accuracy_sla: 0.01
+  assign_to_role: agent
+
+# 4. AD-HOC COLD-FALLBACK PROBE — exercises Gorilla archive tier
+#    Metric is configured StorageBackend::GorillaS3 in
+#    backend-storage-routing.yaml so the warm tier doesn't cover
+#    it; the query forces routing to GorillaQueryEngine. Drives
+#    criterion ⑤ verification (data_source: gorilla_archive).
+#
+#    Predicate uses `zone="z0"` because the fake-exporter emits
+#    `zone, rack, node, pod` labels (see `deploy/fake-exporter/main.go`
+#    `attrSetsZRNP`); there is NO `service` label on the produced
+#    series, so the previous `service="payments"` selector matched
+#    zero series and surfaced as an empty (but HTTP-200) cold-tier
+#    response. `zone="z0"` matches roughly 1/4 of the produced
+#    series and exercises the same routing+engine code path.
+- metric_name: http_requests_total
+  query_string: "count(http_requests_total{zone=\"z0\"})"
+  accuracy_sla: 0.0
+  assign_to_role: archive
+
+# ── Five-sketch MVP coverage (issue #46) ──────────────────────────
+#
+# The four entries below register the new metrics emitted by the
+# fake-exporter's five-sketch workload (deploy/fake-exporter/
+# five_sketch_workload.go). Each entry pins a `sketch_family_override`
+# hint so the controller's planner picks the family the empirical
+# claim is scoped to (DDSketch claims rel-err on quantiles, KLL
+# claims rank-err, HLL claims cardinality, CountSketch claims
+# top-K, CountMinSketch claims one-sided frequency over-estimate).
+#
+# `target_path` records the storage tier the planner should
+# preferentially place each sketch in. Today's WorkloadEntry struct
+# (controller/src/config/workloads.rs) doesn't yet read these two
+# keys — `serde` ignores unknown fields by default, so they round-
+# trip silently until the parallel capability_matching + planner
+# work picks them up. The keys are spelled the same as the
+# capability_matching agent's expected schema so there's no rename
+# step at integration.
+
+# 5. KLL — rank-error quantile on a heavy-tailed body-size dist.
+#    Inner: per-series quantile over a 30s sliding window.
+#    Stage: edge — KLL state flushes per window close, no delta
+#    variant (kllprocessor's Config.Validate rejects
+#    delta_transmission: true). Backend stores the resulting KLL
+#    state.
+#
+#    See entry 1 above for the window-alignment rationale: the warm
+#    tier pre-computes 30s tumbling windows, so the replay range
+#    MUST be `[30s]` for warm answers to be valid against the
+#    archive ground truth.
+- metric_name: request_size_bytes
+  query_string: "quantile_over_time(0.99, request_size_bytes[30s])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: KLL
+  target_path: warm
+
+# 6. HLL — distinct-cardinality query over rotating user pool.
+#    Inner: count of distinct user_id values seen in the most
+#    recent emission window.
+#    Stage: edge HLL register-set, gateway merge (HLL mergeable).
+- metric_name: unique_users_per_min
+  query_string: "count(unique_users_per_min)"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  sketch_family_override: HLL
+  target_path: warm
+
+# 7. CountSketch — top-K over Zipfian endpoint distribution.
+#    Stage: edge CountSketch counters, gateway merge by sum of
+#    matching counter rows. The replay query is `topk(5, ...)`;
+#    the heavy hitters at the head of the Zipf tail dominate the
+#    top-K result.
+- metric_name: top_endpoint_qps
+  query_string: "topk(5, top_endpoint_qps)"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountSketch
+  target_path: warm
+
+# 8. CountMinSketch — frequency query over the same Zipfian
+#    endpoint distribution, but exercised through `rate(...[5m])`
+#    so the family scored is the one-sided over-estimator. The
+#    metric is split from top_endpoint_qps so per-family
+#    bandwidth + accuracy bookkeeping stays clean even though
+#    they share the same distribution shape on the producer side.
+- metric_name: endpoint_request_freq
+  query_string: "rate(endpoint_request_freq[5m])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountMinSketch
+  target_path: warm

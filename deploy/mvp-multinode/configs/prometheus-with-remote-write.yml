@@ -1,0 +1,52 @@
+# Prometheus scrape + remote-write-receiver config (issue #46 v4).
+#
+# Mirrors `prometheus.yml` (controller / backend / gateway / agents
+# scrape jobs) and additionally enables Prometheus's
+# remote-write-receiver: the storage subsystem accepts incoming
+# /api/v1/write requests from the agents' `prometheusremotewrite`
+# exporter when Prometheus is started with
+# `--web.enable-remote-write-receiver` (added in `baseline-b0-prometheus.yml`).
+#
+# The remote-write-receiver does not require any extra config block
+# in this YAML file (it's a global flag, not a scrape job), so this
+# file is byte-identical to `prometheus.yml` with a header comment
+# call-out and the SERF baseline scrape comment removed (B0 has no
+# Serf processor).
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "controller"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["controller:8080"]
+
+  - job_name: "backend"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:9091"]
+
+  - job_name: "gateway"
+    static_configs:
+      - targets: ["gateway:8890"]
+
+  - job_name: "agents"
+    static_configs:
+      - targets:
+          - "agent-1:8890"
+          - "agent-2:8890"
+          - "agent-3:8890"
+          - "agent-4:8890"
+          - "agent-5:8890"
+          - "agent-6:8890"
+          - "agent-7:8890"
+          - "agent-8:8890"
+          - "agent-9:8890"
+          - "agent-10:8890"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: agent_id
+        regex: "([^:]+):.*"
+        replacement: "$1"
