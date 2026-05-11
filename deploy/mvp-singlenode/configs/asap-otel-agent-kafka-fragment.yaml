@@ -8,8 +8,8 @@
 #
 #   • best_effort       — agent fragments → OTel transport → gateway → S3
 #                          (zero durability bridge; this is the MVP demo
-#                          shape implicitly used by
-#                          asap-otel-agent-gorillas3-tier.yaml).
+#                          shape implicitly used by the older
+#                          gorillas3-tier config — now removed).
 #   • durable_raw       — raw → Kafka → gateway_raw → S3. Replay starts
 #                          from raw input.
 #   • durable_fragment  — agent fragments → Kafka → gateway_fragment → S3.
@@ -43,7 +43,8 @@
 # `drop_original: true` — fragment metrics are the only thing that needs
 # to traverse Kafka; the agent must not also OTLP-forward the raw stream
 # (the gateway pipeline is Kafka-only, no OTLP entry point). This matches
-# the agent-side comment in asap-otel-agent-gorillas3-tier.yaml.
+# the agent-side comment pattern from the older gorillas3-tier
+# config (now removed).
 #
 # ── Deploy shape ──────────────────────────────────────────────────────
 #

@@ -81,11 +81,11 @@ for baseline in $BASELINES; do
       case "$baseline" in
         b0a-raw-stream)  cfg="asap-otel-agent-b0a-raw-stream.yaml" ;;
         b0b-raw-batched) cfg="asap-otel-agent-b0b-raw-batched.yaml" ;;
-        b1-serf)         cfg="asap-otel-agent-b1-serf.yaml" ;;
+        b1-serf)         cfg="asap-otel-agent-b1-serf-prometheus.yaml" ;;
         b2-full)         cfg="asap-otel-agent-b2-full.yaml" ;;
         b3-delta)        cfg="asap-otel-agent-b3-delta.yaml" ;;
         b4-tunable)      cfg="asap-otel-agent-b4-tunable.yaml" ;;
-        b5-gorilla)      cfg="asap-otel-agent-b5-gorilla.yaml" ;;
+        b5-gorilla)      cfg="asap-otel-agent-b5-gorilla-prometheus.yaml" ;;
         *) echo "unknown baseline: $baseline" >&2; exit 1 ;;
       esac
 

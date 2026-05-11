@@ -24,7 +24,7 @@
 # is the terminal sink in this pipeline (the S3 PUT is internal to
 # gorillas3, not exporter-mediated). OCB still requires a downstream
 # exporter for pipeline validation, hence `debug`. Mirrors the same
-# pattern as asap-otel-agent-gorillas3-tier.yaml.
+# pattern as the older gorillas3-tier config (now removed).
 #
 # ── Deploy shape ──────────────────────────────────────────────────────
 #
@@ -148,7 +148,7 @@ exporters:
   # The gorillas3 processor is the terminal sink (PUTs to S3
   # internally). OCB requires a downstream exporter for pipeline
   # validation, so we wire `debug` as a documented no-op — same shape
-  # as asap-otel-agent-gorillas3-tier.yaml.
+  # as the older gorillas3-tier config (now removed).
   debug:
     verbosity: basic
 

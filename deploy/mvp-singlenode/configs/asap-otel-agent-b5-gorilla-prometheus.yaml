@@ -1,6 +1,6 @@
 # Baseline B5 v4 — Gorilla XOR + raw forward to real Prometheus.
 #
-# v4 (issue #46) variant of `asap-otel-agent-b5-gorilla.yaml`. The
+# v4 (issue #46) Gorilla baseline. The
 # v3 Gorilla config used `drop_original: true` so nothing reached
 # the gateway / backend / Prometheus — bandwidth was measured
 # entirely against bytes-on-disk under /var/tmp/asap-gorilla-out.

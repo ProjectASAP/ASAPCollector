@@ -21,10 +21,6 @@
 # inside each agent container; bytes-written are read from the
 # patched processor's self-telemetry on :8890. The blob volume is
 # container-only tmpfs (carries no host-disk dependency).
-#
-# v3-compat: legacy callers using
-# `AGENT_CONFIG=asap-otel-agent-b5-gorilla.yaml` still work — the
-# Prometheus flag is harmless when no PRW client connects.
 
 services:
   controller:
