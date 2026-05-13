@@ -4,21 +4,21 @@
 # Drives the gorilla-thanos stack across 4 nodes on 10.10.1.0/24:
 #
 #   node0 (10.10.1.1)  producers + agent-a   (data source)
-#   node1 (10.10.1.2)  idle                  (no gateway in this stack)
+#   node1 (10.10.1.2)  gorilla-gateway        (S3 proxy, 20s flush to MinIO)
 #   node2 (10.10.1.3)  backend: MinIO + Thanos (query, store-gateway, compact)
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
 # Key differences vs. mvp-multinode/scripts/run_demo.sh:
 #   - gorillas3 only — no sketch processors (ddsketch/KLL/HLL/countsketch/countmin)
 #   - No routing connector, no OpAMP controller
-#   - No gateway (node1 is idle)
+#   - gorilla-gateway on node1 (agent → 10s blocks → gateway → 20s flush → MinIO)
 #   - No asap-query-backend Rust binary
 #   - Thanos query engine instead of asap_query_engine
 #   - drop_original: true — NO raw OTLP crosses the network to any backend
 #     (only S3 PUTs to MinIO port 9000)
 #
 # Commands:
-#   sync     rsync configs to nodes 0, 2, 3 (node1 skipped — idle)
+#   sync     rsync configs to nodes 0, 1, 2, 3
 #   up       bring up backend (node2) + agents/producers (node0, node3)
 #   down     stop all asap-* containers on node0, node2, node3
 #   verify   run verify_gorilla_compression.sh success-metric checks
@@ -67,10 +67,11 @@ sync_to() {
 
 # Sync to nodes 0, 2, 3 only. Node1 is idle (no gateway).
 sync_all_nodes() {
-    for n in "${NODE0_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
+    for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
         on "${n}" 'mkdir -p /mydata/gorilla-thanos-multinode/{configs,logs,results}'
     done
     sync_to "${NODE0_HOST}"
+    sync_to "${NODE1_HOST}"
     sync_to "${NODE2_HOST}"
     sync_to "${NODE3_HOST}"
 }
@@ -161,6 +162,20 @@ backend_down() {
     stop_node "${NODE2_HOST}"
 }
 
+
+# ─── GORILLA-GATEWAY on node1 ─────────────────────────────────────────────
+# Buffering S3 proxy: receives 10s TSDB blocks from agents, flushes to MinIO
+# every 20s. Agents write to gateway:9100; gateway writes to minio:9000.
+gateway_up() {
+    log node1 gorilla-gateway up
+    docker_run_on          --name asap-gorilla-gateway         -e GATEWAY_LISTEN=0.0.0.0:9100         -e GATEWAY_UPSTREAM_ENDPOINT=minio:9000         -e GATEWAY_ACCESS_KEY=asap         -e GATEWAY_SECRET_KEY=asap-local-only         -e GATEWAY_FLUSH_INTERVAL=20s         asap/gorilla-gateway:dev
+}
+
+gateway_down() {
+    log node1 gorilla-gateway down
+    stop_node 
+}
+
 # ─── AGENTS + PRODUCERS on node0 and node3 ───────────────────────────────
 # Agent config: gorillas3-only, no OpAMP extensions, no controller env vars.
 # drop_original: true → agents emit S3 PUTs to MinIO, NO outbound gRPC.
@@ -237,6 +252,8 @@ agents_down() {
 stack_up() {
     backend_up
     sleep 5
+    gateway_up
+    sleep 2
     agents_up
     log "=== stack up; waiting WARMUP_S=${WARMUP_S}s for gorillas3 to flush first blocks ==="
     sleep "${WARMUP_S}"
@@ -244,6 +261,7 @@ stack_up() {
 
 stack_down() {
     agents_down
+    gateway_down
     backend_down
 }
 
@@ -294,13 +312,13 @@ usage: $0 <cmd>
 
 Topology:
   node0 (10.10.1.1)  producers + agent-a (gorilla-only, drop_original: true)
-  node1 (10.10.1.2)  idle (no gateway in this stack)
+  node1 (10.10.1.2)  gorilla-gateway (S3 proxy: agents → 10s → gateway → 20s → MinIO)
   node2 (10.10.1.3)  MinIO + Thanos (store-gateway, query, compact)
   node3 (10.10.1.4)  producers + agent-b (gorilla-only, drop_original: true)
 
 Network traffic:
-  producers → OTLP gRPC port 4317 → agent → S3 PUT port 9000 → MinIO
-  NO outbound gRPC from agents (drop_original: true)
+  producers → OTLP gRPC :4317 → agent → S3 PUT :9100 → gorilla-gateway → S3 PUT :9000 → MinIO
+  NO raw OTLP crosses the network to any backend (drop_original: true)
 EOF
         ;;
 esac

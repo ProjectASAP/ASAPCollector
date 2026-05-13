@@ -32,9 +32,12 @@
 # This is the "gorilla-only" pipeline for compression verification:
 # producers → [otlp receiver] → memory_limiter → gorillas3 → batch → [nop]
 #                                                     ↓
-#                                              S3 PUT → MinIO → Thanos
+#                                        S3 PUT (10s) → gorilla-gateway
+#                                                  ↓ (20s flush)
+#                                                MinIO → Thanos
 #
-# No routing connector, no sketch processors, no OpAMP controller, no gateway.
+# No routing connector, no sketch processors, no OpAMP controller.
+# gorilla-gateway sits between this agent and MinIO (agent → gateway → MinIO).
 
 receivers:
   otlp:
@@ -77,9 +80,9 @@ processors:
   # Thanos compact will merge sub-blocks downstream. window_interval: 5s
   # controls the in-memory flush cadence (keeps per-window heap usage low).
   gorillas3:
-    window_interval: 5s
+    window_interval: 10s
     drop_original: true
-    endpoint: http://minio:9000
+    endpoint: http://gorilla-gateway:9100
     bucket: asap-gorilla
     region: us-east-1
     use_ssl: false
