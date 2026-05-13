@@ -1,0 +1,140 @@
+# gorilla-thanos.yml — Single-node docker-compose for local testing.
+#
+# Brings up the full gorilla-thanos stack on a single host:
+#   MinIO (S3 storage) + Thanos (store-gateway, query, compact) + OTel agent + fake-exporter
+#
+# Quick start:
+#   docker compose -f gorilla-thanos.yml up -d
+#   # Wait ~60s for first TSDB block flush, then:
+#   curl http://localhost:19092/api/v1/label/__name__/values   # metric names via Thanos
+#   curl http://localhost:18890/metrics | grep gorilla          # agent self-metrics
+#   # MinIO console: http://localhost:19001 (user: asap, pass: asap-local-only)
+#
+# Verify compression:
+#   docker exec -it gorilla-thanos-minio-setup-1 sh
+#     mc alias set local http://minio:9000 asap asap-local-only
+#     mc ls local/asap-gorilla-tsdb --recursive
+#
+# Note: host-port mappings are offset by 10000 from standard ports to
+# avoid conflicts with any running cluster services (e.g. 19000 not 9000).
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: asap
+      MINIO_ROOT_PASSWORD: asap-local-only
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    # Use alias name 'local' (NOT 'asap') to avoid conflict with the
+    # MinIO username 'asap' — mc treats alias names and usernames in
+    # the same namespace and rejects the alias if it collides.
+    entrypoint: >
+      sh -c "
+        mc alias set local http://minio:9000 asap asap-local-only &&
+        mc mb --ignore-existing local/asap-gorilla &&
+        mc mb --ignore-existing local/asap-gorilla-tsdb &&
+        mc anonymous set download local/asap-gorilla &&
+        mc anonymous set download local/asap-gorilla-tsdb &&
+        echo 'Buckets ready'
+      "
+
+  thanos-store-gateway:
+    image: quay.io/thanos/thanos:v0.41.0
+    user: "0"
+    command:
+      - store
+      - --objstore.config-file=/etc/thanos/objstore.yaml
+      - --http-address=0.0.0.0:10902
+      - --grpc-address=0.0.0.0:10901
+      - --data-dir=/var/thanos/store
+      - --sync-block-duration=30s
+      - --block-sync-concurrency=20
+    volumes:
+      - ../configs/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro
+      - thanos-store-data:/var/thanos/store
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+
+  thanos-query:
+    image: quay.io/thanos/thanos:v0.41.0
+    command:
+      - query
+      - --http-address=0.0.0.0:10903
+      - --endpoint=thanos-store-gateway:10901
+      - --query.replica-label=replica
+    ports:
+      - "19092:10903"
+    depends_on:
+      - thanos-store-gateway
+
+  thanos-compact:
+    image: quay.io/thanos/thanos:v0.41.0
+    user: "0"
+    command:
+      - compact
+      - --objstore.config-file=/etc/thanos/objstore.yaml
+      - --data-dir=/var/thanos/compact
+      - --retention.resolution-raw=30d
+      - --retention.resolution-5m=180d
+      - --retention.resolution-1h=1y
+      - --compact.concurrency=1
+      - --wait
+      - --http-address=0.0.0.0:10904
+    volumes:
+      - ../configs/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro
+      - thanos-compact-data:/var/thanos/compact
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+
+  otel-agent:
+    image: asap/asap-otel:dev
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ../configs/agent-gorilla-only.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "14317:4317"
+      - "14318:4318"
+      - "18890:8890"
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+
+  fake-exporter:
+    image: asap/fake-exporter:dev
+    environment:
+      EXPORTER_TARGET: otel-agent:4317
+      EXPORTER_CARDINALITY: ${EXPORTER_CARDINALITY:-1000}
+      EXPORTER_FREQ_HZ: ${EXPORTER_FREQ_HZ:-10}
+      EXPORTER_RATE: ${EXPORTER_RATE:-1000}
+      EXPORTER_SDK_WINDOW: ${EXPORTER_SDK_WINDOW:-1s}
+      EXPORTER_SDK_AGG: ${EXPORTER_SDK_AGG:-default}
+      EXPORTER_MAX_BUFFER_PER_SERIES: ${EXPORTER_MAX_BUFFER_PER_SERIES:-10}
+      EXPORTER_FRESHNESS_PROBES: ${EXPORTER_FRESHNESS_PROBES:-on}
+      EXPORTER_FRESHNESS_PROBE_HZ: ${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}
+      EXPORTER_FIVE_SKETCH: ${EXPORTER_FIVE_SKETCH:-off}
+    depends_on:
+      - otel-agent
+
+volumes:
+  minio-data:
+  thanos-store-data:
+  thanos-compact-data:

@@ -1,0 +1,125 @@
+# agent-gorilla-only.yaml — OTel collector config: gorillas3 ONLY pipeline.
+#
+# ── What travels over the network with this config ────────────────────────
+#
+# INBOUND (producers → this agent):
+#   gRPC port 4317  — standard OTLP/gRPC from fake-exporter producers
+#   HTTP port 4318  — OTLP/HTTP (optional)
+#
+# OUTBOUND (this agent → backend):
+#   S3 PUT to port 9000 (minio:9000) — Gorilla-compressed Prometheus TSDB
+#   blocks written by gorillas3 processor. These are compact binary blocks,
+#   NOT raw OTLP. Typical size: ~5–15 KB per block at 60s tsdb_block_duration.
+#
+#   NO outbound gRPC on port 4317: drop_original: true means the metric
+#   stream does NOT reach the nop exporter in a meaningful sense — gorillas3
+#   absorbs the data and the downstream pipeline receives ZERO samples.
+#   The nop exporter is required only because OTel's service graph validator
+#   requires at least one exporter per pipeline; it receives and discards
+#   any empty/residual batches.
+#
+# ── Why nop exporter ──────────────────────────────────────────────────────
+#
+# gorillas3 with drop_original: true swallows all incoming metric samples
+# after compressing and uploading them to MinIO. The downstream batch
+# processor and nop exporter therefore receive empty batches. The nop
+# exporter is the canonical OTel way to satisfy the "at least one exporter"
+# requirement without sending data anywhere (unlike debug which logs every
+# sample and floods stdout under high cardinality).
+#
+# ── Pipeline summary ──────────────────────────────────────────────────────
+#
+# This is the "gorilla-only" pipeline for compression verification:
+# producers → [otlp receiver] → memory_limiter → gorillas3 → batch → [nop]
+#                                                     ↓
+#                                              S3 PUT → MinIO → Thanos
+#
+# No routing connector, no sketch processors, no OpAMP controller, no gateway.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        # 4 GiB receive buffer so high-cardinality producer batches don't
+        # trip the default 4 MiB gRPC limit. Matches the simplified
+        # single-pipeline setup (no 6-pipeline fan-out of the mvp config).
+        max_recv_msg_size_mib: 4096
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # ── memory_limiter — backpressure BEFORE gorillas3 ───────────────────────
+  # Must be first in the pipeline so backpressure is applied before gorillas3
+  # buffers samples into its in-memory windowState. At limit_mib=1280 the
+  # limiter starts shedding load at ~1024 MiB RSS, leaving 256 MiB headroom
+  # under a 1.5 GiB container cgroup limit.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1280
+    spike_limit_mib: 256
+
+  # ── gorillas3 — Gorilla-compressed S3/TSDB archive write ─────────────────
+  #
+  # drop_original: true — this is the KEY difference from the mvp-multinode
+  # config (which uses drop_original: false to pass data downstream to sketch
+  # processors and the gateway). With drop_original: true:
+  #   1. gorillas3 compresses incoming samples into Gorilla-format TSDB blocks.
+  #   2. Blocks are uploaded to MinIO via S3 PUT on port 9000.
+  #   3. Zero metric samples are forwarded downstream to batch/nop.
+  #   4. No raw OTLP crosses the network to any backend — only S3 PUTs.
+  #
+  # block_format: prometheus_tsdb + tsdb_bucket: asap-gorilla-tsdb produces
+  # Thanos-readable TSDB blocks (ULID/<chunks/,index,meta.json>) that the
+  # thanos-store-gateway syncs from MinIO and serves via its StoreAPI.
+  #
+  # tsdb_block_duration: 60s — each 60s window closes and flushes one block.
+  # Thanos compact will merge sub-blocks downstream. window_interval: 5s
+  # controls the in-memory flush cadence (keeps per-window heap usage low).
+  gorillas3:
+    window_interval: 5s
+    drop_original: true
+    endpoint: http://minio:9000
+    bucket: asap-gorilla
+    region: us-east-1
+    use_ssl: false
+    access_key_id: asap
+    secret_access_key: asap-local-only
+    prefix_template: "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
+    tenant: default
+    max_retries: 3
+    retry_backoff: 1s
+    upload_timeout: 30s
+    block_format: prometheus_tsdb
+    tsdb_bucket: asap-gorilla-tsdb
+    tsdb_block_duration: 60s
+
+  batch:
+    send_batch_size: 1024
+    timeout: 1s
+
+exporters:
+  # nop discards all data. Required because OTel's service graph validator
+  # requires at least one exporter per pipeline. With drop_original: true
+  # gorillas3 ensures nothing meaningful reaches here anyway.
+  nop: {}
+
+service:
+  # No extensions: — no OpAMP controller in this simplified stack.
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, gorillas3, batch]
+      exporters: [nop]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

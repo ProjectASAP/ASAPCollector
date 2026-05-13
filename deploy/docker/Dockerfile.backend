@@ -69,7 +69,7 @@ COPY --from=asap-sketchlib     . asap_sketchlib
 # Mirrors the asap-precompute-rs pattern.
 COPY --from=asap-gorilla-rust  . ASAPCollector/asap-gorilla-rust
 
-RUN cd ASAPQuery-backend && cargo build --release --bin query_engine_rust --bin controller
+RUN cd ASAPQuery-backend && cargo build --release --bin data_plane --bin controller
 
 # Runtime image: binaries + CA certs.
 FROM debian:bookworm-slim
@@ -80,7 +80,7 @@ RUN apt-get update && \
 # create it so the binary can write its rolling log file without
 # the compose stack mounting a host volume.
 RUN mkdir -p /var/log/asap
-COPY --from=build /src/ASAPQuery-backend/target/release/query_engine_rust \
+COPY --from=build /src/ASAPQuery-backend/target/release/data_plane \
     /usr/local/bin/asap-query-backend
 # Phase-9 single-binary refactor (2026-05): the controller crate
 # moved into ASAPQuery-backend, so the controller binary now ships
