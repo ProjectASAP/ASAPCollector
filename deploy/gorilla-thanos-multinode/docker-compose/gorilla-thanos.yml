@@ -79,11 +79,13 @@ services:
       - query
       - --http-address=0.0.0.0:10903
       - --endpoint=thanos-store-gateway:10901
-      - --query.replica-label=replica
+      - --endpoint=gorilla-buffer-store:10921
+      - --query.replica-label=block_source
     ports:
       - "19092:10903"
     depends_on:
       - thanos-store-gateway
+      - gorilla-buffer-store
 
   thanos-compact:
     image: quay.io/thanos/thanos:v0.41.0
@@ -113,11 +115,37 @@ services:
       GATEWAY_ACCESS_KEY: asap
       GATEWAY_SECRET_KEY: asap-local-only
       GATEWAY_FLUSH_INTERVAL: 20s
+      GATEWAY_BUFFER_DIR: /var/gorilla-gateway/buffer
+      GATEWAY_MINIO_SYNC_GRACE: 90s
     ports:
       - "19100:9100"
+    volumes:
+      - gorilla-gateway-buffer:/var/gorilla-gateway/buffer
     depends_on:
       minio-setup:
         condition: service_completed_successfully
+
+  gorilla-buffer-store:
+    image: quay.io/thanos/thanos:v0.41.0
+    user: "0"
+    command:
+      - store
+      - --objstore.config-file=/etc/thanos/objstore.yaml
+      - --http-address=0.0.0.0:10922
+      - --grpc-address=0.0.0.0:10921
+      - --data-dir=/var/thanos/buffer-store
+      - --sync-block-duration=30s
+      - --block-sync-concurrency=20
+    volumes:
+      - ../configs/buffer-objstore.yaml:/etc/thanos/objstore.yaml:ro
+      - gorilla-buffer-store-cache:/var/thanos/buffer-store
+      - gorilla-gateway-buffer:/var/gorilla-gateway/buffer:ro
+    ports:
+      - "19921:10921"
+      - "19922:10922"
+    depends_on:
+      gorilla-gateway:
+        condition: service_started
 
   otel-agent:
     image: asap/asap-otel:dev
@@ -152,3 +180,5 @@ volumes:
   minio-data:
   thanos-store-data:
   thanos-compact-data:
+  gorilla-gateway-buffer:
+  gorilla-buffer-store-cache:

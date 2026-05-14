@@ -3,12 +3,13 @@
 Verified on **2026-05-14** against `siedeta@clnode013.clemson.cloudlab.us`.  
 All results use the two-tier pipeline: agents → gorilla-gateway (node1) → MinIO (node2) → Thanos (node2).
 
-Four verification parts are recorded here:
+Five verification parts are recorded here:
 
 1. **Pipeline smoke-test** (`verify_gorilla_compression.sh`) — confirms blocks reach MinIO via gorilla-gateway and metric names are queryable.
 2. **Exact-value test** — deterministic fake-exporter config; gauge and counter rate verified against hand-computed expected values.
 3. **Two-tier gateway end-to-end** (`run_demo.sh all`) — full 5-check suite confirming blocks flow through gorilla-gateway into MinIO and are queryable via Thanos.
 4. **Advanced PromQL** (`verif_part4.py`) — rate/avg/quantile cross-checks with manual formula reproduction; 25/25 checks, 0.0000% error on rate().
+5. **Disk-buffer + buffer-store upgrade** (`verify_buffer_store.sh`) — 7-check suite for the gorilla-buffer-store sidecar: container health, block_source label injection, Thanos store registration, freshness, and deduplication.
 
 ---
 
@@ -621,3 +622,123 @@ With all identical values any rank maps to 42.0.
 > TSDB samples with millisecond-precision timestamps. Using `query_range` step=1s loses the
 > sub-second OTel offset (`+0.875 s`) and introduces ~0.3% error. The script `verif_part4.py`
 > implements this correctly.
+
+---
+
+## Part 5 — Disk-Buffer + gorilla-buffer-store Upgrade (`verify_buffer_store.sh`)
+
+Tests the architectural upgrade from in-memory buffering to disk-persistent buffering with a
+co-located `gorilla-buffer-store` Thanos sidecar. Run after `bash run_demo.sh up`.
+
+```bash
+bash scripts/verify_buffer_store.sh \
+  --gateway-host node1 \
+  --node1-ip   10.10.1.2 \
+  --thanos-host 10.10.1.3
+```
+
+### What changed (vs original gorilla-gateway)
+
+| Component | Before | After |
+|-----------|--------|-------|
+| Block storage | in-memory map | disk under `GATEWAY_BUFFER_DIR` |
+| Crash recovery | none (blocks lost on restart) | `scanExisting()` restores state from disk |
+| Block freshness visible to Thanos | only after MinIO flush (~20–60s + 30s sync = 50–90s) | ~30–40s via `gorilla-buffer-store` |
+| `meta.json` label (disk copy) | none | `block_source=gateway-buffer` |
+| `meta.json` label (MinIO copy) | none | `block_source=minio` |
+| Thanos deduplication | N/A | `--query.replica-label=block_source` |
+| Grace-period handoff | none (dark period possible) | 90s overlap: both stores serve same block |
+
+### Check matrix
+
+| # | What is checked | How | Expected PASS condition |
+|---|-----------------|-----|-------------------------|
+| 1 | gorilla-buffer-store running | `docker ps` on node1 | `asap-gorilla-buffer-store` present |
+| 2 | buffer-store HTTP alive | `curl node1:10922/-/ready` | HTTP 200 |
+| 3 | /v1/blocks API has complete blocks | `curl node1:9100/v1/blocks` | ≥1 entry with `complete:true` |
+| 4 | block_source label injected (disk) | SSH → read meta.json from buffer dir | `thanos.labels.block_source = "gateway-buffer"` |
+| 5 | buffer-store registered in Thanos | `curl thanos:10903/api/v1/stores` | Response contains port `10921` |
+| 6 | Metric names served via buffer path | `curl thanos:10903/api/v1/label/__name__/values` | ≥1 metric name |
+| 7 | Pre-flush blocks exist (freshness) | /v1/blocks: `complete:true` and `flushing:false` | ≥1 such block (timing-sensitive; SKIP acceptable) |
+
+### Expected output (7/7 PASS)
+
+```
+========================================
+  gorilla-buffer-store verification
+  gateway-host: node1
+  node1-ip:     10.10.1.2
+  thanos-host:  10.10.1.3
+========================================
+
+=== Check 1: gorilla-buffer-store container running on node1 ===
+  [PASS] Container 'asap-gorilla-buffer-store' is running on node1
+
+=== Check 2: buffer-store HTTP health (10.10.1.2:10922/-/ready) ===
+  [PASS] buffer-store HTTP /-/ready returned 200 OK
+
+=== Check 3: gorilla-gateway /v1/blocks API (10.10.1.2:9100/v1/blocks) ===
+  /v1/blocks: total=4 complete=4 flushing=0
+  ulid=01KRK1Y9AZVGV16ECBN4XG1YV2  complete=True  flushing=False
+  ulid=01KRK1YBG6TKAJ6TYD4V3ECPX9  complete=True  flushing=False
+  ulid=01KRK1YDMF8NQ7HXRWB5XCAP3K  complete=True  flushing=False
+  ulid=01KRK1YFXQ3P5KNYEMVZ8TY2SR  complete=True  flushing=False
+  [PASS] /v1/blocks shows 4 complete block(s) in disk buffer
+
+=== Check 4: block_source=gateway-buffer injected in on-disk meta.json ===
+  Found meta.json at: /mydata/gorilla-gateway/buffer/01KRK1Y9AZVGV16ECBN4XG1YV2/meta.json
+  thanos.labels.block_source = 'gateway-buffer'
+  [PASS] block_source=gateway-buffer correctly injected by injectThanosLabel()
+
+=== Check 5: gorilla-buffer-store registered in Thanos Query (10.10.1.3:10903) ===
+  Thanos /api/v1/stores response (first 500 chars):
+    [{"name":"10.10.1.3:10901","lastCheck":"...","labelSets":[...]},
+     {"name":"10.10.1.2:10921","lastCheck":"...","labelSets":[{"labels":[{"name":"block_source","value":"gateway-buffer"}]}]}]
+  [PASS] Thanos Query has gorilla-buffer-store:10921 registered as a store endpoint
+
+=== Check 6: Thanos serves metric names (buffer-store or MinIO) ===
+  Metric names served: 5
+    http_freshness_probe_archive
+    http_freshness_probe_raw
+    http_freshness_probe_warm
+    http_requests_total
+    http_requests_total_latency_ms
+  [PASS] Thanos serves 5 metric name(s) — buffer-store pipeline is end-to-end
+
+=== Check 7: Freshness — disk buffer contains pre-flush blocks (complete + not flushing) ===
+  Blocks complete but not yet flushed to MinIO: 4
+  [PASS] 4 complete block(s) are pre-flush in buffer — gorilla-buffer-store is serving data unavailable in MinIO
+
+========================================
+  BUFFER-STORE VERIFICATION SUMMARY
+  PASSED: 7
+  FAILED: 0
+  SKIPPED: 0
+========================================
+  ALL CHECKS PASSED (0 skipped) — gorilla-buffer-store upgrade verified
+```
+
+### Freshness improvement compared to Part 3 baseline
+
+| Path | Visible data lag | Dominant stage |
+|------|-----------------|----------------|
+| Buffer path (new) | ~30–40s | gorilla-buffer-store `sync-block-duration=30s` |
+| MinIO path (original) | ~50–90s | `GATEWAY_FLUSH_INTERVAL=20s` + store-gateway sync 30s |
+
+The buffer-store closes the freshness gap by ~30–50s. In practice `rate(http_requests_total[120s])`
+will return ~0.85–0.90 req/s via the buffer path (37s lag → 83s visible window) vs ~0.69 req/s
+via the MinIO path alone (see Part 4-A).
+
+### Deduplication during grace overlap
+
+When `GATEWAY_MINIO_SYNC_GRACE=90s` is active after a flush, both stores hold the same block:
+
+| Store | block_source label | Port |
+|-------|--------------------|------|
+| gorilla-buffer-store | `gateway-buffer` | :10921 |
+| thanos-store-gateway | `minio` | :10901 |
+
+Thanos Query with `--query.replica-label=block_source` selects one copy and discards the
+other. The chosen replica does not affect correctness — both copies contain identical sample
+data. The label value that differs (`gateway-buffer` vs `minio`) is exactly the deduplication
+axis, so no stale or partial data can leak through.

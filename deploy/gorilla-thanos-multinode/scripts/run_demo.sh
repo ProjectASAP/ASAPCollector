@@ -130,7 +130,9 @@ backend_up() {
         --sync-block-duration=30s \
         --block-sync-concurrency=20
 
-    # Thanos query — federated PromQL query over store-gateway StoreAPI
+    # Thanos query — federated PromQL over store-gateway (MinIO) + buffer-store (disk)
+    # --query.replica-label=block_source deduplicates blocks during the grace overlap
+    # window when both gorilla-buffer-store and thanos-store-gateway serve the same block.
     docker_run_on "${NODE2_HOST}" \
         --name asap-thanos-query \
         quay.io/thanos/thanos:v0.41.0 \
@@ -138,7 +140,8 @@ backend_up() {
         --grpc-address=0.0.0.0:10911 \
         --http-address=0.0.0.0:10903 \
         --endpoint=thanos-store-gateway:10901 \
-        --query.replica-label=replica
+        --endpoint=gorilla-buffer-store:10921 \
+        --query.replica-label=block_source
 
     # Thanos compact — background compaction + downsampling of TSDB blocks
     docker_run_on "${NODE2_HOST}" \
@@ -167,7 +170,8 @@ backend_down() {
 # Buffering S3 proxy: receives 10s TSDB blocks from agents, flushes to MinIO
 # every 20s. Agents write to gateway:9100; gateway writes to minio:9000.
 gateway_up() {
-    log node1 gorilla-gateway up
+    log "node1 gorilla-gateway up"
+    on "${NODE1_HOST}" "mkdir -p /mydata/gorilla-gateway/buffer"
     docker_run_on "${NODE1_HOST}" \
         --name asap-gorilla-gateway \
         -e GATEWAY_LISTEN=0.0.0.0:9100 \
@@ -175,12 +179,38 @@ gateway_up() {
         -e GATEWAY_ACCESS_KEY=asap \
         -e GATEWAY_SECRET_KEY=asap-local-only \
         -e GATEWAY_FLUSH_INTERVAL=20s \
+        -e GATEWAY_BUFFER_DIR=/var/gorilla-gateway/buffer \
+        -e GATEWAY_MINIO_SYNC_GRACE=90s \
+        -v /mydata/gorilla-gateway/buffer:/var/gorilla-gateway/buffer \
         asap/gorilla-gateway:dev
 }
 
 gateway_down() {
-    log node1 gorilla-gateway down
+    log "node1 gateway + buffer-store down"
     stop_node "${NODE1_HOST}"
+}
+
+# ─── GORILLA-BUFFER-STORE on node1 ────────────────────────────────────────
+# Thanos store sidecar that exposes the gateway's local disk buffer to
+# Thanos Query via Store gRPC (:10921), giving ~30s data freshness instead
+# of the full GATEWAY_FLUSH_INTERVAL lag.
+# Reads the same /mydata/gorilla-gateway/buffer directory written by the
+# gateway; mounted read-only so the gateway remains the sole writer.
+buffer_store_up() {
+    log "node1 gorilla-buffer-store up"
+    docker_run_on "${NODE1_HOST}" \
+        --name asap-gorilla-buffer-store \
+        --user 0 \
+        -v /mydata/gorilla-thanos-multinode/configs/buffer-objstore.yaml:/etc/thanos/objstore.yaml:ro \
+        -v /mydata/gorilla-gateway/buffer:/var/gorilla-gateway/buffer:ro \
+        quay.io/thanos/thanos:v0.41.0 \
+        store \
+        --objstore.config-file=/etc/thanos/objstore.yaml \
+        --http-address=0.0.0.0:10922 \
+        --grpc-address=0.0.0.0:10921 \
+        --data-dir=/tmp/thanos-buffer-store \
+        --sync-block-duration=30s \
+        --block-sync-concurrency=20
 }
 
 # ─── AGENTS + PRODUCERS on node0 and node3 ───────────────────────────────
@@ -261,6 +291,8 @@ stack_up() {
     sleep 5
     gateway_up
     sleep 2
+    buffer_store_up
+    sleep 2
     agents_up
     log "=== stack up; waiting WARMUP_S=${WARMUP_S}s for gorillas3 to flush first blocks ==="
     sleep "${WARMUP_S}"
@@ -319,7 +351,7 @@ usage: $0 <cmd>
 
 Topology:
   node0 (10.10.1.1)  producers + agent-a (gorilla-only, drop_original: true)
-  node1 (10.10.1.2)  gorilla-gateway (S3 proxy: agents → 10s → gateway → 20s → MinIO)
+  node1 (10.10.1.2)  gorilla-gateway (S3 proxy, 20s flush) + gorilla-buffer-store (Store gRPC :10921)
   node2 (10.10.1.3)  MinIO + Thanos (store-gateway, query, compact)
   node3 (10.10.1.4)  producers + agent-b (gorilla-only, drop_original: true)
 

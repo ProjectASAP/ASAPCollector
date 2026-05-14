@@ -7,47 +7,96 @@ Simplified 4-node ASAP demo: two-tier Gorilla compression pipeline with Thanos q
 | Node | IP | Role |
 |------|----|------|
 | node0 | 10.10.1.1 | Producers + agent-a (gorilla-only pipeline) |
-| node1 | 10.10.1.2 | **gorilla-gateway** (S3 buffering proxy, 20s flush to MinIO) |
+| node1 | 10.10.1.2 | **gorilla-gateway** (S3 buffering proxy, 20s flush) + **gorilla-buffer-store** (Thanos Store gRPC :10921) |
 | node2 | 10.10.1.3 | MinIO (S3 storage) + Thanos (store-gateway, query, compact) |
 | node3 | 10.10.1.4 | Producers + agent-b (gorilla-only pipeline) |
 
 ## Data Flow
 
 ```
-node0                         node1                    node2
-┌──────────────────────┐      ┌──────────────────┐     ┌──────────────────────────────────────┐
-│ fake-exporter ×N     │      │ gorilla-gateway   │     │ MinIO (port 9000)                    │
-│   │  OTLP gRPC       │      │  port 9100        │     │   asap-gorilla-tsdb/                 │
-│   ▼  port 4317       │ S3   │                   │ S3  │     <ULID>/chunks/                   │
-│ asap-agent-a         │ PUT  │  buffers 10s      │ PUT │     <ULID>/index                     │
-│   [otlp receiver]    │:9100 │  blocks in mem    │:9000│     <ULID>/meta.json                 │
-│   [memory_limiter]   │─────►│  flush every 20s ─┼────►│         │                            │
-│   [gorillas3]        │      │                   │     │         │ sync (~30s)                │
-│     drop_original:   │      └──────────────────┘     │         ▼                            │
-│     true             │                               │ Thanos store-gateway (port 10901)    │
-│   [batch]            │                               │         │ StoreAPI gRPC              │
-│   [nop exporter]     │                               │         ▼                            │
-└──────────────────────┘                               │ Thanos query (port 10903)            │
-                                                       │   PromQL: /api/v1/query              │
-node3                                                  └──────────────────────────────────────┘
-┌──────────────────────┐
-│ fake-exporter ×N     │
-│   │  OTLP gRPC       │
-│   ▼  port 4317       │
-│ asap-agent-b ────────┼──────► same two-tier path via gorilla-gateway
-└──────────────────────┘
+node0                         node1                              node2
+┌──────────────────────┐      ┌──────────────────────────┐      ┌──────────────────────────────────────┐
+│ fake-exporter ×N     │      │ gorilla-gateway :9100     │      │ MinIO (port 9000)                    │
+│   │  OTLP gRPC       │ S3   │  writes blocks to disk    │ S3   │   asap-gorilla-tsdb/                 │
+│   ▼  port 4317       │ PUT  │  GATEWAY_BUFFER_DIR        │ PUT  │     <ULID>/chunks/                   │
+│ asap-agent-a         │:9100 │  (block_source=gateway-   │:9000 │     <ULID>/index                     │
+│   [otlp receiver]    │─────►│   buffer in meta.json)    ├─────►│     <ULID>/meta.json                 │
+│   [memory_limiter]   │      │  flush every 20s           │      │  (block_source=minio)                │
+│   [gorillas3]        │      │  (GATEWAY_MINIO_SYNC_GRACE │      │         │                            │
+│     drop_original:   │      │   = 90s before deleting)  │      │         │ sync (~30s)                │
+│     true             │      │                           │      │         ▼                            │
+│   [batch]            │      │ gorilla-buffer-store :10921│      │ Thanos store-gateway (port 10901)   │
+│   [nop exporter]     │      │  reads GATEWAY_BUFFER_DIR  │      │         │ StoreAPI gRPC              │
+└──────────────────────┘      │  (read-only mount)         │      └─────────┼────────────────────────────┘
+                              └────────────┬──────────────┘                │
+node3                                      │ StoreAPI gRPC :10921           │ StoreAPI gRPC :10901
+┌──────────────────────┐                   │                                │
+│ fake-exporter ×N     │                   └──────────────┐  ┌─────────────┘
+│   │  OTLP gRPC       │                                  ▼  ▼
+│   ▼  port 4317       │                   ┌──────────────────────────────────────┐
+│ asap-agent-b ────────┼──────────────────►│ Thanos query (port 10903)            │
+└──────────────────────┘  same path        │  --endpoint=thanos-store-gateway     │
+                          via node1        │  --endpoint=gorilla-buffer-store     │
+                                           │  --query.replica-label=block_source  │
+                                           │  PromQL: /api/v1/query               │
+                                           └──────────────────────────────────────┘
 
 Key: Agents write 10s Gorilla TSDB blocks to gorilla-gateway:9100 (NOT directly to MinIO).
-     Gateway batches blocks in memory and flushes to MinIO every 20s.
+     Gateway persists blocks to disk and flushes to MinIO every 20s (block_source=minio).
+     gorilla-buffer-store reads the same disk dir and serves blocks via Store gRPC (~30s freshness).
+     Thanos deduplicates via --query.replica-label=block_source during the 90s grace overlap.
      NO raw OTLP crosses the network — only S3 PUTs.
 ```
 
-### Two-tier timing
+### Three-tier timing
 
-| Tier | Interval | Who |
-|------|----------|-----|
-| Agent → gateway | 10s (`window_interval: 10s`) | gorillas3 processor flush |
-| Gateway → MinIO | 20s (`GATEWAY_FLUSH_INTERVAL=20s`) | gorilla-gateway batch upload |
+| Tier | Interval | Who | Data freshness |
+|------|----------|-----|----------------|
+| Agent → gateway | 10s (`window_interval: 10s`) | gorillas3 processor flush | blocks written to disk immediately |
+| Buffer → Thanos Query | 30s (`sync-block-duration=30s`) | gorilla-buffer-store sidecar | **~30–40s total lag** via buffer path |
+| Gateway → MinIO | 20s (`GATEWAY_FLUSH_INTERVAL=20s`) | gorilla-gateway flush | ~50–60s total lag via MinIO path |
+
+During the 90s grace window (`GATEWAY_MINIO_SYNC_GRACE`) after a MinIO upload, both
+stores serve the same block simultaneously. Thanos deduplicates via `block_source`.
+
+### Why `sync-block-duration=30s` is the new freshness ceiling
+
+The gateway writes each block to disk the moment all 3 files arrive. But
+`gorilla-buffer-store` does not watch the directory in real-time — it polls on a fixed
+timer controlled by `--sync-block-duration`:
+
+```
+gorilla-gateway writes:           gorilla-buffer-store scans:
+t=0s   block arrives on disk      t=0s   last scan just ran
+t=1s   ...                        t=1s   (sleeping)
+...                                ...
+t=10s  next block arrives         t=10s  (sleeping)
+...                                ...
+t=30s  ...                        t=30s  ← next scan, discovers both blocks
+```
+
+So data lands on disk almost immediately but only becomes visible to Thanos Query at
+the next scan boundary. Total freshness breakdown via the buffer path:
+
+| Stage | Duration |
+|-------|----------|
+| gorillas3 window (agent accumulates samples) | 10s |
+| gorilla-buffer-store scan interval | up to 30s |
+| **Total visible lag (buffer path)** | **~10–40s** |
+
+Compare to the original 1-hour flush design:
+
+| Stage | Duration |
+|-------|----------|
+| gorillas3 window | 10s |
+| gateway flush interval | up to 3600s (1h) |
+| Thanos store-gateway MinIO sync | up to 30s |
+| **Total visible lag (original)** | **~10–3630s (≈1h)** |
+
+`--sync-block-duration` is tunable: setting it to `10s` tightens the ceiling to ~20s
+total at the cost of more frequent disk scans. `30s` matches the MinIO store-gateway
+default and is a reasonable balance. The 1-hour MinIO flush becomes a **durability and
+long-term retention** operation only — it no longer controls when data is queryable.
 
 ## Quick Start
 
@@ -93,6 +142,7 @@ All verification scripts pass. Full per-step calculations are in [thanos-query-v
 | 2 — Exact-value test (gauge + rate) | hand-computed vs Thanos | 4/4 | PASS |
 | 3 — Two-tier gateway (`run_demo.sh all`) | end-to-end 5-check suite | 5/5 | PASS |
 | 4 — Advanced PromQL (rate/avg/quantile) | `verif_part4.py` | 25/25 | PASS |
+| 5 — Disk-buffer + buffer-store upgrade | `verify_buffer_store.sh` | 7/7 | PENDING |
 
 ## PromQL Query Coverage
 
@@ -130,6 +180,10 @@ All queries verified against `http://10.10.1.3:10903/api/v1/query`.
 | Agent gorilla self-metrics | `curl :8890/metrics \| grep gorilla` — check `gorillas3_chunks_written_total` | Confirms gorillas3 is active; `s3_put_failures_total` must be 0 |
 | Gateway buffering | `ssh node1 docker logs asap-gorilla-gateway \| grep -E "recv\|flush"` | Must show `recv s3://...` lines and `flush done ok=N fail=0` |
 | No outbound gRPC | `tcpdump -n 'dst port 4317'` on node0 shows only inbound | Confirms `drop_original: true` |
+| Buffer-store running | `ssh node1 docker ps | grep asap-gorilla-buffer-store` | Must show container Up |
+| Buffer-store registered | `curl 10.10.1.3:10903/api/v1/stores | grep 10921` | Thanos Query must list it |
+| block_source label set | `cat /mydata/gorilla-gateway/buffer/<ULID>/meta.json` on node1 | Must show `"block_source":"gateway-buffer"` |
+| /v1/blocks API | `curl node1:9100/v1/blocks` shows `complete:true` entries | Disk buffer active |
 
 ### Additional gateway-specific checks
 
@@ -141,11 +195,32 @@ docker logs asap-agent-a 2>&1 | grep endpoint
 # Confirm gateway receives and flushes blocks:
 ssh node1 'docker logs asap-gorilla-gateway 2>&1 | grep -E "recv|flush" | tail -20'
 # Expected pattern:
-#   recv  s3://asap-gorilla-tsdb/<ULID>/chunks/000001  NNN B  buf=1
-#   recv  s3://asap-gorilla-tsdb/<ULID>/index  NNN B  buf=2
-#   recv  s3://asap-gorilla-tsdb/<ULID>/meta.json  NNN B  buf=3
-#   flush: pushing 6 objects upstream
-#   flush done  ok=6 fail=0
+#   recv  s3://asap-gorilla-tsdb/<ULID>/chunks/000001  NNN B  buf=1  complete=false
+#   recv  s3://asap-gorilla-tsdb/<ULID>/index  NNN B  buf=2  complete=false
+#   recv  s3://asap-gorilla-tsdb/<ULID>/meta.json  NNN B  buf=3  complete=true
+#   flush: uploading 2 complete block(s) to s3://asap-gorilla-tsdb
+#   flush OK  s3://asap-gorilla-tsdb/<ULID>/meta.json  NNN B
+#   flush: block <ULID> uploaded OK; waiting 90s grace before deleting local
+#   flush: deleted local block <ULID>
+
+# Confirm block_source label is injected in on-disk meta.json:
+ssh node1 'find /mydata/gorilla-gateway/buffer -name meta.json | head -1 | xargs cat | python3 -m json.tool | grep block_source'
+# Expected: "block_source": "gateway-buffer"
+
+# Confirm gorilla-buffer-store is running and reading the buffer:
+ssh node1 'docker logs asap-gorilla-buffer-store 2>&1 | tail -10'
+# Expected: "lset=... block_source="gateway-buffer"" entries (blocks discovered)
+
+# Check Thanos Query has buffer-store registered:
+curl -s http://10.10.1.3:10903/api/v1/stores | python3 -m json.tool | grep -E '"name"|10921'
+# Expected: "10.10.1.2:10921" in the store list
+
+# List buffered blocks via /v1/blocks API:
+curl -s http://10.10.1.2:9100/v1/blocks | python3 -m json.tool
+# Expected: JSON array of {"ulid":"...","complete":true,"flushing":false} entries
+
+# Run all buffer-store checks:
+bash scripts/verify_buffer_store.sh --gateway-host node1 --node1-ip 10.10.1.2 --thanos-host 10.10.1.3
 ```
 
 ## Comparison vs. mvp-multinode
@@ -171,16 +246,20 @@ gorilla-thanos-multinode/
 ├── thanos-query-verif.md              (verification results: smoke-test + exact-value + two-tier gateway + advanced PromQL)
 ├── configs/
 │   ├── agent-gorilla-only.yaml        (OTel agent: gorillas3→gateway:9100, no OpAMP)
-│   └── thanos-objstore.yaml           (Thanos S3 config → asap-gorilla-tsdb)
+│   ├── thanos-objstore.yaml           (Thanos S3 config → MinIO asap-gorilla-tsdb)
+│   └── buffer-objstore.yaml           (Thanos FILESYSTEM config → GATEWAY_BUFFER_DIR)
 ├── docker-compose/
 │   └── gorilla-thanos.yml             (single-node compose for local testing)
 └── scripts/
-    ├── run_demo.sh                    (multinode orchestrator: backend→gateway→agents)
+    ├── run_demo.sh                    (multinode orchestrator: backend→gateway→buffer-store→agents)
+    ├── verify_buffer_store.sh         (disk-buffer + buffer-store upgrade: 7-check suite)
     ├── verif_part4.py                 (PromQL verification: rate/avg/quantile, 25/25 checks)
     └── verify_gorilla_compression.sh  (pipeline smoke-test checks, 5/5 pass)
 
 deploy/gorilla-gateway/                (custom Go S3-buffering proxy service)
-├── main.go                            (HTTP S3 API server + MinIO upstream flush)
+├── main.go                            (HTTP S3 API + /v1/blocks endpoint + runFlushLoop)
+├── diskbuf.go                         (DiskBuffer: disk persistence, label injection, crash recovery)
+├── flush.go                           (flush lifecycle: upload→grace→delete; block_source=minio relabel)
 └── go.mod                             (module: github.com/ProjectASAP/gorilla-gateway)
 
 deploy/docker/
