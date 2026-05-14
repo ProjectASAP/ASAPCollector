@@ -168,12 +168,19 @@ backend_down() {
 # every 20s. Agents write to gateway:9100; gateway writes to minio:9000.
 gateway_up() {
     log node1 gorilla-gateway up
-    docker_run_on          --name asap-gorilla-gateway         -e GATEWAY_LISTEN=0.0.0.0:9100         -e GATEWAY_UPSTREAM_ENDPOINT=minio:9000         -e GATEWAY_ACCESS_KEY=asap         -e GATEWAY_SECRET_KEY=asap-local-only         -e GATEWAY_FLUSH_INTERVAL=20s         asap/gorilla-gateway:dev
+    docker_run_on "${NODE1_HOST}" \
+        --name asap-gorilla-gateway \
+        -e GATEWAY_LISTEN=0.0.0.0:9100 \
+        -e GATEWAY_UPSTREAM_ENDPOINT=minio:9000 \
+        -e GATEWAY_ACCESS_KEY=asap \
+        -e GATEWAY_SECRET_KEY=asap-local-only \
+        -e GATEWAY_FLUSH_INTERVAL=20s \
+        asap/gorilla-gateway:dev
 }
 
 gateway_down() {
     log node1 gorilla-gateway down
-    stop_node 
+    stop_node "${NODE1_HOST}"
 }
 
 # ─── AGENTS + PRODUCERS on node0 and node3 ───────────────────────────────

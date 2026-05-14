@@ -69,7 +69,7 @@ if ssh -n -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no \
            'mc alias set local http://minio:9000 asap asap-local-only 2>/dev/null &&
             mc ls local/asap-gorilla-tsdb --recursive 2>/dev/null'" \
    > /tmp/minio_ls_out.txt 2>&1; then
-    BLOCK_COUNT=$(wc -l < /tmp/minio_ls_out.txt || echo 0)
+    BLOCK_COUNT=$(grep -vc "Added .* successfully" /tmp/minio_ls_out.txt || echo 0)
     echo "  mc ls output (${BLOCK_COUNT} lines):"
     head -20 /tmp/minio_ls_out.txt | sed 's/^/    /'
     if [[ "${BLOCK_COUNT}" -gt 0 ]]; then
@@ -110,7 +110,7 @@ METRIC_COUNT=0
 if LABEL_RESP=$(curl -sf --max-time 15 \
     "${THANOS_URL}/api/v1/label/__name__/values" 2>&1); then
     if echo "${LABEL_RESP}" | grep -q '"status":"success"'; then
-        METRIC_COUNT=$(echo "${LABEL_RESP}" | grep -o '"[^"]*"' | grep -v '"status"\|"success"\|"data"' | wc -l || echo 0)
+        METRIC_COUNT=$(echo "${LABEL_RESP}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get(chr(100)+chr(97)+chr(116)+chr(97), [])))" 2>/dev/null || echo 0)
         echo "  Thanos label __name__ values: ${METRIC_COUNT} metric name(s)"
         echo "${LABEL_RESP}" | python3 -c "
 import sys, json
