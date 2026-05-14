@@ -77,7 +77,7 @@ processors:
   # thanos-store-gateway syncs from MinIO and serves via its StoreAPI.
   #
   # tsdb_block_duration: 60s — each 60s window closes and flushes one block.
-  # Thanos compact will merge sub-blocks downstream. window_interval: 5s
+  # Thanos compact will merge sub-blocks downstream. window_interval: 10s
   # controls the in-memory flush cadence (keeps per-window heap usage low).
   gorillas3:
     window_interval: 10s

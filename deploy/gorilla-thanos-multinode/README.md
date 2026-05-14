@@ -71,8 +71,10 @@ t=0s   block arrives on disk      t=0s   last scan just ran
 t=1s   ...                        t=1s   (sleeping)
 ...                                ...
 t=10s  next block arrives         t=10s  (sleeping)
-...                                ...
+...
 t=30s  ...                        t=30s  ← next scan, discovers both blocks
+...                                ...
+
 ```
 
 So data lands on disk almost immediately but only becomes visible to Thanos Query at
@@ -82,7 +84,7 @@ the next scan boundary. Total freshness breakdown via the buffer path:
 |-------|----------|
 | gorillas3 window (agent accumulates samples) | 10s |
 | gorilla-buffer-store scan interval | up to 30s |
-| **Total visible lag (buffer path)** | **~10–40s** |
+| **Total visible lag (buffer path)** | **~30–40s** |
 
 Compare to the original 1-hour flush design:
 
@@ -200,7 +202,7 @@ ssh node1 'docker logs asap-gorilla-gateway 2>&1 | grep -E "recv|flush" | tail -
 #   recv  s3://asap-gorilla-tsdb/<ULID>/meta.json  NNN B  buf=3  complete=true
 #   flush: uploading 2 complete block(s) to s3://asap-gorilla-tsdb
 #   flush OK  s3://asap-gorilla-tsdb/<ULID>/meta.json  NNN B
-#   flush: block <ULID> uploaded OK; waiting 90s grace before deleting local
+#   flush: block <ULID> uploaded OK; waiting 15s grace before deleting local
 #   flush: deleted local block <ULID>
 
 # Confirm block_source label is injected in on-disk meta.json:
