@@ -12,8 +12,12 @@ Single-host driver: `deploy/mvp-singlenode/scripts/run_mvp_demo.sh` (runs all co
       node0 ──────►│ producers + agent-a   (data source)          │
    10.10.1.1       │                                              │
                    │                                              │
-      node1 ◄──────│ gateway               (ASAP arm only)        │
-   10.10.1.2       │                                              │
+      node1 ──    │ unused / reserved     (former gateway slot;   │
+   10.10.1.2       │                        agent → asapquery-     │
+                   │                        backend is the default │
+                   │                        path. `gateway_up()`   │
+                   │                        in run_demo.sh stays   │
+                   │                        defined-but-uncalled.) │
                    │                                              │
       node2 ◄──────│ backend stack         (asap-query-backend,   │
    10.10.1.3       │                        minio, thanos-*,      │

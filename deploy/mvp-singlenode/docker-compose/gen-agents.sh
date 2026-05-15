@@ -28,7 +28,11 @@ cat <<EOF
 x-agent: &agent-base
   image: asap/asap-otel:dev
   depends_on:
-    - gateway
+    # Agents OTLP-export sketches directly to asapquery-backend
+    # (asapquery-backend's --enable-otel-ingest merges them
+    # per-aggregation_id server-side). The gateway tier is opt-in
+    # via base.yml's \`gateway-legacy\` profile.
+    - backend
     - controller
   command:
     - "--config=/etc/otel/config.yaml"

@@ -54,7 +54,16 @@ x-fake-exporter: &fake-exporter-base
 x-agent: &agent-base
   image: asap/asap-otel:dev
   depends_on:
-    - gateway
+    # This overlay's "multi-stage" intent is that the gateway sits
+    # between agent and asapquery-backend. To preserve that flow,
+    # bring the stack up with `--profile gateway-legacy` AND override
+    # AGENT_CONFIG_A/B to point at an agent config whose `otlp/*`
+    # exporter targets `gateway:4317` instead of the new default
+    # `backend:4317`. Default `depends_on` still references backend so
+    # agents come up even when the gateway-legacy profile is off
+    # (in which case this overlay degrades to the default agent →
+    # backend data path).
+    - backend
     - controller
   command:
     - "--config=/etc/otel/config.yaml"
@@ -315,14 +324,18 @@ services:
       - ../configs/${AGENT_CONFIG_B:-asap-otel-agent-b6-asap-single-sketch.yaml}:/etc/otel/config.yaml:ro
 
   # ─────────────────────────────── 1 gateway ─────────────────────────────────
-  # The base.yml gateway is a pass-through OTLP collector. The MVP
-  # demo wants the gateway to run sketch-merge processors per the
-  # controller's plan (label-aggregation-at-instant query class).
-  # This overlay declares the gateway service and mounts a
-  # placeholder gateway config; the controller-emitted gateway YAML
-  # replaces the placeholder once the typed-stage-split path fires.
-
+  # Opt-in only (`profiles: ["gateway-legacy"]`). The default
+  # deployment routes agent → asapquery-backend directly; this
+  # overlay's "wants the gateway running sketch-merge processors"
+  # intent requires explicit opt-in:
+  #
+  #   docker compose --profile gateway-legacy \
+  #     -f base.yml -f mvp-multi-stage.yml up
+  #
+  # Plus the agent configs (mounted via AGENT_CONFIG_A / AGENT_CONFIG_B)
+  # must target `gateway:4317` — see the comment on `x-agent` above.
   gateway:
+    profiles: ["gateway-legacy"]
     image: asap/asap-otel:dev
     hostname: gateway
     command:

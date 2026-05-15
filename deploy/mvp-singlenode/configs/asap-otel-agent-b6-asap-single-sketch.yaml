@@ -301,7 +301,7 @@ connectors:
 
 exporters:
   otlp/backend:
-    endpoint: gateway:4317
+    endpoint: backend:4317
     tls:
       insecure: true
     # Backend's tonic gRPC server doesn't accept gzip-compressed bodies

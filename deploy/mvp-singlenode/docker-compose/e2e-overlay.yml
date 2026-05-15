@@ -57,13 +57,15 @@ services:
     volumes:
       - ../configs/workloads.yaml:/etc/asap/workloads.yaml:ro
 
-  # The canonical gateway forwards everything as OTLP (sketches +
-  # raw) to the backend. The default `gateway.yaml` uses
-  # `prometheusremotewrite` which silently drops sketch-typed data
-  # points — fine for a raw-metrics-only deployment, wrong for an
-  # ASAP run. Override the mounted config in this overlay so the
-  # e2e harness gets sketch-through-gateway-to-backend by default.
+  # Gateway is opt-in (`profiles: ["gateway-legacy"]` in base.yml).
+  # When the profile IS enabled, this overlay swaps the canonical
+  # config for the OTLP-forwarder variant (so sketches survive the
+  # round-trip — the default `gateway.yaml`'s
+  # `prometheusremotewrite` exporter silently drops sketch-typed
+  # data points). Without `--profile gateway-legacy`, this override
+  # is inert.
   gateway:
+    profiles: ["gateway-legacy"]
     volumes:
       - ../configs/gateway-otlp-forward.yaml:/etc/otelcol-contrib/config.yaml:ro
 
