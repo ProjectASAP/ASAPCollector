@@ -13,7 +13,8 @@
 x-agent: &agent-base
   image: asap/asap-otel:dev
   depends_on:
-    - gateway
+    # See agents-N1.yml for the agent → asapquery-backend rationale.
+    - backend
     - controller
   command:
     - "--config=/etc/otel/config.yaml"

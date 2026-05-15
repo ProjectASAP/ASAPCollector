@@ -13,9 +13,12 @@ _Last updated: 2026-04-23 (post N=10 sweep)._
 N ∈ {1, 10, 100}   # number of edge agents
 ```
 
-All other components (backend, gateway, controller, MinIO,
-Prometheus, Grafana) stay at 1 replica — paper's claim is "one
-controller coordinates N agents".
+All other components (backend, controller, MinIO, Prometheus,
+Grafana) stay at 1 replica — paper's claim is "one controller
+coordinates N agents". The OTel **gateway** tier is opt-in via the
+`gateway-legacy` profile (see `base.yml`); the default data path is
+agent → asapquery-backend, with the precompute engine merging
+sketches server-side via its per-aggregation_id accumulators.
 
 ## Compose (dev / small & mid scale)
 
@@ -54,7 +57,8 @@ agent containers. Host ports:
 | 9090 | Prometheus | |
 | 3000 | Grafana | (admin/admin, anon viewer also allowed) |
 | 9000 / 9001 | MinIO S3 / console | raw-sample cold store (local disk via named volume) |
-| 4317 / 4318 | gateway OTLP | where agents ship metrics |
+| 4317 / 4318 | backend OTLP | where agents ship metrics (asapquery-backend's `--enable-otel-ingest`) |
+| 14317 / 14318 | gateway OTLP | only when `--profile gateway-legacy` is set |
 
 MinIO is configured as a local cold store (data in the
 `minio-data` named volume under `/mydata/...`). Byte-layout

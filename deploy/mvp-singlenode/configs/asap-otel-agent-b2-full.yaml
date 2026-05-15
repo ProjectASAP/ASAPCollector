@@ -13,12 +13,12 @@
 #   │  agent (this config)                     │
 #   │   receivers:   otlp                      │
 #   │   processors:  ddsketch + hll + batch    │
-#   │   exporters:   otlp/gateway, prometheus  │
+#   │   exporters:   otlp/backend, prometheus  │
 #   └──────────────────────────────────────────┘
 #       │                       │
 #       │ OTLP :4317            │ /metrics :8889
 #       ▼                       ▼
-#   gateway → backend        Prometheus scrape
+#   asapquery-backend        Prometheus scrape
 #
 # Only DDSketch + HLL are enabled here: together they exercise
 # the "quantile + distinct-count" joint path the paper's B2
@@ -70,10 +70,12 @@ processors:
     send_batch_size: 1024
 
 exporters:
-  # Forward sketched output to the gateway. Gateway config takes
-  # it from here — currently prometheusremotewrite → backend.
-  otlp/gateway:
-    endpoint: gateway:4317
+  # Forward sketched output directly to asapquery-backend's OTLP ingest
+  # (the precompute engine merges per-aggregation_id sketches
+  # server-side via its accumulators — no middle-tier gateway
+  # processor is in the path).
+  otlp/backend:
+    endpoint: backend:4317
     tls:
       insecure: true
 
@@ -88,7 +90,7 @@ service:
     metrics:
       receivers: [otlp]
       processors: [ddsketch, HLL, batch]
-      exporters: [otlp/gateway, prometheus]
+      exporters: [otlp/backend, prometheus]
 
   telemetry:
     logs:

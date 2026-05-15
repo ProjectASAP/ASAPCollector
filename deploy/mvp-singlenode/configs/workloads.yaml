@@ -63,14 +63,17 @@
 #    min row sum; see PROGRESS "Single-pipeline multi-sketch" note).
 #    Not exercised under b3-delta in the current cell; included so the
 #    full-sweep matrix (E3) can pick this up by toggling AGENT_CONFIG.
+#    Role tagged `agent`: the asapquery-backend's precompute engine
+#    merges per-aggregation_id sketches arriving via OTLP, so a
+#    middle-tier backend OTel collector role is no longer deployed.
 - metric_name: http_requests_total
   query_string: "sum(http_requests_total)"
   accuracy_sla: 0.01
-  assign_to_role: backend
+  assign_to_role: agent
 
 # 4. topk — CountSketch family. As above: lives here for the sweep,
 #    not for the b3-delta cell.
 - metric_name: http_requests_total
   query_string: "topk(10, http_requests_total)"
   accuracy_sla: 0.05
-  assign_to_role: backend
+  assign_to_role: agent

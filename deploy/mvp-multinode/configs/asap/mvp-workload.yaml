@@ -54,12 +54,14 @@
 
 # 2. LABEL AGGREGATION ACROSS SERIES AT ONE TIMESTAMP
 #    Outer: sum-by(zone) at instant. Inner: identity.
-#    Stage: gateway (cross-host fan-in merge); backend stores
-#    the merged sum-by-zone vector.
+#    Stage: edge sketches per-host; asapquery-backend's precompute
+#    engine performs the cross-host sum-by(zone) fan-in merge via its
+#    per-aggregation_id accumulators. (No middle-tier gateway OTel
+#    collector role is deployed; the merge happens server-side.)
 - metric_name: http_requests_total
   query_string: "sum by (zone) (http_requests_total)"
   accuracy_sla: 0.0
-  assign_to_role: gateway
+  assign_to_role: agent
 
 # 3. COMBINED WINDOW + LABEL AGGREGATION
 #    Inner: rate per series over 5m. Outer: sum-by(zone).

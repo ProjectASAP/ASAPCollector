@@ -30,8 +30,8 @@ processors:
     send_batch_max_size: 1000000
 
 exporters:
-  otlp/gateway:
-    endpoint: gateway:4317
+  otlp/backend:
+    endpoint: backend:4317
     tls:
       insecure: true
 
@@ -40,7 +40,7 @@ service:
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp/gateway]
+      exporters: [otlp/backend]
 
   telemetry:
     logs:

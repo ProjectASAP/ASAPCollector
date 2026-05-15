@@ -204,22 +204,36 @@ services:
       # send OTLP straight to the backend from the host.
     logging: *default-logging
 
-  # ───────── OpenTelemetry gateway (aggregator) ─────────
+  # ───────── OpenTelemetry gateway (aggregator) — opt-in only ─────────
+  # The default data path is agent → asapquery-backend (the backend's
+  # `--enable-otel-ingest` accepts sketch data points and merges them
+  # per-aggregation_id via its precompute-engine accumulators). The
+  # gateway tier is preserved in source under the `gateway-legacy`
+  # profile so A/B comparisons against an explicit middle-tier merge
+  # collector are still one flag away:
+  #
+  #   docker compose --profile gateway-legacy -f base.yml -f agents-N1.yml up
+  #
+  # (Agents continue to target backend:4317 directly; flipping any
+  # data path back through the gateway requires also re-pointing the
+  # agent OTel config + fake-exporter EXPORTER_TARGET.)
+  #
+  # ASAP-patched OTel collector — same image the agents use.
+  # Required because stock contrib 0.108's pdata silently drops
+  # typed sketch data points (Metric.data tags 13–17) via
+  # `ConsumeUnknown` during OTLP receive → in-memory → OTLP
+  # export round-trip. The patched build's pdata knows about
+  # those variants and preserves them. See the comment block in
+  # `deploy/mvp-singlenode/configs/gateway.yaml` for the code reference.
+  #
+  # Three gateway configs in deploy/mvp-singlenode/configs/:
+  #   gateway.yaml                          — pure forwarder (default)
+  #   gateway-aggregate-from-raw.yaml       — sketch raw points at gateway tier
+  #   gateway-aggregate-from-sketches.yaml  — merge already-sketched payloads
+  # Override the mounted file via the GATEWAY_CONFIG env var,
+  # same pattern agents use for AGENT_CONFIG.
   gateway:
-    # ASAP-patched OTel collector — same image the agents use.
-    # Required because stock contrib 0.108's pdata silently drops
-    # typed sketch data points (Metric.data tags 13–17) via
-    # `ConsumeUnknown` during OTLP receive → in-memory → OTLP
-    # export round-trip. The patched build's pdata knows about
-    # those variants and preserves them. See the comment block in
-    # `deploy/mvp-singlenode/configs/gateway.yaml` for the code reference.
-    #
-    # Three gateway configs in deploy/mvp-singlenode/configs/:
-    #   gateway.yaml                          — pure forwarder (default)
-    #   gateway-aggregate-from-raw.yaml       — sketch raw points at gateway tier
-    #   gateway-aggregate-from-sketches.yaml  — merge already-sketched payloads
-    # Override the mounted file via the GATEWAY_CONFIG env var,
-    # same pattern agents use for AGENT_CONFIG.
+    profiles: ["gateway-legacy"]
     image: asap/asap-otel:dev
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
@@ -241,7 +255,12 @@ services:
     # DataCollector/datasets_eval/.
     image: asap/fake-exporter:dev
     environment:
-      EXPORTER_TARGET: "gateway:4317"
+      # Default target is asapquery-backend's OTLP ingest. Overlays
+      # that introduce agents (agents-N<K>.yml) re-point this at the
+      # agent so the producer flows through the agent's sketch
+      # pipeline. The `--profile gateway-legacy` opt-in path also
+      # needs the target manually flipped back to gateway:4317.
+      EXPORTER_TARGET: "backend:4317"
       # Workload knobs (can be overridden from sweep scripts via
       # host env). Legacy EXPORTER_RATE is accepted but deprecated
       # — fake-exporter itself logs a warning when set.
@@ -257,7 +276,7 @@ services:
       EXPORTER_SDK_AGG: "${EXPORTER_SDK_AGG:-default}"
       EXPORTER_MAX_BUFFER_PER_SERIES: "${EXPORTER_MAX_BUFFER_PER_SERIES:-0}"
     depends_on:
-      - gateway
+      - backend
     logging: *default-logging
 
   # Agents are defined in `agents-N<K>.yml` overrides — keeping

@@ -6,17 +6,21 @@
 # freshness) but distributed across 4 hosts on 10.10.1.0/24:
 #
 #   node0 (10.10.1.1)  producers + agent-a   (data source)
-#   node1 (10.10.1.2)  gateway               (ASAP arm only)
+#   node1 (10.10.1.2)  unused / reserved     (former gateway slot — see
+#                                             gateway_up() below, now
+#                                             defined-but-uncalled)
 #   node2 (10.10.1.3)  backend stack         (controller, asap-query-backend,
 #                                             prometheus, minio,
 #                                             thanos-{query,store-gateway,compact})
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
 # Three arms run back-to-back over the same workload:
-#   b0     OTel agent → Prometheus (PRW)              [no gateway, no backend]
-#   b1     OTel agent + serfprocessor → Prometheus    [no gateway, no backend]
-#   asap   OTel agent → gateway → asap-query-backend  [+ controller,
-#          + Thanos/MinIO archive, sketches per controller plan]
+#   b0     OTel agent → Prometheus (PRW)            [no backend]
+#   b1     OTel agent + serfprocessor → Prometheus  [no backend]
+#   asap   OTel agent → asap-query-backend          [+ controller,
+#          + Thanos/MinIO archive, sketches per controller plan;
+#          asap-query-backend's --enable-otel-ingest merges sketches
+#          per-aggregation_id via precompute-engine accumulators]
 #
 # Scope notes vs. the canonical single-host `run_mvp_demo.sh`:
 # - Uses `docker run --network host --add-host` (no docker-compose, no
@@ -332,11 +336,14 @@ agents_down() {
 }
 
 # ─── ARM lifecycle ──────────────────────────────────────────────────
+# gateway_up / gateway_down are no longer called by arm lifecycle —
+# the default data path is agent → asapquery-backend directly. The
+# functions stay defined so a topology that re-introduces a middle
+# tier can re-enable them by re-adding the calls.
 arm_up() {
     local arm=$1
     log "=== ARM UP: ${arm} ==="
     backend_up "${arm}"
-    gateway_up "${arm}"
     sleep 5
     agents_up "${arm}"
     log "=== arm ${arm} all containers started; waiting WARMUP_S=${WARMUP_S} ==="
@@ -346,7 +353,6 @@ arm_up() {
 arm_down() {
     log "=== ARM DOWN ==="
     agents_down
-    gateway_down
     backend_down
 }
 
