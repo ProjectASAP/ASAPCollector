@@ -1,6 +1,5 @@
 aggregations:
-- aggregationId: 1
-  aggregationType: DatasketchesKLL
+- aggregationType: DatasketchesKLL
   aggregationSubType: ''
   labels:
     grouping: [zone]
@@ -12,8 +11,7 @@ aggregations:
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
-- aggregationId: 2
-  aggregationType: DatasketchesKLL
+- aggregationType: DatasketchesKLL
   aggregationSubType: ''
   labels:
     grouping: [zone]

@@ -1,6 +1,5 @@
 aggregations:
-- aggregationId: 1
-  aggregationType: HLL
+- aggregationType: HLL
   aggregationSubType: ''
   labels:
     grouping: [zone]
@@ -11,8 +10,7 @@ aggregations:
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
-- aggregationId: 2
-  aggregationType: HLL
+- aggregationType: HLL
   aggregationSubType: ''
   labels:
     grouping: [zone]

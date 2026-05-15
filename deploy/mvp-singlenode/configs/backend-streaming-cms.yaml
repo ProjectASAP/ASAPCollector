@@ -1,6 +1,5 @@
 aggregations:
-- aggregationId: 1
-  aggregationType: CountMinSketch
+- aggregationType: CountMinSketch
   aggregationSubType: ''
   labels:
     grouping: [zone]

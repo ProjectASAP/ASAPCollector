@@ -3,8 +3,7 @@
 # names match the input: `http_requests_total` (Sum) and
 # `http_requests_total_latency_ms` (Gauge).
 aggregations:
-- aggregationId: 1
-  aggregationType: CountSketch
+- aggregationType: CountSketch
   aggregationSubType: ''
   labels:
     grouping: [zone]
@@ -17,8 +16,7 @@ aggregations:
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
-- aggregationId: 2
-  aggregationType: CountSketch
+- aggregationType: CountSketch
   aggregationSubType: ''
   labels:
     grouping: [zone]
