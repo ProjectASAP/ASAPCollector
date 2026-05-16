@@ -5,9 +5,11 @@
 # the CountSketch accumulator:
 #
 #   * `topk(N, …)` — Statistic::Topk; CountSketch's `query_statistic`
-#     returns the row-mean total when no key is supplied (per PR #79
-#     wiring; per-key enumeration needs a paired SetAggregator on the
-#     agent — tracked upstream).
+#     returns the row-mean total when no key is supplied. Per-key
+#     enumeration is served by the heap-bearing variant
+#     `CountSketchWithHeap` (see asapquery-backend PR #258 for the
+#     wire-up); the heap-less CountSketch agent overlay used here
+#     answers point-frequency only.
 #   * Spatial `sum` / `count` — Statistic::{Sum,Count} no-key
 #     fallback (PROGRESS.md "All-five-sketch runtime e2e verification
 #     (2026-04-30)" — `sum_over_time(http_requests_total[1m])` →

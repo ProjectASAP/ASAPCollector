@@ -12,8 +12,8 @@ aggregations:
     aggregated: []
   metric: http_requests_total
   parameters:
-    row_num: 5
-    col_num: 1024
+    d: 5
+    w: 1024
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
@@ -26,8 +26,8 @@ aggregations:
     aggregated: []
   metric: http_requests_total_latency_ms
   parameters:
-    row_num: 5
-    col_num: 1024
+    d: 5
+    w: 1024
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
