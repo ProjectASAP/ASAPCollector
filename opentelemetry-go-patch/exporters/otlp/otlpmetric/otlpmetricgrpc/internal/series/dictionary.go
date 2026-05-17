@@ -174,8 +174,8 @@ func (d *Dictionary) EvictByID(sids []uint64) {
 	for _, src := range d.sources {
 		src.mu.Lock()
 		for _, entry := range src.entries {
-			if _, hit := want[entry.seriesID]; hit {
-				entry.seriesID = 0
+			if _, hit := want[entry.id]; hit {
+				entry.id = 0
 				entry.registered = false
 			}
 		}

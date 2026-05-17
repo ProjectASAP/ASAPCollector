@@ -69,7 +69,13 @@ COPY --from=asap-sketchlib     . asap_sketchlib
 # Mirrors the asap-precompute-rs pattern.
 COPY --from=asap-gorilla-rust  . ASAPCollector/asap-gorilla-rust
 
-RUN cd ASAPQuery-backend && cargo build --release --bin query_engine_rust --bin controller
+# Data-plane reorg (2026-05): the workspace's binary targets were
+# renamed `query_engine_rust` → `data_plane` and `controller` →
+# `control_plane`. The runtime install paths below
+# (`/usr/local/bin/asap-query-backend`, `/usr/local/bin/controller`)
+# are preserved so the existing compose stacks keep working
+# without edits.
+RUN cd ASAPQuery-backend && cargo build --release --bin data_plane --bin control_plane
 
 # Runtime image: binaries + CA certs.
 FROM debian:bookworm-slim
@@ -80,14 +86,14 @@ RUN apt-get update && \
 # create it so the binary can write its rolling log file without
 # the compose stack mounting a host volume.
 RUN mkdir -p /var/log/asap
-COPY --from=build /src/ASAPQuery-backend/target/release/query_engine_rust \
+COPY --from=build /src/ASAPQuery-backend/target/release/data_plane \
     /usr/local/bin/asap-query-backend
 # Phase-9 single-binary refactor (2026-05): the controller crate
-# moved into ASAPQuery-backend, so the controller binary now ships
-# from this image too. base.yml's `controller:` service points at
-# `asap/query-backend:dev` and overrides ENTRYPOINT to
+# moved into ASAPQuery-backend, so the control-plane binary now
+# ships from this image too. base.yml's `controller:` service points
+# at `asap/query-backend:dev` and overrides ENTRYPOINT to
 # `/usr/local/bin/controller`.
-COPY --from=build /src/ASAPQuery-backend/target/release/controller \
+COPY --from=build /src/ASAPQuery-backend/target/release/control_plane \
     /usr/local/bin/controller
 
 ENV RUST_LOG=info \

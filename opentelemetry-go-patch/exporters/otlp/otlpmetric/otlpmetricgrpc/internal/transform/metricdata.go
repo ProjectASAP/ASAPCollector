@@ -319,53 +319,24 @@ func DDSketchDataPoints[N int64 | float64](
 			return nil, err
 		}
 
+		// Refactor-2026-05: the proto removed the precomputed
+		// `count`, `sum`, `min`, `max` fields from
+		// `DDSketchDataPoint` because they are derivable from the
+		// sketch payload at decode time. The `dPt.Count`, `dPt.Sum`,
+		// `dPt.Min`, `dPt.Max` Go-side fields are kept on
+		// `metricdata.DDSketchDataPoint` for local use but no longer
+		// land on the wire (see
+		// `opentelemetry-proto-patch/.../metrics.proto`'s
+		// `reserved 4, 5, 6, 7, 12, 13, 14;` line).
 		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.DDSketchDataPoint{
 			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
-			Count:             dPt.Count,
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
 			Exemplars:         Exemplars(dPt.Exemplars),
 			SeriesId:          seriesID,
-		}
-
-		switch v := any(dPt.Sum).(type) {
-		case int64:
-			dp.Sum = &mpb.DDSketchDataPoint_SumAsInt{
-				SumAsInt: v,
-			}
-		case float64:
-			dp.Sum = &mpb.DDSketchDataPoint_SumAsDouble{
-				SumAsDouble: v,
-			}
-		}
-
-		if v, ok := dPt.Min.Value(); ok {
-			switch mv := any(v).(type) {
-			case int64:
-				dp.Min = &mpb.DDSketchDataPoint_MinAsInt{
-					MinAsInt: mv,
-				}
-			case float64:
-				dp.Min = &mpb.DDSketchDataPoint_MinAsDouble{
-					MinAsDouble: mv,
-				}
-			}
-		}
-
-		if v, ok := dPt.Max.Value(); ok {
-			switch mv := any(v).(type) {
-			case int64:
-				dp.Max = &mpb.DDSketchDataPoint_MaxAsInt{
-					MaxAsInt: mv,
-				}
-			case float64:
-				dp.Max = &mpb.DDSketchDataPoint_MaxAsDouble{
-					MaxAsDouble: mv,
-				}
-			}
 		}
 
 		out = append(out, dp)
@@ -516,15 +487,13 @@ func KLLSketchDataPoints[N int64 | float64](
 			return nil, err
 		}
 
+		// Refactor-2026-05: KLLSketchDataPoint dropped the precomputed
+		// count/sum/min/max fields (derivable from the sketch payload).
 		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.KLLSketchDataPoint{
 			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
-			Count:             dPt.Count,
-			Sum:               dPt.Sum,
-			Min:               dPt.Min,
-			Max:               dPt.Max,
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
 			SeriesId:          seriesID,
@@ -574,6 +543,10 @@ func CountSketchDataPoints[N int64 | float64](
 			return nil, err
 		}
 
+		// Refactor-2026-05: CountSketchDataPoint dropped Dimension /
+		// Epsilon / Delta — those are sketch-instance config, sent
+		// at the CountSketch wrapper level (or derivable from the
+		// payload), not per-DataPoint.
 		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.CountSketchDataPoint{
 			Attributes:        attrs,
@@ -581,9 +554,6 @@ func CountSketchDataPoints[N int64 | float64](
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
-			Dimension:         dPt.Dimension,
-			Epsilon:           dPt.Epsilon,
-			Delta:             dPt.Delta,
 			SeriesId:          seriesID,
 		}
 		out = append(out, dp)
@@ -633,16 +603,17 @@ func CountMinSketchDataPoints[N int64 | float64](
 			return nil, err
 		}
 
+		// Refactor-2026-05: CountMinSketchDataPoint dropped
+		// SampleCount / Rows / Cols — sketch-instance config moved
+		// to the CountMinSketch wrapper or is derivable from the
+		// payload, not per-DataPoint.
 		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.CountMinSketchDataPoint{
 			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
-			SampleCount:       dPt.SampleCount,
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
-			Rows:              dPt.Rows,
-			Cols:              dPt.Cols,
 			SeriesId:          seriesID,
 		}
 		out = append(out, dp)
@@ -692,16 +663,17 @@ func HLLSketchDataPoints(
 			return nil, err
 		}
 
+		// Refactor-2026-05: HLLSketchDataPoint dropped Count /
+		// Cardinality / Precision — sketch-instance config moved
+		// to the HLLSketch wrapper or is derivable from the payload,
+		// not per-DataPoint.
 		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.HLLSketchDataPoint{
 			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
-			Count:             dPt.Count,
-			Cardinality:       dPt.Cardinality,
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
-			Precision:         dPt.Precision,
 			SeriesId:          seriesID,
 		}
 		out = append(out, dp)

@@ -14,7 +14,7 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://backend:4320/v1/opamp
+        endpoint: ws://controller:4320/v1/opamp
         # The controller's OpAMP server requires an X-Agent-ID
         # header to dispatch pushed configs to the right
         # connection. Stock OTel opampextension carries InstanceUid
