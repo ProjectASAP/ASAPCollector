@@ -26,7 +26,6 @@ processors:
     transmit_sketch: true
     enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
-    metric_suffix: "_kll"
 
   batch:
     timeout: 1s

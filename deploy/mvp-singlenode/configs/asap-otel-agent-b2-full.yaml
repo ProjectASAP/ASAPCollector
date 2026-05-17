@@ -51,7 +51,6 @@ processors:
     transmit_sketch: true
     enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
-    metric_suffix: "_quantile"
 
   # HLL for distinct-count (high-cardinality counters,
   # e.g. unique_users). Pairs with DDSketch to cover the two

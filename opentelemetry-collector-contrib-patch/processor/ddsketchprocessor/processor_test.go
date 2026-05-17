@@ -39,7 +39,7 @@ func TestProcessorAddsDDSketchMetric(t *testing.T) {
 
 	original := metricsSlice.At(0)
 	sketchMetric := metricsSlice.At(1)
-	require.Equal(t, original.Name()+cfg.MetricSuffix, sketchMetric.Name())
+	require.Equal(t, original.Name(), sketchMetric.Name())
 	require.Equal(t, pmetric.MetricTypeDDSketch, sketchMetric.Type())
 
 	dps := sketchMetric.DDSketch().DataPoints()
@@ -58,7 +58,6 @@ func TestBatchModeGaugeInput(t *testing.T) {
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
-	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 
 	sink := new(consumertest.MetricsSink)
@@ -100,7 +99,6 @@ func TestWindowModeGaugeInput(t *testing.T) {
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.TransmitSketch = false
-	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 
 	sink := new(consumertest.MetricsSink)
@@ -149,7 +147,6 @@ func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.TransmitSketch = true
-	cfg.MetricSuffix = "_ddsketch"
 
 	sink := new(consumertest.MetricsSink)
 	proc := newProcessor(cfg, zap.NewNop(), sink)
@@ -268,7 +265,6 @@ func TestBatchModeDualInput(t *testing.T) {
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = true
-	cfg.MetricSuffix = "_ddsketch"
 
 	proc := &ddsketchProcessor{cfg: cfg, logger: zap.NewNop()}
 
@@ -324,7 +320,6 @@ func TestWindowModeDualInput(t *testing.T) {
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeWindow
 	cfg.TransmitSketch = true
-	cfg.MetricSuffix = "_ddsketch"
 	cfg.WindowDuration = 60 * 60 * 24 // large so ticker doesn't fire
 
 	sink := new(consumertest.MetricsSink)
@@ -421,7 +416,6 @@ func TestBatchModeNoStatePersistence(t *testing.T) {
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
-	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 
 	sink := new(consumertest.MetricsSink)
@@ -478,7 +472,6 @@ func TestMixedIntDoubleGauge(t *testing.T) {
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
 	cfg.Quantiles = []float64{0.5}
-	cfg.MetricSuffix = "_quantile"
 
 	sink := new(consumertest.MetricsSink)
 	proc := newProcessor(cfg, zap.NewNop(), sink)
@@ -609,7 +602,6 @@ func TestDDAggregateByCollapsesSeries(t *testing.T) {
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
-	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 	cfg.AggregateBy = []string{"region"}
 	require.NoError(t, cfg.validate())
@@ -692,7 +684,6 @@ func TestDDLabelMatchersFilterGauge(t *testing.T) {
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
-	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 	cfg.LabelMatchers = []LabelMatcher{{Key: "env", Value: "prod"}}
 	require.NoError(t, cfg.validate())
@@ -747,7 +738,6 @@ func TestDDAggregateByWindowModeDDSketchInput(t *testing.T) {
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 24 * 60 * 60 * 1e9 // large: no auto-flush
 	cfg.TransmitSketch = false
-	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 	cfg.AggregateBy = []string{"region"}
 	require.NoError(t, cfg.validate())
@@ -832,7 +822,6 @@ func TestDropOriginalDefault(t *testing.T) {
 	require.True(t, cfg.DropOriginal, "default DropOriginal must be true (bandwidth fix)")
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = false
-	cfg.MetricSuffix = "_quantile"
 	cfg.Quantiles = []float64{0.5}
 
 	sink := new(consumertest.MetricsSink)
@@ -873,7 +862,6 @@ func TestDropOriginalDefaultWindowMode(t *testing.T) {
 	cfg.Mode = ModeWindow
 	cfg.WindowDuration = 60 * 60 * 24 // disable ticker
 	cfg.TransmitSketch = true
-	cfg.MetricSuffix = "_ddsketch"
 
 	sink := new(consumertest.MetricsSink)
 	proc := newProcessor(cfg, zap.NewNop(), sink)

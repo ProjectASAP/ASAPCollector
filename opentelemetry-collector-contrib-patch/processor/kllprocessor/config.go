@@ -36,7 +36,6 @@ type Config struct {
 	WriteSeen            bool          `mapstructure:"write_seen"`
 	DropOriginal         bool          `mapstructure:"drop_original"`
 	ReadAsInt            bool          `mapstructure:"is_int"` // gauge has separate int and double fields, we default to double
-	MetricSuffix         string        `mapstructure:"metric_suffix"`
 	EnableSelfMonitoring bool          `mapstructure:"enable_self_monitoring"`
 
 	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
@@ -120,7 +119,7 @@ func (c *Config) Validate() error {
 //     does (see PrecomputeConfig.EmitWindowStats docs).
 //
 // MetricName is intentionally left empty here — the legacy KLL emits
-// `<input>_kll` (or `<input><MetricSuffix>` for the quantile path),
+// `<input>_kll` (),
 // where `<input>` varies per ingested metric. The shim resolves the
 // final output name in its encode path; the runtime's MetricName
 // field is a static-per-Precompute value and would not honor the
@@ -163,7 +162,7 @@ func (c *Config) toPrecomputeConfig(metricName string) *precompute.PrecomputeCon
 		GlobalAggregation: false,
 		EmitWindowStats:   false,
 		// MetricName left empty: the shim's encode path computes
-		// `<input>_kll` (or `<input><MetricSuffix><quantile>`) from
+		// `<input>_kll` from
 		// the per-envelope context; see encodeEnvelopes.
 	}
 }

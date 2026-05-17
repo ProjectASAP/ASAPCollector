@@ -37,7 +37,6 @@ type Config struct {
 	// instead of emitting only the cardinality estimate.
 	TransmitSketch       bool   `mapstructure:"transmit_sketch"`
 	DropOriginal         bool   `mapstructure:"drop_original"`
-	MetricSuffix         string `mapstructure:"metric_suffix"`
 	EnableSelfMonitoring bool   `mapstructure:"enable_self_monitoring"`
 
 	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
@@ -123,7 +122,7 @@ func (c *Config) Validate() error {
 //     does (see PrecomputeConfig.EmitWindowStats docs).
 //
 // MetricName is intentionally left empty here — the legacy HLL emits
-// `<input>_hll_cardinality` (or `<input><MetricSuffix>` if set), where
+// `<input>_hll_cardinality`, where
 // `<input>` varies per ingested metric. The shim resolves the final
 // output name in its encode path; the runtime's MetricName field is
 // a static-per-Precompute value and would not honor the per-input
@@ -161,7 +160,7 @@ func (c *Config) toPrecomputeConfig(metricName string) *precompute.PrecomputeCon
 		GlobalAggregation: false,
 		EmitWindowStats:   false,
 		// MetricName left empty: the shim's encode path computes
-		// `<input>_hll_cardinality` (or `<input><MetricSuffix>`) from
+		// `<input>_hll_cardinality` from
 		// the per-envelope context; see encodeEnvelopes.
 	}
 }

@@ -776,7 +776,6 @@ func TestDropOriginalDefault(t *testing.T) {
 	require.True(t, cfg.DropOriginal, "default DropOriginal must be true (bandwidth fix)")
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = true
-	cfg.MetricSuffix = "_kll"
 
 	sink := new(consumertest.MetricsSink)
 	proc := newProcessor(cfg, zap.NewNop(), sink)

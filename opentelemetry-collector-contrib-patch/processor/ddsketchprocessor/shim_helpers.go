@@ -186,11 +186,12 @@ func (p *ddsketchProcessor) stampDPMetadata(encoded pmetric.Metrics, envs []*pre
 // merges them into out, in place where possible.
 //
 // Refactor-2026-05: metric name is PRESERVED from the input metric.
-// MetricSuffix is intentionally NOT applied — the sketch type is
-// carried by the OTLP pdata.Metric variant tag (DDSketch), so the
-// downstream backend can identify the encoding without a name suffix
-// and PromQL queries fired against the raw input metric name resolve
-// directly against the stored sketch state.
+// The sketch type is carried by the OTLP pdata.Metric variant tag
+// (DDSketch), so the downstream backend can identify the encoding
+// without a name suffix and PromQL queries fired against the raw
+// input metric name resolve directly against the stored sketch state.
+// The legacy `metric_suffix` config field was retired in a follow-up;
+// no path here ever applies a name rewrite.
 func (p *ddsketchProcessor) appendSketchMetrics(out pmetric.Metrics, envs []*precompute.SketchEnvelope, inputName string) {
 	for _, env := range envs {
 		env.MetricName = inputName
