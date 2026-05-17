@@ -75,8 +75,26 @@ services:
       - -c
       - |
         mc alias set asap http://minio:9000 asap asap-local-only &&
-        mc mb --ignore-existing asap/raw &&
+        mc mb --ignore-existing asap/raw asap/asap-gorilla asap/asap-gorilla-tsdb &&
         mc anonymous set download asap/raw
+    # Buckets the gorillas3 processor expects to exist after the
+    # controller's typed-stage-split agent yaml lands. Without
+    # `asap-gorilla` + `asap-gorilla-tsdb`, every flush window on
+    # every per-sketch pipeline crashes with `NoSuchBucket: 404`
+    # (the agent doesn't auto-create buckets — that's intentional;
+    # operators provision them via this setup container or via
+    # Terraform). Surfaced by the MVP smoke test once B1 made the
+    # agent actually apply the controller-pushed config.
+    #
+    # See `opentelemetry-collector-contrib-patch/processor/gorillas3processor/config.go`:
+    #   * `Bucket` (`bucket: asap-gorilla`) — required-for-validation,
+    #     fallback for `TSDBBucket` when empty. Currently the
+    #     write path only uses TSDBBucket; this is kept for
+    #     `Config::Validate()` and back-compat.
+    #   * `TSDBBucket` (`tsdb_bucket: asap-gorilla-tsdb`) — the
+    #     destination for `BlockFormat: prometheus_tsdb` block
+    #     files. Read by thanos store-gateway under
+    #     `mvp-thanos-archive.yml`.
     logging: *default-logging
 
   # ───────── metrics sink (Prometheus-wire-compatible) ─────────
