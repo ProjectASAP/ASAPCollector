@@ -50,20 +50,22 @@ families' queries route directly through that table:
 | CountMin | `sum_over_time(http_requests_total[1m])` | `CountMinSketchAccumulator` | unified `backend-inference.yaml` |
 | HLL | `count(http_requests_total_hll)` | `HLLAccumulator` (Cardinality / Count alias) | **needs** `backend-inference-hll.yaml` |
 
-**HLL caveat.** The unified `backend-inference.yaml` lists
-`count(http_requests_total)` (raw name) under HLL coverage, but the
-HLL processor's encode path (`hllprocessor/encode.go::cardinalityMetricName`)
-always appends a non-empty suffix — `<input>_hll` when
-`metric_suffix: "_hll"` is set, or `<input>_hll_cardinality` (default)
-when unset; there is no way to emit on the bare raw name. The
-all-sketches agent uses `metric_suffix: "_hll"` to match the
-per-sketch HLL convention.
+**HLL note.** Refactor-2026-05: the HLL processor's
+`cardinalityMetricName(base) → base` preserves the input metric name
+end-to-end; sketch encoding is identified by the OTLP HLLSketch
+variant tag rather than by a name suffix. The retired
+`metric_suffix` config field no longer alters wire metric names.
+`count(http_requests_total)` against an HLL-backed agg resolves
+directly against the bare input name in the unified
+`backend-inference.yaml`.
 
-Because the unified inference table doesn't list
-`http_requests_total_hll` as a sketched metric, HLL queries against
-the all-sketches agent currently fall through to the cold tier (or
-through `--forward-unsupported-queries` to Prometheus). Adding an
-HLL block to the unified `backend-inference.yaml` (mirroring the
+(History: pre-refactor, the HLL processor unconditionally appended
+`_hll` / `_hll_cardinality` and the all-sketches agent set
+`metric_suffix: "_hll"`. That suffix-based identification scheme
+was replaced by the OTLP variant-tag scheme; the agent's
+`metric_suffix` config is now ignored.)
+
+Adding an HLL block to the unified `backend-inference.yaml` (mirroring the
 `http_requests_total_hll`-keyed entries from
 `backend-inference-hll.yaml`) is the canonical fix and is tracked as
 a separate cleanup — out of scope for this paper-figure config,

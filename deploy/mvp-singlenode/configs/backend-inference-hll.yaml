@@ -15,10 +15,12 @@
 # `sum` / `quantile_over_time` / `topk` / `rate` excluded (HLL is a
 # cardinality sketch — no value semantics).
 #
-# Metric: `http_requests_total_hll` / `http_requests_total_latency_ms_hll`
-# — the HLL direct agent overlay (`asap-otel-agent-hll-direct.yaml`)
-# uses `metric_suffix: "_hll"`, so the backend-side metric name
-# is the suffixed form.
+# Metric: `http_requests_total` / `http_requests_total_latency_ms`
+# — Refactor-2026-05: the HLL processor preserves the input metric
+# name; sketch encoding is identified by the OTLP HLLSketch variant
+# tag, so the backend ingests under the raw name. The `_hll`-suffixed
+# keys below are stale relative to the agent emit and should be
+# rewritten to the bare names; tracked as a follow-up.
 cleanup_policy:
   name: "circular_buffer"
 metrics:

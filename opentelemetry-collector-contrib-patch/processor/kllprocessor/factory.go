@@ -41,7 +41,6 @@ func createDefaultConfig() component.Config {
 		WriteSeen:            false,
 		DropOriginal:         true,
 		ReadAsInt:            false,
-		MetricSuffix:         "",
 		EnableSelfMonitoring: true,
 		// DeltaTransmission deliberately left at the zero value (false):
 		// KLL has no delta variant (see the doc comment above).

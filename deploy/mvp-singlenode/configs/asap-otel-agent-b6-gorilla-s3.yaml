@@ -70,7 +70,6 @@ processors:
     delta_transmission: false
     enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
-    metric_suffix: "_quantile"
 
   KLL:
     mode: window
@@ -79,14 +78,12 @@ processors:
     transmit_sketch: true
     enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
-    metric_suffix: "_quantile"
 
   HLL:
     mode: window
     window_duration: 30s
     transmit_sketch: true
     enable_self_monitoring: true
-    metric_suffix: "_hll"
 
   countsketch:
     mode: window

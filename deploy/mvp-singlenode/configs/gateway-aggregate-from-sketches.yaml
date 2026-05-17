@@ -73,7 +73,6 @@ processors:
     delta_transmission: false
     enable_self_monitoring: true
     quantiles: [0.5, 0.9, 0.99]
-    metric_suffix: "_quantile"
 
   # Uncomment to also merge KLL / HLL / CountSketch / CMS at the
   # gateway tier. Each pipeline-processor entry below must be added
@@ -84,14 +83,12 @@ processors:
   #   window_duration: 30s
   #   transmit_sketch: true
   #   k: 200
-  #   metric_suffix: "_kll"
   #
   # hll:
   #   mode: window
   #   window_duration: 30s
   #   transmit_sketch: true
   #   precision: 14
-  #   metric_suffix: "_hll"
   #
   # countsketch:
   #   mode: window
@@ -99,7 +96,6 @@ processors:
   #   transmit_sketch: true
   #   width: 1024
   #   depth: 5
-  #   metric_suffix: "_cs"
   #
   # countminsketch:
   #   mode: window
@@ -107,7 +103,6 @@ processors:
   #   transmit_sketch: true
   #   width: 2048
   #   depth: 5
-  #   metric_suffix: "_cms"
 
 exporters:
   otlp/backend:

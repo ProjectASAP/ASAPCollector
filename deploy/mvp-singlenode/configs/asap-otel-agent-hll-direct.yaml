@@ -22,7 +22,6 @@ processors:
     transmit_sketch: true
     enable_self_monitoring: true
     encoding: msgpack
-    metric_suffix: "_hll"
 
   batch:
     timeout: 1s

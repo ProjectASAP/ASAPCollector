@@ -110,10 +110,10 @@ keep — the YAML is checked exact-string at request time by
 
 | Overlay | Backend-side metric name | Why |
 |---|---|---|
-| `backend-inference.yaml` | `http_requests_total_latency_ms_quantile` (KLL/DDSketch quantile patterns), `http_requests_total` (CMS/CountSketch/HLL Sum/Count/Topk patterns) | Default deploy uses `gateway-aggregate-from-raw.yaml` → DDSketch → `metric_suffix: "_quantile"`. Sum/Count/Topk patterns target the raw counter forwarded unsuffixed by CMS/CountSketch processors (see `asap-otel-agent-{cms,cs}-direct.yaml`). |
-| `backend-inference-cms.yaml`, `-cs.yaml` | `http_requests_total` | CMS / CountSketch direct agents preserve the raw metric name (no `metric_suffix`). |
-| `backend-inference-hll.yaml` | `http_requests_total_hll`, `http_requests_total_latency_ms_hll` | `asap-otel-agent-hll-direct.yaml` adds `metric_suffix: "_hll"`. |
-| `backend-inference-kll.yaml` | `http_requests_total_latency_ms_kll` | `asap-otel-agent-kll-direct.yaml` adds `metric_suffix: "_kll"`. |
+| `backend-inference.yaml` | `http_requests_total_latency_ms` (DDSketch / KLL quantile patterns), `http_requests_total` (CMS / CountSketch / HLL Sum / Count / Topk patterns) | Refactor-2026-05: sketch processors preserve the input metric name on the wire. Sketch encoding is identified by the OTLP `pdata.Metric` variant tag (DDSketch / KLLSketch / HLLSketch / CountSketch / CountMinSketch), so the backend ingests sketches under the raw input name and PromQL queries against the bare metric name resolve directly against the stored sketch state. |
+| `backend-inference-cms.yaml`, `-cs.yaml` | `http_requests_total` | Same — name preserved end-to-end. |
+| `backend-inference-hll.yaml` | `http_requests_total`, `http_requests_total_latency_ms` | Same. |
+| `backend-inference-kll.yaml` | `http_requests_total_latency_ms` | Same. |
 
 #### Open gap: `histogram_quantile(φ, …)` is NOT covered
 

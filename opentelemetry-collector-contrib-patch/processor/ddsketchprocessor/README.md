@@ -37,7 +37,6 @@ of quantile gauges (p50, p90, p99, …) per series every `window_duration`.
 | `mode`              | Output timing: `"batch"` (per-batch flush) or `"window"` (tumbling window).| `"batch"`        |
 | `relative_accuracy` | DDSketch relative accuracy parameter.                                      | `0.01`           |
 | `quantiles`         | Quantiles to emit when `transmit_sketch` is `false`.                       | `[0.5, 0.9, 0.99]` |
-| `metric_suffix`     | Suffix for generated metrics (applied to either DDSketch or quantile outputs). | `_ddsketch`  |
 | `transmit_sketch`   | If `true`, emit DDSketch payload metrics; if `false`, emit quantile gauges.| `true`           |
 
 When `transmit_sketch: false`, at least one quantile must be configured and each
@@ -59,7 +58,6 @@ processors:
   ddsketch:
     mode: batch
     transmit_sketch: true
-    metric_suffix: "_merged"
 ```
 
 ### Example: batch mode with quantile gauges
@@ -71,7 +69,6 @@ processors:
     transmit_sketch: false
     relative_accuracy: 0.01
     quantiles: [0.5, 0.9, 0.99]
-    metric_suffix: "_quantile"
 ```
 
 In this mode the processor behaves like the original implementation: for each
@@ -89,7 +86,6 @@ processors:
     relative_accuracy: 0.01
     transmit_sketch: false
     quantiles: [0.5, 0.9, 0.99]
-    metric_suffix: "_quantile"
 ```
 
 In this mode:

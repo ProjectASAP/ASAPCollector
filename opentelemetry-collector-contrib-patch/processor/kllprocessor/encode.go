@@ -84,10 +84,12 @@ func (p *kllProcessor) encodeQuantileGauges(metrics pmetric.MetricSlice, inputNa
 			continue
 		}
 		suffix := p.cfg.suffixes[q]
+		// Refactor-2026-05: legacy `metric_suffix` config field is
+		// gone; the fallback quantile-CDF path still attaches the
+		// per-quantile `_p99`-style suffix (intrinsic to the output
+		// semantics — each Gauge represents one specific quantile),
+		// but no longer threads an additional middle suffix.
 		name := inputName + suffix
-		if p.cfg.MetricSuffix != "" {
-			name = inputName + p.cfg.MetricSuffix + suffix
-		}
 		m := metrics.AppendEmpty()
 		m.SetName(name)
 		g := m.SetEmptyGauge()
