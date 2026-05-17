@@ -188,9 +188,15 @@ backend_up() {
         # The controller crate now lives inside `ASAPQuery-backend` and
         # is embedded as a Rust library by the backend binary. The
         # OpAMP WS endpoint (4320) and the RuntimeSamples gRPC endpoint
-        # (4321) are now backend-owned ports — agents point their
-        # OpAMP client at `ws://backend:4320/v1/opamp` and the
-        # backend's PromQL HTTP API serves on 9091 as before.
+        # (4321) are now controller-owned ports — agents point their
+        # OpAMP client at `ws://controller:4320/v1/opamp` (post Phase-9
+        # the controller binary ships from the asap/query-backend:dev
+        # image but runs as its own compose service). The backend's
+        # PromQL HTTP API serves on 9091 as before. The multinode topology
+        # adds `--add-host=controller:${NODE2_IP}` and `--add-host=backend:${NODE2_IP}`
+        # so both hostnames resolve to the same node — either name in
+        # the agent yaml works there, but the singlenode compose only has
+        # the `controller` alias so the canonical URL is the one above.
 
         # asap-query-backend (ASAP only) — embeds controller in-process
         sleep 3
