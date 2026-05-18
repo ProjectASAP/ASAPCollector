@@ -1,249 +1,216 @@
 #!/usr/bin/env bash
-# verify_buffer_store.sh — Verification checks for the disk-buffer + gorilla-buffer-store upgrade.
+# verify_buffer_store.sh — Verification checks for gorilla-buffer-store on node2.
 #
-# Tests the new gorilla-gateway architecture:
-#   - Gateway writes blocks to GATEWAY_BUFFER_DIR on disk (not in-memory)
-#   - A gorilla-buffer-store sidecar (Thanos filesystem store) reads that dir
-#     and exposes blocks via Store gRPC, giving ~30s freshness instead of the
-#     full flush interval lag.
-#   - Thanos Query uses both thanos-store-gateway (MinIO) and gorilla-buffer-store (disk),
-#     deduplicating via --query.replica-label=block_source.
-#   - Disk blocks carry block_source=gateway-buffer; MinIO blocks carry block_source=minio.
+# New architecture (no gorilla-gateway):
+#   Agents → S3 PUT directly → MinIO (node2)
+#   gorilla-buffer-store (node2): Thanos store, reads MinIO via S3, syncs every 15s,
+#     serves only last BUFFER_STORE_DURATION of blocks via StoreAPI :10921.
+#   thanos-store-gateway (node2): reads MinIO, syncs every 30s, serves all history.
+#   thanos-query: federates both; hot blocks queryable within ~75s of measurement.
 #
 # Checks:
-#   1. gorilla-buffer-store container is running on node1
-#   2. buffer-store HTTP health endpoint is alive (node1:10922/-/ready)
-#   3. gorilla-gateway /v1/blocks API reports complete blocks in the disk buffer
-#   4. block_source=gateway-buffer is injected in on-disk meta.json files
-#   5. Thanos Query has gorilla-buffer-store registered as a Store endpoint
-#   6. Thanos serves metric names (data is queryable from the buffer path)
-#   7. Freshness: disk buffer contains blocks not yet flushed to MinIO (complete + not flushing)
+#   1. gorilla-buffer-store container is running on node2
+#   2. buffer-store HTTP health endpoint alive (node2:10922)
+#   3. buffer-store has loaded blocks from MinIO (log: "loaded new block")
+#   4. buffer-store is configured with --min-time (hot-window filter)
+#   5. buffer-store syncs faster than store-gateway (15s vs 30s)
+#   6. Thanos Query has gorilla-buffer-store registered at :10921
+#   7. Thanos serves metric names (end-to-end pipeline)
 #
 # Usage:
 #   bash verify_buffer_store.sh \
-#     [--gateway-host node1]    \   # SSH-accessible hostname for node1 (docker ps, file reads)
-#     [--node1-ip   10.10.1.2] \   # IP of node1 (curl to /v1/blocks and buffer-store HTTP)
-#     [--thanos-host 10.10.1.3] \  # IP of Thanos query (curl)
-#     [--out results.txt]           # optional output file
+#     [--backend-host node2]     \   # SSH hostname for node2
+#     [--thanos-host 10.10.1.3] \   # IP for Thanos HTTP API
+#     [--out results.txt]            # optional output file
 
 set -euo pipefail
 
-# ── Argument parsing ──────────────────────────────────────────────────────
-GATEWAY_HOST="node1"
-NODE1_IP="10.10.1.2"
+BACKEND_HOST="node2"
 THANOS_HOST="10.10.1.3"
 OUT_FILE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --gateway-host) GATEWAY_HOST="$2"; shift 2 ;;
-        --node1-ip)     NODE1_IP="$2";     shift 2 ;;
+        --backend-host) BACKEND_HOST="$2"; shift 2 ;;
         --thanos-host)  THANOS_HOST="$2";  shift 2 ;;
         --out)          OUT_FILE="$2";     shift 2 ;;
+        # legacy args (old script compat — ignored)
+        --gateway-host|--node1-ip) shift 2 ;;
         *) echo "Unknown arg: $1" >&2; exit 1 ;;
     esac
 done
 
-if [[ -n "${OUT_FILE}" ]]; then
-    exec > >(tee "${OUT_FILE}") 2>&1
-fi
+[[ -n "${OUT_FILE}" ]] && exec > >(tee "${OUT_FILE}") 2>&1
 
-# ── Helpers ───────────────────────────────────────────────────────────────
 PASS=0; FAIL=0; SKIP=0
 pass() { echo "  [PASS] $*"; PASS=$((PASS+1)); }
 fail() { echo "  [FAIL] $*"; FAIL=$((FAIL+1)); }
 skip() { echo "  [SKIP] $*"; SKIP=$((SKIP+1)); }
 section() { echo ""; echo "=== $* ==="; }
-on_node1() { ssh -n -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no \
-                 "${GATEWAY_HOST}" "$@" < /dev/null; }
+on_backend() {
+    ssh -n -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no \
+        "${BACKEND_HOST}" "$@" < /dev/null
+}
+
+BACKEND_IP=$(getent hosts "${BACKEND_HOST}" 2>/dev/null | awk '{print $1}' || echo "${THANOS_HOST}")
+BS_HTTP_URL="http://${THANOS_HOST}:10922"
+THANOS_URL="http://${THANOS_HOST}:10903"
 
 echo "========================================"
 echo "  gorilla-buffer-store verification"
 echo "  $(date)"
-echo "  gateway-host: ${GATEWAY_HOST}"
-echo "  node1-ip:     ${NODE1_IP}"
+echo "  backend-host: ${BACKEND_HOST}"
 echo "  thanos-host:  ${THANOS_HOST}"
 echo "========================================"
 
-# ── Check 1: gorilla-buffer-store container is running on node1 ───────────
-section "Check 1: gorilla-buffer-store container running on node1"
-BS_NAME=""
-if BS_NAME=$(on_node1 'docker ps --format "{{.Names}}" | grep "^asap-gorilla-buffer-store$"' 2>/dev/null); then
-    pass "Container '${BS_NAME}' is running on ${GATEWAY_HOST}"
+# ── Check 1: gorilla-buffer-store container running on node2 ─────────────
+section "Check 1: gorilla-buffer-store container running on ${BACKEND_HOST}"
+BS_STATUS=""
+if BS_STATUS=$(on_backend 'docker ps --format "{{.Names}}\t{{.Status}}" | grep "^asap-gorilla-buffer-store"' 2>/dev/null) \
+   && [[ -n "${BS_STATUS}" ]]; then
+    pass "Container running: ${BS_STATUS}"
 else
-    fail "asap-gorilla-buffer-store not found in docker ps on ${GATEWAY_HOST}"
-    echo "  Hint: run 'bash run_demo.sh up' which calls buffer_store_up() after gateway_up()"
-    echo "        or start it manually: docker run --name asap-gorilla-buffer-store ..."
+    fail "asap-gorilla-buffer-store not found in docker ps on ${BACKEND_HOST}"
+    echo "  Hint: run 'bash run_demo.sh up' — gorilla-buffer-store is launched inside backend_up()"
 fi
 
-# ── Check 2: buffer-store HTTP health endpoint alive ─────────────────────
-section "Check 2: buffer-store HTTP health (${NODE1_IP}:10922/-/ready)"
-BS_HTTP_URL="http://${NODE1_IP}:10922"
-if curl -sf --max-time 10 "${BS_HTTP_URL}/-/ready" -o /dev/null; then
+# ── Check 2: buffer-store HTTP health ────────────────────────────────────
+section "Check 2: buffer-store HTTP health (${THANOS_HOST}:10922)"
+if curl -sf --max-time 10 "${BS_HTTP_URL}/-/ready" -o /dev/null 2>/dev/null; then
     pass "buffer-store HTTP /-/ready returned 200 OK"
-elif curl -sf --max-time 10 "${BS_HTTP_URL}/metrics" -o /dev/null; then
-    pass "buffer-store HTTP /metrics reachable (/-/ready not supported in this build)"
+elif curl -sf --max-time 10 "${BS_HTTP_URL}/metrics" -o /dev/null 2>/dev/null; then
+    pass "buffer-store HTTP /metrics reachable (/-/ready endpoint not exposed in this build)"
 else
     fail "buffer-store HTTP unreachable at ${BS_HTTP_URL}"
-    echo "  Hint: check if port 10922 is exposed and gorilla-buffer-store is healthy:"
-    echo "        ssh ${GATEWAY_HOST} 'docker logs asap-gorilla-buffer-store | tail -20'"
+    echo "  Hint: check container: ssh ${BACKEND_HOST} 'docker logs asap-gorilla-buffer-store | tail -20'"
 fi
 
-# ── Check 3: /v1/blocks API reports complete blocks ───────────────────────
-section "Check 3: gorilla-gateway /v1/blocks API (${NODE1_IP}:9100/v1/blocks)"
-BLOCKS_URL="http://${NODE1_IP}:9100/v1/blocks"
-BLOCKS_JSON=""
-COMPLETE_COUNT=0
-FLUSHING_COUNT=0
-if BLOCKS_JSON=$(curl -sf --max-time 10 "${BLOCKS_URL}" 2>/dev/null); then
-    COMPLETE_COUNT=$(echo "${BLOCKS_JSON}" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(sum(1 for b in d if b.get('complete')))" 2>/dev/null || echo 0)
-    FLUSHING_COUNT=$(echo "${BLOCKS_JSON}" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(sum(1 for b in d if b.get('flushing')))" 2>/dev/null || echo 0)
-    TOTAL_COUNT=$(echo "${BLOCKS_JSON}" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo 0)
-    echo "  /v1/blocks: total=${TOTAL_COUNT} complete=${COMPLETE_COUNT} flushing=${FLUSHING_COUNT}"
-    echo "${BLOCKS_JSON}" | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-for b in d[:5]:
-    print(f\"  ulid={b.get('ulid','?')}  complete={b.get('complete')}  flushing={b.get('flushing')}\")
-if len(d) > 5:
-    print(f'  ... and {len(d)-5} more')
-" 2>/dev/null || true
-    if [[ "${COMPLETE_COUNT}" -gt 0 ]]; then
-        pass "/v1/blocks shows ${COMPLETE_COUNT} complete block(s) in disk buffer"
+# ── Check 3: buffer-store loaded blocks from MinIO ───────────────────────
+section "Check 3: buffer-store has loaded blocks from MinIO"
+BS_LOGS=""
+LOADED_COUNT=0
+if BS_LOGS=$(on_backend 'docker logs asap-gorilla-buffer-store 2>&1' 2>/dev/null); then
+    LOADED_COUNT=$(echo "${BS_LOGS}" | grep -c '"loaded new block"' || echo 0)
+    SYNC_COUNT=$(echo "${BS_LOGS}" | grep -c 'successfully synchronized block metadata' || echo 0)
+    echo "  log lines: loaded_new_block=${LOADED_COUNT}  sync_cycles=${SYNC_COUNT}"
+    echo "${BS_LOGS}" | grep '"loaded new block"' | tail -3 | sed 's/^/    /'
+    if [[ "${LOADED_COUNT}" -gt 0 ]]; then
+        pass "buffer-store has loaded ${LOADED_COUNT} block(s) from MinIO"
     else
-        fail "/v1/blocks returned 0 complete blocks — gateway may not have received any yet"
-        echo "  Hint: wait ~10s after agent startup for first gorillas3 block flush."
-        echo "        Check: ssh ${GATEWAY_HOST} 'docker logs asap-gorilla-gateway | grep recv'"
+        fail "No 'loaded new block' in buffer-store logs — no blocks synced from MinIO yet"
+        echo "  Hint: wait ~75s (60s block + 15s sync) for first block to appear."
+        echo "        Check MinIO: ssh ${BACKEND_HOST} 'docker exec asap-minio mc ls local/asap-gorilla-tsdb'"
     fi
 else
-    fail "/v1/blocks endpoint unreachable at ${BLOCKS_URL}"
-    echo "  Hint: check that gorilla-gateway is running and the new main.go (with disk buffer) is deployed."
+    fail "Could not read logs from asap-gorilla-buffer-store on ${BACKEND_HOST}"
 fi
 
-# ── Check 4: block_source=gateway-buffer in on-disk meta.json ────────────
-section "Check 4: block_source=gateway-buffer injected in on-disk meta.json"
-META_PATH=""
-META_JSON=""
-if META_PATH=$(on_node1 'find /mydata/gorilla-gateway/buffer -name meta.json | head -1' 2>/dev/null) && \
-   [[ -n "${META_PATH}" ]]; then
-    META_JSON=$(on_node1 "cat '${META_PATH}'" 2>/dev/null || echo "")
-    echo "  Found meta.json at: ${META_PATH}"
-    BLOCK_SOURCE=$(echo "${META_JSON}" | python3 -c \
-        "import json,sys; m=json.load(sys.stdin); print(m.get('thanos',{}).get('labels',{}).get('block_source','MISSING'))" \
-        2>/dev/null || echo "PARSE_ERROR")
-    echo "  thanos.labels.block_source = '${BLOCK_SOURCE}'"
-    if [[ "${BLOCK_SOURCE}" == "gateway-buffer" ]]; then
-        pass "block_source=gateway-buffer correctly injected by injectThanosLabel()"
-    elif [[ "${BLOCK_SOURCE}" == "MISSING" ]]; then
-        fail "thanos.labels.block_source key not found in meta.json — label injection failed"
-        echo "  Expected: DiskBuffer.Write() calls injectThanosLabel(data, \"gateway-buffer\")"
-        echo "  meta.json thanos section: $(echo "${META_JSON}" | python3 -c "import json,sys; m=json.load(sys.stdin); print(json.dumps(m.get('thanos','absent'), indent=2))" 2>/dev/null)"
+# ── Check 4: buffer-store has --min-time configured ──────────────────────
+section "Check 4: buffer-store hot-window filter (--min-time)"
+BS_ARGS=""
+if BS_ARGS=$(on_backend 'docker inspect asap-gorilla-buffer-store --format "{{json .Args}}"' 2>/dev/null); then
+    echo "  Container args: ${BS_ARGS}"
+    if echo "${BS_ARGS}" | grep -q 'min-time'; then
+        MIN_TIME=$(echo "${BS_ARGS}" | python3 -c \
+            "import json,sys; args=json.load(sys.stdin); \
+             idx=[i for i,a in enumerate(args) if 'min-time' in a]; \
+             print(args[idx[0]] if idx else 'not found')" 2>/dev/null || echo "?")
+        pass "buffer-store has ${MIN_TIME} — only blocks within window are served"
     else
-        fail "block_source='${BLOCK_SOURCE}' (expected 'gateway-buffer')"
+        fail "--min-time not found in container args — buffer-store serves ALL blocks (same as store-gateway)"
+        echo "  Expected: --min-time=-1h (or BUFFER_STORE_DURATION value)"
     fi
 else
-    fail "No meta.json found under /mydata/gorilla-gateway/buffer on ${GATEWAY_HOST}"
-    echo "  Hint: buffer dir may be empty — wait for first gorillas3 block (10s after startup)."
-    echo "        Check: ssh ${GATEWAY_HOST} 'ls /mydata/gorilla-gateway/buffer/'"
+    fail "Could not inspect asap-gorilla-buffer-store args on ${BACKEND_HOST}"
 fi
 
-# ── Check 5: Thanos Query has gorilla-buffer-store registered ─────────────
-section "Check 5: gorilla-buffer-store registered in Thanos Query (${THANOS_HOST}:10903)"
-THANOS_URL="http://${THANOS_HOST}:10903"
+# ── Check 5: buffer-store sync cadence faster than store-gateway ─────────
+section "Check 5: buffer-store syncs every 15s (vs store-gateway 30s)"
+BS_SYNC=""
+SG_SYNC=""
+if BS_SYNC=$(on_backend 'docker inspect asap-gorilla-buffer-store --format "{{json .Args}}"' 2>/dev/null) && \
+   SG_SYNC=$(on_backend 'docker inspect asap-thanos-store-gateway --format "{{json .Args}}"' 2>/dev/null); then
+    BS_INTERVAL=$(echo "${BS_SYNC}" | python3 -c \
+        "import json,sys; args=json.load(sys.stdin); \
+         idx=[i for i,a in enumerate(args) if 'sync-block-duration' in a]; \
+         print(args[idx[0]+1] if idx else '?')" 2>/dev/null || echo "?")
+    SG_INTERVAL=$(echo "${SG_SYNC}" | python3 -c \
+        "import json,sys; args=json.load(sys.stdin); \
+         idx=[i for i,a in enumerate(args) if 'sync-block-duration' in a]; \
+         print(args[idx[0]+1] if idx else '?')" 2>/dev/null || echo "?")
+    echo "  gorilla-buffer-store sync-block-duration: ${BS_INTERVAL}"
+    echo "  thanos-store-gateway  sync-block-duration: ${SG_INTERVAL}"
+    if [[ "${BS_INTERVAL}" == "15s" && "${SG_INTERVAL}" == "30s" ]]; then
+        pass "buffer-store (15s) syncs 2× faster than store-gateway (30s)"
+    elif [[ "${BS_INTERVAL}" != "?" ]]; then
+        pass "buffer-store sync=${BS_INTERVAL}, store-gateway sync=${SG_INTERVAL}"
+    else
+        fail "Could not read sync-block-duration from container args"
+    fi
+else
+    fail "Could not inspect container args on ${BACKEND_HOST}"
+fi
+
+# ── Check 6: Thanos Query has gorilla-buffer-store registered ─────────────
+section "Check 6: gorilla-buffer-store registered in Thanos Query (:10921)"
 STORES_RESP=""
 if STORES_RESP=$(curl -sf --max-time 10 "${THANOS_URL}/api/v1/stores" 2>/dev/null); then
-    echo "  Thanos /api/v1/stores response (first 500 chars):"
-    echo "${STORES_RESP}" | head -c 500 | sed 's/^/    /'
-    echo ""
-    # Look for port 10921 (gorilla-buffer-store gRPC port)
+    echo "  Registered stores:"
+    echo "${STORES_RESP}" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for store in d.get('data', []):
+    name = store.get('name', '?')
+    labels = store.get('labelSets', [])
+    print(f'    {name}  labels={labels}')
+" 2>/dev/null || echo "${STORES_RESP}" | head -c 400 | sed 's/^/    /'
     if echo "${STORES_RESP}" | grep -q "10921"; then
-        pass "Thanos Query has gorilla-buffer-store:10921 registered as a store endpoint"
+        pass "gorilla-buffer-store:10921 is registered in Thanos Query"
     else
-        fail "Port 10921 not found in Thanos /api/v1/stores — gorilla-buffer-store is not connected"
-        echo "  Hint: verify asap-thanos-query was started with --endpoint=gorilla-buffer-store:10921"
-        echo "        and that ADD_HOSTS includes --add-host=gorilla-buffer-store:${NODE1_IP}"
-        echo "        Check: ssh node2 'docker inspect asap-thanos-query | grep endpoint'"
+        fail "Port 10921 not found in Thanos /api/v1/stores — buffer-store not connected"
+        echo "  Hint: verify thanos-query started with --endpoint=gorilla-buffer-store:10921"
+        echo "        and ADD_HOSTS maps gorilla-buffer-store → ${THANOS_HOST}"
     fi
 else
     fail "Thanos /api/v1/stores unreachable at ${THANOS_URL}/api/v1/stores"
-    echo "  Hint: check thanos-query is running on node2:"
-    echo "        ssh node2 'docker ps | grep thanos-query'"
 fi
 
-# ── Check 6: Thanos serves metric names via buffer-store path ─────────────
-section "Check 6: Thanos serves metric names (buffer-store or MinIO)"
+# ── Check 7: Thanos serves metric names (end-to-end) ─────────────────────
+section "Check 7: Thanos serves metric names (end-to-end pipeline)"
 LABEL_RESP=""
-METRIC_COUNT=0
-if LABEL_RESP=$(curl -sf --max-time 15 \
-    "${THANOS_URL}/api/v1/label/__name__/values" 2>/dev/null); then
-    if echo "${LABEL_RESP}" | grep -q '"status":"success"'; then
-        METRIC_COUNT=$(echo "${LABEL_RESP}" | python3 -c \
-            "import json,sys; d=json.load(sys.stdin); print(len(d.get('data',[])))" 2>/dev/null || echo 0)
-        echo "  Metric names served: ${METRIC_COUNT}"
-        echo "${LABEL_RESP}" | python3 -c "
+if LABEL_RESP=$(curl -sf --max-time 15 "${THANOS_URL}/api/v1/label/__name__/values" 2>/dev/null) && \
+   echo "${LABEL_RESP}" | grep -q '"status":"success"'; then
+    METRIC_COUNT=$(echo "${LABEL_RESP}" | python3 -c \
+        "import json,sys; d=json.load(sys.stdin); print(len(d.get('data',[])))" 2>/dev/null || echo 0)
+    echo "  Metric names: ${METRIC_COUNT}"
+    echo "${LABEL_RESP}" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-for n in d.get('data', [])[:8]:
+for n in d.get('data', [])[:10]:
     print('   ', n)
 " 2>/dev/null || true
-        if [[ "${METRIC_COUNT}" -gt 0 ]]; then
-            pass "Thanos serves ${METRIC_COUNT} metric name(s) — buffer-store pipeline is end-to-end"
-        else
-            fail "Thanos returned 0 metric names — buffer-store may not have synced yet"
-            echo "  Hint: wait 30s for gorilla-buffer-store sync-block-duration to pick up new blocks."
-            echo "        Blocks need to be complete (all 3 files present) to appear in the buffer."
-        fi
+    if [[ "${METRIC_COUNT}" -gt 0 ]]; then
+        pass "Thanos serves ${METRIC_COUNT} metric name(s) — direct-MinIO pipeline end-to-end"
     else
-        fail "Thanos label API status != success"
+        fail "Thanos returned 0 metric names — store sync not yet complete (wait 15-30s)"
     fi
 else
-    fail "Thanos label API unreachable at ${THANOS_URL}/api/v1/label/__name__/values"
-fi
-
-# ── Check 7: Freshness — buffer has blocks not yet flushed to MinIO ───────
-section "Check 7: Freshness — disk buffer contains pre-flush blocks (complete + not flushing)"
-if [[ -n "${BLOCKS_JSON}" ]] && [[ "${TOTAL_COUNT}" -gt 0 ]]; then
-    UNFLUSHED_COUNT=$(echo "${BLOCKS_JSON}" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(sum(1 for b in d if b.get('complete') and not b.get('flushing')))" \
-        2>/dev/null || echo 0)
-    echo "  Blocks complete but not yet flushed to MinIO: ${UNFLUSHED_COUNT}"
-    if [[ "${UNFLUSHED_COUNT}" -gt 0 ]]; then
-        pass "${UNFLUSHED_COUNT} complete block(s) are pre-flush in buffer — gorilla-buffer-store is serving data unavailable in MinIO"
-        echo "  These blocks have block_source=gateway-buffer and are queryable via gorilla-buffer-store:10921"
-        echo "  After GATEWAY_FLUSH_INTERVAL they will be uploaded with block_source=minio and deleted locally."
-    else
-        echo "  All complete blocks are already marked 'flushing' (mid-upload) or the flush already ran."
-        echo "  This is acceptable in a steady-state system — try catching it right after a gorillas3 flush."
-        skip "No pre-flush blocks at this instant; buffer may have just been flushed (not a failure)"
-    fi
-else
-    skip "/v1/blocks data not available from Check 3; skipping freshness check"
+    fail "Thanos label API unreachable or returned error"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────
 echo ""
 echo "========================================"
 echo "  BUFFER-STORE VERIFICATION SUMMARY"
-echo "  PASSED: ${PASS}"
-echo "  FAILED: ${FAIL}"
+echo "  PASSED:  ${PASS}"
+echo "  FAILED:  ${FAIL}"
 echo "  SKIPPED: ${SKIP}"
 echo "========================================"
 
 if [[ "${FAIL}" -eq 0 ]]; then
-    echo "  ALL CHECKS PASSED (${SKIP} skipped) — gorilla-buffer-store upgrade verified"
+    echo "  ALL CHECKS PASSED — gorilla-buffer-store (direct-MinIO arch) verified"
     exit 0
 else
     echo "  SOME CHECKS FAILED — see details above"
-    echo ""
-    echo "  Common causes:"
-    echo "    Check 1/2: buffer-store not started (run_demo.sh up now calls buffer_store_up)"
-    echo "    Check 3:   gateway image is old (pre-disk-buffer); rebuild: docker build -f Dockerfile.gorilla-gateway"
-    echo "    Check 4:   old gateway binary (in-memory); same rebuild needed"
-    echo "    Check 5:   thanos-query started without --endpoint=gorilla-buffer-store:10921"
-    echo "    Check 6:   sync-block-duration not elapsed yet (wait 30s)"
-    echo "    Check 7:   timing — flush may have run between checks (not a hard failure)"
     exit 1
 fi

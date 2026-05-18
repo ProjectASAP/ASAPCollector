@@ -4,22 +4,24 @@
 # Drives the gorilla-thanos stack across 4 nodes on 10.10.1.0/24:
 #
 #   node0 (10.10.1.1)  producers + agent-a   (data source)
-#   node1 (10.10.1.2)  gorilla-gateway        (S3 proxy, 20s flush to MinIO)
-#   node2 (10.10.1.3)  backend: MinIO + Thanos (query, store-gateway, compact)
+#   node1 (10.10.1.2)  idle (no services)
+#   node2 (10.10.1.3)  backend: MinIO + Thanos (store-gateway, query, compact)
+#                                + gorilla-buffer-store (hot window: BUFFER_STORE_DURATION)
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
-# Key differences vs. mvp-multinode/scripts/run_demo.sh:
-#   - gorillas3 only — no sketch processors (ddsketch/KLL/HLL/countsketch/countmin)
-#   - No routing connector, no OpAMP controller
-#   - gorilla-gateway on node1 (agent → 10s blocks → gateway → 20s flush → MinIO)
-#   - No asap-query-backend Rust binary
-#   - Thanos query engine instead of asap_query_engine
-#   - drop_original: true — NO raw OTLP crosses the network to any backend
-#     (only S3 PUTs to MinIO port 9000)
+# Pipeline: agents write 60s TSDB blocks DIRECTLY to MinIO (no gateway hop).
+#   gorilla-buffer-store on node2: syncs from MinIO every 15s, serves only
+#   the last BUFFER_STORE_DURATION of blocks via StoreAPI :10921.
+#   thanos-store-gateway: syncs every 30s, serves all historical data.
+#   thanos-query federates both endpoints.
+#
+# Image requirement: asap/asap-otel:dev must be built after 2026-05-17
+#   (gorillas3 Phase 3 — `bucket:` field removed). Rebuild if needed:
+#   cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh
 #
 # Commands:
-#   sync     rsync configs to nodes 0, 1, 2, 3
-#   up       bring up backend (node2) + agents/producers (node0, node3)
+#   sync     rsync configs + topology.env to nodes 0, 2, 3
+#   up       bring up backend+buffer-store (node2) + agents/producers (node0, node3)
 #   down     stop all asap-* containers on node0, node2, node3
 #   verify   run verify_gorilla_compression.sh success-metric checks
 #   all      sync + down + up + soak + verify + down
@@ -36,8 +38,6 @@ log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "${LOG_BASE}/${RUN_
 die() { log "FATAL: $*"; exit 1; }
 
 # ── ssh wrapper — runs commands on a remote node ──────────────────────────
-# Wrapped with timeout to prevent stuck SSH channels from blocking the
-# orchestrator (common race after `docker run -d` under load).
 on() {
     local node=$1; shift
     timeout --kill-after=5 30 \
@@ -53,8 +53,7 @@ stop_node() {
 }
 
 # ── stage configs to a remote node under /mydata ─────────────────────────
-# Note: syncs only configs/ (not scripts/ or mvp paths).
-# Destination: /mydata/gorilla-thanos-multinode/configs/
+# Syncs configs/ and topology.env. Does NOT sync scripts/.
 sync_to() {
     local node=$1
     log "rsync configs → ${node}"
@@ -65,13 +64,12 @@ sync_to() {
         "${node}:/mydata/gorilla-thanos-multinode/topology.env"
 }
 
-# Sync to nodes 0, 2, 3 only. Node1 is idle (no gateway).
+# Sync to active nodes only (node1 is idle).
 sync_all_nodes() {
-    for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
+    for n in "${NODE0_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
         on "${n}" 'mkdir -p /mydata/gorilla-thanos-multinode/{configs,logs,results}'
     done
     sync_to "${NODE0_HOST}"
-    sync_to "${NODE1_HOST}"
     sync_to "${NODE2_HOST}"
     sync_to "${NODE3_HOST}"
 }
@@ -85,38 +83,37 @@ docker_run_on() {
 }
 
 # ─── BACKEND STACK on node2 ───────────────────────────────────────────────
-# Services: MinIO + Thanos (store-gateway, query, compact).
-# No controller, no asap-query-backend, no prometheus.
+# Services: MinIO + Thanos (store-gateway, query, compact) + gorilla-buffer-store.
+#
+# Two Thanos store endpoints read from the same MinIO bucket:
+#   thanos-store-gateway :10901 — all blocks (30s sync)
+#   gorilla-buffer-store  :10921 — last BUFFER_STORE_DURATION blocks (15s sync)
+#
+# Thanos Query federates both. For the recent hot window, gorilla-buffer-store
+# provides 15s fresher data. Duplicate samples (both stores serving the same
+# block) collapse via Thanos' chunk-level timestamp merge.
 backend_up() {
-    log "node2 backend up (MinIO + Thanos)"
+    log "node2 backend up (MinIO + Thanos + gorilla-buffer-store, BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION})"
 
-    # MinIO — S3-compatible object store for gorillas3 TSDB blocks
+    # MinIO
     docker_run_on "${NODE2_HOST}" \
         --name asap-minio \
         -e MINIO_ROOT_USER=asap \
         -e MINIO_ROOT_PASSWORD=asap-local-only \
         minio/minio:latest server /data --console-address :9001
 
-    # Wait for MinIO to be ready before creating buckets
     sleep 5
 
-    # Create required buckets using mc (minio client).
-    # --entrypoint=sh is required: mc image's default entrypoint is `mc`,
-    # not `sh` — without this override `sh -c '...'` is silently rejected
-    # and buckets are never created.
-    # Alias name: 'local' (NOT 'asap') to avoid collision with the MinIO
-    # username 'asap' in mc's namespace.
+    # Create asap-gorilla-tsdb bucket (sole write destination; asap-gorilla is never written).
     on "${NODE2_HOST}" "docker run --rm --network host \
         ${ADD_HOSTS[*]} \
         --entrypoint=sh minio/mc:latest -c '
             mc alias set local http://minio:9000 asap asap-local-only &&
-            mc mb --ignore-existing local/asap-gorilla &&
             mc mb --ignore-existing local/asap-gorilla-tsdb &&
-            mc anonymous set download local/asap-gorilla &&
             mc anonymous set download local/asap-gorilla-tsdb'" \
-        || log "minio bucket setup non-fatal warn — buckets may already exist"
+        || log "minio bucket setup non-fatal warn — bucket may already exist"
 
-    # Thanos store-gateway — serves TSDB blocks from MinIO via StoreAPI gRPC
+    # Thanos store-gateway — serves ALL blocks from MinIO via StoreAPI :10901
     docker_run_on "${NODE2_HOST}" \
         --name asap-thanos-store-gateway \
         --user 0 \
@@ -130,9 +127,24 @@ backend_up() {
         --sync-block-duration=30s \
         --block-sync-concurrency=20
 
-    # Thanos query — federated PromQL over store-gateway (MinIO) + buffer-store (disk)
-    # --query.replica-label=block_source deduplicates blocks during the grace overlap
-    # window when both gorilla-buffer-store and thanos-store-gateway serve the same block.
+    # gorilla-buffer-store — hot window Thanos store (same MinIO, faster sync).
+    # Serves only blocks with maxTime >= (now - BUFFER_STORE_DURATION) via StoreAPI :10921.
+    # Disk-backed cache at /tmp/thanos-buffer-store prevents OOM for large windows.
+    docker_run_on "${NODE2_HOST}" \
+        --name asap-gorilla-buffer-store \
+        --user 0 \
+        -v /mydata/gorilla-thanos-multinode/configs/buffer-objstore.yaml:/etc/thanos/objstore.yaml:ro \
+        quay.io/thanos/thanos:v0.41.0 \
+        store \
+        --objstore.config-file=/etc/thanos/objstore.yaml \
+        --http-address=0.0.0.0:10922 \
+        --grpc-address=0.0.0.0:10921 \
+        --data-dir=/tmp/thanos-buffer-store \
+        --sync-block-duration=15s \
+        --block-sync-concurrency=20 \
+        --min-time=-"${BUFFER_STORE_DURATION}"
+
+    # Thanos query — federated PromQL over store-gateway (all) + buffer-store (hot window)
     docker_run_on "${NODE2_HOST}" \
         --name asap-thanos-query \
         quay.io/thanos/thanos:v0.41.0 \
@@ -140,10 +152,9 @@ backend_up() {
         --grpc-address=0.0.0.0:10911 \
         --http-address=0.0.0.0:10903 \
         --endpoint=thanos-store-gateway:10901 \
-        --endpoint=gorilla-buffer-store:10921 \
-        --query.replica-label=block_source
+        --endpoint=gorilla-buffer-store:10921
 
-    # Thanos compact — background compaction + downsampling of TSDB blocks
+    # Thanos compact — background block compaction and downsampling
     docker_run_on "${NODE2_HOST}" \
         --name asap-thanos-compact \
         --user 0 \
@@ -165,59 +176,11 @@ backend_down() {
     stop_node "${NODE2_HOST}"
 }
 
-
-# ─── GORILLA-GATEWAY on node1 ─────────────────────────────────────────────
-# Buffering S3 proxy: receives 10s TSDB blocks from agents, flushes to MinIO
-# every 20s. Agents write to gateway:9100; gateway writes to minio:9000.
-gateway_up() {
-    log "node1 gorilla-gateway up"
-    on "${NODE1_HOST}" "mkdir -p /mydata/gorilla-gateway/buffer"
-    docker_run_on "${NODE1_HOST}" \
-        --name asap-gorilla-gateway \
-        -e GATEWAY_LISTEN=0.0.0.0:9100 \
-        -e GATEWAY_UPSTREAM_ENDPOINT=minio:9000 \
-        -e GATEWAY_ACCESS_KEY=asap \
-        -e GATEWAY_SECRET_KEY=asap-local-only \
-        -e GATEWAY_FLUSH_INTERVAL=20s \
-        -e GATEWAY_BUFFER_DIR=/var/gorilla-gateway/buffer \
-        -e GATEWAY_MINIO_SYNC_GRACE=90s \
-        -v /mydata/gorilla-gateway/buffer:/var/gorilla-gateway/buffer \
-        asap/gorilla-gateway:dev
-}
-
-gateway_down() {
-    log "node1 gateway + buffer-store down"
-    stop_node "${NODE1_HOST}"
-}
-
-# ─── GORILLA-BUFFER-STORE on node1 ────────────────────────────────────────
-# Thanos store sidecar that exposes the gateway's local disk buffer to
-# Thanos Query via Store gRPC (:10921), giving ~30s data freshness instead
-# of the full GATEWAY_FLUSH_INTERVAL lag.
-# Reads the same /mydata/gorilla-gateway/buffer directory written by the
-# gateway; mounted read-only so the gateway remains the sole writer.
-buffer_store_up() {
-    log "node1 gorilla-buffer-store up"
-    docker_run_on "${NODE1_HOST}" \
-        --name asap-gorilla-buffer-store \
-        --user 0 \
-        -v /mydata/gorilla-thanos-multinode/configs/buffer-objstore.yaml:/etc/thanos/objstore.yaml:ro \
-        -v /mydata/gorilla-gateway/buffer:/var/gorilla-gateway/buffer:ro \
-        quay.io/thanos/thanos:v0.41.0 \
-        store \
-        --objstore.config-file=/etc/thanos/objstore.yaml \
-        --http-address=0.0.0.0:10922 \
-        --grpc-address=0.0.0.0:10921 \
-        --data-dir=/tmp/thanos-buffer-store \
-        --sync-block-duration=30s \
-        --block-sync-concurrency=20
-}
-
 # ─── AGENTS + PRODUCERS on node0 and node3 ───────────────────────────────
-# Agent config: gorillas3-only, no OpAMP extensions, no controller env vars.
-# drop_original: true → agents emit S3 PUTs to MinIO, NO outbound gRPC.
+# Agent config: gorillas3-only, drop_original: true.
+# gorillas3 writes 60s TSDB blocks directly to MinIO (minio:9000).
 agents_up() {
-    log "node0 agent-a up (gorilla-only)"
+    log "node0 agent-a up (gorilla-only, direct → minio:9000)"
     docker_run_on "${NODE0_HOST}" \
         --name asap-agent-a \
         --hostname agent-a \
@@ -226,7 +189,7 @@ agents_up() {
         asap/asap-otel:dev \
         --config=/etc/otel/config.yaml
 
-    log "node3 agent-b up (gorilla-only)"
+    log "node3 agent-b up (gorilla-only, direct → minio:9000)"
     docker_run_on "${NODE3_HOST}" \
         --name asap-agent-b \
         --hostname agent-b \
@@ -235,10 +198,8 @@ agents_up() {
         asap/asap-otel:dev \
         --config=/etc/otel/config.yaml
 
-    # Wait for agent OTLP receiver to come up before starting producers
     sleep 5
 
-    # Producers on node0 → agent-a:4317 (localhost:4317 on node0)
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
         log "node0 producer-a-${i} up"
         docker_run_on "${NODE0_HOST}" \
@@ -258,7 +219,6 @@ agents_up() {
             asap/fake-exporter:dev
     done
 
-    # Producers on node3 → agent-b:4317 (localhost:4317 on node3)
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
         log "node3 producer-b-${i} up"
         docker_run_on "${NODE3_HOST}" \
@@ -289,10 +249,6 @@ agents_down() {
 stack_up() {
     backend_up
     sleep 5
-    gateway_up
-    sleep 2
-    buffer_store_up
-    sleep 2
     agents_up
     log "=== stack up; waiting WARMUP_S=${WARMUP_S}s for gorillas3 to flush first blocks ==="
     sleep "${WARMUP_S}"
@@ -300,7 +256,6 @@ stack_up() {
 
 stack_down() {
     agents_down
-    gateway_down
     backend_down
 }
 
@@ -343,21 +298,29 @@ case "${cmd}" in
     help|*)
         cat <<EOF
 usage: $0 <cmd>
-  sync     rsync /mydata/gorilla-thanos-multinode/configs to nodes 0, 2, 3
-  up       bring up backend (node2) + agents/producers (node0, node3)
+  sync     rsync configs + topology.env to nodes 0, 2, 3
+  up       bring up backend+buffer-store (node2) + agents/producers (node0, node3)
   down     stop all asap-* containers on node0, node2, node3
   verify   run verify_gorilla_compression.sh success-metric checks
   all      sync + down + up + soak (${SOAK_S}s) + verify + down
 
 Topology:
-  node0 (10.10.1.1)  producers + agent-a (gorilla-only, drop_original: true)
-  node1 (10.10.1.2)  gorilla-gateway (S3 proxy, 20s flush) + gorilla-buffer-store (Store gRPC :10921)
-  node2 (10.10.1.3)  MinIO + Thanos (store-gateway, query, compact)
-  node3 (10.10.1.4)  producers + agent-b (gorilla-only, drop_original: true)
+  node0 (10.10.1.1)  producers + agent-a (gorilla-only, direct S3 → MinIO)
+  node1 (10.10.1.2)  idle
+  node2 (10.10.1.3)  MinIO + Thanos (store-gateway, query, compact) + gorilla-buffer-store
+  node3 (10.10.1.4)  producers + agent-b (gorilla-only, direct S3 → MinIO)
 
 Network traffic:
-  producers → OTLP gRPC :4317 → agent → S3 PUT :9100 → gorilla-gateway → S3 PUT :9000 → MinIO
-  NO raw OTLP crosses the network to any backend (drop_original: true)
+  producers → OTLP gRPC :4317 → agent → S3 PUT :9000 → MinIO (direct, no gateway hop)
+  NO raw OTLP crosses the network (drop_original: true)
+
+Buffer window: BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION} (set in topology.env)
+  gorilla-buffer-store  :10921 — syncs MinIO every 15s, serves last ${BUFFER_STORE_DURATION}
+  thanos-store-gateway  :10901 — syncs MinIO every 30s, serves all historical data
+  thanos-query          :10903 — federates both; hot blocks queryable within ~75s of measurement
+
+Image note: asap/asap-otel:dev must be built after 2026-05-17 (gorillas3 Phase 3).
+  Rebuild: cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh
 EOF
         ;;
 esac

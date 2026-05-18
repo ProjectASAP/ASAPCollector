@@ -1,7 +1,12 @@
 # gorilla-thanos.yml — Single-node docker-compose for local testing.
 #
-# Brings up the full gorilla-thanos stack on a single host:
-#   MinIO (S3 storage) + Thanos (store-gateway, query, compact) + OTel agent + fake-exporter
+# Brings up the full gorilla-thanos stack on a single host (no gorilla-gateway):
+#   MinIO + Thanos (store-gateway, query, compact) + gorilla-buffer-store + OTel agent + fake-exporter
+#
+# agents write 60s TSDB blocks directly to MinIO (minio:9000, no gateway hop).
+# gorilla-buffer-store syncs MinIO every 15s, serves the last BUFFER_STORE_DURATION
+# of blocks via StoreAPI :10921. Override the window with:
+#   BUFFER_STORE_DURATION=30m docker compose -f gorilla-thanos.yml up -d
 #
 # Quick start:
 #   docker compose -f gorilla-thanos.yml up -d
@@ -10,10 +15,8 @@
 #   curl http://localhost:18890/metrics | grep gorilla          # agent self-metrics
 #   # MinIO console: http://localhost:19001 (user: asap, pass: asap-local-only)
 #
-# Verify compression:
-#   docker exec -it gorilla-thanos-minio-setup-1 sh
-#     mc alias set local http://minio:9000 asap asap-local-only
-#     mc ls local/asap-gorilla-tsdb --recursive
+# Image note: asap/asap-otel:dev requires gorillas3 Phase 3 build (after 2026-05-17).
+#   Rebuild: cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh
 #
 # Note: host-port mappings are offset by 10000 from standard ports to
 # avoid conflicts with any running cluster services (e.g. 19000 not 9000).
@@ -42,17 +45,13 @@ services:
     depends_on:
       minio:
         condition: service_healthy
-    # Use alias name 'local' (NOT 'asap') to avoid conflict with the
-    # MinIO username 'asap' — mc treats alias names and usernames in
-    # the same namespace and rejects the alias if it collides.
+    # Only asap-gorilla-tsdb is needed; asap-gorilla bucket is never written.
     entrypoint: >
       sh -c "
         mc alias set local http://minio:9000 asap asap-local-only &&
-        mc mb --ignore-existing local/asap-gorilla &&
         mc mb --ignore-existing local/asap-gorilla-tsdb &&
-        mc anonymous set download local/asap-gorilla &&
         mc anonymous set download local/asap-gorilla-tsdb &&
-        echo 'Buckets ready'
+        echo 'Bucket ready'
       "
 
   thanos-store-gateway:
@@ -73,6 +72,34 @@ services:
       minio-setup:
         condition: service_completed_successfully
 
+  # gorilla-buffer-store — hot-window Thanos store sidecar.
+  # Reads from the same MinIO bucket as thanos-store-gateway but syncs every 15s
+  # (vs. 30s) and serves only blocks within the last BUFFER_STORE_DURATION window.
+  # Disk-backed cache avoids OOM for windows up to several hours.
+  # Both stores serving the same recent block is harmless: Thanos Query merges
+  # results at the chunk level, collapsing duplicate timestamps automatically.
+  gorilla-buffer-store:
+    image: quay.io/thanos/thanos:v0.41.0
+    user: "0"
+    command:
+      - store
+      - --objstore.config-file=/etc/thanos/objstore.yaml
+      - --http-address=0.0.0.0:10922
+      - --grpc-address=0.0.0.0:10921
+      - --data-dir=/var/thanos/buffer-store
+      - --sync-block-duration=15s
+      - --block-sync-concurrency=20
+      - --min-time=-${BUFFER_STORE_DURATION:-1h}
+    volumes:
+      - ../configs/buffer-objstore.yaml:/etc/thanos/objstore.yaml:ro
+      - gorilla-buffer-store-cache:/var/thanos/buffer-store
+    ports:
+      - "19921:10921"
+      - "19922:10922"
+    depends_on:
+      minio-setup:
+        condition: service_completed_successfully
+
   thanos-query:
     image: quay.io/thanos/thanos:v0.41.0
     command:
@@ -80,7 +107,6 @@ services:
       - --http-address=0.0.0.0:10903
       - --endpoint=thanos-store-gateway:10901
       - --endpoint=gorilla-buffer-store:10921
-      - --query.replica-label=block_source
     ports:
       - "19092:10903"
     depends_on:
@@ -107,46 +133,6 @@ services:
       minio-setup:
         condition: service_completed_successfully
 
-  gorilla-gateway:
-    image: asap/gorilla-gateway:dev
-    environment:
-      GATEWAY_LISTEN: "0.0.0.0:9100"
-      GATEWAY_UPSTREAM_ENDPOINT: "minio:9000"
-      GATEWAY_ACCESS_KEY: asap
-      GATEWAY_SECRET_KEY: asap-local-only
-      GATEWAY_FLUSH_INTERVAL: 20s
-      GATEWAY_BUFFER_DIR: /var/gorilla-gateway/buffer
-      GATEWAY_MINIO_SYNC_GRACE: 90s
-    ports:
-      - "19100:9100"
-    volumes:
-      - gorilla-gateway-buffer:/var/gorilla-gateway/buffer
-    depends_on:
-      minio-setup:
-        condition: service_completed_successfully
-
-  gorilla-buffer-store:
-    image: quay.io/thanos/thanos:v0.41.0
-    user: "0"
-    command:
-      - store
-      - --objstore.config-file=/etc/thanos/objstore.yaml
-      - --http-address=0.0.0.0:10922
-      - --grpc-address=0.0.0.0:10921
-      - --data-dir=/var/thanos/buffer-store
-      - --sync-block-duration=30s
-      - --block-sync-concurrency=20
-    volumes:
-      - ../configs/buffer-objstore.yaml:/etc/thanos/objstore.yaml:ro
-      - gorilla-buffer-store-cache:/var/thanos/buffer-store
-      - gorilla-gateway-buffer:/var/gorilla-gateway/buffer:ro
-    ports:
-      - "19921:10921"
-      - "19922:10922"
-    depends_on:
-      gorilla-gateway:
-        condition: service_started
-
   otel-agent:
     image: asap/asap-otel:dev
     command: ["--config=/etc/otel/config.yaml"]
@@ -157,8 +143,8 @@ services:
       - "14318:4318"
       - "18890:8890"
     depends_on:
-      gorilla-gateway:
-        condition: service_started
+      minio-setup:
+        condition: service_completed_successfully
 
   fake-exporter:
     image: asap/fake-exporter:dev
@@ -180,5 +166,4 @@ volumes:
   minio-data:
   thanos-store-data:
   thanos-compact-data:
-  gorilla-gateway-buffer:
   gorilla-buffer-store-cache:

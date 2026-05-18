@@ -1,3 +1,17 @@
-type: FILESYSTEM
+# buffer-objstore.yaml — Thanos object-store config for gorilla-buffer-store.
+#
+# Points at the same MinIO bucket as thanos-objstore.yaml. gorilla-buffer-store
+# uses --min-time=-BUFFER_STORE_DURATION to serve only the hot window of recent
+# blocks, syncing every 15s for lower latency than the main store-gateway (30s).
+#
+# Disk-backed cache (--data-dir) prevents OOM for large buffer windows.
+# Duplicate blocks within the hot window are handled correctly by Thanos Query's
+# chunk-level merge: identical timestamps collapse to one sample.
+type: S3
 config:
-  directory: /var/gorilla-gateway/buffer
+  bucket: asap-gorilla-tsdb
+  endpoint: minio:9000
+  access_key: asap
+  secret_key: asap-local-only
+  insecure: true
+  signature_version2: false
