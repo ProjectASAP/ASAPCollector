@@ -183,7 +183,19 @@ func (o *opampAgent) Start(ctx context.Context, host component.Host) error {
 	// AcceptsRemoteConfig capability"` — even though `onMessage`
 	// would handle it if it got the chance.
 	if o.cfg.RemoteConfigPath != "" {
+		// `AcceptsRemoteConfig` lets the client lib surface
+		// incoming RemoteConfig to OnMessage. `ReportsRemoteConfig`
+		// is the partner bit: without it,
+		// `opampClient.SetRemoteConfigStatus(APPLIED)` returns
+		// `ErrReportsRemoteConfigNotSet` (see
+		// opamp-go/client/internal/clientcommon.go:21) — the
+		// client lib refuses to record the applied hash, so the
+		// server has no way to know we processed the config and
+		// keeps re-pushing it on every reconnect, which (combined
+		// with our exit-on-apply policy) loops the collector
+		// forever. Advertising both bits closes the loop.
 		capabilities |= protobufs.AgentCapabilities_AgentCapabilities_AcceptsRemoteConfig
+		capabilities |= protobufs.AgentCapabilities_AgentCapabilities_ReportsRemoteConfig
 	}
 	if err := o.opampClient.SetCapabilities(&capabilities); err != nil {
 		return err
@@ -547,6 +559,30 @@ func (o *opampAgent) processRemoteConfig(_ context.Context, rc *protobufs.AgentR
 			Status:               protobufs.RemoteConfigStatuses_RemoteConfigStatuses_FAILED,
 			ErrorMessage:         "yaml parse: " + err.Error(),
 		})
+		return
+	}
+
+	// No-op short-circuit. If the on-disk YAML already matches the
+	// incoming body byte-for-byte, the agent is already running this
+	// config. Apply-then-exit would loop forever (the server keeps
+	// pushing the same config until we report APPLIED with the
+	// matching hash; until the OpAMP client lib's in-memory hash
+	// cache survives restart, we re-request the same config on
+	// every reconnect). Detect the no-op, report APPLIED so the
+	// server records the hash for this session, and return WITHOUT
+	// restarting.
+	if existing, err := os.ReadFile(o.cfg.RemoteConfigPath); err == nil &&
+		len(existing) == len(body) && string(existing) == string(body) {
+		o.logger.Debug(
+			"OpAMP RemoteConfig matches current on-disk config — no-op",
+			zap.String("path", o.cfg.RemoteConfigPath),
+			zap.Int("bytes", len(body)))
+		if err := o.opampClient.SetRemoteConfigStatus(&protobufs.RemoteConfigStatus{
+			LastRemoteConfigHash: rc.GetConfigHash(),
+			Status:               protobufs.RemoteConfigStatuses_RemoteConfigStatuses_APPLIED,
+		}); err != nil {
+			o.logger.Warn("SetRemoteConfigStatus(APPLIED) failed", zap.Error(err))
+		}
 		return
 	}
 
