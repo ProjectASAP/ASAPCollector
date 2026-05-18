@@ -3,9 +3,22 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://backend:4320/v1/opamp
+        endpoint: ws://controller:4320/v1/opamp
         headers:
           X-Agent-ID: "agent-1"
+    # ASAP patch (PR #389): when set, the opampextension applies the
+    # pushed AgentRemoteConfig by writing the YAML to this path and
+    # exiting; a restart policy (e.g. `restart: unless-stopped`) then
+    # brings the container back with the new config. The collector
+    # boot path loads `/etc/otel/config.yaml`, so we point both at the
+    # same path — first boot uses the mounted static yaml, every
+    # subsequent boot uses the controller-emitted runtime yaml.
+    # NOTE: the stock `agents-N*.yml` overlays mount this path
+    # read-only and do not set a restart policy; deployments that need
+    # OpAMP-apply to actually persist must drop `:ro` from the mount
+    # and add `restart: unless-stopped` to the agent service (see
+    # `mvp-smoke-test/compose/smoke-overlay.yml` for the pattern).
+    remote_config_path: /etc/otel/config.yaml
 
 receivers:
   otlp:
@@ -22,7 +35,6 @@ processors:
     transmit_sketch: true
     enable_self_monitoring: true
     encoding: msgpack
-    metric_suffix: "_hll"
 
   batch:
     timeout: 1s

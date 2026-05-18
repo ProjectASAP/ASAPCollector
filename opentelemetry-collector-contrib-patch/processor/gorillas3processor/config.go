@@ -87,10 +87,6 @@ type Config struct {
 	// resolution (us-east-1 etc). Set to e.g. http://minio:9000 for MinIO.
 	Endpoint string `mapstructure:"endpoint"`
 
-	// Bucket is the destination bucket. Must exist; the processor does
-	// not create buckets.
-	Bucket string `mapstructure:"bucket"`
-
 	// PrefixTemplate is the S3 key prefix template — see defaultPrefixTemplate.
 	PrefixTemplate string `mapstructure:"prefix_template"`
 
@@ -131,8 +127,8 @@ type Config struct {
 	// "prometheus_tsdb" is supported; empty defaults to that value.
 	BlockFormat BlockFormat `mapstructure:"block_format"`
 
-	// TSDBBucket is the destination bucket for Prometheus TSDB blocks. When
-	// empty, gateway roles fall back to Bucket.
+	// TSDBBucket is the destination bucket for Prometheus TSDB blocks.
+	// Required for gateway roles; agent role never uploads blocks.
 	TSDBBucket string `mapstructure:"tsdb_bucket"`
 
 	// TSDBBlockDuration is the tumbling window over which samples
@@ -202,9 +198,6 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("gorillas3: invalid delivery_mode %q (want best_effort|durable_raw|durable_fragment)", c.DeliveryMode)
 	}
-	if c.Role != ProcessorRoleAgent && c.Bucket == "" {
-		return fmt.Errorf("gorillas3: bucket must be set")
-	}
 	if (c.AccessKeyID == "") != (c.SecretAccessKey == "") {
 		return fmt.Errorf("gorillas3: access_key_id and secret_access_key must both be set or both empty")
 	}
@@ -220,9 +213,7 @@ func (c *Config) Validate() error {
 		c.TSDBBlockDuration = c.WindowInterval
 	}
 	if c.Role != ProcessorRoleAgent && c.TSDBBucket == "" {
-		// Default to Bucket, but warn-by-validate is impractical
-		// here; operators get a clean defaults.
-		c.TSDBBucket = c.Bucket
+		return fmt.Errorf("gorillas3: tsdb_bucket must be set")
 	}
 	if c.TSDBReorderGrace < 0 {
 		return fmt.Errorf("gorillas3: tsdb_reorder_grace must be >= 0")

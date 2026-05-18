@@ -22,51 +22,17 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
-// mockSink captures every PutChunk + PutPostings for assertion.
+// mockSink captures every PutTSDBBlock for assertion.
 type mockSink struct {
 	mu         sync.Mutex
-	chunks     []mockChunk
-	postings   []mockPostings
 	tsdbBlocks []mockTSDBBlock
 	fail       bool
-}
-
-type mockChunk struct {
-	key   string
-	data  []byte
-	hints chunkHints
-}
-
-// mvp/v5: postings sidecar capture.
-type mockPostings struct {
-	key  string
-	data []byte
 }
 
 // mvp/step2.1: Prometheus TSDB block capture.
 type mockTSDBBlock struct {
 	ulid  string
 	files map[string][]byte
-}
-
-func (m *mockSink) PutChunk(ctx context.Context, key string, data []byte, hints chunkHints) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.fail {
-		return errors.New("mock sink: induced failure")
-	}
-	m.chunks = append(m.chunks, mockChunk{key: key, data: append([]byte(nil), data...), hints: hints})
-	return nil
-}
-
-func (m *mockSink) PutPostings(ctx context.Context, key string, data []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.fail {
-		return errors.New("mock sink: induced failure")
-	}
-	m.postings = append(m.postings, mockPostings{key: key, data: append([]byte(nil), data...)})
-	return nil
 }
 
 func (m *mockSink) PutTSDBBlock(ctx context.Context, blockULID string, files map[string][]byte) error {
@@ -84,18 +50,6 @@ func (m *mockSink) PutTSDBBlock(ctx context.Context, blockULID string, files map
 }
 
 func (m *mockSink) Close() error { return nil }
-
-func (m *mockSink) chunkCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.chunks)
-}
-
-func (m *mockSink) postingsCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.postings)
-}
 
 func (m *mockSink) tsdbBlockCount() int {
 	m.mu.Lock()
@@ -175,7 +129,7 @@ func mkProcessor(t *testing.T, cfg *Config, sink chunkSink) *gorillaS3Processor 
 }
 
 func TestConsumeMetrics_DropOriginal(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -188,7 +142,7 @@ func TestConsumeMetrics_DropOriginal(t *testing.T) {
 }
 
 func TestConsumeMetrics_PassThrough(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: false}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: false}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -201,7 +155,7 @@ func TestConsumeMetrics_PassThrough(t *testing.T) {
 }
 
 func TestFlushWindow_WritesTSDBBlockOnTick(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -228,7 +182,7 @@ func TestFlushWindow_WritesTSDBBlockOnTick(t *testing.T) {
 }
 
 func TestFlushWindow_PutFailureLogged(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{fail: true}
 	p := mkProcessor(t, cfg, sink)
 
@@ -241,7 +195,7 @@ func TestFlushWindow_PutFailureLogged(t *testing.T) {
 }
 
 func TestFlushWindow_EmptyNoOp(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 	p.flushWindow(context.Background())
@@ -249,7 +203,7 @@ func TestFlushWindow_EmptyNoOp(t *testing.T) {
 }
 
 func TestShutdown_DrainsBufferedSamples(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -265,7 +219,7 @@ func TestShutdown_DrainsBufferedSamples(t *testing.T) {
 }
 
 func TestConsumeMetrics_SumType(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -297,7 +251,7 @@ func TestConsumeMetrics_SumType(t *testing.T) {
 
 func TestConsumeMetrics_HistogramSilentlyIgnored(t *testing.T) {
 	// Only Gauge / Sum are encoded; histogram-style metrics must be skipped.
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -313,22 +267,6 @@ func TestConsumeMetrics_HistogramSilentlyIgnored(t *testing.T) {
 	_, err := p.ConsumeMetrics(context.Background(), md)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), p.activeSeries())
-}
-
-func TestFlushWindow_DoesNotEmitLegacyChunkOrPostings(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
-	sink := &mockSink{}
-	p := mkProcessor(t, cfg, sink)
-
-	base := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
-	md := buildTestMetrics("cpu.usage", 5, base)
-	_, err := p.ConsumeMetrics(context.Background(), md)
-	require.NoError(t, err)
-	p.flushWindow(context.Background())
-
-	require.Equal(t, 0, sink.chunkCount())
-	require.Equal(t, 0, sink.postingsCount())
-	require.Equal(t, 1, sink.tsdbBlockCount())
 }
 
 func TestAgentRole_EmitsEncodedFragments(t *testing.T) {
@@ -378,7 +316,6 @@ func TestGatewayFragmentRole_FinalizesFragmentsToTSDBBlock(t *testing.T) {
 	gatewayCfg := &Config{
 		Role:           ProcessorRoleGatewayFragment,
 		DeliveryMode:   DeliveryModeBestEffort,
-		Bucket:         "asap-gorilla",
 		TSDBBucket:     "asap-tsdb",
 		WindowInterval: time.Hour,
 		DropOriginal:   true,

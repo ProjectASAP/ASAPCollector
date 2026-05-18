@@ -16,7 +16,6 @@ func createDefaultConfig() component.Config {
 		WindowDuration:       60 * time.Second,
 		TransmitSketch:       false,
 		DropOriginal:         true,
-		MetricSuffix:         "",
 		EnableSelfMonitoring: true,
 		// Delta-encoded transmission is the operational default for the
 		// MVP demo: HLL's per-window wire footprint is dominated by the

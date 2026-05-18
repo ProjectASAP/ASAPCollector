@@ -488,42 +488,26 @@ var (
 		},
 	}
 
+	// Refactor-2026-05: DDSketchDataPoint no longer carries
+	// count/sum/min/max on the wire (proto `reserved 4, 5, 6, 7,
+	// 12, 13, 14;`). The Go-side metricdata fields still exist for
+	// local use but are dropped by the transformer.
 	pbDDSDPInt64 = []*mpb.DDSketchDataPoint{
 		{
 			Attributes:        []*cpb.KeyValue{pbAlice},
 			StartTimeUnixNano: uint64(start.UnixNano()),
 			TimeUnixNano:      uint64(end.UnixNano()),
-			Count:             10,
-			Sum: &mpb.DDSketchDataPoint_SumAsInt{
-				SumAsInt: 15,
-			},
-			Min: &mpb.DDSketchDataPoint_MinAsInt{
-				MinAsInt: 5,
-			},
-			Max: &mpb.DDSketchDataPoint_MaxAsInt{
-				MaxAsInt: 7,
-			},
-			Sketch:    sketchBytesA,
-			Encoding:  mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO,
-			Exemplars: []*mpb.Exemplar{pbExemplarInt64A},
+			Sketch:            sketchBytesA,
+			Encoding:          mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO,
+			Exemplars:         []*mpb.Exemplar{pbExemplarInt64A},
 		},
 		{
 			Attributes:        []*cpb.KeyValue{pbBob},
 			StartTimeUnixNano: uint64(start.UnixNano()),
 			TimeUnixNano:      uint64(end.UnixNano()),
-			Count:             5,
-			Sum: &mpb.DDSketchDataPoint_SumAsInt{
-				SumAsInt: 9,
-			},
-			Min: &mpb.DDSketchDataPoint_MinAsInt{
-				MinAsInt: 3,
-			},
-			Max: &mpb.DDSketchDataPoint_MaxAsInt{
-				MaxAsInt: 6,
-			},
-			Sketch:    sketchBytesB,
-			Encoding:  mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO,
-			Exemplars: []*mpb.Exemplar{pbExemplarInt64B},
+			Sketch:            sketchBytesB,
+			Encoding:          mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO,
+			Exemplars:         []*mpb.Exemplar{pbExemplarInt64B},
 		},
 	}
 
@@ -532,37 +516,17 @@ var (
 			Attributes:        []*cpb.KeyValue{pbAlice},
 			StartTimeUnixNano: uint64(start.UnixNano()),
 			TimeUnixNano:      uint64(end.UnixNano()),
-			Count:             12,
-			Sum: &mpb.DDSketchDataPoint_SumAsDouble{
-				SumAsDouble: 20.5,
-			},
-			Min: &mpb.DDSketchDataPoint_MinAsDouble{
-				MinAsDouble: 4.5,
-			},
-			Max: &mpb.DDSketchDataPoint_MaxAsDouble{
-				MaxAsDouble: 8.1,
-			},
-			Sketch:    sketchBytesA,
-			Encoding:  mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO,
-			Exemplars: []*mpb.Exemplar{pbExemplarFloat64A},
+			Sketch:            sketchBytesA,
+			Encoding:          mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO,
+			Exemplars:         []*mpb.Exemplar{pbExemplarFloat64A},
 		},
 		{
 			Attributes:        []*cpb.KeyValue{pbBob},
 			StartTimeUnixNano: uint64(start.UnixNano()),
 			TimeUnixNano:      uint64(end.UnixNano()),
-			Count:             4,
-			Sum: &mpb.DDSketchDataPoint_SumAsDouble{
-				SumAsDouble: 6.25,
-			},
-			Min: &mpb.DDSketchDataPoint_MinAsDouble{
-				MinAsDouble: 1.5,
-			},
-			Max: &mpb.DDSketchDataPoint_MaxAsDouble{
-				MaxAsDouble: 2.5,
-			},
-			Sketch:    sketchBytesB,
-			Encoding:  mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO,
-			Exemplars: []*mpb.Exemplar{pbExemplarFloat64B},
+			Sketch:            sketchBytesB,
+			Encoding:          mpb.DDSketchEncoding_DDSKETCH_ENCODING_PROTO,
+			Exemplars:         []*mpb.Exemplar{pbExemplarFloat64B},
 		},
 	}
 

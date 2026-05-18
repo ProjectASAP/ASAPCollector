@@ -12,7 +12,7 @@ import (
 )
 
 func TestConfig_Defaults(t *testing.T) {
-	cfg := &Config{Bucket: "asap-gorilla"}
+	cfg := &Config{TSDBBucket: "asap-gorilla-tsdb"}
 	require.NoError(t, cfg.Validate())
 	assert.Equal(t, 60*time.Second, cfg.WindowInterval)
 	assert.Equal(t, defaultPrefixTemplate, cfg.PrefixTemplate)
@@ -23,16 +23,18 @@ func TestConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 30*time.Second, cfg.UploadTimeout)
 }
 
-func TestConfig_BucketRequired(t *testing.T) {
+func TestConfig_TSDBBucketRequired(t *testing.T) {
+	// `Bucket` field validation was retired (B1 downstream); only
+	// `TSDBBucket` is required now for non-agent roles.
 	cfg := &Config{}
 	err := cfg.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "bucket")
+	assert.Contains(t, err.Error(), "tsdb_bucket")
 }
 
 func TestConfig_CredentialPairing(t *testing.T) {
 	cfg := &Config{
-		Bucket:      "asap-gorilla",
+		TSDBBucket:  "asap-gorilla",
 		AccessKeyID: "ak",
 	}
 	err := cfg.Validate()
@@ -42,7 +44,7 @@ func TestConfig_CredentialPairing(t *testing.T) {
 
 func TestConfig_OverridesPreserved(t *testing.T) {
 	cfg := &Config{
-		Bucket:         "b",
+		TSDBBucket:     "b",
 		WindowInterval: 30 * time.Second,
 		PrefixTemplate: "{tenant}/x/{metric}/",
 		Tenant:         "shop",

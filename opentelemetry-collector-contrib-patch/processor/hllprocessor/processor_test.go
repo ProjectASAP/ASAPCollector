@@ -115,37 +115,6 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 	assert.True(t, foundSketch, "expected metric latency_hll_cardinality as HLLSketch")
 }
 
-// TestBatchModeMetricSuffix verifies that a custom metric_suffix is applied.
-func TestBatchModeMetricSuffix(t *testing.T) {
-	cfg := createDefaultConfig().(*Config)
-	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
-	cfg.Mode = ModeBatch
-	cfg.MetricSuffix = "_card"
-	require.NoError(t, cfg.Validate())
-
-	sink := new(consumertest.MetricsSink)
-	proc := newProcessor(cfg, zap.NewNop(), sink)
-
-	md := makeGaugeMetrics("events", []float64{1, 2})
-	require.NoError(t, proc.ConsumeMetrics(context.Background(), md))
-
-	out := sink.AllMetrics()
-	require.Len(t, out, 1)
-
-	var found bool
-	for i := 0; i < out[0].ResourceMetrics().Len(); i++ {
-		sms := out[0].ResourceMetrics().At(i).ScopeMetrics()
-		for j := 0; j < sms.Len(); j++ {
-			ms := sms.At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				if ms.At(k).Name() == "events_card" {
-					found = true
-				}
-			}
-		}
-	}
-	assert.True(t, found, "expected metric events_card")
-}
 
 // TestWindowModeFlush verifies that the window processor emits output only
 // after flushWindow is called, not on every ConsumeMetrics.

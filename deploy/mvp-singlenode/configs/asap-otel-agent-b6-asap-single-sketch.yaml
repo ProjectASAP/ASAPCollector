@@ -67,13 +67,26 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://backend:4320/v1/opamp
+        endpoint: ws://controller:4320/v1/opamp
         # Header-based agent identification — see
         # `asap-otel-agent-b3-delta-direct.yaml` for the rationale
         # (controller's OpAMP server uses X-Agent-ID, not the
         # InstanceUid carried in the OpAMP message body).
         headers:
           X-Agent-ID: "agent-1"
+    # ASAP patch (PR #389): when set, the opampextension applies the
+    # pushed AgentRemoteConfig by writing the YAML to this path and
+    # exiting; a restart policy (e.g. `restart: unless-stopped`) then
+    # brings the container back with the new config. The collector
+    # boot path loads `/etc/otel/config.yaml`, so we point both at the
+    # same path — first boot uses the mounted static yaml, every
+    # subsequent boot uses the controller-emitted runtime yaml.
+    # NOTE: the stock `agents-N*.yml` overlays mount this path
+    # read-only and do not set a restart policy; deployments that need
+    # OpAMP-apply to actually persist must drop `:ro` from the mount
+    # and add `restart: unless-stopped` to the agent service (see
+    # `mvp-smoke-test/compose/smoke-overlay.yml` for the pattern).
+    remote_config_path: /etc/otel/config.yaml
 
 receivers:
   otlp:
@@ -191,7 +204,6 @@ processors:
     enable_self_monitoring: true
     delta_transmission: true
     quantiles: [0.5, 0.9, 0.99]
-    metric_suffix: "_quantile"
 
   # ── KLL — quantile family (rank-error). ──────────────────────────────
   # NO `delta_transmission` for KLL: KLL uses randomised compaction so
@@ -209,7 +221,6 @@ processors:
     # KLL processor's `Config` struct has no `encoding` key — KLL is
     # always serialised as msgpack (DataSketches stream format), and
     # the processor rejects unknown keys.
-    metric_suffix: "_quantile"
 
   # ── HLL — cardinality family. ────────────────────────────────────────
   # The patched contrib build hard-codes precision p=14, so no
@@ -221,7 +232,6 @@ processors:
     enable_self_monitoring: true
     delta_transmission: true
     encoding: msgpack
-    metric_suffix: "_hll"
 
   # ── CountSketch — heavy-hitter / frequency family. ───────────────────
   countsketch:

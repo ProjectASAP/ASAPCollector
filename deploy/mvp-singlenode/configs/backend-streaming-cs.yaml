@@ -1,6 +1,7 @@
-# CountSketch processor doesn't add a suffix in our build (the
-# `metric_suffix` config key isn't recognised), so the wire metric
-# names match the input: `http_requests_total` (Sum) and
+# Refactor-2026-05: NO sketch processor (CountSketch / CMS / DDSketch
+# / KLL / HLL) adds a metric-name suffix on the wire — sketch type is
+# identified by the OTLP pdata.Metric variant tag instead. Wire metric
+# names always match the input: `http_requests_total` (Sum) and
 # `http_requests_total_latency_ms` (Gauge).
 aggregations:
 - aggregationId: 1
@@ -12,8 +13,8 @@ aggregations:
     aggregated: []
   metric: http_requests_total
   parameters:
-    row_num: 5
-    col_num: 1024
+    d: 5
+    w: 1024
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
@@ -26,8 +27,8 @@ aggregations:
     aggregated: []
   metric: http_requests_total_latency_ms
   parameters:
-    row_num: 5
-    col_num: 1024
+    d: 5
+    w: 1024
   windowSize: 30
   windowType: tumbling
   spatialFilter: ''
