@@ -87,8 +87,18 @@ type Config struct {
 	// resolution (us-east-1 etc). Set to e.g. http://minio:9000 for MinIO.
 	Endpoint string `mapstructure:"endpoint"`
 
-	// Bucket is the destination bucket. Must exist; the processor does
-	// not create buckets.
+	// Bucket is retained for back-compat with controller-emitted yaml
+	// that still includes `bucket: <name>` — the field is otherwise
+	// unused. The processor's write path (`uploadArtifact`) only
+	// touches `TSDBBucket`. Validation no longer requires `Bucket`
+	// non-empty; the startup log no longer reads it; the
+	// `TSDBBucket == "" → fall back to Bucket` shim is gone too.
+	// Once the controller's emit drops the `bucket:` line, this
+	// field can be deleted outright (mapstructure-strict mode would
+	// then reject any lingering yaml that still carries it).
+	//
+	// Deprecated: scheduled for deletion after the controller emit
+	// stops including `bucket:` (B1.5 downstream-fix follow-up).
 	Bucket string `mapstructure:"bucket"`
 
 	// PrefixTemplate is the S3 key prefix template — see defaultPrefixTemplate.
@@ -202,9 +212,9 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("gorillas3: invalid delivery_mode %q (want best_effort|durable_raw|durable_fragment)", c.DeliveryMode)
 	}
-	if c.Role != ProcessorRoleAgent && c.Bucket == "" {
-		return fmt.Errorf("gorillas3: bucket must be set")
-	}
+	// Bucket validation retired: the field is no longer read at
+	// runtime (the write path uses TSDBBucket exclusively). See the
+	// Config struct's Bucket-field doc comment.
 	if (c.AccessKeyID == "") != (c.SecretAccessKey == "") {
 		return fmt.Errorf("gorillas3: access_key_id and secret_access_key must both be set or both empty")
 	}
@@ -220,9 +230,7 @@ func (c *Config) Validate() error {
 		c.TSDBBlockDuration = c.WindowInterval
 	}
 	if c.Role != ProcessorRoleAgent && c.TSDBBucket == "" {
-		// Default to Bucket, but warn-by-validate is impractical
-		// here; operators get a clean defaults.
-		c.TSDBBucket = c.Bucket
+		return fmt.Errorf("gorillas3: tsdb_bucket must be set")
 	}
 	if c.TSDBReorderGrace < 0 {
 		return fmt.Errorf("gorillas3: tsdb_reorder_grace must be >= 0")

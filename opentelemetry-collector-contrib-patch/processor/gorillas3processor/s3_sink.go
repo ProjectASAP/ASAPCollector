@@ -195,10 +195,11 @@ func (s *s3Sink) PutTSDBBlock(ctx context.Context, blockULID string, files map[s
 	if len(files) == 0 {
 		return nil
 	}
+	// Config::Validate ensures TSDBBucket is non-empty for non-agent
+	// roles; agent roles never enter this TSDB upload path. The legacy
+	// `tsdbBucket = cfg.Bucket` fallback was retired with the
+	// gorillas3 Bucket-field retirement (B1 downstream).
 	tsdbBucket := s.cfg.TSDBBucket
-	if tsdbBucket == "" {
-		tsdbBucket = s.cfg.Bucket
-	}
 	// Order: everything except meta.json first, then meta.json. We
 	// look for the meta.json key by suffix to be tolerant of either
 	// the "<ulid>/meta.json" full key form or the "meta.json" relative

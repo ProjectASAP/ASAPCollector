@@ -63,7 +63,6 @@ func (p *gorillaS3Processor) Start(ctx context.Context, _ component.Host) error 
 		zap.String("role", string(p.cfg.Role)),
 		zap.String("delivery_mode", string(p.cfg.DeliveryMode)),
 		zap.Duration("window_interval", p.cfg.WindowInterval),
-		zap.String("bucket", p.cfg.Bucket),
 		zap.String("tsdb_bucket", p.cfg.TSDBBucket),
 		zap.String("endpoint", p.cfg.Endpoint),
 		zap.Bool("drop_original", p.cfg.DropOriginal),
