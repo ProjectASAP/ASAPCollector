@@ -175,7 +175,7 @@ func mkProcessor(t *testing.T, cfg *Config, sink chunkSink) *gorillaS3Processor 
 }
 
 func TestConsumeMetrics_DropOriginal(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -188,7 +188,7 @@ func TestConsumeMetrics_DropOriginal(t *testing.T) {
 }
 
 func TestConsumeMetrics_PassThrough(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: false}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: false}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -201,7 +201,7 @@ func TestConsumeMetrics_PassThrough(t *testing.T) {
 }
 
 func TestFlushWindow_WritesTSDBBlockOnTick(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -228,7 +228,7 @@ func TestFlushWindow_WritesTSDBBlockOnTick(t *testing.T) {
 }
 
 func TestFlushWindow_PutFailureLogged(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{fail: true}
 	p := mkProcessor(t, cfg, sink)
 
@@ -241,7 +241,7 @@ func TestFlushWindow_PutFailureLogged(t *testing.T) {
 }
 
 func TestFlushWindow_EmptyNoOp(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 	p.flushWindow(context.Background())
@@ -249,7 +249,7 @@ func TestFlushWindow_EmptyNoOp(t *testing.T) {
 }
 
 func TestShutdown_DrainsBufferedSamples(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -265,7 +265,7 @@ func TestShutdown_DrainsBufferedSamples(t *testing.T) {
 }
 
 func TestConsumeMetrics_SumType(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -297,7 +297,7 @@ func TestConsumeMetrics_SumType(t *testing.T) {
 
 func TestConsumeMetrics_HistogramSilentlyIgnored(t *testing.T) {
 	// Only Gauge / Sum are encoded; histogram-style metrics must be skipped.
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
@@ -316,7 +316,7 @@ func TestConsumeMetrics_HistogramSilentlyIgnored(t *testing.T) {
 }
 
 func TestFlushWindow_DoesNotEmitLegacyChunkOrPostings(t *testing.T) {
-	cfg := &Config{Bucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
+	cfg := &Config{TSDBBucket: "b", WindowInterval: time.Hour, DropOriginal: true, Tenant: "tnt"}
 	sink := &mockSink{}
 	p := mkProcessor(t, cfg, sink)
 
