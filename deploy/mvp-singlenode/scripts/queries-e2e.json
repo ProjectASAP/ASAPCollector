@@ -9,7 +9,7 @@
     },
     {
         "kind": "quantile",
-        "metricsql": "quantile by (zone) (0.99, http_requests_total_latency_ms)"
+        "metricsql": "max by (zone) (quantile_over_time(0.99, http_requests_total_latency_ms[5m]))"
     },
     {
         "kind": "sum",
