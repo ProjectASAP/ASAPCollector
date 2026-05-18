@@ -30,6 +30,16 @@ x-agent: &agent-base
   depends_on:
     - gateway
     - controller
+  # The opampextension's \`remote_config_path\` (ASAPCollector#391)
+  # writes the controller-pushed RemoteConfig back to
+  # \`/etc/otel/config.yaml\` and exits, expecting Docker to restart
+  # the container so the new config takes effect. Both of the
+  # following are required for that flow to work:
+  #   - the mount must be RW (no \`:ro\`) so the on-disk write succeeds
+  #   - \`restart: unless-stopped\` so Docker brings the agent back up
+  # See /mydata/mvp-smoke-test/compose/smoke-overlay.yml for the
+  # working reference that established this contract.
+  restart: unless-stopped
   command:
     - "--config=/etc/otel/config.yaml"
   volumes:
@@ -38,7 +48,7 @@ x-agent: &agent-base
     # paper baselines' compose overlays (baseline-b*.yml) set
     # it before \`docker compose up\`. Compose expands the
     # \${VAR:-default} syntax at container start.
-    - ../configs/\${AGENT_CONFIG:-asap-otel-agent-b2-full.yaml}:/etc/otel/config.yaml:ro
+    - ../configs/\${AGENT_CONFIG:-asap-otel-agent-b2-full.yaml}:/etc/otel/config.yaml
   deploy:
     resources:
       limits:
