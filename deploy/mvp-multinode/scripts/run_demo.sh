@@ -159,11 +159,20 @@ backend_up() {
             --block-sync-concurrency=20
 
         # Thanos query
+        #
+        # All containers on node2 run with --network host, so the default
+        # thanos gRPC port (10901) collides with thanos-store-gateway, and
+        # 10902 collides with the store-gateway HTTP port. Pin query's gRPC
+        # listener to :10905 so all three thanos containers coexist on the
+        # same host. The data_plane (asap-backend) only talks to thanos-query
+        # over HTTP :10903; the gRPC port is just thanos-query's own control
+        # surface and isn't exposed.
         docker_run_on "${NODE2_HOST}" \
             --name asap-thanos-query \
             quay.io/thanos/thanos:v0.41.0 \
             query \
             --http-address=0.0.0.0:10903 \
+            --grpc-address=0.0.0.0:10905 \
             --endpoint=thanos-store-gateway:10901 \
             --query.replica-label=replica
 
