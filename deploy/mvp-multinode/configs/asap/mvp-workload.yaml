@@ -51,6 +51,8 @@
   query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"
   accuracy_sla: 0.01
   assign_to_role: agent
+  grouping_labels:
+  - zone
 
 # 2. LABEL AGGREGATION ACROSS SERIES AT ONE TIMESTAMP
 #    Outer: sum-by(zone) at instant. Inner: identity.
@@ -60,6 +62,8 @@
   query_string: "sum by (zone) (http_requests_total)"
   accuracy_sla: 0.0
   assign_to_role: gateway
+  grouping_labels:
+  - zone
 
 # 3. COMBINED WINDOW + LABEL AGGREGATION
 #    Inner: rate per series over 5m. Outer: sum-by(zone).
@@ -69,6 +73,8 @@
   query_string: "sum by (zone) (rate(http_requests_total[5m]))"
   accuracy_sla: 0.01
   assign_to_role: agent
+  grouping_labels:
+  - zone
 
 # 4. AD-HOC COLD-FALLBACK PROBE — exercises Gorilla archive tier
 #    Metric is configured StorageBackend::GorillaS3 in
@@ -87,6 +93,8 @@
   query_string: "count(http_requests_total{zone=\"z0\"})"
   accuracy_sla: 0.0
   assign_to_role: archive
+  grouping_labels:
+  - zone
 
 # ── Five-sketch MVP coverage (issue #46) ──────────────────────────
 #
@@ -122,6 +130,8 @@
   query_string: "quantile_over_time(0.99, request_size_bytes[30s])"
   accuracy_sla: 0.05
   assign_to_role: agent
+  grouping_labels:
+  - zone
   sketch_family_override: KLL
   target_path: warm
 
@@ -133,6 +143,8 @@
   query_string: "count(unique_users_per_min)"
   accuracy_sla: 0.02
   assign_to_role: agent
+  grouping_labels:
+  - zone
   sketch_family_override: HLL
   target_path: warm
 
@@ -145,6 +157,8 @@
   query_string: "topk(5, top_endpoint_qps)"
   accuracy_sla: 0.05
   assign_to_role: agent
+  grouping_labels:
+  - zone
   sketch_family_override: CountSketch
   target_path: warm
 
@@ -158,5 +172,7 @@
   query_string: "rate(endpoint_request_freq[5m])"
   accuracy_sla: 0.05
   assign_to_role: agent
+  grouping_labels:
+  - zone
   sketch_family_override: CountMinSketch
   target_path: warm
