@@ -406,12 +406,18 @@ arm_measure() {
             > /mydata/mvp-multinode/results/stages-${n}.log 2>&1 &"
     done
 
-    # PromQL replay: for b0/b1 target prometheus on node2:9090; for asap target backend on node2:9091
+    # PromQL replay endpoint:
+    #   asap arm  → asap-query-backend on node2:9091
+    #   b0 / b1   → VictoriaMetrics on node2:8428 (serves PromQL on the
+    #               same port as its /api/v1/write PRW receive). Prior to
+    #               2026-05 this pointed at :9090 (Prometheus), but the
+    #               b0/b1 backend_up() path brings up `asap-victoriametrics`
+    #               not Prometheus, so :9090 was unreachable → 100% timeout.
     local query_endpoint
     if [ "${arm}" = "asap" ]; then
         query_endpoint="http://${NODE2_IP}:9091"
     else
-        query_endpoint="http://${NODE2_IP}:9090"
+        query_endpoint="http://${NODE2_IP}:8428"
     fi
 
     log "[measure ${arm}] MetricsQL replay against ${query_endpoint} for ${SOAK_S}s"
