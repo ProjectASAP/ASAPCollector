@@ -14,5 +14,17 @@
     {
         "kind": "sum",
         "metricsql": "sum_over_time(http_requests_total[1m])"
+    },
+    {
+        "kind": "sum",
+        "metricsql": "sum by (zone) (http_requests_total)"
+    },
+    {
+        "kind": "sum",
+        "metricsql": "sum by (zone) (rate(http_requests_total[5m]))"
+    },
+    {
+        "kind": "topk",
+        "metricsql": "topk(5, sum by (zone) (rate(http_requests_total[5m])))"
     }
 ]

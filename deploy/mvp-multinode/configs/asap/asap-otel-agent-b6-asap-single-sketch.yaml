@@ -162,7 +162,10 @@ processors:
     window_interval: 5s
     drop_original: false
     endpoint: http://minio:9000
-    bucket: asap-gorilla
+    # `bucket:` removed in PR #388 (B1 downstream Phase 3) — the legacy
+    # Bucket field was deleted from gorillas3processor/config.go; only
+    # `tsdb_bucket` remains. Leaving the key here causes a crash-loop:
+    # `'gorillas3' ... '' has invalid keys: bucket`.
     region: us-east-1
     use_ssl: false
     access_key_id: asap
