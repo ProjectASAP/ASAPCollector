@@ -183,30 +183,32 @@ backend_up() {
             --wait \
             --http-address=0.0.0.0:10904
 
-        # Phase 9 (controller-into-backend refactor):
-        # The standalone `asap-controller` container has been removed.
-        # The controller crate now lives inside `ASAPQuery-backend` and
-        # is embedded as a Rust library by the backend binary. The
-        # OpAMP WS endpoint (4320) and the RuntimeSamples gRPC endpoint
-        # (4321) are now controller-owned ports — agents point their
-        # OpAMP client at `ws://controller:4320/v1/opamp` (post Phase-9
-        # the controller binary ships from the asap/query-backend:dev
-        # image but runs as its own compose service). The backend's
-        # PromQL HTTP API serves on 9091 as before. The multinode topology
-        # adds `--add-host=controller:${NODE2_IP}` and `--add-host=backend:${NODE2_IP}`
-        # so both hostnames resolve to the same node — either name in
-        # the agent yaml works there, but the singlenode compose only has
-        # the `controller` alias so the canonical URL is the one above.
+        # Phase-9 single-binary refactor (2026-05): the controller and
+        # backend ship from the same `asap/query-backend:dev` image but
+        # run as TWO separate processes (entrypoints
+        # `/usr/local/bin/controller` vs `/usr/local/bin/asap-query-backend`).
+        # The single-node `deploy/mvp-singlenode/docker-compose/base.yml`
+        # models them as two compose services; mirror that here.
+        #
+        # Without the controller container the backend never receives
+        # the controller's POST /api/v1/streaming-config and falls back
+        # to the static `configs/asap/backend-streaming.yaml`
+        # (DDSketch-only, no Sum/Count/Topk roles). The post-#290 wave
+        # — sum-by-zone (#291), rate-over-Sum and topk-over-rate (#292)
+        # — only fires when the controller-driven plan installs the Sum
+        # aggregation, so this container is load-bearing for ASAP-arm
+        # validation.
+        #
+        # The `controller` DNS alias resolves to NODE2_IP via ADD_HOSTS;
+        # both the agents and the controller-self-reference (the OpAMP
+        # endpoint URL the controller bakes into emitted agent yaml) use
+        # that name.
 
-        # asap-query-backend (ASAP only) — embeds controller in-process
+        # asap-query-backend (ASAP only) — data plane process.
         sleep 3
         docker_run_on "${NODE2_HOST}" \
             --name asap-backend \
-            -e RUST_LOG=info,controller=debug \
-            -e USE_TYPED_STAGE_SPLIT=1 \
-            -e CONTROLLER_OPAMP_ADDR=0.0.0.0:4320 \
-            -e CONTROLLER_GRPC_ADDR=0.0.0.0:4321 \
-            -e CONTROLLER_WORKLOADS=/etc/asap/mvp-workload.yaml \
+            -e RUST_LOG=info \
             -e ASAP_SKETCH_FAMILY=ddsketch \
             -e ASAP_GORILLA_S3_ENDPOINT=http://minio:9000 \
             -e ASAP_GORILLA_S3_BUCKET=asap-gorilla \
@@ -220,13 +222,33 @@ backend_up() {
             -e ASAP_THANOS_QUERY_URL=http://thanos-query:10903 \
             -v /mydata/mvp-multinode/configs/asap/backend-streaming.yaml:/etc/asap/streaming.yaml:ro \
             -v /mydata/mvp-multinode/configs/asap/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro \
-            -v /mydata/mvp-multinode/configs/asap/mvp-workload.yaml:/etc/asap/mvp-workload.yaml:ro \
             asap/query-backend:dev \
             --streaming-config=/etc/asap/streaming.yaml \
             --query-port=9091 \
             --enable-otel-ingest \
             --otel-grpc-port=4317 \
             --otel-http-port=4318
+
+        # asap-controller (ASAP only) — control plane process. Brought
+        # up AFTER the backend so the controller's startup pre-pop
+        # replan tick has a live backend to POST the streaming-config
+        # plan to (CONTROLLER_BACKEND_ENDPOINT). Without that POST the
+        # backend stays on the static DDSketch-only fallback and the
+        # wave's Sum/Topk queries silently return empty.
+        sleep 3
+        docker_run_on "${NODE2_HOST}" \
+            --name asap-controller \
+            -e RUST_LOG="info,controller=debug,control_plane=debug" \
+            -e USE_TYPED_STAGE_SPLIT=1 \
+            -e CONTROLLER_ADDR=0.0.0.0:8080 \
+            -e CONTROLLER_OPAMP_ADDR=0.0.0.0:4320 \
+            -e CONTROLLER_GRPC_ADDR=0.0.0.0:4321 \
+            -e CONTROLLER_OPAMP_ENDPOINT=ws://controller:4320/v1/opamp \
+            -e CONTROLLER_BACKEND_ENDPOINT=http://backend:9091/api/v1/streaming-config \
+            -e CONTROLLER_WORKLOADS=/etc/asap/mvp-workload.yaml \
+            -v /mydata/mvp-multinode/configs/asap/mvp-workload.yaml:/etc/asap/mvp-workload.yaml:ro \
+            --entrypoint /usr/local/bin/controller \
+            asap/query-backend:dev
     fi
 }
 
@@ -385,7 +407,7 @@ arm_measure() {
 
     log "[measure ${arm}] MetricsQL replay against ${query_endpoint} for ${SOAK_S}s"
     python3 "${ROOT}/deploy/mvp-singlenode/scripts/metricsql_replay.py" \
-        --endpoint "${query_endpoint}" \
+        --target "${query_endpoint}" \
         --queries "${ROOT}/deploy/mvp-singlenode/scripts/queries-e2e.json" \
         --duration "${SOAK_S}" \
         --out "${out}/replay.jsonl" \
