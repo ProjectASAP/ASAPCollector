@@ -1,11 +1,11 @@
 [
     {
         "kind": "quantile",
-        "metricsql": "quantile_over_time(0.99, http_requests_total_latency_ms[1m])"
+        "metricsql": "quantile_over_time(0.99, http_requests_total_latency_ms[5m])"
     },
     {
         "kind": "quantile",
-        "metricsql": "quantile_over_time(0.5, http_requests_total_latency_ms[1m])"
+        "metricsql": "quantile_over_time(0.5, http_requests_total_latency_ms[5m])"
     },
     {
         "kind": "quantile",
@@ -13,7 +13,7 @@
     },
     {
         "kind": "sum",
-        "metricsql": "sum_over_time(http_requests_total[1m])"
+        "metricsql": "sum_over_time(http_requests_total[5m])"
     },
     {
         "kind": "sum",
