@@ -7,7 +7,7 @@
 # its own fake-exporter instance (fake-exporter-$i targets
 # agent-$i:4317). Flow per replica:
 #
-#   fake-exporter-$i ──OTLP──▶ agent-$i (sketches) ──OTLP──▶ gateway ──▶ backend
+#   fake-exporter-$i ──OTLP──▶ agent-$i (sketches) ──OTLP──▶ backend
 #
 # Usage: ./gen-agents.sh 100 > agents-N100.yml
 set -euo pipefail
@@ -19,16 +19,19 @@ cat <<EOF
 #
 # Per-replica flow:
 #
-#   fake-exporter-i ──OTLP──▶ agent-i ──OTLP──▶ gateway ──promRW──▶ backend
+#   fake-exporter-i ──OTLP──▶ agent-i ──OTLP──▶ backend
 #
 # Each agent mounts \`asap-otel-agent.yaml\` and runs DDSketch + HLL
-# on the pipeline, so the bytes reaching the gateway are already
+# on the pipeline, so the bytes reaching the backend are already
 # sketched (bandwidth-reduction signal scales with N).
+#
+# Issue #400: the asap-gateway hop was retired; agents push OTLP
+# straight to backend:4317.
 
 x-agent: &agent-base
   image: asap/asap-otel:dev
   depends_on:
-    - gateway
+    - backend
     - controller
   # The opampextension's \`remote_config_path\` (ASAPCollector#391)
   # writes the controller-pushed RemoteConfig back to

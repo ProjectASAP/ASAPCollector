@@ -56,12 +56,23 @@
 
 # 2. LABEL AGGREGATION ACROSS SERIES AT ONE TIMESTAMP
 #    Outer: sum-by(zone) at instant. Inner: identity.
-#    Stage: gateway (cross-host fan-in merge); backend stores
-#    the merged sum-by-zone vector.
+#    Stage: agent (per-agent Sum-by-zone is emitted under
+#    a stable sid; backend's `evaluate_exact_agg` reducer
+#    pulls sids from every agent at query time and merges
+#    across hosts — see ASAPQuery-backend PR #283/#287/#290).
+#
+#    Pre-#400 this used `assign_to_role: gateway`, which
+#    spawned an asap-gateway OTel-collector hop solely to
+#    do that cross-agent merge. Now that the backend does
+#    the merge natively, the gateway hop is redundant; the
+#    role flips to `agent` so the controller's typed
+#    stage_split emits only Edge + Backend stages (no
+#    Gateway stage → no gateway YAML emit → no asap-gateway
+#    container required).
 - metric_name: http_requests_total
   query_string: "sum by (zone) (http_requests_total)"
   accuracy_sla: 0.0
-  assign_to_role: gateway
+  assign_to_role: agent
   grouping_labels:
   - zone
 
