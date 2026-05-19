@@ -56,7 +56,10 @@ func (p *gorillaS3Processor) Start(ctx context.Context, _ component.Host) error 
 		}
 		p.sink = s
 	}
-	if err := p.ensureRoleState(); err != nil {
+	p.mu.Lock()
+	err := p.ensureRoleStateLocked()
+	p.mu.Unlock()
+	if err != nil {
 		return err
 	}
 	p.logger.Info("Starting gorillas3 processor",
@@ -115,12 +118,13 @@ func (p *gorillaS3Processor) ConsumeMetrics(ctx context.Context, md pmetric.Metr
 	if p.monitor != nil {
 		p.monitor.recordInput(ctx, md)
 	}
-	if err := p.ensureRoleState(); err != nil {
-		return md, err
-	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if err := p.ensureRoleStateLocked(); err != nil {
+		return md, err
+	}
 
 	var out pmetric.Metrics
 	var err error
@@ -296,12 +300,13 @@ func numberValue(dp pmetric.NumberDataPoint) (float64, bool) {
 // flushWindow finalizes the current streaming Prometheus TSDB block and uploads
 // it to the Thanos bucket. The next incoming sample starts a new builder.
 func (p *gorillaS3Processor) flushWindow(ctx context.Context) {
-	if err := p.ensureRoleState(); err != nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if err := p.ensureRoleStateLocked(); err != nil {
 		p.logger.Error("gorillas3: role state init failed", zap.Error(err))
 		return
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	switch p.cfg.Role {
 	case ProcessorRoleAgent:
@@ -443,9 +448,14 @@ func (p *gorillaS3Processor) activeSeries() int64 {
 	}
 }
 
-func (p *gorillaS3Processor) ensureRoleState() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// ensureRoleStateLocked lazily initializes the role-specific builder/encoder.
+// Callers MUST hold p.mu — Go mutexes are not reentrant, and the consume/flush
+// paths rely on the init step being part of the SAME critical section as the
+// subsequent read/mutation of p.rawBuilder/p.fragmentEncoder/p.fragmentFinalizer
+// (see flushGatewayRawLocked/flushGatewayFragmentLocked which nil those out).
+// Splitting init and use into two critical sections re-introduces the TOCTOU
+// race that produced nil-pointer dereferences in AddSample.
+func (p *gorillaS3Processor) ensureRoleStateLocked() error {
 	switch p.cfg.Role {
 	case ProcessorRoleAgent:
 		if p.fragmentEncoder == nil {
