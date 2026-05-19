@@ -51,8 +51,8 @@
   query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"
   accuracy_sla: 0.01
   assign_to_role: agent
-  grouping_labels:
-  - zone
+  # NO grouping_labels — per-series DDSketches for accuracy comparison
+  # parity vs baseline. See multinode equivalent file for full rationale.
 
 # 2. LABEL AGGREGATION ACROSS SERIES AT ONE TIMESTAMP
 #    Outer: sum-by(zone) at instant. Inner: identity.
@@ -130,8 +130,7 @@
   query_string: "quantile_over_time(0.99, request_size_bytes[30s])"
   accuracy_sla: 0.05
   assign_to_role: agent
-  grouping_labels:
-  - zone
+  # NO grouping_labels — per-series KLL for accuracy comparison parity.
   sketch_family_override: KLL
   target_path: warm
 

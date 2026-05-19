@@ -70,6 +70,10 @@ exporters:
       enabled: false
     resource_to_telemetry_conversion:
       enabled: false
+    # See b0/asap-otel-agent-b0-prometheus.yaml for the full rationale —
+    # disable unit-suffix appending so the metric name matches what the
+    # asap tier stores, enabling apples-to-apples accuracy comparison.
+    add_metric_suffixes: false
 
 service:
   extensions: [opamp]
