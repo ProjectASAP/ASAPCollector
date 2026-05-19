@@ -51,8 +51,12 @@
   query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"
   accuracy_sla: 0.01
   assign_to_role: agent
-  sketch_family_override: KLL   # KLL accuracy experiment (issue: rank-error vs DDSketch's value-error)
-  # NO grouping_labels — per-series KLL preserves PromQL semantics.
+  # NO grouping_labels — per-series DDSketches preserve PromQL semantics.
+  # NB: a temporary `sketch_family_override: KLL` was tried here to compare
+  # DDSketch vs KLL accuracy on this workload. Empirical result: DDSketch
+  # wins on the marquee max-by-zone aggregation pattern (9.2% vs 20.2%
+  # rel-err); KLL's per-series sampling variance amplifies through the
+  # max-fold. Reverted to default (DDSketch).
   # `quantile_over_time` is per-series in PromQL; grouping the sketch at
   # [zone] would merge all series in a zone into one sketch, returning
   # zone-merged p99 (not per-series p99). That's a different quantity than
