@@ -1,0 +1,11 @@
+# buffer-fs-objstore.yaml — Thanos FILESYSTEM objstore for gorilla-buffer-store.
+#
+# Points thanos store at the local directory written by gorilla-buffer-merger.
+# gorilla-buffer-merger maintains a single merged TSDB block there representing
+# the last BUFFER_STORE_DURATION of data (default 1h, sliding window).
+#
+# Used in place of the S3 objstore so the buffer-store reads the pre-merged
+# local block instead of re-reading individual 60s blocks from MinIO.
+type: FILESYSTEM
+config:
+  directory: /var/gorilla-buffer/merged

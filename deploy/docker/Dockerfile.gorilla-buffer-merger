@@ -1,0 +1,19 @@
+# Dockerfile.gorilla-buffer-merger
+#
+# Builds the gorilla-buffer-merger binary: a sliding-window TSDB merger that
+# polls MinIO for new 60s blocks, merges them into a single 1h block, and
+# writes it to a directory served by thanos store (FILESYSTEM objstore).
+#
+# Build (from ASAPCollector repo root):
+#   docker build -f deploy/docker/Dockerfile.gorilla-buffer-merger \
+#     -t asap/gorilla-buffer-merger:dev .
+
+FROM golang:1.25-bookworm AS build
+WORKDIR /src
+COPY asap-gorilla-go /src/asap-gorilla-go
+WORKDIR /src/asap-gorilla-go
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/gorilla-buffer-merger ./cmd/gorilla-buffer-merger/
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/gorilla-buffer-merger /usr/local/bin/gorilla-buffer-merger
+ENTRYPOINT ["/usr/local/bin/gorilla-buffer-merger"]

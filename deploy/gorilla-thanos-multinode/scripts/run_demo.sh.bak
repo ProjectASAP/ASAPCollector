@@ -10,9 +10,8 @@
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
 # Pipeline: agents write 60s TSDB blocks DIRECTLY to MinIO (no gateway hop).
-#   gorilla-buffer-merger on node2: polls MinIO every 15s, merges in-window 60s blocks
-#   into a single merged block at /tmp/gorilla-buffer/merged/. Expired blocks dropped.
-#   gorilla-buffer-store on node2: thanos store (FILESYSTEM objstore) serves the merged block via :10921.
+#   gorilla-buffer-store on node2: syncs from MinIO every 15s, serves only
+#   the last BUFFER_STORE_DURATION of blocks via StoreAPI :10921.
 #   thanos-store-gateway: syncs every 30s, serves all historical data.
 #   thanos-query federates both endpoints.
 #
@@ -84,20 +83,17 @@ docker_run_on() {
 }
 
 # ─── BACKEND STACK on node2 ───────────────────────────────────────────────
-# Services: MinIO + Thanos (store-gateway, query, compact)
-#           + gorilla-buffer-merger + gorilla-buffer-store.
+# Services: MinIO + Thanos (store-gateway, query, compact) + gorilla-buffer-store.
 #
-# gorilla-buffer-merger: polls MinIO every 15s, downloads new 60s blocks to staging,
-#   merges all in-window blocks into a single merged block, drops expired blocks.
-#   Output: /tmp/gorilla-buffer/merged/{ULID}/ (one block, sliding window).
+# Two Thanos store endpoints read from the same MinIO bucket:
+#   thanos-store-gateway :10901 — all blocks (30s sync)
+#   gorilla-buffer-store  :10921 — last BUFFER_STORE_DURATION blocks (15s sync)
 #
-# gorilla-buffer-store: thanos store (FILESYSTEM objstore on merged dir) :10921.
-#   Serves the single merged block — no per-block fan-out at query time.
-#
-# thanos-store-gateway :10901 — all blocks from MinIO (30s sync, full history).
-# Thanos Query federates both endpoints.
+# Thanos Query federates both. For the recent hot window, gorilla-buffer-store
+# provides 15s fresher data. Duplicate samples (both stores serving the same
+# block) collapse via Thanos' chunk-level timestamp merge.
 backend_up() {
-    log "node2 backend up (MinIO + Thanos + gorilla-buffer-merger/store, window=${BUFFER_STORE_DURATION})"
+    log "node2 backend up (MinIO + Thanos + gorilla-buffer-store, BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION})"
 
     # MinIO
     docker_run_on "${NODE2_HOST}" \
@@ -131,41 +127,22 @@ backend_up() {
         --sync-block-duration=30s \
         --block-sync-concurrency=20
 
-    # gorilla-buffer-merger — sliding-window TSDB block merger.
-    # Polls MinIO every 15s, downloads new 60s blocks, merges all in-window
-    # blocks into a single merged block at /tmp/gorilla-buffer/merged/. Expired
-    # blocks (older than BUFFER_STORE_DURATION) are dropped from staging.
-    on "${NODE2_HOST}" "mkdir -p /tmp/gorilla-buffer/staging /tmp/gorilla-buffer/merged"
-    docker_run_on "${NODE2_HOST}" \
-        --name asap-gorilla-buffer-merger \
-        --user 0 \
-        -v /tmp/gorilla-buffer:/var/gorilla-buffer \
-        asap/gorilla-buffer-merger:dev \
-        -bucket=asap-gorilla-tsdb \
-        -endpoint=minio:9000 \
-        -access-key=asap \
-        -secret-key=asap-local-only \
-        -window="${BUFFER_STORE_DURATION}" \
-        -poll-interval=15s \
-        -staging-dir=/var/gorilla-buffer/staging \
-        -output-dir=/var/gorilla-buffer/merged
-
-    # gorilla-buffer-store — serves the merged sliding-window block via StoreAPI :10921.
-    # Reads a single merged block from FILESYSTEM objstore (/tmp/gorilla-buffer/merged/).
-    # No --min-time filter: the merger handles expiry. One block instead of 60.
+    # gorilla-buffer-store — hot window Thanos store (same MinIO, faster sync).
+    # Serves only blocks with maxTime >= (now - BUFFER_STORE_DURATION) via StoreAPI :10921.
+    # Disk-backed cache at /tmp/thanos-buffer-store prevents OOM for large windows.
     docker_run_on "${NODE2_HOST}" \
         --name asap-gorilla-buffer-store \
         --user 0 \
-        -v /mydata/gorilla-thanos-multinode/configs/buffer-fs-objstore.yaml:/etc/thanos/objstore.yaml:ro \
-        -v /tmp/gorilla-buffer/merged:/var/gorilla-buffer/merged:ro \
+        -v /mydata/gorilla-thanos-multinode/configs/buffer-objstore.yaml:/etc/thanos/objstore.yaml:ro \
         quay.io/thanos/thanos:v0.41.0 \
         store \
         --objstore.config-file=/etc/thanos/objstore.yaml \
         --http-address=0.0.0.0:10922 \
         --grpc-address=0.0.0.0:10921 \
         --data-dir=/tmp/thanos-buffer-store \
-        --sync-block-duration=20s \
-        --block-sync-concurrency=4
+        --sync-block-duration=15s \
+        --block-sync-concurrency=20 \
+        --min-time=-"${BUFFER_STORE_DURATION}"
 
     # Thanos query — federated PromQL over store-gateway (all) + buffer-store (hot window)
     docker_run_on "${NODE2_HOST}" \
@@ -330,7 +307,7 @@ usage: $0 <cmd>
 Topology:
   node0 (10.10.1.1)  producers + agent-a (gorilla-only, direct S3 → MinIO)
   node1 (10.10.1.2)  idle
-  node2 (10.10.1.3)  MinIO + Thanos (store-gateway, query, compact) + gorilla-buffer-merger + gorilla-buffer-store
+  node2 (10.10.1.3)  MinIO + Thanos (store-gateway, query, compact) + gorilla-buffer-store
   node3 (10.10.1.4)  producers + agent-b (gorilla-only, direct S3 → MinIO)
 
 Network traffic:
@@ -338,8 +315,7 @@ Network traffic:
   NO raw OTLP crosses the network (drop_original: true)
 
 Buffer window: BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION} (set in topology.env)
-  gorilla-buffer-merger         — polls MinIO every 15s, merges in-window blocks into one local block
-  gorilla-buffer-store  :10921 — serves the single merged block via FILESYSTEM objstore
+  gorilla-buffer-store  :10921 — syncs MinIO every 15s, serves last ${BUFFER_STORE_DURATION}
   thanos-store-gateway  :10901 — syncs MinIO every 30s, serves all historical data
   thanos-query          :10903 — federates both; hot blocks queryable within ~75s of measurement
 

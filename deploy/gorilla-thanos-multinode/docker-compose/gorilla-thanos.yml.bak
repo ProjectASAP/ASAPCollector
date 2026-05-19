@@ -3,13 +3,10 @@
 # Brings up the full gorilla-thanos stack on a single host (no gorilla-gateway):
 #   MinIO + Thanos (store-gateway, query, compact) + gorilla-buffer-store + OTel agent + fake-exporter
 #
-# Pipeline:
-#   agents write 60s TSDB blocks directly to MinIO (minio:9000, no gateway hop).
-#   gorilla-buffer-merger: polls MinIO every 15s, downloads new in-window 60s blocks
-#     to /var/gorilla-buffer/staging/, merges them into a single block in
-#     /var/gorilla-buffer/merged/. Drops blocks older than BUFFER_STORE_DURATION.
-#   gorilla-buffer-store: thanos store with FILESYSTEM objstore on /var/gorilla-buffer/merged/.
-#     Serves the merged sliding-window block via StoreAPI :10921.
+# agents write 60s TSDB blocks directly to MinIO (minio:9000, no gateway hop).
+# gorilla-buffer-store syncs MinIO every 15s, serves the last BUFFER_STORE_DURATION
+# of blocks via StoreAPI :10921. Override the window with:
+#   BUFFER_STORE_DURATION=30m docker compose -f gorilla-thanos.yml up -d
 #
 # Quick start:
 #   docker compose -f gorilla-thanos.yml up -d
@@ -18,13 +15,11 @@
 #   curl http://localhost:18890/metrics | grep gorilla          # agent self-metrics
 #   # MinIO console: http://localhost:19001 (user: asap, pass: asap-local-only)
 #
-# Image notes:
-#   asap/asap-otel:dev requires gorillas3 Phase 3 build (after 2026-05-17).
-#     Rebuild: cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh
-#   asap/gorilla-buffer-merger:dev requires building:
-#     cd /mydata/ASAPCollector && docker build -f deploy/docker/Dockerfile.gorilla-buffer-merger -t asap/gorilla-buffer-merger:dev .
+# Image note: asap/asap-otel:dev requires gorillas3 Phase 3 build (after 2026-05-17).
+#   Rebuild: cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh
 #
-# Note: host-port mappings are offset by 10000 from standard ports.
+# Note: host-port mappings are offset by 10000 from standard ports to
+# avoid conflicts with any running cluster services (e.g. 19000 not 9000).
 
 services:
   minio:
@@ -50,6 +45,7 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    # Only asap-gorilla-tsdb is needed; asap-gorilla bucket is never written.
     entrypoint: >
       sh -c "
         mc alias set local http://minio:9000 asap asap-local-only &&
@@ -76,31 +72,12 @@ services:
       minio-setup:
         condition: service_completed_successfully
 
-  # gorilla-buffer-merger — sliding-window TSDB block merger.
-  # Polls MinIO every 15s, downloads new 60s blocks to staging, merges all
-  # in-window blocks (last BUFFER_STORE_DURATION) into a single block in the
-  # shared gorilla-buffer volume. Expired blocks are dropped from staging.
-  gorilla-buffer-merger:
-    image: asap/gorilla-buffer-merger:dev
-    user: "0"
-    command:
-      - -bucket=asap-gorilla-tsdb
-      - -endpoint=minio:9000
-      - -access-key=asap
-      - -secret-key=asap-local-only
-      - -window=${BUFFER_STORE_DURATION:-1h}
-      - -poll-interval=15s
-      - -staging-dir=/var/gorilla-buffer/staging
-      - -output-dir=/var/gorilla-buffer/merged
-    volumes:
-      - gorilla-buffer-data:/var/gorilla-buffer
-    depends_on:
-      minio-setup:
-        condition: service_completed_successfully
-
-  # gorilla-buffer-store — serves the merged sliding-window block via StoreAPI.
-  # Reads from the local FILESYSTEM directory written by gorilla-buffer-merger.
-  # Serves only the last BUFFER_STORE_DURATION of merged data (one block, not 60).
+  # gorilla-buffer-store — hot-window Thanos store sidecar.
+  # Reads from the same MinIO bucket as thanos-store-gateway but syncs every 15s
+  # (vs. 30s) and serves only blocks within the last BUFFER_STORE_DURATION window.
+  # Disk-backed cache avoids OOM for windows up to several hours.
+  # Both stores serving the same recent block is harmless: Thanos Query merges
+  # results at the chunk level, collapsing duplicate timestamps automatically.
   gorilla-buffer-store:
     image: quay.io/thanos/thanos:v0.41.0
     user: "0"
@@ -110,17 +87,18 @@ services:
       - --http-address=0.0.0.0:10922
       - --grpc-address=0.0.0.0:10921
       - --data-dir=/var/thanos/buffer-store
-      - --sync-block-duration=20s
-      - --block-sync-concurrency=4
+      - --sync-block-duration=15s
+      - --block-sync-concurrency=20
+      - --min-time=-${BUFFER_STORE_DURATION:-1h}
     volumes:
-      - ../configs/buffer-fs-objstore.yaml:/etc/thanos/objstore.yaml:ro
-      - gorilla-buffer-data:/var/gorilla-buffer:ro
+      - ../configs/buffer-objstore.yaml:/etc/thanos/objstore.yaml:ro
       - gorilla-buffer-store-cache:/var/thanos/buffer-store
     ports:
       - "19921:10921"
       - "19922:10922"
     depends_on:
-      - gorilla-buffer-merger
+      minio-setup:
+        condition: service_completed_successfully
 
   thanos-query:
     image: quay.io/thanos/thanos:v0.41.0
@@ -188,5 +166,4 @@ volumes:
   minio-data:
   thanos-store-data:
   thanos-compact-data:
-  gorilla-buffer-data:
   gorilla-buffer-store-cache:
