@@ -1,13 +1,18 @@
 # ASAP multi-agent eval — base stack.
 #
 # Brings up everything that's shared across the N ∈ {1, 10, 100}
-# agent-count overrides: the backend (ASAPQuery), the gateway
-# (OpenTelemetry aggregator), the controller, plus the infra
-# the evaluation pipes through — MinIO (S3-compatible store
-# for the Gorilla archive tier), VictoriaMetrics (Prometheus-
+# agent-count overrides: the backend (ASAPQuery), the controller,
+# plus the infra the evaluation pipes through — MinIO (S3-compatible
+# store for the Gorilla archive tier), VictoriaMetrics (Prometheus-
 # wire-compatible TSDB; accepts PRW + OTLP natively), and
 # Grafana (pre-wired with the backend + VictoriaMetrics data
 # sources).
+#
+# Issue #400 (2026-05): the asap-gateway OTel-collector hop was
+# removed from the stack. Backend now does cross-agent fan-in for
+# sum-by aggregations natively (ASAPQuery-backend PRs
+# #283/#287/#290), so the gateway no longer earns its place on the
+# pipeline. Agents push OTLP straight to `backend:4317`.
 #
 # Step 2g (2026-05): the upstream Prometheus container was
 # replaced with VictoriaMetrics v1.105.0. VM accepts the same
@@ -216,37 +221,13 @@ services:
       - "--otel-http-port=4318"
     ports:
       - "19091:9091"   # PromQL-compatible HTTP query surface
-      # OTLP ingest is intra-docker only (gateway → backend).
-      # Expose externally if you want to skip the gateway and
-      # send OTLP straight to the backend from the host.
-    logging: *default-logging
-
-  # ───────── OpenTelemetry gateway (aggregator) ─────────
-  gateway:
-    # ASAP-patched OTel collector — same image the agents use.
-    # Required because stock contrib 0.108's pdata silently drops
-    # typed sketch data points (Metric.data tags 13–17) via
-    # `ConsumeUnknown` during OTLP receive → in-memory → OTLP
-    # export round-trip. The patched build's pdata knows about
-    # those variants and preserves them. See the comment block in
-    # `deploy/mvp-singlenode/configs/gateway.yaml` for the code reference.
-    #
-    # Three gateway configs in deploy/mvp-singlenode/configs/:
-    #   gateway.yaml                          — pure forwarder (default)
-    #   gateway-aggregate-from-raw.yaml       — sketch raw points at gateway tier
-    #   gateway-aggregate-from-sketches.yaml  — merge already-sketched payloads
-    # Override the mounted file via the GATEWAY_CONFIG env var,
-    # same pattern agents use for AGENT_CONFIG.
-    image: asap/asap-otel:dev
-    command: ["--config=/etc/otel/config.yaml"]
-    volumes:
-      - ../configs/${GATEWAY_CONFIG:-gateway.yaml}:/etc/otel/config.yaml:ro
-    depends_on:
-      - backend
-    ports:
       - "14317:4317"   # OTLP gRPC (host 14317 → container 4317; avoid collision)
       - "14318:4318"   # OTLP HTTP
-      - "18890:8890"   # /metrics (gateway self-telemetry; patched build uses 8890)
+      # Issue #400: the asap-gateway hop was retired (backend now does
+      # cross-agent fan-in natively). Agents push OTLP directly to
+      # `backend:4317`; the host-side OTLP ports moved over from the
+      # deleted gateway service so any external tooling that previously
+      # poked the gateway can poke the backend on the same host ports.
     logging: *default-logging
 
   # ───────── workload: synthetic metrics producer ─────────
@@ -258,7 +239,15 @@ services:
     # DataCollector/datasets_eval/.
     image: asap/fake-exporter:dev
     environment:
-      EXPORTER_TARGET: "gateway:4317"
+      # Issue #400: pre-removal this targeted `gateway:4317`. The
+      # gateway was retired (backend handles fan-in); fake-exporter
+      # now talks directly to an agent in each `agents-N*.yml`
+      # overlay, where `EXPORTER_TARGET` is overridden to
+      # `agent-1:4317`. The default here points at backend:4317 so
+      # the bare `base.yml` still runs (no agent overlay) — the
+      # producer's metrics land directly in the backend's OTLP
+      # receiver, useful for a no-sketch sanity probe.
+      EXPORTER_TARGET: "backend:4317"
       # Workload knobs (can be overridden from sweep scripts via
       # host env). Legacy EXPORTER_RATE is accepted but deprecated
       # — fake-exporter itself logs a warning when set.
@@ -274,7 +263,7 @@ services:
       EXPORTER_SDK_AGG: "${EXPORTER_SDK_AGG:-default}"
       EXPORTER_MAX_BUFFER_PER_SERIES: "${EXPORTER_MAX_BUFFER_PER_SERIES:-0}"
     depends_on:
-      - gateway
+      - backend
     logging: *default-logging
 
   # Agents are defined in `agents-N<K>.yml` overrides — keeping

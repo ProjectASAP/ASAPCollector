@@ -6,23 +6,24 @@
 # freshness) but distributed across 4 hosts on 10.10.1.0/24:
 #
 #   node0 (10.10.1.1)  producers + agent-a   (data source)
-#   node1 (10.10.1.2)  gateway               (ASAP arm only)
+#   node1 (10.10.1.2)  (unused since #400 — the asap-gateway double-hop
+#                       was removed; agents push OTLP straight to backend)
 #   node2 (10.10.1.3)  backend stack         (controller, asap-query-backend,
 #                                             prometheus, minio,
 #                                             thanos-{query,store-gateway,compact})
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
 # Three arms run back-to-back over the same workload:
-#   b0     OTel agent → Prometheus (PRW)              [no gateway, no backend]
-#   b1     OTel agent + serfprocessor → Prometheus    [no gateway, no backend]
-#   asap   OTel agent → gateway → asap-query-backend  [+ controller,
+#   b0     OTel agent → Prometheus (PRW)              [no backend]
+#   b1     OTel agent + serfprocessor → Prometheus    [no backend]
+#   asap   OTel agent → asap-query-backend            [+ controller,
 #          + Thanos/MinIO archive, sketches per controller plan]
 #
 # Scope notes vs. the canonical single-host `run_mvp_demo.sh`:
 # - Uses `docker run --network host --add-host` (no docker-compose, no
 #   overlay network). The DNS aliases injected via --add-host preserve
 #   every existing service-name reference inside the YAML configs
-#   (gateway:4317, backend:9091, minio:9000, controller:4320, ...).
+#   (backend:9091, minio:9000, controller:4320, ...).
 # - Per-arm bring-up uses subsets of the existing /mydata/ASAPCollector/deploy
 #   configs. No config rewriting; only host placement changes.
 
@@ -266,26 +267,6 @@ backend_down() {
     stop_node "${NODE2_HOST}"
 }
 
-# ─── GATEWAY on node1 (ASAP arm only) ───────────────────────────────
-gateway_up() {
-    local arm=$1
-    if [ "${arm}" != "asap" ]; then
-        log "node1 gateway skipped (arm=${arm})"
-        return 0
-    fi
-    log "node1 gateway up"
-    docker_run_on "${NODE1_HOST}" \
-        --name asap-gateway \
-        -v /mydata/mvp-multinode/configs/asap/asap-otel-gateway-mvp-placeholder.yaml:/etc/otel/config.yaml:ro \
-        asap/asap-otel:dev \
-        --config=/etc/otel/config.yaml
-}
-
-gateway_down() {
-    log "node1 gateway down"
-    stop_node "${NODE1_HOST}"
-}
-
 # ─── AGENTS + PRODUCERS on node0 and node3 ──────────────────────────
 agents_up() {
     local arm=$1
@@ -375,17 +356,23 @@ arm_up() {
     local arm=$1
     log "=== ARM UP: ${arm} ==="
     backend_up "${arm}"
-    gateway_up "${arm}"
     sleep 5
     agents_up "${arm}"
     log "=== arm ${arm} all containers started; waiting WARMUP_S=${WARMUP_S} ==="
     sleep "${WARMUP_S}"
 }
 
+# Issue #400 (post-removal): the asap-gateway node1 hop is gone, but
+# `stop_node node1` is kept in arm_down() so any leftover container
+# from a previous deploy (e.g. an interactive `docker run` an operator
+# left behind, or a container still alive from before this fix
+# landed) is reaped on every arm cycle. The wave's bandwidth budget
+# depends on node1 being idle — leaving stray gateway containers
+# alive on node1 would silently re-establish the double-hop.
 arm_down() {
     log "=== ARM DOWN ==="
     agents_down
-    gateway_down
+    stop_node "${NODE1_HOST}"
     backend_down
 }
 

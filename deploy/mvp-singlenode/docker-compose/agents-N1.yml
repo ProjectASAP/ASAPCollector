@@ -3,17 +3,22 @@
 #
 # Flow after this overlay is applied on top of base.yml:
 #
-#   fake-exporter ──OTLP──▶ agent-1 ──OTLP──▶ gateway ──promRW──▶ backend
-#                   :4317            :4317           :9090
+#   fake-exporter ──OTLP──▶ agent-1 ──OTLP──▶ backend
+#                   :4317            :4317
 #
 # The agent mounts `asap-otel-agent.yaml` and runs DDSketch + HLL
-# on the pipeline, so the bytes reaching the gateway are already
+# on the pipeline, so the bytes reaching the backend are already
 # sketched (bandwidth-reduction signal).
+#
+# Issue #400 (2026-05): the asap-gateway hop was retired; the
+# backend now does cross-agent fan-in for sum-by aggregations
+# natively (ASAPQuery-backend #283/#287/#290), so the gateway
+# middle-tier earns no place on the pipeline.
 
 x-agent: &agent-base
   image: asap/asap-otel:dev
   depends_on:
-    - gateway
+    - backend
     - controller
   # The opampextension's `remote_config_path` (ASAPCollector#391)
   # writes the controller-pushed RemoteConfig back to
@@ -63,9 +68,12 @@ services:
       # baselines ignore it. Default 60s.
       SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
-  # Override fake-exporter to target the agent instead of
-  # the gateway — the agent's sketch pipeline is the thing we
-  # actually want exercised.
+  # Override fake-exporter to target the agent so its sketch
+  # pipeline is the thing we actually want exercised. Pre-#400
+  # the bare base.yml fake-exporter targeted the gateway; with
+  # the gateway gone the base default is backend:4317 (a no-
+  # sketch sanity probe), so this overlay's override is now the
+  # canonical "sketch pipeline" entry point.
   fake-exporter:
     environment:
       EXPORTER_TARGET: "agent-1:4317"

@@ -120,7 +120,7 @@ print(f"\\nRun: \`${RUN_ID}\`  |  Soak: \`${SOAK}s\`  |  Workload: PER_AGENT_CAR
 print("## §1 Per-arm NIC bandwidth (cluster-wide, /sys/class/net/enp130s0f0)\\n")
 print("| arm | node | role | rx_MB/s | tx_MB/s | rx_total_MB | tx_total_MB |")
 print("|---|---|---|---|---|---|---|")
-roles = {"node0":"producer+agent-a","node1":"gateway","node2":"backend","node3":"producer+agent-b"}
+roles = {"node0":"producer+agent-a","node1":"(unused since #400)","node2":"backend","node3":"producer+agent-b"}
 for f in sorted(glob.glob(os.path.join(RUN_DIR,"nic-*.csv"))):
     arm = os.path.basename(f).replace("nic-","").replace(".csv","")
     with open(f) as fh:

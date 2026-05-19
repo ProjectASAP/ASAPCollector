@@ -31,7 +31,7 @@
 #   processors.{ddsketch, KLL, HLL, countsketch, countmin}
 #   processors.batch         — coalesce per-pipeline output
 #   connectors.routing       — OTel v0.106 connector (NOT processor)
-#   exporters.otlp/backend   — gateway:4317
+#   exporters.otlp/backend   — backend:4317  (was gateway:4317 pre-#400)
 #
 #   service.pipelines:
 #     metrics:                     receivers:[otlp]    exporters:[routing]
@@ -356,7 +356,13 @@ connectors:
 
 exporters:
   otlp/backend:
-    endpoint: gateway:4317
+    # Issue #400 (2026-05): the asap-gateway intermediary was removed
+    # because the wave-tier backend now does its own cross-agent
+    # fan-in (PRs #283/#287/#290 — backend `evaluate_exact_agg` pulls
+    # sids from every agent for sum-by aggregations). Agents push OTLP
+    # straight to backend:4317, eliminating the ~10 Mbps double-hop
+    # the gateway used to add per arm.
+    endpoint: backend:4317
     tls:
       insecure: true
     # Backend's tonic gRPC server doesn't accept gzip-compressed bodies
