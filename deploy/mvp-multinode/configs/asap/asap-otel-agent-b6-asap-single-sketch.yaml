@@ -120,6 +120,48 @@ processors:
     limit_mib: 1280
     spike_limit_mib: 256
 
+  # ── cumulativetodelta — Issue #298 (ASAPQuery-backend) ───────────────
+  #
+  # The OTel SDK's `Counter` instruments default to CUMULATIVE
+  # temporality: every export carries the running lifetime value, not
+  # the per-export delta. The backend's `SumAccumulator`
+  # (data_plane/src/precompute_engine/operators/sum_accumulator.rs)
+  # naïvely sums every incoming value into per-window state — fed
+  # cumulative data, it computes `Σ-of-cumulatives-in-window`, a
+  # quadratic-in-time blowup. The replay path then re-sums those
+  # inflated per-window values across the lookback range → cubic
+  # blowup for instant `sum by (zone) (counter)` queries.
+  # (Observed pre-fix: `sum by (zone) (http_requests_total)` returned
+  # ~300× the baseline value.)
+  #
+  # The fix is to convert cumulative → delta upstream of the routing
+  # connector so every per-family pipeline AND the raw_passthrough
+  # default see deltas. `match_type: strict` keeps the processor a
+  # no-op for any metric NOT in the include list (gauges like
+  # `http_requests_total_latency_ms` are unaffected — quantile
+  # workloads keep their wire shape; gauges don't carry temporality
+  # at all and the processor leaves them untouched).
+  #
+  # MUST be the FIRST processor on the entry `metrics:` pipeline so
+  # routing-connector fan-out runs on already-delta data. Per-family
+  # placement would (a) duplicate work and (b) risk double-conversion
+  # on metrics fanned to multiple pipelines.
+  #
+  # The included metrics are the workload's Counter-shaped exports
+  # (`http_requests_total`, `endpoint_request_freq`,
+  # `unique_users_per_min`, `top_endpoint_qps`); add new Counter
+  # metrics to this list when extending the workload. b0/b1 baseline
+  # pipelines push to VictoriaMetrics / Prometheus which EXPECT
+  # cumulative — do NOT inject this processor there.
+  cumulativetodelta:
+    include:
+      metrics:
+        - http_requests_total
+        - endpoint_request_freq
+        - unique_users_per_min
+        - top_endpoint_qps
+      match_type: strict
+
   # ── Cold tier: Gorilla-S3 archive write ──────────────────────────────
   # Runs FIRST in every per-family pipeline so the cold-tier write
   # happens on raw samples BEFORE the sketch processor mutates / suffix-
@@ -311,11 +353,15 @@ exporters:
 service:
   extensions: [opamp]
   pipelines:
-    # Entry pipeline — receivers: [otlp], exporters: [routing] (the
-    # connector). NO processors on the entry pipeline; the routing
-    # connector is responsible for fan-out to the per-family pipelines.
+    # Entry pipeline — receivers: [otlp], processors:
+    # [cumulativetodelta], exporters: [routing] (the connector).
+    # Issue #298: cumulativetodelta runs FIRST so the routing
+    # connector's per-family fan-out sees delta-temporality data for
+    # the workload's Counter-shaped metrics. See processor block
+    # above for the rationale.
     metrics:
       receivers: [otlp]
+      processors: [cumulativetodelta]
       exporters: [routing]
 
     # Default raw-passthrough — memory_limiter then gorillas3 then
