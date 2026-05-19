@@ -341,6 +341,7 @@ agents_up() {
             -e EXPORTER_FRESHNESS_PROBES=${EXPORTER_FRESHNESS_PROBES} \
             -e EXPORTER_FRESHNESS_PROBE_HZ=${EXPORTER_FRESHNESS_PROBE_HZ} \
             -e EXPORTER_FIVE_SKETCH=${EXPORTER_FIVE_SKETCH} \
+            -e EXPORTER_SEED=${EXPORTER_SEED:-42} \
             asap/fake-exporter:dev
     done
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
@@ -358,6 +359,7 @@ agents_up() {
             -e EXPORTER_FRESHNESS_PROBES=${EXPORTER_FRESHNESS_PROBES} \
             -e EXPORTER_FRESHNESS_PROBE_HZ=${EXPORTER_FRESHNESS_PROBE_HZ} \
             -e EXPORTER_FIVE_SKETCH=${EXPORTER_FIVE_SKETCH} \
+            -e EXPORTER_SEED=${EXPORTER_SEED:-42} \
             asap/fake-exporter:dev
     done
 }

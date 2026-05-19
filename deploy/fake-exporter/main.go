@@ -135,6 +135,15 @@ func envFloat(key string, def float64) float64 {
 	return def
 }
 
+func envInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 func envBool(key string, def bool) bool {
 	v := os.Getenv(key)
 	switch v {
@@ -464,6 +473,26 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 	}
 	period := time.Duration(float64(time.Second) / freqHz)
 
+	// Deterministic per-series PRNG seed for accuracy-comparison runs.
+	// Without this, math/rand's global PRNG is auto-seeded per process,
+	// so each container (and each arm in a sequential demo run) produces
+	// a different random latency sequence — masking sketch-approximation
+	// error under cross-arm sampling noise.
+	//
+	// When `EXPORTER_SEED` is set (e.g. via `docker run -e EXPORTER_SEED=42`),
+	// each series gets a deterministic PRNG seeded as:
+	//   seed XOR hash(EXPORTER_PRODUCER_ID) XOR (seriesIdx+1) * <large prime>
+	// so all producers across all arms with the same EXPORTER_SEED emit
+	// identical latency sequences per (producer_id, series_idx). When
+	// unset, behavior matches the legacy auto-random global PRNG (back-compat).
+	baseSeed := envInt64("EXPORTER_SEED", 0)
+	producerIDHash := int64(0)
+	for _, b := range []byte(os.Getenv("EXPORTER_PRODUCER_ID")) {
+		producerIDHash = producerIDHash*131 + int64(b)
+	}
+	const seriesSeedPrime int64 = 2654435761
+	useSeededRng := baseSeed != 0
+
 	// Five-sketch MVP workload (issue #46) — emits the four new
 	// metrics (request_size_bytes / unique_users_per_min /
 	// top_endpoint_qps / endpoint_request_freq) that exercise KLL /
@@ -490,14 +519,29 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 			ticker := time.NewTicker(period)
 			defer ticker.Stop()
 			attrs := metric.WithAttributes(labelSets[seriesIdx]...)
+
+			// Per-series PRNG: when EXPORTER_SEED is set, deterministic
+			// per (producer_id, series_idx). Otherwise nil → falls back
+			// to the global PRNG (current behavior).
+			var localRng *rand.Rand
+			if useSeededRng {
+				seriesSeed := baseSeed ^ producerIDHash ^ (int64(seriesIdx+1) * seriesSeedPrime)
+				localRng = rand.New(rand.NewSource(seriesSeed))
+			}
+			drawLat := func() float64 {
+				if localRng != nil {
+					return math.Exp(3.0 + 0.7*localRng.NormFloat64())
+				}
+				return math.Exp(3.0 + 0.7*rand.NormFloat64())
+			}
+
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
 					counter.Add(ctx, 1, attrs)
-					latVal := math.Exp(3.0 + 0.7*rand.NormFloat64())
-					latencyGauge.Record(ctx, latVal, attrs)
+					latencyGauge.Record(ctx, drawLat(), attrs)
 				}
 			}
 		}(i)
