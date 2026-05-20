@@ -295,6 +295,51 @@ processors:
     send_batch_size: 1024
     timeout: 1s
 
+  # ── Edge Sum-by-zone aggregation — Issue #403 (bandwidth fix) ────────
+  #
+  # `http_requests_total` is a Sum-role counter whose marquee queries are
+  # `sum by (zone) (...)` and `sum by (zone) (rate(...[5m]))`. Pre-#403
+  # it fell through the routing connector's `default_pipelines` into
+  # `metrics/raw_passthrough` (processors: [memory_limiter, gorillas3,
+  # batch] — NO aggregation), so every single counter datapoint across
+  # ~10,000 (zone × rack × node × pod) series streamed continuously to
+  # the backend, which did the Sum-by-zone fan-in centrally via
+  # `evaluate_exact_agg`. Measured at ~12 Mbps of the asap arm's ~12.5
+  # Mbps backend-ingress — the dominant driver, inverting the demo's
+  # edge-aggregation value prop.
+  #
+  # The fix: pre-reduce the counter's cardinality AT THE EDGE so the
+  # agent ships 4 per-zone summed series per flush window instead of
+  # ~10k raw series continuously. The backend's `evaluate_exact_agg`
+  # aggregates whatever sids land, so 4 pre-summed zone series produce
+  # the IDENTICAL `sum by (zone)` answer (and per-zone `rate`) — the edge
+  # just collapses the rack/node/pod dimensions the queries never group
+  # by.
+  #
+  # `metricstransform` with an `aggregate_labels` operation keeping only
+  # `[zone]` and `aggregation_type: sum` is the OTel-native primitive for
+  # this: it aggregates away every label except `zone`, summing the
+  # datapoints that collapse onto the same `zone`. It runs on the
+  # already-delta stream (cumulativetodelta is upstream on the entry
+  # pipeline), so each export carries 4 per-zone delta sums; the backend
+  # `SumAccumulator` folds those per-window exactly as it would the raw
+  # deltas, just at 4-series cardinality instead of 10k.
+  #
+  # `match_type: strict` on `http_requests_total` keeps this a no-op for
+  # every other metric; the freshness probes (`http_freshness_probe_*`)
+  # keep their own raw_passthrough path untouched, and the latency gauge
+  # (`http_requests_total_latency_ms`, DDSketch-sketched per-series) is
+  # on the ddsketch_path and never reaches this processor.
+  metricstransform/groupbyzone:
+    transforms:
+      - include: http_requests_total
+        match_type: strict
+        action: update
+        operations:
+          - action: aggregate_labels
+            label_set: [zone]
+            aggregation_type: sum
+
 connectors:
   # ── Routing connector (OTel v0.106 — NOT a processor). ───────────────
   #
@@ -319,6 +364,13 @@ connectors:
     # routing decision is a pure boolean dispatch on the metric name.
     default_pipelines: [metrics/raw_passthrough]
     table:
+      # Issue #403: route the Sum-role counter to the dedicated
+      # edge-aggregation pipeline (metricstransform Sum-by-zone) instead
+      # of letting it fall through to raw_passthrough. Ships 4 per-zone
+      # summed series per flush window, not ~10k raw counters continuously.
+      - context: metric
+        condition: 'name == "http_requests_total"'
+        pipelines: [metrics/sum_aggregate]
       - context: metric
         condition: 'name == "http_requests_total_latency_ms"'
         pipelines: [metrics/ddsketch_path]
@@ -379,6 +431,22 @@ service:
     metrics/raw_passthrough:
       receivers: [routing]
       processors: [memory_limiter, gorillas3, batch]
+      exporters: [otlp/backend]
+
+    # ── Edge Sum-by-zone aggregation path — Issue #403 ─────────────────
+    # `http_requests_total` (the Sum-role counter) routes here instead of
+    # raw_passthrough. memory_limiter applies backpressure first;
+    # gorillas3 still writes RAW (full-cardinality) samples to the
+    # cold-tier archive BEFORE the metricstransform collapses the
+    # rack/node/pod dimensions (so `count(http_requests_total{zone="z0"})`
+    # cold-fallback drill-down still sees per-series data in MinIO).
+    # metricstransform/groupbyzone then Sum-by-zone reduces the stream to
+    # 4 per-zone delta series; batch coalesces the per-window export. The
+    # backend's evaluate_exact_agg produces the same `sum by (zone)` /
+    # per-zone `rate` answer at 4-series cardinality instead of ~10k raw.
+    metrics/sum_aggregate:
+      receivers: [routing]
+      processors: [memory_limiter, gorillas3, metricstransform/groupbyzone, batch]
       exporters: [otlp/backend]
 
     # Per-family pipelines. Each starts with memory_limiter (drop /
