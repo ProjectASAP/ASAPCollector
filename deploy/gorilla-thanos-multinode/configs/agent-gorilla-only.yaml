@@ -73,7 +73,6 @@ processors:
     retry_backoff: 1s
     upload_timeout: 30s
     block_format: prometheus_tsdb
-    bucket: asap-gorilla-tsdb
     tsdb_bucket: asap-gorilla-tsdb
     tsdb_block_duration: 60s
 

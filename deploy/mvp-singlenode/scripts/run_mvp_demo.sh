@@ -297,7 +297,7 @@ preflight() {
         log "  fake-exporter:dev image present"
     else
         log "  fake-exporter:dev image NOT FOUND — run: "
-        log "    DOCKER_BUILDKIT=1 docker build -f deploy/docker/Dockerfile.fake-exporter --build-context sketchlib-go=/mydata/sketchlib-go -t asap/fake-exporter:dev ."
+        log "    DOCKER_BUILDKIT=1 docker build -f deploy/docker/Dockerfile.fake-exporter -t asap/fake-exporter:dev ."
     fi
 
     # Clean any stale containers from a previous run of the MVP

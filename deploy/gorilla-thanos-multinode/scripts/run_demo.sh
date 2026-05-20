@@ -5,16 +5,18 @@
 #
 #   node0 (10.10.1.1)  producers + agent-a   (data source)
 #   node1 (10.10.1.2)  idle (no services)
-#   node2 (10.10.1.3)  backend: MinIO + Thanos (store-gateway, query, compact)
-#                                + gorilla-buffer-store (hot window: BUFFER_STORE_DURATION)
+#   node2 (10.10.1.3)  backend: MinIO + Thanos (store-gateway=archive-store, query, compact)
+#                                + gorilla-buffer-store (hot-store; recent merged windows, BUFFER_STORE_DURATION)
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
 # Pipeline: agents write 60s TSDB blocks DIRECTLY to MinIO (no gateway hop).
-#   gorilla-buffer-merger on node2: polls MinIO every 15s, merges in-window 60s blocks
-#   into a single merged block at /tmp/gorilla-buffer/merged/. Expired blocks dropped.
-#   gorilla-buffer-store on node2: thanos store (FILESYSTEM objstore) serves the merged block via :10921.
-#   thanos-store-gateway: syncs every 30s, serves all historical data.
-#   thanos-query federates both endpoints.
+#   gorilla-buffer-merger on node2: polls MinIO every 15s, buckets the 60s blocks by
+#   fixed 1h TUMBLING window, and merges each window into one block at
+#   /tmp/gorilla-buffer/merged/ (one per window). Windows older than retention dropped.
+#   gorilla-buffer-store (hot-store) on node2: thanos store (FILESYSTEM objstore) serves
+#   the recent merged window blocks via :10921.
+#   thanos-store-gateway (archive-store): syncs every 30s, serves all historical data from MinIO.
+#   thanos-query federates both endpoints (fan-out + chunk merge).
 #
 # Image requirement: asap/asap-otel:dev must be built after 2026-05-17
 #   (gorillas3 Phase 3 — `bucket:` field removed). Rebuild if needed:
@@ -88,14 +90,15 @@ docker_run_on() {
 #           + gorilla-buffer-merger + gorilla-buffer-store.
 #
 # gorilla-buffer-merger: polls MinIO every 15s, downloads new 60s blocks to staging,
-#   merges all in-window blocks into a single merged block, drops expired blocks.
-#   Output: /tmp/gorilla-buffer/merged/{ULID}/ (one block, sliding window).
+#   buckets them by fixed 1h tumbling window, merges each window into one block, and
+#   drops windows older than retention. Finalized windows are never re-merged.
+#   Output: /tmp/gorilla-buffer/merged/{ULID}/ (one block per tumbling window).
 #
-# gorilla-buffer-store: thanos store (FILESYSTEM objstore on merged dir) :10921.
-#   Serves the single merged block — no per-block fan-out at query time.
+# gorilla-buffer-store (hot-store): thanos store (FILESYSTEM objstore on merged dir) :10921.
+#   Serves the recent merged window blocks — one block per window touched, not 60.
 #
-# thanos-store-gateway :10901 — all blocks from MinIO (30s sync, full history).
-# Thanos Query federates both endpoints.
+# thanos-store-gateway (archive-store) :10901 — all blocks from MinIO (30s sync, full history).
+# Thanos Query federates both endpoints (fan-out + chunk-level merge).
 backend_up() {
     log "node2 backend up (MinIO + Thanos + gorilla-buffer-merger/store, window=${BUFFER_STORE_DURATION})"
 
@@ -131,10 +134,11 @@ backend_up() {
         --sync-block-duration=30s \
         --block-sync-concurrency=20
 
-    # gorilla-buffer-merger — sliding-window TSDB block merger.
-    # Polls MinIO every 15s, downloads new 60s blocks, merges all in-window
-    # blocks into a single merged block at /tmp/gorilla-buffer/merged/. Expired
-    # blocks (older than BUFFER_STORE_DURATION) are dropped from staging.
+    # gorilla-buffer-merger — tumbling-window TSDB block merger.
+    # Polls MinIO every 15s, downloads new 60s blocks, buckets them by fixed
+    # MERGE_WINDOW tumbling window, and merges each window into one block at
+    # /tmp/gorilla-buffer/merged/ (one per window). Windows older than
+    # -retention=BUFFER_STORE_DURATION are dropped; finalized windows are frozen.
     on "${NODE2_HOST}" "mkdir -p /tmp/gorilla-buffer/staging /tmp/gorilla-buffer/merged"
     docker_run_on "${NODE2_HOST}" \
         --name asap-gorilla-buffer-merger \
@@ -145,14 +149,15 @@ backend_up() {
         -endpoint=minio:9000 \
         -access-key=asap \
         -secret-key=asap-local-only \
-        -window="${BUFFER_STORE_DURATION}" \
+        -window="${MERGE_WINDOW:-1h}" \
+        -retention="${BUFFER_STORE_DURATION}" \
         -poll-interval=15s \
         -staging-dir=/var/gorilla-buffer/staging \
         -output-dir=/var/gorilla-buffer/merged
 
-    # gorilla-buffer-store — serves the merged sliding-window block via StoreAPI :10921.
-    # Reads a single merged block from FILESYSTEM objstore (/tmp/gorilla-buffer/merged/).
-    # No --min-time filter: the merger handles expiry. One block instead of 60.
+    # gorilla-buffer-store (hot-store) — serves the merged tumbling-window blocks via StoreAPI :10921.
+    # Reads the per-window merged blocks from FILESYSTEM objstore (/tmp/gorilla-buffer/merged/).
+    # No --min-time filter: the merger handles expiry. One block per window instead of 60.
     docker_run_on "${NODE2_HOST}" \
         --name asap-gorilla-buffer-store \
         --user 0 \
@@ -338,10 +343,10 @@ Network traffic:
   NO raw OTLP crosses the network (drop_original: true)
 
 Buffer window: BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION} (set in topology.env)
-  gorilla-buffer-merger         — polls MinIO every 15s, merges in-window blocks into one local block
-  gorilla-buffer-store  :10921 — serves the single merged block via FILESYSTEM objstore
-  thanos-store-gateway  :10901 — syncs MinIO every 30s, serves all historical data
-  thanos-query          :10903 — federates both; hot blocks queryable within ~75s of measurement
+  gorilla-buffer-merger         — polls MinIO every 15s, merges each 1h TUMBLING window into one local block
+  gorilla-buffer-store  :10921 — hot-store: serves recent merged window blocks via FILESYSTEM objstore
+  thanos-store-gateway  :10901 — archive-store: syncs MinIO every 30s, serves all historical data
+  thanos-query          :10903 — federates both (fan-out + chunk merge); hot blocks queryable within ~75s of measurement
 
 Image note: asap/asap-otel:dev must be built after 2026-05-17 (gorillas3 Phase 3).
   Rebuild: cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh

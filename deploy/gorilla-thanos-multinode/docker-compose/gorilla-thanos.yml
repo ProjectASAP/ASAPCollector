@@ -5,11 +5,13 @@
 #
 # Pipeline:
 #   agents write 60s TSDB blocks directly to MinIO (minio:9000, no gateway hop).
-#   gorilla-buffer-merger: polls MinIO every 15s, downloads new in-window 60s blocks
-#     to /var/gorilla-buffer/staging/, merges them into a single block in
-#     /var/gorilla-buffer/merged/. Drops blocks older than BUFFER_STORE_DURATION.
-#   gorilla-buffer-store: thanos store with FILESYSTEM objstore on /var/gorilla-buffer/merged/.
-#     Serves the merged sliding-window block via StoreAPI :10921.
+#   gorilla-buffer-merger: polls MinIO every 15s, downloads new 60s blocks to
+#     /var/gorilla-buffer/staging/, buckets them by TUMBLING window (MERGE_WINDOW, default 1h), and
+#     merges each window into one block in /var/gorilla-buffer/merged/ (one per
+#     window). Drops windows older than BUFFER_STORE_DURATION.
+#   gorilla-buffer-store (hot-store): thanos store with FILESYSTEM objstore on
+#     /var/gorilla-buffer/merged/. Serves the recent merged tumbling windows via
+#     StoreAPI :10921. (thanos-store-gateway is the archive-store, full MinIO history.)
 #
 # Quick start:
 #   docker compose -f gorilla-thanos.yml up -d
@@ -76,10 +78,14 @@ services:
       minio-setup:
         condition: service_completed_successfully
 
-  # gorilla-buffer-merger — sliding-window TSDB block merger.
-  # Polls MinIO every 15s, downloads new 60s blocks to staging, merges all
-  # in-window blocks (last BUFFER_STORE_DURATION) into a single block in the
-  # shared gorilla-buffer volume. Expired blocks are dropped from staging.
+  # gorilla-buffer-merger — tumbling-window TSDB block merger.
+  # Polls MinIO every 15s, downloads new blocks to staging, buckets them by
+  # tumbling window (MERGE_WINDOW, configurable, default 1h), and merges each
+  # window into one block (one per window) in the shared gorilla-buffer volume.
+  # The window is the granularity at which merged state is flushed to S3/MinIO;
+  # the agent's per-block emit interval (tsdb_block_duration) is independent.
+  # Windows older than
+  # BUFFER_STORE_DURATION are dropped; finalized windows are never re-merged.
   gorilla-buffer-merger:
     image: asap/gorilla-buffer-merger:dev
     user: "0"
@@ -88,7 +94,8 @@ services:
       - -endpoint=minio:9000
       - -access-key=asap
       - -secret-key=asap-local-only
-      - -window=${BUFFER_STORE_DURATION:-1h}
+      - -window=${MERGE_WINDOW:-1h}
+      - -retention=${BUFFER_STORE_DURATION:-1h}
       - -poll-interval=15s
       - -staging-dir=/var/gorilla-buffer/staging
       - -output-dir=/var/gorilla-buffer/merged
@@ -98,9 +105,9 @@ services:
       minio-setup:
         condition: service_completed_successfully
 
-  # gorilla-buffer-store — serves the merged sliding-window block via StoreAPI.
+  # gorilla-buffer-store (hot-store) — serves the merged tumbling-window blocks via StoreAPI.
   # Reads from the local FILESYSTEM directory written by gorilla-buffer-merger.
-  # Serves only the last BUFFER_STORE_DURATION of merged data (one block, not 60).
+  # Serves the last BUFFER_STORE_DURATION of merged windows (one block per window, not 60).
   gorilla-buffer-store:
     image: quay.io/thanos/thanos:v0.41.0
     user: "0"

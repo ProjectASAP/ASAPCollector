@@ -1,6 +1,17 @@
 # gorilla-thanos-multinode
 
-Simplified 4-node ASAP demo: Gorilla-compressed TSDB pipeline with Thanos query engine + MinIO storage. No gorilla-gateway — agents write 60s blocks directly to MinIO. **gorilla-buffer-merger** on the backend node continuously merges in-window blocks into a single local block (sliding 1h window); **gorilla-buffer-store** serves that one merged block via Thanos StoreAPI, cutting query fan-out from ~60 blocks to 1.
+Simplified 4-node ASAP demo: Gorilla-compressed TSDB pipeline with Thanos query engine + MinIO storage. No gorilla-gateway — agents write blocks directly to MinIO at the configurable agent-emit interval (`tsdb_block_duration`, default 60s). **gorilla-buffer-merger** on the backend node merges the per-emit blocks of each **tumbling window** (configurable `-window`, default 1h — the granularity at which merged state is flushed to backend S3/MinIO) into a single merged block (one per window); the **hot-store** (`gorilla-buffer-store`) serves the recent merged windows via Thanos StoreAPI, cutting per-window query fan-out from ~`window/emit` blocks (~60 at the defaults) to 1. The **archive-store** (`thanos-store-gateway`) serves the full history straight from MinIO.
+
+## Store roles (naming)
+
+The two Thanos StoreAPI endpoints are distinguished by their **role** (the upstream `thanos-` / `gorilla-` names are kept for the container/service names, but think of them by role):
+
+| Role | Service | Reads from | Serves |
+|------|---------|-----------|--------|
+| **archive-store** | `thanos-store-gateway` :10901 | MinIO (S3) — full bucket | The complete history of all blocks |
+| **hot-store** | `gorilla-buffer-store` :10921 | local FILESYSTEM `/merged/` | The recent merged tumbling window(s) only |
+
+A **Thanos store-gateway** is the standard Thanos sidecar that exposes the blocks in an object-storage bucket over the StoreAPI gRPC interface so Thanos Query can read them; here it is the **archive-store** that serves everything in MinIO.
 
 ## Topology
 
@@ -26,67 +37,136 @@ node0                                              node2
 │     drop_original:   │                            │  ┌─────────────────────────────────────────────────┐ │
 │     true]            │                            │  │ gorilla-buffer-merger                           │ │
 └──────────────────────┘                            │  │  polls MinIO every 15s                          │ │
-                                                    │  │  downloads new in-window blocks → /staging/     │ │
-node3                                               │  │  drops blocks older than BUFFER_STORE_DURATION  │ │
-┌──────────────────────┐   S3 PUT (60s blocks)      │  │  merges all staging blocks → one block          │ │
-│ fake-exporter ×N     │──────────────────────────► │  │  writes to /merged/{ULID}/                      │ │
+                                                    │  │  downloads new in-retention blocks → /staging/  │ │
+node3                                               │  │  buckets blocks by tumbling window (def 1h)     │ │
+┌──────────────────────┐   S3 PUT (60s blocks)      │  │  merges each window's blocks → 1 block/window   │ │
+│ fake-exporter ×N     │──────────────────────────► │  │  writes /merged/{ULID}/ (one per window)        │ │
 │   │ OTLP gRPC        │      minio:9000             │  └──────────────────────┬────────────────────────┘ │
 │   ▼ port 4317        │                            │                          │ shared volume             │
 │ asap-agent-b         │                            │  ┌───────────────────────▼────────────────────────┐ │
-└──────────────────────┘                            │  │ gorilla-buffer-store  :10921                   │ │
+└──────────────────────┘                            │  │ hot-store (gorilla-buffer-store)  :10921       │ │
                                                     │  │  FILESYSTEM objstore → /merged/                │ │
-                                                    │  │  sync every 20s (picks up new merged block)    │ │
-                                                    │  │  serves ONE merged block (≤ BUFFER_STORE_DURATION)│ │
+                                                    │  │  sync every 20s (picks up new merged windows)  │ │
+                                                    │  │  serves recent merged tumbling window(s)       │ │
                                                     │  └───────────────────────┬────────────────────────┘ │
                                                     │                          │ StoreAPI gRPC :10921       │
                                                     │  ┌───────────────────────────────────────────────┐  │
-                                                    │  │ Thanos store-gateway  :10901                  │  │
+                                                    │  │ archive-store (thanos-store-gateway)  :10901  │  │
                                                     │  │  reads MinIO, sync every 30s                  │  │
                                                     │  │  serves ALL blocks (full history)             │  │
                                                     │  └───────────────────────┬───────────────────────┘  │
                                                     │                          │ StoreAPI gRPC :10901       │
                                                     │  ┌───────────────────────▼───────────────────────┐  │
                                                     │  │ Thanos query  :10903                          │  │
-                                                    │  │  --endpoint=thanos-store-gateway:10901        │  │
-                                                    │  │  --endpoint=gorilla-buffer-store:10921        │  │
-                                                    │  │  PromQL: /api/v1/query                        │  │
+                                                    │  │  --endpoint=…store-gateway:10901  (archive)   │  │
+                                                    │  │  --endpoint=…buffer-store:10921   (hot)       │  │
+                                                    │  │  fan-out to BOTH, merge chunks, run PromQL    │  │
                                                     │  └───────────────────────────────────────────────┘  │
                                                     └───────────────────────────────────────────────────────┘
 ```
 
-## Sliding-window merge model
+## Where are the merged blocks stored, and in what format?
 
-The key design change from the previous no-merge design:
+**Location.** In this demo the merged blocks are written to the **backend node's local disk**
+(`/var/gorilla-buffer/merged/` inside the container, bind-mounted from `/tmp/gorilla-buffer/merged`
+on node2). The merger reuses the on-disk staging area as a local buffer; it does **not** write a
+new file-management system of its own. The **design intent** is for these merged blocks to live in
+**MinIO / S3** (so the hot-store reads them over object storage like the archive-store does), but
+that requires AWS credits / an extra object-storage hop, so the demo keeps them on local disk for
+now. The 60s source blocks already live in MinIO; the merged windows are a local-disk derivative.
 
-| Property | No-merge (old) | Sliding-window merge (current) |
-|----------|---------------|-------------------------------|
-| gorilla-buffer-store reads from | MinIO S3 directly | Local filesystem (FILESYSTEM objstore) |
-| Blocks served per query | Up to 60 individual 60s blocks | 1 merged block |
-| Block expiry | `--min-time=-BUFFER_STORE_DURATION` flag | gorilla-buffer-merger drops expired staging blocks |
-| Data freshness | ~75s (60s block + 15s sync) | ~95s (60s block + 15s merge poll + 20s store sync) |
-| Memory / IO at query time | Fan-out across all hot blocks | Single block read |
+**Format.** Each merged block is a standard **Prometheus TSDB block** (the same on-disk layout the
+agents write to MinIO and that `gorilla-buffer-store` loads via the FILESYSTEM objstore):
 
 ```
-time →
-
-t=0    staging: [b1]                    merged: [b1]
-t=1    staging: [b1][b2]                merged: [b1+b2]
-t=2    staging: [b1][b2][b3]            merged: [b1+b2+b3]
-...
-t=60   staging: [b1]...[b60]            merged: [b1+...+b60]   ← full 1h window
-t=61   staging: [b2]...[b61]            merged: [b2+...+b61]   ← b1 expired, b61 added
-t=62   staging: [b3]...[b62]            merged: [b3+...+b62]   ← b2 expired, b62 added
+/var/gorilla-buffer/merged/<ULID>/
+├── chunks/000001   Gorilla XOR / delta-of-delta encoded sample data
+├── index           series → label index + chunk references
+└── meta.json       ULID, MinTime/MaxTime, numSeries/numChunks, compaction level
 ```
 
-For the hot window, Thanos query receives data from both gorilla-buffer-store (the merged local block) and thanos-store-gateway (the same data from MinIO). Identical timestamps collapse via Thanos's chunk-level merge — no replica-label config needed.
+Example `meta.json` for a merged window block:
+
+```json
+{
+  "ulid": "01KRGYN9DW0JMDDF11YZV0FRV1",
+  "minTime": 1778685486472,
+  "maxTime": 1778685487480,
+  "stats": { "numSamples": 4006, "numSeries": 2003, "numChunks": 2003 },
+  "compaction": { "level": 2, "sources": ["01KRGYN9DW0JMDDF11YZV0FRV1"] },
+  "version": 1
+}
+```
+
+No custom container format is used — it is the Prometheus TSDB block format, so any Thanos/Prometheus
+reader can open it.
+
+## Tumbling-window merge model
+
+The merger uses a **tumbling window** (`-window`, configurable; default 1h): fixed, non-overlapping
+windows, not a sliding/rolling one. The window is the granularity at which merged state is flushed
+to the backend S3/MinIO archive; the agent's per-block emit interval (`tsdb_block_duration`, default
+60s) is independently configurable.
+A block belongs to window `w = floor(block.minTime / window)`, covering `[w*window, (w+1)*window)`.
+All per-emit blocks of a window merge into **one** output block keyed to that window. While a window
+is still in progress it is re-merged each poll as new blocks land; once it is complete
+(`now ≥ window_end + grace`) it is finalized and never re-merged. The output dir keeps the last N
+windows (N = `ceil(BUFFER_STORE_DURATION / window)`, min 2 so a boundary-straddling query is always
+covered) and drops older windows once `thanos-store-gateway` has synced them from MinIO.
+
+| Property | No-merge (old) | Tumbling-window merge (current) |
+|----------|---------------|---------------------------------|
+| hot-store reads from | MinIO S3 directly | Local filesystem (FILESYSTEM objstore) |
+| Blocks served per window | Up to ~`window/emit` blocks (~60 at defaults) | 1 merged block per window |
+| Block expiry | `--min-time=-BUFFER_STORE_DURATION` flag | merger drops windows older than retention |
+| Windows | n/a | fixed `[0,w)`, `[w,2w)`, … (no overlap; `w`=`-window`, default 1h) |
+| Memory / IO at query time | Fan-out across all hot blocks | One block per window touched |
+
+```
+(example at default config: -window=1h, tsdb_block_duration=60s → 60 blocks/window)
+window 0 = [0h, 1h)        window 1 = [1h, 2h)        window 2 = [2h, 3h)
+b1 b2 … b60 (minTime<1h)   b61 … b120 (minTime<2h)    b121 … (minTime<3h)
+        │                          │                          │
+        ▼                          ▼                          ▼
+   merged M0                  merged M1                  merged M2
+ [b1+…+b60]                 [b61+…+b120]               [b121+…]
+```
+
+`[b1..b60] → merged`, then a NEW window `[b61..b120] → merged`, etc. M0 and M1 are distinct,
+non-overlapping outputs — not a single block that keeps getting rewritten. The block count per
+window scales with `window / tsdb_block_duration`; both are configurable (the diagram uses the
+1h / 60s defaults).
+
+For the hot range, Thanos query receives data from both the hot-store (`gorilla-buffer-store`, the
+merged window blocks) and the archive-store (`thanos-store-gateway`, the same data from MinIO).
+Identical timestamps collapse via Thanos's chunk-level merge — no replica-label config needed.
+
+## Multi-store fan-out: how one query spans both stores
+
+A single PromQL query that spans both stores (e.g. `quantile_over_time(...[2h])` where the last
+~1h of merged data is on the hot-store and the older ~1h is only on the archive-store) is served
+like this:
+
+1. **Fan-out.** Thanos Query sends the same Series request (matchers + `[mint, maxt]`) to **both**
+   stores **in parallel** over the StoreAPI.
+2. **Each store returns what it has.** The archive-store returns the older chunks it loaded from
+   MinIO; the hot-store returns the recent merged-window chunks it loaded from local disk. For the
+   overlapping ~1h both stores return chunks for the same series.
+3. **Thanos merges chunks.** For each series, Thanos merges the chunk streams from both stores;
+   chunks with **identical timestamps dedup at the chunk level** (the overlap collapses to one copy).
+4. **PromQL on the combined result.** Thanos then runs the PromQL engine
+   (`quantile_over_time`, `rate`, …) over the **single combined, deduplicated** series — so a 2h
+   query split across the two stores returns exactly what a single store holding all 2h would.
 
 ## Configuration
 
-`BUFFER_STORE_DURATION` (default `1h`) controls the sliding window size. Set in `topology.env`:
+`BUFFER_STORE_DURATION` (default `1h`) controls the retention horizon: how far back merged windows
+are kept queryable on the hot-store. The tumbling window size itself is the merger's `-window` flag
+(also `1h` by default). Set in `topology.env`:
 
 ```bash
-BUFFER_STORE_DURATION=30m  # 30-minute hot window
-BUFFER_STORE_DURATION=2h   # 2-hour hot window
+BUFFER_STORE_DURATION=30m  # keep ~30 minutes of merged windows hot
+BUFFER_STORE_DURATION=2h   # keep ~2 hours of merged windows hot
 ```
 
 ## Quick Start
@@ -131,7 +211,7 @@ cd /mydata/ASAPCollector
 bash restore_otel_collector_contrib_patches.sh
 bash build_asap_otel.sh
 
-# 2. gorilla-buffer-merger image (new sliding-window merger):
+# 2. gorilla-buffer-merger image (tumbling-window merger):
 DOCKER_BUILDKIT=1 docker build \
   -f deploy/docker/Dockerfile.gorilla-buffer-merger \
   -t asap/gorilla-buffer-merger:dev .
@@ -179,8 +259,8 @@ Parts 1, 2, 4 remain valid (MinIO → thanos-store-gateway path unchanged). Part
 |-------|---------|----------|
 | MinIO has TSDB blocks | `ssh node2 'docker exec asap-minio mc ls local/asap-gorilla-tsdb --recursive'` | ULID dirs visible ~60s after start |
 | Merger staging populated | `ssh node2 'ls /tmp/gorilla-buffer/staging/'` | ULID dirs (downloaded 60s blocks) |
-| Merged block written | `ssh node2 'ls /tmp/gorilla-buffer/merged/'` | One ULID dir (merged block) |
-| Merger logs healthy | `ssh node2 'docker logs asap-gorilla-buffer-merger 2>&1 \| tail -5'` | `merged block written` lines |
+| Merged windows written | `ssh node2 'ls /tmp/gorilla-buffer/merged/'` | One ULID dir **per retained tumbling window** (not a single rewritten block) |
+| Merger logs healthy | `ssh node2 'docker logs asap-gorilla-buffer-merger 2>&1 \| tail -5'` | `merged window block written` lines (with `window=` index) |
 | Thanos query healthy | `curl http://10.10.1.3:10903/api/v1/query?query=up` | `status: success` |
 | Metric names visible | `curl http://10.10.1.3:10903/api/v1/label/__name__/values` | Non-empty list ~90s after start |
 | gorilla-buffer-store up | `ssh node2 'docker ps \| grep asap-gorilla-buffer-store'` | Container Up |
@@ -214,7 +294,7 @@ The `gorilla-buffer-merger` binary lives in the ASAPCollector repo at:
 asap-gorilla-go/
 └── cmd/
     └── gorilla-buffer-merger/
-        └── main.go                    (sliding-window TSDB merger: MinIO→staging→merged)
+        └── main.go                    (tumbling-window TSDB merger: MinIO→staging→merged/window)
 deploy/docker/
 └── Dockerfile.gorilla-buffer-merger   (multi-stage Go build → distroless image)
 ```
@@ -225,4 +305,5 @@ deploy/docker/
 |-----------|------------------------|---------------|-------|
 | v1 — gorilla-gateway era | Local disk (gorilla-gateway buffer) | 1 merged block | gateway on node1 wrote merged block |
 | v2 — no-merge (2026-05-18) | MinIO S3 directly | Up to ~60 individual 60s blocks | `--min-time` filter, chunk-level Thanos dedup |
-| v3 — sliding-window merge (2026-05-19) | Local FILESYSTEM (merged by gorilla-buffer-merger) | 1 merged block | custom merger binary, no fan-out at query time |
+| v3 — sliding-window merge (2026-05-19) | Local FILESYSTEM (merged by gorilla-buffer-merger) | 1 merged block | custom merger binary, single rolling merged block |
+| v4 — tumbling-window merge (2026-05-20) | Local FILESYSTEM (merged by gorilla-buffer-merger) | 1 merged block per tumbling window (`-window`, default 1h) | fixed-size non-overlapping windows; finalized windows frozen |

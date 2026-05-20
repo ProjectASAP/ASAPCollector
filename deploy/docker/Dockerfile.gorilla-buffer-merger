@@ -1,8 +1,9 @@
 # Dockerfile.gorilla-buffer-merger
 #
-# Builds the gorilla-buffer-merger binary: a sliding-window TSDB merger that
-# polls MinIO for new 60s blocks, merges them into a single 1h block, and
-# writes it to a directory served by thanos store (FILESYSTEM objstore).
+# Builds the gorilla-buffer-merger binary: a tumbling-window TSDB merger that
+# polls MinIO for new 60s blocks, buckets them into fixed 1h tumbling windows,
+# and merges each window into one block written to a directory served by thanos
+# store (FILESYSTEM objstore) — one merged block per retained window.
 #
 # Build (from ASAPCollector repo root):
 #   docker build -f deploy/docker/Dockerfile.gorilla-buffer-merger \

@@ -53,7 +53,6 @@ cd /mydata/ASAPCollector
 ./build_asap_otel.sh                                       # asap/asap-otel:dev
 DOCKER_BUILDKIT=1 docker build \
     -f deploy/docker/Dockerfile.fake-exporter \
-    --build-context sketchlib-go=/mydata/sketchlib-go \
     -t asap/fake-exporter:dev .
 DOCKER_BUILDKIT=1 docker build \
     -f deploy/docker/Dockerfile.backend \

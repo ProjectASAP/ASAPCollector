@@ -270,9 +270,17 @@ All queries were run against `http://10.10.1.3:10903/api/v1/query`.
 
 ---
 
-## Part 3 — Two-Tier Gateway Pipeline (`run_demo.sh all`)
+## Part 3 — Two-Tier Gateway Pipeline (`run_demo.sh all`) — SUPERSEDED / HISTORICAL
 
-Verified on **2026-05-14** with gorilla-gateway on node1. The full `bash run_demo.sh all` command (sync → down → up → 30s warmup → 90s soak → verify → down) completes 5/5 checks.
+> **⚠️ SUPERSEDED (historical record only).** This section describes the
+> **2026-05-14 gorilla-gateway architecture**, which has been **removed**.
+> gorilla-gateway no longer exists: agents now write 60s TSDB blocks **directly to
+> MinIO**, and a `gorilla-buffer-merger` produces tumbling-window merged blocks. The
+> current architecture is documented below in the **2026-05-18 Direct-MinIO** section
+> and the merge-design section (now tumbling, see Part 6). Keep this part only as a
+> record of the old gateway-based run; do not use its commands or topology.
+
+Verified on **2026-05-14** with gorilla-gateway on node1 (now removed). The full `bash run_demo.sh all` command (sync → down → up → 30s warmup → 90s soak → verify → down) completed 5/5 checks at the time.
 
 ### Pipeline now in effect
 
@@ -535,16 +543,25 @@ SUMMARY: 25/25 checks passed — ALL CHECKS PASSED
 
 ---
 
-## Part 6 — Sliding-window merge design: write + query performance (2026-05-19)
+## Part 6 — Merge design: write + query performance (2026-05-19, v3 sliding — HISTORICAL)
 
-**Design under test:** gorilla-thanos-multinode v3 — `gorilla-buffer-merger` + `gorilla-buffer-store` (FILESYSTEM objstore).
+> **⚠️ HISTORICAL.** These numbers were measured against the **v3 sliding-window**
+> merger (one continuously-rewritten merged block, drop blocks where maxTime ≤ now−1h).
+> The current design is **v4 tumbling-window** (fixed-size, non-overlapping windows —
+> `-window`, configurable, default 1h; one merged block per window; finalized windows
+> frozen). The performance characteristics
+> (sub-second merge, ~1 block touched per window at query time) are expected to carry
+> over, but the "single merged block" observations below are specific to the old sliding
+> design. Re-measure under the tumbling merger before quoting these numbers as current.
 
-| Component | Role |
+**Design under test (v3 sliding, superseded):** gorilla-thanos-multinode v3 — `gorilla-buffer-merger` + `gorilla-buffer-store` (FILESYSTEM objstore).
+
+| Component | Role (v3 sliding) |
 |-----------|------|
-| `gorilla-buffer-merger` | Polls MinIO every 15s, merges all in-window 60s blocks into one local merged block. Drops expired blocks (maxTime ≤ now−1h) from staging. |
-| `gorilla-buffer-store` | Thanos store with FILESYSTEM objstore reading the single merged block. Syncs every 20s. |
-| `thanos-store-gateway` | Serves all MinIO blocks (full history, 30s sync). |
-| `thanos-query` | Federates buffer-store (:10921) + store-gateway (:10901). |
+| `gorilla-buffer-merger` | Polls MinIO every 15s, merges all in-window 60s blocks into one local merged block. Drops expired blocks (maxTime ≤ now−1h) from staging. **(v4: buckets by tumbling window — `-window`, configurable, default 1h — one merged block per window.)** |
+| `gorilla-buffer-store` (hot-store) | Thanos store with FILESYSTEM objstore reading the merged block(s). Syncs every 20s. |
+| `thanos-store-gateway` (archive-store) | Serves all MinIO blocks (full history, 30s sync). |
+| `thanos-query` | Federates hot-store (:10921) + archive-store (:10901). |
 
 ### 6.1 — Merger correctness
 
