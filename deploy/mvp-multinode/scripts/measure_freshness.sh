@@ -30,18 +30,23 @@ CSV="${OUT}/freshness-${ARM}.csv"
 echo "arm,probe,tier,poll_idx,poll_ts_ms,observed_value_ms,delta_ms" > "${CSV}"
 
 # Per-tier endpoint + probe metric mapping
+# NOTE: the probe is a Float64Counter WithUnit("ms"); depending on the OTLP→VM
+# add_metric_suffixes setting the queryable name is either `http_freshness_probe_<tier>`
+# or `http_freshness_probe_<tier>_milliseconds_total`. Match by __name__ regex so the
+# probe is found regardless of the suffix the backend applied.
 case "${ARM}" in
     b0|b1)
-        PROBES=("raw|http_freshness_probe_raw_milliseconds_total|http://${NODE2_IP}:9090")
+        PROBES=('raw|{__name__=~"http_freshness_probe_raw.*"}|http://'"${NODE2_IP}"':9090')
         ;;
     asap)
-        # warm tier → asap-query-backend; archive tier → also goes through
-        # asap-query-backend's EngineRouter (it dispatches to thanos_archive).
-        # raw probe (if path enabled) → Prometheus.
+        # The asap backend's EngineRouter keys on the EXACT raw metric name
+        # (backend-storage-routing.yaml routes http_freshness_probe_{warm,archive}
+        # → gorilla_s3_archive and serves last_over_time from the archive). A
+        # __name__ regex would defeat that name-keyed routing, so use bare names.
+        # (No raw-tier probe in asap: it isn't routed/queryable at the backend.)
         PROBES=(
-            "raw|http_freshness_probe_raw_milliseconds_total|http://${NODE2_IP}:9090"
-            "warm|http_freshness_probe_warm_milliseconds_total|http://${NODE2_IP}:9091"
-            "archive|http_freshness_probe_archive_milliseconds_total|http://${NODE2_IP}:9091"
+            'warm|http_freshness_probe_warm|http://'"${NODE2_IP}"':9091'
+            'archive|http_freshness_probe_archive|http://'"${NODE2_IP}"':9091'
         )
         ;;
     *) echo "unknown arm ${ARM}" >&2; exit 1 ;;
@@ -56,7 +61,7 @@ for spec in "${PROBES[@]}"; do
         # registers. The result `value[1]` is the sample's value (the encoded
         # emission ts_ms).
         body=$(curl -s --max-time 2 \
-            --data-urlencode "query=last_over_time(${PROBE}[10s])" \
+            --data-urlencode "query=last_over_time(${PROBE}[15s])" \
             "${Q}/api/v1/query" 2>/dev/null || echo '')
         poll_ts_ms=$(($(date +%s%N)/1000000))
         v=$(echo "${body}" | python3 -c "
@@ -64,11 +69,10 @@ import sys,json
 try:
     d=json.load(sys.stdin)
     r=d['data']['result']
-    if r:
-        # Take the most recent series's value
-        print(int(float(r[0]['value'][1])))
-    else:
-        print('')
+    # Multiple producers each emit the probe → one series each; take the most
+    # recent (max) encoded emission ts_ms across all matching series.
+    vals=[float(s['value'][1]) for s in r if s.get('value')]
+    print(int(max(vals)) if vals else '')
 except: print('')
 " 2>/dev/null)
         if [ -n "${v}" ]; then
