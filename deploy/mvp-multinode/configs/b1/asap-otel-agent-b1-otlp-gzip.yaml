@@ -1,0 +1,75 @@
+# Baseline B1 — raw OTel → VictoriaMetrics via OTLP, compression GZIP.
+#
+# ── Role in the compression-matched bandwidth sweep ──────────────────
+# B1 is the matched-GZIP raw baseline — the PRIMARY matched comparison's
+# baseline. It ships the FULL-cardinality raw counter/gauge stream over
+# OTLP HTTP to VictoriaMetrics with `compression: gzip`, sharing the
+# EXACT SAME wire codec (gzip) as the `asap-gzip` arm (OTLP→backend,
+# compression gzip). The only difference between B1 and asap-gzip is
+# aggregation:
+#
+#   B1:        producer ──OTLP──▶ agent ──OTLP/gzip──▶ VictoriaMetrics
+#              (no aggregation; ~10k raw series stream continuously)
+#   asap-gzip: producer ──OTLP──▶ agent ──OTLP/gzip──▶ asap-backend
+#              (edge Sum-by-zone + per-series sketches; 4 zone-sums + sketch)
+#
+# So `asap-gzip < b1` at codec=gzip isolates the AGGREGATION gain with
+# the transport+codec held fixed — this is the load-bearing matched
+# comparison for the sweep. The backend must `.accept_compressed(Gzip)`
+# on its OTLP gRPC receiver for asap-gzip; that's the partner change in
+# ASAPQuery-backend (feat/backend-accept-gzip-otlp).
+#
+# Identical to b0/asap-otel-agent-b0-otlp-none.yaml in every respect
+# EXCEPT the exporter `compression: gzip`. See that file for the full
+# rationale on transport, cumulative handling, and metric naming.
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: ws://controller:4320/v1/opamp
+        headers:
+          X-Agent-ID: "agent-1"
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        max_recv_msg_size_mib: 4096
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  # OTLP HTTP straight at VictoriaMetrics' OTLP ingest receiver.
+  # `compression: gzip` — the matched-GZIP codec for the b1-vs-asap-gzip
+  # pair (the sweep's primary matched comparison).
+  otlphttp/vm:
+    metrics_endpoint: "http://victoriametrics:8428/opentelemetry/v1/metrics"
+    compression: gzip
+    tls:
+      insecure: true
+
+service:
+  extensions: [opamp]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/vm]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890
