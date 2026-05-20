@@ -2,8 +2,9 @@
 # THIS is the config the buffer-store (hot-store) actually uses today.
 #
 # Points thanos store at the local directory written by gorilla-buffer-merger.
-# gorilla-buffer-merger maintains one merged TSDB block per fixed 1h TUMBLING
-# window there, keeping the last BUFFER_STORE_DURATION of merged windows.
+# gorilla-buffer-merger maintains one merged TSDB block per tumbling window
+# (MERGE_WINDOW, configurable, default 1h) there, keeping the last
+# BUFFER_STORE_DURATION of merged windows.
 #
 # Used in place of the S3 objstore (buffer-objstore.yaml, now unused) so the
 # buffer-store reads the pre-merged local window blocks instead of re-reading
