@@ -10,9 +10,10 @@
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
 # Pipeline: agents write 60s TSDB blocks DIRECTLY to MinIO (no gateway hop).
-#   gorilla-buffer-merger on node2: polls MinIO every 15s, buckets the 60s blocks by
-#   fixed 1h TUMBLING window, and merges each window into one block at
-#   /tmp/gorilla-buffer/merged/ (one per window). Windows older than retention dropped.
+#   gorilla-buffer-merger on node2: polls MinIO every 15s, buckets the blocks by
+#   TUMBLING window (MERGE_WINDOW, configurable, default 1h), and merges each window
+#   into one block at /tmp/gorilla-buffer/merged/ (one per window). Windows older than
+#   retention dropped.
 #   gorilla-buffer-store (hot-store) on node2: thanos store (FILESYSTEM objstore) serves
 #   the recent merged window blocks via :10921.
 #   thanos-store-gateway (archive-store): syncs every 30s, serves all historical data from MinIO.
@@ -89,8 +90,9 @@ docker_run_on() {
 # Services: MinIO + Thanos (store-gateway, query, compact)
 #           + gorilla-buffer-merger + gorilla-buffer-store.
 #
-# gorilla-buffer-merger: polls MinIO every 15s, downloads new 60s blocks to staging,
-#   buckets them by fixed 1h tumbling window, merges each window into one block, and
+# gorilla-buffer-merger: polls MinIO every 15s, downloads new blocks to staging,
+#   buckets them by tumbling window (MERGE_WINDOW, configurable, default 1h), merges
+#   each window into one block, and
 #   drops windows older than retention. Finalized windows are never re-merged.
 #   Output: /tmp/gorilla-buffer/merged/{ULID}/ (one block per tumbling window).
 #
@@ -342,8 +344,8 @@ Network traffic:
   producers → OTLP gRPC :4317 → agent → S3 PUT :9000 → MinIO (direct, no gateway hop)
   NO raw OTLP crosses the network (drop_original: true)
 
-Buffer window: BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION} (set in topology.env)
-  gorilla-buffer-merger         — polls MinIO every 15s, merges each 1h TUMBLING window into one local block
+Buffer window: BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION}, MERGE_WINDOW=${MERGE_WINDOW:-1h} (set in topology.env)
+  gorilla-buffer-merger         — polls MinIO every 15s, merges each tumbling window (MERGE_WINDOW, default 1h) into one local block
   gorilla-buffer-store  :10921 — hot-store: serves recent merged window blocks via FILESYSTEM objstore
   thanos-store-gateway  :10901 — archive-store: syncs MinIO every 30s, serves all historical data
   thanos-query          :10903 — federates both (fan-out + chunk merge); hot blocks queryable within ~75s of measurement
