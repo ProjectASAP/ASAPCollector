@@ -1,34 +1,36 @@
-# Baseline B1 v4 — Serf XOR + raw forward to real Prometheus.
+# Baseline B3 — Serf as a REAL end-to-end wire codec.
 #
-# v4 (issue #46) SERF baseline. The
-# v3 SERF config used `drop_original: true` so nothing reached
-# the gateway / backend / Prometheus — bandwidth was measured
-# entirely against bytes-on-disk under /var/tmp/asap-serf-out.
-# That makes apples-to-apples comparison against B0
-# (raw-OTel-to-Prometheus) and the ASAP single-sketch baseline
-# impossible because the SERF path doesn't expose any signals
-# downstream of the agent.
+# ── Role: serf as an actual wire-compression codec ──────────────────
+# B3 measures serf the way b1 measures gzip and b2 measures Snappy: as a
+# codec that crosses the network. The agent serf-XOR-COMPRESSES the
+# metric stream and ships the compressed SERF1 blocks over HTTP to a
+# serf-GATEWAY collector (node1). The gateway serf-DECOMPRESSES and
+# inserts the raw, decompressed stream into VictoriaMetrics via OTLP.
+# NO prometheusremotewrite anywhere on this arm — the bytes that cross
+# the agent→gateway hop ARE the serf-compressed wire.
 #
-# v4 keeps the SERF processor running (so its CPU / RSS / output-
-# bytes self-telemetry is still recorded for the resource table),
-# but flips `drop_original: false` and forwards the raw stream
-# via `prometheusremotewrite` to the real Prometheus on
-# :9090/api/v1/write — same sink as B0. Bandwidth column for B1
-# = wire bytes from agent → Prometheus PLUS the SERF-written
-# blob bytes (a structural cost the SERF baseline pays in
-# addition to the wire bytes). The query side (Prometheus
-# evaluator) is then identical to B0, isolating the SERF
-# CPU / RSS overhead as the only delta.
+#   producer ──OTLP──▶ agent ──serfhttp (XOR, compressed)──▶ serf-gw (node1)
+#                                                              │
+#                                                serf-DECODE ──┘
+#                                                              │
+#                                              ──OTLP raw──▶ VictoriaMetrics (node2)
 #
-# Pipeline:
+# This is serf's analog of b1's gzip-compressed wire / b2's Snappy-
+# compressed wire. The authoritative compressed-bytes-sent metric is the
+# serfexporter's `serf_exporter_bytes_sent_bytes_total` self-telemetry
+# (scrape the agent's :8890 prometheus reader). The serf-gateway's
+# ingress on node1's NIC is the same compressed wire viewed at the sink.
 #
-#   producer ──OTLP──▶ agent ──serf──▶ /var/tmp/asap-serf-out
-#                       │
-#                       └─raw forward──▶ Prometheus :9090/api/v1/write
+# Correctness: max_diff: 0.0 makes SerfXOR LOSSLESS (findAppLong returns
+# the exact Float64bits when maxDiff==0), so the gateway reconstructs the
+# original values bit-for-bit. `sum by (zone) (http_requests_total)`
+# against VM must return 4 zones with the correct magnitude.
 #
-# The SERF processor sits BEFORE batch so it sees per-arrival
-# points (matches v3 behaviour); the PRW exporter only sees the
-# raw stream because SERF's output isn't on the OTLP graph.
+# The earlier B3 design ran the serfprocessor with drop_original:false,
+# writing compressed blocks to LOCAL DISK while forwarding the RAW stream
+# via PRW to VM — so the measured wire was just raw PRW and serf never
+# crossed the network. This config replaces that with the serfexporter so
+# serf is measured as a true wire codec.
 
 extensions:
   opamp:
@@ -48,43 +50,30 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
-  serf:
-    # 60s window matches the v3 sketch-baseline aggregation budget.
-    window_interval: 60s
-    compression: xor
-    max_diff: 0.0
-    # v4: forward raw downstream so PRW can sink to Prometheus.
-    drop_original: false
-    local_dir: /var/tmp/asap-serf-out
-
   batch:
     timeout: 1s
     send_batch_size: 1024
 
 exporters:
-  prometheusremotewrite:
-    endpoint: "http://victoriametrics:8428/api/v1/write"
-    tls:
-      insecure: true
-    target_info:
-      enabled: false
-    resource_to_telemetry_conversion:
-      enabled: false
-    # See b0/asap-otel-agent-b0-prometheus.yaml for the full rationale —
-    # disable unit-suffix appending so the metric name matches what the
-    # asap tier stores, enabling apples-to-apples accuracy comparison.
-    add_metric_suffixes: false
+  # Serf wire codec: XOR-compress the metric stream over a tumbling
+  # window and POST SERF1 blocks to the serf-gateway collector on node1.
+  # `serf-gw` resolves to node1's IP via --add-host (injected by
+  # run_demo.sh for the b3 arm). compression: xor + max_diff: 0.0 =>
+  # lossless. window_interval matches the agent batch cadence enough to
+  # keep latency bounded while still amortising the per-block metadata.
+  serfhttp:
+    endpoint: "http://serf-gw:9000/serf"
+    compression: xor
+    max_diff: 0.0
+    window_interval: 5s
 
 service:
   extensions: [opamp]
   pipelines:
     metrics:
       receivers: [otlp]
-      # serf first (writes blob, passes raw through), then batch +
-      # PRW so the same data Prometheus would see in B0 also lands
-      # in B1 — the SERF baseline only ADDS overhead.
-      processors: [serf, batch]
-      exporters: [prometheusremotewrite]
+      processors: [batch]
+      exporters: [serfhttp]
 
   telemetry:
     logs:

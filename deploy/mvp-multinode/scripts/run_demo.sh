@@ -23,9 +23,15 @@
 #   b0         raw   OTLP→VM,  compression none   matched-none baseline
 #   b1         raw   OTLP→VM,  compression gzip   matched-gzip baseline (primary)
 #   b2         raw   PRW →VM   (Snappy, native)   Prometheus reference
-#   b3         raw   serf + PRW→VM                serf reference
+#   b3         raw   serf wire codec → gw → VM    serf-compressed wire ref
 #   asap       agg   OTLP→backend, none           matched-none asap
 #   asap-gzip  agg   OTLP→backend, gzip           matched-gzip asap (primary)
+#
+# b3 is serf as a REAL wire codec: the agent serf-XOR-COMPRESSES and
+# ships compressed SERF1 blocks to a serf-gateway (node1) that
+# DECOMPRESSES and inserts raw into VM (node2). No PRW. The
+# serf-compressed wire is the agent→gateway hop (node1 RX). This is
+# serf's analog of b1's gzip / b2's Snappy compressed wire.
 #
 # Two clean apples-to-apples aggregation comparisons (same codec, only
 # aggregation differs):
@@ -128,7 +134,9 @@ backend_up() {
     #   - b0/b1 push OTLP HTTP to /opentelemetry/v1/metrics (compression
     #     none / gzip respectively).
     #   - b2 pushes Prometheus remote_write (Snappy) to /api/v1/write.
-    #   - b3 (serf) also forwards raw via PRW to /api/v1/write.
+    #   - b3 (serf wire codec) ships serf-compressed blocks to the
+    #     serf-gateway (node1), which DECOMPRESSES and inserts raw into
+    #     VM via OTLP HTTP /opentelemetry/v1/metrics. No PRW on b3.
     # VM serves PromQL on the same port for all four.
     #
     # `-opentelemetry.usePrometheusNaming` is LEFT OFF so VM stores the
@@ -310,6 +318,31 @@ backend_down() {
     stop_node "${NODE2_HOST}"
 }
 
+# ─── SERF-GATEWAY on node1 (b3 arm only) ────────────────────────────
+#
+# The decompression half of the serf-as-real-wire-codec arm. The b3
+# agents serf-XOR-COMPRESS the metric stream and POST SERF1 blocks to
+# `http://serf-gw:9000/serf` (serf-gw → node1 via ADD_HOSTS). This
+# gateway runs the asap-otel binary with a serfreceiver pipeline that
+# DECODES the blocks back to raw points and inserts them into VM (node2)
+# over OTLP HTTP. The only compressed hop is agent(node0/3) → gw(node1);
+# the gw → VM hop carries raw decompressed OTLP. So the serf-compressed
+# wire == node1 NIC RX == the serfexporter's bytes_sent counter.
+#
+# Brought up BEFORE the b3 agents so the serfreceiver is already
+# listening when the agents' first window flushes. node1 is otherwise
+# idle (the asap-gateway double-hop was retired in #400), and arm_down's
+# `stop_node node1` reaps this container at teardown.
+serf_gateway_up() {
+    log "node1 serf-gateway up (b3 serf wire codec)"
+    docker_run_on "${NODE1_HOST}" \
+        --name asap-serf-gateway \
+        --hostname serf-gw \
+        -v /mydata/mvp-multinode/configs/b3/serf-gateway.yaml:/etc/otel/config.yaml:ro \
+        asap/asap-otel:dev \
+        --config=/etc/otel/config.yaml
+}
+
 # ─── AGENTS + PRODUCERS on node0 and node3 ──────────────────────────
 agents_up() {
     local arm=$1
@@ -322,7 +355,7 @@ agents_up() {
         b0)        agent_cfg=b0/asap-otel-agent-b0-otlp-none.yaml ;;        # raw OTLP→VM, compression none  (matched-none baseline)
         b1)        agent_cfg=b1/asap-otel-agent-b1-otlp-gzip.yaml ;;        # raw OTLP→VM, compression gzip  (matched-gzip baseline)
         b2)        agent_cfg=b2/asap-otel-agent-b2-prw-snappy.yaml ;;       # raw PRW→VM   (Snappy, native)  (Prometheus ref)
-        b3)        agent_cfg=b3/asap-otel-agent-b3-serf.yaml ;;             # raw serf + PRW→VM              (serf ref)
+        b3)        agent_cfg=b3/asap-otel-agent-b3-serf.yaml ;;             # serf wire codec → gw → VM      (serf-compressed wire ref)
         asap)      agent_cfg=asap/asap-otel-agent-b6-asap-single-sketch.yaml ;;  # edge-agg, OTLP→backend none  (matched-none asap)
         asap-gzip) agent_cfg=asap-gzip/asap-otel-agent-asap-gzip.yaml ;;    # edge-agg, OTLP→backend gzip   (matched-gzip asap)
         *) die "unknown arm ${arm}" ;;
@@ -407,6 +440,13 @@ arm_up() {
     log "=== ARM UP: ${arm} ==="
     backend_up "${arm}"
     sleep 5
+    # b3 serf wire codec: bring up the serf-gateway (node1) AFTER the VM
+    # backend (node2) is up but BEFORE the agents, so the serfreceiver is
+    # listening when the agents' first compressed window flushes.
+    if [[ "${arm}" == "b3" ]]; then
+        serf_gateway_up
+        sleep 3
+    fi
     agents_up "${arm}"
     log "=== arm ${arm} all containers started; waiting WARMUP_S=${WARMUP_S} ==="
     sleep "${WARMUP_S}"
@@ -522,7 +562,7 @@ usage: $0 <cmd> [arm]
                         b0        raw OTLP→VM,  compression none  (matched-none baseline)
                         b1        raw OTLP→VM,  compression gzip  (matched-gzip baseline)
                         b2        raw PRW→VM    (Snappy, native)  (Prometheus ref)
-                        b3        raw serf + PRW→VM               (serf ref)
+                        b3        serf wire codec → gw → VM       (serf-compressed wire ref)
                         asap      edge-agg, OTLP→backend none     (matched-none asap)
                         asap-gzip edge-agg, OTLP→backend gzip     (matched-gzip asap)
   down                stop and remove all asap-* containers cluster-wide
