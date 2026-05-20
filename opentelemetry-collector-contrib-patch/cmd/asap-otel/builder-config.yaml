@@ -113,6 +113,15 @@ exporters:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/tencentcloudlogserviceexporter v0.141.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/tinybirdexporter v0.141.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/zipkinexporter v0.141.0
+  # Serf wire-codec exporter (component type `serfhttp`). XOR-compresses
+  # the metric stream over a tumbling window and POSTs SERF1 binary
+  # blocks to a serfreceiver endpoint over HTTP — the agent side of the
+  # serf-as-real-wire-codec arm (b3). Mirrors the serfprocessor encoder
+  # but ships compressed bytes across the network instead of writing
+  # them to local disk. Self-telemetry: `serf_exporter_bytes_sent_total`
+  # (compressed wire bytes) on the agent's :8890 prometheus reader.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/serfexporter v0.141.0
+    path: ./exporter/serfexporter
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.141.0
@@ -291,6 +300,14 @@ receivers:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/windowseventlogreceiver v0.141.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/zipkinreceiver v0.141.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/zookeeperreceiver v0.141.0
+  # Serf wire-codec receiver (component type `serfhttp`). HTTP server
+  # that decodes SERF1 binary blocks back into raw metric data points
+  # and emits them to its pipeline — the serf-gateway side of the
+  # serf-as-real-wire-codec arm (b3). Pairs with the serfexporter above.
+  # Self-telemetry: `serf_receiver_bytes_received_total` (compressed
+  # ingress) + `serf_receiver_decoded_points_total` (decoded points).
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/serfreceiver v0.141.0
+    path: ./receiver/serfreceiver
 
 connectors:
   - gomod: go.opentelemetry.io/collector/connector/forwardconnector v0.141.0
