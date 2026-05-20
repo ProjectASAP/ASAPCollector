@@ -1,7 +1,7 @@
 # Pipeline Query Catalog
 
 **Status:** design doc, living document.
-**Last refreshed:** 2026-05-05 (post-#243 byte-parity, post-#270 DDSketch SDK migration, post-#79 inference YAML expansion).
+**Last refreshed:** 2026-05-20 (PromQL-only alignment — removed the never-implemented SQL / ElasticDSL front-ends and ClickHouse / Elasticsearch fallback adapters; the pipeline accepts PromQL and falls back to a Prometheus-compatible backend only). Prior: 2026-05-05 (post-#243 byte-parity, post-#270 DDSketch SDK migration, post-#79 inference YAML expansion).
 **Audience:** anyone asking "can the pipeline answer this query today, and
 where is the work done?"
 **Scope:** the current implementation of the end-to-end pipeline
@@ -86,7 +86,7 @@ SimpleMapStore → query engine`.
       │ SimpleEngine                                         │
       │   (engines/simple_engine.rs)                         │
       │                                                      │
-      │   • PromQL / SQL / ElasticDSL front-ends             │
+      │   • PromQL front-end                                 │
       │   • dispatches by AggregationType to accumulator     │
       │     .query_statistic(...)                            │
       └──────────────────────────────────────────────────────┘
@@ -220,8 +220,10 @@ the same 33-entry set into the 5 deploy overlays
 Plus PromQL spatial aggregators (`sum`, `count`, `avg`, `min`, `max`,
 `topk`, `quantile`) applied after an `_over_time` read.
 
-SQL and ElasticDSL front-ends route through separate HTTP adapters but
-ultimately dispatch to the same accumulators by `AggregationType`.
+PromQL is the only query language the pipeline accepts. (Earlier drafts
+of this doc described SQL and ElasticDSL front-ends; those were never
+implemented and have been removed — see the control plane's
+`query_parser/promql.rs`, the sole L1 parser.)
 
 > **A note on `count`, distinct counting, and PromQL shorthand used in this doc.**
 >
@@ -275,10 +277,8 @@ ultimately dispatch to the same accumulators by `AggregationType`.
 > reader-facing hint about which label gets projected, *not* a
 > runtime difference.
 >
-> **Watch this shape when translating queries from SQL
-> `COUNT(DISTINCT …)`, ClickHouse `uniq(…)`, or
-> `histogram_quantile(…)` idioms from a Prometheus / Grafana
-> dashboard.**
+> **Watch this shape when porting `histogram_quantile(…)` idioms
+> from a Prometheus / Grafana dashboard.**
 
 ---
 
@@ -489,7 +489,7 @@ one of them.
 ## 5. Queries not accelerated on the sketch fast path
 
 The sketch pipeline is an **accelerator**, not a replacement for the
-exact backend DB. Any PromQL / SQL the user issues — whether the sketch
+exact backend DB. Any PromQL the user issues — whether the sketch
 path can serve it or not — ultimately reaches `SimpleEngine`, which has
 three dispositions for each query (or, more often, for each sub-tree
 of each query):
@@ -497,9 +497,9 @@ of each query):
 1. **Full sketch path.** Everything in the catalog (§3) that maps to a
    stored accumulator. Answered from merged state, ms-scale latency.
 2. **Full fallback to the exact backend DB.** The query has no sketch
-   coverage at all (§5.1 below). SimpleEngine forwards to Prometheus /
-   VictoriaMetrics / ClickHouse / Elasticsearch via the forwarding
-   adapters in `drivers/query/adapters/`.
+   coverage at all (§5.1 below). SimpleEngine forwards to a
+   Prometheus-compatible backend (Prometheus / VictoriaMetrics /
+   Thanos) via the forwarding adapter in `drivers/query/adapters/`.
 3. **Split execution.** The query tree has *some* sub-trees mapped to
    sketches and *some* that require exact data (§5.3). SimpleEngine
    runs each sub-tree on its appropriate executor and combines the
@@ -518,31 +518,28 @@ configured.
 
 | Pattern | Why sketch-unsuitable | Fallback target |
 |---|---|---|
-| `last_over_time(m[w])`, `deriv(m[w])`, `delta(m[w])`, `predict_linear(m[w], t)` | Need exact last-value / timestamped passthrough; no sketch preserves sample ordering | Prometheus, VictoriaMetrics, ClickHouse |
+| `last_over_time(m[w])`, `deriv(m[w])`, `delta(m[w])`, `predict_linear(m[w], t)` | Need exact last-value / timestamped passthrough; no sketch preserves sample ordering | Prometheus, VictoriaMetrics, Thanos |
 | Bare selector `m{f}` at sub-window resolution | No sketch; the store holds windowed aggregations, not raw samples | same |
 | Queries that require cross-sketch reinterpretation (e.g. reading a CMS as a KLL) | Not mathematically meaningful | same |
 | Queries on metrics the backend has not been configured to aggregate at all | Nothing is stored | same |
 | Queries against a brand-new dashboard metric the controller has not yet generated a plan for (the "cold query" case from §7 discussion) | `AggregationConfig` does not yet exist in `StreamingConfig` | same *(the fallback serves the user while the backend asynchronously asks the controller to plan the query, hot-reloads `StreamingConfig`, and warms the sketch path for the next call)*. The cold-fallback `parse_jsonl` reader tolerates torn trailing lines (ASAPQuery-backend [#80](https://github.com/ProjectASAP/ASAPQuery-backend/pull/80), 2026-05-05) so a crash mid-write doesn't poison the cold tier. |
 
-The forwarding adapters are production-tested (see
-`tests::prometheus_forwarding_tests`, `tests::clickhouse_forwarding_tests`,
-`tests::elastic_forwarding_tests` in `asap-query-engine`), handle
-server-unreachable and error cases, and can be disabled per adapter.
+The forwarding adapter is production-tested (see
+`tests::prometheus_forwarding_tests` in `asap-query-engine`), handles
+server-unreachable and error cases, and can be disabled.
 
 ### 5.2 The fallback architecture
 
-The forwarding adapters live under
+The forwarding adapter lives under
 `asap-query-engine/src/drivers/query/adapters/`:
 
 | Adapter | File | Targets |
 |---|---|---|
 | Prometheus HTTP | `prometheus_http.rs` | any Prometheus / VictoriaMetrics / Cortex / Thanos-compatible query API |
-| ClickHouse HTTP | `clickhouse_http.rs` | ClickHouse native HTTP endpoint |
-| Elasticsearch | `elastic_http.rs` | Elasticsearch search + SQL API |
 
-The adapter is selected per query language: a PromQL query enters via
-the Prometheus adapter; a SQL query via the ClickHouse adapter; an
-Elastic DSL query via the Elasticsearch adapter. Each adapter has a
+PromQL is the only query language, so the Prometheus adapter is the
+only forwarding adapter; an in-process Thanos engine
+(`thanos_query_engine`) backs the archive tier. The adapter has a
 per-target config with options for:
 
 - `fallback_url` — where to forward if the sketch path cannot serve
@@ -572,27 +569,8 @@ This is the most interesting case, and it maps directly onto the
 > `Partial` coverage is valid: the controller runs exact passthrough
 > for the non-sketch columns and sketch-merge for the rest.
 
-A concrete ClickBench example from that doc:
-
-```sql
-SELECT SearchPhrase, MIN(URL), COUNT(*) AS c
-FROM hits
-WHERE URL LIKE '%google%' AND SearchPhrase <> ''
-GROUP BY SearchPhrase
-ORDER BY c DESC LIMIT 10;
-```
-
-- `COUNT(*)` → `CountSketch(k=10)` accumulator, served from the
-  sketch path
-- `MIN(URL)` → no sketch (URL is a string, and we want the actual
-  URL, not a quantile), served from ClickHouse exact passthrough
-- the outer `ORDER BY c DESC LIMIT 10` reads both sub-trees and
-  combines them: the top-10 search phrases come from the sketch,
-  and for each of those phrases the `MIN(URL)` value is looked up
-  from ClickHouse
-
 SimpleEngine's query planner is the place where this split happens.
-For a PromQL example:
+A PromQL example:
 
 ```promql
 # Alert: per-host CPU exceeds its cluster's p99
@@ -612,7 +590,7 @@ Other split patterns worth naming:
 
 - **Sketch-covered inner + exact outer.** `topk(10, quantile_over_time(0.99, m[5m]) by (service))` — the quantiles come from KLLs, the topk selection is a tiny post-processing step.
 - **Sketch-covered aggregation + exact arithmetic.** `sum by (service) (rate(http_requests_total[5m])) / on(service) count by (service) (rate(http_requests_total[5m]))` — both operands are sketch-covered, the ratio is computed at the query engine.
-- **Sketch counter + exact lookup column.** The ClickBench `MIN(URL)` case above.
+- **Sketch counter + exact lookup column.** A frequency `topk` from a CountSketch, joined `on(label)` against a slowly-changing metadata/ownership gauge served from the exact backend — the top-K keys come from the sketch, the looked-up column from exact passthrough.
 - **Sketch histogram + exact gauge join.** `quantile_over_time(0.99, http_request_duration[1h]) by (service) - on(service) group_left rollout_baseline{service=~".*"}` where the baseline is a slowly-changing gauge served from the exact backend.
 
 The win here is that **the sketch-covered sub-trees still benefit
@@ -896,24 +874,22 @@ the `Data::Ddsketch => …` family of per-variant handlers via
 DDSketch + KLL + HLL + CountSketch + CountMinSketch paths through
 this same wire format end-to-end.
 
-### 6.2 ClickBench Q17 — TopK search phrases
+### 6.2 Top-K heavy hitters (ClickBench Q17 shape)
 
 ```
-Query (SQL):
-  SELECT SearchPhrase, COUNT(*) AS c FROM hits
-  GROUP BY SearchPhrase
-  ORDER BY c DESC LIMIT 10
+Query (PromQL):
+  topk(10, sum by (search_phrase) (count_over_time(search_events[5m])))
 
 AggIntent:
   Frequency{accuracy=...} with top-K absorption
   → countsketchprocessor or countminsketchprocessor with heap
 
 OTel side:
-  countminsketchprocessor(heap=true, k=10, partition_by=[SearchPhrase])
+  countminsketchprocessor(heap=true, k=10, partition_by=[search_phrase])
   emits: Metric.data = CountMinSketch{
            data_points: [
              CountMinSketchDataPoint{
-               attributes: [{SearchPhrase: "..."}],
+               attributes: [{search_phrase: "..."}],
                start_time_unix_nano: t₀,
                time_unix_nano:       t₀ + 10s,
                sample_count: N,
@@ -928,14 +904,14 @@ OTel side:
 
 Backend:
   aggregation_type = CountMinSketchWithHeap
-  grouping_labels   = [] (no further group — top-K is global over SearchPhrase)
+  grouping_labels   = [] (no further group — top-K is global over search_phrase)
 
 Stored:
   CountMinSketchWithHeapAccumulator at (agg_id, "", window)
 
 Query:
   SimpleEngine reads CountMinSketchWithHeapAccumulator.query_statistic(TopK{k:10})
-  → top-10 (SearchPhrase, count) pairs
+  → top-10 (search_phrase, count) pairs
 ```
 
 ### 6.3 Two-stage window aggregation
@@ -1597,12 +1573,13 @@ MinIO / GCS.
    months of data.
 3. **The query path can fall through to the archive lane.** Cold
    queries and exact-required operators (§5.1) hit the forwarding
-   adapters (§5.2), which today talk to Prometheus / ClickHouse /
-   Elasticsearch. A natural extension is to add an S3-backed exact
-   executor — a DataFusion / ClickHouse local cluster that reads
-   the Gorilla-compressed S3 segments — which becomes the *cold
-   tier* of the fallback: in-memory store (hot) → external
-   Prom/CH/ES (warm) → S3/Gorilla (cold).
+   adapter (§5.2), which today talks to a Prometheus-compatible
+   backend (Prometheus / VictoriaMetrics / Thanos). A natural
+   extension is to add an S3-backed exact executor — e.g. a
+   DataFusion cluster that reads the Gorilla-compressed S3 segments —
+   which becomes the *cold tier* of the fallback: in-memory store
+   (hot) → external Prometheus-compatible backend (warm) →
+   S3/Gorilla (cold).
 4. **The two lanes decouple flush rates.** Sketches flush on
    window close (seconds to minutes). Gorilla can flush on size
    thresholds (tens of seconds to minutes) and stream to S3
@@ -1815,7 +1792,7 @@ Alternative architectures remain viable for specific workloads:
 ## 11. Pointers
 
 - Existing compilation-side design:
-  [`docs/sketch-algebra-query-mapping.md`](sketch-algebra-query-mapping.md) — SQL/PromQL → sketch algebra IR
+  [`docs/sketch-algebra-query-mapping.md`](sketch-algebra-query-mapping.md) — PromQL → sketch algebra IR
 - Controller's five-layer plan:
   [`controller/docs/query-to-sketch-translation.md`](../controller/docs/query-to-sketch-translation.md)
 - Precompute engine source of truth:
