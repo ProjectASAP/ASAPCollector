@@ -1,0 +1,22 @@
+# Dockerfile.gorilla-head-merger
+#
+# Builds the gorilla-head-merger binary: a local head-block buffer with a
+# block-level WAL. It receives per-emit Gorilla TSDB blocks from agents over
+# HTTP (/ingest), durably stages them in the served dir (the WAL + hot-store
+# source), and on tumbling-window close concatenates each window's per-series
+# chunks into one block, uploads that single block to S3/MinIO, and prunes the
+# per-emit blocks. The served dir is read by thanos store (FILESYSTEM objstore).
+#
+# Build (from ASAPCollector repo root):
+#   docker build -f deploy/docker/Dockerfile.gorilla-head-merger \
+#     -t asap/gorilla-head-merger:dev .
+
+FROM golang:1.25-bookworm AS build
+WORKDIR /src
+COPY asap-gorilla-go /src/asap-gorilla-go
+WORKDIR /src/asap-gorilla-go
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/gorilla-head-merger ./cmd/gorilla-head-merger/
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/gorilla-head-merger /usr/local/bin/gorilla-head-merger
+ENTRYPOINT ["/usr/local/bin/gorilla-head-merger"]

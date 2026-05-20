@@ -1,0 +1,101 @@
+# agent-gorilla-only.yaml — OTel collector config: gorillas3 ONLY pipeline.
+#
+# ── What travels over the network with this config ────────────────────────
+#
+# INBOUND (producers → this agent):
+#   gRPC port 4317  — standard OTLP/gRPC from fake-exporter producers
+#   HTTP port 4318  — OTLP/HTTP (optional)
+#
+# OUTBOUND (this agent → backend):
+#   HTTP POST to gorilla-head-merger:9099/ingest — Gorilla-compressed Prometheus
+#   TSDB blocks (tarred) built by the gorillas3 processor at tsdb_block_duration
+#   (60s). These are compact binary blocks, NOT raw OTLP. The agent does NOT
+#   write to S3; the merger durably WALs each block and later cuts+flushes the
+#   merged window block to S3 (issue #408) — moving the many small per-emit PUTs
+#   off the S3 request path.
+#
+#   NO outbound gRPC on port 4317: drop_original: true means the metric
+#   stream does NOT reach the nop exporter. gorillas3 absorbs the data and
+#   the downstream pipeline receives ZERO samples.
+#   The nop exporter is required only because OTel's service graph validator
+#   requires at least one exporter per pipeline.
+#
+# ── Why ship to the head-merger (not direct S3) ──────────────────────────
+#
+# gorillas3 still builds the Gorilla 60s blocks but POSTs each to the
+# gorilla-head-merger on node2 (ship_endpoint) instead of PUTting it to MinIO.
+# The merger is the local head block: it buffers the current window's per-emit
+# blocks (WAL), serves them fresh via gorilla-buffer-store, and on window close
+# concatenates them into one block flushed to S3 — read by thanos-store-gateway.
+#
+# ── Image requirement ─────────────────────────────────────────────────────
+#
+# Requires asap/asap-otel:dev built with the gorillas3 ship_endpoint sink
+# (issue #408). To rebuild:
+#   cd /mydata/ASAPCollector
+#   bash restore_otel_collector_contrib_patches.sh
+#   bash build_asap_otel.sh
+#
+# ── Pipeline summary ──────────────────────────────────────────────────────
+#
+# producers → [otlp receiver] → memory_limiter → gorillas3 → batch → [nop]
+#                                                     ↓
+#                          HTTP POST (60s blocks) → gorilla-head-merger:9099
+#                                                       ↓ WAL + cut at window close
+#                                          served dir → gorilla-buffer-store (hot)
+#                                                       ↓ flush cut block to S3
+#                                          MinIO → thanos-store-gateway (archive)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 4096
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1280
+    spike_limit_mib: 256
+
+  gorillas3:
+    window_interval: 60s
+    drop_original: true
+    # Ship built blocks to the head-merger over HTTP instead of S3 PUT. When
+    # set, ship_endpoint replaces tsdb_bucket as the block sink; the S3 fields
+    # are unused. Resolved via the gorilla-head-merger add-host → NODE2_IP.
+    ship_endpoint: http://gorilla-head-merger:9099/ingest
+    max_retries: 3
+    retry_backoff: 1s
+    upload_timeout: 30s
+    block_format: prometheus_tsdb
+    tsdb_block_duration: 60s
+
+  batch:
+    send_batch_size: 1024
+    timeout: 1s
+
+exporters:
+  nop: {}
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, gorillas3, batch]
+      exporters: [nop]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

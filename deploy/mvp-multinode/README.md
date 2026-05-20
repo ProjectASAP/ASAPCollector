@@ -51,7 +51,9 @@ From node0:
 # 1) Build the three images on node0.
 cd /mydata/ASAPCollector
 ./build_asap_otel.sh                                       # asap/asap-otel:dev
-docker build -t asap/fake-exporter:dev deploy/fake-exporter/
+DOCKER_BUILDKIT=1 docker build \
+    -f deploy/docker/Dockerfile.fake-exporter \
+    -t asap/fake-exporter:dev .
 DOCKER_BUILDKIT=1 docker build \
     -f deploy/docker/Dockerfile.backend \
     --build-context backend-src=/mydata/ASAPQuery-backend \

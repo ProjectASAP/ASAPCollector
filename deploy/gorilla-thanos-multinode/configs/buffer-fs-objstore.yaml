@@ -1,0 +1,15 @@
+# buffer-fs-objstore.yaml — Thanos FILESYSTEM objstore for gorilla-buffer-store.
+# THIS is the config the buffer-store (hot-store) actually uses today.
+#
+# Points thanos store at the gorilla-head-merger's served dir. That dir holds:
+#   - the CURRENT (open) window's per-emit blocks (the head — fresh, queryable
+#     immediately, no re-merge), and
+#   - one cut block per completed tumbling window (MERGE_WINDOW, configurable,
+#     default 1h), kept for the last BUFFER_STORE_DURATION.
+# So the hot-store serves both the freshest in-progress data and the recent cut
+# windows from local disk; thanos-store-gateway serves older history from S3.
+#
+# Used in place of the S3 objstore (buffer-objstore.yaml, now unused).
+type: FILESYSTEM
+config:
+  directory: /var/gorilla-buffer/served

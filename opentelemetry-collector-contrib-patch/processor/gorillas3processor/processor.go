@@ -50,11 +50,19 @@ func newProcessor(cfg *Config, next consumer.Metrics, logger *zap.Logger, sink c
 // tumbling-window flush goroutine.
 func (p *gorillaS3Processor) Start(ctx context.Context, _ component.Host) error {
 	if p.cfg.Role != ProcessorRoleAgent && p.sink == nil {
-		s, err := newS3Sink(p.cfg)
-		if err != nil {
-			return err
+		if p.cfg.ShipEndpoint != "" {
+			s, err := newMergerSink(p.cfg)
+			if err != nil {
+				return err
+			}
+			p.sink = s
+		} else {
+			s, err := newS3Sink(p.cfg)
+			if err != nil {
+				return err
+			}
+			p.sink = s
 		}
-		p.sink = s
 	}
 	p.mu.Lock()
 	err := p.ensureRoleStateLocked()
