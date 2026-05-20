@@ -150,6 +150,14 @@ type Config struct {
 	// older than max_observed_timestamp - tsdb_reorder_grace. Later samples
 	// behind already-written data are dropped and counted.
 	TSDBReorderGrace time.Duration `mapstructure:"tsdb_reorder_grace"`
+
+	// ShipEndpoint, when set, redirects emitted TSDB blocks to the
+	// gorilla-head-merger's HTTP ingest endpoint (e.g.
+	// "http://merger:9099/ingest") instead of PUTting them to S3/MinIO. The
+	// Gorilla block-building is unchanged; only the delivery target differs.
+	// The merger durably WALs each per-emit block and later cuts+flushes the
+	// merged window block to S3. Mutually replaces tsdb_bucket as the sink.
+	ShipEndpoint string `mapstructure:"ship_endpoint"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -212,8 +220,8 @@ func (c *Config) Validate() error {
 	if c.TSDBBlockDuration <= 0 {
 		c.TSDBBlockDuration = c.WindowInterval
 	}
-	if c.Role != ProcessorRoleAgent && c.TSDBBucket == "" {
-		return fmt.Errorf("gorillas3: tsdb_bucket must be set")
+	if c.Role != ProcessorRoleAgent && c.TSDBBucket == "" && c.ShipEndpoint == "" {
+		return fmt.Errorf("gorillas3: tsdb_bucket or ship_endpoint must be set")
 	}
 	if c.TSDBReorderGrace < 0 {
 		return fmt.Errorf("gorillas3: tsdb_reorder_grace must be >= 0")

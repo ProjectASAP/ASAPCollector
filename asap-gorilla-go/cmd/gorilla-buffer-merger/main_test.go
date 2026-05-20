@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -57,8 +59,9 @@ func TestNumRetainedWindows(t *testing.T) {
 }
 
 // writeTestBlock writes a minimal valid TSDB block to <dir>/<ulid>/ containing a
-// single series whose one sample sits at sampleTs. Returns the block dir path.
-func writeTestBlock(t *testing.T, dir string, metricName string, sampleTs int64) string {
+// single series (one XOR chunk) at sampleTs. Models one agent per-emit block.
+// Returns the block dir path.
+func writeTestBlock(t *testing.T, dir, metricName string, sampleTs int64) string {
 	t.Helper()
 	xc := chunkenc.NewXORChunk()
 	app, err := xc.Appender()
@@ -69,11 +72,7 @@ func writeTestBlock(t *testing.T, dir string, metricName string, sampleTs int64)
 
 	se := &seriesEntry{
 		lset: labels.FromStrings("__name__", metricName),
-		chks: []chunks.Meta{{
-			MinTime: sampleTs,
-			MaxTime: sampleTs,
-			Chunk:   xc,
-		}},
+		chks: []chunks.Meta{{MinTime: sampleTs, MaxTime: sampleTs, Chunk: xc}},
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
@@ -85,138 +84,120 @@ func writeTestBlock(t *testing.T, dir string, metricName string, sampleTs int64)
 	return filepath.Join(dir, uid.String())
 }
 
-// TestTumblingBucketingAcrossBoundary is the load-bearing test: blocks whose
-// start times fall in different tumbling windows must produce DISTINCT merged
-// output blocks (one per window), never a single rolling block.
-func TestTumblingBucketingAcrossBoundary(t *testing.T) {
+// TestBuildWindowBlockConcatenatesChunks is the load-bearing test: the per-emit
+// blocks of one window must concatenate per-series into ONE block whose chunk
+// count is the sum of the source chunks (append, not re-merge), clamped to the
+// window's interval.
+func TestBuildWindowBlockConcatenatesChunks(t *testing.T) {
 	const windowMs = int64(3600_000) // 1h
+	srcRoot := t.TempDir()
+	dest := t.TempDir()
 
-	stagingRoot := t.TempDir()
-	outputDir := t.TempDir()
+	// Three per-emit blocks within window 0, same series, distinct timestamps.
+	src1 := writeTestBlock(t, filepath.Join(srcRoot, "b1"), "metric_a", 5*60_000)
+	src2 := writeTestBlock(t, filepath.Join(srcRoot, "b2"), "metric_a", 10*60_000)
+	src3 := writeTestBlock(t, filepath.Join(srcRoot, "b3"), "metric_a", 15*60_000)
 
-	// Block A: sample at 0.5h → window 0.
-	tsA := windowMs / 2
-	srcA := writeTestBlock(t, filepath.Join(stagingRoot, "blockA"), "metric_a", tsA)
-	// Block B: sample at 1.5h → window 1 (one boundary past A).
-	tsB := windowMs + windowMs/2
-	srcB := writeTestBlock(t, filepath.Join(stagingRoot, "blockB"), "metric_a", tsB)
-
-	wA := windowOf(tsA, windowMs)
-	wB := windowOf(tsB, windowMs)
-	if wA == wB {
-		t.Fatalf("test setup error: blocks expected in distinct windows, both in %d", wA)
+	uid, nSeries, err := buildWindowBlock(context.Background(), []string{src1, src2, src3}, 0, windowMs, dest)
+	if err != nil {
+		t.Fatalf("buildWindowBlock: %v", err)
 	}
-
-	// Merge each window's block into its own output (mimics tick()'s per-window loop).
-	if err := mergeWindow(context.Background(), wA, []string{srcA}, outputDir, "", windowMs, true); err != nil {
-		t.Fatalf("mergeWindow A: %v", err)
-	}
-	if err := mergeWindow(context.Background(), wB, []string{srcB}, outputDir, "", windowMs, false); err != nil {
-		t.Fatalf("mergeWindow B: %v", err)
+	if nSeries != 1 {
+		t.Fatalf("expected 1 series, got %d", nSeries)
 	}
 
-	// There must be exactly two merged output blocks, keyed to distinct windows.
-	merged := readMergedWindows(outputDir, windowMs)
-	if len(merged) != 2 {
-		t.Fatalf("expected 2 merged windows, got %d: %v", len(merged), merged)
+	bi, err := readBlockMeta(filepath.Join(dest, uid.String()))
+	if err != nil {
+		t.Fatalf("read cut meta: %v", err)
 	}
-	if _, ok := merged[wA]; !ok {
-		t.Errorf("missing merged block for window %d (block A)", wA)
+	if bi.Compaction.Level != 2 {
+		t.Errorf("cut block should be Level 2, got %d", bi.Compaction.Level)
 	}
-	if _, ok := merged[wB]; !ok {
-		t.Errorf("missing merged block for window %d (block B)", wB)
+	// Re-read the cut block: its single series must carry all 3 concatenated chunks.
+	got := map[string]*seriesEntry{}
+	if err := readBlockSeries(context.Background(), filepath.Join(dest, uid.String()), 0, windowMs-1, got); err != nil {
+		t.Fatalf("re-read cut block: %v", err)
 	}
-	if merged[wA] == merged[wB] {
-		t.Errorf("windows %d and %d collapsed into the same merged block %q", wA, wB, merged[wA])
+	if len(got) != 1 {
+		t.Fatalf("expected 1 series in cut block, got %d", len(got))
+	}
+	for _, se := range got {
+		if len(se.chks) != 3 {
+			t.Errorf("expected 3 concatenated chunks, got %d", len(se.chks))
+		}
+	}
+	if bi.MinTime < 0 || bi.MaxTime > windowMs {
+		t.Errorf("cut block range [%d,%d] escapes window [0,%d)", bi.MinTime, bi.MaxTime, windowMs)
+	}
+}
+
+// TestBuildWindowBlockEmpty: source blocks entirely outside the window produce no
+// block (nSeries 0) so the caller can prune them without writing output.
+func TestBuildWindowBlockEmpty(t *testing.T) {
+	const windowMs = int64(3600_000)
+	srcRoot := t.TempDir()
+	dest := t.TempDir()
+
+	// Block sample sits in window 1, but we ask buildWindowBlock for window 0.
+	src := writeTestBlock(t, filepath.Join(srcRoot, "b"), "metric_a", windowMs+60_000)
+	_, nSeries, err := buildWindowBlock(context.Background(), []string{src}, 0, windowMs, dest)
+	if err != nil {
+		t.Fatalf("buildWindowBlock: %v", err)
+	}
+	if nSeries != 0 {
+		t.Errorf("expected 0 series for out-of-window source, got %d", nSeries)
+	}
+}
+
+// TestExtractTarRoundtrip: a block tarred (as the agent ship-to-merger sink does)
+// and extracted by the merger ingest path must round-trip byte-for-byte.
+func TestExtractTarRoundtrip(t *testing.T) {
+	files := map[string][]byte{
+		"meta.json":     []byte(`{"ulid":"01TESTULID","minTime":0,"maxTime":1,"compaction":{"level":1}}`),
+		"index":         []byte("fake-index-bytes"),
+		"chunks/000001": []byte("fake-chunk-bytes"),
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for name, data := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatalf("tar header %s: %v", name, err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatalf("tar write %s: %v", name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
 	}
 
-	// Each merged block's time range must be clamped to its own window.
-	for w, name := range merged {
-		bi, err := readBlockMeta(filepath.Join(outputDir, name))
+	dest := t.TempDir()
+	if err := extractTar(&buf, dest); err != nil {
+		t.Fatalf("extractTar: %v", err)
+	}
+	for name, want := range files {
+		got, err := os.ReadFile(filepath.Join(dest, filepath.FromSlash(name)))
 		if err != nil {
-			t.Fatalf("read merged meta %s: %v", name, err)
+			t.Fatalf("read extracted %s: %v", name, err)
 		}
-		lo, hi := w*windowMs, (w+1)*windowMs
-		if bi.MinTime < lo || bi.MaxTime > hi {
-			t.Errorf("merged window %d block %s range [%d,%d] escapes window [%d,%d)",
-				w, name, bi.MinTime, bi.MaxTime, lo, hi)
+		if !bytes.Equal(got, want) {
+			t.Errorf("file %s mismatch: got %q want %q", name, got, want)
 		}
 	}
 }
 
-// TestTumblingSameWindowMergesToOne verifies that multiple blocks within the
-// SAME window collapse into a single merged output block (the [b1..b60]→merged
-// case), and that re-merging an in-progress window replaces the prior output.
-func TestTumblingSameWindowMergesToOne(t *testing.T) {
-	const windowMs = int64(3600_000)
+// TestExtractTarRejectsTraversal: a malicious entry escaping destDir is rejected.
+func TestExtractTarRejectsTraversal(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	data := []byte("pwned")
+	if err := tw.WriteHeader(&tar.Header{Name: "../escape", Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatalf("tar header: %v", err)
+	}
+	tw.Write(data)
+	tw.Close()
 
-	stagingRoot := t.TempDir()
-	outputDir := t.TempDir()
-
-	// Three blocks all within window 0 (at 5m, 10m, 15m).
-	src1 := writeTestBlock(t, filepath.Join(stagingRoot, "b1"), "metric_a", 5*60_000)
-	src2 := writeTestBlock(t, filepath.Join(stagingRoot, "b2"), "metric_a", 10*60_000)
-	src3 := writeTestBlock(t, filepath.Join(stagingRoot, "b3"), "metric_a", 15*60_000)
-
-	// First merge with 2 blocks (window still in progress).
-	if err := mergeWindow(context.Background(), 0, []string{src1, src2}, outputDir, "", windowMs, false); err != nil {
-		t.Fatalf("mergeWindow first: %v", err)
-	}
-	merged := readMergedWindows(outputDir, windowMs)
-	if len(merged) != 1 {
-		t.Fatalf("after first merge expected 1 merged window, got %d", len(merged))
-	}
-	firstULID := merged[0]
-
-	// Re-merge the same window with all 3 blocks; the new output must replace
-	// the prior one (still exactly one merged block for window 0).
-	if err := mergeWindow(context.Background(), 0, []string{src1, src2, src3}, outputDir, firstULID, windowMs, false); err != nil {
-		t.Fatalf("mergeWindow re-merge: %v", err)
-	}
-	merged = readMergedWindows(outputDir, windowMs)
-	if len(merged) != 1 {
-		t.Fatalf("after re-merge expected 1 merged window, got %d: %v", len(merged), merged)
-	}
-	if merged[0] == firstULID {
-		t.Errorf("re-merge did not produce a new block (still %q)", firstULID)
-	}
-	// Old block must be gone.
-	if _, err := os.Stat(filepath.Join(outputDir, firstULID)); !os.IsNotExist(err) {
-		t.Errorf("prior merged block %q was not removed on re-merge", firstULID)
-	}
-}
-
-// TestExpireMergedWindows verifies windows older than the retention horizon are
-// dropped from the output dir while in-retention windows are kept.
-func TestExpireMergedWindows(t *testing.T) {
-	const windowMs = int64(3600_000)
-	outputDir := t.TempDir()
-	stagingRoot := t.TempDir()
-
-	// Merged blocks for windows 0, 1, 2.
-	for _, w := range []int64{0, 1, 2} {
-		ts := w*windowMs + windowMs/2
-		src := writeTestBlock(t, filepath.Join(stagingRoot, "src", string(rune('a'+w))), "metric_a", ts)
-		if err := mergeWindow(context.Background(), w, []string{src}, outputDir, "", windowMs, true); err != nil {
-			t.Fatalf("mergeWindow window %d: %v", w, err)
-		}
-	}
-	if got := len(readMergedWindows(outputDir, windowMs)); got != 3 {
-		t.Fatalf("expected 3 merged windows before expiry, got %d", got)
-	}
-
-	// Retain only windows >= 1 (oldestWindow = 1): window 0 must be expired.
-	expireMergedWindows(outputDir, windowMs, 1)
-	merged := readMergedWindows(outputDir, windowMs)
-	if len(merged) != 2 {
-		t.Fatalf("expected 2 merged windows after expiry, got %d: %v", len(merged), merged)
-	}
-	if _, ok := merged[0]; ok {
-		t.Errorf("window 0 should have been expired but is still present")
-	}
-	for _, w := range []int64{1, 2} {
-		if _, ok := merged[w]; !ok {
-			t.Errorf("window %d should be retained but is missing", w)
-		}
+	if err := extractTar(&buf, t.TempDir()); err == nil {
+		t.Errorf("expected extractTar to reject path traversal, got nil error")
 	}
 }

@@ -1,44 +1,56 @@
-// gorilla-buffer-merger — tumbling-window TSDB block merger for gorilla-buffer-store.
+// gorilla-head-merger — local head-block buffer + block-level WAL for gorilla-buffer-store.
 //
-// Polls MinIO every poll-interval for 60-second TSDB blocks written by gorillas3 agents.
-// Buckets each block into a FIXED, NON-OVERLAPPING tumbling window of size -window
-// (default 1h) by its start time, and merges all blocks in a window into ONE output
-// block keyed by that window. The output directory holds one merged block per retained
-// window, so gorilla-buffer-store can serve a continuous recent range.
+// The merger is the recent, in-progress HEAD of the storage hierarchy (the role
+// a Prometheus head block plays). gorillas3 agents keep computing Gorilla-XOR
+// per-emit TSDB blocks (tsdb_block_duration, default 60s) but, instead of PUTting
+// each one to S3/MinIO, they POST it to this merger's /ingest endpoint. The merger:
+//
+//   - Durably writes each received per-emit block into the served dir (atomic
+//     temp+rename), ack'ing the agent only after the durable write. The served dir
+//     IS the block-level WAL: on crash restart the blocks are still there and the
+//     window is re-cut from them — no separate log to replay.
+//   - Keeps the current (open) tumbling window's per-emit blocks in the served dir
+//     so the hot-store (thanos store, FILESYSTEM objstore over the served dir) can
+//     serve the freshest data immediately — no re-merge per poll.
+//   - When a window completes (now ≥ window_end + grace), CUTS it once: concatenates
+//     the per-series Gorilla chunks of that window's per-emit blocks into ONE block
+//     (copying chunk bytes — no sample decode/re-encode), uploads that single block
+//     to S3/MinIO, then prunes the window's per-emit blocks (replaced by the cut
+//     block). ~window/emit fewer S3 PUTs than PUTting every per-emit block.
 //
 // Tumbling-window invariant:
 //   - A block belongs to window w = floor(block.minTime / window).
 //   - Window w covers the half-open interval [w*window, (w+1)*window).
-//   - Each window's blocks merge into exactly one output block (re-merged every poll
-//     while the window is still in progress — i.e. while new 60s blocks keep landing).
-//   - Once a window is complete (now ≥ window_end + grace), its merged block is
-//     finalized and is NOT re-merged again.
-//   - The output dir retains the last N windows (N derived from retention / window),
-//     dropping windows older than retention so the hot range stays queryable until
-//     thanos-store-gateway syncs the same blocks from MinIO.
+//   - Per-emit (head) blocks carry Compaction.Level 1 (from gorillas3); the merger's
+//     cut blocks carry Level 2 — that is how the two are told apart in the served dir.
+//   - Each completed window is cut into exactly one Level-2 block. If a late per-emit
+//     block arrives for an already-cut window, the window is re-cut (merging the prior
+//     cut block + the late block) so no data is lost.
+//   - The served dir retains the last N windows (N = ceil(retention/window), min 2),
+//     dropping older windows once thanos-store-gateway has synced the cut blocks from S3.
 //
-// Example (window = 1h, blocks b1..b120 arriving over 2h):
-//
-//	b1..b60   (minTime in [0h, 1h)) → window 0 → merged block M0 = [b1+...+b60]
-//	b61..b120 (minTime in [1h, 2h)) → window 1 → merged block M1 = [b61+...+b120]
-//
-// M0 and M1 are distinct, non-overlapping merged outputs (not a single rolling block).
-//
-// The output directory is served by a thanos store container via FILESYSTEM objstore.
+// The window (-window / MERGE_WINDOW) is configurable, default 1h — the granularity at
+// which the head is cut and flushed to S3/MinIO. The agent's per-emit interval
+// (tsdb_block_duration) is configured independently.
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -58,48 +70,60 @@ import (
 )
 
 var (
-	flagBucket       = flag.String("bucket", "asap-gorilla-tsdb", "MinIO/S3 bucket name")
-	flagEndpoint     = flag.String("endpoint", "minio:9000", "MinIO endpoint (host:port, no scheme)")
-	flagAccessKey    = flag.String("access-key", "asap", "S3 access key")
-	flagSecretKey    = flag.String("secret-key", "asap-local-only", "S3 secret key")
-	flagWindow       = flag.Duration("window", time.Hour, "Tumbling window duration: fixed-size, non-overlapping; configurable, default 1h. This is the granularity at which merged state is flushed to the backend S3/MinIO archive; the agent's per-block emit interval (tsdb_block_duration) is configured independently.")
-	flagRetention    = flag.Duration("retention", 0, "How far back to keep merged windows queryable (0 = same as -window). N retained windows = ceil(retention/window), min 2 so the current + previous window bridge boundaries.")
-	flagGrace        = flag.Duration("grace", time.Minute, "Grace period after a window's end before it is finalized (no further re-merge), to absorb late-arriving 60s blocks.")
-	flagPollInterval = flag.Duration("poll-interval", 15*time.Second, "MinIO poll interval")
-	flagStagingDir   = flag.String("staging-dir", "/var/gorilla-buffer/staging", "Local staging dir for downloaded blocks")
-	flagOutputDir    = flag.String("output-dir", "/var/gorilla-buffer/merged", "Output dir for merged blocks (served by thanos store), one block per retained window")
-	flagMetricsAddr  = flag.String("metrics-addr", ":9100", "Prometheus metrics endpoint address (empty to disable)")
+	flagBucket      = flag.String("bucket", "asap-gorilla-tsdb", "S3/MinIO bucket for flushed (cut) window blocks")
+	flagEndpoint    = flag.String("endpoint", "minio:9000", "S3/MinIO endpoint (host:port, no scheme)")
+	flagAccessKey   = flag.String("access-key", "asap", "S3 access key")
+	flagSecretKey   = flag.String("secret-key", "asap-local-only", "S3 secret key")
+	flagWindow      = flag.Duration("window", time.Hour, "Tumbling window duration: fixed-size, non-overlapping; configurable, default 1h. Granularity at which the head is cut and flushed to S3/MinIO; the agent's per-emit interval (tsdb_block_duration) is configured independently.")
+	flagRetention   = flag.Duration("retention", 0, "How far back to keep cut window blocks queryable from the local served dir (0 = same as -window). Retained windows = ceil(retention/window), min 2.")
+	flagGrace       = flag.Duration("grace", time.Minute, "Grace period after a window's end before it is cut+flushed, to absorb late-arriving per-emit blocks.")
+	flagCutInterval = flag.Duration("cut-interval", 15*time.Second, "How often to check for completed windows ready to cut+flush.")
+	flagServedDir   = flag.String("served-dir", "/var/gorilla-buffer/served", "Hot dir served by thanos store (FILESYSTEM objstore): holds the current window's per-emit blocks (the head) + cut window blocks. Also the durable block-level WAL of received blocks.")
+	flagIngestAddr  = flag.String("ingest-addr", ":9099", "HTTP address for the per-emit block ingest endpoint (POST /ingest)")
+	flagMaxBlockMiB = flag.Int64("max-block-mib", 256, "Max accepted ingest body size (MiB)")
+	flagMetricsAddr = flag.String("metrics-addr", ":9100", "Prometheus metrics endpoint address (empty to disable)")
 )
 
-// Self-monitoring counters exposed on /metrics.
+// mu serializes served-dir mutations (ingest rename, cut swap+prune, retention
+// expiry) so a window is never read mid-cut and a block never appears/disappears
+// partially. Reads of already-written, immutable block dirs need no lock.
+var mu sync.Mutex
+
 var (
-	metricPollCycles = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "gorilla_merger_poll_cycles_total",
-		Help: "Total MinIO poll cycles.",
+	metricBlocksIngested = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "gorilla_head_blocks_ingested_total",
+		Help: "Per-emit blocks received and durably written to the head/WAL.",
 	})
-	metricMergeErrors = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "gorilla_merger_errors_total",
-		Help: "Total errors during poll/merge cycles.",
+	metricCutErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "gorilla_head_cut_errors_total",
+		Help: "Errors while cutting/flushing a completed window.",
 	})
-	metricStagingBlocks = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "gorilla_merger_staging_blocks",
-		Help: "Number of retained (in-retention) staging blocks after the last poll.",
+	metricHeadBlocks = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "gorilla_head_uncut_blocks",
+		Help: "Per-emit (Level-1) blocks currently in the served dir (head, not yet cut).",
 	})
-	metricMergedWindows = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "gorilla_merger_merged_windows",
-		Help: "Number of merged output blocks (one per retained tumbling window) after the last poll.",
+	metricCutWindows = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "gorilla_head_cut_windows",
+		Help: "Cut (Level-2) window blocks retained in the served dir.",
 	})
-	metricLastMergeTime = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "gorilla_merger_last_merge_success_timestamp_seconds",
-		Help: "Unix timestamp of the last successful merge cycle.",
+	metricBlocksUploaded = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "gorilla_head_blocks_uploaded_total",
+		Help: "Cut window blocks uploaded to S3/MinIO.",
+	})
+	metricLastCutTime = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "gorilla_head_last_cut_timestamp_seconds",
+		Help: "Unix time of the last successful cut+flush.",
 	})
 )
 
-// blockInfo holds the time-range fields we need from a block's meta.json.
+// blockInfo holds the meta.json fields we need to classify and window a block.
 type blockInfo struct {
-	ULID    string `json:"ulid"`
-	MinTime int64  `json:"minTime"`
-	MaxTime int64  `json:"maxTime"`
+	ULID       string `json:"ulid"`
+	MinTime    int64  `json:"minTime"`
+	MaxTime    int64  `json:"maxTime"`
+	Compaction struct {
+		Level int `json:"level"`
+	} `json:"compaction"`
 }
 
 // seriesEntry accumulates chunks for one time series across multiple source blocks.
@@ -131,22 +155,24 @@ func numRetainedWindows(retention, window time.Duration) int64 {
 
 func main() {
 	flag.Parse()
-	slog.Info("gorilla-buffer-merger starting (tumbling window)",
+	slog.Info("gorilla-head-merger starting (local head + block WAL)",
 		"bucket", *flagBucket,
 		"endpoint", *flagEndpoint,
 		"window", *flagWindow,
 		"retention", *flagRetention,
 		"grace", *flagGrace,
-		"poll", *flagPollInterval,
+		"cut_interval", *flagCutInterval,
+		"served_dir", *flagServedDir,
+		"ingest_addr", *flagIngestAddr,
 		"retained_windows", numRetainedWindows(*flagRetention, *flagWindow),
 	)
 
-	for _, d := range []string{*flagStagingDir, *flagOutputDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			slog.Error("create dir", "path", d, "err", err)
-			os.Exit(1)
-		}
+	if err := os.MkdirAll(*flagServedDir, 0o755); err != nil {
+		slog.Error("create served dir", "path", *flagServedDir, "err", err)
+		os.Exit(1)
 	}
+	// Drop any partial temp dirs left by a crash mid-ingest or mid-cut.
+	cleanTempDirs(*flagServedDir)
 
 	ctx := context.Background()
 	s3c, err := newS3Client(ctx)
@@ -155,7 +181,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start Prometheus metrics server.
 	if *flagMetricsAddr != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
@@ -167,24 +192,24 @@ func main() {
 		}()
 	}
 
-	// Run immediately, then on every tick.
-	metricPollCycles.Inc()
-	if err := tick(ctx, s3c); err != nil {
-		slog.Error("initial sync", "err", err)
-		metricMergeErrors.Inc()
-	} else {
-		metricLastMergeTime.SetToCurrentTime()
-	}
-	ticker := time.NewTicker(*flagPollInterval)
+	// Ingest server: agents POST per-emit blocks here.
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/ingest", handleIngest)
+		slog.Info("ingest server listening", "addr", *flagIngestAddr)
+		if err := http.ListenAndServe(*flagIngestAddr, mux); err != nil {
+			slog.Error("ingest server failed", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	// Cut loop: run immediately (replays any past-grace windows present on disk
+	// from before a restart), then on every tick.
+	cutTick(ctx, s3c)
+	ticker := time.NewTicker(*flagCutInterval)
 	defer ticker.Stop()
 	for range ticker.C {
-		metricPollCycles.Inc()
-		if err := tick(ctx, s3c); err != nil {
-			slog.Error("sync error", "err", err)
-			metricMergeErrors.Inc()
-		} else {
-			metricLastMergeTime.SetToCurrentTime()
-		}
+		cutTick(ctx, s3c)
 	}
 }
 
@@ -205,289 +230,287 @@ func newS3Client(ctx context.Context) (*s3.Client, error) {
 	}), nil
 }
 
-func tick(ctx context.Context, s3c *s3.Client) error {
-	now := time.Now()
-	windowMs := flagWindow.Milliseconds()
-	if windowMs <= 0 {
-		return fmt.Errorf("window must be positive, got %s", *flagWindow)
+// handleIngest receives one per-emit TSDB block as a tar stream and durably
+// writes it into the served dir under its ULID. The agent should drop its local
+// copy only after a 200 response (the block is then on the merger's WAL).
+func handleIngest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
 	}
-	graceMs := flagGrace.Milliseconds()
-	nowMs := now.UnixMilli()
+	body := http.MaxBytesReader(w, r.Body, *flagMaxBlockMiB<<20)
 
-	// Tumbling-window bookkeeping.
-	curWindow := windowOf(nowMs, windowMs)
-	nWindows := numRetainedWindows(*flagRetention, *flagWindow)
-	// Oldest window index we still retain. Windows < oldestWindow are expired.
-	oldestWindow := curWindow - (nWindows - 1)
-
-	// Step 1: list all TSDB block ULIDs in MinIO.
-	minioBlocks, err := listMinIOBlocks(ctx, s3c, *flagBucket)
+	tmp, err := os.MkdirTemp(*flagServedDir, ".ingest-")
 	if err != nil {
-		return fmt.Errorf("list minio blocks: %w", err)
+		http.Error(w, "mkdtemp: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.RemoveAll(tmp)
+		}
+	}()
+
+	if err := extractTar(body, tmp); err != nil {
+		http.Error(w, "extract: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
-	// Step 2: download any new in-retention blocks to staging. A block belongs
-	// to the tumbling window of its start time (minTime); only blocks whose
-	// window is still retained are downloaded.
-	for _, mb := range minioBlocks {
-		if windowOf(mb.MinTime, windowMs) < oldestWindow {
-			continue
-		}
-		localDir := filepath.Join(*flagStagingDir, mb.ULID)
-		if _, err := os.Stat(localDir); os.IsNotExist(err) {
-			slog.Info("downloading block", "ulid", mb.ULID, "window", windowOf(mb.MinTime, windowMs))
-			if dlErr := downloadBlock(ctx, s3c, *flagBucket, mb.ULID, localDir); dlErr != nil {
-				slog.Error("download block", "ulid", mb.ULID, "err", dlErr)
-				os.RemoveAll(localDir)
-			}
-		}
-	}
-
-	// Step 3: audit staging — bucket retained blocks by tumbling window, drop expired.
-	entries, err := os.ReadDir(*flagStagingDir)
-	if err != nil {
-		return fmt.Errorf("read staging dir: %w", err)
-	}
-	byWindow := map[int64][]string{} // window index → staging block dirs
-	var retained int
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		dir := filepath.Join(*flagStagingDir, e.Name())
-		meta, err := readBlockMeta(dir)
+	// Derive the ULID from the query param, falling back to the block's meta.json.
+	ulidStr := r.URL.Query().Get("ulid")
+	if ulidStr == "" {
+		bi, err := readBlockMeta(tmp)
 		if err != nil {
-			slog.Warn("read meta.json", "dir", e.Name(), "err", err)
-			continue
+			http.Error(w, "read meta.json: "+err.Error(), http.StatusBadRequest)
+			return
 		}
-		w := windowOf(meta.MinTime, windowMs)
-		if w < oldestWindow {
-			slog.Info("dropping expired staging block", "ulid", meta.ULID, "window", w)
-			os.RemoveAll(dir)
-			continue
-		}
-		byWindow[w] = append(byWindow[w], dir)
-		retained++
+		ulidStr = bi.ULID
 	}
-	metricStagingBlocks.Set(float64(retained))
-
-	// Step 4: for each retained window, ensure a single merged output block exists.
-	// A window is finalized (frozen, never re-merged) once now ≥ window_end + grace.
-	// Until then it is re-merged every poll as new 60s blocks land.
-	if err := os.MkdirAll(*flagOutputDir, 0o755); err != nil {
-		return fmt.Errorf("create output dir: %w", err)
+	if ulidStr == "" || strings.ContainsAny(ulidStr, "/.") {
+		http.Error(w, "missing or invalid block ulid", http.StatusBadRequest)
+		return
 	}
-	// existingMerged maps window index → output block dir name (ULID) already on disk.
-	existingMerged := readMergedWindows(*flagOutputDir, windowMs)
-
-	windows := make([]int64, 0, len(byWindow))
-	for w := range byWindow {
-		windows = append(windows, w)
-	}
-	sort.Slice(windows, func(i, j int) bool { return windows[i] < windows[j] })
-
-	var firstErr error
-	for _, w := range windows {
-		windowEnd := (w + 1) * windowMs
-		finalized := nowMs >= windowEnd+graceMs
-		_, alreadyMerged := existingMerged[w]
-
-		// Skip re-merge of a window that is finalized AND already has its merged
-		// block on disk — its output is frozen.
-		if finalized && alreadyMerged {
-			continue
-		}
-		if err := mergeWindow(ctx, w, byWindow[w], *flagOutputDir, existingMerged[w], windowMs, finalized); err != nil {
-			slog.Warn("merge window", "window", w, "err", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
+	if _, err := os.Stat(filepath.Join(tmp, "meta.json")); err != nil {
+		http.Error(w, "block missing meta.json", http.StatusBadRequest)
+		return
 	}
 
-	// Step 5: expire merged output blocks for windows older than retention.
-	expireMergedWindows(*flagOutputDir, windowMs, oldestWindow)
+	syncDir(tmp)
+	dst := filepath.Join(*flagServedDir, ulidStr)
 
-	// Report retained merged-window count.
-	metricMergedWindows.Set(float64(len(readMergedWindows(*flagOutputDir, windowMs))))
-
-	if retained == 0 {
-		slog.Info("no in-retention blocks")
+	mu.Lock()
+	if _, statErr := os.Stat(dst); statErr == nil {
+		// Idempotent: a re-delivered block is already present.
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		return
 	}
-	return firstErr
+	renErr := os.Rename(tmp, dst)
+	mu.Unlock()
+	if renErr != nil {
+		http.Error(w, "commit: "+renErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	cleanup = false
+	syncDir(*flagServedDir)
+	metricBlocksIngested.Inc()
+	w.WriteHeader(http.StatusOK)
 }
 
-// listMinIOBlocks enumerates top-level TSDB block directories in the bucket.
-// Each block is a "directory" prefix {ULID}/ containing meta.json, chunks/, index.
-func listMinIOBlocks(ctx context.Context, s3c *s3.Client, bucket string) ([]blockInfo, error) {
-	var blocks []blockInfo
-	var token *string
+// extractTar unpacks a tar stream into destDir, rejecting unsafe paths and
+// fsync'ing each regular file so the block survives a crash once committed.
+func extractTar(r io.Reader, destDir string) error {
+	tr := tar.NewReader(r)
 	for {
-		resp, err := s3c.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            &bucket,
-			Delimiter:         aws.String("/"),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("ListObjectsV2: %w", err)
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
 		}
-		for _, cp := range resp.CommonPrefixes {
-			if cp.Prefix == nil {
-				continue
+		if err != nil {
+			return err
+		}
+		name := filepath.Clean(hdr.Name)
+		if name == "." {
+			continue
+		}
+		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("unsafe tar path: %q", hdr.Name)
+		}
+		target := filepath.Join(destDir, name)
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
 			}
-			ulidStr := (*cp.Prefix)[:len(*cp.Prefix)-1]
-			metaKey := ulidStr + "/meta.json"
-			obj, err := s3c.GetObject(ctx, &s3.GetObjectInput{Bucket: &bucket, Key: &metaKey})
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 			if err != nil {
-				slog.Warn("fetch meta.json", "ulid", ulidStr, "err", err)
-				continue
+				return err
 			}
-			body, _ := io.ReadAll(obj.Body)
-			obj.Body.Close()
-			var bi blockInfo
-			if json.Unmarshal(body, &bi) == nil {
-				blocks = append(blocks, bi)
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return err
 			}
-		}
-		if !aws.ToBool(resp.IsTruncated) {
-			break
-		}
-		token = resp.NextContinuationToken
-	}
-	return blocks, nil
-}
-
-// downloadBlock fetches all S3 objects under the {ulidStr}/ prefix into destDir.
-func downloadBlock(ctx context.Context, s3c *s3.Client, bucket, ulidStr, destDir string) error {
-	prefix := ulidStr + "/"
-	var token *string
-	for {
-		resp, err := s3c.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            &bucket,
-			Prefix:            &prefix,
-			ContinuationToken: token,
-		})
-		if err != nil {
-			return fmt.Errorf("ListObjectsV2: %w", err)
-		}
-		for _, obj := range resp.Contents {
-			if obj.Key == nil {
-				continue
+			if err := f.Sync(); err != nil {
+				f.Close()
+				return err
 			}
-			key := *obj.Key
-			rel := key[len(prefix):]
-			if rel == "" {
-				continue
-			}
-			if err := downloadFile(ctx, s3c, bucket, key, filepath.Join(destDir, filepath.FromSlash(rel))); err != nil {
-				return fmt.Errorf("download %s: %w", key, err)
+			if err := f.Close(); err != nil {
+				return err
 			}
 		}
-		if !aws.ToBool(resp.IsTruncated) {
-			break
-		}
-		token = resp.NextContinuationToken
 	}
 	return nil
 }
 
-func downloadFile(ctx context.Context, s3c *s3.Client, bucket, key, localPath string) error {
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		return err
+// cutTick scans the served dir, cuts any completed windows (past end+grace) that
+// still hold per-emit blocks, and expires windows older than retention.
+func cutTick(ctx context.Context, s3c *s3.Client) {
+	windowMs := flagWindow.Milliseconds()
+	if windowMs <= 0 {
+		slog.Error("window must be positive", "window", *flagWindow)
+		return
 	}
-	obj, err := s3c.GetObject(ctx, &s3.GetObjectInput{Bucket: &bucket, Key: &key})
-	if err != nil {
-		return err
-	}
-	defer obj.Body.Close()
-	f, err := os.Create(localPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = io.Copy(f, obj.Body)
-	return err
-}
+	graceMs := flagGrace.Milliseconds()
+	nowMs := time.Now().UnixMilli()
+	curWindow := windowOf(nowMs, windowMs)
+	oldestWindow := curWindow - (numRetainedWindows(*flagRetention, *flagWindow) - 1)
 
-func readBlockMeta(dir string) (blockInfo, error) {
-	body, err := os.ReadFile(filepath.Join(dir, "meta.json"))
-	if err != nil {
-		return blockInfo{}, err
+	type cutJob struct {
+		w   int64
+		src []string // per-emit block dirs (+ existing cut block) to merge
 	}
-	var bi blockInfo
-	return bi, json.Unmarshal(body, &bi)
-}
+	var jobs []cutJob
 
-// readMergedWindows scans the output dir and maps each merged block's tumbling
-// window index (derived from its meta.json minTime) → block dir name (ULID).
-// Skips temp (".merging-*") dirs. If two blocks somehow share a window, the
-// lexicographically-last ULID wins (newer ULIDs sort later).
-func readMergedWindows(outputDir string, windowMs int64) map[int64]string {
-	out := map[int64]string{}
-	entries, err := os.ReadDir(outputDir)
+	mu.Lock()
+	entries, err := os.ReadDir(*flagServedDir)
 	if err != nil {
-		return out
+		mu.Unlock()
+		slog.Error("read served dir", "err", err)
+		return
 	}
+	headByWindow := map[int64][]string{} // Level-1 per-emit blocks
+	cutByWindow := map[int64]string{}    // Level-2 cut block dir
+	var headCount int
 	for _, e := range entries {
 		if !e.IsDir() || len(e.Name()) == 0 || e.Name()[0] == '.' {
 			continue
 		}
-		dir := filepath.Join(outputDir, e.Name())
+		dir := filepath.Join(*flagServedDir, e.Name())
 		meta, err := readBlockMeta(dir)
 		if err != nil {
 			continue
 		}
 		w := windowOf(meta.MinTime, windowMs)
-		if prev, ok := out[w]; !ok || e.Name() > prev {
-			out[w] = e.Name()
+		if meta.Compaction.Level >= 2 {
+			cutByWindow[w] = dir
+		} else {
+			headByWindow[w] = append(headByWindow[w], dir)
+			headCount++
 		}
 	}
-	return out
-}
 
-// expireMergedWindows removes merged output blocks whose tumbling window is
-// older than oldestWindow (i.e. fell out of the retention range).
-func expireMergedWindows(outputDir string, windowMs, oldestWindow int64) {
-	entries, err := os.ReadDir(outputDir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if !e.IsDir() || len(e.Name()) == 0 || e.Name()[0] == '.' {
-			continue
-		}
-		dir := filepath.Join(outputDir, e.Name())
-		meta, err := readBlockMeta(dir)
-		if err != nil {
-			continue
-		}
-		if windowOf(meta.MinTime, windowMs) < oldestWindow {
-			slog.Info("expiring merged window block", "ulid", e.Name(), "window", windowOf(meta.MinTime, windowMs))
+	// Expire windows older than retention (both cut blocks and any stray head blocks).
+	for w, dir := range cutByWindow {
+		if w < oldestWindow {
+			slog.Info("expiring cut window block", "window", w)
 			os.RemoveAll(dir)
+			delete(cutByWindow, w)
 		}
 	}
+	for w, dirs := range headByWindow {
+		if w < oldestWindow {
+			for _, d := range dirs {
+				os.RemoveAll(d)
+			}
+			delete(headByWindow, w)
+		}
+	}
+
+	// A completed window (past end+grace) that still has per-emit blocks must be
+	// cut. Merge in the prior cut block too, so a late-arriving per-emit block is
+	// folded in without losing the already-cut data.
+	for w, dirs := range headByWindow {
+		windowEnd := (w + 1) * windowMs
+		if nowMs >= windowEnd+graceMs {
+			src := append([]string{}, dirs...)
+			if cut, ok := cutByWindow[w]; ok {
+				src = append(src, cut)
+			}
+			jobs = append(jobs, cutJob{w: w, src: src})
+		}
+	}
+	mu.Unlock()
+
+	for _, j := range jobs {
+		if err := cutWindow(ctx, s3c, j.w, windowMs, j.src); err != nil {
+			slog.Error("cut window", "window", j.w, "err", err)
+			metricCutErrors.Inc()
+		}
+	}
+
+	metricHeadBlocks.Set(float64(headCount))
+	metricCutWindows.Set(float64(len(cutByWindow)))
 }
 
-// mergeWindow merges all source blocks of a single tumbling window into one
-// output block, then atomically swaps it in place of any prior merged block for
-// the same window (prevReplace). The merged block's time bounds are clamped to
-// the window's half-open interval [w*window, (w+1)*window) so windows never
-// overlap, regardless of straggler chunks that bleed slightly past the boundary.
-func mergeWindow(ctx context.Context, w int64, srcDirs []string, outputDir, prevReplace string, windowMs int64, finalized bool) error {
+// cutWindow concatenates the per-series chunks of a completed window's source
+// blocks into one Level-2 block, uploads it to S3, then atomically swaps it into
+// the served dir and prunes the source blocks. Time bounds are clamped to the
+// window's half-open interval so windows never overlap.
+func cutWindow(ctx context.Context, s3c *s3.Client, w int64, windowMs int64, srcDirs []string) error {
 	windowStart := w * windowMs
 	windowEnd := (w + 1) * windowMs // exclusive
 
+	tmpDir, err := os.MkdirTemp(*flagServedDir, ".cutting-")
+	if err != nil {
+		return fmt.Errorf("mkdtemp: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	newUID, nSeries, err := buildWindowBlock(ctx, srcDirs, windowStart, windowEnd, tmpDir)
+	if err != nil {
+		return fmt.Errorf("build cut block: %w", err)
+	}
+
+	// Empty window: nothing worth a block — just prune the source blocks so the
+	// window stops being re-scanned.
+	if nSeries == 0 {
+		mu.Lock()
+		for _, d := range srcDirs {
+			os.RemoveAll(d)
+		}
+		mu.Unlock()
+		slog.Info("cut window: no series, pruned sources", "window", w, "src_blocks", len(srcDirs))
+		return nil
+	}
+	cutBlockDir := filepath.Join(tmpDir, newUID.String())
+
+	// Upload to S3 FIRST so the archive has the window before the local per-emit
+	// blocks (the only other copy) are pruned. If a crash happens after upload but
+	// before the local swap, the next tick re-cuts (new ULID, duplicate object in
+	// S3 — harmless, Thanos dedups identical chunks at query time).
+	if err := uploadBlockToS3(ctx, s3c, *flagBucket, newUID.String(), cutBlockDir); err != nil {
+		return fmt.Errorf("upload cut block: %w", err)
+	}
+	metricBlocksUploaded.Inc()
+
+	dst := filepath.Join(*flagServedDir, newUID.String())
+	mu.Lock()
+	renErr := os.Rename(cutBlockDir, dst)
+	if renErr == nil {
+		// Prune the source blocks (per-emit blocks + any prior cut block for this
+		// window); they are now represented by the single new cut block.
+		for _, d := range srcDirs {
+			os.RemoveAll(d)
+		}
+	}
+	mu.Unlock()
+	if renErr != nil {
+		return fmt.Errorf("commit cut block: %w", renErr)
+	}
+	syncDir(*flagServedDir)
+
+	metricLastCutTime.SetToCurrentTime()
+	slog.Info("cut+flushed window",
+		"window", w, "ulid", newUID, "series", nSeries, "src_blocks", len(srcDirs))
+	return nil
+}
+
+// buildWindowBlock reads the in-window chunks of srcDirs, concatenates the
+// per-series Gorilla chunks (copying chunk bytes — no sample decode/re-encode),
+// deduplicates overlapping chunks, and writes ONE Level-2 block into destDir.
+// Returns the new block's ULID and the number of series written (0 ⇒ no block
+// written because the window had no in-range samples).
+func buildWindowBlock(ctx context.Context, srcDirs []string, windowStart, windowEnd int64, destDir string) (ulid.ULID, int, error) {
 	byKey := map[string]*seriesEntry{}
 	for _, dir := range srcDirs {
-		// Clamp to the window's interval so a single block's chunks can only ever
-		// land in one window's merged output (chunks are 60s blocks, well inside).
 		if err := readBlockSeries(ctx, dir, windowStart, windowEnd-1, byKey); err != nil {
 			slog.Warn("read block series", "dir", dir, "err", err)
 		}
-	}
-	if len(byKey) == 0 {
-		slog.Info("no series after filter, skipping write", "window", w)
-		return nil
 	}
 
 	// Sort series by labels; deduplicate overlapping chunks within each series.
@@ -508,38 +531,94 @@ func mergeWindow(ctx context.Context, w int64, srcDirs []string, outputDir, prev
 			all = append(all, se)
 		}
 	}
+	if len(all) == 0 {
+		return ulid.ULID{}, 0, nil
+	}
+
 	sort.Slice(all, func(i, j int) bool {
 		return labels.Compare(all[i].lset, all[j].lset) < 0
 	})
 
-	// Write to a temp subdir inside outputDir, then rename atomically.
-	tmpDir, err := os.MkdirTemp(outputDir, ".merging-")
+	uid, err := writeMergedBlock(ctx, destDir, all, windowStart, windowEnd)
 	if err != nil {
-		return fmt.Errorf("mkdtemp: %w", err)
+		return ulid.ULID{}, 0, err
 	}
-	defer os.RemoveAll(tmpDir)
+	return uid, len(all), nil
+}
 
-	newUID, err := writeMergedBlock(ctx, tmpDir, all, windowStart, windowEnd)
-	if err != nil {
-		return fmt.Errorf("write merged block: %w", err)
+// uploadBlockToS3 uploads every file of a local block dir to the bucket under the
+// `<ulid>/` prefix, writing meta.json LAST so readers see a complete block
+// (Thanos uses meta.json's presence as the readiness signal).
+func uploadBlockToS3(ctx context.Context, s3c *s3.Client, bucket, ulidStr, blockDir string) error {
+	var files []string
+	if err := filepath.WalkDir(blockDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			files = append(files, path)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
-
-	newDst := filepath.Join(outputDir, newUID.String())
-	if err := os.Rename(filepath.Join(tmpDir, newUID.String()), newDst); err != nil {
-		return fmt.Errorf("move merged block: %w", err)
+	sort.Slice(files, func(i, j int) bool {
+		mi := strings.HasSuffix(files[i], "meta.json")
+		mj := strings.HasSuffix(files[j], "meta.json")
+		if mi != mj {
+			return mj // non-meta first; meta.json last
+		}
+		return files[i] < files[j]
+	})
+	for _, path := range files {
+		rel, err := filepath.Rel(blockDir, path)
+		if err != nil {
+			return err
+		}
+		key := ulidStr + "/" + filepath.ToSlash(rel)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if _, err := s3c.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: &bucket,
+			Key:    &key,
+			Body:   bytes.NewReader(data),
+		}); err != nil {
+			return fmt.Errorf("put %s: %w", key, err)
+		}
 	}
-	os.RemoveAll(tmpDir)
-
-	// Replace the prior merged block for THIS window only (if any), after the
-	// new one is in place. Other windows' merged blocks are left untouched.
-	if prevReplace != "" && prevReplace != newUID.String() {
-		slog.Info("replacing merged window block", "window", w, "old", prevReplace, "new", newUID.String())
-		os.RemoveAll(filepath.Join(outputDir, prevReplace))
-	}
-
-	slog.Info("merged window block written",
-		"window", w, "ulid", newUID, "series", len(all), "src_blocks", len(srcDirs), "finalized", finalized)
 	return nil
+}
+
+// syncDir fsyncs a directory so a rename into/within it is durable.
+func syncDir(dir string) {
+	if f, err := os.Open(dir); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
+}
+
+// cleanTempDirs removes partial temp dirs (.ingest-*/.cutting-*) left by a crash.
+func cleanTempDirs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() && len(e.Name()) > 0 && e.Name()[0] == '.' {
+			os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+func readBlockMeta(dir string) (blockInfo, error) {
+	body, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+	if err != nil {
+		return blockInfo{}, err
+	}
+	var bi blockInfo
+	return bi, json.Unmarshal(body, &bi)
 }
 
 // readBlockSeries opens a TSDB block directory and appends its in-window chunks
