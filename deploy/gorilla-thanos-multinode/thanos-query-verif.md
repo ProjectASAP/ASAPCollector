@@ -274,11 +274,18 @@ All queries were run against `http://10.10.1.3:10903/api/v1/query`.
 
 > **⚠️ SUPERSEDED (historical record only).** This section describes the
 > **2026-05-14 gorilla-gateway architecture**, which has been **removed**.
-> gorilla-gateway no longer exists: agents now write 60s TSDB blocks **directly to
-> MinIO**, and a `gorilla-buffer-merger` produces tumbling-window merged blocks. The
-> current architecture is documented below in the **2026-05-18 Direct-MinIO** section
-> and the merge-design section (now tumbling, see Part 6). Keep this part only as a
-> record of the old gateway-based run; do not use its commands or topology.
+> gorilla-gateway no longer exists. In the current architecture (v5, head-block +
+> block-level WAL, issue #408) agents build per-emit (default 60s) Gorilla TSDB blocks
+> and **POST each one over HTTP** to `gorilla-head-merger:9099/ingest` — they no longer
+> write to MinIO/S3 at all. The merger durably writes each block into a single served
+> dir (`/var/gorilla-buffer/served`, the block-level WAL); that dir holds the current
+> window's per-emit head blocks plus one cut block per completed tumbling window
+> (`MERGE_WINDOW`, configurable, default 1h). On window close the merger cuts the window
+> once, uploads the single cut block to MinIO, and prunes the window's per-emit blocks;
+> S3 holds only cut blocks. The hot-store (`gorilla-buffer-store`) reads the served dir
+> over a FILESYSTEM objstore; the archive-store (`thanos-store-gateway`) reads the cut
+> blocks from MinIO. Keep this part only as a record of the old gateway-based run; do not
+> use its commands or topology.
 
 Verified on **2026-05-14** with gorilla-gateway on node1 (now removed). The full `bash run_demo.sh all` command (sync → down → up → 30s warmup → 90s soak → verify → down) completed 5/5 checks at the time.
 
@@ -547,12 +554,19 @@ SUMMARY: 25/25 checks passed — ALL CHECKS PASSED
 
 > **⚠️ HISTORICAL.** These numbers were measured against the **v3 sliding-window**
 > merger (one continuously-rewritten merged block, drop blocks where maxTime ≤ now−1h).
-> The current design is **v4 tumbling-window** (fixed-size, non-overlapping windows —
-> `-window`, configurable, default 1h; one merged block per window; finalized windows
-> frozen). The performance characteristics
+> They were already superseded by **v4 tumbling-window** (fixed-size, non-overlapping
+> windows — `-window`, configurable, default 1h; one merged block per window; finalized
+> windows frozen). The performance characteristics
 > (sub-second merge, ~1 block touched per window at query time) are expected to carry
 > over, but the "single merged block" observations below are specific to the old sliding
-> design. Re-measure under the tumbling merger before quoting these numbers as current.
+> design.
+>
+> **v5 (head-block + block-level WAL, issue #408) supersedes the merge model entirely.**
+> Agents no longer write to MinIO; they **POST per-emit blocks** to `gorilla-head-merger`,
+> which WALs them in a single served dir and **cuts one block per tumbling window** on
+> window close (concatenating Gorilla chunks, no per-poll re-merge), flushing only that cut
+> block to S3. The per-poll re-merge and "single rolling merged block" framing below no
+> longer apply. Re-measure under the v5 head-merger before quoting these numbers as current.
 
 **Design under test (v3 sliding, superseded):** gorilla-thanos-multinode v3 — `gorilla-buffer-merger` + `gorilla-buffer-store` (FILESYSTEM objstore).
 

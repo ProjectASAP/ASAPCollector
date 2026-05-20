@@ -5,8 +5,9 @@
 #       design where gorilla-buffer-store read the hot window straight from the MinIO
 #       bucket with --min-time=-BUFFER_STORE_DURATION. NOT used anymore.
 #   - buffer-fs-objstore.yaml (the active one)  type: FILESYSTEM — the current design
-#       where gorilla-buffer-store reads the merged tumbling-window blocks that
-#       gorilla-buffer-merger writes to local disk (/var/gorilla-buffer/merged).
+#       where gorilla-buffer-store reads the served dir that gorilla-head-merger
+#       writes to local disk (/var/gorilla-buffer/served): the current window's per-emit
+#       head blocks plus one cut block per completed tumbling window.
 #
 # Kept only for reference / quick A-B comparison; the demo wires the buffer-store
 # to buffer-fs-objstore.yaml. Safe to delete if the S3 hot-window path is dropped.

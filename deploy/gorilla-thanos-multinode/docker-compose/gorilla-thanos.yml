@@ -1,17 +1,20 @@
 # gorilla-thanos.yml — Single-node docker-compose for local testing.
 #
 # Brings up the full gorilla-thanos stack on a single host (no gorilla-gateway):
-#   MinIO + Thanos (store-gateway, query, compact) + gorilla-buffer-store + OTel agent + fake-exporter
+#   MinIO + Thanos (store-gateway, query, compact) + gorilla-head-merger + gorilla-buffer-store + OTel agent + fake-exporter
 #
 # Pipeline:
-#   agents write 60s TSDB blocks directly to MinIO (minio:9000, no gateway hop).
-#   gorilla-buffer-merger: polls MinIO every 15s, downloads new 60s blocks to
-#     /var/gorilla-buffer/staging/, buckets them by TUMBLING window (MERGE_WINDOW, default 1h), and
-#     merges each window into one block in /var/gorilla-buffer/merged/ (one per
-#     window). Drops windows older than BUFFER_STORE_DURATION.
+#   agent builds 60s Gorilla blocks and POSTs them to gorilla-head-merger:9099/ingest
+#     (ship_endpoint), NOT to MinIO.
+#   gorilla-head-merger: receives per-emit blocks over HTTP, durably stages them in
+#     /var/gorilla-buffer/served/ (block-level WAL + hot-store source), and on TUMBLING
+#     window close (MERGE_WINDOW, default 1h) concatenates each window's per-series
+#     chunks into one block, uploads that single block to MinIO, then prunes the
+#     per-emit blocks. Drops windows older than BUFFER_STORE_DURATION.
 #   gorilla-buffer-store (hot-store): thanos store with FILESYSTEM objstore on
-#     /var/gorilla-buffer/merged/. Serves the recent merged tumbling windows via
-#     StoreAPI :10921. (thanos-store-gateway is the archive-store, full MinIO history.)
+#     /var/gorilla-buffer/served/. Serves the current window's per-emit blocks (fresh)
+#     + recent cut blocks via StoreAPI :10921. (thanos-store-gateway is the
+#     archive-store, MinIO cut-block history.)
 #
 # Quick start:
 #   docker compose -f gorilla-thanos.yml up -d
@@ -23,8 +26,8 @@
 # Image notes:
 #   asap/asap-otel:dev requires gorillas3 Phase 3 build (after 2026-05-17).
 #     Rebuild: cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh
-#   asap/gorilla-buffer-merger:dev requires building:
-#     cd /mydata/ASAPCollector && docker build -f deploy/docker/Dockerfile.gorilla-buffer-merger -t asap/gorilla-buffer-merger:dev .
+#   asap/gorilla-head-merger:dev requires building:
+#     cd /mydata/ASAPCollector && docker build -f deploy/docker/Dockerfile.gorilla-head-merger -t asap/gorilla-head-merger:dev .
 #
 # Note: host-port mappings are offset by 10000 from standard ports.
 
@@ -78,16 +81,16 @@ services:
       minio-setup:
         condition: service_completed_successfully
 
-  # gorilla-buffer-merger — tumbling-window TSDB block merger.
-  # Polls MinIO every 15s, downloads new blocks to staging, buckets them by
-  # tumbling window (MERGE_WINDOW, configurable, default 1h), and merges each
-  # window into one block (one per window) in the shared gorilla-buffer volume.
-  # The window is the granularity at which merged state is flushed to S3/MinIO;
-  # the agent's per-block emit interval (tsdb_block_duration) is independent.
-  # Windows older than
-  # BUFFER_STORE_DURATION are dropped; finalized windows are never re-merged.
-  gorilla-buffer-merger:
-    image: asap/gorilla-buffer-merger:dev
+  # gorilla-head-merger — local head block + block-level WAL.
+  # Receives per-emit Gorilla blocks from agents over HTTP (:9099/ingest), durably
+  # stages them in the served dir (WAL + hot-store source), and on tumbling-window
+  # close (MERGE_WINDOW, configurable, default 1h) concatenates each window's
+  # per-series chunks into one block, uploads that single block to S3/MinIO, then
+  # prunes the per-emit blocks. The window is the granularity at which the head is
+  # cut and flushed to S3/MinIO; the agent's per-emit interval (tsdb_block_duration)
+  # is independent. Windows older than BUFFER_STORE_DURATION are dropped.
+  gorilla-head-merger:
+    image: asap/gorilla-head-merger:dev
     user: "0"
     command:
       - -bucket=asap-gorilla-tsdb
@@ -96,18 +99,20 @@ services:
       - -secret-key=asap-local-only
       - -window=${MERGE_WINDOW:-1h}
       - -retention=${BUFFER_STORE_DURATION:-1h}
-      - -poll-interval=15s
-      - -staging-dir=/var/gorilla-buffer/staging
-      - -output-dir=/var/gorilla-buffer/merged
+      - -cut-interval=15s
+      - -ingest-addr=:${MERGER_INGEST_PORT:-9099}
+      - -served-dir=/var/gorilla-buffer/served
     volumes:
       - gorilla-buffer-data:/var/gorilla-buffer
+    ports:
+      - "${MERGER_INGEST_PORT:-9099}:${MERGER_INGEST_PORT:-9099}"
     depends_on:
       minio-setup:
         condition: service_completed_successfully
 
-  # gorilla-buffer-store (hot-store) — serves the merged tumbling-window blocks via StoreAPI.
-  # Reads from the local FILESYSTEM directory written by gorilla-buffer-merger.
-  # Serves the last BUFFER_STORE_DURATION of merged windows (one block per window, not 60).
+  # gorilla-buffer-store (hot-store) — serves the head-merger's served dir via StoreAPI.
+  # Reads the FILESYSTEM objstore (served dir): the current window's per-emit blocks
+  # (fresh) + the recent cut window blocks. The merger handles expiry.
   gorilla-buffer-store:
     image: quay.io/thanos/thanos:v0.41.0
     user: "0"
@@ -127,7 +132,7 @@ services:
       - "19921:10921"
       - "19922:10922"
     depends_on:
-      - gorilla-buffer-merger
+      - gorilla-head-merger
 
   thanos-query:
     image: quay.io/thanos/thanos:v0.41.0

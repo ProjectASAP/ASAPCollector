@@ -7,9 +7,12 @@
 #   HTTP port 4318  — OTLP/HTTP (optional)
 #
 # OUTBOUND (this agent → backend):
-#   S3 PUT to minio:9000 — Gorilla-compressed Prometheus TSDB blocks written
-#   by gorillas3 processor. These are compact binary blocks, NOT raw OTLP.
-#   Typical size: ~5–15 KB per block at 60s tsdb_block_duration.
+#   HTTP POST to gorilla-head-merger:9099/ingest — Gorilla-compressed Prometheus
+#   TSDB blocks (tarred) built by the gorillas3 processor at tsdb_block_duration
+#   (60s). These are compact binary blocks, NOT raw OTLP. The agent does NOT
+#   write to S3; the merger durably WALs each block and later cuts+flushes the
+#   merged window block to S3 (issue #408) — moving the many small per-emit PUTs
+#   off the S3 request path.
 #
 #   NO outbound gRPC on port 4317: drop_original: true means the metric
 #   stream does NOT reach the nop exporter. gorillas3 absorbs the data and
@@ -17,19 +20,18 @@
 #   The nop exporter is required only because OTel's service graph validator
 #   requires at least one exporter per pipeline.
 #
-# ── Why direct MinIO (no gorilla-gateway) ────────────────────────────────
+# ── Why ship to the head-merger (not direct S3) ──────────────────────────
 #
-# The gorilla-gateway hop was removed. gorillas3 now writes 60s TSDB blocks
-# directly to MinIO (minio:9000). gorilla-buffer-store on node2 syncs from
-# MinIO every 15s (vs. store-gateway's 30s) and serves only the last
-# BUFFER_STORE_DURATION window of blocks, providing fresher query results
-# while thanos-store-gateway covers all historical data.
+# gorillas3 still builds the Gorilla 60s blocks but POSTs each to the
+# gorilla-head-merger on node2 (ship_endpoint) instead of PUTting it to MinIO.
+# The merger is the local head block: it buffers the current window's per-emit
+# blocks (WAL), serves them fresh via gorilla-buffer-store, and on window close
+# concatenates them into one block flushed to S3 — read by thanos-store-gateway.
 #
 # ── Image requirement ─────────────────────────────────────────────────────
 #
-# This config uses gorillas3 Phase 3 format: `bucket:` field is removed
-# (confmap-strict rejects unknown keys). Requires asap/asap-otel:dev built
-# after 2026-05-17 (gorillas3 B1 Phase 3, PR #388). To rebuild:
+# Requires asap/asap-otel:dev built with the gorillas3 ship_endpoint sink
+# (issue #408). To rebuild:
 #   cd /mydata/ASAPCollector
 #   bash restore_otel_collector_contrib_patches.sh
 #   bash build_asap_otel.sh
@@ -38,11 +40,11 @@
 #
 # producers → [otlp receiver] → memory_limiter → gorillas3 → batch → [nop]
 #                                                     ↓
-#                                     S3 PUT (60s) → minio:9000
-#                                                       ↓ sync 15s
-#                                           gorilla-buffer-store (hot window)
-#                                                       ↓ sync 30s
-#                                          thanos-store-gateway (all history)
+#                          HTTP POST (60s blocks) → gorilla-head-merger:9099
+#                                                       ↓ WAL + cut at window close
+#                                          served dir → gorilla-buffer-store (hot)
+#                                                       ↓ flush cut block to S3
+#                                          MinIO → thanos-store-gateway (archive)
 
 receivers:
   otlp:
@@ -62,18 +64,14 @@ processors:
   gorillas3:
     window_interval: 60s
     drop_original: true
-    endpoint: http://minio:9000
-    region: us-east-1
-    use_ssl: false
-    access_key_id: asap
-    secret_access_key: asap-local-only
-    prefix_template: "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
-    tenant: default
+    # Ship built blocks to the head-merger over HTTP instead of S3 PUT. When
+    # set, ship_endpoint replaces tsdb_bucket as the block sink; the S3 fields
+    # are unused. Resolved via the gorilla-head-merger add-host → NODE2_IP.
+    ship_endpoint: http://gorilla-head-merger:9099/ingest
     max_retries: 3
     retry_backoff: 1s
     upload_timeout: 30s
     block_format: prometheus_tsdb
-    tsdb_bucket: asap-gorilla-tsdb
     tsdb_block_duration: 60s
 
   batch:

@@ -9,14 +9,16 @@
 #                                + gorilla-buffer-store (hot-store; recent merged windows, BUFFER_STORE_DURATION)
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
-# Pipeline: agents write 60s TSDB blocks DIRECTLY to MinIO (no gateway hop).
-#   gorilla-buffer-merger on node2: polls MinIO every 15s, buckets the blocks by
-#   TUMBLING window (MERGE_WINDOW, configurable, default 1h), and merges each window
-#   into one block at /tmp/gorilla-buffer/merged/ (one per window). Windows older than
-#   retention dropped.
-#   gorilla-buffer-store (hot-store) on node2: thanos store (FILESYSTEM objstore) serves
-#   the recent merged window blocks via :10921.
-#   thanos-store-gateway (archive-store): syncs every 30s, serves all historical data from MinIO.
+# Pipeline: agents build 60s Gorilla TSDB blocks and POST them to the head-merger
+#   (no direct S3 write, no gateway hop).
+#   gorilla-head-merger on node2: receives per-emit blocks over HTTP (:9099/ingest),
+#   durably stages them in /tmp/gorilla-buffer/served/ (block-level WAL + hot-store
+#   source), and on TUMBLING window close (MERGE_WINDOW, configurable, default 1h)
+#   concatenates each window's per-series chunks into one block, uploads that single
+#   block to MinIO, then prunes the per-emit blocks. Windows older than retention dropped.
+#   gorilla-buffer-store (hot-store) on node2: thanos store (FILESYSTEM objstore on the
+#   served dir) serves the current window's per-emit blocks (fresh) + recent cut blocks via :10921.
+#   thanos-store-gateway (archive-store): syncs every 30s, serves cut blocks from MinIO.
 #   thanos-query federates both endpoints (fan-out + chunk merge).
 #
 # Image requirement: asap/asap-otel:dev must be built after 2026-05-17
@@ -88,21 +90,21 @@ docker_run_on() {
 
 # ─── BACKEND STACK on node2 ───────────────────────────────────────────────
 # Services: MinIO + Thanos (store-gateway, query, compact)
-#           + gorilla-buffer-merger + gorilla-buffer-store.
+#           + gorilla-head-merger + gorilla-buffer-store.
 #
-# gorilla-buffer-merger: polls MinIO every 15s, downloads new blocks to staging,
-#   buckets them by tumbling window (MERGE_WINDOW, configurable, default 1h), merges
-#   each window into one block, and
-#   drops windows older than retention. Finalized windows are never re-merged.
-#   Output: /tmp/gorilla-buffer/merged/{ULID}/ (one block per tumbling window).
+# gorilla-head-merger: receives per-emit Gorilla blocks over HTTP (:9099/ingest),
+#   durably stages them in /tmp/gorilla-buffer/served/ (block-level WAL + hot-store
+#   source), and on tumbling-window close (MERGE_WINDOW, configurable, default 1h)
+#   concatenates each window's per-series chunks into one block, uploads that single
+#   block to MinIO, then prunes the per-emit blocks. Drops windows older than retention.
 #
-# gorilla-buffer-store (hot-store): thanos store (FILESYSTEM objstore on merged dir) :10921.
-#   Serves the recent merged window blocks — one block per window touched, not 60.
+# gorilla-buffer-store (hot-store): thanos store (FILESYSTEM objstore on served dir) :10921.
+#   Serves the current window's per-emit blocks (fresh) + recent cut blocks.
 #
-# thanos-store-gateway (archive-store) :10901 — all blocks from MinIO (30s sync, full history).
+# thanos-store-gateway (archive-store) :10901 — cut blocks from MinIO (30s sync, history).
 # Thanos Query federates both endpoints (fan-out + chunk-level merge).
 backend_up() {
-    log "node2 backend up (MinIO + Thanos + gorilla-buffer-merger/store, window=${BUFFER_STORE_DURATION})"
+    log "node2 backend up (MinIO + Thanos + gorilla-head-merger/buffer-store, window=${MERGE_WINDOW:-1h})"
 
     # MinIO
     docker_run_on "${NODE2_HOST}" \
@@ -136,35 +138,37 @@ backend_up() {
         --sync-block-duration=30s \
         --block-sync-concurrency=20
 
-    # gorilla-buffer-merger — tumbling-window TSDB block merger.
-    # Polls MinIO every 15s, downloads new 60s blocks, buckets them by fixed
-    # MERGE_WINDOW tumbling window, and merges each window into one block at
-    # /tmp/gorilla-buffer/merged/ (one per window). Windows older than
-    # -retention=BUFFER_STORE_DURATION are dropped; finalized windows are frozen.
-    on "${NODE2_HOST}" "mkdir -p /tmp/gorilla-buffer/staging /tmp/gorilla-buffer/merged"
+    # gorilla-head-merger — local head block + block-level WAL.
+    # Receives per-emit Gorilla blocks from agents over HTTP (:9099/ingest),
+    # durably stages them in the served dir (WAL + hot-store source), and on
+    # window close (now >= end + grace) concatenates each window's per-series
+    # chunks into ONE block, uploads that single block to MinIO, then prunes the
+    # per-emit blocks. Windows older than -retention=BUFFER_STORE_DURATION drop.
+    on "${NODE2_HOST}" "mkdir -p /tmp/gorilla-buffer/served"
     docker_run_on "${NODE2_HOST}" \
-        --name asap-gorilla-buffer-merger \
+        --name asap-gorilla-head-merger \
         --user 0 \
         -v /tmp/gorilla-buffer:/var/gorilla-buffer \
-        asap/gorilla-buffer-merger:dev \
+        asap/gorilla-head-merger:dev \
         -bucket=asap-gorilla-tsdb \
         -endpoint=minio:9000 \
         -access-key=asap \
         -secret-key=asap-local-only \
         -window="${MERGE_WINDOW:-1h}" \
         -retention="${BUFFER_STORE_DURATION}" \
-        -poll-interval=15s \
-        -staging-dir=/var/gorilla-buffer/staging \
-        -output-dir=/var/gorilla-buffer/merged
+        -cut-interval=15s \
+        -ingest-addr=":${MERGER_INGEST_PORT:-9099}" \
+        -served-dir=/var/gorilla-buffer/served
 
-    # gorilla-buffer-store (hot-store) — serves the merged tumbling-window blocks via StoreAPI :10921.
-    # Reads the per-window merged blocks from FILESYSTEM objstore (/tmp/gorilla-buffer/merged/).
-    # No --min-time filter: the merger handles expiry. One block per window instead of 60.
+    # gorilla-buffer-store (hot-store) — serves the head-merger's served dir via StoreAPI :10921.
+    # Reads from FILESYSTEM objstore (/tmp/gorilla-buffer/served/): the current
+    # window's per-emit blocks (fresh) + the recent cut window blocks.
+    # No --min-time filter: the merger handles expiry.
     docker_run_on "${NODE2_HOST}" \
         --name asap-gorilla-buffer-store \
         --user 0 \
         -v /mydata/gorilla-thanos-multinode/configs/buffer-fs-objstore.yaml:/etc/thanos/objstore.yaml:ro \
-        -v /tmp/gorilla-buffer/merged:/var/gorilla-buffer/merged:ro \
+        -v /tmp/gorilla-buffer/served:/var/gorilla-buffer/served:ro \
         quay.io/thanos/thanos:v0.41.0 \
         store \
         --objstore.config-file=/etc/thanos/objstore.yaml \
@@ -208,9 +212,10 @@ backend_down() {
 
 # ─── AGENTS + PRODUCERS on node0 and node3 ───────────────────────────────
 # Agent config: gorillas3-only, drop_original: true.
-# gorillas3 writes 60s TSDB blocks directly to MinIO (minio:9000).
+# gorillas3 builds 60s Gorilla TSDB blocks and POSTs them to the head-merger
+# (gorilla-head-merger:${MERGER_INGEST_PORT}/ingest), NOT to MinIO.
 agents_up() {
-    log "node0 agent-a up (gorilla-only, direct → minio:9000)"
+    log "node0 agent-a up (gorilla-only, ship → gorilla-head-merger:${MERGER_INGEST_PORT:-9099})"
     docker_run_on "${NODE0_HOST}" \
         --name asap-agent-a \
         --hostname agent-a \
@@ -219,7 +224,7 @@ agents_up() {
         asap/asap-otel:dev \
         --config=/etc/otel/config.yaml
 
-    log "node3 agent-b up (gorilla-only, direct → minio:9000)"
+    log "node3 agent-b up (gorilla-only, ship → gorilla-head-merger:${MERGER_INGEST_PORT:-9099})"
     docker_run_on "${NODE3_HOST}" \
         --name asap-agent-b \
         --hostname agent-b \
@@ -335,23 +340,25 @@ usage: $0 <cmd>
   all      sync + down + up + soak (${SOAK_S}s) + verify + down
 
 Topology:
-  node0 (10.10.1.1)  producers + agent-a (gorilla-only, direct S3 → MinIO)
+  node0 (10.10.1.1)  producers + agent-a (gorilla-only, ship → head-merger)
   node1 (10.10.1.2)  idle
-  node2 (10.10.1.3)  MinIO + Thanos (store-gateway, query, compact) + gorilla-buffer-merger + gorilla-buffer-store
-  node3 (10.10.1.4)  producers + agent-b (gorilla-only, direct S3 → MinIO)
+  node2 (10.10.1.3)  MinIO + Thanos (store-gateway, query, compact) + gorilla-head-merger + gorilla-buffer-store
+  node3 (10.10.1.4)  producers + agent-b (gorilla-only, ship → head-merger)
 
 Network traffic:
-  producers → OTLP gRPC :4317 → agent → S3 PUT :9000 → MinIO (direct, no gateway hop)
+  producers → OTLP gRPC :4317 → agent → HTTP POST :${MERGER_INGEST_PORT:-9099} → gorilla-head-merger (per-emit Gorilla blocks)
+  merger → S3 PUT :9000 → MinIO (one cut block per window, on window close)
   NO raw OTLP crosses the network (drop_original: true)
 
 Buffer window: BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION}, MERGE_WINDOW=${MERGE_WINDOW:-1h} (set in topology.env)
-  gorilla-buffer-merger         — polls MinIO every 15s, merges each tumbling window (MERGE_WINDOW, default 1h) into one local block
-  gorilla-buffer-store  :10921 — hot-store: serves recent merged window blocks via FILESYSTEM objstore
-  thanos-store-gateway  :10901 — archive-store: syncs MinIO every 30s, serves all historical data
-  thanos-query          :10903 — federates both (fan-out + chunk merge); hot blocks queryable within ~75s of measurement
+  gorilla-head-merger   :9099 — receives per-emit blocks, WALs them, cuts each window into one block, flushes to S3
+  gorilla-buffer-store  :10921 — hot-store: serves current-window per-emit blocks (fresh) + recent cut blocks via FILESYSTEM objstore
+  thanos-store-gateway  :10901 — archive-store: syncs MinIO every 30s, serves cut blocks (history)
+  thanos-query          :10903 — federates both (fan-out + chunk merge)
 
-Image note: asap/asap-otel:dev must be built after 2026-05-17 (gorillas3 Phase 3).
+Image note: asap/asap-otel:dev must be built with the gorillas3 ship_endpoint sink (issue #408).
   Rebuild: cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh
+  Merger: docker build -f deploy/docker/Dockerfile.gorilla-head-merger -t asap/gorilla-head-merger:dev .
 EOF
         ;;
 esac
