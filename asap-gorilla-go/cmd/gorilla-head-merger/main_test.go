@@ -186,6 +186,26 @@ func TestExtractTarRoundtrip(t *testing.T) {
 	}
 }
 
+// TestFindBlockDir: locates meta.json whether block files are bare at root or
+// under a "<ulid>/" prefix dir (gorillas3's readTSDBBlockFiles layout).
+func TestFindBlockDir(t *testing.T) {
+	bare := t.TempDir()
+	os.WriteFile(filepath.Join(bare, "meta.json"), []byte("{}"), 0o644)
+	if got, err := findBlockDir(bare); err != nil || got != bare {
+		t.Errorf("bare: got (%q,%v), want (%q,nil)", got, err, bare)
+	}
+	root := t.TempDir()
+	sub := filepath.Join(root, "01KS3MJR908CJPDDPRZ95F6NGP")
+	os.MkdirAll(filepath.Join(sub, "chunks"), 0o755)
+	os.WriteFile(filepath.Join(sub, "meta.json"), []byte("{}"), 0o644)
+	if got, err := findBlockDir(root); err != nil || got != sub {
+		t.Errorf("prefixed: got (%q,%v), want (%q,nil)", got, err, sub)
+	}
+	if _, err := findBlockDir(t.TempDir()); err == nil {
+		t.Errorf("empty: expected error, got nil")
+	}
+}
+
 // TestExtractTarRejectsTraversal: a malicious entry escaping destDir is rejected.
 func TestExtractTarRejectsTraversal(t *testing.T) {
 	var buf bytes.Buffer

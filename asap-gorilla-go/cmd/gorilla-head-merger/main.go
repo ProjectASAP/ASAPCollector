@@ -245,38 +245,35 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mkdtemp: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	cleanup := true
-	defer func() {
-		if cleanup {
-			os.RemoveAll(tmp)
-		}
-	}()
+	defer os.RemoveAll(tmp)
 
 	if err := extractTar(body, tmp); err != nil {
 		http.Error(w, "extract: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
+	// gorillas3 tars block files under a "<ulid>/" prefix (readTSDBBlockFiles),
+	// so the extracted block dir is either tmp itself or a single tmp/<ulid>/
+	// subdir. Locate the dir that actually holds meta.json.
+	blockSrc, err := findBlockDir(tmp)
+	if err != nil {
+		http.Error(w, "locate block: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Derive the ULID from the query param, falling back to the block's meta.json.
 	ulidStr := r.URL.Query().Get("ulid")
 	if ulidStr == "" {
-		bi, err := readBlockMeta(tmp)
-		if err != nil {
-			http.Error(w, "read meta.json: "+err.Error(), http.StatusBadRequest)
-			return
+		if bi, err := readBlockMeta(blockSrc); err == nil {
+			ulidStr = bi.ULID
 		}
-		ulidStr = bi.ULID
 	}
 	if ulidStr == "" || strings.ContainsAny(ulidStr, "/.") {
 		http.Error(w, "missing or invalid block ulid", http.StatusBadRequest)
 		return
 	}
-	if _, err := os.Stat(filepath.Join(tmp, "meta.json")); err != nil {
-		http.Error(w, "block missing meta.json", http.StatusBadRequest)
-		return
-	}
 
-	syncDir(tmp)
+	syncDir(blockSrc)
 	dst := filepath.Join(*flagServedDir, ulidStr)
 
 	mu.Lock()
@@ -286,16 +283,37 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	renErr := os.Rename(tmp, dst)
+	renErr := os.Rename(blockSrc, dst)
 	mu.Unlock()
 	if renErr != nil {
 		http.Error(w, "commit: "+renErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	cleanup = false
 	syncDir(*flagServedDir)
 	metricBlocksIngested.Inc()
 	w.WriteHeader(http.StatusOK)
+}
+
+// findBlockDir returns the directory under root that holds meta.json — either
+// root itself (bare block files) or its single immediate subdir (gorillas3's
+// "<ulid>/"-prefixed layout).
+func findBlockDir(root string) (string, error) {
+	if _, err := os.Stat(filepath.Join(root, "meta.json")); err == nil {
+		return root, nil
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			sub := filepath.Join(root, e.Name())
+			if _, err := os.Stat(filepath.Join(sub, "meta.json")); err == nil {
+				return sub, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no meta.json found in uploaded block")
 }
 
 // extractTar unpacks a tar stream into destDir, rejecting unsafe paths and
