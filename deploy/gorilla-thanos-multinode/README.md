@@ -243,15 +243,19 @@ MinIO poll and no separate staging/merged dir anymore.
 
 ### Single-node (local testing with docker-compose)
 
-**Prerequisite — build the gorilla-head-merger and ASAPQuery-backend images:**
+**Prerequisite — build the gorilla-head-merger image and provide an ASAPQuery-backend image:**
 ```bash
 cd /mydata/ASAPCollector
 DOCKER_BUILDKIT=1 docker build \
   -f deploy/docker/Dockerfile.gorilla-head-merger \
   -t asap/gorilla-head-merger:dev .
-DOCKER_BUILDKIT=1 docker build \
-  -f deploy/docker/Dockerfile.backend \
-  -t asap/query-backend:dev .
+```
+
+`ASAPQuery-backend` does not have to be built locally in this deploy. By default the stack uses
+`asap/query-backend:dev`, but you can point it at a prebuilt registry image:
+
+```bash
+export ASAP_QUERY_BACKEND_IMAGE=ghcr.io/projectasap/query-backend:<tag-or-sha>
 ```
 
 **Start the stack:**
@@ -263,6 +267,10 @@ docker compose -f gorilla-thanos.yml up -d
 
 # Custom buffer window:
 BUFFER_STORE_DURATION=30m docker compose -f gorilla-thanos.yml up -d
+
+# Prebuilt backend image instead of local asap/query-backend:dev:
+ASAP_QUERY_BACKEND_IMAGE=ghcr.io/projectasap/query-backend:<tag-or-sha> \
+  docker compose -f gorilla-thanos.yml up -d
 
 # Wait ~60s for the first per-emit block to be POSTed to the merger and land in
 # the served dir (head; queryable immediately — no window cut needed), then:
@@ -278,7 +286,7 @@ docker compose -f gorilla-thanos.yml down -v
 
 ### Multi-node (4-node CloudLab)
 
-**Prerequisite — rebuild images on node0 (or whichever node runs the build):**
+**Prerequisite — prepare images on node0 (or whichever node stages images):**
 ```bash
 cd /mydata/ASAPCollector
 
@@ -292,15 +300,14 @@ DOCKER_BUILDKIT=1 docker build \
   -t asap/gorilla-head-merger:dev .
 
 # 3. ASAPQuery-backend image (PromQL frontend; forwards archive/Gorilla queries to Thanos):
-DOCKER_BUILDKIT=1 docker build \
-  -f deploy/docker/Dockerfile.backend \
-  -t asap/query-backend:dev .
+#    Prefer a prebuilt image so this deploy does not require the private
+#    ASAPQuery-backend checkout or Dockerfile.backend build contexts.
+export ASAP_QUERY_BACKEND_IMAGE=ghcr.io/projectasap/query-backend:<tag-or-sha>
 
 # Distribute images to all nodes that need them:
 # asap/asap-otel:dev → node0, node3
 # asap/gorilla-head-merger:dev → node2
-# asap/query-backend:dev → node2
-# (use docker save | ssh node2 docker load)
+# ${ASAP_QUERY_BACKEND_IMAGE} → node2 (docker pull on node2, or docker save | ssh node2 docker load)
 ```
 
 **Run the stack:**

@@ -205,7 +205,7 @@ backend_up() {
         -e ASAP_BACKEND_STORAGE_ROUTING=/etc/asap/backend-storage-routing.yaml \
         -v /mydata/gorilla-thanos-multinode/configs/backend-streaming.yaml:/etc/asap/streaming.yaml:ro \
         -v /mydata/gorilla-thanos-multinode/configs/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro \
-        asap/query-backend:dev \
+        "${ASAP_QUERY_BACKEND_IMAGE}" \
         --streaming-config=/etc/asap/streaming.yaml \
         --query-port=9091
 
@@ -381,7 +381,8 @@ Buffer window: BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION}, MERGE_WINDOW=${ME
 Image note: asap/asap-otel:dev must be built with the gorillas3 ship_endpoint sink (issue #408).
   Rebuild: cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh
   Merger: docker build -f deploy/docker/Dockerfile.gorilla-head-merger -t asap/gorilla-head-merger:dev .
-  Backend: docker build -f deploy/docker/Dockerfile.backend -t asap/query-backend:dev .
+  Backend image: ASAP_QUERY_BACKEND_IMAGE=${ASAP_QUERY_BACKEND_IMAGE}
+    Set ASAP_QUERY_BACKEND_IMAGE to a prebuilt registry image to avoid building ASAPQuery-backend locally.
 EOF
         ;;
 esac

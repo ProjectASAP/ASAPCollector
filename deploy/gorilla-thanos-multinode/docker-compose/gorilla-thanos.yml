@@ -153,7 +153,7 @@ services:
       - gorilla-buffer-store
 
   asap-backend:
-    image: asap/query-backend:dev
+    image: ${ASAP_QUERY_BACKEND_IMAGE:-asap/query-backend:dev}
     environment:
       RUST_LOG: info
       ASAP_THANOS_QUERY_URL: http://thanos-query:10903
