@@ -1,6 +1,6 @@
 # gorilla-thanos-multinode
 
-Simplified 4-node ASAP demo: Gorilla-compressed TSDB pipeline with Thanos query engine + MinIO storage. No gorilla-gateway — agents build per-emit Gorilla TSDB blocks at the configurable agent-emit interval (`tsdb_block_duration`, default 60s) and **POST each block over HTTP** to the backend merger's ingest endpoint (`gorilla-head-merger:9099/ingest`, set via the `gorillas3` `ship_endpoint` key); agents no longer write to MinIO/S3 at all. **gorilla-head-merger** on the backend node durably writes each received per-emit block (atomic temp+fsync+rename) into a single **served dir** (`/var/gorilla-buffer/served`) — that dir IS a block-level WAL, so crash recovery just re-reads it. The served dir holds both the CURRENT (open) tumbling window's per-emit blocks (the **head** — fresh, immediately queryable, Compaction.Level 1) and one CUT block per completed window (Compaction.Level 2). On window close (now ≥ window_end + grace) the merger **cuts the window once** — concatenating the per-series Gorilla chunks of that window's per-emit blocks into one block (copying chunk bytes, no sample decode/re-encode), uploading it to MinIO/S3, then pruning the window's per-emit blocks; the tumbling window (`-window` / env `MERGE_WINDOW`, default 1h) is the granularity at which the head is cut and flushed to S3. The **hot-store** (`gorilla-buffer-store`) reads the served dir via a FILESYSTEM objstore — serving both the fresh current-window per-emit blocks and the recent cut blocks. The **archive-store** (`thanos-store-gateway`) serves the full history from MinIO, which now holds only cut blocks (~`window/emit` fewer PUTs than direct per-emit writes, ~60× fewer at the 1h/60s defaults).
+Simplified 4-node ASAP demo: Gorilla-compressed TSDB pipeline with Thanos query engine + MinIO storage. No gorilla-gateway — agents build per-emit Gorilla TSDB blocks at the configurable agent-emit interval (`tsdb_block_duration`, default 60s) and **POST each block over HTTP** to the backend merger's ingest endpoint (`gorilla-head-merger:9099/ingest`, set via the `gorillas3` `ship_endpoint` key); agents no longer write to MinIO/S3 at all. **gorilla-head-merger** on the backend node durably writes each received per-emit block (atomic temp+fsync+rename) into a single **served dir** (`/var/gorilla-buffer/served`) — that dir IS a block-level WAL, so crash recovery just re-reads it. The served dir holds both the CURRENT (open) tumbling window's per-emit blocks (the **head** — fresh, immediately queryable, Compaction.Level 1) and one CUT block per completed window (Compaction.Level 2). On window close (now ≥ window_end + grace) the merger **cuts the window once** — concatenating the per-series Gorilla chunks of that window's per-emit blocks into one block (copying chunk bytes, no sample decode/re-encode), uploading it to MinIO/S3, then pruning the window's per-emit blocks; the tumbling window (`-window` / env `MERGE_WINDOW`, default 1h) is the granularity at which the head is cut and flushed to S3. The **hot-store** (`gorilla-buffer-store`) reads the served dir via a FILESYSTEM objstore — serving both the fresh current-window per-emit blocks and the recent cut blocks. The **archive-store** (`thanos-store-gateway`) serves the full history from MinIO, which now holds only cut blocks (~`window/emit` fewer PUTs than direct per-emit writes, ~60× fewer at the 1h/60s defaults). **ASAPQuery-backend** also runs on the backend node as the ASAP-facing PromQL frontend and forwards Gorilla/archive queries to `thanos-query` via `ASAP_THANOS_QUERY_URL=http://thanos-query:10903`.
 
 ## Store roles (naming)
 
@@ -19,7 +19,7 @@ A **Thanos store-gateway** is the standard Thanos sidecar that exposes the block
 |------|----|------|
 | node0 | 10.10.1.1 | Producers + agent-a (gorilla-only pipeline) |
 | node1 | 10.10.1.2 | Idle (no services) |
-| node2 | 10.10.1.3 | MinIO + Thanos (store-gateway, query, compact) + **gorilla-head-merger** + **gorilla-buffer-store** |
+| node2 | 10.10.1.3 | **ASAPQuery-backend** + MinIO + Thanos (store-gateway, query, compact) + **gorilla-head-merger** + **gorilla-buffer-store** |
 | node3 | 10.10.1.4 | Producers + agent-b (gorilla-only pipeline) |
 
 ## Data Flow
@@ -189,6 +189,30 @@ like this:
    (`quantile_over_time`, `rate`, …) over the **single combined, deduplicated** series — so a 2h
    query split across the two stores returns exactly what a single store holding all 2h would.
 
+## Query entrypoints
+
+Node2 exposes two PromQL query surfaces:
+
+| Entrypoint | Port | Purpose |
+|------------|------|---------|
+| `asap-backend` | `:9091` | ASAPQuery-backend frontend for ASAP/Grafana clients. |
+| `thanos-query` | `:10903` | Direct Thanos endpoint and the upstream used by `asap-backend`. |
+
+`asap-backend` does not read Gorilla blocks directly. It forwards archive/Gorilla queries to
+`thanos-query` through `ThanosQueryEngine` (`ASAP_THANOS_QUERY_URL=http://thanos-query:10903`).
+
+### Backend bootstrap configs
+
+Two backend config files are mounted into `asap-backend`:
+
+| File | Purpose |
+|------|---------|
+| `configs/backend-storage-routing.yaml` | Routes queries to the archive slot by default (`default: gorilla_s3_archive`). With `ASAP_THANOS_QUERY_URL` set, that archive slot is served by `ThanosQueryEngine`, so unlisted metrics still go to Thanos. |
+| `configs/backend-streaming.yaml` | Startup bootstrap required by the backend binary's `--streaming-config` flag. In this Gorilla-only stack it is not the source of truth for archive queryability; Thanos serves archive data from TSDB blocks. |
+
+If a real ASAP warm tier is enabled later, these files should be expanded or emitted by the control
+plane to describe warm-tier aggregations and warm-first/archive-fallback routing.
+
 ## Configuration
 
 `BUFFER_STORE_DURATION` (default `1h`) controls the retention horizon: how far back cut blocks are
@@ -219,12 +243,15 @@ MinIO poll and no separate staging/merged dir anymore.
 
 ### Single-node (local testing with docker-compose)
 
-**Prerequisite — build the gorilla-head-merger image:**
+**Prerequisite — build the gorilla-head-merger and ASAPQuery-backend images:**
 ```bash
 cd /mydata/ASAPCollector
 DOCKER_BUILDKIT=1 docker build \
   -f deploy/docker/Dockerfile.gorilla-head-merger \
   -t asap/gorilla-head-merger:dev .
+DOCKER_BUILDKIT=1 docker build \
+  -f deploy/docker/Dockerfile.backend \
+  -t asap/query-backend:dev .
 ```
 
 **Start the stack:**
@@ -240,6 +267,7 @@ BUFFER_STORE_DURATION=30m docker compose -f gorilla-thanos.yml up -d
 # Wait ~60s for the first per-emit block to be POSTed to the merger and land in
 # the served dir (head; queryable immediately — no window cut needed), then:
 curl 'http://localhost:19092/api/v1/label/__name__/values'   # metric names via Thanos
+curl 'http://localhost:19091/api/v1/query?query=up'           # ASAPQuery-backend → ThanosQueryEngine → Thanos
 curl http://localhost:18890/metrics | grep gorilla            # agent self-metrics
 
 # MinIO console: http://localhost:19001 (user: asap, pass: asap-local-only)
@@ -263,9 +291,15 @@ DOCKER_BUILDKIT=1 docker build \
   -f deploy/docker/Dockerfile.gorilla-head-merger \
   -t asap/gorilla-head-merger:dev .
 
+# 3. ASAPQuery-backend image (PromQL frontend; forwards archive/Gorilla queries to Thanos):
+DOCKER_BUILDKIT=1 docker build \
+  -f deploy/docker/Dockerfile.backend \
+  -t asap/query-backend:dev .
+
 # Distribute images to all nodes that need them:
 # asap/asap-otel:dev → node0, node3
 # asap/gorilla-head-merger:dev → node2
+# asap/query-backend:dev → node2
 # (use docker save | ssh node2 docker load)
 ```
 
@@ -309,6 +343,7 @@ Parts 1, 2, 4 remain valid (cut blocks in MinIO → thanos-store-gateway path un
 | Cut blocks present | `ssh node2 'for d in /tmp/gorilla-buffer/served/*/; do grep -l "\"level\": 2" "$d"meta.json; done'` | One Level-2 cut block dir **per completed tumbling window** (not a single rewritten block) |
 | Head-merger logs healthy | `ssh node2 'docker logs asap-gorilla-head-merger 2>&1 \| tail -5'` | `cut+flushed window` lines (with `window=` and `ulid=`) once a window closes; ingest lines before that |
 | Thanos query healthy | `curl http://10.10.1.3:10903/api/v1/query?query=up` | `status: success` |
+| ASAPQuery-backend healthy | `curl http://10.10.1.3:9091/api/v1/query?query=up` | `status: success`; `asap-backend` logs show `ThanosQueryEngine` registered |
 | Metric names visible | `curl http://10.10.1.3:10903/api/v1/label/__name__/values` | Non-empty list ~90s after start |
 | gorilla-buffer-store up | `ssh node2 'docker ps \| grep asap-gorilla-buffer-store'` | Container Up |
 | buffer-store registered | `curl http://10.10.1.3:10903/api/v1/stores \| python3 -m json.tool \| grep 10921` | node2:10921 in store list |
@@ -326,7 +361,9 @@ gorilla-thanos-multinode/
 │   ├── agent-gorilla-only.yaml        (OTel agent: gorillas3 ship_endpoint→gorilla-head-merger:9099/ingest)
 │   ├── thanos-objstore.yaml           (Thanos S3 config → MinIO asap-gorilla-tsdb, cut blocks)
 │   ├── buffer-objstore.yaml           (legacy S3 config — no longer used by buffer-store)
-│   └── buffer-fs-objstore.yaml        (Thanos FILESYSTEM objstore → /var/gorilla-buffer/served)
+│   ├── buffer-fs-objstore.yaml        (Thanos FILESYSTEM objstore → /var/gorilla-buffer/served)
+│   ├── backend-storage-routing.yaml   (ASAPQuery-backend default route → Thanos-backed archive slot)
+│   └── backend-streaming.yaml         (ASAPQuery-backend startup bootstrap config)
 ├── docker-compose/
 │   └── gorilla-thanos.yml             (single-node compose for local testing)
 └── scripts/

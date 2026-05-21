@@ -1,0 +1,52 @@
+# ASAPQuery-backend routing for the gorilla-thanos-multinode stack.
+#
+# This stack stores raw Gorilla data behind Thanos:
+#   hot data     -> gorilla-buffer-store -> thanos-query
+#   archive data -> thanos-store-gateway -> thanos-query
+#
+# The backend still uses the historical StorageBackend name
+# "gorilla_s3_archive" for the archive slot. When ASAP_THANOS_QUERY_URL is set,
+# that slot is served by ThanosQueryEngine, not by the legacy in-process
+# GorillaQueryEngine.
+#
+# The default below is intentionally archive-first:
+#
+#   default: gorilla_s3_archive
+#
+# That means metrics not listed under routes still fall through to the
+# Thanos-backed archive path. For this Gorilla-only stack, operators do NOT need
+# to enumerate every metric name here. The explicit route entries below are just
+# common demo metrics and documentation anchors.
+#
+# If this deployment later grows a real ASAP warm tier, change the default to
+# "sketch_warm_tier" and add per-metric dual targets, for example:
+#
+#   default: sketch_warm_tier
+#   routes:
+#     - metric: http_requests_total
+#       targets:
+#         - backend: sketch_warm_tier
+#         - backend: gorilla_s3_archive
+#           applies_to_query_shape: [count, topk, rate_post_hoc, quantile, sum, last_over_time, other]
+#
+# In a full ASAP deployment, this file should usually be emitted by the control
+# plane rather than maintained by hand.
+
+default: gorilla_s3_archive
+
+routes:
+  - metric: http_requests_total
+    targets:
+      - backend: gorilla_s3_archive
+
+  - metric: http_requests_total_latency_ms
+    targets:
+      - backend: gorilla_s3_archive
+
+  - metric: http_freshness_probe_archive
+    targets:
+      - backend: gorilla_s3_archive
+
+  - metric: http_freshness_probe_warm
+    targets:
+      - backend: gorilla_s3_archive

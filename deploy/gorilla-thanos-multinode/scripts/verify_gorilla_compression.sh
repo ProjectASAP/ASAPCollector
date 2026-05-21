@@ -2,16 +2,17 @@
 # verify_gorilla_compression.sh — Success-metric checks for gorilla-thanos-multinode.
 #
 # Checks:
-#   1. MinIO has TSDB blocks in asap-gorilla-tsdb bucket
+#   1. Served dir has TSDB blocks written by gorilla-head-merger
 #   2. Thanos query API is healthy
-#   3. Thanos serves metric names (data queryable end-to-end)
-#   4. Agent self-metrics show gorillas3 activity
-#   5. Network traffic explanation (what's on the wire)
+#   3. ASAPQuery-backend forwards archive/Gorilla queries to Thanos
+#   4. Thanos serves metric names (data queryable end-to-end)
+#   5. Agent self-metrics show gorillas3 activity
+#   6. Network traffic explanation (what's on the wire)
 #
 # Usage:
 #   bash verify_gorilla_compression.sh \
-#     --minio-host  node2        \   # SSH-accessible hostname for MinIO
-#     --thanos-host 10.10.1.3   \   # IP/host for Thanos HTTP API
+#     --minio-host  node2        \   # SSH-accessible backend hostname
+#     --thanos-host 10.10.1.3   \   # IP/host for Thanos and ASAP backend HTTP APIs
 #     --agent-host  10.10.1.1   \   # IP/host for agent Prometheus metrics
 #     [--out results.txt]           # optional output file
 
@@ -54,33 +55,29 @@ echo "  thanos-host: ${THANOS_HOST}"
 echo "  agent-host:  ${AGENT_HOST}"
 echo "========================================"
 
-# ── Check 1: MinIO has TSDB blocks ───────────────────────────────────────
-section "Check 1: MinIO has TSDB blocks in asap-gorilla-tsdb"
-echo "  Connecting to ${MINIO_HOST} via SSH to run mc ls ..."
+# ── Check 1: Served dir has TSDB blocks ─────────────────────────────────
+section "Check 1: Served dir has TSDB blocks written by gorilla-head-merger"
+echo "  Connecting to ${MINIO_HOST} via SSH to inspect /tmp/gorilla-buffer/served ..."
 echo "  Note: First blocks appear after tsdb_block_duration=60s flush."
 echo "  If this fails immediately after stack_up, wait 60-90s and retry."
 
 BLOCK_COUNT=0
 if ssh -n -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no \
        "${MINIO_HOST}" \
-       "docker run --rm --network host \
-           --add-host=minio:127.0.0.1 \
-           --entrypoint=sh minio/mc:latest -c \
-           'mc alias set local http://minio:9000 asap asap-local-only 2>/dev/null &&
-            mc ls local/asap-gorilla-tsdb --recursive 2>/dev/null'" \
+       "find /tmp/gorilla-buffer/served -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null" \
    > /tmp/minio_ls_out.txt 2>&1; then
-    BLOCK_COUNT=$(grep -vc "Added .* successfully" /tmp/minio_ls_out.txt || echo 0)
-    echo "  mc ls output (${BLOCK_COUNT} lines):"
+    BLOCK_COUNT=$(awk 'NF { count++ } END { print count+0 }' /tmp/minio_ls_out.txt)
+    echo "  served dir block dirs (${BLOCK_COUNT}):"
     head -20 /tmp/minio_ls_out.txt | sed 's/^/    /'
     if [[ "${BLOCK_COUNT}" -gt 0 ]]; then
-        pass "MinIO asap-gorilla-tsdb has ${BLOCK_COUNT} object(s) — gorillas3 is writing blocks"
+        pass "served dir has ${BLOCK_COUNT} TSDB block dir(s) — agent → merger ingest is writing hot blocks"
     else
-        fail "MinIO asap-gorilla-tsdb is EMPTY — gorillas3 may not have flushed yet (wait 60-90s)"
+        fail "served dir is EMPTY — gorillas3 may not have flushed yet or merger ingest is not receiving"
         echo "  Hint: tsdb_block_duration=60s means first block appears ~60s after startup."
-        echo "        Run: docker logs asap-agent-a 2>&1 | grep -i gorilla"
+        echo "        Run: docker logs asap-gorilla-head-merger 2>&1 | tail -50"
     fi
 else
-    fail "Could not SSH to ${MINIO_HOST} or mc ls failed (exit $?)"
+    fail "Could not SSH to ${MINIO_HOST} or inspect served dir (exit $?)"
     echo "  Raw output:"
     cat /tmp/minio_ls_out.txt | sed 's/^/    /' || true
 fi
@@ -103,8 +100,26 @@ else
     echo "        ssh node2 'docker ps | grep thanos-query'"
 fi
 
-# ── Check 3: Thanos serves metric names ──────────────────────────────────
-section "Check 3: Thanos serves metric names (data queryable end-to-end)"
+# ── Check 3: ASAPQuery-backend forwards archive/Gorilla queries to Thanos ─
+section "Check 3: ASAPQuery-backend forwards archive/Gorilla queries to Thanos (${THANOS_HOST}:9091)"
+ASAP_URL="http://${THANOS_HOST}:9091"
+ASAP_RESP=""
+if ASAP_RESP=$(curl -sf --max-time 10 \
+    "${ASAP_URL}/api/v1/query?query=up" 2>&1); then
+    if echo "${ASAP_RESP}" | grep -q '"status":"success"'; then
+        pass "ASAPQuery-backend returned status=success through the Thanos-backed archive path"
+    else
+        fail "ASAPQuery-backend responded but status != success"
+        echo "  Response: ${ASAP_RESP}" | head -5
+    fi
+else
+    fail "ASAPQuery-backend unreachable at ${ASAP_URL} (curl failed)"
+    echo "  Hint: Check if asap-backend is running on node2:"
+    echo "        ssh node2 'docker ps | grep asap-backend'"
+fi
+
+# ── Check 4: Thanos serves metric names ──────────────────────────────────
+section "Check 4: Thanos serves metric names (data queryable end-to-end)"
 LABEL_RESP=""
 METRIC_COUNT=0
 if LABEL_RESP=$(curl -sf --max-time 15 \
@@ -122,7 +137,7 @@ if len(names) > 10:
     print('    ... and', len(names)-10, 'more')
 " 2>/dev/null || echo "  (could not parse JSON for display)"
         if [[ "${METRIC_COUNT}" -gt 0 ]]; then
-            pass "Thanos serves ${METRIC_COUNT} metric name(s) — gorillas3 → MinIO → Thanos pipeline is end-to-end"
+            pass "Thanos serves ${METRIC_COUNT} metric name(s) — gorillas3 → merger → hot/archive stores → Thanos pipeline is end-to-end"
         else
             fail "Thanos returned success but 0 metric names — blocks may not be synced yet (thanos-store sync-block-duration=30s)"
             echo "  Hint: Wait 30s for store-gateway to sync new blocks from MinIO, then retry."
@@ -134,8 +149,8 @@ else
     fail "Thanos label API unreachable at ${THANOS_URL}/api/v1/label/__name__/values"
 fi
 
-# ── Check 4: Agent gorilla telemetry ─────────────────────────────────────
-section "Check 4: Agent gorilla self-metrics (${AGENT_HOST}:8890)"
+# ── Check 5: Agent gorilla telemetry ─────────────────────────────────────
+section "Check 5: Agent gorilla self-metrics (${AGENT_HOST}:8890)"
 AGENT_METRICS_URL="http://${AGENT_HOST}:8890/metrics"
 GORILLA_LINES=""
 if AGENT_METRICS_RAW=$(curl -sf --max-time 10 "${AGENT_METRICS_URL}" 2>&1); then
@@ -158,17 +173,21 @@ else
     echo "        ssh node0 'docker ps | grep agent-a'"
 fi
 
-# ── Check 5: Network traffic explanation ─────────────────────────────────
-section "Check 5: Network traffic analysis"
+# ── Check 6: Network traffic explanation ─────────────────────────────────
+section "Check 6: Network traffic analysis"
 cat <<'TRAFFIC'
   What's on the wire in this stack:
 
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  S3 PUT to port 9000: agent → MinIO (Gorilla-compressed TSDB blocks)│
-  │  - Protocol: HTTP/1.1 PUT (S3 API)                                  │
+  │  HTTP POST to port 9099: agent → gorilla-head-merger                │
+  │  - Protocol: HTTP POST to /ingest                                   │
   │  - Content: Prometheus TSDB block files (chunks/, index, meta.json) │
   │  - Compression: Gorilla delta-of-delta + XOR encoding in gorillas3  │
-  │  - Frequency: one PUT every tsdb_block_duration=60s per flush       │
+  │  - Frequency: one POST every tsdb_block_duration=60s per flush      │
+  │                                                                     │
+  │  S3 PUT to port 9000: gorilla-head-merger → MinIO                   │
+  │  - Protocol: HTTP/1.1 PUT (S3 API)                                  │
+  │  - Content: one cut TSDB block per completed tumbling window        │
   │                                                                     │
   │  No outbound gRPC port 4317 from agents:                            │
   │  - drop_original: true in gorillas3 means the metric stream does    │
@@ -179,15 +198,15 @@ cat <<'TRAFFIC'
 
   How to observe on the wire:
 
-  On node0 (agent host) — observe S3 PUTs going out to MinIO:
-    ssh node0 'sudo tcpdump -i eth0 -n "dst port 9000" -c 20'
-    (You should see HTTP PUT requests to 10.10.1.3:9000)
+  On node0 (agent host) — observe block POSTs going out to the merger:
+    ssh node0 'sudo tcpdump -i eth0 -n "dst port 9099" -c 20'
+    (You should see HTTP POST requests to 10.10.1.3:9099)
 
   On node0 — confirm NO outbound gRPC from agent:
     ssh node0 'sudo tcpdump -i eth0 -n "dst port 4317" -c 20'
     (You should see ONLY inbound from producers, no outbound to backend)
 
-  On node2 (MinIO host) — see blocks arriving:
+  On node2 (backend host) — see cut blocks arriving in MinIO:
     ssh node2 'docker logs asap-minio 2>&1 | grep PUT | tail -20'
 
 TRAFFIC

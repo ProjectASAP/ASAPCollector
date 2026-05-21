@@ -5,7 +5,8 @@
 #
 #   node0 (10.10.1.1)  producers + agent-a   (data source)
 #   node1 (10.10.1.2)  idle (no services)
-#   node2 (10.10.1.3)  backend: MinIO + Thanos (store-gateway=archive-store, query, compact)
+#   node2 (10.10.1.3)  backend: ASAPQuery-backend + MinIO + Thanos
+#                                (store-gateway=archive-store, query, compact)
 #                                + gorilla-buffer-store (hot-store; recent merged windows, BUFFER_STORE_DURATION)
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
@@ -19,7 +20,9 @@
 #   gorilla-buffer-store (hot-store) on node2: thanos store (FILESYSTEM objstore on the
 #   served dir) serves the current window's per-emit blocks (fresh) + recent cut blocks via :10921.
 #   thanos-store-gateway (archive-store): syncs every 30s, serves cut blocks from MinIO.
-#   thanos-query federates both endpoints (fan-out + chunk merge).
+#   thanos-query federates both endpoints (fan-out + chunk merge). ASAPQuery-backend
+#   runs as the PromQL frontend and forwards archive/Gorilla queries to thanos-query
+#   through ASAP_THANOS_QUERY_URL.
 #
 # Image requirement: asap/asap-otel:dev must be built after 2026-05-17
 #   (gorillas3 Phase 3 — `bucket:` field removed). Rebuild if needed:
@@ -89,7 +92,7 @@ docker_run_on() {
 }
 
 # ─── BACKEND STACK on node2 ───────────────────────────────────────────────
-# Services: MinIO + Thanos (store-gateway, query, compact)
+# Services: ASAPQuery-backend + MinIO + Thanos (store-gateway, query, compact)
 #           + gorilla-head-merger + gorilla-buffer-store.
 #
 # gorilla-head-merger: receives per-emit Gorilla blocks over HTTP (:9099/ingest),
@@ -103,8 +106,10 @@ docker_run_on() {
 #
 # thanos-store-gateway (archive-store) :10901 — cut blocks from MinIO (30s sync, history).
 # Thanos Query federates both endpoints (fan-out + chunk-level merge).
+# ASAPQuery-backend is the optional ASAP-facing query frontend on :9091. Its
+# archive slot is wired to ThanosQueryEngine through ASAP_THANOS_QUERY_URL.
 backend_up() {
-    log "node2 backend up (MinIO + Thanos + gorilla-head-merger/buffer-store, window=${MERGE_WINDOW:-1h})"
+    log "node2 backend up (ASAPQuery-backend + MinIO + Thanos + gorilla-head-merger/buffer-store, window=${MERGE_WINDOW:-1h})"
 
     # MinIO
     docker_run_on "${NODE2_HOST}" \
@@ -187,6 +192,22 @@ backend_up() {
         --http-address=0.0.0.0:10903 \
         --endpoint=thanos-store-gateway:10901 \
         --endpoint=gorilla-buffer-store:10921
+
+    # ASAPQuery-backend — PromQL frontend for ASAP clients.
+    # The backend does not read Gorilla blocks directly in this stack. Its
+    # archive slot is filled by ThanosQueryEngine, which forwards to
+    # thanos-query. Thanos then fans out to gorilla-buffer-store (hot) and
+    # thanos-store-gateway (archive).
+    docker_run_on "${NODE2_HOST}" \
+        --name asap-backend \
+        -e RUST_LOG=info \
+        -e ASAP_THANOS_QUERY_URL=http://thanos-query:10903 \
+        -e ASAP_BACKEND_STORAGE_ROUTING=/etc/asap/backend-storage-routing.yaml \
+        -v /mydata/gorilla-thanos-multinode/configs/backend-streaming.yaml:/etc/asap/streaming.yaml:ro \
+        -v /mydata/gorilla-thanos-multinode/configs/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro \
+        asap/query-backend:dev \
+        --streaming-config=/etc/asap/streaming.yaml \
+        --query-port=9091
 
     # Thanos compact — background block compaction and downsampling
     docker_run_on "${NODE2_HOST}" \
@@ -355,10 +376,12 @@ Buffer window: BUFFER_STORE_DURATION=${BUFFER_STORE_DURATION}, MERGE_WINDOW=${ME
   gorilla-buffer-store  :10921 — hot-store: serves current-window per-emit blocks (fresh) + recent cut blocks via FILESYSTEM objstore
   thanos-store-gateway  :10901 — archive-store: syncs MinIO every 30s, serves cut blocks (history)
   thanos-query          :10903 — federates both (fan-out + chunk merge)
+  asap-backend          :9091  — ASAPQuery-backend frontend; forwards archive/Gorilla queries to thanos-query
 
 Image note: asap/asap-otel:dev must be built with the gorillas3 ship_endpoint sink (issue #408).
   Rebuild: cd /mydata/ASAPCollector && bash restore_otel_collector_contrib_patches.sh && bash build_asap_otel.sh
   Merger: docker build -f deploy/docker/Dockerfile.gorilla-head-merger -t asap/gorilla-head-merger:dev .
+  Backend: docker build -f deploy/docker/Dockerfile.backend -t asap/query-backend:dev .
 EOF
         ;;
 esac

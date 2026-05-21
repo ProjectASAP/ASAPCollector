@@ -1,7 +1,7 @@
 # gorilla-thanos.yml — Single-node docker-compose for local testing.
 #
 # Brings up the full gorilla-thanos stack on a single host (no gorilla-gateway):
-#   MinIO + Thanos (store-gateway, query, compact) + gorilla-head-merger + gorilla-buffer-store + OTel agent + fake-exporter
+#   ASAPQuery-backend + MinIO + Thanos (store-gateway, query, compact) + gorilla-head-merger + gorilla-buffer-store + OTel agent + fake-exporter
 #
 # Pipeline:
 #   agent builds 60s Gorilla blocks and POSTs them to gorilla-head-merger:9099/ingest
@@ -15,11 +15,16 @@
 #     /var/gorilla-buffer/served/. Serves the current window's per-emit blocks (fresh)
 #     + recent cut blocks via StoreAPI :10921. (thanos-store-gateway is the
 #     archive-store, MinIO cut-block history.)
+#   asap-backend: ASAPQuery-backend PromQL frontend on :9091. Its archive slot
+#     is wired to ThanosQueryEngine via ASAP_THANOS_QUERY_URL, so Gorilla/archive
+#     queries are forwarded to thanos-query instead of using the legacy
+#     in-process Gorilla reader.
 #
 # Quick start:
 #   docker compose -f gorilla-thanos.yml up -d
 #   # Wait ~60s for first TSDB block flush, then:
 #   curl http://localhost:19092/api/v1/label/__name__/values   # metric names via Thanos
+#   curl http://localhost:19091/api/v1/query?query=up          # ASAPQuery-backend → Thanos
 #   curl http://localhost:18890/metrics | grep gorilla          # agent self-metrics
 #   # MinIO console: http://localhost:19001 (user: asap, pass: asap-local-only)
 #
@@ -146,6 +151,23 @@ services:
     depends_on:
       - thanos-store-gateway
       - gorilla-buffer-store
+
+  asap-backend:
+    image: asap/query-backend:dev
+    environment:
+      RUST_LOG: info
+      ASAP_THANOS_QUERY_URL: http://thanos-query:10903
+      ASAP_BACKEND_STORAGE_ROUTING: /etc/asap/backend-storage-routing.yaml
+    command:
+      - --streaming-config=/etc/asap/streaming.yaml
+      - --query-port=9091
+    volumes:
+      - ../configs/backend-streaming.yaml:/etc/asap/streaming.yaml:ro
+      - ../configs/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro
+    ports:
+      - "19091:9091"
+    depends_on:
+      - thanos-query
 
   thanos-compact:
     image: quay.io/thanos/thanos:v0.41.0

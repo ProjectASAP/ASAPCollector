@@ -1,0 +1,56 @@
+# Bootstrap streaming config for the optional ASAPQuery-backend frontend.
+#
+# The gorilla-thanos-multinode stack is Gorilla/Thanos-only on the ingest path,
+# so this file is primarily a required startup config for the backend binary.
+# Archive queries are routed to Thanos via backend-storage-routing.yaml and
+# ASAP_THANOS_QUERY_URL.
+#
+# The aggregations below are bootstrap/demo entries, not the source of truth for
+# the Gorilla archive. Because backend-storage-routing.yaml defaults every
+# unlisted metric to gorilla_s3_archive, Thanos can still answer archive queries
+# for metrics that are not listed here, as long as those metrics exist in the
+# TSDB blocks served by thanos-query.
+#
+# If a real ASAP warm tier is enabled, this file must be complete for the warm
+# tier metrics/operators that the backend is expected to ingest and answer. In
+# normal ASAP deployments, the control plane should emit or update this config.
+aggregations:
+- aggregationId: 1
+  aggregationType: DDSketch
+  aggregationSubType: ''
+  labels:
+    grouping: [zone]
+    rollup: [rack, node, pod]
+    aggregated: []
+  metric: http_requests_total_latency_ms
+  parameters:
+    relativeAccuracy: 0.01
+  windowSize: 30
+  windowType: tumbling
+  spatialFilter: ''
+- aggregationId: 2
+  aggregationType: DDSketch
+  aggregationSubType: ''
+  labels:
+    grouping: [zone]
+    rollup: [rack, node, pod]
+    aggregated: []
+  metric: http_requests_total
+  parameters:
+    relativeAccuracy: 0.01
+  windowSize: 30
+  windowType: tumbling
+  spatialFilter: ''
+metrics:
+  http_requests_total_latency_ms:
+    - zone
+    - rack
+    - node
+    - pod
+  http_requests_total:
+    - zone
+    - rack
+    - node
+    - pod
+  http_freshness_probe_archive: []
+  http_freshness_probe_warm: []
