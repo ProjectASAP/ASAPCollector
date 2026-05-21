@@ -382,13 +382,3 @@ asap-gorilla-go/
 deploy/docker/
 └── Dockerfile.gorilla-head-merger     (multi-stage Go build → distroless image)
 ```
-
-## Design history
-
-| Iteration | Buffer-store reads from | Blocks served | Notes |
-|-----------|------------------------|---------------|-------|
-| v1 — gorilla-gateway era | Local disk (gorilla-gateway buffer) | 1 merged block | gateway on node1 wrote merged block |
-| v2 — no-merge (2026-05-18) | MinIO S3 directly | Up to ~60 individual 60s blocks | `--min-time` filter, chunk-level Thanos dedup |
-| v3 — sliding-window merge (2026-05-19) | Local FILESYSTEM (merged by gorilla-buffer-merger) | 1 merged block | custom merger binary, single rolling merged block |
-| v4 — tumbling-window merge (2026-05-20) | Local FILESYSTEM (merged by gorilla-buffer-merger) | 1 merged block per tumbling window (`-window`, default 1h) | fixed-size non-overlapping windows; finalized windows frozen |
-| v5 — head-block + block WAL (2026-05-20) | served dir (per-emit head + cut blocks) | agents POST per-emit blocks to merger; cut+flush one block/window to S3 | local head, block-level WAL, no S3 poll |
