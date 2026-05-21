@@ -275,7 +275,9 @@ ASAP_QUERY_BACKEND_IMAGE=ghcr.io/projectasap/query-backend:<tag-or-sha> \
 # Wait ~60s for the first per-emit block to be POSTed to the merger and land in
 # the served dir (head; queryable immediately — no window cut needed), then:
 curl 'http://localhost:19092/api/v1/label/__name__/values'   # metric names via Thanos
-curl 'http://localhost:19091/api/v1/query?query=up'           # ASAPQuery-backend → ThanosQueryEngine → Thanos
+curl 'http://localhost:19091/api/v1/query?query=up'           # ASAPQuery-backend → ThanosQueryEngine → Thanos (instant)
+START=$(date -d-5min +%s); END=$(date +%s)
+curl "http://localhost:19091/api/v1/query_range?query=rate(http_requests_total%5B1m%5D)&start=${START}&end=${END}&step=15"  # range query forwarded to Thanos
 curl http://localhost:18890/metrics | grep gorilla            # agent self-metrics
 
 # MinIO console: http://localhost:19001 (user: asap, pass: asap-local-only)
@@ -351,6 +353,7 @@ Parts 1, 2, 4 remain valid (cut blocks in MinIO → thanos-store-gateway path un
 | Head-merger logs healthy | `ssh node2 'docker logs asap-gorilla-head-merger 2>&1 \| tail -5'` | `cut+flushed window` lines (with `window=` and `ulid=`) once a window closes; ingest lines before that |
 | Thanos query healthy | `curl http://10.10.1.3:10903/api/v1/query?query=up` | `status: success` |
 | ASAPQuery-backend healthy | `curl http://10.10.1.3:9091/api/v1/query?query=up` | `status: success`; `asap-backend` logs show `ThanosQueryEngine` registered |
+| Range query forwarding | `curl "http://10.10.1.3:9091/api/v1/query_range?query=rate(http_requests_total%5B1m%5D)&start=$(date -d-5min +%s)&end=$(date +%s)&step=15"` | `status: success`, `resultType: matrix` |
 | Metric names visible | `curl http://10.10.1.3:10903/api/v1/label/__name__/values` | Non-empty list ~90s after start |
 | gorilla-buffer-store up | `ssh node2 'docker ps \| grep asap-gorilla-buffer-store'` | Container Up |
 | buffer-store registered | `curl http://10.10.1.3:10903/api/v1/stores \| python3 -m json.tool \| grep 10921` | node2:10921 in store list |

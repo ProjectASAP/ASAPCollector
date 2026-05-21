@@ -7,7 +7,8 @@
 #   3. ASAPQuery-backend forwards archive/Gorilla queries to Thanos
 #   4. Thanos serves metric names (data queryable end-to-end)
 #   5. Agent self-metrics show gorillas3 activity
-#   6. Network traffic explanation (what's on the wire)
+#   6. ASAPQuery-backend forwards /api/v1/query_range to Thanos
+#   7. Network traffic explanation (what's on the wire)
 #
 # Usage:
 #   bash verify_gorilla_compression.sh \
@@ -173,8 +174,34 @@ else
     echo "        ssh node0 'docker ps | grep agent-a'"
 fi
 
-# ── Check 6: Network traffic explanation ─────────────────────────────────
-section "Check 6: Network traffic analysis"
+# ── Check 6: query_range forwarding through ASAPQuery-backend ───────────
+section "Check 6: /api/v1/query_range forwarded to Thanos via ASAPQuery-backend"
+ASAP_BACKEND_URL="http://${THANOS_HOST}:9091"
+NOW=$(date +%s)
+START=$((NOW - 300))
+END=${NOW}
+RANGE_RESP=""
+if RANGE_RESP=$(curl -sf --max-time 15 \
+    "${ASAP_BACKEND_URL}/api/v1/query_range?query=rate(http_requests_total%5B1m%5D)&start=${START}&end=${END}&step=15" 2>&1); then
+    RANGE_STATUS=$(echo "${RANGE_RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || echo "")
+    RANGE_TYPE=$(echo "${RANGE_RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('resultType',''))" 2>/dev/null || echo "")
+    if [[ "${RANGE_STATUS}" == "success" && "${RANGE_TYPE}" == "matrix" ]]; then
+        pass "ASAPQuery-backend /api/v1/query_range returned status=success resultType=matrix (ThanosQueryEngine forwarding is live)"
+    elif [[ "${RANGE_STATUS}" == "success" ]]; then
+        fail "query_range returned success but resultType=${RANGE_TYPE} (expected matrix)"
+        echo "  Response: ${RANGE_RESP}" | head -3
+    else
+        fail "query_range returned status=${RANGE_STATUS:-<empty>} (check if ASAP_THANOS_QUERY_URL is set on backend)"
+        echo "  Response: ${RANGE_RESP}" | head -3
+        echo "  Hint: ASAPQuery-backend must be started with ASAP_THANOS_QUERY_URL=http://thanos-query:10903"
+    fi
+else
+    fail "ASAPQuery-backend /api/v1/query_range unreachable at ${ASAP_BACKEND_URL} (curl exit $?)"
+    echo "  Hint: Check if asap-backend is running: docker ps | grep asap-backend"
+fi
+
+# ── Check 7: Network traffic explanation ─────────────────────────────────
+section "Check 7: Network traffic analysis"
 cat <<'TRAFFIC'
   What's on the wire in this stack:
 

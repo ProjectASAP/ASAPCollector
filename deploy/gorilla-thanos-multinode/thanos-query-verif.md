@@ -679,3 +679,163 @@ The rate() difference is a freshness/window artifact: old stack was 18h old (sta
 | Part 6.4 — Freshness | Lag = 0s | **PASS** | 2026-05-19 |
 | Part 6.5 — avg_over_time correctness | = 42.000000 | **PASS** | 2026-05-19 |
 | Part 6.6 — SIGSEGV fix | Chunk bytes deep-copied; no crash after fix | **PASS** | 2026-05-19 |
+
+
+---
+
+## Part 7 — ThanosQueryEngine `/api/v1/query_range` Forwarding (2026-05-21)
+
+### Overview
+
+`ThanosQueryEngine` previously forwarded only instant PromQL queries (`/api/v1/query`).
+Range queries (`/api/v1/query_range`) hit `ASAPQueryEngine::execute_range_promql_modern`
+(ASAP sketch tier); when that returned `CapabilityMiss` (no sketch data for the metric),
+the backend returned an "unsupported query" error instead of falling through to Thanos.
+
+This part documents the implementation and automated test results for range-query forwarding.
+
+---
+
+### 7.1 — What was implemented
+
+**Files changed** (all in `ASAPQuery-backend`):
+
+| File | Change |
+|------|--------|
+| `data_plane/src/query_engines/thanos_query_engine/forward.rs` | `range_endpoint()`, `query_range()`, `execute_range()` impl; 6 unit tests + 3 mock helpers |
+| `data_plane/src/query_engines/routing/query_engine_routing.rs` | `execute_range()` default method added to `QueryEngine` trait (returns `CapabilityMiss`; existing impls unaffected) |
+| `data_plane/src/drivers/query/servers/http.rs` | `process_range_query_request`: on ASAP `CapabilityMiss`, look up `thanos_query` engine and call `execute_range`; 1 e2e test |
+
+**Request flow after this change:**
+
+```
+GET /api/v1/query_range?query=...&start=...&end=...&step=...
+  │
+  ▼
+ASAPQueryEngine::execute_range_promql_modern()
+  │
+  ├─ Ok(result)          → return 200 matrix (unchanged)
+  │
+  └─ Err(CapabilityMiss) → ThanosQueryEngine::execute_range()
+                             │
+                             POST /api/v1/query_range
+                             query=... start=<unix_s> end=<unix_s> step=<s>
+                             │
+                             ├─ 2xx matrix  → return 200 matrix
+                             ├─ 4xx         → CapabilityMiss → 404
+                             └─ 5xx/timeout → Backend error → 503
+```
+
+**Parameter conversion**: `start_ms`, `end_ms`, `step_ms` (milliseconds from the HTTP
+handler) are divided by 1000 and formatted as `{:.3}` float strings before being posted
+to Thanos (e.g. `1700000000.000`), matching the Prometheus HTTP API contract.
+
+---
+
+### 7.2 — Unit test results (2026-05-21)
+
+Run command:
+```bash
+cd /mydata/ASAPQuery-backend
+CARGO_NET_GIT_FETCH_WITH_CLI=true ~/.cargo/bin/cargo test \
+  --manifest-path data_plane/Cargo.toml thanos_query_engine
+```
+
+Output:
+```
+running 17 tests
+test query_engines::thanos_query_engine::forward::tests::build_result_from_thanos_payload_rejects_non_success ... ok
+test query_engines::thanos_query_engine::forward::tests::build_result_from_thanos_payload_rejects_unsupported_result_type ... ok
+test query_engines::thanos_query_engine::forward::tests::capabilities_report_thanos_query_id ... ok
+test query_engines::thanos_query_engine::forward::tests::config_from_env_returns_none_when_blank ... ok
+test query_engines::thanos_query_engine::forward::tests::config_from_env_returns_none_when_unset ... ok
+test query_engines::thanos_query_engine::forward::tests::config_from_env_strips_trailing_slash ... ok
+test query_engines::thanos_query_engine::forward::tests::engine_from_env_returns_none_when_unset ... ok
+test query_engines::thanos_query_engine::forward::tests::engine_from_env_returns_some_when_set ... ok
+test query_engines::thanos_query_engine::forward::tests::forwards_promql_and_wraps_response ... ok
+test query_engines::thanos_query_engine::forward::tests::parse_vector_extracts_value_and_timestamp ... ok
+test query_engines::thanos_query_engine::forward::tests::query_range_4xx_returns_capability_miss ... ok
+test query_engines::thanos_query_engine::forward::tests::query_range_5xx_returns_backend_error ... ok
+test query_engines::thanos_query_engine::forward::tests::query_range_calls_range_endpoint_not_instant ... ok
+test query_engines::thanos_query_engine::forward::tests::query_range_parses_matrix_response ... ok
+test query_engines::thanos_query_engine::forward::tests::query_range_passes_params_correctly ... ok
+test query_engines::thanos_query_engine::forward::tests::query_range_timeout_returns_backend_error ... ok
+test query_engines::thanos_query_engine::forward::tests::unreachable_upstream_returns_503_quirk_via_engine_trait ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 747 filtered out; finished in 0.21s
+```
+
+**New tests (6):**
+
+| Test | What it asserts |
+|------|----------------|
+| `query_range_calls_range_endpoint_not_instant` | POST goes to `/api/v1/query_range`, not `/api/v1/query` |
+| `query_range_passes_params_correctly` | `query`, `start`, `end`, `step` forwarded as URL-encoded form; times in seconds (float) |
+| `query_range_parses_matrix_response` | `resultType=matrix` body parsed into `QueryResult::Matrix`; 2 samples with values 42.0 and 43.0 |
+| `query_range_4xx_returns_capability_miss` | HTTP 400 from mock → `ThanosQueryError::BadQuery` → `EngineError::CapabilityMiss` |
+| `query_range_5xx_returns_backend_error` | HTTP 503 from mock → `ThanosQueryError::Unreachable` → `EngineError::Backend` |
+| `query_range_timeout_returns_backend_error` | 100 ms request timeout against 10 s sleep mock → `ThanosQueryError::Unreachable` → `EngineError::Backend` |
+
+---
+
+### 7.3 — HTTP e2e test result (2026-05-21)
+
+Run command:
+```bash
+CARGO_NET_GIT_FETCH_WITH_CLI=true ~/.cargo/bin/cargo test \
+  --manifest-path data_plane/Cargo.toml http_query_range_forwards_to_thanos
+```
+
+Output:
+```
+running 1 test
+test drivers::query::servers::http::tests::http_query_range_forwards_to_thanos_when_asap_misses ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 763 filtered out; finished in 0.11s
+```
+
+**Test coverage**: full wire path — `GET /api/v1/query_range` with a mock Thanos server
+registered as `ThanosQueryEngine`, ASAP sketch tier returning `CapabilityMiss` (no sketch
+data in empty test engine), Thanos mock returning `CANNED_MATRIX_BODY`. Asserts:
+- HTTP status 2xx
+- `body["status"] == "success"`
+- `body["data"]["resultType"] == "matrix"`
+
+---
+
+### 7.4 — Verification script check (Check 7)
+
+Added to `verify_gorilla_compression.sh`. When run against a live stack with
+`ASAP_THANOS_QUERY_URL` set on the backend:
+
+```bash
+bash verify_gorilla_compression.sh \
+  --minio-host node2 --thanos-host 10.10.1.3 --agent-host 10.10.1.1
+```
+
+Expected output for Check 7:
+```
+=== Check 7: /api/v1/query_range forwarded to Thanos via ASAPQuery-backend ===
+  [PASS] ASAPQuery-backend /api/v1/query_range returned status=success resultType=matrix
+         (ThanosQueryEngine forwarding is live)
+```
+
+The check curls a 5-minute window (`now-300s` → `now`, step 15 s) of
+`rate(http_requests_total[1m])`. Pass criteria: HTTP 200, `status=success`,
+`resultType=matrix`.
+
+---
+
+### Summary — 2026-05-21 results
+
+| Test | Description | Result | Date |
+|------|-------------|--------|------|
+| Part 7.1 — Implementation | `range_endpoint`, `query_range`, `execute_range`, trait default, http.rs fallback | **DONE** | 2026-05-21 |
+| Part 7.2 — Unit: correct endpoint | POST to `/api/v1/query_range` not `/api/v1/query` | **PASS** | 2026-05-21 |
+| Part 7.2 — Unit: params forwarded | query/start/end/step as form fields, times in seconds | **PASS** | 2026-05-21 |
+| Part 7.2 — Unit: matrix parsed | `resultType=matrix` → `QueryResult::Matrix`, values correct | **PASS** | 2026-05-21 |
+| Part 7.2 — Unit: 4xx → CapabilityMiss | HTTP 400 folds into `EngineError::CapabilityMiss` | **PASS** | 2026-05-21 |
+| Part 7.2 — Unit: 5xx → Backend | HTTP 503 folds into `EngineError::Backend` | **PASS** | 2026-05-21 |
+| Part 7.2 — Unit: timeout → Backend | 100 ms timeout folds into `EngineError::Backend` | **PASS** | 2026-05-21 |
+| Part 7.3 — HTTP e2e | `GET /api/v1/query_range` → Thanos mock → `status=success resultType=matrix` | **PASS** | 2026-05-21 |
+| Part 7.4 — verify script Check 7 | query_range smoke-check added to `verify_gorilla_compression.sh` | **DONE** | 2026-05-21 |
