@@ -264,12 +264,21 @@ def run_query(
         }
 
     data = parsed.get("data") or {}
+    # The ASAP backend reports the serving engine in the top-level `infos`
+    # array as a string "data_source: <engine>" (e.g. sketch_warm_tier,
+    # gorilla_archive, thanos_query) rather than a dedicated field. Surface it
+    # so the sweep can tell warm-tier hits from cold-archive fallthroughs.
+    data_source = None
+    for info in (parsed.get("infos") or []):
+        if isinstance(info, str) and info.startswith("data_source:"):
+            data_source = info.split(":", 1)[1].strip()
     return duration_ms, {
         "status": parsed.get("status", "unknown"),
         "http_code": code,
         "result": data.get("result"),
         "result_type": data.get("resultType"),
         "fallback_used": parsed.get("fallback_used"),  # populated by ASAP backend if present
+        "data_source": data_source,
     }
 
 

@@ -26,5 +26,9 @@
     {
         "kind": "topk",
         "metricsql": "topk(5, sum by (zone) (rate(http_requests_total[5m])))"
+    },
+    {
+        "kind": "count_unique",
+        "metricsql": "count(http_requests_total{zone=\"z0\"})"
     }
 ]
