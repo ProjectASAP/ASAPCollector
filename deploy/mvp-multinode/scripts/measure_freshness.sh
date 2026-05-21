@@ -34,9 +34,22 @@ echo "arm,probe,tier,poll_idx,poll_ts_ms,observed_value_ms,delta_ms" > "${CSV}"
 # add_metric_suffixes setting the queryable name is either `http_freshness_probe_<tier>`
 # or `http_freshness_probe_<tier>_milliseconds_total`. Match by __name__ regex so the
 # probe is found regardless of the suffix the backend applied.
+
+# Extra query args, set per arm. VictoriaMetrics defaults -search.latencyOffset
+# to 30s (it evaluates instant queries 30s in the past to avoid partial head
+# data), which made the raw-baseline freshness read ~31s instead of the true
+# ~1s. Override it per-query with the minimum VM accepts (latency_offset=1ms;
+# 0 is rejected as out-of-range) so freshness reflects when the sample is
+# actually queryable, not VM's safety lag. The asap backend has no such offset,
+# so this is only applied on the VM path.
+VM_QARGS=()
 case "${ARM}" in
     b0|b1)
-        PROBES=('raw|{__name__=~"http_freshness_probe_raw.*"}|http://'"${NODE2_IP}"':9090')
+        # Raw baseline lands in VictoriaMetrics, which serves PromQL on :8428
+        # (NOT :9090 — there is no Prometheus in this topology; :9090 is
+        # unreachable and was the cause of the prior "no successful polls").
+        PROBES=('raw|{__name__=~"http_freshness_probe_raw.*"}|http://'"${NODE2_IP}"':8428')
+        VM_QARGS=(--data-urlencode "latency_offset=1ms")
         ;;
     asap)
         # The asap backend's EngineRouter keys on the EXACT raw metric name
@@ -62,6 +75,7 @@ for spec in "${PROBES[@]}"; do
         # emission ts_ms).
         body=$(curl -s --max-time 2 \
             --data-urlencode "query=last_over_time(${PROBE}[15s])" \
+            "${VM_QARGS[@]}" \
             "${Q}/api/v1/query" 2>/dev/null || echo '')
         poll_ts_ms=$(($(date +%s%N)/1000000))
         v=$(echo "${body}" | python3 -c "

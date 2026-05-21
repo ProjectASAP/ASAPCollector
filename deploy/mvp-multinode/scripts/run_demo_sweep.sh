@@ -45,10 +45,12 @@ run_arm() {
     echo "[sweep] arm=${arm} brought up; warmup already happened in up()"  | tee -a "${RUN_DIR}/run.log"
     sleep 5
 
-    # determine query endpoint per arm (b0/b1 → prometheus, asap → backend)
+    # determine query endpoint per arm: asap → backend :9091; raw baselines
+    # (b0/b1/b2/b3) → VictoriaMetrics :8428 (there is NO Prometheus in this
+    # topology — :9090 is unreachable and silently fails replay + freshness).
     local q_endpoint
     if [ "${arm}" = "asap" ]; then q_endpoint="http://${NODE2_IP}:9091"
-    else                            q_endpoint="http://${NODE2_IP}:9090"
+    else                            q_endpoint="http://${NODE2_IP}:8428"
     fi
 
     # background: MetricsQL replay
