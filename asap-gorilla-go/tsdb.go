@@ -3,6 +3,7 @@ package gorilla
 import (
 	"container/heap"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -267,16 +268,99 @@ func (b *StreamingTSDBBlockBuilder) Finalize(ctx context.Context) (*TSDBBlockArt
 }
 
 func (b *StreamingTSDBBlockBuilder) getSeries(metricName string, attrs map[string]string) *tsdbSeriesState {
-	ls := b.labelsFor(metricName, attrs)
-	key := ls.String()
-	st := b.series[key]
-	if st != nil {
+	// Build the lookup key into a pooled byte buffer so the common case
+	// (an already-admitted series) costs no allocation: `b.series[string(
+	// sc.buf)]` is the compiler's zero-alloc string-from-bytes map index.
+	// Previously this did `labelsFor(...).String()` on EVERY sample purely
+	// to look up an existing series — the dominant getSeries cost (issue
+	// #46 profiling: getSeries ~16% of agent CPU, ~half in labels.String).
+	// The labels.Labels and the retained key string are now built only when
+	// a NEW series is admitted.
+	sc := seriesKeyScratchPool.Get().(*seriesKeyScratch)
+	b.appendSeriesKey(sc, metricName, attrs)
+	if st := b.series[string(sc.buf)]; st != nil {
+		seriesKeyScratchPool.Put(sc)
 		return st
 	}
-	st = &tsdbSeriesState{key: key, labels: ls, lastTs: math.MinInt64}
+	ls := b.labelsFor(metricName, attrs)
+	key := string(sc.buf) // retained map key, paid once per new series
+	seriesKeyScratchPool.Put(sc)
+	st := &tsdbSeriesState{key: key, labels: ls, lastTs: math.MinInt64}
 	heap.Init(&st.pending)
 	b.series[key] = st
 	return st
+}
+
+// seriesKeyScratch is a reusable buffer for building a series identity key
+// without the per-sample labels.Labels + String() that getSeries used to
+// allocate just to look up an existing series.
+type seriesKeyScratch struct {
+	buf  []byte
+	keys []string
+}
+
+var seriesKeyScratchPool = sync.Pool{New: func() any { return &seriesKeyScratch{} }}
+
+// appendSeriesKey writes a canonical, collision-free identity key for the
+// (metricName, attrs, b.extLabels) series into sc.buf. It is equivalent to
+// serializing labelsFor(metricName, attrs) — same dedup / override / empty-
+// drop / metric-name sanitize semantics — so it partitions samples into
+// series identically, but allocates neither a labels.Labels nor its
+// String(). The key is internal to b.series (st.key is never read elsewhere);
+// the only contract is "same labels => same bytes, distinct labels =>
+// distinct bytes". Length-prefixed fields keep it collision-free for
+// arbitrary label values.
+func (b *StreamingTSDBBlockBuilder) appendSeriesKey(sc *seriesKeyScratch, metricName string, attrs map[string]string) {
+	sc.buf = sc.buf[:0]
+	sc.keys = sc.keys[:0]
+	sc.keys = append(sc.keys, labels.MetricName)
+	for k := range attrs {
+		if k != labels.MetricName {
+			sc.keys = append(sc.keys, k)
+		}
+	}
+	for k := range b.extLabels {
+		if k != labels.MetricName {
+			sc.keys = append(sc.keys, k) // may duplicate an attrs key; deduped below
+		}
+	}
+	sort.Strings(sc.keys)
+	prev := ""
+	first := true
+	for _, k := range sc.keys {
+		if !first && k == prev {
+			continue
+		}
+		first = false
+		prev = k
+		// labelsFor's Builder.Set precedence is __name__ then attrs then
+		// extLabels, so the last writer wins: extLabels > attrs > __name__-
+		// default. An empty value drops the label (Builder.Set("") deletes).
+		v, ok := b.resolveLabelValue(k, metricName, attrs)
+		if !ok || v == "" {
+			continue
+		}
+		sc.buf = appendLenPrefixed(sc.buf, k)
+		sc.buf = appendLenPrefixed(sc.buf, v)
+	}
+}
+
+func (b *StreamingTSDBBlockBuilder) resolveLabelValue(k, metricName string, attrs map[string]string) (string, bool) {
+	if v, ok := b.extLabels[k]; ok {
+		return v, true
+	}
+	if v, ok := attrs[k]; ok {
+		return v, true
+	}
+	if k == labels.MetricName {
+		return sanitizePromLabelValue(metricName), true
+	}
+	return "", false
+}
+
+func appendLenPrefixed(dst []byte, s string) []byte {
+	dst = binary.AppendUvarint(dst, uint64(len(s)))
+	return append(dst, s...)
 }
 
 func (b *StreamingTSDBBlockBuilder) drainWatermarkLocked(watermark int64) error {
