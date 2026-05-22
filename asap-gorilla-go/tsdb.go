@@ -62,6 +62,13 @@ type StreamingTSDBBlockBuilder struct {
 
 	series map[string]*tsdbSeriesState
 
+	// drainQueue is a min-heap of series keyed by their earliest pending
+	// timestamp. drainWatermarkLocked pops only the series whose earliest
+	// pending point is <= the watermark, instead of scanning every series in
+	// `series` on every AddSample (which was O(series)-per-sample — the
+	// dominant agent CPU cost, issue #46 profiling).
+	drainQueue seriesDrainHeap
+
 	maxObserved int64
 	minTime     int64
 	maxTime     int64
@@ -114,6 +121,36 @@ func (h *pointHeap) Pop() any {
 	return x
 }
 
+// drainEntry pairs a series with the earliest-pending timestamp it was enqueued
+// under. seriesDrainHeap is a min-heap on that timestamp so drainWatermarkLocked
+// can pop only the series that actually have points ready to drain.
+//
+// Entries are advisory: a series may be enqueued more than once (e.g. an
+// out-of-order point lowers its earliest) and entries may go stale after a
+// drain. That is harmless — draining a series only pops points <= watermark, so
+// re-visiting a series is idempotent. The invariant we keep is: whenever a
+// series holds a pending point, the heap contains an entry with t <= that
+// series' current earliest pending timestamp (enqueued on new-earliest in
+// AddSample and re-enqueued after a partial drain), so no ready series is missed.
+type drainEntry struct {
+	t  int64
+	st *tsdbSeriesState
+}
+
+type seriesDrainHeap []drainEntry
+
+func (h seriesDrainHeap) Len() int            { return len(h) }
+func (h seriesDrainHeap) Less(i, j int) bool  { return h[i].t < h[j].t }
+func (h seriesDrainHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *seriesDrainHeap) Push(x any)         { *h = append(*h, x.(drainEntry)) }
+func (h *seriesDrainHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
 // NewStreamingTSDBBlockBuilder creates a builder with an empty Prometheus block
 // directory and an open chunks writer.
 func NewStreamingTSDBBlockBuilder(opts StreamingTSDBOptions) (*StreamingTSDBBlockBuilder, error) {
@@ -153,6 +190,14 @@ func (b *StreamingTSDBBlockBuilder) AddSample(sample TSDBSample) error {
 	}
 	st := b.getSeries(sample.MetricName, sample.Attributes)
 	heap.Push(&st.pending, pendingPoint{t: tms, v: sample.Value})
+	// Enqueue the series for draining only when this point is its new earliest
+	// pending timestamp (heap root). For in-order data that's just the first
+	// point after each drain; for out-of-order data it's whenever a smaller
+	// timestamp arrives. This keeps drainQueue ~O(series-with-pending), not
+	// O(samples), and guarantees a ready series is never missed.
+	if st.pending[0].t == tms {
+		heap.Push(&b.drainQueue, drainEntry{t: tms, st: st})
+	}
 	return b.drainWatermarkLocked(b.maxObserved - b.reorderGrace)
 }
 
@@ -234,7 +279,13 @@ func (b *StreamingTSDBBlockBuilder) getSeries(metricName string, attrs map[strin
 }
 
 func (b *StreamingTSDBBlockBuilder) drainWatermarkLocked(watermark int64) error {
-	for _, st := range b.series {
+	// Pop only the series whose earliest pending timestamp is <= watermark
+	// (drainQueue root), rather than scanning every series. Stale/duplicate
+	// entries are skipped harmlessly (the inner loop is a no-op if the series
+	// has nothing ready); a series with points still pending after this drain
+	// is re-enqueued under its new earliest so a future watermark catches it.
+	for b.drainQueue.Len() > 0 && b.drainQueue[0].t <= watermark {
+		st := heap.Pop(&b.drainQueue).(drainEntry).st
 		for st.pending.Len() > 0 && st.pending[0].t <= watermark {
 			p := heap.Pop(&st.pending).(pendingPoint)
 			if st.hasLast && p.t <= st.lastTs {
@@ -244,6 +295,9 @@ func (b *StreamingTSDBBlockBuilder) drainWatermarkLocked(watermark int64) error 
 			if err := b.appendLocked(st, p); err != nil {
 				return err
 			}
+		}
+		if st.pending.Len() > 0 {
+			heap.Push(&b.drainQueue, drainEntry{t: st.pending[0].t, st: st})
 		}
 	}
 	return nil
