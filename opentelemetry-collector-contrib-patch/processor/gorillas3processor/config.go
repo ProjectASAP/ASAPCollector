@@ -106,6 +106,16 @@ type Config struct {
 	// metric further when it has been written to cold-store.
 	DropOriginal bool `mapstructure:"drop_original"`
 
+	// DisableColdTier makes the gateway_raw path a pure passthrough: no
+	// per-sample TSDB block building, no S3 upload. The warm tier (downstream
+	// sketch / aggregation processors) is unaffected, so this turns the cold
+	// archive into an OPTIONAL tier — at the cost of losing cold-store
+	// fallback for ad-hoc queries (issue #46 ⑦). Default false (cold on) for
+	// backward compatibility; the controller can emit true when no query in
+	// the workload needs the archive. Eliminates the gorillas3 chunk-head
+	// memory + per-flush index-build churn + per-sample build CPU.
+	DisableColdTier bool `mapstructure:"disable_cold_tier"`
+
 	// Retry / timeout knobs for PutObject.
 	MaxRetries    int           `mapstructure:"max_retries"`
 	RetryBackoff  time.Duration `mapstructure:"retry_backoff"`
