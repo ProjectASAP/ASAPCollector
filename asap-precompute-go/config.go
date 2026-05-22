@@ -268,6 +268,26 @@ func (cfg *PrecomputeConfig) SeriesKeyFor(obs *Observation) string {
 	return SeriesKey(cfg.AggID, obs.ResourceLabels, obs.Labels, cfg.AggregateBy)
 }
 
+// buildSeriesKey is the zero-alloc twin of SeriesKeyFor: it appends
+// the key into the scratch buffer (already reset by the caller)
+// instead of returning a freshly-allocated string. Output is
+// byte-identical to SeriesKeyFor so the resulting map key matches
+// the one serializeSeries rebuilds via SeriesKeyForEntry.
+func (cfg *PrecomputeConfig) buildSeriesKey(s *seriesKeyScratch, obs *Observation) {
+	if cfg == nil {
+		return
+	}
+	if cfg.GlobalAggregation {
+		s.appendSeriesKey(cfg.AggID, nil, nil, nil)
+		return
+	}
+	if cfg.OmitResourceAttrs {
+		s.appendSeriesKey(cfg.AggID, nil, obs.Labels, cfg.AggregateBy)
+		return
+	}
+	s.appendSeriesKey(cfg.AggID, obs.ResourceLabels, obs.Labels, cfg.AggregateBy)
+}
+
 // SeriesKeyForEntry rebuilds the same key from a series entry's
 // stored labels. Used by serializeSeries on flush; the invariant is
 // that for a given config and an observation that produced an entry,

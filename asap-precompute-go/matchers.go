@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // MatchOp picks the comparison operator for a LabelMatcher.
@@ -142,6 +143,74 @@ func AttributesKey(labels []KeyValue, aggregateBy []string) string {
 	var b strings.Builder
 	writeAttributesKey(&b, labels, aggregateBy)
 	return b.String()
+}
+
+// seriesKeyScratch is a reusable buffer for building a SeriesKey
+// without the per-observation string allocation strings.Builder
+// incurs. The agent's hot path (windowState.observe) builds one key
+// per scalar observation purely to look up an existing series — at
+// 30K series × ~100 Hz that's ~3M throwaway key strings/sec. Building
+// into a pooled []byte lets the lookup use the compiler's zero-alloc
+// `m[string(b)]` form; the retained key string is materialized only
+// when a new series is admitted.
+//
+// Output is byte-identical to SeriesKey — the two MUST agree so that
+// serializeSeries's SeriesKeyForEntry rebuilds the same map key.
+type seriesKeyScratch struct {
+	buf  []byte
+	keys []string
+}
+
+var seriesKeyScratchPool = sync.Pool{New: func() any { return &seriesKeyScratch{} }}
+
+func getSeriesKeyScratch() *seriesKeyScratch {
+	s := seriesKeyScratchPool.Get().(*seriesKeyScratch)
+	s.buf = s.buf[:0]
+	return s
+}
+
+func putSeriesKeyScratch(s *seriesKeyScratch) { seriesKeyScratchPool.Put(s) }
+
+// appendAttributesKey mirrors writeAttributesKey but appends to the
+// scratch's byte buffer, reusing the keys slice for the sort.
+func (s *seriesKeyScratch) appendAttributesKey(labels []KeyValue, aggregateBy []string) {
+	if len(aggregateBy) == 0 {
+		s.keys = s.keys[:0]
+		for i := range labels {
+			s.keys = append(s.keys, labels[i].Key)
+		}
+		sort.Strings(s.keys)
+		for _, k := range s.keys {
+			v, ok := lookupLabel(labels, k)
+			if !ok {
+				continue
+			}
+			s.buf = append(s.buf, k...)
+			s.buf = append(s.buf, '=')
+			s.buf = append(s.buf, v...)
+			s.buf = append(s.buf, ';')
+		}
+		return
+	}
+	for _, k := range aggregateBy {
+		v, ok := lookupLabel(labels, k)
+		if !ok {
+			continue
+		}
+		s.buf = append(s.buf, k...)
+		s.buf = append(s.buf, '=')
+		s.buf = append(s.buf, v...)
+		s.buf = append(s.buf, ';')
+	}
+}
+
+// appendSeriesKey is the byte-buffer twin of SeriesKey.
+func (s *seriesKeyScratch) appendSeriesKey(aggID AggId, resourceLabels, labels []KeyValue, aggregateBy []string) {
+	s.buf = strconv.AppendUint(s.buf, uint64(aggID), 10)
+	s.buf = append(s.buf, '|')
+	s.appendAttributesKey(resourceLabels, nil)
+	s.buf = append(s.buf, '|')
+	s.appendAttributesKey(labels, aggregateBy)
 }
 
 func writeAttributesKey(b *strings.Builder, labels []KeyValue, aggregateBy []string) {

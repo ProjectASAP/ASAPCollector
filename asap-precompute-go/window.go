@@ -119,8 +119,15 @@ func (w *windowState) observe(
 		}
 	}
 
-	key := cfg.SeriesKeyFor(obs)
-	entry, ok := w.series[key]
+	// Build the lookup key into a pooled byte buffer so the common
+	// case (an already-admitted series) costs no allocation: the
+	// `w.series[string(sc.buf)]` index is the compiler's zero-alloc
+	// string-from-bytes form. The retained string key is allocated
+	// only when a new series is admitted below.
+	sc := getSeriesKeyScratch()
+	defer putSeriesKeyScratch(sc)
+	cfg.buildSeriesKey(sc, obs)
+	entry, ok := w.series[string(sc.buf)]
 	if !ok {
 		// New series — check cap.
 		if cfg.MaxSeries > 0 && uint64(len(w.series)) >= cfg.MaxSeries {
@@ -172,7 +179,9 @@ func (w *windowState) observe(
 			Labels:         labelsCopy,
 			LastSeenMs:     obs.TimestampMs,
 		}
-		w.series[key] = entry
+		// Materialize the retained map key (the only key allocation
+		// on the observe path, paid once per new series).
+		w.series[string(sc.buf)] = entry
 		if stats != nil {
 			stats.ActiveSeries.Add(1)
 		}
