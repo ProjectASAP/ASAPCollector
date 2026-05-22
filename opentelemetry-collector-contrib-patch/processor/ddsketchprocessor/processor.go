@@ -24,6 +24,7 @@ import (
 	"go.uber.org/zap"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
+	"github.com/ProjectASAP/asap-precompute-go/sketches"
 )
 
 // ddsketchProcessor is the Layer-4 OTel shim. State is keyed per
@@ -48,17 +49,27 @@ type ddsketchProcessor struct {
 	mu          sync.Mutex
 	precomputes map[string]precompute.Precompute
 
+	// sketchPool recycles DDSketch wrappers across windows. Every
+	// sketch in one processor shares the configured relative_accuracy,
+	// so a single type+shape pool is correctness-safe. The flush-time
+	// sink Reset()s a sketch (in-place Clear, keeping bucket-store
+	// capacity) before Put, so Get returns a zeroed-but-warm sketch
+	// that skips the per-window store re-allocation + regrow.
+	sketchPool sync.Pool
+
 	stopCh        chan struct{}
 	doneCh        chan struct{}
 	windowStarted atomic.Bool
 }
 
 func newProcessor(cfg *Config, logger *zap.Logger, next consumer.Metrics) *ddsketchProcessor {
-	return &ddsketchProcessor{
+	p := &ddsketchProcessor{
 		cfg: cfg, logger: logger, nextConsumer: next,
 		precomputes: make(map[string]precompute.Precompute),
 		stopCh:      make(chan struct{}), doneCh: make(chan struct{}),
 	}
+	p.sketchPool.New = func() any { return sketches.NewDDSketchWrapper(cfg.RelativeAccuracy) }
+	return p
 }
 
 func (p *ddsketchProcessor) Capabilities() consumer.Capabilities {

@@ -135,11 +135,16 @@ func (w *DDSketchWrapper) Merge(other precompute.Sketch) error {
 	return w.sk.Merge(o.sk)
 }
 
-// Reset zeros the sketch in place by replacing it with a fresh
-// DDSketch of the same alpha. Window rotation calls this when the
-// runtime decides to recycle entries.
+// Reset zeros the sketch IN PLACE, preserving the bucket store's
+// backing-array capacity so a wrapper recycled through a sketch pool
+// across windows does not re-allocate its store. Previously this
+// reallocated via NewDDSketch, which defeated pooling.
 func (w *DDSketchWrapper) Reset() {
-	w.sk = ddsketch.NewDDSketch(w.alpha)
+	if w.sk == nil {
+		w.sk = ddsketch.NewDDSketch(w.alpha)
+		return
+	}
+	w.sk.Clear()
 }
 
 // Quantile returns the q-th rank value as a float64; (0, false) from
