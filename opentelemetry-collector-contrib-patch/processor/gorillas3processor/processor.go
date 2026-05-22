@@ -12,6 +12,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
+	"github.com/colega/zeropool"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
@@ -50,19 +51,11 @@ func newProcessor(cfg *Config, next consumer.Metrics, logger *zap.Logger, sink c
 // tumbling-window flush goroutine.
 func (p *gorillaS3Processor) Start(ctx context.Context, _ component.Host) error {
 	if p.cfg.Role != ProcessorRoleAgent && p.sink == nil {
-		if p.cfg.ShipEndpoint != "" {
-			s, err := newMergerSink(p.cfg)
-			if err != nil {
-				return err
-			}
-			p.sink = s
-		} else {
-			s, err := newS3Sink(p.cfg)
-			if err != nil {
-				return err
-			}
-			p.sink = s
+		s, err := newS3Sink(p.cfg)
+		if err != nil {
+			return err
 		}
+		p.sink = s
 	}
 	p.mu.Lock()
 	err := p.ensureRoleStateLocked()
@@ -225,12 +218,15 @@ func (p *gorillaS3Processor) ingestRawMetricLocked(m pmetric.Metric) error {
 			if !ok {
 				continue
 			}
-			if err := p.rawBuilder.AddSample(gorilla.TSDBSample{
+			am := getAttrMap(dp.Attributes())
+			err := p.rawBuilder.AddSample(gorilla.TSDBSample{
 				MetricName: m.Name(),
-				Attributes: attributesToMap(dp.Attributes()),
+				Attributes: am,
 				Timestamp:  dp.Timestamp().AsTime(),
 				Value:      v,
-			}); err != nil {
+			})
+			putAttrMap(am)
+			if err != nil {
 				return err
 			}
 		}
@@ -242,12 +238,15 @@ func (p *gorillaS3Processor) ingestRawMetricLocked(m pmetric.Metric) error {
 			if !ok {
 				continue
 			}
-			if err := p.rawBuilder.AddSample(gorilla.TSDBSample{
+			am := getAttrMap(dp.Attributes())
+			err := p.rawBuilder.AddSample(gorilla.TSDBSample{
 				MetricName: m.Name(),
-				Attributes: attributesToMap(dp.Attributes()),
+				Attributes: am,
 				Timestamp:  dp.Timestamp().AsTime(),
 				Value:      v,
-			}); err != nil {
+			})
+			putAttrMap(am)
+			if err != nil {
 				return err
 			}
 		}
@@ -590,4 +589,27 @@ func attributesToMap(attrs pcommon.Map) map[string]string {
 		return true
 	})
 	return m
+}
+
+// attrMapPool reuses the per-datapoint attribute map. The raw ingest path builds
+// one map per data point only to hand it to AddSample, which copies the entries
+// into the series labels and does NOT retain the map — so it pools cleanly and
+// removes a top per-sample allocation (issue #46 perf profiling). zeropool keeps
+// the pooled map out of an interface box. Callers MUST putAttrMap after AddSample.
+var attrMapPool = zeropool.New(func() map[string]string {
+	return make(map[string]string, 8)
+})
+
+func getAttrMap(attrs pcommon.Map) map[string]string {
+	m := attrMapPool.Get()
+	attrs.Range(func(k string, v pcommon.Value) bool {
+		m[k] = v.AsString()
+		return true
+	})
+	return m
+}
+
+func putAttrMap(m map[string]string) {
+	clear(m)
+	attrMapPool.Put(m)
 }
