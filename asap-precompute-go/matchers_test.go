@@ -252,3 +252,37 @@ func TestSeriesAttrs(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildSeriesKeyMatchesSeriesKeyFor guards the byte-identity
+// invariant between the zero-alloc observe path (buildSeriesKey) and
+// the canonical SeriesKeyFor / SeriesKeyForEntry used at flush. If
+// these ever diverge, admitted series fail to round-trip on flush.
+func TestBuildSeriesKeyMatchesSeriesKeyFor(t *testing.T) {
+	obsCases := []*Observation{
+		{},
+		{Labels: []KeyValue{{Key: "method", Value: "GET"}, {Key: "status", Value: "200"}}},
+		// Deliberately unsorted to exercise the sort path.
+		{Labels: []KeyValue{{Key: "status", Value: "200"}, {Key: "method", Value: "GET"}}},
+		{ResourceLabels: []KeyValue{{Key: "host", Value: "h1"}}, Labels: []KeyValue{{Key: "zone", Value: "z0"}}},
+		{Labels: []KeyValue{{Key: "k", Value: "v;with=weird|chars"}}},
+	}
+	cfgCases := []*PrecomputeConfig{
+		{AggID: 1},
+		{AggID: 42, OmitResourceAttrs: true},
+		{AggID: 7, GlobalAggregation: true},
+		{AggID: 9, AggregateBy: []string{"method"}},
+		{AggID: 9, AggregateBy: []string{"missing", "method"}},
+	}
+	for ci, cfg := range cfgCases {
+		for oi, obs := range obsCases {
+			want := cfg.SeriesKeyFor(obs)
+			sc := getSeriesKeyScratch()
+			cfg.buildSeriesKey(sc, obs)
+			got := string(sc.buf)
+			putSeriesKeyScratch(sc)
+			if got != want {
+				t.Fatalf("cfg[%d] obs[%d]: buildSeriesKey=%q SeriesKeyFor=%q", ci, oi, got, want)
+			}
+		}
+	}
+}
