@@ -147,6 +147,17 @@ func (p *gorillaS3Processor) ConsumeMetrics(ctx context.Context, md pmetric.Metr
 }
 
 func (p *gorillaS3Processor) consumeGatewayRawLocked(md pmetric.Metrics) (pmetric.Metrics, error) {
+	// Cold tier optional: when disabled, skip all per-sample TSDB block
+	// building / S3 upload and act as a pure passthrough. The warm tier
+	// (downstream sketch / aggregation processors) is unaffected because it
+	// runs in separate pipelines off the routing connector — we only gate
+	// the cold archive write here. See Config.DisableColdTier.
+	if p.cfg.DisableColdTier {
+		if p.cfg.DropOriginal {
+			return pmetric.NewMetrics(), nil
+		}
+		return md, nil
+	}
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
