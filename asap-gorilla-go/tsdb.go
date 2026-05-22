@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/colega/zeropool"
 	"github.com/oklog/ulid/v2"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
@@ -452,8 +453,19 @@ func (b *StreamingTSDBBlockBuilder) sortedSymbols() []string {
 	return out
 }
 
+// labelsBuilderPool reuses *labels.Builder scratch across labelsFor calls.
+// labelsFor runs once per AddSample (to compute the series-lookup key), so a
+// fresh NewBuilder per sample was a top allocation source (issue #46 perf
+// profiling). The builder is transient (its Labels() output is the only
+// retained value), so it pools cleanly. zeropool avoids sync.Pool's
+// interface-boxing allocation for the pooled pointer.
+var labelsBuilderPool = zeropool.New(func() *labels.Builder {
+	return labels.NewBuilder(labels.EmptyLabels())
+})
+
 func (b *StreamingTSDBBlockBuilder) labelsFor(metricName string, attrs map[string]string) labels.Labels {
-	bld := labels.NewBuilder(labels.EmptyLabels())
+	bld := labelsBuilderPool.Get()
+	bld.Reset(labels.EmptyLabels())
 	bld.Set(labels.MetricName, sanitizePromLabelValue(metricName))
 	for k, v := range attrs {
 		bld.Set(k, v)
@@ -461,7 +473,9 @@ func (b *StreamingTSDBBlockBuilder) labelsFor(metricName string, attrs map[strin
 	for k, v := range b.extLabels {
 		bld.Set(k, v)
 	}
-	return bld.Labels()
+	ls := bld.Labels()
+	labelsBuilderPool.Put(bld)
+	return ls
 }
 
 func sanitizePromLabelValue(v string) string {
