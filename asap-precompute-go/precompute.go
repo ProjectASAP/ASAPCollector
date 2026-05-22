@@ -104,7 +104,19 @@ type FrequencyEntry struct {
 // SketchFactory constructs an empty Sketch of the type owned by a
 // specific Precompute instance. Phase 2 keeps construction
 // per-Precompute rather than registry-based to avoid global state.
+//
+// When the host wires a sketch pool (see SketchSink), the factory is
+// the pool's Get side: it returns a recycled, already-Reset sketch
+// when one is available and a fresh one otherwise.
 type SketchFactory func() Sketch
+
+// SketchSink receives a series' sketch at flush time, after its
+// envelope has been serialized and the Precompute is done with it.
+// It is the symmetric Put side of a host-provided sketch pool: a
+// pooled adapter Resets the sketch and returns it for reuse next
+// window. When no sink is installed the sketch is simply dropped and
+// garbage-collected (the prior behavior).
+type SketchSink func(Sketch)
 
 // SketchObserver is implemented by the per-shim glue that knows
 // how to feed a raw observation (Float / Hash / Bytes) into the
@@ -203,6 +215,11 @@ type Precompute interface {
 	// with Observe; the runtime stores the function pointer atomically.
 	// See LatencyObserver godoc for semantics.
 	SetLatencyObserver(fn LatencyObserver)
+	// SetSketchSink installs (or replaces) the flush-time sketch sink
+	// that recycles a series' sketch once its envelope is serialized.
+	// Pass nil to disable (sketches are dropped/GC'd). Safe to call
+	// concurrently; the runtime stores the function pointer atomically.
+	SetSketchSink(fn SketchSink)
 	// Shutdown flushes any in-progress state; intended for the
 	// shim's Shutdown path to run a final Tick before returning.
 	Shutdown(ctx context.Context) error
@@ -227,6 +244,7 @@ type precompute struct {
 	sketchType      SketchType
 	closed          atomic.Bool
 	latencyObserver atomic.Pointer[LatencyObserver]
+	sketchSink      atomic.Pointer[SketchSink]
 }
 
 // New constructs a Precompute given an initial config, a sketch
@@ -377,17 +395,22 @@ func (p *precompute) finishRotate(closed []*seriesEntry, rng [2]uint64, nowMs ui
 		return nil
 	}
 	cfg := p.activeConfig()
+	sink := p.sketchSink.Load()
 	envelopes := make([]*SketchEnvelope, 0, len(closed))
 	for _, entry := range closed {
 		env, err := p.serializeSeries(entry, cfg, rng)
-		if err != nil {
-			// Best-effort: skip this series and continue. Real
-			// shims log via their host's logger; the Layer-3
-			// runtime is host-neutral and has no logger.
-			continue
-		}
-		if env != nil {
+		if err == nil && env != nil {
 			envelopes = append(envelopes, env)
+		}
+		// On err we skip the envelope (best-effort: host-neutral
+		// runtime has no logger) but still recycle the sketch.
+		//
+		// The entry is detached from the live window (rotateLocked
+		// replaced the map), so once its envelope is serialized
+		// nothing else references the sketch — hand it to the pool.
+		if sink != nil && entry != nil && entry.Sketch != nil {
+			(*sink)(entry.Sketch)
+			entry.Sketch = nil
 		}
 	}
 	p.stats.OutputEnvelopes.Add(uint64(len(envelopes)))
@@ -514,6 +537,15 @@ func (p *precompute) SetLatencyObserver(fn LatencyObserver) {
 		return
 	}
 	p.latencyObserver.Store(&fn)
+}
+
+// SetSketchSink implements Precompute.SetSketchSink.
+func (p *precompute) SetSketchSink(fn SketchSink) {
+	if fn == nil {
+		p.sketchSink.Store(nil)
+		return
+	}
+	p.sketchSink.Store(&fn)
 }
 
 // Shutdown implements Precompute.Shutdown.

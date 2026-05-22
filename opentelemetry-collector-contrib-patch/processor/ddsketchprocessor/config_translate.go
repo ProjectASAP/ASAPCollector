@@ -21,14 +21,30 @@ func getOrCreate(batch map[string]precompute.Precompute, metricName string, cfg 
 		return pc
 	}
 	pc := precompute.New(toPrecomputeConfig(cfg, metricName), func() precompute.Sketch {
+		// Draw from the processor's cross-window sketch pool when
+		// available; the pool's New makes a fresh wrapper at the
+		// configured relative_accuracy. The throwaway-batch path
+		// (proc==nil, used by tests) always makes a fresh sketch.
+		if proc != nil {
+			return proc.sketchPool.Get().(precompute.Sketch)
+		}
 		return sketches.NewDDSketchWrapper(cfg.RelativeAccuracy)
 	}, sketches.DDSketchObserver{})
-	// Wire the per-Observe latency histogram if the shim has one.
-	// Closes Phase 2.11B gap #3 — every observation routed through
-	// this Precompute now contributes to asap_processor_observe_seconds
-	// on the deployed /metrics endpoint.
-	if proc != nil && proc.observeLatency != nil {
-		pc.SetLatencyObserver(proc.recordObserveLatency)
+	if proc != nil {
+		// Recycle each series' sketch back to the pool once its
+		// envelope is serialized at flush; Reset() does the in-place
+		// Clear that keeps the bucket-store capacity for reuse.
+		pc.SetSketchSink(func(s precompute.Sketch) {
+			s.Reset()
+			proc.sketchPool.Put(s)
+		})
+		// Wire the per-Observe latency histogram if the shim has one.
+		// Closes Phase 2.11B gap #3 — every observation routed through
+		// this Precompute now contributes to asap_processor_observe_seconds
+		// on the deployed /metrics endpoint.
+		if proc.observeLatency != nil {
+			pc.SetLatencyObserver(proc.recordObserveLatency)
+		}
 	}
 	batch[metricName] = pc
 	return pc
