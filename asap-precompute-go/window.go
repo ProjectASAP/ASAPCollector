@@ -129,68 +129,119 @@ func (w *windowState) observe(
 	cfg.buildSeriesKey(sc, obs)
 	entry, ok := w.series[string(sc.buf)]
 	if !ok {
-		// New series — check cap.
-		if cfg.MaxSeries > 0 && uint64(len(w.series)) >= cfg.MaxSeries {
-			switch cfg.OnOverflow {
-			case OnOverflowDrop, OnOverflowBlock:
-				// Block is degraded to Drop in Phase 2: latency-
-				// hostile semantics belong to integration tests
-				// and aren't worth blocking the runtime hot path.
-				return ErrSeriesCapExceeded
-			case OnOverflowEvictOldest:
-				// Find and evict the oldest series.
-				var (
-					oldestKey string
-					oldestMs  uint64 = ^uint64(0)
-				)
-				for k, e := range w.series {
-					if e.LastSeenMs < oldestMs {
-						oldestMs = e.LastSeenMs
-						oldestKey = k
-					}
-				}
-				if oldestKey != "" {
-					delete(w.series, oldestKey)
-					if stats != nil {
-						stats.ActiveSeries.Add(-1)
-					}
-				}
-			}
+		var err error
+		if entry, err = w.admitSeriesLocked(string(sc.buf), obs, cfg, sketchFactory, stats); err != nil {
+			return err
 		}
-		sketch := sketchFactory()
-		// Honor the parity-mode flags by stripping the labels we
-		// promised not to surface. GlobalAggregation collapses
-		// everything; OmitResourceAttrs zeroes only the resource
-		// segment. The output envelope reads ResourceLabels/Labels
-		// straight from the entry, so this is what controls what
-		// shows up on the wire.
-		var resourceCopy, labelsCopy []KeyValue
-		if !cfg.GlobalAggregation {
-			labelsCopy = make([]KeyValue, len(obs.Labels))
-			copy(labelsCopy, obs.Labels)
-			if !cfg.OmitResourceAttrs {
-				resourceCopy = make([]KeyValue, len(obs.ResourceLabels))
-				copy(resourceCopy, obs.ResourceLabels)
-			}
-		}
-		entry = &seriesEntry{
-			Sketch:         sketch,
-			ResourceLabels: resourceCopy,
-			Labels:         labelsCopy,
-			LastSeenMs:     obs.TimestampMs,
-		}
-		// Materialize the retained map key (the only key allocation
-		// on the observe path, paid once per new series).
-		w.series[string(sc.buf)] = entry
-		if stats != nil {
-			stats.ActiveSeries.Add(1)
-		}
-	} else {
-		if obs.TimestampMs > entry.LastSeenMs {
-			entry.LastSeenMs = obs.TimestampMs
+	}
+	return w.recordLocked(entry, obs, observer)
+}
+
+// observeKeyed is the shared-key entry point for the fused asap_edge
+// processor: the caller built the series key once (and decoded the obs
+// labels once) so this skips cfg.buildSeriesKey entirely. The key MUST be
+// byte-identical to cfg.SeriesKeyFor(obs) — asap_edge derives it the same
+// way — so keyed and unkeyed admits land on the same series.
+func (w *windowState) observeKeyed(
+	key string,
+	obs *Observation,
+	cfg *PrecomputeConfig,
+	sketchFactory SketchFactory,
+	observer SketchObserver,
+	stats *PrecomputeStats,
+) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.initWindow(obs.TimestampMs, cfg)
+
+	if cfg.Window.AllowedLateness > 0 {
+		latenessMs := uint64(cfg.Window.AllowedLateness / time.Millisecond)
+		if obs.TimestampMs+latenessMs < w.activeStartMs {
+			return ErrLateData
 		}
 	}
 
+	entry, ok := w.series[key]
+	if !ok {
+		var err error
+		if entry, err = w.admitSeriesLocked(key, obs, cfg, sketchFactory, stats); err != nil {
+			return err
+		}
+	}
+	return w.recordLocked(entry, obs, observer)
+}
+
+// admitSeriesLocked creates + registers a new series for key (caller holds
+// w.mu and confirmed it absent), honoring MaxSeries/OnOverflow and the
+// parity-mode label-stripping flags. Shared by observe (unkeyed) and
+// observeKeyed.
+func (w *windowState) admitSeriesLocked(
+	key string,
+	obs *Observation,
+	cfg *PrecomputeConfig,
+	sketchFactory SketchFactory,
+	stats *PrecomputeStats,
+) (*seriesEntry, error) {
+	if cfg.MaxSeries > 0 && uint64(len(w.series)) >= cfg.MaxSeries {
+		switch cfg.OnOverflow {
+		case OnOverflowDrop, OnOverflowBlock:
+			// Block is degraded to Drop in Phase 2: latency-hostile
+			// semantics belong to integration tests and aren't worth
+			// blocking the runtime hot path.
+			return nil, ErrSeriesCapExceeded
+		case OnOverflowEvictOldest:
+			var (
+				oldestKey string
+				oldestMs  uint64 = ^uint64(0)
+			)
+			for k, e := range w.series {
+				if e.LastSeenMs < oldestMs {
+					oldestMs = e.LastSeenMs
+					oldestKey = k
+				}
+			}
+			if oldestKey != "" {
+				delete(w.series, oldestKey)
+				if stats != nil {
+					stats.ActiveSeries.Add(-1)
+				}
+			}
+		}
+	}
+	sketch := sketchFactory()
+	// Honor the parity-mode flags by stripping the labels we promised not
+	// to surface. GlobalAggregation collapses everything; OmitResourceAttrs
+	// zeroes only the resource segment. The output envelope reads
+	// ResourceLabels/Labels straight from the entry.
+	var resourceCopy, labelsCopy []KeyValue
+	if !cfg.GlobalAggregation {
+		labelsCopy = make([]KeyValue, len(obs.Labels))
+		copy(labelsCopy, obs.Labels)
+		if !cfg.OmitResourceAttrs {
+			resourceCopy = make([]KeyValue, len(obs.ResourceLabels))
+			copy(resourceCopy, obs.ResourceLabels)
+		}
+	}
+	entry := &seriesEntry{
+		Sketch:         sketch,
+		ResourceLabels: resourceCopy,
+		Labels:         labelsCopy,
+		LastSeenMs:     obs.TimestampMs,
+	}
+	w.series[key] = entry
+	if stats != nil {
+		stats.ActiveSeries.Add(1)
+	}
+	return entry, nil
+}
+
+// recordLocked feeds one observation into a series' sketch and advances its
+// bookkeeping. Caller holds w.mu. Shared by observe and observeKeyed.
+func (w *windowState) recordLocked(entry *seriesEntry, obs *Observation, observer SketchObserver) error {
+	if obs.TimestampMs > entry.LastSeenMs {
+		entry.LastSeenMs = obs.TimestampMs
+	}
 	if err := observer.Observe(entry.Sketch, obs.Value); err != nil {
 		return fmt.Errorf("sketch observe: %w", err)
 	}

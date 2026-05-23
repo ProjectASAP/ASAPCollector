@@ -178,6 +178,10 @@ type Precompute interface {
 	// May return ErrSeriesCapExceeded or ErrLateData; other errors
 	// indicate config/state problems.
 	Observe(obs *Observation) error
+	// ObserveKeyed is Observe with a caller-supplied series key (built
+	// once upstream by the fused asap_edge processor), skipping the
+	// internal buildSeriesKey. key MUST equal cfg.SeriesKeyFor(obs).
+	ObserveKeyed(key string, obs *Observation) error
 	// ObserveEnvelope merges a pre-aggregated upstream sketch into
 	// the active window. The envelope's bytes are NEVER expanded
 	// to scalar samples (design-doc §5.2 bandwidth invariant).
@@ -312,6 +316,48 @@ func (p *precompute) Observe(obs *Observation) error {
 	}
 
 	if err := p.window.observe(obs, cfg, p.sketchFactory, p.observer, p.stats); err != nil {
+		switch {
+		case errors.Is(err, ErrSeriesCapExceeded):
+			p.stats.DroppedOverflow.Add(1)
+		case errors.Is(err, ErrLateData):
+			p.stats.DroppedLate.Add(1)
+		}
+		return err
+	}
+	return nil
+}
+
+// ObserveKeyed is the shared-key entry point for the fused asap_edge
+// processor: the caller built the series key once (and decoded the obs
+// labels once) and passes the key, so the window skips cfg.buildSeriesKey.
+// The key MUST equal cfg.SeriesKeyFor(obs) — asap_edge derives it the same
+// way. Otherwise identical to Observe.
+func (p *precompute) ObserveKeyed(key string, obs *Observation) error {
+	if fn := p.latencyObserver.Load(); fn != nil && *fn != nil {
+		start := time.Now()
+		defer func() { (*fn)(time.Since(start)) }()
+	}
+	if p.closed.Load() {
+		return errors.New("precompute: instance is closed")
+	}
+	cfg := p.activeConfig()
+	if cfg == nil {
+		return ErrNoConfig
+	}
+	p.stats.InputObservations.Add(1)
+	if obs.Value.Kind == KindEnvelope && obs.Value.Envelope != nil {
+		return p.ObserveEnvelope(obs.Value.Envelope)
+	}
+	if !cfg.Matches(obs) {
+		return nil
+	}
+	if p.sketchFactory == nil {
+		return errors.New("precompute: sketch factory not configured")
+	}
+	if p.observer == nil {
+		return errors.New("precompute: sketch observer not configured")
+	}
+	if err := p.window.observeKeyed(key, obs, cfg, p.sketchFactory, p.observer, p.stats); err != nil {
 		switch {
 		case errors.Is(err, ErrSeriesCapExceeded):
 			p.stats.DroppedOverflow.Add(1)
