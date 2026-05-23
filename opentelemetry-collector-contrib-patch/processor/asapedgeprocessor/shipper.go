@@ -36,13 +36,37 @@ func newFragmentShipper(endpoint string) *fragmentShipper {
 	}
 }
 
+// noop reports whether shipping is disabled (nil shipper or empty endpoint =>
+// build-only mode: fragments are drained but not shipped). Callers skip the
+// spool entirely when shipping is a no-op.
+func (s *fragmentShipper) noop() bool { return s == nil || s.endpoint == "" }
+
+// encode serializes fragments to the ASAPFRG1 frame and gzips it — the exact
+// on-disk spool body and wire body (re-ship is a plain POST of these bytes).
+func (s *fragmentShipper) encode(frags []gorilla.Fragment) ([]byte, error) {
+	return gzipBytes(gorilla.EncodeFragmentBatch(frags))
+}
+
+// ship encodes + ships a fragment batch in one call (the inline convenience
+// used by tests / direct callers). Prefer encode + shipEncoded when the encoded
+// body must also be spooled to disk on failure.
 func (s *fragmentShipper) ship(ctx context.Context, frags []gorilla.Fragment) error {
-	if s == nil || s.endpoint == "" || len(frags) == 0 {
+	if s.noop() || len(frags) == 0 {
 		return nil
 	}
-	body, err := gzipBytes(gorilla.EncodeFragmentBatch(frags))
+	body, err := s.encode(frags)
 	if err != nil {
 		return err
+	}
+	return s.shipEncoded(ctx, body)
+}
+
+// shipEncoded POSTs an already-gzipped ASAPFRG1 body to the merger, retrying
+// with linear backoff. The body is the same bytes written to the spool, so a
+// spooled file is re-shipped by reading it and calling shipEncoded directly.
+func (s *fragmentShipper) shipEncoded(ctx context.Context, body []byte) error {
+	if s.noop() || len(body) == 0 {
+		return nil
 	}
 	var lastErr error
 	for attempt := 0; attempt < s.maxRetries; attempt++ {

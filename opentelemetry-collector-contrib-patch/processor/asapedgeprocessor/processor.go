@@ -53,6 +53,7 @@ type asapEdgeProcessor struct {
 	coldExtLabels map[string]string
 	coldSource    string
 	shipper       *fragmentShipper
+	shipWorker    *shipWorker
 
 	windowStartMs atomic.Uint64
 	maxObservedMs atomic.Uint64
@@ -88,6 +89,7 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 	if p.coldEnabled {
 		p.coldSource = coldSourceFromLabels(p.coldExtLabels)
 		p.shipper = newFragmentShipper(cfg.Cold.ShipEndpoint)
+		p.shipWorker = newShipWorker(p.shipper, cfg.Cold, p.logger)
 	}
 	for i := range p.shards {
 		sh := &shard{
@@ -138,6 +140,10 @@ func (p *asapEdgeProcessor) Capabilities() consumer.Capabilities {
 
 func (p *asapEdgeProcessor) Start(_ context.Context, _ component.Host) error {
 	p.windowStartMs.Store(uint64(time.Now().UnixMilli()))
+	// Start the async ship worker (drains the spool + re-ships failed batches)
+	// before the flush loop so the first flush's batch has a worker to receive
+	// it. No-op when the cold tier is disabled.
+	p.shipWorker.start()
 	if p.cfg.WindowDuration > 0 {
 		p.flushStarted = true
 		go p.flushLoop()
@@ -146,6 +152,9 @@ func (p *asapEdgeProcessor) Start(_ context.Context, _ component.Host) error {
 }
 
 func (p *asapEdgeProcessor) Shutdown(ctx context.Context) error {
+	// Stop the flush loop first (its final flushAll enqueues the last batch),
+	// then drain the worker's in-flight queue + one spool pass under the
+	// Shutdown deadline — never context.Background() for the final ship.
 	if p.flushStarted {
 		close(p.stopCh)
 		select {
@@ -154,6 +163,7 @@ func (p *asapEdgeProcessor) Shutdown(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	p.shipWorker.shutdown(ctx)
 	return nil
 }
 
@@ -334,8 +344,12 @@ func (p *asapEdgeProcessor) flushAll(ctx context.Context) {
 			frags = append(frags, drained...)
 		}
 		if len(frags) > 0 {
-			if serr := p.shipper.ship(ctx, frags); serr != nil {
-				p.logger.Warn("asap_edge: ship cold fragments failed", zap.Error(serr))
+			// Hand the drained batch to the async ship worker (non-blocking):
+			// flushes never wait on the network, and a ship failure is spooled
+			// to disk + retried instead of dropped. encode runs here (cheap,
+			// off the worker) so an encode error is logged in the flush path.
+			if serr := p.shipWorker.shipBatch(frags); serr != nil {
+				p.logger.Warn("asap_edge: encode cold fragments failed", zap.Error(serr))
 			}
 		}
 	}
