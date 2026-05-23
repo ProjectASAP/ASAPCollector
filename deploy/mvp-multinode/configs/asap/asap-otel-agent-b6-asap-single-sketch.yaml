@@ -88,11 +88,12 @@ processors:
       - { metric: endpoint_request_freq,          family: countminsketch, rows: 5, cols: 2048 }
     cold:
       enabled: true
-      # Ship per-emit Gorilla blocks to the backend gorilla storage-engine
-      # ingest (Track 2: the merger moves into asapquery-backend's
-      # gorilla_object_store, which cuts the 1h window block + flushes S3).
-      # Provided by the backend; until then cold build-and-drops.
-      ship_endpoint: http://backend:9098/ingest/gorilla
+      # Ship compact XOR-chunk fragments (ASAPFRG1) to the backend
+      # gorilla-merger's HTTP ingest. The merger (a Thanos-Receive-style
+      # service: tsdb.DB -> 2h block -> S3, + StoreAPI for the pending window)
+      # runs on node2 as host `gorilla-merger`, HTTP ingest on :10908.
+      # Empty endpoint = build-and-drop (measurement / warm-only).
+      ship_endpoint: http://gorilla-merger:10908/ingest/gorilla
       block_duration: 60s
       reorder_grace: 2s
       external_labels:
