@@ -5,6 +5,8 @@ package asapedgeprocessor
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"go.opentelemetry.io/collector/component"
@@ -76,6 +78,30 @@ type ColdConfig struct {
 	ReorderGrace time.Duration `mapstructure:"reorder_grace"`
 	// ExternalLabels are stamped onto every cold-archived series.
 	ExternalLabels map[string]string `mapstructure:"external_labels"`
+
+	// --- durable async ship (decouples flush from the network) ---
+	// The flush goroutine hands each drained fragment batch to a background
+	// ship worker over a buffered channel, so a slow/failing merger never
+	// blocks the next window flush. On ship failure the encoded batch is
+	// written to SpoolDir and re-shipped by a periodic retry loop (durable
+	// across restarts), bounded by SpoolMaxBytes (oldest dropped when over).
+
+	// SpoolDir is the directory the worker persists failed (gzipped ASAPFRG1)
+	// batches to. Empty => default <os.TempDir()>/asap-edge-spool. The spool
+	// is only used when ShipEndpoint is set (build-only mode never spools).
+	SpoolDir string `mapstructure:"spool_dir"`
+	// SpoolMaxBytes bounds the total spool size. When a new batch would exceed
+	// it, the oldest spooled batches are dropped (logged as a permanent
+	// cold-archive hole) so disk can't grow unbounded. Default 256 MiB.
+	// <=0 => unbounded (not recommended).
+	SpoolMaxBytes int64 `mapstructure:"spool_max_bytes"`
+	// ShipQueueDepth is the buffered ship-channel depth between flushAll and
+	// the worker. When full, flushAll spools the batch directly (still
+	// non-blocking). Default 64.
+	ShipQueueDepth int `mapstructure:"ship_queue_depth"`
+	// SpoolRetryInterval is how often the worker re-ships spooled batches.
+	// Default 30s.
+	SpoolRetryInterval time.Duration `mapstructure:"spool_retry_interval"`
 
 	// --- legacy S3-direct fallback (used only when ShipEndpoint is empty) ---
 	// Endpoint/TSDBBucket/etc. write blocks straight to S3/MinIO from the
@@ -175,6 +201,23 @@ func (c *Config) Validate() error {
 		}
 		if c.Cold.ReorderGrace == 0 {
 			c.Cold.ReorderGrace = 2 * time.Second
+		}
+		// Durable async-ship defaults (only relevant when a ship endpoint is
+		// configured; build-only mode never touches the spool).
+		if c.Cold.SpoolDir == "" {
+			c.Cold.SpoolDir = filepath.Join(os.TempDir(), "asap-edge-spool")
+		}
+		if c.Cold.SpoolMaxBytes == 0 {
+			c.Cold.SpoolMaxBytes = 256 << 20 // 256 MiB
+		}
+		if c.Cold.SpoolMaxBytes < 0 {
+			return fmt.Errorf("asap_edge: cold.spool_max_bytes must be >= 0 (0 => default, <0 invalid)")
+		}
+		if c.Cold.ShipQueueDepth <= 0 {
+			c.Cold.ShipQueueDepth = 64
+		}
+		if c.Cold.SpoolRetryInterval <= 0 {
+			c.Cold.SpoolRetryInterval = 30 * time.Second
 		}
 	}
 	return nil

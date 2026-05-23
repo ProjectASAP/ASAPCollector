@@ -123,6 +123,11 @@ func TestColdFlushShipsFragments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Start launches the async ship worker so flushAll's enqueued batch is
+	// actually POSTed (the ship is now decoupled from flushAll).
+	if err := p.Start(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
 
 	md := pmetric.NewMetrics()
@@ -140,6 +145,18 @@ func TestColdFlushShipsFragments(t *testing.T) {
 		t.Fatalf("ConsumeMetrics: %v", err)
 	}
 	p.flushAll(context.Background())
+
+	// The ship is async; poll briefly for the worker to deliver the POST.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		n := len(body)
+		mu.Unlock()
+		if n > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
