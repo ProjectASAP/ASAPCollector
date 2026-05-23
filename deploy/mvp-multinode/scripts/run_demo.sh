@@ -92,7 +92,8 @@ sync_to() {
 
 sync_all_nodes() {
     for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
-        on "${n}" 'mkdir -p /mydata/mvp-multinode/{configs,scripts,logs,results}'
+        # `data/gorilla-merger` is the merger's tsdb volume mount on node2.
+        on "${n}" 'mkdir -p /mydata/mvp-multinode/{configs,scripts,logs,results,data/gorilla-merger}'
     done
     sync_to "${NODE0_HOST}"
     sync_to "${NODE1_HOST}"
@@ -210,6 +211,33 @@ backend_up() {
             --sync-block-duration=30s \
             --block-sync-concurrency=20
 
+        # gorilla-merger — Thanos-Receive-style pending-window component.
+        #
+        # Brought up BEFORE thanos-query so its StoreAPI is listening when
+        # query starts fanning out. On node2's --network host, the merger
+        # binds its two default ports directly:
+        #   HTTP  :10908  /ingest/gorilla (edge fragment cold-ship, issue #24)
+        #                 + /metrics + /-/healthy + /-/ready
+        #   gRPC  :10907  Thanos StoreAPI (the <2h pending query surface)
+        # These don't collide with the three thanos containers (10901–10905).
+        #
+        # The shipper uploads completed 2h blocks to the SAME bucket the
+        # store-gateway watches (configs/shared/thanos-objstore.yaml →
+        # asap-gorilla-tsdb), so query unions: merger StoreAPI (recent <2h)
+        # + store-gateway (>=2h S3) with no double-count (the merger drops
+        # its local copy once shipped). `cluster=asap-mvp` is the merger's
+        # distinguishing external label (applied to every series + block).
+        docker_run_on "${NODE2_HOST}" \
+            --name asap-gorilla-merger \
+            -v /mydata/mvp-multinode/configs/shared/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
+            -v /mydata/mvp-multinode/data/gorilla-merger:/data \
+            asap/gorilla-merger:dev \
+            --http-address=0.0.0.0:10908 \
+            --grpc-address=0.0.0.0:10907 \
+            --tsdb.path=/data \
+            --objstore.config-file=/etc/thanos/objstore.yaml \
+            --external-labels=cluster=asap-mvp,merger=m1
+
         # Thanos query
         #
         # All containers on node2 run with --network host, so the default
@@ -219,6 +247,12 @@ backend_up() {
         # same host. The data_plane (asap-backend) only talks to thanos-query
         # over HTTP :10903; the gRPC port is just thanos-query's own control
         # surface and isn't exposed.
+        #
+        # Issue #32: register the gorilla-merger StoreAPI (10907) as a second
+        # --endpoint so query fans out to BOTH the merger (recent <2h pending
+        # window) and the store-gateway (>=2h S3 blocks) and unions the
+        # results. Without this, query only sees shipped S3 blocks and the
+        # most-recent <2h of merger-ingested data is invisible.
         docker_run_on "${NODE2_HOST}" \
             --name asap-thanos-query \
             quay.io/thanos/thanos:v0.41.0 \
@@ -226,6 +260,7 @@ backend_up() {
             --http-address=0.0.0.0:10903 \
             --grpc-address=0.0.0.0:10905 \
             --endpoint=thanos-store-gateway:10901 \
+            --endpoint=gorilla-merger:10907 \
             --query.replica-label=replica
 
         # Thanos compact

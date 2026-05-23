@@ -29,13 +29,14 @@ Edits to topology (IPs, hostnames, port mappings) live in `topology.env`.
 
 ## Image set
 
-Three images, all built on node0 and `docker save | ssh load`-distributed by `run_demo.sh` Phase 0:
+Four images, all built on node0 and `docker save | ssh load`-distributed by `run_demo.sh` Phase 0:
 
 | Image | Built from | Contains |
 |---|---|---|
 | `asap/asap-otel:dev` | `ASAPCollector` root + `build_asap_otel.sh` | Patched OTel-Collector with sketch processors |
 | `asap/fake-exporter:dev` | `deploy/fake-exporter/Dockerfile` | OTLP load generator |
 | `asap/query-backend:dev` | `deploy/docker/Dockerfile.backend` (multi-bin) | `asap-query-backend` (port 9091 / 4317 / 4318) **and** `controller` (port 8080 / 4320 / 4321), per the Phase-9 single-binary refactor (#373). The 4-node `run_demo.sh` runs the controller in-process inside the asap-backend container — no separate controller container. |
+| `asap/gorilla-merger:dev` | `ASAPQuery-backend/gorilla-merger/Dockerfile` (BuildKit secret) | Thanos-Receive-style merger: HTTP fragment ingest (`:10908`), Thanos StoreAPI for the `<2h` pending window (`:10907`), 2h-block shipper → `asap-gorilla-tsdb`. ASAP arms only; runs on node2. `thanos-query` fans out to its StoreAPI alongside the store-gateway. Imports the private `asap-gorilla-go` module, so its build needs a `gh_token` BuildKit secret — see the merger README. |
 
 External images (pulled by each node): `minio/minio:latest`, `minio/mc:latest`, `prom/prometheus:v2.55.0`, `quay.io/thanos/thanos:v0.41.0`.
 
@@ -104,3 +105,41 @@ The per-node Python utilities (`metricsql_replay.py`, `measure_*.py`, `accuracy_
 | `MVP_REPORT.md` | Rendered by `mvp_report.py` (Phase 8) | Generated on node0 from aggregated per-node CSVs |
 
 Pick the single-host driver for fast iteration and PR-time smoke. Use the 4-node driver when bandwidth claims need to land on a real LAN.
+
+## gorilla-merger integration (issues #32 / #24)
+
+The ASAP arms run an `asap-gorilla-merger` container on node2 (Thanos-Receive-style):
+HTTP fragment ingest on `:10908` (`POST /ingest/gorilla`), Thanos StoreAPI on
+`:10907` for the `<2h` pending window, and a 2h-block shipper into the same
+`asap-gorilla-tsdb` bucket the store-gateway watches.
+
+**Wired (#32 — StoreAPI fan-out):** `thanos-query` is launched with a second
+`--endpoint=gorilla-merger:10907` alongside `--endpoint=thanos-store-gateway:10901`,
+so query unions the merger's recent `<2h` window with the store-gateway's `>=2h`
+S3 blocks. The merger ships its own blocks to S3 and drops the local copy once
+shipped, so there is no double-count across the boundary. The merger's
+distinguishing external label is `cluster=asap-mvp,merger=m1`.
+
+**NOT yet wired (#24 — edge cold-ship to the merger):** the merger's HTTP
+ingest expects `asap-gorilla-go` `ASAPFRG1` fragment batches, but **no edge
+agent path produces an HTTP fragment ship today.** The current edge cold tier
+is the `gorillas3` OTel processor (see
+`configs/asap/asap-otel-agent-b6-asap-single-sketch.yaml`), which writes
+Prometheus TSDB blocks **directly** to MinIO (`block_format: prometheus_tsdb`,
+`tsdb_bucket: asap-gorilla-tsdb`) — there is **no `cold.ship_endpoint` config
+key** anywhere in this repo, and the `gorillas3processor` Config struct exposes
+no HTTP-ship endpoint (its `agent` role emits fragment *metrics* downstream
+through the OTel pipeline, it does not POST them over HTTP). So the
+merger ingest port currently has no producer in the multinode deploy.
+
+To close #24, one of the following has to land first (out of scope here):
+1. an OTel exporter that serializes the `agent`-role gorillas3 fragment stream
+   into `ASAPFRG1` batches and POSTs them to `http://gorilla-merger:10908/ingest/gorilla`
+   (gzip optional), replacing the direct-to-S3 `gorillas3` TSDB write; or
+2. a `gateway_fragment`-role gorillas3 sidecar that the agents ship fragments
+   to over OTLP, which then re-POSTs to the merger.
+
+Until then, the merger container + StoreAPI fan-out are live and queryable, but
+ingest is exercised only by a manual `POST /ingest/gorilla` (the merger's own
+unit tests cover the wire path). End-to-end edge→merger→query validation is
+blocked on the producer side, NOT the merger or query side.
