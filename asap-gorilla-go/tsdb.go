@@ -190,8 +190,32 @@ func (b *StreamingTSDBBlockBuilder) AddSample(sample TSDBSample) error {
 	if tms > b.maxObserved {
 		b.maxObserved = tms
 	}
-	st := b.getSeries(sample.MetricName, sample.Attributes)
-	heap.Push(&st.pending, pendingPoint{t: tms, v: sample.Value})
+	return b.addToSeriesLocked(b.getSeries(sample.MetricName, sample.Attributes), tms, sample.Value)
+}
+
+// AddSampleKeyed is the shared-key entry point for the fused asap_edge
+// processor: the caller has already built the canonical series key once
+// (for cold + warm dispatch + sharding), so this skips the internal
+// appendSeriesKey rebuild. The key MUST be byte-identical to what
+// appendSeriesKey produces for (metricName, attrs) — asap_edge derives it
+// the same way — so keyed and unkeyed admits land on the same series.
+func (b *StreamingTSDBBlockBuilder) AddSampleKeyed(key string, sample TSDBSample) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return fmt.Errorf("streaming tsdb builder is closed")
+	}
+	tms := sample.Timestamp.UnixNano() / int64(time.Millisecond)
+	if tms > b.maxObserved {
+		b.maxObserved = tms
+	}
+	return b.addToSeriesLocked(b.getSeriesKeyed(key, sample.MetricName, sample.Attributes), tms, sample.Value)
+}
+
+// addToSeriesLocked appends one point to a series and advances the drain.
+// Caller holds b.mu. Shared by AddSample and AddSampleKeyed.
+func (b *StreamingTSDBBlockBuilder) addToSeriesLocked(st *tsdbSeriesState, tms int64, v float64) error {
+	heap.Push(&st.pending, pendingPoint{t: tms, v: v})
 	// Enqueue the series for draining only when this point is its new earliest
 	// pending timestamp (heap root). For in-order data that's just the first
 	// point after each drain; for out-of-order data it's whenever a smaller
@@ -282,9 +306,27 @@ func (b *StreamingTSDBBlockBuilder) getSeries(metricName string, attrs map[strin
 		seriesKeyScratchPool.Put(sc)
 		return st
 	}
-	ls := b.labelsFor(metricName, attrs)
 	key := string(sc.buf) // retained map key, paid once per new series
 	seriesKeyScratchPool.Put(sc)
+	return b.admitSeriesLocked(key, metricName, attrs)
+}
+
+// getSeriesKeyed looks up (or admits) a series by a pre-built key, skipping
+// appendSeriesKey. Used by AddSampleKeyed so the fused asap_edge processor
+// builds the canonical key once and shares it with the cold tier.
+func (b *StreamingTSDBBlockBuilder) getSeriesKeyed(key, metricName string, attrs map[string]string) *tsdbSeriesState {
+	if st := b.series[key]; st != nil {
+		return st
+	}
+	return b.admitSeriesLocked(key, metricName, attrs)
+}
+
+// admitSeriesLocked creates + registers a new series for key. Caller holds
+// b.mu and has already confirmed the series is absent. labels.Labels is
+// built only here (the per-new-series cost). Shared by getSeries (unkeyed
+// miss) and getSeriesKeyed (keyed miss).
+func (b *StreamingTSDBBlockBuilder) admitSeriesLocked(key, metricName string, attrs map[string]string) *tsdbSeriesState {
+	ls := b.labelsFor(metricName, attrs)
 	st := &tsdbSeriesState{key: key, labels: ls, lastTs: math.MinInt64}
 	heap.Init(&st.pending)
 	b.series[key] = st
@@ -311,6 +353,25 @@ var seriesKeyScratchPool = sync.Pool{New: func() any { return &seriesKeyScratch{
 // distinct bytes". Length-prefixed fields keep it collision-free for
 // arbitrary label values.
 func (b *StreamingTSDBBlockBuilder) appendSeriesKey(sc *seriesKeyScratch, metricName string, attrs map[string]string) {
+	appendSeriesKeyInto(sc, metricName, attrs, b.extLabels)
+}
+
+// SeriesKey builds the canonical series key for (metricName, attrs,
+// extLabels) — byte-identical to what a StreamingTSDBBlockBuilder uses
+// internally. Exported so a fused upstream (asap_edge) can build the key
+// once (for sharding + cold dispatch) and feed it via AddSampleKeyed; key
+// parity with the unkeyed path is guaranteed by sharing this code.
+func SeriesKey(metricName string, attrs, extLabels map[string]string) string {
+	sc := seriesKeyScratchPool.Get().(*seriesKeyScratch)
+	appendSeriesKeyInto(sc, metricName, attrs, extLabels)
+	key := string(sc.buf)
+	seriesKeyScratchPool.Put(sc)
+	return key
+}
+
+// appendSeriesKeyInto writes the canonical key for (metricName, attrs,
+// extLabels) into sc.buf. Shared by the builder method and exported SeriesKey.
+func appendSeriesKeyInto(sc *seriesKeyScratch, metricName string, attrs, extLabels map[string]string) {
 	sc.buf = sc.buf[:0]
 	sc.keys = sc.keys[:0]
 	sc.keys = append(sc.keys, labels.MetricName)
@@ -319,7 +380,7 @@ func (b *StreamingTSDBBlockBuilder) appendSeriesKey(sc *seriesKeyScratch, metric
 			sc.keys = append(sc.keys, k)
 		}
 	}
-	for k := range b.extLabels {
+	for k := range extLabels {
 		if k != labels.MetricName {
 			sc.keys = append(sc.keys, k) // may duplicate an attrs key; deduped below
 		}
@@ -333,10 +394,10 @@ func (b *StreamingTSDBBlockBuilder) appendSeriesKey(sc *seriesKeyScratch, metric
 		}
 		first = false
 		prev = k
-		// labelsFor's Builder.Set precedence is __name__ then attrs then
-		// extLabels, so the last writer wins: extLabels > attrs > __name__-
-		// default. An empty value drops the label (Builder.Set("") deletes).
-		v, ok := b.resolveLabelValue(k, metricName, attrs)
+		// Builder.Set precedence is __name__ then attrs then extLabels, so
+		// the last writer wins: extLabels > attrs > __name__-default. An
+		// empty value drops the label (Builder.Set("") deletes).
+		v, ok := resolveLabelValue(k, metricName, attrs, extLabels)
 		if !ok || v == "" {
 			continue
 		}
@@ -345,8 +406,8 @@ func (b *StreamingTSDBBlockBuilder) appendSeriesKey(sc *seriesKeyScratch, metric
 	}
 }
 
-func (b *StreamingTSDBBlockBuilder) resolveLabelValue(k, metricName string, attrs map[string]string) (string, bool) {
-	if v, ok := b.extLabels[k]; ok {
+func resolveLabelValue(k, metricName string, attrs, extLabels map[string]string) (string, bool) {
+	if v, ok := extLabels[k]; ok {
 		return v, true
 	}
 	if v, ok := attrs[k]; ok {
