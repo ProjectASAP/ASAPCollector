@@ -52,7 +52,7 @@ func newMonitor(settings component.TelemetrySettings, processorID string, active
 
 	if c, err := meter.Int64Counter(
 		"gorillas3_chunks_written_total",
-		metric.WithDescription("Number of GORILLA1 chunks successfully written to S3."),
+		metric.WithDescription("Number of TSDB/fragment chunks successfully written to S3."),
 		metric.WithUnit("{chunk}"),
 	); err == nil {
 		m.chunksWritten = c
@@ -70,7 +70,7 @@ func newMonitor(settings component.TelemetrySettings, processorID string, active
 	}
 	if c, err := meter.Int64Counter(
 		"gorillas3_chunk_bytes_written_total",
-		metric.WithDescription("Total bytes of GORILLA1 chunk payload written to S3."),
+		metric.WithDescription("Total bytes of TSDB/fragment chunk payload written to S3."),
 		metric.WithUnit("By"),
 	); err == nil {
 		m.chunkBytesWritten = c
@@ -79,7 +79,7 @@ func newMonitor(settings component.TelemetrySettings, processorID string, active
 	}
 	if c, err := meter.Int64Counter(
 		"gorillas3_chunk_points_written_total",
-		metric.WithDescription("Total number of data points encoded into successfully written GORILLA1 chunks."),
+		metric.WithDescription("Total number of data points encoded into successfully written TSDB/fragment chunks."),
 		metric.WithUnit("{datapoint}"),
 	); err == nil {
 		m.chunkPointsWritten = c
