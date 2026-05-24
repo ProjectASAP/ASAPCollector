@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	gorilla "github.com/ProjectASAP/asap-gorilla-go"
@@ -97,16 +98,29 @@ func (s *fragmentShipper) shipEncoded(ctx context.Context, body []byte) error {
 	return lastErr
 }
 
-// gzipBytes gzip-compresses the ASAPFRG1 frame for the wire.
+// gzipWriterPool reuses gzip.Writer instances across ships. Each flush's
+// compress/flate.NewWriter allocates ~4MB of compression state (heap profile);
+// pooling + Reset reuses that state, killing the per-flush allocation/GC spike.
+var gzipWriterPool = sync.Pool{
+	New: func() any { return gzip.NewWriter(nil) },
+}
+
+// gzipBytes gzip-compresses the ASAPFRG1 frame for the wire. The gzip.Writer
+// (and its ~4MB flate state) is borrowed from a pool and Reset onto a fresh
+// buffer, so repeated flushes don't each allocate a new compressor.
 func gzipBytes(raw []byte) ([]byte, error) {
 	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
+	gw := gzipWriterPool.Get().(*gzip.Writer)
+	gw.Reset(&buf)
 	if _, err := gw.Write(raw); err != nil {
 		_ = gw.Close()
+		gzipWriterPool.Put(gw)
 		return nil, fmt.Errorf("gzip fragment batch: %w", err)
 	}
 	if err := gw.Close(); err != nil {
+		gzipWriterPool.Put(gw)
 		return nil, fmt.Errorf("gzip close: %w", err)
 	}
+	gzipWriterPool.Put(gw)
 	return buf.Bytes(), nil
 }

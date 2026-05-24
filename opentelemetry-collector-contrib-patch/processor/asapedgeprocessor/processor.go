@@ -167,19 +167,64 @@ func (p *asapEdgeProcessor) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// flushLoop drives the warm/cold flush cadence.
+//
+// Staggered (the default, ShardCount > 1): tick every WindowDuration/ShardCount
+// and on tick k flush ONLY shard k%ShardCount's cold fragments + sketches. Each
+// shard still flushes once per WindowDuration, but the N shards are phase-shifted
+// by WindowDuration/ShardCount, so their state builds + releases interleave
+// instead of bursting together — the aggregate mem sawtooth and CPU spike split
+// into N smaller, offset ones. The cross-shard sum is merged + emitted once per
+// full WindowDuration cycle (sum state is tiny, so it's not the mem driver, and
+// a unified flush keeps the backend's per-group delta total unchanged).
+//
+// Single-flush fallback (ShardCount <= 1 or staggering disabled): tick every
+// WindowDuration and flush all shards together (the original behavior).
 func (p *asapEdgeProcessor) flushLoop() {
 	defer close(p.doneCh)
-	t := time.NewTicker(p.cfg.WindowDuration)
+	if !p.staggered() {
+		t := time.NewTicker(p.cfg.WindowDuration)
+		defer t.Stop()
+		for {
+			select {
+			case <-p.stopCh:
+				p.flushAll(context.Background())
+				return
+			case <-t.C:
+				p.flushAll(context.Background())
+			}
+		}
+	}
+
+	n := len(p.shards)
+	t := time.NewTicker(p.cfg.WindowDuration / time.Duration(n))
 	defer t.Stop()
+	tick := 0
 	for {
 		select {
 		case <-p.stopCh:
+			// Final drain: flush every shard (cold + sketch) AND the unified
+			// sum so no un-flushed shard is lost on Shutdown.
 			p.flushAll(context.Background())
 			return
 		case <-t.C:
-			p.flushAll(context.Background())
+			shardIdx := tick % n
+			p.flushShardWarmCold(context.Background(), shardIdx)
+			// Once per full window cycle (after the last shard in a round),
+			// merge + emit the cross-shard sum so its output cadence and totals
+			// stay window-aligned and unchanged.
+			if shardIdx == n-1 {
+				p.flushSum(context.Background())
+			}
+			tick++
 		}
 	}
+}
+
+// staggered reports whether the round-robin per-shard flush is active. It is
+// disabled (single-flush fallback) for a single shard or a non-positive window.
+func (p *asapEdgeProcessor) staggered() bool {
+	return len(p.shards) > 1 && p.cfg.WindowDuration > 0
 }
 
 // attrMapPool reuses the decoded attribute map across samples (the shared
@@ -312,50 +357,121 @@ func numberValue(dp pmetric.NumberDataPoint) float64 {
 	return dp.DoubleValue()
 }
 
-// flushAll drains the window: per shard, swap+drain the cold fragment encoder
-// and ship the collected XOR-chunk fragments as one binary batch; collect+merge
-// sum partials across shards and emit one delta Sum metric per Sum metric.
-// Forwards the result downstream.
+// flushAll drains the window for EVERY shard at once: per shard, swap+drain the
+// cold fragment encoder and ship the collected XOR-chunk fragments; flush each
+// shard's sketch aggregators; collect+merge sum partials across shards and emit
+// one delta Sum metric per Sum metric. Forwards the result downstream.
+//
+// This is the single-flush path: the fallback cadence (ShardCount <= 1 /
+// WindowDuration <= 0) and the final drain on Shutdown both call it so no shard
+// is left un-flushed.
 func (p *asapEdgeProcessor) flushAll(ctx context.Context) {
+	// Cold: drain every shard's encoder and ship as one binary batch.
+	if p.coldEnabled {
+		var frags []gorilla.Fragment
+		for _, sh := range p.shards {
+			frags = append(frags, p.drainShardCold(sh)...)
+		}
+		p.shipFragments(frags)
+	}
+
+	out := pmetric.NewMetrics()
+	// Warm sum: merge partials across all shards, emit one delta Sum per metric.
+	p.appendSumMetrics(out)
+	// Warm sketches: per-shard flush (each series lives in one shard).
+	for _, sh := range p.shards {
+		sh.mu.Lock()
+		for _, sa := range sh.sketchAggs {
+			sa.flush(out)
+		}
+		sh.mu.Unlock()
+	}
+	p.forward(ctx, out)
+}
+
+// flushShardWarmCold drains ONE shard's cold fragments and flushes that shard's
+// sketch aggregators, then forwards the sketch envelopes. The cross-shard sum is
+// NOT touched here — it is merged + emitted on the window-aligned cadence by
+// flushSum so its delta totals stay unchanged. This is the staggered per-tick
+// unit of work: only shard idx's state is built up and released, so the N shards'
+// sawtooths phase-shift instead of releasing in lockstep.
+func (p *asapEdgeProcessor) flushShardWarmCold(ctx context.Context, idx int) {
+	if idx < 0 || idx >= len(p.shards) {
+		return
+	}
+	sh := p.shards[idx]
+
+	if p.coldEnabled {
+		p.shipFragments(p.drainShardCold(sh))
+	}
+
+	out := pmetric.NewMetrics()
+	sh.mu.Lock()
+	for _, sa := range sh.sketchAggs {
+		sa.flush(out)
+	}
+	sh.mu.Unlock()
+	p.forward(ctx, out)
+}
+
+// flushSum merges the sum partials across ALL shards and emits one delta Sum
+// metric per Sum metric, then resets every shard's partials. Run once per
+// WindowDuration so the backend's per-group delta total per window is identical
+// to the original single-flush behavior.
+func (p *asapEdgeProcessor) flushSum(ctx context.Context) {
+	if len(p.sumMetrics) == 0 {
+		return
+	}
+	out := pmetric.NewMetrics()
+	p.appendSumMetrics(out)
+	p.forward(ctx, out)
+}
+
+// drainShardCold swaps in a fresh cold encoder under the shard lock, then drains
+// the old one OUTSIDE the lock so ingestion continues during the (heavier)
+// drain. Returns the drained fragments (nil on a disabled/empty shard or a drain
+// error, which is logged).
+func (p *asapEdgeProcessor) drainShardCold(sh *shard) []gorilla.Fragment {
+	sh.mu.Lock()
+	old := sh.cold
+	if old != nil {
+		sh.cold = p.newColdEncoder()
+	}
+	sh.mu.Unlock()
+	if old == nil {
+		return nil
+	}
+	drained, derr := old.Drain(true)
+	if derr != nil {
+		p.logger.Warn("asap_edge: cold drain failed", zap.Error(derr))
+		return nil
+	}
+	return drained
+}
+
+// shipFragments hands a drained fragment batch to the async ship worker
+// (non-blocking): flushes never wait on the network, and a ship failure is
+// spooled + retried. encode runs here (cheap, off the worker) so an encode error
+// is logged in the flush path.
+func (p *asapEdgeProcessor) shipFragments(frags []gorilla.Fragment) {
+	if len(frags) == 0 {
+		return
+	}
+	if serr := p.shipWorker.shipBatch(frags); serr != nil {
+		p.logger.Warn("asap_edge: encode cold fragments failed", zap.Error(serr))
+	}
+}
+
+// appendSumMetrics merges each Sum metric's partials across all shards (resetting
+// each shard) and appends one delta Sum metric per name to out. Sum is
+// associative, so this is byte/semantically identical regardless of how many
+// shard-ticks elapsed since the last sum flush.
+func (p *asapEdgeProcessor) appendSumMetrics(out pmetric.Metrics) {
 	startMs := p.windowStartMs.Load()
 	endMs := p.maxObservedMs.Load()
 	if endMs < startMs {
 		endMs = uint64(time.Now().UnixMilli())
 	}
-
-	// Cold: swap each shard's fragment encoder under its lock, then drain the
-	// old one outside the lock so ingestion continues. Collect XOR-chunk
-	// fragments across all shards and ship them as one binary batch.
-	if p.coldEnabled {
-		var frags []gorilla.Fragment
-		for _, sh := range p.shards {
-			sh.mu.Lock()
-			old := sh.cold
-			sh.cold = p.newColdEncoder()
-			sh.mu.Unlock()
-			if old == nil {
-				continue
-			}
-			drained, derr := old.Drain(true)
-			if derr != nil {
-				p.logger.Warn("asap_edge: cold drain failed", zap.Error(derr))
-				continue
-			}
-			frags = append(frags, drained...)
-		}
-		if len(frags) > 0 {
-			// Hand the drained batch to the async ship worker (non-blocking):
-			// flushes never wait on the network, and a ship failure is spooled
-			// to disk + retried instead of dropped. encode runs here (cheap,
-			// off the worker) so an encode error is logged in the flush path.
-			if serr := p.shipWorker.shipBatch(frags); serr != nil {
-				p.logger.Warn("asap_edge: encode cold fragments failed", zap.Error(serr))
-			}
-		}
-	}
-
-	// Warm sum: merge partials across shards, emit one delta Sum per metric.
-	out := pmetric.NewMetrics()
 	for name := range p.sumMetrics {
 		merged := make(map[string]*sumGroup)
 		for _, sh := range p.shards {
@@ -366,18 +482,11 @@ func (p *asapEdgeProcessor) flushAll(ctx context.Context) {
 		}
 		emitSumMetric(out, name, merged, startMs, endMs)
 	}
-
-	// Warm sketches: per-shard flush (each series lives in one shard, so no
-	// cross-shard merge — tick each shard's aggregators and append envelopes).
-	for _, sh := range p.shards {
-		sh.mu.Lock()
-		for _, sa := range sh.sketchAggs {
-			sa.flush(out)
-		}
-		sh.mu.Unlock()
-	}
-
 	p.windowStartMs.Store(endMs)
+}
+
+// forward sends a flushed metrics batch downstream (no-op if empty).
+func (p *asapEdgeProcessor) forward(ctx context.Context, out pmetric.Metrics) {
 	if out.ResourceMetrics().Len() == 0 {
 		return
 	}
