@@ -6,7 +6,7 @@ End-to-end integration test for the ASAP warm-path sketch pipeline:
 fake-driver  ─OTLP─▶  asap-otel + ddsketchprocessor (window 10s)
                           │  emits typed DDSketchDataPoint
                           ▼
-                       backend (asap/query-backend:dev)
+                       data plane (asap/data-plane:dev)
                           │  warm-tier OTLP receiver +
                           │  DDSketchAccumulator
                           ▼
@@ -103,7 +103,7 @@ sweep is alive (`WARM_E2E_SWEEP_PID=<pid>`). Override with
 
 ## Constraints
 
-- The compose stack pulls `asap/query-backend:dev` from the local
+- The compose stack pulls `asap/data-plane:dev` from the local
   Docker daemon — assume it's already built.
 - This is a **focused** warm-path gate, not a copy of the MVP demo:
   no MinIO, no Thanos, no fake-exporter, no

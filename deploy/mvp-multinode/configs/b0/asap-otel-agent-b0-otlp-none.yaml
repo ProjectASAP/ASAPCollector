@@ -4,12 +4,12 @@
 # B0 is the matched-NONE raw baseline. It ships the FULL-cardinality
 # raw counter/gauge stream over OTLP HTTP to VictoriaMetrics with
 # `compression: none`, so it shares the EXACT SAME wire codec (none) as
-# the plain `asap` arm (OTLP→backend, compression none). The only
+# the plain `asap` arm (OTLP→data-plane, compression none). The only
 # difference between B0 and asap is aggregation:
 #
 #   B0:   producer ──OTLP──▶ agent ──OTLP/none──▶ VictoriaMetrics
 #         (no aggregation; ~10k raw series stream continuously)
-#   asap: producer ──OTLP──▶ agent ──OTLP/none──▶ asap-backend
+#   asap: producer ──OTLP──▶ agent ──OTLP/none──▶ asap-data-plane
 #         (edge Sum-by-zone + per-series sketches; 4 zone-sums + sketch)
 #
 # So `asap < b0` at codec=none isolates the AGGREGATION gain, with the
@@ -31,7 +31,7 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://controller:4320/v1/opamp
+        endpoint: ws://control-plane:4320/v1/opamp
         headers:
           X-Agent-ID: "agent-1"
 

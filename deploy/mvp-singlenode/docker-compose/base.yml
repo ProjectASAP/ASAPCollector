@@ -140,12 +140,14 @@ services:
 
   # ───────── ASAP control / query plane ─────────
   controller:
-    # Phase-9 single-binary refactor (2026-05): the controller crate
-    # moved into ASAPQuery-backend; the asap/query-backend:dev image
-    # now ships both bins. Build instructions for that image are in
-    # the `backend:` block below.
-    image: asap/query-backend:dev
-    entrypoint: ["/usr/local/bin/controller"]
+    # data_plane reorg (2026-05): the control plane now ships as its own
+    # `asap/control-plane:dev` image (entrypoint `/usr/local/bin/control_plane`),
+    # built from ASAPQuery-backend's control_plane/Dockerfile. This retires
+    # the old combined query-backend image. (Compose service name
+    # / DNS alias `controller` is kept unchanged — only the image and binary
+    # path are renamed here.)
+    image: asap/control-plane:dev
+    entrypoint: ["/usr/local/bin/control_plane"]
     environment:
       CONTROLLER_ADDR: "0.0.0.0:8080"
       CONTROLLER_OPAMP_ADDR: "0.0.0.0:4320"
@@ -175,15 +177,17 @@ services:
 
   backend:
     # Image is built separately because the source lives in a
-    # different private repo. From DataCollector root, run:
+    # different private repo. From the ASAPQuery-backend checkout, run:
     #
     #   DOCKER_BUILDKIT=1 docker build \
-    #     -f deploy/docker/Dockerfile.backend \
-    #     --build-context backend-src=/path/to/ASAPQuery-backend \
-    #     -t asap/query-backend:dev .
+    #     -f data_plane/Dockerfile \
+    #     -t asap/data-plane:dev .
     #
     # Then `docker compose up backend` picks up the tagged image.
-    image: asap/query-backend:dev
+    # (data_plane reorg, 2026-05: this is the data-plane image from the
+    # per-crate Dockerfile; the old combined deploy/docker/Dockerfile.backend
+    # is retired. Compose service name / DNS alias `backend` is unchanged.)
+    image: asap/data-plane:dev
     depends_on:
       - minio
     environment:
@@ -201,9 +205,9 @@ services:
       - ../configs/backend-streaming.yaml:/etc/asap/streaming.yaml:ro
     command:
       - "--streaming-config=/etc/asap/streaming.yaml"
-      # Deployed binary is `query_engine_rust` (the workspace's
-      # default, from `asap-query-engine/src/main.rs`); see
-      # `deploy/docker/Dockerfile.backend`. Ingest is OTLP-only
+      # Deployed binary is `data_plane` (the workspace's data-plane
+      # binary); see ASAPQuery-backend's `data_plane/Dockerfile`. Ingest
+      # is OTLP-only
       # (PRW ingest into the backend itself was deleted in PR #100;
       # PRW from the agents now lands in the VictoriaMetrics
       # container — phase ε.1 was previously Prometheus's

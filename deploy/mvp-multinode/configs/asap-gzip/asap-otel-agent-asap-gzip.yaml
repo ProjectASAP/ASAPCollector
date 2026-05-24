@@ -54,7 +54,7 @@
 #   processors.{ddsketch, KLL, HLL, countsketch, countmin}
 #   processors.batch         — coalesce per-pipeline output
 #   connectors.routing       — OTel v0.106 connector (NOT processor)
-#   exporters.otlp/backend   — backend:4317  (was gateway:4317 pre-#400)
+#   exporters.otlp/backend   — data-plane:4317  (was gateway:4317 pre-#400)
 #
 #   service.pipelines:
 #     metrics:                     receivers:[otlp]    exporters:[routing]
@@ -90,7 +90,7 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://controller:4320/v1/opamp
+        endpoint: ws://control-plane:4320/v1/opamp
         # Header-based agent identification — see
         # `asap-otel-agent-b3-delta-direct.yaml` for the rationale
         # (controller's OpAMP server uses X-Agent-ID, not the
@@ -422,9 +422,9 @@ exporters:
     # because the wave-tier backend now does its own cross-agent
     # fan-in (PRs #283/#287/#290 — backend `evaluate_exact_agg` pulls
     # sids from every agent for sum-by aggregations). Agents push OTLP
-    # straight to backend:4317, eliminating the ~10 Mbps double-hop
+    # straight to data-plane:4317, eliminating the ~10 Mbps double-hop
     # the gateway used to add per arm.
-    endpoint: backend:4317
+    endpoint: data-plane:4317
     tls:
       insecure: true
     # ASAP-GZIP arm: gzip-compress the per-window sketch/aggregate

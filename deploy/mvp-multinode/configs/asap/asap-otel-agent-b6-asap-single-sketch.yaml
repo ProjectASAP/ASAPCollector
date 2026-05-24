@@ -40,7 +40,7 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://controller:4320/v1/opamp
+        endpoint: ws://control-plane:4320/v1/opamp
         headers:
           X-Agent-ID: "agent-1"
 
@@ -101,9 +101,9 @@ processors:
 
 exporters:
   otlp/backend:
-    # Agents push OTLP straight to backend:4317 (the asap-gateway hop was
-    # removed in #400; the backend does cross-agent fan-in itself).
-    endpoint: backend:4317
+    # Agents push OTLP straight to data-plane:4317 (the asap-gateway hop was
+    # removed in #400; the data plane does cross-agent fan-in itself).
+    endpoint: data-plane:4317
     tls:
       insecure: true
 

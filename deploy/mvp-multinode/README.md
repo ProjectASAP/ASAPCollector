@@ -29,13 +29,14 @@ Edits to topology (IPs, hostnames, port mappings) live in `topology.env`.
 
 ## Image set
 
-Four images, all built on node0 and `docker save | ssh load`-distributed by `run_demo.sh` Phase 0:
+Five images, all built on node0 and `docker save | ssh load`-distributed by `run_demo.sh` Phase 0:
 
 | Image | Built from | Contains |
 |---|---|---|
 | `asap/asap-otel:dev` | `ASAPCollector` root + `build_asap_otel.sh` | Patched OTel-Collector with sketch processors |
 | `asap/fake-exporter:dev` | `deploy/fake-exporter/Dockerfile` | OTLP load generator |
-| `asap/query-backend:dev` | `deploy/docker/Dockerfile.backend` (multi-bin) | `asap-query-backend` (port 9091 / 4317 / 4318) **and** `controller` (port 8080 / 4320 / 4321), per the Phase-9 single-binary refactor (#373). The 4-node `run_demo.sh` runs the controller in-process inside the asap-backend container — no separate controller container. |
+| `asap/data-plane:dev` | `ASAPQuery-backend/data_plane/Dockerfile` | `data_plane` (the data plane / query backend, entrypoint `/usr/local/bin/data_plane`, port 9091 / 4317 / 4318). Runs as the `asap-data-plane` container on node2. |
+| `asap/control-plane:dev` | `ASAPQuery-backend/control_plane/Dockerfile` | `control_plane` (the control plane / controller, entrypoint `/usr/local/bin/control_plane`, port 8080 / 4320 / 4321). Runs as a separate `asap-control-plane` container on node2 (data_plane reorg, 2026-05 — retires the old combined query-backend image). |
 | `asap/gorilla-merger:dev` | `ASAPQuery-backend/gorilla-merger/Dockerfile` (BuildKit secret) | Thanos-Receive-style merger: HTTP fragment ingest (`:10908`), Thanos StoreAPI for the `<2h` pending window (`:10907`), 2h-block shipper → `asap-gorilla-tsdb`. ASAP arms only; runs on node2. `thanos-query` fans out to its StoreAPI alongside the store-gateway. Imports the private `asap-gorilla-go` module, so its build needs a `gh_token` BuildKit secret — see the merger README. |
 
 External images (pulled by each node): `minio/minio:latest`, `minio/mc:latest`, `prom/prometheus:v2.55.0`, `quay.io/thanos/thanos:v0.41.0`.
@@ -49,22 +50,25 @@ Prereqs:
 From node0:
 
 ```bash
-# 1) Build the three images on node0.
+# 1) Build the images on node0.
 cd /mydata/ASAPCollector
 ./build_asap_otel.sh                                       # asap/asap-otel:dev
 DOCKER_BUILDKIT=1 docker build \
     -f deploy/docker/Dockerfile.fake-exporter \
     -t asap/fake-exporter:dev .
+# data_plane reorg (2026-05): the data plane and control plane now build
+# from two per-crate Dockerfiles in ASAPQuery-backend, producing two
+# separate images (the old combined deploy/docker/Dockerfile.backend is
+# retired).
 DOCKER_BUILDKIT=1 docker build \
-    -f deploy/docker/Dockerfile.backend \
-    --build-context backend-src=/mydata/ASAPQuery-backend \
-    --build-context asap-precompute-rs=/mydata/ASAPCollector/asap-precompute-rs \
-    --build-context asap-sketchlib=/mydata/asap_sketchlib \
-    --build-context asap-gorilla-rust=/mydata/ASAPCollector/asap-gorilla-rust \
-    -t asap/query-backend:dev .
+    -f /mydata/ASAPQuery-backend/data_plane/Dockerfile \
+    -t asap/data-plane:dev /mydata/ASAPQuery-backend
+DOCKER_BUILDKIT=1 docker build \
+    -f /mydata/ASAPQuery-backend/control_plane/Dockerfile \
+    -t asap/control-plane:dev /mydata/ASAPQuery-backend
 
 # 2) Distribute + run the demo. `run_demo.sh` Phase 0 rsyncs configs/scripts,
-#    docker-save-distributes the 3 images, and pulls externals on each node.
+#    docker-save-distributes the images, and pulls externals on each node.
 cd /mydata/ASAPCollector/deploy/mvp-multinode
 bash run_demo.sh --mode both
 ```

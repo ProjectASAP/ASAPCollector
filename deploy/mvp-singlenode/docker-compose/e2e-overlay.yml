@@ -33,13 +33,12 @@
 #     up -d
 
 services:
-  # Phase-9 single-binary refactor (#373): the standalone
-  # `asap/controller:dev` image is gone. The controller binary now
-  # ships from `asap/query-backend:dev` (multi-bin build in
-  # Dockerfile.backend), and base.yml's controller service points
-  # at that image with an entrypoint override to
-  # /usr/local/bin/controller. This overlay's controller block kept
-  # for its environment + volume tweaks; the image: and build:
+  # data_plane reorg (2026-05): the control plane ships as its own
+  # `asap/control-plane:dev` image (entrypoint
+  # `/usr/local/bin/control_plane`), built from ASAPQuery-backend's
+  # control_plane/Dockerfile. base.yml's controller service already
+  # pins that image + entrypoint, so this overlay's controller block is
+  # kept only for its environment + volume tweaks; the image: and build:
   # overrides are no longer needed (base.yml already pins the
   # right image, and there's no build stanza to neutralize).
   controller:

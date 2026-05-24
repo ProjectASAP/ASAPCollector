@@ -10,7 +10,7 @@
 #   asap-otel-warm      Single asap-otel agent running the DDSketch
 #                       window processor (10s flush interval; small
 #                       so the test budget stays under 60s).
-#   backend-warm        asap/query-backend:dev with --enable-otel-ingest
+#   backend-warm        asap/data-plane:dev with --enable-otel-ingest
 #                       wiring the warm-tier OTLP receiver. Exposes
 #                       PromQL on host 29191 (note: 29191, not 29091
 #                       which is owned by the cold-path overlay).
@@ -46,7 +46,7 @@ services:
     logging: *default-logging
 
   backend-warm:
-    image: asap/query-backend:dev
+    image: asap/data-plane:dev
     environment:
       RUST_LOG: "info"
     command:

@@ -4,7 +4,7 @@
 //	fake-driver  ─OTLP─▶  asap-otel + ddsketchprocessor (window 10s)
 //	                          │  emits typed DDSketchDataPoint
 //	                          ▼
-//	                       backend (asap/query-backend:dev)
+//	                       data plane (asap/data-plane:dev)
 //	                          │  warm-tier OTLP receiver +
 //	                          │  DDSketchAccumulator
 //	                          ▼

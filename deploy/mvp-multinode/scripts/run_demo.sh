@@ -8,7 +8,7 @@
 #   node0 (10.10.1.1)  producers + agent-a   (data source)
 #   node1 (10.10.1.2)  (unused since #400 — the asap-gateway double-hop
 #                       was removed; agents push OTLP straight to backend)
-#   node2 (10.10.1.3)  backend stack         (controller, asap-query-backend,
+#   node2 (10.10.1.3)  backend stack         (control_plane, data_plane,
 #                                             prometheus, minio,
 #                                             thanos-{query,store-gateway,compact})
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
@@ -44,7 +44,7 @@
 # - Uses `docker run --network host --add-host` (no docker-compose, no
 #   overlay network). The DNS aliases injected via --add-host preserve
 #   every existing service-name reference inside the YAML configs
-#   (backend:9091, minio:9000, controller:4320, ...).
+#   (data-plane:9091, minio:9000, control-plane:4320, ...).
 # - Per-arm bring-up uses subsets of the existing /mydata/ASAPCollector/deploy
 #   configs. No config rewriting; only host placement changes.
 
@@ -124,8 +124,8 @@ docker_run_on() {
 # ─── BACKEND STACK on node2 ────────────────────────────────────────
 #
 # Common services across all arms: prometheus, minio (b0/b1 don't use
-# minio but it's harmless idle), and the controller. ASAP arm adds
-# backend + thanos-{query,store-gateway,compact}.
+# minio but it's harmless idle), and the control plane. ASAP arm adds
+# the data plane + thanos-{query,store-gateway,compact}.
 
 # is_asap_arm — true for the aggregation arms (full backend stack), false
 # for the raw baselines (b0/b1/b2/b3, VictoriaMetrics sink). The two asap
@@ -256,7 +256,7 @@ backend_up() {
         # thanos gRPC port (10901) collides with thanos-store-gateway, and
         # 10902 collides with the store-gateway HTTP port. Pin query's gRPC
         # listener to :10905 so all three thanos containers coexist on the
-        # same host. The data_plane (asap-backend) only talks to thanos-query
+        # same host. The data_plane (asap-data-plane) only talks to thanos-query
         # over HTTP :10903; the gRPC port is just thanos-query's own control
         # surface and isn't exposed.
         #
@@ -291,31 +291,33 @@ backend_up() {
             --wait \
             --http-address=0.0.0.0:10904
 
-        # Phase-9 single-binary refactor (2026-05): the controller and
-        # backend ship from the same `asap/query-backend:dev` image but
-        # run as TWO separate processes (entrypoints
-        # `/usr/local/bin/controller` vs `/usr/local/bin/asap-query-backend`).
-        # The single-node `deploy/mvp-singlenode/docker-compose/base.yml`
-        # models them as two compose services; mirror that here.
+        # data_plane reorg (2026-05): the control plane and data plane now
+        # ship as TWO separate images — `asap/control-plane:dev` (entrypoint
+        # `/usr/local/bin/control_plane`) and `asap/data-plane:dev`
+        # (entrypoint `/usr/local/bin/data_plane`) — built from
+        # ASAPQuery-backend's per-crate Dockerfiles. They still run as TWO
+        # separate processes/containers. The single-node
+        # `deploy/mvp-singlenode/docker-compose/base.yml` models them as two
+        # compose services; mirror that here.
         #
-        # Without the controller container the backend never receives
-        # the controller's POST /api/v1/streaming-config and falls back
+        # Without the control-plane container the data plane never receives
+        # the control plane's POST /api/v1/streaming-config and falls back
         # to the static `configs/asap/backend-streaming.yaml`
         # (DDSketch-only, no Sum/Count/Topk roles). The post-#290 wave
         # — sum-by-zone (#291), rate-over-Sum and topk-over-rate (#292)
-        # — only fires when the controller-driven plan installs the Sum
+        # — only fires when the control-plane-driven plan installs the Sum
         # aggregation, so this container is load-bearing for ASAP-arm
         # validation.
         #
-        # The `controller` DNS alias resolves to NODE2_IP via ADD_HOSTS;
-        # both the agents and the controller-self-reference (the OpAMP
-        # endpoint URL the controller bakes into emitted agent yaml) use
+        # The `control-plane` DNS alias resolves to NODE2_IP via ADD_HOSTS;
+        # both the agents and the control-plane-self-reference (the OpAMP
+        # endpoint URL the control plane bakes into emitted agent yaml) use
         # that name.
 
-        # asap-query-backend (ASAP only) — data plane process.
+        # asap-data-plane (ASAP only) — data plane process.
         sleep 3
         docker_run_on "${NODE2_HOST}" \
-            --name asap-backend \
+            --name asap-data-plane \
             -e RUST_LOG=info \
             -e ASAP_SKETCH_FAMILY=ddsketch \
             -e ASAP_GORILLA_S3_ENDPOINT=http://minio:9000 \
@@ -330,33 +332,39 @@ backend_up() {
             -e ASAP_THANOS_QUERY_URL=http://thanos-query:10903 \
             -v /mydata/mvp-multinode/configs/asap/backend-streaming.yaml:/etc/asap/streaming.yaml:ro \
             -v /mydata/mvp-multinode/configs/asap/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro \
-            asap/query-backend:dev \
+            asap/data-plane:dev \
             --streaming-config=/etc/asap/streaming.yaml \
             --query-port=9091 \
             --enable-otel-ingest \
             --otel-grpc-port=4317 \
             --otel-http-port=4318
 
-        # asap-controller (ASAP only) — control plane process. Brought
-        # up AFTER the backend so the controller's startup pre-pop
-        # replan tick has a live backend to POST the streaming-config
+        # asap-control-plane (ASAP only) — control plane process. Brought
+        # up AFTER the data plane so the control plane's startup pre-pop
+        # replan tick has a live data plane to POST the streaming-config
         # plan to (CONTROLLER_BACKEND_ENDPOINT). Without that POST the
-        # backend stays on the static DDSketch-only fallback and the
+        # data plane stays on the static DDSketch-only fallback and the
         # wave's Sum/Topk queries silently return empty.
+        #
+        # ASAP_EDGE_FUSED=1 gates the control plane to emit the FUSED
+        # asap_edge agent config (single fused pipeline) instead of the
+        # old 5-sketch routing shape. The `asap/control-plane:dev` image's
+        # default entrypoint IS `/usr/local/bin/control_plane`, so no
+        # `--entrypoint` override is needed.
         sleep 3
         docker_run_on "${NODE2_HOST}" \
-            --name asap-controller \
+            --name asap-control-plane \
             -e RUST_LOG="info,controller=debug,control_plane=debug" \
             -e USE_TYPED_STAGE_SPLIT=1 \
+            -e ASAP_EDGE_FUSED=1 \
             -e CONTROLLER_ADDR=0.0.0.0:8080 \
             -e CONTROLLER_OPAMP_ADDR=0.0.0.0:4320 \
             -e CONTROLLER_GRPC_ADDR=0.0.0.0:4321 \
-            -e CONTROLLER_OPAMP_ENDPOINT=ws://controller:4320/v1/opamp \
-            -e CONTROLLER_BACKEND_ENDPOINT=http://backend:9091/api/v1/streaming-config \
+            -e CONTROLLER_OPAMP_ENDPOINT=ws://control-plane:4320/v1/opamp \
+            -e CONTROLLER_BACKEND_ENDPOINT=http://data-plane:9091/api/v1/streaming-config \
             -e CONTROLLER_WORKLOADS=/etc/asap/mvp-workload.yaml \
             -v /mydata/mvp-multinode/configs/asap/mvp-workload.yaml:/etc/asap/mvp-workload.yaml:ro \
-            --entrypoint /usr/local/bin/controller \
-            asap/query-backend:dev
+            asap/control-plane:dev
     fi
 }
 
@@ -415,7 +423,7 @@ agents_up() {
         --name asap-agent-a \
         --hostname agent-a \
         -e AGENT_ID=agent-a \
-        -e CONTROLLER_OPAMP_URL=ws://controller:4320/v1/opamp \
+        -e CONTROLLER_OPAMP_URL=ws://control-plane:4320/v1/opamp \
         -e ASAP_SKETCH_FAMILY=ddsketch \
         -v /mydata/mvp-multinode/configs/${agent_cfg}:/etc/otel/config.yaml:ro \
         asap/asap-otel:dev \
@@ -427,7 +435,7 @@ agents_up() {
         --name asap-agent-b \
         --hostname agent-b \
         -e AGENT_ID=agent-b \
-        -e CONTROLLER_OPAMP_URL=ws://controller:4320/v1/opamp \
+        -e CONTROLLER_OPAMP_URL=ws://control-plane:4320/v1/opamp \
         -e ASAP_SKETCH_FAMILY=ddsketch \
         -v /mydata/mvp-multinode/configs/${agent_cfg}:/etc/otel/config.yaml:ro \
         asap/asap-otel:dev \
@@ -533,7 +541,7 @@ arm_measure() {
     done
 
     # PromQL replay endpoint:
-    #   asap arm  → asap-query-backend on node2:9091
+    #   asap arm  → asap-data-plane on node2:9091
     #   b0 / b1   → VictoriaMetrics on node2:8428 (serves PromQL on the
     #               same port as its /api/v1/write PRW receive). Prior to
     #               2026-05 this pointed at :9090 (Prometheus), but the
