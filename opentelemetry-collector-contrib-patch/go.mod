@@ -5,7 +5,7 @@ module HLL
 go 1.24.0
 
 require (
-	github.com/ProjectASAP/asap-gorilla-go v0.0.0
+	github.com/ProjectASAP/asap-gorilla-go v0.2.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.142.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/prometheusexporter v0.142.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllprocessor v0.0.0
@@ -224,5 +224,3 @@ replace go.opentelemetry.io/collector/pdata => ../opentelemetry-collector/pdata
 replace go.opentelemetry.io/collector/processor => ../opentelemetry-collector/processor
 
 replace github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go
-
-replace github.com/ProjectASAP/asap-gorilla-go => ../asap-gorilla-go
