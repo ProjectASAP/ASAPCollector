@@ -53,6 +53,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(dirname "${SCRIPT_DIR}")"
 source "${PKG_DIR}/topology.env"
 
+# Derive ROOT/CONFIG_SRC deterministically from this script's location so the
+# rsync source in sync_to() is always the configs that ship alongside this
+# run_demo.sh — not whatever absolute ROOT topology.env happened to hard-code
+# (which is how a stale agent config got synced over the intended one).
+# deploy/mvp-multinode → two levels up is the ASAPCollector repo root.
+ROOT="$(cd "${PKG_DIR}/../.." && pwd)"
+CONFIG_SRC="${PKG_DIR}/configs"
+
 RUN_ID="${RUN_ID:-mvp-multinode-$(date +%Y%m%d-%H%M%S)}"
 RUN_DIR="${RUN_BASE}/${RUN_ID}"
 mkdir -p "${RUN_DIR}" "${LOG_BASE}"
@@ -94,6 +102,10 @@ sync_all_nodes() {
     for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
         # `data/gorilla-merger` is the merger's tsdb volume mount on node2.
         on "${n}" 'mkdir -p /mydata/mvp-multinode/{configs,scripts,logs,results,data/gorilla-merger}'
+        # gorilla-merger runs distroless nonroot (UID 65532); mkdir leaves the
+        # dir owned by the ssh user, so 65532 can't write /data/lock → crash-loop.
+        # 0777 lets the nonroot UID write without sudo (harmless on the other nodes).
+        on "${n}" 'chmod 0777 /mydata/mvp-multinode/data/gorilla-merger'
     done
     sync_to "${NODE0_HOST}"
     sync_to "${NODE1_HOST}"
