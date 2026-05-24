@@ -3,7 +3,7 @@ module github.com/open-telemetry/opentelemetry-collector-contrib/processor/asape
 go 1.24.0
 
 require (
-	github.com/ProjectASAP/asap-gorilla-go v0.0.0-00010101000000-000000000000
+	github.com/ProjectASAP/asap-gorilla-go v0.2.0
 	github.com/ProjectASAP/asap-precompute-go v0.0.0-00010101000000-000000000000
 	go.opentelemetry.io/collector/component v1.47.0
 	go.opentelemetry.io/collector/consumer v1.47.0
@@ -123,5 +123,3 @@ replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
 // Local asap-precompute-go checkout — Phase 2 step 2.5 introduces
 // the runtime delegation. Path is relative to this processor.
 replace github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
-
-replace github.com/ProjectASAP/asap-gorilla-go => ../../../asap-gorilla-go
