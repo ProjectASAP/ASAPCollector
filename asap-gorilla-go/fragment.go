@@ -79,6 +79,7 @@ type StreamingFragmentEncoder struct {
 	source        string
 
 	series      map[string]*fragmentSeriesState
+	drainQueue  fragmentDrainHeap
 	maxObserved int64
 	queued      []Fragment
 	dropped     uint64
@@ -130,6 +131,13 @@ func (e *StreamingFragmentEncoder) AddSample(sample TSDBSample) error {
 	}
 	st := e.getSeries(sample.MetricName, sample.Attributes)
 	heap.Push(&st.pending, pendingPoint{t: tms, v: sample.Value})
+	// Enqueue for the per-sample watermark drain only when this point is the
+	// series' new earliest-pending timestamp (heap root), so drainLocked pops
+	// ~O(series-with-ready-points) per sample instead of scanning every series.
+	// Mirrors StreamingTSDBBlockBuilder's drainQueue (issue #46 profiling).
+	if st.pending[0].t == tms {
+		heap.Push(&e.drainQueue, fragmentDrainEntry{t: tms, st: st})
+	}
 	return e.drainLocked(e.maxObserved-e.reorderGrace, false)
 }
 
@@ -176,22 +184,71 @@ func (e *StreamingFragmentEncoder) getSeries(metricName string, attrs map[string
 	return st
 }
 
+// fragmentDrainEntry pairs a series with the earliest-pending timestamp it was
+// enqueued under; fragmentDrainHeap is a min-heap on that timestamp so the
+// per-sample watermark drain pops only series that actually have ready points.
+// Entries are advisory (a series may be enqueued more than once or go stale) —
+// draining a series only pops points <= watermark, so revisiting is idempotent.
+// Mirrors tsdb.go's drainEntry/seriesDrainHeap.
+type fragmentDrainEntry struct {
+	t  int64
+	st *fragmentSeriesState
+}
+
+type fragmentDrainHeap []fragmentDrainEntry
+
+func (h fragmentDrainHeap) Len() int           { return len(h) }
+func (h fragmentDrainHeap) Less(i, j int) bool { return h[i].t < h[j].t }
+func (h fragmentDrainHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *fragmentDrainHeap) Push(x any)        { *h = append(*h, x.(fragmentDrainEntry)) }
+func (h *fragmentDrainHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
 func (e *StreamingFragmentEncoder) drainLocked(watermark int64, force bool) error {
-	for _, st := range e.series {
-		for st.pending.Len() > 0 && st.pending[0].t <= watermark {
-			p := heap.Pop(&st.pending).(pendingPoint)
-			if st.hasLast && p.t <= st.lastTs {
-				e.dropped++
-				continue
-			}
-			if err := e.appendLocked(st, p); err != nil {
+	if force {
+		// Flush path (per-window, not per-sample): drain every series' ready
+		// points and flush its open chunk. O(series) is acceptable here.
+		for _, st := range e.series {
+			if err := e.drainSeriesLocked(st, watermark); err != nil {
 				return err
 			}
-		}
-		if force {
 			if err := e.flushOpenChunkLocked(st, watermark); err != nil {
 				return err
 			}
+		}
+		e.drainQueue = e.drainQueue[:0] // all drained; reset the advisory heap
+		return nil
+	}
+	// Per-sample path: pop only the series whose earliest-pending timestamp is
+	// <= watermark, instead of scanning ALL series. The old O(series)-per-sample
+	// scan was ~64% of agent CPU (issue #46 profiling).
+	for e.drainQueue.Len() > 0 && e.drainQueue[0].t <= watermark {
+		st := heap.Pop(&e.drainQueue).(fragmentDrainEntry).st
+		if err := e.drainSeriesLocked(st, watermark); err != nil {
+			return err
+		}
+		if st.pending.Len() > 0 {
+			heap.Push(&e.drainQueue, fragmentDrainEntry{t: st.pending[0].t, st: st})
+		}
+	}
+	return nil
+}
+
+// drainSeriesLocked emits one series' pending points that are <= watermark.
+func (e *StreamingFragmentEncoder) drainSeriesLocked(st *fragmentSeriesState, watermark int64) error {
+	for st.pending.Len() > 0 && st.pending[0].t <= watermark {
+		p := heap.Pop(&st.pending).(pendingPoint)
+		if st.hasLast && p.t <= st.lastTs {
+			e.dropped++
+			continue
+		}
+		if err := e.appendLocked(st, p); err != nil {
+			return err
 		}
 	}
 	return nil
