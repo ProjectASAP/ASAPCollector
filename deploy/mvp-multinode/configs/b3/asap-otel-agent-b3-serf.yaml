@@ -36,7 +36,7 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://controller:4320/v1/opamp
+        endpoint: ws://control-plane:4320/v1/opamp
         headers:
           X-Agent-ID: "agent-1"
 

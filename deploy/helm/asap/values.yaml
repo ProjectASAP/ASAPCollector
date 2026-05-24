@@ -23,7 +23,10 @@ gateway:
     limits:   { cpu: 2,    memory: 4Gi }
 
 backend:
-  image: "asap/query-backend:dev"
+  # data_plane reorg (2026-05): the data plane ships as its own
+  # `asap/data-plane:dev` image (entrypoint `/usr/local/bin/data_plane`),
+  # built from ASAPQuery-backend's data_plane/Dockerfile.
+  image: "asap/data-plane:dev"
   # cold-fallback points at the in-cluster MinIO service by
   # default; flip to a real S3 bucket for scale runs.
   cold:
@@ -34,13 +37,13 @@ backend:
     limits:   { cpu: 4,    memory: 8Gi }
 
 controller:
-  # Phase-9 single-binary refactor (#373): the controller binary
-  # now ships from `asap/query-backend:dev` (Dockerfile.backend
-  # multi-bin build) rather than a separate image. Kubernetes
-  # deployments reuse the backend image with an entrypoint
-  # override to `/usr/local/bin/controller`.
-  image: "asap/query-backend:dev"
-  entrypoint: "/usr/local/bin/controller"
+  # data_plane reorg (2026-05): the control plane ships as its own
+  # `asap/control-plane:dev` image (entrypoint
+  # `/usr/local/bin/control_plane`), built from ASAPQuery-backend's
+  # control_plane/Dockerfile — no longer a multi-bin reuse of the
+  # data-plane image.
+  image: "asap/control-plane:dev"
+  entrypoint: "/usr/local/bin/control_plane"
   runtimeSamples:
     # Per-key ring buffer depth. 1024 at default agent rates
     # gives ~10 min of freshness — plenty for a replanner that

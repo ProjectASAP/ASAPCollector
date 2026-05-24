@@ -30,7 +30,7 @@ Column-by-column provenance is documented in
   * `backend_samples_per_s` — primary path is
     `rate(asap_ingest_samples_total[…])` from the backend's
     own /metrics; if the backend image doesn't expose that
-    counter (current asap/query-backend:dev does not), falls
+    counter (current asap/data-plane:dev does not), falls
     back to `rate(otelcol_exporter_sent_metric_points_total
     {job="gateway"})`, which is the points the gateway forwarded
     to the backend (= ingest rate).
@@ -310,7 +310,7 @@ QUERIES: dict[str, str] = {
     # the Prom histogram (paper blocker #3, item 3).
     #
     # `asap_ingest_samples_total` is NOT exposed by the current
-    # asap/query-backend:dev image — only query-side counters are.
+    # asap/data-plane:dev image — only query-side counters are.
     # Falls back to gateway-egress in `FALLBACK_QUERIES` below.
     "backend_samples_per_s": "rate(asap_ingest_samples_total[{w}])",
     "backend_query_p99_ms": (
@@ -323,7 +323,7 @@ QUERIES: dict[str, str] = {
 # ── Fallback queries (paper blocker #3) ─────────────────────────
 #
 # Used when the primary QUERIES counter is absent — current
-# `asap/query-backend:dev` doesn't expose `asap_ingest_samples_total`
+# `asap/data-plane:dev` doesn't expose `asap_ingest_samples_total`
 # or `asap_query_duration_seconds_bucket` even though the backend
 # /metrics surface is reachable, so the primary path returns NaN.
 # These fallbacks let us populate the columns from signals that

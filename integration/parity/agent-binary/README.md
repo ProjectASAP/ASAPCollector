@@ -74,7 +74,7 @@ bash integration/parity/agent-binary/run_parity.sh --mode=binary --include-teleg
 
 - Brings up `asap/asap-otel:dev` + `asap/asap-otap:dev` (+
   `asap/asap-telegraf:dev` if `--include-telegraf`) plus
-  `asap/query-backend:dev` and an envelope-tap container via
+  `asap/data-plane:dev` and an envelope-tap container via
   `deploy/docker-compose/cross-host-parity.yml`.
 - Drives the canonical input from `golden_input/inputs.json` through
   each agent.

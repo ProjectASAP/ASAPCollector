@@ -4,13 +4,13 @@
 # B1 is the matched-GZIP raw baseline — the PRIMARY matched comparison's
 # baseline. It ships the FULL-cardinality raw counter/gauge stream over
 # OTLP HTTP to VictoriaMetrics with `compression: gzip`, sharing the
-# EXACT SAME wire codec (gzip) as the `asap-gzip` arm (OTLP→backend,
+# EXACT SAME wire codec (gzip) as the `asap-gzip` arm (OTLP→data-plane,
 # compression gzip). The only difference between B1 and asap-gzip is
 # aggregation:
 #
 #   B1:        producer ──OTLP──▶ agent ──OTLP/gzip──▶ VictoriaMetrics
 #              (no aggregation; ~10k raw series stream continuously)
-#   asap-gzip: producer ──OTLP──▶ agent ──OTLP/gzip──▶ asap-backend
+#   asap-gzip: producer ──OTLP──▶ agent ──OTLP/gzip──▶ asap-data-plane
 #              (edge Sum-by-zone + per-series sketches; 4 zone-sums + sketch)
 #
 # So `asap-gzip < b1` at codec=gzip isolates the AGGREGATION gain with
@@ -26,7 +26,7 @@ extensions:
   opamp:
     server:
       ws:
-        endpoint: ws://controller:4320/v1/opamp
+        endpoint: ws://control-plane:4320/v1/opamp
         headers:
           X-Agent-ID: "agent-1"
 

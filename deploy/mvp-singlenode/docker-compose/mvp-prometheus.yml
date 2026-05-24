@@ -43,9 +43,9 @@
 # overlay with `mvp-prometheus-archive.yml` instead of
 # `mvp-victoriametrics-archive.yml`.
 #
-# Phase 9 single-binary refactor (#373) is unaffected: the
-# `controller` service still runs from the `asap/query-backend:dev`
-# image with its `controller` binary entrypoint — that's defined in
+# data_plane reorg (2026-05) is unaffected: the `controller` service
+# runs from the `asap/control-plane:dev` image with its
+# `/usr/local/bin/control_plane` entrypoint — that's defined in
 # `base.yml`, orthogonal to which metrics-storage backend is selected.
 
 services:

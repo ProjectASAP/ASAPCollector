@@ -31,9 +31,12 @@
 # env var) applies.
 #
 # The caller is responsible for having the compose stack's images
-# built (asap/asap-otel:dev, asap/query-backend:dev, asap/fake-
-# exporter:dev). Each iteration does a full `docker compose down`
-# to ensure a clean state.
+# built (asap/asap-otel:dev, asap/data-plane:dev, asap/control-plane:dev,
+# asap/fake-exporter:dev). The data-plane and control-plane images build
+# from ASAPQuery-backend's data_plane/Dockerfile and control_plane/Dockerfile
+# respectively (data_plane reorg, 2026-05 — the old combined
+# deploy/docker/Dockerfile.backend is retired). Each iteration does a full
+# `docker compose down` to ensure a clean state.
 set -euo pipefail
 
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"

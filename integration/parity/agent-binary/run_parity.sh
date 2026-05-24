@@ -35,7 +35,7 @@
 #                                bash build_asap_telegraf.sh +
 #                                Dockerfile.asap-telegraf — see follow-up #1
 #                                in PROGRESS.md, currently a follow-up).
-#       asap/query-backend:dev  (deploy/docker/Dockerfile.backend)
+#       asap/data-plane:dev     (ASAPQuery-backend/data_plane/Dockerfile)
 #
 # Missing images cause an explicit failure with the build command in
 # the message — never a silent skip in binary mode.
@@ -162,7 +162,7 @@ if [[ ! -f "${COMPOSE_FILE}" ]]; then
 fi
 
 # Required images
-required_images=("asap/asap-otel:dev" "asap/asap-otap:dev" "asap/query-backend:dev")
+required_images=("asap/asap-otel:dev" "asap/asap-otap:dev" "asap/data-plane:dev")
 if (( INCLUDE_TELEGRAF == 1 )); then
   required_images+=("asap/asap-telegraf:dev")
 fi
@@ -182,7 +182,7 @@ if (( missing_images > 0 )); then
   if (( INCLUDE_TELEGRAF == 1 )); then
     log "  bash build_asap_telegraf.sh   && docker build -f deploy/docker/Dockerfile.asap-telegraf -t asap/asap-telegraf:dev ."
   fi
-  log "  docker build -f deploy/docker/Dockerfile.backend -t asap/query-backend:dev ."
+  log "  docker build -f /mydata/ASAPQuery-backend/data_plane/Dockerfile -t asap/data-plane:dev /mydata/ASAPQuery-backend"
   exit 2
 fi
 
