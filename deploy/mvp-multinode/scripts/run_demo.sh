@@ -87,6 +87,117 @@ stop_node() {
     on "${node}" 'docker ps -a --format "{{.Names}}" | grep "^asap-" | xargs -r docker rm -f' || true
 }
 
+# ── build all locally-built images from CURRENT source, then ship them ──
+#
+# Source changes constantly during development, so every deploy rebuilds the
+# images from source and re-loads them onto the nodes — no more stale-image
+# version skew. External images (minio/thanos/prometheus/victoria-metrics) are
+# NOT built here; each node pulls those itself. Set SKIP_BUILD=1 / SKIP_LOAD=1
+# to reuse what's already present (e.g. iterating on config only).
+SKETCHLIB_GO="${SKETCHLIB_GO:-/mydata/sketchlib-go}"
+
+build_images() {
+    log "build_images: rebuilding all local images from current source"
+    # shellcheck disable=SC1091
+    source "${HOME}/.cargo/env" 2>/dev/null || true
+    export PATH="${PATH}:/usr/local/go/bin:${HOME}/go/bin"
+
+    # Build from the repos AS THEY ARE ON DISK — this compiles your local edits
+    # and NEVER pulls or checks out for you (so it can't clobber uncommitted
+    # work). Print exactly what's being built, and fail loudly on a stale /
+    # incomplete checkout instead of silently shipping the wrong code (e.g. an
+    # ASAPQuery-backend tree that predates control_plane/Dockerfile would
+    # otherwise build a data-plane WITHOUT the latest fixes).
+    log "  ROOT (ASAPCollector)     = ${ROOT} @ $(git -C "${ROOT}" log -1 --format='%h %s' 2>/dev/null || echo 'non-git')"
+    log "  BACKEND (ASAPQuery-back) = ${BACKEND} @ $(git -C "${BACKEND}" log -1 --format='%h %s' 2>/dev/null || echo 'non-git')"
+    local missing=0 req
+    for req in "${BACKEND}/data_plane/Dockerfile" "${BACKEND}/control_plane/Dockerfile" "${BACKEND}/gorilla-merger" \
+               "${ROOT}/build_asap_otel.sh" "${ROOT}/build_opamp_supervisor.sh" \
+               "${ROOT}/deploy/docker/Dockerfile.asap-otel" "${ROOT}/deploy/docker/Dockerfile.asap-otel-supervised" \
+               "${ROOT}/deploy/docker/Dockerfile.fake-exporter" \
+               "${ROOT}/asap-precompute-rs" "${ROOT}/asap-gorilla-rust" "${SKETCHLIB}" "${SKETCHLIB_GO}"; do
+        [ -e "${req}" ] || { log "  MISSING build input: ${req}"; missing=1; }
+    done
+    [ "${missing}" = 1 ] && die "build_images: required build inputs missing — is ${BACKEND} at the intended commit? (stale/incomplete checkout; pull or point BACKEND= at a current tree)"
+
+    # ── ASAPQuery-backend: split WARM engine (data_plane + control_plane) ──
+    log "  → asap/data-plane:dev"
+    DOCKER_BUILDKIT=1 docker build -f "${BACKEND}/data_plane/Dockerfile" \
+        --build-context asap-precompute-rs="${ROOT}/asap-precompute-rs" \
+        --build-context asap-sketchlib="${SKETCHLIB}" \
+        --build-context asap-gorilla-rust="${ROOT}/asap-gorilla-rust" \
+        -t asap/data-plane:dev "${BACKEND}"
+    log "  → asap/control-plane:dev"
+    DOCKER_BUILDKIT=1 docker build -f "${BACKEND}/control_plane/Dockerfile" \
+        --build-context asap-precompute-rs="${ROOT}/asap-precompute-rs" \
+        --build-context asap-sketchlib="${SKETCHLIB}" \
+        --build-context asap-gorilla-rust="${ROOT}/asap-gorilla-rust" \
+        -t asap/control-plane:dev "${BACKEND}"
+
+    # ── ASAPCollector: agent collector + its opamp-supervisor wrapper ──
+    # build_asap_otel.sh injects the local sketchlib-go / asap-precompute-go /
+    # asap-gorilla-go replace directives and produces the OCB binary, so #432
+    # (and any asap-gorilla-go edit) is picked up WITHOUT a published tag.
+    log "  → asap-otel binary + asap/asap-otel:dev"
+    GONOSUMCHECK="github.com/ProjectASAP/*" GOPRIVATE="github.com/ProjectASAP/*" \
+        GONOSUMDB="github.com/ProjectASAP/*" bash "${ROOT}/build_asap_otel.sh"
+    docker build -f "${ROOT}/deploy/docker/Dockerfile.asap-otel" -t asap/asap-otel:dev "${ROOT}"
+    log "  → opamp-supervisor + asap/asap-otel-supervised:dev"
+    bash "${ROOT}/build_opamp_supervisor.sh"
+    docker build -f "${ROOT}/deploy/docker/Dockerfile.asap-otel-supervised" \
+        -t asap/asap-otel-supervised:dev "${ROOT}"
+
+    # ── fake-exporter (producers) ──
+    log "  → asap/fake-exporter:dev"
+    DOCKER_BUILDKIT=1 docker build -f "${ROOT}/deploy/docker/Dockerfile.fake-exporter" \
+        --build-context sketchlib-go="${SKETCHLIB_GO}" \
+        -t asap/fake-exporter:dev "${ROOT}"
+
+    # ── gorilla-merger (cold sink; imports PRIVATE asap-gorilla-go via a
+    #    BuildKit secret so the token never lands in an image layer) ──
+    log "  → asap/gorilla-merger:dev"
+    local gh_token_file="${GH_TOKEN_FILE:-}" cleanup_token=0
+    if [ -z "${gh_token_file}" ]; then
+        gh_token_file="$(mktemp)"; cleanup_token=1
+        python3 -c "import yaml; d=yaml.safe_load(open('${HOME}/.config/gh/hosts.yml')); print(d['github.com'].get('oauth_token') or d['github.com'].get('token'), end='')" > "${gh_token_file}"
+    fi
+    DOCKER_BUILDKIT=1 docker build --secret id=gh_token,src="${gh_token_file}" \
+        -t asap/gorilla-merger:dev "${BACKEND}/gorilla-merger"
+    [ "${cleanup_token}" = 1 ] && rm -f "${gh_token_file}"
+
+    log "build_images: done"
+    docker images | grep -E "^asap/" | sort | sed 's/^/  /' | while read -r l; do log "${l}"; done
+}
+
+# ── distribute the locally-built images to the node(s) that RUN them.
+# Mapping follows the cold/warm split: WARM engine on node2, agents+producers
+# on node0/node3, COLD/thanos sink on node1. ──
+load_images() {
+    log "load_images: distributing local images to their nodes (cold/warm split)"
+    _ship() { # _ship IMAGE NODE...
+        local img=$1; shift
+        for n in "$@"; do
+            log "  ${img} → ${n}"
+            docker save "${img}" \
+                | timeout 300 ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o BatchMode=yes "${n}" 'docker load' >/dev/null \
+                || die "load ${img} → ${n} failed"
+        done
+    }
+    _ship asap/data-plane:dev            "${NODE2_HOST}"
+    _ship asap/control-plane:dev         "${NODE2_HOST}"
+    _ship asap/asap-otel:dev             "${NODE0_HOST}" "${NODE3_HOST}"
+    _ship asap/asap-otel-supervised:dev  "${NODE0_HOST}" "${NODE3_HOST}"
+    _ship asap/fake-exporter:dev         "${NODE0_HOST}" "${NODE3_HOST}"
+    _ship asap/gorilla-merger:dev        "${NODE1_HOST}"
+    log "load_images: done"
+}
+
+# build + load, once per invocation, gated by SKIP_BUILD / SKIP_LOAD.
+ensure_images() {
+    if [ "${SKIP_BUILD:-0}" = 1 ]; then log "SKIP_BUILD=1 — reusing existing local images"; else build_images; fi
+    if [ "${SKIP_LOAD:-0}" = 1 ]; then log "SKIP_LOAD=1 — not redistributing images"; else load_images; fi
+}
+
 # ── stage configs/scripts to a remote node under /mydata ──
 sync_to() {
     local node=$1
@@ -141,9 +252,13 @@ is_asap_arm() {
 
 backend_up() {
     local arm=$1
-    log "node2 backend up (${arm})"
+    # COLD/WARM split (2026-05): the cold backend (VM / Thanos / MinIO /
+    # gorilla-merger / Prometheus) runs on node1; only the WARM asap engine
+    # (data_plane + control_plane) runs on node2. Per-container --memory caps
+    # make any runaway a recoverable container OOM-kill, not a host freeze.
+    log "backend up (${arm}) — cold=node1, warm=node2"
 
-    # Raw baselines (b0/b1/b2/b3): VictoriaMetrics on node2:8428.
+    # Raw baselines (b0/b1/b2/b3): VictoriaMetrics on node1:8428.
     #   - b0/b1 push OTLP HTTP to /opentelemetry/v1/metrics (compression
     #     none / gzip respectively).
     #   - b2 pushes Prometheus remote_write (Snappy) to /api/v1/write.
@@ -167,7 +282,7 @@ backend_up() {
     # ASAP arms: still use Prometheus for self-telemetry scraping
     # (backend/agent self-metrics).
     if ! is_asap_arm "${arm}"; then
-        docker_run_on "${NODE2_HOST}" \
+        docker_run_on "${NODE1_HOST}" --memory=16g --memory-swap=16g \
             --name asap-victoriametrics \
             victoriametrics/victoria-metrics:v1.110.0 \
             --httpListenAddr=:8428 \
@@ -178,7 +293,7 @@ backend_up() {
             "--storage.tsdb.retention.time=24h"
             "--web.enable-lifecycle"
         )
-        docker_run_on "${NODE2_HOST}" \
+        docker_run_on "${NODE1_HOST}" --memory=8g --memory-swap=8g \
             --name asap-prometheus \
             -v /mydata/mvp-multinode/configs/shared/prometheus-with-remote-write.yml:/etc/prometheus/prometheus.yml:ro \
             prom/prometheus:v2.55.0 "${prom_args[@]}"
@@ -186,7 +301,7 @@ backend_up() {
 
     if is_asap_arm "${arm}"; then
         # MinIO + bucket setup
-        docker_run_on "${NODE2_HOST}" \
+        docker_run_on "${NODE1_HOST}" --memory=16g --memory-swap=16g \
             --name asap-minio \
             -e MINIO_ROOT_USER=asap \
             -e MINIO_ROOT_PASSWORD=asap-local-only \
@@ -198,7 +313,7 @@ backend_up() {
         # --entrypoint=sh, otherwise the bucket-create step is silently
         # rejected with "sh is not a recognized command" and gorillas3
         # writes vanish into a non-existent bucket.
-        on "${NODE2_HOST}" "docker run --rm --network host \
+        on "${NODE1_HOST}" "docker run --rm --network host \
             ${ADD_HOSTS[*]} \
             --entrypoint=sh minio/mc:latest -c '
                 mc alias set asap http://minio:9000 asap asap-local-only &&
@@ -210,7 +325,7 @@ backend_up() {
                 mc anonymous set download asap/raw'" || log "minio bucket setup non-fatal warn"
 
         # Thanos store-gateway
-        docker_run_on "${NODE2_HOST}" \
+        docker_run_on "${NODE1_HOST}" --memory=16g --memory-swap=16g \
             --name asap-thanos-store-gateway \
             --user 0 \
             -v /mydata/mvp-multinode/configs/shared/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
@@ -239,7 +354,7 @@ backend_up() {
         # + store-gateway (>=2h S3) with no double-count (the merger drops
         # its local copy once shipped). `cluster=asap-mvp` is the merger's
         # distinguishing external label (applied to every series + block).
-        docker_run_on "${NODE2_HOST}" \
+        docker_run_on "${NODE1_HOST}" --memory=32g --memory-swap=32g \
             --name asap-gorilla-merger \
             -v /mydata/mvp-multinode/configs/shared/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
             -v /mydata/mvp-multinode/data/gorilla-merger:/data \
@@ -265,7 +380,7 @@ backend_up() {
         # window) and the store-gateway (>=2h S3 blocks) and unions the
         # results. Without this, query only sees shipped S3 blocks and the
         # most-recent <2h of merger-ingested data is invisible.
-        docker_run_on "${NODE2_HOST}" \
+        docker_run_on "${NODE1_HOST}" --memory=8g --memory-swap=8g \
             --name asap-thanos-query \
             quay.io/thanos/thanos:v0.41.0 \
             query \
@@ -276,7 +391,7 @@ backend_up() {
             --query.replica-label=replica
 
         # Thanos compact
-        docker_run_on "${NODE2_HOST}" \
+        docker_run_on "${NODE1_HOST}" --memory=24g --memory-swap=24g \
             --name asap-thanos-compact \
             --user 0 \
             -v /mydata/mvp-multinode/configs/shared/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
@@ -316,7 +431,7 @@ backend_up() {
 
         # asap-data-plane (ASAP only) — data plane process.
         sleep 3
-        docker_run_on "${NODE2_HOST}" \
+        docker_run_on "${NODE2_HOST}" --memory=64g --memory-swap=64g \
             --name asap-data-plane \
             -e RUST_LOG=info \
             -e ASAP_SKETCH_FAMILY=ddsketch \
@@ -352,7 +467,7 @@ backend_up() {
         # default entrypoint IS `/usr/local/bin/control_plane`, so no
         # `--entrypoint` override is needed.
         sleep 3
-        docker_run_on "${NODE2_HOST}" \
+        docker_run_on "${NODE2_HOST}" --memory=4g --memory-swap=4g \
             --name asap-control-plane \
             -e RUST_LOG="info,controller=debug,control_plane=debug" \
             -e USE_TYPED_STAGE_SPLIT=1 \
@@ -369,8 +484,10 @@ backend_up() {
 }
 
 backend_down() {
-    log "node2 backend down"
+    log "backend down — warm=node2, cold=node1"
     stop_node "${NODE2_HOST}"
+    # Cold/thanos stack now lives on node1 (cold/warm split).
+    stop_node "${NODE1_HOST}"
 }
 
 # ─── SERF-GATEWAY on node1 (b3 arm only) ────────────────────────────
@@ -632,11 +749,14 @@ run_arm() {
 cmd=${1:-help}
 case "${cmd}" in
     sync)            sync_all_nodes ;;
-    up)              arm_up "${2:?need arm name}" ;;
+    build)           build_images ;;
+    load)            load_images ;;
+    up)              ensure_images; sync_all_nodes; arm_up "${2:?need arm name}" ;;
     down)            arm_down ;;
     measure)         arm_measure "${2:?need arm name}" ;;
-    arm)             run_arm "${2:?need arm name}" ;;
+    arm)             ensure_images; sync_all_nodes; run_arm "${2:?need arm name}" ;;
     all)
+        ensure_images
         sync_all_nodes
         # Compression-matched bandwidth sweep — six arms. The two clean
         # apples-to-apples aggregation comparisons (same codec, only
@@ -654,8 +774,13 @@ case "${cmd}" in
     help|*)
         cat <<EOF
 usage: $0 <cmd> [arm]
+  build               rebuild ALL local images from current source (data-plane,
+                      control-plane, asap-otel, asap-otel-supervised,
+                      fake-exporter, gorilla-merger)
+  load                ship the local images to the node(s) that run them
+                      (cold/warm split: warm→node2, agents→node0/3, cold→node1)
   sync                rsync /mydata/ASAPCollector configs+scripts to all 4 nodes
-  up <arm>            bring up containers for an arm
+  up <arm>            build + load + sync, then bring up containers for an arm
                       arms: b0 b1 b2 b3 asap asap-gzip
                         b0        raw OTLP→VM,  compression none  (matched-none baseline)
                         b1        raw OTLP→VM,  compression gzip  (matched-gzip baseline)
@@ -664,8 +789,14 @@ usage: $0 <cmd> [arm]
                         asap      edge-agg, OTLP→backend none     (matched-none asap)
                         asap-gzip edge-agg, OTLP→backend gzip     (matched-gzip asap)
   down                stop and remove all asap-* containers cluster-wide
-  arm <arm>           full single-arm lifecycle: up → measure → down
-  all                 sync + run all 6 arms back-to-back + generate report
+  arm <arm>           build + load + sync, then full single-arm lifecycle: up → measure → down
+  all                 build + load + sync + run all 6 arms back-to-back + report
+
+  Source is rebuilt and re-shipped on every up/arm/all so a deploy never runs a
+  stale image. Escape hatches when iterating on config only:
+    SKIP_BUILD=1   reuse existing local images (don't rebuild)
+    SKIP_LOAD=1    don't re-ship images to nodes
+  Scale knob: PER_AGENT_CARDINALITY=<n> (default ${PER_AGENT_CARDINALITY}) — lower for light validation.
 EOF
         ;;
 esac

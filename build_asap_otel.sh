@@ -92,6 +92,15 @@ fi
 if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/asap-precompute-go" "${ASAP_OTEL_DIR}/go.mod" 2>/dev/null; then
   echo "replace github.com/ProjectASAP/asap-precompute-go => ${ROOT_DIR}/asap-precompute-go" >> "${ASAP_OTEL_DIR}/go.mod"
 fi
+# asap-gorilla-go is the cold-fragment encoder used by the asapedgeprocessor.
+# Same OCB-indirect trap as sketchlib-go above: without an explicit replace the
+# build resolves the PUBLISHED module (e.g. v0.2.0) from the proxy/cache and
+# silently ignores LOCAL asap-gorilla-go edits (this is exactly how a build
+# missed #432's idle-series eviction). Pin it to the in-repo checkout so local
+# changes always ship.
+if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/asap-gorilla-go" "${ASAP_OTEL_DIR}/go.mod" 2>/dev/null; then
+  echo "replace github.com/ProjectASAP/asap-gorilla-go => ${ROOT_DIR}/asap-gorilla-go" >> "${ASAP_OTEL_DIR}/go.mod"
+fi
 
 cd "${ASAP_OTEL_DIR}"
 GONOSUMCHECK="github.com/ProjectASAP/*" GONOSUMDB="github.com/ProjectASAP/*" go build -o asap-otel . 2>&1
