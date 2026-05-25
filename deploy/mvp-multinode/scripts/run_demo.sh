@@ -115,7 +115,8 @@ build_images() {
                "${ROOT}/build_asap_otel.sh" "${ROOT}/build_opamp_supervisor.sh" \
                "${ROOT}/deploy/docker/Dockerfile.asap-otel" "${ROOT}/deploy/docker/Dockerfile.asap-otel-supervised" \
                "${ROOT}/deploy/docker/Dockerfile.fake-exporter" \
-               "${ROOT}/asap-precompute-rs" "${ROOT}/asap-gorilla-rust" "${SKETCHLIB}" "${SKETCHLIB_GO}"; do
+               "${ROOT}/asap-precompute-rs" "${ROOT}/asap-gorilla-rust" "${ROOT}/asap-gorilla-go" \
+               "${SKETCHLIB}" "${SKETCHLIB_GO}"; do
         [ -e "${req}" ] || { log "  MISSING build input: ${req}"; missing=1; }
     done
     [ "${missing}" = 1 ] && die "build_images: required build inputs missing — is ${BACKEND} at the intended commit? (stale/incomplete checkout; pull or point BACKEND= at a current tree)"
@@ -153,8 +154,16 @@ build_images() {
         --build-context sketchlib-go="${SKETCHLIB_GO}" \
         -t asap/fake-exporter:dev "${ROOT}"
 
-    # ── gorilla-merger (cold sink; imports PRIVATE asap-gorilla-go via a
-    #    BuildKit secret so the token never lands in an image layer) ──
+    # ── gorilla-merger (cold sink) ──
+    # The merger imports asap-gorilla-go AND its intchunk subpackage (the cold
+    # value-chunk codec behind the decode-on-read helper). intchunk is NOT in
+    # any published asap-gorilla-go tag, so — exactly like data-plane's sibling
+    # path-deps and build_asap_otel.sh's asap-gorilla-go replace — we hand the
+    # in-repo monorepo checkout to the build as the `asap-gorilla-go`
+    # build-context; the Dockerfile rewrites the go.mod replace to point at it.
+    # A gh_token secret is still mounted so any OTHER private fetch keeps working
+    # (the Dockerfile uses it only when present; asap-gorilla-go itself is now
+    # local source and needs no token).
     log "  → asap/gorilla-merger:dev"
     local gh_token_file="${GH_TOKEN_FILE:-}" cleanup_token=0
     if [ -z "${gh_token_file}" ]; then
@@ -162,6 +171,7 @@ build_images() {
         python3 -c "import yaml; d=yaml.safe_load(open('${HOME}/.config/gh/hosts.yml')); print(d['github.com'].get('oauth_token') or d['github.com'].get('token'), end='')" > "${gh_token_file}"
     fi
     DOCKER_BUILDKIT=1 docker build --secret id=gh_token,src="${gh_token_file}" \
+        --build-context asap-gorilla-go="${ROOT}/asap-gorilla-go" \
         -t asap/gorilla-merger:dev "${BACKEND}/gorilla-merger"
     [ "${cleanup_token}" = 1 ] && rm -f "${gh_token_file}"
 
