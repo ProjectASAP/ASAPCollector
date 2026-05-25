@@ -35,15 +35,73 @@ type CMSWrapper struct {
 	rows       int
 	cols       int
 	useMsgpack bool
+	// sampleP is the per-sketch sampling probability in (0,1]. 1.0 (the
+	// default) disables sampling so the sketch is byte-identical to an
+	// unsampled one. Set via WithSampleP; preserved across the
+	// re-construction paths (Reset / Merge / ApplyDelta) so a sampled
+	// wrapper stays sampled for its whole lifetime.
+	sampleP float64
 }
+
+// cmsSampleSeed is the fixed seed handed to sketchlib-go's geometric
+// sampler. A constant seed keeps the admitted-subset reproducible across
+// runs (sketchlib-go's NewGeometricSampler doc) and across the wrapper's
+// internal re-constructions; the value is arbitrary and only matters for
+// determinism, never for correctness (any seed yields an unbiased sample).
+const cmsSampleSeed int64 = 0x5A4D_5043 // "ZMPC"
 
 // NewCMSWrapper builds an empty CMS with the configured rows / cols.
 // useMsgpack=true selects the legacy msgpack emit path (no delta
 // transmission supported in that mode); useMsgpack=false uses the
 // proto SerializeProtoBytesFO format and supports delta transmission.
+//
+// Sampling is disabled (sampleP=1.0) by default — call WithSampleP to
+// enable it. The default keeps the emitted wire bytes byte-identical to
+// the pre-sampling format.
 func NewCMSWrapper(rows, cols int, useMsgpack bool) *CMSWrapper {
-	sk, _ := cms.NewCountMinSketch(rows, cols)
-	return &CMSWrapper{sk: sk, rows: rows, cols: cols, useMsgpack: useMsgpack}
+	w := &CMSWrapper{rows: rows, cols: cols, useMsgpack: useMsgpack, sampleP: 1.0}
+	w.sk = w.newSketch()
+	return w
+}
+
+// WithSampleP enables per-sketch geometric admission sampling at
+// probability p in (0,1]. p>=1 (or NaN) disables sampling (exact, the
+// default); p<=0 is clamped to a tiny positive probability by sketchlib-go
+// rather than dropping the whole stream. Returns the receiver for fluent
+// construction. The probability is stamped on the SketchEnvelope by
+// sketchlib-go so the backend rescales frequency estimates by 1/p at
+// query time.
+func (w *CMSWrapper) WithSampleP(p float64) *CMSWrapper {
+	if p >= 1.0 || p != p { // p != p ⇒ NaN
+		w.sampleP = 1.0
+	} else {
+		w.sampleP = p
+	}
+	// Re-apply to the live sketch so a WithSampleP after construction
+	// takes effect immediately.
+	if w.sk != nil {
+		w.sk.WithSampleP(w.sampleP, cmsSampleSeed)
+	}
+	return w
+}
+
+// SampleP returns the configured sampling probability (1.0 when disabled).
+func (w *CMSWrapper) SampleP() float64 {
+	if w.sampleP <= 0 {
+		return 1.0
+	}
+	return w.sampleP
+}
+
+// newSketch builds a fresh sketchlib-go CMS carrying the wrapper's
+// configured sampling probability. Centralises the construction so every
+// re-creation path (New / Reset / Merge / ApplyDelta) keeps sampleP.
+func (w *CMSWrapper) newSketch() *cms.CountMinSketch {
+	sk, _ := cms.NewCountMinSketch(w.rows, w.cols)
+	if sk != nil && w.sampleP > 0 && w.sampleP < 1.0 {
+		sk.WithSampleP(w.sampleP, cmsSampleSeed)
+	}
+	return sk
 }
 
 // InsertHash mirrors the legacy CMS processor's
@@ -131,7 +189,7 @@ func (w *CMSWrapper) ApplyDelta(payload []byte) error {
 		return nil
 	}
 	if w.sk == nil {
-		w.sk, _ = cms.NewCountMinSketch(w.rows, w.cols)
+		w.sk = w.newSketch()
 	}
 	if other, err := cms.DeserializeCountMinSketchFromProtoBytes(payload); err == nil && other != nil {
 		return w.sk.Merge(other)
@@ -158,16 +216,17 @@ func (w *CMSWrapper) Merge(other precompute.Sketch) error {
 		return nil
 	}
 	if w.sk == nil {
-		w.sk, _ = cms.NewCountMinSketch(w.rows, w.cols)
+		w.sk = w.newSketch()
 	}
 	return w.sk.Merge(o.sk)
 }
 
 // Reset zeros the sketch in place by replacing it with a fresh
-// CountMinSketch of the same dimensions. Window rotation calls this
-// when the runtime decides to recycle entries.
+// CountMinSketch of the same dimensions (and the same sampling
+// probability). Window rotation calls this when the runtime decides to
+// recycle entries.
 func (w *CMSWrapper) Reset() {
-	w.sk, _ = cms.NewCountMinSketch(w.rows, w.cols)
+	w.sk = w.newSketch()
 }
 
 // EstimateCount returns the estimated frequency for a hashed key.

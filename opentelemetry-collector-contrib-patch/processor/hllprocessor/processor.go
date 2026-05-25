@@ -246,8 +246,11 @@ func (p *hllProcessor) precomputeForLocked(name string) precompute.Precompute {
 	if pp, ok := p.pcByName[name]; ok {
 		return pp
 	}
+	sampleP := p.cfg.SampleP
 	pp := precompute.New(p.cfg.toPrecomputeConfig(name), func() precompute.Sketch {
-		return sketches.NewHLLWrapper()
+		// WithSampleP(1.0) is an exact no-op, so the default path is
+		// byte-identical to the pre-sampling build.
+		return sketches.NewHLLWrapper().WithSampleP(sampleP)
 	}, sketches.HLLObserver{})
 	p.pcByName[name] = pp
 	return pp

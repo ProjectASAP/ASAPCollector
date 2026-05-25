@@ -96,6 +96,15 @@ type Config struct {
 	// DeltaThreshold is the minimum absolute cell change required to include a
 	// cell in the delta payload. Defaults to 1.0 when DeltaTransmission=true.
 	DeltaThreshold float64 `mapstructure:"delta_threshold"`
+
+	// SampleP is the per-sketch geometric admission sampling probability in
+	// (0,1]. The control plane sets it per metric from the workload spec.
+	// 1.0 (the default — 0/unset is normalised to 1.0 in Validate) disables
+	// sampling so the emitted wire bytes are byte-identical to the
+	// pre-sampling format. A value <1 admits a ~p fraction of updates into
+	// the sketch; sketchlib-go stamps p on the SketchEnvelope so the backend
+	// rescales frequency estimates by 1/p at query time.
+	SampleP float64 `mapstructure:"sample_p"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -135,6 +144,17 @@ func (c *Config) Validate() error {
 		if c.DeltaThreshold <= 0 {
 			c.DeltaThreshold = 1.0
 		}
+	}
+
+	// SampleP: 0/unset normalises to 1.0 (sampling disabled — the safe
+	// default). Reject out-of-range values (negative or >1) rather than
+	// silently clamping, so a typo in the wire config surfaces at agent
+	// boot instead of producing a mis-scaled sketch.
+	if c.SampleP == 0 {
+		c.SampleP = 1.0
+	}
+	if c.SampleP < 0 || c.SampleP > 1.0 {
+		return fmt.Errorf("sample_p must be in (0, 1] (got %v)", c.SampleP)
 	}
 
 	// Default Encoding to proto when unset. Accept both supported
