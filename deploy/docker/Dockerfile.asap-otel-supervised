@@ -1,0 +1,61 @@
+# asap-otel-supervised — the asap-otel collector wrapped by the OpenTelemetry
+# opamp-supervisor so the agent APPLIES the config the controller pushes over
+# OpAMP (instead of just reporting health like the bare opampextension does).
+#
+# ## Why a separate image
+#
+# The plain `asap/asap-otel:dev` image runs the collector directly and embeds
+# the `opampextension`, which is REPORT-ONLY: it connects to the controller's
+# OpAMP server and reports health + effective config, but it can NOT reload the
+# collector or apply a pushed remote config. So the agent keeps running its
+# static mounted config forever (controller logs "config pushed" while the
+# agent reports remote-config status=Unset).
+#
+# The opamp-supervisor is the component that owns the collector process: it
+# connects to the controller's OpAMP server, receives the AgentRemoteConfig,
+# MERGES it with its own bootstrap pieces, writes the result to disk, and
+# (re)starts the collector against it. This image runs the supervisor as the
+# entrypoint and lets it spawn the asap-otel collector binary.
+#
+# ## Build model: host-build, container-ship (same as Dockerfile.asap-otel)
+#
+# 1. Build the asap-otel collector + the asap/asap-otel:dev image first
+#    (see Dockerfile.asap-otel header). The supervisor needs the collector
+#    binary at /usr/local/bin/asap-otel, which that image already provides.
+#
+# 2. Build the supervisor binary into the docker build context:
+#
+#      ./build_opamp_supervisor.sh
+#        # → deploy/docker/opampsupervisor
+#
+# 3. Build this image (COPY below expects the supervisor binary present in the
+#    build context):
+#
+#      docker build -f deploy/docker/Dockerfile.asap-otel-supervised \
+#        -t asap/asap-otel-supervised:dev .
+#
+# The supervisor reads its OWN config (server endpoint, per-agent X-Agent-ID,
+# capabilities, the collector executable path, storage dir) from a mounted
+# supervisor.yaml — see deploy/mvp-multinode/configs/asap/supervisor.yaml.
+
+# Start from the already-built collector image so the asap-otel binary +
+# ca-certificates are present and stay in lockstep with the rest of the deploy.
+FROM asap/asap-otel:dev
+
+# Supervisor needs a writable storage dir for its instance UID / last remote
+# config hash. run_demo mounts the supervisor.yaml at /etc/otel/supervisor.yaml
+# and points storage.directory here.
+RUN mkdir -p /etc/otel/supervisor-storage
+
+COPY deploy/docker/opampsupervisor /usr/local/bin/opampsupervisor
+
+# OTLP receivers (4317/4318) + self-telemetry (8888) + prometheus (9464) are
+# served by the collector the supervisor spawns; the supervisor's local OpAMP
+# server + health-check server bind loopback/ephemeral ports inside the
+# container (host network in the deploy), so nothing extra to EXPOSE here.
+
+# Supervisor is the entrypoint: it manages the asap-otel collector process and
+# applies the controller's remote config. Override the base image's collector
+# entrypoint/cmd.
+ENTRYPOINT ["/usr/local/bin/opampsupervisor"]
+CMD ["--config", "/etc/otel/supervisor.yaml"]

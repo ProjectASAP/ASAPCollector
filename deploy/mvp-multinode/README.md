@@ -34,6 +34,7 @@ Five images, all built on node0 and `docker save | ssh load`-distributed by `run
 | Image | Built from | Contains |
 |---|---|---|
 | `asap/asap-otel:dev` | `ASAPCollector` root + `build_asap_otel.sh` | Patched OTel-Collector with sketch processors |
+| `asap/asap-otel-supervised:dev` | `deploy/docker/Dockerfile.asap-otel-supervised` (`FROM asap/asap-otel:dev`) + `build_opamp_supervisor.sh` | The asap-otel collector wrapped by the OpenTelemetry opamp-supervisor (v0.141.0). The ASAP arms run this so the agent APPLIES the controller's pushed remote config (the bare collector's `opampextension` is report-only). |
 | `asap/fake-exporter:dev` | `deploy/fake-exporter/Dockerfile` | OTLP load generator |
 | `asap/data-plane:dev` | `ASAPQuery-backend/data_plane/Dockerfile` | `data_plane` (the data plane / query backend, entrypoint `/usr/local/bin/data_plane`, port 9091 / 4317 / 4318). Runs as the `asap-data-plane` container on node2. |
 | `asap/control-plane:dev` | `ASAPQuery-backend/control_plane/Dockerfile` | `control_plane` (the control plane / controller, entrypoint `/usr/local/bin/control_plane`, port 8080 / 4320 / 4321). Runs as a separate `asap-control-plane` container on node2 (data_plane reorg, 2026-05 — retires the old combined query-backend image). |
@@ -53,6 +54,15 @@ From node0:
 # 1) Build the images on node0.
 cd /mydata/ASAPCollector
 ./build_asap_otel.sh                                       # asap/asap-otel:dev
+docker build -f deploy/docker/Dockerfile.asap-otel \
+    -t asap/asap-otel:dev .
+# Wrap the collector with the opamp-supervisor so the ASAP-arm agents APPLY
+# the controller's pushed config (instead of running a static config). Builds
+# the supervisor from the pinned opentelemetry-collector-contrib submodule
+# (cmd/opampsupervisor/v0.141.0 — same release train as the collector).
+./build_opamp_supervisor.sh                                # → deploy/docker/opampsupervisor
+docker build -f deploy/docker/Dockerfile.asap-otel-supervised \
+    -t asap/asap-otel-supervised:dev .                     # asap/asap-otel-supervised:dev
 DOCKER_BUILDKIT=1 docker build \
     -f deploy/docker/Dockerfile.fake-exporter \
     -t asap/fake-exporter:dev .

@@ -1,0 +1,64 @@
+# supervisor.yaml — OpenTelemetry opamp-supervisor config for the ASAP edge
+# agent. The supervisor connects to the controller's OpAMP server, receives
+# the controller's pushed remote config (the fused asap_edge pipeline), merges
+# it with its own bootstrap pieces, and (re)starts the asap-otel collector
+# against the merged result. This is what makes the agent APPLY the
+# controller's plan instead of running a static mounted config.
+#
+# Per-agent identity is supplied via the X_AGENT_ID env var (run_demo passes
+# agent-a on node0, agent-b on node3). The supervisor's config loader expands
+# `${env:X_AGENT_ID}` at startup. The controller's OpAMP server keys agents by
+# the X-Agent-ID request header (NOT the OpAMP InstanceUid in the message
+# body), so this header is the identity the controller routes config on.
+
+server:
+  # The controller's OpAMP server. ws:// (not wss) — TLS disabled in the MVP.
+  # control-plane:4320 is the DNS alias run_demo's --add-host wires up on the
+  # agent nodes.
+  endpoint: ws://control-plane:4320/v1/opamp
+  tls:
+    insecure: true
+  headers:
+    # Header-based agent identification. The controller requires X-Agent-ID on
+    # the upgrade request and 400s without it.
+    X-Agent-ID: ${env:X_AGENT_ID}
+
+capabilities:
+  # Accept + apply the controller's pushed config. This is the whole point of
+  # running the supervisor: accepts_remote_config=true makes it rewrite the
+  # collector config and restart it on every AgentRemoteConfig.
+  accepts_remote_config: true
+  # Report the merged effective config back so the controller can see what the
+  # agent actually runs.
+  reports_effective_config: true
+  # The collector's own metrics are scraped by prometheus in the deploy; no
+  # need for the supervisor to forward them over OpAMP.
+  reports_own_metrics: false
+  # Report agent health so the controller's status surface lights up.
+  reports_health: true
+  # Report the remote-config status (Applying / Applied / Failed) — this is the
+  # signal the controller checks to confirm the push landed (the bare
+  # opampextension reports status=Unset, which is the bug this image fixes).
+  reports_remote_config: true
+
+agent:
+  # The asap-otel collector binary inside the asap-otel image. The supervisor
+  # spawns + manages this process and feeds it the merged config on disk.
+  executable: /usr/local/bin/asap-otel
+  # Identify this agent to the controller. Mirrors the X-Agent-ID header so the
+  # controller's two identity surfaces agree.
+  description:
+    non_identifying_attributes:
+      agent.id: ${env:X_AGENT_ID}
+
+storage:
+  # Writable dir for the supervisor's persistent state (instance UID, last
+  # applied remote-config hash, last merged config). Created in the image.
+  directory: /etc/otel/supervisor-storage
+
+# Supervisor's own health-check HTTP server (NOT a collector extension — the
+# supervisor monitors the collector via the local OpAMP channel it injects and
+# exposes this endpoint itself). Bound on all interfaces so the deploy can
+# probe agent liveness on the host network.
+healthcheck:
+  endpoint: 0.0.0.0:13133

@@ -416,30 +416,75 @@ agents_up() {
         *) die "unknown arm ${arm}" ;;
     esac
 
-    # node0 → agent-a (binds 0.0.0.0:4317 on node0). Producers on node0
-    # send to localhost:4317 == agent-a:4317.
-    log "node0 agent-a up (${arm})"
-    docker_run_on "${NODE0_HOST}" \
-        --name asap-agent-a \
-        --hostname agent-a \
-        -e AGENT_ID=agent-a \
-        -e CONTROLLER_OPAMP_URL=ws://control-plane:4320/v1/opamp \
-        -e ASAP_SKETCH_FAMILY=ddsketch \
-        -v /mydata/mvp-multinode/configs/${agent_cfg}:/etc/otel/config.yaml:ro \
-        asap/asap-otel:dev \
-        --config=/etc/otel/config.yaml
+    # ── agent launch: supervised (asap arms) vs static (baselines) ──────
+    #
+    # The asap/asap-gzip arms talk to the controller, so they run the
+    # OpenTelemetry opamp-supervisor (asap-otel-supervised image) instead of
+    # the bare collector. The supervisor connects to the controller's OpAMP
+    # server, receives the pushed remote config, merges it with its own
+    # bootstrap pieces, writes it to disk, and (re)starts the asap-otel
+    # collector against it — so the agent APPLIES the controller's plan
+    # instead of running the static mounted ${agent_cfg} forever.
+    #
+    # The supervisor config (configs/asap/supervisor.yaml) is identity-templated
+    # via the X_AGENT_ID env var (the controller keys agents by the X-Agent-ID
+    # OpAMP header). It points server.endpoint at control-plane:4320 itself, so
+    # the controller's OpAMP URL no longer comes from the mounted collector
+    # config. The supervisor INJECTS its own `opamp` extension (→ its local
+    # OpAMP server) into the collector's merged config; the controller must
+    # therefore emit a supervisor-compatible fused config that does NOT carry
+    # its own `opamp` extension / `service.extensions: [opamp]` (otherwise the
+    # remote config's opamp block, merged last, clobbers the supervisor's and
+    # the collector phones the controller directly instead of the supervisor).
+    #
+    # The b0/b1/b2/b3 baselines have no controller OpAMP server, so they keep
+    # running the bare asap-otel collector with their static mounted config.
+    if is_asap_arm "${arm}"; then
+        # node0 → agent-a (binds 0.0.0.0:4317 on node0). Producers on node0
+        # send to localhost:4317 == agent-a:4317.
+        log "node0 agent-a up (${arm}, supervised)"
+        docker_run_on "${NODE0_HOST}" \
+            --name asap-agent-a \
+            --hostname agent-a \
+            -e X_AGENT_ID=agent-a \
+            -e AGENT_ID=agent-a \
+            -v /mydata/mvp-multinode/configs/asap/supervisor.yaml:/etc/otel/supervisor.yaml:ro \
+            asap/asap-otel-supervised:dev \
+            --config /etc/otel/supervisor.yaml
 
-    # Same on node3 → agent-b
-    log "node3 agent-b up (${arm})"
-    docker_run_on "${NODE3_HOST}" \
-        --name asap-agent-b \
-        --hostname agent-b \
-        -e AGENT_ID=agent-b \
-        -e CONTROLLER_OPAMP_URL=ws://control-plane:4320/v1/opamp \
-        -e ASAP_SKETCH_FAMILY=ddsketch \
-        -v /mydata/mvp-multinode/configs/${agent_cfg}:/etc/otel/config.yaml:ro \
-        asap/asap-otel:dev \
-        --config=/etc/otel/config.yaml
+        # Same on node3 → agent-b
+        log "node3 agent-b up (${arm}, supervised)"
+        docker_run_on "${NODE3_HOST}" \
+            --name asap-agent-b \
+            --hostname agent-b \
+            -e X_AGENT_ID=agent-b \
+            -e AGENT_ID=agent-b \
+            -v /mydata/mvp-multinode/configs/asap/supervisor.yaml:/etc/otel/supervisor.yaml:ro \
+            asap/asap-otel-supervised:dev \
+            --config /etc/otel/supervisor.yaml
+    else
+        # Raw baselines: bare asap-otel collector, static mounted config, no
+        # controller/OpAMP.
+        log "node0 agent-a up (${arm})"
+        docker_run_on "${NODE0_HOST}" \
+            --name asap-agent-a \
+            --hostname agent-a \
+            -e AGENT_ID=agent-a \
+            -e ASAP_SKETCH_FAMILY=ddsketch \
+            -v /mydata/mvp-multinode/configs/${agent_cfg}:/etc/otel/config.yaml:ro \
+            asap/asap-otel:dev \
+            --config=/etc/otel/config.yaml
+
+        log "node3 agent-b up (${arm})"
+        docker_run_on "${NODE3_HOST}" \
+            --name asap-agent-b \
+            --hostname agent-b \
+            -e AGENT_ID=agent-b \
+            -e ASAP_SKETCH_FAMILY=ddsketch \
+            -v /mydata/mvp-multinode/configs/${agent_cfg}:/etc/otel/config.yaml:ro \
+            asap/asap-otel:dev \
+            --config=/etc/otel/config.yaml
+    fi
 
     # Wait for agent OTLP receiver to come up
     sleep 5
