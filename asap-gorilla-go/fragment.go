@@ -71,22 +71,36 @@ func UnmarshalFragment(s string) (Fragment, error) {
 // StreamingFragmentEncoder turns raw samples into encoded XOR fragments. It
 // bounds out-of-order memory with an event-time watermark and never keeps a full
 // flush window of raw samples.
+//
+// For long-lived cold-tier backup it encodes EVERY raw series. Under rotating
+// high cardinality (e.g. a metric labelled with a churning user_id) new series
+// appear continuously and old ones go idle forever. To keep retained state
+// bounded to the ACTIVE working set rather than the cumulative set-of-all-series,
+// idle series whose state has been fully shipped are evicted (see idleEvictMs).
 type StreamingFragmentEncoder struct {
 	mu sync.Mutex
 
 	reorderGrace  int64
 	samplesPerChk int
 	source        string
+	// idleEvictMs is the idle threshold: a series with no pending un-shipped
+	// points, no open chunk, and whose most recent sample is older than
+	// idleEvictMs behind the encoder's max observed event-time is evicted. 0
+	// disables eviction (unbounded retention). Default: 3 * reorderGrace.
+	idleEvictMs int64
 
 	series      map[string]*fragmentSeriesState
 	drainQueue  fragmentDrainHeap
+	evictQueue  fragmentEvictHeap
 	maxObserved int64
 	queued      []Fragment
 	dropped     uint64
+	evicted     uint64
 	closed      bool
 }
 
 type fragmentSeriesState struct {
+	key        string
 	metricName string
 	attrs      map[string]string
 	pending    pointHeap
@@ -99,22 +113,47 @@ type fragmentSeriesState struct {
 
 	lastTs  int64
 	hasLast bool
+
+	// lastActive is the event-time (ms) of the most recent sample observed for
+	// this series (set on AddSample, not only on append). It drives idle-based
+	// eviction and is independent of lastTs, which advances only on append.
+	lastActive int64
+	// inEvictQueue avoids pushing duplicate eviction-heap entries for the same
+	// series across repeated flushes (entries remain advisory and re-checked).
+	inEvictQueue bool
 }
 
 type StreamingFragmentOptions struct {
 	ReorderGrace    time.Duration
 	SamplesPerChunk int
 	Source          string
+	// IdleEvict bounds retained per-series state to the active working set. A
+	// series that has been fully flushed/shipped and has received no sample for
+	// longer than IdleEvict (measured against the encoder's max observed
+	// event-time) has its per-series state evicted. Defaults to 3*ReorderGrace
+	// when unset; a negative value disables eviction.
+	IdleEvict time.Duration
 }
 
 func NewStreamingFragmentEncoder(opts StreamingFragmentOptions) *StreamingFragmentEncoder {
 	if opts.SamplesPerChunk <= 0 {
 		opts.SamplesPerChunk = defaultTSDBSamplesPerChunk
 	}
+	reorderGrace := opts.ReorderGrace.Milliseconds()
+	var idleEvictMs int64
+	switch {
+	case opts.IdleEvict < 0:
+		idleEvictMs = 0 // explicitly disabled
+	case opts.IdleEvict > 0:
+		idleEvictMs = opts.IdleEvict.Milliseconds()
+	default:
+		idleEvictMs = 3 * reorderGrace // sensible default: ~3 windows of inactivity
+	}
 	return &StreamingFragmentEncoder{
-		reorderGrace:  opts.ReorderGrace.Milliseconds(),
+		reorderGrace:  reorderGrace,
 		samplesPerChk: opts.SamplesPerChunk,
 		source:        opts.Source,
+		idleEvictMs:   idleEvictMs,
 		series:        make(map[string]*fragmentSeriesState),
 	}
 }
@@ -130,6 +169,9 @@ func (e *StreamingFragmentEncoder) AddSample(sample TSDBSample) error {
 		e.maxObserved = tms
 	}
 	st := e.getSeries(sample.MetricName, sample.Attributes)
+	if tms > st.lastActive {
+		st.lastActive = tms // track last-activity for idle-based eviction
+	}
 	heap.Push(&st.pending, pendingPoint{t: tms, v: sample.Value})
 	// Enqueue for the per-sample watermark drain only when this point is the
 	// series' new earliest-pending timestamp (heap root), so drainLocked pops
@@ -168,16 +210,28 @@ func (e *StreamingFragmentEncoder) DroppedSamples() uint64 {
 	return e.dropped
 }
 
+// EvictedSeries reports how many idle, fully-shipped series have had their
+// per-series state evicted to bound memory under rotating high cardinality.
+func (e *StreamingFragmentEncoder) EvictedSeries() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.evicted
+}
+
 func (e *StreamingFragmentEncoder) getSeries(metricName string, attrs map[string]string) *fragmentSeriesState {
 	key := metricName + "\xff" + canonicalAttrsKey(attrs)
 	st := e.series[key]
 	if st != nil {
 		return st
 	}
+	// A re-appearing (previously evicted) series lands here and starts a fresh
+	// fragment cleanly: a new state with no open chunk and an empty pending heap.
 	st = &fragmentSeriesState{
+		key:        key,
 		metricName: metricName,
 		attrs:      cloneStringMap(attrs),
 		lastTs:     math.MinInt64,
+		lastActive: math.MinInt64,
 	}
 	heap.Init(&st.pending)
 	e.series[key] = st
@@ -209,6 +263,87 @@ func (h *fragmentDrainHeap) Pop() any {
 	return x
 }
 
+// fragmentEvictEntry pairs a fully-shipped series with the last-activity time it
+// was enqueued under; fragmentEvictHeap is a min-heap on that time so the
+// eviction sweep visits the most-idle series first and stops as soon as the heap
+// root is still within the idle threshold (O(evicted) per sweep, not O(all)).
+//
+// Entries are advisory, like the drain heap: a series may receive a newer sample
+// after being enqueued (raising its real lastActive above the entry's), so the
+// sweep re-checks the series' current state and skips/re-enqueues stale entries
+// instead of trusting the heap key. This guarantees a series that is still
+// active, still has pending un-shipped points, or has an open chunk is never
+// evicted.
+type fragmentEvictEntry struct {
+	lastActive int64
+	st         *fragmentSeriesState
+}
+
+type fragmentEvictHeap []fragmentEvictEntry
+
+func (h fragmentEvictHeap) Len() int           { return len(h) }
+func (h fragmentEvictHeap) Less(i, j int) bool { return h[i].lastActive < h[j].lastActive }
+func (h fragmentEvictHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *fragmentEvictHeap) Push(x any)        { *h = append(*h, x.(fragmentEvictEntry)) }
+func (h *fragmentEvictHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
+// sweepEvictionsLocked reclaims per-series state for series that are idle AND
+// fully shipped, bounding retained state to the active working set under
+// rotating high cardinality. It pops the most-idle candidates from evictQueue
+// and evicts a series only when ALL of these hold (correctness over thrift —
+// we never drop un-shipped data nor corrupt an active series' XOR chunk):
+//
+//   - no pending un-shipped points (st.pending empty),
+//   - no open (un-flushed) chunk (st.openChunk nil / openCount 0),
+//   - idle: maxObserved - st.lastActive > idleEvictMs.
+//
+// A series that received a newer sample since being enqueued is re-enqueued
+// under its true lastActive rather than evicted. Because the heap is ordered by
+// lastActive, the sweep stops at the first candidate still within the idle
+// threshold, so it costs O(evicted + re-enqueued) rather than O(all-series).
+func (e *StreamingFragmentEncoder) sweepEvictionsLocked() {
+	if e.idleEvictMs <= 0 {
+		return
+	}
+	cutoff := e.maxObserved - e.idleEvictMs
+	for e.evictQueue.Len() > 0 && e.evictQueue[0].lastActive <= cutoff {
+		ent := heap.Pop(&e.evictQueue).(fragmentEvictEntry)
+		st := ent.st
+		// Stale entry: series was already evicted (and possibly re-created as a
+		// distinct state object) — the live map entry, if any, is not this one.
+		if e.series[st.key] != st {
+			st.inEvictQueue = false
+			continue
+		}
+		// The series became active again after this entry was enqueued; re-enqueue
+		// under its current last-activity and stop draining stale-low entries.
+		if st.lastActive > ent.lastActive {
+			heap.Push(&e.evictQueue, fragmentEvictEntry{lastActive: st.lastActive, st: st})
+			continue
+		}
+		// Correctness guard: never evict a series that still owns un-shipped data
+		// (pending points buffered for reorder, or an open chunk not yet flushed),
+		// and never evict one that is not actually idle yet.
+		if st.pending.Len() > 0 || st.openChunk != nil || st.openCount > 0 {
+			st.inEvictQueue = false
+			continue
+		}
+		if e.maxObserved-st.lastActive <= e.idleEvictMs {
+			st.inEvictQueue = false
+			continue
+		}
+		st.inEvictQueue = false
+		delete(e.series, st.key)
+		e.evicted++
+	}
+}
+
 func (e *StreamingFragmentEncoder) drainLocked(watermark int64, force bool) error {
 	if force {
 		// Flush path (per-window, not per-sample): drain every series' ready
@@ -222,6 +357,8 @@ func (e *StreamingFragmentEncoder) drainLocked(watermark int64, force bool) erro
 			}
 		}
 		e.drainQueue = e.drainQueue[:0] // all drained; reset the advisory heap
+		// Now that every series' shipped state is at rest, reclaim idle ones.
+		e.sweepEvictionsLocked()
 		return nil
 	}
 	// Per-sample path: pop only the series whose earliest-pending timestamp is
@@ -298,6 +435,15 @@ func (e *StreamingFragmentEncoder) flushOpenChunkLocked(st *fragmentSeriesState,
 	st.openChunk = nil
 	st.app = nil
 	st.openCount = 0
+	// The series' open chunk has now been shipped, so it is an eviction
+	// candidate once it goes idle. Enqueue it (keyed by last-activity) so the
+	// next flush sweep can reclaim it in O(evicted) without scanning all series.
+	// Only meaningful when eviction is enabled; the sweep re-checks current
+	// state, so a stale/duplicate entry is harmless.
+	if e.idleEvictMs > 0 && !st.inEvictQueue {
+		st.inEvictQueue = true
+		heap.Push(&e.evictQueue, fragmentEvictEntry{lastActive: st.lastActive, st: st})
+	}
 	return nil
 }
 
