@@ -222,7 +222,7 @@ sync_to() {
 sync_all_nodes() {
     for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
         # `data/gorilla-merger` is the merger's tsdb volume mount on node2.
-        on "${n}" 'mkdir -p /mydata/mvp-multinode/{configs,scripts,logs,results,data/gorilla-merger}'
+        on "${n}" 'mkdir -p /mydata/mvp-multinode/{configs,scripts,logs,results,data/gorilla-merger,data/sketch-persistence}'
         # gorilla-merger runs distroless nonroot (UID 65532); mkdir leaves the
         # dir owned by the ssh user, so 65532 can't write /data/lock → crash-loop.
         # 0777 lets the nonroot UID write without sudo (harmless on the other nodes).
@@ -441,6 +441,19 @@ backend_up() {
 
         # asap-data-plane (ASAP only) — data plane process.
         sleep 3
+        # Durable disk-backed sketch tier (ASAPQuery-backend #329): the warm
+        # SketchStore seals aged epochs and flushes them to on-disk parts under
+        # --persistence-dir, so memory is bounded by flush-then-evict (not just
+        # #327's drop) and warm sketch state survives a restart. Enabled by
+        # default; PERSISTENCE_ENABLED=0 reverts to the in-memory-only path.
+        # Tuning knobs are env-overridable — prod defaults here; for fast-flush
+        # validation set e.g. PERSIST_SEAL_WINDOWS=4 PERSIST_HOT_WINDOW_SECS=120.
+        # Values are flag-shaped with no spaces, so the unquoted expansion below
+        # word-splits cleanly (empty when disabled).
+        local persist_flags=""
+        if [ "${PERSISTENCE_ENABLED:-1}" = 1 ]; then
+            persist_flags="--persistence-enabled --persistence-dir=/data/sketch-persistence --persistence-memory-limit-mb=${PERSIST_MEM_LIMIT_MB:-2048} --persistence-hot-window-secs=${PERSIST_HOT_WINDOW_SECS:-3600} --persistence-delete-older-than-secs=${PERSIST_DELETE_OLDER_SECS:-604800} --persistence-flush-interval-ms=${PERSIST_FLUSH_INTERVAL_MS:-1000} --persistence-part-cache-mb=${PERSIST_PART_CACHE_MB:-256} --persistence-seal-window-count=${PERSIST_SEAL_WINDOWS:-20}"
+        fi
         docker_run_on "${NODE2_HOST}" --memory=64g --memory-swap=64g \
             --name asap-data-plane \
             -e RUST_LOG=info \
@@ -457,12 +470,14 @@ backend_up() {
             -e ASAP_THANOS_QUERY_URL=http://thanos-query:10903 \
             -v /mydata/mvp-multinode/configs/asap/backend-streaming.yaml:/etc/asap/streaming.yaml:ro \
             -v /mydata/mvp-multinode/configs/asap/backend-storage-routing.yaml:/etc/asap/backend-storage-routing.yaml:ro \
+            -v /mydata/mvp-multinode/data/sketch-persistence:/data/sketch-persistence \
             asap/data-plane:dev \
             --streaming-config=/etc/asap/streaming.yaml \
             --query-port=9091 \
             --enable-otel-ingest \
             --otel-grpc-port=4317 \
-            --otel-http-port=4318
+            --otel-http-port=4318 \
+            ${persist_flags}
 
         # asap-control-plane (ASAP only) — control plane process. Brought
         # up AFTER the data plane so the control plane's startup pre-pop
