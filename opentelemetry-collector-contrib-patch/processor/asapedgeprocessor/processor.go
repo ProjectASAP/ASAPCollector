@@ -63,6 +63,12 @@ type asapEdgeProcessor struct {
 	coldSource    string
 	shipper       *fragmentShipper
 	shipWorker    *shipWorker
+	// coldFormat selects the cold archive wire format. The default
+	// (ColdFormatFragment) ships gorilla-XOR fragments via shipWorker (today's
+	// behavior, unchanged). ColdFormatIntchunk routes the SAME drained
+	// fragments through coldPartShip instead.
+	coldFormat   ColdFormat
+	coldPartShip *coldPartShipper
 
 	windowStartMs atomic.Uint64
 	maxObservedMs atomic.Uint64
@@ -110,6 +116,10 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 		p.coldSource = coldSourceFromLabels(p.coldExtLabels)
 		p.shipper = newFragmentShipper(cfg.Cold.ShipEndpoint)
 		p.shipWorker = newShipWorker(p.shipper, cfg.Cold, p.logger)
+		p.coldFormat = cfg.Cold.Format.normalized()
+		if p.coldFormat == ColdFormatIntchunk {
+			p.coldPartShip = newColdPartShipper(cfg.Cold.ColdPartEndpoint, p.coldExtLabels)
+		}
 	}
 	for i := range p.shards {
 		sh := &shard{
@@ -475,17 +485,50 @@ func (p *asapEdgeProcessor) drainShardCold(sh *shard) []gorilla.Fragment {
 	return drained
 }
 
-// shipFragments hands a drained fragment batch to the async ship worker
+// shipFragments hands a drained fragment batch to the cold archive ship path.
+// In the default (fragment) format it goes to the async ship worker
 // (non-blocking): flushes never wait on the network, and a ship failure is
-// spooled + retried. encode runs here (cheap, off the worker) so an encode error
-// is logged in the flush path.
+// spooled + retried. When the intchunk cold-part format is enabled the SAME
+// drained fragments are instead re-encoded as a coldpart.Part and POSTed to the
+// merger's /ingest/coldpart (see shipColdPart). encode runs here (cheap, off the
+// worker) so an encode error is logged in the flush path.
 func (p *asapEdgeProcessor) shipFragments(frags []gorilla.Fragment) {
 	if len(frags) == 0 {
+		return
+	}
+	if p.coldFormat == ColdFormatIntchunk {
+		p.shipColdPart(frags)
 		return
 	}
 	if serr := p.shipWorker.shipBatch(frags); serr != nil {
 		p.logger.Warn("asap_edge: encode cold fragments failed", zap.Error(serr))
 	}
+}
+
+// shipColdPart re-encodes the drained fragments as a lossless intchunk
+// coldpart.Part and POSTs it to the merger's /ingest/coldpart. The POST runs in
+// its own goroutine with a bounded context so a slow/failing merger never blocks
+// the next window flush (mirroring the fragment path's async ship). A no-op
+// shipper or a batch with no decodable samples is a clean no-op.
+func (p *asapEdgeProcessor) shipColdPart(frags []gorilla.Fragment) {
+	if p.coldPartShip.noop() {
+		return
+	}
+	body, err := p.coldPartShip.buildPart(frags)
+	if err != nil {
+		p.logger.Warn("asap_edge: build cold part failed", zap.Error(err))
+		return
+	}
+	if len(body) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if serr := p.coldPartShip.shipEncoded(ctx, body); serr != nil {
+			p.logger.Warn("asap_edge: ship cold part failed", zap.Error(serr))
+		}
+	}()
 }
 
 // appendSumMetrics merges each Sum metric's partials across all shards (resetting

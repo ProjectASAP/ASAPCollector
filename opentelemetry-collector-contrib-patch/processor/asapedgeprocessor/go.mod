@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/ProjectASAP/asap-gorilla-go v0.2.0
 	github.com/ProjectASAP/asap-precompute-go v0.0.0-00010101000000-000000000000
+	github.com/prometheus/prometheus v0.307.3
 	go.opentelemetry.io/collector/component v1.47.0
 	go.opentelemetry.io/collector/consumer v1.47.0
 	go.opentelemetry.io/collector/pdata v1.47.0
@@ -70,7 +71,6 @@ require (
 	github.com/prometheus/common v0.67.1 // indirect
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
-	github.com/prometheus/prometheus v0.307.3 // indirect
 	github.com/prometheus/sigv4 v0.2.1 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
@@ -123,3 +123,13 @@ replace github.com/ProjectASAP/sketchlib-go => ../../../../sketchlib-go
 // Local asap-precompute-go checkout — Phase 2 step 2.5 introduces
 // the runtime delegation. Path is relative to this processor.
 replace github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
+
+// Local asap-gorilla-go checkout. The agent cold tier imports both the
+// fragment encoder and the coldpart Part format from asap-gorilla-go; the
+// coldpart subpackage and the FragmentLabels/DecodeFragmentSamples helpers are
+// newer than the published v0.2.0, so standalone `go test` here must resolve
+// against the local checkout. Path is relative to this processor. (The OCB
+// asap-otel build adds the same replace at the cmd/asap-otel main-module level,
+// where it takes precedence; a replace in this non-main module is ignored by
+// that build, so this does not change the asap-otel image's resolution.)
+replace github.com/ProjectASAP/asap-gorilla-go => ../../../asap-gorilla-go
