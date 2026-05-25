@@ -30,6 +30,39 @@ const (
 	FamilyCountMinSketch FamilyKind = "countminsketch"
 )
 
+// Tier selects which storage tiers a metric flows into.
+type Tier string
+
+const (
+	// TierWarm builds the warm sketch/aggregation ONLY; the metric's raw
+	// samples are NOT added to the cold gorilla fragment stream. Use for
+	// high-cardinality sketch-only metrics whose per-series cold archive would
+	// balloon the gorilla encoder.
+	TierWarm Tier = "warm"
+	// TierBoth builds the warm sketch/agg AND the cold gorilla archive. This is
+	// the default (today's behavior) when tier is omitted.
+	TierBoth Tier = "both"
+	// TierCold cold-archives the raw series ONLY; no warm sketch/agg is built.
+	TierCold Tier = "cold"
+)
+
+// normalized returns the effective tier, mapping the empty/unset value to the
+// default TierBoth (today's behavior).
+func (t Tier) normalized() Tier {
+	if t == "" {
+		return TierBoth
+	}
+	return t
+}
+
+func (t Tier) valid() bool {
+	switch t {
+	case "", TierWarm, TierBoth, TierCold:
+		return true
+	}
+	return false
+}
+
 // MetricFamily configures the warm aggregation for one metric name. A
 // metric not listed here is cold-archived only (no warm aggregation).
 type MetricFamily struct {
@@ -41,6 +74,14 @@ type MetricFamily struct {
 	// collapse key (e.g. [zone] => one summed series per zone). For the
 	// sketches, empty means per-series (group by full attribute set).
 	AggregateBy []string `mapstructure:"aggregate_by"`
+
+	// Tier selects which storage tiers this metric flows into: "warm" (build
+	// the warm sketch/agg only, skip the cold gorilla archive), "cold"
+	// (cold-archive the raw series only, no warm sketch/agg), or "both" (warm
+	// AND cold — the default when omitted, today's behavior). Marking a
+	// high-cardinality sketch-only metric "warm" keeps the cold tier from
+	// archiving it per-series (which balloons the gorilla encoder).
+	Tier Tier `mapstructure:"tier"`
 
 	// RelativeAccuracy is the DDSketch alpha (0,1). Default 0.01.
 	RelativeAccuracy float64 `mapstructure:"relative_accuracy"`
@@ -138,6 +179,20 @@ type Config struct {
 	DropOriginal bool `mapstructure:"drop_original"`
 }
 
+// warmEligible reports whether this metric should build its warm sketch/agg
+// (tier ∈ {warm, both}).
+func (m *MetricFamily) warmEligible() bool {
+	t := m.Tier.normalized()
+	return t == TierWarm || t == TierBoth
+}
+
+// coldEligible reports whether this metric's raw series should be added to the
+// cold gorilla fragment stream (tier ∈ {both, cold}).
+func (m *MetricFamily) coldEligible() bool {
+	t := m.Tier.normalized()
+	return t == TierBoth || t == TierCold
+}
+
 var _ component.Config = (*Config)(nil)
 
 func (k FamilyKind) valid() bool {
@@ -171,6 +226,9 @@ func (c *Config) Validate() error {
 		seen[m.Metric] = struct{}{}
 		if !m.Family.valid() {
 			return fmt.Errorf("asap_edge: metrics[%d] (%s): invalid family %q", i, m.Metric, m.Family)
+		}
+		if !m.Tier.valid() {
+			return fmt.Errorf("asap_edge: metrics[%d] (%s): invalid tier %q (want warm|both|cold or empty)", i, m.Metric, m.Tier)
 		}
 		if m.Family == FamilyDDSketch && m.RelativeAccuracy == 0 {
 			m.RelativeAccuracy = 0.01

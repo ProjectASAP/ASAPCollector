@@ -17,8 +17,8 @@
 //   - The CountSketch / CountMinSketch counters carry an `endpoint`
 //     attribute drawn Zipfian (so top-K is actually meaningful).
 //
-//   - EXPORTER_FIVE_SKETCH=off short-circuits everything — none of
-//     the four metrics show up in the collected scope.
+//   - The five-sketch metrics always emit (the old EXPORTER_FIVE_SKETCH
+//     on/off gate was removed; the controller now decides storage tier).
 //
 // We use a ManualReader so the test is OTLP-free and deterministic.
 //
@@ -29,7 +29,6 @@ package main
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -138,7 +137,6 @@ func hasAttr(set attribute.Set, key string) bool {
 // high frequency for a short window and verifies all four metrics
 // appear in the collected scope, with the documented inner labels.
 func TestFiveSketchWorkloadEmitsAllMetrics(t *testing.T) {
-	t.Setenv("EXPORTER_FIVE_SKETCH", "on")
 	t.Setenv("EXPORTER_FIVE_SKETCH_USER_POOL", "500")
 	t.Setenv("EXPORTER_FIVE_SKETCH_ENDPOINTS", "20")
 
@@ -180,66 +178,3 @@ func TestFiveSketchWorkloadEmitsAllMetrics(t *testing.T) {
 	}
 }
 
-// TestFiveSketchWorkloadDisabled verifies the EXPORTER_FIVE_SKETCH=off
-// kill switch — when disabled, none of the four metrics show up in
-// the reader.
-func TestFiveSketchWorkloadDisabled(t *testing.T) {
-	t.Setenv("EXPORTER_FIVE_SKETCH", "off")
-
-	provider, reader := fiveSketchTestProvider(t)
-	meter := provider.Meter("five-sketch-test-off")
-
-	outer := [][]attribute.KeyValue{
-		{attribute.String("zone", "z0"), attribute.String("pod", "pod-000")},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	stop := startFiveSketchWorkload(ctx, meter, outer, 100.0)
-	defer stop()
-
-	time.Sleep(150 * time.Millisecond)
-
-	got := collectFiveSketch(t, reader)
-	for _, name := range []string{
-		"request_size_bytes",
-		"unique_users_per_min",
-		"top_endpoint_qps",
-		"endpoint_request_freq",
-	} {
-		if obs, ok := got[name]; ok && obs.dataPoints > 0 {
-			t.Errorf("EXPORTER_FIVE_SKETCH=off but %s still emitted %d points",
-				name, obs.dataPoints)
-		}
-	}
-}
-
-// TestFiveSketchEnabledHelper exercises the env-string parsing that
-// fiveSketchEnabled performs — the explicit "off" / "0" / "false"
-// strings disable, anything else (including empty) enables.
-func TestFiveSketchEnabledHelper(t *testing.T) {
-	cases := map[string]bool{
-		"":      true, // default on
-		"on":    true,
-		"ON":    true,
-		"yes":   true,
-		"1":     true,
-		"true":  true,
-		"off":   false,
-		"OFF":   false,
-		"0":     false,
-		"false": false,
-		"no":    false,
-		// Whitespace tolerance — matches the freshness probe spec.
-		"  off  ": false,
-		"  on  ":  true,
-	}
-	for in, want := range cases {
-		t.Run("env="+strings.ReplaceAll(in, " ", "_"), func(t *testing.T) {
-			t.Setenv("EXPORTER_FIVE_SKETCH", in)
-			if got := fiveSketchEnabled(); got != want {
-				t.Errorf("fiveSketchEnabled(%q)=%v, want %v", in, got, want)
-			}
-		})
-	}
-}
