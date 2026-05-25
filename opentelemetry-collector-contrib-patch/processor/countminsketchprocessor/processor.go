@@ -217,10 +217,13 @@ func (p *cmsProcessor) precomputeForLocked(name string) precompute.Precompute {
 		return pp
 	}
 	useMsgpack := p.cfg.Encoding == EncodingMsgpack && !p.cfg.DeltaTransmission
+	sampleP := p.cfg.SampleP
 	pp := precompute.New(
 		p.cfg.toPrecomputeConfig(name),
 		func() precompute.Sketch {
-			return sketches.NewCMSWrapper(p.cfg.Rows, p.cfg.Columns, useMsgpack)
+			// WithSampleP(1.0) is an exact no-op, so the default path is
+			// byte-identical to the pre-sampling build.
+			return sketches.NewCMSWrapper(p.cfg.Rows, p.cfg.Columns, useMsgpack).WithSampleP(sampleP)
 		},
 		sketches.CMSObserver{},
 	)

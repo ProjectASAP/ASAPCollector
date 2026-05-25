@@ -35,9 +35,9 @@ type Config struct {
 	WindowDuration time.Duration `mapstructure:"window_duration"`
 	// TransmitSketch embeds the serialized HLL registers in a gauge attribute
 	// instead of emitting only the cardinality estimate.
-	TransmitSketch       bool   `mapstructure:"transmit_sketch"`
-	DropOriginal         bool   `mapstructure:"drop_original"`
-	EnableSelfMonitoring bool   `mapstructure:"enable_self_monitoring"`
+	TransmitSketch       bool `mapstructure:"transmit_sketch"`
+	DropOriginal         bool `mapstructure:"drop_original"`
+	EnableSelfMonitoring bool `mapstructure:"enable_self_monitoring"`
 
 	// AggregateBy lists label keys to group by for cross-series (matrix) aggregation.
 	// All data points sharing the same values for these labels are merged into one sketch.
@@ -58,6 +58,15 @@ type Config struct {
 	// Encoding selects the wire format for the `HLLSketchDataPoint.Sketch`
 	// bytes. See `SketchEncoding` for supported values. Defaults to "proto".
 	Encoding SketchEncoding `mapstructure:"encoding"`
+
+	// SampleP is the per-sketch hash-threshold sampling probability in
+	// (0,1]. The control plane sets it per metric from the workload spec.
+	// 1.0 (the default — 0/unset is normalised to 1.0 in Validate) disables
+	// sampling so the emitted wire bytes are byte-identical to the
+	// pre-sampling format. A value <1 keeps each distinct element with
+	// probability p; sketchlib-go stamps p on the SketchEnvelope so the
+	// backend rescales cardinality by 1/p at query time.
+	SampleP float64 `mapstructure:"sample_p"`
 }
 
 // SketchEncoding selects the wire format for the serialized HLL bytes
@@ -101,6 +110,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf(
 			"invalid encoding %q, must be %q or %q",
 			c.Encoding, EncodingProto, EncodingMsgpack)
+	}
+
+	// SampleP: 0/unset normalises to 1.0 (sampling disabled — the safe
+	// default). Reject out-of-range values (negative or >1) rather than
+	// silently clamping, so a typo in the wire config surfaces at agent
+	// boot instead of producing a mis-scaled sketch.
+	if c.SampleP == 0 {
+		c.SampleP = 1.0
+	}
+	if c.SampleP < 0 || c.SampleP > 1.0 {
+		return fmt.Errorf("sample_p must be in (0, 1] (got %v)", c.SampleP)
 	}
 
 	return nil

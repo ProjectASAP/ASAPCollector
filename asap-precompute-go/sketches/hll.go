@@ -29,14 +29,63 @@ import (
 // legacy emit-side mode that only applies when DeltaTransmission=false.
 type HLLWrapper struct {
 	sk *hll.HyperLogLog
+	// sampleP is the per-sketch hash-threshold sampling probability in
+	// (0,1]. 1.0 (the default) disables sampling so the sketch is
+	// byte-identical to an unsampled one. Set via WithSampleP; preserved
+	// across the re-construction paths (Reset / Merge / ApplyDelta) so a
+	// sampled wrapper stays sampled for its whole lifetime.
+	sampleP float64
 }
 
 // NewHLLWrapper builds an empty HLL sketch. The sketchlib-go
 // constructor is parameterless (precision is hard-coded to
 // hll.HLLPrecision = 14); the adapter's encoding choice is honored
 // at the encode layer, not here.
+//
+// Sampling is disabled (sampleP=1.0) by default — call WithSampleP to
+// enable it. The default keeps the emitted wire bytes byte-identical to
+// the pre-sampling format.
 func NewHLLWrapper() *HLLWrapper {
-	return &HLLWrapper{sk: hll.NewHyperLogLog()}
+	w := &HLLWrapper{sampleP: 1.0}
+	w.sk = w.newSketch()
+	return w
+}
+
+// WithSampleP enables per-sketch hash-threshold element sampling at
+// probability p in (0,1]. p>=1 (or NaN) disables sampling (exact, the
+// default); p<=0 keeps nothing, which sketchlib-go clamps to disabled.
+// Returns the receiver for fluent construction. The probability is
+// stamped on the SketchEnvelope by sketchlib-go so the backend rescales
+// cardinality by 1/p at query time.
+func (w *HLLWrapper) WithSampleP(p float64) *HLLWrapper {
+	if p >= 1.0 || p != p { // p != p ⇒ NaN
+		w.sampleP = 1.0
+	} else {
+		w.sampleP = p
+	}
+	if w.sk != nil {
+		w.sk.WithSampleP(w.sampleP)
+	}
+	return w
+}
+
+// SampleP returns the configured sampling probability (1.0 when disabled).
+func (w *HLLWrapper) SampleP() float64 {
+	if w.sampleP <= 0 {
+		return 1.0
+	}
+	return w.sampleP
+}
+
+// newSketch builds a fresh sketchlib-go HLL carrying the wrapper's
+// configured sampling probability. Centralises the construction so every
+// re-creation path (New / Reset / Merge / ApplyDelta) keeps sampleP.
+func (w *HLLWrapper) newSketch() *hll.HyperLogLog {
+	sk := hll.NewHyperLogLog()
+	if sk != nil && w.sampleP > 0 && w.sampleP < 1.0 {
+		sk.WithSampleP(w.sampleP)
+	}
+	return sk
 }
 
 // UpdateValue feeds a single observation into the underlying HLL
@@ -97,7 +146,7 @@ func (w *HLLWrapper) ApplyDelta(payload []byte) error {
 		return nil
 	}
 	if w.sk == nil {
-		w.sk = hll.NewHyperLogLog()
+		w.sk = w.newSketch()
 	}
 	// Try delta first: RegisterDelta is the more constrained shape;
 	// proto-encoded HyperLogLogState envelopes won't decode as a
@@ -128,16 +177,16 @@ func (w *HLLWrapper) Merge(other precompute.Sketch) error {
 		return nil
 	}
 	if w.sk == nil {
-		w.sk = hll.NewHyperLogLog()
+		w.sk = w.newSketch()
 	}
 	return w.sk.Merge(o.sk)
 }
 
-// Reset zeros the sketch in place by replacing it with a fresh HLL.
-// Window rotation calls this when the runtime decides to recycle
-// entries.
+// Reset zeros the sketch in place by replacing it with a fresh HLL
+// (carrying the same sampling probability). Window rotation calls this
+// when the runtime decides to recycle entries.
 func (w *HLLWrapper) Reset() {
-	w.sk = hll.NewHyperLogLog()
+	w.sk = w.newSketch()
 }
 
 // EstimateCardinality satisfies precompute.CardinalitySketch — adapter
