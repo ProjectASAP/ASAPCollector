@@ -17,7 +17,8 @@
 //	└──────────────────────────┴────────────────────┴──────────────────────────────────────────┘
 //
 // The first two columns already exist in `runSynthetic`. This file
-// adds the four new metrics and is gated by EXPORTER_FIVE_SKETCH.
+// adds the four new metrics; they always emit (the asap_edge controller
+// decides each metric's storage tier downstream).
 //
 // ## Distribution shapes (chosen so the matched sketch family is
 //    actually stressed):
@@ -56,7 +57,6 @@
 //	EXPORTER_CARDINALITY              upstream zone/rack/node/pod label set count
 //	                                  (shared — drives the outer label set on every
 //	                                  five-sketch metric so they fan out per-host).
-//	EXPORTER_FIVE_SKETCH              on | off       (default on)
 //	EXPORTER_FIVE_SKETCH_USER_POOL    HLL user-id cardinality       (default 100)
 //	EXPORTER_FIVE_SKETCH_ENDPOINTS    Zipfian endpoint cardinality  (default 50)
 //	EXPORTER_FIVE_SKETCH_ZIPF_S       Zipfian s parameter            (default 1.2)
@@ -68,9 +68,6 @@
 // Each five-sketch series ticks at the same EXPORTER_FREQ_HZ as the
 // existing http_requests_total counter; per-series goroutines stagger
 // their start so the wire pattern is smooth.
-//
-// To turn these emitters off (e.g. when running the cost-eval that
-// only cares about DDSketch + Sum), set EXPORTER_FIVE_SKETCH=off.
 
 package main
 
@@ -80,8 +77,6 @@ import (
 	"log"
 	"math"
 	"math/rand"
-	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,20 +85,14 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// fiveSketchEnabled honours the explicit "off" string the spec calls
-// out, falling back to envBool's default-on for any other value.
-func fiveSketchEnabled() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("EXPORTER_FIVE_SKETCH")))
-	if v == "off" || v == "0" || v == "false" || v == "no" {
-		return false
-	}
-	return true
-}
-
 // startFiveSketchWorkload wires the four new instruments and starts
-// their per-series goroutines. Returns a stop closure (joinable);
-// returns a no-op closure when gated off so the caller can `defer`
-// unconditionally.
+// their per-series goroutines. Returns a stop closure (joinable).
+//
+// The five-sketch metrics ALWAYS emit — the controller now decides
+// per-metric storage tier (warm-only sketch vs cold archive) on the
+// asap_edge processor, so the producer just emits unconditionally; the
+// old EXPORTER_FIVE_SKETCH on/off gate has been removed. The cardinality
+// knobs (EXPORTER_FIVE_SKETCH_USER_POOL etc.) are retained.
 //
 // `outerLabels` is the same per-host label set that runSynthetic
 // uses, so each five-sketch metric fans out across the same
@@ -115,11 +104,6 @@ func startFiveSketchWorkload(
 	outerLabels [][]attribute.KeyValue,
 	freqHz float64,
 ) (stop func()) {
-	if !fiveSketchEnabled() {
-		log.Printf("five-sketch workload disabled (EXPORTER_FIVE_SKETCH=off)")
-		return func() {}
-	}
-
 	// Default lowered from 1000 → 100 (and floor lowered from 500 → 50)
 	// to keep agent → gateway bandwidth bounded; HLL inner-label fan-out
 	// (one series per user_id × outer label set) dominates SDK output.

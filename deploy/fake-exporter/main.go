@@ -497,9 +497,10 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 	// metrics (request_size_bytes / unique_users_per_min /
 	// top_endpoint_qps / endpoint_request_freq) that exercise KLL /
 	// HLL / CountSketch / CountMinSketch alongside the DDSketch +
-	// Sum signal already produced below. Gated by EXPORTER_FIVE_SKETCH
-	// (default on); reuses the same outer label schema as the
-	// existing counter so per-host fan-out is consistent.
+	// Sum signal already produced below. Always emitted (the asap_edge
+	// controller decides each metric's storage tier downstream); reuses
+	// the same outer label schema as the existing counter so per-host
+	// fan-out is consistent.
 	stopFiveSketch := startFiveSketchWorkload(ctx, meter, labelSets, freqHz)
 	defer stopFiveSketch()
 

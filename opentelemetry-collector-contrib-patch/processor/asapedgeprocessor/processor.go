@@ -48,6 +48,15 @@ type asapEdgeProcessor struct {
 	shards        []*shard
 	sumMetrics    map[string]*MetricFamily
 	sketchMetrics map[string]*MetricFamily
+	// configured is the set of every metric name listed in cfg.Metrics
+	// (regardless of tier). Used by DropOriginal so a tier=cold metric's raw
+	// is dropped too (its cold archive carries the data downstream).
+	configured map[string]struct{}
+	// coldSkip is the set of configured metric names whose tier excludes the
+	// cold gorilla archive (tier=warm). Series for these are NOT added to the
+	// cold fragment encoder; everything else (unconfigured or tier∈{both,cold})
+	// is archived as before.
+	coldSkip map[string]struct{}
 
 	coldEnabled   bool
 	coldExtLabels map[string]string
@@ -73,6 +82,8 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 		shards:        make([]*shard, cfg.ShardCount),
 		sumMetrics:    make(map[string]*MetricFamily),
 		sketchMetrics: make(map[string]*MetricFamily),
+		configured:    make(map[string]struct{}),
+		coldSkip:      make(map[string]struct{}),
 		coldEnabled:   cfg.Cold.Enabled,
 		coldExtLabels: cfg.Cold.ExternalLabels,
 		stopCh:        make(chan struct{}),
@@ -80,10 +91,19 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 	}
 	for i := range cfg.Metrics {
 		m := &cfg.Metrics[i]
-		if m.Family == FamilySum {
-			p.sumMetrics[m.Metric] = m
-		} else {
-			p.sketchMetrics[m.Metric] = m
+		p.configured[m.Metric] = struct{}{}
+		// Build the warm aggregator only when the tier includes warm
+		// (warm|both). A tier=cold metric is cold-archived only.
+		if m.warmEligible() {
+			if m.Family == FamilySum {
+				p.sumMetrics[m.Metric] = m
+			} else {
+				p.sketchMetrics[m.Metric] = m
+			}
+		}
+		// A tier=warm metric is excluded from the cold gorilla archive.
+		if !m.coldEligible() {
+			p.coldSkip[m.Metric] = struct{}{}
 		}
 	}
 	if p.coldEnabled {
@@ -275,16 +295,17 @@ func (p *asapEdgeProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metri
 	if !p.cfg.DropOriginal {
 		return p.next.ConsumeMetrics(ctx, md) // forward everything raw
 	}
-	// DropOriginal: forward only UNMATCHED (passthrough) metrics — e.g.
-	// freshness probes and any metric with no configured family. The raw of
-	// AGGREGATED metrics is dropped here; their sum/sketch output is emitted
-	// on the flush tick instead. (Cold already archived all metrics above.)
+	// DropOriginal: forward only UNCONFIGURED (passthrough) metrics — e.g.
+	// freshness probes and any metric with no configured entry. The raw of any
+	// CONFIGURED metric is dropped here regardless of tier: a warm/both metric's
+	// sum/sketch output is emitted on the flush tick, and a cold/both metric's
+	// raw is carried by the cold archive (added above). Unconfigured metrics
+	// are still cold-archived and forwarded raw, unchanged.
 	md.ResourceMetrics().RemoveIf(func(rm pmetric.ResourceMetrics) bool {
 		rm.ScopeMetrics().RemoveIf(func(sm pmetric.ScopeMetrics) bool {
 			sm.Metrics().RemoveIf(func(m pmetric.Metric) bool {
-				_, isSum := p.sumMetrics[m.Name()]
-				_, isSketch := p.sketchMetrics[m.Name()]
-				return isSum || isSketch
+				_, isConfigured := p.configured[m.Name()]
+				return isConfigured
 			})
 			return sm.Metrics().Len() == 0
 		})
@@ -298,7 +319,12 @@ func (p *asapEdgeProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metri
 
 func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 	name := m.Name()
-	sumAgg := p.sumMetrics[name] // nil if not a Sum-family metric
+	sumAgg := p.sumMetrics[name] // nil if not a warm Sum-family metric
+	// coldArchive: add raw samples to the cold gorilla stream unless this
+	// metric is configured tier=warm. Unconfigured metrics and tier∈{both,cold}
+	// are archived as before.
+	_, coldSkip := p.coldSkip[name]
+	coldArchive := !coldSkip
 
 	var dps pmetric.NumberDataPointSlice
 	switch m.Type() {
@@ -321,7 +347,7 @@ func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 		tsMs := uint64(ts.UnixMilli())
 		sh := p.shards[p.shardForKey(key)]
 		sh.mu.Lock()
-		if sh.cold != nil {
+		if sh.cold != nil && coldArchive {
 			// The fragment encoder rekeys internally by (metric, attrs); the
 			// shared SeriesKey above is kept for shard selection only.
 			_ = sh.cold.AddSample(gorilla.TSDBSample{
