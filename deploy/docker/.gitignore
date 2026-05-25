@@ -1,0 +1,5 @@
+# Built opamp-supervisor binary — produced by build_opamp_supervisor.sh into
+# this build context for Dockerfile.asap-otel-supervised to COPY. A ~32 MB
+# host-built artifact (same host-build, container-ship model as the asap-otel
+# collector binary), so it is not tracked in git.
+opampsupervisor
