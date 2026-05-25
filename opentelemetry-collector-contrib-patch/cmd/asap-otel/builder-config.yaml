@@ -361,8 +361,12 @@ replaces:
   # (sketchlib-go uses one extra `..` because it lives as a sibling
   # repo of ASAPCollector, one level up from this repo root.)
   - github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
-  # asap-gorilla-go is now consumed as a published versioned module
-  # (github.com/ProjectASAP/asap-gorilla-go v0.2.0) rather than the
-  # in-repo sibling directory, so no local replace is needed here.
-  # The gorillas3processor and contrib-patch go.mod files require
-  # v0.2.0 directly; OCB resolves it via the module graph.
+  # asap-gorilla-go is a private module living as a sibling subdirectory of
+  # this repo (ASAPCollector/asap-gorilla-go). The asapedgeprocessor imports
+  # its `coldpart` subpackage (the cold decode-on-read part format), which is
+  # NOT in any published tag (v0.2.0 predates it), so OCB's `go mod tidy`
+  # cannot resolve it from the module graph — redirect to the in-repo sibling
+  # like asap-precompute-go (../../../asap-gorilla-go from the generated
+  # cmd/asap-otel/go.mod). build_asap_otel.sh also appends this replace, but
+  # OCB tidy runs first and needs it here.
+  - github.com/ProjectASAP/asap-gorilla-go => ../../../asap-gorilla-go
