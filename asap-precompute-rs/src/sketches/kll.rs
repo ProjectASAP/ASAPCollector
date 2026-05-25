@@ -81,6 +81,13 @@ impl KLLWrapper {
                 bit_cache,
                 remaining_bits,
             }),
+            // Emit the raw-f64 item representation (field 5); the
+            // value-offset fixed-point encoding (offset/value_scale/
+            // residuals, fields 7-9) is left at its off defaults so the
+            // wire form is unchanged.
+            offset: 0.0,
+            value_scale: 0,
+            residuals: Vec::new(),
         }
     }
 

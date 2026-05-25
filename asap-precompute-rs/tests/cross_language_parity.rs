@@ -103,7 +103,7 @@ fn hll_byte_parity_with_go() {
     // Both producers reach `insert_with_hash` with the same `u64` because
     // `sketchlib-go::common.FromBytes` and `asap_sketchlib::HllSketch::update`
     // both route through `xxh3_64(seed=seedList[CanonicalHashSeed=5], key)`.
-    let mut w = HLLWrapper::new(asap_sketchlib::sketches::HllVariant::Datafusion, 14);
+    let mut w = HLLWrapper::new(asap_sketchlib::HllVariant::Datafusion, 14);
     for v in deterministic_floats() {
         // Go's HLLObserver routes float observations through
         // HyperLogLog.UpdateValue(double). Mirror by hashing the
@@ -164,7 +164,7 @@ fn golden_fixtures_when_present_are_nonempty() {
 fn rust_wrappers_produce_nonempty_envelopes_for_same_input() {
     let mut dd = DDSketchWrapper::new(0.01);
     let mut kll = KLLWrapper::new(200, Some(42));
-    let mut hll = HLLWrapper::new(asap_sketchlib::sketches::HllVariant::Regular, 14);
+    let mut hll = HLLWrapper::new(asap_sketchlib::HllVariant::Regular, 14);
     let mut cs = CountSketchWrapper::new(3, 512);
     let mut cms = CMSWrapper::new(4, 2048);
 
