@@ -63,6 +63,34 @@ func (t Tier) valid() bool {
 	return false
 }
 
+// ColdFormat selects the cold archive wire format the edge ships.
+type ColdFormat string
+
+const (
+	// ColdFormatFragment ships the gorilla-XOR ASAPFRG1 fragment batch to
+	// ShipEndpoint. This is the default (empty maps here) and today's behavior.
+	ColdFormatFragment ColdFormat = "fragment"
+	// ColdFormatIntchunk ships a lossless intchunk coldpart.Part to
+	// ColdPartEndpoint (the merger's /ingest/coldpart). Opt-in.
+	ColdFormatIntchunk ColdFormat = "intchunk"
+)
+
+// normalized maps the empty/unset value to the default ColdFormatFragment.
+func (f ColdFormat) normalized() ColdFormat {
+	if f == "" {
+		return ColdFormatFragment
+	}
+	return f
+}
+
+func (f ColdFormat) valid() bool {
+	switch f {
+	case "", ColdFormatFragment, ColdFormatIntchunk:
+		return true
+	}
+	return false
+}
+
 // MetricFamily configures the warm aggregation for one metric name. A
 // metric not listed here is cold-archived only (no warm aggregation).
 type MetricFamily struct {
@@ -110,6 +138,21 @@ type ColdConfig struct {
 	// server-side). This is the primary delivery path — it keeps the index
 	// build + S3 PUTs off the edge. Empty => drain-only (no shipping).
 	ShipEndpoint string `mapstructure:"ship_endpoint"`
+
+	// Format selects the cold archive wire format. Default (empty or
+	// ColdFormatFragment) is the gorilla-XOR ASAPFRG1 fragment batch POSTed to
+	// ShipEndpoint — today's behavior, unchanged. ColdFormatIntchunk turns on
+	// the parallel intchunk cold-part path: the same drained samples are
+	// re-encoded as a lossless intchunk coldpart.Part and POSTed to
+	// ColdPartEndpoint (the merger's /ingest/coldpart). This is opt-in; an
+	// operator typically wires it from an env var, e.g.
+	// `cold.format: ${env:ASAP_COLD_FORMAT}` with ASAP_COLD_FORMAT=intchunk.
+	Format ColdFormat `mapstructure:"format"`
+	// ColdPartEndpoint is the merger's POST /ingest/coldpart URL the serialized
+	// intchunk cold part is shipped to when Format is intchunk (e.g.
+	// http://merger:9099/ingest/coldpart). Required when Format is intchunk;
+	// ignored for the fragment format.
+	ColdPartEndpoint string `mapstructure:"coldpart_endpoint"`
 
 	// BlockDuration is the per-emit (head) block tumbling window. Default =
 	// WindowDuration. The merger/backend cuts these into the larger (e.g.
@@ -239,6 +282,15 @@ func (c *Config) Validate() error {
 	}
 	// Cold defaults (only meaningful when enabled).
 	if c.Cold.Enabled {
+		if !c.Cold.Format.valid() {
+			return fmt.Errorf("asap_edge: cold.format %q invalid (want fragment|intchunk or empty)", c.Cold.Format)
+		}
+		// The intchunk cold-part path POSTs a serialized Part to a dedicated
+		// /ingest/coldpart endpoint; it cannot reuse the fragment ShipEndpoint
+		// (different wire contract), so it must be set explicitly.
+		if c.Cold.Format.normalized() == ColdFormatIntchunk && c.Cold.ColdPartEndpoint == "" {
+			return fmt.Errorf("asap_edge: cold.coldpart_endpoint must be set when cold.format is intchunk")
+		}
 		// tsdb_bucket is only needed for the legacy S3-direct fallback
 		// (Endpoint set, no ShipEndpoint). The ship path + build-only mode
 		// don't need a bucket.

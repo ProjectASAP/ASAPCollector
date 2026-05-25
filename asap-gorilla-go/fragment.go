@@ -20,6 +20,8 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/tsdb/index"
+
+	"github.com/ProjectASAP/asap-gorilla-go/intchunk"
 )
 
 const (
@@ -631,15 +633,55 @@ func (f *FragmentBlockFinalizer) writeMeta() error {
 }
 
 func (f *FragmentBlockFinalizer) labelsFor(metricName string, attrs map[string]string) labels.Labels {
+	return FragmentLabels(metricName, attrs, f.external)
+}
+
+// FragmentLabels builds the Prometheus label set for one cold series exactly as
+// the fragment->TSDB finalizer does: __name__ from the (sanitized) metric name,
+// then the data point's attributes, then the agent's external labels (external
+// wins on a name clash). It is exported so an alternate cold producer (e.g. the
+// edge agent's intchunk cold-part path) builds BYTE-IDENTICAL label sets, so a
+// series cold-archived via either format is queried under the same identity.
+func FragmentLabels(metricName string, attrs, external map[string]string) labels.Labels {
 	bld := labels.NewBuilder(labels.EmptyLabels())
 	bld.Set(labels.MetricName, sanitizePromLabelValue(metricName))
 	for k, v := range attrs {
 		bld.Set(k, v)
 	}
-	for k, v := range f.external {
+	for k, v := range external {
 		bld.Set(k, v)
 	}
 	return bld.Labels()
+}
+
+// DecodeFragmentSamples decodes a fragment's XOR-chunk payload back into the
+// raw (timestamp-ms, value) samples it carries, time-ordered ascending. It is
+// the inverse of the StreamingFragmentEncoder's per-series XOR encoding and lets
+// an alternate cold producer (e.g. the intchunk cold-part path) recover the raw
+// samples from the SAME drained fragments the XOR ship path uses, so the two
+// cold formats archive identical data. Only the XOR encoding ("" defaults to
+// xor) is supported. A fragment with no data returns no samples (nil, nil).
+func DecodeFragmentSamples(f Fragment) ([]intchunk.Sample, error) {
+	if f.Encoding != "" && f.Encoding != "xor" {
+		return nil, fmt.Errorf("decode fragment samples: unsupported encoding %q", f.Encoding)
+	}
+	if len(f.Data) == 0 {
+		return nil, nil
+	}
+	chunk, err := chunkenc.FromData(chunkenc.EncXOR, f.Data)
+	if err != nil {
+		return nil, fmt.Errorf("decode fragment samples: %w", err)
+	}
+	out := make([]intchunk.Sample, 0, f.Count)
+	it := chunk.Iterator(nil)
+	for it.Next() == chunkenc.ValFloat {
+		t, v := it.At()
+		out = append(out, intchunk.Sample{T: t, V: v})
+	}
+	if err := it.Err(); err != nil {
+		return nil, fmt.Errorf("decode fragment samples: iterate: %w", err)
+	}
+	return out, nil
 }
 
 func (f *FragmentBlockFinalizer) nonEmptySeries() []*fragmentBlockSeries {
