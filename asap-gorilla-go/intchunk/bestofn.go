@@ -42,11 +42,23 @@ func Encode(samples []Sample) (EncodeResult, error) {
 		vals[i] = samples[i].V
 	}
 	if scaleExp, ints, ok := tryScaleToInt64(vals); ok {
-		if chunks, ok := encodeIntChunks(samples, scaleExp, ints, false); ok {
-			cands = append(cands, cand{CodecIntForDelta, chunks, totalLen(chunks)})
-		}
-		if chunks, ok := encodeIntChunks(samples, scaleExp, ints, true); ok {
-			cands = append(cands, cand{CodecIntForDoD, chunks, totalLen(chunks)})
+		// Try every (delta-vs-dod) x (fixed-width vs varint) body over the same
+		// residual transform and keep each valid candidate; the best-of-N pick
+		// below takes the smallest. Fixed-width wins on near-uniform residuals;
+		// varint wins on skewed residuals where a single fixed width over-pays.
+		for _, v := range []struct {
+			dod  bool
+			body intBodyFormat
+			tag  CodecTag
+		}{
+			{false, bodyFixed, CodecIntForDelta},
+			{true, bodyFixed, CodecIntForDoD},
+			{false, bodyVarint, CodecIntForDeltaVarint},
+			{true, bodyVarint, CodecIntForDoDVarint},
+		} {
+			if chunks, ok := encodeIntChunks(samples, scaleExp, ints, v.dod, v.body); ok {
+				cands = append(cands, cand{v.tag, chunks, totalLen(chunks)})
+			}
 		}
 	}
 
@@ -88,7 +100,7 @@ func DecodeChunk(chunk []byte) ([]Sample, error) {
 	switch tag {
 	case CodecGorillaXOR:
 		return decodeGorillaChunk(r)
-	case CodecIntForDelta, CodecIntForDoD:
+	case CodecIntForDelta, CodecIntForDoD, CodecIntForDeltaVarint, CodecIntForDoDVarint:
 		return decodeIntChunk(r, tag)
 	default:
 		return nil, ErrBadCodecTag

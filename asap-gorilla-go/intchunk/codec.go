@@ -2,19 +2,29 @@
 // chunk codec from the ASAP holistic-compression design (DESIGN.md §1.2-1.4).
 //
 // A cold raw chunk encodes one series' (timestamp, float64-value) samples for a
-// block. Three lossless codecs compete per chunk; the encoder emits whichever
+// block. Several lossless codecs compete per chunk; the encoder emits whichever
 // produces the fewest bytes:
 //
-//	GORILLA_XOR    (tag 0) lossless float64 via prometheus/tsdb/chunkenc XOR
-//	                       (XOR == Gorilla). Always valid; the fallback for
-//	                       true high-precision floats.
-//	INT_FOR_DELTA  (tag 1) float->int64 via a decimal scale exponent, then
-//	                       frame-of-reference (subtract base), delta, bit-pack.
-//	                       For gauges.
-//	INT_FOR_DOD    (tag 2) same scale+FOR but delta-of-delta. For monotonic
-//	                       counters and the regularly-spaced timestamp column.
+//	GORILLA_XOR          (tag 0) lossless float64 via prometheus/tsdb/chunkenc
+//	                             XOR (XOR == Gorilla). Always valid; the
+//	                             fallback for true high-precision floats.
+//	INT_FOR_DELTA        (tag 1) float->int64 via a decimal scale exponent, then
+//	                             frame-of-reference (subtract base), delta,
+//	                             fixed-width bit-pack. For gauges.
+//	INT_FOR_DOD          (tag 2) same scale+FOR but delta-of-delta, fixed width.
+//	                             For monotonic counters and the regularly-spaced
+//	                             timestamp column.
+//	INT_FOR_DELTA_VARINT (tag 3) FOR+delta with each residual stored as a zigzag
+//	                             varint instead of a fixed-width field. Wins on
+//	                             skewed residual distributions where a single
+//	                             fixed width over-pays the common case.
+//	INT_FOR_DOD_VARINT   (tag 4) FOR delta-of-delta with zigzag-varint residuals.
 //
-// All three are bit-exact lossless. The INT_* candidates are only ever produced
+// The INT_* codecs come in two body formats over the SAME residual transform:
+// fixed-width bit-pack (tags 1/2) and zigzag-varint (tags 3/4). Best-of-N tries
+// both and keeps the smaller, so a block whose residuals are nearly uniform
+// takes the tight fixed width while a skewed block takes variable-length
+// varints. All are bit-exact lossless. The INT_* candidates are only ever produced
 // when tryScaleToInt64 proves float->int64->float round-trips BIT-EXACTLY at the
 // chosen scale (the lib/decimal precision trap the benchmark exposed); otherwise
 // only Gorilla is offered for that block.
@@ -41,11 +51,21 @@ const (
 	// chunk. Always valid; the fallback for true high-precision floats.
 	CodecGorillaXOR CodecTag = 0
 	// CodecIntForDelta scales floats to int64, subtracts a frame base, then
-	// delta + bit-packs the residuals. For gauges.
+	// delta + bit-packs the residuals at a single fixed width. For gauges.
 	CodecIntForDelta CodecTag = 1
 	// CodecIntForDoD is like CodecIntForDelta but on delta-of-delta. For
 	// monotonic counters and the timestamp column.
 	CodecIntForDoD CodecTag = 2
+	// CodecIntForDeltaVarint is the FOR+delta residual transform with each
+	// residual stored as a zigzag varint instead of a single fixed-width field.
+	// Variable-length residuals avoid paying the block's widest residual on
+	// every sample, so this wins on skewed residual distributions (most deltas
+	// tiny, a few large) where a fixed width over-pays.
+	CodecIntForDeltaVarint CodecTag = 3
+	// CodecIntForDoDVarint is the FOR delta-of-delta transform with zigzag
+	// varint residuals. For near-linear counters whose dods are mostly zero but
+	// occasionally spike.
+	CodecIntForDoDVarint CodecTag = 4
 )
 
 func (t CodecTag) String() string {
@@ -56,6 +76,10 @@ func (t CodecTag) String() string {
 		return "INT_FOR_DELTA"
 	case CodecIntForDoD:
 		return "INT_FOR_DOD"
+	case CodecIntForDeltaVarint:
+		return "INT_FOR_DELTA_VARINT"
+	case CodecIntForDoDVarint:
+		return "INT_FOR_DOD_VARINT"
 	default:
 		return "UNKNOWN"
 	}

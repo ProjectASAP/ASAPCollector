@@ -93,10 +93,12 @@ func forcedGorilla(s []Sample) (int, CodecTag, bool) {
 	return len(b), CodecGorillaXOR, true
 }
 
-// forcedInt encodes a block as the better of INT_FOR_DELTA / INT_FOR_DOD, but
-// ONLY when tryScaleToInt64 proves it lossless; otherwise it reports !ok so the
-// table shows "n/a" (the honest decimal-exactness guard — never lossy INT).
-func forcedInt(s []Sample) (int, CodecTag, bool) {
+// forcedIntFmt encodes a block as the best INT codec restricted to the given
+// body format(s), but ONLY when tryScaleToInt64 proves it lossless; otherwise
+// it reports !ok so the table shows "n/a" (the honest decimal-exactness guard —
+// never lossy INT). It is the shared core of forcedInt / forcedIntFixed /
+// forcedIntVarint.
+func forcedIntFmt(s []Sample, bodies []intBodyFormat) (int, CodecTag, bool) {
 	vals := make([]float64, len(s))
 	for i := range s {
 		vals[i] = s[i].V
@@ -105,23 +107,37 @@ func forcedInt(s []Sample) (int, CodecTag, bool) {
 	if !ok {
 		return 0, CodecIntForDelta, false
 	}
-	del, okD := encodeIntChunks(s, scaleExp, ints, false)
-	dod, okDD := encodeIntChunks(s, scaleExp, ints, true)
 	best := -1
 	tag := CodecIntForDelta
-	if okD {
-		best = totalLen(del)
-	}
-	if okDD {
-		if best < 0 || totalLen(dod) < best {
-			best = totalLen(dod)
-			tag = CodecIntForDoD
+	for _, body := range bodies {
+		for _, dod := range []bool{false, true} {
+			chunks, ok := encodeIntChunks(s, scaleExp, ints, dod, body)
+			if !ok {
+				continue
+			}
+			if sz := totalLen(chunks); best < 0 || sz < best {
+				best = sz
+				tag = codecTagFor(dod, body)
+			}
 		}
 	}
 	if best < 0 {
 		return 0, tag, false
 	}
 	return best, tag, true
+}
+
+// forcedInt encodes a block as the best of ALL INT codecs (both bodies).
+func forcedInt(s []Sample) (int, CodecTag, bool) {
+	return forcedIntFmt(s, []intBodyFormat{bodyFixed, bodyVarint})
+}
+
+// forcedIntFixed / forcedIntVarint isolate one body format for the bench table.
+func forcedIntFixed(s []Sample) (int, CodecTag, bool) {
+	return forcedIntFmt(s, []intBodyFormat{bodyFixed})
+}
+func forcedIntVarint(s []Sample) (int, CodecTag, bool) {
+	return forcedIntFmt(s, []intBodyFormat{bodyVarint})
 }
 
 // bestOfN encodes a block with the full best-of-N codec.
@@ -150,27 +166,33 @@ func TestBenchmarkBitsPerSample(t *testing.T) {
 	}
 
 	t.Logf("=== bits/sample over %d series in %s (block=%d) ===", len(rows), dir, benchBlockSize)
-	t.Logf("%-22s %-22s %8s | %9s %9s %8s | %-14s %s",
-		"series", "kind", "n", "gor b/s", "int b/s", "gor/int", "bestN b/s", "bestN winner")
+	t.Logf("%-22s %-22s %8s | %9s %9s %9s %8s | %-9s %s",
+		"series", "kind", "n", "gor b/s", "fixed b/s", "varint b/s", "gor/int", "bestN b/s", "bestN winner")
 
 	var sumGor, sumInt, sumBest float64
 	var nInt, nRows int
-	// Class roll-up (the design verdict).
+	// Class roll-up (the design verdict), tracking fixed vs varint separately so
+	// the table shows the varint improvement on the fixed-decimal class.
 	classGor := map[string][]float64{}
-	classInt := map[string][]float64{}
+	classFixed := map[string][]float64{}
+	classVarint := map[string][]float64{}
+	classInt := map[string][]float64{} // best of the two bodies
 
 	for _, r := range rows {
 		s := r.samples()
 		gor, _, _ := blockAvgBits(s, forcedGorilla)
+		fixedb, _, _ := blockAvgBits(s, forcedIntFixed)
+		varintb, _, _ := blockAvgBits(s, forcedIntVarint)
 		intb, _, _ := blockAvgBits(s, forcedInt)
 		best, _, winners := blockAvgBits(s, bestOfN)
 
 		// Determine if INT was usable for this series (decimal-exact).
 		intUsable := intb > 0
-		intStr := "      n/a"
+		fixedStr, varintStr := "      n/a", "      n/a"
 		x := 0.0
 		if intUsable {
-			intStr = fmtBits(intb)
+			fixedStr = fmtBits(fixedb)
+			varintStr = fmtBits(varintb)
 			x = gor / intb
 		}
 		// Dominant best-of-N winner.
@@ -180,8 +202,8 @@ func TestBenchmarkBitsPerSample(t *testing.T) {
 			cls = "high-precision float (Gorilla)"
 		}
 
-		t.Logf("%-22s %-22s %8d | %9.3f %9s %7.2fx | %9.3f %s",
-			trunc(r.Metric, 22), trunc(r.Kind, 22), len(s), gor, intStr, x, best, winTag)
+		t.Logf("%-22s %-22s %8d | %9.3f %9s %9s %7.2fx | %9.3f %s",
+			trunc(r.Metric, 22), trunc(r.Kind, 22), len(s), gor, fixedStr, varintStr, x, best, winTag)
 
 		sumGor += gor
 		sumBest += best
@@ -192,6 +214,8 @@ func TestBenchmarkBitsPerSample(t *testing.T) {
 		}
 		classGor[cls] = append(classGor[cls], gor)
 		if intUsable {
+			classFixed[cls] = append(classFixed[cls], fixedb)
+			classVarint[cls] = append(classVarint[cls], varintb)
 			classInt[cls] = append(classInt[cls], intb)
 		}
 	}
@@ -206,6 +230,8 @@ func TestBenchmarkBitsPerSample(t *testing.T) {
 	t.Log("--- class roll-up (the design verdict) ---")
 	for _, cls := range sortedKeys(classGor) {
 		g := mean(classGor[cls])
+		fx := mean(classFixed[cls])
+		vr := mean(classVarint[cls])
 		iv := mean(classInt[cls])
 		verdict := "Gorilla"
 		ratio := 0.0
@@ -215,18 +241,29 @@ func TestBenchmarkBitsPerSample(t *testing.T) {
 				verdict = "INT"
 			}
 		}
-		t.Logf("  %-34s gor=%.3f int=%.3f  gor/int=%.2fx -> %s",
-			cls, g, iv, ratio, verdict)
+		t.Logf("  %-34s gor=%.3f fixed=%.3f varint=%.3f best-int=%.3f  gor/int=%.2fx -> %s",
+			cls, g, fx, vr, iv, ratio, verdict)
 	}
 
 	// Verdict assertions.
 	fdGor := mean(classGor["fixed-decimal (INT)"])
+	fdFixed := mean(classFixed["fixed-decimal (INT)"])
+	fdVarint := mean(classVarint["fixed-decimal (INT)"])
 	fdInt := mean(classInt["fixed-decimal (INT)"])
 	if fdInt > 0 {
 		if fdInt >= fdGor {
 			t.Errorf("expected INT to BEAT Gorilla on fixed-decimal: int=%.3f gor=%.3f", fdInt, fdGor)
 		} else {
-			t.Logf("VERDICT: INT beats Gorilla on fixed-decimal by %.2fx", fdGor/fdInt)
+			t.Logf("VERDICT: best-INT beats Gorilla on fixed-decimal by %.2fx", fdGor/fdInt)
+		}
+		// The new varint body should not be worse than fixed-width on the
+		// fixed-decimal class (best-of-N keeps whichever is smaller per block,
+		// so the combined best-int is at least as good as either alone).
+		t.Logf("VERDICT: fixed=%.3f varint=%.3f best-int=%.3f b/s on fixed-decimal "+
+			"(fixed->best-int improvement %.2fx, gor->best-int %.2fx)",
+			fdFixed, fdVarint, fdInt, fdFixed/fdInt, fdGor/fdInt)
+		if fdInt > fdFixed {
+			t.Errorf("best-of-N INT (%.3f) should never exceed fixed-only (%.3f)", fdInt, fdFixed)
 		}
 	}
 }
@@ -237,7 +274,10 @@ func fmtBits(b float64) string { return fmt.Sprintf("%9.3f", b) }
 func dominant(m map[CodecTag]int) CodecTag {
 	best := CodecGorillaXOR
 	bestN := -1
-	for _, tag := range []CodecTag{CodecGorillaXOR, CodecIntForDelta, CodecIntForDoD} {
+	for _, tag := range []CodecTag{
+		CodecGorillaXOR, CodecIntForDelta, CodecIntForDoD,
+		CodecIntForDeltaVarint, CodecIntForDoDVarint,
+	} {
 		if m[tag] > bestN {
 			bestN = m[tag]
 			best = tag

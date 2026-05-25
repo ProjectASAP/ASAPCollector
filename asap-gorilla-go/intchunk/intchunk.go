@@ -160,15 +160,40 @@ func residualFits(v int64) bool {
 // INT_* chunk body encode / decode
 // ---------------------------------------------------------------------------
 
-// encodeIntChunk encodes a single INT_* chunk over the whole input. It assumes
-// the caller (via intResiduals) has confirmed no residual overflows; callers
-// that need the overflow chunk-cut use encodeIntChunks. Returns the full chunk
-// bytes (header + body) or ok=false if the residual transform overflowed.
-func encodeIntChunk(samples []Sample, scaleExp int8, ints []int64, dod bool) ([]byte, bool) {
-	tag := CodecIntForDelta
-	if dod {
-		tag = CodecIntForDoD
+// intBodyFormat selects how an INT_* chunk stores its residual body. Both
+// formats share the identical residual transform (intResiduals) and header;
+// only the trailing residual stream differs, so best-of-N can try both over the
+// same transform and keep the smaller.
+type intBodyFormat uint8
+
+const (
+	// bodyFixed bit-packs every residual at a single fixed width (tags 1/2).
+	bodyFixed intBodyFormat = iota
+	// bodyVarint stores each residual as a zigzag varint (tags 3/4).
+	bodyVarint
+)
+
+// codecTagFor maps (delta-vs-dod, body format) to the wire codec tag.
+func codecTagFor(dod bool, body intBodyFormat) CodecTag {
+	switch {
+	case !dod && body == bodyFixed:
+		return CodecIntForDelta
+	case dod && body == bodyFixed:
+		return CodecIntForDoD
+	case !dod && body == bodyVarint:
+		return CodecIntForDeltaVarint
+	default:
+		return CodecIntForDoDVarint
 	}
+}
+
+// encodeIntChunk encodes a single INT_* chunk over the whole input using the
+// requested body format. It assumes the caller (via intResiduals) has confirmed
+// no residual overflows; callers that need the overflow chunk-cut use
+// encodeIntChunks. Returns the full chunk bytes (header + body) or ok=false if
+// the residual transform overflowed.
+func encodeIntChunk(samples []Sample, scaleExp int8, ints []int64, dod bool, body intBodyFormat) ([]byte, bool) {
+	tag := codecTagFor(dod, body)
 	base, firstResidual, residuals, ok := intResiduals(ints, dod)
 	if !ok {
 		return nil, false
@@ -188,21 +213,32 @@ func encodeIntChunk(samples []Sample, scaleExp int8, ints []int64, dod bool) ([]
 	w.varint(base)
 	w.varint(firstResidual)
 
-	// Body: bit-packed zigzag residuals (fixed width).
-	zz := make([]uint64, len(residuals))
-	for i, d := range residuals {
-		zz[i] = zigzag(d)
+	// Body: residual stream in the chosen format.
+	switch body {
+	case bodyVarint:
+		// Each residual as a self-delimiting zigzag varint. No width byte is
+		// needed; the residual count is fixed by n.
+		for _, d := range residuals {
+			w.varint(d)
+		}
+	default: // bodyFixed
+		// Single fixed-width bit-packed array of zigzag residuals.
+		zz := make([]uint64, len(residuals))
+		for i, d := range residuals {
+			zz[i] = zigzag(d)
+		}
+		width := bitPackWidth(zz)
+		w.u8(width)
+		w.buf = packBits(w.buf, zz, width)
 	}
-	width := bitPackWidth(zz)
-	w.u8(width)
-	w.buf = packBits(w.buf, zz, width)
 	return w.buf, true
 }
 
 // decodeIntChunk decodes an INT_* chunk body (the reader is positioned just
 // after the codec tag, which the caller has already consumed and matched).
 func decodeIntChunk(r *byteReader, tag CodecTag) ([]Sample, error) {
-	dod := tag == CodecIntForDoD
+	dod := tag == CodecIntForDoD || tag == CodecIntForDoDVarint
+	varintBody := tag == CodecIntForDeltaVarint || tag == CodecIntForDoDVarint
 	nU, err := r.uvarint()
 	if err != nil {
 		return nil, err
@@ -225,21 +261,32 @@ func decodeIntChunk(r *byteReader, tag CodecTag) ([]Sample, error) {
 	if err != nil {
 		return nil, err
 	}
-	width, err := r.u8()
-	if err != nil {
-		return nil, err
-	}
 	nResiduals := 0
 	if n >= 3 {
 		nResiduals = n - 2
 	}
-	zz, err := unpackBits(r.buf[r.pos:], nResiduals, width)
-	if err != nil {
-		return nil, err
-	}
-	residuals := make([]int64, len(zz))
-	for i, u := range zz {
-		residuals[i] = unzigzag(u)
+	residuals := make([]int64, nResiduals)
+	if varintBody {
+		// Body: nResiduals self-delimiting zigzag varints.
+		for i := 0; i < nResiduals; i++ {
+			d, err := r.varint()
+			if err != nil {
+				return nil, err
+			}
+			residuals[i] = d
+		}
+	} else {
+		width, err := r.u8()
+		if err != nil {
+			return nil, err
+		}
+		zz, err := unpackBits(r.buf[r.pos:], nResiduals, width)
+		if err != nil {
+			return nil, err
+		}
+		for i, u := range zz {
+			residuals[i] = unzigzag(u)
+		}
 	}
 	ints := reconstructInts(base, firstResidual, residuals, n, dod)
 
@@ -277,7 +324,7 @@ func pow10Abs(e int8) float64 {
 // cold analogue of "offset drift -> re-base": the cut starts a new chunk whose
 // first sample becomes the fresh frame base. Each returned []byte is a complete,
 // independently-decodable chunk.
-func encodeIntChunks(samples []Sample, scaleExp int8, ints []int64, dod bool) ([][]byte, bool) {
+func encodeIntChunks(samples []Sample, scaleExp int8, ints []int64, dod bool, body intBodyFormat) ([][]byte, bool) {
 	if len(samples) == 0 {
 		return nil, false
 	}
@@ -285,7 +332,7 @@ func encodeIntChunks(samples []Sample, scaleExp int8, ints []int64, dod bool) ([
 	start := 0
 	for start < len(samples) {
 		end := findCutEnd(ints[start:], dod) + start
-		b, ok := encodeIntChunk(samples[start:end], scaleExp, ints[start:end], dod)
+		b, ok := encodeIntChunk(samples[start:end], scaleExp, ints[start:end], dod, body)
 		if !ok {
 			return nil, false
 		}

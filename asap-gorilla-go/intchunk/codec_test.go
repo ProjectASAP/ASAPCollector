@@ -197,13 +197,17 @@ func TestBestOfNPicksSmallest(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected fixed-decimal to scale")
 	}
-	delChunks, _ := encodeIntChunks(samples, scaleExp, ints, false)
-	dodChunks, _ := encodeIntChunks(samples, scaleExp, ints, true)
+	delChunks, _ := encodeIntChunks(samples, scaleExp, ints, false, bodyFixed)
+	dodChunks, _ := encodeIntChunks(samples, scaleExp, ints, true, bodyFixed)
+	delVarChunks, _ := encodeIntChunks(samples, scaleExp, ints, false, bodyVarint)
+	dodVarChunks, _ := encodeIntChunks(samples, scaleExp, ints, true, bodyVarint)
 	gb, _ := encodeGorillaChunk(samples)
 	sizes := map[CodecTag]int{
-		CodecIntForDelta: totalLen(delChunks),
-		CodecIntForDoD:   totalLen(dodChunks),
-		CodecGorillaXOR:  len(gb),
+		CodecIntForDelta:       totalLen(delChunks),
+		CodecIntForDoD:         totalLen(dodChunks),
+		CodecIntForDeltaVarint: totalLen(delVarChunks),
+		CodecIntForDoDVarint:   totalLen(dodVarChunks),
+		CodecGorillaXOR:        len(gb),
 	}
 	minTag := CodecGorillaXOR
 	for tag, sz := range sizes {
@@ -216,15 +220,15 @@ func TestBestOfNPicksSmallest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Tag != minTag {
-		t.Errorf("best-of-N picked %s (%d B) but smallest candidate is %s; sizes=%v",
-			res.Tag, res.Bytes, minTag, sizes)
-	}
+	// Ties are allowed: any candidate matching the minimum byte size is a valid
+	// winner, so assert on byte size rather than a single expected tag.
 	if res.Bytes != sizes[minTag] {
-		t.Errorf("winner byte size %d != smallest candidate %d", res.Bytes, sizes[minTag])
+		t.Errorf("best-of-N winner %s is %d B but smallest candidate is %s at %d B; sizes=%v",
+			res.Tag, res.Bytes, minTag, sizes[minTag], sizes)
 	}
-	t.Logf("candidate sizes: delta=%d dod=%d gorilla=%d -> winner=%s",
-		sizes[CodecIntForDelta], sizes[CodecIntForDoD], sizes[CodecGorillaXOR], res.Tag)
+	t.Logf("candidate sizes: delta=%d dod=%d delta-varint=%d dod-varint=%d gorilla=%d -> winner=%s (%d B)",
+		sizes[CodecIntForDelta], sizes[CodecIntForDoD], sizes[CodecIntForDeltaVarint],
+		sizes[CodecIntForDoDVarint], sizes[CodecGorillaXOR], res.Tag, res.Bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +258,7 @@ func TestOverflowChunkCut(t *testing.T) {
 	if !ok {
 		t.Fatalf("integer data should scale exactly")
 	}
-	chunks, ok := encodeIntChunks(samples, scaleExp, ints, false)
+	chunks, ok := encodeIntChunks(samples, scaleExp, ints, false, bodyFixed)
 	if !ok {
 		t.Fatalf("encodeIntChunks failed")
 	}
@@ -296,7 +300,7 @@ func TestOverflowChunkCutDoD(t *testing.T) {
 	}
 	samples := mkSamples(0, 1000, vals)
 	scaleExp, ints, _ := tryScaleToInt64(vals)
-	chunks, ok := encodeIntChunks(samples, scaleExp, ints, true)
+	chunks, ok := encodeIntChunks(samples, scaleExp, ints, true, bodyFixed)
 	if !ok {
 		t.Fatalf("dod encodeIntChunks failed")
 	}
@@ -308,6 +312,148 @@ func TestOverflowChunkCutDoD(t *testing.T) {
 		if math.Float64bits(got[i].V) != math.Float64bits(samples[i].V) {
 			t.Fatalf("dod cut sample %d mismatch", i)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Varint body codecs: round-trip + the decode dispatch on the new tags, and
+// the skewed-residual case where varint beats fixed-width.
+// ---------------------------------------------------------------------------
+
+// roundTripBody forces a specific INT body format and asserts a bit-exact
+// round-trip through the per-chunk encode/decode (incl. the overflow cut), with
+// every emitted chunk carrying the expected wire tag.
+func roundTripBody(t *testing.T, name string, samples []Sample, dod bool, body intBodyFormat) [][]byte {
+	t.Helper()
+	vals := make([]float64, len(samples))
+	for i := range samples {
+		vals[i] = samples[i].V
+	}
+	scaleExp, ints, ok := tryScaleToInt64(vals)
+	if !ok {
+		t.Fatalf("%s: expected fixed-decimal/integer data to scale", name)
+	}
+	chunks, ok := encodeIntChunks(samples, scaleExp, ints, dod, body)
+	if !ok {
+		t.Fatalf("%s: encodeIntChunks failed", name)
+	}
+	wantTag := codecTagFor(dod, body)
+	for ci, c := range chunks {
+		got, err := PeekTag(c)
+		if err != nil {
+			t.Fatalf("%s: chunk %d peek tag: %v", name, ci, err)
+		}
+		if got != wantTag {
+			t.Fatalf("%s: chunk %d tag = %s, want %s", name, ci, got, wantTag)
+		}
+	}
+	got, err := DecodeChunks(chunks)
+	if err != nil {
+		t.Fatalf("%s: decode: %v", name, err)
+	}
+	if len(got) != len(samples) {
+		t.Fatalf("%s: len mismatch got %d want %d", name, len(got), len(samples))
+	}
+	for i := range samples {
+		if got[i].T != samples[i].T || math.Float64bits(got[i].V) != math.Float64bits(samples[i].V) {
+			t.Fatalf("%s: sample %d mismatch: got (%d,%v) want (%d,%v)",
+				name, i, got[i].T, got[i].V, samples[i].T, samples[i].V)
+		}
+	}
+	return chunks
+}
+
+func TestVarintBodyRoundTrip(t *testing.T) {
+	// Fixed 2dp gauge.
+	gauge := make([]float64, 800)
+	cents := int64(2000)
+	for i := range gauge {
+		cents += int64(math.Round(math.Sin(float64(i)/30) * 8))
+		gauge[i] = float64(cents) / 100.0
+	}
+	// Monotonic counter.
+	counter := make([]float64, 800)
+	v := 100000.0
+	for i := range counter {
+		v += float64(40 + i%20)
+		counter[i] = v
+	}
+	cases := []struct {
+		name string
+		vals []float64
+	}{
+		{"gauge", gauge},
+		{"counter", counter},
+		{"negatives", []float64{-5.5, -0.0, 0.0, 5.5, -1234.25, 9999.75, -0.25}},
+		{"single", []float64{3.14}},
+		{"two", []float64{3.1, 3.2}},
+	}
+	for _, c := range cases {
+		s := mkSamples(1_700_000_000_000, 1000, c.vals)
+		for _, dod := range []bool{false, true} {
+			roundTripBody(t, c.name+"/varint", s, dod, bodyVarint)
+		}
+	}
+}
+
+func TestVarintOverflowChunkCut(t *testing.T) {
+	// Same overflow shape as the fixed-width cut test but exercising the varint
+	// body: a giant jump forces residual overflow -> re-base -> multiple chunks,
+	// each tagged INT_FOR_DELTA_VARINT, decoding back to the original.
+	n := 60
+	vals := make([]float64, n)
+	for i := 0; i < n; i++ {
+		switch {
+		case i < 20:
+			vals[i] = float64(i)
+		case i < 40:
+			vals[i] = float64(i) + math.Ldexp(1, maxResidualWidth+4)
+		default:
+			vals[i] = float64(i) + math.Ldexp(1, maxResidualWidth+4) + math.Ldexp(1, maxResidualWidth+5)
+		}
+	}
+	samples := mkSamples(0, 1000, vals)
+	chunks := roundTripBody(t, "overflow/varint", samples, false, bodyVarint)
+	if len(chunks) < 2 {
+		t.Fatalf("expected overflow to cut into >=2 chunks, got %d", len(chunks))
+	}
+	t.Logf("varint overflow produced %d chunks", len(chunks))
+}
+
+// TestVarintBeatsFixedOnSkewed builds a residual distribution that is mostly
+// tiny with rare large spikes — the case where a single fixed width over-pays
+// every sample and the variable-length varint body wins. The full best-of-N
+// must then pick a varint codec for this block.
+func TestVarintBeatsFixedOnSkewed(t *testing.T) {
+	rng := rand.New(rand.NewSource(0x5EED))
+	n := 1000
+	vals := make([]float64, n)
+	cents := int64(50000)
+	for i := range vals {
+		step := int64(rng.Intn(3) - 1) // mostly -1..+1 cent
+		if rng.Intn(40) == 0 {
+			step += int64(rng.Intn(20000) - 10000) // rare large spike
+		}
+		cents += step
+		vals[i] = float64(cents) / 100.0
+	}
+	samples := mkSamples(1_700_000_000_000, 1000, vals)
+
+	fixed, _, okF := forcedIntFixed(samples)
+	varint, tag, okV := forcedIntVarint(samples)
+	if !okF || !okV {
+		t.Fatalf("expected fixed-decimal data to scale (fixed ok=%v varint ok=%v)", okF, okV)
+	}
+	if varint >= fixed {
+		t.Fatalf("expected varint (%d B) to beat fixed-width (%d B) on skewed residuals", varint, fixed)
+	}
+	t.Logf("skewed residuals: fixed=%d B varint=%d B (%s) -> varint smaller by %.2fx",
+		fixed, varint, tag, float64(fixed)/float64(varint))
+
+	// Best-of-N must therefore choose a varint codec here (and round-trip).
+	res := assertLossless(t, "skewed", samples)
+	if res.Tag != CodecIntForDeltaVarint && res.Tag != CodecIntForDoDVarint {
+		t.Errorf("expected best-of-N to pick a VARINT codec on skewed residuals, got %s", res.Tag)
 	}
 }
 
