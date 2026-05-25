@@ -96,6 +96,7 @@ impl KLLWrapper {
             format_version: 1,
             producer: None,
             hash_spec: None,
+            sample_p: 0.0,
             sketch_state: Some(sketch_envelope::SketchState::Kll(self.build_state())),
         };
         let mut buf = Vec::with_capacity(env.encoded_len());
