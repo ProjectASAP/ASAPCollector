@@ -1,4 +1,4 @@
-//! CountMinSketch wrapper over [`asap_sketchlib::sketches::CountMinSketch`].
+//! CountMinSketch wrapper over [`asap_sketchlib::CountMinSketch`].
 //!
 //! Mirrors `asap-precompute-go/sketches/cms.go`. Implements
 //! [`Sketch`] + [`FrequencySketch`].
@@ -6,7 +6,7 @@
 use asap_sketchlib::proto::sketchlib::{
     sketch_envelope, CountMinState, CounterType, SketchEnvelope as ProtoEnvelope,
 };
-use asap_sketchlib::sketches::CountMinSketch;
+use asap_sketchlib::CountMinSketch;
 use prost::Message;
 
 use crate::observation::ObservationValue;

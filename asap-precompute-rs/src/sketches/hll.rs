@@ -1,4 +1,4 @@
-//! HLL wrapper over [`asap_sketchlib::sketches::HllSketch`].
+//! HLL wrapper over [`asap_sketchlib::HllSketch`].
 //!
 //! Mirrors `asap-precompute-go/sketches/hll.go`. HLL is the canonical
 //! [`CardinalitySketch`] implementation in this crate.
@@ -6,7 +6,7 @@
 use asap_sketchlib::proto::sketchlib::{
     sketch_envelope, HllVariant, HyperLogLogState, SketchEnvelope as ProtoEnvelope,
 };
-use asap_sketchlib::sketches::{HllSketch, HllVariant as RsHllVariant};
+use asap_sketchlib::{HllSketch, HllVariant as RsHllVariant};
 use prost::Message;
 
 use crate::observation::ObservationValue;
@@ -54,6 +54,10 @@ impl HLLWrapper {
             hip_kxq0: self.sk.hip_kxq0,
             hip_kxq1: self.sk.hip_kxq1,
             hip_est: self.sk.hip_est,
+            // Emit the dense register encoding (tag 3); the sparse
+            // encoding (tag 7) is left unset, matching the existing
+            // wire form.
+            registers_sparse: None,
         }
     }
 

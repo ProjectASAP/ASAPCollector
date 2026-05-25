@@ -223,7 +223,7 @@ fn build_dispatch(config: &PluginConfig) -> Result<SketchDispatch, ConfigError> 
                 sketch_type: SketchType::HLLSketch,
                 factory: Box::new(move || {
                     Box::new(HLLWrapper::new(
-                        asap_sketchlib::sketches::HllVariant::Regular,
+                        asap_sketchlib::HllVariant::Regular,
                         precision as u32,
                     ))
                 }),
