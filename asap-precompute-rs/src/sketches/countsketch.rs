@@ -75,6 +75,7 @@ impl CountSketchWrapper {
             format_version: 1,
             producer: None,
             hash_spec: None,
+            sample_p: 0.0,
             sketch_state: Some(sketch_envelope::SketchState::CountSketch(
                 self.build_state(),
             )),

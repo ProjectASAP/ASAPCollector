@@ -86,6 +86,9 @@ impl CMSWrapper {
             format_version: 1,
             producer: None,
             hash_spec: None,
+            // No edge sampling yet: 0.0 is the proto3 default (dual-read as 1.0
+            // by the backend) so the encoded envelope is byte-identical.
+            sample_p: 0.0,
             sketch_state: Some(sketch_envelope::SketchState::CountMin(self.build_state())),
         };
         let mut buf = Vec::with_capacity(env.encoded_len());
