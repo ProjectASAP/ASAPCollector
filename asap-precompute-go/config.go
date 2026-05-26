@@ -15,9 +15,19 @@ const (
 	// processors use today.
 	Tumbling AggregationMode = iota
 	// Sliding rotates every WindowSpec.Slide; observations land in
-	// every window whose [start, end) range covers their timestamp.
-	// Phase 2 implements only Tumbling — see window.go for the
-	// follow-up.
+	// every window whose [start, end) range covers their timestamp, so
+	// successive emitted windows OVERLAP (a sample near a pane boundary
+	// is re-emitted in each window that still covers it).
+	//
+	// WARNING — do NOT use Sliding for output shipped to an additive-merge
+	// backend (e.g. ASAPQuery-backend, which merges consecutive edge
+	// sketches cell-/bucket-additively assuming NON-overlapping windows):
+	// overlapping emissions would be counted multiple times → inflated
+	// frequencies/quantiles. The documented architecture keeps the EDGE
+	// tumbling and does sliding at the BACKEND's window_manager. Sliding
+	// here is for standalone/local aggregation that is not fed into the
+	// additive two-stage merge. The asap_edge OTel processor only ever
+	// configures Tumbling, so this footgun is not reachable from it today.
 	Sliding
 	// Batch processes one batch end-to-end with no windowing; used
 	// by the original ddsketchprocessor's `mode: batch` config.

@@ -206,7 +206,7 @@ impl WindowState {
             .series
             .get_mut(&key)
             .expect("series entry must exist after insert");
-        observer.observe(entry.sketch.as_mut(), &obs.value)?;
+        observer.observe(entry.sketch.as_mut(), obs)?;
         entry.count += 1;
         Ok(())
     }

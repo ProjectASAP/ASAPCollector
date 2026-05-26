@@ -27,6 +27,14 @@ func createDefaultConfig() component.Config {
 		ShardCount:     12,
 		WindowDuration: 60 * time.Second,
 		DropOriginal:   true,
+		// Bound the per-shard sketch/sum series maps out of the box so a
+		// cardinality explosion can't grow them without limit (0 => unlimited;
+		// Validate applies this same default).
+		MaxSeries: 100000,
+		// DeltaTransmission defaults OFF (conservative: full state every window).
+		DeltaTransmission: false,
+		// ControlChannel is disabled by default (zero value); set poll_url to
+		// enable the control-plane config-poll loop.
 		Cold: ColdConfig{
 			Enabled:       true,
 			BlockDuration: 60 * time.Second,

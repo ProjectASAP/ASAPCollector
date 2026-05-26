@@ -160,9 +160,20 @@ func (p *asapEdgeProcessor) flushSum(ctx context.Context) {
 // shard-ticks elapsed since the last sum flush.
 func (p *asapEdgeProcessor) appendSumMetrics(out pmetric.Metrics) {
 	startMs := p.windowStartMs.Load()
+	now := uint64(time.Now().UnixMilli())
+	// endMs is the window's max observed sample timestamp. Two corrections:
+	//   1. Idle window: no sample this window => maxObserved is still <= startMs,
+	//      which would emit start==end or (after a stale future sample) start>end.
+	//      Clamp endMs up to now so the emitted point spans [start, now], never
+	//      inverted.
+	//   2. start>end guard: if even now < startMs (clock skew), fall back to
+	//      startMs so we never emit an inverted (start>end) data point.
 	endMs := p.maxObservedMs.Load()
+	if endMs <= startMs {
+		endMs = now
+	}
 	if endMs < startMs {
-		endMs = uint64(time.Now().UnixMilli())
+		endMs = startMs
 	}
 	for name := range p.sumMetrics {
 		merged := make(map[string]*sumGroup)
@@ -174,5 +185,11 @@ func (p *asapEdgeProcessor) appendSumMetrics(out pmetric.Metrics) {
 		}
 		emitSumMetric(out, name, merged, startMs, endMs)
 	}
+	// Advance the window start to this window's end and reset the max-observed
+	// watermark down to the same boundary. Resetting (rather than letting it
+	// only ever rise) prevents one future-timestamped sample from permanently
+	// skewing every later window's endMs; the next window's max is rebuilt from
+	// its own samples.
 	p.windowStartMs.Store(endMs)
+	p.resetMaxObserved(endMs)
 }

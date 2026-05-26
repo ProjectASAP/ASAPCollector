@@ -9,7 +9,7 @@ use asap_sketchlib::proto::sketchlib::{
 use asap_sketchlib::{HllSketch, HllVariant as RsHllVariant};
 use prost::Message;
 
-use crate::observation::ObservationValue;
+use crate::observation::Observation;
 use crate::precompute::{CardinalitySketch, DeltaResult, PrecomputeError, Sketch, SketchObserver};
 
 /// HLL wrapper. Owns one `asap_sketchlib::HllSketch`.
@@ -170,29 +170,25 @@ impl CardinalitySketch for HLLWrapper {
 pub struct HLLObserver;
 
 impl SketchObserver for HLLObserver {
-    fn observe(
-        &self,
-        sketch: &mut dyn Sketch,
-        v: &ObservationValue,
-    ) -> Result<(), PrecomputeError> {
+    fn observe(&self, sketch: &mut dyn Sketch, obs: &Observation) -> Result<(), PrecomputeError> {
         let w = sketch
             .as_any_mut()
             .downcast_mut::<HLLWrapper>()
             .ok_or_else(|| {
                 PrecomputeError::Other("HLLObserver: sketch is not an HLLWrapper".into())
             })?;
-        match v.kind {
+        match obs.value.kind {
             crate::observation::ObservationValueKind::Float => {
-                let bytes = v.float.to_le_bytes();
+                let bytes = obs.value.float.to_le_bytes();
                 w.update(&bytes);
                 Ok(())
             }
             crate::observation::ObservationValueKind::Bytes => {
-                w.update(&v.bytes);
+                w.update(&obs.value.bytes);
                 Ok(())
             }
             crate::observation::ObservationValueKind::Hash => {
-                let bytes = v.hash.to_le_bytes();
+                let bytes = obs.value.hash.to_le_bytes();
                 w.update(&bytes);
                 Ok(())
             }

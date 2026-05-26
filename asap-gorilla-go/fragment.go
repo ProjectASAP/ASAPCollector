@@ -97,8 +97,15 @@ type StreamingFragmentEncoder struct {
 	maxObserved int64
 	queued      []Fragment
 	dropped     uint64
-	evicted     uint64
-	closed      bool
+	// lastReportedDropped is the value of dropped already attributed to
+	// previously-flushed fragments. Each flushed fragment is stamped with the
+	// DELTA (dropped - lastReportedDropped) rather than the running cumulative
+	// total, so the finalizer's per-fragment summation yields the true total
+	// exactly once. Stamping the cumulative total made the finalizer over-count
+	// quadratically (~N drops * D fragments).
+	lastReportedDropped uint64
+	evicted             uint64
+	closed              bool
 }
 
 type fragmentSeriesState struct {
@@ -359,6 +366,19 @@ func (e *StreamingFragmentEncoder) drainLocked(watermark int64, force bool) erro
 			}
 		}
 		e.drainQueue = e.drainQueue[:0] // all drained; reset the advisory heap
+		// A forced drain reports every drop seen so far. Drops are normally
+		// stamped (as a delta) onto the fragment of the series whose flush
+		// follows them, but drops that occurred after the last open chunk was
+		// flushed (e.g. a series whose only remaining points were all dropped)
+		// leave a residual delta no flush will carry. Attribute that residual to
+		// the most recently queued fragment so the finalizer's sum over fragments
+		// still equals the true total. If no fragment was emitted at all, the
+		// drops are simply not represented (there is no series to attribute them
+		// to and the finalizer would write no block).
+		if e.dropped > e.lastReportedDropped && len(e.queued) > 0 {
+			e.queued[len(e.queued)-1].OOODropCount += e.dropped - e.lastReportedDropped
+			e.lastReportedDropped = e.dropped
+		}
 		// Now that every series' shipped state is at rest, reclaim idle ones.
 		e.sweepEvictionsLocked()
 		return nil
@@ -421,19 +441,35 @@ func (e *StreamingFragmentEncoder) flushOpenChunkLocked(st *fragmentSeriesState,
 	if st.openChunk == nil || st.openCount == 0 {
 		return nil
 	}
+	// Stamp the encoder's real event-time watermark, never the force/Finalize
+	// sentinel (math.MaxInt64) the drain uses internally to flush everything.
+	// Per-sample flushes already pass maxObserved-reorderGrace; a forced flush
+	// passing math.MaxInt64 would otherwise leave a nonsensical sentinel in the
+	// JSON fragment's watermark_time_ms. (The ASAPFRG1 wire format drops this
+	// field entirely, so it is purely a JSON-transport cosmetic — but consistent
+	// is better than a sentinel a reader could misinterpret as a real time.)
+	stampWatermark := watermark
+	if stampWatermark == math.MaxInt64 {
+		stampWatermark = e.maxObserved - e.reorderGrace
+	}
 	e.queued = append(e.queued, Fragment{
-		MetricName:    st.metricName,
-		Attributes:    cloneStringMap(st.attrs),
-		MinTime:       st.openMin,
-		MaxTime:       st.openMax,
-		Count:         st.openCount,
-		Encoding:      "xor",
-		Data:          append([]byte(nil), st.openChunk.Bytes()...),
-		OOODropCount:  e.dropped,
+		MetricName: st.metricName,
+		Attributes: cloneStringMap(st.attrs),
+		MinTime:    st.openMin,
+		MaxTime:    st.openMax,
+		Count:      st.openCount,
+		Encoding:   "xor",
+		Data:       append([]byte(nil), st.openChunk.Bytes()...),
+		// Per-fragment DELTA of drops since the last flush, not the running
+		// cumulative total: the finalizer sums OOODropCount across all fragments,
+		// so a cumulative stamp would over-count quadratically. Summing the deltas
+		// reconstructs e.dropped exactly.
+		OOODropCount:  e.dropped - e.lastReportedDropped,
 		FragmentULID:  ulid.Make().String(),
 		Source:        e.source,
-		WatermarkTime: watermark,
+		WatermarkTime: stampWatermark,
 	})
+	e.lastReportedDropped = e.dropped
 	st.openChunk = nil
 	st.app = nil
 	st.openCount = 0
@@ -569,6 +605,11 @@ func (f *FragmentBlockFinalizer) Finalize(ctx context.Context) (*TSDBBlockArtifa
 	}, nil
 }
 
+// TODO: dedupe with tsdb.go's StreamingTSDBBlockBuilder.writeChunks/writeIndex/
+// writeMeta/nonEmptySeries/sortedSymbols (see the matching TODO there). The two
+// block writers are ~150 LOC of parallel logic differing only in the per-series
+// state type; the merge is deferred because the pre-write handling diverges and
+// both paths are hot + well-tested.
 func (f *FragmentBlockFinalizer) writeChunks() error {
 	chunkw, err := chunks.NewWriter(filepath.Join(f.blockDir, "chunks"))
 	if err != nil {

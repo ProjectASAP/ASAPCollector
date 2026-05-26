@@ -127,16 +127,12 @@ impl Sketch for FakeSketch {
 struct FakeObserver;
 
 impl SketchObserver for FakeObserver {
-    fn observe(
-        &self,
-        sketch: &mut dyn Sketch,
-        v: &ObservationValue,
-    ) -> Result<(), PrecomputeError> {
+    fn observe(&self, sketch: &mut dyn Sketch, obs: &Observation) -> Result<(), PrecomputeError> {
         // Mirror Go fakeObserver: append a tag byte per value kind.
-        let tag: &[u8] = match v.kind {
+        let tag: &[u8] = match obs.value.kind {
             asap_precompute_rs::ObservationValueKind::Float => b"f",
             asap_precompute_rs::ObservationValueKind::Hash => b"h",
-            asap_precompute_rs::ObservationValueKind::Bytes => &v.bytes,
+            asap_precompute_rs::ObservationValueKind::Bytes => &obs.value.bytes,
             asap_precompute_rs::ObservationValueKind::Envelope => b"",
         };
         sketch.apply_delta(tag)
@@ -829,10 +825,7 @@ mod real_sketch {
 
     fn hll_factory() -> Box<dyn Fn() -> Box<dyn Sketch> + Send + Sync> {
         Box::new(|| {
-            Box::new(HLLWrapper::new(
-                asap_sketchlib::HllVariant::Regular,
-                12,
-            )) as Box<dyn Sketch>
+            Box::new(HLLWrapper::new(asap_sketchlib::HllVariant::Regular, 12)) as Box<dyn Sketch>
         })
     }
 

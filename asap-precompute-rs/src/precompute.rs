@@ -11,7 +11,7 @@ use thiserror::Error;
 use crate::config::{PrecomputeConfig, PrecomputeConfigSet};
 use crate::envelope::{Encoding, SketchEnvelope, SketchType};
 use crate::matchers::series_attrs;
-use crate::observation::{KeyValue, Observation, ObservationValue, ObservationValueKind};
+use crate::observation::{KeyValue, Observation, ObservationValueKind};
 use crate::snapshot_cache::SnapshotCache;
 use crate::window::{SeriesEntry, WindowState};
 
@@ -162,12 +162,16 @@ pub trait FrequencySketch: Sketch {
 /// forcing all sketches to accept all kinds would push pointless
 /// match-arms into every Layer-1 implementation.
 pub trait SketchObserver: Send + Sync {
-    /// Applies the observation's value to the sketch.
+    /// Applies the observation to the sketch.
+    ///
+    /// Receives the full [`Observation`] so family-specific observers
+    /// can key themselves off the observation's labels (e.g. CMS /
+    /// CountSketch count the per-attribute-set frequency) in addition
+    /// to the raw value.
     ///
     /// Implementations should panic-proof against unsupported kinds
     /// (return an error) and call [`Sketch`] methods directly.
-    fn observe(&self, sketch: &mut dyn Sketch, v: &ObservationValue)
-        -> Result<(), PrecomputeError>;
+    fn observe(&self, sketch: &mut dyn Sketch, obs: &Observation) -> Result<(), PrecomputeError>;
 }
 
 /// Errors returned by the precompute runtime.

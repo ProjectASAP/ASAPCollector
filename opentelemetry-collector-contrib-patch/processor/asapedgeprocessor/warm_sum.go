@@ -6,6 +6,7 @@ package asapedgeprocessor
 import (
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -28,6 +29,16 @@ type sumAggregator struct {
 	// [zone]. Empty groups everything into a single series.
 	aggregateBy []string
 	groups      map[string]*sumGroup
+	// maxGroups bounds the group map per shard (0 => unlimited). A new group
+	// past the cap is dropped (not summed) so a cardinality explosion in the
+	// AggregateBy space cannot grow the map without bound. Existing groups keep
+	// accepting samples.
+	maxGroups int
+	// overflowCount counts observations dropped because the group map was full.
+	overflowCount atomic.Uint64
+	// procOverflowCount, when non-nil, is the processor-wide sum-overflow
+	// counter this aggregator also bumps so per-shard drops roll up.
+	procOverflowCount *atomic.Uint64
 }
 
 type sumGroup struct {
@@ -42,11 +53,11 @@ type kv struct {
 	v string
 }
 
-func newSumAggregator(aggregateBy []string) *sumAggregator {
+func newSumAggregator(aggregateBy []string, maxGroups int) *sumAggregator {
 	// Copy + sort aggregateBy for a stable group-key layout.
 	ab := append([]string(nil), aggregateBy...)
 	sort.Strings(ab)
-	return &sumAggregator{aggregateBy: ab, groups: make(map[string]*sumGroup)}
+	return &sumAggregator{aggregateBy: ab, groups: make(map[string]*sumGroup), maxGroups: maxGroups}
 }
 
 // observe adds value to the group identified by attrs filtered to
@@ -71,6 +82,15 @@ func (s *sumAggregator) observe(attrs map[string]string, value float64) {
 	key := b.String()
 	g := s.groups[key]
 	if g == nil {
+		// Cap the group map: drop a NEW group once at the limit (existing groups
+		// still accept samples). 0 => unlimited.
+		if s.maxGroups > 0 && len(s.groups) >= s.maxGroups {
+			s.overflowCount.Add(1)
+			if s.procOverflowCount != nil {
+				s.procOverflowCount.Add(1)
+			}
+			return
+		}
 		g = &sumGroup{labels: grp}
 		s.groups[key] = g
 	}

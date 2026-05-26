@@ -29,10 +29,11 @@
 5. [Query path](#5-query-path)
 6. [Compaction](#6-compaction)
 7. [Cost-model break-even table](#7-cost-model-break-even-table)
-8. [Legacy chunk format (historical)](#8-legacy-chunk-format-historical)
-9. [What was deleted](#9-what-was-deleted)
-10. [Open questions](#10-open-questions)
-11. [References](#11-references)
+8. [`ASAPCC1` decode-on-read cold part + `intchunk` best-of-N codec](#8-asapcc1-decode-on-read-cold-part--intchunk-best-of-n-codec)
+9. [Legacy chunk format (historical)](#9-legacy-chunk-format-historical)
+10. [What was deleted](#10-what-was-deleted)
+11. [Open questions](#11-open-questions)
+12. [References](#12-references)
 
 ---
 
@@ -69,7 +70,7 @@ tier. The controller picks per metric (or per metric pattern):
 The legacy raw-JSONL "cold fallback" tier was deleted in Step 1 of
 the JSONL deprecation (backend PR #95, collector PR #312). A
 capability miss in the warm tier no longer falls through to JSONL —
-it now resolves through the archive tier. See §9.
+it now resolves through the archive tier. See §10.
 
 ---
 
@@ -118,7 +119,7 @@ emit format:
 | `prometheus_tsdb` | **canonical** post-Path-A2 (PR #311, mvp step 2.1); demo + production | `thanos store-gateway` + `thanos-query` archive serving path |
 | `asap` | **legacy**, still readable | in-process Rust `GorillaQueryEngine` reading buckets written before Path A2 |
 
-The legacy `asap` format is documented in §8.
+The legacy `asap` format is documented in §9.
 
 ---
 
@@ -144,7 +145,7 @@ The legacy `asap` format is documented in §8.
   single-tenant deployments. Multi-tenant deployments separate by
   prefix; cross-tenant access control is delegated to S3 IAM /
   bucket policies. (Per-bucket isolation vs per-prefix isolation is
-  flagged in §10 Q1.)
+  flagged in §11 Q1.)
 - **`<ulid>`** — block name. ULID gives a lexicographically-sortable
   time-prefixed identifier, so `LIST` over the prefix returns blocks
   in roughly time order without an external index.
@@ -163,7 +164,7 @@ store-gateway, the in-process Rust legacy engine) all honour it.
 ### 3.3 No `index.json` / no postings sidecar
 
 Pre-Path-A2 buckets carried per-hour-bucket `index.json` and
-`postings-v1.json` sidecars (§8). Those are not present in the
+`postings-v1.json` sidecars (§9). Those are not present in the
 canonical Prometheus-TSDB layout; the standard `index` file inside
 each block carries postings, time bounds, and chunk-locator metadata.
 This eliminates the index-file-write hot path entirely (no per-PUT
@@ -331,7 +332,7 @@ TSDB + retention is the archive.
 When neither `ASAP_ARCHIVE_ENGINE=thanos` nor
 `ASAP_ARCHIVE_ENGINE=prometheus` is set, the backend falls back to
 the in-process Rust `GorillaQueryEngine`. This engine reads the
-**legacy `asap` chunk format** (§8) and answers a **curated PromQL
+**legacy `asap` chunk format** (§9) and answers a **curated PromQL
 subset**: `sum / count / avg / min / max / rate / increase /
 quantile_over_time / topk`.
 
@@ -439,7 +440,122 @@ The cost model also costs:
 
 ---
 
-## 8. Legacy chunk format (historical)
+## 8. `ASAPCC1` decode-on-read cold part + `intchunk` best-of-N codec
+
+The Prometheus-TSDB block format (§2) is the canonical archive object —
+self-describing and readable by any Prometheus-ecosystem tool. Alongside
+it, ASAP maintains a **second, denser cold format** for the
+decode-on-read cold tier the edge agent + backend `gorilla-merger`
+own end-to-end: the `ASAPCC1` **cold part**, whose value bodies use the
+`intchunk` **best-of-N, all-lossless** codec. It is implemented in the
+shared `asap-gorilla-go` library
+(`asap-gorilla-go/coldpart` + `asap-gorilla-go/intchunk`) so BOTH sides
+of the wire import the same encoder/decoder. It is intentionally
+parallel to — not a replacement for — the TSDB-block path; the two cold
+formats archive identical raw samples (the producer builds byte-identical
+label sets via the shared `FragmentLabels`), so a series cold-archived via
+either path is queried under the same identity.
+
+### 8.1 Why a second cold format
+
+TSDB blocks store every `f64` value through Gorilla XOR. That is excellent
+for smooth high-precision floats but **over-pays for the common cold
+shapes** — fixed-decimal gauges (a 2dp sensor reading) and monotonic
+counters — where the values are really integers behind a decimal scale.
+`intchunk` competes several lossless codecs per block and keeps the
+smallest, beating XOR on those shapes while never losing precision (it
+falls back to XOR exactly when XOR is the right answer). `ASAPCC1` wraps
+those chunks in a label-indexed container that answers
+`Series(matchers, mint, maxt)` **without decoding any chunk body** — chunk
+bodies are decoded lazily only for the series a query actually matches
+(decode-on-read).
+
+### 8.2 `intchunk` value codec — best-of-N, all-lossless
+
+`intchunk` encodes one series' `(timestamp i64, value f64)` samples for a
+block. Five lossless value codecs compete per block; the encoder emits the
+fewest-bytes winner. The codec tag (a `u8` chunk-header byte) is one of:
+
+| Tag | Codec | Wins on |
+|---|---|---|
+| 0 | `GORILLA_XOR` | true high-precision `f64`; the always-valid fallback (XOR == Gorilla, via `prometheus/tsdb/chunkenc`) |
+| 1 | `INT_FOR_DELTA` | fixed-decimal gauges — `float→int64` (decimal scale), frame-of-reference, first-order delta, single fixed-width bit-pack |
+| 2 | `INT_FOR_DOD` | monotonic counters — same scale+FOR but delta-of-delta, fixed width |
+| 3 | `INT_FOR_DELTA_VARINT` | skewed delta distributions — FOR+delta with zigzag-varint residuals (a single fixed width over-pays the common case) |
+| 4 | `INT_FOR_DOD_VARINT` | near-linear counters with occasional spikes — FOR delta-of-delta, zigzag-varint residuals |
+
+Load-bearing properties:
+
+- **Timestamp column** — always `t0 + delta-of-delta` zigzag varints,
+  independent of the value codec, so a chunk is self-describing. Regular
+  cadences collapse to a stream of one-byte zero-dods. The dod arithmetic
+  is overflow-safe at int64 extremes: the wraparound (mod 2^64) subtraction
+  on encode is exactly inverted by the wraparound addition on decode.
+- **Decimal-exactness guard** — an `INT_*` candidate is produced ONLY when
+  `float→int64→float` round-trips **bit-exactly** at the chosen decimal
+  scale exponent (the guard probes exponents 0..15 and demands the exact
+  reproduce-via-division). True high-precision floats, NaN, and Inf fall
+  back to `GORILLA_XOR`. This sidesteps the `lib/decimal` precision trap
+  (a naive scale silently injects ~1e-12 error); ASAP never emits an
+  `INT_*` chunk unless decode reproduces the original `f64` bit pattern
+  exactly.
+- **Overflow chunk-cut / re-base** — when a residual would exceed the
+  per-chunk width bound (56 bits), the encoder ends the chunk and starts a
+  fresh one with a new frame base (the cold analogue of warm "offset drift
+  → re-base"), so one block may emit several independently-decodable
+  chunks.
+
+### 8.3 `ASAPCC1` cold-part layout
+
+A **Part** bundles many series, each stored as one-or-more `intchunk`
+value chunks, behind a label index + symbol table. Layout (multi-byte
+integers little-endian unless noted uvarint):
+
+```
+[part header]  magic "ASAPCC1" | u8 version | i64 block_start_ms |
+               i64 block_end_ms | uvarint series_count
+[chunks]       per-series intchunk value chunks, concatenated. A series may
+               occupy >1 chunk (the §8.2 overflow cut); its whole run is
+               [chunk_off, chunk_off+chunk_len).
+[index]        per series, sorted by labels: label refs into the symbol
+               table, u64 chunk_off, u32 chunk_len, uvarint chunk_count,
+               per-chunk byte lengths, i64 min_ts, i64 max_ts.
+[symbol table] deduped label strings; the index references them by ordinal.
+[footer]       u64 index_off | u64 index_len | u64 symtab_off | u32 crc32c
+```
+
+- The **crc32c** (Castagnoli) covers every byte before the crc field and is
+  verified by `OpenPart`, so a corrupt object is rejected before any chunk
+  is decoded. The footer offsets are fully validated against the layout
+  contract (`index_off + index_len == symtab_off`, both before the footer),
+  not merely range-checked, so a forged footer cannot steer the parse.
+- **Decode-on-read** — `OpenPart` validates the magic/version/crc and parses
+  the footer → index → symbol table WITHOUT decoding any chunk body. Labels
+  are materialized eagerly (cheap symbol-table lookups). `Series(matchers,
+  mintMs, maxtMs)` then decodes chunk bodies **lazily** — only for series
+  whose `[min_ts,max_ts]` overlaps the (inclusive) window AND whose labels
+  satisfy every matcher.
+- **Prometheus-matcher Series query** — matcher filtering applies every
+  `*labels.Matcher` with AND semantics against the series' value for that
+  matcher's label name (empty string when absent), so `=`, `!=`, `=~`, `!~`
+  behave exactly as Prometheus selectors do. This makes the cold part a
+  drop-in source for the same selector semantics the rest of the archive
+  tier serves.
+
+### 8.4 Relationship to the edge fragment path
+
+The edge `StreamingFragmentEncoder` ships XOR-chunk **fragments**
+(`ASAPFRG1` binary frame, or base64-JSON inside an OTLP attribute) that the
+backend `FragmentBlockFinalizer` turns into TSDB blocks (§2). The
+`coldpart`/`intchunk` path is the **denser alternative cold producer**: it
+can recover the same raw samples from those fragments
+(`DecodeFragmentSamples`) and re-encode them as best-of-N chunks inside an
+`ASAPCC1` part. Because both producers build byte-identical label sets,
+either cold representation is queryable under one identity.
+
+---
+
+## 9. Legacy chunk format (historical)
 
 Pre-Path-A2 deployments wrote a **custom ASAP chunk format** with the
 following layout per chunk:
@@ -501,7 +617,7 @@ here for posterity + for operators with on-disk pre-Path-A2 corpora.
 
 ---
 
-## 9. What was deleted
+## 10. What was deleted
 
 The path from the original 3-tier framing (warm sketch + custom
 Gorilla chunks + JSONL fallback + curated subset engine) to today's
@@ -522,7 +638,7 @@ and one Prometheus-ingest API surface removed.
 
 ---
 
-## 10. Open questions
+## 11. Open questions
 
 1. **Tenant isolation — per-prefix vs per-bucket?** The current
    `<tenant>/<ulid>/...` layout assumes prefix isolation. For strong
@@ -547,7 +663,7 @@ and one Prometheus-ingest API surface removed.
 
 ---
 
-## 11. References
+## 12. References
 
 ### In-repo
 
@@ -581,13 +697,22 @@ and one Prometheus-ingest API surface removed.
   — Go OTel processor that writes blocks to S3. Selects between
   `block_format: prometheus_tsdb` (canonical) and `block_format: asap`
   (legacy) at config time.
+- `asap-gorilla-go/intchunk/` — the best-of-N, all-lossless value chunk
+  codec (§8.2): `Encode`/`DecodeChunk`/`DecodeChunks`/`PeekTag`.
+- `asap-gorilla-go/coldpart/` — the `ASAPCC1` decode-on-read cold part
+  (§8.3): `WritePart`/`OpenPart`/`Part.Series`. Shared by the edge agent
+  (producer) and the backend `gorilla-merger` (consumer).
+- `asap-gorilla-go/fragment.go` — `StreamingFragmentEncoder` (edge XOR
+  fragments + idle eviction), `FragmentBlockFinalizer` (fragments → TSDB
+  block), and `DecodeFragmentSamples` (the bridge to the `coldpart` path,
+  §8.4); `tsdb.go` — `StreamingTSDBBlockBuilder`.
 - `ASAPQuery-backend/asap-query-engine/src/engines/thanos_forward.rs`
   — `ThanosForwardEngine` HTTP-forward to `thanos-query`.
 - `ASAPQuery-backend/asap-query-engine/src/engines/prometheus_forward.rs`
   — `PrometheusForwardEngine` HTTP-forward to a Prometheus
   `/api/v1/query` endpoint (Mode 3).
 - `ASAPQuery-backend/asap-query-engine/src/engines/gorilla_engine.rs`
-  — legacy in-process Rust `GorillaQueryEngine`; reads the §8 custom
+  — legacy in-process Rust `GorillaQueryEngine`; reads the §9 custom
   chunk format; curated PromQL subset.
 - `ASAPQuery-backend/asap-query-engine/src/engines/simple_engine.rs`
   — warm-tier `SimpleEngine`; sibling of the archive engines.

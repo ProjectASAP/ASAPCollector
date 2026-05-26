@@ -95,6 +95,29 @@ type MetricFamily struct {
 	// CountSketch) ignore it. Mirrors the standalone hll/countminsketch
 	// processors' sample_p (this is the fused asap_edge equivalent).
 	SampleP float64 `mapstructure:"sample_p"`
+
+	// MaxSeries caps the per-shard sketch series cardinality for this metric
+	// (plumbed into precompute.PrecomputeConfig.MaxSeries). 0 means "inherit the
+	// top-level Config.MaxSeries default"; a negative-equivalent is rejected at
+	// validation. A new series beyond the cap is dropped (precompute's
+	// OnOverflowDrop) so a cardinality explosion can't grow the sketch series
+	// map without bound. Set it to a very large value to effectively disable the
+	// cap for one metric while keeping the global default.
+	MaxSeries int `mapstructure:"max_series"`
+
+	// DeltaTransmission, when true, makes the delta-capable sketch families
+	// (DDSketch / CountSketch / HLL / CountMinSketch) emit PROTO_DELTA frames
+	// against the previous window's cached snapshot instead of a full
+	// PROTO_FULL state every window — large bandwidth savings for slowly
+	// changing sketches. The first window per series still ships PROTO_FULL
+	// (no prior snapshot). Defaults to the top-level Config.DeltaTransmission
+	// when unset here. KLL is not delta-capable and ignores this.
+	DeltaTransmission *bool `mapstructure:"delta_transmission"`
+	// DeltaThreshold caps the delta size: when the computed delta is at least
+	// DeltaThreshold * full-state size, the full state is emitted instead. 0
+	// inherits the runtime default (always prefer delta). Unit is
+	// sketch-specific (bucket counts / cells); see PrecomputeConfig.DeltaThreshold.
+	DeltaThreshold uint64 `mapstructure:"delta_threshold"`
 }
 
 // ColdConfig configures the per-shard Gorilla cold archive. Each shard
@@ -200,10 +223,61 @@ type Config struct {
 	// Cold configures the per-shard cold archive tier.
 	Cold ColdConfig `mapstructure:"cold"`
 
+	// ControlChannel optionally configures the control-plane config-poll loop.
+	// DISABLED by default (zero value / unset): existing deployments are
+	// unaffected. When Enabled with a PollURL, Start() spawns a goroutine that
+	// polls the controller and applies received PrecomputeConfigSet updates to
+	// the live sketch aggregators via Precompute.UpdateConfig — in place, with
+	// NO sketch/cold state rebuild (design §8/R5).
+	ControlChannel ControlChannelConfig `mapstructure:"control_channel"`
+
+	// MaxSeries is the default per-shard sketch series-cardinality cap applied
+	// to any metric that does not set its own metrics[].max_series. Bounds the
+	// precompute series map so a cardinality explosion can't grow it without
+	// bound. Default 100000; 0 means unlimited (not recommended).
+	MaxSeries int `mapstructure:"max_series"`
+
+	// DeltaTransmission is the default delta-transmission setting for
+	// delta-capable sketch families when a metric does not set its own
+	// metrics[].delta_transmission. Defaults to false (full state every
+	// window — the conservative choice that matches existing behavior).
+	DeltaTransmission bool `mapstructure:"delta_transmission"`
+
 	// DropOriginal drops the raw metric from the outbound stream after
 	// cold-archiving + warm-aggregating it (the asap default — the warm
 	// envelopes + cold blocks carry the data downstream). Default true.
 	DropOriginal bool `mapstructure:"drop_original"`
+}
+
+// ControlChannelConfig configures the optional control-plane config-poll loop
+// (design §8). When Enabled is false (the default) the processor never imports
+// or runs the poller, so an unconfigured deployment is byte-for-byte
+// unaffected.
+type ControlChannelConfig struct {
+	// Enabled turns the config-poll loop on. Default false (disabled). A
+	// non-empty PollURL with Enabled unset is also treated as enabled (so a
+	// minimal `control_channel: {poll_url: ...}` works).
+	Enabled bool `mapstructure:"enabled"`
+	// PollURL is the controller GET endpoint returning a JSON-encoded
+	// precompute.PrecomputeConfigSet (HttpPollChannel wire format). Required
+	// when enabled.
+	PollURL string `mapstructure:"poll_url"`
+	// AckURL is the optional POST endpoint that receives plan-version acks.
+	// Empty => acks are no-ops.
+	AckURL string `mapstructure:"ack_url"`
+	// PollInterval is how often the loop polls PollURL. Default 30s.
+	PollInterval time.Duration `mapstructure:"poll_interval"`
+	// Timeout is the per-request HTTP timeout. Default 10s.
+	Timeout time.Duration `mapstructure:"timeout"`
+	// BearerTokenFile, when set, is read on every request for an
+	// Authorization: Bearer header (rotated without restart).
+	BearerTokenFile string `mapstructure:"bearer_token_file"`
+}
+
+// enabled reports whether the control-plane poll loop should run: explicitly
+// Enabled, or a PollURL given (convenience).
+func (c ControlChannelConfig) enabled() bool {
+	return c.Enabled || c.PollURL != ""
 }
 
 var _ component.Config = (*Config)(nil)

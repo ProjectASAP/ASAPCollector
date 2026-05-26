@@ -6,6 +6,7 @@ package sketches
 import (
 	"errors"
 	"fmt"
+	"math/bits"
 
 	countsketch "github.com/ProjectASAP/sketchlib-go/sketches/CountSketch"
 
@@ -32,11 +33,27 @@ type CountSketchWrapper struct {
 // NewCountSketchWrapper constructs a fresh CountSketch with the given
 // (rows, cols) — derived from epsilon/delta the same way the legacy
 // processor's newConfiguredCountSketch did. Returns an error if
-// sketchlib's constructor rejects the dimensions.
+// sketchlib's constructor rejects the dimensions (it requires cols to
+// be a power of two and both dims positive).
+//
+// In addition to sketchlib's checks, this rejects dimensions whose
+// per-row hash slices would overflow the single 64-bit item hash:
+// sketchlib bit-slices the hash as row*ceil(log2(cols)) and once
+// rows*ceil(log2(cols)) > 64 the high rows read shifted-out (zero) bits
+// and silently collapse onto column 0. NewCountSketchWrapper already
+// returns an error (unlike NewCMSWrapper), so it rejects rather than
+// clamps — surfacing the misconfiguration to the caller.
 func NewCountSketchWrapper(rows, cols int) (*CountSketchWrapper, error) {
 	cs, err := countsketch.NewCountSketch(rows, cols)
 	if err != nil {
 		return nil, fmt.Errorf("sketches: NewCountSketch(%d, %d): %w", rows, cols, err)
+	}
+	// cols is a power of two here (sketchlib rejected it otherwise), so
+	// bits.TrailingZeros gives exactly log2(cols) = the per-row bit width.
+	if bitsPerRow := bits.TrailingZeros(uint(cols)); bitsPerRow > 0 && rows*bitsPerRow > maxRowHashBits {
+		return nil, fmt.Errorf(
+			"sketches: NewCountSketch(%d, %d): rows*ceil(log2(cols))=%d exceeds the %d-bit row-hash budget; reduce rows or cols",
+			rows, cols, rows*bitsPerRow, maxRowHashBits)
 	}
 	return &CountSketchWrapper{cs: cs, rows: rows, cols: cols}, nil
 }
@@ -89,11 +106,23 @@ func (w *CountSketchWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) 
 	return payload, false, nil
 }
 
-// ApplyDelta merges a sparse delta payload into this sketch in place.
-// Used by Precompute.ObserveEnvelope when an upstream agent forwards
-// a PROTO_DELTA-encoded CountSketchDataPoint.
-func (w *CountSketchWrapper) ApplyDelta(delta []byte) error {
-	if len(delta) == 0 {
+// ApplyDelta merges an inbound payload into this sketch in place.
+// Dispatch on payload shape: try a full-state SketchEnvelope FIRST,
+// then fall back to a sparse delta. The runtime invokes this for both
+// full-state envelopes (mergeFullEnvelope's "merge from empty" path
+// calls ApplyDelta on a fresh sketch) and PROTO_DELTA-encoded
+// CountSketchDataPoints.
+//
+// Order matters and full-state MUST be attempted first. A full-state
+// CountSketchState is carried in a SketchEnvelope (oneof field 11),
+// whereas a delta is a bare CountSketchDelta. Without the full-state
+// branch (the original bug) a full-state envelope was never recognised
+// and DeserializeDelta would decode it to an empty delta, silently
+// merging it to an estimate of 0. A bare delta fails the envelope
+// decode (GetCountSketch()==nil / field wire-type mismatch) so the
+// delta fallback catches it cleanly. This mirrors CMSWrapper.ApplyDelta.
+func (w *CountSketchWrapper) ApplyDelta(payload []byte) error {
+	if len(payload) == 0 {
 		return errors.New("CountSketchWrapper: ApplyDelta with empty payload")
 	}
 	if w.cs == nil {
@@ -103,12 +132,14 @@ func (w *CountSketchWrapper) ApplyDelta(delta []byte) error {
 		}
 		w.cs = cs
 	}
-	deltaMsg, err := countsketch.DeserializeDelta(delta)
-	if err != nil {
-		return fmt.Errorf("CountSketchWrapper: DeserializeDelta: %w", err)
+	if other, err := countsketch.DeserializeCountSketchFromProtoBytes(payload); err == nil && other != nil {
+		return w.cs.Merge(other)
 	}
-	countsketch.ApplyDelta(w.cs, deltaMsg)
-	return nil
+	if deltaMsg, err := countsketch.DeserializeDelta(payload); err == nil && deltaMsg != nil {
+		countsketch.ApplyDelta(w.cs, deltaMsg)
+		return nil
+	}
+	return errors.New("CountSketchWrapper: payload is neither a full proto state nor a delta")
 }
 
 // Merge folds another CountSketch into this one. The runtime calls

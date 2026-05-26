@@ -393,7 +393,12 @@ func (p *precompute) ObserveEnvelope(env *SketchEnvelope) error {
 	if p.sketchFactory == nil {
 		return errors.New("precompute: sketch factory not configured")
 	}
-	p.stats.InputObservations.Add(1)
+	// InputEnvelopes is the per-ObserveEnvelope counter (inbound merge
+	// path). We do NOT bump InputObservations here: when an envelope
+	// arrives via Observe() (KindEnvelope) that wrapper already counted
+	// it once, so bumping again would double-count; direct
+	// ObserveEnvelope callers are tracked by InputEnvelopes instead.
+	p.stats.InputEnvelopes.Add(1)
 	if err := p.window.observeEnvelope(env, cfg, p.sketchFactory, p.snapshotCache, p.stats); err != nil {
 		if errors.Is(err, ErrSeriesCapExceeded) {
 			p.stats.DroppedOverflow.Add(1)
@@ -407,7 +412,10 @@ func (p *precompute) ObserveEnvelope(env *SketchEnvelope) error {
 //
 // Behavior: rotates the window when nowMs >= activeEndMs. For
 // Tumbling, this is "drain everything older than now". For Batch,
-// every Tick drains. Sliding is deferred (see window.go).
+// every Tick drains. For Sliding, each Tick that crosses a slide
+// boundary closes the current pane and emits one merged envelope per
+// series covering the trailing window (panesPerWindow × slide) — see
+// windowState.rotateSlidingLocked.
 func (p *precompute) Tick(nowMs uint64) []*SketchEnvelope {
 	cfg := p.activeConfig()
 	if cfg == nil {
@@ -460,6 +468,9 @@ func (p *precompute) finishRotate(closed []*seriesEntry, rng [2]uint64, nowMs ui
 		}
 	}
 	p.stats.OutputEnvelopes.Add(uint64(len(envelopes)))
+	// LastEmittedEnvelopes is a snapshot (not a running total) of the
+	// envelopes produced by this single rotate, so Store rather than Add.
+	p.stats.LastEmittedEnvelopes.Store(uint64(len(envelopes)))
 	p.stats.LastTickMs.Store(nowMs)
 	return envelopes
 }

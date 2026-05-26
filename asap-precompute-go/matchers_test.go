@@ -210,6 +210,81 @@ func TestMatches(t *testing.T) {
 			t.Fatal("present-equal: want false")
 		}
 	})
+	t.Run("regex_full_match_anchored", func(t *testing.T) {
+		cfg := &PrecomputeConfig{
+			Matchers: []LabelMatcher{{Name: "path", Value: "/api/v[0-9]+", Op: MatchRegex}},
+		}
+		// Full match.
+		if !cfg.Matches(&Observation{Labels: []KeyValue{{Key: "path", Value: "/api/v2"}}}) {
+			t.Fatal("/api/v2: want true")
+		}
+		// Anchored: a partial / prefix-only match must FAIL (Prometheus
+		// semantics anchor both ends).
+		if cfg.Matches(&Observation{Labels: []KeyValue{{Key: "path", Value: "/api/v2/users"}}}) {
+			t.Fatal("/api/v2/users: anchored regex must not partial-match")
+		}
+		if cfg.Matches(&Observation{Labels: []KeyValue{{Key: "path", Value: "x/api/v2"}}}) {
+			t.Fatal("x/api/v2: anchored regex must not partial-match prefix")
+		}
+		// Missing key fails a positive regex.
+		if cfg.Matches(&Observation{Labels: nil}) {
+			t.Fatal("missing key: positive regex want false")
+		}
+	})
+	t.Run("regex_top_level_alternation_anchors_whole", func(t *testing.T) {
+		cfg := &PrecomputeConfig{
+			Matchers: []LabelMatcher{{Name: "env", Value: "prod|staging", Op: MatchRegex}},
+		}
+		if !cfg.Matches(&Observation{Labels: []KeyValue{{Key: "env", Value: "prod"}}}) {
+			t.Fatal("prod: want true")
+		}
+		if !cfg.Matches(&Observation{Labels: []KeyValue{{Key: "env", Value: "staging"}}}) {
+			t.Fatal("staging: want true")
+		}
+		// Non-capturing wrap means "prodX" must not match via ^prod|...$.
+		if cfg.Matches(&Observation{Labels: []KeyValue{{Key: "env", Value: "prodX"}}}) {
+			t.Fatal("prodX: alternation must anchor whole value")
+		}
+	})
+	t.Run("not_regex", func(t *testing.T) {
+		cfg := &PrecomputeConfig{
+			Matchers: []LabelMatcher{{Name: "kind", Value: "debug|trace", Op: MatchNotRegex}},
+		}
+		// Missing key passes.
+		if !cfg.Matches(&Observation{Labels: nil}) {
+			t.Fatal("missing key: not-regex want true")
+		}
+		// Present-non-matching passes.
+		if !cfg.Matches(&Observation{Labels: []KeyValue{{Key: "kind", Value: "info"}}}) {
+			t.Fatal("info: not-regex want true")
+		}
+		// Present-matching fails.
+		if cfg.Matches(&Observation{Labels: []KeyValue{{Key: "kind", Value: "trace"}}}) {
+			t.Fatal("trace: not-regex want false")
+		}
+	})
+	t.Run("regex_metric_name", func(t *testing.T) {
+		cfg := &PrecomputeConfig{
+			Matchers: []LabelMatcher{{Name: "", Value: "http_.*_total", Op: MatchRegex}},
+		}
+		if !cfg.Matches(&Observation{Metric: "http_requests_total"}) {
+			t.Fatal("http_requests_total: want true")
+		}
+		if cfg.Matches(&Observation{Metric: "grpc_requests_total"}) {
+			t.Fatal("grpc_requests_total: want false")
+		}
+	})
+	t.Run("regex_bad_pattern_never_matches", func(t *testing.T) {
+		bad := "([" // invalid RE2
+		pos := &PrecomputeConfig{Matchers: []LabelMatcher{{Name: "k", Value: bad, Op: MatchRegex}}}
+		if pos.Matches(&Observation{Labels: []KeyValue{{Key: "k", Value: "anything"}}}) {
+			t.Fatal("bad positive regex must not match")
+		}
+		neg := &PrecomputeConfig{Matchers: []LabelMatcher{{Name: "k", Value: bad, Op: MatchNotRegex}}}
+		if !neg.Matches(&Observation{Labels: []KeyValue{{Key: "k", Value: "anything"}}}) {
+			t.Fatal("bad negative regex must pass (cannot disagree)")
+		}
+	})
 }
 
 func TestSeriesAttrs(t *testing.T) {

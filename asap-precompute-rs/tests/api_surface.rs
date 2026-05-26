@@ -211,7 +211,7 @@ impl SketchObserver for DropObserver {
     fn observe(
         &self,
         _sketch: &mut dyn asap_precompute_rs::Sketch,
-        _v: &ObservationValue,
+        _obs: &Observation,
     ) -> Result<(), asap_precompute_rs::precompute::PrecomputeError> {
         Ok(())
     }

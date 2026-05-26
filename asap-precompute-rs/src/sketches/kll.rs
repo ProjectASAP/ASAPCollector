@@ -13,7 +13,7 @@ use asap_sketchlib::proto::sketchlib::{
     sketch_envelope, CoinState, KllState, SketchEnvelope as ProtoEnvelope,
 };
 
-use crate::observation::ObservationValue;
+use crate::observation::Observation;
 use crate::precompute::{DeltaResult, PrecomputeError, QuantileSketch, Sketch, SketchObserver};
 
 /// KLL wrapper.
@@ -199,20 +199,16 @@ impl QuantileSketch for KLLWrapper {
 pub struct KLLObserver;
 
 impl SketchObserver for KLLObserver {
-    fn observe(
-        &self,
-        sketch: &mut dyn Sketch,
-        v: &ObservationValue,
-    ) -> Result<(), PrecomputeError> {
+    fn observe(&self, sketch: &mut dyn Sketch, obs: &Observation) -> Result<(), PrecomputeError> {
         let w = sketch
             .as_any_mut()
             .downcast_mut::<KLLWrapper>()
             .ok_or_else(|| {
                 PrecomputeError::Other("KLLObserver: sketch is not a KLLWrapper".into())
             })?;
-        match v.kind {
+        match obs.value.kind {
             crate::observation::ObservationValueKind::Float => {
-                w.update(v.float);
+                w.update(obs.value.float);
                 Ok(())
             }
             other => Err(PrecomputeError::Other(format!(

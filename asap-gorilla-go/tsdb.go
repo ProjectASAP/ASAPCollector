@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -141,10 +140,10 @@ type drainEntry struct {
 
 type seriesDrainHeap []drainEntry
 
-func (h seriesDrainHeap) Len() int            { return len(h) }
-func (h seriesDrainHeap) Less(i, j int) bool  { return h[i].t < h[j].t }
-func (h seriesDrainHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *seriesDrainHeap) Push(x any)         { *h = append(*h, x.(drainEntry)) }
+func (h seriesDrainHeap) Len() int           { return len(h) }
+func (h seriesDrainHeap) Less(i, j int) bool { return h[i].t < h[j].t }
+func (h seriesDrainHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *seriesDrainHeap) Push(x any)        { *h = append(*h, x.(drainEntry)) }
 func (h *seriesDrainHeap) Pop() any {
 	old := *h
 	n := len(old)
@@ -497,6 +496,14 @@ func (b *StreamingTSDBBlockBuilder) flushOpenChunkLocked(st *tsdbSeriesState) er
 	return nil
 }
 
+// TODO: dedupe with fragment.go's FragmentBlockFinalizer.writeChunks/
+// writeIndex/writeMeta/nonEmptySeries/sortedSymbols. The two block writers are
+// ~150 LOC of parallel logic differing only in the per-series state type
+// (tsdbSeriesState here vs fragmentBlockSeries there). A shared writer over a
+// (labels, []chunks.Meta) view would collapse them, but the two paths diverge
+// in pre-write handling (this one flushes open XOR chunks; the finalizer sorts
+// + de-overlaps decoded chunks) and both are hot + well-tested, so the merge is
+// deferred rather than risked here.
 func (b *StreamingTSDBBlockBuilder) writeChunks() error {
 	chunkw, err := chunks.NewWriter(filepath.Join(b.blockDir, "chunks"))
 	if err != nil {
@@ -666,5 +673,3 @@ func cloneStringMap(in map[string]string) map[string]string {
 	}
 	return out
 }
-
-var _ = io.Discard

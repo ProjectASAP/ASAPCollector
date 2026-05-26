@@ -33,7 +33,7 @@ func TestCountMinSketchRecordsFrequency(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	sa, ok := newSketchAggregator("m", &cfg.Metrics[0], time.Hour, zap.NewNop())
+	sa, ok := newSketchAggregator("m", &cfg.Metrics[0], sketchOpts{window: time.Hour}, zap.NewNop())
 	if !ok {
 		t.Fatal("newSketchAggregator(CountMinSketch) returned ok=false")
 	}
