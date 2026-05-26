@@ -77,7 +77,7 @@ is implemented.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  Load Generator  (otel_collector_benchmark / fakemetricload)         │
+│  Load Generator  (otel_collector_benchmark / otel-app)         │
 │  Emits raw Gauge metrics over OTLP/gRPC → agent port 4317           │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │ OTLP/gRPC  (raw metrics)

@@ -3,7 +3,7 @@
 
 Reads the cached CSV produced by `fetcher.py` and emits a stream of
 OTLP-shaped metric events that match the wire shape produced by
-`deploy/fake-exporter/`. The output is JSON-Lines so it can be
+`otel-app/`. The output is JSON-Lines so it can be
 consumed by `run.py replay` (which then drives an OTLP/gRPC receiver
 on the agent), and so unit tests can assert against it as plain text.
 
@@ -23,9 +23,9 @@ Each line is one JSON object:
   }
 
 Attribute keys ({zone, rack, host, service, task}) are chosen to match
-fake-exporter's existing 4-dim `{zone, rack, node, pod}` schema as
+otel-app's existing 4-dim `{zone, rack, node, pod}` schema as
 closely as the trace allows (see "Mapping" below); `series_id` is the
-deterministic concatenation used by fake-exporter's trace-replay
+deterministic concatenation used by otel-app's trace-replay
 mode (timestamp_ms, series_id, value).
 
 The mapper produces TWO metric families per row:
@@ -33,7 +33,7 @@ The mapper produces TWO metric families per row:
   - {metric}_cpu_rate          : the CPU usage rate sample (gauge)
   - {metric}_memory_usage      : canonical memory usage sample (gauge)
 
-This mirrors fake-exporter's pattern of emitting two correlated
+This mirrors otel-app's pattern of emitting two correlated
 families per event (counter + latency gauge); having two families
 lets the same trace exercise both quantile-flavoured and
 sum/topk-flavoured queries.
@@ -63,7 +63,7 @@ the original trace does cluster machines into platform IDs (2011
 extra tables. For the cardinality-cap experiment, what matters is
 that the projection is reproducible and that hashing produces a
 roughly uniform spread across the synthetic zone/rack values — which
-matches how fake-exporter generates labels.
+matches how otel-app generates labels.
 
 ## Cardinality cap (the projection bias)
 
@@ -118,7 +118,7 @@ from pathlib import Path
 from typing import Iterator
 
 # ---------------------------------------------------------------------------
-# Schema (matches fake-exporter's default zone/rack/node/pod widths)
+# Schema (matches otel-app's default zone/rack/node/pod widths)
 # ---------------------------------------------------------------------------
 
 DEFAULT_ZONE_VALS = 4
@@ -409,11 +409,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--zone-vals", type=int, default=DEFAULT_ZONE_VALS,
-        help="Synthetic zone fanout (default 4 — matches fake-exporter).",
+        help="Synthetic zone fanout (default 4 — matches otel-app).",
     )
     parser.add_argument(
         "--rack-vals", type=int, default=DEFAULT_RACK_VALS,
-        help="Synthetic rack fanout (default 10 — matches fake-exporter).",
+        help="Synthetic rack fanout (default 10 — matches otel-app).",
     )
     parser.add_argument(
         "--max-rows", type=int, default=0,

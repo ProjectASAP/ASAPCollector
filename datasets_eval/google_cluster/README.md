@@ -66,12 +66,12 @@ cardinality), per-cell RSD is ~1 %. This is acceptable for the
 quantile / topk / sum claims; the count_unique claim documents the
 saturation in `queries.json` and is rescaled in the accuracy reducer.
 
-## OTLP wire shape (vs `deploy/fake-exporter/`)
+## OTLP wire shape (vs `otel-app/`)
 
 The mapper produces JSONL where each row is shaped to align with
-fake-exporter's existing 4-dim attribute schema:
+otel-app's existing 4-dim attribute schema:
 
-| fake-exporter attr key | google-cluster attr key | derivation |
+| otel-app attr key | google-cluster attr key | derivation |
 |------------------------|-------------------------|------------|
 | `zone` (4 vals)        | `zone`                  | `f"z{hash(machine_id) % 4}"` |
 | `rack` (10 vals)       | `rack`                  | `f"r{hash(machine_id) % 10:02d}"` |
@@ -146,11 +146,11 @@ to exercise the 1k cardinality cap with U ≈ 50–100k.
 
 - **No new ingest endpoint** — the replay path uses the existing
   OTLP/gRPC receiver on the agent (`localhost:4317`). Modifying
-  `deploy/fake-exporter/` is E2's domain.
+  `otel-app/` is E2's domain.
 - **No sweep-runner integration yet** — Phase B for this dataset is
   fetcher + mapper + queries + smoke; harness integration is a
   follow-up PR.
-- **Ground-truth JSONL is not produced here** — fake-exporter's
+- **Ground-truth JSONL is not produced here** — otel-app's
   `EXPORTER_RAW_TEE_ROOT` is the canonical ground-truth source and
   should be used by the accuracy reducer when comparing replayed
   Google-trace runs against PromQL ground truth.

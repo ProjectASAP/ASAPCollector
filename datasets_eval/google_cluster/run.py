@@ -4,7 +4,7 @@
 Mirrors `datasets_eval/debs/benchmark/run.py` in spirit: a single
 script that runs the dataset's full lifecycle of fetch -> map -> replay
 -> validate. The replay path drives an OTLP/gRPC receiver on the
-running ASAP agent; we do NOT modify deploy/fake-exporter/ source —
+running ASAP agent; we do NOT modify otel-app/ source —
 the JSONL produced by `otlp_mapper.py` plus a thin OTLP/gRPC sender
 in `replay()` is sufficient.
 

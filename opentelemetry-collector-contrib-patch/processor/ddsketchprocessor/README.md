@@ -128,7 +128,7 @@ cd otel_collector_benchmark && go run main.go --endpoint=localhost:4317 --type=g
 
 # Terminal 2b: patched SDK (DDSketch inputs)
 cd otel-app
-go run ./cmd/fakemetricload --enable-ddsketch=true --rate-per-series=25000 --endpoint=localhost:4317
+go run . -sketch-type=ddsketch -freq-hz=25000 -target=localhost:4317
 ```
 
 ### Window mode (`mode: window`)

@@ -103,7 +103,7 @@ def test_mapper_attribute_keys_match_fake_exporter_schema():
     """Validate the OTLP attribute keys match the schema documented in the README.
 
     The keys must be {zone, rack, host, service, task} so the same
-    PromQL queries that work against fake-exporter's synthetic
+    PromQL queries that work against otel-app's synthetic
     workload also work against the Google trace.
     """
     in_dir, out = _stage_dataset("2019", FIXTURES / "2019_instance_usage.csv")

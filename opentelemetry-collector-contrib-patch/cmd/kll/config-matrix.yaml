@@ -6,11 +6,11 @@
 # Two source modes are supported (same collector config works for both):
 #
 #   Mode 1 — SDK sends pre-aggregated sketches (fine granularity, e.g. 1 s reader
-#             interval via e2esdkbench --sketch-type=kll). The collector merges the
+#             interval via otel-app -sketch-type=kll -sdk-window=1s). The collector merges the
 #             per-series KLLSketch data points across series (aggregate_by) and across
 #             time (window_duration) into one output sketch per group.
 #
-#   Mode 2 — SDK sends raw gauge values (e.g. e2esdkbench --sketch-type=baseline, or
+#   Mode 2 — SDK sends raw gauge values (e.g. otel-app -sketch-type=baseline, or
 #             any gauge instrument). The collector inserts the raw float64 samples from
 #             all matching series into a single sketch per group.
 #

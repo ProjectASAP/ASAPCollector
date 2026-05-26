@@ -135,8 +135,8 @@ type PipelineASAPControllerOpts struct {
 	LatencySLA  float64 `yaml:"latency_sla"`
 }
 
-// PipelineLoadConfig holds load-generation parameters for fakemetricload and
-// e2esdkbench.
+// PipelineLoadConfig holds load-generation parameters for the SDK
+// pipeline config.
 type PipelineLoadConfig struct {
 	Workers                int                        `yaml:"workers"`
 	Series                 int                        `yaml:"series"`
