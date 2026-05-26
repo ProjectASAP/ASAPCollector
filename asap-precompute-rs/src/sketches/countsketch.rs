@@ -14,6 +14,24 @@ use crate::precompute::{
     DeltaResult, FrequencyEntry, FrequencySketch, PrecomputeError, Sketch, SketchObserver,
 };
 
+/// Width, in bits, of the single 64-bit per-item hash that sketchlib's
+/// CountSketch bit-slices across rows. See `cms.rs::MAX_ROW_HASH_BITS`
+/// and Go's `maxRowHashBits` (`asap-precompute-go/sketches/cms.go`).
+const MAX_ROW_HASH_BITS: usize = 64;
+
+/// Clamp `rows` so `rows * ceil(log2(cols)) <= 64`. Identical to the CMS
+/// helper (`cms.rs::clamp_rows_for_hash_bits`) and Go's
+/// `clampRowsForHashBits`. `cols` is assumed already rounded to a power
+/// of two. Returns at least 1.
+fn clamp_rows_for_hash_bits(rows: usize, cols: usize) -> usize {
+    let bits_per_row = cols.trailing_zeros() as usize;
+    if bits_per_row == 0 {
+        return rows.max(1);
+    }
+    let max_rows = (MAX_ROW_HASH_BITS / bits_per_row).max(1);
+    rows.min(max_rows).max(1)
+}
+
 /// CountSketch wrapper.
 pub struct CountSketchWrapper {
     sk: CountSketch,
@@ -23,7 +41,23 @@ pub struct CountSketchWrapper {
 
 impl CountSketchWrapper {
     /// Construct a CountSketch with the given dimensions.
+    ///
+    /// Go's `NewCountSketchWrapper`
+    /// (`asap-precompute-go/sketches/countsketch.go`) REJECTS (returns an
+    /// error for) a non-power-of-two `cols` and the same narrow-hash
+    /// condition (`rows * log2(cols) > 64`). Rust `new()` returns `Self`
+    /// (not `Result`), so instead of rejecting we apply the SAME
+    /// normalization as `CMSWrapper::new`: round `cols` up to the next
+    /// power of two and clamp `rows` by the 64-bit per-item hash budget.
+    ///
+    /// The two runtimes therefore yield IDENTICAL dims for any VALID
+    /// config (power-of-two `cols` within the budget — e.g. the canonical
+    /// `2048` / depth `4`); an invalid config that Go would reject is
+    /// repaired here identically rather than panicking, keeping #243
+    /// byte-parity for every config the Go side accepts.
     pub fn new(rows: usize, cols: usize) -> Self {
+        let cols = cols.max(1).next_power_of_two();
+        let rows = clamp_rows_for_hash_bits(rows, cols);
         Self {
             sk: CountSketch::new(rows, cols),
             rows,

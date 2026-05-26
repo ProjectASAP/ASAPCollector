@@ -14,6 +14,28 @@ use crate::precompute::{
     DeltaResult, FrequencyEntry, FrequencySketch, PrecomputeError, Sketch, SketchObserver,
 };
 
+/// Width, in bits, of the single 64-bit per-item hash that sketchlib's
+/// CMS / CountSketch bit-slice across rows. Each row consumes
+/// `ceil(log2(cols))` bits; once `rows * bitsPerRow > 64` the high rows
+/// read shifted-out (zero) bits and collapse onto column 0. Mirrors Go's
+/// `maxRowHashBits` (`asap-precompute-go/sketches/cms.go`).
+const MAX_ROW_HASH_BITS: usize = 64;
+
+/// Clamp `rows` so `rows * ceil(log2(cols)) <= 64`, mirroring Go's
+/// `clampRowsForHashBits`. `cols` is assumed already rounded to a power
+/// of two, so `cols.trailing_zeros()` == `log2(cols)` == the per-row bit
+/// width. When `bits_per_row == 0` (cols == 1) every row maps to column 0
+/// regardless, so the slicing never overflows and `rows` is left as-is.
+/// Returns at least 1.
+fn clamp_rows_for_hash_bits(rows: usize, cols: usize) -> usize {
+    let bits_per_row = cols.trailing_zeros() as usize;
+    if bits_per_row == 0 {
+        return rows.max(1);
+    }
+    let max_rows = (MAX_ROW_HASH_BITS / bits_per_row).max(1);
+    rows.min(max_rows).max(1)
+}
+
 /// CountMinSketch wrapper.
 pub struct CMSWrapper {
     sk: CountMinSketch,
@@ -23,7 +45,27 @@ pub struct CMSWrapper {
 
 impl CMSWrapper {
     /// Construct a CMS with the given dimensions.
+    ///
+    /// Mirrors Go `NewCMSWrapper` (`asap-precompute-go/sketches/cms.go`)
+    /// for #243 byte-parity. The dimensions are normalized identically:
+    ///
+    /// - `cols` is rounded UP to the next power of two (after a floor of
+    ///   1). sketchlib's CMS folds inserts with `% cols` but masks /
+    ///   bit-slices the query hash assuming a power-of-two width, so a
+    ///   non-pow2 cols mis-indexes. The canonical `cols = 2000` config
+    ///   must produce a sketch mergeable with the Go runtime's; both
+    ///   sides round to `2048`.
+    /// - `rows` is clamped so `rows * log2(cols) <= 64` (the single
+    ///   64-bit per-item hash budget); beyond that the high rows read
+    ///   shifted-out (zero) bits and collapse onto column 0. See Go's
+    ///   `clampRowsForHashBits`.
+    ///
+    /// The normalized `rows`/`cols` are stored on the struct AND used to
+    /// build the underlying `CountMinSketch`, so `build_state` serializes
+    /// the normalized dimensions onto the wire.
     pub fn new(rows: usize, cols: usize) -> Self {
+        let cols = cols.max(1).next_power_of_two();
+        let rows = clamp_rows_for_hash_bits(rows, cols);
         Self {
             sk: CountMinSketch::new(rows, cols),
             rows,
