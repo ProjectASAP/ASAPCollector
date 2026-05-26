@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/collector/confmap"
+	"go.uber.org/zap"
 )
 
 // samplePProbe is implemented by the sampling-aware sketch wrappers
@@ -104,7 +105,7 @@ func TestFusedSketchBuildAppliesSampleP(t *testing.T) {
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			sa, ok := newSketchAggregator("m", &cfg.Metrics[0], time.Hour)
+			sa, ok := newSketchAggregator("m", &cfg.Metrics[0], time.Hour, zap.NewNop())
 			if !ok {
 				t.Fatalf("family %s: newSketchAggregator returned not-ok", tc.family)
 			}
