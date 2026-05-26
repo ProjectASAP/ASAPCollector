@@ -296,15 +296,34 @@ func OpenPart(b []byte) (*Part, error) {
 		return nil, err
 	}
 
-	// Footer.
+	// Footer. The on-disk layout is, in order:
+	//   header | chunks | index | symbol table | footer
+	// so the footer offsets must satisfy the exact region contract below. We
+	// validate it fully (not just "in range") so a corrupt/forged footer cannot
+	// steer the index or symbol-table parse into the wrong bytes. footerOff is
+	// where the 28-byte footer begins; everything the offsets point at must lie
+	// at or before it. All comparisons are written to avoid uint64 overflow
+	// (e.g. indexOff+indexLen is only formed after indexOff <= footerOff bounds
+	// indexOff, and indexLen is then bounded by the equality check).
 	footerStart := len(b) - footerLen
+	footerOff := uint64(footerStart)
 	fr := &reader{buf: b, pos: footerStart}
 	indexOff, _ := fr.u64()
 	indexLen, _ := fr.u64()
 	symtabOff, _ := fr.u64()
-	if indexOff > uint64(len(b)) || symtabOff > uint64(len(b)) ||
-		indexOff+indexLen > uint64(len(b)) || indexOff > symtabOff {
-		return nil, fmt.Errorf("%w: footer offsets out of range", ErrCorrupt)
+	switch {
+	case indexOff > footerOff:
+		// Index must start within the pre-footer region.
+		return nil, fmt.Errorf("%w: index_off %d past footer %d", ErrCorrupt, indexOff, footerOff)
+	case indexLen > footerOff-indexOff:
+		// Index length must not run past the footer (overflow-safe: indexOff <= footerOff).
+		return nil, fmt.Errorf("%w: index_len %d overruns region", ErrCorrupt, indexLen)
+	case indexOff+indexLen != symtabOff:
+		// The index region must end exactly where the symbol table begins.
+		return nil, fmt.Errorf("%w: index_off+index_len %d != symtab_off %d", ErrCorrupt, indexOff+indexLen, symtabOff)
+	case symtabOff > footerOff:
+		// The symbol table must lie entirely before the footer.
+		return nil, fmt.Errorf("%w: symtab_off %d past footer %d", ErrCorrupt, symtabOff, footerOff)
 	}
 
 	// Symbol table: [uvarint count] then count x ([uvarint len] bytes).

@@ -9,6 +9,20 @@ import "math/bits"
 // Per DESIGN.md §1.2 the chunk header carries the timestamps as t0 followed by
 // delta-of-delta varints, independent of the value codec. Regular cadences
 // (the common case) collapse to a stream of zero-dods, each a single byte.
+//
+// int64 overflow at extremes: unlike the INT value column (which has the
+// residualFits guard + chunk-cut re-base), the timestamp deltas and
+// delta-of-deltas are NOT range-checked. They do not need to be: the
+// subtractions `delta = ts[i]-ts[i-1]` and `dod = delta-prevDelta` are computed
+// in Go's wraparound (two's-complement, mod 2^64) int64 arithmetic, and
+// decodeTimestamps inverts them with the exact mirror additions
+// (`prevDelta += dod; prev += prevDelta`) in the same wraparound arithmetic.
+// Because the inverse of (mod 2^64) subtraction is (mod 2^64) addition, the
+// reconstruction is bit-exact for ALL int64 inputs — even an adversarial
+// MinInt64/MaxInt64 alternation whose intermediate delta overflows. The zigzag
+// varint encodes the (possibly wrapped) int64 result losslessly, so no value is
+// lost. (Real block-relative millisecond timestamps never approach this range;
+// the wraparound argument is what makes the codec safe regardless.)
 
 func encodeTimestamps(w *byteWriter, ts []int64) {
 	if len(ts) == 0 {
@@ -284,6 +298,17 @@ func decodeIntChunk(r *byteReader, tag CodecTag) ([]Sample, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Advance the cursor past the packed body. packBits writes the residual
+		// fields MSB-first and byte-aligns at the end, so the body occupies
+		// ceil(nResiduals*width / 8) bytes. The varint path advances r.pos
+		// implicitly via r.varint(); the fixed-width path reads through the
+		// r.buf[r.pos:] slice and must advance r.pos explicitly, or a subsequent
+		// chunk decoded from the same buffer would read from the wrong offset.
+		packedBytes := (nResiduals*int(width) + 7) / 8
+		if r.pos+packedBytes > len(r.buf) {
+			return nil, ErrCorruptChunk
+		}
+		r.pos += packedBytes
 		for i, u := range zz {
 			residuals[i] = unzigzag(u)
 		}

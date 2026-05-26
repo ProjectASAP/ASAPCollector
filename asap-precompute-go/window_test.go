@@ -248,3 +248,187 @@ func TestWindow_ResourceLabelsPropagated(t *testing.T) {
 		t.Fatalf("labels: %+v", entry.Labels)
 	}
 }
+
+// slidingCfg builds a sliding config with slide=10s, size=30s ⇒ N=3 panes.
+func slidingCfg() *PrecomputeConfig {
+	return &PrecomputeConfig{
+		AggID:      1,
+		SketchType: SketchTypeDDSketch,
+		Mode:       Sliding,
+		Window:     WindowSpec{Size: 30 * time.Second, Slide: 10 * time.Second},
+	}
+}
+
+func slidingObs(ts uint64, label string) *Observation {
+	return &Observation{
+		TimestampMs: ts,
+		Metric:      "m",
+		Labels:      []KeyValue{{Key: "k", Value: label}},
+		Value:       FloatValue(1),
+	}
+}
+
+// TestWindow_SlidingPaneArithmetic checks the pane-count / step helpers.
+func TestWindow_SlidingPaneArithmetic(t *testing.T) {
+	t.Parallel()
+	cfg := slidingCfg()
+	if got := panesPerWindow(cfg); got != 3 {
+		t.Fatalf("panesPerWindow: want 3, got %d", got)
+	}
+	if got := rotationStepMs(cfg); got != 10_000 {
+		t.Fatalf("rotationStepMs: want 10000 (slide), got %d", got)
+	}
+	if got := windowSizeMs(cfg); got != 30_000 {
+		t.Fatalf("windowSizeMs: want 30000, got %d", got)
+	}
+	// Slide==0 degenerates to tumbling-equivalent (1 pane, step==size).
+	tum := &PrecomputeConfig{Mode: Sliding, Window: WindowSpec{Size: 10 * time.Second}}
+	if got := panesPerWindow(tum); got != 1 {
+		t.Fatalf("panesPerWindow(no-slide): want 1, got %d", got)
+	}
+	if got := rotationStepMs(tum); got != 10_000 {
+		t.Fatalf("rotationStepMs(no-slide): want 10000, got %d", got)
+	}
+}
+
+// TestWindow_SlidingEmitsMergedWindow drives three consecutive panes and
+// verifies each slide emits a merged window covering the trailing N panes,
+// with the correct [start,end) range and merged observation count.
+func TestWindow_SlidingEmitsMergedWindow(t *testing.T) {
+	t.Parallel()
+	cfg := slidingCfg()
+	w := newWindowState()
+	stats := NewStats()
+	obs := &fakeObserver{}
+	factory := newFakeFactory()
+
+	mergedCount := func(closed []*seriesEntry) int {
+		if len(closed) != 1 {
+			t.Fatalf("expected exactly 1 merged series, got %d", len(closed))
+		}
+		fs := closed[0].Sketch.(*fakeSketch)
+		return len(fs.state) // one 'f' byte per merged float observation
+	}
+
+	// Pane 0: [0,10s) — 2 observations.
+	for i := 0; i < 2; i++ {
+		if err := w.observe(slidingObs(1_000, "a"), cfg, factory, obs, stats); err != nil {
+			t.Fatalf("observe p0: %v", err)
+		}
+	}
+	// Close pane 0 at t=10s. Window so far = just pane 0 ⇒ 2 obs.
+	closed, rng := w.rotate(10_000, cfg)
+	if got := mergedCount(closed); got != 2 {
+		t.Fatalf("after slide@10s: merged obs want 2, got %d", got)
+	}
+	if rng != [2]uint64{0, 10_000} {
+		t.Fatalf("range@10s: want [0,10000), got %v", rng)
+	}
+
+	// Pane 1: [10s,20s) — 3 observations.
+	for i := 0; i < 3; i++ {
+		if err := w.observe(slidingObs(12_000, "a"), cfg, factory, obs, stats); err != nil {
+			t.Fatalf("observe p1: %v", err)
+		}
+	}
+	// Close pane 1 at t=20s. Window = panes 0+1 ⇒ 2+3 = 5 obs.
+	closed, rng = w.rotate(20_000, cfg)
+	if got := mergedCount(closed); got != 5 {
+		t.Fatalf("after slide@20s: merged obs want 5, got %d", got)
+	}
+	if rng != [2]uint64{0, 20_000} {
+		t.Fatalf("range@20s: want [0,20000), got %v", rng)
+	}
+
+	// Pane 2: [20s,30s) — 4 observations.
+	for i := 0; i < 4; i++ {
+		if err := w.observe(slidingObs(22_000, "a"), cfg, factory, obs, stats); err != nil {
+			t.Fatalf("observe p2: %v", err)
+		}
+	}
+	// Close pane 2 at t=30s. Window = panes 0+1+2 ⇒ 2+3+4 = 9 obs (full).
+	closed, rng = w.rotate(30_000, cfg)
+	if got := mergedCount(closed); got != 9 {
+		t.Fatalf("after slide@30s: merged obs want 9, got %d", got)
+	}
+	if rng != [2]uint64{0, 30_000} {
+		t.Fatalf("range@30s: want [0,30000), got %v", rng)
+	}
+
+	// Pane 3: [30s,40s) — 1 observation.
+	if err := w.observe(slidingObs(32_000, "a"), cfg, factory, obs, stats); err != nil {
+		t.Fatalf("observe p3: %v", err)
+	}
+	// Close pane 3 at t=40s. Pane 0 ages out; window = panes 1+2+3 ⇒
+	// 3+4+1 = 8 obs, range = [10s,40s) (oldest retained pane is pane 1).
+	closed, rng = w.rotate(40_000, cfg)
+	if got := mergedCount(closed); got != 8 {
+		t.Fatalf("after slide@40s: merged obs want 8 (pane0 aged out), got %d", got)
+	}
+	if rng != [2]uint64{10_000, 40_000} {
+		t.Fatalf("range@40s: want [10000,40000), got %v", rng)
+	}
+}
+
+// TestWindow_SlidingEmptySlideStillAges verifies an empty slide still
+// advances the window and ages panes out (no emit when the window holds
+// no data).
+func TestWindow_SlidingEmptySlideStillAges(t *testing.T) {
+	t.Parallel()
+	cfg := slidingCfg()
+	w := newWindowState()
+	stats := NewStats()
+	obs := &fakeObserver{}
+	factory := newFakeFactory()
+
+	// One observation in pane 0.
+	if err := w.observe(slidingObs(1_000, "a"), cfg, factory, obs, stats); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	// Slide forward 3 empty panes after the data pane closes; pane 0
+	// must eventually age out, after which a slide emits nothing.
+	if closed, _ := w.rotate(10_000, cfg); len(closed) != 1 { // pane0 closes, window={p0}
+		t.Fatalf("slide@10s: want 1, got %d", len(closed))
+	}
+	if closed, _ := w.rotate(20_000, cfg); len(closed) != 1 { // window={p0,empty}
+		t.Fatalf("slide@20s: want 1, got %d", len(closed))
+	}
+	if closed, _ := w.rotate(30_000, cfg); len(closed) != 1 { // window={p0,empty,empty}
+		t.Fatalf("slide@30s: want 1, got %d", len(closed))
+	}
+	// At t=40s pane 0 ages out and the window holds only empty panes.
+	if closed, _ := w.rotate(40_000, cfg); len(closed) != 0 {
+		t.Fatalf("slide@40s: want 0 (pane0 aged out, all empty), got %d", len(closed))
+	}
+}
+
+// TestWindow_SlidingViaRuntime drives Sliding through the full Precompute
+// Tick path and checks emitted envelope window ranges.
+func TestWindow_SlidingViaRuntime(t *testing.T) {
+	t.Parallel()
+	cfg := slidingCfg()
+	p := New(cfg, newFakeFactory(), &fakeObserver{})
+
+	// Two observations in pane 0.
+	for i := 0; i < 2; i++ {
+		if err := p.Observe(slidingObs(1_000, "a")); err != nil {
+			t.Fatalf("observe: %v", err)
+		}
+	}
+	// Tick before the first slide boundary: nothing due.
+	if out := p.Tick(5_000); len(out) != 0 {
+		t.Fatalf("Tick@5s: want 0, got %d", len(out))
+	}
+	// Tick at the slide boundary: one merged envelope for the window.
+	out := p.Tick(10_000)
+	if len(out) != 1 {
+		t.Fatalf("Tick@10s: want 1 envelope, got %d", len(out))
+	}
+	if out[0].WindowStartMs != 0 || out[0].WindowEndMs != 10_000 {
+		t.Fatalf("envelope window: want [0,10000), got [%d,%d)", out[0].WindowStartMs, out[0].WindowEndMs)
+	}
+	st := p.Stats().Snapshot()
+	if st.LastEmittedEnvelopes != 1 {
+		t.Fatalf("LastEmittedEnvelopes: want 1, got %d", st.LastEmittedEnvelopes)
+	}
+}

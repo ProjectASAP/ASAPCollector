@@ -131,12 +131,14 @@ func (w *KLLWrapper) Reset() {
 	w.sk = buildKLL(w.k, w.seed)
 }
 
-// Quantile returns the q-th rank value via the KLL CDF query.
+// Quantile returns the q-th rank value via the KLL CDF query. q is
+// clamped to [0,1] per the precompute.QuantileSketch contract before
+// querying.
 func (w *KLLWrapper) Quantile(q float64) float64 {
 	if w.sk == nil || w.sk.GetSize() == 0 {
 		return 0
 	}
-	return w.sk.CDF().Query(q)
+	return w.sk.CDF().Query(clampQuantile(q))
 }
 
 // Count returns the underlying sketch's accumulated sample count.

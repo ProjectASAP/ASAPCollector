@@ -11,6 +11,7 @@ import (
 	gorilla "github.com/ProjectASAP/asap-gorilla-go"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.uber.org/zap"
 )
 
 // attrMapPool reuses the decoded attribute map across samples (the shared
@@ -70,6 +71,13 @@ func (p *asapEdgeProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metri
 	md.ResourceMetrics().RemoveIf(func(rm pmetric.ResourceMetrics) bool {
 		rm.ScopeMetrics().RemoveIf(func(sm pmetric.ScopeMetrics) bool {
 			sm.Metrics().RemoveIf(func(m pmetric.Metric) bool {
+				// Never remove an unsupported metric type (Histogram/Summary/
+				// ExponentialHistogram): we don't aggregate or archive it, so the
+				// only place it survives is the passthrough stream. Removing it here
+				// would be total data loss regardless of how it is configured.
+				if isUnsupportedType(m.Type()) {
+					return false
+				}
 				_, isConfigured := p.configured[m.Name()]
 				return isConfigured
 			})
@@ -99,7 +107,15 @@ func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 	case pmetric.MetricTypeGauge:
 		dps = m.Gauge().DataPoints()
 	default:
-		return // non-number metrics not handled yet (cold-only TODO)
+		// Histogram / Summary / ExponentialHistogram are not warm-aggregated yet.
+		// They must NEVER be silently dropped: count them, log once, and let the
+		// passthrough path forward them unchanged. Critically, such a metric is
+		// removed from p.unsupportedPassthrough (see ConsumeMetrics) so it is
+		// always forwarded even under drop_original/tier=cold — otherwise a
+		// histogram configured drop_original would be removed from the output
+		// stream AND never archived (total data loss).
+		p.recordUnsupportedType(m)
+		return
 	}
 
 	for i := 0; i < dps.Len(); i++ {
@@ -133,6 +149,41 @@ func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 	}
 }
 
+// isUnsupportedType reports whether the metric type is one the warm/cold
+// aggregation path does not handle (so it must be forwarded raw, never
+// dropped).
+func isUnsupportedType(t pmetric.MetricType) bool {
+	switch t {
+	case pmetric.MetricTypeSum, pmetric.MetricTypeGauge:
+		return false
+	default:
+		return true
+	}
+}
+
+// recordUnsupportedType increments the unsupported-type data-point counter and
+// logs a single warning the first time an unsupported type is seen. The metric
+// itself is left untouched in md so the passthrough path forwards it unchanged.
+func (p *asapEdgeProcessor) recordUnsupportedType(m pmetric.Metric) {
+	n := uint64(1)
+	switch m.Type() {
+	case pmetric.MetricTypeHistogram:
+		n = uint64(m.Histogram().DataPoints().Len())
+	case pmetric.MetricTypeExponentialHistogram:
+		n = uint64(m.ExponentialHistogram().DataPoints().Len())
+	case pmetric.MetricTypeSummary:
+		n = uint64(m.Summary().DataPoints().Len())
+	}
+	if n == 0 {
+		n = 1
+	}
+	p.unsupportedTypeCount.Add(n)
+	if p.loggedUnsupported.CompareAndSwap(false, true) {
+		p.logger.Warn("asap_edge: metric type not warm-aggregated; forwarding raw unchanged (logged once)",
+			zap.String("metric", m.Name()), zap.String("type", m.Type().String()))
+	}
+}
+
 func (p *asapEdgeProcessor) observeMax(tsMs uint64) {
 	for {
 		cur := p.maxObservedMs.Load()
@@ -140,6 +191,17 @@ func (p *asapEdgeProcessor) observeMax(tsMs uint64) {
 			return
 		}
 	}
+}
+
+// resetMaxObserved lowers the max-observed watermark to the new window
+// boundary at flush time. Without it, observeMax only ever RAISES the value, so
+// a single future-timestamped sample would permanently skew every later
+// window's emit-time end timestamp. It runs from the single flush goroutine;
+// the watermark only bounds the emitted point's [start,end] (it is not part of
+// the summed value), so a best-effort Store racing a concurrent observeMax CAS
+// is acceptable — at worst one window's end is off by one late sample.
+func (p *asapEdgeProcessor) resetMaxObserved(windowEndMs uint64) {
+	p.maxObservedMs.Store(windowEndMs)
 }
 
 func numberValue(dp pmetric.NumberDataPoint) float64 {

@@ -1,6 +1,7 @@
 package precompute
 
 import (
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,13 @@ const (
 	MatchEqual MatchOp = iota
 	// MatchNotEqual requires v != matcher.Value.
 	MatchNotEqual
+	// MatchRegex requires v to fully match the regexp in matcher.Value
+	// (Prometheus "=~" semantics: the pattern is implicitly anchored,
+	// so it must match the WHOLE value).
+	MatchRegex
+	// MatchNotRegex requires v to NOT fully match the regexp in
+	// matcher.Value (Prometheus "!~" semantics).
+	MatchNotRegex
 )
 
 // String returns the operator's debug name.
@@ -24,6 +32,10 @@ func (op MatchOp) String() string {
 		return "="
 	case MatchNotEqual:
 		return "!="
+	case MatchRegex:
+		return "=~"
+	case MatchNotRegex:
+		return "!~"
 	}
 	return "?"
 }
@@ -31,16 +43,49 @@ func (op MatchOp) String() string {
 // LabelMatcher selects observations by metric name (Name == "")
 // or label key (Name != ""). Op defaults to MatchEqual.
 //
-// Today's per-processor `LabelMatchers` config uses (Key, Value)
-// equality only; the Op field is forward-compat for regex/glob.
+// For MatchEqual / MatchNotEqual, Value is an exact target string.
+// For MatchRegex / MatchNotRegex, Value is a regular expression
+// (RE2 syntax) matched against the WHOLE value, Prometheus-style.
 type LabelMatcher struct {
 	// Name is the label key to match against, or the empty string
 	// to match the metric name field.
 	Name string
-	// Value is the exact target value.
+	// Value is the exact target value (Equal/NotEqual) or the regexp
+	// pattern (Regex/NotRegex).
 	Value string
-	// Op picks Equal vs NotEqual.
+	// Op picks Equal / NotEqual / Regex / NotRegex.
 	Op MatchOp
+}
+
+// regexCache memoizes compiled, fully-anchored regexps keyed by the raw
+// pattern string. LabelMatcher is a value type embedded in
+// PrecomputeConfig, so the matcher can't hold a *regexp.Regexp without
+// breaking config copies / comparisons; instead Matches() looks the
+// compiled form up here. A failed compile is cached as a nil regexp so
+// repeated bad patterns don't recompile (and deterministically fail to
+// match).
+var regexCache sync.Map // map[string]*regexp.Regexp (nil ⇒ compile failed)
+
+// compileAnchored returns the compiled, Prometheus-anchored regexp for
+// pattern (matching the full string via ^(?:...)$), using a process-wide
+// cache. Returns nil if the pattern fails to compile.
+func compileAnchored(pattern string) *regexp.Regexp {
+	if v, ok := regexCache.Load(pattern); ok {
+		if v == nil {
+			return nil
+		}
+		return v.(*regexp.Regexp)
+	}
+	// Anchor like Prometheus: the pattern must match the entire value.
+	// Wrap in a non-capturing group so top-level alternation (a|b)
+	// anchors as a whole rather than ^a|b$.
+	re, err := regexp.Compile("^(?:" + pattern + ")$")
+	if err != nil {
+		regexCache.Store(pattern, (*regexp.Regexp)(nil))
+		return nil
+	}
+	regexCache.Store(pattern, re)
+	return re
 }
 
 // Matches returns true iff the observation satisfies all matchers.
@@ -78,6 +123,25 @@ func (cfg *PrecomputeConfig) Matches(obs *Observation) bool {
 		case MatchNotEqual:
 			if present && v == m.Value {
 				return false
+			}
+		case MatchRegex:
+			// Positive regex: a missing key cannot match. A bad pattern
+			// (nil re) never matches.
+			if !present {
+				return false
+			}
+			re := compileAnchored(m.Value)
+			if re == nil || !re.MatchString(v) {
+				return false
+			}
+		case MatchNotRegex:
+			// Negative regex: a missing key passes (no value to match).
+			// Present-and-matching fails. A bad pattern (nil re) can't
+			// match anything, so the negation passes.
+			if present {
+				if re := compileAnchored(m.Value); re != nil && re.MatchString(v) {
+					return false
+				}
 			}
 		}
 	}

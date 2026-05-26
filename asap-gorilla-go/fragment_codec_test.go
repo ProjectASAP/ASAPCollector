@@ -91,6 +91,35 @@ func TestFragmentBatchDataDoesNotAliasInput(t *testing.T) {
 	}
 }
 
+// TestFragmentBatchRejectsUnsupportedEncoding proves encodingByte honors its
+// parameter: an out-of-contract encoding (XOR is the only one the wire format
+// defines) is emitted as the unsupported sentinel and rejected on decode,
+// rather than being silently mislabeled and shipped as XOR.
+func TestFragmentBatchRejectsUnsupportedEncoding(t *testing.T) {
+	enc := EncodeFragmentBatch([]Fragment{{
+		MetricName: "m",
+		Count:      1,
+		Encoding:   "gorilla-int", // not XOR -> unsupported by ASAPFRG1
+		Data:       []byte{1, 2, 3},
+	}})
+	if _, err := DecodeFragmentBatch(enc); err == nil {
+		t.Fatal("expected decode to reject an unsupported encoding, got nil error")
+	}
+
+	// The "" and "xor" encodings both remain valid (map to the XOR byte).
+	for _, e := range []string{"", "xor"} {
+		out, err := DecodeFragmentBatch(EncodeFragmentBatch([]Fragment{{
+			MetricName: "m", Count: 1, Encoding: e, Data: []byte{1},
+		}}))
+		if err != nil {
+			t.Fatalf("encoding %q: unexpected decode error: %v", e, err)
+		}
+		if out[0].Encoding != "xor" {
+			t.Errorf("encoding %q: decoded as %q, want xor", e, out[0].Encoding)
+		}
+	}
+}
+
 func TestFragmentBatchBadMagic(t *testing.T) {
 	if _, err := DecodeFragmentBatch([]byte("XXXXXXXX\x01\x00")); err == nil {
 		t.Fatal("expected bad-magic error")

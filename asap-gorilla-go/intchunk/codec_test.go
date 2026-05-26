@@ -496,6 +496,110 @@ func TestRandomizedRoundTrip(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Fixed-width INT body cursor: decoding a fixed-width INT chunk must leave the
+// shared byteReader positioned exactly at the chunk's end, so a following chunk
+// in the same buffer decodes from the right offset. The varint body advances
+// r.pos implicitly via r.varint(); the fixed-width body reads through
+// r.buf[r.pos:] and must advance r.pos by the packed-byte count itself.
+// ---------------------------------------------------------------------------
+
+func TestFixedWidthBodyAdvancesCursor(t *testing.T) {
+	// A fixed-decimal gauge whose fixed-width body is non-trivial (width > 0):
+	// many small +/- cent residuals so bitPackWidth picks a real width.
+	gauge := make([]float64, 64)
+	cents := int64(2000)
+	for i := range gauge {
+		cents += int64(math.Round(math.Sin(float64(i)/5) * 6))
+		gauge[i] = float64(cents) / 100.0
+	}
+	samples := mkSamples(1_700_000_000_000, 1000, gauge)
+	vals := make([]float64, len(samples))
+	for i := range samples {
+		vals[i] = samples[i].V
+	}
+	scaleExp, ints, ok := tryScaleToInt64(vals)
+	if !ok {
+		t.Fatalf("expected fixed-decimal gauge to scale")
+	}
+	// Force the fixed-width (bodyFixed) FOR_DELTA codec and confirm the tag.
+	chunk, ok := encodeIntChunk(samples, scaleExp, ints, false, bodyFixed)
+	if !ok {
+		t.Fatalf("encodeIntChunk(bodyFixed) failed")
+	}
+	if got := CodecTag(chunk[0]); got != CodecIntForDelta {
+		t.Fatalf("expected %s, got %s", CodecIntForDelta, got)
+	}
+
+	// Place a sentinel byte sequence immediately after the chunk. If decode
+	// leaves r.pos at the exact chunk boundary, the next reads return it intact.
+	const sentinelA, sentinelB = byte(0xAB), byte(0xCD)
+	buf := append([]byte(nil), chunk...)
+	buf = append(buf, sentinelA, sentinelB)
+
+	// Decode using a SHARED reader: consume the tag, then decode the body, then
+	// keep reading from the same cursor.
+	r := &byteReader{buf: buf}
+	tagByte, err := r.u8()
+	if err != nil {
+		t.Fatalf("read tag: %v", err)
+	}
+	got, err := decodeIntChunk(r, CodecTag(tagByte))
+	if err != nil {
+		t.Fatalf("decodeIntChunk: %v", err)
+	}
+	if len(got) != len(samples) {
+		t.Fatalf("decoded %d samples, want %d", len(got), len(samples))
+	}
+	for i := range samples {
+		if got[i].T != samples[i].T || math.Float64bits(got[i].V) != math.Float64bits(samples[i].V) {
+			t.Fatalf("sample %d mismatch: got (%d,%v) want (%d,%v)", i, got[i].T, got[i].V, samples[i].T, samples[i].V)
+		}
+	}
+	// The cursor must now sit exactly at the chunk boundary (== len(chunk)).
+	if r.pos != len(chunk) {
+		t.Fatalf("cursor at %d after fixed-width decode, want chunk boundary %d", r.pos, len(chunk))
+	}
+	// And the trailing sentinel bytes must read back intact from the same reader.
+	a, err := r.u8()
+	if err != nil {
+		t.Fatalf("read sentinel A: %v", err)
+	}
+	b, err := r.u8()
+	if err != nil {
+		t.Fatalf("read sentinel B: %v", err)
+	}
+	if a != sentinelA || b != sentinelB {
+		t.Fatalf("trailing bytes corrupted: got %#x,%#x want %#x,%#x", a, b, sentinelA, sentinelB)
+	}
+
+	// Concrete multi-chunk-in-one-buffer proof: two fixed-width INT chunks
+	// concatenated decode independently from a single shared reader to the
+	// correct two sample runs (this is the latent trap the cursor fix closes).
+	chunk2, ok := encodeIntChunk(samples, scaleExp, ints, false, bodyFixed)
+	if !ok {
+		t.Fatalf("encodeIntChunk #2 failed")
+	}
+	concat := append(append([]byte(nil), chunk...), chunk2...)
+	rr := &byteReader{buf: concat}
+	for run := 0; run < 2; run++ {
+		tb, err := rr.u8()
+		if err != nil {
+			t.Fatalf("run %d: read tag: %v", run, err)
+		}
+		s, err := decodeIntChunk(rr, CodecTag(tb))
+		if err != nil {
+			t.Fatalf("run %d: decodeIntChunk: %v", run, err)
+		}
+		if len(s) != len(samples) {
+			t.Fatalf("run %d: decoded %d samples, want %d", run, len(s), len(samples))
+		}
+	}
+	if rr.pos != len(concat) {
+		t.Fatalf("after two chunks cursor at %d, want %d", rr.pos, len(concat))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // timestamp column round-trips on its own (it is a FOR_DOD-style stream).
 // ---------------------------------------------------------------------------
 
@@ -508,6 +612,11 @@ func TestTimestampColumnRoundTrip(t *testing.T) {
 		{0, 1000, 2000, 5000, 6000, 7000},   // one gap
 		{5, 4, 3, 2, 1},                     // decreasing (codec is agnostic)
 		{-100, 0, 100, 250, 251, 1_000_000}, // mixed
+		// Adversarial int64 extremes: alternating MinInt64/MaxInt64 makes the
+		// intermediate deltas and delta-of-deltas overflow int64. The wraparound
+		// (mod 2^64) encode/decode must still round-trip bit-exactly.
+		{math.MinInt64, math.MaxInt64, math.MinInt64, 0, math.MaxInt64},
+		{math.MaxInt64, math.MinInt64, math.MaxInt64},
 	}
 	for _, ts := range cases {
 		w := &byteWriter{}

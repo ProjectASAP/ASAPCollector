@@ -76,6 +76,17 @@ func (c *Config) Validate() error {
 	if c.WindowDuration <= 0 {
 		c.WindowDuration = 60 * time.Second
 	}
+	// MaxSeries: default the global cap so the sketch/sum maps are bounded
+	// out-of-the-box. 0 (unset after the default) only if the operator
+	// explicitly set a negative value, which we reject — there's no
+	// "unset vs explicit 0" distinction for an int, so the default is applied
+	// only when exactly 0, and an operator wanting unlimited sets a huge value.
+	if c.MaxSeries < 0 {
+		return fmt.Errorf("asap_edge: max_series must be >= 0 (0 => default 100000)")
+	}
+	if c.MaxSeries == 0 {
+		c.MaxSeries = 100000
+	}
 	seen := make(map[string]struct{}, len(c.Metrics))
 	for i := range c.Metrics {
 		m := &c.Metrics[i]
@@ -109,6 +120,13 @@ func (c *Config) Validate() error {
 		}
 		if m.SampleP < 0 || m.SampleP > 1.0 {
 			return fmt.Errorf("asap_edge: metrics[%d] (%s): sample_p must be in (0,1] (got %v)", i, m.Metric, m.SampleP)
+		}
+		// max_series: 0 inherits the top-level default; negative is invalid.
+		if m.MaxSeries < 0 {
+			return fmt.Errorf("asap_edge: metrics[%d] (%s): max_series must be >= 0 (0 => inherit global default)", i, m.Metric)
+		}
+		if m.MaxSeries == 0 {
+			m.MaxSeries = c.MaxSeries
 		}
 	}
 	// Cold defaults (only meaningful when enabled).
@@ -161,7 +179,43 @@ func (c *Config) Validate() error {
 			c.Cold.SpoolRetryInterval = 30 * time.Second
 		}
 	}
+	// Control-plane poll loop (only validated when enabled; disabled is the
+	// default and leaves existing deployments untouched).
+	if c.ControlChannel.enabled() {
+		if c.ControlChannel.PollURL == "" {
+			return fmt.Errorf("asap_edge: control_channel.poll_url must be set when control_channel is enabled")
+		}
+		if c.ControlChannel.PollInterval <= 0 {
+			c.ControlChannel.PollInterval = 30 * time.Second
+		}
+		if c.ControlChannel.Timeout <= 0 {
+			c.ControlChannel.Timeout = 10 * time.Second
+		}
+	}
 	return nil
+}
+
+// deltaCapable reports whether the family supports delta transmission. KLL is
+// the only wired sketch family that does not (no ComputeDeltaAgainst).
+func (k FamilyKind) deltaCapable() bool {
+	switch k {
+	case FamilyDDSketch, FamilyCountSketch, FamilyHLL, FamilyCountMinSketch:
+		return true
+	}
+	return false
+}
+
+// effectiveDelta resolves the per-metric delta-transmission setting: the
+// explicit metrics[].delta_transmission if set, else the top-level default. It
+// is forced off for families that cannot do delta (KLL, Sum).
+func (m *MetricFamily) effectiveDelta(globalDefault bool) bool {
+	if !m.Family.deltaCapable() {
+		return false
+	}
+	if m.DeltaTransmission != nil {
+		return *m.DeltaTransmission
+	}
+	return globalDefault
 }
 
 // familyFor returns the configured family for a metric name, or ("", false)

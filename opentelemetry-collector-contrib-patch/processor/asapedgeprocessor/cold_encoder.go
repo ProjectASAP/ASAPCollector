@@ -105,28 +105,41 @@ func (p *asapEdgeProcessor) accumulateColdPart(idx int, frags []gorilla.Fragment
 	}
 }
 
+// sealColdPartBody seals shard idx's accumulator (always resetting it so the
+// next block starts fresh) and encodes the buffered series into one serialized
+// coldpart.Part. It is the single seal->encode helper shared by the async
+// per-block ship (sealAndShipColdPart) and the synchronous Shutdown drain
+// (flushColdPartAccumulators) so the two paths can never drift. Returns
+// (nil, nil) — no body to ship — for an empty buffer, a no-op (endpointless)
+// shipper, an empty series set, or an empty encoding. An encode error is logged
+// and surfaced so the caller can skip the POST.
+func (p *asapEdgeProcessor) sealColdPartBody(idx int) ([]byte, error) {
+	acc := p.coldAccum[idx]
+	if acc.empty() {
+		return nil, nil
+	}
+	series, blockStart, blockEnd := acc.seal()
+	if len(series) == 0 || p.coldPartShip.noop() {
+		return nil, nil
+	}
+	body, err := encodePart(blockStart, blockEnd, series)
+	if err != nil {
+		p.logger.Warn("asap_edge: build cold part failed", zap.Error(err))
+		return nil, err
+	}
+	if len(body) == 0 {
+		return nil, nil
+	}
+	return body, nil
+}
+
 // sealAndShipColdPart seals shard idx's accumulator into one coldpart.Part and
 // POSTs it (async, bounded context, mirroring the fragment path's async ship).
 // An empty buffer or a no-op shipper is a clean no-op; the buffer is always
 // reset (seal resets it) so the next block starts fresh.
 func (p *asapEdgeProcessor) sealAndShipColdPart(idx int) {
-	acc := p.coldAccum[idx]
-	if acc.empty() {
-		return
-	}
-	series, blockStart, blockEnd := acc.seal()
-	if len(series) == 0 {
-		return
-	}
-	if p.coldPartShip.noop() {
-		return // drain-only (no endpoint): buffered + reset, never POSTed
-	}
-	body, err := encodePart(blockStart, blockEnd, series)
-	if err != nil {
-		p.logger.Warn("asap_edge: build cold part failed", zap.Error(err))
-		return
-	}
-	if len(body) == 0 {
+	body, err := p.sealColdPartBody(idx)
+	if err != nil || len(body) == 0 {
 		return
 	}
 	go func() {
@@ -147,20 +160,8 @@ func (p *asapEdgeProcessor) flushColdPartAccumulators(ctx context.Context) {
 		return
 	}
 	for idx := range p.coldAccum {
-		acc := p.coldAccum[idx]
-		if acc.empty() {
-			continue
-		}
-		series, blockStart, blockEnd := acc.seal()
-		if len(series) == 0 || p.coldPartShip.noop() {
-			continue
-		}
-		body, err := encodePart(blockStart, blockEnd, series)
-		if err != nil {
-			p.logger.Warn("asap_edge: build cold part failed", zap.Error(err))
-			continue
-		}
-		if len(body) == 0 {
+		body, err := p.sealColdPartBody(idx)
+		if err != nil || len(body) == 0 {
 			continue
 		}
 		if serr := p.coldPartShip.shipEncoded(ctx, body); serr != nil {

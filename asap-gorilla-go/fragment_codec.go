@@ -31,6 +31,11 @@ const (
 	fragmentBatchMagic   = "ASAPFRG1"
 	fragmentBatchVersion = byte(1)
 	fragmentEncodingXOR  = byte(0)
+	// fragmentEncodingUnsupported is emitted for any encoding the wire format
+	// does not define (only XOR is). encodingString rejects it, so an
+	// out-of-contract Fragment.Encoding fails cleanly on decode rather than
+	// being silently shipped as XOR.
+	fragmentEncodingUnsupported = byte(0xFF)
 )
 
 // EncodeFragmentBatch serializes fragments into the ASAPFRG1 wire frame.
@@ -156,10 +161,23 @@ func appendCodecStr(dst []byte, s string) []byte {
 	return append(dst, s...)
 }
 
+// encodingByte maps a Fragment.Encoding string to its wire byte. XOR
+// (chunkenc.EncXOR) is the ONLY encoding the ASAPFRG1 frame defines, and it is
+// the only encoding the producer side (StreamingFragmentEncoder, which always
+// emits "xor") ever creates; MarshalFragment likewise normalizes "" -> "xor".
+// So "" and "xor" both map to the XOR byte. The parameter is honored — any
+// OTHER value is an unsupported encoding the wire format cannot represent, so we
+// return the sentinel 0xFF, which encodingString rejects on decode (a clean
+// round-trip error) rather than silently mislabeling a non-XOR payload as XOR.
+// EncodeFragmentBatch has no error return, so fail-on-decode is the safest way
+// to surface the misuse without a breaking signature change.
 func encodingByte(enc string) byte {
-	// Only XOR is defined today; the empty string is the Fragment default
-	// (MarshalFragment also defaults "" -> "xor"), so it maps to XOR too.
-	return fragmentEncodingXOR
+	switch enc {
+	case "", "xor":
+		return fragmentEncodingXOR
+	default:
+		return fragmentEncodingUnsupported
+	}
 }
 
 func encodingString(b byte) (string, error) {

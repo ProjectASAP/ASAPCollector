@@ -2,6 +2,8 @@ package coldpart
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"math"
 	"testing"
@@ -467,6 +469,59 @@ func TestShortBuffer(t *testing.T) {
 	}
 	if _, err := OpenPart(nil); err != ErrShort {
 		t.Fatalf("nil buffer: got %v, want ErrShort", err)
+	}
+}
+
+// TestFooterOffsetValidation proves OpenPart fully validates the footer's
+// region contract (header|chunks|index|symtab|footer), not just "in range":
+// corrupting symtab_off so index_off+index_len != symtab_off, or pushing an
+// offset past the footer, is rejected as ErrCorrupt (with the crc fixed up so
+// the offset check, not the crc check, is what fires).
+func TestFooterOffsetValidation(t *testing.T) {
+	series := []Series{
+		{Labels: lbls("__name__", "x", "job", "j"), Samples: seriesValues(0, 1, 2, 3)},
+		{Labels: lbls("__name__", "y"), Samples: seriesValues(0, 4, 5)},
+	}
+	var buf bytes.Buffer
+	if err := WritePart(&buf, 0, 5000, series, Options{}); err != nil {
+		t.Fatalf("WritePart: %v", err)
+	}
+	clean := buf.Bytes()
+
+	// Footer fields (each u64) sit at the end before the 4-byte crc:
+	//   [-28,-20) index_off | [-20,-12) index_len | [-12,-4) symtab_off | [-4,) crc
+	putU64 := func(b []byte, fromEnd int, v uint64) {
+		binary.LittleEndian.PutUint64(b[len(b)-fromEnd:len(b)-fromEnd+8], v)
+	}
+
+	// Case 1: symtab_off no longer equals index_off+index_len.
+	c1 := append([]byte(nil), clean...)
+	symOff := binary.LittleEndian.Uint64(c1[len(c1)-12 : len(c1)-4])
+	putU64(c1, 12, symOff+1) // shift symtab_off by one byte
+	fixCRC(c1)
+	if _, err := OpenPart(c1); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("shifted symtab_off: got %v, want ErrCorrupt", err)
+	}
+
+	// Case 2: symtab_off pushed past the footer.
+	c2 := append([]byte(nil), clean...)
+	putU64(c2, 12, uint64(len(c2))) // symtab_off at/after footer
+	fixCRC(c2)
+	if _, err := OpenPart(c2); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("symtab_off past footer: got %v, want ErrCorrupt", err)
+	}
+
+	// Case 3: index_off pushed past the footer.
+	c3 := append([]byte(nil), clean...)
+	putU64(c3, 28, uint64(len(c3)))
+	fixCRC(c3)
+	if _, err := OpenPart(c3); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("index_off past footer: got %v, want ErrCorrupt", err)
+	}
+
+	// Sanity: the clean part still opens.
+	if _, err := OpenPart(clean); err != nil {
+		t.Fatalf("clean part failed to open: %v", err)
 	}
 }
 

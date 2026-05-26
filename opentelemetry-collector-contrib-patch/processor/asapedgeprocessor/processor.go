@@ -62,9 +62,35 @@ type asapEdgeProcessor struct {
 	windowStartMs atomic.Uint64
 	maxObservedMs atomic.Uint64
 
+	// unsupportedTypeCount counts data points belonging to a metric type the
+	// warm/cold aggregation path does not handle yet (Histogram, Summary,
+	// ExponentialHistogram). Such metrics are NEVER removed from the
+	// passthrough stream regardless of drop_original/tier config — they are
+	// always forwarded unchanged so the type is never silently lost. The first
+	// occurrence is logged once (loggedUnsupported) to avoid log spam.
+	unsupportedTypeCount atomic.Uint64
+	loggedUnsupported    atomic.Bool
+	// sketchDropCount counts samples dropped by a sketch aggregator's
+	// ObserveKeyed (see warm_sketch.go) so latched log-once drops stay
+	// observable.
+	sketchDropCount atomic.Uint64
+	// sumOverflowCount counts sum-aggregator group observations dropped because
+	// a shard's group map hit MaxSeries.
+	sumOverflowCount atomic.Uint64
+
 	stopCh       chan struct{}
 	doneCh       chan struct{}
 	flushStarted bool
+
+	// ctrlChan is the optional control-plane poll channel (nil when the
+	// ControlChannel config block is unset). When set, Start() spawns a poll
+	// loop that applies received config updates to the live Precompute
+	// instances via UpdateConfig, and Shutdown stops it.
+	ctrlChan      controlChannel
+	ctrlStopCh    chan struct{}
+	ctrlDoneCh    chan struct{}
+	ctrlStarted   bool
+	ctrlLastApply atomic.Uint64
 }
 
 func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*asapEdgeProcessor, error) {
@@ -121,10 +147,20 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 			sketchAggs: make(map[string]*sketchAggregator, len(p.sketchMetrics)),
 		}
 		for name, fam := range p.sumMetrics {
-			sh.sumAggs[name] = newSumAggregator(fam.AggregateBy)
+			sa := newSumAggregator(fam.AggregateBy, fam.MaxSeries)
+			sa.procOverflowCount = &p.sumOverflowCount
+			sh.sumAggs[name] = sa
 		}
 		for name, fam := range p.sketchMetrics {
-			if sa, ok := newSketchAggregator(name, fam, cfg.WindowDuration, p.logger); ok {
+			opts := sketchOpts{
+				window:          cfg.WindowDuration,
+				maxSeries:       uint64(fam.MaxSeries),
+				delta:           fam.effectiveDelta(cfg.DeltaTransmission),
+				deltaThreshold:  fam.DeltaThreshold,
+				allowedLateness: cfg.Cold.ReorderGrace,
+			}
+			if sa, ok := newSketchAggregator(name, fam, opts, p.logger); ok {
+				sa.procDropCount = &p.sketchDropCount
 				sh.sketchAggs[name] = sa
 			}
 		}
@@ -133,6 +169,12 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 		}
 		p.shards[i] = sh
 	}
+	// Optional control-plane poll channel (nil when control_channel is unset).
+	ch, err := newControlChannel(cfg.ControlChannel, p.logger)
+	if err != nil {
+		return nil, err
+	}
+	p.ctrlChan = ch
 	return p, nil
 }
 
@@ -150,29 +192,74 @@ func (p *asapEdgeProcessor) Start(_ context.Context, _ component.Host) error {
 		p.flushStarted = true
 		go p.flushLoop()
 	}
+	// Control-plane config-poll loop (no-op when control_channel is unset).
+	p.startControlPlane()
 	return nil
 }
 
 func (p *asapEdgeProcessor) Shutdown(ctx context.Context) error {
-	// Stop the flush loop first (its final flushAll enqueues the last batch),
-	// then drain the worker's in-flight queue + one spool pass under the
-	// Shutdown deadline — never context.Background() for the final ship.
+	// Stop the control-plane poll loop first so no config swap races the drain.
+	p.stopControlPlane()
+	// Stop the flush loop (its final flushAll enqueues the last batch). The
+	// previous code returned early on ctx.Done() while waiting on doneCh, which
+	// SKIPPED the cold-part accumulator force-seal AND the ship-worker drain,
+	// dropping buffered intchunk blocks + queued/spooled fragment batches.
+	//
+	// We now ALWAYS run the durable drain. The cold-part accumulators are owned
+	// by the single flush goroutine and are not lock-protected, so we must NOT
+	// touch them until that goroutine has exited (flushLoopDone). To bound
+	// Shutdown when the original ctx is already (or nearly) expired, we wait for
+	// the loop's doneCh under the original ctx AND a fresh best-effort grace
+	// deadline. The ship-worker drain has its own locking and runs regardless.
+	flushLoopDone := !p.flushStarted // nothing to wait on if the loop never ran
 	if p.flushStarted {
 		close(p.stopCh)
+		graceCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainGrace)
 		select {
 		case <-p.doneCh:
+			flushLoopDone = true
 		case <-ctx.Done():
-			return ctx.Err()
+			// Original deadline hit; give the loop a final bounded grace to
+			// finish its last flushAll so the accumulators go quiescent.
+			select {
+			case <-p.doneCh:
+				flushLoopDone = true
+			case <-graceCtx.Done():
+			}
 		}
+		cancel()
 	}
-	// Intchunk cold-part path: the final flushAll above buffered each shard's
-	// last drain but only seals a part at the block boundary, so any partial
+
+	// Build the drain context: prefer the caller's ctx, but if it has expired
+	// derive a fresh bounded best-effort one so the final ship still gets a
+	// chance to deliver instead of being a guaranteed no-op.
+	drainCtx := ctx
+	var cancel context.CancelFunc
+	if ctx.Err() != nil {
+		drainCtx, cancel = context.WithTimeout(context.Background(), shutdownDrainGrace)
+		defer cancel()
+	}
+	// Intchunk cold-part path: the final flushAll buffered each shard's last
+	// drain but only seals a part at the block boundary, so any partial
 	// (span < BlockDuration) block is still in the accumulators. Force-seal +
-	// POST them now so no cold samples are lost on Shutdown.
-	p.flushColdPartAccumulators(ctx)
-	p.shipWorker.shutdown(ctx)
-	return nil
+	// POST them now so no cold samples are lost on Shutdown. Only safe once the
+	// flush goroutine has exited (else we'd race its accumulator writes); if it
+	// is somehow still running we skip this rather than race — the ship-worker
+	// drain below still runs.
+	if flushLoopDone {
+		p.flushColdPartAccumulators(drainCtx)
+	} else {
+		p.logger.Warn("asap_edge: flush loop did not stop within drain grace; skipping cold-part accumulator force-seal to avoid a data race")
+	}
+	p.shipWorker.shutdown(drainCtx)
+	return ctx.Err()
 }
+
+// shutdownDrainGrace bounds the best-effort durable drain that runs after the
+// flush-loop wait expires on Shutdown, so a wedged downstream can't hang the
+// process indefinitely while still giving the last buffered block a chance to
+// ship.
+const shutdownDrainGrace = 5 * time.Second
 
 // forward sends a flushed metrics batch downstream (no-op if empty).
 func (p *asapEdgeProcessor) forward(ctx context.Context, out pmetric.Metrics) {

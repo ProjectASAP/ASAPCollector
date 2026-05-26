@@ -135,12 +135,21 @@ func (w *HLLWrapper) ComputeDeltaAgainst(prev []byte, _ uint64) ([]byte, bool, e
 }
 
 // ApplyDelta merges a payload into the underlying HLL. Dispatches on
-// payload shape: a RegisterDelta (the sketchlib-go delta wire format)
-// is applied via ApplyRegisterDelta; otherwise the payload is treated
-// as a full proto-encoded HyperLogLog and merged in directly. The
-// runtime's mergeFullEnvelope helper calls ApplyDelta on a fresh
-// sketch as its "merge from empty" path, so accepting both shapes
-// keeps the inbound full / delta envelope handling uniform.
+// payload shape: try a full-state SketchEnvelope FIRST, then fall back
+// to a sparse RegisterDelta. The runtime's mergeFullEnvelope helper
+// calls ApplyDelta on a fresh sketch as its "merge from empty" path, so
+// accepting both shapes keeps the inbound full / delta envelope
+// handling uniform.
+//
+// Order matters and full-state MUST be attempted first. A full-state
+// HyperLogLogState is carried in a SketchEnvelope (oneof field 12),
+// whereas a delta is a bare HLLDelta whose `updates` lives at field 1.
+// proto3's HLLDelta tolerates the envelope's unknown fields and decodes
+// to an EMPTY delta (no updates) without error — so trying delta first
+// would silently merge a real full-state envelope to cardinality 0
+// (the bug this ordering fixes). Conversely a bare HLLDelta fails the
+// envelope decode (field-1 wire-type mismatch / GetHll()==nil), so the
+// delta fallback catches it cleanly. This mirrors CMSWrapper.ApplyDelta.
 func (w *HLLWrapper) ApplyDelta(payload []byte) error {
 	if len(payload) == 0 {
 		return nil
@@ -148,18 +157,14 @@ func (w *HLLWrapper) ApplyDelta(payload []byte) error {
 	if w.sk == nil {
 		w.sk = w.newSketch()
 	}
-	// Try delta first: RegisterDelta is the more constrained shape;
-	// proto-encoded HyperLogLogState envelopes won't decode as a
-	// RegisterDelta so the fallback path catches them cleanly.
+	if other, err := hll.DeserializeHyperLogLogFromProtoBytes(payload); err == nil && other != nil {
+		return w.sk.Merge(other)
+	}
 	if deltaMsg, err := hll.DeserializeRegisterDelta(payload); err == nil && deltaMsg != nil {
 		hll.ApplyRegisterDelta(w.sk, deltaMsg)
 		return nil
 	}
-	other, err := hll.DeserializeHyperLogLogFromProtoBytes(payload)
-	if err != nil {
-		return fmt.Errorf("hll.DeserializeHyperLogLogFromProtoBytes: %w", err)
-	}
-	return w.sk.Merge(other)
+	return fmt.Errorf("HLLWrapper: payload is neither a full proto state nor a register delta")
 }
 
 // Merge folds another HLLWrapper into this one. The runtime only

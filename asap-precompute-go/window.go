@@ -39,14 +39,25 @@ type seriesEntry struct {
 	Count uint64
 }
 
-// windowState is the per-Precompute window manager. Tumbling-only
-// for Phase 2; Sliding lands in a follow-up.
+// windowState is the per-Precompute window manager. It supports
+// Tumbling, Batch, and Sliding modes.
 //
-// Locking: a single RWMutex guards the entire series map plus the
-// activeStart/activeEnd window bounds. Read paths (Observe) take
-// RLock to look up an existing series, then upgrade only if a new
-// series needs creation. Tick takes the write lock to swap the
-// active map atomically.
+// Tumbling / Batch use `series` as the single active window's map:
+// rotation drains it wholesale and emits one envelope per series.
+//
+// Sliding adds a ring of closed PANES (`panes`). The active `series`
+// map IS the current (newest) pane. A "slide" event (Tick crossing
+// activeEndMs, where activeEndMs == curPaneStart + slide) closes the
+// current pane into the ring, trims the ring to panesPerWindow, and
+// emits one MERGED envelope per series-key covering every pane still
+// in the window. The window thus has length panesPerWindow × slide
+// and advances by one slide each Tick (overlapping panes are
+// re-emitted in successive windows — that is the defining property of
+// a sliding window).
+//
+// Locking: a single RWMutex guards the entire series map, the pane
+// ring, and the activeStart/activeEnd window bounds. Observe takes the
+// write lock to admit/record; Tick takes it to rotate.
 type windowState struct {
 	mu            sync.RWMutex
 	series        map[string]*seriesEntry
@@ -56,6 +67,28 @@ type windowState struct {
 	// initialized for the active config. Lazy-init avoids needing
 	// New() to know the config up front.
 	initialized bool
+
+	// panes is the ring of closed slide-panes for Sliding mode, oldest
+	// first, holding at most panesPerWindow entries. Each pane is a
+	// snapshot of the `series` map captured when its slide closed. nil /
+	// empty for Tumbling and Batch.
+	panes []slidingPane
+
+	// sketchFactory is captured from the observe path so the Sliding
+	// rotate can build fresh throwaway sketches to merge panes into,
+	// without threading the factory through rotate/drain (whose
+	// signatures the test suite pins). Set on first observe; nil before
+	// any observation, in which case the empty-window rotate paths never
+	// dereference it.
+	sketchFactory SketchFactory
+}
+
+// slidingPane is one closed slide-interval's worth of per-series
+// sketches, tagged with the [start,end) range the pane covered.
+type slidingPane struct {
+	series  map[string]*seriesEntry
+	startMs uint64
+	endMs   uint64
 }
 
 // newWindowState constructs an empty windowState.
@@ -67,11 +100,15 @@ func newWindowState() *windowState {
 
 // initWindow lazily computes the first window's bounds based on a
 // reference timestamp. Caller must hold the write lock.
+//
+// For Sliding mode the bounds describe the CURRENT PANE (length =
+// slide), not the full window — rotation steps one pane at a time and
+// the full window is reconstructed from the pane ring at emit time.
 func (w *windowState) initWindow(refMs uint64, cfg *PrecomputeConfig) {
 	if w.initialized {
 		return
 	}
-	size := windowSizeMs(cfg)
+	size := rotationStepMs(cfg)
 	if size == 0 {
 		// Batch mode: window covers a single observation set; use
 		// a sentinel range that Tick treats as always-flushable.
@@ -80,20 +117,62 @@ func (w *windowState) initWindow(refMs uint64, cfg *PrecomputeConfig) {
 		w.initialized = true
 		return
 	}
-	// Align to size boundaries so multiple Precompute instances on
+	// Align to step boundaries so multiple Precompute instances on
 	// the same host produce comparable window edges.
 	w.activeStartMs = (refMs / size) * size
 	w.activeEndMs = w.activeStartMs + size
 	w.initialized = true
 }
 
-// windowSizeMs returns the active window size in milliseconds, or
-// zero for unsized (Batch) configs.
+// windowSizeMs returns the configured window size in milliseconds, or
+// zero for unsized (Batch) configs. For Sliding this is the full
+// window length (panesPerWindow × slide).
 func windowSizeMs(cfg *PrecomputeConfig) uint64 {
 	if cfg == nil || cfg.Window.Size <= 0 {
 		return 0
 	}
 	return uint64(cfg.Window.Size / time.Millisecond)
+}
+
+// slideMs returns the slide interval (pane length) in milliseconds for
+// Sliding mode. Falls back to the full window size when Slide is unset
+// or non-positive (Slide == Size ⇒ degenerates to Tumbling). Returns 0
+// only when the window itself is unsized.
+func slideMs(cfg *PrecomputeConfig) uint64 {
+	if cfg == nil {
+		return 0
+	}
+	if cfg.Window.Slide > 0 {
+		return uint64(cfg.Window.Slide / time.Millisecond)
+	}
+	return windowSizeMs(cfg)
+}
+
+// panesPerWindow returns N, the number of slide-panes that tile one
+// full sliding window: N = ceil(windowSize / slide), at least 1. With
+// the conventional window_size = N × slide_interval this is exact.
+func panesPerWindow(cfg *PrecomputeConfig) int {
+	size := windowSizeMs(cfg)
+	slide := slideMs(cfg)
+	if size == 0 || slide == 0 {
+		return 1
+	}
+	n := int((size + slide - 1) / slide) // ceil
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// rotationStepMs returns the per-Tick rotation period in milliseconds:
+// the slide interval for Sliding mode, the full window size otherwise,
+// and 0 for Batch. This is the unit the active pane / window bounds
+// advance by on each rotation.
+func rotationStepMs(cfg *PrecomputeConfig) uint64 {
+	if cfg != nil && cfg.Mode == Sliding {
+		return slideMs(cfg)
+	}
+	return windowSizeMs(cfg)
 }
 
 // observe routes an Observation into the window. Creates a new
@@ -109,6 +188,9 @@ func (w *windowState) observe(
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.sketchFactory == nil {
+		w.sketchFactory = sketchFactory
+	}
 	w.initWindow(obs.TimestampMs, cfg)
 
 	// Late-data check.
@@ -153,6 +235,9 @@ func (w *windowState) observeKeyed(
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.sketchFactory == nil {
+		w.sketchFactory = sketchFactory
+	}
 	w.initWindow(obs.TimestampMs, cfg)
 
 	if cfg.Window.AllowedLateness > 0 {
@@ -265,6 +350,10 @@ func (w *windowState) observeEnvelope(
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.sketchFactory == nil {
+		w.sketchFactory = sketchFactory
+	}
+
 	// Use the envelope's window-end as the reference timestamp;
 	// this lets a fresh Precompute initialize its window aligned
 	// with the upstream sender.
@@ -371,9 +460,9 @@ func (w *windowState) rotate(nowMs uint64, cfg *PrecomputeConfig) ([]*seriesEntr
 		return nil, [2]uint64{0, 0}
 	}
 
-	size := windowSizeMs(cfg)
-	if size > 0 && nowMs < w.activeEndMs {
-		// Window not yet due.
+	step := rotationStepMs(cfg)
+	if step > 0 && nowMs < w.activeEndMs {
+		// Window / pane not yet due.
 		return nil, [2]uint64{0, 0}
 	}
 
@@ -401,11 +490,18 @@ func (w *windowState) drain(cfg *PrecomputeConfig) ([]*seriesEntry, [2]uint64) {
 	if !w.initialized {
 		return nil, [2]uint64{0, 0}
 	}
-	if len(w.series) == 0 {
+	// For Sliding, there may be buffered state in the pane ring even
+	// when the current pane is empty, so drain whenever either holds
+	// data. For Tumbling/Batch only the current series matters.
+	if cfg != nil && cfg.Mode == Sliding {
+		if len(w.series) == 0 && len(w.panes) == 0 {
+			return nil, [2]uint64{0, 0}
+		}
+	} else if len(w.series) == 0 {
 		return nil, [2]uint64{0, 0}
 	}
 	// Hand a "now" pegged to the active end so advanceWindow
-	// snaps the next window forward by exactly one size — the
+	// snaps the next window forward by exactly one step — the
 	// same boundary Tick would have used had it fired naturally.
 	return w.rotateLocked(w.activeEndMs, cfg)
 }
@@ -414,6 +510,10 @@ func (w *windowState) drain(cfg *PrecomputeConfig) ([]*seriesEntry, [2]uint64) {
 // Caller must hold w.mu (write lock). Captures the active series,
 // resets the map, and advances the window bounds.
 func (w *windowState) rotateLocked(nowMs uint64, cfg *PrecomputeConfig) ([]*seriesEntry, [2]uint64) {
+	if cfg != nil && cfg.Mode == Sliding {
+		return w.rotateSlidingLocked(nowMs, cfg)
+	}
+
 	if len(w.series) == 0 {
 		// Slide the window forward but emit nothing.
 		w.advanceWindow(nowMs, cfg)
@@ -432,6 +532,84 @@ func (w *windowState) rotateLocked(nowMs uint64, cfg *PrecomputeConfig) ([]*seri
 	return closedSeries, rng
 }
 
+// rotateSlidingLocked closes the current pane (the active `series` map)
+// into the pane ring, trims the ring to panesPerWindow, and emits one
+// MERGED entry per series-key spanning every pane in the window. Caller
+// holds w.mu.
+//
+// The returned entries own FRESH, throwaway sketches (built via
+// sketchFactory and Merge-folded from the panes' live sketches), so
+// finishRotate is free to hand them to the sketch pool without
+// disturbing the still-live pane sketches that the next slide will
+// re-emit. The pane sketches themselves are only released when their
+// pane ages out of the ring.
+func (w *windowState) rotateSlidingLocked(nowMs uint64, cfg *PrecomputeConfig) ([]*seriesEntry, [2]uint64) {
+	n := panesPerWindow(cfg)
+	curStart, curEnd := w.activeStartMs, w.activeEndMs
+
+	// Close the current pane into the ring (even when empty: an empty
+	// pane still advances the window and ages out an old pane).
+	w.panes = append(w.panes, slidingPane{
+		series:  w.series,
+		startMs: curStart,
+		endMs:   curEnd,
+	})
+	// Start a fresh current pane and advance the bounds by one slide.
+	w.series = make(map[string]*seriesEntry)
+	w.advanceWindow(nowMs, cfg)
+
+	// Trim the ring to the most recent N panes (drop the oldest,
+	// releasing its sketches for GC).
+	if len(w.panes) > n {
+		w.panes = append(w.panes[:0], w.panes[len(w.panes)-n:]...)
+	}
+
+	// Merge every pane in the window per series-key.
+	merged := make(map[string]*seriesEntry)
+	for pi := range w.panes {
+		pane := &w.panes[pi]
+		for key, src := range pane.series {
+			dst, ok := merged[key]
+			if !ok {
+				// Build a fresh throwaway sketch and copy the series
+				// identity so the emitted envelope carries the right
+				// labels. The merge below folds in this pane's state.
+				dst = &seriesEntry{
+					Sketch:         w.sketchFactory(),
+					ResourceLabels: src.ResourceLabels,
+					Labels:         src.Labels,
+					LastSeenMs:     src.LastSeenMs,
+				}
+				merged[key] = dst
+			}
+			if dst.Sketch != nil && src.Sketch != nil {
+				// Best-effort: a merge error (dimension/type mismatch)
+				// should never happen for same-config sketches, but if
+				// it does we simply skip this pane's contribution rather
+				// than fail the whole rotate.
+				_ = dst.Sketch.Merge(src.Sketch)
+			}
+			dst.Count += src.Count
+			if src.LastSeenMs > dst.LastSeenMs {
+				dst.LastSeenMs = src.LastSeenMs
+			}
+		}
+	}
+
+	if len(merged) == 0 {
+		return nil, [2]uint64{0, 0}
+	}
+
+	out := make([]*seriesEntry, 0, len(merged))
+	for _, e := range merged {
+		out = append(out, e)
+	}
+	// The emitted window spans from the oldest retained pane's start to
+	// the just-closed pane's end.
+	rng := [2]uint64{w.panes[0].startMs, w.panes[len(w.panes)-1].endMs}
+	return out, rng
+}
+
 // advanceWindow rolls the active window bounds forward. Caller
 // holds the write lock.
 //
@@ -441,8 +619,8 @@ func (w *windowState) rotateLocked(nowMs uint64, cfg *PrecomputeConfig) ([]*seri
 //
 // Batch: collapses to a no-op since size is zero.
 func (w *windowState) advanceWindow(nowMs uint64, cfg *PrecomputeConfig) {
-	size := windowSizeMs(cfg)
-	if size == 0 {
+	step := rotationStepMs(cfg)
+	if step == 0 {
 		// Batch / unsized — use the latest observation timestamp
 		// as the new window start.
 		w.activeStartMs = nowMs
@@ -450,15 +628,17 @@ func (w *windowState) advanceWindow(nowMs uint64, cfg *PrecomputeConfig) {
 		return
 	}
 	// Snap to the bucket containing nowMs to avoid lock-step
-	// churn after long idle gaps.
-	bucketStart := (nowMs / size) * size
+	// churn after long idle gaps. For Sliding `step` is the slide,
+	// so this advances by exactly one pane (or jumps forward over
+	// idle panes).
+	bucketStart := (nowMs / step) * step
 	if bucketStart <= w.activeStartMs {
-		// Defensive: at minimum move forward by one window.
+		// Defensive: at minimum move forward by one step.
 		w.activeStartMs = w.activeEndMs
 	} else {
 		w.activeStartMs = bucketStart
 	}
-	w.activeEndMs = w.activeStartMs + size
+	w.activeEndMs = w.activeStartMs + step
 }
 
 // activeSeriesCount returns the current series count. For tests

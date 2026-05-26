@@ -147,14 +147,32 @@ func (w *DDSketchWrapper) Reset() {
 	w.sk.Clear()
 }
 
+// clampQuantile clamps q to the [0,1] range required by the
+// precompute.QuantileSketch contract. NaN (which compares false to both
+// bounds) is mapped to 0 so the query is always well-defined rather than
+// passing NaN into the underlying sketch's quantile lookup.
+func clampQuantile(q float64) float64 {
+	if q != q { // NaN
+		return 0
+	}
+	if q < 0 {
+		return 0
+	}
+	if q > 1 {
+		return 1
+	}
+	return q
+}
+
 // Quantile returns the q-th rank value as a float64; (0, false) from
 // the underlying sketch (empty / out-of-range) collapses to 0 per
-// the QuantileSketch contract used by adapter code.
+// the QuantileSketch contract used by adapter code. q is clamped to
+// [0,1] per the contract before querying.
 func (w *DDSketchWrapper) Quantile(q float64) float64 {
 	if w.sk == nil {
 		return 0
 	}
-	v, ok := w.sk.Quantile(q)
+	v, ok := w.sk.Quantile(clampQuantile(q))
 	if !ok {
 		return 0
 	}
