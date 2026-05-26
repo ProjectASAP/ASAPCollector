@@ -283,7 +283,7 @@ deltas** (no `d_count`/`d_sum`/min/max scalars). It is still a reasonable
 its merge algebra is the simplest unambiguous additive case: a window-reset
 producer emits the window's own buckets (its base is empty) and the backend's
 additive bucket merge yields the correct running total **provided the backend
-does not also subtract a prior base** (Option A). Total count is derived from
+does not also subtract a prior base** (the per-window-reset model (PWR)). Total count is derived from
 the buckets; exact sum/min/max, if a query needs them, come from a separate
 controller-provisioned exact aggregation (the `sum`/`MinMax` families), not
 from the sketch. Correctness is established by the e2e delta-ON == delta-OFF
@@ -294,7 +294,7 @@ equality test — the same gate used for every other family.
 > window-reset producer the per-window min/max are correct for that window
 > but the backend's running base would carry the all-time min/max forward —
 > fine for "current window" queries, wrong for "min over this window only"
-> unless the base is rotated (see Option A).
+> unless the base is rotated (see the per-window-reset model (PWR)).
 
 ### 2.2 CMS / CountSketch — additive cells, same caveat
 
@@ -318,7 +318,7 @@ delta merges additively into a per-window base correctly. The caveats:
 inverse**: the never-reset backend base accumulates the all-time-max across
 all windows (§1.5). HLL therefore **cannot** use the running-base model for
 per-window or windowed-range cardinality queries without resetting the
-backend base at the window boundary (Option A). Note the existing delta
+backend base at the window boundary (the per-window-reset model (PWR)). Note the existing delta
 design already mandates **lossless** HLL deltas (no threshold) for a
 different reason — dropping a register update underestimates permanently
 (`delta-transmission-design.md` §9.3). The window-reset problem is
@@ -347,7 +347,7 @@ Today the edge produces a *difference of two independent per-window
 sketches* and the backend applies an *additive merge onto a never-reset
 running base*. There are exactly two clean ways to reconcile them.
 
-### Option A — true per-window deltas + backend rotates the base each window
+### Model PWR — per-window reset: true per-window deltas + backend rotates the base each window
 
 Make `delta(N)` mean "this window's events only" and make the backend's
 `state(N)` mean "this window only" by **resetting the backend per-series
@@ -400,7 +400,7 @@ Trade-offs:
   inter-window. (This matches `delta-transmission-design.md` §7's
   conclusion that sub-window deltas reduce burst, not total volume.)
 
-### Option B — edge stops resetting between base and delta (cumulative epoch)
+### Model CE — cumulative epoch: edge stops resetting between base and delta
 
 Keep the backend's existing additive-onto-running-base model **unchanged**
 and make the edge produce genuinely cumulative snapshots so that
@@ -448,11 +448,11 @@ Trade-offs:
 
 ### 3.1 Recommendation
 
-**Adopt Option A.** It preserves the edge's existing — and correct —
+**Adopt the per-window-reset model (PWR).** It preserves the edge's existing — and correct —
 per-window reset, touches the lower-risk side (a base-rotation rule in the
 backend ingest path plus a window-close marker that the proto already
 defines), is the only option that makes **HLL** correct, and is
-self-healing against lost frames. Option B's appeal (no backend change) is
+self-healing against lost frames. the cumulative-epoch model (CE)'s appeal (no backend change) is
 outweighed by having to rewrite the edge's window rotation and by leaving
 HLL/per-window semantics broken.
 
@@ -462,12 +462,12 @@ HLL/per-window semantics broken.
 
 ### 4.1 Which option, which sketch first
 
-- **Option A** (per-window deltas + backend per-window base rotation).
+- **the per-window-reset model (PWR)** (per-window deltas + backend per-window base rotation).
 - **Enable DDSketch first** — as the simplest unambiguous additive case
   (bucket-only deltas), validated by the e2e delta-ON == delta-OFF equality
   test (there are no scalar fields to cross-check; see the design rule in §2).
   Once DDSketch is proven end-to-end, extend to CMS and CountSketch (same
-  additive cell contract), then HLL (which Option A's base-rotation finally
+  additive cell contract), then HLL (which the per-window-reset model (PWR)'s base-rotation finally
   makes correct). KLL stays full-only forever.
 - **Prerequisite:** the sketch-proto field removal (drop metric
   `count`/`sum`/`min`/`max` from full + delta protos; route exact aggregates
@@ -539,9 +539,9 @@ unused integration/ test suite (#450)"). So before enabling deltas:
 
 ## 5. Relationship to Existing Code
 
-| Component | File | Today | Change needed for Option A |
+| Component | File | Today | Change needed for the per-window-reset model (PWR) |
 |-----------|------|-------|-----------------------------|
-| Edge window rotate | `asap-precompute-go/window.go:512-533`, `asap-precompute-rs/src/window.rs:344-357` | Resets per-series sketch each window | **No change** (this is what Option A relies on) |
+| Edge window rotate | `asap-precompute-go/window.go:512-533`, `asap-precompute-rs/src/window.rs:344-357` | Resets per-series sketch each window | **No change** (this is what the per-window-reset model (PWR) relies on) |
 | Edge snapshot cache | `asap-precompute-go/snapshot_cache.go:74-137`, `asap-precompute-rs/src/snapshot_cache.rs:114-150` | Always-refresh `delta = snap(N) − snap(N−1)` | Reset outbound base to empty at window close → delta = this-window-only |
 | Wire window marker | `SketchEnvelope.WindowStartMs/EndMs`; `SketchDeltaEnvelope.is_window_close` | Present, partially used | Carry/honor a per-window close marker |
 | Backend ingest delta apply | `ASAPQuery-backend/.../ingest/otel.rs:1290-1357` | Additive merge onto never-reset running base | **Reset/rotate base at window boundary** before applying new window's deltas |
@@ -554,7 +554,7 @@ unused integration/ test suite (#450)"). So before enabling deltas:
 
 ## 6. Open Questions
 
-1. **Window-close signal reliability.** Option A's correctness hinges on the
+1. **Window-close signal reliability.** the per-window-reset model (PWR)'s correctness hinges on the
    backend knowing exactly when a window closes per series. If a window-close
    frame is lost, the backend must fall back to detecting the boundary from
    `(series_key, window_start)` changing on the next frame. Which is the
@@ -565,7 +565,7 @@ unused integration/ test suite (#450)"). So before enabling deltas:
    keyed by `(sender_id, series_key, window_start)` to avoid one sender's
    window-close resetting another's in-flight base (cf.
    `delta-transmission-design.md` §11 open question 3).
-3. **Threshold and decreases across the reset.** With Option A the delta is
+3. **Threshold and decreases across the reset.** With the per-window-reset model (PWR) the delta is
    this-window-only against an empty base, so all cells are increases from 0
    and thresholding is the bounded-error CMS case again — no cross-window
    decreases to drop. Confirm `DeltaThreshold` semantics with an empty base

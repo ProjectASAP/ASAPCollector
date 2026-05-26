@@ -107,11 +107,14 @@ func (w *HLLWrapper) Snapshot() ([]byte, error) {
 	return w.sk.SerializeProtoBytes()
 }
 
-// ComputeDeltaAgainst computes a sparse RegisterDelta against the
-// previous snapshot bytes. When prev is empty (first window), returns
-// the full snapshot with isFull=true. The threshold parameter is
-// unused for HLL — register deltas are always sparse and never larger
-// than the full state, so the threshold short-circuit isn't relevant.
+// ComputeDeltaAgainst computes a sparse RegisterDelta against the previous
+// snapshot bytes. When prev is empty (first window), returns the full snapshot
+// with isFull=true. The threshold parameter is unused for HLL (register deltas
+// are lossless). The delta is CLAMPED to the full frame: the full HLL state is
+// sparse-packed (HLLSparseRegisters), so when few registers are set a
+// per-register-update delta can be LARGER than the full sparse frame; in that
+// case the full frame is emitted so a delta is never larger than the
+// equivalent full frame at the same cadence.
 func (w *HLLWrapper) ComputeDeltaAgainst(prev []byte, _ uint64) ([]byte, bool, error) {
 	if w.sk == nil {
 		return nil, true, nil
@@ -130,6 +133,10 @@ func (w *HLLWrapper) ComputeDeltaAgainst(prev []byte, _ uint64) ([]byte, bool, e
 	if err != nil {
 		full, fErr := w.Snapshot()
 		return full, true, fErr
+	}
+	full, fErr := w.Snapshot()
+	if fErr == nil && len(payload) >= len(full) {
+		return full, true, nil
 	}
 	return payload, false, nil
 }

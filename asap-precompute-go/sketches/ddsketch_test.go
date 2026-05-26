@@ -99,23 +99,26 @@ func TestDDSketchObserver(t *testing.T) {
 	}
 }
 
-// TestDDSketch_OptionA_DeltaAgainstEmptyRoundTrips drives the
-// precompute.SnapshotCache delta path with delta mode on (Option-A,
-// delta-baseline-contract.md §3): the first window emits a full frame,
-// and the second window — a fresh per-window sketch, since the runtime
-// resets per-series state every window — emits a DELTA computed against
-// the empty base the cache stored at window-1 close. Applying that
-// delta to an EMPTY base reconstructs the window's full state and the
-// quantiles match within the alpha relative-accuracy bound.
-func TestDDSketch_OptionA_DeltaAgainstEmptyRoundTrips(t *testing.T) {
+// TestDDSketch_PerWindowEmptyBase_DeltaAgainstEmptyRoundTrips drives the
+// precompute.SnapshotCache delta path (per-window empty-base model,
+// delta-baseline-contract.md): window 1 emits a full frame; window 2 — a fresh
+// per-window sketch — emits a DELTA computed against the empty base the cache
+// stored at window-1 close. Applying that delta to an EMPTY base reconstructs
+// the window's state within the alpha relative-accuracy bound.
+//
+// Window 2 uses SPARSE values (buckets far apart) so the sparse indexed delta
+// is strictly smaller than the contiguous positional full frame and the
+// min(full, delta) clamp keeps it a delta. (Dense data clamps to full — see
+// TestDDSketch_PerWindowEmptyBase_NeverExceedsFull.)
+func TestDDSketch_PerWindowEmptyBase_DeltaAgainstEmptyRoundTrips(t *testing.T) {
 	t.Parallel()
 	const alpha = 0.01
 	c := precompute.NewSnapshotCache()
+	sparse := []float64{1, 1000, 1_000_000}
 
-	// Window 1: first emit is full (no prior base).
 	w1 := NewDDSketchWrapper(alpha)
-	for i := 1; i <= 200; i++ {
-		w1.Update(float64(i))
+	for _, v := range sparse {
+		w1.Update(v)
 	}
 	_, isFull, err := c.ComputeDelta("series", w1, 1)
 	if err != nil {
@@ -125,29 +128,26 @@ func TestDDSketch_OptionA_DeltaAgainstEmptyRoundTrips(t *testing.T) {
 		t.Fatal("window 1 must emit a full frame")
 	}
 
-	// Window 2: a fresh per-window sketch. The cache reset the base to
-	// empty at window-1 close, so this emit must be a DELTA.
 	w2 := NewDDSketchWrapper(alpha)
-	for i := 1; i <= 200; i++ {
-		w2.Update(float64(i))
+	for _, v := range sparse {
+		w2.Update(v)
 	}
 	payload, isFull, err := c.ComputeDelta("series", w2, 1)
 	if err != nil {
 		t.Fatalf("w2: %v", err)
 	}
 	if isFull {
-		t.Fatal("window 2 must emit a delta, not a full frame")
+		t.Fatal("window 2 (sparse) must emit a delta, not a full frame")
 	}
 	if len(payload) == 0 {
 		t.Fatal("window 2 delta payload empty")
 	}
 
-	// Apply the delta to an EMPTY base -> reconstructs window 2.
 	recon := NewDDSketchWrapper(alpha)
 	if err := recon.ApplyDelta(payload); err != nil {
 		t.Fatalf("apply delta: %v", err)
 	}
-	for _, q := range []float64{0.5, 0.9, 0.99} {
+	for _, q := range []float64{0.25, 0.5, 0.9} {
 		want := w2.Quantile(q)
 		got := recon.Quantile(q)
 		if rel := abs(got-want) / want; rel > 0.011 {
@@ -156,44 +156,91 @@ func TestDDSketch_OptionA_DeltaAgainstEmptyRoundTrips(t *testing.T) {
 	}
 }
 
-// TestDDSketch_OptionA_NoCrossWindowSubtraction verifies two
-// consecutive windows each emit their OWN state — window 2's delta is
-// NOT diffed against window 1. Window 1 inserts each value TWICE (high
-// counts), window 2 inserts the SAME values ONCE. If the cache diffed
-// window 2 against window 1, the saturating bucket subtraction would
-// drop every bucket and emit an empty delta; under Option-A the delta
-// reconstructs window 2 in full from an empty base.
-func TestDDSketch_OptionA_NoCrossWindowSubtraction(t *testing.T) {
+// TestDDSketch_PerWindowEmptyBase_NoCrossWindowSubtraction verifies two
+// consecutive windows each emit their OWN state — window 2 is never diffed
+// against window 1. Window 1 inserts each value 5×, window 2 inserts the SAME
+// values 1×. A cross-window diff would yield negative bucket counts that
+// reconstruct to garbage; the per-window empty-base path always diffs against a
+// fresh empty base, so the emit reconstructs window 2 exactly. Sparse values
+// keep it on the delta path.
+func TestDDSketch_PerWindowEmptyBase_NoCrossWindowSubtraction(t *testing.T) {
 	t.Parallel()
 	const alpha = 0.01
 	c := precompute.NewSnapshotCache()
+	sparse := []float64{2, 5000, 2_000_000}
 
 	w1 := NewDDSketchWrapper(alpha)
-	for i := 1; i <= 100; i++ {
-		w1.Update(float64(i))
-		w1.Update(float64(i))
+	for _, v := range sparse {
+		for k := 0; k < 5; k++ {
+			w1.Update(v)
+		}
 	}
 	if _, isFull, err := c.ComputeDelta("s", w1, 1); err != nil || !isFull {
 		t.Fatalf("w1: full=%v err=%v", isFull, err)
 	}
 
 	w2 := NewDDSketchWrapper(alpha)
-	for i := 1; i <= 100; i++ {
-		w2.Update(float64(i))
+	for _, v := range sparse {
+		w2.Update(v)
 	}
 	payload, isFull, err := c.ComputeDelta("s", w2, 1)
 	if err != nil {
 		t.Fatalf("w2: %v", err)
 	}
 	if isFull {
-		t.Fatal("window 2 must emit a delta")
+		t.Fatal("window 2 (sparse) must emit a delta")
 	}
 	if len(payload) == 0 {
 		t.Fatal("window 2 delta empty — cross-window subtraction leaked")
 	}
 
-	// Reconstruct window 2 from empty; its median must match window 2's
-	// own state, NOT window 1's.
+	recon := NewDDSketchWrapper(alpha)
+	if err := recon.ApplyDelta(payload); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	for _, q := range []float64{0.25, 0.5, 0.9} {
+		want := w2.Quantile(q)
+		got := recon.Quantile(q)
+		if rel := abs(got-want) / want; rel > 0.011 {
+			t.Fatalf("q=%v: want %f got %f rel %f", q, want, got, rel)
+		}
+	}
+}
+
+// TestDDSketch_PerWindowEmptyBase_NeverExceedsFull verifies the min(full,delta)
+// bandwidth invariant: for dense contiguous data the emitted per-window frame
+// is never larger than the equivalent full frame. The DDSketch full state is a
+// positional count array (no per-bucket index), so a sparse indexed delta can
+// be larger; the clamp emits the full frame in that case. Either way the
+// emitted payload reconstructs the window on a fresh base.
+func TestDDSketch_PerWindowEmptyBase_NeverExceedsFull(t *testing.T) {
+	t.Parallel()
+	const alpha = 0.01
+	c := precompute.NewSnapshotCache()
+
+	w1 := NewDDSketchWrapper(alpha)
+	for i := 1; i <= 200; i++ {
+		w1.Update(float64(i))
+	}
+	if _, isFull, err := c.ComputeDelta("d", w1, 1); err != nil || !isFull {
+		t.Fatalf("w1: full=%v err=%v", isFull, err)
+	}
+
+	w2 := NewDDSketchWrapper(alpha)
+	for i := 1; i <= 200; i++ {
+		w2.Update(float64(i))
+	}
+	full, err := w2.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	payload, _, err := c.ComputeDelta("d", w2, 1)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	if len(payload) > len(full) {
+		t.Fatalf("invariant violated: payload %d > full %d bytes", len(payload), len(full))
+	}
 	recon := NewDDSketchWrapper(alpha)
 	if err := recon.ApplyDelta(payload); err != nil {
 		t.Fatalf("apply: %v", err)
