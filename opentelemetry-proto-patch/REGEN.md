@@ -5,10 +5,10 @@ The ASAP-patched `metrics.proto` adds five sketch message types (`DDSketch`,
 `*DataPoint` and `*Encoding` enums on top of upstream
 [`opentelemetry-proto` v1.9.0]. The Go bindings under
 `gen/go/go.opentelemetry.io/proto/otlp/` are committed to this repo so the
-fake-exporter / asap-otel Docker builds don't have to reinvent a protoc
+otel-app / asap-otel Docker builds don't have to reinvent a protoc
 toolchain at build time. The `replace` directives in
 `opentelemetry-go-patch/exporters/otlp/otlpmetric/{otlpmetricgrpc,otlpmetrichttp}/go.mod`
-and `deploy/fake-exporter/go.mod` point at this gen tree.
+and `otel-app/go.mod` point at this gen tree.
 
 ## When to regenerate
 
@@ -63,16 +63,16 @@ grep -c "DDSketchDataPoint\|KLLSketchDataPoint\|CountSketchDataPoint\|CountMinSk
 
 The `gen/go/go.opentelemetry.io/proto/otlp/go.mod` is hand-maintained
 (modeled on upstream) and pins protobuf / gRPC / grpc-gateway versions
-that match `deploy/fake-exporter/go.sum`. Update it only when those pins
+that match `otel-app/go.sum`. Update it only when those pins
 shift (rare).
 
 ## Build wiring
 
 `restore_otel_proto_patches.sh` (in the repo root) copies this entire
 directory tree, including `gen/go/...`, on top of the
-`opentelemetry-proto/` submodule. The Docker build for fake-exporter
+`opentelemetry-proto/` submodule. The Docker build for otel-app
 copies `opentelemetry-proto/` into the build context, and
-`deploy/fake-exporter/go.mod` has a
+`otel-app/go.mod` has a
 `replace go.opentelemetry.io/proto/otlp => ../../opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp`
 that picks up the regenerated bindings.
 

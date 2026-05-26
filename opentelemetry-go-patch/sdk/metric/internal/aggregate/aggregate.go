@@ -74,7 +74,7 @@ type fltrMeasure[N int64 | float64] func(ctx context.Context, value N, fltrAttr 
 // MeterProvider's compiled View. Cache invalidation is *not* needed
 // for the SDK's normal lifecycle — Filter is set at Builder time and
 // the Builder is consumed once per stream. The `swappable_filter.go`
-// runtime-swap path in deploy/fake-exporter is a separate
+// runtime-swap path in otel-app is a separate
 // experimental track (it mutates atomic state inside the closure)
 // and the cache freezes the pre-swap result for already-seen keys —
 // acceptable for the cost-eval (every cell is a fresh process) but

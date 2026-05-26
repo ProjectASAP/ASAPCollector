@@ -6,7 +6,7 @@
 #
 # Same binary serves two deploy roles:
 #   - Agent tier:    sketch-from-raw — receives raw OTLP from the
-#                    fake-exporter, runs ddsketch / kll / hll /
+#                    otel-app, runs ddsketch / kll / hll /
 #                    countsketch / countminsketch processors,
 #                    emits typed sketch data points downstream.
 #   - Gateway tier:  forwarder OR sketch-merge. Critically, the
