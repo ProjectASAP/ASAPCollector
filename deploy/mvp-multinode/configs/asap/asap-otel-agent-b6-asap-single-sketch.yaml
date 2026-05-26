@@ -76,7 +76,13 @@ processors:
   # the routing connector + per-family pipelines used to do); everything
   # else is cold-archived + passed through.
   asap_edge:
-    shard_count: 4
+    # shard_count also sets the flush staggering granularity: the loop ticks
+    # every window_duration/shard_count and flushes ONE phase-shifted shard per
+    # tick, so a window's seal/serialize/ship work splits into shard_count small
+    # bursts (peak CPU ~1/shard_count). 12 keeps the dense raw-buffer (100 Hz)
+    # flush from spiking the core; per-shard semantics are unchanged (each shard
+    # still flushes once per window, backend delta totals identical).
+    shard_count: 12
     window_duration: 60s
     drop_original: true
     metrics:

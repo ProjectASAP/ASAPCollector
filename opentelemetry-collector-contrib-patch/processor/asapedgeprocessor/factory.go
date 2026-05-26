@@ -24,7 +24,7 @@ func NewFactory() processor.Factory {
 
 func createDefaultConfig() component.Config {
 	return &Config{
-		ShardCount:     4,
+		ShardCount:     12,
 		WindowDuration: 60 * time.Second,
 		DropOriginal:   true,
 		Cold: ColdConfig{
