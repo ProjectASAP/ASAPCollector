@@ -497,6 +497,8 @@ backend_up() {
             -e RUST_LOG="info,controller=debug,control_plane=debug" \
             -e USE_TYPED_STAGE_SPLIT=1 \
             -e ASAP_EDGE_FUSED=1 \
+            -e ASAP_COLD_FORMAT=intchunk \
+            -e ASAP_AGENT_MEMORY_LIMIT_MIB=8192 \
             -e CONTROLLER_ADDR=0.0.0.0:8080 \
             -e CONTROLLER_OPAMP_ADDR=0.0.0.0:4320 \
             -e CONTROLLER_GRPC_ADDR=0.0.0.0:4321 \

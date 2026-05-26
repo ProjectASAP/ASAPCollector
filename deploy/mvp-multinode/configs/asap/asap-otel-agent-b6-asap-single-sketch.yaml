@@ -100,6 +100,12 @@ processors:
       # runs on node2 as host `gorilla-merger`, HTTP ingest on :10908.
       # Empty endpoint = build-and-drop (measurement / warm-only).
       ship_endpoint: http://gorilla-merger:10908/ingest/gorilla
+      # Activate the intchunk decode-on-read cold path: re-encode the same
+      # drained samples as a lossless intchunk coldpart.Part and POST it to the
+      # merger's /ingest/coldpart (write-no-decode store + decode-on-read
+      # StoreAPI), instead of the gorilla-XOR fragment batch.
+      format: intchunk
+      coldpart_endpoint: http://gorilla-merger:10908/ingest/coldpart
       block_duration: 60s
       reorder_grace: 2s
       external_labels:

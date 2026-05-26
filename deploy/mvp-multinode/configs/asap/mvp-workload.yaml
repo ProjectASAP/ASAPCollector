@@ -169,6 +169,7 @@
   grouping_labels:
   - zone
   sketch_family_override: HLL
+  sample_p: 0.5   # activate sampling (fused processor honors it; backend rescales x1/p)
   target_path: warm
 
 # 7. CountSketch — top-K over Zipfian endpoint distribution.
@@ -198,4 +199,5 @@
   grouping_labels:
   - zone
   sketch_family_override: CountMinSketch
+  sample_p: 0.5   # activate sampling (fused processor honors it; backend rescales x1/p)
   target_path: warm
