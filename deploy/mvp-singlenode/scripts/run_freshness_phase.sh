@@ -4,7 +4,7 @@
 #
 # Each path's freshness is measured by polling a Prometheus-style
 # /api/v1/query endpoint for the corresponding probe metric emitted
-# by the fake-exporter (see deploy/fake-exporter/probes.go and
+# by the otel-app (see otel-app/probes.go and
 # deploy/mvp-singlenode/configs/mvp-freshness-probes.yaml). Per-path delta math
 # is in deploy/mvp-singlenode/scripts/measure_freshness.py.
 #
@@ -24,7 +24,7 @@
 #
 # The driver intentionally runs the three paths sequentially rather
 # than in parallel — each call to measure_freshness.py is poll-only
-# (the producer side is the fake-exporter, which has been emitting
+# (the producer side is the otel-app, which has been emitting
 # all three probes the whole time), and serializing makes the
 # stderr summary lines easy to read in the demo log.
 #

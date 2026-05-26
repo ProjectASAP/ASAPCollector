@@ -7,13 +7,13 @@ flags the caller passes; mixing them is rejected with a clear error.
 ## v6 mode (preferred — see deploy/mvp-singlenode/configs/mvp-freshness-probes.yaml)
 
 Polls a Prometheus-style /api/v1/query endpoint for one of the three
-freshness probe metrics emitted by the fake-exporter (see
-deploy/fake-exporter/probes.go) and computes per-sample freshness::
+freshness probe metrics emitted by the otel-app (see
+otel-app/probes.go) and computes per-sample freshness::
 
     delta_ms = poll_response_ts_ms - observed_value
 
 `observed_value` is the cumulative counter value returned by
-`last_over_time(<probe>[10s])`. The fake-exporter encodes the
+`last_over_time(<probe>[10s])`. The otel-app encodes the
 unix_ts_ms of the most recent emission directly in the counter's
 cumulative value (probes.go), so the subtraction yields the
 wall-clock latency between emission and visibility through the
@@ -490,12 +490,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # v6 mode flags (preferred)
-    g6 = p.add_argument_group("v6 mode (poll-only, fake-exporter does the push)")
+    g6 = p.add_argument_group("v6 mode (poll-only, otel-app does the push)")
     g6.add_argument("--query-endpoint", help="Prometheus /api/v1/query base URL")
     g6.add_argument(
         "--probe",
         choices=ALLOWED_PROBES,
-        help="probe metric name (must match fake-exporter probes.go)",
+        help="probe metric name (must match otel-app probes.go)",
     )
     g6.add_argument(
         "--path-label",

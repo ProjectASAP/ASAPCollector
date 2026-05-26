@@ -29,17 +29,16 @@
 //
 //   - `unique_users_per_min` (HLL): per-event Counter labelled with a
 //     synthetic `user_id` drawn from a rotating pool of size
-//     EXPORTER_FIVE_SKETCH_USER_POOL (default 100, range
-//     50-2000). Cardinality of the active user set in any 1-minute
-//     window is the property HLL estimates. The default was lowered
-//     from 1000 → 100 to keep the agent → gateway wire bandwidth
-//     bounded (HLL inner-label fan-out dominates SDK output rate).
+//     -five-sketch-user-pool (default 100, range 50-2000). Cardinality
+//     of the active user set in any 1-minute window is the property HLL
+//     estimates. The default of 100 keeps the agent → gateway wire
+//     bandwidth bounded (HLL inner-label fan-out dominates SDK output rate).
 //
 //   - `top_endpoint_qps` (CountSketch): per-event Counter labelled
 //     with `endpoint` drawn Zipfian (s=1.2) over
-//     EXPORTER_FIVE_SKETCH_ENDPOINTS (default 50). Heavy hitters
-//     dominate, so top-K is meaningful and the count-sketch's
-//     unbiased frequency estimator is the right oracle.
+//     -five-sketch-endpoints (default 50). Heavy hitters dominate, so
+//     top-K is meaningful and the count-sketch's unbiased frequency
+//     estimator is the right oracle.
 //
 //   - `endpoint_request_freq` (CountMinSketch): per-event Counter
 //     labelled with `endpoint`. Same Zipfian shape as
@@ -51,23 +50,22 @@
 //
 // These respect the existing per-producer knobs so the demo's
 // PER_AGENT_CARDINALITY × N_PRODUCERS arithmetic continues to make
-// sense:
+// sense (flags / YAML — see Config in main.go):
 //
-//	EXPORTER_FREQ_HZ                  per-series tick rate (shared with runSynthetic)
-//	EXPORTER_CARDINALITY              upstream zone/rack/node/pod label set count
-//	                                  (shared — drives the outer label set on every
-//	                                  five-sketch metric so they fan out per-host).
-//	EXPORTER_FIVE_SKETCH_USER_POOL    HLL user-id cardinality       (default 100)
-//	EXPORTER_FIVE_SKETCH_ENDPOINTS    Zipfian endpoint cardinality  (default 50)
-//	EXPORTER_FIVE_SKETCH_ZIPF_S       Zipfian s parameter            (default 1.2)
-//	EXPORTER_FIVE_SKETCH_USER_ROTATE  s — how often we rotate the user
-//	                                   active window forward by one slot
-//	                                   (default 60s — matches the
-//	                                   "_per_min" semantic).
+//	-freq-hz                   per-series tick rate (shared with runSynthetic)
+//	-cardinality               upstream zone/rack/node/pod label set count
+//	                           (shared — drives the outer label set on every
+//	                           five-sketch metric so they fan out per-host).
+//	-five-sketch-user-pool     HLL user-id cardinality       (default 100)
+//	-five-sketch-endpoints     Zipfian endpoint cardinality  (default 50)
+//	-five-sketch-zipf-s        Zipfian s parameter            (default 1.2)
+//	-five-sketch-user-rotate   how often we rotate the user active
+//	                           window forward by one slot
+//	                           (default 60s — matches the "_per_min" semantic).
 //
-// Each five-sketch series ticks at the same EXPORTER_FREQ_HZ as the
-// existing http_requests_total counter; per-series goroutines stagger
-// their start so the wire pattern is smooth.
+// Each five-sketch series ticks at the same -freq-hz as the existing
+// http_requests_total counter; per-series goroutines stagger their start
+// so the wire pattern is smooth.
 
 package main
 
@@ -91,8 +89,8 @@ import (
 // The five-sketch metrics ALWAYS emit — the controller now decides
 // per-metric storage tier (warm-only sketch vs cold archive) on the
 // asap_edge processor, so the producer just emits unconditionally; the
-// old EXPORTER_FIVE_SKETCH on/off gate has been removed. The cardinality
-// knobs (EXPORTER_FIVE_SKETCH_USER_POOL etc.) are retained.
+// old five-sketch on/off gate has been removed. The cardinality knobs
+// (-five-sketch-user-pool etc.) are retained.
 //
 // `outerLabels` is the same per-host label set that runSynthetic
 // uses, so each five-sketch metric fans out across the same
@@ -103,31 +101,34 @@ func startFiveSketchWorkload(
 	meter metric.Meter,
 	outerLabels [][]attribute.KeyValue,
 	freqHz float64,
+	c Config,
 ) (stop func()) {
-	// Default lowered from 1000 → 100 (and floor lowered from 500 → 50)
-	// to keep agent → gateway bandwidth bounded; HLL inner-label fan-out
-	// (one series per user_id × outer label set) dominates SDK output.
-	// Aggregate target with N_PRODUCERS=10 × PER_AGENT_CARDINALITY=500
-	// is ~5K series at the gateway; userPool only widens the active
-	// user-id bucket inside that fan-out, so 100 is plenty for HLL to
-	// have something non-trivial to estimate.
-	userPool := envInt("EXPORTER_FIVE_SKETCH_USER_POOL", 100)
+	// Default 100 (and floor 50) keeps agent → gateway bandwidth bounded;
+	// HLL inner-label fan-out (one series per user_id × outer label set)
+	// dominates SDK output. Aggregate target with N_PRODUCERS=10 ×
+	// PER_AGENT_CARDINALITY=500 is ~5K series at the gateway; userPool only
+	// widens the active user-id bucket inside that fan-out, so 100 is plenty
+	// for HLL to have something non-trivial to estimate.
+	userPool := c.FiveSketchUserPool
 	if userPool < 50 {
 		userPool = 50
 	}
 	if userPool > 2000 {
 		userPool = 2000
 	}
-	endpoints := envInt("EXPORTER_FIVE_SKETCH_ENDPOINTS", 50)
+	endpoints := c.FiveSketchEndpoints
 	if endpoints < 5 {
 		endpoints = 5
 	}
-	zipfS := envFloat("EXPORTER_FIVE_SKETCH_ZIPF_S", 1.2)
+	zipfS := c.FiveSketchZipfS
 	if zipfS <= 1.0 {
 		// math/rand.Zipf requires s > 1 strictly.
 		zipfS = 1.2
 	}
-	userRotate := envDuration("EXPORTER_FIVE_SKETCH_USER_ROTATE", 60*time.Second)
+	userRotate := c.FiveSketchUserRot
+	if userRotate <= 0 {
+		userRotate = 60 * time.Second
+	}
 
 	// Per-series tick period — matches the Hz used by the rest of the
 	// synthetic workload so the wire shape stays predictable.

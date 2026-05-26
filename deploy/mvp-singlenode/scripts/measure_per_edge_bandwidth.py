@@ -94,8 +94,8 @@ def _role_for_container(name: str) -> str:
         return "backend"
     if bare == "minio":
         return "minio"
-    if bare.startswith("fake-exporter") or bare.startswith("fake_exporter"):
-        # base.yml's fake-exporter; under the MVP overlay it's a
+    if bare.startswith("otel-app") or bare.startswith("otel_app"):
+        # base.yml's otel-app; under the MVP overlay it's a
         # stub alpine that does nothing, so its bytes-on-wire is ~0.
         # Tag it as producer so a misconfiguration (overlay not
         # active) still attributes to the right edge — better than

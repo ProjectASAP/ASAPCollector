@@ -114,7 +114,7 @@ build_images() {
     for req in "${BACKEND}/data_plane/Dockerfile" "${BACKEND}/control_plane/Dockerfile" "${BACKEND}/gorilla-merger" \
                "${ROOT}/build_asap_otel.sh" "${ROOT}/build_opamp_supervisor.sh" \
                "${ROOT}/deploy/docker/Dockerfile.asap-otel" "${ROOT}/deploy/docker/Dockerfile.asap-otel-supervised" \
-               "${ROOT}/deploy/docker/Dockerfile.fake-exporter" \
+               "${ROOT}/deploy/docker/Dockerfile.otel-app" \
                "${ROOT}/asap-precompute-rs" "${ROOT}/asap-gorilla-rust" "${ROOT}/asap-gorilla-go" \
                "${SKETCHLIB}" "${SKETCHLIB_GO}"; do
         [ -e "${req}" ] || { log "  MISSING build input: ${req}"; missing=1; }
@@ -148,11 +148,11 @@ build_images() {
     docker build -f "${ROOT}/deploy/docker/Dockerfile.asap-otel-supervised" \
         -t asap/asap-otel-supervised:dev "${ROOT}"
 
-    # ── fake-exporter (producers) ──
-    log "  → asap/fake-exporter:dev"
-    DOCKER_BUILDKIT=1 docker build -f "${ROOT}/deploy/docker/Dockerfile.fake-exporter" \
+    # ── otel-app (producers) ──
+    log "  → asap/otel-app:dev"
+    DOCKER_BUILDKIT=1 docker build -f "${ROOT}/deploy/docker/Dockerfile.otel-app" \
         --build-context sketchlib-go="${SKETCHLIB_GO}" \
-        -t asap/fake-exporter:dev "${ROOT}"
+        -t asap/otel-app:dev "${ROOT}"
 
     # ── gorilla-merger (cold sink) ──
     # The merger imports asap-gorilla-go AND its intchunk subpackage (the cold
@@ -197,7 +197,7 @@ load_images() {
     _ship asap/control-plane:dev         "${NODE2_HOST}"
     _ship asap/asap-otel:dev             "${NODE0_HOST}" "${NODE3_HOST}"
     _ship asap/asap-otel-supervised:dev  "${NODE0_HOST}" "${NODE3_HOST}"
-    _ship asap/fake-exporter:dev         "${NODE0_HOST}" "${NODE3_HOST}"
+    _ship asap/otel-app:dev         "${NODE0_HOST}" "${NODE3_HOST}"
     _ship asap/gorilla-merger:dev        "${NODE1_HOST}"
     log "load_images: done"
 }
@@ -636,35 +636,33 @@ agents_up() {
         log "node0 producer-a-${i} up"
         docker_run_on "${NODE0_HOST}" \
             --name asap-producer-a-${i} \
-            -e EXPORTER_TARGET=agent-a:4317 \
-            -e EXPORTER_PRODUCER_ID=p-a-${i} \
-            -e EXPORTER_RATE=${EXPORTER_RATE} \
-            -e EXPORTER_CARDINALITY=${PER_AGENT_CARDINALITY} \
-            -e EXPORTER_FREQ_HZ=${EXPORTER_FREQ_HZ} \
-            -e EXPORTER_SDK_WINDOW=${EXPORTER_SDK_WINDOW} \
-            -e EXPORTER_SDK_AGG=${EXPORTER_SDK_AGG} \
-            -e EXPORTER_MAX_BUFFER_PER_SERIES=${EXPORTER_MAX_BUFFER_PER_SERIES} \
-            -e EXPORTER_FRESHNESS_PROBES=${EXPORTER_FRESHNESS_PROBES} \
-            -e EXPORTER_FRESHNESS_PROBE_HZ=${EXPORTER_FRESHNESS_PROBE_HZ} \
-            -e EXPORTER_SEED=${EXPORTER_SEED:-42} \
-            asap/fake-exporter:dev
+            asap/otel-app:dev \
+            -target=agent-a:4317 \
+            -producer-id=p-a-${i} \
+            -cardinality=${PER_AGENT_CARDINALITY} \
+            -freq-hz=${OTELAPP_FREQ_HZ} \
+            -sdk-window=${OTELAPP_SDK_WINDOW} \
+            -agg=${OTELAPP_SDK_AGG} \
+            -max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES} \
+            -freshness-probes=${OTELAPP_FRESHNESS_PROBES} \
+            -freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ} \
+            -seed=${OTELAPP_SEED:-42}
     done
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
         log "node3 producer-b-${i} up"
         docker_run_on "${NODE3_HOST}" \
             --name asap-producer-b-${i} \
-            -e EXPORTER_TARGET=agent-b:4317 \
-            -e EXPORTER_PRODUCER_ID=p-b-${i} \
-            -e EXPORTER_RATE=${EXPORTER_RATE} \
-            -e EXPORTER_CARDINALITY=${PER_AGENT_CARDINALITY} \
-            -e EXPORTER_FREQ_HZ=${EXPORTER_FREQ_HZ} \
-            -e EXPORTER_SDK_WINDOW=${EXPORTER_SDK_WINDOW} \
-            -e EXPORTER_SDK_AGG=${EXPORTER_SDK_AGG} \
-            -e EXPORTER_MAX_BUFFER_PER_SERIES=${EXPORTER_MAX_BUFFER_PER_SERIES} \
-            -e EXPORTER_FRESHNESS_PROBES=${EXPORTER_FRESHNESS_PROBES} \
-            -e EXPORTER_FRESHNESS_PROBE_HZ=${EXPORTER_FRESHNESS_PROBE_HZ} \
-            -e EXPORTER_SEED=${EXPORTER_SEED:-42} \
-            asap/fake-exporter:dev
+            asap/otel-app:dev \
+            -target=agent-b:4317 \
+            -producer-id=p-b-${i} \
+            -cardinality=${PER_AGENT_CARDINALITY} \
+            -freq-hz=${OTELAPP_FREQ_HZ} \
+            -sdk-window=${OTELAPP_SDK_WINDOW} \
+            -agg=${OTELAPP_SDK_AGG} \
+            -max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES} \
+            -freshness-probes=${OTELAPP_FRESHNESS_PROBES} \
+            -freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ} \
+            -seed=${OTELAPP_SEED:-42}
     done
 }
 
@@ -801,7 +799,7 @@ case "${cmd}" in
 usage: $0 <cmd> [arm]
   build               rebuild ALL local images from current source (data-plane,
                       control-plane, asap-otel, asap-otel-supervised,
-                      fake-exporter, gorilla-merger)
+                      otel-app, gorilla-merger)
   load                ship the local images to the node(s) that run them
                       (cold/warm split: warm→node2, agents→node0/3, cold→node1)
   sync                rsync /mydata/ASAPCollector configs+scripts to all 4 nodes

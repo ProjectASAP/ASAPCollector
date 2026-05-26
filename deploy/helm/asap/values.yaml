@@ -72,7 +72,7 @@ grafana:
 # workloads (see `docs/paper-outline.md` §non-goals), so this
 # stays pointed at a cluster-trace replayer.
 workload:
-  image: "asap/fake-exporter:dev"
+  image: "asap/otel-app:dev"
   trace: "google-cluster-2019"
   rate: 1000          # samples/sec per metric
   cardinality: 1000   # unique label sets per metric

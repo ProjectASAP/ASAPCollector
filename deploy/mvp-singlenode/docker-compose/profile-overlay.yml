@@ -2,8 +2,8 @@
 # label-axis CPU root-cause investigation (paper blocker #2).
 #
 # Used only with the SDK cost-eval grid (run-sdk-cost-grid.sh)
-# when capturing CPU profiles. Adds the EXPORTER_PPROF_ADDR
-# env var (gated in main.go) and exposes the pprof port on
+# when capturing CPU profiles. Adds the -pprof-addr flag
+# (gated in main.go) and exposes the pprof port on
 # the host. Off by default so production sweeps don't expose a
 # pprof listener.
 #
@@ -18,9 +18,21 @@
 # other agents that share the default project name.
 
 services:
-  fake-exporter:
-    environment:
-      EXPORTER_PPROF_ADDR: "0.0.0.0:6060"
+  # Add -pprof-addr. compose `command:` fully replaces the command
+  # set by earlier layers (no merge like environment had), so the full
+  # flag list is restated here. When pairing with a non-default
+  # baseline, pass its knobs via host env (OTELAPP_SDK_AGG, etc.) so
+  # they survive this last-layer command override.
+  otel-app:
+    command:
+      - "-target=agent-1:4317"
+      - "-pprof-addr=0.0.0.0:6060"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-sdk-projection=${OTELAPP_SDK_PROJECTION:-}"
+      - "-agg=${OTELAPP_SDK_AGG:-default}"
+      - "-max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES:-0}"
     ports:
       # Host port 36060 to avoid colliding with sibling stacks.
       - "36060:6060"

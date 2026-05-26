@@ -235,37 +235,34 @@ services:
     logging: *default-logging
 
   # ───────── workload: synthetic metrics producer ─────────
-  fake-exporter:
+  otel-app:
     # Replays the Google cluster usage trace (or any OTel
     # source) at realistic rates to feed the agents. Observability
     # workload is the only kind we evaluate.
-    # Placeholder image — the actual binary lives in
-    # DataCollector/datasets_eval/.
-    image: asap/fake-exporter:dev
-    environment:
+    image: asap/otel-app:dev
+    # otel-app is configured entirely by CLI flags (no environment
+    # variables). The host-env ${OTELAPP_*:-default} interpolations let
+    # sweep scripts override individual knobs without editing this file.
+    command:
       # Issue #400: pre-removal this targeted `gateway:4317`. The
-      # gateway was retired (backend handles fan-in); fake-exporter
-      # now talks directly to an agent in each `agents-N*.yml`
-      # overlay, where `EXPORTER_TARGET` is overridden to
-      # `agent-1:4317`. The default here points at backend:4317 so
-      # the bare `base.yml` still runs (no agent overlay) — the
-      # producer's metrics land directly in the backend's OTLP
-      # receiver, useful for a no-sketch sanity probe.
-      EXPORTER_TARGET: "backend:4317"
-      # Workload knobs (can be overridden from sweep scripts via
-      # host env). Legacy EXPORTER_RATE is accepted but deprecated
-      # — fake-exporter itself logs a warning when set.
-      EXPORTER_RATE: "${EXPORTER_RATE:-}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      # Three-axis SDK knobs (PR #190, see
-      # docs/sdk-cost-evaluation.md). Empty
-      # projection = keep all labels; "default" aggregation =
+      # gateway was retired (backend handles fan-in); otel-app now talks
+      # directly to an agent in each `agents-N*.yml` overlay, where
+      # `-target` is overridden to `agent-1:4317`. The default here
+      # points at backend:4317 so the bare `base.yml` still runs (no
+      # agent overlay) — the producer's metrics land directly in the
+      # backend's OTLP receiver, useful for a no-sketch sanity probe.
+      - "-target=backend:4317"
+      # Workload knobs (overridable from sweep scripts via host env).
+      # The deprecated rate knob was dropped (it was ignored).
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      # Three-axis SDK knobs (PR #190, see docs/sdk-cost-evaluation.md).
+      # Empty projection = keep all labels; "default" aggregation =
       # Sum for Counter / LastValue for Gauge.
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_SDK_PROJECTION: "${EXPORTER_SDK_PROJECTION:-}"
-      EXPORTER_SDK_AGG: "${EXPORTER_SDK_AGG:-default}"
-      EXPORTER_MAX_BUFFER_PER_SERIES: "${EXPORTER_MAX_BUFFER_PER_SERIES:-0}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-sdk-projection=${OTELAPP_SDK_PROJECTION:-}"
+      - "-agg=${OTELAPP_SDK_AGG:-default}"
+      - "-max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES:-0}"
     depends_on:
       - backend
     logging: *default-logging

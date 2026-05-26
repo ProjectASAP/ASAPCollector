@@ -30,7 +30,7 @@
 #     to inject `--web.enable-remote-write-receiver` /
 #     `--enable-feature=otlp-write-receiver` onto the metrics
 #     service (those were Prometheus-only flags).
-#   - The fake-exporter still talks to `agent-1:4317` (set in
+#   - The otel-app still talks to `agent-1:4317` (set in
 #     agents-N10.yml). The PRW path activates inside the agent.
 #   - Ad-hoc queries during the demo target VM's :8428/api/v1/query
 #     (published on the host as :9090), NOT the precompute

@@ -5,7 +5,7 @@
 # per-pipeline resource numbers are clean (the user's explicit
 # constraint: "do so if you can clearly separate out the resource
 # usage and overhead, otherwise, please run twice"). Both pipelines
-# share the same fake-exporter producers, the same per-agent
+# share the same otel-app producers, the same per-agent
 # cardinality, the same query classes, and the same soak duration —
 # only the agent + storage backend differs:
 #
@@ -112,9 +112,9 @@ FRESHNESS_DURATION_S="${FRESHNESS_DURATION_S:-60}"
 QPS="${QPS:-8}"
 PER_AGENT_CARDINALITY="${PER_AGENT_CARDINALITY:-500}"
 N_PRODUCERS="${N_PRODUCERS:-10}"
-EXPORTER_FREQ_HZ="${EXPORTER_FREQ_HZ:-10}"
-EXPORTER_FRESHNESS_PROBES="${EXPORTER_FRESHNESS_PROBES:-on}"
-EXPORTER_FRESHNESS_PROBE_HZ="${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+OTELAPP_FREQ_HZ="${OTELAPP_FREQ_HZ:-10}"
+OTELAPP_FRESHNESS_PROBES="${OTELAPP_FRESHNESS_PROBES:-true}"
+OTELAPP_FRESHNESS_PROBE_HZ="${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
 ASAP_SKETCH_FAMILY="${ASAP_SKETCH_FAMILY:-ddsketch}"
 USE_TYPED_STAGE_SPLIT="${USE_TYPED_STAGE_SPLIT:-1}"
 
@@ -290,14 +290,14 @@ preflight() {
     # compactor_phase() (now: thanos_compact_phase) where it polls the
     # docker compose service.
 
-    # Best-effort: warn if the fake-exporter image is missing.
+    # Best-effort: warn if the otel-app image is missing.
     # We do NOT fail here — the docker-compose `up` will surface
     # that directly.
-    if docker image inspect asap/fake-exporter:dev >/dev/null 2>&1; then
-        log "  fake-exporter:dev image present"
+    if docker image inspect asap/otel-app:dev >/dev/null 2>&1; then
+        log "  otel-app:dev image present"
     else
-        log "  fake-exporter:dev image NOT FOUND — run: "
-        log "    DOCKER_BUILDKIT=1 docker build -f deploy/docker/Dockerfile.fake-exporter -t asap/fake-exporter:dev ."
+        log "  otel-app:dev image NOT FOUND — run: "
+        log "    DOCKER_BUILDKIT=1 docker build -f deploy/docker/Dockerfile.otel-app -t asap/otel-app:dev ."
     fi
 
     # Clean any stale containers from a previous run of the MVP
@@ -338,9 +338,9 @@ bring_up_stack() {
         cd "${COMPOSE_DIR}"
         USE_TYPED_STAGE_SPLIT="${USE_TYPED_STAGE_SPLIT}" \
         PER_AGENT_CARDINALITY="${PER_AGENT_CARDINALITY}" \
-        EXPORTER_FREQ_HZ="${EXPORTER_FREQ_HZ}" \
-        EXPORTER_FRESHNESS_PROBES="${EXPORTER_FRESHNESS_PROBES}" \
-        EXPORTER_FRESHNESS_PROBE_HZ="${EXPORTER_FRESHNESS_PROBE_HZ}" \
+        OTELAPP_FREQ_HZ="${OTELAPP_FREQ_HZ}" \
+        OTELAPP_FRESHNESS_PROBES="${OTELAPP_FRESHNESS_PROBES}" \
+        OTELAPP_FRESHNESS_PROBE_HZ="${OTELAPP_FRESHNESS_PROBE_HZ}" \
         ASAP_SKETCH_FAMILY="${ASAP_SKETCH_FAMILY}" \
         ASAP_THANOS_QUERY_URL="${ASAP_THANOS_QUERY_URL:-http://thanos-query:10903}" \
         AGENT_CONFIG_A="${AGENT_CONFIG_A:-}" \
@@ -614,8 +614,8 @@ JSON
 # Phase 3 — freshness (raw / warm / archive).
 freshness_phase() {
     log "Phase 3 freshness probes [${PIPELINE_LABEL}]"
-    # The fake-exporter has been emitting probes the whole time
-    # (EXPORTER_FRESHNESS_PROBES=on); this phase is poll-only.
+    # The otel-app has been emitting probes the whole time
+    # (-freshness-probes=true); this phase is poll-only.
     #
     # Phase 3.2.5 Bug (c): the raw probe is intentionally polled at
     # the VictoriaMetrics B0 sink (HOST_VM_B0_PORT=19090; was
@@ -667,8 +667,8 @@ ad_hoc_postings_phase() {
     }
 
     # The two postings-exercise queries from the spec. Predicates
-    # match labels the fake-exporter actually emits (`zone, rack,
-    # node, pod` per `deploy/fake-exporter/main.go::attrSetsZRNP`) —
+    # match labels the otel-app actually emits (`zone, rack,
+    # node, pod` per `otel-app/main.go::attrSetsZRNP`) —
     # the previous `service="api"` and `status=~"5.."` selectors
     # match zero series since neither label exists in the produced
     # data, masking the postings-filter exercise with empty results.
@@ -713,11 +713,11 @@ cold_fallback_phase() {
     local adir="${PIPELINE_OUT_BASE}/ad-hoc"
     local backend_url="http://localhost:${PIPELINE_QUERY_PORT}"
 
-    # Probe predicate uses `zone="z0"` because the fake-exporter
+    # Probe predicate uses `zone="z0"` because the otel-app
     # emits zone/rack/node/pod labels — no `service` label exists,
     # so the previous `service="payments"` selector always matched
     # zero series and surfaced an empty (but HTTP-200) response that
-    # masked any real cold-path data (deploy/fake-exporter/main.go
+    # masked any real cold-path data (otel-app/main.go
     # `attrSetsZRNP`). Keeping the file basename `cold_payments.*`
     # for backwards compatibility with mvp_report.py's loader.
     log "  cold[zone=z0]: count(http_requests_total{zone=\"z0\"})"

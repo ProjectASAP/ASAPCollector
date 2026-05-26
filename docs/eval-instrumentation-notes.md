@@ -27,7 +27,7 @@ NaN. "Stack tier" is which container the signal originates from.
 | `scale` | `--scale` CLI arg (e.g. `N1`, `N10`) | — | — | label |
 | `rate` | `--rate` CLI arg | — | — | events/s (workload knob) |
 | `cardinality` | `--cardinality` CLI arg | — | — | distinct series (workload knob) |
-| `producer_cpu_cores` | `docker stats` CPU% / 100 on `--producer-container` | — | producer (`fake-exporter`) | cores |
+| `producer_cpu_cores` | `docker stats` CPU% / 100 on `--producer-container` | — | producer (`otel-app`) | cores |
 | `producer_rss_mib` | `docker stats` mem on `--producer-container` | — | producer | MiB |
 | `producer_bytes_out_per_s` | `docker stats` net tx delta on `--producer-container`, divided by `--bytes-sample-window` | — | producer | bytes/s on the wire |
 | `agent_cpu_cores` | `rate(otelcol_process_cpu_seconds_total{job="agents"})` | — | agent | cores |

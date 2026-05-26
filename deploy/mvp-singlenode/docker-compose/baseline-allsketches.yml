@@ -32,7 +32,16 @@ services:
     labels:
       asap.baseline: "allsketches-demo"
 
-  fake-exporter:
-    environment:
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-100000}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-100}"
+  # compose `command:` fully replaces the command set by the
+  # base.yml + agents-N* layers, so the full flag list is restated
+  # here with the higher cardinality / freq for this demo. Target
+  # stays agent-1 (the agents-N* entry point).
+  otel-app:
+    command:
+      - "-target=agent-1:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-100000}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-100}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-sdk-projection=${OTELAPP_SDK_PROJECTION:-}"
+      - "-agg=${OTELAPP_SDK_AGG:-default}"
+      - "-max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES:-0}"

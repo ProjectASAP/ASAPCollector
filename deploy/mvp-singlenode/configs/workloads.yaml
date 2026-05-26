@@ -5,7 +5,7 @@
 #
 #   - metric_name:    REQUIRED. Metric the planner targets. Must match a
 #                     name the producer actually emits (see
-#                     deploy/fake-exporter/main.go: `http_requests_total`
+#                     otel-app/main.go: `http_requests_total`
 #                     counter, `http_requests_total_latency_ms` gauge).
 #     query_string:   OPTIONAL. Raw PromQL/SQL parsed by the analyzer to
 #                     fill metric_name / aggregations / time_window /

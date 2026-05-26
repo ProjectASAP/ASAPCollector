@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # measure_freshness.sh — sample-generation-to-backend-write delay.
 #
-# Mechanism: fake-exporter emits `http_freshness_probe_{raw,warm,archive}`
+# Mechanism: otel-app emits `http_freshness_probe_{raw,warm,archive}`
 # counters whose cumulative value is the Unix-epoch-ms at emission. We poll
 # the relevant backend for `<probe>` (instant query — gives the latest sample's
 # value as a number == its emission ts_ms). Δ = poll_response_ts_ms − value.

@@ -36,13 +36,13 @@ that this baseline exercises.
 
 Workload knobs (defaults from `base.yml`):
 
-- `EXPORTER_FREQ_HZ=10` — 10 Hz event rate from the synthetic producer
-- `EXPORTER_CARDINALITY=1000` — 1000 active series
-- `EXPORTER_SDK_WINDOW=15s` — SDK aggregation window
-- `EXPORTER_SDK_AGG=default` — Sum / LastValue per metric kind
+- `-freq-hz=10` — 10 Hz event rate from the synthetic producer
+- `-cardinality=1000` — 1000 active series
+- `-sdk-window=15s` — SDK aggregation window
+- `-agg=default` — Sum / LastValue per metric kind
 
 One agent (N1), one gateway, one backend. No load-gen client; the
-fake-exporter is the only writer.
+otel-app is the only writer.
 
 ## Methodology
 
@@ -293,21 +293,20 @@ listed at the end as standing follow-ups.
    `asap_sketch_payload_bytes_per_window` counter on the processor
    would close this gap. Not addressed in PR #246.
 
-5. **`run-baseline-sweep.sh` still parameterises on legacy
-   `EXPORTER_RATE`** (deprecated in favour of `EXPORTER_FREQ_HZ` +
-   `EXPORTER_SDK_WINDOW`); fake-exporter logs a warning per start.
-   The sweep script should be updated, otherwise every run produces
-   a deprecation warning in `up.log`. Not addressed in PR #246.
+5. **Legacy rate knob removed.** The old per-second rate knob was a
+   no-op under SDK aggregation and has been dropped entirely; the
+   workload is paced by `-freq-hz` and flushed by `-sdk-window`.
+   The sweeps no longer carry the dead dimension.
 
 6. **Producer-paced workload caps the discriminating power — FIXED
    in PR #246.** At cardinality 1000 × 10 Hz the agent ran at
    ~0.25% of one core so CPU diffs were dominated by measurement
    noise. `baseline-b3-delta.yml` now overrides
-   `EXPORTER_CARDINALITY` and `EXPORTER_FREQ_HZ` to 1e5 × 100 Hz,
+   `-cardinality` and `-freq-hz` to 1e5 × 100 Hz,
    chosen to land the agent in the 50–70% one-core band on
    reference hardware (Threadripper PRO 5955WX as described in
-   the "Hardware" section). The override is still respectful of
-   environment-variable shadowing — set `EXPORTER_CARDINALITY=1000`
+   the "Hardware" section). The override still honours host-env
+   shadowing — set `OTELAPP_CARDINALITY=1000`
    on the host to recover the legacy quiet profile for ad-hoc work.
 
    Re-running the pre-shim vs post-shim comparison under the new

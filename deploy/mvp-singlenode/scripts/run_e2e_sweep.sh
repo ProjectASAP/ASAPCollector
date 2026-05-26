@@ -187,10 +187,10 @@ for sk in "${SKETCHES[@]}"; do
                 (cd "$COMPOSE_DIR" && \
                   AGENT_CONFIG="$AGENT_YAML" \
                   FAMILY="$FAM" \
-                  EXPORTER_FREQ_HZ="$(echo "scale=2; 1000 / ${SCRAPE_MS}" | bc)" \
-                  EXPORTER_CARDINALITY="$CARD" \
-                  EXPORTER_SDK_WINDOW="${SCRAPE_MS}ms" \
-                  EXPORTER_SDK_AGG="$AGG" \
+                  OTELAPP_FREQ_HZ="$(echo "scale=2; 1000 / ${SCRAPE_MS}" | bc)" \
+                  OTELAPP_CARDINALITY="$CARD" \
+                  OTELAPP_SDK_WINDOW="${SCRAPE_MS}ms" \
+                  OTELAPP_SDK_AGG="$AGG" \
                   docker compose \
                     -f base.yml -f "$AGENTS_YAML" \
                     -f baseline-b3-delta.yml -f e2e-overlay.yml \

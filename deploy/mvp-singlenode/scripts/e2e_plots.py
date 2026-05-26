@@ -16,7 +16,7 @@ Inputs:
 Figures:
 
   1. pareto_acc_vs_thru.png — accuracy (median error / 1-recall)
-     on x, throughput (median fake-exporter cpu_pct) on y, one
+     on x, throughput (median otel-app cpu_pct) on y, one
      point per cell, coloured by sketch family.
   2. bandwidth_vs_n.png — agent net_tx_mb p50/p99 vs N, faceted
      by sketch family + scrape window.
@@ -90,7 +90,7 @@ def fig_pareto(accuracy_csv: str, sweep_root: str, out_dir: str) -> None:
         rec = pd.to_numeric(df["recall"], errors="coerce").dropna()
         med_recall_loss = (1.0 - float(rec.median())) if len(rec) else float("nan")
 
-        # Throughput proxy: median fake-exporter cpu_pct from
+        # Throughput proxy: median otel-app cpu_pct from
         # sample.jsonl (high cpu = high produce rate sustained).
         thru = float("nan")
         sample_path = os.path.join(sweep_root, cell, "sample.jsonl")
@@ -105,7 +105,7 @@ def fig_pareto(accuracy_csv: str, sweep_root: str, out_dir: str) -> None:
                         rec_ = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if rec_.get("container") == "fake-exporter":
+                    if rec_.get("container") == "otel-app":
                         samples.append(rec_.get("cpu_pct", 0.0))
             if samples:
                 thru = float(pd.Series(samples).median())

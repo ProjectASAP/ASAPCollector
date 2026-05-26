@@ -69,9 +69,9 @@ func (s *swappableFilter) Swap(f attribute.Filter) {
 }
 
 // projectionRequest is the wire format for POST /control/projection.
-// `Projection` follows the same grammar as the EXPORTER_SDK_PROJECTION
-// env var: comma-separated keep-list, "" for keep-all, "-" for
-// drop-all. Anything else is a malformed request.
+// `Projection` follows the same grammar as the -sketch-projection flag:
+// comma-separated keep-list, "" for keep-all, "-" for drop-all. Anything
+// else is a malformed request.
 type projectionRequest struct {
 	Projection string `json:"projection"`
 }

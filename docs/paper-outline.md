@@ -61,7 +61,7 @@ workload + SLAs.
      (ε / δ / kind), and is quantitatively close to ground
      truth. The accuracy envelope is already surfaced in the
      `infos` of every response.
-     - *Evidence:* `deploy/fake-exporter/raw_tee.go` (P4)
+     - *Evidence:* `otel-app/raw_tee.go` (P4)
        writes ground truth to MinIO/S3 raw JSONL;
        `deploy/mvp-singlenode/scripts/accuracy_reduce.py` (P8) joins query
        answers vs. truth and computes per-row relative

@@ -16,7 +16,7 @@ import (
 )
 
 // collectCounterDataPoints wires the exact View + Aggregation main.go builds for
-// EXPORTER_SDK_AGG=aggName, fires `events` Add(1) calls per series across
+// -agg=aggName, fires `events` Add(1) calls per series across
 // `cardinality` series of one Counter, and returns the total DataPoints the
 // periodic reader would emit on one Collect. This is the agent's per-window
 // input: it is what the asap_edge cold encoder archives.
@@ -67,7 +67,7 @@ func collectCounterDataPoints(t *testing.T, aggName string, maxBuf, cardinality,
 
 // TestColdDensityAggContrast is the root-cause guard for the cold-archive
 // density bug: the multinode workload (topology.env) must drive the producer
-// with EXPORTER_SDK_AGG=raw-buffer, NOT the OTel default. With `default`
+// with -agg=raw-buffer, NOT the OTel default. With `default`
 // (cumulative Sum) all freqHz events/series in a window collapse to ONE
 // datapoint/series, so the agent — and therefore the cold gorilla archive — sees
 // ~1 sample/series. raw-buffer keeps every event as its own datapoint, feeding

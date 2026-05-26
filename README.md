@@ -230,10 +230,10 @@ builder --config ./cmd/asap-otel/builder-config.yaml
 3. To mirror changes into the tracked overlay, copy updated files into
    `opentelemetry-go-patch/` before committing.
 
-### opentelemetry-app
+### otel-app
 ```bash
-cd opentelemetry-app
-go build ./cmd/fakemetricload    # produces ./fakemetricload
+cd otel-app
+go build -o otel-app .            # produces ./otel-app
 # or to run in-place:
-go run ./cmd/fakemetricload
+go run .
 ```

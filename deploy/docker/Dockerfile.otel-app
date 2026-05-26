@@ -1,10 +1,10 @@
-# Small Go build for the fake OTLP metrics producer. See
-# `deploy/fake-exporter/main.go` for the behavior spec.
+# Small Go build for the otel-app OTLP metrics producer. See
+# `otel-app/main.go` for the behavior spec.
 #
-# The build pulls in the ASAP-patched OTel SDK (for
-# AggregationRawBuffer + DeltaTransmission flags on sketch
-# aggregators — see docs/sdk-cost-evaluation.md) and
-# the sketchlib-go sibling repo.
+# The build pulls in the ASAP-patched OTel SDK (for the sketch
+# aggregators — AggregationDDSketch/KLLSketch/CountSketch/CountMinSketch/
+# HLLSketch + AggregationRawBuffer + DeltaTransmission flags, see
+# docs/sdk-cost-evaluation.md) and the sketchlib-go sibling repo.
 #
 # ## Prereq: combine the patches onto the upstream trees
 #
@@ -26,9 +26,9 @@
 # outside this repo) can be supplied without vendoring:
 #
 #   DOCKER_BUILDKIT=1 docker build \
-#     -f deploy/docker/Dockerfile.fake-exporter \
+#     -f deploy/docker/Dockerfile.otel-app \
 #     --build-context sketchlib-go=/path/to/sketchlib-go \
-#     -t asap/fake-exporter:dev .
+#     -t asap/otel-app:dev .
 #
 # The default repo layout on a dev box is /mydata/{DataCollector,
 # sketchlib-go}, so from /mydata/DataCollector the path is
@@ -38,31 +38,30 @@ FROM golang:1.25-bookworm AS build
 WORKDIR /src
 
 # Main repo tree (contains opentelemetry-go and opentelemetry-proto with
-# patches applied and deploy/fake-exporter source). The replace directives
-# in opentelemetry-go's exporter go.mod files point at
+# patches applied and the otel-app source). The replace directives in
+# opentelemetry-go's exporter go.mod files point at
 # ../../../../../opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp,
 # so opentelemetry-proto/ must be present alongside opentelemetry-go/ in the
 # build context root.
 COPY opentelemetry-go     /src/opentelemetry-go
 COPY opentelemetry-proto  /src/opentelemetry-proto
-COPY deploy/fake-exporter /src/deploy/fake-exporter
+COPY otel-app             /src/otel-app
 
 # Sketchlib-go pulled via named build context to avoid a submodule
 # hop outside this repo.
 COPY --from=sketchlib-go . /src/sketchlib-go
 
-# The go.mod replaces reference ../../../sketchlib-go (three dirs up
-# from deploy/fake-exporter/go.mod). Inside /src the layout is
-# /src/deploy/fake-exporter → /src/sketchlib-go, which is two dirs
-# up. Rewrite on the fly.
+# The go.mod replace references ../../sketchlib-go (the local checkout sits at
+# the workspace root, one level above the repo root). Inside /src it was
+# COPY'd to /src/sketchlib-go, so rewrite the replace to that absolute path.
 RUN sed -i \
-    's|github.com/ProjectASAP/sketchlib-go => ../../../sketchlib-go|github.com/ProjectASAP/sketchlib-go => /src/sketchlib-go|' \
-    /src/deploy/fake-exporter/go.mod
+    's|github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go|github.com/ProjectASAP/sketchlib-go => /src/sketchlib-go|' \
+    /src/otel-app/go.mod
 
-WORKDIR /src/deploy/fake-exporter
+WORKDIR /src/otel-app
 RUN go mod tidy && \
-    CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/fake-exporter .
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/otel-app .
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/fake-exporter /usr/local/bin/fake-exporter
-ENTRYPOINT ["/usr/local/bin/fake-exporter"]
+COPY --from=build /out/otel-app /usr/local/bin/otel-app
+ENTRYPOINT ["/usr/local/bin/otel-app"]

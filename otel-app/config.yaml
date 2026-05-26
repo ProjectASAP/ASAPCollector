@@ -1,0 +1,64 @@
+# otel-app configuration — base template.
+#
+# Every key maps 1:1 to a command-line flag of the same name (with
+# dashes). CLI flags override the values set here. Precedence is:
+#
+#   built-in defaults  <  this YAML (-config config.yaml)  <  explicit flags
+#
+# Run with:   otel-app -config config.yaml
+# Override:   otel-app -config config.yaml -sketch-type=kll -duration=30s
+#
+# Any key omitted below falls back to the built-in default.
+
+# ── exporter / workload identity ───────────────────────────────────────
+target: gateway:4317          # OTLP/gRPC endpoint
+metric: http_requests_total   # base metric name (counter + _latency_ms gauge)
+pprof_addr: ""                # pprof listen addr, e.g. 0.0.0.0:6060; "" = off
+producer_id: ""               # producer_id label prepended to every series; "" = none
+seed: 0                       # deterministic per-series PRNG base seed; 0 = auto-random
+
+# ── three-axis SDK config ──────────────────────────────────────────────
+sdk_window: 15s               # SDK PeriodicReader export interval
+sdk_projection: ""            # attribute keep-list: "" keep-all, "zone,rack" keep listed, "-" drop-all
+sdk_agg: default              # default|sum|raw-buffer|dd-full|dd-delta|kll|cms-full|cms-delta|cs-full|cs-delta|hll-full|hll-delta
+max_buffer_per_series: 0      # raw-buffer per-series event cap (0 = unbounded)
+
+# sketch_type is a convenience alias for sdk_agg using the fakemetricload
+# names (ddsketch|kll|countsketch|countminsketch|hll|baseline). It is only
+# consulted when sdk_agg is left at "default".
+sketch_type: ddsketch
+
+# ── synthetic workload ─────────────────────────────────────────────────
+cardinality: 500              # # distinct zone×rack×node×pod attribute sets
+freq_hz: 10.0                 # per-series event rate (Hz)
+zone_vals: 4
+rack_vals: 10
+node_vals: 25
+pod_vals: 10
+
+# ── Zipf value model (latency value distribution) ──────────────────────
+zipf_s: 1.1                   # shape (must be > 1)
+zipf_v: 1.0                   # shift (must be >= 1)
+zipf_max: 500                 # integer range upper bound
+zipf_mean: 250.0              # target mean used for value scaling
+
+# ── trace replay (set trace_file to switch modes) ──────────────────────
+trace_file: ""                # CSV (timestamp_ms,series_id,value); non-empty = replay mode
+trace_scale: 1.0              # playback speed multiplier
+trace_loop: true              # wrap at EOF
+
+# ── freshness probes ───────────────────────────────────────────────────
+freshness_probes: true        # emit http_freshness_probe_{raw,warm,archive}
+freshness_probe_hz: 1.0       # probe tick rate (Hz)
+
+# ── five-sketch MVP workload ───────────────────────────────────────────
+five_sketch_user_pool: 100    # HLL user-id pool size (range 50..2000)
+five_sketch_endpoints: 50     # Zipfian endpoint cardinality (>= 5)
+five_sketch_zipf_s: 1.2       # endpoint Zipfian s parameter (> 1)
+five_sketch_user_rotate: 60s  # user-window rotate cadence
+
+# ── control channel ────────────────────────────────────────────────────
+control_addr: ""              # HTTP /control/projection listen addr; "" = off
+
+# ── run duration ───────────────────────────────────────────────────────
+duration: 0s                  # 0 = run until Ctrl+C

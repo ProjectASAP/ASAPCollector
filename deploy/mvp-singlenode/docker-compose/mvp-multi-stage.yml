@@ -2,7 +2,7 @@
 #
 # Layers:
 #
-#   10 fake-exporter  (×100-500 series each → 1K-5K SDK total)
+#   10 otel-app  (×100-500 series each → 1K-5K SDK total)
 #         │ OTLP/4317
 #         ▼
 #    2 agents          (×~5K series → 10K aggregate)
@@ -34,22 +34,13 @@
 #   ASAP_SKETCH_FAMILY      # default ddsketch (overridden per-metric by
 #                             controller-emitted configs)
 
-x-fake-exporter: &fake-exporter-base
-  image: asap/fake-exporter:dev
+x-otel-app: &otel-app-base
+  image: asap/otel-app:dev
   depends_on:
     - controller
-  environment:
-    EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-    EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-    EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-    EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-    # Freshness probes (criterion ⑥) — explicit propagation so the
-    # producer-* services emit the three timestamp-encoded counters
-    # regardless of what the host shell exports. Default is `on` in
-    # probes.go; thread it deterministically here so the CSVs are
-    # populated even when the host shell is silent.
-    EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-    EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+  # No shared command here — each producer-* service supplies its full
+  # `command:` flag list (compose does not merge command across the
+  # `<<:` anchor), so the per-service blocks below are authoritative.
 
 x-agent: &agent-base
   image: asap/asap-otel:dev
@@ -66,134 +57,131 @@ x-agent: &agent-base
 
 services:
 
-  # ─────────────────────────────── 10 fake-exporters ─────────────────────────
+  # ─────────────────────────────── 10 otel-apps ─────────────────────────
   # Five fan into agent-a, five fan into agent-b. Each emits its own
   # "shard" of cardinality so the producer-side cardinality is
   # PER_AGENT_CARDINALITY × N_PRODUCERS at the gateway.
 
-  # NOTE on the per-producer environment block: YAML's `<<:` merge key
-  # does NOT deep-merge nested mappings, and docker-compose treats
-  # the per-service `environment` map as a complete override of any
-  # anchor-supplied `environment`. The full env is therefore inlined
-  # per producer so the EXPORTER_RATE / EXPORTER_CARDINALITY /
-  # EXPORTER_FREQ_HZ / EXPORTER_FRESHNESS_* knobs propagate
-  # deterministically (a previous attempt that relied on the anchor
-  # silently dropped them inside the containers, producing empty
-  # freshness CSVs).
+  # NOTE on the per-producer command block: compose does NOT merge
+  # `command:` across the `<<:` anchor — a per-service command fully
+  # replaces it. The full flag list is therefore inlined per producer
+  # so the cardinality / freq-hz / sdk-window / freshness knobs are set
+  # deterministically. The deprecated rate knob was dropped.
   #
   # Each producer pulls the host-shell env (which the driver script
-  # exports) via Compose's `${VAR:-default}` interpolation.
+  # exports) via Compose's `${VAR:-default}` interpolation in the flag
+  # values.
   producer-a-1:
-    <<: *fake-exporter-base
-    environment: &producer-env-a-1
-      EXPORTER_TARGET: "agent-a:4317"
-      EXPORTER_PRODUCER_ID: "p-a-1"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-a:4317"
+      - "-producer-id=p-a-1"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
   producer-a-2:
-    <<: *fake-exporter-base
-    environment:
-      EXPORTER_TARGET: "agent-a:4317"
-      EXPORTER_PRODUCER_ID: "p-a-2"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-a:4317"
+      - "-producer-id=p-a-2"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
   producer-a-3:
-    <<: *fake-exporter-base
-    environment:
-      EXPORTER_TARGET: "agent-a:4317"
-      EXPORTER_PRODUCER_ID: "p-a-3"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-a:4317"
+      - "-producer-id=p-a-3"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
   producer-a-4:
-    <<: *fake-exporter-base
-    environment:
-      EXPORTER_TARGET: "agent-a:4317"
-      EXPORTER_PRODUCER_ID: "p-a-4"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-a:4317"
+      - "-producer-id=p-a-4"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
   producer-a-5:
-    <<: *fake-exporter-base
-    environment:
-      EXPORTER_TARGET: "agent-a:4317"
-      EXPORTER_PRODUCER_ID: "p-a-5"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-a:4317"
+      - "-producer-id=p-a-5"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
 
   producer-b-1:
-    <<: *fake-exporter-base
-    environment:
-      EXPORTER_TARGET: "agent-b:4317"
-      EXPORTER_PRODUCER_ID: "p-b-1"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-b:4317"
+      - "-producer-id=p-b-1"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
   producer-b-2:
-    <<: *fake-exporter-base
-    environment:
-      EXPORTER_TARGET: "agent-b:4317"
-      EXPORTER_PRODUCER_ID: "p-b-2"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-b:4317"
+      - "-producer-id=p-b-2"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
   producer-b-3:
-    <<: *fake-exporter-base
-    environment:
-      EXPORTER_TARGET: "agent-b:4317"
-      EXPORTER_PRODUCER_ID: "p-b-3"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-b:4317"
+      - "-producer-id=p-b-3"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
   producer-b-4:
-    <<: *fake-exporter-base
-    environment:
-      EXPORTER_TARGET: "agent-b:4317"
-      EXPORTER_PRODUCER_ID: "p-b-4"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-b:4317"
+      - "-producer-id=p-b-4"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
   producer-b-5:
-    <<: *fake-exporter-base
-    environment:
-      EXPORTER_TARGET: "agent-b:4317"
-      EXPORTER_PRODUCER_ID: "p-b-5"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${PER_AGENT_CARDINALITY:-500}"
-      EXPORTER_FREQ_HZ: "${EXPORTER_FREQ_HZ:-10}"
-      EXPORTER_SDK_WINDOW: "${EXPORTER_SDK_WINDOW:-15s}"
-      EXPORTER_FRESHNESS_PROBES: "${EXPORTER_FRESHNESS_PROBES:-on}"
-      EXPORTER_FRESHNESS_PROBE_HZ: "${EXPORTER_FRESHNESS_PROBE_HZ:-1.0}"
+    <<: *otel-app-base
+    command:
+      - "-target=agent-b:4317"
+      - "-producer-id=p-b-5"
+      - "-cardinality=${PER_AGENT_CARDINALITY:-500}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-freshness-probes=${OTELAPP_FRESHNESS_PROBES:-true}"
+      - "-freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ:-1.0}"
+
 
   # ─────────────────────────────── controller workload mount ────────────────
   # Controller reads the MVP workload manifest at startup so its plan
@@ -362,12 +350,12 @@ services:
           memory: 1536M
 
   # ─────────────────────────────── pre-work placeholder ──────────────────────
-  # Override the base.yml fake-exporter so it doesn't run alongside
+  # Override the base.yml otel-app so it doesn't run alongside
   # the 10 producers above (would double-count cardinality).
 
-  fake-exporter:
+  otel-app:
     image: alpine:3.19
-    command: ["sh", "-c", "echo 'mvp overlay disables base fake-exporter; producers-a/b run instead' && sleep infinity"]
+    command: ["sh", "-c", "echo 'mvp overlay disables base otel-app; producers-a/b run instead' && sleep infinity"]
     depends_on: []
     environment:
       OVERRIDDEN_BY: "mvp-multi-stage.yml"

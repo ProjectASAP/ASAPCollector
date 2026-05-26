@@ -146,7 +146,7 @@ mutating input md in place.
 
 - **Go (Phase 2):** per-observation `Observe` latency p99 must
   stay within 10% of the pre-refactor in-line implementation.
-  Verified via the existing fake-exporter b3-delta benchmark.
+  Verified via the existing otel-app b3-delta benchmark.
 - **Rust (Phase 3) — edge side:** `asap-precompute-rs` mirrors
   `asap-precompute-go`'s runtime bit-identically (same
   `SeriesKey` format, same `SnapshotCache` always-refresh

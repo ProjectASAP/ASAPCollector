@@ -43,7 +43,7 @@ from __future__ import annotations
 # MEASURED [FINDINGS §2 conclusions + topology.env workload sizing]:
 # 5 producers/node x 2 agent-nodes x 1000 series = 10_000 total series, 10 Hz.
 CAL_SERIES = 10_000              # MEASURED [FINDINGS "10k raw series"]
-CAL_SAMPLE_HZ = 10.0             # DESIGN  [workload.yaml header / runbook: EXPORTER_FREQ_HZ=10]
+CAL_SAMPLE_HZ = 10.0             # DESIGN  [workload.yaml header / runbook: -freq-hz=10]
 CAL_METRICS = 2                  # DESIGN  [FINDINGS: http_requests_total + latency]
 # Raw samples/sec at the calibration point = series * Hz * metrics. This is the
 # per-DEPLOYMENT raw throughput that ALL the measured coefficients (wire, CPU,

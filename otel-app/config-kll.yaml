@@ -1,0 +1,8 @@
+# otel-app — KLL sketch SDK pre-aggregation (rank/quantile error).
+# Run:  otel-app -config config-kll.yaml
+target: gateway:4317
+sdk_window: 15s
+sdk_agg: kll
+sketch_type: kll
+cardinality: 500
+freq_hz: 10.0

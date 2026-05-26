@@ -36,7 +36,7 @@
 #
 # The overlay's only host-exposed port is `34317:4317` (agent OTLP gRPC)
 # so the integration test driver can push the deterministic 100-sample
-# fixture into the agent without going through fake-exporter.
+# fixture into the agent without going through otel-app.
 #
 # Kafka itself uses port 9092 *inside* the docker network; we do NOT
 # expose 9092 on the host (no host-side Kafka clients in the e2e flow).

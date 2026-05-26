@@ -264,7 +264,7 @@ and reversible:
 | **2.8** Refactor `countsketchprocessor` | Pattern B — verify flat-window collapse to (agg_id, label_key) keying preserves behavior. | CountSketch top-K accuracy reducer (`P8`) matches pre-extraction. |
 | **2.9** Refactor `countminsketchprocessor` | Same as 2.8 for CMS. | P8 accuracy reducer matches. |
 | **2.10** `controlchannel/http_poll.go` + adapter wiring | First non-OpAMP control channel. Backward-compat: existing OpAMP-driven deploys keep using `OpAmpChannel`; new deploys can opt into `HttpPollChannel`. | b3-delta e2e survives a runtime config push (sketch_type unchanged, window_size changed) without state loss. |
-| **2.11** Performance gate | Per-observation latency p99 within 10% of pre-refactor (R2). | Bench against the existing fake-exporter throughput harness. |
+| **2.11** Performance gate | Per-observation latency p99 within 10% of pre-refactor (R2). | Bench against the existing otel-app throughput harness. |
 
 Steps 2.1–2.4 can run in parallel (no inter-dependencies).
 Steps 2.5–2.9 are sequential (each builds on the verified shim

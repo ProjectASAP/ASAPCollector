@@ -4,10 +4,10 @@
 # agent has a distinct AGENT_ID label — see base.yml comment.
 #
 # Each agent mounts asap-otel-agent.yaml and receives OTLP from
-# its own fake-exporter instance (fake-exporter-$i targets
+# its own otel-app instance (otel-app-$i targets
 # agent-$i:4317). Flow per replica:
 #
-#   fake-exporter-$i ──OTLP──▶ agent-$i (sketches) ──OTLP──▶ backend
+#   otel-app-$i ──OTLP──▶ agent-$i (sketches) ──OTLP──▶ backend
 #
 # Usage: ./gen-agents.sh 100 > agents-N100.yml
 set -euo pipefail
@@ -19,7 +19,7 @@ cat <<EOF
 #
 # Per-replica flow:
 #
-#   fake-exporter-i ──OTLP──▶ agent-i ──OTLP──▶ backend
+#   otel-app-i ──OTLP──▶ agent-i ──OTLP──▶ backend
 #
 # Each agent mounts \`asap-otel-agent.yaml\` and runs DDSketch + HLL
 # on the pipeline, so the bytes reaching the backend are already
@@ -62,21 +62,26 @@ x-agent: &agent-base
         memory: 1024M
 
 x-producer: &producer-base
-  image: asap/fake-exporter:dev
+  image: asap/otel-app:dev
 
 services:
-  # The base.yml fake-exporter service is overridden here to
-  # target agent-1 so its definition stays meaningful.
-  fake-exporter:
-    environment:
-      EXPORTER_TARGET: "agent-1:4317"
-      # workload-sweep knobs. Defaults match the N=1
-      # smoke-test. Override at bring-up:
-      #
-      #   EXPORTER_RATE=10000 EXPORTER_CARDINALITY=5000 \\
+  # The base.yml otel-app service is overridden here to
+  # target agent-1 so its definition stays meaningful. compose
+  # \`command:\` fully replaces base.yml's command, so the full flag
+  # list is restated with -target pointed at the agent.
+  otel-app:
+    command:
+      - "-target=agent-1:4317"
+      # workload-sweep knobs. Defaults match the N=1 smoke-test.
+      # Override at bring-up, e.g.:
+      #   OTELAPP_FREQ_HZ=10000 OTELAPP_CARDINALITY=5000 \\
       #     docker compose -f base.yml -f agents-N1.yml up -d
-      EXPORTER_RATE: "\${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "\${EXPORTER_CARDINALITY:-1000}"
+      - "-cardinality=\${OTELAPP_CARDINALITY:-1000}"
+      - "-freq-hz=\${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=\${OTELAPP_SDK_WINDOW:-15s}"
+      - "-sdk-projection=\${OTELAPP_SDK_PROJECTION:-}"
+      - "-agg=\${OTELAPP_SDK_AGG:-default}"
+      - "-max-buffer-per-series=\${OTELAPP_MAX_BUFFER_PER_SERIES:-0}"
 EOF
 
 for ((i=1; i<=N; i++)); do
@@ -97,18 +102,19 @@ for ((i=1; i<=N; i++)); do
 EOF
 done
 
-# Fake-exporter-1 is already defined as the base's `fake-exporter`
-# override above; emit fake-exporter-2..N for i >= 2.
+# otel-app-1 is already defined as the base's `otel-app` override
+# above; emit otel-app-2..N for i >= 2. These inherit only `image`
+# from x-producer, so a minimal -target/-cardinality command is all
+# they need — every other flag falls back to the binary default.
 for ((i=2; i<=N; i++)); do
   cat <<EOF
 
-  fake-exporter-$i:
+  otel-app-$i:
     <<: *producer-base
     depends_on:
       - agent-$i
-    environment:
-      EXPORTER_TARGET: "agent-$i:4317"
-      EXPORTER_RATE: "\${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "\${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-$i:4317"
+      - "-cardinality=\${OTELAPP_CARDINALITY:-1000}"
 EOF
 done

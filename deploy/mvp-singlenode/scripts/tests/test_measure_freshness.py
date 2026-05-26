@@ -1,6 +1,6 @@
 """Unit tests for measure_freshness.py (v6 mode).
 
-The v6 mode is a poll-only client. The fake-exporter (probes.go) is
+The v6 mode is a poll-only client. The otel-app (probes.go) is
 the producer. Tests below cover the small parts of the script that
 have non-trivial behavior:
 
@@ -10,7 +10,7 @@ have non-trivial behavior:
     returns a known cumulative value.
   * `write_v6_summary` — count + p50 + p99 line shape.
 
-We do NOT spin up an actual Prometheus or fake-exporter; tests are
+We do NOT spin up an actual Prometheus or otel-app; tests are
 hermetic. urllib.urlopen is monkeypatched per-test.
 """
 
