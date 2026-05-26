@@ -69,6 +69,17 @@ type asapEdgeProcessor struct {
 	// fragments through coldPartShip instead.
 	coldFormat   ColdFormat
 	coldPartShip *coldPartShipper
+	// coldBlockMs is the intchunk cold-part accumulation window (cfg.Cold.
+	// BlockDuration, default = WindowDuration) in absolute ms. A per-shard
+	// accumulator buffers each flush's drained fragments and only seals + POSTs
+	// ONE coldpart.Part once its buffered sample span reaches coldBlockMs, so a
+	// part amortizes the per-part index + symbol-table overhead over ~a block's
+	// worth of samples/series instead of one flush's ~1-2. Intchunk-only.
+	coldBlockMs int64
+	// coldAccum holds one accumulator per shard (intchunk format only; nil
+	// otherwise). Each is touched only from the single flush goroutine
+	// (flushShardWarmCold / flushAll / Shutdown), so it needs no lock.
+	coldAccum []*coldPartAccumulator
 
 	windowStartMs atomic.Uint64
 	maxObservedMs atomic.Uint64
@@ -119,6 +130,11 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 		p.coldFormat = cfg.Cold.Format.normalized()
 		if p.coldFormat == ColdFormatIntchunk {
 			p.coldPartShip = newColdPartShipper(cfg.Cold.ColdPartEndpoint, p.coldExtLabels)
+			p.coldBlockMs = cfg.Cold.BlockDuration.Milliseconds()
+			p.coldAccum = make([]*coldPartAccumulator, cfg.ShardCount)
+			for i := range p.coldAccum {
+				p.coldAccum[i] = newColdPartAccumulator(p.coldExtLabels)
+			}
 		}
 	}
 	for i := range p.shards {
@@ -193,8 +209,44 @@ func (p *asapEdgeProcessor) Shutdown(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	// Intchunk cold-part path: the final flushAll above buffered each shard's
+	// last drain but only seals a part at the block boundary, so any partial
+	// (span < BlockDuration) block is still in the accumulators. Force-seal +
+	// POST them now so no cold samples are lost on Shutdown.
+	p.flushColdPartAccumulators(ctx)
 	p.shipWorker.shutdown(ctx)
 	return nil
+}
+
+// flushColdPartAccumulators force-seals + POSTs every shard's buffered cold-part
+// accumulator (intchunk only), draining any partial (sub-BlockDuration) block on
+// Shutdown. It POSTs synchronously under the Shutdown deadline ctx (not a
+// detached goroutine) so the last block is delivered before the process exits.
+func (p *asapEdgeProcessor) flushColdPartAccumulators(ctx context.Context) {
+	if p.coldFormat != ColdFormatIntchunk {
+		return
+	}
+	for idx := range p.coldAccum {
+		acc := p.coldAccum[idx]
+		if acc.empty() {
+			continue
+		}
+		series, blockStart, blockEnd := acc.seal()
+		if len(series) == 0 || p.coldPartShip.noop() {
+			continue
+		}
+		body, err := encodePart(blockStart, blockEnd, series)
+		if err != nil {
+			p.logger.Warn("asap_edge: build cold part failed", zap.Error(err))
+			continue
+		}
+		if len(body) == 0 {
+			continue
+		}
+		if serr := p.coldPartShip.shipEncoded(ctx, body); serr != nil {
+			p.logger.Warn("asap_edge: ship cold part failed", zap.Error(serr))
+		}
+	}
 }
 
 // flushLoop drives the warm/cold flush cadence.
@@ -402,13 +454,26 @@ func numberValue(dp pmetric.NumberDataPoint) float64 {
 // WindowDuration <= 0) and the final drain on Shutdown both call it so no shard
 // is left un-flushed.
 func (p *asapEdgeProcessor) flushAll(ctx context.Context) {
-	// Cold: drain every shard's encoder and ship as one binary batch.
+	// Cold: drain every shard's encoder and ship.
 	if p.coldEnabled {
-		var frags []gorilla.Fragment
-		for _, sh := range p.shards {
-			frags = append(frags, p.drainShardCold(sh)...)
+		if p.coldFormat == ColdFormatIntchunk {
+			// Intchunk: drain + buffer each shard into its own accumulator,
+			// keeping per-shard block bounds, and seal a part only when the shard's
+			// buffered span reaches BlockDuration (per-shard, like the staggered
+			// path). flushAll runs for the single-flush fallback and final
+			// Shutdown drain; the partial (sub-block) tail left buffered here is
+			// force-sealed by flushColdPartAccumulators on Shutdown.
+			for i, sh := range p.shards {
+				p.shipFragmentsForShard(i, p.drainShardCold(sh))
+			}
+		} else {
+			// Fragment: drain every shard's encoder and ship as one binary batch.
+			var frags []gorilla.Fragment
+			for _, sh := range p.shards {
+				frags = append(frags, p.drainShardCold(sh)...)
+			}
+			p.shipFragments(frags)
 		}
-		p.shipFragments(frags)
 	}
 
 	out := pmetric.NewMetrics()
@@ -438,7 +503,7 @@ func (p *asapEdgeProcessor) flushShardWarmCold(ctx context.Context, idx int) {
 	sh := p.shards[idx]
 
 	if p.coldEnabled {
-		p.shipFragments(p.drainShardCold(sh))
+		p.shipFragmentsForShard(idx, p.drainShardCold(sh))
 	}
 
 	out := pmetric.NewMetrics()
@@ -485,19 +550,13 @@ func (p *asapEdgeProcessor) drainShardCold(sh *shard) []gorilla.Fragment {
 	return drained
 }
 
-// shipFragments hands a drained fragment batch to the cold archive ship path.
-// In the default (fragment) format it goes to the async ship worker
-// (non-blocking): flushes never wait on the network, and a ship failure is
-// spooled + retried. When the intchunk cold-part format is enabled the SAME
-// drained fragments are instead re-encoded as a coldpart.Part and POSTed to the
-// merger's /ingest/coldpart (see shipColdPart). encode runs here (cheap, off the
-// worker) so an encode error is logged in the flush path.
+// shipFragments hands a drained fragment batch to the default (fragment) cold
+// archive ship path: the async ship worker (non-blocking) — flushes never wait
+// on the network, and a ship failure is spooled + retried. It is the
+// fragment-format path only; the intchunk cold-part path routes per shard
+// through shipFragmentsForShard so each shard's part accumulates across a block.
 func (p *asapEdgeProcessor) shipFragments(frags []gorilla.Fragment) {
 	if len(frags) == 0 {
-		return
-	}
-	if p.coldFormat == ColdFormatIntchunk {
-		p.shipColdPart(frags)
 		return
 	}
 	if serr := p.shipWorker.shipBatch(frags); serr != nil {
@@ -505,16 +564,59 @@ func (p *asapEdgeProcessor) shipFragments(frags []gorilla.Fragment) {
 	}
 }
 
-// shipColdPart re-encodes the drained fragments as a lossless intchunk
-// coldpart.Part and POSTs it to the merger's /ingest/coldpart. The POST runs in
-// its own goroutine with a bounded context so a slow/failing merger never blocks
-// the next window flush (mirroring the fragment path's async ship). A no-op
-// shipper or a batch with no decodable samples is a clean no-op.
-func (p *asapEdgeProcessor) shipColdPart(frags []gorilla.Fragment) {
-	if p.coldPartShip.noop() {
+// shipFragmentsForShard routes one shard's drained fragments to the cold archive
+// ship path. The default (fragment) format ignores the shard (one shared async
+// worker). The intchunk format buffers the fragments into shard idx's
+// accumulator and seals + POSTs a coldpart.Part only when the buffered sample
+// span reaches BlockDuration — amortizing the per-part index + symbol-table
+// overhead over ~a block's worth of samples instead of one flush's ~1-2.
+func (p *asapEdgeProcessor) shipFragmentsForShard(idx int, frags []gorilla.Fragment) {
+	if p.coldFormat != ColdFormatIntchunk {
+		p.shipFragments(frags)
 		return
 	}
-	body, err := p.coldPartShip.buildPart(frags)
+	p.accumulateColdPart(idx, frags)
+}
+
+// accumulateColdPart appends shard idx's drained fragments to its accumulator
+// and, once the buffered span reaches BlockDuration, seals one coldpart.Part and
+// POSTs it. A no-op shipper still drains+buffers (kept bounded by the block
+// seal) but never POSTs. Called only from the single flush goroutine, so the
+// per-shard accumulator needs no lock.
+func (p *asapEdgeProcessor) accumulateColdPart(idx int, frags []gorilla.Fragment) {
+	if idx < 0 || idx >= len(p.coldAccum) {
+		return
+	}
+	acc := p.coldAccum[idx]
+	if err := acc.add(frags); err != nil {
+		p.logger.Warn("asap_edge: buffer cold part failed", zap.Error(err))
+		return
+	}
+	// Seal once the accumulated sample span reaches the block window. spanMs is
+	// max-min sample T, so a part covers ~BlockDuration regardless of how many
+	// sub-window flushes contributed.
+	if p.coldBlockMs > 0 && acc.spanMs() >= p.coldBlockMs {
+		p.sealAndShipColdPart(idx)
+	}
+}
+
+// sealAndShipColdPart seals shard idx's accumulator into one coldpart.Part and
+// POSTs it (async, bounded context, mirroring the fragment path's async ship).
+// An empty buffer or a no-op shipper is a clean no-op; the buffer is always
+// reset (seal resets it) so the next block starts fresh.
+func (p *asapEdgeProcessor) sealAndShipColdPart(idx int) {
+	acc := p.coldAccum[idx]
+	if acc.empty() {
+		return
+	}
+	series, blockStart, blockEnd := acc.seal()
+	if len(series) == 0 {
+		return
+	}
+	if p.coldPartShip.noop() {
+		return // drain-only (no endpoint): buffered + reset, never POSTed
+	}
+	body, err := encodePart(blockStart, blockEnd, series)
 	if err != nil {
 		p.logger.Warn("asap_edge: build cold part failed", zap.Error(err))
 		return
