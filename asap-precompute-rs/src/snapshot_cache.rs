@@ -145,7 +145,7 @@ impl SnapshotCache {
 
         // Refresh the cached outbound base for the NEXT window's delta.
         //
-        // Option-A (delta-baseline-contract.md §3) — per-window deltas:
+        // (delta-baseline-contract.md §3) — per-window deltas:
         // families that opt in via `Sketch::delta_against_empty_base`
         // (DDSketch this phase) reset the cached base to the EMPTY-sketch
         // snapshot after each window-close emit, so the next window diffs
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(c.get_outbound("k"), Some(vec![1, 2, 3]));
     }
 
-    // ---- Option-A per-window delta tests (DDSketch) ----
+    // ---- per-window delta tests (DDSketch) ----
 
     use crate::precompute::QuantileSketch;
     use crate::sketches::ddsketch::DDSketchWrapper;
@@ -263,7 +263,7 @@ mod tests {
         w
     }
 
-    /// Option-A: with delta mode on, applying the emitted DDSketch delta
+    /// With delta mode on, applying the emitted DDSketch delta
     /// to an EMPTY base reconstructs the window's full state, and
     /// quantiles match within the α relative-accuracy bound.
     #[test]
@@ -299,7 +299,7 @@ mod tests {
         }
     }
 
-    /// Option-A: two consecutive windows each emit their OWN state —
+    /// Two consecutive windows each emit their OWN state —
     /// window 2's delta is NOT diffed against window 1 (no cross-window
     /// subtraction). Even when window 1's events overlap window 2's, the
     /// emitted delta reconstructs window 2 exactly from empty.

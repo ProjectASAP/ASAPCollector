@@ -132,7 +132,7 @@ impl Sketch for DDSketchWrapper {
         // an empty current sketch, fall back to a full snapshot so the
         // emit path always produces a valid payload.
         //
-        // Under Option-A delta-against-empty (the snapshot cache resets
+        // Under per-window delta-against-empty (the snapshot cache resets
         // the cached base to the empty-sketch snapshot at each window
         // close), `prev` decodes to an empty `DdSketch`, so the computed
         // delta IS this window's full bucket store encoded as bucket
@@ -208,7 +208,7 @@ impl Sketch for DDSketchWrapper {
     }
 
     fn delta_against_empty_base(&self) -> Result<Option<Vec<u8>>, PrecomputeError> {
-        // Option-A (delta-baseline-contract.md §3): DDSketch opts in to
+        // (delta-baseline-contract.md §3): DDSketch opts in to
         // per-window deltas. After a window-close emit the snapshot cache
         // caches THIS — the encoded envelope of an EMPTY DDSketch of the
         // same alpha — so the next window's `compute_delta_against` diffs

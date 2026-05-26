@@ -67,9 +67,9 @@ pub trait Sketch: Send + Sync {
     /// sketch object pools.
     fn reset(&mut self);
 
-    /// Option-A delta base for a window-reset producer.
+    /// Per-window delta base for a window-reset producer.
     ///
-    /// When a family opts in to Option-A "true per-window deltas"
+    /// When a family opts in to "true per-window deltas"
     /// (delta-baseline-contract.md §3), this returns the snapshot bytes
     /// the [`crate::snapshot_cache::SnapshotCache`] should cache as the
     /// outbound base AFTER each window-close emit — i.e. the snapshot of
@@ -81,7 +81,7 @@ pub trait Sketch: Send + Sync {
     /// The default returns `None`: such families keep the legacy
     /// always-refresh behavior (the cache is refreshed to the
     /// just-emitted full state). Only DDSketch overrides this in the
-    /// first Option-A rollout; CMS / CountSketch / HLL / KLL are
+    /// first per-window-delta rollout; CMS / CountSketch / HLL / KLL are
     /// untouched this phase.
     fn delta_against_empty_base(&self) -> Result<Option<Vec<u8>>, PrecomputeError> {
         Ok(None)

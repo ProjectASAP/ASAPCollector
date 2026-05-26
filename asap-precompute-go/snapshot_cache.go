@@ -72,7 +72,7 @@ func (c *SnapshotCache) GetInbound(seriesKey string) []byte {
 }
 
 // emptyBaseDeltaSketch is implemented by sketches that opt in to
-// Option-A "true per-window deltas" (delta-baseline-contract.md §3).
+// "true per-window deltas" (delta-baseline-contract.md §3).
 //
 // DeltaAgainstEmptyBase returns the snapshot bytes the SnapshotCache
 // caches as the outbound base AFTER each window-close emit — i.e. the
@@ -82,7 +82,7 @@ func (c *SnapshotCache) GetInbound(seriesKey string) []byte {
 // cross-window subtraction). This is what makes the backend's future
 // per-window base rotation correct.
 //
-// Only DDSketch implements this in the first Option-A rollout; CMS /
+// Only DDSketch implements this in the first per-window-delta rollout; CMS /
 // CountSketch / HLL / KLL do NOT, so they keep the legacy
 // always-refresh behavior via the type-assertion miss below.
 type emptyBaseDeltaSketch interface {
@@ -101,11 +101,11 @@ type emptyBaseDeltaSketch interface {
 //     so successive sub-threshold deltas are each computed against the
 //     immediately preceding window. This matches the established
 //     behavior of the legacy OTel sketch processors.
-//   - Option-A per-window deltas (DDSketch, via emptyBaseDeltaSketch):
+//   - Per-window deltas (DDSketch, via emptyBaseDeltaSketch):
 //     after each window-close emit the cached base is reset to the
 //     EMPTY-sketch snapshot, so the next window diffs against empty and
 //     transmits its OWN per-window state as a delta (no cross-window
-//     subtraction). See delta-baseline-contract.md §3 Option A.
+//     subtraction). See delta-baseline-contract.md §3.
 //
 // The Sketch interface's ComputeDeltaAgainst does the actual diff
 // using the algorithm-specific delta-encoding rules from sketchlib-go.
@@ -140,7 +140,7 @@ func (c *SnapshotCache) ComputeDelta(
 	}
 	// Refresh the cached outbound base for the NEXT window's delta.
 	//
-	// Option-A per-window deltas: if the sketch opts in via
+	// Per-window deltas: if the sketch opts in via
 	// emptyBaseDeltaSketch (DDSketch this phase), reset the cached base
 	// to the EMPTY-sketch snapshot after this window-close emit, so the
 	// next window diffs against empty and transmits its own per-window
