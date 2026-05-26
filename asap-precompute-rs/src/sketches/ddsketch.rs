@@ -53,21 +53,15 @@ impl DDSketchWrapper {
             // Use the gamma-roundtripped alpha so the on-the-wire bytes
             // match `sketchlib-go::DDSketch.SerializePortable` exactly.
             // Closes part of ProjectASAP/ASAPCollector#243.
+            //
+            // The DataPoint-level METRIC scalars (count/sum/min/max) were
+            // dropped from `DdSketchState` (ProjectASAP/sketchlib-go#61 +
+            // ProjectASAP/asap_sketchlib#57): the count is recoverable by
+            // summing `store_counts` and the others are bucket-estimated,
+            // so the wire format now carries only alpha + the bucket store.
             alpha: self.sk.wire_alpha(),
             store_counts: self.sk.store_counts.clone(),
             store_offset: self.sk.store_offset,
-            count: self.sk.count,
-            sum: self.sk.sum,
-            min: if self.sk.count == 0 {
-                f64::INFINITY
-            } else {
-                self.sk.min
-            },
-            max: if self.sk.count == 0 {
-                f64::NEG_INFINITY
-            } else {
-                self.sk.max
-            },
         }
     }
 
@@ -101,21 +95,24 @@ impl DDSketchWrapper {
                 state.alpha
             )));
         }
+        // `DdSketchState` no longer carries the count/sum/min/max scalars
+        // (ProjectASAP/sketchlib-go#61 + ProjectASAP/asap_sketchlib#57). The
+        // total count is recovered by summing `store_counts` (see
+        // `DdSketch::total_count`); min/max are estimated from the extreme
+        // non-empty buckets inside `DdSketch::quantile`, within DDSketch's
+        // alpha relative-accuracy bound. So we reconstruct purely from the
+        // bucket store + alpha.
         Ok(DdSketch::from_raw(
             state.alpha,
             state.store_counts,
             state.store_offset,
-            state.count,
-            state.sum,
-            state.min,
-            state.max,
         ))
     }
 }
 
 impl Sketch for DDSketchWrapper {
     fn snapshot(&self) -> Result<Vec<u8>, PrecomputeError> {
-        if self.sk.count == 0 {
+        if self.sk.total_count() == 0 {
             // Mirror Go: empty sketch produces empty snapshot — the
             // runtime drops empty payloads rather than emitting
             // zero-byte envelopes.
@@ -178,7 +175,7 @@ impl Sketch for DDSketchWrapper {
 
 impl QuantileSketch for DDSketchWrapper {
     fn quantile(&self, q: f64) -> f64 {
-        if self.sk.count == 0 {
+        if self.sk.total_count() == 0 {
             return f64::NAN;
         }
         self.sk.quantile(q.clamp(0.0, 1.0)).unwrap_or(f64::NAN)
@@ -222,7 +219,7 @@ mod tests {
     #[test]
     fn new_wrapper_is_empty() {
         let w = DDSketchWrapper::new(0.01);
-        assert_eq!(w.sk.count, 0);
+        assert_eq!(w.sk.total_count(), 0);
         assert_eq!(w.snapshot().unwrap().len(), 0);
     }
 
@@ -246,8 +243,12 @@ mod tests {
         }
         let bytes = w.snapshot().unwrap();
         let decoded = DDSketchWrapper::decode_envelope(&bytes).unwrap();
-        assert_eq!(decoded.count, w.sk.count);
-        assert!((decoded.sum - w.sk.sum).abs() < 1e-9);
+        // count is recovered exactly by summing the bucket store; the
+        // count/sum scalars are no longer on the wire
+        // (ProjectASAP/sketchlib-go#61 + ProjectASAP/asap_sketchlib#57).
+        assert_eq!(decoded.total_count(), w.sk.total_count());
+        assert_eq!(decoded.store_counts, w.sk.store_counts);
+        assert_eq!(decoded.store_offset, w.sk.store_offset);
     }
 
     #[test]
@@ -262,7 +263,7 @@ mod tests {
         }
         let other_bytes = b.snapshot().unwrap();
         a.apply_delta(&other_bytes).unwrap();
-        assert_eq!(a.sk.count, 10);
+        assert_eq!(a.sk.total_count(), 10);
     }
 
     #[test]
@@ -271,6 +272,6 @@ mod tests {
         w.update(1.0);
         w.update(2.0);
         w.reset();
-        assert_eq!(w.sk.count, 0);
+        assert_eq!(w.sk.total_count(), 0);
     }
 }

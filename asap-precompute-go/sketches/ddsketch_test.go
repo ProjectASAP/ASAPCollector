@@ -43,10 +43,18 @@ func TestDDSketchWrapper_ObserveSnapshotApplyDelta(t *testing.T) {
 
 // TestDDSketchWrapper_ComputeDeltaShape exercises the
 // ComputeDeltaAgainst path: prev empty -> isFull=true; non-empty prev
-// with sub-threshold change -> a non-empty delta payload with
+// with per-bucket changes -> a non-empty delta payload with
 // isFull=false. The actual delta-apply correctness lives in
 // sketchlib-go's own tests; this test just confirms the wrapper
 // dispatches into the right sketchlib API.
+//
+// NOTE: the DDSketchDelta wire format no longer carries the
+// DataPoint-level count/sum/min/max scalar deltas
+// (ProjectASAP/sketchlib-go#61 + ProjectASAP/asap_sketchlib#57), so a
+// delta now marshals to non-empty bytes only when at least one bucket
+// passes the threshold. Use threshold=1 so the new buckets from the
+// second batch are emitted; a previously-used huge threshold (1<<30)
+// would now drop every bucket and produce a legitimately empty payload.
 func TestDDSketchWrapper_ComputeDeltaShape(t *testing.T) {
 	t.Parallel()
 	w := NewDDSketchWrapper(0.01)
@@ -54,7 +62,7 @@ func TestDDSketchWrapper_ComputeDeltaShape(t *testing.T) {
 		w.Update(float64(i))
 	}
 	// First call: no prev -> full snapshot.
-	full, isFull, err := w.ComputeDeltaAgainst(nil, 1<<30)
+	full, isFull, err := w.ComputeDeltaAgainst(nil, 1)
 	if err != nil || !isFull || len(full) == 0 {
 		t.Fatalf("first call: full=%v err=%v len=%d", isFull, err, len(full))
 	}
@@ -62,12 +70,12 @@ func TestDDSketchWrapper_ComputeDeltaShape(t *testing.T) {
 	for i := 51; i <= 100; i++ {
 		w.Update(float64(i))
 	}
-	delta, isFull, err := w.ComputeDeltaAgainst(prev, 1<<30)
+	delta, isFull, err := w.ComputeDeltaAgainst(prev, 1)
 	if err != nil {
 		t.Fatalf("delta: %v", err)
 	}
 	if isFull {
-		t.Fatal("expected sub-threshold delta, got isFull=true")
+		t.Fatal("expected per-bucket delta, got isFull=true")
 	}
 	if len(delta) == 0 {
 		t.Fatal("empty delta")
