@@ -1,0 +1,9 @@
+# otel-app — DDSketch SDK pre-aggregation (quantiles).
+# The SDK builds a DDSketch per series per window before export.
+# Run:  otel-app -config config-ddsketch.yaml
+target: gateway:4317
+sdk_window: 15s
+sdk_agg: dd-full          # use dd-delta for sparse delta encoding
+sketch_type: ddsketch
+cardinality: 500
+freq_hz: 10.0

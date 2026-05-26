@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 gen-demo-trace.py — emit a Google-cluster-trace-shaped CSV for
-fake-exporter's trace replay mode.
+otel-app's trace replay mode.
 
 This generates a SYNTHETIC dataset with statistical properties close
 to real cluster-trace CPU usage:

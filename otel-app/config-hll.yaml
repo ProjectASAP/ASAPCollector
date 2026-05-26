@@ -1,0 +1,9 @@
+# otel-app — HyperLogLog SDK pre-aggregation (distinct-count).
+# Run:  otel-app -config config-hll.yaml
+target: gateway:4317
+sdk_window: 15s
+sdk_agg: hll-full         # use hll-delta for sparse delta encoding
+sketch_type: hll
+cardinality: 500
+freq_hz: 10.0
+five_sketch_user_pool: 100

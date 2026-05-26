@@ -3,8 +3,8 @@
 #
 # Flow after this overlay is applied on top of base.yml:
 #
-#   fake-exporter ──OTLP──▶ agent-1 ──OTLP──▶ backend
-#                   :4317            :4317
+#   otel-app ──OTLP──▶ agent-1 ──OTLP──▶ backend
+#              :4317            :4317
 #
 # The agent mounts `asap-otel-agent.yaml` and runs DDSketch + HLL
 # on the pipeline, so the bytes reaching the backend are already
@@ -68,15 +68,23 @@ services:
       # baselines ignore it. Default 60s.
       SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
-  # Override fake-exporter to target the agent so its sketch
+  # Override otel-app to target the agent so its sketch
   # pipeline is the thing we actually want exercised. Pre-#400
-  # the bare base.yml fake-exporter targeted the gateway; with
+  # the bare base.yml producer targeted the gateway; with
   # the gateway gone the base default is backend:4317 (a no-
   # sketch sanity probe), so this overlay's override is now the
   # canonical "sketch pipeline" entry point.
-  fake-exporter:
-    environment:
-      EXPORTER_TARGET: "agent-1:4317"
-      # workload-sweep knobs; override via shell env.
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+  #
+  # compose `command:` fully replaces base.yml's command, so the full
+  # flag list is restated here with `-target` pointed at the agent.
+  otel-app:
+    command:
+      - "-target=agent-1:4317"
+      # workload-sweep knobs; override via shell env. (The deprecated
+      # rate knob was dropped.)
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-sdk-projection=${OTELAPP_SDK_PROJECTION:-}"
+      - "-agg=${OTELAPP_SDK_AGG:-default}"
+      - "-max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES:-0}"

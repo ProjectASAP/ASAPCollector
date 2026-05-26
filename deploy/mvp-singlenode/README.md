@@ -146,14 +146,14 @@ before kicking off the 60-cell sweep to catch wiring regressions.
 ```bash
 # 1. Stack up. The e2e overlay is what flips controller workload
 #    registry on, wires CONTROLLER_BACKEND_ENDPOINT, mounts the
-#    cold-store volume into both fake-exporter (writer) and
+#    cold-store volume into both otel-app (writer) and
 #    backend (reader), and points the gateway at the OTLP
 #    forwarder (gateway-otlp-forward.yaml). Pin cardinality and
 #    frequency low — the b3-delta overlay's 100k×100Hz default
 #    can blow past the OTLP exporter's 64 MiB max message size on
 #    the first window, even with delta_transmission=true.
 AGENT_CONFIG=asap-otel-agent-b3-delta.yaml \
-EXPORTER_CARDINALITY=1000 EXPORTER_FREQ_HZ=10 \
+OTELAPP_CARDINALITY=1000 OTELAPP_FREQ_HZ=10 \
 docker compose \
     -f deploy/mvp-singlenode/docker-compose/base.yml \
     -f deploy/mvp-singlenode/docker-compose/agents-N1.yml \

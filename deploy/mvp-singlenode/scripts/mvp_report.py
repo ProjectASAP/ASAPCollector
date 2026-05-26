@@ -1635,7 +1635,7 @@ def render_markdown_dual(
     md.append("# ASAPCollector MVP demo — issue #46 (baseline vs ASAP)")
     md.append("")
     md.append(
-        "Dual-pipeline run: same workload, same fake-exporter "
+        "Dual-pipeline run: same workload, same otel-app "
         "producers, same per-agent cardinality, same query classes, "
         "same soak duration — only the pipeline differs. Pipelines "
         "run **sequentially** with a full `docker compose down -v` "
@@ -1774,7 +1774,7 @@ def main(argv: list[str] | None = None) -> int:
         "--num-producers",
         type=int,
         default=10,
-        help="Number of fake-exporter producers (default 10).",
+        help="Number of otel-app producers (default 10).",
     )
     ap.add_argument(
         "--per-agent-cardinality",

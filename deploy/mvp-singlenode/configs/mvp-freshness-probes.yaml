@@ -1,6 +1,6 @@
 # MVP demo freshness probe schema
 #
-# Three synthetic counter metrics emitted by the fake-exporter at 1Hz.
+# Three synthetic counter metrics emitted by the otel-app at 1Hz.
 # Each emission carries a value of `unix_ts_ms_of_emission`
 # — the value IS the timestamp.
 #
@@ -20,8 +20,8 @@
 #
 # Plumbing notes:
 #
-# 1. fake-exporter must emit these three metrics. Today's
-#    fake-exporter (DataCollector/datasets_eval/) has fixed metric
+# 1. otel-app must emit these three metrics. Today's
+#    otel-app (DataCollector/datasets_eval/) has fixed metric
 #    names. A small extension is required to add the three
 #    timestamp-encoded counters.
 #

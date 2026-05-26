@@ -17,8 +17,8 @@
 //   - The CountSketch / CountMinSketch counters carry an `endpoint`
 //     attribute drawn Zipfian (so top-K is actually meaningful).
 //
-//   - The five-sketch metrics always emit (the old EXPORTER_FIVE_SKETCH
-//     on/off gate was removed; the controller now decides storage tier).
+//   - The five-sketch metrics always emit (the old five-sketch on/off
+//     gate was removed; the controller now decides storage tier).
 //
 // We use a ManualReader so the test is OTLP-free and deterministic.
 //
@@ -137,8 +137,9 @@ func hasAttr(set attribute.Set, key string) bool {
 // high frequency for a short window and verifies all four metrics
 // appear in the collected scope, with the documented inner labels.
 func TestFiveSketchWorkloadEmitsAllMetrics(t *testing.T) {
-	t.Setenv("EXPORTER_FIVE_SKETCH_USER_POOL", "500")
-	t.Setenv("EXPORTER_FIVE_SKETCH_ENDPOINTS", "20")
+	c := defaultConfig()
+	c.FiveSketchUserPool = 500
+	c.FiveSketchEndpoints = 20
 
 	provider, reader := fiveSketchTestProvider(t)
 	meter := provider.Meter("five-sketch-test")
@@ -151,7 +152,7 @@ func TestFiveSketchWorkloadEmitsAllMetrics(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop := startFiveSketchWorkload(ctx, meter, outer, 100.0) // 10ms period
+	stop := startFiveSketchWorkload(ctx, meter, outer, 100.0, c) // 10ms period
 	defer stop()
 
 	// Allow several ticks per series — at 100Hz, 200ms = ~20 ticks.

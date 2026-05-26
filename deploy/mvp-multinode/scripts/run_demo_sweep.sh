@@ -21,7 +21,7 @@ mkdir -p "${RUN_DIR}"
 SOAK="${SOAK_S:-60}"
 
 echo "[sweep] RUN_ID=${RUN_ID}  SOAK=${SOAK}s  out=${RUN_DIR}" | tee -a "${RUN_DIR}/run.log"
-echo "[sweep] workload: PER_AGENT_CARDINALITY=${PER_AGENT_CARDINALITY}  EXPORTER_FREQ_HZ=${EXPORTER_FREQ_HZ}  EXPORTER_SDK_AGG=${EXPORTER_SDK_AGG}  EXPORTER_SDK_WINDOW=${EXPORTER_SDK_WINDOW}  N_PRODUCERS_PER_NODE=${N_PRODUCERS_PER_NODE}" | tee -a "${RUN_DIR}/run.log"
+echo "[sweep] workload: PER_AGENT_CARDINALITY=${PER_AGENT_CARDINALITY}  OTELAPP_FREQ_HZ=${OTELAPP_FREQ_HZ}  OTELAPP_SDK_AGG=${OTELAPP_SDK_AGG}  OTELAPP_SDK_WINDOW=${OTELAPP_SDK_WINDOW}  N_PRODUCERS_PER_NODE=${N_PRODUCERS_PER_NODE}" | tee -a "${RUN_DIR}/run.log"
 
 # ── ssh sync configs once ──
 echo "[sweep] sync configs to all 4 nodes" | tee -a "${RUN_DIR}/run.log"
@@ -86,7 +86,7 @@ run_arm() {
     ARM=${arm} OUT=${out} \
         N_PRODUCERS_PER_NODE=${N_PRODUCERS_PER_NODE} \
         PER_AGENT_CARDINALITY=${PER_AGENT_CARDINALITY} \
-        EXPORTER_FREQ_HZ=${EXPORTER_FREQ_HZ} \
+        OTELAPP_FREQ_HZ=${OTELAPP_FREQ_HZ} \
         NODE2_IP=${NODE2_IP} \
         bash "${SCRIPT_DIR}/validate_arm.sh" \
         > "${out}/validate.log" 2>&1 || \
@@ -118,7 +118,7 @@ python3 - <<EOF > "${RUN_DIR}/MVP_REPORT.md"
 import csv, glob, json, os
 RUN_DIR = "${RUN_DIR}"
 print("# MVP multi-node sweep report")
-print(f"\\nRun: \`${RUN_ID}\`  |  Soak: \`${SOAK}s\`  |  Workload: PER_AGENT_CARDINALITY=${PER_AGENT_CARDINALITY}, FREQ_HZ=${EXPORTER_FREQ_HZ}, SDK_AGG=${EXPORTER_SDK_AGG}, SDK_WINDOW=${EXPORTER_SDK_WINDOW}, N_PRODUCERS_PER_NODE=${N_PRODUCERS_PER_NODE}\\n")
+print(f"\\nRun: \`${RUN_ID}\`  |  Soak: \`${SOAK}s\`  |  Workload: PER_AGENT_CARDINALITY=${PER_AGENT_CARDINALITY}, FREQ_HZ=${OTELAPP_FREQ_HZ}, SDK_AGG=${OTELAPP_SDK_AGG}, SDK_WINDOW=${OTELAPP_SDK_WINDOW}, N_PRODUCERS_PER_NODE=${N_PRODUCERS_PER_NODE}\\n")
 print("## §1 Per-arm NIC bandwidth (cluster-wide, /sys/class/net/enp130s0f0)\\n")
 print("| arm | node | role | rx_MB/s | tx_MB/s | rx_total_MB | tx_total_MB |")
 print("|---|---|---|---|---|---|---|")

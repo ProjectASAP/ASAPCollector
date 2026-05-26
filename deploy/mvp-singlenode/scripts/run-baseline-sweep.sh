@@ -13,8 +13,10 @@
 #
 #   BASELINES="b2-full b3-delta"         which baselines to run
 #   SCALE="N1"                            compose-overlay to use
-#   RATES="1000 5000 10000"               EXPORTER_RATE sweep
-#   CARDS="500 1000 5000"                 EXPORTER_CARDINALITY sweep
+#   RATES="1000 5000 10000"               label-only sweep dim (the
+#                                          rate knob was a no-op under SDK
+#                                          aggregation and has been dropped)
+#   CARDS="500 1000 5000"                 -cardinality sweep
 #   WINDOWS="5s 30s 60s 300s"             SKETCH_WINDOW sweep (B4 only)
 #   SOAK_S=120                            per-config soak seconds
 #   SCRIPT_DIR=.../deploy/scripts         override lookup path
@@ -32,7 +34,7 @@
 #
 # The caller is responsible for having the compose stack's images
 # built (asap/asap-otel:dev, asap/data-plane:dev, asap/control-plane:dev,
-# asap/fake-exporter:dev). The data-plane and control-plane images build
+# asap/otel-app:dev). The data-plane and control-plane images build
 # from ASAPQuery-backend's data_plane/Dockerfile and control_plane/Dockerfile
 # respectively (data_plane reorg, 2026-05 — the old combined
 # deploy/docker/Dockerfile.backend is retired). Each iteration does a full
@@ -107,8 +109,7 @@ for baseline in $BASELINES; do
       # accept the env harmlessly. Using `env` as the wrapper so
       # an empty window doesn't require separate branches.
       env_args=(
-        EXPORTER_RATE="$rate"
-        EXPORTER_CARDINALITY="$card"
+        OTELAPP_CARDINALITY="$card"
         AGENT_CONFIG="$cfg"
       )
       if [[ -n "$window_env" ]]; then

@@ -9,7 +9,7 @@ container).
 Stage mapping (hard-coded; override via --stages-yaml):
 
     agent-* (any container whose name starts with "agent-"  )      → agent
-    fake-exporter*                                                 → producer
+    otel-app*                                                 → producer
     gateway                                                         → gateway
     backend                                                         → backend-ingest +
                                                                       backend-query  (same
@@ -97,7 +97,7 @@ def default_stage_for(container: str, baseline: str) -> list[str]:
 
     if bare.startswith("agent-") or bare.startswith("agent_"):
         return ["agent"]
-    if bare.startswith("fake-exporter") or bare.startswith("fake_exporter"):
+    if bare.startswith("otel-app") or bare.startswith("otel_app"):
         return ["producer"]
     if bare == "gateway":
         return ["gateway"]

@@ -35,7 +35,7 @@ Five images, all built on node0 and `docker save | ssh load`-distributed by `run
 |---|---|---|
 | `asap/asap-otel:dev` | `ASAPCollector` root + `build_asap_otel.sh` | Patched OTel-Collector with sketch processors |
 | `asap/asap-otel-supervised:dev` | `deploy/docker/Dockerfile.asap-otel-supervised` (`FROM asap/asap-otel:dev`) + `build_opamp_supervisor.sh` | The asap-otel collector wrapped by the OpenTelemetry opamp-supervisor (v0.141.0). The ASAP arms run this so the agent APPLIES the controller's pushed remote config (the bare collector's `opampextension` is report-only). |
-| `asap/fake-exporter:dev` | `deploy/fake-exporter/Dockerfile` | OTLP load generator |
+| `asap/otel-app:dev` | `otel-app/Dockerfile` | OTLP load generator |
 | `asap/data-plane:dev` | `ASAPQuery-backend/data_plane/Dockerfile` | `data_plane` (the data plane / query backend, entrypoint `/usr/local/bin/data_plane`, port 9091 / 4317 / 4318). Runs as the `asap-data-plane` container on node2. |
 | `asap/control-plane:dev` | `ASAPQuery-backend/control_plane/Dockerfile` | `control_plane` (the control plane / controller, entrypoint `/usr/local/bin/control_plane`, port 8080 / 4320 / 4321). Runs as a separate `asap-control-plane` container on node2 (data_plane reorg, 2026-05 — retires the old combined query-backend image). |
 | `asap/gorilla-merger:dev` | `ASAPQuery-backend/gorilla-merger/Dockerfile` (BuildKit secret) | Thanos-Receive-style merger: HTTP fragment ingest (`:10908`), Thanos StoreAPI for the `<2h` pending window (`:10907`), 2h-block shipper → `asap-gorilla-tsdb`. ASAP arms only; runs on node2. `thanos-query` fans out to its StoreAPI alongside the store-gateway. Imports the private `asap-gorilla-go` module, so its build needs a `gh_token` BuildKit secret — see the merger README. |
@@ -64,8 +64,8 @@ docker build -f deploy/docker/Dockerfile.asap-otel \
 docker build -f deploy/docker/Dockerfile.asap-otel-supervised \
     -t asap/asap-otel-supervised:dev .                     # asap/asap-otel-supervised:dev
 DOCKER_BUILDKIT=1 docker build \
-    -f deploy/docker/Dockerfile.fake-exporter \
-    -t asap/fake-exporter:dev .
+    -f deploy/docker/Dockerfile.otel-app \
+    -t asap/otel-app:dev .
 # data_plane reorg (2026-05): the data plane and control plane now build
 # from two per-crate Dockerfiles in ASAPQuery-backend, producing two
 # separate images (the old combined deploy/docker/Dockerfile.backend is

@@ -25,18 +25,17 @@
 //
 // Routing is determined entirely by metric name + agent / gateway
 // pipeline configs (see configs/asap-otel-agent-*-tier.yaml). The
-// fake-exporter is path-agnostic; it simply emits the three counters.
+// producer is path-agnostic; it simply emits the three counters.
 //
-// Env knobs:
+// Config knobs (flags / YAML — see Config in main.go):
 //
-//	EXPORTER_FRESHNESS_PROBES        on | off (default on)
-//	EXPORTER_FRESHNESS_PROBE_HZ      tick rate, Hz (default 1)
+//	-freshness-probes       enable the three probes (default true)
+//	-freshness-probe-hz     tick rate, Hz (default 1)
 package main
 
 import (
 	"context"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -58,22 +57,17 @@ var freshnessProbeNames = []string{
 //
 // The probes share the meter passed in (so they ride the same
 // PeriodicReader / View / projection / aggregation as the rest of the
-// fake-exporter). Phase C overlay routing handles per-metric pipeline
+// producer). Phase C overlay routing handles per-metric pipeline
 // selection at the agent.
-func startFreshnessProbes(ctx context.Context, meter metric.Meter) (stop func()) {
-	enabled := envBool("EXPORTER_FRESHNESS_PROBES", true)
-	// Tolerate the explicit "off" string the spec calls out.
-	if v := strings.ToLower(strings.TrimSpace(envOr("EXPORTER_FRESHNESS_PROBES", ""))); v == "off" {
-		enabled = false
-	}
-	if !enabled {
-		log.Printf("freshness probes disabled (EXPORTER_FRESHNESS_PROBES=off)")
+func startFreshnessProbes(ctx context.Context, meter metric.Meter, c Config) (stop func()) {
+	if !c.FreshnessProbes {
+		log.Printf("freshness probes disabled (-freshness-probes=false)")
 		return func() {}
 	}
 
-	hz := envFloat("EXPORTER_FRESHNESS_PROBE_HZ", 1.0)
+	hz := c.FreshnessProbeHz
 	if hz <= 0 {
-		log.Printf("warning: EXPORTER_FRESHNESS_PROBE_HZ=%v invalid, using 1.0", hz)
+		log.Printf("warning: -freshness-probe-hz=%v invalid, using 1.0", hz)
 		hz = 1.0
 	}
 	period := time.Duration(float64(time.Second) / hz)

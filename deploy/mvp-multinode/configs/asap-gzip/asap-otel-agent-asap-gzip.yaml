@@ -205,7 +205,7 @@ processors:
   # is held at 5 s (was 60 s pre-fix). Each per-family pipeline owns
   # an independent gorillas3 instance and an independent in-memory
   # `windowState` buffer; PR #353 spawned six such instances (one
-  # per per-family pipeline) and PR #338's fake-exporter cardinality
+  # per per-family pipeline) and PR #338's otel-app cardinality
   # (5 producers × 500 user_ids × ~30 K events / s) means each window
   # accretes ~30 MiB of buffered samples per second per pipeline.
   # With six pipelines and a 60 s window, the in-memory working set

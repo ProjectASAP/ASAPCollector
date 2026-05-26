@@ -47,8 +47,8 @@ opentelemetry-collector-contrib-patch/HLL
 # Benchmark result data (large CSVs / logs)
 otel_collector_benchmark/benchmark_results/
 
-# e2esdkbench compiled binary
-opentelemetry-app/e2esdkbench
+# otel-app compiled binary
+otel-app/otel-app
 deploy/scripts/__pycache__/
 *.pyc
 deploy/eval-results/

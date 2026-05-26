@@ -164,7 +164,7 @@ one-time image builds.
 | Docker BuildKit | (default in 24.0+) | `DOCKER_BUILDKIT=1` named build contexts |
 | Docker Compose v2 | 2.20+ | `docker compose ...` (NOT `docker-compose`) |
 | Rust toolchain | 1.90+ | backend image build, controller (Phase δ.1: `gorilla-compactor` Rust binary deleted; replaced by stock `thanos-compact` sidecar) |
-| Go toolchain | 1.22+ | `fake-exporter`, `gorillas3processor`, OCB build |
+| Go toolchain | 1.22+ | `otel-app`, `gorillas3processor`, OCB build |
 | Python | 3.10+ | Measurement / report scripts |
 | protoc | 3.21+ | prost-build in the backend Cargo crates |
 | jq | 1.6+ | Driver scripts parse PromQL responses |
@@ -271,7 +271,7 @@ posted on the issue-#46 comment thread:
 The demo runs **two architectures back-to-back on the same workload**
 so the issue-#46 criteria (X bandwidth reduction, Y query-latency
 reduction, Z combined-resource reduction, accuracy, cold-fallback,
-freshness) all fall out as A-vs-B comparisons. Same fake-exporter
+freshness) all fall out as A-vs-B comparisons. Same otel-app
 producers, same per-agent cardinality, same query classes, same soak
 duration — only the pipeline differs.
 
@@ -285,7 +285,7 @@ TSDB.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  BASELINE                                                                │
 │                                                                          │
-│  10 fake-exporter  ──OTLP raw──▶  2 OTel agents  ──remote_write──▶       │
+│  10 otel-app  ──OTLP raw──▶  2 OTel agents  ──remote_write──▶       │
 │   (1000 series each)              (no aggregation;                       │
 │                                    forward as-is)                        │
 │                                          │                               │
@@ -322,7 +322,7 @@ based on the query's shape.
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  ASAP                                                                    │
 │                                                                          │
-│  10 fake-exporter ──OTLP──▶ 2 asap-otel agents ──OTLP──▶ 1 gateway       │
+│  10 otel-app ──OTLP──▶ 2 asap-otel agents ──OTLP──▶ 1 gateway       │
 │   (1000 series each)         (sketch processors:        (sketch-merge    │
 │                               ddsketch / kll / hll /     processors)     │
 │                               cs / cms — picked per             │        │
@@ -431,7 +431,7 @@ exercise.
 3. controller binary             (cargo)
 4. asap/controller:dev           (Docker image)              } runtime
 5. asap/asap-otel:dev            (OCB + Docker)              }   images
-6. asap/fake-exporter:dev        (Docker image)              }
+6. asap/otel-app:dev        (Docker image)              }
 7. asap/query-backend:dev        (Docker image, multi-context)
 ```
 
@@ -514,19 +514,19 @@ docker image ls asap/asap-otel:dev
 See `docs/design-asap-edge-framework.md` for OCB build details and
 `builder-config.yaml` semantics.
 
-### Step 6 — `asap/fake-exporter:dev` (with freshness probes)
+### Step 6 — `asap/otel-app:dev` (with freshness probes)
 
 ```bash
-cd ~/repos/ASAPCollector/deploy/fake-exporter
+cd ~/repos/ASAPCollector
 
-# Pure Go build — no extra setup beyond `go` on PATH
-docker build -t asap/fake-exporter:dev .
-docker image ls asap/fake-exporter:dev
-
-# Verify the freshness probe metrics from PR #299 are baked in:
-docker run --rm asap/fake-exporter:dev sh -c \
-    'grep -l http_freshness_probe_raw probes.go' || \
-    echo "WARNING: image lacks freshness probes — rebuild after PR #299"
+# BuildKit build — the build context is the repo root (so the patched
+# opentelemetry-go / opentelemetry-proto trees are available); sketchlib-go
+# is supplied via a named build context. See deploy/docker/Dockerfile.otel-app.
+DOCKER_BUILDKIT=1 docker build \
+    -f deploy/docker/Dockerfile.otel-app \
+    --build-context sketchlib-go=../sketchlib-go \
+    -t asap/otel-app:dev .
+docker image ls asap/otel-app:dev
 ```
 
 ### Step 7 — `asap/query-backend:dev` (multi-context Docker build)
@@ -601,7 +601,8 @@ docker build -t asap/controller:dev controller/
 bash opentelemetry-collector-contrib-patch/cmd/asap-otel/build.sh
 docker build -t asap/asap-otel:dev \
     -f opentelemetry-collector-contrib-patch/cmd/asap-otel/Dockerfile .
-docker build -t asap/fake-exporter:dev deploy/fake-exporter/
+DOCKER_BUILDKIT=1 docker build -f deploy/docker/Dockerfile.otel-app \
+    --build-context sketchlib-go=../sketchlib-go -t asap/otel-app:dev .
 DOCKER_BUILDKIT=1 docker build -f deploy/docker/Dockerfile.backend \
     --build-context backend-src=$HOME/repos/ASAPQuery-backend \
     --build-context asap-precompute-rs=$PWD/asap-precompute-rs \
@@ -627,7 +628,7 @@ export OUT_BASE=$PWD/deploy/eval-results       # default
 export PER_AGENT_CARDINALITY=500               # 500 × 10 producers = 5K aggregate
 export NUM_PRODUCERS=10                         # spread across 2 agents (5 + 5)
 export ASAP_SKETCH_FAMILY=ddsketch             # default; overridden per-metric by controller
-export EXPORTER_FRESHNESS_PROBES=on            # emit timestamp-encoded probes
+export OTELAPP_FRESHNESS_PROBES=true           # emit timestamp-encoded probes
 
 # Run the demo SYNCHRONOUSLY (foreground). Wall time: ~30-45 min.
 bash deploy/mvp-singlenode/scripts/run_mvp_demo.sh
@@ -658,7 +659,7 @@ Three images, all built from this repo's root:
 | Image | Built from | Contains |
 |---|---|---|
 | `asap/asap-otel:dev` | `build_asap_otel.sh` | Patched OTel Collector with sketch processors |
-| `asap/fake-exporter:dev` | `docker build deploy/fake-exporter/` | OTLP load generator |
+| `asap/otel-app:dev` | `docker build -f deploy/docker/Dockerfile.otel-app .` | OTLP load generator |
 | `asap/query-backend:dev` | `Dockerfile.backend` (multi-bin: see deploy/mvp-multinode/README.md for full command) | `asap-query-backend` (port 9091 / 4317 / 4318) AND `controller` (port 8080 / 4320 / 4321). Phase 9 single-binary refactor — no separate `asap/controller:dev` image. |
 
 If you want to run it in the background and watch from another shell:
@@ -776,13 +777,13 @@ For the demo's 60 s flush window:
 | 1 Hz (legacy) | 60 | LOSE (~1200% inflation; below break-even) | LOSE (~5×) | LOSE (~133×) | LOSE |
 | **10 Hz (default)** | **600** | **WIN (delta)** | **WIN (~1.8× — past 330-sample HLL knee)** | LOSE (~13× — better but still loses) | WIN-adjacent |
 
-The MVP demo defaults to `EXPORTER_FREQ_HZ=10` (see `base.yml` and
+The MVP demo defaults to `-freq-hz=10` (see `base.yml` and
 `mvp-multi-stage.yml`) so all four delta-capable families operate above
 their break-even where possible. KLL is omitted from the table (no
 delta variant; full-state cost per window).
 
 If a sweep cell ships at 1 Hz (legacy paths, or a host shell that
-overrides `EXPORTER_FREQ_HZ=1`), do NOT compare its bandwidth verdict
+overrides `OTELAPP_FREQ_HZ=1`), do NOT compare its bandwidth verdict
 against the 10 Hz numbers — the operating point is on the wrong side
 of every break-even curve.
 
@@ -824,7 +825,7 @@ docker builder prune --all
 | `no such file or directory: ../../asap_sketchlib/Cargo.toml` during backend build | Repo layout doesn't have the three sibling clones | Re-clone in `~/repos/{ASAPCollector, ASAPQuery-backend, asap_sketchlib}` |
 | Backend log: `No matching pattern for http_freshness_probe_warm` | Backend image pre-dates PR #91 freshness pattern registration | `docker build --no-cache ...` per §3 |
 | `MVP_REPORT.md` says §8 STATUS = `not-exercised` | `USE_TYPED_STAGE_SPLIT` not propagating | Check `docker exec controller env \| grep USE_TYPED`; re-export at the host shell |
-| `freshness/{raw,warm,archive}.csv` empty | Probe exporter/backend path did not produce observations | Rebuild fake-exporter image; verify with the `grep -l` step in §3 and inspect `freshness/run.log` |
+| `freshness/{raw,warm,archive}.csv` empty | Probe exporter/backend path did not produce observations | Rebuild otel-app image; verify with the `grep -l` step in §3 and inspect `freshness/run.log` |
 | `accuracy.csv` empty | Archive truth queries failed or replay produced no reducible rows | Inspect `asap/measurements/accuracy.log`; verify backend answers with `X-ASAP-Engine: thanos_archive` |
 | Demo agent dies at "stack settle" | Controller container not reachable; check `docker ps` and `docker compose logs controller` | Often a port collision; run `docker compose down -v` first |
 | OOM kill during the soak | `PER_AGENT_CARDINALITY` too high for the host RAM budget | Lower to 250 or run on a 32 GB host |

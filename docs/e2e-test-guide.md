@@ -301,7 +301,7 @@ curl -s http://localhost:8888/metrics | grep -E "process_cpu|accepted_metric"
 `e2esdkbench` sends OTLP metrics from a synthetic workload to the collector.
 
 ```bash
-cd opentelemetry-app
+cd otel-app
 go run ./cmd/e2esdkbench \
   --sketch-type=ddsketch \
   --endpoint=localhost:4317 \

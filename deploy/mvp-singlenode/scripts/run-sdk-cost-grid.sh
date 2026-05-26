@@ -27,18 +27,18 @@
 #                   whitespace and an empty string is painful to
 #                   pass through.
 #                   [:] (= one run with no filter)
-#   AGGS            space-sep EXPORTER_SDK_AGG values
+#   AGGS            space-sep OTELAPP_SDK_AGG values
 #                   [dd-full]
-#   CARDINALITY     EXPORTER_CARDINALITY            [1000]
-#   FREQ_HZ         EXPORTER_FREQ_HZ                [10]
+#   CARDINALITY     OTELAPP_CARDINALITY            [1000]
+#   FREQ_HZ         OTELAPP_FREQ_HZ                [10]
 #   SCALE           agents-${SCALE}.yml overlay     [N1]
 #   SOAK_S          per-cell soak seconds           [180]
 #   BYTES_WIN       --bytes-sample-window seconds   [5]
 #
-# Pre-req: asap/fake-exporter:dev image built with three-axis knobs
-# (PR #190 onwards). Earlier builds silently ignore EXPORTER_SDK_*
-# and produce rows all at the SDK default, which looks like the
-# sweep is broken.
+# Pre-req: asap/otel-app:dev image built with three-axis knobs
+# (PR #190 onwards). Earlier builds silently ignore the -sdk-*
+# flags and produce rows all at the SDK default, which looks like
+# the sweep is broken.
 
 set -euo pipefail
 
@@ -90,11 +90,11 @@ for window in "${WINDOWS_ARR[@]}"; do
                 down >/dev/null 2>&1 || true
 
             env \
-                EXPORTER_SDK_WINDOW="$window" \
-                EXPORTER_SDK_PROJECTION="$proj" \
-                EXPORTER_SDK_AGG="$agg" \
-                EXPORTER_CARDINALITY="$CARDINALITY" \
-                EXPORTER_FREQ_HZ="$FREQ_HZ" \
+                OTELAPP_SDK_WINDOW="$window" \
+                OTELAPP_SDK_PROJECTION="$proj" \
+                OTELAPP_SDK_AGG="$agg" \
+                OTELAPP_CARDINALITY="$CARDINALITY" \
+                OTELAPP_FREQ_HZ="$FREQ_HZ" \
                 AGENT_CONFIG="$AGENT_CONFIG" \
                 docker compose \
                 -f base.yml -f "agents-${SCALE}.yml" -f "${BASELINE_OVERLAY}" \
@@ -108,7 +108,7 @@ for window in "${WINDOWS_ARR[@]}"; do
             #   --rate            empty — freq_hz isn't a workload rate in
             #                     the old sense; keep the column but skip
             #                     filling it
-            #   --cardinality     EXPORTER_CARDINALITY
+            #   --cardinality     OTELAPP_CARDINALITY
             if (( head == 1 )); then
                 python3 "${SCRIPT_DIR}/measure-baseline.py" \
                     --baseline "$tag" --scale "$SCALE" \

@@ -1,4 +1,4 @@
-module github.com/ProjectASAP/DataCollector/deploy/fake-exporter
+module github.com/approx-telemetry/otel-app
 
 go 1.25.0
 
@@ -8,6 +8,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk v1.41.0
 	go.opentelemetry.io/otel/sdk/metric v1.41.0
+	go.yaml.in/yaml/v2 v2.4.3
 )
 
 require (
@@ -26,7 +27,6 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.9.0 // indirect
-	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
@@ -39,20 +39,25 @@ require (
 // `opentelemetry-go-patch/` applied on top (via
 // `restore_opentelemetry_go_patches.sh`). That combined tree is the
 // source of truth — build against it directly. The patched sdk/metric
-// carries AggregationRawBuffer + DeltaTransmission flags; see
-// docs/sdk-cost-evaluation.md.
+// carries AggregationDDSketch/KLLSketch/CountSketch/CountMinSketch/HLLSketch
+// + AggregationRawBuffer + DeltaTransmission flags; see
+// docs/sdk-cost-evaluation.md. This module lives one level under the repo
+// root (otel-app/), a sibling of the opentelemetry-go / opentelemetry-proto
+// submodules (so those replaces are a single `../` deep). sketchlib-go is a
+// local checkout at the workspace root (one level above the repo root), so it
+// is `../../sketchlib-go` — matching the path opentelemetry-app used.
 replace (
-	github.com/ProjectASAP/sketchlib-go => ../../../sketchlib-go
-	go.opentelemetry.io/otel => ../../opentelemetry-go
-	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc => ../../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetricgrpc
-	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp => ../../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetrichttp
-	go.opentelemetry.io/otel/metric => ../../opentelemetry-go/metric
-	go.opentelemetry.io/otel/sdk => ../../opentelemetry-go/sdk
-	go.opentelemetry.io/otel/sdk/metric => ../../opentelemetry-go/sdk/metric
-	go.opentelemetry.io/otel/trace => ../../opentelemetry-go/trace
+	github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go
+	go.opentelemetry.io/otel => ../opentelemetry-go
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc => ../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetricgrpc
+	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp => ../opentelemetry-go/exporters/otlp/otlpmetric/otlpmetrichttp
+	go.opentelemetry.io/otel/metric => ../opentelemetry-go/metric
+	go.opentelemetry.io/otel/sdk => ../opentelemetry-go/sdk
+	go.opentelemetry.io/otel/sdk/metric => ../opentelemetry-go/sdk/metric
+	go.opentelemetry.io/otel/trace => ../opentelemetry-go/trace
 	// The patched OTLP proto bindings (mpb.DDSketch / KLLSketch / CountSketch
 	// / CountMinSketch / HLLSketch types added on top of upstream v1.9.0)
 	// are regenerated under opentelemetry-proto/gen/go/... by
 	// restore_otel_proto_patches.sh. See opentelemetry-proto-patch/REGEN.md.
-	go.opentelemetry.io/proto/otlp => ../../opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp
+	go.opentelemetry.io/proto/otlp => ../opentelemetry-proto/gen/go/go.opentelemetry.io/proto/otlp
 )

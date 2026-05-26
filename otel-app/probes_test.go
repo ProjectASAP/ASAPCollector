@@ -4,10 +4,10 @@
 //
 //   - startFreshnessProbes wires three Float64Counters with the
 //     canonical names http_freshness_probe_{raw,warm,archive}.
-//   - Each probe ticks at FRESHNESS_PROBE_HZ. After N ticks the
+//   - Each probe ticks at -freshness-probe-hz. After N ticks the
 //     cumulative counter value equals the wall-clock UnixMilli of
 //     the most recent tick (within a few ms of test wall-clock).
-//   - EXPORTER_FRESHNESS_PROBES=off short-circuits the wiring so the
+//   - -freshness-probes=false short-circuits the wiring so the
 //     ManualReader sees no probe metrics at all.
 //
 // We use a ManualReader so we can deterministically Collect() the
@@ -79,15 +79,16 @@ func collectCumulativeByName(
 // within a small slack of the current UnixMilli. This is the core
 // freshness invariant the replay client relies on.
 func TestFreshnessProbesEmitTimestamp(t *testing.T) {
-	t.Setenv("EXPORTER_FRESHNESS_PROBES", "on")
-	t.Setenv("EXPORTER_FRESHNESS_PROBE_HZ", "20") // 50ms period — fast test
+	c := defaultConfig()
+	c.FreshnessProbes = true
+	c.FreshnessProbeHz = 20 // 50ms period — fast test
 
 	provider, reader := newProbeTestProvider(t)
 	meter := provider.Meter("probe-test")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop := startFreshnessProbes(ctx, meter)
+	stop := startFreshnessProbes(ctx, meter, c)
 	defer stop()
 
 	// Allow several ticks at 50ms each.
@@ -120,25 +121,26 @@ func TestFreshnessProbesEmitTimestamp(t *testing.T) {
 	}
 }
 
-// TestFreshnessProbesDisabled verifies the EXPORTER_FRESHNESS_PROBES=off
+// TestFreshnessProbesDisabled verifies the -freshness-probes=false
 // kill switch — when disabled, no probe metrics make it to the
 // reader.
 func TestFreshnessProbesDisabled(t *testing.T) {
-	t.Setenv("EXPORTER_FRESHNESS_PROBES", "off")
+	c := defaultConfig()
+	c.FreshnessProbes = false
 
 	provider, reader := newProbeTestProvider(t)
 	meter := provider.Meter("probe-test-off")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop := startFreshnessProbes(ctx, meter)
+	stop := startFreshnessProbes(ctx, meter, c)
 	defer stop()
 
 	time.Sleep(150 * time.Millisecond)
 
 	got := collectCumulativeByName(t, reader)
 	if len(got) != 0 {
-		t.Errorf("EXPORTER_FRESHNESS_PROBES=off but reader saw probes: %v", got)
+		t.Errorf("-freshness-probes=false but reader saw probes: %v", got)
 	}
 }
 
@@ -168,15 +170,16 @@ func TestFreshnessProbeNamesMatchSpec(t *testing.T) {
 // non-monotonic Adds and we want to fail fast if a future refactor
 // breaks that.
 func TestFreshnessProbeMonotonic(t *testing.T) {
-	t.Setenv("EXPORTER_FRESHNESS_PROBES", "on")
-	t.Setenv("EXPORTER_FRESHNESS_PROBE_HZ", "20")
+	c := defaultConfig()
+	c.FreshnessProbes = true
+	c.FreshnessProbeHz = 20
 
 	provider, reader := newProbeTestProvider(t)
 	meter := provider.Meter("probe-test-mono")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop := startFreshnessProbes(ctx, meter)
+	stop := startFreshnessProbes(ctx, meter, c)
 	defer stop()
 
 	time.Sleep(120 * time.Millisecond)

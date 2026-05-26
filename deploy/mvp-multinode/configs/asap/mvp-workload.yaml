@@ -12,7 +12,7 @@
 #
 # ── Operating-point assumptions for the bandwidth verdict ─────────
 #
-# Agents run at 10 Hz scrape (`EXPORTER_FREQ_HZ=10`, see
+# Agents run at 10 Hz scrape (`-freq-hz=10`, see
 # `deploy/mvp-singlenode/docker-compose/base.yml` and `mvp-multi-stage.yml`); each
 # series therefore produces 600 samples per 60 s flush window. The
 # break-even against raw scrape depends on `samples_per_window`
@@ -102,8 +102,8 @@
 #    it; the query forces routing to GorillaQueryEngine. Drives
 #    criterion ⑤ verification (data_source: gorilla_archive).
 #
-#    Predicate uses `zone="z0"` because the fake-exporter emits
-#    `zone, rack, node, pod` labels (see `deploy/fake-exporter/main.go`
+#    Predicate uses `zone="z0"` because the otel-app emits
+#    `zone, rack, node, pod` labels (see `otel-app/main.go`
 #    `attrSetsZRNP`); there is NO `service` label on the produced
 #    series, so the previous `service="payments"` selector matched
 #    zero series and surfaced as an empty (but HTTP-200) cold-tier
@@ -119,7 +119,7 @@
 # ── Five-sketch MVP coverage (issue #46) ──────────────────────────
 #
 # The four entries below register the new metrics emitted by the
-# fake-exporter's five-sketch workload (deploy/fake-exporter/
+# otel-app's five-sketch workload (otel-app/
 # five_sketch_workload.go). Each entry pins a `sketch_family_override`
 # hint so the controller's planner picks the family the empirical
 # claim is scoped to (DDSketch claims rel-err on quantiles, KLL

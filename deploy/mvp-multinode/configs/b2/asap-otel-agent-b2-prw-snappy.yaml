@@ -66,7 +66,7 @@ exporters:
     # Preserve original metric names from the OTLP source. Without
     # this, the unit annotation on `http_requests_total_latency_ms`
     # (Float64Gauge with `WithUnit("ms")` in
-    # deploy/fake-exporter/main.go:447) causes the exporter to append
+    # otel-app/main.go:447) causes the exporter to append
     # `_milliseconds` on the wire, producing
     # `http_requests_total_latency_ms_milliseconds` in VictoriaMetrics.
     # Asap tier preserves the original name; baseline must too so the

@@ -4,7 +4,7 @@
 #
 # Per-replica flow:
 #
-#   fake-exporter-i ──OTLP──▶ agent-i ──OTLP──▶ backend
+#   otel-app-i ──OTLP──▶ agent-i ──OTLP──▶ backend
 #
 # Each agent mounts `asap-otel-agent.yaml` and runs DDSketch + HLL
 # on the pipeline, so the bytes reaching the backend are already
@@ -47,21 +47,26 @@ x-agent: &agent-base
         memory: 1024M
 
 x-producer: &producer-base
-  image: asap/fake-exporter:dev
+  image: asap/otel-app:dev
 
 services:
-  # The base.yml fake-exporter service is overridden here to
-  # target agent-1 so its definition stays meaningful.
-  fake-exporter:
-    environment:
-      EXPORTER_TARGET: "agent-1:4317"
-      # workload-sweep knobs. Defaults match the N=1
-      # smoke-test. Override at bring-up:
-      #
-      #   EXPORTER_RATE=10000 EXPORTER_CARDINALITY=5000 \
+  # The base.yml otel-app service is overridden here to
+  # target agent-1 so its definition stays meaningful. compose
+  # `command:` fully replaces base.yml's command, so the full flag
+  # list is restated with -target pointed at the agent.
+  otel-app:
+    command:
+      - "-target=agent-1:4317"
+      # workload-sweep knobs. Defaults match the N=1 smoke-test.
+      # Override at bring-up, e.g.:
+      #   OTELAPP_FREQ_HZ=10000 OTELAPP_CARDINALITY=5000 \
       #     docker compose -f base.yml -f agents-N1.yml up -d
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-sdk-projection=${OTELAPP_SDK_PROJECTION:-}"
+      - "-agg=${OTELAPP_SDK_AGG:-default}"
+      - "-max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES:-0}"
 
   agent-1:
     <<: *agent-base
@@ -1363,893 +1368,794 @@ services:
       # ignore this env. Default 60s.
       SKETCH_WINDOW: "${SKETCH_WINDOW:-60s}"
 
-  fake-exporter-2:
+  otel-app-2:
     <<: *producer-base
     depends_on:
       - agent-2
-    environment:
-      EXPORTER_TARGET: "agent-2:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-2:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-3:
+  otel-app-3:
     <<: *producer-base
     depends_on:
       - agent-3
-    environment:
-      EXPORTER_TARGET: "agent-3:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-3:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-4:
+  otel-app-4:
     <<: *producer-base
     depends_on:
       - agent-4
-    environment:
-      EXPORTER_TARGET: "agent-4:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-4:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-5:
+  otel-app-5:
     <<: *producer-base
     depends_on:
       - agent-5
-    environment:
-      EXPORTER_TARGET: "agent-5:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-5:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-6:
+  otel-app-6:
     <<: *producer-base
     depends_on:
       - agent-6
-    environment:
-      EXPORTER_TARGET: "agent-6:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-6:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-7:
+  otel-app-7:
     <<: *producer-base
     depends_on:
       - agent-7
-    environment:
-      EXPORTER_TARGET: "agent-7:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-7:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-8:
+  otel-app-8:
     <<: *producer-base
     depends_on:
       - agent-8
-    environment:
-      EXPORTER_TARGET: "agent-8:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-8:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-9:
+  otel-app-9:
     <<: *producer-base
     depends_on:
       - agent-9
-    environment:
-      EXPORTER_TARGET: "agent-9:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-9:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-10:
+  otel-app-10:
     <<: *producer-base
     depends_on:
       - agent-10
-    environment:
-      EXPORTER_TARGET: "agent-10:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-10:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-11:
+  otel-app-11:
     <<: *producer-base
     depends_on:
       - agent-11
-    environment:
-      EXPORTER_TARGET: "agent-11:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-11:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-12:
+  otel-app-12:
     <<: *producer-base
     depends_on:
       - agent-12
-    environment:
-      EXPORTER_TARGET: "agent-12:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-12:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-13:
+  otel-app-13:
     <<: *producer-base
     depends_on:
       - agent-13
-    environment:
-      EXPORTER_TARGET: "agent-13:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-13:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-14:
+  otel-app-14:
     <<: *producer-base
     depends_on:
       - agent-14
-    environment:
-      EXPORTER_TARGET: "agent-14:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-14:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-15:
+  otel-app-15:
     <<: *producer-base
     depends_on:
       - agent-15
-    environment:
-      EXPORTER_TARGET: "agent-15:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-15:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-16:
+  otel-app-16:
     <<: *producer-base
     depends_on:
       - agent-16
-    environment:
-      EXPORTER_TARGET: "agent-16:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-16:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-17:
+  otel-app-17:
     <<: *producer-base
     depends_on:
       - agent-17
-    environment:
-      EXPORTER_TARGET: "agent-17:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-17:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-18:
+  otel-app-18:
     <<: *producer-base
     depends_on:
       - agent-18
-    environment:
-      EXPORTER_TARGET: "agent-18:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-18:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-19:
+  otel-app-19:
     <<: *producer-base
     depends_on:
       - agent-19
-    environment:
-      EXPORTER_TARGET: "agent-19:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-19:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-20:
+  otel-app-20:
     <<: *producer-base
     depends_on:
       - agent-20
-    environment:
-      EXPORTER_TARGET: "agent-20:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-20:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-21:
+  otel-app-21:
     <<: *producer-base
     depends_on:
       - agent-21
-    environment:
-      EXPORTER_TARGET: "agent-21:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-21:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-22:
+  otel-app-22:
     <<: *producer-base
     depends_on:
       - agent-22
-    environment:
-      EXPORTER_TARGET: "agent-22:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-22:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-23:
+  otel-app-23:
     <<: *producer-base
     depends_on:
       - agent-23
-    environment:
-      EXPORTER_TARGET: "agent-23:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-23:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-24:
+  otel-app-24:
     <<: *producer-base
     depends_on:
       - agent-24
-    environment:
-      EXPORTER_TARGET: "agent-24:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-24:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-25:
+  otel-app-25:
     <<: *producer-base
     depends_on:
       - agent-25
-    environment:
-      EXPORTER_TARGET: "agent-25:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-25:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-26:
+  otel-app-26:
     <<: *producer-base
     depends_on:
       - agent-26
-    environment:
-      EXPORTER_TARGET: "agent-26:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-26:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-27:
+  otel-app-27:
     <<: *producer-base
     depends_on:
       - agent-27
-    environment:
-      EXPORTER_TARGET: "agent-27:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-27:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-28:
+  otel-app-28:
     <<: *producer-base
     depends_on:
       - agent-28
-    environment:
-      EXPORTER_TARGET: "agent-28:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-28:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-29:
+  otel-app-29:
     <<: *producer-base
     depends_on:
       - agent-29
-    environment:
-      EXPORTER_TARGET: "agent-29:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-29:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-30:
+  otel-app-30:
     <<: *producer-base
     depends_on:
       - agent-30
-    environment:
-      EXPORTER_TARGET: "agent-30:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-30:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-31:
+  otel-app-31:
     <<: *producer-base
     depends_on:
       - agent-31
-    environment:
-      EXPORTER_TARGET: "agent-31:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-31:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-32:
+  otel-app-32:
     <<: *producer-base
     depends_on:
       - agent-32
-    environment:
-      EXPORTER_TARGET: "agent-32:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-32:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-33:
+  otel-app-33:
     <<: *producer-base
     depends_on:
       - agent-33
-    environment:
-      EXPORTER_TARGET: "agent-33:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-33:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-34:
+  otel-app-34:
     <<: *producer-base
     depends_on:
       - agent-34
-    environment:
-      EXPORTER_TARGET: "agent-34:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-34:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-35:
+  otel-app-35:
     <<: *producer-base
     depends_on:
       - agent-35
-    environment:
-      EXPORTER_TARGET: "agent-35:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-35:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-36:
+  otel-app-36:
     <<: *producer-base
     depends_on:
       - agent-36
-    environment:
-      EXPORTER_TARGET: "agent-36:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-36:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-37:
+  otel-app-37:
     <<: *producer-base
     depends_on:
       - agent-37
-    environment:
-      EXPORTER_TARGET: "agent-37:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-37:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-38:
+  otel-app-38:
     <<: *producer-base
     depends_on:
       - agent-38
-    environment:
-      EXPORTER_TARGET: "agent-38:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-38:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-39:
+  otel-app-39:
     <<: *producer-base
     depends_on:
       - agent-39
-    environment:
-      EXPORTER_TARGET: "agent-39:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-39:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-40:
+  otel-app-40:
     <<: *producer-base
     depends_on:
       - agent-40
-    environment:
-      EXPORTER_TARGET: "agent-40:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-40:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-41:
+  otel-app-41:
     <<: *producer-base
     depends_on:
       - agent-41
-    environment:
-      EXPORTER_TARGET: "agent-41:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-41:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-42:
+  otel-app-42:
     <<: *producer-base
     depends_on:
       - agent-42
-    environment:
-      EXPORTER_TARGET: "agent-42:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-42:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-43:
+  otel-app-43:
     <<: *producer-base
     depends_on:
       - agent-43
-    environment:
-      EXPORTER_TARGET: "agent-43:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-43:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-44:
+  otel-app-44:
     <<: *producer-base
     depends_on:
       - agent-44
-    environment:
-      EXPORTER_TARGET: "agent-44:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-44:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-45:
+  otel-app-45:
     <<: *producer-base
     depends_on:
       - agent-45
-    environment:
-      EXPORTER_TARGET: "agent-45:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-45:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-46:
+  otel-app-46:
     <<: *producer-base
     depends_on:
       - agent-46
-    environment:
-      EXPORTER_TARGET: "agent-46:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-46:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-47:
+  otel-app-47:
     <<: *producer-base
     depends_on:
       - agent-47
-    environment:
-      EXPORTER_TARGET: "agent-47:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-47:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-48:
+  otel-app-48:
     <<: *producer-base
     depends_on:
       - agent-48
-    environment:
-      EXPORTER_TARGET: "agent-48:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-48:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-49:
+  otel-app-49:
     <<: *producer-base
     depends_on:
       - agent-49
-    environment:
-      EXPORTER_TARGET: "agent-49:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-49:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-50:
+  otel-app-50:
     <<: *producer-base
     depends_on:
       - agent-50
-    environment:
-      EXPORTER_TARGET: "agent-50:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-50:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-51:
+  otel-app-51:
     <<: *producer-base
     depends_on:
       - agent-51
-    environment:
-      EXPORTER_TARGET: "agent-51:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-51:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-52:
+  otel-app-52:
     <<: *producer-base
     depends_on:
       - agent-52
-    environment:
-      EXPORTER_TARGET: "agent-52:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-52:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-53:
+  otel-app-53:
     <<: *producer-base
     depends_on:
       - agent-53
-    environment:
-      EXPORTER_TARGET: "agent-53:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-53:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-54:
+  otel-app-54:
     <<: *producer-base
     depends_on:
       - agent-54
-    environment:
-      EXPORTER_TARGET: "agent-54:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-54:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-55:
+  otel-app-55:
     <<: *producer-base
     depends_on:
       - agent-55
-    environment:
-      EXPORTER_TARGET: "agent-55:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-55:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-56:
+  otel-app-56:
     <<: *producer-base
     depends_on:
       - agent-56
-    environment:
-      EXPORTER_TARGET: "agent-56:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-56:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-57:
+  otel-app-57:
     <<: *producer-base
     depends_on:
       - agent-57
-    environment:
-      EXPORTER_TARGET: "agent-57:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-57:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-58:
+  otel-app-58:
     <<: *producer-base
     depends_on:
       - agent-58
-    environment:
-      EXPORTER_TARGET: "agent-58:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-58:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-59:
+  otel-app-59:
     <<: *producer-base
     depends_on:
       - agent-59
-    environment:
-      EXPORTER_TARGET: "agent-59:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-59:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-60:
+  otel-app-60:
     <<: *producer-base
     depends_on:
       - agent-60
-    environment:
-      EXPORTER_TARGET: "agent-60:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-60:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-61:
+  otel-app-61:
     <<: *producer-base
     depends_on:
       - agent-61
-    environment:
-      EXPORTER_TARGET: "agent-61:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-61:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-62:
+  otel-app-62:
     <<: *producer-base
     depends_on:
       - agent-62
-    environment:
-      EXPORTER_TARGET: "agent-62:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-62:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-63:
+  otel-app-63:
     <<: *producer-base
     depends_on:
       - agent-63
-    environment:
-      EXPORTER_TARGET: "agent-63:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-63:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-64:
+  otel-app-64:
     <<: *producer-base
     depends_on:
       - agent-64
-    environment:
-      EXPORTER_TARGET: "agent-64:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-64:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-65:
+  otel-app-65:
     <<: *producer-base
     depends_on:
       - agent-65
-    environment:
-      EXPORTER_TARGET: "agent-65:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-65:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-66:
+  otel-app-66:
     <<: *producer-base
     depends_on:
       - agent-66
-    environment:
-      EXPORTER_TARGET: "agent-66:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-66:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-67:
+  otel-app-67:
     <<: *producer-base
     depends_on:
       - agent-67
-    environment:
-      EXPORTER_TARGET: "agent-67:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-67:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-68:
+  otel-app-68:
     <<: *producer-base
     depends_on:
       - agent-68
-    environment:
-      EXPORTER_TARGET: "agent-68:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-68:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-69:
+  otel-app-69:
     <<: *producer-base
     depends_on:
       - agent-69
-    environment:
-      EXPORTER_TARGET: "agent-69:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-69:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-70:
+  otel-app-70:
     <<: *producer-base
     depends_on:
       - agent-70
-    environment:
-      EXPORTER_TARGET: "agent-70:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-70:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-71:
+  otel-app-71:
     <<: *producer-base
     depends_on:
       - agent-71
-    environment:
-      EXPORTER_TARGET: "agent-71:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-71:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-72:
+  otel-app-72:
     <<: *producer-base
     depends_on:
       - agent-72
-    environment:
-      EXPORTER_TARGET: "agent-72:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-72:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-73:
+  otel-app-73:
     <<: *producer-base
     depends_on:
       - agent-73
-    environment:
-      EXPORTER_TARGET: "agent-73:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-73:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-74:
+  otel-app-74:
     <<: *producer-base
     depends_on:
       - agent-74
-    environment:
-      EXPORTER_TARGET: "agent-74:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-74:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-75:
+  otel-app-75:
     <<: *producer-base
     depends_on:
       - agent-75
-    environment:
-      EXPORTER_TARGET: "agent-75:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-75:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-76:
+  otel-app-76:
     <<: *producer-base
     depends_on:
       - agent-76
-    environment:
-      EXPORTER_TARGET: "agent-76:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-76:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-77:
+  otel-app-77:
     <<: *producer-base
     depends_on:
       - agent-77
-    environment:
-      EXPORTER_TARGET: "agent-77:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-77:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-78:
+  otel-app-78:
     <<: *producer-base
     depends_on:
       - agent-78
-    environment:
-      EXPORTER_TARGET: "agent-78:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-78:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-79:
+  otel-app-79:
     <<: *producer-base
     depends_on:
       - agent-79
-    environment:
-      EXPORTER_TARGET: "agent-79:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-79:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-80:
+  otel-app-80:
     <<: *producer-base
     depends_on:
       - agent-80
-    environment:
-      EXPORTER_TARGET: "agent-80:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-80:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-81:
+  otel-app-81:
     <<: *producer-base
     depends_on:
       - agent-81
-    environment:
-      EXPORTER_TARGET: "agent-81:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-81:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-82:
+  otel-app-82:
     <<: *producer-base
     depends_on:
       - agent-82
-    environment:
-      EXPORTER_TARGET: "agent-82:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-82:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-83:
+  otel-app-83:
     <<: *producer-base
     depends_on:
       - agent-83
-    environment:
-      EXPORTER_TARGET: "agent-83:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-83:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-84:
+  otel-app-84:
     <<: *producer-base
     depends_on:
       - agent-84
-    environment:
-      EXPORTER_TARGET: "agent-84:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-84:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-85:
+  otel-app-85:
     <<: *producer-base
     depends_on:
       - agent-85
-    environment:
-      EXPORTER_TARGET: "agent-85:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-85:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-86:
+  otel-app-86:
     <<: *producer-base
     depends_on:
       - agent-86
-    environment:
-      EXPORTER_TARGET: "agent-86:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-86:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-87:
+  otel-app-87:
     <<: *producer-base
     depends_on:
       - agent-87
-    environment:
-      EXPORTER_TARGET: "agent-87:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-87:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-88:
+  otel-app-88:
     <<: *producer-base
     depends_on:
       - agent-88
-    environment:
-      EXPORTER_TARGET: "agent-88:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-88:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-89:
+  otel-app-89:
     <<: *producer-base
     depends_on:
       - agent-89
-    environment:
-      EXPORTER_TARGET: "agent-89:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-89:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-90:
+  otel-app-90:
     <<: *producer-base
     depends_on:
       - agent-90
-    environment:
-      EXPORTER_TARGET: "agent-90:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-90:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-91:
+  otel-app-91:
     <<: *producer-base
     depends_on:
       - agent-91
-    environment:
-      EXPORTER_TARGET: "agent-91:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-91:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-92:
+  otel-app-92:
     <<: *producer-base
     depends_on:
       - agent-92
-    environment:
-      EXPORTER_TARGET: "agent-92:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-92:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-93:
+  otel-app-93:
     <<: *producer-base
     depends_on:
       - agent-93
-    environment:
-      EXPORTER_TARGET: "agent-93:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-93:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-94:
+  otel-app-94:
     <<: *producer-base
     depends_on:
       - agent-94
-    environment:
-      EXPORTER_TARGET: "agent-94:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-94:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-95:
+  otel-app-95:
     <<: *producer-base
     depends_on:
       - agent-95
-    environment:
-      EXPORTER_TARGET: "agent-95:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-95:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-96:
+  otel-app-96:
     <<: *producer-base
     depends_on:
       - agent-96
-    environment:
-      EXPORTER_TARGET: "agent-96:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-96:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-97:
+  otel-app-97:
     <<: *producer-base
     depends_on:
       - agent-97
-    environment:
-      EXPORTER_TARGET: "agent-97:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-97:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-98:
+  otel-app-98:
     <<: *producer-base
     depends_on:
       - agent-98
-    environment:
-      EXPORTER_TARGET: "agent-98:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-98:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-99:
+  otel-app-99:
     <<: *producer-base
     depends_on:
       - agent-99
-    environment:
-      EXPORTER_TARGET: "agent-99:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-99:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
 
-  fake-exporter-100:
+  otel-app-100:
     <<: *producer-base
     depends_on:
       - agent-100
-    environment:
-      EXPORTER_TARGET: "agent-100:4317"
-      EXPORTER_RATE: "${EXPORTER_RATE:-1000}"
-      EXPORTER_CARDINALITY: "${EXPORTER_CARDINALITY:-1000}"
+    command:
+      - "-target=agent-100:4317"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"

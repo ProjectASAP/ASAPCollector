@@ -215,7 +215,7 @@ drops in flight is a follow-up tracked in `PROGRESS.md`.
 **Contract.** Given `N` events emitted on `K` distinct
 attribute sets during one `W`, `collect()` returns `N` data
 points (bounded by `K × MaxEventsPerSeries`). Verified by
-`deploy/fake-exporter/sdk_emit_test.go` via a `ManualReader`
+`otel-app/sdk_emit_test.go` via a `ManualReader`
 harness — the wiring-level complement to the aggregator unit
 tests in `opentelemetry-go-patch/sdk/metric/internal/aggregate/`.
 
@@ -283,7 +283,7 @@ triple and holds the other two fixed at a representative
 operating point.
 
 **The workload driver is
-[`deploy/fake-exporter/`](../deploy/fake-exporter/) — a
+[`otel-app/`](../otel-app/) — a
 synthetic *instrumented application*, not an OTel `Exporter` and
 not a Prometheus client.** The misleading name is historical.
 Concretely it imports the ASAP-patched OTel Go SDK, stands up

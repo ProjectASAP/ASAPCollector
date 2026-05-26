@@ -127,7 +127,7 @@ Works with either input type:
 cd otel_collector_benchmark && go run main.go --endpoint=localhost:4317 --type=gauge
 
 # Terminal 2b: patched SDK (DDSketch inputs)
-cd opentelemetry-app
+cd otel-app
 go run ./cmd/fakemetricload --enable-ddsketch=true --rate-per-series=25000 --endpoint=localhost:4317
 ```
 

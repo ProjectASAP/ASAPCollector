@@ -3,7 +3,7 @@
 # `-f` flag so it can override env / volumes / commands.
 #
 # What it adds:
-#   1. EXPORTER_CONTROL_ADDR  → fake-exporter exposes the swappable
+#   1. -control-addr  → otel-app exposes the swappable
 #      filter HTTP control endpoint (P2).
 #   2. Mounts deploy/mvp-singlenode/configs/workloads.yaml into the controller and
 #      sets CONTROLLER_WORKLOADS to point at it. Without this the
@@ -66,13 +66,26 @@ services:
     volumes:
       - ../configs/gateway-otlp-forward.yaml:/etc/otelcol-contrib/config.yaml:ro
 
-  fake-exporter:
-    environment:
-      EXPORTER_CONTROL_ADDR: "0.0.0.0:7700"
-      EXPORTER_INSTANCE_ID: "${EXPORTER_INSTANCE_ID:-fake-1}"
-      # When this overlay is in the chain, the producer talks to
-      # the agent rather than the gateway directly. The agents-N1
-      # overlay does the same; we leave it alone here.
+  # Add the control endpoint (-control-addr) so the swappable filter
+  # HTTP server (POST /control/projection, P2) is exposed. Because
+  # compose `command:` fully replaces the command set by earlier
+  # layers (and does NOT merge like environment did), the full flag
+  # list is restated here. When pairing with a saturating baseline
+  # (e.g. baseline-b3-delta sets cardinality=100000, freq=100), pass
+  # those defaults via host env — OTELAPP_CARDINALITY / OTELAPP_FREQ_HZ
+  # — so they survive this last-layer command override.
+  # (The former instance-id env was never read by the producer and
+  # has been dropped.)
+  otel-app:
+    command:
+      - "-target=agent-1:4317"
+      - "-control-addr=0.0.0.0:7700"
+      - "-cardinality=${OTELAPP_CARDINALITY:-1000}"
+      - "-freq-hz=${OTELAPP_FREQ_HZ:-10}"
+      - "-sdk-window=${OTELAPP_SDK_WINDOW:-15s}"
+      - "-sdk-projection=${OTELAPP_SDK_PROJECTION:-}"
+      - "-agg=${OTELAPP_SDK_AGG:-default}"
+      - "-max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES:-0}"
     ports:
       - "17700:7700"   # POST /control/projection from the host
 

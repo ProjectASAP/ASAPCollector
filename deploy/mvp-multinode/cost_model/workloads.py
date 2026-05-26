@@ -48,7 +48,7 @@ class Workload:
     metrics: List[MetricSpec] = field(default_factory=list)
     # Group cardinality for edge aggregation (e.g. distinct zones). Used to size
     # the asap aggregated output for metrics with aggregate_by.
-    group_cardinality: int = 4        # DESIGN: fake-exporter EXPORTER_ZONE_VALS=4
+    group_cardinality: int = 4        # DESIGN: otel-app -zone-vals=4
     retention_days: int = 30          # cold-archive retention (S3 storage months)
     # query rate against the backend (GETs from thanos store-gateway on cold reads)
     queries_per_sec: float = 1.0
@@ -80,9 +80,9 @@ class ASAPConfig:
 def mvp_workload() -> Workload:
     """The MVP-multinode bandwidth-sweep operating point (FINDINGS calibration).
 
-    topology.env: PER_AGENT_CARDINALITY=1000, EXPORTER_FREQ_HZ=10 (per the
+    topology.env: PER_AGENT_CARDINALITY=1000, -freq-hz=10 (per the
     workload.yaml / runbook bandwidth operating point), 5 producers/node x
-    2 agent-nodes => 10_000 series. EXPORTER_FIVE_SKETCH=off => the 2 sweep
+    2 agent-nodes => 10_000 series. the five-sketch gate (removed) => the 2 sweep
     metrics only: the http_requests_total counter (Sum-by-zone) and the
     latency gauge (DDSketch quantile).
     """

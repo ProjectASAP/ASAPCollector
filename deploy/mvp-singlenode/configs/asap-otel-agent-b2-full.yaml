@@ -5,7 +5,7 @@
 #
 # Pipeline shape:
 #
-#   fake-exporter (or real workload)
+#   otel-app (or real workload)
 #       │
 #       │  OTLP/gRPC :4317
 #       ▼

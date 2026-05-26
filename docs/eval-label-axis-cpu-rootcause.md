@@ -61,30 +61,30 @@ cd deploy/docker-compose
 docker compose -f base.yml -f agents-N1.yml \
     -f baseline-b0a-raw-stream.yml down -v
 
-# Bring up a single fake-exporter that targets the existing
-# agent network. EXPORTER_PPROF_ADDR exposes the runtime/pprof
+# Bring up a single otel-app producer that targets the existing
+# agent network. -pprof-addr exposes the runtime/pprof
 # endpoint on container port 6060, mapped to host 36060 via
 # the profile overlay.
-docker run --rm -d --name fake-exporter-profile \
+docker run --rm -d --name otel-app-profile \
     --network docker-compose_default \
     -p 36060:6060 \
-    -e EXPORTER_TARGET=agent-1:4317 \
-    -e EXPORTER_SDK_WINDOW=60s \
-    -e EXPORTER_SDK_PROJECTION="" \
-    -e EXPORTER_SDK_AGG=dd-full \
-    -e EXPORTER_CARDINALITY=1000 \
-    -e EXPORTER_FREQ_HZ=10 \
-    -e EXPORTER_PPROF_ADDR=0.0.0.0:6060 \
-    asap/fake-exporter:dev
+    asap/otel-app:dev \
+    -target=agent-1:4317 \
+    -sdk-window=60s \
+    -sdk-projection="" \
+    -agg=dd-full \
+    -cardinality=1000 \
+    -freq-hz=10 \
+    -pprof-addr=0.0.0.0:6060
 
 sleep 90  # let runSynthetic spawn all 1000 series goroutines
-docker stats --no-stream fake-exporter-profile  # ~5–9 % CPU
+docker stats --no-stream otel-app-profile  # ~5–9 % CPU
 
 curl -sS "http://127.0.0.1:36060/debug/pprof/profile?seconds=30" \
     -o deploy/eval-results/sdk-cost/profiles/keep-all.prof
-docker stop fake-exporter-profile
+docker stop otel-app-profile
 
-# Repeat with EXPORTER_SDK_PROJECTION=zone,rack →
+# Repeat with -sdk-projection=zone,rack →
 # CPU ~17–25 % (3–4× higher), profile to filtered.prof.
 ```
 
@@ -225,7 +225,7 @@ func (b Builder[N]) filter(f fltrMeasure[N]) Measure[N] {
 
 ### Why this is NOT correct under runtime swap
 
-The `deploy/fake-exporter/swappable_filter.go` runtime path
+The `otel-app/swappable_filter.go` runtime path
 mutates the filter behaviour underneath the captured closure
 (via `atomic.Pointer[attribute.Filter]` inside the closure).
 With this cache, the first call for a given input Set **freezes
@@ -276,7 +276,7 @@ measurement. With the fix:
   CPU profile, keep-all configuration.
 - `deploy/eval-results/sdk-cost/profiles/filtered.prof` — 30 s
   CPU profile, `zone,rack` configuration. Both captured from
-  `asap/fake-exporter:dev` (the image the original cost-eval
+  `asap/otel-app:dev` (the image the original cost-eval
   ran against), at the cost-eval's `(W=60s, agg=dd-full,
   cardinality=1000, freq_hz=10)` operating point.
 - `deploy/eval-results/sdk-cost/profiles/{keep-all,filtered}.heap.prof`
@@ -290,7 +290,7 @@ measurement. With the fix:
 
 The post-fix producer-side pprof profile (the third deliverable
 suggested in the task) was not captured. Reason: the
-`asap/fake-exporter:dev` image needs a rebuild to pick up the
+`asap/otel-app:dev` image needs a rebuild to pick up the
 fix, but the current build is broken from independent drift
 (`opentelemetry-proto` patches not regenerated → `mpb.*` proto
 types undefined; `sketchlib-go` HEAD has a method-rename

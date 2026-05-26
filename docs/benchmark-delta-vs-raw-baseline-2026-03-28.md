@@ -1,6 +1,6 @@
 # Benchmark: Raw Samples vs Full Sketch vs Delta Sketch
 **Date:** 2026-03-28
-**Tool:** `opentelemetry-app/cmd/deltaaccbench`
+**Tool:** `otel-app/cmd/deltaaccbench`
 **Config:** 20 windows · 5 000 inserts/window · Zipf(s=1.10, v=1.00, max=5 000) · delta-threshold=1.0
 
 Raw bytes = proto-packed fixed64 encoding: **8 bytes per sample** (5 000 × 8 = 40 000 B / window).
@@ -11,7 +11,7 @@ This is the minimum on-wire cost for transmitting every raw data point.
 ## How to reproduce
 
 ```bash
-cd opentelemetry-app
+cd otel-app
 go run ./cmd/deltaaccbench \
   --windows=20 --inserts=5000 \
   --delta-threshold=1.0 \

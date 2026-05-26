@@ -1,0 +1,10 @@
+# otel-app — CountMinSketch SDK pre-aggregation (frequency estimates).
+# Run:  otel-app -config config-countminsketch.yaml
+target: gateway:4317
+sdk_window: 15s
+sdk_agg: cms-full         # use cms-delta for sparse delta encoding
+sketch_type: countminsketch
+cardinality: 500
+freq_hz: 10.0
+five_sketch_endpoints: 50
+five_sketch_zipf_s: 1.2

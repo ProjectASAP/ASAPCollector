@@ -5,7 +5,7 @@ figures from the running compose stack.
 
 Queries Prometheus for agent / gateway / backend metrics, plus
 supplements with `docker stats` for containers that don't
-self-report (backend + the producer / fake-exporter, and — added
+self-report (backend + the producer / otel-app, and — added
 2026-05-05 for paper blocker #3 — every agent container, so the
 raw / Gorilla / Serf baselines that don't emit
 `otelcol_asapcollector_processor_*_bytes_total` still produce
@@ -439,7 +439,7 @@ def main() -> int:
     )
     p.add_argument(
         "--producer-container",
-        default="docker-compose-fake-exporter-1",
+        default="docker-compose-otel-app-1",
         help="docker container name of the producer to scrape for SDK-side "
         "CPU / RSS / bytes-out.",
     )

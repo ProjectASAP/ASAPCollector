@@ -1,10 +1,10 @@
-# fake-exporter trace replay
+# otel-app trace replay
 
-fake-exporter's trace-replay mode reads a CSV of
+otel-app's trace-replay mode reads a CSV of
 `(timestamp_ms, series_id, value)` rows and emits them as OTLP
 Gauges at the recorded pace. This is the
 workload-credibility hook — run B0/B1/B2/B3/B5 against **real
-production data** instead of the synthetic log-normal default.
+production data** instead of the synthetic Zipf default.
 
 ## Quickstart: demo dataset
 
@@ -22,14 +22,14 @@ python3 gen-demo-trace.py 17 demo-trace.csv
 Run a baseline against the demo trace:
 
 ```
-EXPORTER_TRACE_FILE=/trace/demo-trace.csv \
-  docker compose \
-    -f base.yml -f agents-N1.yml -f baseline-b3-delta.yml up -d
+docker compose \
+  -f base.yml -f agents-N1.yml -f baseline-b3-delta.yml up -d
 ```
 
-The compose stack already mounts `deploy/fake-exporter/replay-data/`
-at `/trace/` in each fake-exporter container (see the
-`baseline-*-trace.yml` overlays).
+The compose stack already mounts `otel-app/replay-data/`
+at `/trace/` in each otel-app container, and the producer is
+launched with `-trace-file=/trace/demo-trace.csv` in the
+`baseline-*-trace.yml` overlays.
 
 ## Swapping in the real Google 2019 cluster trace
 
@@ -49,7 +49,7 @@ Preprocessing checklist:
        instance_index`, but any hashable string works — it
        becomes the `series_id` label on the OTLP gauge)
      * `cpu_usage` (a float in [0, 1])
-  3. Sort by `timestamp_ms` (fake-exporter sorts internally but
+  3. Sort by `timestamp_ms` (otel-app sorts internally but
      a pre-sort speeds up the load).
   4. Emit as the same CSV schema as the demo.
 
@@ -72,16 +72,16 @@ timestamp_ms,series_id,value
   `{series_id="…"}` attribute on the emitted gauge.
 - `value` (float64): the gauge reading.
 
-`EXPORTER_TRACE_SCALE` (default 1.0) scales playback speed —
+`-trace-scale` (default 1.0) scales playback speed —
 `10` replays a 1-hour trace in 6 minutes, useful for shorter
-sweeps. `EXPORTER_TRACE_LOOP` (default true) wraps at EOF for
+sweeps. `-trace-loop` (default true) wraps at EOF for
 long soaks.
 
 ## Limitations
 
 * Each row is emitted as its own gauge — if the source data has
   aggregated multi-metric rows, flatten them before writing.
-* Timestamps are advisory; fake-exporter uses wallclock at emit
+* Timestamps are advisory; otel-app uses wallclock at emit
   time for OTLP export. The CSV timestamp only governs the
   inter-sample sleep interval.
 * The demo dataset is synthetic — `log-normal + drift` — so

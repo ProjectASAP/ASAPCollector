@@ -1,0 +1,10 @@
+# otel-app — baseline (no SDK sketch aggregation).
+# sdk_agg: default keeps Sum for the counter / LastValue for the gauge;
+# the collector-side processor performs any aggregation.
+# Run:  otel-app -config config-baseline.yaml
+target: gateway:4317
+sdk_window: 15s
+sdk_agg: default
+sketch_type: baseline
+cardinality: 500
+freq_hz: 10.0

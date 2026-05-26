@@ -59,7 +59,7 @@ default: sketch_warm_tier
 #   it. `topk(...)` and `rate(...)` shapes the warm tier doesn't
 #   precompute also drop into the archive's exact streaming path.
 #   (Predicate uses `zone="z0"` rather than `service="payments"`
-#   because the fake-exporter emits `zone, rack, node, pod` —
+#   because the otel-app emits `zone, rack, node, pod` —
 #   no `service` label is produced, so the older selector always
 #   matched zero series and masked the cold-engine traversal.)
 #
@@ -110,7 +110,7 @@ routes:
   # Freshness probes (criterion ⑥). Both probes route to the cold
   # archive — the GorillaQueryEngine handles `last_over_time(...)`
   # by returning the value of the largest-timestamp sample in the
-  # range. The fake-exporter encodes `unix_ts_ms_of_emission` in
+  # range. The otel-app encodes `unix_ts_ms_of_emission` in
   # the cumulative counter value, so the replay client subtracts
   # `(poll_ts - observed_value)` to get a per-path freshness delta.
   #

@@ -23,7 +23,7 @@ mkdir -p "$OUT_DIR"
 
 TS="${TS:-$(date +%Y%m%d)}"
 
-# BYTES_WIN must be >= the longest EXPORTER_SDK_WINDOW we sweep, so
+# BYTES_WIN must be >= the longest OTELAPP_SDK_WINDOW we sweep, so
 # every cell's sample captures at least one full reader flush. See
 # PR #194 — when BYTES_WIN < W, producer_bytes_out_per_s ends up
 # sampling between ticks and reports near-zero.

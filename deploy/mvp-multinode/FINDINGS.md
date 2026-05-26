@@ -11,7 +11,7 @@ of compression codecs).
 Apples-to-apples requires: (a) per-series sketches on the latency metric (drop
 `grouping_labels` so PromQL per-series semantics match raw), (b) matched metric
 names (`add_metric_suffixes: false` on PRW; VM OTLP naming), (c) a deterministic
-producer seed (`EXPORTER_SEED`) so all arms see identical sample sequences.
+producer seed (`-seed`) so all arms see identical sample sequences.
 
 | Query | asap rel-err vs baseline | Notes |
 |---|---|---|

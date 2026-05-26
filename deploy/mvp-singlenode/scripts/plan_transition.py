@@ -34,7 +34,7 @@ Output schemas:
     }
 
   sample.jsonl (one line per container per second):
-    {"ts": "...", "container": "fake-exporter", "cpu_pct": 12.3,
+    {"ts": "...", "container": "otel-app", "cpu_pct": 12.3,
      "mem_mb": 220.4, "net_rx_bytes": 1234567, "net_tx_bytes": ...}
 
 Usage (during a live e2e run):

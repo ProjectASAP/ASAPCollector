@@ -7,12 +7,12 @@
 #
 #   * `http_requests_total_latency_ms_quantile`  — DDSketch / KLL,
 #     produced by `gateway-aggregate-from-raw.yaml` (`metric_suffix:
-#     "_quantile"`) from the fake-exporter's `*_latency_ms` gauge.
+#     "_quantile"`) from the otel-app's `*_latency_ms` gauge.
 #   * `http_requests_total_quantile`             — DDSketch / KLL,
 #     produced by the same gateway path from the `http_requests_total`
 #     counter.
 #   * `http_requests_total`                       — raw counter
-#     emitted by fake-exporter and forwarded unsuffixed by the
+#     emitted by otel-app and forwarded unsuffixed by the
 #     CountMinSketch / CountSketch agent processors (which preserve
 #     metric_name). Routes to CMS / CountSketch on Sum / Count.
 #
