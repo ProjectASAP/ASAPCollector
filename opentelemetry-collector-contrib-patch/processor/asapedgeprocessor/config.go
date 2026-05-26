@@ -215,7 +215,16 @@ type Config struct {
 	// ShardCount is the number of key-hash ingestion shards. Each shard
 	// owns its own lock + cold builder + warm aggregators, so concurrent
 	// OTLP Export goroutines on distinct series ingest in parallel.
-	// Default 4. Must be >= 1.
+	//
+	// It ALSO sets the flush staggering granularity: the flush loop ticks
+	// every WindowDuration/ShardCount and flushes exactly one (phase-shifted)
+	// shard per tick (see flushLoop), so a window's seal/serialize/ship work
+	// splits into ShardCount small bursts instead of one. A higher count
+	// flattens the per-tick CPU spike and the memory sawtooth (peak work scales
+	// ~1/ShardCount) WITHOUT changing per-shard semantics — each shard still
+	// flushes once per WindowDuration and the backend's per-group delta totals
+	// are unchanged. Default 12 (a value that meaningfully smooths the curve
+	// under the dense raw-buffer workload while staying cheap). Must be >= 1.
 	ShardCount int `mapstructure:"shard_count"`
 
 	// WindowDuration is the warm-tier (sum/sketch) flush cadence.
@@ -263,7 +272,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("asap_edge: shard_count must be >= 0 (0/unset => default)")
 	}
 	if c.ShardCount == 0 {
-		c.ShardCount = 4
+		c.ShardCount = 12
 	}
 	if c.WindowDuration <= 0 {
 		c.WindowDuration = 60 * time.Second
