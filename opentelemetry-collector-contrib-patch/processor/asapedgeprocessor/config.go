@@ -120,6 +120,17 @@ type MetricFamily struct {
 	Rows int `mapstructure:"rows"`
 	Cols int `mapstructure:"cols"`
 	// HLL takes no sizing knob (fixed precision in the wrapper).
+
+	// SampleP is the per-metric warm-sketch sampling probability in (0,1].
+	// The control plane sets it from a metric's workload spec (only when
+	// sample_p < 1). 0/unset is treated as 1.0 — sampling disabled — so the
+	// emitted wire bytes are byte-identical to the pre-sampling build. A value
+	// <1 thins updates to the sampling-aware families (HLL / CountMinSketch)
+	// to ~p; sketchlib-go stamps p on the SketchEnvelope so the backend rescales
+	// by 1/p at query time. Families without sampling support (DDSketch / KLL /
+	// CountSketch) ignore it. Mirrors the standalone hll/countminsketch
+	// processors' sample_p (this is the fused asap_edge equivalent).
+	SampleP float64 `mapstructure:"sample_p"`
 }
 
 // ColdConfig configures the per-shard Gorilla cold archive. Each shard
@@ -278,6 +289,18 @@ func (c *Config) Validate() error {
 		}
 		if m.RelativeAccuracy < 0 || m.RelativeAccuracy >= 1 {
 			return fmt.Errorf("asap_edge: metrics[%d] (%s): relative_accuracy must be in [0,1)", i, m.Metric)
+		}
+		// SampleP: 0/unset normalises to 1.0 (sampling disabled — the safe
+		// default that keeps wire bytes byte-identical to the pre-sampling
+		// build). Reject out-of-range values rather than silently clamping, so
+		// a control-plane typo surfaces at agent boot instead of producing a
+		// mis-scaled sketch. Mirrors the standalone hll/countminsketch
+		// processors' (0,1] check.
+		if m.SampleP == 0 {
+			m.SampleP = 1.0
+		}
+		if m.SampleP < 0 || m.SampleP > 1.0 {
+			return fmt.Errorf("asap_edge: metrics[%d] (%s): sample_p must be in (0,1] (got %v)", i, m.Metric, m.SampleP)
 		}
 	}
 	// Cold defaults (only meaningful when enabled).

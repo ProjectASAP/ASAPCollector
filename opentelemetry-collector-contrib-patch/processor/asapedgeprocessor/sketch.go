@@ -21,6 +21,11 @@ type sketchAggregator struct {
 	pc   precompute.Precompute
 	pcfg *precompute.PrecomputeConfig
 	enc  *oteladapter.AdapterConfig
+	// factory is the per-window sketch constructor handed to precompute.New
+	// (it bakes in the per-family params + the warm-sketch sample_p). Retained
+	// so the built sampling probability is observable (e.g. in tests) without
+	// reaching into precompute internals.
+	factory precompute.SketchFactory
 }
 
 // fnv64 derives a stable per-metric AggID (matches the standalone sketch
@@ -43,6 +48,15 @@ func newSketchAggregator(metric string, fam *MetricFamily, window time.Duration)
 		factory  precompute.SketchFactory
 		observer precompute.SketchObserver
 	)
+	// sampleP is the warm-sketch sampling probability (1.0 = disabled). It is
+	// applied only to the sampling-aware families (HLL / CountMinSketch) via
+	// sketchlib-go's WithSampleP; WithSampleP(1.0) is an exact no-op, so the
+	// default path stays byte-identical to the pre-sampling build. Families
+	// without sampling support (DDSketch / KLL / CountSketch) ignore it.
+	sampleP := fam.SampleP
+	if sampleP <= 0 {
+		sampleP = 1.0
+	}
 	switch fam.Family {
 	case FamilyDDSketch:
 		alpha := fam.RelativeAccuracy
@@ -59,7 +73,7 @@ func newSketchAggregator(metric string, fam *MetricFamily, window time.Duration)
 		observer = sketches.KLLObserver{}
 	case FamilyHLL:
 		st = precompute.SketchTypeHLLSketch
-		factory = func() precompute.Sketch { return sketches.NewHLLWrapper() }
+		factory = func() precompute.Sketch { return sketches.NewHLLWrapper().WithSampleP(sampleP) }
 		observer = sketches.HLLObserver{}
 	case FamilyCountSketch:
 		rows, cols := csmDims(fam)
@@ -72,7 +86,7 @@ func newSketchAggregator(metric string, fam *MetricFamily, window time.Duration)
 	case FamilyCountMinSketch:
 		rows, cols := csmDims(fam)
 		st = precompute.SketchTypeCountMinSketch
-		factory = func() precompute.Sketch { return sketches.NewCMSWrapper(rows, cols, false) }
+		factory = func() precompute.Sketch { return sketches.NewCMSWrapper(rows, cols, false).WithSampleP(sampleP) }
 		observer = sketches.CMSObserver{}
 	default:
 		return nil, false
@@ -89,9 +103,10 @@ func newSketchAggregator(metric string, fam *MetricFamily, window time.Duration)
 		Temporality:    int32(pmetric.AggregationTemporalityDelta),
 	}
 	return &sketchAggregator{
-		pc:   precompute.New(pcfg, factory, observer),
-		pcfg: pcfg,
-		enc:  &oteladapter.AdapterConfig{MetricSuffix: "_" + string(fam.Family), DropOriginal: true},
+		pc:      precompute.New(pcfg, factory, observer),
+		pcfg:    pcfg,
+		enc:     &oteladapter.AdapterConfig{MetricSuffix: "_" + string(fam.Family), DropOriginal: true},
+		factory: factory,
 	}, true
 }
 
