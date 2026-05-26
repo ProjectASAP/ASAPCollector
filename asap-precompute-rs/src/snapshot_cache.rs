@@ -147,13 +147,14 @@ impl SnapshotCache {
         //
         // (delta-baseline-contract.md §3) — per-window deltas:
         // families that opt in via `Sketch::delta_against_empty_base`
-        // (DDSketch this phase) reset the cached base to the EMPTY-sketch
-        // snapshot after each window-close emit, so the next window diffs
-        // against empty and transmits its OWN per-window state as a delta
-        // (no cross-window subtraction). This is what makes the backend's
-        // future per-window base rotation correct.
+        // (DDSketch / CMS / CountSketch / HLL) reset the cached base to the
+        // EMPTY-sketch snapshot after each window-close emit, so the next
+        // window diffs against empty and transmits its OWN per-window state
+        // as a delta (no cross-window subtraction). This is what makes the
+        // backend's per-window base rotation correct.
         //
-        // Legacy always-refresh (all other families, `None` default):
+        // Legacy always-refresh (KLL, and any family that returns the
+        // `None` default):
         // update the cached base to the just-emitted full snapshot, so the
         // next delta is computed against the immediately preceding window.
         // When is_full=true the wire payload IS the snapshot; reuse it.
@@ -356,5 +357,203 @@ mod tests {
 
         // And it must NOT equal window 1's state (which had double counts).
         assert_ne!(recon.inner().total_count(), w1.inner().total_count());
+    }
+
+    // ---- per-window delta tests (CMS) ----
+
+    use crate::precompute::FrequencySketch;
+    use crate::sketches::cms::CMSWrapper;
+
+    /// With delta mode on, applying the emitted CMS delta to an EMPTY base
+    /// reconstructs the window's per-cell matrix, and the estimated
+    /// frequency matches.
+    #[test]
+    fn cms_delta_against_empty_round_trips() {
+        let c = SnapshotCache::new();
+        let (rows, cols) = (5, 1024);
+
+        // Window 1 — first emit is FULL (no prior base).
+        let mut w1 = CMSWrapper::new(rows, cols);
+        for _ in 0..200 {
+            w1.update("hot", 1.0);
+        }
+        let r1 = c.compute_delta("series", &w1, 1).unwrap();
+        assert!(r1.is_full, "first window must emit a full frame");
+
+        // Window 2 — fresh per-window sketch; emit must be a DELTA now.
+        let mut w2 = CMSWrapper::new(rows, cols);
+        for _ in 0..200 {
+            w2.update("hot", 1.0);
+        }
+        let r2 = c.compute_delta("series", &w2, 1).unwrap();
+        assert!(!r2.is_full, "window 2 must emit a delta, not a full frame");
+        assert!(!r2.payload.is_empty(), "delta payload must be non-empty");
+
+        // Apply the delta to an EMPTY base → reconstructs window 2.
+        let mut recon = CMSWrapper::new(rows, cols);
+        recon.apply_delta(&r2.payload).unwrap();
+        let want = w2.estimate_count(b"hot");
+        let got = recon.estimate_count(b"hot");
+        assert!((got - want).abs() <= want * 0.1, "recon={got} want={want}");
+    }
+
+    /// Two consecutive windows each emit their OWN state — window 2's
+    /// delta is NOT diffed against window 1. Window 1 counts "k" 300×,
+    /// window 2 counts it 50×; reconstructing window 2 from EMPTY yields
+    /// ~50, proving no cross-window subtraction.
+    #[test]
+    fn cms_consecutive_windows_no_cross_window_subtraction() {
+        let c = SnapshotCache::new();
+        let (rows, cols) = (5, 1024);
+
+        let mut w1 = CMSWrapper::new(rows, cols);
+        for _ in 0..300 {
+            w1.update("k", 1.0);
+        }
+        assert!(c.compute_delta("s", &w1, 1).unwrap().is_full);
+
+        let mut w2 = CMSWrapper::new(rows, cols);
+        for _ in 0..50 {
+            w2.update("k", 1.0);
+        }
+        let r2 = c.compute_delta("s", &w2, 1).unwrap();
+        assert!(!r2.is_full);
+        assert!(!r2.payload.is_empty());
+
+        let mut recon = CMSWrapper::new(rows, cols);
+        recon.apply_delta(&r2.payload).unwrap();
+        let got = recon.estimate_count(b"k");
+        let want = w2.estimate_count(b"k");
+        assert!((got - want).abs() <= want * 0.1, "got={got} want={want}");
+        assert!(got < 150.0, "window 2 leaked window 1's mass: got={got}");
+    }
+
+    // ---- per-window delta tests (CountSketch) ----
+
+    use crate::sketches::countsketch::CountSketchWrapper;
+
+    /// With delta mode on, applying the emitted CountSketch delta to an
+    /// EMPTY base reconstructs the window's per-cell matrix.
+    #[test]
+    fn countsketch_delta_against_empty_round_trips() {
+        let c = SnapshotCache::new();
+        let (rows, cols) = (5, 1024);
+
+        let mut w1 = CountSketchWrapper::new(rows, cols);
+        for _ in 0..200 {
+            w1.update("hot", 1.0);
+        }
+        assert!(c.compute_delta("series", &w1, 1).unwrap().is_full);
+
+        let mut w2 = CountSketchWrapper::new(rows, cols);
+        for _ in 0..200 {
+            w2.update("hot", 1.0);
+        }
+        let r2 = c.compute_delta("series", &w2, 1).unwrap();
+        assert!(!r2.is_full, "window 2 must emit a delta");
+        assert!(!r2.payload.is_empty());
+
+        let mut recon = CountSketchWrapper::new(rows, cols);
+        recon.apply_delta(&r2.payload).unwrap();
+        // CountSketch round-trips its cells exactly under
+        // delta-against-empty: matrices must be identical.
+        assert_eq!(recon.inner().matrix, w2.inner().matrix);
+    }
+
+    /// CountSketch consecutive windows each emit their own state.
+    #[test]
+    fn countsketch_consecutive_windows_no_cross_window_subtraction() {
+        let c = SnapshotCache::new();
+        let (rows, cols) = (5, 1024);
+
+        let mut w1 = CountSketchWrapper::new(rows, cols);
+        for _ in 0..300 {
+            w1.update("k", 1.0);
+        }
+        assert!(c.compute_delta("s", &w1, 1).unwrap().is_full);
+
+        let mut w2 = CountSketchWrapper::new(rows, cols);
+        for _ in 0..50 {
+            w2.update("k", 1.0);
+        }
+        let r2 = c.compute_delta("s", &w2, 1).unwrap();
+        assert!(!r2.is_full);
+
+        let mut recon = CountSketchWrapper::new(rows, cols);
+        recon.apply_delta(&r2.payload).unwrap();
+        // Reconstructed-from-empty matrix equals window 2's own — not
+        // window 1's higher-count matrix.
+        assert_eq!(recon.inner().matrix, w2.inner().matrix);
+        assert_ne!(recon.inner().matrix, w1.inner().matrix);
+    }
+
+    // ---- per-window delta tests (HLL) ----
+
+    use crate::precompute::CardinalitySketch;
+    use crate::sketches::hll::HLLWrapper;
+    use asap_sketchlib::HllVariant as RsHllVariant;
+
+    /// With delta mode on, applying the emitted HLL register delta to an
+    /// EMPTY base reconstructs the window's registers exactly, and the
+    /// cardinality estimate matches.
+    #[test]
+    fn hll_delta_against_empty_round_trips() {
+        let c = SnapshotCache::new();
+
+        let mut w1 = HLLWrapper::new(RsHllVariant::Regular, 12);
+        for i in 0..2000u64 {
+            w1.update(&i.to_le_bytes());
+        }
+        assert!(c.compute_delta("series", &w1, 1).unwrap().is_full);
+
+        let mut w2 = HLLWrapper::new(RsHllVariant::Regular, 12);
+        for i in 0..2000u64 {
+            w2.update(&i.to_le_bytes());
+        }
+        let r2 = c.compute_delta("series", &w2, 1).unwrap();
+        assert!(!r2.is_full, "window 2 must emit a delta");
+        assert!(!r2.payload.is_empty());
+
+        let mut recon = HLLWrapper::new(RsHllVariant::Regular, 12);
+        recon.apply_delta(&r2.payload).unwrap();
+        // Register delta over an empty base carries every non-zero
+        // register, so the reconstructed registers are identical.
+        assert_eq!(recon.inner().registers, w2.inner().registers);
+        let want = w2.estimate_cardinality();
+        let got = recon.estimate_cardinality();
+        assert!((got - want).abs() <= want * 0.001, "got={got} want={want}");
+    }
+
+    /// HLL consecutive windows each emit their OWN register state. Window
+    /// 1 sees 5000 keys, window 2 a DISJOINT 200 keys. Reconstructing
+    /// window 2 from EMPTY must yield ~200, NOT the ~5000-element union —
+    /// proving the empty-base reset defeats register-MAX leakage
+    /// (delta-baseline-contract.md §1.5 / §2.3).
+    #[test]
+    fn hll_consecutive_windows_no_cross_window_subtraction() {
+        let c = SnapshotCache::new();
+
+        let mut w1 = HLLWrapper::new(RsHllVariant::Regular, 12);
+        for i in 0..5000u64 {
+            w1.update(&i.to_le_bytes());
+        }
+        assert!(c.compute_delta("s", &w1, 1).unwrap().is_full);
+
+        let mut w2 = HLLWrapper::new(RsHllVariant::Regular, 12);
+        for i in 1_000_000u64..1_000_200u64 {
+            w2.update(&i.to_le_bytes());
+        }
+        let r2 = c.compute_delta("s", &w2, 1).unwrap();
+        assert!(!r2.is_full);
+
+        let mut recon = HLLWrapper::new(RsHllVariant::Regular, 12);
+        recon.apply_delta(&r2.payload).unwrap();
+        let got = recon.estimate_cardinality();
+        let want = w2.estimate_cardinality();
+        assert!((got - want).abs() <= want * 0.05, "got={got} want={want}");
+        assert!(
+            got < 1000.0,
+            "window 2 cardinality leaked window 1's registers: got={got}"
+        );
     }
 }

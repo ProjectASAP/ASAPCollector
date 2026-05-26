@@ -59,6 +59,111 @@ func TestHLLWrapper_RegisterDeltaShape(t *testing.T) {
 	}
 }
 
+// TestHLLWrapper_PerWindowDelta_AgainstEmptyRoundTrips drives the
+// precompute.SnapshotCache delta path with delta mode on
+// (delta-against-empty, delta-baseline-contract.md §3): window 1 emits a
+// full frame; window 2 — a fresh per-window sketch — emits a register
+// DELTA computed against the empty base cached at window-1 close.
+// Applying that delta to an EMPTY base reconstructs window 2's register
+// state and the cardinality estimate matches.
+func TestHLLWrapper_PerWindowDelta_AgainstEmptyRoundTrips(t *testing.T) {
+	t.Parallel()
+	c := precompute.NewSnapshotCache()
+
+	// Window 1: first emit is full (no prior base).
+	w1 := NewHLLWrapper()
+	for i := 0; i < 2000; i++ {
+		w1.UpdateValue(float64(i))
+	}
+	if _, isFull, err := c.ComputeDelta("series", w1, 1); err != nil || !isFull {
+		t.Fatalf("w1: full=%v err=%v", isFull, err)
+	}
+
+	// Window 2: a fresh per-window sketch with the SAME values. The cache
+	// reset the base to empty at window-1 close, so this must be a DELTA.
+	w2 := NewHLLWrapper()
+	for i := 0; i < 2000; i++ {
+		w2.UpdateValue(float64(i))
+	}
+	payload, isFull, err := c.ComputeDelta("series", w2, 1)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	if isFull {
+		t.Fatal("window 2 must emit a delta, not a full frame")
+	}
+	if len(payload) == 0 {
+		t.Fatal("window 2 delta payload empty")
+	}
+
+	// Apply the delta to an EMPTY base -> reconstructs window 2 exactly
+	// (HLL register-delta carries every non-zero register over an empty
+	// base, so the reconstructed registers equal window 2's).
+	recon := NewHLLWrapper()
+	if err := recon.ApplyDelta(payload); err != nil {
+		t.Fatalf("apply delta: %v", err)
+	}
+	want := float64(w2.Estimate())
+	got := float64(recon.Estimate())
+	if rel := abs(got-want) / want; rel > 0.001 {
+		t.Fatalf("cardinality: want %f got %f rel %f", want, got, rel)
+	}
+}
+
+// TestHLLWrapper_PerWindowDelta_NoCrossWindowSubtraction verifies two
+// consecutive windows each emit their OWN register state. HLL merges by
+// register-wise MAX over a never-reset base, which over-counts
+// window-scoped cardinality (delta-baseline-contract.md §1.5 / §2.3); the
+// delta-against-empty base reset makes window 2's emitted delta carry
+// window 2's own registers. Window 1 sees a large disjoint key set;
+// window 2 sees a small one. Reconstructing window 2 from EMPTY must
+// yield window 2's own (small) cardinality, NOT the union with window 1.
+func TestHLLWrapper_PerWindowDelta_NoCrossWindowSubtraction(t *testing.T) {
+	t.Parallel()
+	c := precompute.NewSnapshotCache()
+
+	w1 := NewHLLWrapper()
+	for i := 0; i < 5000; i++ {
+		w1.UpdateValue(float64(i))
+	}
+	if _, isFull, err := c.ComputeDelta("s", w1, 1); err != nil || !isFull {
+		t.Fatalf("w1: full=%v err=%v", isFull, err)
+	}
+
+	// Window 2: a DISJOINT, much smaller key set.
+	w2 := NewHLLWrapper()
+	for i := 1_000_000; i < 1_000_200; i++ {
+		w2.UpdateValue(float64(i))
+	}
+	payload, isFull, err := c.ComputeDelta("s", w2, 1)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	if isFull {
+		t.Fatal("window 2 must emit a delta")
+	}
+	if len(payload) == 0 {
+		t.Fatal("window 2 delta empty")
+	}
+
+	recon := NewHLLWrapper()
+	if err := recon.ApplyDelta(payload); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	// Reconstructed-from-empty cardinality must match window 2's own
+	// (~200), NOT the ~5000-element union with window 1. A register-MAX
+	// merge against a never-reset base would have left window 1's high
+	// registers in place, inflating the estimate far above 200.
+	got := float64(recon.Estimate())
+	want := float64(w2.Estimate())
+	if rel := abs(got-want) / want; rel > 0.05 {
+		t.Fatalf("window 2 cardinality: want %f got %f rel %f", want, got, rel)
+	}
+	if got > 1000 {
+		t.Fatalf("window 2 cardinality leaked window 1's registers: got %f", got)
+	}
+}
+
 // TestHLLObserver verifies the HLL SketchObserver hot path.
 func TestHLLObserver(t *testing.T) {
 	t.Parallel()

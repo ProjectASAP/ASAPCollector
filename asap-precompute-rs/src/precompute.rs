@@ -80,9 +80,9 @@ pub trait Sketch: Send + Sync {
     ///
     /// The default returns `None`: such families keep the legacy
     /// always-refresh behavior (the cache is refreshed to the
-    /// just-emitted full state). Only DDSketch overrides this in the
-    /// first per-window-delta rollout; CMS / CountSketch / HLL / KLL are
-    /// untouched this phase.
+    /// just-emitted full state). DDSketch, CMS, CountSketch, and HLL
+    /// override this to opt in to per-window deltas; KLL keeps the default
+    /// (full-only).
     fn delta_against_empty_base(&self) -> Result<Option<Vec<u8>>, PrecomputeError> {
         Ok(None)
     }

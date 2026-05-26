@@ -190,27 +190,77 @@ impl Sketch for CMSWrapper {
 
     fn compute_delta_against(
         &self,
-        _prev: &[u8],
-        _threshold: u64,
+        prev: &[u8],
+        threshold: u64,
     ) -> Result<DeltaResult, PrecomputeError> {
-        // No `compute_delta` on `asap_sketchlib::CountMinSketch`. The
-        // Go side has `cms.ComputeDelta`; the Rust crate doesn't —
-        // emit full snapshots until that lands.
-        let full = self.snapshot()?;
-        Ok(DeltaResult {
-            payload: full,
-            is_full: true,
-        })
+        // Mirror Go's `CMSWrapper.ComputeDeltaAgainst`: decode the prior
+        // snapshot envelope, then diff via `asap_sketchlib`'s
+        // `CountMinSketch::compute_delta`. On an empty / undecodable prior,
+        // or an empty current sketch, fall back to a full snapshot so the
+        // emit path always produces a valid payload.
+        //
+        // Under per-window delta-against-empty (the snapshot cache resets
+        // the cached base to the empty-sketch snapshot at each window
+        // close), `prev` decodes to an empty `CountMinSketch`, so the
+        // computed delta IS this window's full per-cell matrix encoded as
+        // cell deltas — no cross-window subtraction.
+        if self.is_empty() {
+            let full = self.snapshot()?;
+            return Ok(DeltaResult {
+                payload: full,
+                is_full: true,
+            });
+        }
+        if prev.is_empty() {
+            let full = self.snapshot()?;
+            return Ok(DeltaResult {
+                payload: full,
+                is_full: true,
+            });
+        }
+        let prev_sk = match Self::decode_envelope(prev) {
+            Ok(sk) => sk,
+            Err(_) => {
+                let full = self.snapshot()?;
+                return Ok(DeltaResult {
+                    payload: full,
+                    is_full: true,
+                });
+            }
+        };
+        match self.sk.compute_delta(&prev_sk, threshold as f64) {
+            Ok(delta) => Ok(DeltaResult {
+                payload: delta,
+                is_full: false,
+            }),
+            Err(_) => {
+                let full = self.snapshot()?;
+                Ok(DeltaResult {
+                    payload: full,
+                    is_full: true,
+                })
+            }
+        }
     }
 
     fn apply_delta(&mut self, payload: &[u8]) -> Result<(), PrecomputeError> {
         if payload.is_empty() {
             return Ok(());
         }
-        let other = Self::decode_envelope(payload)?;
+        // Mirror Go's `CMSWrapper.ApplyDelta`, dispatching on payload
+        // shape. A full-state envelope (the `SketchEnvelope{CountMinState}`
+        // wire format) takes the decode + merge path; otherwise the payload
+        // is a `CountMinDelta` proto and is applied additively via
+        // `apply_delta_bytes`.
+        if let Ok(other) = Self::decode_envelope(payload) {
+            return self
+                .sk
+                .merge(&other)
+                .map_err(|e| PrecomputeError::Other(format!("CMSWrapper merge: {e}")));
+        }
         self.sk
-            .merge(&other)
-            .map_err(|e| PrecomputeError::Other(format!("CMSWrapper merge: {e}")))
+            .apply_delta_bytes(payload)
+            .map_err(|e| PrecomputeError::Other(format!("CMSWrapper apply_delta: {e}")))
     }
 
     fn merge(&mut self, other: &dyn Sketch) -> Result<(), PrecomputeError> {
@@ -226,6 +276,23 @@ impl Sketch for CMSWrapper {
 
     fn reset(&mut self) {
         self.sk = CountMinSketch::new(self.rows, self.cols);
+    }
+
+    fn delta_against_empty_base(&self) -> Result<Option<Vec<u8>>, PrecomputeError> {
+        // (delta-baseline-contract.md §3): CMS opts in to per-window
+        // deltas. After a window-close emit the snapshot cache caches THIS
+        // — the encoded envelope of an EMPTY CountMinSketch of the same
+        // dimensions — so the next window's `compute_delta_against` diffs
+        // against empty and emits that window's own per-cell matrix as a
+        // delta (no cross-window subtraction).
+        //
+        // We encode the empty envelope rather than returning
+        // `Sketch::snapshot()` of an empty sketch, because the latter
+        // short-circuits to empty bytes (the runtime drops empty
+        // payloads), and empty bytes would make `compute_delta_against`
+        // fall back to a full snapshot instead of a delta.
+        let empty = CMSWrapper::new(self.rows, self.cols);
+        Ok(Some(empty.encode_envelope()))
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {

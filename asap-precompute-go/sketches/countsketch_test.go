@@ -66,6 +66,110 @@ func TestCountSketchWrapper_DeltaRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCountSketchWrapper_PerWindowDelta_AgainstEmptyRoundTrips drives
+// the precompute.SnapshotCache delta path with delta mode on
+// (delta-against-empty, delta-baseline-contract.md §3): window 1 emits a
+// full frame; window 2 — a fresh per-window sketch — emits a DELTA
+// computed against the empty base cached at window-1 close. Applying that
+// delta to an EMPTY base reconstructs window 2's per-cell state and the
+// estimated frequency matches.
+func TestCountSketchWrapper_PerWindowDelta_AgainstEmptyRoundTrips(t *testing.T) {
+	t.Parallel()
+	const rows, cols = 5, 1024
+	c := precompute.NewSnapshotCache()
+
+	w1, err := NewCountSketchWrapper(rows, cols)
+	if err != nil {
+		t.Fatalf("w1: %v", err)
+	}
+	for i := 0; i < 200; i++ {
+		w1.UpdateString("hot", 1.0)
+	}
+	if _, isFull, err := c.ComputeDelta("series", w1, 1); err != nil || !isFull {
+		t.Fatalf("w1: full=%v err=%v", isFull, err)
+	}
+
+	w2, err := NewCountSketchWrapper(rows, cols)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	for i := 0; i < 200; i++ {
+		w2.UpdateString("hot", 1.0)
+	}
+	payload, isFull, err := c.ComputeDelta("series", w2, 1)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	if isFull {
+		t.Fatal("window 2 must emit a delta, not a full frame")
+	}
+	if len(payload) == 0 {
+		t.Fatal("window 2 delta payload empty")
+	}
+
+	recon, err := NewCountSketchWrapper(rows, cols)
+	if err != nil {
+		t.Fatalf("recon: %v", err)
+	}
+	if err := recon.ApplyDelta(payload); err != nil {
+		t.Fatalf("apply delta: %v", err)
+	}
+	want := w2.EstimateCount([]byte("hot"))
+	got := recon.EstimateCount([]byte("hot"))
+	// CountSketch's median-of-rows estimator round-trips the cells
+	// exactly under delta-against-empty, so the estimate matches.
+	if got < want*0.9 || got > want*1.1 {
+		t.Fatalf("estimate: want %f got %f", want, got)
+	}
+}
+
+// TestCountSketchWrapper_PerWindowDelta_NoCrossWindowSubtraction
+// verifies two consecutive windows each emit their OWN state. Window 1
+// inserts "k" 300 times, window 2 inserts it 50 times. Reconstructing
+// window 2 from EMPTY must yield window 2's own count (~50), proving the
+// delta was computed against empty, not against window 1.
+func TestCountSketchWrapper_PerWindowDelta_NoCrossWindowSubtraction(t *testing.T) {
+	t.Parallel()
+	const rows, cols = 5, 1024
+	c := precompute.NewSnapshotCache()
+
+	w1, _ := NewCountSketchWrapper(rows, cols)
+	for i := 0; i < 300; i++ {
+		w1.UpdateString("k", 1.0)
+	}
+	if _, isFull, err := c.ComputeDelta("s", w1, 1); err != nil || !isFull {
+		t.Fatalf("w1: full=%v err=%v", isFull, err)
+	}
+
+	w2, _ := NewCountSketchWrapper(rows, cols)
+	for i := 0; i < 50; i++ {
+		w2.UpdateString("k", 1.0)
+	}
+	payload, isFull, err := c.ComputeDelta("s", w2, 1)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	if isFull {
+		t.Fatal("window 2 must emit a delta")
+	}
+	if len(payload) == 0 {
+		t.Fatal("window 2 delta empty — cross-window subtraction leaked")
+	}
+
+	recon, _ := NewCountSketchWrapper(rows, cols)
+	if err := recon.ApplyDelta(payload); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	got := recon.EstimateCount([]byte("k"))
+	want := w2.EstimateCount([]byte("k"))
+	if got < want*0.9 || got > want*1.1 {
+		t.Fatalf("window 2 count: want %f got %f", want, got)
+	}
+	if got > 150 {
+		t.Fatalf("window 2 count leaked window 1's mass: got %f", got)
+	}
+}
+
 // TestCountSketchObserver verifies the observer routes through to the
 // underlying CountSketch via UpdateString and rejects unsupported
 // value kinds.
