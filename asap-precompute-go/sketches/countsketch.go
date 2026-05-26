@@ -106,6 +106,29 @@ func (w *CountSketchWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) 
 	return payload, false, nil
 }
 
+// DeltaAgainstEmptyBase returns the snapshot of an EMPTY CountSketch of
+// the same dimensions. The precompute.SnapshotCache caches this as the
+// outbound base after each window-close emit (delta-baseline-contract.md
+// §3): the next window's ComputeDeltaAgainst then diffs against this
+// empty base, so the emitted delta is that window's own full (signed)
+// per-cell matrix encoded as a delta — no cross-window subtraction.
+//
+// An empty CountSketch's SerializeProtoBytes is a non-empty envelope (it
+// encodes the all-zero matrix + dimensions), so ComputeDeltaAgainst
+// takes its decode-and-diff path rather than the len(prev)==0
+// full-snapshot fallback.
+func (w *CountSketchWrapper) DeltaAgainstEmptyBase() ([]byte, error) {
+	empty, err := countsketch.NewCountSketch(w.rows, w.cols)
+	if err != nil {
+		return nil, fmt.Errorf("sketches: NewCountSketch(empty): %w", err)
+	}
+	b, err := empty.SerializeProtoBytes()
+	if err != nil {
+		return nil, fmt.Errorf("countsketch.SerializeProtoBytes(empty): %w", err)
+	}
+	return b, nil
+}
+
 // ApplyDelta merges an inbound payload into this sketch in place.
 // Dispatch on payload shape: try a full-state SketchEnvelope FIRST,
 // then fall back to a sparse delta. The runtime invokes this for both

@@ -27,16 +27,15 @@
 //!
 //! # API surface caveats
 //!
-//! `asap_sketchlib` does not currently expose:
-//! - Per-sketch `compute_delta(prev_bytes, threshold)` helpers — Go's
-//!   `sketchlib-go` ships these (`ddsketch.ComputeDelta`,
-//!   `hll.ComputeRegisterDelta`, `countsketch.ComputeDelta`,
-//!   `cms.ComputeDelta`).  The wrappers therefore fall back to
-//!   "always-full" delta encoding (the runtime emits `ProtoFull`
-//!   envelopes every window). This is correct but bandwidth-inefficient
-//!   versus Go. A follow-up that lands `compute_delta` in
-//!   `asap_sketchlib` will let these wrappers emit `ProtoDelta` frames.
-//! - `DeserializeXxxFromProtoBytes` round-trip helpers for the
+//! - `asap_sketchlib` exposes per-sketch `compute_delta` /
+//!   `apply_delta_bytes` for DDSketch, CMS, CountSketch, and HLL (the
+//!   Rust twins of Go's `ddsketch.ComputeDelta`,
+//!   `cms.ComputeDelta`, `countsketch.ComputeDelta`,
+//!   `hll.ComputeRegisterDelta`). Those four wrappers emit real
+//!   `ProtoDelta` frames; KLL stays full-only. See asap_sketchlib#58
+//!   (DDSketch) and #59 (CMS/CountSketch/HLL).
+//! - `asap_sketchlib` does not expose
+//!   `DeserializeXxxFromProtoBytes` round-trip helpers for the
 //!   high-throughput sketch types. The wrappers decode the wire-format
 //!   `SketchEnvelope` envelope and reconstruct the wire-aligned
 //!   sketch struct (`DdSketch`, `HllSketch`, …) directly from the

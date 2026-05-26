@@ -95,6 +95,135 @@ func TestCMSWrapper_MsgpackForcesFullSnapshot(t *testing.T) {
 	}
 }
 
+// TestCMSWrapper_PerWindowDelta_AgainstEmptyRoundTrips drives the
+// precompute.SnapshotCache delta path with delta mode on
+// (delta-against-empty, delta-baseline-contract.md §3): the first window
+// emits a full frame, and the second window — a fresh per-window sketch,
+// since the runtime resets per-series state every window — emits a DELTA
+// computed against the empty base the cache stored at window-1 close.
+// Applying that delta to an EMPTY base reconstructs the window's full
+// per-cell state and the estimated frequencies match.
+func TestCMSWrapper_PerWindowDelta_AgainstEmptyRoundTrips(t *testing.T) {
+	t.Parallel()
+	const rows, cols = 5, 1024
+	c := precompute.NewSnapshotCache()
+
+	key := common.FromBytes([]byte("hot")).Hash
+
+	// Window 1: first emit is full (no prior base).
+	w1 := NewCMSWrapper(rows, cols, false)
+	for i := 0; i < 200; i++ {
+		w1.InsertHash(key)
+	}
+	if _, isFull, err := c.ComputeDelta("series", w1, 1); err != nil || !isFull {
+		t.Fatalf("w1: full=%v err=%v", isFull, err)
+	}
+
+	// Window 2: a fresh per-window sketch. The cache reset the base to
+	// empty at window-1 close, so this emit must be a DELTA.
+	w2 := NewCMSWrapper(rows, cols, false)
+	for i := 0; i < 200; i++ {
+		w2.InsertHash(key)
+	}
+	payload, isFull, err := c.ComputeDelta("series", w2, 1)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	if isFull {
+		t.Fatal("window 2 must emit a delta, not a full frame")
+	}
+	if len(payload) == 0 {
+		t.Fatal("window 2 delta payload empty")
+	}
+
+	// Apply the delta to an EMPTY base -> reconstructs window 2.
+	recon := NewCMSWrapper(rows, cols, false)
+	if err := recon.ApplyDelta(payload); err != nil {
+		t.Fatalf("apply delta: %v", err)
+	}
+	want := w2.EstimateCount([]byte("hot"))
+	got := recon.EstimateCount([]byte("hot"))
+	if got < want*0.9 || got > want*1.1 {
+		t.Fatalf("estimate: want %f got %f", want, got)
+	}
+}
+
+// TestCMSWrapper_PerWindowDelta_NoCrossWindowSubtraction verifies two
+// consecutive windows each emit their OWN state — window 2's delta is
+// NOT diffed against window 1. Window 1 inserts the key 300 times (high
+// count), window 2 the SAME key 50 times. If the cache diffed window 2
+// against window 1, the per-cell delta would be negative and a
+// threshold>0 would drop the cells, under-transmitting window 2; under
+// delta-against-empty the delta reconstructs window 2's own count from
+// an empty base.
+func TestCMSWrapper_PerWindowDelta_NoCrossWindowSubtraction(t *testing.T) {
+	t.Parallel()
+	const rows, cols = 5, 1024
+	c := precompute.NewSnapshotCache()
+	key := common.FromBytes([]byte("k")).Hash
+
+	w1 := NewCMSWrapper(rows, cols, false)
+	for i := 0; i < 300; i++ {
+		w1.InsertHash(key)
+	}
+	if _, isFull, err := c.ComputeDelta("s", w1, 1); err != nil || !isFull {
+		t.Fatalf("w1: full=%v err=%v", isFull, err)
+	}
+
+	w2 := NewCMSWrapper(rows, cols, false)
+	for i := 0; i < 50; i++ {
+		w2.InsertHash(key)
+	}
+	payload, isFull, err := c.ComputeDelta("s", w2, 1)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	if isFull {
+		t.Fatal("window 2 must emit a delta")
+	}
+	if len(payload) == 0 {
+		t.Fatal("window 2 delta empty — cross-window subtraction leaked")
+	}
+
+	recon := NewCMSWrapper(rows, cols, false)
+	if err := recon.ApplyDelta(payload); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	// Reconstructed-from-empty count must match window 2's own count
+	// (~50), NOT window 1's (~300) and NOT a saturated 0.
+	got := recon.EstimateCount([]byte("k"))
+	want := w2.EstimateCount([]byte("k"))
+	if got < want*0.9 || got > want*1.1 {
+		t.Fatalf("window 2 count: want %f got %f", want, got)
+	}
+	if got > 100 {
+		t.Fatalf("window 2 count leaked window 1's mass: got %f", got)
+	}
+}
+
+// TestCMSWrapper_MsgpackOptsOutOfPerWindowDelta confirms msgpack mode
+// returns a nil empty-base so the SnapshotCache keeps legacy
+// always-refresh (msgpack cannot carry deltas), while proto mode opts in.
+func TestCMSWrapper_MsgpackOptsOutOfPerWindowDelta(t *testing.T) {
+	t.Parallel()
+	mp := NewCMSWrapper(5, 1024, true)
+	base, err := mp.DeltaAgainstEmptyBase()
+	if err != nil {
+		t.Fatalf("msgpack DeltaAgainstEmptyBase: %v", err)
+	}
+	if len(base) != 0 {
+		t.Fatalf("msgpack mode must opt out (nil base), got %d bytes", len(base))
+	}
+	pr := NewCMSWrapper(5, 1024, false)
+	base, err = pr.DeltaAgainstEmptyBase()
+	if err != nil {
+		t.Fatalf("proto DeltaAgainstEmptyBase: %v", err)
+	}
+	if len(base) == 0 {
+		t.Fatal("proto mode must opt in (non-empty empty-base envelope)")
+	}
+}
+
 // TestCMSObserver verifies the observer rejects non-bytes kinds and
 // hashes byte input the same way the legacy processor does.
 func TestCMSObserver(t *testing.T) {

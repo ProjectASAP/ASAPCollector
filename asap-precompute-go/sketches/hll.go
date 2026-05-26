@@ -134,6 +134,34 @@ func (w *HLLWrapper) ComputeDeltaAgainst(prev []byte, _ uint64) ([]byte, bool, e
 	return payload, false, nil
 }
 
+// DeltaAgainstEmptyBase returns the snapshot of an EMPTY HLL (same
+// precision / sampling probability). The precompute.SnapshotCache caches
+// this as the outbound base after each window-close emit
+// (delta-baseline-contract.md §3): the next window's ComputeDeltaAgainst
+// then diffs against this empty base, so the emitted RegisterDelta is
+// that window's own per-window register state (every non-zero register)
+// encoded as a delta — no cross-window subtraction.
+//
+// HLL merges by register-wise MAX, so a per-window delta over an empty
+// base is mandatory for window-scoped cardinality correctness: without
+// resetting the base each window, a never-reset base would over-count
+// (delta-baseline-contract.md §1.5 / §2.3). An empty HLL's
+// SerializeProtoBytes is a non-empty envelope (it encodes the all-zero
+// register array + precision), so ComputeDeltaAgainst takes its
+// decode-and-diff path rather than the len(prev)==0 full-snapshot
+// fallback.
+func (w *HLLWrapper) DeltaAgainstEmptyBase() ([]byte, error) {
+	empty := w.newSketch()
+	if empty == nil {
+		return nil, nil
+	}
+	b, err := empty.SerializeProtoBytes()
+	if err != nil {
+		return nil, fmt.Errorf("hll.SerializeProtoBytes(empty): %w", err)
+	}
+	return b, nil
+}
+
 // ApplyDelta merges a payload into the underlying HLL. Dispatches on
 // payload shape: try a full-state SketchEnvelope FIRST, then fall back
 // to a sparse RegisterDelta. The runtime's mergeFullEnvelope helper

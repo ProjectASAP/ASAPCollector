@@ -112,17 +112,51 @@ impl Sketch for HLLWrapper {
 
     fn compute_delta_against(
         &self,
-        _prev: &[u8],
-        _threshold: u64,
+        prev: &[u8],
+        threshold: u64,
     ) -> Result<DeltaResult, PrecomputeError> {
-        // `asap_sketchlib` does not currently expose
-        // `compute_register_delta`; until it does, the wrapper emits
-        // full snapshots. Honest fallback (matches Go's
-        // "decode failure → full" branch).
-        let full = self.snapshot()?;
+        // Mirror Go's `HLLWrapper.ComputeDeltaAgainst`: decode the prior
+        // snapshot envelope, then diff via `asap_sketchlib`'s
+        // `HllSketch::compute_delta` (a register delta carrying every
+        // register where this window's value exceeds the prior's). On an
+        // empty / undecodable prior, or an empty current sketch, fall back
+        // to a full snapshot so the emit path always produces a valid
+        // payload.
+        //
+        // Under per-window delta-against-empty (the snapshot cache resets
+        // the cached base to the empty-sketch snapshot at each window
+        // close), `prev` decodes to an empty `HllSketch`, so the register
+        // delta carries every non-zero register of THIS window — i.e. this
+        // window's own register state, with no cross-window register-MAX
+        // leakage (delta-baseline-contract.md §1.5 / §2.3).
+        if self.sk.registers.iter().all(|&r| r == 0) {
+            let full = self.snapshot()?;
+            return Ok(DeltaResult {
+                payload: full,
+                is_full: true,
+            });
+        }
+        if prev.is_empty() {
+            let full = self.snapshot()?;
+            return Ok(DeltaResult {
+                payload: full,
+                is_full: true,
+            });
+        }
+        let prev_sk = match Self::decode_envelope(prev) {
+            Ok(sk) => sk,
+            Err(_) => {
+                let full = self.snapshot()?;
+                return Ok(DeltaResult {
+                    payload: full,
+                    is_full: true,
+                });
+            }
+        };
+        let delta = self.sk.compute_delta(&prev_sk, threshold);
         Ok(DeltaResult {
-            payload: full,
-            is_full: true,
+            payload: delta,
+            is_full: false,
         })
     }
 
@@ -130,10 +164,20 @@ impl Sketch for HLLWrapper {
         if payload.is_empty() {
             return Ok(());
         }
-        let other = Self::decode_envelope(payload)?;
+        // Mirror Go's `HLLWrapper.ApplyDelta`, dispatching on payload
+        // shape. A full-state envelope (the
+        // `SketchEnvelope{HyperLogLogState}` wire format) takes the decode +
+        // merge path; otherwise the payload is an `HllDelta` proto and is
+        // applied via register max-merge through `apply_delta_bytes`.
+        if let Ok(other) = Self::decode_envelope(payload) {
+            return self
+                .sk
+                .merge(&other)
+                .map_err(|e| PrecomputeError::Other(format!("HLLWrapper merge: {e}")));
+        }
         self.sk
-            .merge(&other)
-            .map_err(|e| PrecomputeError::Other(format!("HLLWrapper merge: {e}")))
+            .apply_delta_bytes(payload)
+            .map_err(|e| PrecomputeError::Other(format!("HLLWrapper apply_delta: {e}")))
     }
 
     fn merge(&mut self, other: &dyn Sketch) -> Result<(), PrecomputeError> {
@@ -149,6 +193,26 @@ impl Sketch for HLLWrapper {
 
     fn reset(&mut self) {
         self.sk = HllSketch::new(self.variant, self.precision);
+    }
+
+    fn delta_against_empty_base(&self) -> Result<Option<Vec<u8>>, PrecomputeError> {
+        // (delta-baseline-contract.md §3): HLL opts in to per-window
+        // deltas. After a window-close emit the snapshot cache caches THIS
+        // — the encoded envelope of an EMPTY HLL of the same variant /
+        // precision — so the next window's `compute_delta_against` diffs
+        // against empty and emits that window's own register state as a
+        // delta. The empty-base reset is what makes window-scoped
+        // cardinality correct: HLL merges by register-wise MAX over a
+        // never-reset base, which would over-count without the reset
+        // (delta-baseline-contract.md §1.5 / §2.3).
+        //
+        // We encode the empty envelope rather than returning
+        // `Sketch::snapshot()` of an empty sketch, because the latter
+        // short-circuits to empty bytes (the runtime drops empty
+        // payloads), and empty bytes would make `compute_delta_against`
+        // fall back to a full snapshot instead of a delta.
+        let empty = HLLWrapper::new(self.variant, self.precision);
+        Ok(Some(empty.encode_envelope()))
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {

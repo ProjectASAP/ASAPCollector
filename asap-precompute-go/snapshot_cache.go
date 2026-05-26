@@ -82,9 +82,11 @@ func (c *SnapshotCache) GetInbound(seriesKey string) []byte {
 // cross-window subtraction). This is what makes the backend's future
 // per-window base rotation correct.
 //
-// Only DDSketch implements this in the first per-window-delta rollout; CMS /
-// CountSketch / HLL / KLL do NOT, so they keep the legacy
-// always-refresh behavior via the type-assertion miss below.
+// DDSketch, CMS, CountSketch, and HLL implement this; KLL does NOT
+// (it stays full-only), so KLL keeps the legacy always-refresh behavior
+// via the type-assertion miss below. A family that opts in only
+// conditionally returns a nil/empty base from DeltaAgainstEmptyBase to
+// fall back to legacy refresh for that call (e.g. CMS msgpack mode).
 type emptyBaseDeltaSketch interface {
 	DeltaAgainstEmptyBase() ([]byte, error)
 }
@@ -96,16 +98,16 @@ type emptyBaseDeltaSketch interface {
 //
 // Base refresh — two modes:
 //
-//   - Legacy always-refresh (CMS / KLL / HLL / CountSketch): every call
-//     updates the cached previous snapshot to the current sketch state,
-//     so successive sub-threshold deltas are each computed against the
-//     immediately preceding window. This matches the established
-//     behavior of the legacy OTel sketch processors.
-//   - Per-window deltas (DDSketch, via emptyBaseDeltaSketch):
-//     after each window-close emit the cached base is reset to the
-//     EMPTY-sketch snapshot, so the next window diffs against empty and
-//     transmits its OWN per-window state as a delta (no cross-window
-//     subtraction). See delta-baseline-contract.md §3.
+//   - Legacy always-refresh (KLL, and any family that does not opt in):
+//     every call updates the cached previous snapshot to the current
+//     sketch state, so successive sub-threshold deltas are each computed
+//     against the immediately preceding window. This matches the
+//     established behavior of the legacy OTel sketch processors.
+//   - Per-window deltas (DDSketch / CMS / CountSketch / HLL, via
+//     emptyBaseDeltaSketch): after each window-close emit the cached base
+//     is reset to the EMPTY-sketch snapshot, so the next window diffs
+//     against empty and transmits its OWN per-window state as a delta (no
+//     cross-window subtraction). See delta-baseline-contract.md §3.
 //
 // The Sketch interface's ComputeDeltaAgainst does the actual diff
 // using the algorithm-specific delta-encoding rules from sketchlib-go.
@@ -141,17 +143,25 @@ func (c *SnapshotCache) ComputeDelta(
 	// Refresh the cached outbound base for the NEXT window's delta.
 	//
 	// Per-window deltas: if the sketch opts in via
-	// emptyBaseDeltaSketch (DDSketch this phase), reset the cached base
-	// to the EMPTY-sketch snapshot after this window-close emit, so the
-	// next window diffs against empty and transmits its own per-window
-	// state as a delta — no cross-window subtraction.
+	// emptyBaseDeltaSketch (DDSketch / CMS / CountSketch / HLL), reset
+	// the cached base to the EMPTY-sketch snapshot after this
+	// window-close emit, so the next window diffs against empty and
+	// transmits its own per-window state as a delta — no cross-window
+	// subtraction.
+	//
+	// A family may opt in only conditionally (e.g. CMS in proto mode but
+	// not msgpack mode, which cannot carry deltas). DeltaAgainstEmptyBase
+	// then returns a nil/empty base to signal "not this call": we fall
+	// through to the legacy always-refresh below for that case.
 	if eb, ok := current.(emptyBaseDeltaSketch); ok {
 		emptyBase, ebErr := eb.DeltaAgainstEmptyBase()
 		if ebErr != nil {
 			return nil, false, fmt.Errorf("empty base: %w", ebErr)
 		}
-		c.CacheOutbound(seriesKey, emptyBase)
-		return payload, isFull, nil
+		if len(emptyBase) > 0 {
+			c.CacheOutbound(seriesKey, emptyBase)
+			return payload, isFull, nil
+		}
 	}
 	// Legacy always-refresh: update the cached outbound to the latest
 	// full snapshot so the next ComputeDelta call diffs against the
