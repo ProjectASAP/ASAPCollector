@@ -92,6 +92,25 @@ func (w *DDSketchWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) ([]
 	return delta, false, nil
 }
 
+// DeltaAgainstEmptyBase returns the snapshot of an EMPTY DDSketch of
+// the same relative-accuracy alpha. The precompute.SnapshotCache caches
+// this as the outbound base after each window-close emit
+// (delta-baseline-contract.md §3): the next window's ComputeDeltaAgainst
+// then diffs against this empty base, so the emitted delta is that
+// window's own full per-window bucket store encoded as a delta — no
+// cross-window subtraction.
+//
+// We encode the empty sketch's envelope (rather than returning empty
+// bytes) so ComputeDeltaAgainst takes its decode-and-diff path instead
+// of the len(prev)==0 full-snapshot fallback.
+func (w *DDSketchWrapper) DeltaAgainstEmptyBase() ([]byte, error) {
+	env, err := ddsketch.NewDDSketch(w.alpha).SerializePortable()
+	if err != nil {
+		return nil, fmt.Errorf("ddsketch.SerializePortable(empty): %w", err)
+	}
+	return proto.Marshal(env)
+}
+
 // ApplyDelta merges a payload into the underlying DDSketch. The
 // runtime invokes this for both delta-encoded inbound envelopes and
 // full-state envelopes (the runtime's mergeFullEnvelope helper calls

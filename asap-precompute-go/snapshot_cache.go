@@ -71,21 +71,41 @@ func (c *SnapshotCache) GetInbound(seriesKey string) []byte {
 	return c.inbound[seriesKey]
 }
 
+// emptyBaseDeltaSketch is implemented by sketches that opt in to
+// "true per-window deltas" (delta-baseline-contract.md §3).
+//
+// DeltaAgainstEmptyBase returns the snapshot bytes the SnapshotCache
+// caches as the outbound base AFTER each window-close emit — i.e. the
+// snapshot of an EMPTY sketch of the same shape. The next window's
+// ComputeDeltaAgainst then diffs against empty, so its delta is that
+// window's own full per-window state encoded as a delta (no
+// cross-window subtraction). This is what makes the backend's future
+// per-window base rotation correct.
+//
+// Only DDSketch implements this in the first per-window-delta rollout; CMS /
+// CountSketch / HLL / KLL do NOT, so they keep the legacy
+// always-refresh behavior via the type-assertion miss below.
+type emptyBaseDeltaSketch interface {
+	DeltaAgainstEmptyBase() ([]byte, error)
+}
+
 // ComputeDelta diffs current sketch state against the cached outbound
 // snapshot for that seriesKey. Returns (payload, isFull, err) where
 // isFull means the runtime should emit PROTO_FULL (either no prior
 // snapshot existed, or the delta exceeded threshold).
 //
-// Semantics — always-refresh: every call to ComputeDelta updates the
-// cached previous snapshot to the current sketch state. Successive
-// sub-threshold deltas are therefore each computed against the
-// immediately preceding window, matching the established behavior of
-// all five legacy OTel sketch processors (DDSketch / KLL / HLL /
-// CountSketch / CountMinSketch). There is no configurable
-// "refresh-only-on-full" mode — that earlier design was a bug because
-// it forced downstream consumers to merge a chain of deltas back to
-// the original baseline rather than apply each delta to the previous
-// window's reconstructed state.
+// Base refresh — two modes:
+//
+//   - Legacy always-refresh (CMS / KLL / HLL / CountSketch): every call
+//     updates the cached previous snapshot to the current sketch state,
+//     so successive sub-threshold deltas are each computed against the
+//     immediately preceding window. This matches the established
+//     behavior of the legacy OTel sketch processors.
+//   - Per-window deltas (DDSketch, via emptyBaseDeltaSketch):
+//     after each window-close emit the cached base is reset to the
+//     EMPTY-sketch snapshot, so the next window diffs against empty and
+//     transmits its OWN per-window state as a delta (no cross-window
+//     subtraction). See delta-baseline-contract.md §3.
 //
 // The Sketch interface's ComputeDeltaAgainst does the actual diff
 // using the algorithm-specific delta-encoding rules from sketchlib-go.
@@ -118,12 +138,27 @@ func (c *SnapshotCache) ComputeDelta(
 		payload = delta
 		isFull = full
 	}
-	// Always refresh the cached outbound to the latest snapshot, so
-	// the next ComputeDelta call diffs against the just-emitted
-	// window. When isFull=true the wire payload IS the snapshot, so
-	// reuse it; otherwise serialize a fresh full snapshot for the
-	// cache. Both branches end with c.outbound[seriesKey] == latest
-	// full state.
+	// Refresh the cached outbound base for the NEXT window's delta.
+	//
+	// Per-window deltas: if the sketch opts in via
+	// emptyBaseDeltaSketch (DDSketch this phase), reset the cached base
+	// to the EMPTY-sketch snapshot after this window-close emit, so the
+	// next window diffs against empty and transmits its own per-window
+	// state as a delta — no cross-window subtraction.
+	if eb, ok := current.(emptyBaseDeltaSketch); ok {
+		emptyBase, ebErr := eb.DeltaAgainstEmptyBase()
+		if ebErr != nil {
+			return nil, false, fmt.Errorf("empty base: %w", ebErr)
+		}
+		c.CacheOutbound(seriesKey, emptyBase)
+		return payload, isFull, nil
+	}
+	// Legacy always-refresh: update the cached outbound to the latest
+	// full snapshot so the next ComputeDelta call diffs against the
+	// just-emitted window. When isFull=true the wire payload IS the
+	// snapshot, so reuse it; otherwise serialize a fresh full snapshot
+	// for the cache. Both branches end with c.outbound[seriesKey] ==
+	// latest full state.
 	if isFull {
 		c.CacheOutbound(seriesKey, payload)
 	} else {

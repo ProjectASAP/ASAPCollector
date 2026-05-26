@@ -123,18 +123,50 @@ impl Sketch for DDSketchWrapper {
 
     fn compute_delta_against(
         &self,
-        _prev: &[u8],
-        _threshold: u64,
+        prev: &[u8],
+        threshold: u64,
     ) -> Result<DeltaResult, PrecomputeError> {
-        // `asap_sketchlib` does not expose a `ComputeDelta` helper for
-        // DDSketch (Go's `sketchlib-go` does). Until that lands, the
-        // wrapper always returns a full snapshot. The runtime sees
-        // `is_full = true` on every emit; bandwidth-inefficient
-        // compared to Go, but correct.
-        let full = self.snapshot()?;
+        // Mirror Go's `DDSketchWrapper.ComputeDeltaAgainst`: decode the
+        // prior snapshot envelope, then diff via `asap_sketchlib`'s
+        // `DdSketch::compute_delta`. On an empty / undecodable prior, or
+        // an empty current sketch, fall back to a full snapshot so the
+        // emit path always produces a valid payload.
+        //
+        // Under per-window delta-against-empty (the snapshot cache resets
+        // the cached base to the empty-sketch snapshot at each window
+        // close), `prev` decodes to an empty `DdSketch`, so the computed
+        // delta IS this window's full bucket store encoded as bucket
+        // deltas — no cross-window subtraction.
+        if self.sk.total_count() == 0 {
+            // Empty current sketch produces an empty snapshot; the
+            // runtime drops empty payloads.
+            let full = self.snapshot()?;
+            return Ok(DeltaResult {
+                payload: full,
+                is_full: true,
+            });
+        }
+        if prev.is_empty() {
+            let full = self.snapshot()?;
+            return Ok(DeltaResult {
+                payload: full,
+                is_full: true,
+            });
+        }
+        let prev_sk = match Self::decode_envelope(prev) {
+            Ok(sk) => sk,
+            Err(_) => {
+                let full = self.snapshot()?;
+                return Ok(DeltaResult {
+                    payload: full,
+                    is_full: true,
+                });
+            }
+        };
+        let delta = self.sk.compute_delta(&prev_sk, threshold);
         Ok(DeltaResult {
-            payload: full,
-            is_full: true,
+            payload: delta,
+            is_full: false,
         })
     }
 
@@ -142,12 +174,19 @@ impl Sketch for DDSketchWrapper {
         if delta.is_empty() {
             return Ok(());
         }
-        // Always treated as a full proto envelope: with `compute_delta_against`
-        // pinned to full, the only inbound shape is a full envelope.
-        let other = Self::decode_envelope(delta)?;
+        // Mirror Go's `DDSketchWrapper.ApplyDelta`, dispatching on payload
+        // shape. A full-state envelope (the `SketchEnvelope{DDSketchState}`
+        // wire format) takes the decode + merge path; otherwise the payload
+        // is a `DDSketchDelta` proto and is applied additively.
+        if let Ok(other) = Self::decode_envelope(delta) {
+            return self
+                .sk
+                .merge(&other)
+                .map_err(|e| PrecomputeError::Other(format!("DDSketchWrapper merge: {e}")));
+        }
         self.sk
-            .merge(&other)
-            .map_err(|e| PrecomputeError::Other(format!("DDSketchWrapper merge: {e}")))
+            .apply_delta_bytes(delta)
+            .map_err(|e| PrecomputeError::Other(format!("DDSketchWrapper apply_delta: {e}")))
     }
 
     fn merge(&mut self, other: &dyn Sketch) -> Result<(), PrecomputeError> {
@@ -166,6 +205,23 @@ impl Sketch for DDSketchWrapper {
 
     fn reset(&mut self) {
         self.sk = DdSketch::new(self.alpha);
+    }
+
+    fn delta_against_empty_base(&self) -> Result<Option<Vec<u8>>, PrecomputeError> {
+        // (delta-baseline-contract.md §3): DDSketch opts in to
+        // per-window deltas. After a window-close emit the snapshot cache
+        // caches THIS — the encoded envelope of an EMPTY DDSketch of the
+        // same alpha — so the next window's `compute_delta_against` diffs
+        // against empty and emits that window's own bucket store as a
+        // delta (no cross-window subtraction).
+        //
+        // Note: we deliberately encode the empty envelope rather than
+        // returning `Sketch::snapshot()` of an empty sketch, because the
+        // latter short-circuits to empty bytes (the runtime drops empty
+        // payloads), and empty bytes would make `compute_delta_against`
+        // fall back to a full snapshot instead of a delta.
+        let empty = DDSketchWrapper::new(self.alpha);
+        Ok(Some(empty.encode_envelope()))
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {

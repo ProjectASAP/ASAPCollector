@@ -143,14 +143,33 @@ impl SnapshotCache {
             Some(prev_bytes) => current.compute_delta_against(&prev_bytes, threshold)?,
         };
 
-        // Always-refresh: update the cached outbound to the latest
-        // full snapshot. When is_full=true the wire payload IS the
-        // snapshot; reuse it. Otherwise serialize a fresh snapshot.
-        if result.is_full {
-            self.cache_outbound(series_key, &result.payload);
-        } else {
-            let full = current.snapshot()?;
-            self.cache_outbound(series_key, &full);
+        // Refresh the cached outbound base for the NEXT window's delta.
+        //
+        // (delta-baseline-contract.md §3) — per-window deltas:
+        // families that opt in via `Sketch::delta_against_empty_base`
+        // (DDSketch this phase) reset the cached base to the EMPTY-sketch
+        // snapshot after each window-close emit, so the next window diffs
+        // against empty and transmits its OWN per-window state as a delta
+        // (no cross-window subtraction). This is what makes the backend's
+        // future per-window base rotation correct.
+        //
+        // Legacy always-refresh (all other families, `None` default):
+        // update the cached base to the just-emitted full snapshot, so the
+        // next delta is computed against the immediately preceding window.
+        // When is_full=true the wire payload IS the snapshot; reuse it.
+        // Otherwise serialize a fresh snapshot.
+        match current.delta_against_empty_base()? {
+            Some(empty_base) => {
+                self.cache_outbound(series_key, &empty_base);
+            }
+            None => {
+                if result.is_full {
+                    self.cache_outbound(series_key, &result.payload);
+                } else {
+                    let full = current.snapshot()?;
+                    self.cache_outbound(series_key, &full);
+                }
+            }
         }
         Ok(result)
     }
@@ -226,5 +245,116 @@ mod tests {
         payload[0] = 99;
         // Cache must not have mutated.
         assert_eq!(c.get_outbound("k"), Some(vec![1, 2, 3]));
+    }
+
+    // ---- per-window delta tests (DDSketch) ----
+
+    use crate::precompute::QuantileSketch;
+    use crate::sketches::ddsketch::DDSketchWrapper;
+
+    /// Build a fresh per-window DDSketch wrapper from a value range. The
+    /// runtime resets per-series state every window, so each window is an
+    /// independent sketch — mirrored here by a fresh wrapper per window.
+    fn window_sketch(alpha: f64, values: impl IntoIterator<Item = f64>) -> DDSketchWrapper {
+        let mut w = DDSketchWrapper::new(alpha);
+        for v in values {
+            w.update(v);
+        }
+        w
+    }
+
+    /// With delta mode on, applying the emitted DDSketch delta
+    /// to an EMPTY base reconstructs the window's full state, and
+    /// quantiles match within the α relative-accuracy bound.
+    #[test]
+    fn ddsketch_delta_against_empty_round_trips() {
+        let alpha = 0.01;
+        let c = SnapshotCache::new();
+
+        // Window 1 — first emit is FULL (no prior base).
+        let w1 = window_sketch(alpha, (1..=200).map(|i| i as f64));
+        let r1 = c.compute_delta("series", &w1, 1).unwrap();
+        assert!(r1.is_full, "first window must emit a full frame");
+
+        // Window 2 — a fresh per-window sketch; emit must be a DELTA now
+        // (the cache reset the base to empty at window-1 close).
+        let w2 = window_sketch(alpha, (1..=200).map(|i| i as f64));
+        let r2 = c.compute_delta("series", &w2, 1).unwrap();
+        assert!(!r2.is_full, "window 2 must emit a delta, not a full frame");
+        assert!(!r2.payload.is_empty(), "delta payload must be non-empty");
+
+        // Apply the delta to an EMPTY base → reconstructs window 2.
+        let mut recon = DDSketchWrapper::new(alpha);
+        recon.apply_delta(&r2.payload).unwrap();
+        assert_eq!(recon.inner().total_count(), w2.inner().total_count());
+
+        // Quantiles match within α.
+        for q in [0.5, 0.9, 0.99] {
+            let got = recon.quantile(q);
+            let want = w2.quantile(q);
+            assert!(
+                (got / want - 1.0).abs() <= alpha,
+                "q={q}: recon={got} want={want}"
+            );
+        }
+    }
+
+    /// Two consecutive windows each emit their OWN state —
+    /// window 2's delta is NOT diffed against window 1 (no cross-window
+    /// subtraction). Even when window 1's events overlap window 2's, the
+    /// emitted delta reconstructs window 2 exactly from empty.
+    #[test]
+    fn ddsketch_consecutive_windows_no_cross_window_subtraction() {
+        let alpha = 0.01;
+        let c = SnapshotCache::new();
+
+        // Window 1: each value inserted TWICE (high counts).
+        let mut w1 = DDSketchWrapper::new(alpha);
+        for i in 1..=100 {
+            w1.update(i as f64);
+            w1.update(i as f64);
+        }
+        let r1 = c.compute_delta("s", &w1, 1).unwrap();
+        assert!(r1.is_full);
+
+        // Window 2: SAME value range but each inserted ONCE (lower counts).
+        // If the cache diffed window 2 against window 1 (cross-window),
+        // every bucket delta would saturate to 0 and the emitted delta
+        // would be empty — under-transmitting window 2 entirely.
+        let mut w2 = DDSketchWrapper::new(alpha);
+        for i in 1..=100 {
+            w2.update(i as f64);
+        }
+        let r2 = c.compute_delta("s", &w2, 1).unwrap();
+        assert!(!r2.is_full);
+
+        // Reconstruct window 2 from EMPTY — must equal window 2's own
+        // full state, proving no cross-window subtraction occurred.
+        let mut recon = DDSketchWrapper::new(alpha);
+        recon.apply_delta(&r2.payload).unwrap();
+        assert_eq!(
+            recon.inner().total_count(),
+            w2.inner().total_count(),
+            "window 2 delta must carry window 2's full count"
+        );
+
+        // The reconstructed-from-empty state must match window 2's own
+        // full per-bucket counts (compared on absolute bucket index —
+        // the reconstructed store's backing-array padding differs from
+        // the chunk-grown original, but the logical distribution is
+        // identical: delta-against-empty == window 2's own state).
+        let w2_sk = w2.inner();
+        let r_sk = recon.inner();
+        for (i, &c) in w2_sk.store_counts.iter().enumerate() {
+            if c == 0 {
+                continue;
+            }
+            let k = w2_sk.store_offset + i as i32;
+            let r_idx = (k - r_sk.store_offset) as usize;
+            assert_eq!(r_sk.store_counts[r_idx], c, "bucket k={k}");
+        }
+
+        // And it must NOT equal window 1's state (which had double counts).
+        assert_ne!(recon.inner().total_count(), w1.inner().total_count());
     }
 }

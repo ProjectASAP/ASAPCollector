@@ -67,6 +67,26 @@ pub trait Sketch: Send + Sync {
     /// sketch object pools.
     fn reset(&mut self);
 
+    /// Per-window delta base for a window-reset producer.
+    ///
+    /// When a family opts in to "true per-window deltas"
+    /// (delta-baseline-contract.md §3), this returns the snapshot bytes
+    /// the [`crate::snapshot_cache::SnapshotCache`] should cache as the
+    /// outbound base AFTER each window-close emit — i.e. the snapshot of
+    /// an EMPTY sketch of the same shape. The next window's
+    /// [`Self::compute_delta_against`] then diffs against empty, so its
+    /// delta is that window's own full per-window state encoded as a
+    /// delta (no cross-window subtraction).
+    ///
+    /// The default returns `None`: such families keep the legacy
+    /// always-refresh behavior (the cache is refreshed to the
+    /// just-emitted full state). Only DDSketch overrides this in the
+    /// first per-window-delta rollout; CMS / CountSketch / HLL / KLL are
+    /// untouched this phase.
+    fn delta_against_empty_base(&self) -> Result<Option<Vec<u8>>, PrecomputeError> {
+        Ok(None)
+    }
+
     /// Type-erased downcast accessor used by paired
     /// [`SketchObserver`] implementations to recover the concrete
     /// sketch type.
