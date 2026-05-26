@@ -89,6 +89,15 @@ func (w *DDSketchWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) ([]
 		full, fErr := w.Snapshot()
 		return full, true, fErr
 	}
+	// Clamp: never emit a delta that isn't strictly smaller than the full
+	// frame. A DDSketch full state packs bucket counts as a contiguous
+	// positional array (no per-bucket index), so on dense buckets a sparse
+	// indexed delta can be larger; emit the full frame in that case so a delta
+	// is never larger than the equivalent full frame at the same cadence.
+	full, fErr := w.Snapshot()
+	if fErr == nil && len(delta) >= len(full) {
+		return full, true, nil
+	}
 	return delta, false, nil
 }
 

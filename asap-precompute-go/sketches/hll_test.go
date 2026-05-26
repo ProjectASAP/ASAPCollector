@@ -31,31 +31,50 @@ func TestHLLWrapper_BasicObserveSnapshot(t *testing.T) {
 	}
 }
 
-// TestHLLWrapper_RegisterDeltaShape verifies ComputeDeltaAgainst
-// returns a non-empty register-delta payload with isFull=false when
-// fed a non-empty prior snapshot.
-func TestHLLWrapper_RegisterDeltaShape(t *testing.T) {
+// TestHLLWrapper_DeltaNeverLargerThanFull verifies the min(full, delta) clamp:
+// ComputeDeltaAgainst never returns a delta larger than the equivalent full
+// frame. With a large base and a tiny incremental change the clamp keeps a
+// (smaller) delta; with a near-empty base and a large change — where the
+// per-register-update delta exceeds the sparse-packed full frame — it emits
+// the full frame instead. Both directions respect payload ≤ full.
+func TestHLLWrapper_DeltaNeverLargerThanFull(t *testing.T) {
 	t.Parallel()
-	w := NewHLLWrapper()
-	for i := 0; i < 500; i++ {
-		w.UpdateValue(float64(i))
+	check := func(name string, base, extra int) bool {
+		w := NewHLLWrapper()
+		for i := 0; i < base; i++ {
+			w.UpdateValue(float64(i))
+		}
+		prev, err := w.Snapshot()
+		if err != nil {
+			t.Fatalf("%s prev: %v", name, err)
+		}
+		for i := base; i < base+extra; i++ {
+			w.UpdateValue(float64(i))
+		}
+		full, err := w.Snapshot()
+		if err != nil {
+			t.Fatalf("%s full: %v", name, err)
+		}
+		payload, isFull, err := w.ComputeDeltaAgainst(prev, 1<<30)
+		if err != nil {
+			t.Fatalf("%s delta: %v", name, err)
+		}
+		if len(payload) > len(full) {
+			t.Fatalf("%s: clamp violated, payload %d > full %d", name, len(payload), len(full))
+		}
+		if len(payload) == 0 {
+			t.Fatalf("%s: empty payload", name)
+		}
+		return isFull
 	}
-	prev, err := w.Snapshot()
-	if err != nil {
-		t.Fatalf("prev: %v", err)
+	// Large base, tiny increment → delta far smaller than full → keep delta.
+	if check("large-base", 20000, 50) {
+		t.Fatal("large base + tiny increment should stay a delta, not clamp to full")
 	}
-	for i := 500; i < 1000; i++ {
-		w.UpdateValue(float64(i))
-	}
-	delta, isFull, err := w.ComputeDeltaAgainst(prev, 1<<30)
-	if err != nil {
-		t.Fatalf("delta: %v", err)
-	}
-	if isFull {
-		t.Fatal("expected sparse register delta, got full")
-	}
-	if len(delta) == 0 {
-		t.Fatal("empty delta payload")
+	// Near-empty base, large increment → per-register-update delta exceeds the
+	// sparse full frame → clamp emits full.
+	if !check("near-empty-base", 1, 400) {
+		t.Fatal("near-empty base + large increment should clamp to full")
 	}
 }
 
@@ -85,18 +104,19 @@ func TestHLLWrapper_PerWindowDelta_AgainstEmptyRoundTrips(t *testing.T) {
 	for i := 0; i < 2000; i++ {
 		w2.UpdateValue(float64(i))
 	}
-	payload, isFull, err := c.ComputeDelta("series", w2, 1)
+	payload, _, err := c.ComputeDelta("series", w2, 1)
 	if err != nil {
 		t.Fatalf("w2: %v", err)
 	}
-	if isFull {
-		t.Fatal("window 2 must emit a delta, not a full frame")
-	}
 	if len(payload) == 0 {
-		t.Fatal("window 2 delta payload empty")
+		t.Fatal("window 2 payload empty")
 	}
+	// Note: the min(full,delta) clamp emits whichever is smaller. For HLL the
+	// per-register-update delta-against-empty is typically larger than the
+	// sparse-packed full frame, so window 2 usually emits a full frame here;
+	// either way it reconstructs window 2 on an empty base.
 
-	// Apply the delta to an EMPTY base -> reconstructs window 2 exactly
+	// Apply the payload to an EMPTY base -> reconstructs window 2 exactly
 	// (HLL register-delta carries every non-zero register over an empty
 	// base, so the reconstructed registers equal window 2's).
 	recon := NewHLLWrapper()
@@ -135,16 +155,16 @@ func TestHLLWrapper_PerWindowDelta_NoCrossWindowSubtraction(t *testing.T) {
 	for i := 1_000_000; i < 1_000_200; i++ {
 		w2.UpdateValue(float64(i))
 	}
-	payload, isFull, err := c.ComputeDelta("s", w2, 1)
+	payload, _, err := c.ComputeDelta("s", w2, 1)
 	if err != nil {
 		t.Fatalf("w2: %v", err)
 	}
-	if isFull {
-		t.Fatal("window 2 must emit a delta")
-	}
 	if len(payload) == 0 {
-		t.Fatal("window 2 delta empty")
+		t.Fatal("window 2 payload empty")
 	}
+	// The clamp may emit a full frame (window 2's own state) rather than a
+	// register delta; either reconstructs window 2 only — never the union with
+	// window 1 — which is what this test guards.
 
 	recon := NewHLLWrapper()
 	if err := recon.ApplyDelta(payload); err != nil {

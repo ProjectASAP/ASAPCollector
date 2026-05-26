@@ -246,6 +246,11 @@ func (w *CMSWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) ([]byte,
 		full, fErr := w.Snapshot()
 		return full, true, fErr
 	}
+	// Clamp: never emit a delta larger than the equivalent full frame.
+	full, fErr := w.Snapshot()
+	if fErr == nil && len(payload) >= len(full) {
+		return full, true, nil
+	}
 	return payload, false, nil
 }
 
