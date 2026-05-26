@@ -9,7 +9,7 @@ use asap_sketchlib::proto::sketchlib::{
 use asap_sketchlib::CountSketch;
 use prost::Message;
 
-use crate::observation::ObservationValue;
+use crate::observation::Observation;
 use crate::precompute::{
     DeltaResult, FrequencyEntry, FrequencySketch, PrecomputeError, Sketch, SketchObserver,
 };
@@ -237,20 +237,25 @@ impl FrequencySketch for CountSketchWrapper {
     }
 }
 
-/// Observer that routes `Float`-kind observations into the wrapper
-/// using the observation's `bytes` field as the key (or falling back
-/// to the configured default).
+/// Observer that routes observations into the wrapper, counting the
+/// per-attribute-set frequency.
+///
+/// The key is the observation's `bytes` field when present (preserves
+/// pre-shaped callers / unit tests), else the full label set via
+/// [`crate::matchers::attributes_key`] (matching the Go edge's
+/// `AttributesKey(labels, nil)`), falling back to [`Self::default_key`]
+/// only when there are no labels either. The weight is the value's
+/// `float` when a pre-shaped `bytes` key is present (existing-test
+/// compat) or `1.0` for the OTAP labels path (mirroring Go's
+/// `obsKindKeyedFreq` frequency weight). Float-kind input is accepted.
 pub struct CountSketchObserver {
-    /// Default key used when the observation's `bytes` field is empty.
+    /// Default key used when the observation has neither a `bytes`
+    /// field nor any labels.
     pub default_key: String,
 }
 
 impl SketchObserver for CountSketchObserver {
-    fn observe(
-        &self,
-        sketch: &mut dyn Sketch,
-        v: &ObservationValue,
-    ) -> Result<(), PrecomputeError> {
+    fn observe(&self, sketch: &mut dyn Sketch, obs: &Observation) -> Result<(), PrecomputeError> {
         let w = sketch
             .as_any_mut()
             .downcast_mut::<CountSketchWrapper>()
@@ -259,18 +264,21 @@ impl SketchObserver for CountSketchObserver {
                     "CountSketchObserver: sketch is not a CountSketchWrapper".into(),
                 )
             })?;
-        if v.kind != crate::observation::ObservationValueKind::Float {
-            return Err(PrecomputeError::Other(format!(
-                "CountSketchObserver: unsupported value kind {}",
-                v.kind.name()
-            )));
-        }
-        let key_str: String = if !v.bytes.is_empty() {
-            String::from_utf8_lossy(&v.bytes).into_owned()
+        let (key_str, weight): (String, f64) = if !obs.value.bytes.is_empty() {
+            (
+                String::from_utf8_lossy(&obs.value.bytes).into_owned(),
+                obs.value.float,
+            )
         } else {
-            self.default_key.clone()
+            let attr_key = crate::matchers::attributes_key(&obs.labels, &[]);
+            let key = if !attr_key.is_empty() {
+                attr_key
+            } else {
+                self.default_key.clone()
+            };
+            (key, 1.0)
         };
-        w.update(&key_str, v.float);
+        w.update(&key_str, weight);
         Ok(())
     }
 }
@@ -308,5 +316,52 @@ mod tests {
         let bytes = w.snapshot().unwrap();
         let decoded = CountSketchWrapper::decode_envelope(&bytes).unwrap();
         assert_eq!(decoded.matrix, w.sk.matrix);
+    }
+
+    // B6 regression: on the OTAP edge, observations arrive Float-kind
+    // with empty bytes. CountSketch must count the per-attribute-set
+    // key with weight 1.0 (Go's obsKindKeyedFreq), NOT degenerately
+    // count the metric NAME via default_key.
+    #[test]
+    fn observe_counts_attribute_set_not_metric_name() {
+        use crate::matchers::attributes_key;
+        use crate::observation::{KeyValue, Observation, ObservationValue};
+        use crate::precompute::SketchObserver;
+
+        let mut sketch = CountSketchWrapper::new(8, 64);
+        // default_key set to the metric name to prove we do NOT fall
+        // back to it when labels are present.
+        let observer = CountSketchObserver {
+            default_key: "events_per_path".into(),
+        };
+        let labels = vec![KeyValue::new("path", "/api")];
+        let n = 30;
+        for _ in 0..n {
+            let obs = Observation::new(
+                1_000,
+                "events_per_path",
+                vec![],
+                labels.clone(),
+                // Float-kind, empty bytes — OTAP scalar row shape.
+                ObservationValue::float(1.0),
+            );
+            observer.observe(&mut sketch, &obs).expect("observe");
+        }
+
+        let attr_key = attributes_key(&labels, &[]);
+        assert_eq!(attr_key, "path=/api;");
+        let counted = sketch.estimate_count(attr_key.as_bytes());
+        // CountSketch's median-of-rows estimator can over/undercount,
+        // but the attribute-set key should be near N.
+        assert!(
+            counted >= (n as f64) * 0.5,
+            "attribute-set key undercounted: {counted} (n={n})"
+        );
+        // The metric NAME (== default_key) must NOT be the counted key.
+        let metric_count = sketch.estimate_count(b"events_per_path");
+        assert!(
+            metric_count.abs() < counted,
+            "metric name was counted ({metric_count}) vs attr set ({counted})"
+        );
     }
 }

@@ -43,10 +43,9 @@ use asap_precompute_rs::config::{PrecomputeConfig, PrecomputeConfigSet, WindowSp
 use asap_precompute_rs::control_channel::ControlChannel;
 use asap_precompute_rs::envelope::{Encoding, SketchType};
 use asap_precompute_rs::otap::{
-    AsapSketchesPlugin, OtapMetricRecords, PluginConfig, PluginHandle, StartOptions,
-    ATTR_AGG_ID, ATTR_ENCODING, ATTR_ENVELOPE, ATTR_SCHEMA_VERSION, ATTR_SKETCH_TYPE,
-    ATTR_WINDOW_END_MS, ATTR_WINDOW_START_MS, COLUMN_METRIC, COLUMN_TIME_UNIX_NANO,
-    COLUMN_VALUE,
+    AsapSketchesPlugin, OtapMetricRecords, PluginConfig, PluginHandle, StartOptions, ATTR_AGG_ID,
+    ATTR_ENCODING, ATTR_ENVELOPE, ATTR_SCHEMA_VERSION, ATTR_SKETCH_TYPE, ATTR_WINDOW_END_MS,
+    ATTR_WINDOW_START_MS, COLUMN_METRIC, COLUMN_TIME_UNIX_NANO, COLUMN_VALUE,
 };
 
 const PARENT_ID_COL: &str = "parent_id";
@@ -103,9 +102,7 @@ fn scalar_records(metric: &str, value: f64, timestamp_ms: u64, host: &str) -> Ot
 /// Drain an [`asap_precompute_rs::otap::EmitReceiver`] with a
 /// generous timeout. The lifecycle tasks emit eagerly on shutdown,
 /// so 5s is far more than needed in practice.
-async fn drain_emit(
-    rx: &mut asap_precompute_rs::otap::EmitReceiver,
-) -> Vec<OtapMetricRecords> {
+async fn drain_emit(rx: &mut asap_precompute_rs::otap::EmitReceiver) -> Vec<OtapMetricRecords> {
     let mut out = Vec::new();
     let timeout = Duration::from_secs(5);
     let deadline = tokio::time::Instant::now() + timeout;
@@ -240,8 +237,7 @@ async fn run_lifecycle(
         ts += 100;
     }
     let input_stream = futures::stream::iter(batches);
-    let (handle, mut emit_rx) =
-        plugin.start(input_stream, None, StartOptions::default());
+    let (handle, mut emit_rx) = plugin.start(input_stream, None, StartOptions::default());
 
     handle.shutdown().await.expect("shutdown");
     drain_emit(&mut emit_rx).await
@@ -319,29 +315,26 @@ async fn lifecycle_countsketch_emits_envelope_with_correct_sketch_type() {
 
 #[tokio::test]
 async fn lifecycle_countminsketch_emits_envelope_with_correct_sketch_type() {
-    // CMS observer requires Bytes-kind input, but our scalar_records
-    // input is Float-kind (decoded from the `value` column). Per the
-    // CountSketch test, the runtime drops Bytes-only sketches when
-    // fed Float input. To exercise CMS end-to-end, we feed batches
-    // whose value carries the host name as a string label and rely
-    // on the host-attr lift surfacing it; the runtime's Bytes input
-    // path lives at the wrapper level, which is unit-tested
-    // separately. For lifecycle purposes we assert the plugin
-    // *resolves* CMS via dispatch and the drain emits the structural
-    // shape (no rows is acceptable — observe-side errors are
-    // recoverable per Phase C's drop-on-error policy).
+    // CMS now keys off the observation's attribute set (the OTAP
+    // scalar path: Float-kind, empty bytes -> AttributesKey(labels))
+    // and accepts Float-kind input, mirroring the Go edge. Pin all
+    // rows to a single `host` series so the runtime collapses them
+    // into one envelope. (Before the B6 fix CMS rejected Float-kind
+    // input and emitted nothing; it now records the attribute-set
+    // frequency.)
     let records = run_lifecycle(
         "countminsketch",
         "flow_count",
-        &[(1.0, "h1"), (1.0, "h2")],
+        &[(1.0, "h1"), (1.0, "h1"), (1.0, "h1"), (1.0, "h1")],
     )
     .await;
-    // Lift is structural: even if no envelopes were produced (CMS
-    // observer rejects Float-kind input — see sketches/cms.rs), the
-    // shutdown path still completes cleanly.
-    for batch in &records {
-        assert_no_strategy_b_top_level_columns(batch);
-    }
+    let last = records.last().expect("at least one batch");
+    assert_no_strategy_b_top_level_columns(last);
+    let payload = extract_envelope_payload(last, "CountMinSketch");
+    assert!(
+        !payload.is_empty(),
+        "CountMinSketch payload must not be empty"
+    );
 }
 
 #[tokio::test]
@@ -471,8 +464,7 @@ async fn control_channel_plan_change_acks_after_apply() {
         .downcast_ref::<StringArray>()
         .expect("Utf8");
     assert!(
-        (0..metric_col.len())
-            .all(|i| !metric_col.is_null(i) && metric_col.value(i) == "after"),
+        (0..metric_col.len()).all(|i| !metric_col.is_null(i) && metric_col.value(i) == "after"),
         "post-plan-change emit should carry metric_name=after"
     );
 }
@@ -496,7 +488,10 @@ async fn shutdown_without_inputs_is_clean_no_op() {
     handle.shutdown().await.expect("shutdown");
     // Drain gets back zero records (no observations, no envelopes).
     let out = drain_emit(&mut emit_rx).await;
-    assert!(out.is_empty(), "unexpected records on empty-stream shutdown");
+    assert!(
+        out.is_empty(),
+        "unexpected records on empty-stream shutdown"
+    );
 }
 
 #[tokio::test]

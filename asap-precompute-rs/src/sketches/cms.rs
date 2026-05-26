@@ -9,7 +9,7 @@ use asap_sketchlib::proto::sketchlib::{
 use asap_sketchlib::CountMinSketch;
 use prost::Message;
 
-use crate::observation::ObservationValue;
+use crate::observation::Observation;
 use crate::precompute::{
     DeltaResult, FrequencyEntry, FrequencySketch, PrecomputeError, Sketch, SketchObserver,
 };
@@ -253,31 +253,33 @@ impl FrequencySketch for CMSWrapper {
     }
 }
 
-/// Observer routing `Bytes`-kind observations into the wrapper.
+/// Observer routing observations into the wrapper, counting the
+/// per-attribute-set frequency.
+///
+/// The key is the observation's `bytes` value when present (preserves
+/// pre-shaped callers / unit tests) or, for OTAP scalar observations
+/// (Float-kind, empty bytes), the full label set via
+/// [`crate::matchers::attributes_key`] — matching the Go edge's
+/// `AttributesKey(labels, nil)`. Each observation contributes weight
+/// `1.0`. We accept any value kind (including Float decoded from the
+/// OTAP `value` column) so CMS records the attribute-set on the OTAP
+/// edge instead of silently dropping every observation.
 pub struct CMSObserver;
 
 impl SketchObserver for CMSObserver {
-    fn observe(
-        &self,
-        sketch: &mut dyn Sketch,
-        v: &ObservationValue,
-    ) -> Result<(), PrecomputeError> {
+    fn observe(&self, sketch: &mut dyn Sketch, obs: &Observation) -> Result<(), PrecomputeError> {
         let w = sketch
             .as_any_mut()
             .downcast_mut::<CMSWrapper>()
             .ok_or_else(|| {
                 PrecomputeError::Other("CMSObserver: sketch is not a CMSWrapper".into())
             })?;
-        if v.kind != crate::observation::ObservationValueKind::Bytes {
-            return Err(PrecomputeError::Other(format!(
-                "CMSObserver: expected Bytes, got {}",
-                v.kind.name()
-            )));
-        }
-        let s = std::str::from_utf8(&v.bytes).map_err(|e| {
-            PrecomputeError::Other(format!("CMSObserver: bytes were not utf-8: {e}"))
-        })?;
-        w.update(s, 1.0);
+        let key = if !obs.value.bytes.is_empty() {
+            String::from_utf8_lossy(&obs.value.bytes).into_owned()
+        } else {
+            crate::matchers::attributes_key(&obs.labels, &[])
+        };
+        w.update(&key, 1.0);
         Ok(())
     }
 }
@@ -314,5 +316,46 @@ mod tests {
         let bytes = w.snapshot().unwrap();
         let decoded = CMSWrapper::decode_envelope(&bytes).unwrap();
         assert_eq!(decoded.sketch(), w.sk.sketch());
+    }
+
+    // B6 regression: on the OTAP edge, observations arrive Float-kind
+    // with empty bytes. CMS must (a) accept them instead of erroring
+    // and (b) count the per-attribute-set key, NOT the metric name.
+    #[test]
+    fn observe_counts_attribute_set_not_metric_name() {
+        use crate::matchers::attributes_key;
+        use crate::observation::{KeyValue, Observation, ObservationValue};
+        use crate::precompute::SketchObserver;
+
+        let mut sketch = CMSWrapper::new(8, 64);
+        let observer = CMSObserver;
+        let labels = vec![KeyValue::new("host", "h1")];
+        // Float-kind, empty bytes — exactly what the OTAP decoder
+        // produces for a scalar row.
+        let n = 25;
+        for _ in 0..n {
+            let obs = Observation::new(
+                1_000,
+                "flow_count",
+                vec![],
+                labels.clone(),
+                ObservationValue::float(1.0),
+            );
+            observer.observe(&mut sketch, &obs).expect("observe");
+        }
+
+        let attr_key = attributes_key(&labels, &[]);
+        assert_eq!(attr_key, "host=h1;");
+        let counted = sketch.estimate_count(attr_key.as_bytes());
+        assert!(
+            counted >= n as f64,
+            "attribute-set key undercounted: {counted} < {n}"
+        );
+        // The metric NAME must not be the counted subject.
+        let metric_count = sketch.estimate_count(b"flow_count");
+        assert!(
+            metric_count < n as f64,
+            "metric name was counted ({metric_count}); should be the attribute set"
+        );
     }
 }

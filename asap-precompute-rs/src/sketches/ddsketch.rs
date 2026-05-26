@@ -10,7 +10,7 @@ use asap_sketchlib::proto::sketchlib::{
 use asap_sketchlib::DdSketch;
 use prost::Message;
 
-use crate::observation::ObservationValue;
+use crate::observation::Observation;
 use crate::precompute::{DeltaResult, PrecomputeError, QuantileSketch, Sketch, SketchObserver};
 
 /// DDSketch wrapper.
@@ -189,17 +189,13 @@ impl QuantileSketch for DDSketchWrapper {
 pub struct DDSketchObserver;
 
 impl SketchObserver for DDSketchObserver {
-    fn observe(
-        &self,
-        sketch: &mut dyn Sketch,
-        v: &ObservationValue,
-    ) -> Result<(), PrecomputeError> {
+    fn observe(&self, sketch: &mut dyn Sketch, obs: &Observation) -> Result<(), PrecomputeError> {
         // Use a `&mut dyn Sketch -> &mut DDSketchWrapper` downcast via
         // the panic-safe method below.
         let w = downcast_mut(sketch)?;
-        match v.kind {
+        match obs.value.kind {
             crate::observation::ObservationValueKind::Float => {
-                w.update(v.float);
+                w.update(obs.value.float);
                 Ok(())
             }
             other => Err(PrecomputeError::Other(format!(

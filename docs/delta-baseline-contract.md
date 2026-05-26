@@ -252,6 +252,21 @@ algebra, so this never self-corrects.
 Where deltas land at the backend (`apply_modified_otlp_delta_bytes`,
 `otel.rs:1875-1943`):
 
+> **DESIGN RULE — supersedes the scalar-based reasoning in this section.**
+> Sketches carry **only sketch state** — no metric `count`/`sum`/`min`/`max`
+> in the full proto *or* the delta proto, DDSketch included. Exact aggregates
+> are **separate, controller-provisioned exact edge aggregations** (e.g. the
+> existing `sum` family → delta-Sum metric; a `MinMax`/`ExactMinMax` family for
+> extrema), decided by the controller's plan — never fields on the sketch.
+> Consequence for delta transmission: every family's delta is **uniformly the
+> sketch-state diff only** (DDSketch = bucket deltas, no `d_count`/`d_sum`/min/max;
+> CMS/CountSketch = cell deltas). There is no per-family "scalar cross-check" —
+> the single correctness gate is the e2e *delta-ON == delta-OFF* query-equality
+> test, identical for all families. Dropping these fields is a prerequisite
+> field-removal effort (proto → `sketchlib-go`/`asap_sketchlib` → edge → backend
+> → regenerated #243 goldens). The per-family notes below describe the
+> *pre-removal* protos and are kept for reference.
+
 | Family | Backend merge algebra | Delta proto fields | Verdict |
 |--------|----------------------|--------------------|---------|
 | DDSketch | additive buckets + additive `d_count`/`d_sum`; min/max conditional | `buckets[]`, `d_count`, `d_sum`, `new_min`/`min_changed`, `new_max`/`max_changed` | **Easiest** — first candidate |
@@ -260,20 +275,19 @@ Where deltas land at the backend (`apply_modified_otlp_delta_bytes`,
 | HLL | register-wise `max` (idempotent) | `updates[] (index,value)` | **Needs explicit care** |
 | KLL | — (no delta exists) | none | **Not applicable** |
 
-### 2.1 DDSketch — easiest to make correct
+### 2.1 DDSketch — reasonable first candidate
 
-DDSketch's delta is the most self-describing of all the families. The
-proto (`DdSketchDelta`) carries **explicit additive scalars**: `d_count`
-(total count delta), `d_sum` (sum delta), and additive per-bucket
-`d_count`s, plus **lossless** `new_min`/`new_max` guarded by `*_changed`
-flags (`dd_sketch_accumulator.rs:103-128`). Because count and sum travel as
-their own additive fields — not reconstructed from bucket scans — a
-window-reset producer can emit a *true "this-window" delta* (the window's
-own buckets/count/sum, since its base is empty), and the backend's additive
-merge yields the correct running total **provided the backend does not also
-subtract a prior base**. This is the **lowest-risk first candidate**: the
-delta is unambiguous and the count/sum scalars give an independent
-correctness check at the receiver.
+Under the design rule above, a DDSketch delta is **just additive bucket
+deltas** (no `d_count`/`d_sum`/min/max scalars). It is still a reasonable
+*first* family to enable, not because of any scalar cross-check, but because
+its merge algebra is the simplest unambiguous additive case: a window-reset
+producer emits the window's own buckets (its base is empty) and the backend's
+additive bucket merge yields the correct running total **provided the backend
+does not also subtract a prior base** (Option A). Total count is derived from
+the buckets; exact sum/min/max, if a query needs them, come from a separate
+controller-provisioned exact aggregation (the `sum`/`MinMax` families), not
+from the sketch. Correctness is established by the e2e delta-ON == delta-OFF
+equality test — the same gate used for every other family.
 
 > Caveat that still applies: min/max are monotone (min only decreases, max
 > only increases) and are sent losslessly only *when changed*. Under a
@@ -449,13 +463,16 @@ HLL/per-window semantics broken.
 ### 4.1 Which option, which sketch first
 
 - **Option A** (per-window deltas + backend per-window base rotation).
-- **Enable DDSketch first.** It is the easiest to validate: the delta
-  proto carries explicit additive `d_count`/`d_sum` scalars and lossless
-  min/max, giving an independent receiver-side correctness check that the
-  reconstructed per-window state matches the full-frame state. Once
-  DDSketch is proven end-to-end, extend to CMS and CountSketch (same
-  additive contract), then HLL (which Option A's base-rotation finally
+- **Enable DDSketch first** — as the simplest unambiguous additive case
+  (bucket-only deltas), validated by the e2e delta-ON == delta-OFF equality
+  test (there are no scalar fields to cross-check; see the design rule in §2).
+  Once DDSketch is proven end-to-end, extend to CMS and CountSketch (same
+  additive cell contract), then HLL (which Option A's base-rotation finally
   makes correct). KLL stays full-only forever.
+- **Prerequisite:** the sketch-proto field removal (drop metric
+  `count`/`sum`/`min`/`max` from full + delta protos; route exact aggregates
+  to controller-provisioned `sum`/`MinMax` edge aggregations) lands before/with
+  delta enablement, since delta is now uniformly sketch-state-only.
 
 ### 4.2 How to gate it
 
