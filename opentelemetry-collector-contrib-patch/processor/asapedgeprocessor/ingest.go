@@ -1,0 +1,150 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package asapedgeprocessor
+
+import (
+	"context"
+	"hash/maphash"
+	"sync"
+
+	gorilla "github.com/ProjectASAP/asap-gorilla-go"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+)
+
+// attrMapPool reuses the decoded attribute map across samples (the shared
+// decode: pcommon.Map -> map[string]string, used for the gorilla key +
+// cold AddSample + sum, then returned).
+var attrMapPool = sync.Pool{New: func() any { return make(map[string]string, 16) }}
+
+func getAttrMap(src pcommon.Map) map[string]string {
+	m := attrMapPool.Get().(map[string]string)
+	for k := range m {
+		delete(m, k)
+	}
+	src.Range(func(k string, v pcommon.Value) bool {
+		m[k] = v.AsString()
+		return true
+	})
+	return m
+}
+
+func putAttrMap(m map[string]string) { attrMapPool.Put(m) }
+
+func (p *asapEdgeProcessor) shardForKey(key string) int {
+	if len(p.shards) <= 1 {
+		return 0
+	}
+	var h maphash.Hash
+	h.SetSeed(p.hashSeed)
+	_, _ = h.WriteString(key)
+	return int(h.Sum64() % uint64(len(p.shards)))
+}
+
+// ConsumeMetrics is the single decode pass: each data point's attributes are
+// decoded once, the gorilla series key is built once (for shard selection), and
+// the sample is dispatched to its shard's cold fragment encoder + (if
+// configured) the metric's warm aggregator. DropOriginal controls raw
+// passthrough; warm/cold output is emitted on the flush tick.
+func (p *asapEdgeProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				p.consumeMetric(ms.At(k))
+			}
+		}
+	}
+	if !p.cfg.DropOriginal {
+		return p.next.ConsumeMetrics(ctx, md) // forward everything raw
+	}
+	// DropOriginal: forward only UNCONFIGURED (passthrough) metrics — e.g.
+	// freshness probes and any metric with no configured entry. The raw of any
+	// CONFIGURED metric is dropped here regardless of tier: a warm/both metric's
+	// sum/sketch output is emitted on the flush tick, and a cold/both metric's
+	// raw is carried by the cold archive (added above). Unconfigured metrics
+	// are still cold-archived and forwarded raw, unchanged.
+	md.ResourceMetrics().RemoveIf(func(rm pmetric.ResourceMetrics) bool {
+		rm.ScopeMetrics().RemoveIf(func(sm pmetric.ScopeMetrics) bool {
+			sm.Metrics().RemoveIf(func(m pmetric.Metric) bool {
+				_, isConfigured := p.configured[m.Name()]
+				return isConfigured
+			})
+			return sm.Metrics().Len() == 0
+		})
+		return rm.ScopeMetrics().Len() == 0
+	})
+	if md.ResourceMetrics().Len() == 0 {
+		return nil
+	}
+	return p.next.ConsumeMetrics(ctx, md)
+}
+
+func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
+	name := m.Name()
+	sumAgg := p.sumMetrics[name] // nil if not a warm Sum-family metric
+	// coldArchive: add raw samples to the cold gorilla stream unless this
+	// metric is configured tier=warm. Unconfigured metrics and tier∈{both,cold}
+	// are archived as before.
+	_, coldSkip := p.coldSkip[name]
+	coldArchive := !coldSkip
+
+	var dps pmetric.NumberDataPointSlice
+	switch m.Type() {
+	case pmetric.MetricTypeSum:
+		dps = m.Sum().DataPoints()
+	case pmetric.MetricTypeGauge:
+		dps = m.Gauge().DataPoints()
+	default:
+		return // non-number metrics not handled yet (cold-only TODO)
+	}
+
+	for i := 0; i < dps.Len(); i++ {
+		dp := dps.At(i)
+		am := getAttrMap(dp.Attributes()) // shared decode (once)
+		key := gorilla.SeriesKey(name, am, p.coldExtLabels)
+		val := numberValue(dp)
+		ts := dp.Timestamp().AsTime()
+		p.observeMax(uint64(ts.UnixMilli()))
+
+		tsMs := uint64(ts.UnixMilli())
+		sh := p.shards[p.shardForKey(key)]
+		sh.mu.Lock()
+		if sh.cold != nil && coldArchive {
+			// The fragment encoder rekeys internally by (metric, attrs); the
+			// shared SeriesKey above is kept for shard selection only.
+			_ = sh.cold.AddSample(gorilla.TSDBSample{
+				MetricName: name,
+				Attributes: am,
+				Timestamp:  ts,
+				Value:      val,
+			})
+		}
+		if sumAgg != nil {
+			sh.sumAggs[name].observe(am, val)
+		} else if sa := sh.sketchAggs[name]; sa != nil {
+			sa.observe(am, val, tsMs)
+		}
+		sh.mu.Unlock()
+		putAttrMap(am)
+	}
+}
+
+func (p *asapEdgeProcessor) observeMax(tsMs uint64) {
+	for {
+		cur := p.maxObservedMs.Load()
+		if tsMs <= cur || p.maxObservedMs.CompareAndSwap(cur, tsMs) {
+			return
+		}
+	}
+}
+
+func numberValue(dp pmetric.NumberDataPoint) float64 {
+	if dp.ValueType() == pmetric.NumberDataPointValueTypeInt {
+		return float64(dp.IntValue())
+	}
+	return dp.DoubleValue()
+}
