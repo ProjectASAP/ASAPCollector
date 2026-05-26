@@ -10,6 +10,7 @@ import (
 	oteladapter "github.com/ProjectASAP/asap-precompute-go/otel"
 	"github.com/ProjectASAP/asap-precompute-go/sketches"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.uber.org/zap"
 )
 
 // sketchAggregator wraps a precompute.Precompute for one sketch-family metric.
@@ -26,6 +27,19 @@ type sketchAggregator struct {
 	// so the built sampling probability is observable (e.g. in tests) without
 	// reaching into precompute internals.
 	factory precompute.SketchFactory
+	// valueAsKey routes the observation as a KindBytes attribute key instead of
+	// the numeric float. CountMinSketch counts attribute-set cardinality and its
+	// observer requires KindBytes (sketches.CMSObserver); every other wired
+	// family observes the numeric value as KindFloat. Feeding CMS a KindFloat
+	// makes the observer reject every sample, leaving an empty sketch.
+	valueAsKey bool
+	logger     *zap.Logger
+	// lastObserveErr is the most recent ObserveKeyed result (nil when the last
+	// sample recorded cleanly). The observe error used to be discarded, which
+	// hid exactly the CMS KindBytes mismatch above; it is now retained (and
+	// logged once) so a value-kind regression is visible instead of silent.
+	lastObserveErr   error
+	loggedObserveErr bool
 }
 
 // fnv64 derives a stable per-metric AggID (matches the standalone sketch
@@ -42,7 +56,10 @@ func fnv64(s string) uint64 {
 // newSketchAggregator builds the aggregator for fam, or (nil,false) if the
 // family isn't wired yet. DDSketch (observes the number value) is wired;
 // KLL/HLL/CS/CMS follow with their per-family params + observe-subject.
-func newSketchAggregator(metric string, fam *MetricFamily, window time.Duration) (*sketchAggregator, bool) {
+func newSketchAggregator(metric string, fam *MetricFamily, window time.Duration, logger *zap.Logger) (*sketchAggregator, bool) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	var (
 		st       precompute.SketchType
 		factory  precompute.SketchFactory
@@ -103,10 +120,12 @@ func newSketchAggregator(metric string, fam *MetricFamily, window time.Duration)
 		Temporality:    int32(pmetric.AggregationTemporalityDelta),
 	}
 	return &sketchAggregator{
-		pc:      precompute.New(pcfg, factory, observer),
-		pcfg:    pcfg,
-		enc:     &oteladapter.AdapterConfig{MetricSuffix: "_" + string(fam.Family), DropOriginal: true},
-		factory: factory,
+		pc:         precompute.New(pcfg, factory, observer),
+		pcfg:       pcfg,
+		enc:        &oteladapter.AdapterConfig{MetricSuffix: "_" + string(fam.Family), DropOriginal: true},
+		factory:    factory,
+		valueAsKey: fam.Family == FamilyCountMinSketch,
+		logger:     logger,
 	}, true
 }
 
@@ -134,12 +153,31 @@ func kvFromMap(am map[string]string) []precompute.KeyValue {
 // observe feeds one sample. The precompute key is built once here from the
 // shared decoded attrs and passed via ObserveKeyed (no internal re-key).
 func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint64) {
+	kv := kvFromMap(am)
 	obs := &precompute.Observation{
 		TimestampMs: tsMs,
-		Labels:      kvFromMap(am),
+		Labels:      kv,
 		Value:       precompute.FloatValue(val),
 	}
-	_ = s.pc.ObserveKeyed(s.pcfg.SeriesKeyFor(obs), obs)
+	if s.valueAsKey {
+		// CountMinSketch's observer consumes KindBytes: it hashes the encoded
+		// attribute key (matching the standalone countminsketchprocessor's
+		// AttributesKey(labels, nil)) to count series cardinality, not the numeric
+		// value. AggregateBy grouping is applied separately by SeriesKeyFor below,
+		// so the inserted key is the full attribute set (nil), identical to the
+		// standalone shim.
+		obs.Value = precompute.BytesValue([]byte(precompute.AttributesKey(kv, nil)))
+	}
+	if err := s.pc.ObserveKeyed(s.pcfg.SeriesKeyFor(obs), obs); err != nil {
+		s.lastObserveErr = err
+		if !s.loggedObserveErr {
+			s.loggedObserveErr = true
+			s.logger.Warn("asap_edge: sketch observe dropped sample",
+				zap.String("metric", s.pcfg.MetricName), zap.Error(err))
+		}
+		return
+	}
+	s.lastObserveErr = nil
 }
 
 // flush force-rotates the window (Drain, regardless of wall-clock — the

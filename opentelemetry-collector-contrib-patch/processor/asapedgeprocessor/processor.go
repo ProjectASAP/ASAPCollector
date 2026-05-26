@@ -124,7 +124,7 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 			sh.sumAggs[name] = newSumAggregator(fam.AggregateBy)
 		}
 		for name, fam := range p.sketchMetrics {
-			if sa, ok := newSketchAggregator(name, fam, cfg.WindowDuration); ok {
+			if sa, ok := newSketchAggregator(name, fam, cfg.WindowDuration, p.logger); ok {
 				sh.sketchAggs[name] = sa
 			}
 		}
