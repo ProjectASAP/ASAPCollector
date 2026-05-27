@@ -1,6 +1,123 @@
 # DataCollector progress
 
-_Last updated: 2026-05-06._
+_Last updated: 2026-05-27._
+
+## asapedge mvp-multinode validation → 5 root-caused bugs fixed, all 6 query families warm (2026-05-27)
+
+Ran the fused `asap_edge` mvp-multinode stack end-to-end on a localhost
+bridge network (the controller-driven path: control-plane
+[`ASAP_EDGE_FUSED=1`] → asap-otel `asap_edge` agent running the
+controller's own emitted fused config → data-plane OTLP ingest →
+warm PromQL) and drove it from **2/6 → 6/6** warm query families
+(SUM / KLL latency / KLL request_size / HLL / CMS / TopK all resolving
+via `asap_query`). Five distinct bugs were root-caused and fixed;
+merged as **ASAPQuery-backend #352 + ASAPCollector #463 + sketchlib-go
+#64** (in that dependency order — #64 ships the CountSketch heap msgpack
+the edge + backend depend on).
+
+1. **HLL sparse decode (×2 decoders).** sketchlib-go emits HLL as the
+   SPARSE `registers_sparse` (proto tag 7) form below its ~6000 non-zero
+   crossover, so the demo's per-`user_id` HLLs were all sparse; both the
+   ingest decoder (`hll_sketch_accumulator::from_sketchlib_proto_bytes`)
+   AND a duplicate read-side decoder (`delta_apply::hll_from_proto`) read
+   only the dense `registers` field and errored "registers has 0 bytes"
+   → HLL unqueryable. Fixed by expanding sparse→dense via a shared
+   `expand_sparse_hll_registers` in both.
+2. **KLL k=0.** `KLLWrapper.Snapshot` used `SerializePortable`'s
+   value-offset fixed-point encoding (empty `items[]`) for
+   exactly-representable samples, which the backend decodes as a
+   degenerate `KllState{k=0}` → latency p99 read 0 (latency values are
+   exact integers, so 100% hit it). Fixed: `SerializePortableRawF64`.
+3. **item_label projection.** The controller emitted `item_label` only
+   for CountSketch, so HLL/CMS kept the high-cardinality inner dimension
+   (`user_id`/`endpoint`) as a GROUPING label — each value got its own
+   cardinality-1 sketch. Fixed across 3 layers (control_plane generic
+   `WorkloadEntry.item_label` emit; asapedgeprocessor `obsKindItemHLL`/
+   `obsKindItemCMS` projecting the item_label out of the series key into
+   the sketch hash subject; `mvp-workload.yaml` keys). HLL keys collapsed
+   2000 → per-zone.
+4. **TopK / heap CountSketch.** The controller emitted no `aggregate_by`
+   for the sketch families, so the heap CountSketch fell into edge
+   `GlobalAggregation` (an attr-less series the registry-sid ingest
+   cannot mint a sid for) → never registered → `topk(top_endpoint_qps)`
+   capability-missed to archive. Fixed: controller now emits
+   `aggregate_by` from `grouping_labels` for the sketch families → the
+   per-zone heap registers → `FrequencyTopk`.
+5. **CMS query surface.** The reducer's `FrequencyEstimate` answers
+   `count_over_time(m[w])` / `frequency(m)`, NOT `rate()` (the analyzer
+   classifies `rate()` as a counter op → `ExactAgg(Sum)` → archive). The
+   workload's `rate(endpoint_request_freq[5m])` was the wrong surface;
+   `mvp-workload.yaml` now uses `count_over_time(endpoint_request_freq
+   [30s])`.
+
+Orchestration gotcha worth recording: the controller deduped its
+streaming-config POSTs, so a data-plane restart silently lost its config
+(SUM/ExactAgg → archive) until an edge agent reconnected — bring the
+data-plane up FIRST, then (re)start the control-plane. (Fixed in the
+follow-up below.) Full diagnosis lives in the project memory
+`asapedge-validation-rootcauses.md`.
+
+## Whole-system code review + 5-agent parallel fix → re-validated 6/6 (2026-05-27)
+
+Code-reviewed the whole sketching pipeline with **4 parallel agents**
+(edge runtime + asap_edge; backend ingest/store; query engine + analyzer
++ controller; sketchlib-go wire) and produced a prioritized findings set,
+then **fixed all of it with 5 parallel agents** partitioned on disjoint
+file sets (edge / wire / data_plane-ingest / data_plane-store-query /
+control_plane). Integrated cleanly (workspace `cargo check` + data_plane
+& control_plane lib tests pass, 815 + control_plane), caught and fixed
+one integration regression during re-validation, and confirmed **6/6
+query families still resolve warm**. Merged as **sketchlib-go #65 +
+ASAPCollector #464 + ASAPQuery-backend #353**.
+
+Highlights of what changed:
+
+- **Delta protocol (PWR).** A delta with no cached base now BOOTSTRAPS an
+  empty accumulator of the frame's `(kind,config)` and applies it
+  (CMS/CountSketch/HLL) instead of dropping — closes restart data-loss
+  and warm/worker-tier divergence.
+- **Memory (the "agent pins its cgroup" root cause).** Both unbounded
+  caches now evict: edge `SnapshotCache.RetainKeys` prunes vanished
+  series each window; backend `sketch_snapshots` got TTL/window-lag
+  eviction.
+- **Heap capability** one-way upgrade (`FrequencyEstimate→FrequencyTopk`)
+  when a later heap-bearing frame lands (detected on full + delta
+  msgpack); **empty-attrs (global-agg) series** can now mint a sid
+  (`fp=""`).
+- **Observability.** Per-reason ingest drop counters (no_base /
+  decode_fail / unconfigured / policy_miss) replace silent drops; edge
+  `DroppedSerialize` counter.
+- **Robustness.** Controller now does a periodic full idempotent re-POST
+  of streaming-config + storage-routing
+  (`CONTROLLER_BACKEND_REPOST_INTERVAL_SECS`, default 60s) — a data-plane
+  restart self-heals (fixes the dedup gotcha above). CountSketch
+  nil-panic guarded (boot-time 64-bit row-hash budget validation +
+  nil-safe wrapper). Warm-window lateness decoupled from the cold
+  reorder-grace (`WarmAllowedLateness`).
+- **Wire/parity.** KLL `SerializeProtoBytes` defaults to raw-f64 (the
+  consumable form); CMS/CountSketch delta cells keep i64 (the Rust delta
+  wire is `sint64`) but the `|Δ|<1` vanish + fractional-cell bugs are
+  guarded; HLL sparse + CountSketch delta-heap + KLL negative-scale
+  cross-language goldens added.
+- **Cleanup/perf.** Deleted the dead+drifted HLL decoder, consolidated to
+  one decoder per family; atomic `register` + `metric→sid` secondary
+  index + `with_instance` borrow (no per-call clone); single-pass OTLP
+  parse (4→2 walks); legacy dual-write gated behind `ASAP_LEGACY_DUAL_WRITE`
+  (default off); hot-path per-shard scratch buffers in `observe()`.
+
+Integration regression caught + fixed during re-validation: the new
+controller `with_heap` default ("`false` for an unenumerated CountSketch")
+over-applied to `top_endpoint_qps` (a top-k metric that isn't enumerated
+as an `EdgeSketchProcessor`), so the agent stopped emitting the heap while
+the backend still registered `with_heap=true` → TopK regressed to archive.
+Fixed by keying `with_heap` off the metric's `item_label` (a CountSketch
+with a heavy-hitter dimension IS top-k), restoring lock-step with the
+backend registration.
+
+Known non-blocking follow-up: the new `rate(cms_metric)` → warm
+`FrequencyEstimate` fallback fires in unit tests but, for the `tier:both`
+demo metric, the cold archive answers `rate()` exactly first; the demo's
+CMS query (`count_over_time`) resolves warm regardless.
 
 ## Headline §5 evidence — 60-cell paired sweep (2026-05-06)
 
