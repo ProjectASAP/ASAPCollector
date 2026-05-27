@@ -128,6 +128,20 @@ func (c *Config) Validate() error {
 		if m.MaxSeries == 0 {
 			m.MaxSeries = c.MaxSeries
 		}
+		// emit_heap: only the CountSketch family has a heap-bearing wire form
+		// (the backend promotes it to CountSketchWithHeap / FrequencyTopk).
+		// Reject it on any other family rather than silently ignoring so a
+		// misconfiguration surfaces at agent boot. emit_heap implies the
+		// msgpack heap encoding (set in the warm factory); default the heap
+		// size to 100 (sketchlib-go's TOPK_SIZE) when unset.
+		if m.EmitHeap {
+			if m.Family != FamilyCountSketch {
+				return fmt.Errorf("asap_edge: metrics[%d] (%s): emit_heap is only valid for family=countsketch (got %q)", i, m.Metric, m.Family)
+			}
+			if m.HeapSize <= 0 {
+				m.HeapSize = 100
+			}
+		}
 	}
 	// Cold defaults (only meaningful when enabled).
 	if c.Cold.Enabled {

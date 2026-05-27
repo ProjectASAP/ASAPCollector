@@ -41,7 +41,12 @@ type sketchAggregator struct {
 	//                      — instead of degenerately counting one key (the metric
 	//                      name) weighted by the sample value (see B6).
 	obsKind observeKind
-	logger  *zap.Logger
+	// itemLabel is the data-point attribute whose value is the CountSketch
+	// heap key, used only by obsKindKeyedItem (the heap-bearing CountSketch
+	// emit_heap path). Empty => every sample keys by the metric name (the
+	// observer's DefaultKey), the degenerate single-key case.
+	itemLabel string
+	logger    *zap.Logger
 	// lastObserveErr is the most recent ObserveKeyed result (nil when the last
 	// sample recorded cleanly). The observe error used to be discarded, which
 	// hid exactly the CMS KindBytes mismatch above; it is now retained (and
@@ -68,6 +73,15 @@ const (
 	obsKindBytesHash
 	// obsKindKeyedFreq: attribute-set key + weight 1 via KindFloat (CountSketch).
 	obsKindKeyedFreq
+	// obsKindKeyedItem: heap-bearing CountSketch (emit_heap). Like
+	// obsKindKeyedFreq (KindFloat, weight 1) but the key is the configured
+	// item_label's VALUE (the heavy-hitter dimension, e.g. endpoint) rather
+	// than the full attribute-set frequency key — so the producer's
+	// Space-Saving tracker feeds distinct items into the top-k heap and the
+	// heap ranks the real item dimension. When the item_label attribute is
+	// absent on a data point (or item_label is unset), the key is left empty
+	// so the observer falls back to its DefaultKey (the metric name).
+	obsKindKeyedItem
 )
 
 // fnv64 derives a stable per-metric AggID (matches the standalone sketch
@@ -112,6 +126,31 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		st       precompute.SketchType
 		factory  precompute.SketchFactory
 		observer precompute.SketchObserver
+		// encoding is the per-family wire encoding stamped on PrecomputeConfig.
+		// Default PROTO_FULL keeps every existing family byte-identical; only the
+		// heap-bearing CountSketch (emit_heap) overrides it to MSGPACK so the
+		// runtime tags its full/delta frames MSGPACK / MSGPACK_DELTA (precompute
+		// serializeSeries) and the otel adapter maps those to the heap-bearing
+		// pmetric encodings the backend promotes to CountSketchWithHeap.
+		encoding = precompute.EncodingProtoFull
+		// obsKindOverride, when non-zero-meaningful, replaces observeKindFor for
+		// this family. Used by the heap CountSketch path so each sample keys the
+		// sketch by the configured item_label value (the heavy-hitter dimension)
+		// rather than the attribute-set frequency key the non-heap path uses.
+		obsKindOverride *observeKind
+		// itemLabel is the dp-attribute whose value is the heap key (heap mode).
+		itemLabel string
+		// globalAgg / omitResource collapse the series grouping for the
+		// heap-bearing CountSketch so every heavy-hitter item lands in ONE sketch
+		// (per AggregateBy group) whose top-k heap ranks them together. Without
+		// this the default per-attribute-set series grouping puts each distinct
+		// item_label value in its own series → its own single-item heap, so the
+		// heap could never rank items against each other. Mirrors the standalone
+		// countsketchprocessor's config_translate (GlobalAggregation when
+		// AggregateBy is empty; OmitResourceAttrs always). Off for every other
+		// family / the non-heap CountSketch (byte-unchanged).
+		globalAgg    bool
+		omitResource bool
 	)
 	// sampleP is the warm-sketch sampling probability (1.0 = disabled). It is
 	// applied via sketchlib-go's WithSampleP to the families whose geometric
@@ -152,11 +191,41 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 	case FamilyCountSketch:
 		rows, cols := csmDims(fam)
 		st = precompute.SketchTypeCountSketch
-		factory = func() precompute.Sketch {
-			w, _ := sketches.NewCountSketchWrapper(rows, cols)
-			return w
-		}
+		// The observer's DefaultKey is the metric name: it is the fallback key
+		// when a sample carries no key in ObservationValue.Bytes (the heap path
+		// when item_label is absent on a data point, mirroring the standalone
+		// shim's sketchKey metric-name fallback).
 		observer = sketches.CountSketchObserver{DefaultKey: metric}
+		if fam.EmitHeap {
+			// Heap-bearing variant: build the wrapper whose Snapshot() emits the
+			// `{sketch, topk_heap, heap_size}` MSGPACK frame and whose
+			// ComputeDeltaAgainst emits the DELTA-HEAP frame. The top-k heap is
+			// fed by UpdateString (the keyed-observe path), so the observe path
+			// keys each sample by the item_label value (obsKindKeyedItem) — the
+			// heavy-hitter dimension the heap ranks. Encoding MSGPACK so the
+			// runtime tags the emitted frames MSGPACK / MSGPACK_DELTA.
+			heapSize := fam.HeapSize
+			factory = func() precompute.Sketch {
+				w, _ := sketches.NewCountSketchWithHeapWrapper(rows, cols, heapSize)
+				return w
+			}
+			encoding = precompute.EncodingMsgpack
+			k := obsKindKeyedItem
+			obsKindOverride = &k
+			itemLabel = fam.ItemLabel
+			// Collapse series grouping so all items aggregate into one heap per
+			// group: empty AggregateBy => one global sketch (the heavy-hitter
+			// dimension is the item, never a series key); a set AggregateBy =>
+			// one sketch per group (SeriesKey projects out the item_label).
+			// Resource attrs never split the heap (mirrors the standalone shim).
+			globalAgg = len(fam.AggregateBy) == 0
+			omitResource = true
+		} else {
+			factory = func() precompute.Sketch {
+				w, _ := sketches.NewCountSketchWrapper(rows, cols)
+				return w
+			}
+		}
 	case FamilyCountMinSketch:
 		rows, cols := csmDims(fam)
 		st = precompute.SketchTypeCountMinSketch
@@ -172,9 +241,17 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		Window:         precompute.WindowSpec{Size: window, AllowedLateness: opts.allowedLateness},
 		AggregateBy:    fam.AggregateBy,
 		TransmitSketch: true,
-		Encoding:       precompute.EncodingProtoFull,
-		MetricName:     metric,
-		Temporality:    int32(pmetric.AggregationTemporalityDelta),
+		// Encoding follows the family: PROTO_FULL for every family except the
+		// heap-bearing CountSketch (emit_heap), which sets MSGPACK so the runtime
+		// tags its frames MSGPACK / MSGPACK_DELTA and the backend promotes the
+		// sid to CountSketchWithHeap (FrequencyTopk).
+		Encoding:   encoding,
+		MetricName: metric,
+		// Heap-bearing CountSketch only: collapse series grouping so heavy-hitter
+		// items aggregate into one sketch/heap per group (see globalAgg above).
+		GlobalAggregation: globalAgg,
+		OmitResourceAttrs: omitResource,
+		Temporality:       int32(pmetric.AggregationTemporalityDelta),
 		// Bound the per-shard series map so a cardinality explosion cannot grow
 		// it without limit; a new series past the cap is dropped (counted via
 		// Stats().DroppedOverflow).
@@ -187,13 +264,18 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		DeltaTransmission: opts.delta,
 		DeltaThreshold:    opts.deltaThreshold,
 	}
+	obsKind := observeKindFor(fam.Family)
+	if obsKindOverride != nil {
+		obsKind = *obsKindOverride
+	}
 	return &sketchAggregator{
-		pc:      precompute.New(pcfg, factory, observer),
-		pcfg:    pcfg,
-		enc:     &oteladapter.AdapterConfig{MetricSuffix: "_" + string(fam.Family), DropOriginal: true},
-		factory: factory,
-		obsKind: observeKindFor(fam.Family),
-		logger:  logger,
+		pc:        precompute.New(pcfg, factory, observer),
+		pcfg:      pcfg,
+		enc:       &oteladapter.AdapterConfig{MetricSuffix: "_" + string(fam.Family), DropOriginal: true},
+		factory:   factory,
+		obsKind:   obsKind,
+		itemLabel: itemLabel,
+		logger:    logger,
 	}, true
 }
 
@@ -263,6 +345,24 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 			Kind:  precompute.KindFloat,
 			Float: 1,
 			Bytes: []byte(precompute.AttributesKey(kv, nil)),
+		}
+	case obsKindKeyedItem:
+		// Heap-bearing CountSketch (emit_heap): key each sample by the configured
+		// item_label's VALUE (the heavy-hitter dimension) so the producer's
+		// Space-Saving tracker feeds distinct items into the top-k heap and the
+		// heap ranks the real item dimension. The asap_edge observe path receives
+		// the data-point attribute set (am); when item_label is unset or absent on
+		// this sample, Bytes is left empty so the CountSketchObserver falls back to
+		// its DefaultKey (the metric name) — the degenerate single-key case,
+		// mirroring the standalone shim's sketchKey metric-name fallback.
+		key := ""
+		if s.itemLabel != "" {
+			key = am[s.itemLabel]
+		}
+		obs.Value = precompute.ObservationValue{
+			Kind:  precompute.KindFloat,
+			Float: 1,
+			Bytes: []byte(key),
 		}
 	}
 	if err := s.pc.ObserveKeyed(s.pcfg.SeriesKeyFor(obs), obs); err != nil {

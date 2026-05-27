@@ -118,6 +118,38 @@ type MetricFamily struct {
 	// inherits the runtime default (always prefer delta). Unit is
 	// sketch-specific (bucket counts / cells); see PrecomputeConfig.DeltaThreshold.
 	DeltaThreshold uint64 `mapstructure:"delta_threshold"`
+
+	// EmitHeap selects the heap-bearing CountSketch wire variant for a
+	// `family: countsketch` metric: the emitted sketch carries a bounded
+	// top-k min-heap of heavy-hitter items alongside the count matrix,
+	// serialized as the MessagePack `{sketch, topk_heap, heap_size}` payload
+	// the ASAPQuery backend detects as `CountSketchWithHeap`
+	// (Capability::FrequencyTopk) — so a warm `topk(metric)` query routes to
+	// this sketch instead of returning "No result". Implies msgpack encoding
+	// (heap-bearing payloads have no proto wire form): the first window per
+	// series ships a full MSGPACK heap frame, each later window a MSGPACK_DELTA
+	// frame (sparse matrix delta + full heap) when delta_transmission is on.
+	// Pair with ItemLabel so the heap ranks the real item dimension (e.g.
+	// endpoint), not the metric name. Only valid on `family: countsketch`;
+	// rejected at validation for any other family. Default false → plain
+	// proto CountSketch (FrequencyEstimate), byte-unchanged from before.
+	// Mirrors the standalone countsketchprocessor's emit_heap.
+	EmitHeap bool `mapstructure:"emit_heap"`
+	// HeapSize bounds the transmitted top-k heap when EmitHeap is true.
+	// Defaults to 100 (sketchlib-go's CountSketch TOPK_SIZE) when <=0.
+	// Ignored when EmitHeap is false.
+	HeapSize int `mapstructure:"heap_size"`
+	// ItemLabel names the data-point attribute whose VALUE is the
+	// heavy-hitter "item" the heap-bearing CountSketch counts/ranks (e.g.
+	// "endpoint" for top_endpoint_qps). Each observation is keyed in the
+	// sketch by `dpAttrs[ItemLabel]` (falling back to the resource attrs,
+	// then to the metric name) so distinct items get distinct cells and the
+	// top-k heap can rank them. Only consulted when EmitHeap is true (the
+	// non-heap CountSketch path keeps its attribute-set frequency keying,
+	// B6). When empty, every observation is keyed by the metric NAME — the
+	// degenerate single-key case — so set it to the workload's item
+	// dimension. Mirrors the standalone countsketchprocessor's item_label.
+	ItemLabel string `mapstructure:"item_label"`
 }
 
 // ColdConfig configures the per-shard Gorilla cold archive. Each shard
