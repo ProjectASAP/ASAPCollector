@@ -31,6 +31,47 @@ func TestHLLWrapper_BasicObserveSnapshot(t *testing.T) {
 	}
 }
 
+// TestHLLWrapper_UpdateBytesCardinality verifies the item_label cardinality
+// path: hashing distinct byte keys (e.g. user_id values) via UpdateBytes /
+// KindBytes counts DISTINCT keys, and repeated keys do not inflate the
+// estimate. This is the BUG-2 HLL subject — distinct label-value cardinality,
+// not the numeric sample.
+func TestHLLWrapper_UpdateBytesCardinality(t *testing.T) {
+	t.Parallel()
+	w := NewHLLWrapper()
+	obs := HLLObserver{}
+	// 300 distinct user_ids, each observed 5×.
+	for rep := 0; rep < 5; rep++ {
+		for i := 0; i < 300; i++ {
+			key := []byte("u" + itoa5(i))
+			if err := obs.Observe(w, precompute.BytesValue(key)); err != nil {
+				t.Fatalf("Observe: %v", err)
+			}
+		}
+	}
+	est := w.Estimate()
+	if est < 270 || est > 330 {
+		t.Fatalf("distinct-key estimate %d, want ~300 (±10%%)", est)
+	}
+	// An empty key is a no-op.
+	before := w.Estimate()
+	if err := obs.Observe(w, precompute.BytesValue(nil)); err != nil {
+		t.Fatalf("Observe(empty): %v", err)
+	}
+	if w.Estimate() != before {
+		t.Fatalf("empty key changed estimate %d -> %d", before, w.Estimate())
+	}
+}
+
+func itoa5(i int) string {
+	b := []byte("00000")
+	for p := 4; p >= 0 && i > 0; p-- {
+		b[p] = byte('0' + i%10)
+		i /= 10
+	}
+	return string(b)
+}
+
 // TestHLLWrapper_DeltaNeverLargerThanFull verifies the min(full, delta) clamp:
 // ComputeDeltaAgainst never returns a delta larger than the equivalent full
 // frame. With a large base and a tiny incremental change the clamp keeps a

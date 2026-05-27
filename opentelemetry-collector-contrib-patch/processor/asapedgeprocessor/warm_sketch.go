@@ -82,6 +82,24 @@ const (
 	// absent on a data point (or item_label is unset), the key is left empty
 	// so the observer falls back to its DefaultKey (the metric name).
 	obsKindKeyedItem
+	// obsKindItemHLL: HLL keyed by the configured item_label's VALUE. The HLL
+	// hashes that label value (KindBytes) so the sketch measures the
+	// CARDINALITY of the item_label dimension (e.g. distinct user_ids) within
+	// each grouping bucket, instead of UpdateValue-ing the numeric sample. The
+	// item_label is projected OUT of the series key + output labels by observe()
+	// so there is ONE HLL per group, not one cardinality-1 HLL per item value.
+	// Only used when item_label is set; an unset item_label keeps the numeric
+	// KindFloat HLL path (obsKindFloat), byte-unchanged.
+	obsKindItemHLL
+	// obsKindItemCMS: CountMinSketch keyed by the configured item_label's VALUE.
+	// The CMS hashes that label value (KindBytes) so frequency is counted PER
+	// item_label value (e.g. per endpoint) within each grouping bucket, instead
+	// of hashing the full attribute-set key (which made each {…,endpoint} tuple
+	// its own series). The item_label is projected OUT of the series key +
+	// output labels by observe() so there is ONE CMS per group. Only used when
+	// item_label is set; an unset item_label keeps the attribute-set KindBytes
+	// path (obsKindBytesHash), byte-unchanged.
+	obsKindItemCMS
 )
 
 // fnv64 derives a stable per-metric AggID (matches the standalone sketch
@@ -188,6 +206,16 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		st = precompute.SketchTypeHLLSketch
 		factory = func() precompute.Sketch { return sketches.NewHLLWrapper() }
 		observer = sketches.HLLObserver{}
+		// item_label support: when set, hash the item_label's VALUE (the
+		// high-cardinality inner dimension, e.g. user_id) so the HLL counts
+		// DISTINCT label values per group rather than UpdateValue-ing the
+		// numeric sample — and project the item_label out of the series key so
+		// there is ONE HLL per group instead of one cardinality-1 HLL per value.
+		if fam.ItemLabel != "" {
+			k := obsKindItemHLL
+			obsKindOverride = &k
+			itemLabel = fam.ItemLabel
+		}
 	case FamilyCountSketch:
 		rows, cols := csmDims(fam)
 		st = precompute.SketchTypeCountSketch
@@ -231,6 +259,16 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		st = precompute.SketchTypeCountMinSketch
 		factory = func() precompute.Sketch { return sketches.NewCMSWrapper(rows, cols, false).WithSampleP(sampleP) }
 		observer = sketches.CMSObserver{}
+		// item_label support: when set, key frequency by the item_label's VALUE
+		// (the inner dimension, e.g. endpoint) so the CMS counts per-endpoint
+		// frequency within each group — and project the item_label out of the
+		// series key so there is ONE CMS per group instead of one per
+		// {…,endpoint} tuple. Unset keeps the full-attribute-set frequency key.
+		if fam.ItemLabel != "" {
+			k := obsKindItemCMS
+			obsKindOverride = &k
+			itemLabel = fam.ItemLabel
+		}
 	default:
 		return nil, false
 	}
@@ -316,10 +354,39 @@ func kvFromMap(am map[string]string) []precompute.KeyValue {
 	return out
 }
 
+// kvFromMapExcept is kvFromMap but omits the single attribute named `drop`. The
+// HLL / CMS item_label paths use it to PROJECT the high-cardinality item_label
+// (e.g. user_id / endpoint) out of the observation labels, so the item_label
+// lands in neither the series key (one sketch per group, not per item value)
+// nor the emitted output labels — while its VALUE is still fed into the sketch
+// as the cardinality / frequency subject (see observe). When `drop` is empty
+// this is exactly kvFromMap.
+func kvFromMapExcept(am map[string]string, drop string) []precompute.KeyValue {
+	if drop == "" {
+		return kvFromMap(am)
+	}
+	out := make([]precompute.KeyValue, 0, len(am))
+	for k, v := range am {
+		if k == drop {
+			continue
+		}
+		out = append(out, precompute.KeyValue{Key: k, Value: v})
+	}
+	return out
+}
+
 // observe feeds one sample. The precompute key is built once here from the
 // shared decoded attrs and passed via ObserveKeyed (no internal re-key).
 func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint64) {
-	kv := kvFromMap(am)
+	// For the HLL / CMS item_label paths the item_label attribute is the sketch
+	// subject (its value is hashed below), so it must NOT appear in the series
+	// key or the emitted labels — project it out of the observation labels here.
+	// Every other path keeps the full attribute set (drop == "" => kvFromMap).
+	dropLabel := ""
+	if s.obsKind == obsKindItemHLL || s.obsKind == obsKindItemCMS {
+		dropLabel = s.itemLabel
+	}
+	kv := kvFromMapExcept(am, dropLabel)
 	obs := &precompute.Observation{
 		TimestampMs: tsMs,
 		Labels:      kv,
@@ -364,6 +431,20 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 			Float: 1,
 			Bytes: []byte(key),
 		}
+	case obsKindItemHLL:
+		// HLL cardinality of the item_label dimension: hash the item_label's
+		// VALUE (KindBytes) so the register set counts DISTINCT label values
+		// (e.g. distinct user_ids) within the group. The item_label was already
+		// projected out of obs.Labels above, so the series key/labels carry only
+		// the grouping dimensions. An absent item_label value yields empty Bytes,
+		// which the HLL observer treats as a no-op (no element added).
+		obs.Value = precompute.BytesValue([]byte(am[s.itemLabel]))
+	case obsKindItemCMS:
+		// CMS frequency keyed by the item_label dimension: hash the item_label's
+		// VALUE (KindBytes) so frequency is counted PER label value (e.g. per
+		// endpoint) within the group, instead of per full-attribute-set tuple.
+		// The item_label was projected out of obs.Labels above.
+		obs.Value = precompute.BytesValue([]byte(am[s.itemLabel]))
 	}
 	if err := s.pc.ObserveKeyed(s.pcfg.SeriesKeyFor(obs), obs); err != nil {
 		s.lastObserveErr = err

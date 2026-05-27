@@ -139,16 +139,30 @@ type MetricFamily struct {
 	// Defaults to 100 (sketchlib-go's CountSketch TOPK_SIZE) when <=0.
 	// Ignored when EmitHeap is false.
 	HeapSize int `mapstructure:"heap_size"`
-	// ItemLabel names the data-point attribute whose VALUE is the
-	// heavy-hitter "item" the heap-bearing CountSketch counts/ranks (e.g.
-	// "endpoint" for top_endpoint_qps). Each observation is keyed in the
-	// sketch by `dpAttrs[ItemLabel]` (falling back to the resource attrs,
-	// then to the metric name) so distinct items get distinct cells and the
-	// top-k heap can rank them. Only consulted when EmitHeap is true (the
-	// non-heap CountSketch path keeps its attribute-set frequency keying,
-	// B6). When empty, every observation is keyed by the metric NAME — the
-	// degenerate single-key case — so set it to the workload's item
-	// dimension. Mirrors the standalone countsketchprocessor's item_label.
+	// ItemLabel names the data-point attribute whose VALUE is the inner
+	// high-cardinality dimension a sketch counts/ranks over (e.g. "endpoint"
+	// for top_endpoint_qps, "user_id" for unique_users_per_min). Consulted by:
+	//
+	//   * CountSketch + EmitHeap — the heap-bearing top-k path: each
+	//     observation is keyed by `dpAttrs[ItemLabel]` so distinct items get
+	//     distinct cells and the top-k heap ranks them (mirrors the standalone
+	//     countsketchprocessor's item_label).
+	//   * HLL — the cardinality of the ItemLabel dimension: the HLL hashes
+	//     `dpAttrs[ItemLabel]` so it counts DISTINCT label values per group
+	//     (e.g. distinct user_ids per zone) instead of one cardinality-1 HLL
+	//     per value.
+	//   * CountMinSketch — frequency keyed by the ItemLabel value: the CMS
+	//     hashes `dpAttrs[ItemLabel]` so it estimates per-value frequency
+	//     within each group instead of per full-attribute-set tuple.
+	//
+	// In ALL three the ItemLabel attribute is PROJECTED OUT of the series key
+	// and the emitted output labels, so there is ONE sketch per grouping bucket
+	// (the remaining attributes / AggregateBy) rather than one sketch per item
+	// value. When empty: CountSketch+heap keys by the metric NAME (degenerate
+	// single-key), while HLL/CMS keep their pre-item_label keying (HLL hashes
+	// the numeric sample; CMS hashes the full attribute-set key), byte-unchanged.
+	// The non-heap plain CountSketch keeps its attribute-set frequency keying
+	// regardless (B6).
 	ItemLabel string `mapstructure:"item_label"`
 }
 
