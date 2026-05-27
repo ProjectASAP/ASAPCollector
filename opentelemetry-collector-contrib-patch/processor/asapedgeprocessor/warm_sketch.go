@@ -114,10 +114,15 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		observer precompute.SketchObserver
 	)
 	// sampleP is the warm-sketch sampling probability (1.0 = disabled). It is
-	// applied only to the sampling-aware families (HLL / CountMinSketch) via
-	// sketchlib-go's WithSampleP; WithSampleP(1.0) is an exact no-op, so the
-	// default path stays byte-identical to the pre-sampling build. Families
-	// without sampling support (DDSketch / KLL / CountSketch) ignore it.
+	// applied via sketchlib-go's WithSampleP to the families whose geometric
+	// skip actually avoids work: DDSketch (value-independent skip avoids the
+	// bucket-index mapping + store increment) and CountMinSketch (skip avoids
+	// the d×w cell update). WithSampleP(1.0) is an exact no-op, so the default
+	// path stays byte-identical to the pre-sampling build. HLL is deliberately
+	// NEVER sampled: its hash must be computed regardless (it is both the
+	// admission threshold AND the register index), so sampling buys ~0 CPU while
+	// degrading cardinality accuracy — it is forced to no-sampling here. KLL /
+	// CountSketch have no sampling support and ignore it.
 	sampleP := fam.SampleP
 	if sampleP <= 0 {
 		sampleP = 1.0
@@ -126,7 +131,7 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 	case FamilyDDSketch:
 		alpha := fam.RelativeAccuracy
 		st = precompute.SketchTypeDDSketch
-		factory = func() precompute.Sketch { return sketches.NewDDSketchWrapper(alpha) }
+		factory = func() precompute.Sketch { return sketches.NewDDSketchWrapper(alpha).WithSampleP(sampleP) }
 		observer = sketches.DDSketchObserver{}
 	case FamilyKLL:
 		k := fam.K
@@ -137,8 +142,12 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		factory = func() precompute.Sketch { return sketches.NewKLLWrapper(k, nil) }
 		observer = sketches.KLLObserver{}
 	case FamilyHLL:
+		// HLL is never sampled: the hash is needed for both the admission
+		// threshold and the register index, so sampling saves ~0 CPU while
+		// degrading cardinality accuracy. Force no-sampling regardless of
+		// fam.SampleP.
 		st = precompute.SketchTypeHLLSketch
-		factory = func() precompute.Sketch { return sketches.NewHLLWrapper().WithSampleP(sampleP) }
+		factory = func() precompute.Sketch { return sketches.NewHLLWrapper() }
 		observer = sketches.HLLObserver{}
 	case FamilyCountSketch:
 		rows, cols := csmDims(fam)

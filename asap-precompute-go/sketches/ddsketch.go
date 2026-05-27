@@ -36,16 +36,51 @@ import (
 // the same envelope bytes the legacy DDSketch processor emitted via
 // serializeDDSketch, so the wire payload stays byte-identical
 // pre/post-refactor (ADR-0002 §"Behavior preservation").
+// ddSampleSeed is the fixed seed handed to sketchlib-go's geometric sampler so
+// the admitted subset is reproducible across runs.
+const ddSampleSeed int64 = 0x4444_5350 // "DDSP"
+
 type DDSketchWrapper struct {
 	sk    *ddsketch.DDSketch
 	alpha float64
+	// sampleP is the warm-sketch sampling probability in (0,1]. 1.0 (default)
+	// disables sampling so the sketch is byte-identical to an unsampled one.
+	// Preserved across Reset so a sampled wrapper stays sampled for its life.
+	sampleP float64
 }
 
 // NewDDSketchWrapper builds an empty DDSketch with the configured
 // relative-accuracy alpha. Callers must keep alpha within (0, 1);
-// sketchlib-go's NewDDSketch panics otherwise.
+// sketchlib-go's NewDDSketch panics otherwise. Sampling is disabled by
+// default — call WithSampleP to enable it.
 func NewDDSketchWrapper(alpha float64) *DDSketchWrapper {
-	return &DDSketchWrapper{sk: ddsketch.NewDDSketch(alpha), alpha: alpha}
+	return &DDSketchWrapper{sk: ddsketch.NewDDSketch(alpha), alpha: alpha, sampleP: 1.0}
+}
+
+// WithSampleP enables NitroSketch geometric skip-sampling at probability p in
+// (0,1]. p>=1 (or NaN) disables sampling (exact, the default). Unlike HLL's
+// hash-threshold sampling, the skip decision is value-independent, so a skipped
+// value avoids the whole record (bucket-index mapping + store grow + increment)
+// — the warm-path CPU saving is real. Quantiles are rank-preserving and need no
+// rescale; a total-count query rescales ×1/p (sample_p rides on the envelope).
+func (w *DDSketchWrapper) WithSampleP(p float64) *DDSketchWrapper {
+	if p >= 1.0 || p != p { // p != p ⇒ NaN
+		w.sampleP = 1.0
+	} else {
+		w.sampleP = p
+	}
+	if w.sk != nil {
+		w.sk.WithSampleP(w.sampleP, ddSampleSeed)
+	}
+	return w
+}
+
+// SampleP returns the configured sampling probability (1.0 when disabled).
+func (w *DDSketchWrapper) SampleP() float64 {
+	if w.sampleP <= 0 {
+		return 1.0
+	}
+	return w.sampleP
 }
 
 // Update feeds a single observation into the underlying DDSketch.
@@ -170,9 +205,13 @@ func (w *DDSketchWrapper) Merge(other precompute.Sketch) error {
 func (w *DDSketchWrapper) Reset() {
 	if w.sk == nil {
 		w.sk = ddsketch.NewDDSketch(w.alpha)
-		return
+	} else {
+		w.sk.Clear()
 	}
-	w.sk.Clear()
+	// Re-apply sampling so a sampled wrapper stays sampled across window resets.
+	if w.sampleP > 0 && w.sampleP < 1.0 {
+		w.sk.WithSampleP(w.sampleP, ddSampleSeed)
+	}
 }
 
 // clampQuantile clamps q to the [0,1] range required by the
