@@ -32,7 +32,9 @@ func makeGaugeMetrics(name string, values []float64) pmetric.Metrics {
 }
 
 // TestBatchModeCardinalityOutput verifies that the batch processor emits one
-// cardinality gauge metric per input series with the expected suffix.
+// cardinality gauge metric per input series under the preserved input
+// metric name (Refactor-2026-05: the HLL encoding is carried by the
+// pdata variant / scope, not a name suffix).
 func TestBatchModeCardinalityOutput(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
@@ -56,7 +58,7 @@ func TestBatchModeCardinalityOutput(t *testing.T) {
 			if sms.At(j).Scope().Name() == "otelcol/hllprocessor" {
 				ms := sms.At(j).Metrics()
 				for k := 0; k < ms.Len(); k++ {
-					if ms.At(k).Name() == "requests_hll_cardinality" {
+					if ms.At(k).Name() == "requests" {
 						foundCardinality = true
 						assert.Equal(t, pmetric.MetricTypeGauge, ms.At(k).Type())
 						require.Equal(t, 1, ms.At(k).Gauge().DataPoints().Len())
@@ -69,11 +71,14 @@ func TestBatchModeCardinalityOutput(t *testing.T) {
 			}
 		}
 	}
-	assert.True(t, foundCardinality, "expected metric requests_hll_cardinality")
+	assert.True(t, foundCardinality, "expected cardinality gauge under preserved name \"requests\"")
 }
 
 // TestBatchModeTransmitSketch verifies that transmit_sketch=true emits a native
-// HLLSketch metric with properly populated data point fields.
+// HLLSketch metric (under the preserved input name) with a non-empty
+// sketch payload, the PROTO encoding tag, and the precision stamped on
+// the parent HLLSketch container (Refactor-2026-05: per-DP Cardinality /
+// Precision were removed; precision lifts to the parent).
 func TestBatchModeTransmitSketch(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
@@ -97,22 +102,23 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 			if sms.At(j).Scope().Name() == "otelcol/hllprocessor" {
 				ms := sms.At(j).Metrics()
 				for k := 0; k < ms.Len(); k++ {
-					if ms.At(k).Name() == "latency_hll_cardinality" {
+					if ms.At(k).Name() == "latency" {
 						foundSketch = true
 						assert.Equal(t, pmetric.MetricTypeHLLSketch, ms.At(k).Type())
-						dps := ms.At(k).HLLSketch().DataPoints()
+						sketch := ms.At(k).HLLSketch()
+						assert.Greater(t, sketch.Precision(), uint32(0),
+							"expected non-zero precision on the HLLSketch container")
+						dps := sketch.DataPoints()
 						require.Equal(t, 1, dps.Len())
 						dp := dps.At(0)
-						assert.Greater(t, dp.Cardinality(), uint64(0), "expected non-zero cardinality")
 						assert.Greater(t, len(dp.Sketch()), 0, "expected non-empty sketch bytes")
 						assert.Equal(t, pmetric.HLLSketchEncodingProto, dp.Encoding())
-						assert.Greater(t, dp.Precision(), uint32(0), "expected non-zero precision")
 					}
 				}
 			}
 		}
 	}
-	assert.True(t, foundSketch, "expected metric latency_hll_cardinality as HLLSketch")
+	assert.True(t, foundSketch, "expected HLLSketch under preserved name \"latency\"")
 }
 
 
@@ -149,14 +155,14 @@ func TestWindowModeFlush(t *testing.T) {
 			for j := 0; j < sms.Len(); j++ {
 				ms := sms.At(j).Metrics()
 				for k := 0; k < ms.Len(); k++ {
-					if ms.At(k).Name() == "sessions_hll_cardinality" {
+					if ms.At(k).Name() == "sessions" {
 						foundCardinality = true
 					}
 				}
 			}
 		}
 	}
-	assert.True(t, foundCardinality, "expected sessions_hll_cardinality after flush")
+	assert.True(t, foundCardinality, "expected \"sessions\" cardinality after flush")
 }
 
 // TestWindowModeMergesAcrossBatches verifies that multiple ConsumeMetrics calls
@@ -190,7 +196,7 @@ func TestWindowModeMergesAcrossBatches(t *testing.T) {
 			for j := 0; j < sms.Len(); j++ {
 				ms := sms.At(j).Metrics()
 				for k := 0; k < ms.Len(); k++ {
-					if ms.At(k).Name() == "hits_hll_cardinality" {
+					if ms.At(k).Name() == "hits" {
 						dps := ms.At(k).Gauge().DataPoints()
 						if dps.Len() > 0 {
 							est = dps.At(0).DoubleValue()
@@ -270,13 +276,20 @@ func TestHLLAggregateByCollapsesSeries(t *testing.T) {
 	out := sink.AllMetrics()
 	require.Len(t, out, 1)
 
+	// DropOriginal=false forwards the raw input gauge alongside the
+	// synthesized cardinality gauge — both now carry the preserved name
+	// "requests" (Refactor-2026-05). Scope-restrict to the synthesized
+	// "otelcol/hllprocessor" output so the raw input DPs aren't counted.
 	var cardDPs []pmetric.NumberDataPoint
 	rms := out[0].ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		for j := 0; j < rms.At(i).ScopeMetrics().Len(); j++ {
+			if rms.At(i).ScopeMetrics().At(j).Scope().Name() != "otelcol/hllprocessor" {
+				continue
+			}
 			ms := rms.At(i).ScopeMetrics().At(j).Metrics()
 			for k := 0; k < ms.Len(); k++ {
-				if ms.At(k).Name() == "requests_hll_cardinality" {
+				if ms.At(k).Name() == "requests" {
 					dps := ms.At(k).Gauge().DataPoints()
 					for l := 0; l < dps.Len(); l++ {
 						cardDPs = append(cardDPs, dps.At(l))
@@ -331,14 +344,20 @@ func TestHLLLabelMatchersFilter(t *testing.T) {
 	out := sink.AllMetrics()
 	require.Len(t, out, 1)
 
-	// Only one series (prod) should appear in the output.
+	// Only one series (prod) should appear in the synthesized output.
+	// DropOriginal=false also forwards the raw 2-DP input gauge under the
+	// same preserved name "requests" (Refactor-2026-05), so scope-restrict
+	// to "otelcol/hllprocessor" to count only the cardinality output.
 	var cardCount int
 	rms := out[0].ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		for j := 0; j < rms.At(i).ScopeMetrics().Len(); j++ {
+			if rms.At(i).ScopeMetrics().At(j).Scope().Name() != "otelcol/hllprocessor" {
+				continue
+			}
 			ms := rms.At(i).ScopeMetrics().At(j).Metrics()
 			for k := 0; k < ms.Len(); k++ {
-				if ms.At(k).Name() == "requests_hll_cardinality" {
+				if ms.At(k).Name() == "requests" {
 					cardCount += ms.At(k).Gauge().DataPoints().Len()
 				}
 			}
@@ -368,26 +387,41 @@ func TestDropOriginalDefault(t *testing.T) {
 	out := sink.AllMetrics()
 	require.Len(t, out, 1)
 
-	// Sketch-only on the wire: raw "unique_users_per_min" must NOT
-	// appear; HLL cardinality summary "unique_users_per_min_hll_cardinality"
-	// MUST appear.
-	var foundRaw, foundCard bool
+	// Refactor-2026-05: the cardinality summary carries the PRESERVED
+	// input name "unique_users_per_min" (the HLL encoding is implicit in
+	// the pdata variant / "otelcol/hllprocessor" scope, not a name
+	// suffix), so raw vs summary can no longer be told apart by name.
+	// Discriminate by scope + shape instead: the synthesized summary
+	// lives under the "otelcol/hllprocessor" scope and is a single-DP
+	// cardinality gauge, whereas the raw input was a 5-DP gauge under the
+	// empty input scope. DropOriginal=true must drop the raw multi-DP
+	// gauge and emit ONLY the single-DP summary.
+	var foundRawMultiDP, foundCard bool
 	rms := out[0].ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
 		for j := 0; j < sms.Len(); j++ {
+			isHLLScope := sms.At(j).Scope().Name() == "otelcol/hllprocessor"
 			ms := sms.At(j).Metrics()
 			for k := 0; k < ms.Len(); k++ {
-				switch ms.At(k).Name() {
-				case "unique_users_per_min":
-					foundRaw = true
-				case "unique_users_per_min_hll_cardinality":
+				if ms.At(k).Name() != "unique_users_per_min" {
+					continue
+				}
+				if isHLLScope {
+					// Synthesized cardinality summary: one gauge DP per
+					// series carrying the estimate.
+					require.Equal(t, pmetric.MetricTypeGauge, ms.At(k).Type())
+					require.Equal(t, 1, ms.At(k).Gauge().DataPoints().Len(),
+						"summary must collapse the series to one estimate DP")
 					foundCard = true
+				} else if ms.At(k).Gauge().DataPoints().Len() > 1 {
+					// The raw input gauge (5 distinct DPs) leaked through.
+					foundRawMultiDP = true
 				}
 			}
 		}
 	}
-	assert.False(t, foundRaw,
-		"raw input metric must not be on the outbound stream when DropOriginal=true")
+	assert.False(t, foundRawMultiDP,
+		"raw multi-DP input gauge must not be on the outbound stream when DropOriginal=true")
 	assert.True(t, foundCard, "expected HLL cardinality summary on outbound stream")
 }

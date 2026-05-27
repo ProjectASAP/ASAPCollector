@@ -91,7 +91,7 @@ func TestHLLDelta_FirstWindowSendsFullSketch(t *testing.T) {
 
 	time.Sleep(winDur + 80*time.Millisecond)
 
-	dps := collectHLLDataPoints(sink.AllMetrics(), "events_hll_cardinality")
+	dps := collectHLLDataPoints(sink.AllMetrics(), "events")
 	require.Len(t, dps, 1, "expected exactly one data point after first flush")
 
 	// Full sketch: encoding must be Proto, not Delta.
@@ -122,7 +122,7 @@ func TestHLLDelta_SubsequentWindowsSendDelta(t *testing.T) {
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), makeHLLGaugeMetrics("hits", 50, 50)))
 	time.Sleep(winDur + 80*time.Millisecond)
 
-	dps := collectHLLDataPoints(sink.AllMetrics(), "hits_hll_cardinality")
+	dps := collectHLLDataPoints(sink.AllMetrics(), "hits")
 	require.Len(t, dps, 1, "expected one data point for window 2")
 
 	assert.Equal(t, pmetric.HLLSketchEncodingDelta, dps[0].Encoding(),
@@ -149,7 +149,7 @@ func TestHLLDelta_RoundTrip(t *testing.T) {
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), makeHLLGaugeMetrics("req", 0, 100)))
 	time.Sleep(winDur + 80*time.Millisecond)
 
-	dps1 := collectHLLDataPoints(sink.AllMetrics(), "req_hll_cardinality")
+	dps1 := collectHLLDataPoints(sink.AllMetrics(), "req")
 	require.Len(t, dps1, 1)
 	require.Equal(t, pmetric.HLLSketchEncodingProto, dps1[0].Encoding())
 	snapSketch, err := hll.DeserializeHyperLogLogFromProtoBytes(dps1[0].Sketch())
@@ -161,7 +161,7 @@ func TestHLLDelta_RoundTrip(t *testing.T) {
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), makeHLLGaugeMetrics("req", 100, 50)))
 	time.Sleep(winDur + 80*time.Millisecond)
 
-	dps2 := collectHLLDataPoints(sink.AllMetrics(), "req_hll_cardinality")
+	dps2 := collectHLLDataPoints(sink.AllMetrics(), "req")
 	require.Len(t, dps2, 1)
 
 	require.Equal(t, pmetric.HLLSketchEncodingDelta, dps2[0].Encoding())
@@ -185,7 +185,7 @@ func TestHLLDelta_RoundTrip(t *testing.T) {
 	require.NoError(t, batchProc.ConsumeMetrics(context.Background(), makeHLLGaugeMetrics("req", 100, 50)))
 	batchOut := batchSink.AllMetrics()
 	require.Len(t, batchOut, 1)
-	batchDPs := collectHLLDataPoints(batchOut, "req_hll_cardinality")
+	batchDPs := collectHLLDataPoints(batchOut, "req")
 	require.Len(t, batchDPs, 1)
 	w2Sketch, err := hll.DeserializeHyperLogLogFromProtoBytes(batchDPs[0].Sketch())
 	require.NoError(t, err)
@@ -213,7 +213,7 @@ func TestHLLDelta_MaxSemanticsIdempotent(t *testing.T) {
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), makeHLLGaugeMetrics("ev", 0, 80)))
 	time.Sleep(winDur + 80*time.Millisecond)
 
-	snapDPs := collectHLLDataPoints(sink.AllMetrics(), "ev_hll_cardinality")
+	snapDPs := collectHLLDataPoints(sink.AllMetrics(), "ev")
 	require.Len(t, snapDPs, 1)
 	snapSketch, err := hll.DeserializeHyperLogLogFromProtoBytes(snapDPs[0].Sketch())
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestHLLDelta_MaxSemanticsIdempotent(t *testing.T) {
 	require.NoError(t, proc.ConsumeMetrics(context.Background(), makeHLLGaugeMetrics("ev", 80, 40)))
 	time.Sleep(winDur + 80*time.Millisecond)
 
-	dps2 := collectHLLDataPoints(sink.AllMetrics(), "ev_hll_cardinality")
+	dps2 := collectHLLDataPoints(sink.AllMetrics(), "ev")
 	require.Len(t, dps2, 1)
 	rawDelta := dps2[0].Sketch()
 
@@ -271,7 +271,7 @@ func TestHLLDelta_MultipleWindowsConvergence(t *testing.T) {
 		require.NoError(t, proc.ConsumeMetrics(context.Background(), makeHLLGaugeMetrics("stream", start, 50)))
 		time.Sleep(winDur + 80*time.Millisecond)
 
-		dps := collectHLLDataPoints(sink.AllMetrics(), "stream_hll_cardinality")
+		dps := collectHLLDataPoints(sink.AllMetrics(), "stream")
 		require.Len(t, dps, 1, "window %d: expected 1 data point", w)
 
 		rawPayload := dps[0].Sketch()
@@ -293,8 +293,12 @@ func TestHLLDelta_MultipleWindowsConvergence(t *testing.T) {
 		}
 		prevSnap = cloneHLL(currentHLL)
 
-		// Cardinality estimate must be non-zero after each window.
-		assert.Greater(t, dps[0].Cardinality(), uint64(0),
-			fmt.Sprintf("window %d: cardinality must be positive", w))
+		// Refactor-2026-05: per-DP Cardinality was removed from
+		// HLLSketchDataPoint; the receiver evaluates cardinality on demand
+		// from the (reconstructed) sketch state. Mirror that here: the
+		// estimate from the reconstructed sketch must be non-zero after
+		// each window.
+		assert.Greater(t, currentHLL.Estimate(), 0,
+			fmt.Sprintf("window %d: reconstructed cardinality must be positive", w))
 	}
 }

@@ -3,7 +3,6 @@ package hllprocessor
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -34,7 +33,8 @@ func TestIntegrationFactoryCreateMetrics(t *testing.T) {
 }
 
 // TestIntegrationPipelineBatchMode verifies full pipeline: create via factory, send gauge data points
-// with distinct float64 values, verify output contains cardinality metric (name ending in _hll_cardinality).
+// with distinct float64 values, verify output contains the cardinality metric under the PRESERVED
+// input name (Refactor-2026-05: no _hll_cardinality suffix; encoding lives in the pdata variant).
 func TestIntegrationPipelineBatchMode(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
@@ -70,7 +70,8 @@ func TestIntegrationPipelineBatchMode(t *testing.T) {
 	require.Len(t, all, 1)
 	require.GreaterOrEqual(t, all[0].ResourceMetrics().Len(), 1)
 
-	// Verify output contains a metric whose name ends with _hll_cardinality.
+	// Verify output contains the cardinality metric under the PRESERVED
+	// input name "requests".
 	found := false
 	rms := all[0].ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
@@ -78,13 +79,13 @@ func TestIntegrationPipelineBatchMode(t *testing.T) {
 		for j := 0; j < sms.Len(); j++ {
 			metrics := sms.At(j).Metrics()
 			for k := 0; k < metrics.Len(); k++ {
-				if strings.HasSuffix(metrics.At(k).Name(), "_hll_cardinality") {
+				if metrics.At(k).Name() == "requests" {
 					found = true
 				}
 			}
 		}
 	}
-	require.True(t, found, "expected a metric with suffix _hll_cardinality in the output")
+	require.True(t, found, "expected the cardinality metric under preserved name \"requests\"")
 }
 
 // TestIntegrationPipelineWindowMode verifies window mode: Start, ConsumeMetrics multiple batches
@@ -240,23 +241,26 @@ func TestIntegrationMultipleSeries(t *testing.T) {
 	all := sink.AllMetrics()
 	require.Len(t, all, 1)
 
-	// Count cardinality output metrics.
+	// Count cardinality output metrics. Refactor-2026-05: each emits
+	// under its PRESERVED input name (no _hll_cardinality suffix). Only
+	// the synthesized hllprocessor scope is consulted so a forwarded raw
+	// input copy can't be mistaken for the cardinality output.
 	cardinalityMetrics := map[string]bool{}
 	rms := all[0].ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
 		sms := rms.At(i).ScopeMetrics()
 		for j := 0; j < sms.Len(); j++ {
+			if sms.At(j).Scope().Name() != "otelcol/hllprocessor" {
+				continue
+			}
 			metrics := sms.At(j).Metrics()
 			for k := 0; k < metrics.Len(); k++ {
-				name := metrics.At(k).Name()
-				if strings.HasSuffix(name, "_hll_cardinality") {
-					cardinalityMetrics[name] = true
-				}
+				cardinalityMetrics[metrics.At(k).Name()] = true
 			}
 		}
 	}
 
 	// Expect separate cardinality metrics for each distinct input metric.
-	require.Contains(t, cardinalityMetrics, "metric_alpha_hll_cardinality")
-	require.Contains(t, cardinalityMetrics, "metric_beta_hll_cardinality")
+	require.Contains(t, cardinalityMetrics, "metric_alpha")
+	require.Contains(t, cardinalityMetrics, "metric_beta")
 }

@@ -20,11 +20,10 @@ import (
 func TestProcessorAddsDDSketchMetric(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.DropOriginal = false // preserve legacy "raw + sketch" assertions
-	// Use a minimal processor instance that only exercises batch aggregation.
-	proc := &ddsketchProcessor{
-		cfg:    cfg,
-		logger: zap.NewNop(),
-	}
+	// Build via newProcessor so the cross-window sketchPool (#418) is
+	// initialized; ProcessBatch's getOrCreate draws sketches from that
+	// pool and panics on a manually-zero-valued processor.
+	proc := newProcessor(cfg, zap.NewNop(), new(consumertest.MetricsSink))
 
 	metrics := buildDDSketchMetrics(t)
 	out, err := proc.ProcessBatch(context.Background(), metrics)
@@ -45,10 +44,12 @@ func TestProcessorAddsDDSketchMetric(t *testing.T) {
 	dps := sketchMetric.DDSketch().DataPoints()
 	require.Equal(t, 1, dps.Len())
 	dp := dps.At(0)
-	require.GreaterOrEqual(t, dp.Count(), uint64(1), "sketch datapoint should have count")
 	require.Equal(t, pmetric.DDSketchEncodingProto, dp.Encoding())
 	require.NotEmpty(t, dp.Sketch())
 
+	// Refactor-2026-05: per-DP Count was removed from DDSketchDataPoint;
+	// the count is now recoverable from the serialized sketch payload
+	// (GetCount sums the bucket store), which is what the backend uses.
 	merged := decodeSketch(t, dp.Sketch())
 	require.GreaterOrEqual(t, merged.GetCount(), uint64(1), "merged sketch should have at least one sample")
 }
@@ -88,9 +89,11 @@ func TestBatchModeGaugeInput(t *testing.T) {
 	ms := sms.At(0).Metrics()
 	require.Equal(t, 2, ms.Len())
 
-	// Second metric should be the quantile output.
+	// Second metric should be the quantile output. Refactor-2026-05/#382:
+	// the metric name is PRESERVED from the input ("latency"); the sketch
+	// encoding is carried by the pdata variant, not a "_quantile" suffix.
 	outMetric := ms.At(1)
-	assert.Equal(t, "latency_quantile", outMetric.Name())
+	assert.Equal(t, "latency", outMetric.Name())
 	assert.Equal(t, pmetric.MetricTypeGauge, outMetric.Type())
 }
 
@@ -138,7 +141,8 @@ func TestWindowModeGaugeInput(t *testing.T) {
 	ms := sms.At(0).Metrics()
 	require.Equal(t, 1, ms.Len())
 	outMetric := ms.At(0)
-	assert.Equal(t, "latency_quantile", outMetric.Name())
+	// Refactor-2026-05/#382: output keeps the input metric name "latency".
+	assert.Equal(t, "latency", outMetric.Name())
 	assert.Equal(t, pmetric.MetricTypeGauge, outMetric.Type())
 }
 
@@ -179,7 +183,9 @@ func TestWindowModeDDSketchInputMultipleBatches(t *testing.T) {
 	require.Equal(t, 1, ms.Len())
 
 	sketchMetric := ms.At(0)
-	assert.Equal(t, "request_latency_ddsketch", sketchMetric.Name())
+	// Refactor-2026-05/#382: name preserved from input ("request_latency");
+	// the DDSketch encoding is carried by the pdata variant tag.
+	assert.Equal(t, "request_latency", sketchMetric.Name())
 	require.Equal(t, pmetric.MetricTypeDDSketch, sketchMetric.Type())
 	assert.Equal(t, pmetric.AggregationTemporalityDelta, sketchMetric.DDSketch().AggregationTemporality(),
 		"window mode must preserve AggregationTemporality from DDSketch inputs")
@@ -205,10 +211,12 @@ func buildDDSketchMetrics(t *testing.T) pmetric.Metrics {
 	dd.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
 	dps := dd.DataPoints()
 
+	// Refactor-2026-05: per-DP Count was removed from DDSketchDataPoint;
+	// the count is carried inside the serialized sketch payload that
+	// setSketchPayload writes (here 2 samples per DP).
 	dp1 := dps.AppendEmpty()
 	dp1.SetStartTimestamp(pcommon.Timestamp(1))
 	dp1.SetTimestamp(pcommon.Timestamp(2))
-	dp1.SetCount(4)
 	dp1.SetEncoding(pmetric.DDSketchEncodingProto)
 	dp1.Attributes().PutStr("route", "/api")
 	setSketchPayload(t, dp1, []float64{25.5, 26.5})
@@ -216,7 +224,6 @@ func buildDDSketchMetrics(t *testing.T) pmetric.Metrics {
 	dp2 := dps.AppendEmpty()
 	dp2.SetStartTimestamp(pcommon.Timestamp(1))
 	dp2.SetTimestamp(pcommon.Timestamp(3))
-	dp2.SetCount(8)
 	dp2.SetEncoding(pmetric.DDSketchEncodingProto)
 	dp2.Attributes().PutStr("route", "/api")
 	setSketchPayload(t, dp2, []float64{50.25, 75.0})
@@ -266,7 +273,9 @@ func TestBatchModeDualInput(t *testing.T) {
 	cfg.Mode = ModeBatch
 	cfg.TransmitSketch = true
 
-	proc := &ddsketchProcessor{cfg: cfg, logger: zap.NewNop()}
+	// newProcessor initializes the sketchPool that ProcessBatch's
+	// getOrCreate factory draws from (#418).
+	proc := newProcessor(cfg, zap.NewNop(), new(consumertest.MetricsSink))
 
 	// Build metrics with both Gauge and DDSketch for same logical metric (different metric names in one scope).
 	metrics := pmetric.NewMetrics()
@@ -287,7 +296,7 @@ func TestBatchModeDualInput(t *testing.T) {
 	dd := ddMetric.SetEmptyDDSketch()
 	dd.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
 	dp := dd.DataPoints().AppendEmpty()
-	dp.SetCount(2)
+	// Refactor-2026-05: per-DP Count removed; count lives in the payload.
 	dp.SetEncoding(pmetric.DDSketchEncodingProto)
 	dp.Attributes().PutStr("route", "/api")
 	setSketchPayload(t, dp, []float64{25.0, 75.0})
@@ -295,23 +304,27 @@ func TestBatchModeDualInput(t *testing.T) {
 	out, err := proc.ProcessBatch(context.Background(), metrics)
 	require.NoError(t, err)
 
-	// Should have original 2 metrics + 2 sketch metrics (one per input type)
+	// Should have original 2 metrics + 2 sketch metrics (one per input type).
+	// Refactor-2026-05/#382: synthesized sketch metrics PRESERVE the input
+	// metric name (no "_ddsketch" suffix); the sketch encoding is carried by
+	// the pdata variant tag. We therefore identify the synthesized outputs by
+	// (name, DDSketch type): the gauge input "latency_ms" gains a DDSketch
+	// metric of the same name, and the already-DDSketch "request_latency"
+	// appears as a DDSketch metric (input + synthesized share the name+type).
 	ms := out.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
 	require.GreaterOrEqual(t, ms.Len(), 2)
 	var foundGaugeSketch, foundDDSketch bool
 	for i := 0; i < ms.Len(); i++ {
 		m := ms.At(i)
-		if m.Name() == "latency_ms_ddsketch" {
+		if m.Name() == "latency_ms" && m.Type() == pmetric.MetricTypeDDSketch {
 			foundGaugeSketch = true
-			require.Equal(t, pmetric.MetricTypeDDSketch, m.Type())
 		}
-		if m.Name() == "request_latency_ddsketch" {
+		if m.Name() == "request_latency" && m.Type() == pmetric.MetricTypeDDSketch {
 			foundDDSketch = true
-			require.Equal(t, pmetric.MetricTypeDDSketch, m.Type())
 		}
 	}
-	assert.True(t, foundGaugeSketch, "expected sketch from gauge input")
-	assert.True(t, foundDDSketch, "expected sketch from DDSketch input")
+	assert.True(t, foundGaugeSketch, "expected DDSketch output from gauge input 'latency_ms'")
+	assert.True(t, foundDDSketch, "expected DDSketch output from DDSketch input 'request_latency'")
 }
 
 // TestWindowModeDualInput verifies that window mode merges both Gauge and DDSketch inputs for the same metric.
@@ -346,29 +359,30 @@ func TestWindowModeDualInput(t *testing.T) {
 	require.NoError(t, proc.FlushWindow(context.Background()))
 
 	// Window mode forwards inputs through (PR #211): 2 ConsumeMetrics +
-	// 1 flushWindow synthesized output = 3 sink entries. Find the
-	// synthesized sketch output by metric name (don't assume position).
+	// 1 flushWindow synthesized output = 3 sink entries. Refactor-2026-05/#382:
+	// the synthesized sketch PRESERVES the input name "latency" (no "_ddsketch"
+	// suffix), so it is indistinguishable from the forwarded DDSketch input by
+	// name alone. The synthesized output is the 3rd (FlushWindow) sink entry.
 	out := sink.AllMetrics()
 	require.Len(t, out, 3)
+	synthesized := out[2]
 	var sketchMetric pmetric.Metric
 	var found bool
-	for _, md := range out {
-		rms := md.ResourceMetrics()
-		for i := 0; i < rms.Len(); i++ {
-			sms := rms.At(i).ScopeMetrics()
-			for j := 0; j < sms.Len(); j++ {
-				ms := sms.At(j).Metrics()
-				for k := 0; k < ms.Len(); k++ {
-					m := ms.At(k)
-					if m.Name() == "latency_ddsketch" && m.Type() == pmetric.MetricTypeDDSketch {
-						sketchMetric = m
-						found = true
-					}
+	rms := synthesized.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				m := ms.At(k)
+				if m.Name() == "latency" && m.Type() == pmetric.MetricTypeDDSketch {
+					sketchMetric = m
+					found = true
 				}
 			}
 		}
 	}
-	require.True(t, found, "expected synthesized latency_ddsketch metric in sink")
+	require.True(t, found, "expected synthesized 'latency' DDSketch metric in flushed output")
 	dps := sketchMetric.DDSketch().DataPoints()
 	require.Equal(t, 1, dps.Len())
 	merged := decodeSketch(t, dps.At(0).Sketch())
@@ -436,9 +450,10 @@ func TestBatchModeNoStatePersistence(t *testing.T) {
 
 	out := sink.AllMetrics()
 	require.Len(t, out, 2)
-	// First batch p50 ~10, second batch p50 ~100 (no cross-batch state)
-	p50First := getQuantileFromOutput(t, out[0], "x_quantile")
-	p50Second := getQuantileFromOutput(t, out[1], "x_quantile")
+	// First batch p50 ~10, second batch p50 ~100 (no cross-batch state).
+	// Refactor-2026-05/#382: output keeps the input metric name "x".
+	p50First := getQuantileFromOutput(t, out[0], "x")
+	p50Second := getQuantileFromOutput(t, out[1], "x")
 	require.NotNil(t, p50First)
 	require.NotNil(t, p50Second)
 	// Sketch quantiles are approximate; use relaxed delta
@@ -446,7 +461,14 @@ func TestBatchModeNoStatePersistence(t *testing.T) {
 	assert.InDelta(t, 100.0, *p50Second, 1.0)
 }
 
-func getQuantileFromOutput(t *testing.T, md pmetric.Metrics, namePrefix string) *float64 {
+// getQuantileFromOutput returns the value of the synthesized quantile
+// data point for the (preserved) metric name. Refactor-2026-05/#382:
+// the quantile output now keeps the input metric name, so when
+// DropOriginal=false the forwarded raw gauge shares that name. The
+// synthesized quantile DP is the one carrying the "ddsketch.quantile"
+// attribute (appendQuantileMetrics stamps it), so prefer that to avoid
+// returning the raw input value.
+func getQuantileFromOutput(t *testing.T, md pmetric.Metrics, name string) *float64 {
 	t.Helper()
 	rms := md.ResourceMetrics()
 	for i := 0; i < rms.Len(); i++ {
@@ -455,14 +477,50 @@ func getQuantileFromOutput(t *testing.T, md pmetric.Metrics, namePrefix string) 
 			ms := sms.At(j).Metrics()
 			for k := 0; k < ms.Len(); k++ {
 				m := ms.At(k)
-				if (m.Name() == namePrefix || len(namePrefix) == 0) && m.Type() == pmetric.MetricTypeGauge && m.Gauge().DataPoints().Len() > 0 {
-					v := m.Gauge().DataPoints().At(0).DoubleValue()
-					return &v
+				if (m.Name() == name || len(name) == 0) && m.Type() == pmetric.MetricTypeGauge {
+					dps := m.Gauge().DataPoints()
+					for l := 0; l < dps.Len(); l++ {
+						dp := dps.At(l)
+						if _, ok := dp.Attributes().Get("ddsketch.quantile"); ok {
+							v := dp.DoubleValue()
+							return &v
+						}
+					}
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// collectQuantileDPs gathers all synthesized quantile data points for the
+// (preserved) metric name across md. Refactor-2026-05/#382: the quantile
+// output keeps the input metric name, so the synthesized DPs are the gauge
+// DPs carrying the "ddsketch.quantile" attribute (distinguishing them from a
+// forwarded raw gauge of the same name when DropOriginal=false).
+func collectQuantileDPs(md pmetric.Metrics, name string) []pmetric.NumberDataPoint {
+	var out []pmetric.NumberDataPoint
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				m := ms.At(k)
+				if m.Name() != name || m.Type() != pmetric.MetricTypeGauge {
+					continue
+				}
+				dps := m.Gauge().DataPoints()
+				for l := 0; l < dps.Len(); l++ {
+					dp := dps.At(l)
+					if _, ok := dp.Attributes().Get("ddsketch.quantile"); ok {
+						out = append(out, dp)
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // TestMixedIntDoubleGauge verifies that Int and Double gauge datapoints are both accepted.
@@ -489,7 +547,7 @@ func TestMixedIntDoubleGauge(t *testing.T) {
 
 	out := sink.AllMetrics()
 	require.Len(t, out, 1)
-	q := getQuantileFromOutput(t, out[0], "mixed_quantile")
+	q := getQuantileFromOutput(t, out[0], "mixed")
 	require.NotNil(t, q)
 	assert.GreaterOrEqual(t, *q, 10.0)
 	assert.LessOrEqual(t, *q, 20.0)
@@ -523,25 +581,26 @@ func TestWindowModeConcurrentConsume(t *testing.T) {
 	// metric by name rather than by position.
 	out := sink.AllMetrics()
 	require.Len(t, out, 11)
+	// Refactor-2026-05/#382: the synthesized sketch PRESERVES the input name
+	// "request_latency" (no "_ddsketch" suffix), so it shares name+type with
+	// the forwarded DDSketch inputs. FlushWindow runs after wg.Wait(), so the
+	// synthesized output is deterministically the LAST sink entry.
+	synthesized := out[10]
 	var found bool
-	for _, md := range out {
-		rms := md.ResourceMetrics()
-		for i := 0; i < rms.Len(); i++ {
-			sms := rms.At(i).ScopeMetrics()
-			for j := 0; j < sms.Len(); j++ {
-				ms := sms.At(j).Metrics()
-				for k := 0; k < ms.Len(); k++ {
-					m := ms.At(k)
-					// Synthesized metric carries the suffix; raw input
-					// keeps its original name.
-					if m.Name() == "request_latency_ddsketch" && m.Type() == pmetric.MetricTypeDDSketch {
-						found = true
-					}
+	rms := synthesized.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		sms := rms.At(i).ScopeMetrics()
+		for j := 0; j < sms.Len(); j++ {
+			ms := sms.At(j).Metrics()
+			for k := 0; k < ms.Len(); k++ {
+				m := ms.At(k)
+				if m.Name() == "request_latency" && m.Type() == pmetric.MetricTypeDDSketch {
+					found = true
 				}
 			}
 		}
 	}
-	require.True(t, found, "expected synthesized request_latency_ddsketch metric in sink")
+	require.True(t, found, "expected synthesized 'request_latency' DDSketch metric in flushed output")
 }
 
 // TestWindowModeFlushDuringConsume verifies flush and ConsumeMetrics can run concurrently without race.
@@ -638,22 +697,12 @@ func TestDDAggregateByCollapsesSeries(t *testing.T) {
 	out := sink.AllMetrics()
 	require.Len(t, out, 1)
 
-	// Collect all latency_quantile data points.
-	var outDPs []pmetric.NumberDataPoint
-	rms := out[0].ResourceMetrics()
-	for i := 0; i < rms.Len(); i++ {
-		for j := 0; j < rms.At(i).ScopeMetrics().Len(); j++ {
-			ms := rms.At(i).ScopeMetrics().At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				if ms.At(k).Name() == "latency_quantile" {
-					dps := ms.At(k).Gauge().DataPoints()
-					for l := 0; l < dps.Len(); l++ {
-						outDPs = append(outDPs, dps.At(l))
-					}
-				}
-			}
-		}
-	}
+	// Collect synthesized quantile data points. Refactor-2026-05/#382: the
+	// quantile output PRESERVES the input metric name "latency" (the raw
+	// input gauge is also named "latency" since DropOriginal=false), so the
+	// synthesized DPs are identified by the "ddsketch.quantile" attribute that
+	// appendQuantileMetrics stamps.
+	outDPs := collectQuantileDPs(out[0], "latency")
 
 	// One p50 per group (us-east, eu-west).
 	require.Len(t, outDPs, 2)
@@ -711,20 +760,10 @@ func TestDDLabelMatchersFilterGauge(t *testing.T) {
 	out := sink.AllMetrics()
 	require.Len(t, out, 1)
 
-	// Find the quantile output.
-	var p50 *float64
-	rms := out[0].ResourceMetrics()
-	for i := 0; i < rms.Len(); i++ {
-		for j := 0; j < rms.At(i).ScopeMetrics().Len(); j++ {
-			ms := rms.At(i).ScopeMetrics().At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				if ms.At(k).Name() == "latency_quantile" && ms.At(k).Gauge().DataPoints().Len() > 0 {
-					v := ms.At(k).Gauge().DataPoints().At(0).DoubleValue()
-					p50 = &v
-				}
-			}
-		}
-	}
+	// Find the synthesized quantile output. Refactor-2026-05/#382: name is
+	// preserved ("latency"); the synthesized DP carries the "ddsketch.quantile"
+	// attribute (used by getQuantileFromOutput to skip the forwarded raw gauge).
+	p50 := getQuantileFromOutput(t, out[0], "latency")
 	require.NotNil(t, p50, "expected quantile output")
 	// Only the prod data point (10) was included.
 	assert.InDelta(t, 10.0, *p50, 1.0)
@@ -754,12 +793,12 @@ func TestDDAggregateByWindowModeDDSketchInput(t *testing.T) {
 	dd := m.SetEmptyDDSketch()
 	dd.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
 
+	// Refactor-2026-05: per-DP Count removed; counts live in the payloads.
 	dp1 := dd.DataPoints().AppendEmpty()
 	dp1.Attributes().PutStr("region", "us-east")
 	dp1.Attributes().PutStr("server", "a")
 	dp1.SetStartTimestamp(pcommon.Timestamp(1))
 	dp1.SetTimestamp(pcommon.Timestamp(2))
-	dp1.SetCount(1)
 	dp1.SetEncoding(pmetric.DDSketchEncodingProto)
 	setSketchPayload(t, dp1, []float64{10})
 
@@ -768,7 +807,6 @@ func TestDDAggregateByWindowModeDDSketchInput(t *testing.T) {
 	dp2.Attributes().PutStr("server", "b")
 	dp2.SetStartTimestamp(pcommon.Timestamp(1))
 	dp2.SetTimestamp(pcommon.Timestamp(2))
-	dp2.SetCount(1)
 	dp2.SetEncoding(pmetric.DDSketchEncodingProto)
 	setSketchPayload(t, dp2, []float64{20})
 
@@ -776,27 +814,16 @@ func TestDDAggregateByWindowModeDDSketchInput(t *testing.T) {
 	require.NoError(t, proc.FlushWindow(context.Background()))
 
 	// Window mode forwards input through (PR #211): 1 ConsumeMetrics +
-	// 1 flushWindow synthesized output = 2 sink entries. Scan for the
-	// synthesized "latency_quantile" metric across all entries.
+	// 1 flushWindow synthesized output = 2 sink entries. Refactor-2026-05/#382:
+	// the synthesized quantile output PRESERVES the input name "latency"; it is
+	// the Gauge DP carrying the "ddsketch.quantile" attribute (the forwarded
+	// raw input is DDSketch-typed, so collectQuantileDPs ignores it).
 	out := sink.AllMetrics()
 	require.Len(t, out, 2)
 
 	var outDPs []pmetric.NumberDataPoint
 	for _, md := range out {
-		rms := md.ResourceMetrics()
-		for i := 0; i < rms.Len(); i++ {
-			for j := 0; j < rms.At(i).ScopeMetrics().Len(); j++ {
-				ms := rms.At(i).ScopeMetrics().At(j).Metrics()
-				for k := 0; k < ms.Len(); k++ {
-					if ms.At(k).Name() == "latency_quantile" {
-						dps := ms.At(k).Gauge().DataPoints()
-						for l := 0; l < dps.Len(); l++ {
-							outDPs = append(outDPs, dps.At(l))
-						}
-					}
-				}
-			}
-		}
+		outDPs = append(outDPs, collectQuantileDPs(md, "latency")...)
 	}
 
 	// Both dp1 and dp2 share region=us-east → one output data point.
@@ -842,14 +869,20 @@ func TestDropOriginalDefault(t *testing.T) {
 	out := sink.AllMetrics()
 	require.Len(t, out, 1)
 	ms := out[0].ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
-	// EXACTLY ONE metric on the wire: the sketch summary. The raw
-	// "http_requests_total_latency_ms" must NOT be present.
+	// EXACTLY ONE metric on the wire: the sketch summary, NOT the raw input.
+	// Refactor-2026-05/#382: the summary now PRESERVES the input metric name
+	// ("http_requests_total_latency_ms") rather than appending "_quantile",
+	// so we distinguish the summary from a passed-through raw gauge by the
+	// synthesized "ddsketch.quantile" attribute on its data point. The raw
+	// input DP (value 42, no quantile attr) must not be on the wire.
 	require.Equal(t, 1, ms.Len(), "DropOriginal=true must emit sketch ONLY (no raw)")
-	assert.Equal(t, "http_requests_total_latency_ms_quantile", ms.At(0).Name())
-	for i := 0; i < ms.Len(); i++ {
-		assert.NotEqual(t, "http_requests_total_latency_ms", ms.At(i).Name(),
-			"raw input metric must not be on the outbound stream when DropOriginal=true")
-	}
+	summary := ms.At(0)
+	assert.Equal(t, "http_requests_total_latency_ms", summary.Name())
+	require.Equal(t, pmetric.MetricTypeGauge, summary.Type())
+	require.Equal(t, 1, summary.Gauge().DataPoints().Len())
+	_, isQuantile := summary.Gauge().DataPoints().At(0).Attributes().Get("ddsketch.quantile")
+	assert.True(t, isQuantile,
+		"the single outbound metric must be the synthesized quantile summary, not the raw input gauge")
 }
 
 // TestDropOriginalDefaultWindowMode verifies window-mode also drops
@@ -878,5 +911,8 @@ func TestDropOriginalDefaultWindowMode(t *testing.T) {
 	require.Len(t, out, 1)
 	ms := out[0].ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
 	require.Equal(t, 1, ms.Len())
-	assert.Equal(t, "request_latency_ddsketch", ms.At(0).Name())
+	// Refactor-2026-05/#382: name preserved from input ("request_latency");
+	// the sketch encoding is carried by the DDSketch pdata variant tag.
+	assert.Equal(t, "request_latency", ms.At(0).Name())
+	assert.Equal(t, pmetric.MetricTypeDDSketch, ms.At(0).Type())
 }
