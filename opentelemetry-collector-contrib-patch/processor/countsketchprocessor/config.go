@@ -77,6 +77,47 @@ type Config struct {
 	// Encoding selects the wire format for the `CountSketchDataPoint.Sketch`
 	// bytes. See `SketchEncoding` for supported values. Defaults to "proto".
 	Encoding SketchEncoding `mapstructure:"encoding"`
+
+	// MetricName is the metric name stamped on flushed CountSketch
+	// envelopes. Optional; when empty the legacy fixed name
+	// "countsketch_partition" is used (back-compat). Set it to the input
+	// metric this sketch represents (e.g. "top_endpoint_qps") so the
+	// emitted sketch lands under the same name the backend's
+	// streaming-config aggregation and PromQL queries key by — otherwise
+	// the sketch registers under "countsketch_partition" and a query for
+	// the real metric finds no sid. Mirrors the CMS processor's
+	// `metric_name` field (which is required there; here it is optional).
+	MetricName string `mapstructure:"metric_name"`
+
+	// ItemLabel names the data-point label whose VALUE is the
+	// heavy-hitter "item" the CountSketch counts/ranks (e.g.
+	// "endpoint" for top_endpoint_qps). Each observation is keyed in
+	// the sketch by `dpAttrs[ItemLabel]` (falling back to the resource
+	// attrs, then to the metric name) so distinct items get distinct
+	// cells and TopK can rank them. Optional; when empty the legacy
+	// behavior is preserved: every observation is keyed by the metric
+	// NAME, collapsing all items into one cell (so a top-k over the
+	// metric ranks a single key). Set it to the workload's item
+	// dimension (the otel-app emits `endpoint` on top_endpoint_qps) so
+	// the heavy-hitter dimension is retained. Back-compat: leaving it
+	// empty keeps byte-parity with the prior metric-name-keyed output.
+	ItemLabel string `mapstructure:"item_label"`
+
+	// EmitHeap selects the heap-bearing CountSketch wire variant: the
+	// emitted sketch carries a bounded top-k min-heap of heavy-hitter
+	// items alongside the count matrix, serialized as the MessagePack
+	// `{sketch, topk_heap, heap_size}` payload the ASAPQuery backend
+	// detects as `CountSketchWithHeap` (Capability::FrequencyTopk) — so
+	// `topk(metric)` queries route to this sketch instead of returning
+	// "No result". Implies msgpack encoding (heap-bearing payloads have
+	// no proto/delta wire form). Pair with ItemLabel so the heap ranks
+	// the real item dimension (e.g. endpoint), not the metric name.
+	// Default false → legacy plain CountSketch (proto, FrequencyEstimate).
+	EmitHeap bool `mapstructure:"emit_heap"`
+
+	// HeapSize bounds the transmitted top-k heap when EmitHeap=true.
+	// Defaults to 100 (sketchlib-go's CountSketch TOPK_SIZE) when <=0.
+	HeapSize int `mapstructure:"heap_size"`
 }
 
 // SketchEncoding selects the wire format for the serialized sketch bytes
@@ -148,6 +189,23 @@ func (c *Config) Validate() error {
 		return fmt.Errorf(
 			"invalid encoding %q, must be %q or %q",
 			c.Encoding, EncodingProto, EncodingMsgpack)
+	}
+
+	// The heap-bearing variant uses the MessagePack wire form (the backend
+	// reads the full frame via CountMinSketchWithHeap::from_msgpack and the
+	// delta frame via its data_plane rmp_serde decode + matrix-delta apply),
+	// so force msgpack encoding. emit_heap + delta_transmission now coexist:
+	// window 1 ships a full heap frame (MSGPACK), each later window ships a
+	// sparse matrix delta + full heap (MSGPACK_DELTA), reconstructed under
+	// the per-window-reset model (delta-baseline-contract.md §3).
+	if c.EmitHeap {
+		c.Encoding = EncodingMsgpack
+		if c.HeapSize <= 0 {
+			c.HeapSize = 100
+		}
+		if !c.TransmitSketch {
+			return fmt.Errorf("emit_heap requires transmit_sketch=true")
+		}
 	}
 
 	return nil

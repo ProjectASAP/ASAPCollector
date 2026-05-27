@@ -17,6 +17,7 @@ package countsketchprocessor
 
 import (
 	"context"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,9 +68,39 @@ func newProcessor(logger *zap.Logger, cfg *Config, next consumer.Metrics) *count
 		cfg.Mode = ModeBatch
 	}
 	rows, cols := configDimensions(cfg)
+	// configDimensions clamps rows to the 64-bit row-hash budget, so the
+	// dims below are always constructible. Surface the clamp so an operator
+	// who set an over-budget (epsilon, delta) learns their delta isn't met.
+	if wantRows := int(math.Ceil(math.Log(1 / cfg.Delta))); wantRows > rows && logger != nil {
+		logger.Warn("countsketch: rows clamped to fit the 64-bit row-hash budget; "+
+			"effective failure probability exceeds the configured delta",
+			zap.Int("requested_rows", wantRows), zap.Int("rows", rows), zap.Int("cols", cols))
+	}
 	pcfg := toPrecomputeConfig(cfg)
 	factory := precompute.SketchFactory(func() precompute.Sketch {
-		w, _ := sketches.NewCountSketchWrapper(rows, cols)
+		var (
+			w   *sketches.CountSketchWrapper
+			err error
+		)
+		if cfg.EmitHeap {
+			// Heap-bearing variant: Snapshot() emits the msgpack
+			// `{sketch, topk_heap, heap_size}` payload the backend reads
+			// via CountMinSketchWithHeap::from_msgpack, promoting the sid
+			// to CountSketchWithHeap / FrequencyTopk.
+			w, err = sketches.NewCountSketchWithHeapWrapper(rows, cols, cfg.HeapSize)
+		} else {
+			w, err = sketches.NewCountSketchWrapper(rows, cols)
+		}
+		if err != nil {
+			// Unreachable given the clamp above; kept as a hard guard so a
+			// future dims regression fails loudly instead of returning a nil
+			// sketch that SIGSEGVs on the first observe (the original bug).
+			if logger != nil {
+				logger.Error("countsketch: sketch construction failed; using minimal fallback dims",
+					zap.Int("rows", rows), zap.Int("cols", cols), zap.Error(err))
+			}
+			w, _ = sketches.NewCountSketchWrapper(1, 2)
+		}
 		return w
 	})
 	pp := precompute.New(pcfg, factory, sketches.CountSketchObserver{DefaultKey: outputMetricName})

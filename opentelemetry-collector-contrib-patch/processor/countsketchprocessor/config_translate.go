@@ -5,6 +5,7 @@ package countsketchprocessor
 
 import (
 	"math"
+	"math/bits"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
@@ -18,6 +19,20 @@ import (
 // harness's CountSketch sketchDescriptor in
 // integration/parity/harness/runtime.go.
 const outputMetricName = "countsketch_partition"
+
+// resolveOutputMetricName returns the metric name stamped on flushed
+// CountSketch envelopes. It defaults to the legacy outputMetricName for
+// back-compat; when the config sets `metric_name` (mirroring the CMS
+// processor) the sketch is emitted under that name instead. The backend's
+// streaming-config aggregation and PromQL queries key by the INPUT metric
+// name (e.g. top_endpoint_qps), so without this the sketch lands under
+// "countsketch_partition" and a query for the real metric finds no sid.
+func resolveOutputMetricName(cfg *Config) string {
+	if cfg.MetricName != "" {
+		return cfg.MetricName
+	}
+	return outputMetricName
+}
 
 // toPrecomputeConfig translates the legacy Config into the runtime's
 // PrecomputeConfig. The runtime always emits envelopes
@@ -52,7 +67,7 @@ func toPrecomputeConfig(cfg *Config) *precompute.PrecomputeConfig {
 		Window:            precompute.WindowSpec{Size: cfg.WindowDuration},
 		Matchers:          toRuntimeMatchers(cfg.LabelMatchers),
 		AggregateBy:       append([]string(nil), cfg.AggregateBy...),
-		MetricName:        outputMetricName,
+		MetricName:        resolveOutputMetricName(cfg),
 		TransmitSketch:    true,
 		DeltaTransmission: cfg.DeltaTransmission,
 		DeltaThreshold:    uint64(math.Ceil(cfg.DeltaThreshold)),
@@ -78,7 +93,43 @@ func configDimensions(cfg *Config) (rows, cols int) {
 		cols = 2
 	}
 	cols = nextPowerOfTwo(cols)
+	// Clamp rows to the 64-bit row-hash budget so the returned dimensions
+	// are ALWAYS constructible. sketchlib bit-slices the single 64-bit
+	// per-item hash as row*log2(cols), so NewCountSketchWrapper REJECTS
+	// (returns an error) when rows*ceil(log2(cols)) > 64. The processor's
+	// SketchFactory is a `func() Sketch` that can't propagate that error,
+	// so an over-budget (epsilon, delta) — e.g. the demo's 0.01/0.01 →
+	// rows=5,cols=16384 (5*14=70) — would otherwise hand the runtime a nil
+	// wrapper that SIGSEGVs on the first observe. Mirror NewCMSWrapper's
+	// clampRowsForHashBits: repair rather than reject. Clamping rows (not
+	// cols) preserves the epsilon-driven width; only the delta-driven
+	// failure probability rises, which the runtime tolerates.
+	rows = clampRowsForHashBits(rows, cols)
 	return rows, cols
+}
+
+// maxRowHashBits mirrors asap-precompute-go/sketches.maxRowHashBits (the
+// const there is unexported). It is the width of the single per-item hash
+// sketchlib slices per row.
+const maxRowHashBits = 64
+
+// clampRowsForHashBits returns the largest rows' <= rows such that
+// rows'*ceil(log2(cols)) <= maxRowHashBits. cols must be a power of two
+// (configDimensions guarantees this). Mirrors the same-named helper in
+// asap-precompute-go/sketches used by NewCMSWrapper.
+func clampRowsForHashBits(rows, cols int) int {
+	bitsPerRow := bits.TrailingZeros(uint(cols)) // == log2(cols) for pow2 cols
+	if bitsPerRow <= 0 {
+		return rows
+	}
+	maxRows := maxRowHashBits / bitsPerRow
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	if rows > maxRows {
+		return maxRows
+	}
+	return rows
 }
 
 func nextPowerOfTwo(n int) int {
