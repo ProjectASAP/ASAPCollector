@@ -78,11 +78,14 @@ func TestFusedConfigSamplePRejectsOutOfRange(t *testing.T) {
 }
 
 // TestFusedSketchBuildAppliesSampleP asserts the fused warm sketch-build
-// (newSketchAggregator) actually wires sample_p into the sampling-aware
-// families: a config with sample_p=0.5 on an HLL/CMS metric builds a sketch
-// whose SampleP()==0.5, and an unset sample_p builds a sketch with sampling
-// disabled (SampleP()==1.0 — byte-identical to today). DDSketch (no sampling
-// support) ignores the knob (SampleP() stays 1.0 / the family is not a probe).
+// (newSketchAggregator) wires sample_p into the families whose geometric skip
+// actually avoids work — DDSketch and CountMinSketch — so a config with
+// sample_p=0.5 builds a sketch whose SampleP()==0.5, and an unset sample_p
+// builds an unsampled sketch (SampleP()==1.0 — byte-identical to today).
+// HLL is deliberately FORCED unsampled: its hash is needed for both the
+// admission threshold and the register index, so sampling buys ~0 CPU while
+// degrading cardinality accuracy. An HLL metric therefore builds SampleP()==1.0
+// even when the config requests sampling.
 func TestFusedSketchBuildAppliesSampleP(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -91,11 +94,12 @@ func TestFusedSketchBuildAppliesSampleP(t *testing.T) {
 		wantP   float64
 		isProbe bool // family exposes SampleP() (sampling-aware)
 	}{
-		{"hll_sampled", FamilyHLL, 0.5, 0.5, true},
+		{"hll_forced_unsampled_despite_config", FamilyHLL, 0.5, 1.0, true},
 		{"hll_unset", FamilyHLL, 0, 1.0, true},
 		{"cms_sampled", FamilyCountMinSketch, 0.5, 0.5, true},
 		{"cms_unset", FamilyCountMinSketch, 0, 1.0, true},
-		{"ddsketch_ignores", FamilyDDSketch, 0.5, 1.0, false},
+		{"ddsketch_sampled", FamilyDDSketch, 0.5, 0.5, true},
+		{"ddsketch_unset", FamilyDDSketch, 0, 1.0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
