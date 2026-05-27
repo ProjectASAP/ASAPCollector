@@ -53,6 +53,9 @@ type sketchAggregator struct {
 	// logged once) so a value-kind regression is visible instead of silent.
 	lastObserveErr   error
 	loggedObserveErr bool
+	// loggedEncodeErr latches the one-time flush-encode-failure log so repeated
+	// failures don't spam the log; the encodeDropCount counter stays accurate.
+	loggedEncodeErr bool
 	// droppedSamples counts samples ObserveKeyed rejected. The log is latched
 	// (loggedObserveErr), so without this counter later drops would be invisible;
 	// it keeps every drop observable even after the one-time log fires.
@@ -60,6 +63,34 @@ type sketchAggregator struct {
 	// procDropCount, when non-nil, is the processor-wide sketch-drop counter the
 	// aggregator also bumps so all aggregators' drops roll up to one number.
 	procDropCount *atomic.Uint64
+	// encodeDropCount counts flush envelopes that failed to encode to pmetric
+	// (oteladapter.Encode error). Without it an Encode failure dropped the
+	// window's envelopes silently (P0-2); the counter keeps the loss
+	// observable. Rolled up to procEncodeDropCount when set.
+	encodeDropCount atomic.Uint64
+	// procEncodeDropCount, when non-nil, is the processor-wide encode-drop
+	// counter the aggregator also bumps so all aggregators' encode failures
+	// roll up to one number.
+	procEncodeDropCount *atomic.Uint64
+
+	// --- per-shard observe() scratch (P1-3) ---
+	// One sketchAggregator exists per (shard, metric) and the shard lock
+	// serializes every observe() call into it, so these scratch buffers can be
+	// reused across samples without their own lock. They cut the documented
+	// per-sample allocations on the hot path: the KeyValue slice, the
+	// attribute-key bytes, and the obs struct.
+	//
+	// kvScratch is reused as the obs.Labels slice each sample (re-filled from
+	// the attr map). Its backing array is reused; only a label-count growth
+	// reallocates. obs.Labels is consumed synchronously by ObserveKeyed (the
+	// window copies what it retains for a NEW series), so reuse is safe.
+	kvScratch []precompute.KeyValue
+	// attrKeyScratch is reused for the []byte form of AttributesKey (the CMS /
+	// CountSketch keyed paths), avoiding a fresh []byte per sample.
+	attrKeyScratch []byte
+	// obsScratch is the reused Observation struct so observe() doesn't heap a
+	// fresh one each sample.
+	obsScratch precompute.Observation
 }
 
 // observeKind selects how observe() shapes each ObservationValue for the wired
@@ -124,11 +155,22 @@ type sketchOpts struct {
 	maxSeries uint64
 	// delta enables PROTO_DELTA transmission for delta-capable families.
 	delta bool
-	// deltaThreshold caps the delta size (0 => runtime default).
+	// deltaThreshold caps the delta size. 0 is a valid value, NOT a sentinel:
+	// it means "include every non-zero bucket in the delta", which is the
+	// correct/cheapest setting under the empty-base per-window-reset (PWR)
+	// contract (delta-baseline-contract.md §3) — the base is always an empty
+	// sketch, so a 0 threshold never spuriously forces a full frame. A
+	// non-zero value caps the delta size (full state emitted once the delta
+	// reaches threshold * full-state size). No runtime default is substituted
+	// for 0 (P1-4: the old "0 => runtime default" comment was misleading).
 	deltaThreshold uint64
-	// allowedLateness mirrors Cold.ReorderGrace so warm late-data semantics
-	// match the cold tier (precompute drops samples older than
-	// activeStart-allowedLateness instead of silently accepting them).
+	// allowedLateness is the WARM window's own late-data grace (P1-1),
+	// decoupled from Cold.ReorderGrace. precompute drops samples whose event
+	// timestamp is older than activeStart-allowedLateness. The processor
+	// threads Config.WarmAllowedLateness here (default = WindowDuration), so a
+	// sample that actually falls within the (WindowDuration-wide) warm window
+	// is admitted — unlike the old coupling to the ~2s cold reorder grace,
+	// which dropped most processing-delayed-but-in-window samples.
 	allowedLateness time.Duration
 }
 
@@ -233,8 +275,25 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 			// heavy-hitter dimension the heap ranks. Encoding MSGPACK so the
 			// runtime tags the emitted frames MSGPACK / MSGPACK_DELTA.
 			heapSize := fam.HeapSize
+			// P0-1(b): validate the dimensions ONCE up front. The wrapper
+			// constructor returns (nil, err) when rows*ceil(log2(cols)) exceeds
+			// the 64-bit row-hash budget; discarding that error left a
+			// nil-backed wrapper that panicked on the first sample. If
+			// construction fails (e.g. config_validate was bypassed), log and
+			// skip wiring this family rather than returning a nil-wrapping
+			// sketch.
+			if _, err := sketches.NewCountSketchWithHeapWrapper(rows, cols, heapSize); err != nil {
+				logger.Error("asap_edge: skipping countsketch (emit_heap) family: invalid dimensions",
+					zap.String("metric", metric), zap.Int("rows", rows), zap.Int("cols", cols), zap.Error(err))
+				return nil, false
+			}
 			factory = func() precompute.Sketch {
-				w, _ := sketches.NewCountSketchWithHeapWrapper(rows, cols, heapSize)
+				w, err := sketches.NewCountSketchWithHeapWrapper(rows, cols, heapSize)
+				if err != nil {
+					// Unreachable in practice (validated above); return nil so
+					// the runtime's nil guards skip rather than panic.
+					return nil
+				}
 				return w
 			}
 			encoding = precompute.EncodingMsgpack
@@ -249,8 +308,17 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 			globalAgg = len(fam.AggregateBy) == 0
 			omitResource = true
 		} else {
+			// P0-1(b): same up-front validation for the plain CountSketch.
+			if _, err := sketches.NewCountSketchWrapper(rows, cols); err != nil {
+				logger.Error("asap_edge: skipping countsketch family: invalid dimensions",
+					zap.String("metric", metric), zap.Int("rows", rows), zap.Int("cols", cols), zap.Error(err))
+				return nil, false
+			}
 			factory = func() precompute.Sketch {
-				w, _ := sketches.NewCountSketchWrapper(rows, cols)
+				w, err := sketches.NewCountSketchWrapper(rows, cols)
+				if err != nil {
+					return nil
+				}
 				return w
 			}
 		}
@@ -300,7 +368,14 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		// families (KLL/Sum cannot delta) — opts.delta is already gated on
 		// family by config.effectiveDelta.
 		DeltaTransmission: opts.delta,
-		DeltaThreshold:    opts.deltaThreshold,
+		// DeltaThreshold: 0 is a real, correct value under the empty-base PWR
+		// contract — NOT an unfilled sentinel (P1-4). Each window's delta is
+		// computed against an EMPTY base, so a 0 threshold simply includes
+		// every non-zero bucket and never spuriously promotes to a full frame;
+		// the ComputeDeltaAgainst clamp still caps a delta that grows larger
+		// than the equivalent full snapshot. A non-zero value caps the delta
+		// at threshold * full-state size. No runtime default is substituted.
+		DeltaThreshold: opts.deltaThreshold,
 	}
 	obsKind := observeKindFor(fam.Family)
 	if obsKindOverride != nil {
@@ -375,19 +450,54 @@ func kvFromMapExcept(am map[string]string, drop string) []precompute.KeyValue {
 	return out
 }
 
+// fillKVScratch refills s.kvScratch from the attribute map, omitting the
+// single `drop` key when non-empty. Reuses the backing array across samples
+// (P1-3): only a label-count growth past the current capacity reallocates.
+// Returns the filled slice (an alias of s.kvScratch).
+func (s *sketchAggregator) fillKVScratch(am map[string]string, drop string) []precompute.KeyValue {
+	out := s.kvScratch[:0]
+	for k, v := range am {
+		if drop != "" && k == drop {
+			continue
+		}
+		out = append(out, precompute.KeyValue{Key: k, Value: v})
+	}
+	s.kvScratch = out
+	return out
+}
+
+// attrKeyBytes returns the AttributesKey of kv as a []byte, reusing
+// s.attrKeyScratch to avoid the per-sample []byte(string) allocation (P1-3).
+// The returned slice aliases the scratch and is only valid until the next
+// observe() call; the precompute observer copies what it needs synchronously.
+func (s *sketchAggregator) attrKeyBytes(kv []precompute.KeyValue) []byte {
+	key := precompute.AttributesKey(kv, nil)
+	s.attrKeyScratch = append(s.attrKeyScratch[:0], key...)
+	return s.attrKeyScratch
+}
+
 // observe feeds one sample. The precompute key is built once here from the
 // shared decoded attrs and passed via ObserveKeyed (no internal re-key).
+//
+// Per-sample allocation note (P1-3): the KeyValue slice, the attribute-key
+// bytes, and the Observation struct are reused across samples via per-shard
+// scratch on the aggregator (the shard lock serializes observe()), so the hot
+// path no longer allocates them each sample. The SeriesKeyFor key string is
+// still allocated per sample — the keyed precompute entry point takes a
+// string and there is no exported zero-alloc keyed path — so that one
+// allocation remains.
 func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint64) {
 	// For the HLL / CMS item_label paths the item_label attribute is the sketch
 	// subject (its value is hashed below), so it must NOT appear in the series
 	// key or the emitted labels — project it out of the observation labels here.
-	// Every other path keeps the full attribute set (drop == "" => kvFromMap).
+	// Every other path keeps the full attribute set (drop == "" => all labels).
 	dropLabel := ""
 	if s.obsKind == obsKindItemHLL || s.obsKind == obsKindItemCMS {
 		dropLabel = s.itemLabel
 	}
-	kv := kvFromMapExcept(am, dropLabel)
-	obs := &precompute.Observation{
+	kv := s.fillKVScratch(am, dropLabel)
+	obs := &s.obsScratch
+	*obs = precompute.Observation{
 		TimestampMs: tsMs,
 		Labels:      kv,
 		Value:       precompute.FloatValue(val),
@@ -400,7 +510,7 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 		// value. AggregateBy grouping is applied separately by SeriesKeyFor below,
 		// so the inserted key is the full attribute set (nil), identical to the
 		// standalone shim.
-		obs.Value = precompute.BytesValue([]byte(precompute.AttributesKey(kv, nil)))
+		obs.Value = precompute.BytesValue(s.attrKeyBytes(kv))
 	case obsKindKeyedFreq:
 		// CountSketch's observer is UpdateString(key, weight) where key defaults
 		// to DefaultKey (the metric NAME) when Bytes is empty — the degenerate
@@ -411,7 +521,7 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 		obs.Value = precompute.ObservationValue{
 			Kind:  precompute.KindFloat,
 			Float: 1,
-			Bytes: []byte(precompute.AttributesKey(kv, nil)),
+			Bytes: s.attrKeyBytes(kv),
 		}
 	case obsKindKeyedItem:
 		// Heap-bearing CountSketch (emit_heap): key each sample by the configured
@@ -426,10 +536,13 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 		if s.itemLabel != "" {
 			key = am[s.itemLabel]
 		}
+		// Reuse attrKeyScratch for the item key bytes (P1-3); aliases the
+		// scratch, consumed synchronously by the observer.
+		s.attrKeyScratch = append(s.attrKeyScratch[:0], key...)
 		obs.Value = precompute.ObservationValue{
 			Kind:  precompute.KindFloat,
 			Float: 1,
-			Bytes: []byte(key),
+			Bytes: s.attrKeyScratch,
 		}
 	case obsKindItemHLL:
 		// HLL cardinality of the item_label dimension: hash the item_label's
@@ -438,13 +551,15 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 		// projected out of obs.Labels above, so the series key/labels carry only
 		// the grouping dimensions. An absent item_label value yields empty Bytes,
 		// which the HLL observer treats as a no-op (no element added).
-		obs.Value = precompute.BytesValue([]byte(am[s.itemLabel]))
+		s.attrKeyScratch = append(s.attrKeyScratch[:0], am[s.itemLabel]...)
+		obs.Value = precompute.BytesValue(s.attrKeyScratch)
 	case obsKindItemCMS:
 		// CMS frequency keyed by the item_label dimension: hash the item_label's
 		// VALUE (KindBytes) so frequency is counted PER label value (e.g. per
 		// endpoint) within the group, instead of per full-attribute-set tuple.
 		// The item_label was projected out of obs.Labels above.
-		obs.Value = precompute.BytesValue([]byte(am[s.itemLabel]))
+		s.attrKeyScratch = append(s.attrKeyScratch[:0], am[s.itemLabel]...)
+		obs.Value = precompute.BytesValue(s.attrKeyScratch)
 	}
 	if err := s.pc.ObserveKeyed(s.pcfg.SeriesKeyFor(obs), obs); err != nil {
 		s.lastObserveErr = err
@@ -473,7 +588,22 @@ func (s *sketchAggregator) flush(dst pmetric.Metrics) {
 		return
 	}
 	out, err := oteladapter.Encode(envs, s.enc)
-	if err != nil || out.ResourceMetrics().Len() == 0 {
+	if err != nil {
+		// P0-2: an Encode failure dropped the whole window's envelopes
+		// silently. Count it (per-aggregator + rolled up) and log once so the
+		// loss is observable instead of vanishing.
+		s.encodeDropCount.Add(uint64(len(envs)))
+		if s.procEncodeDropCount != nil {
+			s.procEncodeDropCount.Add(uint64(len(envs)))
+		}
+		if !s.loggedEncodeErr {
+			s.loggedEncodeErr = true
+			s.logger.Warn("asap_edge: sketch flush encode failed (further encode drops counted, not logged)",
+				zap.String("metric", s.pcfg.MetricName), zap.Int("dropped_envelopes", len(envs)), zap.Error(err))
+		}
+		return
+	}
+	if out.ResourceMetrics().Len() == 0 {
 		return
 	}
 	out.ResourceMetrics().MoveAndAppendTo(dst.ResourceMetrics())

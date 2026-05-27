@@ -74,6 +74,11 @@ type asapEdgeProcessor struct {
 	// ObserveKeyed (see warm_sketch.go) so latched log-once drops stay
 	// observable.
 	sketchDropCount atomic.Uint64
+	// sketchEncodeDropCount counts flush envelopes dropped because a sketch
+	// aggregator's oteladapter.Encode failed (P0-2). Without it an Encode
+	// failure dropped the window's envelopes silently; this keeps the loss
+	// observable across all aggregators.
+	sketchEncodeDropCount atomic.Uint64
 	// sumOverflowCount counts sum-aggregator group observations dropped because
 	// a shard's group map hit MaxSeries.
 	sumOverflowCount atomic.Uint64
@@ -153,14 +158,19 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 		}
 		for name, fam := range p.sketchMetrics {
 			opts := sketchOpts{
-				window:          cfg.WindowDuration,
-				maxSeries:       uint64(fam.MaxSeries),
-				delta:           fam.effectiveDelta(cfg.DeltaTransmission),
-				deltaThreshold:  fam.DeltaThreshold,
-				allowedLateness: cfg.Cold.ReorderGrace,
+				window:         cfg.WindowDuration,
+				maxSeries:      uint64(fam.MaxSeries),
+				delta:          fam.effectiveDelta(cfg.DeltaTransmission),
+				deltaThreshold: fam.DeltaThreshold,
+				// P1-1: the warm window uses its OWN late-data grace
+				// (default = WindowDuration), decoupled from the cold tier's
+				// ~2s reorder grace, so processing-delayed-but-in-window
+				// samples are not dropped as late.
+				allowedLateness: cfg.WarmAllowedLateness,
 			}
 			if sa, ok := newSketchAggregator(name, fam, opts, p.logger); ok {
 				sa.procDropCount = &p.sketchDropCount
+				sa.procEncodeDropCount = &p.sketchEncodeDropCount
 				sh.sketchAggs[name] = sa
 			}
 		}

@@ -5,10 +5,44 @@ package asapedgeprocessor
 
 import (
 	"fmt"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// countSketchMaxRowHashBits mirrors sketchlib-go's 64-bit single-item hash
+// that CountSketch bit-slices across rows (sketches.maxRowHashBits, which is
+// unexported). Each row consumes ceil(log2(cols)) bits; once
+// rows*ceil(log2(cols)) > 64 the high rows read shifted-out bits and the
+// wrapper constructor returns an error. Kept in sync with the sketches pkg.
+const countSketchMaxRowHashBits = 64
+
+// validateCountSketchDims rejects CountSketch dimensions that the wrapper
+// constructor would reject (P0-1), using the same effective dims the warm
+// factory's csmDims resolves: rows default 5, cols default 2048. cols must be
+// a power of two (sketchlib bit-slices the hash with a pow2 column mask), and
+// rows*log2(cols) must fit the 64-bit row-hash budget. CountSketch rejects
+// rather than clamps, so we surface the misconfiguration at boot.
+func validateCountSketchDims(i int, m *MetricFamily) error {
+	rows, cols := m.Rows, m.Cols
+	if rows < 1 {
+		rows = 5
+	}
+	if cols < 2 {
+		cols = 2048
+	}
+	if cols&(cols-1) != 0 {
+		return fmt.Errorf("asap_edge: metrics[%d] (%s): countsketch cols=%d must be a power of two", i, m.Metric, cols)
+	}
+	bitsPerRow := bits.TrailingZeros(uint(cols)) // == log2(cols) for pow2 cols
+	if bitsPerRow > 0 && rows*bitsPerRow > countSketchMaxRowHashBits {
+		return fmt.Errorf(
+			"asap_edge: metrics[%d] (%s): countsketch rows*ceil(log2(cols))=%d exceeds the %d-bit row-hash budget; reduce rows (%d) or cols (%d)",
+			i, m.Metric, rows*bitsPerRow, countSketchMaxRowHashBits, rows, cols)
+	}
+	return nil
+}
 
 func (k FamilyKind) valid() bool {
 	switch k {
@@ -76,6 +110,17 @@ func (c *Config) Validate() error {
 	if c.WindowDuration <= 0 {
 		c.WindowDuration = 60 * time.Second
 	}
+	// WarmAllowedLateness: the warm tier's own late-data grace, decoupled
+	// from cold.reorder_grace (P1-1). Default to the full WindowDuration so
+	// any sample that actually falls within the active window is admitted
+	// (a small grace borrowed from the cold tier would drop most
+	// processing-delayed-but-in-window samples). Negative is invalid.
+	if c.WarmAllowedLateness < 0 {
+		return fmt.Errorf("asap_edge: warm_allowed_lateness must be >= 0 (0 => default = window_duration)")
+	}
+	if c.WarmAllowedLateness == 0 {
+		c.WarmAllowedLateness = c.WindowDuration
+	}
 	// MaxSeries: default the global cap so the sketch/sum maps are bounded
 	// out-of-the-box. 0 (unset after the default) only if the operator
 	// explicitly set a negative value, which we reject — there's no
@@ -140,6 +185,21 @@ func (c *Config) Validate() error {
 			}
 			if m.HeapSize <= 0 {
 				m.HeapSize = 100
+			}
+		}
+		// CountSketch row-hash budget (P0-1): sketchlib bit-slices a single
+		// 64-bit per-item hash as rows*ceil(log2(cols)); once that exceeds 64
+		// bits the high rows read shifted-out (zero) bits and silently
+		// collapse onto column 0, AND the wrapper constructor
+		// (NewCountSketch*Wrapper) returns (nil, err). The warm factory used
+		// to discard that error, leaving a nil-backed wrapper that panics on
+		// the first sample. CountSketch rejects (unlike CMS, which clamps), so
+		// reject the misconfiguration at boot with a clear error instead.
+		// Uses the same effective dimensions newSketchAggregator does
+		// (csmDims defaults: 5 rows x 2048 cols).
+		if m.Family == FamilyCountSketch {
+			if err := validateCountSketchDims(i, m); err != nil {
+				return err
 			}
 		}
 	}

@@ -25,6 +25,12 @@ type PrecomputeStats struct {
 	DroppedOverflow atomic.Uint64
 	// DroppedLate counts observations dropped due to AllowedLateness.
 	DroppedLate atomic.Uint64
+	// DroppedSerialize counts closed-window series that failed to
+	// serialize into an emittable envelope at flush time (a Snapshot /
+	// ComputeDelta error, or a nil/empty payload). Without this counter
+	// the host-neutral runtime — which has no logger — would drop the
+	// series silently in finishRotate, making the loss unobservable.
+	DroppedSerialize atomic.Uint64
 	// LastTickMs is the wall-clock timestamp of the last Tick() call.
 	LastTickMs atomic.Uint64
 	// LastEmittedEnvelopes is the count returned by the most recent
@@ -48,6 +54,7 @@ type StatsSnapshot struct {
 	ActiveSeries         int64
 	DroppedOverflow      uint64
 	DroppedLate          uint64
+	DroppedSerialize     uint64
 	LastTickMs           uint64
 	LastEmittedEnvelopes uint64
 }
@@ -67,6 +74,7 @@ func (s *PrecomputeStats) Snapshot() StatsSnapshot {
 		ActiveSeries:         s.ActiveSeries.Load(),
 		DroppedOverflow:      s.DroppedOverflow.Load(),
 		DroppedLate:          s.DroppedLate.Load(),
+		DroppedSerialize:     s.DroppedSerialize.Load(),
 		LastTickMs:           s.LastTickMs.Load(),
 		LastEmittedEnvelopes: s.LastEmittedEnvelopes.Load(),
 	}
