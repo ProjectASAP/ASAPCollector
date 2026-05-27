@@ -33,14 +33,17 @@
 #   connectors.routing       — OTel v0.106 connector (NOT processor)
 #   exporters.otlp/backend   — backend:4317  (was gateway:4317 pre-#400)
 #
-#   service.pipelines:
+#   service.pipelines (R1: single shared cold-archive holds the only
+#   gorillas3; the routing connector fans every metric to BOTH its
+#   warm-tier path AND metrics/cold_archive):
 #     metrics:                     receivers:[otlp]    exporters:[routing]
-#     metrics/raw_passthrough:     receivers:[routing] processors:[gorillas3, batch]              exporters:[otlp/backend]
-#     metrics/ddsketch_path:       receivers:[routing] processors:[gorillas3, ddsketch, batch]    exporters:[otlp/backend]
-#     metrics/kll_path:            receivers:[routing] processors:[gorillas3, KLL, batch]         exporters:[otlp/backend]
-#     metrics/hll_path:            receivers:[routing] processors:[gorillas3, HLL, batch]         exporters:[otlp/backend]
-#     metrics/countsketch_path:    receivers:[routing] processors:[gorillas3, countsketch, batch] exporters:[otlp/backend]
-#     metrics/countminsketch_path: receivers:[routing] processors:[gorillas3, countmin, batch]    exporters:[otlp/backend]
+#     metrics/raw_passthrough:     receivers:[routing] processors:[memory_limiter, batch]              exporters:[otlp/backend]
+#     metrics/cold_archive:        receivers:[routing] processors:[memory_limiter, gorillas3, batch]   exporters:[otlp/backend]
+#     metrics/ddsketch_path:       receivers:[routing] processors:[memory_limiter, ddsketch, batch]    exporters:[otlp/backend]
+#     metrics/kll_path:            receivers:[routing] processors:[memory_limiter, KLL, batch]         exporters:[otlp/backend]
+#     metrics/hll_path:            receivers:[routing] processors:[memory_limiter, HLL, batch]         exporters:[otlp/backend]
+#     metrics/countsketch_path:    receivers:[routing] processors:[memory_limiter, countsketch, batch] exporters:[otlp/backend]
+#     metrics/countminsketch_path: receivers:[routing] processors:[memory_limiter, countmin, batch]    exporters:[otlp/backend]
 #
 # Processor key names match the IDs the patched contrib build's
 # `factory.go` registers — verified by `asap-otel components`:
@@ -176,10 +179,17 @@ processors:
       match_type: strict
 
   # ── Cold tier: Gorilla-S3 archive write ──────────────────────────────
-  # Runs FIRST in every per-family pipeline so the cold-tier write
-  # happens on raw samples BEFORE the sketch processor mutates / suffix-
-  # renames the stream. `drop_original: false` lets the raw metric pass
-  # through to the warm-tier sketch processor on each path.
+  # R1 (memory): there is now exactly ONE gorillas3 instance, carried by
+  # the dedicated `metrics/cold_archive` pipeline. The routing connector
+  # fans every metric to BOTH its warm-tier sketch/raw path AND
+  # cold_archive, so this single instance archives the raw samples for
+  # all six workload metrics (it sees the un-sketched stream because
+  # cold_archive has no sketch processor). This replaces the former six
+  # per-pipeline gorillas3 instances — the dominant agent-memory cost —
+  # with one, while preserving full raw cold coverage.
+  # `drop_original: false` is retained (harmless here: cold_archive only
+  # exports to the backend, and the raw stream reaching gorillas3 is
+  # never sketch-mutated).
   #
   # `block_format: prometheus_tsdb` + dedicated `asap-gorilla-tsdb`
   # bucket so the Thanos store-gateway sidecar in
@@ -314,12 +324,17 @@ connectors:
   # OTTL `route()` table mirrors the controller's canonical
   # `metric_to_family` map (see MVP §46 — five workload-spec metrics).
   # Any metric NOT matched here falls through to the default
-  # `metrics/raw_passthrough` pipeline, where the cold-tier write still
-  # happens and the raw counter lands at the gateway verbatim.
+  # `metrics/raw_passthrough` pipeline, where the raw counter lands at
+  # the gateway verbatim. The cold-tier write is no longer done on the
+  # matched/default pipeline itself — every entry ALSO fans to the
+  # shared `metrics/cold_archive` pipeline (R1), which holds the single
+  # gorillas3 that archives the raw samples for every metric.
   #
   # The freshness-probe metrics (warm/archive) explicitly route to
   # `metrics/raw_passthrough` so their metric NAME is preserved end-to-
-  # end (no sketch processor suffixes them).
+  # end (no sketch processor suffixes them); they also fan to
+  # cold_archive, matching their pre-R1 behaviour (raw_passthrough used
+  # to carry gorillas3, so the probes were archived before too).
   routing:
     # `context: metric` on each table entry — required so OTTL paths
     # resolve against the metric scope (where `name` is the metric
@@ -330,29 +345,38 @@ connectors:
     # `condition:` form is the per-entry OTTL boolean (mutually
     # exclusive with `statement:`); we use `condition:` so the
     # routing decision is a pure boolean dispatch on the metric name.
-    default_pipelines: [metrics/raw_passthrough]
+    # R1 (memory): every entry now fans to BOTH its sketch/raw path AND
+    # the single shared `metrics/cold_archive` pipeline. The routing
+    # connector supports multiple targets per table entry, so each metric
+    # is delivered to its warm-tier processor AND to the one gorillas3
+    # cold-tier archive. `default_pipelines` likewise includes
+    # cold_archive so unmatched metrics (e.g. http_requests_total) and the
+    # freshness probes are still raw-archived. This collapses the former
+    # six per-pipeline gorillas3 instances down to one while preserving
+    # full raw cold coverage for all six workload metrics.
+    default_pipelines: [metrics/raw_passthrough, metrics/cold_archive]
     table:
       - context: metric
         condition: 'name == "http_requests_total_latency_ms"'
-        pipelines: [metrics/ddsketch_path]
+        pipelines: [metrics/ddsketch_path, metrics/cold_archive]
       - context: metric
         condition: 'name == "request_size_bytes"'
-        pipelines: [metrics/kll_path]
+        pipelines: [metrics/kll_path, metrics/cold_archive]
       - context: metric
         condition: 'name == "unique_users_per_min"'
-        pipelines: [metrics/hll_path]
+        pipelines: [metrics/hll_path, metrics/cold_archive]
       - context: metric
         condition: 'name == "top_endpoint_qps"'
-        pipelines: [metrics/countsketch_path]
+        pipelines: [metrics/countsketch_path, metrics/cold_archive]
       - context: metric
         condition: 'name == "endpoint_request_freq"'
-        pipelines: [metrics/countminsketch_path]
+        pipelines: [metrics/countminsketch_path, metrics/cold_archive]
       - context: metric
         condition: 'name == "http_freshness_probe_warm"'
-        pipelines: [metrics/raw_passthrough]
+        pipelines: [metrics/raw_passthrough, metrics/cold_archive]
       - context: metric
         condition: 'name == "http_freshness_probe_archive"'
-        pipelines: [metrics/raw_passthrough]
+        pipelines: [metrics/raw_passthrough, metrics/cold_archive]
 
 exporters:
   otlp/backend:
@@ -383,43 +407,91 @@ service:
       processors: [cumulativetodelta]
       exporters: [routing]
 
-    # Default raw-passthrough — memory_limiter then gorillas3 then
-    # batch. NO sketch processor; raw counters land at the gateway
-    # verbatim. Also the destination of warm/archive freshness probes
-    # (their metric name is preserved end-to-end). memory_limiter MUST
-    # come first so backpressure rejects incoming batches BEFORE
-    # gorillas3 buffers them into windowState.
+    # Default raw-passthrough — memory_limiter then batch. NO sketch
+    # processor and (post-R1) NO gorillas3; raw counters land at the
+    # gateway verbatim. Also the destination of warm/archive freshness
+    # probes (their metric name is preserved end-to-end). The cold-tier
+    # archive write for these metrics now happens on the shared
+    # metrics/cold_archive pipeline that the routing connector also fans
+    # them to.
     metrics/raw_passthrough:
+      receivers: [routing]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/backend]
+
+    # ── R1: single shared cold-tier archive pipeline ──────────────────
+    #
+    # Holds the ONE gorillas3 instance. The routing connector fans EVERY
+    # metric (all 5 sketch metrics, the unmatched default like
+    # http_requests_total, and both freshness probes) to this pipeline
+    # IN ADDITION to its warm-tier path, so gorillas3 here receives the
+    # raw, un-sketched samples for all six workload metrics and writes
+    # the cold-tier TSDB blocks to MinIO. This is what the accuracy
+    # harness reads as ground truth via X-ASAP-Engine: thanos_archive.
+    # memory_limiter is first (backpressure before gorillas3 buffers
+    # into windowState); batch coalesces the archive-side output.
+    metrics/cold_archive:
       receivers: [routing]
       processors: [memory_limiter, gorillas3, batch]
       exporters: [otlp/backend]
 
-    # Per-family pipelines. Each starts with memory_limiter (drop /
-    # refuse on heap pressure) then gorillas3 (cold-tier write on raw
-    # samples) BEFORE the sketch processor mutates the stream.
+    # ── R1 (memory tuning) — shared single cold-archive, APPLIED ───────
+    #
+    # The former 6 gorillas3 instances (one per routed pipeline) were the
+    # dominant agent-memory cost (drove ~100%-of-cap RSS even at low
+    # cardinality). They are now collapsed to ONE shared gorillas3 on the
+    # dedicated metrics/cold_archive pipeline (declared above).
+    #
+    # The previously-rejected naive approach was to keep gorillas3 only on
+    # metrics/raw_passthrough — UNSAFE, because the routing connector
+    # routes EXCLUSIVELY: a metric matched by a table entry goes ONLY to
+    # that entry's pipeline, never also to the default. So the 5 sketch
+    # metrics would never reach raw_passthrough's gorillas3 and would stop
+    # being archived.
+    #
+    # The SAFE consolidation applied here uses the routing connector's
+    # MULTI-TARGET support: each table entry (and default_pipelines) now
+    # fans the metric to BOTH its warm-tier sketch/raw path AND
+    # metrics/cold_archive. The single gorillas3 therefore receives the
+    # raw samples for ALL six workload metrics
+    # (http_requests_total_latency_ms, request_size_bytes,
+    #  unique_users_per_min, top_endpoint_qps, endpoint_request_freq, and
+    #  the unmatched http_requests_total), preserving the cold ground
+    # truth.
+    #
+    # Why the ground truth still holds: the accuracy phase (run_mvp_demo.sh
+    # measure_phase → accuracy_reduce.py) re-issues EVERY replay query with
+    # `X-ASAP-Engine: thanos_archive`, reading the TSDB blocks gorillas3
+    # wrote to MinIO. Since every metric is fanned to cold_archive, every
+    # metric's raw samples still land in the archive → no archive_miss →
+    # criterion ④ (warm-sketch-vs-exact accuracy comparison) is preserved.
+    #
+    # Per-family pipelines. Each starts with memory_limiter (drop / refuse
+    # on heap pressure) then its sketch processor. They NO LONGER carry
+    # gorillas3 — the cold-tier write is done once on cold_archive.
     metrics/ddsketch_path:
       receivers: [routing]
-      processors: [memory_limiter, gorillas3, ddsketch, batch]
+      processors: [memory_limiter, ddsketch, batch]
       exporters: [otlp/backend]
 
     metrics/kll_path:
       receivers: [routing]
-      processors: [memory_limiter, gorillas3, KLL, batch]
+      processors: [memory_limiter, KLL, batch]
       exporters: [otlp/backend]
 
     metrics/hll_path:
       receivers: [routing]
-      processors: [memory_limiter, gorillas3, HLL, batch]
+      processors: [memory_limiter, HLL, batch]
       exporters: [otlp/backend]
 
     metrics/countsketch_path:
       receivers: [routing]
-      processors: [memory_limiter, gorillas3, countsketch, batch]
+      processors: [memory_limiter, countsketch, batch]
       exporters: [otlp/backend]
 
     metrics/countminsketch_path:
       receivers: [routing]
-      processors: [memory_limiter, gorillas3, countmin, batch]
+      processors: [memory_limiter, countmin, batch]
       exporters: [otlp/backend]
 
   telemetry:
