@@ -181,6 +181,44 @@ func (c *SnapshotCache) ComputeDelta(
 	return payload, isFull, nil
 }
 
+// RetainKeys prunes the cache down to ONLY the keys present in retain,
+// deleting every outbound/inbound entry whose key is not in the set.
+//
+// Without this the outbound/inbound maps only ever grow: with delta
+// transmission every series key ever observed retains a snapshot copy
+// forever, even after the series vanishes, pinning agent memory for the
+// process lifetime (MaxSeries bounds only the live window map, not the
+// cache). finishRotate calls this after each window-close emit with the
+// just-closed window's key set, so a series that did not reappear this
+// window has its cached snapshots evicted.
+//
+// A nil/empty retain set is treated as "keep nothing" and clears both
+// maps — callers that mean "no series this window" want the cache empty.
+func (c *SnapshotCache) RetainKeys(retain map[string]struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.outbound {
+		if _, keep := retain[k]; !keep {
+			delete(c.outbound, k)
+		}
+	}
+	for k := range c.inbound {
+		if _, keep := retain[k]; !keep {
+			delete(c.inbound, k)
+		}
+	}
+}
+
+// Delete removes a single series key's cached outbound and inbound
+// snapshots. Used when a series is explicitly evicted; a no-op when the
+// key is absent.
+func (c *SnapshotCache) Delete(seriesKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.outbound, seriesKey)
+	delete(c.inbound, seriesKey)
+}
+
 // Reset clears all cached state (used in tests and on shutdown).
 func (c *SnapshotCache) Reset() {
 	c.mu.Lock()

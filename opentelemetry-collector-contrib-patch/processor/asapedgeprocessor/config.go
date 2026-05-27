@@ -263,6 +263,21 @@ type Config struct {
 	// WindowDuration is the warm-tier (sum/sketch) flush cadence.
 	WindowDuration time.Duration `mapstructure:"window_duration"`
 
+	// WarmAllowedLateness is the warm-window late-data grace: a sample whose
+	// event timestamp is older than the active window's aligned start by more
+	// than this is dropped as late (precompute ErrLateData). It is the WARM
+	// tier's own knob, DECOUPLED from cold.reorder_grace.
+	//
+	// Why a separate knob (P1-1): the warm window is WindowDuration wide
+	// (default 60s), but cold.reorder_grace defaults to ~2s. Threading the
+	// 2s cold grace into the 60s warm window dropped any sample whose
+	// event-time was >2s older than the window's aligned start — i.e. most
+	// processing-delayed-but-in-window samples — even though they belong in
+	// the 60s window. Defaulting this to WindowDuration (set in Validate when
+	// unset) makes the warm window accept anything that actually falls within
+	// it. Set a smaller value to tighten warm lateness independently of cold.
+	WarmAllowedLateness time.Duration `mapstructure:"warm_allowed_lateness"`
+
 	// Metrics maps metric names to their warm aggregation family.
 	Metrics []MetricFamily `mapstructure:"metrics"`
 

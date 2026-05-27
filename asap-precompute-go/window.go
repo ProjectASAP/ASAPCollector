@@ -37,6 +37,21 @@ type seriesEntry struct {
 	// SketchEnvelope.Count at flush time so the OTel adapter can
 	// set dp.SetCount().
 	Count uint64
+
+	// deltaWindowStartMs / deltaWindowEndMs record the [start,end) range
+	// of the inbound delta envelope most recently applied to this entry's
+	// sketch (zero when no delta has been applied — e.g. scalar-fed or
+	// full-state-merged entries). observeEnvelope uses them to detect a
+	// NEW upstream window arriving for the same series-key in one consumer
+	// window: under the per-window-reset (PWR) model each delta is that
+	// window's own state against empty, so folding a second window's delta
+	// onto the first would over-count additive families (CMS/CountSketch).
+	// When the range differs the sketch is reset to empty before applying
+	// the new delta, enforcing the one-delta-per-series-per-window
+	// invariant. Same-range re-delivery (an idempotent retransmit) keeps
+	// the existing additive merge.
+	deltaWindowStartMs uint64
+	deltaWindowEndMs   uint64
 }
 
 // windowState is the per-Precompute window manager. It supports
@@ -399,9 +414,25 @@ func (w *windowState) observeEnvelope(
 		// against empty, and the runtime already starts each window with
 		// a fresh per-series sketch, so the apply reconstructs the
 		// window's state.
+		//
+		// Double-count guard (P0-3): a delta encodes one upstream
+		// window's full state against empty. If a SECOND envelope for the
+		// SAME series-key but a DIFFERENT window range arrives before this
+		// consumer window rotates, folding its delta onto the first would
+		// over-count additive families (CMS/CountSketch). Reset the
+		// per-series sketch to empty first so each distinct upstream
+		// window replaces rather than accumulates. A same-range
+		// re-delivery (idempotent retransmit) is left to merge as before.
+		envStart, envEnd := env.WindowStartMs, env.WindowEndMs
+		if entry.deltaWindowEndMs != 0 &&
+			(entry.deltaWindowStartMs != envStart || entry.deltaWindowEndMs != envEnd) {
+			entry.Sketch.Reset()
+		}
 		if err := entry.Sketch.ApplyDelta(env.Payload); err != nil {
 			return fmt.Errorf("apply delta: %w", err)
 		}
+		entry.deltaWindowStartMs = envStart
+		entry.deltaWindowEndMs = envEnd
 		// Reconstruct the new full snapshot for cached inbound use.
 		snap, snapErr := entry.Sketch.Snapshot()
 		if snapErr == nil && snapshotCache != nil {

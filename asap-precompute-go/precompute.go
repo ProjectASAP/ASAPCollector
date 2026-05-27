@@ -451,14 +451,30 @@ func (p *precompute) finishRotate(closed []*seriesEntry, rng [2]uint64, nowMs ui
 	cfg := p.activeConfig()
 	sink := p.sketchSink.Load()
 	envelopes := make([]*SketchEnvelope, 0, len(closed))
+	// closedKeys collects every series key in the just-closed window so the
+	// snapshot cache can prune entries for keys that did NOT reappear this
+	// window (P1-2: the outbound/inbound maps would otherwise grow forever,
+	// retaining a snapshot copy for every series key ever seen). Built only
+	// when the delta path is active (the only consumer of the cache) and a
+	// cache is present.
+	var closedKeys map[string]struct{}
+	if cfg != nil && cfg.DeltaTransmission && p.snapshotCache != nil {
+		closedKeys = make(map[string]struct{}, len(closed))
+	}
 	for _, entry := range closed {
+		if closedKeys != nil && entry != nil {
+			closedKeys[cfg.SeriesKeyForEntry(entry.ResourceLabels, entry.Labels)] = struct{}{}
+		}
 		env, err := p.serializeSeries(entry, cfg, rng)
 		if err == nil && env != nil {
 			envelopes = append(envelopes, env)
+		} else {
+			// On err (or a nil/empty payload) we skip the envelope but
+			// still recycle the sketch. The host-neutral runtime has no
+			// logger, so bump DroppedSerialize to keep the loss observable
+			// (P0-2) instead of dropping the series silently.
+			p.stats.DroppedSerialize.Add(1)
 		}
-		// On err we skip the envelope (best-effort: host-neutral
-		// runtime has no logger) but still recycle the sketch.
-		//
 		// The entry is detached from the live window (rotateLocked
 		// replaced the map), so once its envelope is serialized
 		// nothing else references the sketch — hand it to the pool.
@@ -466,6 +482,13 @@ func (p *precompute) finishRotate(closed []*seriesEntry, rng [2]uint64, nowMs ui
 			(*sink)(entry.Sketch)
 			entry.Sketch = nil
 		}
+	}
+	// Prune the snapshot cache to only the keys present in the just-closed
+	// window. A series that vanished (never observed again this window) no
+	// longer needs its cached outbound/inbound snapshot, and keeping it
+	// would pin agent memory for the lifetime of the process (P1-2).
+	if closedKeys != nil {
+		p.snapshotCache.RetainKeys(closedKeys)
 	}
 	p.stats.OutputEnvelopes.Add(uint64(len(envelopes)))
 	// LastEmittedEnvelopes is a snapshot (not a running total) of the
@@ -552,6 +575,16 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 			KeyValue{Key: "window_duration_seconds", Value: strconv.FormatUint(windowSeconds, 10)},
 		)
 	}
+	// AggregationTemporality is stamped straight from cfg.Temporality.
+	// Temporality note: the warm runtime accumulates each window's
+	// observations into a fresh per-series sketch (the window map is
+	// replaced on every rotate), so each emitted envelope describes only
+	// THIS window's contribution. That is delta semantics — additive
+	// families (Sum / CMS / CountSketch) consume per-window deltas and the
+	// backend re-aggregates across windows. Configs that feed such a
+	// family therefore set cfg.Temporality = AGGREGATION_TEMPORALITY_DELTA
+	// (see the asap_edge warm factory). A cumulative source must be
+	// pre-deltaed upstream; the runtime never converts temporality itself.
 	return &SketchEnvelope{
 		SchemaVersion:          1,
 		SketchType:             cfg.SketchType,
@@ -630,10 +663,9 @@ func (p *precompute) Shutdown(ctx context.Context) error {
 	if !p.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	// Best-effort final tick to drain any in-flight window. Use
-	// the deadline if present to bound work.
-	deadline, ok := ctx.Deadline()
-	_ = deadline
-	_ = ok
+	// Shutdown only flips the closed flag (above) so subsequent Observe
+	// calls fail fast; the shim's Shutdown path runs its own final
+	// Drain/Tick to flush in-flight state. We simply propagate any
+	// context cancellation/deadline error to the caller.
 	return ctx.Err()
 }

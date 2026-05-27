@@ -115,6 +115,13 @@ func NewCountSketchWithHeapWrapper(rows, cols, heapSize int) (*CountSketchWrappe
 // call. Adapters that route a key/count pair (rather than an
 // ObservationValue) call this directly.
 func (w *CountSketchWrapper) UpdateString(key string, count float64) {
+	// Nil guard: a wrapper whose constructor failed (e.g. dimensions
+	// exceeding the 64-bit row-hash budget) can be left with cs == nil if
+	// a caller discarded the constructor error. Skip the update rather
+	// than panic on the first sample (P0-1).
+	if w == nil || w.cs == nil {
+		return
+	}
 	w.cs.UpdateString(key, count)
 }
 
@@ -125,7 +132,10 @@ func (w *CountSketchWrapper) UpdateString(key string, count float64) {
 // reads via CountMinSketchWithHeap::from_msgpack (carrying the count
 // matrix + top-k heap), which the emit path tags EncodingMsgpack.
 func (w *CountSketchWrapper) Snapshot() ([]byte, error) {
-	if w.cs == nil {
+	// Nil guard (P0-1): a wrapper left with cs == nil (constructor error
+	// discarded by a caller) returns an empty snapshot rather than
+	// panicking; the runtime treats a nil payload as "skip this series".
+	if w == nil || w.cs == nil {
 		return nil, nil
 	}
 	if w.heapMsgpack {
@@ -308,9 +318,12 @@ func (w *CountSketchWrapper) Merge(other precompute.Sketch) error {
 // Reset zeros the sketch in place, preserving (rows, cols). Mirrors
 // the legacy windowSketchPool path's `ws.cs.Reset()` call.
 func (w *CountSketchWrapper) Reset() {
-	if w.cs != nil {
-		w.cs.Reset()
+	// Nil guard (P0-1): tolerate a wrapper whose cs is nil (discarded
+	// constructor error) so window rotation / pool recycle never panics.
+	if w == nil || w.cs == nil {
+		return
 	}
+	w.cs.Reset()
 }
 
 // EstimateCount implements precompute.FrequencySketch. The key is

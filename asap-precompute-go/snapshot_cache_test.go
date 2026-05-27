@@ -211,3 +211,60 @@ func TestSnapshotCache_NilSketchReturnsError(t *testing.T) {
 		t.Fatal("nil sketch: want error")
 	}
 }
+
+// TestSnapshotCache_RetainKeys verifies the P1-2 prune: keys NOT in the retain
+// set are evicted from BOTH outbound and inbound maps; retained keys survive.
+func TestSnapshotCache_RetainKeys(t *testing.T) {
+	t.Parallel()
+	c := NewSnapshotCache()
+	c.CacheOutbound("keep", []byte("o1"))
+	c.CacheOutbound("drop", []byte("o2"))
+	c.CacheInbound("keep", []byte("i1"))
+	c.CacheInbound("gone", []byte("i2"))
+	if c.LenOutbound() != 2 || c.LenInbound() != 2 {
+		t.Fatalf("pre: out=%d in=%d", c.LenOutbound(), c.LenInbound())
+	}
+
+	c.RetainKeys(map[string]struct{}{"keep": {}})
+
+	if c.LenOutbound() != 1 || c.LenInbound() != 1 {
+		t.Fatalf("post: out=%d in=%d, want 1/1", c.LenOutbound(), c.LenInbound())
+	}
+	if c.GetOutbound("keep") == nil {
+		t.Error("retained outbound key was evicted")
+	}
+	if c.GetOutbound("drop") != nil {
+		t.Error("vanished outbound key was NOT evicted")
+	}
+	if c.GetInbound("keep") == nil {
+		t.Error("retained inbound key was evicted")
+	}
+	if c.GetInbound("gone") != nil {
+		t.Error("vanished inbound key was NOT evicted")
+	}
+
+	// An empty retain set clears everything.
+	c.RetainKeys(map[string]struct{}{})
+	if c.LenOutbound() != 0 || c.LenInbound() != 0 {
+		t.Fatalf("empty retain: out=%d in=%d, want 0/0", c.LenOutbound(), c.LenInbound())
+	}
+}
+
+// TestSnapshotCache_Delete verifies single-key eviction from both maps.
+func TestSnapshotCache_Delete(t *testing.T) {
+	t.Parallel()
+	c := NewSnapshotCache()
+	c.CacheOutbound("k", []byte("o"))
+	c.CacheInbound("k", []byte("i"))
+	c.CacheOutbound("other", []byte("x"))
+
+	c.Delete("k")
+	if c.GetOutbound("k") != nil || c.GetInbound("k") != nil {
+		t.Error("Delete did not evict both outbound and inbound for k")
+	}
+	if c.GetOutbound("other") == nil {
+		t.Error("Delete evicted an unrelated key")
+	}
+	// Deleting an absent key is a no-op.
+	c.Delete("absent")
+}
