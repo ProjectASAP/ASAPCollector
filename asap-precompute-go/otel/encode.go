@@ -208,10 +208,40 @@ func hostNeutralToHLLSketchEncoding(e precompute.Encoding) pmetric.HLLSketchEnco
 	return pmetric.HLLSketchEncodingProto
 }
 
+// hostNeutralToCountSketchEncoding maps precompute.Encoding back to the
+// OTel-typed CountSketch encoding enum. Note the proto-delta variant is
+// spelled CountSketchEncodingDelta (not ...ProtoDelta) in the generated
+// pmetric code. This mirrors hostNeutralToDDSketchEncoding above and
+// agrees with the standalone countsketchprocessor's
+// hostNeutralToTypedEncoding so the re-stamp in stampDPMetadata is a
+// no-op when both run on the same payload.
 func hostNeutralToCountSketchEncoding(e precompute.Encoding) pmetric.CountSketchEncoding {
+	switch e {
+	case precompute.EncodingProtoFull:
+		return pmetric.CountSketchEncodingProto
+	case precompute.EncodingProtoDelta:
+		return pmetric.CountSketchEncodingDelta
+	case precompute.EncodingMsgpack:
+		return pmetric.CountSketchEncodingMsgpack
+	case precompute.EncodingMsgpackDelta:
+		return pmetric.CountSketchEncodingMsgpackDelta
+	}
 	return pmetric.CountSketchEncodingProto
 }
 
+// hostNeutralToCountMinSketchEncoding maps precompute.Encoding back to the
+// OTel-typed CountMinSketch encoding enum. The proto-delta variant is
+// spelled CountMinSketchEncodingDelta in the generated pmetric code.
 func hostNeutralToCountMinSketchEncoding(e precompute.Encoding) pmetric.CountMinSketchEncoding {
+	switch e {
+	case precompute.EncodingProtoFull:
+		return pmetric.CountMinSketchEncodingProto
+	case precompute.EncodingProtoDelta:
+		return pmetric.CountMinSketchEncodingDelta
+	case precompute.EncodingMsgpack:
+		return pmetric.CountMinSketchEncodingMsgpack
+	case precompute.EncodingMsgpackDelta:
+		return pmetric.CountMinSketchEncodingMsgpackDelta
+	}
 	return pmetric.CountMinSketchEncodingProto
 }

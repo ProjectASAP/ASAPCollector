@@ -497,7 +497,17 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 		if err != nil {
 			return nil, fmt.Errorf("compute delta: %w", err)
 		}
-		if isFull {
+		// In msgpack mode (the heap-bearing CountSketch) the wire form is
+		// the DELTA-HEAP msgpack frame: a full MSGPACK frame on the first
+		// window / forced-full path, and a MSGPACK_DELTA frame otherwise.
+		// Every other sketch keeps the proto full/delta tag pair.
+		if cfg.Encoding == EncodingMsgpack {
+			if isFull {
+				enc = EncodingMsgpack
+			} else {
+				enc = EncodingMsgpackDelta
+			}
+		} else if isFull {
 			enc = EncodingProtoFull
 		} else {
 			enc = EncodingProtoDelta
@@ -507,7 +517,17 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 		if err != nil {
 			return nil, fmt.Errorf("snapshot: %w", err)
 		}
-		enc = EncodingProtoFull
+		// The full-state encoding tag follows cfg.Encoding so a sketch
+		// whose Snapshot() emits a msgpack full state (e.g. the
+		// heap-bearing CountSketch, whose msgpack carries the top-k heap
+		// the backend needs to promote the sid to FrequencyTopk) is
+		// tagged MSGPACK rather than mislabeled PROTO_FULL. Default
+		// (PROTO_FULL) is unchanged for every proto-snapshot sketch.
+		if cfg.Encoding == EncodingMsgpack {
+			enc = EncodingMsgpack
+		} else {
+			enc = EncodingProtoFull
+		}
 		// Even without delta transmission, refreshing the cached
 		// outbound snapshot keeps the cache consistent for any
 		// later config change that flips DeltaTransmission to true.

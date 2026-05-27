@@ -66,6 +66,11 @@ const (
 	// EncodingMsgpack means Payload is a msgpack-encoded full state
 	// (some sketches expose msgpack as a faster wire format).
 	EncodingMsgpack
+	// EncodingMsgpackDelta means Payload is a msgpack-encoded sparse
+	// delta (the DELTA-HEAP wire form for the heap-bearing CountSketch:
+	// a sparse signed matrix delta plus the full top-k heap, applied
+	// against the receiver's per-window-rotated base).
+	EncodingMsgpackDelta
 )
 
 // String returns the canonical encoding name.
@@ -77,6 +82,8 @@ func (e Encoding) String() string {
 		return "PROTO_DELTA"
 	case EncodingMsgpack:
 		return "MSGPACK"
+	case EncodingMsgpackDelta:
+		return "MSGPACK_DELTA"
 	}
 	return "UNSPECIFIED"
 }
