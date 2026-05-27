@@ -136,26 +136,26 @@ S3 blocks. The merger ships its own blocks to S3 and drops the local copy once
 shipped, so there is no double-count across the boundary. The merger's
 distinguishing external label is `cluster=asap-mvp,merger=m1`.
 
-**NOT yet wired (#24 — edge cold-ship to the merger):** the merger's HTTP
-ingest expects `asap-gorilla-go` `ASAPFRG1` fragment batches, but **no edge
-agent path produces an HTTP fragment ship today.** The current edge cold tier
-is the `gorillas3` OTel processor (see
-`configs/asap/asap-otel-agent-b6-asap-single-sketch.yaml`), which writes
-Prometheus TSDB blocks **directly** to MinIO (`block_format: prometheus_tsdb`,
-`tsdb_bucket: asap-gorilla-tsdb`) — there is **no `cold.ship_endpoint` config
-key** anywhere in this repo, and the `gorillas3processor` Config struct exposes
-no HTTP-ship endpoint (its `agent` role emits fragment *metrics* downstream
-through the OTel pipeline, it does not POST them over HTTP). So the
-merger ingest port currently has no producer in the multinode deploy.
+**Edge cold-ship to the merger (#24):** the merger's HTTP ingest expects
+`asap-gorilla-go` `ASAPFRG1` fragment batches. The current edge cold tier is the
+FUSED `asap_edge` processor's `cold:` block (see
+`configs/asap/asap-otel-agent-asapedge.yaml`), which Gorilla-XOR-encodes raw
+samples into `ASAPFRG1` fragment batches and SHIPS them over HTTP to
+`cold.ship_endpoint: http://gorilla-merger:10908/ingest/gorilla` — the edge does
+no direct-to-S3 PUT; the merger builds the TSDB block + index and cuts the window
+block to MinIO's `asap-gorilla-tsdb` bucket. (This supersedes the old `gorillas3`
+OTel processor, which wrote Prometheus TSDB blocks directly to MinIO and had no
+HTTP-ship endpoint — that path, and the old per-sketch routing-connector agent
+config `asap-otel-agent-b6-asap-single-sketch.yaml`, are retired.)
 
-To close #24, one of the following has to land first (out of scope here):
-1. an OTel exporter that serializes the `agent`-role gorillas3 fragment stream
-   into `ASAPFRG1` batches and POSTs them to `http://gorilla-merger:10908/ingest/gorilla`
-   (gzip optional), replacing the direct-to-S3 `gorillas3` TSDB write; or
-2. a `gateway_fragment`-role gorillas3 sidecar that the agents ship fragments
-   to over OTLP, which then re-POSTs to the merger.
+The fused agent config is delivered to the supervised agent as an OpAMP
+RemoteConfig PUSH from the control plane (run_demo starts it with
+`ASAP_EDGE_FUSED=1`, gating the controller's `emit_edge_yaml_asap_edge` emitter);
+`configs/asap/asap-otel-agent-asapedge.yaml` is the static reference/bootstrap
+shape mirroring that emit. The optional `cold.format: intchunk` +
+`coldpart_endpoint` opt-in re-encodes the same drained samples as a lossless
+intchunk cold-part POSTed to `/ingest/coldpart` instead.
 
-Until then, the merger container + StoreAPI fan-out are live and queryable, but
-ingest is exercised only by a manual `POST /ingest/gorilla` (the merger's own
-unit tests cover the wire path). End-to-end edge→merger→query validation is
-blocked on the producer side, NOT the merger or query side.
+End-to-end edge→merger→query validation against a live stack is the
+orchestrator's job (the asap_edge binary actually loading + emitting queryable
+sketches cannot be confirmed statically from the config alone).

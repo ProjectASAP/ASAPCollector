@@ -187,3 +187,75 @@ func TestCountSketchObserver(t *testing.T) {
 		t.Fatal("expected error for unsupported kind")
 	}
 }
+
+// TestCountSketchWithHeapWrapper_PWRDeltaRoundTrips drives the DELTA-HEAP
+// path through the precompute.SnapshotCache: window 1 emits a full
+// heap-msgpack frame (isFull); window 2 — a fresh per-window heap sketch —
+// emits a DELTA-HEAP frame computed against the empty base cached at
+// window-1 close. Applying that delta to an EMPTY heap wrapper reconstructs
+// window 2's own state (estimate + heap rank), proving PWR with no
+// cross-window subtraction.
+func TestCountSketchWithHeapWrapper_PWRDeltaRoundTrips(t *testing.T) {
+	t.Parallel()
+	const rows, cols, heapSize = 5, 1024, 20
+	c := precompute.NewSnapshotCache()
+
+	w1, err := NewCountSketchWithHeapWrapper(rows, cols, heapSize)
+	if err != nil {
+		t.Fatalf("w1: %v", err)
+	}
+	for i := 0; i < 300; i++ {
+		w1.UpdateString("/checkout", 1)
+	}
+	if _, isFull, err := c.ComputeDelta("series", w1, 1); err != nil || !isFull {
+		t.Fatalf("w1: full=%v err=%v", isFull, err)
+	}
+
+	w2, err := NewCountSketchWithHeapWrapper(rows, cols, heapSize)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		w2.UpdateString("/checkout", 1)
+	}
+	for i := 0; i < 20; i++ {
+		w2.UpdateString("/cart", 1)
+	}
+	payload, isFull, err := c.ComputeDelta("series", w2, 1)
+	if err != nil {
+		t.Fatalf("w2: %v", err)
+	}
+	if isFull {
+		t.Fatal("window 2 must emit a DELTA-HEAP frame, not a full frame")
+	}
+	if len(payload) == 0 {
+		t.Fatal("window 2 delta payload empty")
+	}
+
+	// Reconstruct from EMPTY (the backend rotates its base to empty per
+	// window under PWR).
+	recon, err := NewCountSketchWithHeapWrapper(rows, cols, heapSize)
+	if err != nil {
+		t.Fatalf("recon: %v", err)
+	}
+	if err := recon.ApplyDelta(payload); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	got := recon.EstimateCount([]byte("/checkout"))
+	want := w2.EstimateCount([]byte("/checkout"))
+	if got != want {
+		t.Fatalf("/checkout estimate: got %f want %f", got, want)
+	}
+	// Window-2 mass only — no leakage of window-1's 300.
+	if got > 100 {
+		t.Fatalf("window-2 /checkout leaked window-1 mass: got %f", got)
+	}
+	// Heap ranks /checkout above /cart.
+	top := recon.TopK(heapSize)
+	if len(top) < 2 {
+		t.Fatalf("reconstructed top-k has %d items, want >=2", len(top))
+	}
+	if string(top[0].Key) != "/checkout" {
+		t.Fatalf("top-1 key: got %q want /checkout", string(top[0].Key))
+	}
+}

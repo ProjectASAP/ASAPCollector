@@ -244,6 +244,26 @@ func encodingToLegacyString(enc pmetric.CountMinSketchEncoding) string {
 	return "unknown"
 }
 
+// sampleCountFromPayload reconstructs the per-DP sample count from the
+// serialized CountMin sketch payload. Refactor-2026-05 removed the
+// per-DP sample_count field; the count is recoverable from the sketch
+// itself: for an unweighted CountMin every row observes all N insertions,
+// so the L1 norm of any single row (here the sum of row 0's counters)
+// equals the sample count. Returns 0 for payloads that aren't a full
+// CountMin state (e.g. proto_delta), which the sample_count assertions
+// never read.
+func sampleCountFromPayload(payload []byte) int64 {
+	sketch, err := cms.DeserializeCountMinSketchFromProtoBytes(payload)
+	if err != nil || sketch == nil || sketch.Rows == 0 || len(sketch.Count) == 0 {
+		return 0
+	}
+	var total float64
+	for _, c := range sketch.Count[0] {
+		total += c
+	}
+	return int64(total)
+}
+
 // getAllDataPoints walks the output metrics and returns a flat slice of
 // test adapters, one per sketch data point (typed or legacy Gauge). When
 // the input metric is a typed `CountMinSketch`, its fields (sketch bytes,
@@ -261,7 +281,8 @@ func getAllDataPoints(md pmetric.Metrics) []cmsTestDataPoint {
 				m := ms.At(k)
 				switch m.Type() {
 				case pmetric.MetricTypeCountMinSketch:
-					pts := m.CountMinSketch().DataPoints()
+					parent := m.CountMinSketch()
+					pts := parent.DataPoints()
 					for l := 0; l < pts.Len(); l++ {
 						dp := pts.At(l)
 						attrs := pcommon.NewMap()
@@ -269,11 +290,18 @@ func getAllDataPoints(md pmetric.Metrics) []cmsTestDataPoint {
 						// Inject the typed-DP fields under their
 						// legacy attribute names so existing tests
 						// keep working.
+						//
+						// Refactor-2026-05: rows/cols moved off the DP onto
+						// the parent CountMinSketch container (sent once per
+						// emit), and per-DP sample_count was removed entirely
+						// (recoverable from the sketch payload). We reconstruct
+						// all three from the new API here so the legacy-keyed
+						// assertions stay meaningful.
 						attrs.PutEmptyBytes("sketch_payload").FromRaw(dp.Sketch())
 						attrs.PutStr("encoding", encodingToLegacyString(dp.Encoding()))
-						attrs.PutInt("sample_count", int64(dp.SampleCount()))
-						attrs.PutInt("rows", int64(dp.Rows()))
-						attrs.PutInt("cols", int64(dp.Cols()))
+						attrs.PutInt("rows", int64(parent.Rows()))
+						attrs.PutInt("cols", int64(parent.Cols()))
+						attrs.PutInt("sample_count", sampleCountFromPayload(dp.Sketch()))
 						dps = append(dps, cmsTestDataPoint{attributes: attrs})
 					}
 				case pmetric.MetricTypeGauge:
@@ -629,10 +657,14 @@ func TestRoundTripIngestProtoSketch(t *testing.T) {
 	sm := rm.ScopeMetrics().AppendEmpty()
 	metric := sm.Metrics().AppendEmpty()
 	metric.SetName("cms_roundtrip")
-	in := metric.SetEmptyCountMinSketch().DataPoints().AppendEmpty()
-	in.SetSampleCount(uint64(numInserts))
-	in.SetRows(int32(cfg.Rows))
-	in.SetCols(int32(cfg.Columns))
+	// Refactor-2026-05: rows/cols moved onto the parent CountMinSketch
+	// container (sent once per emit) and per-DP sample_count was removed
+	// (recoverable from the payload). The sketch bytes still carry the
+	// dimensions, which is what the decode path reads.
+	parent := metric.SetEmptyCountMinSketch()
+	parent.SetRows(int32(cfg.Rows))
+	parent.SetCols(int32(cfg.Columns))
+	in := parent.DataPoints().AppendEmpty()
 	in.SetSketch(payload)
 	in.SetEncoding(pmetric.CountMinSketchEncodingProto)
 

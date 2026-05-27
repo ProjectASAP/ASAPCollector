@@ -1,0 +1,251 @@
+# Agent config — FUSED asap_edge edge processor (mvp-multinode `asap` arm).
+#
+# ── What this is ──────────────────────────────────────────────────────
+#
+# The single-pipeline FUSED edge shape: ONE `asap_edge` processor does the
+# cold gorilla archive, the Sum-by-zone aggregation, and ALL five sketch
+# families in a single sharded decode pass:
+#
+#   otlp → memory_limiter → cumulativetodelta → asap_edge → otlp/backend
+#
+# This SUPERSEDES the old per-sketch routing-connector shape (one
+# routing connector fanning into 6 per-family pipelines, each running a
+# standalone ddsketch/KLL/HLL/countsketch/countminsketch + gorillas3 cold
+# processor). The fused processor decodes + keys each data point ONCE and
+# feeds both the cold encoder and the warm aggregators, key-hash-shards for
+# multi-core ingestion, and emits the SAME zone-keyed delta Sum + per-family
+# sketch envelopes the backend ingests.
+#
+# ── How it is delivered to the agent ──────────────────────────────────
+#
+# In the `asap` / `asap-gzip` arms the agent runs the opamp-supervisor,
+# which receives this pipeline as an OpAMP RemoteConfig PUSH from the
+# control plane (run_demo.sh starts the control plane with
+# `ASAP_EDGE_FUSED=1`, gating the controller's
+# `emit_edge_yaml_asap_edge` emitter — see
+# ASAPQuery-backend/control_plane/src/emit/stage_config.rs). This file is
+# the STATIC reference / bootstrap shape that mirrors that controller
+# emit: it is what the agent runs if the OpAMP push has not yet landed,
+# and it documents the exact `asap_edge` config the fused agent expects.
+#
+# Because the supervisor injects its OWN `opamp` extension into the merged
+# collector config, this file carries NO `opamp` extension and NO
+# `service.extensions: [opamp]` (a remote-config opamp block merged last
+# would clobber the supervisor's local channel and make the collector phone
+# the controller directly — see supervisor.yaml + the run_demo agents_up
+# comment).
+#
+# ── Schema source of truth ────────────────────────────────────────────
+#
+# Every key under `processors.asap_edge` maps 1:1 to a field in the patched
+# contrib build's asapedgeprocessor `Config` / `MetricFamily` / `ColdConfig`
+# / `ControlChannelConfig` structs
+# (opentelemetry-collector-contrib-patch/processor/asapedgeprocessor/config.go).
+# No invented keys.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        # Large frame so dense raw-buffer producer batches (5 producers ×
+        # ~1K series × 100 Hz) don't trip the 4 MiB gRPC default before
+        # asap_edge buffers a window. Mirrors the controller emit + the
+        # superseded b6 config.
+        max_recv_msg_size_mib: 4096
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # ── memory_limiter — backpressure BEFORE asap_edge buffers a window ──
+  # Agent cgroup is 1536 MiB; shed at 1024 soft / 1280 hard with 256 MiB
+  # spike headroom. MUST precede asap_edge so the limiter rejects incoming
+  # batches before a window's series maps accrete on heap.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1280
+    spike_limit_mib: 256
+
+  # ── cumulativetodelta — Counter temporality fix (ASAPQuery-backend #298)
+  # The OTel SDK Counters export CUMULATIVE; asap_edge's Sum aggregator and
+  # the backend SumAccumulator want deltas. Convert upstream of asap_edge so
+  # the fused Sum path + the delta-capable sketches see deltas.
+  # `match_type: strict` leaves the latency gauge untouched.
+  cumulativetodelta:
+    include:
+      metrics:
+        - http_requests_total
+        - endpoint_request_freq
+        - unique_users_per_min
+        - top_endpoint_qps
+      match_type: strict
+
+  # ── asap_edge — the fused edge processor ─────────────────────────────
+  asap_edge:
+    # shard_count also sets the flush-staggering granularity: the flush
+    # loop ticks every window_duration/shard_count and flushes ONE
+    # phase-shifted shard per tick, so a window's seal/serialize/ship work
+    # splits into shard_count small bursts (peak CPU ~1/shard_count). 12
+    # keeps the dense 100 Hz raw-buffer flush from spiking a core;
+    # per-shard semantics are unchanged (each shard flushes once per
+    # window, backend delta totals identical). Matches the factory default
+    # + the controller emit (ASAP_SHARD_COUNT default 12).
+    shard_count: 12
+    window_duration: 60s
+    # Drop the raw metric for the configured (aggregated) metrics after
+    # cold-archiving + warm-aggregating; their sum/sketch output is emitted
+    # on the flush tick. Unconfigured metrics (e.g. freshness probes) pass
+    # through raw regardless of this knob.
+    drop_original: true
+    # Per-shard sketch/sum series-cardinality cap (factory default 100000).
+    # Bounds the precompute series map so a cardinality explosion can't grow
+    # it without bound.
+    max_series: 100000
+    # Top-level default delta-transmission for delta-capable families when a
+    # metrics[] entry omits its own delta_transmission. Per-metric values
+    # below are explicit, so this default is belt-and-suspenders.
+    delta_transmission: false
+
+    # metrics[] — the metric→family map (the job the old routing connector +
+    # per-family pipelines did). 6 entries = the demo's 6 query families.
+    #
+    #   metric                          family          tier   params
+    #   http_requests_total             sum             both   aggregate_by:[zone]
+    #   http_requests_total_latency_ms  kll             warm   k:200 (workload override; no delta)
+    #   request_size_bytes              kll             warm   k:200 (no delta — KLL has no delta variant)
+    #   unique_users_per_min            hll             warm   delta
+    #   top_endpoint_qps                countsketch     warm   rows:5 cols:2048 delta
+    #   endpoint_request_freq           countminsketch  warm   rows:5 cols:2048 delta
+    #
+    # tier rationale (mirrors the controller's tier_for derivation):
+    #   * http_requests_total has BOTH a warm `sum by (zone)` query AND an
+    #     archive `count(http_requests_total{zone="z0"})` query → tier: both
+    #     (warm Sum aggregate AND cold gorilla archive of the raw series).
+    #   * the five sketch metrics have ONLY a warm sketch query → tier: warm
+    #     (warm sketch ONLY; their high-cardinality raw series are NOT
+    #     cold-archived, which would balloon the gorilla encoder).
+    #
+    # delta_transmission: true for the delta-capable families
+    # (DDSketch / HLL / CountSketch / CountMinSketch) — large bandwidth
+    # savings on slowly-changing sketches (first window per series still
+    # ships full state). OMITTED for KLL: it is not delta-capable
+    # (effectiveDelta forces it off; the field is ignored).
+    metrics:
+      - metric: http_requests_total
+        family: sum
+        aggregate_by: [zone]
+        tier: both
+      # Reconciled to KLL: mvp-workload.yaml pins sketch_family_override: KLL
+      # for this metric, which the controller treats as canonical — keep the
+      # static bootstrap in lock-step. KLL has no delta variant (no
+      # delta_transmission); the latency quantile query is rank-served by KLL.
+      - metric: http_requests_total_latency_ms
+        family: kll
+        tier: warm
+        k: 200
+      - metric: request_size_bytes
+        family: kll
+        tier: warm
+        k: 200
+      - metric: unique_users_per_min
+        family: hll
+        tier: warm
+        delta_transmission: true
+      - metric: top_endpoint_qps
+        family: countsketch
+        tier: warm
+        rows: 5
+        cols: 2048
+        delta_transmission: true
+        # Warm topk: emit the heap-bearing CountSketch — the backend promotes it
+        # to FrequencyTopk so topk(top_endpoint_qps) resolves on the warm tier.
+        # item_label is the heavy-hitter dimension the otel-app stamps on the
+        # metric. emit_heap coexists with delta_transmission (msgpack delta-heap).
+        emit_heap: true
+        heap_size: 100
+        item_label: endpoint
+      - metric: endpoint_request_freq
+        family: countminsketch
+        tier: warm
+        rows: 5
+        cols: 2048
+        delta_transmission: true
+
+    # ── cold: per-shard Gorilla archive ──────────────────────────────────
+    # The edge encodes raw samples into compact Gorilla-XOR ASAPFRG1
+    # fragment batches and SHIPS them over HTTP to the gorilla-merger's
+    # ingest endpoint (the merger builds the TSDB block + index and cuts the
+    # window block to MinIO's `asap-gorilla-tsdb` bucket — the edge does no
+    # S3 PUT). The merger runs on node1 as host `gorilla-merger`, HTTP
+    # ingest on :10908. This is the SAME cold-store ingest path the
+    # superseded b6 config and the controller emit
+    # (default_cold_ship_endpoint) use.
+    cold:
+      enabled: true
+      ship_endpoint: http://gorilla-merger:10908/ingest/gorilla
+      # format: fragment is the default (gorilla-XOR ASAPFRG1 batch). Set
+      # `format: intchunk` + `coldpart_endpoint:
+      # http://gorilla-merger:10908/ingest/coldpart` to opt into the
+      # lossless intchunk cold-part path instead.
+      block_duration: 60s
+      reorder_grace: 2s
+      external_labels:
+        # Matches the merger's own cluster label + default_cold_external_labels.
+        cluster: asap-mvp
+
+    # ── control_channel — control-plane config-poll loop (DISABLED) ──────
+    #
+    # asap_edge's OPTIONAL control channel is an HTTP-GET poll loop
+    # (asap-precompute-go/controlchannel.HttpPollChannel) that expects the
+    # poll_url to return a JSON-encoded precompute.PrecomputeConfigSet and
+    # applies it to the live sketch aggregators in place (no state rebuild).
+    # It is a key UNDER asap_edge (Config.ControlChannel), NOT a sibling
+    # processor.
+    #
+    # In THIS deploy the live control plane is OpAMP-PUSH via the supervisor
+    # (control-plane:4320/v1/opamp), NOT this HTTP poll: the controller's
+    # HTTP API on control-plane:8080 exposes /api/v1/plan, /api/v1/config/
+    # :metric, /api/v1/collector-config/agent — but NO route returning the
+    # PrecomputeConfigSet wire format this poll loop consumes. So the channel
+    # is left DISABLED (enabled: false) to avoid a goroutine polling a
+    # non-matching endpoint; the poll_url is pre-filled at the controller's
+    # HTTP API base for when such a route lands. enabled() also treats a
+    # non-empty poll_url as enabled, so this MUST stay enabled: false while
+    # the route is absent.
+    # NOTE: zero-value control_channel (this block omitted entirely) is also
+    # disabled; it is spelled out here for documentation + forward-readiness.
+    control_channel:
+      enabled: false
+      poll_url: http://control-plane:8080/api/v1/precompute-config
+      poll_interval: 30s
+      timeout: 10s
+
+exporters:
+  otlp/backend:
+    # Agents push OTLP straight to the data plane (the asap-gateway hop was
+    # removed in #400; the data plane does cross-agent fan-in itself).
+    # `asap` arm = compression none (matched-none partner of b0). The
+    # `asap-gzip` arm overrides this to `compression: gzip`.
+    endpoint: data-plane:4317
+    tls:
+      insecure: true
+
+service:
+  # NO `extensions: [opamp]` — the supervisor injects its own opamp
+  # extension into the merged config (see header).
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, cumulativetodelta, asap_edge]
+      exporters: [otlp/backend]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8890

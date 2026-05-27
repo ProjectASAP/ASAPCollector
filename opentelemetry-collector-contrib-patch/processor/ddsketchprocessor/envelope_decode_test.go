@@ -60,14 +60,14 @@ func TestDecodeDDSketchEnvelope_RoundTripFull(t *testing.T) {
 // the runtime's dispatcher then falls through to bare-state and
 // delta decode paths, which is the documented contract.
 func TestDecodeDDSketchEnvelope_BareStateRejected(t *testing.T) {
+	// Refactor-2026-05: per-DP metric scalars (Count/Sum/Min/Max) were
+	// removed from DDSketchState — the count is recoverable by summing
+	// bucket store counts and min/max/quantiles derive from the bucket
+	// distribution. The bare state now carries only alpha + bucket store.
 	bare := &ddpb.DDSketchState{
 		Alpha:       0.01,
 		StoreCounts: []uint64{1, 2, 3},
 		StoreOffset: 0,
-		Count:       6,
-		Sum:         42,
-		Min:         1.5,
-		Max:         99.0,
 	}
 	bytes, err := proto.Marshal(bare)
 	require.NoError(t, err)

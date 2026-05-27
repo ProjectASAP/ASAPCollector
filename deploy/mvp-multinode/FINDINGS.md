@@ -80,10 +80,11 @@ compressed hop. All represent compressed wire bytes shipped from the edge.)
    sensor-style data, not random latency. gzip/Snappy exploit structural/label
    repetition serf-XOR can't.
 
-**Caveat — asap total NIC vs ingest wire:** asap also runs the gorillas3 cold-tier,
-writing the full raw stream to colocated MinIO (~3.57 Mbps) — archival the
-baselines don't do. That's separate from the ingest-wire metric and shouldn't be
-charged against the aggregation comparison.
+**Caveat — asap total NIC vs ingest wire:** asap also runs the fused `asap_edge`
+cold tier, Gorilla-XOR-encoding the full raw stream and shipping `ASAPFRG1`
+fragments to the gorilla-merger (which archives to colocated MinIO; ~3.57 Mbps) —
+archival the baselines don't do. That's separate from the ingest-wire metric and
+shouldn't be charged against the aggregation comparison.
 
 ## 3. Serf arm: real wire codec (not raw passthrough)
 

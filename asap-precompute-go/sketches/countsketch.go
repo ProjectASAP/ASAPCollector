@@ -28,7 +28,33 @@ type CountSketchWrapper struct {
 	cs   *countsketch.CountSketch
 	rows int
 	cols int
+
+	// heapMsgpack selects the heap-bearing MessagePack emit path: when
+	// true, Snapshot() emits the `{sketch, topk_heap, heap_size}` wire
+	// format the ASAPQuery backend reads via
+	// CountMinSketchWithHeap::from_msgpack, promoting the sid to
+	// CountSketchWithHeap (Capability::FrequencyTopk) so `topk(metric)`
+	// queries route here instead of returning "No result". When false
+	// (the default) Snapshot() emits the legacy proto full state, exactly
+	// byte-parity with the original wrapper.
+	//
+	// Delta transmission IS supported in heap-msgpack mode via the
+	// DELTA-HEAP wire form (encoding tag MSGPACK_DELTA): window 1 ships a
+	// full heap frame; each later window ships a sparse matrix delta + the
+	// full top-k heap (SerializeMsgpackWithHeapDelta). The delta is
+	// computed against an EMPTY base per the per-window-reset model (PWR,
+	// delta-baseline-contract.md §3), so the backend reconstructs the
+	// window's own state by applying the delta onto a rotated-empty base.
+	heapMsgpack bool
+	// heapSize is the bounded top-k heap capacity carried in the wire
+	// payload (the backend stores it and uses min(self,other) on merge).
+	heapSize int
 }
+
+// defaultCountSketchHeapSize mirrors sketchlib-go's CountSketch TOPK_SIZE
+// default (the heap the producer's Space-Saving tracker feeds). Used when
+// the caller passes heapSize <= 0.
+const defaultCountSketchHeapSize = 100
 
 // NewCountSketchWrapper constructs a fresh CountSketch with the given
 // (rows, cols) — derived from epsilon/delta the same way the legacy
@@ -55,7 +81,34 @@ func NewCountSketchWrapper(rows, cols int) (*CountSketchWrapper, error) {
 			"sketches: NewCountSketch(%d, %d): rows*ceil(log2(cols))=%d exceeds the %d-bit row-hash budget; reduce rows or cols",
 			rows, cols, rows*bitsPerRow, maxRowHashBits)
 	}
-	return &CountSketchWrapper{cs: cs, rows: rows, cols: cols}, nil
+	return &CountSketchWrapper{cs: cs, rows: rows, cols: cols, heapSize: defaultCountSketchHeapSize}, nil
+}
+
+// NewCountSketchWithHeapWrapper builds a CountSketch wrapper whose
+// Snapshot() emits the heap-bearing MessagePack wire format the
+// ASAPQuery backend detects as `CountSketchWithHeap` (see
+// sketchlib-go CountSketch.SerializeMsgpackWithHeap and
+// ASAPQuery-backend ingest/otel.rs::sketch_kind_handle_for). heapSize
+// bounds the transmitted top-k heap (<=0 → defaultCountSketchHeapSize).
+// Same dimension validation as NewCountSketchWrapper.
+//
+// IMPORTANT: the top-k heap is populated from the producer's internal
+// Space-Saving candidate tracker, which is fed ONLY by UpdateString
+// (the keyed-observe path). Route observations through the
+// CountSketchObserver (KindFloat with the item key in
+// ObservationValue.Bytes) so the heap is non-empty — the backend only
+// promotes to FrequencyTopk when the decoded heap is non-empty.
+func NewCountSketchWithHeapWrapper(rows, cols, heapSize int) (*CountSketchWrapper, error) {
+	w, err := NewCountSketchWrapper(rows, cols)
+	if err != nil {
+		return nil, err
+	}
+	if heapSize <= 0 {
+		heapSize = defaultCountSketchHeapSize
+	}
+	w.heapMsgpack = true
+	w.heapSize = heapSize
+	return w, nil
 }
 
 // UpdateString mirrors the legacy ws.cs.UpdateString(itemKey, value)
@@ -67,10 +120,16 @@ func (w *CountSketchWrapper) UpdateString(key string, count float64) {
 
 // Snapshot returns the canonical proto-encoded SketchEnvelope bytes,
 // byte-identical to the legacy processor's serializeCountSketch
-// output (SerializePortable + proto.Marshal).
+// output (SerializePortable + proto.Marshal). In heap-msgpack mode it
+// instead returns the heap-bearing MessagePack wire format the backend
+// reads via CountMinSketchWithHeap::from_msgpack (carrying the count
+// matrix + top-k heap), which the emit path tags EncodingMsgpack.
 func (w *CountSketchWrapper) Snapshot() ([]byte, error) {
 	if w.cs == nil {
 		return nil, nil
+	}
+	if w.heapMsgpack {
+		return w.cs.SerializeMsgpackWithHeap(w.heapSize)
 	}
 	return w.cs.SerializeProtoBytes()
 }
@@ -83,6 +142,34 @@ func (w *CountSketchWrapper) Snapshot() ([]byte, error) {
 func (w *CountSketchWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) ([]byte, bool, error) {
 	if w.cs == nil {
 		return nil, true, nil
+	}
+	// Heap-msgpack mode: produce a DELTA-HEAP frame — a sparse matrix
+	// delta of this window's sketch against the cached base (an empty
+	// heap-msgpack frame under PWR) plus the FULL top-k heap. On any
+	// decode/compute failure (e.g. no/garbled base) fall back to the full
+	// heap snapshot tagged isFull so the runtime emits a full MSGPACK frame
+	// the backend can decode standalone.
+	if w.heapMsgpack {
+		if len(prev) == 0 {
+			full, err := w.Snapshot()
+			return full, true, err
+		}
+		base, err := countsketch.DeserializeMsgpackWithHeapMatrix(prev)
+		if err != nil {
+			full, fErr := w.Snapshot()
+			return full, true, fErr
+		}
+		delta, err := w.cs.SerializeMsgpackWithHeapDelta(base, w.heapSize, float64(threshold))
+		if err != nil {
+			full, fErr := w.Snapshot()
+			return full, true, fErr
+		}
+		// Clamp: never emit a delta larger than the equivalent full frame.
+		full, fErr := w.Snapshot()
+		if fErr == nil && len(delta) >= len(full) {
+			return full, true, nil
+		}
+		return delta, false, nil
 	}
 	if len(prev) == 0 {
 		full, err := w.Snapshot()
@@ -127,6 +214,17 @@ func (w *CountSketchWrapper) DeltaAgainstEmptyBase() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sketches: NewCountSketch(empty): %w", err)
 	}
+	// Heap-msgpack mode: the cached base must itself be a heap-bearing
+	// full frame so the NEXT window's ComputeDeltaAgainst decodes its
+	// matrix via DeserializeMsgpackWithHeapMatrix. The empty sketch has an
+	// empty heap; only its (all-zero) matrix is consumed as the base.
+	if w.heapMsgpack {
+		b, sErr := empty.SerializeMsgpackWithHeap(w.heapSize)
+		if sErr != nil {
+			return nil, fmt.Errorf("countsketch.SerializeMsgpackWithHeap(empty): %w", sErr)
+		}
+		return b, nil
+	}
 	b, err := empty.SerializeProtoBytes()
 	if err != nil {
 		return nil, fmt.Errorf("countsketch.SerializeProtoBytes(empty): %w", err)
@@ -159,6 +257,17 @@ func (w *CountSketchWrapper) ApplyDelta(payload []byte) error {
 			return err
 		}
 		w.cs = cs
+	}
+	// Heap-msgpack frames first: a DELTA-HEAP frame (4-element array,
+	// is_delta marker) applies the sparse matrix delta + replaces the heap;
+	// a full heap frame (3-element array) merges the decoded matrix. Both
+	// are tried before the proto branches because the proto decoders would
+	// mis-accept the msgpack bytes as an empty state otherwise.
+	if countsketch.IsMsgpackWithHeapDelta(payload) {
+		return w.cs.ApplyMsgpackWithHeapDelta(payload)
+	}
+	if other, err := countsketch.DeserializeMsgpackWithHeapMatrix(payload); err == nil && other != nil {
+		return w.cs.Merge(other)
 	}
 	if other, err := countsketch.DeserializeCountSketchFromProtoBytes(payload); err == nil && other != nil {
 		return w.cs.Merge(other)

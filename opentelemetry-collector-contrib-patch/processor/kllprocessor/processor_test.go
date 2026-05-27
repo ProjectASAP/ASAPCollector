@@ -104,10 +104,13 @@ func TestBatchModeTransmitSketch(t *testing.T) {
 			ms := sms.At(j).Metrics()
 			for k := 0; k < ms.Len(); k++ {
 				m := ms.At(k)
-				if m.Name() != "latency_kll" {
+				// Refactor-2026-05/#382: the typed KLLSketch output PRESERVES
+				// the input metric name ("latency"); the KLL encoding is carried
+				// by the pdata variant tag, not a "_kll" suffix. Match on
+				// name+type to skip the forwarded raw gauge of the same name.
+				if m.Name() != "latency" || m.Type() != pmetric.MetricTypeKLLSketch {
 					continue
 				}
-				require.Equal(t, pmetric.MetricTypeKLLSketch, m.Type())
 				found = true
 				require.Equal(t, 1, m.KLLSketch().DataPoints().Len())
 				outDP := m.KLLSketch().DataPoints().At(0)
@@ -728,7 +731,8 @@ func TestRoundTripIngestProtoSketch(t *testing.T) {
 	metric.SetName("latency")
 	metric.SetUnit("ms")
 	in := metric.SetEmptyKLLSketch().DataPoints().AppendEmpty()
-	in.SetCount(uint64(src.Count()))
+	// Refactor-2026-05: per-DP Count was removed from KLLSketchDataPoint;
+	// the count is recoverable from the serialized sketch payload.
 	in.SetSketch(payload)
 	in.SetEncoding(pmetric.KLLSketchEncodingProto)
 
@@ -746,7 +750,9 @@ func TestRoundTripIngestProtoSketch(t *testing.T) {
 			ms := sms.At(j).Metrics()
 			for k := 0; k < ms.Len(); k++ {
 				m := ms.At(k)
-				if m.Type() != pmetric.MetricTypeKLLSketch || m.Name() != "latency_kll" {
+				// Refactor-2026-05/#382: typed sketch output preserves the
+				// input name "latency" (encoding carried by the pdata variant).
+				if m.Type() != pmetric.MetricTypeKLLSketch || m.Name() != "latency" {
 					continue
 				}
 				require.Equal(t, 1, m.KLLSketch().DataPoints().Len())
@@ -755,7 +761,7 @@ func TestRoundTripIngestProtoSketch(t *testing.T) {
 			}
 		}
 	}
-	require.True(t, found, "expected emitted KLLSketch metric latency_kll")
+	require.True(t, found, "expected emitted KLLSketch metric 'latency'")
 	require.NotEmpty(t, outDP.Sketch())
 	require.Equal(t, pmetric.KLLSketchEncodingProto, outDP.Encoding())
 
@@ -795,18 +801,24 @@ func TestDropOriginalDefault(t *testing.T) {
 	out := sink.AllMetrics()
 	require.Len(t, out, 1)
 	ms := out[0].ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics()
-	// Sketch-only: raw input must NOT be on the wire.
+	// Refactor-2026-05/#382: the KLL sketch summary PRESERVES the input
+	// metric name; the encoding is carried by the KLLSketch pdata variant.
+	// So "sketch replaces raw" means: there must be NO raw Gauge of that
+	// name on the wire, and there MUST be a KLLSketch metric of that name.
+	var foundRawGauge, foundSketch bool
 	for i := 0; i < ms.Len(); i++ {
-		assert.NotEqual(t, "http_requests_total_latency_ms", ms.At(i).Name(),
-			"raw input metric must not be on the outbound stream when DropOriginal=true")
-	}
-	// At least one KLL-sketch metric must be present.
-	var foundSketch bool
-	for i := 0; i < ms.Len(); i++ {
-		if ms.At(i).Name() == "http_requests_total_latency_ms_kll" {
+		m := ms.At(i)
+		if m.Name() != "http_requests_total_latency_ms" {
+			continue
+		}
+		switch m.Type() {
+		case pmetric.MetricTypeGauge:
+			foundRawGauge = true
+		case pmetric.MetricTypeKLLSketch:
 			foundSketch = true
-			assert.Equal(t, pmetric.MetricTypeKLLSketch, ms.At(i).Type())
 		}
 	}
+	assert.False(t, foundRawGauge,
+		"raw input gauge must not be on the outbound stream when DropOriginal=true")
 	assert.True(t, foundSketch, "expected KLL sketch summary on outbound stream")
 }

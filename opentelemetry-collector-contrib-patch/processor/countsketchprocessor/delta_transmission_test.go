@@ -6,6 +6,7 @@ package countsketchprocessor
 import (
 	"context"
 	"fmt"
+	"sort"
 	"testing"
 
 	countsketch "github.com/ProjectASAP/sketchlib-go/sketches/CountSketch"
@@ -87,14 +88,28 @@ func getCSOutputDPs(md pmetric.Metrics) []csTestDataPoint {
 						dp := pts.At(l)
 						attrs := pcommon.NewMap()
 						dp.Attributes().CopyTo(attrs)
-						// The typed DP has a dedicated
-						// `dimension` field that carries
-						// the partition key; mirror it
-						// back into the legacy attribute
-						// name.
-						attrs.PutStr("partition_key", dp.Dimension())
-						attrs.PutDouble("epsilon", dp.Epsilon())
-						attrs.PutDouble("delta", dp.Delta())
+						// Refactor-2026-05 dropped the dedicated
+						// `dimension` field: the partition key now rides
+						// as the DP's group-by label attributes, and
+						// epsilon/delta are derivable from the parent
+						// container's rows/cols (no longer per-DP).
+						// Reconstruct the legacy `partition_key` attribute
+						// (sorted `key=value;`, group-by labels only —
+						// excluding the EmitWindowStats extras) so this
+						// file's assertions keep working unchanged.
+						raw := attrs.AsRaw()
+						delete(raw, "sample_count")
+						delete(raw, "window_duration_seconds")
+						pkKeys := make([]string, 0, len(raw))
+						for k := range raw {
+							pkKeys = append(pkKeys, k)
+						}
+						sort.Strings(pkKeys)
+						pk := ""
+						for _, k := range pkKeys {
+							pk += fmt.Sprintf("%s=%v;", k, raw[k])
+						}
+						attrs.PutStr("partition_key", pk)
 						attrs.PutEmptyBytes("sketch_payload").FromRaw(dp.Sketch())
 						attrs.PutStr("encoding", csEncodingToLegacyString(dp.Encoding()))
 						dps = append(dps, csTestDataPoint{attributes: attrs})
@@ -228,9 +243,21 @@ func TestCSDelta_SubsequentWindowsSendDelta(t *testing.T) {
 	require.NoError(t, err, "proto_delta payload must deserialize as a Delta")
 }
 
-// TestCSDelta_RoundTrip verifies that applying the delta from window 2 onto the
-// full sketch from window 1 produces the same state as an independent reference
-// processor run on window-2 data.
+// TestCSDelta_RoundTrip verifies that applying the delta from window 2 onto an
+// EMPTY base produces the same state as an independent reference processor run
+// on window-2 data.
+//
+// Per-window-delta contract (delta-baseline-contract.md §3, the per-window-reset
+// model PWR; producer implemented by PRs #456/#457): the producer resets its
+// per-series sketch every window AND resets the SnapshotCache outbound base to
+// EMPTY after each window-close emit (CountSketchWrapper.DeltaAgainstEmptyBase).
+// So window 2's delta is window 2's OWN per-window state (delta-against-empty),
+// NOT `win2 − win1`. The backend reconstructs by applying each per-window delta
+// onto a per-window-reset (empty) base, so the test must reconstruct the same
+// way: apply window 2's delta to an EMPTY sketch — NOT to window 1's snapshot
+// (that older always-refresh / cumulative-epoch model is exactly what the
+// contract §3.1 rejects, and would yield win1+win2). This mirrors the canonical
+// sketches-level test TestCountSketchWrapper_PerWindowDelta_AgainstEmptyRoundTrips.
 //
 // Both windows use the same service name so they share a partition key.
 func TestCSDelta_RoundTrip(t *testing.T) {
@@ -239,7 +266,8 @@ func TestCSDelta_RoundTrip(t *testing.T) {
 
 	proc := newProcessor(zap.NewNop(), cfg, new(consumertest.MetricsSink))
 
-	// Window 1: 50 insertions → snapshot created.
+	// Window 1: 50 insertions → snapshot created (sets the per-series base;
+	// the producer then resets that base to empty for the next window).
 	out1, err := proc.ProcessMetrics(context.Background(), makeCSGaugeMetrics("svc", 50))
 	require.NoError(t, err)
 	dps1 := getCSOutputDPs(out1)
@@ -248,7 +276,8 @@ func TestCSDelta_RoundTrip(t *testing.T) {
 	snapSketch, err := countsketch.DeserializeCountSketchFromProtoBytes(rawFull)
 	require.NoError(t, err)
 
-	// Window 2: 30 insertions of the same key → delta against window-1 snapshot.
+	// Window 2: 30 insertions of the same key → per-window delta (against the
+	// empty base cached at window-1 close), i.e. window 2's own state.
 	md2 := makeCSGaugeMetrics("svc", 30)
 	out2, err := proc.ProcessMetrics(context.Background(), md2)
 	require.NoError(t, err)
@@ -263,8 +292,11 @@ func TestCSDelta_RoundTrip(t *testing.T) {
 	deltaMsg, err := countsketch.DeserializeDelta(rawDelta)
 	require.NoError(t, err)
 
-	// Apply delta to clone of snapshot → reconstructed.
-	reconstructed := cloneCSTest(snapSketch)
+	// PWR reconstruction: apply window 2's per-window delta to an EMPTY base
+	// of the same dimensions → window-2-only state. (Applying to window 1's
+	// snapshot would be the rejected cumulative model and yield win1+win2.)
+	reconstructed, err := countsketch.NewCountSketch(snapSketch.Rows, snapSketch.Cols)
+	require.NoError(t, err)
 	require.NotNil(t, reconstructed)
 	countsketch.ApplyDelta(reconstructed, deltaMsg)
 
@@ -286,20 +318,23 @@ func TestCSDelta_RoundTrip(t *testing.T) {
 // and verifies that the receiver's reconstructed sketch matches an independent
 // reference processor for each window.
 //
-// Receiver protocol post-PR #232: the runtime's SnapshotCache always
-// refreshes the cached outbound after each emit, so every delta is
-// computed as `current_window_state - prev_window_state`. The
-// receiver reconstructs the current window by applying each delta to
-// the *previous reconstruction* (not to a fixed baseline), which
-// mirrors the legacy CountSketch processor's snapshot-update-after-
-// every-emit invariant.
+// Per-window-delta contract (delta-baseline-contract.md §3, model PWR; producer
+// PRs #456/#457): the producer resets its per-series sketch every window AND
+// resets the SnapshotCache outbound base to EMPTY after each window-close emit
+// (CountSketchWrapper.DeltaAgainstEmptyBase). Every window therefore emits its
+// OWN per-window state (window 1 as a full frame, windows 2…N as
+// delta-against-empty) — NOT `current − prev_window`. The backend rotates its
+// per-series base to empty each window boundary and applies the per-window delta
+// onto that empty base, so the receiver here reconstructs each window by
+// applying its frame to a FRESH EMPTY sketch (full frames deserialize
+// standalone) — never accumulating across windows. This is the contract §3.1
+// PWR model; the older always-refresh/cumulative reconstruction (apply onto the
+// previous reconstruction) is exactly what the contract rejects.
 func TestCSDelta_MultipleWindowsConvergence(t *testing.T) {
 	cfg := deltaCSConfig()
 	require.NoError(t, cfg.Validate())
 
 	proc := newProcessor(zap.NewNop(), cfg, new(consumertest.MetricsSink))
-
-	var prevReconstruction *countsketch.CountSketch
 
 	for w := 0; w < 5; w++ {
 		insertCount := 20 * (w + 1)
@@ -321,17 +356,17 @@ func TestCSDelta_MultipleWindowsConvergence(t *testing.T) {
 			require.NoError(t, err, "window %d: full deserialize", w)
 		} else {
 			require.Equal(t, "proto_delta", enc, "window %d: unexpected encoding", w)
-			require.NotNil(t, prevReconstruction, "window %d: delta before full snapshot", w)
 			deltaMsg, derr := countsketch.DeserializeDelta(rawPayload)
 			require.NoError(t, derr, "window %d: delta deserialize", w)
-			// Apply delta to the previous reconstruction — the
-			// always-refresh SnapshotCache (PR #232) emits
-			// `current - prev_window`, not `current - first_baseline`.
-			currentCS = cloneCSTest(prevReconstruction)
-			require.NotNil(t, currentCS)
+			// PWR: each delta is window-w's own state, computed against an
+			// empty base. Reconstruct by applying it to a FRESH EMPTY sketch
+			// (per-window base rotation) — never to the prior reconstruction.
+			// Dimensions come from the same configDimensions the producer used.
+			rrows, rcols := configDimensions(cfg)
+			currentCS, err = countsketch.NewCountSketch(rrows, rcols)
+			require.NoError(t, err, "window %d: empty base", w)
 			countsketch.ApplyDelta(currentCS, deltaMsg)
 		}
-		prevReconstruction = cloneCSTest(currentCS)
 
 		// Reference: fresh no-delta processor with only this window's data.
 		refProc := newProcessor(zap.NewNop(), refCSConfig(), new(consumertest.MetricsSink))

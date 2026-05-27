@@ -41,7 +41,12 @@ type sketchAggregator struct {
 	//                      — instead of degenerately counting one key (the metric
 	//                      name) weighted by the sample value (see B6).
 	obsKind observeKind
-	logger  *zap.Logger
+	// itemLabel is the data-point attribute whose value is the CountSketch
+	// heap key, used only by obsKindKeyedItem (the heap-bearing CountSketch
+	// emit_heap path). Empty => every sample keys by the metric name (the
+	// observer's DefaultKey), the degenerate single-key case.
+	itemLabel string
+	logger    *zap.Logger
 	// lastObserveErr is the most recent ObserveKeyed result (nil when the last
 	// sample recorded cleanly). The observe error used to be discarded, which
 	// hid exactly the CMS KindBytes mismatch above; it is now retained (and
@@ -68,6 +73,33 @@ const (
 	obsKindBytesHash
 	// obsKindKeyedFreq: attribute-set key + weight 1 via KindFloat (CountSketch).
 	obsKindKeyedFreq
+	// obsKindKeyedItem: heap-bearing CountSketch (emit_heap). Like
+	// obsKindKeyedFreq (KindFloat, weight 1) but the key is the configured
+	// item_label's VALUE (the heavy-hitter dimension, e.g. endpoint) rather
+	// than the full attribute-set frequency key — so the producer's
+	// Space-Saving tracker feeds distinct items into the top-k heap and the
+	// heap ranks the real item dimension. When the item_label attribute is
+	// absent on a data point (or item_label is unset), the key is left empty
+	// so the observer falls back to its DefaultKey (the metric name).
+	obsKindKeyedItem
+	// obsKindItemHLL: HLL keyed by the configured item_label's VALUE. The HLL
+	// hashes that label value (KindBytes) so the sketch measures the
+	// CARDINALITY of the item_label dimension (e.g. distinct user_ids) within
+	// each grouping bucket, instead of UpdateValue-ing the numeric sample. The
+	// item_label is projected OUT of the series key + output labels by observe()
+	// so there is ONE HLL per group, not one cardinality-1 HLL per item value.
+	// Only used when item_label is set; an unset item_label keeps the numeric
+	// KindFloat HLL path (obsKindFloat), byte-unchanged.
+	obsKindItemHLL
+	// obsKindItemCMS: CountMinSketch keyed by the configured item_label's VALUE.
+	// The CMS hashes that label value (KindBytes) so frequency is counted PER
+	// item_label value (e.g. per endpoint) within each grouping bucket, instead
+	// of hashing the full attribute-set key (which made each {…,endpoint} tuple
+	// its own series). The item_label is projected OUT of the series key +
+	// output labels by observe() so there is ONE CMS per group. Only used when
+	// item_label is set; an unset item_label keeps the attribute-set KindBytes
+	// path (obsKindBytesHash), byte-unchanged.
+	obsKindItemCMS
 )
 
 // fnv64 derives a stable per-metric AggID (matches the standalone sketch
@@ -112,6 +144,31 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		st       precompute.SketchType
 		factory  precompute.SketchFactory
 		observer precompute.SketchObserver
+		// encoding is the per-family wire encoding stamped on PrecomputeConfig.
+		// Default PROTO_FULL keeps every existing family byte-identical; only the
+		// heap-bearing CountSketch (emit_heap) overrides it to MSGPACK so the
+		// runtime tags its full/delta frames MSGPACK / MSGPACK_DELTA (precompute
+		// serializeSeries) and the otel adapter maps those to the heap-bearing
+		// pmetric encodings the backend promotes to CountSketchWithHeap.
+		encoding = precompute.EncodingProtoFull
+		// obsKindOverride, when non-zero-meaningful, replaces observeKindFor for
+		// this family. Used by the heap CountSketch path so each sample keys the
+		// sketch by the configured item_label value (the heavy-hitter dimension)
+		// rather than the attribute-set frequency key the non-heap path uses.
+		obsKindOverride *observeKind
+		// itemLabel is the dp-attribute whose value is the heap key (heap mode).
+		itemLabel string
+		// globalAgg / omitResource collapse the series grouping for the
+		// heap-bearing CountSketch so every heavy-hitter item lands in ONE sketch
+		// (per AggregateBy group) whose top-k heap ranks them together. Without
+		// this the default per-attribute-set series grouping puts each distinct
+		// item_label value in its own series → its own single-item heap, so the
+		// heap could never rank items against each other. Mirrors the standalone
+		// countsketchprocessor's config_translate (GlobalAggregation when
+		// AggregateBy is empty; OmitResourceAttrs always). Off for every other
+		// family / the non-heap CountSketch (byte-unchanged).
+		globalAgg    bool
+		omitResource bool
 	)
 	// sampleP is the warm-sketch sampling probability (1.0 = disabled). It is
 	// applied via sketchlib-go's WithSampleP to the families whose geometric
@@ -149,19 +206,69 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		st = precompute.SketchTypeHLLSketch
 		factory = func() precompute.Sketch { return sketches.NewHLLWrapper() }
 		observer = sketches.HLLObserver{}
+		// item_label support: when set, hash the item_label's VALUE (the
+		// high-cardinality inner dimension, e.g. user_id) so the HLL counts
+		// DISTINCT label values per group rather than UpdateValue-ing the
+		// numeric sample — and project the item_label out of the series key so
+		// there is ONE HLL per group instead of one cardinality-1 HLL per value.
+		if fam.ItemLabel != "" {
+			k := obsKindItemHLL
+			obsKindOverride = &k
+			itemLabel = fam.ItemLabel
+		}
 	case FamilyCountSketch:
 		rows, cols := csmDims(fam)
 		st = precompute.SketchTypeCountSketch
-		factory = func() precompute.Sketch {
-			w, _ := sketches.NewCountSketchWrapper(rows, cols)
-			return w
-		}
+		// The observer's DefaultKey is the metric name: it is the fallback key
+		// when a sample carries no key in ObservationValue.Bytes (the heap path
+		// when item_label is absent on a data point, mirroring the standalone
+		// shim's sketchKey metric-name fallback).
 		observer = sketches.CountSketchObserver{DefaultKey: metric}
+		if fam.EmitHeap {
+			// Heap-bearing variant: build the wrapper whose Snapshot() emits the
+			// `{sketch, topk_heap, heap_size}` MSGPACK frame and whose
+			// ComputeDeltaAgainst emits the DELTA-HEAP frame. The top-k heap is
+			// fed by UpdateString (the keyed-observe path), so the observe path
+			// keys each sample by the item_label value (obsKindKeyedItem) — the
+			// heavy-hitter dimension the heap ranks. Encoding MSGPACK so the
+			// runtime tags the emitted frames MSGPACK / MSGPACK_DELTA.
+			heapSize := fam.HeapSize
+			factory = func() precompute.Sketch {
+				w, _ := sketches.NewCountSketchWithHeapWrapper(rows, cols, heapSize)
+				return w
+			}
+			encoding = precompute.EncodingMsgpack
+			k := obsKindKeyedItem
+			obsKindOverride = &k
+			itemLabel = fam.ItemLabel
+			// Collapse series grouping so all items aggregate into one heap per
+			// group: empty AggregateBy => one global sketch (the heavy-hitter
+			// dimension is the item, never a series key); a set AggregateBy =>
+			// one sketch per group (SeriesKey projects out the item_label).
+			// Resource attrs never split the heap (mirrors the standalone shim).
+			globalAgg = len(fam.AggregateBy) == 0
+			omitResource = true
+		} else {
+			factory = func() precompute.Sketch {
+				w, _ := sketches.NewCountSketchWrapper(rows, cols)
+				return w
+			}
+		}
 	case FamilyCountMinSketch:
 		rows, cols := csmDims(fam)
 		st = precompute.SketchTypeCountMinSketch
 		factory = func() precompute.Sketch { return sketches.NewCMSWrapper(rows, cols, false).WithSampleP(sampleP) }
 		observer = sketches.CMSObserver{}
+		// item_label support: when set, key frequency by the item_label's VALUE
+		// (the inner dimension, e.g. endpoint) so the CMS counts per-endpoint
+		// frequency within each group — and project the item_label out of the
+		// series key so there is ONE CMS per group instead of one per
+		// {…,endpoint} tuple. Unset keeps the full-attribute-set frequency key.
+		if fam.ItemLabel != "" {
+			k := obsKindItemCMS
+			obsKindOverride = &k
+			itemLabel = fam.ItemLabel
+		}
 	default:
 		return nil, false
 	}
@@ -172,9 +279,17 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		Window:         precompute.WindowSpec{Size: window, AllowedLateness: opts.allowedLateness},
 		AggregateBy:    fam.AggregateBy,
 		TransmitSketch: true,
-		Encoding:       precompute.EncodingProtoFull,
-		MetricName:     metric,
-		Temporality:    int32(pmetric.AggregationTemporalityDelta),
+		// Encoding follows the family: PROTO_FULL for every family except the
+		// heap-bearing CountSketch (emit_heap), which sets MSGPACK so the runtime
+		// tags its frames MSGPACK / MSGPACK_DELTA and the backend promotes the
+		// sid to CountSketchWithHeap (FrequencyTopk).
+		Encoding:   encoding,
+		MetricName: metric,
+		// Heap-bearing CountSketch only: collapse series grouping so heavy-hitter
+		// items aggregate into one sketch/heap per group (see globalAgg above).
+		GlobalAggregation: globalAgg,
+		OmitResourceAttrs: omitResource,
+		Temporality:       int32(pmetric.AggregationTemporalityDelta),
 		// Bound the per-shard series map so a cardinality explosion cannot grow
 		// it without limit; a new series past the cap is dropped (counted via
 		// Stats().DroppedOverflow).
@@ -187,13 +302,18 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		DeltaTransmission: opts.delta,
 		DeltaThreshold:    opts.deltaThreshold,
 	}
+	obsKind := observeKindFor(fam.Family)
+	if obsKindOverride != nil {
+		obsKind = *obsKindOverride
+	}
 	return &sketchAggregator{
-		pc:      precompute.New(pcfg, factory, observer),
-		pcfg:    pcfg,
-		enc:     &oteladapter.AdapterConfig{MetricSuffix: "_" + string(fam.Family), DropOriginal: true},
-		factory: factory,
-		obsKind: observeKindFor(fam.Family),
-		logger:  logger,
+		pc:        precompute.New(pcfg, factory, observer),
+		pcfg:      pcfg,
+		enc:       &oteladapter.AdapterConfig{MetricSuffix: "_" + string(fam.Family), DropOriginal: true},
+		factory:   factory,
+		obsKind:   obsKind,
+		itemLabel: itemLabel,
+		logger:    logger,
 	}, true
 }
 
@@ -234,10 +354,39 @@ func kvFromMap(am map[string]string) []precompute.KeyValue {
 	return out
 }
 
+// kvFromMapExcept is kvFromMap but omits the single attribute named `drop`. The
+// HLL / CMS item_label paths use it to PROJECT the high-cardinality item_label
+// (e.g. user_id / endpoint) out of the observation labels, so the item_label
+// lands in neither the series key (one sketch per group, not per item value)
+// nor the emitted output labels — while its VALUE is still fed into the sketch
+// as the cardinality / frequency subject (see observe). When `drop` is empty
+// this is exactly kvFromMap.
+func kvFromMapExcept(am map[string]string, drop string) []precompute.KeyValue {
+	if drop == "" {
+		return kvFromMap(am)
+	}
+	out := make([]precompute.KeyValue, 0, len(am))
+	for k, v := range am {
+		if k == drop {
+			continue
+		}
+		out = append(out, precompute.KeyValue{Key: k, Value: v})
+	}
+	return out
+}
+
 // observe feeds one sample. The precompute key is built once here from the
 // shared decoded attrs and passed via ObserveKeyed (no internal re-key).
 func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint64) {
-	kv := kvFromMap(am)
+	// For the HLL / CMS item_label paths the item_label attribute is the sketch
+	// subject (its value is hashed below), so it must NOT appear in the series
+	// key or the emitted labels — project it out of the observation labels here.
+	// Every other path keeps the full attribute set (drop == "" => kvFromMap).
+	dropLabel := ""
+	if s.obsKind == obsKindItemHLL || s.obsKind == obsKindItemCMS {
+		dropLabel = s.itemLabel
+	}
+	kv := kvFromMapExcept(am, dropLabel)
 	obs := &precompute.Observation{
 		TimestampMs: tsMs,
 		Labels:      kv,
@@ -264,6 +413,38 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 			Float: 1,
 			Bytes: []byte(precompute.AttributesKey(kv, nil)),
 		}
+	case obsKindKeyedItem:
+		// Heap-bearing CountSketch (emit_heap): key each sample by the configured
+		// item_label's VALUE (the heavy-hitter dimension) so the producer's
+		// Space-Saving tracker feeds distinct items into the top-k heap and the
+		// heap ranks the real item dimension. The asap_edge observe path receives
+		// the data-point attribute set (am); when item_label is unset or absent on
+		// this sample, Bytes is left empty so the CountSketchObserver falls back to
+		// its DefaultKey (the metric name) — the degenerate single-key case,
+		// mirroring the standalone shim's sketchKey metric-name fallback.
+		key := ""
+		if s.itemLabel != "" {
+			key = am[s.itemLabel]
+		}
+		obs.Value = precompute.ObservationValue{
+			Kind:  precompute.KindFloat,
+			Float: 1,
+			Bytes: []byte(key),
+		}
+	case obsKindItemHLL:
+		// HLL cardinality of the item_label dimension: hash the item_label's
+		// VALUE (KindBytes) so the register set counts DISTINCT label values
+		// (e.g. distinct user_ids) within the group. The item_label was already
+		// projected out of obs.Labels above, so the series key/labels carry only
+		// the grouping dimensions. An absent item_label value yields empty Bytes,
+		// which the HLL observer treats as a no-op (no element added).
+		obs.Value = precompute.BytesValue([]byte(am[s.itemLabel]))
+	case obsKindItemCMS:
+		// CMS frequency keyed by the item_label dimension: hash the item_label's
+		// VALUE (KindBytes) so frequency is counted PER label value (e.g. per
+		// endpoint) within the group, instead of per full-attribute-set tuple.
+		// The item_label was projected out of obs.Labels above.
+		obs.Value = precompute.BytesValue([]byte(am[s.itemLabel]))
 	}
 	if err := s.pc.ObserveKeyed(s.pcfg.SeriesKeyFor(obs), obs); err != nil {
 		s.lastObserveErr = err

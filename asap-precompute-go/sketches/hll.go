@@ -6,6 +6,7 @@ package sketches
 import (
 	"fmt"
 
+	"github.com/ProjectASAP/sketchlib-go/common"
 	hll "github.com/ProjectASAP/sketchlib-go/sketches/HLL"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
@@ -95,6 +96,21 @@ func (w *HLLWrapper) UpdateValue(v float64) {
 	if w.sk != nil {
 		w.sk.UpdateValue(v)
 	}
+}
+
+// UpdateBytes feeds the canonical hash of an opaque byte key (e.g. an
+// item_label attribute VALUE such as a user_id) into the HLL. The hash is
+// computed via common.FromBytes — the SAME canonical-seed XXH3 path the CMS /
+// CountSketch observers use for their string keys — so the inner-dimension
+// cardinality is measured over the label value, not the numeric sample. Used
+// by the fused asap_edge item_label path so unique_users_per_min counts
+// DISTINCT user_ids per group instead of degenerating to one cardinality-1
+// HLL per user_id. An empty key is a no-op (no element to add).
+func (w *HLLWrapper) UpdateBytes(b []byte) {
+	if w.sk == nil || len(b) == 0 {
+		return
+	}
+	w.sk.InsertWithHash(common.FromBytes(b).Hash)
 }
 
 // Snapshot serializes via SerializeProtoBytes — the canonical wire
@@ -257,7 +273,14 @@ func (w *HLLWrapper) Estimate() uint64 {
 type HLLObserver struct{}
 
 // Observe routes a precompute.ObservationValue into the wrapped HLL
-// sketch via UpdateValue.
+// sketch. KindFloat hashes the numeric value (the legacy
+// accumulateGaugeMetric path); KindBytes hashes an opaque byte key — the
+// item_label attribute VALUE — so the fused asap_edge item_label path can
+// measure the cardinality of a label dimension (e.g. distinct user_ids)
+// rather than the numeric sample. The two kinds share the same canonical
+// hash family, so a KindFloat(x) and a KindBytes(float-bytes-of-x) are NOT
+// interchangeable — callers pick the kind that matches the cardinality
+// subject they intend.
 func (HLLObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) error {
 	w, ok := s.(*HLLWrapper)
 	if !ok {
@@ -266,6 +289,9 @@ func (HLLObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) e
 	switch v.Kind {
 	case precompute.KindFloat:
 		w.UpdateValue(v.Float)
+		return nil
+	case precompute.KindBytes:
+		w.UpdateBytes(v.Bytes)
 		return nil
 	default:
 		return fmt.Errorf("HLLObserver: unsupported value kind %s", v.Kind)

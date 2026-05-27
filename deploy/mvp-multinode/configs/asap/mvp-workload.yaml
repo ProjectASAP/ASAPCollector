@@ -170,6 +170,12 @@
   - zone
   sketch_family_override: HLL
   target_path: warm
+  # Inner high-cardinality dimension the HLL counts distinct values of.
+  # The producer stamps user_id per event (five_sketch_workload.go); the
+  # controller emits this as the asap_edge `item_label`, so the edge hashes
+  # user_id into ONE HLL per zone (projecting user_id OUT of the series key)
+  # instead of building one cardinality-1 HLL per user_id.
+  item_label: user_id
 
 # 7. CountSketch — top-K over Zipfian endpoint distribution.
 #    Stage: edge CountSketch counters, gateway merge by sum of
@@ -184,18 +190,35 @@
   - zone
   sketch_family_override: CountSketch
   target_path: warm
+  # Heavy-hitter dimension the CountSketch/top-k ranks (producer stamps
+  # `endpoint` per event). Emitted as the asap_edge `item_label`.
+  item_label: endpoint
 
 # 8. CountMinSketch — frequency query over the same Zipfian
-#    endpoint distribution, but exercised through `rate(...[5m])`
-#    so the family scored is the one-sided over-estimator. The
-#    metric is split from top_endpoint_qps so per-family
-#    bandwidth + accuracy bookkeeping stays clean even though
-#    they share the same distribution shape on the producer side.
+#    endpoint distribution, exercised through the CMS frequency
+#    query surface so the family scored is the one-sided
+#    over-estimator. The metric is split from top_endpoint_qps so
+#    per-family bandwidth + accuracy bookkeeping stays clean even
+#    though they share the same distribution shape on the producer side.
+#
+#    Query surface (ASAPQuery-backend sketch_reducer
+#    `function_to_family`): the CMS / CountSketch FrequencyEstimate
+#    family answers `count_over_time(m[w])` (the PromQL surface) /
+#    `frequency(m)` (canonical) — it decodes the per-window sketch
+#    matrix directly. `rate(...)` is NOT the CMS surface: the
+#    analyzer classifies `rate()` as a COUNTER op → `ExactAgg(Sum)`,
+#    which has no warm CMS sid and falls over to archive. Use
+#    `count_over_time` at the edge window width ([30s]) so the warm
+#    answer is computed over the same window the CMS sealed.
 - metric_name: endpoint_request_freq
-  query_string: "rate(endpoint_request_freq[5m])"
+  query_string: "count_over_time(endpoint_request_freq[30s])"
   accuracy_sla: 0.05
   assign_to_role: agent
   grouping_labels:
   - zone
   sketch_family_override: CountMinSketch
   target_path: warm
+  # Frequency key the CMS estimates per-value counts for (producer stamps
+  # `endpoint` per event). Emitted as the asap_edge `item_label` so the CMS
+  # hashes endpoint into ONE sketch per zone instead of one per endpoint.
+  item_label: endpoint

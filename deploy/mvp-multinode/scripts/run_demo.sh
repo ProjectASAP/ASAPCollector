@@ -553,7 +553,7 @@ agents_up() {
         b1)        agent_cfg=b1/asap-otel-agent-b1-otlp-gzip.yaml ;;        # raw OTLP→VM, compression gzip  (matched-gzip baseline)
         b2)        agent_cfg=b2/asap-otel-agent-b2-prw-snappy.yaml ;;       # raw PRW→VM   (Snappy, native)  (Prometheus ref)
         b3)        agent_cfg=b3/asap-otel-agent-b3-serf.yaml ;;             # serf wire codec → gw → VM      (serf-compressed wire ref)
-        asap)      agent_cfg=asap/asap-otel-agent-b6-asap-single-sketch.yaml ;;  # edge-agg, OTLP→backend none  (matched-none asap)
+        asap)      agent_cfg=asap/asap-otel-agent-asapedge.yaml ;;             # fused asap_edge edge-agg, OTLP→backend none (matched-none asap)
         asap-gzip) agent_cfg=asap-gzip/asap-otel-agent-asap-gzip.yaml ;;    # edge-agg, OTLP→backend gzip   (matched-gzip asap)
         *) die "unknown arm ${arm}" ;;
     esac

@@ -118,6 +118,52 @@ type MetricFamily struct {
 	// inherits the runtime default (always prefer delta). Unit is
 	// sketch-specific (bucket counts / cells); see PrecomputeConfig.DeltaThreshold.
 	DeltaThreshold uint64 `mapstructure:"delta_threshold"`
+
+	// EmitHeap selects the heap-bearing CountSketch wire variant for a
+	// `family: countsketch` metric: the emitted sketch carries a bounded
+	// top-k min-heap of heavy-hitter items alongside the count matrix,
+	// serialized as the MessagePack `{sketch, topk_heap, heap_size}` payload
+	// the ASAPQuery backend detects as `CountSketchWithHeap`
+	// (Capability::FrequencyTopk) — so a warm `topk(metric)` query routes to
+	// this sketch instead of returning "No result". Implies msgpack encoding
+	// (heap-bearing payloads have no proto wire form): the first window per
+	// series ships a full MSGPACK heap frame, each later window a MSGPACK_DELTA
+	// frame (sparse matrix delta + full heap) when delta_transmission is on.
+	// Pair with ItemLabel so the heap ranks the real item dimension (e.g.
+	// endpoint), not the metric name. Only valid on `family: countsketch`;
+	// rejected at validation for any other family. Default false → plain
+	// proto CountSketch (FrequencyEstimate), byte-unchanged from before.
+	// Mirrors the standalone countsketchprocessor's emit_heap.
+	EmitHeap bool `mapstructure:"emit_heap"`
+	// HeapSize bounds the transmitted top-k heap when EmitHeap is true.
+	// Defaults to 100 (sketchlib-go's CountSketch TOPK_SIZE) when <=0.
+	// Ignored when EmitHeap is false.
+	HeapSize int `mapstructure:"heap_size"`
+	// ItemLabel names the data-point attribute whose VALUE is the inner
+	// high-cardinality dimension a sketch counts/ranks over (e.g. "endpoint"
+	// for top_endpoint_qps, "user_id" for unique_users_per_min). Consulted by:
+	//
+	//   * CountSketch + EmitHeap — the heap-bearing top-k path: each
+	//     observation is keyed by `dpAttrs[ItemLabel]` so distinct items get
+	//     distinct cells and the top-k heap ranks them (mirrors the standalone
+	//     countsketchprocessor's item_label).
+	//   * HLL — the cardinality of the ItemLabel dimension: the HLL hashes
+	//     `dpAttrs[ItemLabel]` so it counts DISTINCT label values per group
+	//     (e.g. distinct user_ids per zone) instead of one cardinality-1 HLL
+	//     per value.
+	//   * CountMinSketch — frequency keyed by the ItemLabel value: the CMS
+	//     hashes `dpAttrs[ItemLabel]` so it estimates per-value frequency
+	//     within each group instead of per full-attribute-set tuple.
+	//
+	// In ALL three the ItemLabel attribute is PROJECTED OUT of the series key
+	// and the emitted output labels, so there is ONE sketch per grouping bucket
+	// (the remaining attributes / AggregateBy) rather than one sketch per item
+	// value. When empty: CountSketch+heap keys by the metric NAME (degenerate
+	// single-key), while HLL/CMS keep their pre-item_label keying (HLL hashes
+	// the numeric sample; CMS hashes the full attribute-set key), byte-unchanged.
+	// The non-heap plain CountSketch keeps its attribute-set frequency keying
+	// regardless (B6).
+	ItemLabel string `mapstructure:"item_label"`
 }
 
 // ColdConfig configures the per-shard Gorilla cold archive. Each shard

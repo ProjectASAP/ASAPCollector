@@ -141,12 +141,17 @@ func (c *Config) Validate() error {
 //     / window_duration_seconds attrs onto its emit. Only CountSketch
 //     does (see PrecomputeConfig.EmitWindowStats docs).
 //
-// MetricName is intentionally left empty here — the legacy HLL emits
-// `<input>_hll_cardinality`, where
-// `<input>` varies per ingested metric. The shim resolves the final
-// output name in its encode path; the runtime's MetricName field is
-// a static-per-Precompute value and would not honor the per-input
-// naming the legacy emit guarantees.
+// MetricName is intentionally left empty here. Refactor-2026-05: the
+// HLL processor preserves the input metric name end-to-end (see
+// encode.go::cardinalityMetricName). The HLL encoding is identified by
+// the OTLP pdata.Metric variant tag (HLLSketch), NOT by a name suffix,
+// so the backend ingests the sketch under the raw input name and a
+// PromQL `count(<input>)` query resolves directly against the stored
+// sketch state. `<input>` varies per ingested metric; the runtime's
+// MetricName field is a static-per-Precompute value and would not honor
+// the per-input naming the emit guarantees, so the shim resolves the
+// (preserved) output name in its encode path instead. This matches the
+// DDSketch / KLL "preserve input name on the wire" convention.
 func (c *Config) toPrecomputeConfig(metricName string) *precompute.PrecomputeConfig {
 	matchers := make([]precompute.LabelMatcher, 0, 1)
 	if metricName != "" {
@@ -179,8 +184,8 @@ func (c *Config) toPrecomputeConfig(metricName string) *precompute.PrecomputeCon
 		OmitResourceAttrs: true,
 		GlobalAggregation: false,
 		EmitWindowStats:   false,
-		// MetricName left empty: the shim's encode path computes
-		// `<input>_hll_cardinality` from
-		// the per-envelope context; see encodeEnvelopes.
+		// MetricName left empty: the shim's encode path preserves the
+		// raw `<input>` name from the per-envelope context (Refactor-
+		// 2026-05); see encodeEnvelopes / cardinalityMetricName.
 	}
 }

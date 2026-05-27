@@ -391,9 +391,14 @@ func (w *windowState) observeEnvelope(
 	}
 
 	switch env.Encoding {
-	case EncodingProtoDelta:
+	case EncodingProtoDelta, EncodingMsgpackDelta:
 		// Delta apply path: feed the delta bytes directly into the
-		// sketch; the wrapper knows the on-the-wire delta format.
+		// sketch; the wrapper knows the on-the-wire delta format (proto
+		// sparse cells, or the msgpack DELTA-HEAP frame). Under the
+		// per-window-reset model each delta is that window's own state
+		// against empty, and the runtime already starts each window with
+		// a fresh per-series sketch, so the apply reconstructs the
+		// window's state.
 		if err := entry.Sketch.ApplyDelta(env.Payload); err != nil {
 			return fmt.Errorf("apply delta: %w", err)
 		}

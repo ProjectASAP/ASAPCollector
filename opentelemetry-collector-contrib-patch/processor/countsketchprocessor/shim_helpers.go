@@ -120,11 +120,19 @@ func (p *countSketchProcessor) observeMetric(resourceAttrs pcommon.Map, m pmetri
 	return nil
 }
 
-// observeFloat is the scalar-input fast path. Metric name travels in
-// ObservationValue.Bytes as a side-channel so the SketchObserver can
-// call UpdateString(metricName, value) with the same key the legacy
-// processor used.
+// observeFloat is the scalar-input fast path. The sketch KEY (the item
+// the CountSketch counts/ranks) travels in ObservationValue.Bytes as a
+// side-channel so the SketchObserver calls UpdateString(key, value).
+//
+// Key selection (C2): when config sets ItemLabel, the key is that
+// label's VALUE (preferring the data-point attrs, then the resource
+// attrs), so distinct heavy-hitter items (e.g. each `endpoint`) land in
+// distinct cells and TopK can rank them. When ItemLabel is empty, OR the
+// named label is absent on this data point, the key falls back to the
+// metric NAME — preserving the legacy behavior and byte-parity for the
+// no-item-label case.
 func (p *countSketchProcessor) observeFloat(name string, resourceAttrs, dpAttrs pcommon.Map, ts pcommon.Timestamp, val float64) error {
+	key := p.sketchKey(name, resourceAttrs, dpAttrs)
 	obs := precompute.Observation{
 		TimestampMs: uint64(ts / 1_000_000),
 		Metric:      name,
@@ -132,10 +140,32 @@ func (p *countSketchProcessor) observeFloat(name string, resourceAttrs, dpAttrs 
 		Value: precompute.ObservationValue{
 			Kind:  precompute.KindFloat,
 			Float: val,
-			Bytes: []byte(name),
+			Bytes: []byte(key),
 		},
 	}
 	return p.pc.Observe(&obs)
+}
+
+// sketchKey resolves the CountSketch item key for one observation.
+// Returns the value of the configured ItemLabel (data-point attrs win
+// over resource attrs, mirroring mergedLabels' precedence) when present
+// and non-empty; otherwise the metric name (legacy behavior / back-compat
+// byte-parity). When ItemLabel is unset the metric name is always used.
+func (p *countSketchProcessor) sketchKey(name string, resourceAttrs, dpAttrs pcommon.Map) string {
+	if p.config.ItemLabel == "" {
+		return name
+	}
+	if v, ok := dpAttrs.Get(p.config.ItemLabel); ok {
+		if s := v.AsString(); s != "" {
+			return s
+		}
+	}
+	if v, ok := resourceAttrs.Get(p.config.ItemLabel); ok {
+		if s := v.AsString(); s != "" {
+			return s
+		}
+	}
+	return name
 }
 
 // flushToMetrics drains the Precompute and converts the closed
@@ -179,12 +209,26 @@ func (p *countSketchProcessor) encodeSketchMetrics(envs []*precompute.SketchEnve
 	return md
 }
 
-// stampDPMetadata walks the encoded pmetric output in encode-order
-// (groupOrder by ResourceLabels, envelopes within group preserved)
-// and stamps the CountSketch parent's AggregationTemporality plus
-// Rows/Cols (sketch matrix dimensions, sent ONCE per Metric emit
-// instead of duplicated per DataPoint as of refactor-2026-05) and
-// stamps each DP's Encoding tag.
+// stampDPMetadata stamps the CountSketch parent's AggregationTemporality
+// plus Rows/Cols (sketch matrix dimensions, sent ONCE per Metric emit
+// instead of duplicated per DataPoint as of refactor-2026-05) and each
+// DP's Encoding tag. The encoder's own CountSketch encoding mapper is a
+// stub that always writes Proto (otel/encode.go::hostNeutralToCountSketchEncoding),
+// so this re-stamp is load-bearing for PROTO_DELTA / msgpack frames.
+//
+// C6 hardening: the encoder GROUPS envelopes by ResourceLabels
+// (otel/encode.go::Encode builds one ResourceMetrics per unique
+// ResourceLabels group, in first-seen order, envelopes preserved within a
+// group), so the encoded tree's metric order is NOT the input `envs`
+// order whenever more than one resource-label group is present. The
+// previous flat `idx++` walk assumed a 1:1 in-order correspondence and
+// would stamp the wrong envelope's Encoding/Temporality onto a DP after
+// any regrouping. Instead, reproduce the encoder's exact group ordering
+// to get the envelopes in ENCODED order, then pair each CountSketch
+// metric (encoder emits exactly one DP per envelope) with its envelope
+// from that ordering. Guards: only CountSketch metrics consume an
+// envelope, and we stop if the encoded count and envelope count diverge
+// (a fail-safe so a future encoder change can't silently misalign).
 //
 // Refactor-2026-05: per-DP `dimension`, `epsilon`, `delta` are
 // removed from CountSketchDataPoint:
@@ -194,32 +238,88 @@ func (p *countSketchProcessor) encodeSketchMetrics(envs []*precompute.SketchEnve
 //     container, so they no longer ride per-DP.
 func (p *countSketchProcessor) stampDPMetadata(md pmetric.Metrics, envs []*precompute.SketchEnvelope) {
 	rows, cols := configDimensions(p.config)
+	encodedOrder := envelopesInEncodeOrder(envs)
 	idx := 0
 	rms := md.ResourceMetrics()
-	for i := 0; i < rms.Len() && idx < len(envs); i++ {
+	for i := 0; i < rms.Len() && idx < len(encodedOrder); i++ {
 		sms := rms.At(i).ScopeMetrics()
-		for j := 0; j < sms.Len() && idx < len(envs); j++ {
+		for j := 0; j < sms.Len() && idx < len(encodedOrder); j++ {
 			ms := sms.At(j).Metrics()
-			for k := 0; k < ms.Len() && idx < len(envs); k++ {
+			for k := 0; k < ms.Len() && idx < len(encodedOrder); k++ {
 				m := ms.At(k)
+				// Only CountSketch metrics correspond to (consume) an
+				// envelope; any other metric type is not something Encode
+				// produced from `envs`, so skip it WITHOUT advancing idx
+				// (advancing here was the old bug's index-skew source).
 				if m.Type() != pmetric.MetricTypeCountSketch {
-					idx++
 					continue
 				}
+				env := encodedOrder[idx]
 				cs := m.CountSketch()
-				cs.SetAggregationTemporality(pmetric.AggregationTemporality(envs[idx].AggregationTemporality))
+				cs.SetAggregationTemporality(pmetric.AggregationTemporality(env.AggregationTemporality))
 				cs.SetRows(int32(rows))
 				cs.SetCols(int32(cols))
 				dps := cs.DataPoints()
-				for l := 0; l < dps.Len() && idx < len(envs); l++ {
-					dp := dps.At(l)
-					env := envs[idx]
-					dp.SetEncoding(hostNeutralToTypedEncoding(env.Encoding, p.config.Encoding))
-					idx++
+				for l := 0; l < dps.Len(); l++ {
+					dps.At(l).SetEncoding(hostNeutralToTypedEncoding(env.Encoding, p.config.Encoding))
 				}
+				idx++
 			}
 		}
 	}
+	if idx != len(encodedOrder) && p.logger != nil {
+		// Encoded-tree metric count and envelope count disagree — a
+		// signal that the encoder's grouping/ordering changed out from
+		// under this shim. Stamps already applied stay correct (paired by
+		// reconstructed encode order); log so the divergence is visible.
+		p.logger.Warn("countsketch: stampDPMetadata stamped fewer metrics than envelopes; "+
+			"encoder ordering may have changed",
+			zap.Int("stamped", idx), zap.Int("envelopes", len(encodedOrder)))
+	}
+}
+
+// envelopesInEncodeOrder returns envs reordered to match the order the
+// otel adapter's Encode emits Metrics: grouped by ResourceLabels
+// (first-seen group order), envelopes preserved within each group, nil
+// envelopes dropped. This mirrors otel/encode.go::Encode +
+// canonicalLabelsKey so stampDPMetadata can pair encoded DPs with their
+// source envelopes by position without assuming the input order survives.
+func envelopesInEncodeOrder(envs []*precompute.SketchEnvelope) []*precompute.SketchEnvelope {
+	groupOrder := make([]string, 0, len(envs))
+	groups := make(map[string][]*precompute.SketchEnvelope, len(envs))
+	for _, env := range envs {
+		if env == nil {
+			continue
+		}
+		key := canonicalResourceLabelsKey(env.ResourceLabels)
+		if _, ok := groups[key]; !ok {
+			groupOrder = append(groupOrder, key)
+		}
+		groups[key] = append(groups[key], env)
+	}
+	out := make([]*precompute.SketchEnvelope, 0, len(envs))
+	for _, gkey := range groupOrder {
+		out = append(out, groups[gkey]...)
+	}
+	return out
+}
+
+// canonicalResourceLabelsKey mirrors otel/encode.go::canonicalLabelsKey
+// (unexported there) so the shim groups identically to the encoder.
+// ResourceLabels arrive sorted-by-key from the runtime, so equal slices
+// produce equal keys.
+func canonicalResourceLabelsKey(kvs []precompute.KeyValue) string {
+	if len(kvs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, kv := range kvs {
+		b.WriteString(kv.Key)
+		b.WriteByte('=')
+		b.WriteString(kv.Value)
+		b.WriteByte(';')
+	}
+	return b.String()
 }
 
 // encodeGaugeMetrics is the non-transmit emission path. The legacy
@@ -357,6 +457,8 @@ func countSketchEncodingToHostNeutral(e pmetric.CountSketchEncoding) precompute.
 		return precompute.EncodingProtoDelta
 	case pmetric.CountSketchEncodingMsgpack:
 		return precompute.EncodingMsgpack
+	case pmetric.CountSketchEncodingMsgpackDelta:
+		return precompute.EncodingMsgpackDelta
 	}
 	return precompute.EncodingProtoFull
 }
@@ -373,6 +475,8 @@ func hostNeutralToTypedEncoding(e precompute.Encoding, cfgEnc SketchEncoding) pm
 		return pmetric.CountSketchEncodingDelta
 	case precompute.EncodingMsgpack:
 		return pmetric.CountSketchEncodingMsgpack
+	case precompute.EncodingMsgpackDelta:
+		return pmetric.CountSketchEncodingMsgpackDelta
 	}
 	if cfgEnc == EncodingMsgpack {
 		return pmetric.CountSketchEncodingMsgpack

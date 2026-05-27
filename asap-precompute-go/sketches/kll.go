@@ -62,16 +62,28 @@ func (w *KLLWrapper) Update(v float64) {
 	}
 }
 
-// Snapshot serializes via SerializePortable + proto.Marshal — the
-// canonical wire format the backend's modified-OTLP KLL decoder
+// Snapshot serializes via SerializePortableRawF64 + proto.Marshal — the
+// raw-f64 items[] wire format the backend's modified-OTLP KLL decoder
 // expects (matching DeserializeKLLSketchFromProtoBytes).
+//
+// We deliberately use the RAW-F64 form, NOT the value-offset fixed-point
+// form (SerializePortable). The fixed-point encoding (offset/value_scale/
+// residuals, KLLState fields 7–9) is a newer bandwidth optimization that
+// leaves items[] empty; the ASAPQuery backend's KLL decoder does not yet
+// understand those fields, so a fixed-point frame decodes as a degenerate /
+// empty sketch (observed in the field as `KllState.k must be >= 8 (got 0)`
+// for integer-valued metrics such as http_requests_total_latency_ms, whose
+// exact-integer samples always trip the fixed-point path while continuous
+// double metrics like request_size_bytes mostly stay on the raw-f64 path).
+// Forcing raw-f64 keeps EVERY emitted KLL frame in the format the backend
+// reconstructs correctly. Empty windows still emit nothing (nil payload).
 func (w *KLLWrapper) Snapshot() ([]byte, error) {
 	if w.sk == nil || w.sk.GetSize() == 0 {
 		return nil, nil
 	}
-	env, err := w.sk.SerializePortable()
+	env, err := w.sk.SerializePortableRawF64()
 	if err != nil {
-		return nil, fmt.Errorf("kll.SerializePortable: %w", err)
+		return nil, fmt.Errorf("kll.SerializePortableRawF64: %w", err)
 	}
 	return proto.Marshal(env)
 }
