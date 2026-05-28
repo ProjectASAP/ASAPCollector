@@ -57,6 +57,16 @@ func NewDDSketchWrapper(alpha float64) *DDSketchWrapper {
 	return &DDSketchWrapper{sk: ddsketch.NewDDSketch(alpha), alpha: alpha, sampleP: 1.0}
 }
 
+// RelativeAccuracy returns the DDSketch alpha (relative accuracy) this
+// wrapper was built with. The OTel encoder stamps it onto the emitted
+// pmetric.DDSketch container's relative_accuracy field so the backend
+// records a non-zero ε on registration. Without it the container defaults
+// to 0.0 — a degenerate sketch the backend can't answer quantiles from, so
+// `quantile_over_time(...)` capability-misses to the archive and returns
+// empty. The standalone ddsketchprocessor sets this via its config; the
+// fused asap_edge path lost it because the runtime envelope didn't carry it.
+func (w *DDSketchWrapper) RelativeAccuracy() float64 { return w.alpha }
+
 // WithSampleP enables NitroSketch geometric skip-sampling at probability p in
 // (0,1]. p>=1 (or NaN) disables sampling (exact, the default). Unlike HLL's
 // hash-threshold sampling, the skip decision is value-independent, so a skipped

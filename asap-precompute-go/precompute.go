@@ -599,7 +599,20 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 		MetricName:             cfg.MetricName,
 		Count:                  entry.Count,
 		AggregationTemporality: cfg.Temporality,
+		RelativeAccuracy:       sketchRelativeAccuracy(entry.Sketch),
 	}, nil
+}
+
+// sketchRelativeAccuracy reads the DDSketch relative-accuracy alpha off a
+// sketch instance when it exposes one (DDSketchWrapper); 0 for every other
+// family. Stamped onto the envelope so the OTel encoder can set the output
+// pmetric.DDSketch container's relative_accuracy (an ε=0 container is a
+// degenerate sketch the backend can't answer quantiles from).
+func sketchRelativeAccuracy(s Sketch) float64 {
+	if ra, ok := s.(interface{ RelativeAccuracy() float64 }); ok {
+		return ra.RelativeAccuracy()
+	}
+	return 0
 }
 
 // UpdateConfig implements Precompute.UpdateConfig.
