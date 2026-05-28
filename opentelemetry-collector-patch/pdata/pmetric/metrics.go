@@ -60,6 +60,8 @@ func (ms Metrics) DataPointCount() (dataPointCount int) {
 					dataPointCount += m.CountMinSketch().DataPoints().Len()
 				case MetricTypeHLLSketch:
 					dataPointCount += m.HLLSketch().DataPoints().Len()
+				case MetricTypeSumAgg:
+					dataPointCount += m.SumAgg().DataPoints().Len()
 				}
 			}
 		}

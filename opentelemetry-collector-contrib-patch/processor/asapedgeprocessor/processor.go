@@ -24,7 +24,6 @@ type asapEdgeProcessor struct {
 	hashSeed  maphash.Seed
 
 	shards        []*shard
-	sumMetrics    map[string]*MetricFamily
 	sketchMetrics map[string]*MetricFamily
 	// configured is the set of every metric name listed in cfg.Metrics
 	// (regardless of tier). Used by DropOriginal so a tier=cold metric's raw
@@ -79,10 +78,6 @@ type asapEdgeProcessor struct {
 	// failure dropped the window's envelopes silently; this keeps the loss
 	// observable across all aggregators.
 	sketchEncodeDropCount atomic.Uint64
-	// sumOverflowCount counts sum-aggregator group observations dropped because
-	// a shard's group map hit MaxSeries.
-	sumOverflowCount atomic.Uint64
-
 	stopCh       chan struct{}
 	doneCh       chan struct{}
 	flushStarted bool
@@ -106,7 +101,6 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 		telemetry:     set.TelemetrySettings,
 		hashSeed:      maphash.MakeSeed(),
 		shards:        make([]*shard, cfg.ShardCount),
-		sumMetrics:    make(map[string]*MetricFamily),
 		sketchMetrics: make(map[string]*MetricFamily),
 		configured:    make(map[string]struct{}),
 		coldSkip:      make(map[string]struct{}),
@@ -121,11 +115,10 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 		// Build the warm aggregator only when the tier includes warm
 		// (warm|both). A tier=cold metric is cold-archived only.
 		if m.warmEligible() {
-			if m.Family == FamilySum {
-				p.sumMetrics[m.Metric] = m
-			} else {
-				p.sketchMetrics[m.Metric] = m
-			}
+			// Sum routes through the same sketchMetrics/precompute path as the
+			// sketch families now (FamilySum builds a SumWrapper aggregator and
+			// emits a first-class SumAgg envelope); there is no separate sum path.
+			p.sketchMetrics[m.Metric] = m
 		}
 		// A tier=warm metric is excluded from the cold gorilla archive.
 		if !m.coldEligible() {
@@ -148,13 +141,7 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 	}
 	for i := range p.shards {
 		sh := &shard{
-			sumAggs:    make(map[string]*sumAggregator, len(p.sumMetrics)),
 			sketchAggs: make(map[string]*sketchAggregator, len(p.sketchMetrics)),
-		}
-		for name, fam := range p.sumMetrics {
-			sa := newSumAggregator(fam.AggregateBy, fam.MaxSeries)
-			sa.procOverflowCount = &p.sumOverflowCount
-			sh.sumAggs[name] = sa
 		}
 		for name, fam := range p.sketchMetrics {
 			opts := sketchOpts{

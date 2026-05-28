@@ -193,6 +193,10 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		// serializeSeries) and the otel adapter maps those to the heap-bearing
 		// pmetric encodings the backend promotes to CountSketchWithHeap.
 		encoding = precompute.EncodingProtoFull
+		// aggKind is the umbrella AggregationKind stamped on the config/envelope.
+		// Defaults to Sketch; the FamilySum case flips it to Sum so the otel
+		// adapter emits a first-class SumAgg envelope instead of a sketch metric.
+		aggKind = precompute.AggKindSketch
 		// obsKindOverride, when non-zero-meaningful, replaces observeKindFor for
 		// this family. Used by the heap CountSketch path so each sample keys the
 		// sketch by the configured item_label value (the heavy-hitter dimension)
@@ -337,12 +341,23 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 			obsKindOverride = &k
 			itemLabel = fam.ItemLabel
 		}
+	case FamilySum:
+		// Sum is a first-class AggregationType, NOT a sketch: build a
+		// precompute-backed SumWrapper so it flushes a SumAgg envelope
+		// (AggKind=Sum) through the same windowed runtime as the sketch
+		// families. Per-shard partials are additive; the backend sums the
+		// per-window SumAgg deltas for the same sid (ExactAgg(Sum)).
+		st = precompute.SketchTypeUnspecified
+		aggKind = precompute.AggKindSum
+		factory = func() precompute.Sketch { return sketches.NewSumWrapper() }
+		observer = sketches.SumObserver{}
 	default:
 		return nil, false
 	}
 	pcfg := &precompute.PrecomputeConfig{
 		AggID:          precompute.AggId(fnv64(metric)),
 		SketchType:     st,
+		AggKind:        aggKind,
 		Mode:           precompute.Tumbling,
 		Window:         precompute.WindowSpec{Size: window, AllowedLateness: opts.allowedLateness},
 		AggregateBy:    fam.AggregateBy,
@@ -381,10 +396,17 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 	if obsKindOverride != nil {
 		obsKind = *obsKindOverride
 	}
+	// Sketch families suffix the output metric ("_ddsketch" etc.); Sum is a
+	// first-class aggregate and keeps the metric's OWN name (no suffix) so a
+	// `sum(metric)` query resolves to the same name the backend registers.
+	metricSuffix := "_" + string(fam.Family)
+	if fam.Family == FamilySum {
+		metricSuffix = ""
+	}
 	return &sketchAggregator{
 		pc:        precompute.New(pcfg, factory, observer),
 		pcfg:      pcfg,
-		enc:       &oteladapter.AdapterConfig{MetricSuffix: "_" + string(fam.Family), DropOriginal: true},
+		enc:       &oteladapter.AdapterConfig{MetricSuffix: metricSuffix, DropOriginal: true},
 		factory:   factory,
 		obsKind:   obsKind,
 		itemLabel: itemLabel,

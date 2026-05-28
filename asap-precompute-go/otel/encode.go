@@ -88,6 +88,19 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 	startTs := pcommon.Timestamp(env.WindowStartMs * 1_000_000)
 	endTs := pcommon.Timestamp(env.WindowEndMs * 1_000_000)
 
+	// Sum is a first-class AggregationType (not a sketch): emit the
+	// modified-OTLP SumAgg metric carrying the SumState envelope bytes.
+	if env.EffectiveAggKind() == precompute.AggKindSum {
+		dst := out.SetEmptySumAgg()
+		dp := dst.DataPoints().AppendEmpty()
+		KeyValuesToAttributes(env.Labels, dp.Attributes())
+		dp.SetStartTimestamp(startTs)
+		dp.SetTimestamp(endTs)
+		dp.SetSketch(env.Payload)
+		dp.SetEncoding(hostNeutralToSumAggEncoding(env.Encoding))
+		return nil
+	}
+
 	switch env.SketchType {
 	case precompute.SketchTypeDDSketch:
 		dst := out.SetEmptyDDSketch()
@@ -188,6 +201,18 @@ func hostNeutralToDDSketchEncoding(e precompute.Encoding) pmetric.DDSketchEncodi
 		return pmetric.DDSketchEncodingMsgpack
 	}
 	return pmetric.DDSketchEncodingProto
+}
+
+func hostNeutralToSumAggEncoding(e precompute.Encoding) pmetric.SumAggEncoding {
+	switch e {
+	case precompute.EncodingProtoFull:
+		return pmetric.SumAggEncodingProto
+	case precompute.EncodingProtoDelta:
+		return pmetric.SumAggEncodingProtoDelta
+	case precompute.EncodingMsgpack:
+		return pmetric.SumAggEncodingMsgpack
+	}
+	return pmetric.SumAggEncodingProto
 }
 
 func hostNeutralToKLLSketchEncoding(e precompute.Encoding) pmetric.KLLSketchEncoding {

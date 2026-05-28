@@ -124,6 +124,11 @@ type PrecomputeConfig struct {
 	// SketchType determines which Sketch implementation handles
 	// observations for this AggId.
 	SketchType SketchType
+	// AggKind is the umbrella aggregation kind stamped onto every emitted
+	// envelope (Sketch vs Sum). Unset (AggKindUnspecified) is resolved to
+	// AggKindSketch for any SketchType-bearing config, so existing sketch
+	// configs are unaffected; a Sum config sets AggKindSum.
+	AggKind AggregationKind
 	// Mode picks the windowing strategy.
 	Mode AggregationMode
 	// Window configures size / slide / lateness.

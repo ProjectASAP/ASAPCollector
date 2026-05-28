@@ -57,6 +57,7 @@ var pmetric = &Package{
 		hllsketch,
 		countsketch,
 		countminsketch,
+		sumAgg,
 		summary,
 		numberDataPointSlice,
 		numberDataPoint,
@@ -74,6 +75,8 @@ var pmetric = &Package{
 		countsketchDataPoint,
 		countminsketchDataPointSlice,
 		countminsketchDataPoint,
+		sumAggDataPointSlice,
+		sumAggDataPoint,
 		bucketsValues,
 		summaryDataPointSlice,
 		summaryDataPoint,
@@ -89,6 +92,7 @@ var pmetric = &Package{
 		hllsketchEncodingEnum,
 		countsketchEncodingEnum,
 		countminsketchEncodingEnum,
+		sumAggEncodingEnum,
 	},
 }
 
@@ -279,6 +283,11 @@ var metric = &messageStruct{
 					protoID:       17,
 					returnMessage: hllsketch,
 				},
+				&OneOfMessageValue{
+					fieldName:     "SumAgg",
+					protoID:       18,
+					returnMessage: sumAgg,
+				},
 			},
 		},
 		&SliceField{
@@ -392,6 +401,26 @@ var ddsketch = &messageStruct{
 			fieldName: "RelativeAccuracy",
 			protoID:   3,
 			protoType: proto.TypeDouble,
+		},
+	},
+}
+
+var sumAgg = &messageStruct{
+	structName:    "SumAgg",
+	description:   "// SumAgg represents a first-class scalar Sum aggregate (AggregationKind = Sum), carried as a portable {sum,count} envelope in the Sketch bytes. It is NOT a sketch; it rides the modified-OTLP metric data oneof alongside the sketch families so the backend can decode it via the same envelope path (into the ExactAgg(Sum) accumulator).",
+	protoName:     "SumAgg",
+	upstreamProto: "gootlpmetrics.SumAgg",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "DataPoints",
+			protoID:     1,
+			protoType:   proto.TypeMessage,
+			returnSlice: sumAggDataPointSlice,
+		},
+		&TypedField{
+			fieldName:  "AggregationTemporality",
+			protoID:    2,
+			returnType: aggregationTemporalityType,
 		},
 	},
 }
@@ -866,6 +895,70 @@ var ddsketchDataPoint = &messageStruct{
 	},
 }
 
+var sumAggDataPointSlice = &messageSlice{
+	structName:      "SumAggDataPointSlice",
+	elementNullable: true,
+	element:         sumAggDataPoint,
+}
+
+var sumAggDataPoint = &messageStruct{
+	structName:    "SumAggDataPoint",
+	description:   "// SumAggDataPoint is a single data point carrying a scalar Sum aggregate as a portable {sum,count} envelope in the Sketch bytes.",
+	protoName:     "SumAggDataPoint",
+	upstreamProto: "gootlpmetrics.SumAggDataPoint",
+	fields: []Field{
+		&SliceField{
+			fieldName:   "Attributes",
+			protoID:     9,
+			protoType:   proto.TypeMessage,
+			returnSlice: mapStruct,
+		},
+		&PrimitiveField{
+			fieldName: "SeriesID",
+			protoID:   16,
+			protoType: proto.TypeUint64,
+		},
+		&TypedField{
+			fieldName:       "StartTimestamp",
+			originFieldName: "StartTimeUnixNano",
+			protoID:         2,
+			returnType:      timestampType,
+		},
+		&TypedField{
+			fieldName:       "Timestamp",
+			originFieldName: "TimeUnixNano",
+			protoID:         3,
+			returnType:      timestampType,
+		},
+		&PrimitiveField{
+			fieldName: "Sketch",
+			protoID:   8,
+			protoType: proto.TypeBytes,
+		},
+		&TypedField{
+			fieldName:  "Encoding",
+			protoID:    10,
+			returnType: sumAggEncodingType,
+		},
+		&SliceField{
+			fieldName:   "Exemplars",
+			protoID:     11,
+			protoType:   proto.TypeMessage,
+			returnSlice: exemplarSlice,
+		},
+		&TypedField{
+			fieldName: "Flags",
+			protoID:   15,
+			returnType: &TypedType{
+				structName: "DataPointFlags",
+				protoType:  proto.TypeUint32,
+				defaultVal: "0",
+				testVal:    "1",
+			},
+		},
+	},
+}
+
 var kllsketchDataPointSlice = &messageSlice{
 	structName:      "KLLSketchDataPointSlice",
 	elementNullable: true,
@@ -1282,6 +1375,26 @@ var ddsketchEncodingEnum = &proto.Enum{
 		{Name: "DDSKETCH_ENCODING_PROTO_DELTA", Value: 2},
 		{Name: "DDSKETCH_ENCODING_MSGPACK", Value: 3},
 		{Name: "DDSKETCH_ENCODING_MSGPACK_DELTA", Value: 4},
+	},
+}
+
+var sumAggEncodingType = &TypedType{
+	structName:  "SumAggEncoding",
+	protoType:   proto.TypeEnum,
+	messageName: "SumAggEncoding",
+	defaultVal:  "SumAggEncoding(0)",
+	testVal:     "SumAggEncoding(1)",
+}
+
+var sumAggEncodingEnum = &proto.Enum{
+	Name:        "SumAggEncoding",
+	Description: "// SumAggEncoding identifies how the SumAgg payload bytes are encoded.",
+	Fields: []*proto.EnumField{
+		{Name: "SUM_AGG_ENCODING_UNSPECIFIED", Value: 0},
+		{Name: "SUM_AGG_ENCODING_PROTO", Value: 1},
+		{Name: "SUM_AGG_ENCODING_PROTO_DELTA", Value: 2},
+		{Name: "SUM_AGG_ENCODING_MSGPACK", Value: 3},
+		{Name: "SUM_AGG_ENCODING_MSGPACK_DELTA", Value: 4},
 	},
 }
 

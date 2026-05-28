@@ -47,19 +47,13 @@ func (p *asapEdgeProcessor) flushLoop() {
 	for {
 		select {
 		case <-p.stopCh:
-			// Final drain: flush every shard (cold + sketch) AND the unified
-			// sum so no un-flushed shard is lost on Shutdown.
+			// Final drain: flush every shard (cold + sketch) so no un-flushed
+			// shard is lost on Shutdown.
 			p.flushAll(context.Background())
 			return
 		case <-t.C:
 			shardIdx := tick % n
 			p.flushShardWarmCold(context.Background(), shardIdx)
-			// Once per full window cycle (after the last shard in a round),
-			// merge + emit the cross-shard sum so its output cadence and totals
-			// stay window-aligned and unchanged.
-			if shardIdx == n-1 {
-				p.flushSum(context.Background())
-			}
 			tick++
 		}
 	}
@@ -103,9 +97,9 @@ func (p *asapEdgeProcessor) flushAll(ctx context.Context) {
 	}
 
 	out := pmetric.NewMetrics()
-	// Warm sum: merge partials across all shards, emit one delta Sum per metric.
-	p.appendSumMetrics(out)
-	// Warm sketches: per-shard flush (each series lives in one shard).
+	// Warm: per-shard flush of every aggregator (sketches + Sum, which now
+	// flushes a SumAgg envelope through the same path; each series lives in one
+	// shard and the backend sums the per-window SumAgg deltas for the same sid).
 	for _, sh := range p.shards {
 		sh.mu.Lock()
 		for _, sa := range sh.sketchAggs {
@@ -117,9 +111,8 @@ func (p *asapEdgeProcessor) flushAll(ctx context.Context) {
 }
 
 // flushShardWarmCold drains ONE shard's cold fragments and flushes that shard's
-// sketch aggregators, then forwards the sketch envelopes. The cross-shard sum is
-// NOT touched here — it is merged + emitted on the window-aligned cadence by
-// flushSum so its delta totals stay unchanged. This is the staggered per-tick
+// sketch aggregators (including Sum, which now flushes a SumAgg envelope through
+// the same path), then forwards the envelopes. This is the staggered per-tick
 // unit of work: only shard idx's state is built up and released, so the N shards'
 // sawtooths phase-shift instead of releasing in lockstep.
 func (p *asapEdgeProcessor) flushShardWarmCold(ctx context.Context, idx int) {
@@ -139,57 +132,4 @@ func (p *asapEdgeProcessor) flushShardWarmCold(ctx context.Context, idx int) {
 	}
 	sh.mu.Unlock()
 	p.forward(ctx, out)
-}
-
-// flushSum merges the sum partials across ALL shards and emits one delta Sum
-// metric per Sum metric, then resets every shard's partials. Run once per
-// WindowDuration so the backend's per-group delta total per window is identical
-// to the original single-flush behavior.
-func (p *asapEdgeProcessor) flushSum(ctx context.Context) {
-	if len(p.sumMetrics) == 0 {
-		return
-	}
-	out := pmetric.NewMetrics()
-	p.appendSumMetrics(out)
-	p.forward(ctx, out)
-}
-
-// appendSumMetrics merges each Sum metric's partials across all shards (resetting
-// each shard) and appends one delta Sum metric per name to out. Sum is
-// associative, so this is byte/semantically identical regardless of how many
-// shard-ticks elapsed since the last sum flush.
-func (p *asapEdgeProcessor) appendSumMetrics(out pmetric.Metrics) {
-	startMs := p.windowStartMs.Load()
-	now := uint64(time.Now().UnixMilli())
-	// endMs is the window's max observed sample timestamp. Two corrections:
-	//   1. Idle window: no sample this window => maxObserved is still <= startMs,
-	//      which would emit start==end or (after a stale future sample) start>end.
-	//      Clamp endMs up to now so the emitted point spans [start, now], never
-	//      inverted.
-	//   2. start>end guard: if even now < startMs (clock skew), fall back to
-	//      startMs so we never emit an inverted (start>end) data point.
-	endMs := p.maxObservedMs.Load()
-	if endMs <= startMs {
-		endMs = now
-	}
-	if endMs < startMs {
-		endMs = startMs
-	}
-	for name := range p.sumMetrics {
-		merged := make(map[string]*sumGroup)
-		for _, sh := range p.shards {
-			sh.mu.Lock()
-			mergeSumGroups(merged, sh.sumAggs[name].groups)
-			sh.sumAggs[name].reset()
-			sh.mu.Unlock()
-		}
-		emitSumMetric(out, name, merged, startMs, endMs)
-	}
-	// Advance the window start to this window's end and reset the max-observed
-	// watermark down to the same boundary. Resetting (rather than letting it
-	// only ever rise) prevents one future-timestamped sample from permanently
-	// skewing every later window's endMs; the next window's max is rebuilt from
-	// its own samples.
-	p.windowStartMs.Store(endMs)
-	p.resetMaxObserved(endMs)
 }

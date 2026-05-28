@@ -16,7 +16,7 @@ import (
 // processor (gauge in → ObserveKeyed → Drain → Encode out) and asserts the
 // family constructs, observes, and emits without panic.
 func TestAllSketchFamiliesFlush(t *testing.T) {
-	for _, fam := range []FamilyKind{FamilyDDSketch, FamilyKLL, FamilyHLL, FamilyCountSketch, FamilyCountMinSketch} {
+	for _, fam := range []FamilyKind{FamilyDDSketch, FamilyKLL, FamilyHLL, FamilyCountSketch, FamilyCountMinSketch, FamilySum} {
 		t.Run(string(fam), func(t *testing.T) {
 			cap := &capMetrics{}
 			cfg := &Config{

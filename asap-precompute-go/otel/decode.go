@@ -109,6 +109,28 @@ func decodeMetric(
 				Value:          precompute.EnvelopeValue(env),
 			})
 		}
+	case pmetric.MetricTypeSumAgg:
+		dps := m.SumAgg().DataPoints()
+		for i := 0; i < dps.Len(); i++ {
+			dp := dps.At(i)
+			env := &precompute.SketchEnvelope{
+				SchemaVersion:  1,
+				AggKind:        precompute.AggKindSum,
+				ResourceLabels: resourceLabels,
+				Labels:         AttributesToKeyValues(dp.Attributes()),
+				WindowStartMs:  timestampMs(dp.StartTimestamp()),
+				WindowEndMs:    timestampMs(dp.Timestamp()),
+				Encoding:       sumAggEncodingToHostNeutral(dp.Encoding()),
+				Payload:        copyBytes(dp.Sketch()),
+			}
+			*out = append(*out, precompute.Observation{
+				TimestampMs:    timestampMs(dp.Timestamp()),
+				Metric:         name,
+				ResourceLabels: resourceLabels,
+				Labels:         env.Labels,
+				Value:          precompute.EnvelopeValue(env),
+			})
+		}
 	case pmetric.MetricTypeKLLSketch:
 		dps := m.KLLSketch().DataPoints()
 		for i := 0; i < dps.Len(); i++ {
@@ -258,6 +280,18 @@ func ddSketchEncodingToHostNeutral(e pmetric.DDSketchEncoding) precompute.Encodi
 	case pmetric.DDSketchEncodingProtoDelta:
 		return precompute.EncodingProtoDelta
 	case pmetric.DDSketchEncodingMsgpack, pmetric.DDSketchEncodingMsgpackDelta:
+		return precompute.EncodingMsgpack
+	}
+	return precompute.EncodingUnspecified
+}
+
+func sumAggEncodingToHostNeutral(e pmetric.SumAggEncoding) precompute.Encoding {
+	switch e {
+	case pmetric.SumAggEncodingProto:
+		return precompute.EncodingProtoFull
+	case pmetric.SumAggEncodingProtoDelta:
+		return precompute.EncodingProtoDelta
+	case pmetric.SumAggEncodingMsgpack, pmetric.SumAggEncodingMsgpackDelta:
 		return precompute.EncodingMsgpack
 	}
 	return precompute.EncodingUnspecified

@@ -588,6 +588,7 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 	return &SketchEnvelope{
 		SchemaVersion:          1,
 		SketchType:             cfg.SketchType,
+		AggKind:                cfg.AggKind,
 		AggID:                  cfg.AggID,
 		ResourceLabels:         entry.ResourceLabels,
 		Labels:                 labels,

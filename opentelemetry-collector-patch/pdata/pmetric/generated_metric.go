@@ -106,6 +106,8 @@ func (ms Metric) Type() MetricType {
 		return MetricTypeCountMinSketch
 	case *internal.Metric_HLLSketch:
 		return MetricTypeHLLSketch
+	case *internal.Metric_SumAgg:
+		return MetricTypeSumAgg
 	}
 	return MetricTypeEmpty
 }
@@ -428,6 +430,38 @@ func (ms Metric) SetEmptyHLLSketch() HLLSketch {
 	ov.HLLSketch = internal.NewHLLSketch()
 	ms.orig.Data = ov
 	return newHLLSketch(ov.HLLSketch, ms.state)
+}
+
+// SumAgg returns the sumagg associated with this Metric.
+//
+// Calling this function when Type() != MetricTypeSumAgg returns an invalid
+// zero-initialized instance of SumAgg. Note that using such SumAgg instance can cause panic.
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) SumAgg() SumAgg {
+	v, ok := ms.orig.GetData().(*internal.Metric_SumAgg)
+	if !ok {
+		return SumAgg{}
+	}
+	return newSumAgg(v.SumAgg, ms.state)
+}
+
+// SetEmptySumAgg sets an empty sumagg to this Metric.
+//
+// After this, Type() function will return MetricTypeSumAgg".
+//
+// Calling this function on zero-initialized Metric will cause a panic.
+func (ms Metric) SetEmptySumAgg() SumAgg {
+	ms.state.AssertMutable()
+	var ov *internal.Metric_SumAgg
+	if !internal.UseProtoPooling.IsEnabled() {
+		ov = &internal.Metric_SumAgg{}
+	} else {
+		ov = internal.ProtoPoolMetric_SumAgg.Get().(*internal.Metric_SumAgg)
+	}
+	ov.SumAgg = internal.NewSumAgg()
+	ms.orig.Data = ov
+	return newSumAgg(ov.SumAgg, ms.state)
 }
 
 // Metadata returns the Metadata associated with this Metric.

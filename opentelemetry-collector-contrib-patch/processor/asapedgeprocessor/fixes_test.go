@@ -100,21 +100,6 @@ func TestSketchMaxSeriesBounds(t *testing.T) {
 	}
 }
 
-// TestSumMaxGroupsBounds covers P0 #2 (sum half): the group map is capped and
-// overflow is counted.
-func TestSumMaxGroupsBounds(t *testing.T) {
-	sa := newSumAggregator([]string{"zone"}, 2)
-	for i := 0; i < 5; i++ {
-		sa.observe(map[string]string{"zone": string(rune('a' + i))}, 1)
-	}
-	if len(sa.groups) != 2 {
-		t.Fatalf("group map size = %d, want 2 (cap not enforced)", len(sa.groups))
-	}
-	if sa.overflowCount.Load() != 3 {
-		t.Fatalf("overflowCount = %d, want 3", sa.overflowCount.Load())
-	}
-}
-
 // TestCountSketchCountsAttributeSet covers B6 (#9): CountSketch must count the
 // per-attribute-set frequency (like CMS), NOT the degenerate single metric-name
 // key. After observing N samples of attrs {zone=z0}, the reconstructed sketch
@@ -527,105 +512,6 @@ func TestShutdownDrainsColdPartEvenWithExpiredCtx(t *testing.T) {
 	pc.waitForParts(1, 2*time.Second)
 	if got := pc.count(); got != 1 {
 		t.Fatalf("parts after Shutdown(expired ctx) = %d, want 1 (partial block must still ship)", got)
-	}
-}
-
-// TestSumNeverEmitsInvertedTimestamps covers P2 #7: a future-timestamped sample
-// must not permanently skew maxObserved, and an idle window must never emit a
-// data point whose start > end. After a window with a far-future sample, the
-// watermark is reset; the next (idle) window emits start <= end.
-func TestSumNeverEmitsInvertedTimestamps(t *testing.T) {
-	cap := &capMetrics{}
-	cfg := &Config{
-		ShardCount:     1,
-		WindowDuration: time.Hour,
-		DropOriginal:   true,
-		Metrics:        []MetricFamily{{Metric: "reqs", Family: FamilySum, AggregateBy: []string{"zone"}}},
-		Cold:           ColdConfig{Enabled: false},
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	p, err := newProcessor(cfg, testSettings(), cap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Seed windowStartMs to "now" as Start would.
-	now := uint64(time.Now().UnixMilli())
-	p.windowStartMs.Store(now)
-
-	// A far-future sample raises maxObserved well past windowStart.
-	future := now + 365*24*3600*1000 // +1 year
-	md := pmetric.NewMetrics()
-	m := md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
-	m.SetName("reqs")
-	s := m.SetEmptySum()
-	s.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
-	dp := s.DataPoints().AppendEmpty()
-	dp.Attributes().PutStr("zone", "z0")
-	dp.SetDoubleValue(1)
-	dp.SetTimestamp(pcommon.Timestamp(future * 1e6))
-	if err := p.ConsumeMetrics(context.Background(), md); err != nil {
-		t.Fatal(err)
-	}
-	// Window 1 flush: emits [start, future]; watermark is then reset to future.
-	p.flushAll(context.Background())
-	// After reset, maxObservedMs must equal windowStartMs (not stuck at future
-	// for a later idle window in a way that inverts it).
-	if p.maxObservedMs.Load() != p.windowStartMs.Load() {
-		t.Fatalf("maxObserved=%d windowStart=%d: watermark not reset to window boundary",
-			p.maxObservedMs.Load(), p.windowStartMs.Load())
-	}
-
-	// Window 2: idle (no new samples). Must emit a point with start <= end.
-	cap.got = nil
-	p.flushAll(context.Background())
-	// No groups -> emitSumMetric returns early, so no batch is forwarded; assert
-	// no inverted point exists in whatever was forwarded.
-	assertNoInvertedSum(t, cap.got)
-
-	// Window 3: one in-range sample after the future skew.
-	cap.got = nil
-	md3 := pmetric.NewMetrics()
-	m3 := md3.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
-	m3.SetName("reqs")
-	s3 := m3.SetEmptySum()
-	s3.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
-	dp3 := s3.DataPoints().AppendEmpty()
-	dp3.Attributes().PutStr("zone", "z0")
-	dp3.SetDoubleValue(2)
-	dp3.SetTimestamp(pcommon.Timestamp((uint64(time.Now().UnixMilli())) * 1e6))
-	if err := p.ConsumeMetrics(context.Background(), md3); err != nil {
-		t.Fatal(err)
-	}
-	p.flushAll(context.Background())
-	assertNoInvertedSum(t, cap.got)
-}
-
-func assertNoInvertedSum(t *testing.T, batches []pmetric.Metrics) {
-	t.Helper()
-	for _, md := range batches {
-		rms := md.ResourceMetrics()
-		for i := 0; i < rms.Len(); i++ {
-			sms := rms.At(i).ScopeMetrics()
-			for j := 0; j < sms.Len(); j++ {
-				ms := sms.At(j).Metrics()
-				for k := 0; k < ms.Len(); k++ {
-					mm := ms.At(k)
-					if mm.Type() != pmetric.MetricTypeSum {
-						continue
-					}
-					dps := mm.Sum().DataPoints()
-					for d := 0; d < dps.Len(); d++ {
-						dp := dps.At(d)
-						if dp.StartTimestamp() > dp.Timestamp() {
-							t.Fatalf("%s dp[%d]: start %d > end %d (inverted)",
-								mm.Name(), d, dp.StartTimestamp(), dp.Timestamp())
-						}
-					}
-				}
-			}
-		}
 	}
 }
 

@@ -19,9 +19,6 @@ type shard struct {
 	// shipped to the backend merger — the edge no longer builds TSDB blocks.
 	// nil when the cold tier is disabled.
 	cold *gorilla.StreamingFragmentEncoder
-	// sumAggs holds one sumAggregator per Sum-family metric (cross-shard
-	// merged at flush).
-	sumAggs map[string]*sumAggregator
 	// sketchAggs holds one precompute-backed aggregator per sketch-family
 	// metric. Series live in a single shard, so these flush independently
 	// per shard (no cross-shard merge, unlike sum).

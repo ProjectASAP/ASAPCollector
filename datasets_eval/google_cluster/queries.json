@@ -1,62 +1,101 @@
 [
     {
+        "id": "q-cpu-p99",
         "kind": "quantile",
         "promql": "histogram_quantile(0.99, sum by (le) (google_cluster_2019_cpu_rate))",
+        "metricsql": "quantile_over_time(0.99, google_cluster_2019_cpu_rate[30s])",
         "expected_ground_truth_query": "quantile(0.99, google_cluster_2019_cpu_rate)",
+        "gt": {"op": "quantile", "metric": "google_cluster_2019_cpu_rate", "q": 0.99, "by": []},
         "rationale": "p99 of per-instance CPU usage rates over the cell — claim #1 (quantile accuracy). Natural for the Google trace because instance_usage is sampled at 5-min intervals across all instances in a cell."
     },
     {
+        "id": "q-cpu-p50",
         "kind": "quantile",
         "promql": "histogram_quantile(0.50, sum by (le) (google_cluster_2019_cpu_rate))",
+        "metricsql": "quantile_over_time(0.50, google_cluster_2019_cpu_rate[30s])",
         "expected_ground_truth_query": "quantile(0.50, google_cluster_2019_cpu_rate)",
+        "gt": {"op": "quantile", "metric": "google_cluster_2019_cpu_rate", "q": 0.50, "by": []},
         "rationale": "p50 of per-instance CPU usage rates — paired with p99 for the quantile accuracy claim."
     },
     {
+        "id": "q-mem-p99-by-zone",
         "kind": "quantile",
         "promql": "histogram_quantile(0.99, sum by (le, zone) (google_cluster_2019_memory_usage))",
+        "metricsql": "quantile_over_time(0.99, google_cluster_2019_memory_usage[30s])",
         "expected_ground_truth_query": "quantile by (zone) (0.99, google_cluster_2019_memory_usage)",
-        "rationale": "Per-zone p99 memory usage — exercises group-by + quantile (claim #2 cross-key roll-up accuracy)."
+        "gt": {"op": "quantile", "metric": "google_cluster_2019_memory_usage", "q": 0.99, "by": ["zone"]},
+        "rationale": "Per-zone p99 memory usage — exercises group-by + quantile (claim #2 cross-key roll-up accuracy). Requires the sketch's grouping_labels=[zone]."
     },
     {
+        "id": "q-topk-host-cpu",
         "kind": "topk",
         "promql": "topk(10, sum by (host) (google_cluster_2019_cpu_rate))",
+        "metricsql": "topk(10, sum by (host) (google_cluster_2019_cpu_rate))",
         "expected_ground_truth_query": "topk(10, sum by (host) (google_cluster_2019_cpu_rate))",
+        "gt": {"op": "topk_sum", "metric": "google_cluster_2019_cpu_rate", "k": 10, "key_label": "host"},
         "rationale": "Top-10 busiest hosts by CPU — claim #3 (heavy-hitter accuracy with CountSketch). Natural Google-trace question: 'which machines are most loaded?'"
     },
     {
+        "id": "q-topk-service-count",
         "kind": "topk",
         "promql": "topk(10, count by (service) (google_cluster_2019_cpu_rate))",
+        "metricsql": "topk(10, count by (service) (google_cluster_2019_cpu_rate))",
         "expected_ground_truth_query": "topk(10, count by (service) (google_cluster_2019_cpu_rate))",
+        "gt": {"op": "topk_count", "metric": "google_cluster_2019_cpu_rate", "k": 10, "key_label": "service"},
         "rationale": "Top-10 services by sample count — heavy-hitter on identity, complements the CPU-load topk."
     },
     {
+        "id": "q-sum-cpu",
         "kind": "sum",
         "promql": "sum(google_cluster_2019_cpu_rate)",
+        "metricsql": "sum(google_cluster_2019_cpu_rate)",
         "expected_ground_truth_query": "sum(google_cluster_2019_cpu_rate)",
-        "rationale": "Cluster-wide CPU rate — claim #4 (counter exactness; Sum aggregation should be lossless)."
+        "gt": {"op": "sum", "metric": "google_cluster_2019_cpu_rate", "by": []},
+        "rationale": "Cluster-wide CPU rate — claim #4 (counter exactness; the first-class Sum aggregation-type envelope should be lossless)."
     },
     {
+        "id": "q-sum-mem-by-zone",
         "kind": "sum",
         "promql": "sum by (zone) (google_cluster_2019_memory_usage)",
+        "metricsql": "sum by (zone) (google_cluster_2019_memory_usage)",
         "expected_ground_truth_query": "sum by (zone) (google_cluster_2019_memory_usage)",
-        "rationale": "Per-zone memory total — exercises sum + group-by, the simplest cross-key roll-up (claim #2)."
+        "gt": {"op": "sum", "metric": "google_cluster_2019_memory_usage", "by": ["zone"]},
+        "rationale": "Per-zone memory total — exercises the Sum envelope + group-by, the simplest cross-key roll-up (claim #2)."
     },
     {
+        "id": "q-card-service",
         "kind": "count_unique",
         "promql": "count(count by (service) (google_cluster_2019_cpu_rate))",
+        "metricsql": "count(count by (service) (google_cluster_2019_cpu_rate))",
         "expected_ground_truth_query": "count_distinct(service) where metric=google_cluster_2019_cpu_rate",
+        "gt": {"op": "count_distinct", "metric": "google_cluster_2019_cpu_rate", "key_label": "service"},
         "rationale": "Distinct-service cardinality — claim #5 (HLL accuracy). Natural Google-trace question: 'how many unique services are running in this cell?'"
     },
     {
+        "id": "q-card-host",
         "kind": "count_unique",
         "promql": "count(count by (host) (google_cluster_2019_cpu_rate))",
+        "metricsql": "count(count by (host) (google_cluster_2019_cpu_rate))",
         "expected_ground_truth_query": "count_distinct(host) where metric=google_cluster_2019_cpu_rate",
+        "gt": {"op": "count_distinct", "metric": "google_cluster_2019_cpu_rate", "key_label": "host"},
         "rationale": "Distinct-host cardinality — exercises HLL on a different attribute and confirms cross-attribute consistency."
     },
     {
+        "id": "q-card-service-task",
         "kind": "count_unique",
         "promql": "count(count by (service, task) (google_cluster_2019_cpu_rate))",
+        "metricsql": "count(count by (service, task) (google_cluster_2019_cpu_rate))",
         "expected_ground_truth_query": "count_distinct((service, task)) where metric=google_cluster_2019_cpu_rate",
+        "gt": {"op": "count_distinct", "metric": "google_cluster_2019_cpu_rate", "key_label": ["service", "task"]},
         "rationale": "Distinct-instance cardinality — saturates at --cardinality-cap when the cap is engaged; the harness scales by U/N to recover the true count (see otlp_mapper.py docstring 'Cardinality cap')."
+    },
+    {
+        "id": "q-cms-freq-service",
+        "kind": "frequency",
+        "promql": "count_over_time(google_cluster_2019_cpu_rate{service=\"svc-000003\"}[30s])",
+        "metricsql": "count_over_time(google_cluster_2019_cpu_rate{service=\"svc-000003\"}[30s])",
+        "expected_ground_truth_query": "frequency(service=svc-000003) where metric=google_cluster_2019_cpu_rate",
+        "gt": {"op": "frequency", "metric": "google_cluster_2019_cpu_rate", "item_label": "service", "item_value": "svc-000003"},
+        "rationale": "Per-item frequency of one service via CountMinSketch estimate(key) (NEW feature). CMS is a one-sided over-estimator: warm answer >= exact within the relative-error band. Requires the CMS metric's item_label=service."
     }
 ]
