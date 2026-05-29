@@ -200,6 +200,15 @@ type SketchEnvelope struct {
 	// adapter encode-side reads this to set
 	// Sum.SetAggregationTemporality(...). In-process only.
 	AggregationTemporality int32
+	// RelativeAccuracy is the DDSketch alpha (relative accuracy) the
+	// producing sketch was built with — non-zero only for
+	// SketchType==DDSketch. In-process only (NOT a proto wire field): the
+	// OTel adapter's Encode stamps it onto the output pmetric.DDSketch
+	// container's relative_accuracy so the backend registers a non-zero ε.
+	// A 0.0 here leaves the container at its zero value, which the backend
+	// treats as a degenerate (exact, no-bucket) DDSketch — quantile queries
+	// then capability-miss to the archive and return empty.
+	RelativeAccuracy float64
 }
 
 // EffectiveAggKind resolves the envelope's aggregation kind, applying the

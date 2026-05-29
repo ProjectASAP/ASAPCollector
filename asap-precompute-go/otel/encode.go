@@ -104,6 +104,14 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 	switch env.SketchType {
 	case precompute.SketchTypeDDSketch:
 		dst := out.SetEmptyDDSketch()
+		// Stamp the container's relative_accuracy (the DDSketch alpha) so the
+		// backend registers a non-zero ε. Omitting it left the container at
+		// 0.0 — a degenerate sketch that makes quantile queries
+		// capability-miss to the archive and return empty. Mirrors the
+		// standalone ddsketchprocessor (shim_helpers.go SetRelativeAccuracy).
+		if env.RelativeAccuracy > 0 {
+			dst.SetRelativeAccuracy(env.RelativeAccuracy)
+		}
 		dp := dst.DataPoints().AppendEmpty()
 		KeyValuesToAttributes(env.Labels, dp.Attributes())
 		dp.SetStartTimestamp(startTs)
