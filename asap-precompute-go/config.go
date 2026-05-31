@@ -250,6 +250,7 @@ type PrecomputeConfig struct {
 	//   DDSketch       : "relative_accuracy"          (float, 0<v<1)
 	//   KLL            : "k"                          (uint, ≥8)
 	//   HLL            : "precision"                  (uint, 4-18)
+	//                    "sparse"                     (0=dense default, 1=sparse base)
 	//   CountSketch    : "epsilon", "delta"           (floats, 0<v<1)
 	//                    "width", "depth" (derived if absent)
 	//   CountMin       : "rows", "columns"            (uints)
