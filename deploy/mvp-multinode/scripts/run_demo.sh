@@ -235,9 +235,16 @@ sync_all_nodes() {
 }
 
 # ── docker_run wrapper that always uses host network + DNS aliases ──
+#
+# Restart policy defaults to `no` so a host reboot does NOT silently bring
+# the benchmark stack back up under the operator (post-reboot containers
+# race with the next `run_demo.sh` invocation, and the new flags / configs
+# in that run never take effect on the already-up containers). Override with
+# DOCKER_RESTART_POLICY=unless-stopped for long-lived deployments that
+# should survive a daemon restart.
 docker_run_on() {
     local node=$1; shift
-    on "${node}" "docker run -d --restart unless-stopped --network host \
+    on "${node}" "docker run -d --restart ${DOCKER_RESTART_POLICY:-no} --network host \
         ${ADD_HOSTS[*]} \
         $*"
 }
@@ -292,7 +299,7 @@ backend_up() {
     # ASAP arms: still use Prometheus for self-telemetry scraping
     # (backend/agent self-metrics).
     if ! is_asap_arm "${arm}"; then
-        docker_run_on "${NODE1_HOST}" --memory=16g --memory-swap=16g \
+        docker_run_on "${NODE1_HOST}" --cpus=4 --memory=16g --memory-swap=16g \
             --name asap-victoriametrics \
             victoriametrics/victoria-metrics:v1.110.0 \
             --httpListenAddr=:8428 \
@@ -303,7 +310,7 @@ backend_up() {
             "--storage.tsdb.retention.time=24h"
             "--web.enable-lifecycle"
         )
-        docker_run_on "${NODE1_HOST}" --memory=8g --memory-swap=8g \
+        docker_run_on "${NODE1_HOST}" --cpus=2 --memory=8g --memory-swap=8g \
             --name asap-prometheus \
             -v /mydata/mvp-multinode/configs/shared/prometheus-with-remote-write.yml:/etc/prometheus/prometheus.yml:ro \
             prom/prometheus:v2.55.0 "${prom_args[@]}"
@@ -311,7 +318,7 @@ backend_up() {
 
     if is_asap_arm "${arm}"; then
         # MinIO + bucket setup
-        docker_run_on "${NODE1_HOST}" --memory=16g --memory-swap=16g \
+        docker_run_on "${NODE1_HOST}" --cpus=2 --memory=16g --memory-swap=16g \
             --name asap-minio \
             -e MINIO_ROOT_USER=asap \
             -e MINIO_ROOT_PASSWORD=asap-local-only \
@@ -335,7 +342,7 @@ backend_up() {
                 mc anonymous set download asap/raw'" || log "minio bucket setup non-fatal warn"
 
         # Thanos store-gateway
-        docker_run_on "${NODE1_HOST}" --memory=16g --memory-swap=16g \
+        docker_run_on "${NODE1_HOST}" --cpus=2 --memory=16g --memory-swap=16g \
             --name asap-thanos-store-gateway \
             --user 0 \
             -v /mydata/mvp-multinode/configs/shared/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
@@ -364,7 +371,7 @@ backend_up() {
         # + store-gateway (>=2h S3) with no double-count (the merger drops
         # its local copy once shipped). `cluster=asap-mvp` is the merger's
         # distinguishing external label (applied to every series + block).
-        docker_run_on "${NODE1_HOST}" --memory=32g --memory-swap=32g \
+        docker_run_on "${NODE1_HOST}" --cpus=4 --memory=32g --memory-swap=32g \
             --name asap-gorilla-merger \
             -v /mydata/mvp-multinode/configs/shared/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
             -v /mydata/mvp-multinode/data/gorilla-merger:/data \
@@ -390,7 +397,7 @@ backend_up() {
         # window) and the store-gateway (>=2h S3 blocks) and unions the
         # results. Without this, query only sees shipped S3 blocks and the
         # most-recent <2h of merger-ingested data is invisible.
-        docker_run_on "${NODE1_HOST}" --memory=8g --memory-swap=8g \
+        docker_run_on "${NODE1_HOST}" --cpus=2 --memory=8g --memory-swap=8g \
             --name asap-thanos-query \
             quay.io/thanos/thanos:v0.41.0 \
             query \
@@ -401,7 +408,7 @@ backend_up() {
             --query.replica-label=replica
 
         # Thanos compact
-        docker_run_on "${NODE1_HOST}" --memory=24g --memory-swap=24g \
+        docker_run_on "${NODE1_HOST}" --cpus=2 --memory=24g --memory-swap=24g \
             --name asap-thanos-compact \
             --user 0 \
             -v /mydata/mvp-multinode/configs/shared/thanos-objstore.yaml:/etc/thanos/objstore.yaml:ro \
@@ -454,7 +461,7 @@ backend_up() {
         if [ "${PERSISTENCE_ENABLED:-1}" = 1 ]; then
             persist_flags="--persistence-enabled --persistence-dir=/data/sketch-persistence --persistence-memory-limit-mb=${PERSIST_MEM_LIMIT_MB:-2048} --persistence-hot-window-secs=${PERSIST_HOT_WINDOW_SECS:-3600} --persistence-delete-older-than-secs=${PERSIST_DELETE_OLDER_SECS:-604800} --persistence-flush-interval-ms=${PERSIST_FLUSH_INTERVAL_MS:-1000} --persistence-part-cache-mb=${PERSIST_PART_CACHE_MB:-256} --persistence-seal-window-count=${PERSIST_SEAL_WINDOWS:-20}"
         fi
-        docker_run_on "${NODE2_HOST}" --memory=64g --memory-swap=64g \
+        docker_run_on "${NODE2_HOST}" --cpus=8 --memory=64g --memory-swap=64g \
             --name asap-data-plane \
             -e RUST_LOG=info \
             -e ASAP_SKETCH_FAMILY=ddsketch \
@@ -492,7 +499,7 @@ backend_up() {
         # default entrypoint IS `/usr/local/bin/control_plane`, so no
         # `--entrypoint` override is needed.
         sleep 3
-        docker_run_on "${NODE2_HOST}" --memory=4g --memory-swap=4g \
+        docker_run_on "${NODE2_HOST}" --cpus=2 --memory=4g --memory-swap=4g \
             --name asap-control-plane \
             -e RUST_LOG="info,controller=debug,control_plane=debug" \
             -e USE_TYPED_STAGE_SPLIT=1 \
@@ -532,7 +539,7 @@ backend_down() {
 # `stop_node node1` reaps this container at teardown.
 serf_gateway_up() {
     log "node1 serf-gateway up (b3 serf wire codec)"
-    docker_run_on "${NODE1_HOST}" \
+    docker_run_on "${NODE1_HOST}" --cpus=4 --memory=8g --memory-swap=8g \
         --name asap-serf-gateway \
         --hostname serf-gw \
         -v /mydata/mvp-multinode/configs/b3/serf-gateway.yaml:/etc/otel/config.yaml:ro \
@@ -585,7 +592,7 @@ agents_up() {
         # node0 → agent-a (binds 0.0.0.0:4317 on node0). Producers on node0
         # send to localhost:4317 == agent-a:4317.
         log "node0 agent-a up (${arm}, supervised)"
-        docker_run_on "${NODE0_HOST}" \
+        docker_run_on "${NODE0_HOST}" --cpus=4 --memory=12g --memory-swap=12g \
             --name asap-agent-a \
             --hostname agent-a \
             -e X_AGENT_ID=agent-a \
@@ -596,7 +603,7 @@ agents_up() {
 
         # Same on node3 → agent-b
         log "node3 agent-b up (${arm}, supervised)"
-        docker_run_on "${NODE3_HOST}" \
+        docker_run_on "${NODE3_HOST}" --cpus=4 --memory=12g --memory-swap=12g \
             --name asap-agent-b \
             --hostname agent-b \
             -e X_AGENT_ID=agent-b \
@@ -608,7 +615,7 @@ agents_up() {
         # Raw baselines: bare asap-otel collector, static mounted config, no
         # controller/OpAMP.
         log "node0 agent-a up (${arm})"
-        docker_run_on "${NODE0_HOST}" \
+        docker_run_on "${NODE0_HOST}" --cpus=4 --memory=12g --memory-swap=12g \
             --name asap-agent-a \
             --hostname agent-a \
             -e AGENT_ID=agent-a \
@@ -618,7 +625,7 @@ agents_up() {
             --config=/etc/otel/config.yaml
 
         log "node3 agent-b up (${arm})"
-        docker_run_on "${NODE3_HOST}" \
+        docker_run_on "${NODE3_HOST}" --cpus=4 --memory=12g --memory-swap=12g \
             --name asap-agent-b \
             --hostname agent-b \
             -e AGENT_ID=agent-b \
@@ -634,7 +641,7 @@ agents_up() {
     # Producers on node0 → agent-a:4317 (== 10.10.1.1:4317 == localhost:4317)
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
         log "node0 producer-a-${i} up"
-        docker_run_on "${NODE0_HOST}" \
+        docker_run_on "${NODE0_HOST}" --cpus=1 --memory=4g --memory-swap=4g \
             --name asap-producer-a-${i} \
             asap/otel-app:dev \
             -target=agent-a:4317 \
@@ -650,7 +657,7 @@ agents_up() {
     done
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
         log "node3 producer-b-${i} up"
-        docker_run_on "${NODE3_HOST}" \
+        docker_run_on "${NODE3_HOST}" --cpus=1 --memory=4g --memory-swap=4g \
             --name asap-producer-b-${i} \
             asap/otel-app:dev \
             -target=agent-b:4317 \
