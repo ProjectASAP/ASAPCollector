@@ -283,7 +283,10 @@ func (w *windowState) admitSeriesLocked(
 	sketchFactory SketchFactory,
 	stats *PrecomputeStats,
 ) (*seriesEntry, error) {
-	if cfg.MaxSeries > 0 && uint64(len(w.series)) >= cfg.MaxSeries {
+	// WholeStream collapses to a single bucket per AggID, so the
+	// series-cardinality cap is a no-op (cardinality is 1) — never reject the
+	// lone global series even when MaxSeries is set small.
+	if cfg.MaxSeries > 0 && !cfg.isWholeStream() && uint64(len(w.series)) >= cfg.MaxSeries {
 		switch cfg.OnOverflow {
 		case OnOverflowDrop, OnOverflowBlock:
 			// Block is degraded to Drop in Phase 2: latency-hostile
@@ -311,11 +314,12 @@ func (w *windowState) admitSeriesLocked(
 	}
 	sketch := sketchFactory()
 	// Honor the parity-mode flags by stripping the labels we promised not
-	// to surface. GlobalAggregation collapses everything; OmitResourceAttrs
-	// zeroes only the resource segment. The output envelope reads
-	// ResourceLabels/Labels straight from the entry.
+	// to surface. WholeStream (incl. the legacy GlobalAggregation alias)
+	// collapses everything; OmitResourceAttrs zeroes only the resource
+	// segment. The output envelope reads ResourceLabels/Labels straight from
+	// the entry.
 	var resourceCopy, labelsCopy []KeyValue
-	if !cfg.GlobalAggregation {
+	if !cfg.isWholeStream() {
 		labelsCopy = make([]KeyValue, len(obs.Labels))
 		copy(labelsCopy, obs.Labels)
 		if !cfg.OmitResourceAttrs {
@@ -683,4 +687,25 @@ func (w *windowState) activeSeriesCount() int {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return len(w.series)
+}
+
+// resetForScopeChange drops all in-flight window state (the active series map
+// and any sliding panes) without emitting it. Called by Precompute.UpdateConfig
+// when the aggregation SCOPE flips (PerSeries <-> WholeStream): the two scopes
+// key the series map incompatibly (one bucket per AggID vs one per series), so
+// the old map's entries cannot be reused under the new scope. Discarding the
+// partial window is the conservative choice — at most the current sub-window's
+// observations are lost on a live scope change, which only happens on a control-
+// plane reconfiguration. A same-scope config change leaves the window untouched.
+//
+// The window bounds are kept (initialized stays true) so the next rotate still
+// advances on the established cadence; only the accumulated sketches are
+// dropped. Pooling is intentionally NOT invoked here (the sketches are released
+// to GC) because UpdateConfig has no access to the sketch sink and a scope
+// change is rare.
+func (w *windowState) resetForScopeChange() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.series = make(map[string]*seriesEntry)
+	w.panes = nil
 }

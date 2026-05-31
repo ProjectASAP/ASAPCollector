@@ -638,6 +638,18 @@ func (p *precompute) UpdateConfig(cs *PrecomputeConfigSet) {
 		chosen = &cs.Configs[0]
 	}
 	cfgCopy := *chosen
+	// A scope flip (PerSeries <-> WholeStream) cannot hot-swap in place: the
+	// active window's series map is keyed incompatibly under the two scopes
+	// (one bucket per AggID vs one per series). Drop the in-flight partial
+	// window before installing the new config so the next observations
+	// accumulate under the new scope's keying. Same-scope changes (matchers,
+	// aggregateBy, delta toggles, etc.) leave the window untouched, preserving
+	// the bytes already accumulated this window (the documented UpdateConfig
+	// contract). `active` is read above (before the store), so this compares
+	// the scope that produced the current window against the incoming one.
+	if active != nil && active.effectiveScope() != cfgCopy.effectiveScope() {
+		p.window.resetForScopeChange()
+	}
 	p.cfg.Store(&cfgCopy)
 	p.sketchType = cfgCopy.SketchType
 }

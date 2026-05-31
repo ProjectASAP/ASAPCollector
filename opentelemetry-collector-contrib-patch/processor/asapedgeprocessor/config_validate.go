@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	precompute "github.com/ProjectASAP/asap-precompute-go"
 )
 
 // countSketchMaxRowHashBits mirrors sketchlib-go's 64-bit single-item hash
@@ -202,6 +204,12 @@ func (c *Config) Validate() error {
 				return err
 			}
 		}
+		// mode: the per-series vs whole-stream aggregation scope (plumbed into
+		// precompute.PrecomputeConfig.Scope). Empty ⇒ per_series (default).
+		// Reject an unknown value at boot rather than silently defaulting.
+		if _, ok := precompute.ParseAggMode(m.Mode); !ok {
+			return fmt.Errorf("asap_edge: metrics[%d] (%s): mode must be per_series or whole_stream (got %q)", i, m.Metric, m.Mode)
+		}
 	}
 	// Cold defaults (only meaningful when enabled).
 	if c.Cold.Enabled {
@@ -277,6 +285,14 @@ func (k FamilyKind) deltaCapable() bool {
 		return true
 	}
 	return false
+}
+
+// scope resolves the metric's aggregation scope (precompute.AggMode), applying
+// the per_series default for an empty Mode. Validate() checks Mode first, so the
+// parse always succeeds here; an unexpected bad value falls back to PerSeries.
+func (m *MetricFamily) scope() precompute.AggMode {
+	s, _ := precompute.ParseAggMode(m.Mode)
+	return s
 }
 
 // effectiveDelta resolves the per-metric delta-transmission setting: the

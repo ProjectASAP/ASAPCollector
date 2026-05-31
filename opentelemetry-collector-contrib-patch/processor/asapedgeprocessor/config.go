@@ -67,6 +67,29 @@ type MetricFamily struct {
 	// sketches, empty means per-series (group by full attribute set).
 	AggregateBy []string `mapstructure:"aggregate_by"`
 
+	// Mode selects the aggregation SCOPE, decided by the control plane given
+	// the query:
+	//   "per_series"   (default / empty) — one sketch per series key (per
+	//                  AggregateBy group); each datapoint folds into its own
+	//                  series and one output is emitted per series. Today's
+	//                  behavior.
+	//   "whole_stream" — collapse grouping: a single sketch per metric (per
+	//                  shard, merged at flush) ingests from EVERY matching
+	//                  datapoint regardless of series identity; one output is
+	//                  emitted per metric per window. Per-family the ingested
+	//                  subject is the metric VALUE (Sum=grand total,
+	//                  DDSketch/KLL=pooled distribution, HLL=distinct values,
+	//                  CMS/CountSketch=value frequency) UNLESS ItemLabel is set,
+	//                  in which case the inner item dimension is ingested
+	//                  (HLL=distinct items, CMS/TopK=heavy items).
+	//
+	// Plumbed into precompute.PrecomputeConfig.Scope. Empty ⇒ per_series so
+	// existing configs are byte-compatible. Whole-stream subsumes the legacy
+	// emit_heap "collapse to one heap" path (which still works): a
+	// `family: countsketch, emit_heap: true` entry is implicitly whole-stream
+	// over its item dimension whether or not `mode` is set.
+	Mode string `mapstructure:"mode"`
+
 	// Tier selects which storage tiers this metric flows into: "warm" (build
 	// the warm sketch/agg only, skip the cold gorilla archive), "cold"
 	// (cold-archive the raw series only, no warm sketch/agg), or "both" (warm

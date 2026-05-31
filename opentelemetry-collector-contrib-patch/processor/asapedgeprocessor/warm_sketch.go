@@ -355,10 +355,19 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		return nil, false
 	}
 	pcfg := &precompute.PrecomputeConfig{
-		AggID:          precompute.AggId(fnv64(metric)),
-		SketchType:     st,
-		AggKind:        aggKind,
-		Mode:           precompute.Tumbling,
+		AggID:      precompute.AggId(fnv64(metric)),
+		SketchType: st,
+		AggKind:    aggKind,
+		Mode:       precompute.Tumbling,
+		// Scope is the per-series vs whole-stream aggregation scope chosen by the
+		// control plane (config `mode:`). Empty ⇒ ModePerSeries (today's
+		// behavior). WholeStream collapses every matching datapoint into one
+		// sketch per metric and emits one envelope per window. It composes with
+		// the heap path's GlobalAggregation below: precompute's effectiveScope()
+		// treats EITHER signal as whole-stream, so an emit_heap CountSketch is
+		// whole-stream over its item dimension whether the operator set
+		// `mode: whole_stream` or relied on the legacy collapse.
+		Scope:          fam.scope(),
 		Window:         precompute.WindowSpec{Size: window, AllowedLateness: opts.allowedLateness},
 		AggregateBy:    fam.AggregateBy,
 		TransmitSketch: true,
