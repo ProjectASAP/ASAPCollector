@@ -1,0 +1,351 @@
+% =====================================================================
+% Design-doc / paper section: Problem, Requirements, Related Work
+% Topic: distributed sketch telemetry with continuous, arbitrary-window
+%        queries (edge collection -> centralized analytics backend).
+% Citation keys are placeholders; a suggested bib list is at the bottom.
+% =====================================================================
+
+\section{Problem Statement}
+\label{sec:problem}
+
+We target \emph{distributed telemetry analytics}: a large fleet of edge
+data sources (services, hosts, sidecar agents) each observes a local
+substream of metric samples, and a centralized backend answers
+analytical queries over the \emph{union} of all substreams. The metrics
+are high-cardinality (many time series = metric name $\times$ label set)
+and high-frequency (many samples per series per second). Queries are
+\emph{approximate aggregations} --- quantiles, distinct counts, heavy
+hitters, sums --- expressed over \emph{time windows}.
+
+The architecture is two-stage. Edges \emph{pre-aggregate} each window of
+their local data into mergeable summaries (sketches) and transmit those,
+not raw samples; the backend \emph{merges} per-edge summaries and serves
+queries. Today both stages operate on \emph{tumbling} windows of a fixed
+size: the edge emits one summary per window, and the backend answers
+queries aligned to those same boundaries.
+
+\paragraph{The gap we address.} Fixed, boundary-aligned tumbling windows
+are restrictive for monitoring. We want the edge to emit summaries
+\emph{continuously} at a fine granularity, and the backend to answer
+\emph{(i)} tumbling-window queries (the easy case), \emph{(ii)}
+\emph{continuously} updated window queries (``the last $T$, as of now''),
+and \emph{(iii)} \emph{arbitrary} window queries over any
+$[t_\mathrm{start}, t_\mathrm{end}]$ and any duration $T$, ideally without
+the edge knowing the query windows in advance. The central tension is
+that finer emission improves query flexibility and freshness but costs
+edge memory, edge CPU, and network bandwidth --- the three resources we
+must conserve.
+
+
+\section{Requirements}
+\label{sec:requirements}
+
+We organize requirements along two axes: the \emph{distributed edge}
+(resource efficiency under cloud economics) and the \emph{query model}
+(continuous, accurate, fresh). We then add cross-cutting requirements
+that the two-stage, transmit-summaries design forces upon us.
+
+\subsection{Distributed edge: resource efficiency}
+
+Edge collection runs \emph{co-located with production workloads} in the
+cloud, so its resource use is not free overhead --- it is stolen from the
+paying workload and billed at cloud rates. Cloud pricing is
+\emph{asymmetric}: memory-heavy instances cost more per unit than
+CPU-heavy ones, and cross-AZ/cross-region egress is billed
+separately and is often the dominant marginal cost~\cite{cloudpricing}.
+This asymmetry, not abstract big-$O$, is what ranks our objectives.
+
+\paragraph{Memory efficiency.}
+Per-series, per-window sketches multiply: $|\text{series}| \times
+S_\text{sketch}$. At high cardinality a per-series quantile/cardinality
+sketch (e.g.\ a fixed-size HLL or KLL) imposes a large, \emph{cardinality-
+proportional} memory floor on the very nodes running the application. The
+floor is paid even by series of trivial cardinality, and even before any
+query is asked. We require that edge memory scale with \emph{useful
+information}, not with worst-case structure size: sketches that are
+sparse/adaptive at low cardinality and promote to dense only when
+warranted; the option to aggregate \emph{whole-stream} (one summary
+tracking many series) when the query does not need per-series resolution;
+and bounded total footprint via cardinality caps with graceful overflow.
+
+\paragraph{Computation efficiency.}
+Two cost centers, with different constraints.
+\emph{(a) The per-sample hot path} (sketch update) runs at the full
+ingest rate and competes directly with the application for CPU; it must be
+$O(1)$, allocation-free, and cache-friendly, so that telemetry overhead is
+a small, predictable fraction of node CPU regardless of cardinality or
+sample rate. \emph{(b) The flush/emit path} (serialize, delta-encode,
+ship) runs once per emission period and can be heavier, but its cost
+scales with the number of live summaries and the emission frequency, so it
+trades directly against freshness (below). We require that finer emission
+not impose super-linear flush cost, and that update cost be independent of
+window size and of how many windows the backend will later assemble.
+
+\paragraph{Communication efficiency.}
+Transmission is billed (egress) \emph{and} latency-bearing. We require
+that what crosses the network be (i) \emph{summaries, never raw samples}
+--- the bandwidth invariant; (ii) \emph{delta-encoded} against state the
+backend can already reconstruct, so steady-state bytes track \emph{change}
+rather than absolute state; and (iii) \emph{adaptive} --- silent/empty
+intervals cost nothing, and emission can be triggered by significant
+change rather than a fixed clock when freshness permits. Crucially,
+communication trades against both freshness (emit more often $\Rightarrow$
+fresher but costlier) and the backend's window flexibility (finer
+temporal slices $\Rightarrow$ more arbitrary windows answerable, but more
+bytes). The emission granularity $\tau$ is the single knob that sets this
+trade, and it also sets a hard floor: \emph{the backend can place window
+boundaries no finer than $\tau$.}
+
+\subsection{Continuous, accurate, fresh queries}
+
+\paragraph{Continuous (standing) queries.}
+Monitoring queries are long-running ``standing'' views, not one-shot
+on-demand reads~\cite{babcock2002models}. The system maintains and
+continuously refreshes answers as data arrives, rather than recomputing
+from scratch per request. This favors \emph{incremental} maintenance at
+the backend and \emph{push}-style emission at the edge.
+
+\paragraph{Arbitrary and sliding windows.}
+Beyond fixed tumbling windows we require \emph{sliding} windows (``last
+$T$ as of now'', advancing continuously) and \emph{arbitrary} historical
+sub-window queries over any $[a,b]$ and any $T$, composed at the backend
+from the edge's fine-grained slices --- without the edge pre-committing to
+the query windows.
+
+\paragraph{Accuracy and its composition.}
+Each summary carries an error bound ($\varepsilon$). In a two-stage
+hierarchy the key property is that \emph{merging summaries does not
+compound error}: assembling a window from $N$ slices must keep error at
+the base $\varepsilon$, independent of $N$ and of the merge order. This is
+exactly the \emph{mergeable summary} guarantee~\cite{agarwal2013mergeable}
+and it is what makes arbitrary-window assembly viable. Where bounded space
+forces \emph{approximate} window boundaries (below), the boundary error
+$\varepsilon_w$ \emph{adds} to the sketch error $\varepsilon_s$, and the
+two must be budgeted jointly.
+
+\paragraph{Freshness / timeliness.}
+We care about the end-to-end lag between when a sample is \emph{generated}
+at the source and when it is \emph{reflected} in an accurate backend
+answer. This staleness is dominated by the emission period $\tau$ plus the
+backend's late-data grace, and it trades directly against communication
+cost. Freshness should be an explicit, tunable SLO, not an accident of the
+window size.
+
+\subsection{Cross-cutting requirements (forced by the design)}
+
+\begin{itemize}
+  \item \textbf{Query-driven configuration (elasticity).} The set of
+  queries determines what each edge must compute: sketch family,
+  parameters, window/emission policy, and per-series vs.\ whole-stream
+  scope. A control plane must (re)configure edges at runtime --- without
+  restart or data loss --- as queries arrive and change.
+
+  \item \textbf{Out-of-order, late, and clock-skewed data.} Edges have
+  independent clocks; samples and slices can arrive late or reordered.
+  Window assembly must tolerate late slices landing in past time buckets
+  within a bounded grace, with defined semantics for what falls outside
+  it.
+
+  \item \textbf{Fault tolerance vs.\ idempotent merge.} Additive
+  summary merge is \emph{not} idempotent: an at-least-once retransmission
+  of a slice double-counts. Continuous delta transmission makes this
+  acute. We require either exactly-once slice application (sequence
+  numbers / dedup at the backend) or idempotent slice identity, so
+  retries do not corrupt aggregates. This requirement directly shapes the
+  ``what is a delta'' design.
+
+  \item \textbf{Retention vs.\ space.} Storing every fine slice for a long
+  horizon is often infeasible. We require bounded backend storage via
+  multi-resolution roll-up (fine-recent, coarse-old) and/or bounded-space
+  sliding-window structures, with an explicit, documented loss of
+  \emph{resolution} (roll-up) or \emph{accuracy} (approximate boundaries)
+  on the long tail.
+
+  \item \textbf{Query expressiveness across families.} The aggregations
+  we support --- quantiles (DDSketch/KLL), distinct counts (HLL), heavy
+  hitters/frequencies (CMS/Count Sketch), sums --- split into
+  \emph{linear/subtractable} families (sum, CMS, Count Sketch, DDSketch
+  bucket counts), for which arbitrary windows reduce to a prefix-sum
+  \emph{difference}, and \emph{non-linear} families (HLL's register max,
+  KLL's selection structure), for which windows require \emph{merging}
+  slices. The system must serve both, dispatching the window mechanism by
+  family.
+\end{itemize}
+
+
+\section{Related Work}
+\label{sec:related}
+
+Our setting sits at the intersection of three lines of work: continuous
+distributed monitoring (the edge$\rightarrow$backend channel), the
+sliding-window streaming model (bounded-space ``last $T$''), and
+arbitrary sub-window / range aggregation (any $[a,b]$). Mergeable
+summaries are the connective tissue that lets the three compose.
+
+\subsection{Continuous distributed monitoring}
+
+The \emph{continuous distributed monitoring} model~\cite{cormode2013survey}
+formalizes our exact channel: $k$ sites each see a substream, a
+coordinator must continuously hold $f(\bigcup_i \text{stream}_i)$ within
+$\varepsilon$ while minimizing total communication. The theory of
+\emph{distributed functional monitoring}~\cite{cormode2008functional}
+bounds how much a site must communicate to keep a function tracked, and
+shows that for many functions communication is far sublinear in the stream
+--- the formal basis for ``emit on significant change, not every update.''
+For \emph{non-linear} functions, \emph{geometric
+monitoring}~\cite{sharfman2006geometric} decomposes a global threshold
+condition into \emph{local} constraints each site checks independently,
+escalating only on violation; this is the template for an edge deciding
+\emph{locally} whether its slice matters globally. Closest to our
+``delta'' idea, sketch-plus-prediction tracking~\cite{cormode2005sketching}
+has each site hold a sketch and a shared prediction model, transmitting
+only when its true sketch diverges from what the coordinator can already
+reconstruct --- an I-frame/P-frame discipline for sketches; the quantile
+specialization~\cite{cormode2005holistic} tracks holistic aggregates the
+same way. This line optimizes tracking of a \emph{single current value};
+it deliberately discards the temporal decomposition, so on its own it does
+\emph{not} answer arbitrary historical windows --- motivating the next two
+lines.
+
+\subsection{Sliding-window model}
+
+The sliding-window model maintains an aggregate over the last $N$ items /
+last $T$ time, forgetting older data. The foundational result --- the
+Exponential Histogram (EH)~\cite{datar2002sliding} --- maintains
+counts/sums within $\varepsilon$ in $O(\tfrac{1}{\varepsilon}\log^2 N)$
+bits and proves a \emph{matching lower bound}: exact sliding-window sums
+require $\Omega(\tfrac{1}{\varepsilon}\log^2 N)$ bits. This is the result
+that forces our ``exact-to-$\tau$ \emph{or} bounded-space'' fork. Waves
+\cite{gibbons2002distributed} port sliding-window counting to the
+distributed setting. \emph{Smooth histograms}~\cite{braverman2007smooth}
+generalize EH to the broad class of ``smooth'' functions (Lp norms,
+frequency moments, many sketchable quantities), maintaining
+$O(\tfrac{1}{\varepsilon}\log N)$ sketch instances at chosen window-start
+points so any suffix is covered --- the principal theoretical tool for
+bounded-space sliding windows \emph{over sketches}. Deterministic schemes
+target frequent items and quantiles
+specifically~\cite{arasu2004quantiles,lee2006significant}. Most directly
+reusable are sketch-specific window variants: the
+ECM-sketch~\cite{papapetrou2012ecm} replaces each Count-Min cell with an
+Exponential Histogram, giving distributed sliding-window range-frequency
+queries; and Sliding HyperLogLog~\cite{chabchoub2010sliding} stores recent
+$(\text{timestamp},\rho)$ per register to recompute the max over any
+suffix --- confronting head-on that HLL's register max is \emph{not}
+invertible.
+
+\subsection{Arbitrary sub-window / range aggregation}
+
+Answering \emph{any} $[a,b]$, not just a suffix of now, pushes from
+``sliding-window structure'' to ``range-aggregate over time-partitioned
+partials.'' The \emph{panes} technique~\cite{li2005nopane} chops time into
+fixed slices, partial-aggregates each, and answers any window as a merge
+of covered slices. General \emph{stream slicing}
+--- Cutty~\cite{carbone2016cutty} and especially
+Scotty~\cite{traub2021scotty} --- manages many concurrent windows of
+different sizes over out-of-order streams with watermarks, and is the
+closest existing \emph{system} to ``arbitrary window sizes, answered
+continuously.'' To make the merges cheap, incremental sliding-window
+aggregation provides associative-combine data structures:
+FlatFAT~\cite{tangwongsan2015flatfat} is a balanced tree over slices with
+$O(\log n)$ update and \emph{arbitrary $[a,b]$ range queries};
+DABA~\cite{tangwongsan2017daba} gives $O(1)$ worst-case for the suffix
+case; and FiBA~\cite{tangwongsan2019fiba} extends to \emph{out-of-order}
+inserts with arbitrary window queries. All require only that the
+aggregation be an associative monoid --- which sketch-merge is --- so they
+apply to our non-linear families directly. As an alternative to hard
+windows, \emph{time-decayed} aggregation~\cite{cohen2003timedecay,
+cormode2009forwarddecay} weights data by age, often a better and far
+cheaper model for monitoring dashboards. For the \emph{linear} families,
+the classical persistent prefix-sum / Fenwick lineage collapses arbitrary
+$[a,b]$ to a single \emph{subtraction} of two cumulative summaries.
+
+\subsection{Mergeable summaries: the connective tissue}
+
+What makes the above compose safely is
+\emph{mergeability}~\cite{agarwal2013mergeable}: KLL~\cite{karnin2016kll},
+HyperLogLog~\cite{flajolet2007hyperloglog,ertl2017new}, Count-Min
+\cite{cormode2005cm}, Count Sketch~\cite{charikar2002frequent}, and
+DDSketch~\cite{masson2019ddsketch} can each be merged in \emph{any} tree
+shape without compounding error. This licenses assembling a window from
+$O(\log n)$ slice-merges with error fixed at the base $\varepsilon$,
+regardless of how the range structure groups slices --- the property
+without which arbitrary-window assembly over sketches would be unsound.
+
+\subsection{Positioning}
+
+Prior work supplies the pieces but not the combination we need.
+Continuous monitoring optimizes the channel but tracks a single current
+value, discarding the temporal decomposition needed for historical
+windows. Sliding-window theory bounds space for ``last $T$'' but is
+suffix-oriented and largely single-node or count-centric. Stream-slicing
+systems manage arbitrary windows but are designed for raw/SQL aggregates
+within one engine, not for \emph{distributed, bandwidth-billed, sketch}
+telemetry with a per-family linear/non-linear split. Our contribution is a
+two-stage design that (i) emits fine, continuous, delta-compressed
+\emph{temporal slice-sketches} from resource-constrained edges under cloud
+economics, and (ii) serves tumbling, sliding, and arbitrary-window queries
+at the backend by dispatching, \emph{per sketch family}, between
+prefix-difference (linear) and tree-based range-merge (non-linear) over a
+multi-resolution slice store --- with mergeability guaranteeing
+non-compounding error across the hierarchy.
+
+
+% =====================================================================
+% Suggested bibliography keys (fill in full entries):
+%  cloudpricing            - AWS/GCP/Azure pricing: memory vs vCPU, egress.
+%  babcock2002models       - Babcock et al., Models and Issues in Data
+%                            Stream Systems, PODS 2002.
+%  cormode2013survey       - Cormode, The Continuous Distributed Monitoring
+%                            Model, SIGMOD Record 2013.
+%  cormode2008functional   - Cormode, Muthukrishnan, Yi, Algorithms for
+%                            Distributed Functional Monitoring, SODA 2008 /
+%                            ACM TALG 2011.
+%  sharfman2006geometric   - Sharfman, Schuster, Keren, A Geometric Approach
+%                            to Monitoring Threshold Functions..., SIGMOD 2006.
+%  cormode2005sketching    - Cormode, Garofalakis, Sketching Streams Through
+%                            the Net, VLDB 2005.
+%  cormode2005holistic     - Cormode et al., Holistic Aggregates in a
+%                            Networked World (quantile tracking), SIGMOD 2005.
+%  datar2002sliding        - Datar, Gionis, Indyk, Motwani, Maintaining
+%                            Stream Statistics over Sliding Windows, SODA/
+%                            SICOMP 2002 (Exponential Histograms).
+%  gibbons2002distributed  - Gibbons, Tirthapura, Distributed Streams
+%                            Algorithms for Sliding Windows, SPAA 2002.
+%  braverman2007smooth     - Braverman, Ostrovsky, Smooth Histograms for
+%                            Sliding Windows, FOCS 2007.
+%  arasu2004quantiles      - Arasu, Manku, Approximate Counts and Quantiles
+%                            over Sliding Windows, PODS 2004.
+%  lee2006significant      - Lee, Ting, Maintaining Significant Stream
+%                            Statistics over Sliding Windows, SODA 2006.
+%  papapetrou2012ecm       - Papapetrou, Garofalakis, Deligiannakis,
+%                            Sketch-based Querying of Distributed
+%                            Sliding-Window Data Streams (ECM-sketch), VLDB 2012.
+%  chabchoub2010sliding    - Chabchoub, Hebrail, Sliding HyperLogLog, 2010.
+%  li2005nopane            - Li et al., No Pane, No Gain, SIGMOD Record 2005.
+%  carbone2016cutty        - Carbone et al., Cutty, CIKM 2016.
+%  traub2021scotty         - Traub et al., Scotty: Efficient Window
+%                            Aggregation..., ICDE 2018 / ACM TODS 2021.
+%  tangwongsan2015flatfat  - Tangwongsan et al., General Incremental
+%                            Sliding-Window Aggregation (FlatFAT), VLDB 2015.
+%  tangwongsan2017daba     - Tangwongsan et al., Low-Latency Sliding-Window
+%                            Aggregation in Worst-Case Constant Time (DABA),
+%                            DEBS 2017.
+%  tangwongsan2019fiba     - Tangwongsan et al., Optimal and General
+%                            Out-of-Order Sliding-Window Aggregation (FiBA),
+%                            VLDB 2019.
+%  cohen2003timedecay      - Cohen, Strauss, Maintaining Time-Decaying
+%                            Stream Aggregates, PODS 2003.
+%  cormode2009forwarddecay - Cormode et al., Forward Decay, ICDE 2009.
+%  agarwal2013mergeable    - Agarwal et al., Mergeable Summaries, PODS 2012
+%                            / ACM TODS 2013.
+%  karnin2016kll           - Karnin, Lang, Liberty, Optimal Quantile
+%                            Approximation in Streams (KLL), FOCS 2016.
+%  flajolet2007hyperloglog - Flajolet et al., HyperLogLog, AofA 2007.
+%  ertl2017new             - Ertl, New Cardinality Estimation Algorithms for
+%                            HyperLogLog Sketches, arXiv:1702.01284.
+%  cormode2005cm           - Cormode, Muthukrishnan, Count-Min Sketch, J.
+%                            Algorithms 2005.
+%  charikar2002frequent    - Charikar, Chen, Farach-Colton, Finding Frequent
+%                            Items in Data Streams (Count Sketch), ICALP 2002.
+%  masson2019ddsketch      - Masson, Rim, Lee, DDSketch, VLDB 2019.
+% =====================================================================
