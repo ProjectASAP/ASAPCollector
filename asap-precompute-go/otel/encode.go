@@ -88,9 +88,30 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 	startTs := pcommon.Timestamp(env.WindowStartMs * 1_000_000)
 	endTs := pcommon.Timestamp(env.WindowEndMs * 1_000_000)
 
+	// Sum is a first-class AggregationType (not a sketch): emit the
+	// modified-OTLP SumAgg metric carrying the SumState envelope bytes.
+	if env.EffectiveAggKind() == precompute.AggKindSum {
+		dst := out.SetEmptySumAgg()
+		dp := dst.DataPoints().AppendEmpty()
+		KeyValuesToAttributes(env.Labels, dp.Attributes())
+		dp.SetStartTimestamp(startTs)
+		dp.SetTimestamp(endTs)
+		dp.SetSketch(env.Payload)
+		dp.SetEncoding(hostNeutralToSumAggEncoding(env.Encoding))
+		return nil
+	}
+
 	switch env.SketchType {
 	case precompute.SketchTypeDDSketch:
 		dst := out.SetEmptyDDSketch()
+		// Stamp the container's relative_accuracy (the DDSketch alpha) so the
+		// backend registers a non-zero ε. Omitting it left the container at
+		// 0.0 — a degenerate sketch that makes quantile queries
+		// capability-miss to the archive and return empty. Mirrors the
+		// standalone ddsketchprocessor (shim_helpers.go SetRelativeAccuracy).
+		if env.RelativeAccuracy > 0 {
+			dst.SetRelativeAccuracy(env.RelativeAccuracy)
+		}
 		dp := dst.DataPoints().AppendEmpty()
 		KeyValuesToAttributes(env.Labels, dp.Attributes())
 		dp.SetStartTimestamp(startTs)
@@ -188,6 +209,18 @@ func hostNeutralToDDSketchEncoding(e precompute.Encoding) pmetric.DDSketchEncodi
 		return pmetric.DDSketchEncodingMsgpack
 	}
 	return pmetric.DDSketchEncodingProto
+}
+
+func hostNeutralToSumAggEncoding(e precompute.Encoding) pmetric.SumAggEncoding {
+	switch e {
+	case precompute.EncodingProtoFull:
+		return pmetric.SumAggEncodingProto
+	case precompute.EncodingProtoDelta:
+		return pmetric.SumAggEncodingProtoDelta
+	case precompute.EncodingMsgpack:
+		return pmetric.SumAggEncodingMsgpack
+	}
+	return pmetric.SumAggEncodingProto
 }
 
 func hostNeutralToKLLSketchEncoding(e precompute.Encoding) pmetric.KLLSketchEncoding {

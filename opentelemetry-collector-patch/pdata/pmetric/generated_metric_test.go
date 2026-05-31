@@ -197,6 +197,18 @@ func TestMetric_HLLSketch(t *testing.T) {
 	assert.Panics(t, func() { newMetric(internal.NewMetric(), sharedState).SetEmptyHLLSketch() })
 }
 
+func TestMetric_SumAgg(t *testing.T) {
+	ms := NewMetric()
+	ms.SetEmptySumAgg()
+	assert.Equal(t, NewSumAgg(), ms.SumAgg())
+	ms.orig.GetData().(*internal.Metric_SumAgg).SumAgg = internal.GenTestSumAgg()
+	assert.Equal(t, MetricTypeSumAgg, ms.Type())
+	assert.Equal(t, generateTestSumAgg(), ms.SumAgg())
+	sharedState := internal.NewState()
+	sharedState.MarkReadOnly()
+	assert.Panics(t, func() { newMetric(internal.NewMetric(), sharedState).SetEmptySumAgg() })
+}
+
 func TestMetric_Metadata(t *testing.T) {
 	ms := NewMetric()
 	assert.Equal(t, pcommon.NewMap(), ms.Metadata())

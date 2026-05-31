@@ -225,8 +225,11 @@ func genTestFailingUnmarshalProtoValuesMetric() map[string][]byte {
 
 		"HLLSketch/wrong_wire_type": {0x8c, 0x1},
 		"HLLSketch/missing_value":   {0x8a, 0x1},
-		"Metadata/wrong_wire_type":  {0x64},
-		"Metadata/missing_value":    {0x62},
+
+		"SumAgg/wrong_wire_type":   {0x94, 0x1},
+		"SumAgg/missing_value":     {0x92, 0x1},
+		"Metadata/wrong_wire_type": {0x64},
+		"Metadata/missing_value":   {0x62},
 	}
 }
 
@@ -256,6 +259,8 @@ func genTestEncodingValuesMetric() map[string]*Metric {
 		"CountMinSketch/test":          {Data: &Metric_CountMinSketch{CountMinSketch: GenTestCountMinSketch()}},
 		"HLLSketch/default":            {Data: &Metric_HLLSketch{HLLSketch: &HLLSketch{}}},
 		"HLLSketch/test":               {Data: &Metric_HLLSketch{HLLSketch: GenTestHLLSketch()}},
+		"SumAgg/default":               {Data: &Metric_SumAgg{SumAgg: &SumAgg{}}},
+		"SumAgg/test":                  {Data: &Metric_SumAgg{SumAgg: GenTestSumAgg()}},
 		"Metadata/test":                {Metadata: []KeyValue{{}, *GenTestKeyValue()}},
 	}
 }

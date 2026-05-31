@@ -93,7 +93,6 @@ func (p *asapEdgeProcessor) ConsumeMetrics(ctx context.Context, md pmetric.Metri
 
 func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 	name := m.Name()
-	sumAgg := p.sumMetrics[name] // nil if not a warm Sum-family metric
 	// coldArchive: add raw samples to the cold gorilla stream unless this
 	// metric is configured tier=warm. Unconfigured metrics and tier∈{both,cold}
 	// are archived as before.
@@ -139,9 +138,7 @@ func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 				Value:      val,
 			})
 		}
-		if sumAgg != nil {
-			sh.sumAggs[name].observe(am, val)
-		} else if sa := sh.sketchAggs[name]; sa != nil {
+		if sa := sh.sketchAggs[name]; sa != nil {
 			sa.observe(am, val, tsMs)
 		}
 		sh.mu.Unlock()

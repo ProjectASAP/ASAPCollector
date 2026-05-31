@@ -48,6 +48,39 @@ func (s SketchType) String() string {
 	return "Unspecified"
 }
 
+// AggregationKind is the umbrella over WHAT kind of aggregate an envelope
+// carries: a Sketch (whose SketchType sub-tag names the algorithm —
+// DDSketch/KLL/HLL/CountSketch/CountMinSketch) or a scalar Sum. This mirrors
+// the ASAPQuery backend's AggKind { Sketch | ExactAgg } split: "sketch" is
+// ONE aggregation kind and "sum" is a sibling, NOT a SketchType.
+//
+// Backward compatibility: every producer that predates this field emits the
+// zero value (AggKindUnspecified). On decode, an Unspecified AggKind paired
+// with a real SketchType is read as AggKindSketch (see EffectiveAggKind), so
+// existing sketch envelopes stay byte-identical and decode unchanged.
+type AggregationKind uint8
+
+const (
+	// AggKindUnspecified is the proto3 zero value; resolved via
+	// EffectiveAggKind (Unspecified + a real SketchType => Sketch).
+	AggKindUnspecified AggregationKind = iota
+	// AggKindSketch: the payload is a sketch; SketchType names which.
+	AggKindSketch
+	// AggKindSum: the payload is a scalar Sum aggregate ({sum,count}).
+	AggKindSum
+)
+
+// String returns the canonical aggregation-kind name.
+func (a AggregationKind) String() string {
+	switch a {
+	case AggKindSketch:
+		return "Sketch"
+	case AggKindSum:
+		return "Sum"
+	}
+	return "Unspecified"
+}
+
 // Encoding describes how the bytes in SketchEnvelope.Payload are
 // encoded. Mirrors the design-doc §5.1 SketchEnvelope.encoding enum.
 type Encoding uint8
@@ -111,6 +144,11 @@ type SketchEnvelope struct {
 	SchemaVersion uint32
 	// SketchType identifies which sketch algorithm produced Payload.
 	SketchType SketchType
+	// AggKind is the umbrella aggregation kind (Sketch vs Sum). The zero
+	// value (AggKindUnspecified) is resolved by EffectiveAggKind to
+	// AggKindSketch whenever SketchType is set, so every pre-existing
+	// (sketch-only) producer is byte-for-byte unaffected.
+	AggKind AggregationKind
 	// AggID is the controller-plan join key. Pairs the envelope to
 	// a specific PrecomputeConfig.
 	AggID AggId
@@ -162,4 +200,25 @@ type SketchEnvelope struct {
 	// adapter encode-side reads this to set
 	// Sum.SetAggregationTemporality(...). In-process only.
 	AggregationTemporality int32
+	// RelativeAccuracy is the DDSketch alpha (relative accuracy) the
+	// producing sketch was built with — non-zero only for
+	// SketchType==DDSketch. In-process only (NOT a proto wire field): the
+	// OTel adapter's Encode stamps it onto the output pmetric.DDSketch
+	// container's relative_accuracy so the backend registers a non-zero ε.
+	// A 0.0 here leaves the container at its zero value, which the backend
+	// treats as a degenerate (exact, no-bucket) DDSketch — quantile queries
+	// then capability-miss to the archive and return empty.
+	RelativeAccuracy float64
+}
+
+// EffectiveAggKind resolves the envelope's aggregation kind, applying the
+// backward-compat default: an unset AggKind on an envelope that carries a
+// real SketchType is treated as AggKindSketch (every producer emitted before
+// AggKind existed predates the field and only ever produced sketches). A Sum
+// producer sets AggKind = AggKindSum explicitly.
+func (e *SketchEnvelope) EffectiveAggKind() AggregationKind {
+	if e.AggKind == AggKindUnspecified && e.SketchType != SketchTypeUnspecified {
+		return AggKindSketch
+	}
+	return e.AggKind
 }

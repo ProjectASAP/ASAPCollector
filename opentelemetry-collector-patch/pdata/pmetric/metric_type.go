@@ -19,6 +19,7 @@ const (
 	MetricTypeCountSketch
 	MetricTypeCountMinSketch
 	MetricTypeHLLSketch
+	MetricTypeSumAgg
 )
 
 // String returns the string representation of the MetricType.
@@ -46,6 +47,8 @@ func (mdt MetricType) String() string {
 		return "CountMinSketch"
 	case MetricTypeHLLSketch:
 		return "HLLSketch"
+	case MetricTypeSumAgg:
+		return "SumAgg"
 	}
 	return ""
 }

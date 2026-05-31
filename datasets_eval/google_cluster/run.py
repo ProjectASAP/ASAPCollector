@@ -44,8 +44,12 @@ EXPECTED_ATTR_KEYS = {"zone", "rack", "host", "service", "task"}
 # google-cluster log adds `expected_ground_truth_query` so the
 # accuracy reducer can compare against ground truth.
 QUERY_REQUIRED_KEYS = {"kind", "promql"}
-QUERY_OPTIONAL_KEYS = {"expected_ground_truth_query", "rationale"}
-QUERY_ALLOWED_KINDS = {"quantile", "topk", "sum", "count_unique"}
+# `metricsql` is the warm-tier query string the E2E harness sends to the
+# data-plane query engine; `gt` is the structured ground-truth spec consumed
+# by e2e/gt_eval.py; `id` is a stable handle for reports.
+QUERY_OPTIONAL_KEYS = {"expected_ground_truth_query", "rationale", "id", "metricsql", "gt"}
+# `frequency` covers the CountMinSketch per-item estimate(key) path.
+QUERY_ALLOWED_KINDS = {"quantile", "topk", "sum", "count_unique", "frequency"}
 
 
 def _run_module(module_path: Path, argv: list[str]) -> int:

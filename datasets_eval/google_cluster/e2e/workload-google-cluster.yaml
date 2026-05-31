@@ -1,0 +1,82 @@
+# google_cluster E2E controller workload (CONTROLLER_WORKLOADS)
+#
+# Mirrors deploy/mvp-multinode/configs/asap/mvp-workload.yaml schema
+# (controller/src/config/workloads.rs::WorkloadEntry). Drives the fused
+# asap_edge agent for the google_cluster trace replay.
+#
+# IMPORTANT CONSTRAINT (one family per metric in the fused edge):
+# the fused asap_edge processor assigns ONE warm family per metric name.
+# The mapper (otlp_mapper.py) emits only two metrics
+# (google_cluster_2019_cpu_rate, google_cluster_2019_memory_usage), so a
+# single workload cannot exercise DDSketch + CountSketch + HLL + CMS on
+# the SAME metric simultaneously. Two ways to get full per-family coverage
+# on real data:
+#   (A) run the harness once per family-variant workload (this file is the
+#       quantile+sum variant; see the *_topk / *_card / *_cms siblings), or
+#   (B) extend otlp_mapper.py to emit family-specific metric aliases
+#       (e.g. *_cpu_rate_q, *_cpu_rate_topk, *_cpu_rate_card, *_cpu_rate_cms)
+#       from the same rows, then declare each alias with its own family here.
+# (B) is preferred for a single-pass E2E run; it is a small mapper change.
+# This file uses (A)'s quantile+sum slice as the default, and lists the
+# other families as commented entries to copy into per-family variants.
+
+# --- DDSketch quantile, per-series (q-cpu-p99, q-cpu-p50) ---
+- metric_name: google_cluster_2019_cpu_rate
+  query_string: "quantile_over_time(0.99, google_cluster_2019_cpu_rate[30s])"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  sketch_family_override: DDSketch
+  # NO grouping_labels — per-series quantile preserves PromQL semantics.
+
+# --- DDSketch quantile, grouped by zone (q-mem-p99-by-zone) ---
+- metric_name: google_cluster_2019_memory_usage
+  query_string: "quantile_over_time(0.99, google_cluster_2019_memory_usage[30s])"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  sketch_family_override: DDSketch
+  grouping_labels:
+    - zone
+
+# --- Sum aggregation-type (q-sum-cpu, q-sum-mem-by-zone) ---
+# Exact-agg / Sum path. With Phase 3 landed these resolve via the new
+# first-class Sum *envelope*; before Phase 3 they resolve via the legacy
+# ExactAgg(Sum) precompute path. Both should be lossless.
+#   NOTE: cpu_rate is declared as a sketch above; a metric cannot be both
+#   a sketch family AND a Sum entry in one fused config, so the sum-cpu
+#   query belongs in a Sum-variant workload (assign cpu_rate family=Sum).
+- metric_name: google_cluster_2019_memory_usage_sum
+  query_string: "sum by (zone) (google_cluster_2019_memory_usage_sum)"
+  accuracy_sla: 0.0
+  assign_to_role: agent
+  grouping_labels:
+    - zone
+
+# === Per-family variant entries (copy into a dedicated workload, or pair
+#     with mapper alias metrics, per the CONSTRAINT note above) ===========
+#
+# --- CountSketch top-K by host CPU (q-topk-host-cpu) ---
+# - metric_name: google_cluster_2019_cpu_rate
+#   query_string: "topk(10, sum by (host) (google_cluster_2019_cpu_rate))"
+#   accuracy_sla: 0.05
+#   assign_to_role: agent
+#   sketch_family_override: CountSketch
+#   grouping_labels: [zone]
+#   item_label: host          # heavy-hitter dimension the heap ranks
+#
+# --- HLL distinct-service cardinality (q-card-service) ---
+# - metric_name: google_cluster_2019_cpu_rate
+#   query_string: "count(google_cluster_2019_cpu_rate)"
+#   accuracy_sla: 0.02
+#   assign_to_role: agent
+#   sketch_family_override: HLL
+#   grouping_labels: [zone]
+#   item_label: service       # HLL counts DISTINCT service values
+#
+# --- CountMinSketch per-item frequency (q-cms-freq-service) ---
+# - metric_name: google_cluster_2019_cpu_rate
+#   query_string: "count_over_time(google_cluster_2019_cpu_rate[30s])"
+#   accuracy_sla: 0.05
+#   assign_to_role: agent
+#   sketch_family_override: CountMinSketch
+#   grouping_labels: [zone]
+#   item_label: service       # REQUIRED for per-item estimate(key) (Phase 2)

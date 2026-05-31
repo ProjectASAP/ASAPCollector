@@ -76,6 +76,60 @@ func TestDecode_GaugeReadAsInt(t *testing.T) {
 	}
 }
 
+func TestRoundTrip_SumAggEnvelope(t *testing.T) {
+	t.Parallel()
+	// The fixed 16-byte Sum payload SumWrapper produces (and the backend
+	// cross-language golden): float64 sum (LE) || uint64 count (LE),
+	// here sum=100, count=4.
+	payload := []byte{
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x59, 0x40,
+		0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	in := &precompute.SketchEnvelope{
+		SchemaVersion: 1,
+		AggKind:       precompute.AggKindSum,
+		MetricName:    "google_cluster_2019_cpu_rate",
+		Labels:        []precompute.KeyValue{{Key: "zone", Value: "z1"}},
+		WindowStartMs: 1_000,
+		WindowEndMs:   2_000,
+		Encoding:      precompute.EncodingProtoFull,
+		Payload:       payload,
+	}
+	md, err := Encode([]*precompute.SketchEnvelope{in}, &AdapterConfig{})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	m := md.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().At(0)
+	if m.Type() != pmetric.MetricTypeSumAgg {
+		t.Fatalf("encoded metric type: want SumAgg, got %v", m.Type())
+	}
+	dp := m.SumAgg().DataPoints().At(0)
+	if string(dp.Sketch()) != string(payload) {
+		t.Errorf("encoded sketch payload mismatch")
+	}
+	if dp.Encoding() != pmetric.SumAggEncodingProto {
+		t.Errorf("encoded encoding: %v", dp.Encoding())
+	}
+
+	obs, err := Decode(md, &AdapterConfig{})
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(obs) != 1 {
+		t.Fatalf("obs len: want 1, got %d", len(obs))
+	}
+	env := obs[0].Value.Envelope
+	if env == nil || env.EffectiveAggKind() != precompute.AggKindSum {
+		t.Fatalf("decoded agg kind: %+v", env)
+	}
+	if string(env.Payload) != string(payload) {
+		t.Errorf("payload round-trip mismatch: want %x got %x", payload, env.Payload)
+	}
+	if env.WindowStartMs != 1_000 || env.WindowEndMs != 2_000 {
+		t.Errorf("window round-trip: [%d,%d)", env.WindowStartMs, env.WindowEndMs)
+	}
+}
+
 func TestDecode_DDSketchProducesEnvelope(t *testing.T) {
 	t.Parallel()
 	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF}

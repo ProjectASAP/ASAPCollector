@@ -131,6 +131,17 @@ func (m *Metric) GetHLLSketch() *HLLSketch {
 	return nil
 }
 
+type Metric_SumAgg struct {
+	SumAgg *SumAgg
+}
+
+func (m *Metric) GetSumAgg() *SumAgg {
+	if v, ok := m.GetData().(*Metric_SumAgg); ok {
+		return v.SumAgg
+	}
+	return nil
+}
+
 // Metric represents one metric as a collection of datapoints.
 // See Metric definition in OTLP: https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/metrics/v1/metrics.proto
 type Metric struct {
@@ -207,6 +218,12 @@ var (
 			return &Metric_HLLSketch{}
 		},
 	}
+
+	ProtoPoolMetric_SumAgg = sync.Pool{
+		New: func() any {
+			return &Metric_SumAgg{}
+		},
+	}
 )
 
 func NewMetric() *Metric {
@@ -267,6 +284,10 @@ func DeleteMetric(orig *Metric, nullable bool) {
 		DeleteHLLSketch(ov.HLLSketch, true)
 		ov.HLLSketch = nil
 		ProtoPoolMetric_HLLSketch.Put(ov)
+	case *Metric_SumAgg:
+		DeleteSumAgg(ov.SumAgg, true)
+		ov.SumAgg = nil
+		ProtoPoolMetric_SumAgg.Put(ov)
 
 	}
 	for i := range orig.Metadata {
@@ -409,6 +430,17 @@ func CopyMetric(dest, src *Metric) *Metric {
 		CopyHLLSketch(ov.HLLSketch, t.HLLSketch)
 		dest.Data = ov
 
+	case *Metric_SumAgg:
+		var ov *Metric_SumAgg
+		if !UseProtoPooling.IsEnabled() {
+			ov = &Metric_SumAgg{}
+		} else {
+			ov = ProtoPoolMetric_SumAgg.Get().(*Metric_SumAgg)
+		}
+		ov.SumAgg = NewSumAgg()
+		CopySumAgg(ov.SumAgg, t.SumAgg)
+		dest.Data = ov
+
 	default:
 		dest.Data = nil
 	}
@@ -534,6 +566,11 @@ func (orig *Metric) MarshalJSON(dest *json.Stream) {
 		if orig.HLLSketch != nil {
 			dest.WriteObjectField("hLLSketch")
 			orig.HLLSketch.MarshalJSON(dest)
+		}
+	case *Metric_SumAgg:
+		if orig.SumAgg != nil {
+			dest.WriteObjectField("sumAgg")
+			orig.SumAgg.MarshalJSON(dest)
 		}
 	}
 	if len(orig.Metadata) > 0 {
@@ -690,6 +727,19 @@ func (orig *Metric) UnmarshalJSON(iter *json.Iterator) {
 				orig.Data = ov
 			}
 
+		case "sumAgg", "sum_agg":
+			{
+				var ov *Metric_SumAgg
+				if !UseProtoPooling.IsEnabled() {
+					ov = &Metric_SumAgg{}
+				} else {
+					ov = ProtoPoolMetric_SumAgg.Get().(*Metric_SumAgg)
+				}
+				ov.SumAgg = NewSumAgg()
+				ov.SumAgg.UnmarshalJSON(iter)
+				orig.Data = ov
+			}
+
 		case "metadata":
 			for iter.ReadArray() {
 				orig.Metadata = append(orig.Metadata, KeyValue{})
@@ -770,6 +820,11 @@ func (orig *Metric) SizeProto() int {
 	case *Metric_HLLSketch:
 		if orig.HLLSketch != nil {
 			l = orig.HLLSketch.SizeProto()
+			n += 2 + proto.Sov(uint64(l)) + l
+		}
+	case *Metric_SumAgg:
+		if orig.SumAgg != nil {
+			l = orig.SumAgg.SizeProto()
 			n += 2 + proto.Sov(uint64(l)) + l
 		}
 	}
@@ -892,6 +947,16 @@ func (orig *Metric) MarshalProto(buf []byte) int {
 			buf[pos] = 0x1
 			pos--
 			buf[pos] = 0x8a
+		}
+	case *Metric_SumAgg:
+		if orig.SumAgg != nil {
+			l = orig.SumAgg.MarshalProto(buf[:pos])
+			pos -= l
+			pos = proto.EncodeVarint(buf, pos, uint64(l))
+			pos--
+			buf[pos] = 0x1
+			pos--
+			buf[pos] = 0x92
 		}
 	}
 	for i := len(orig.Metadata) - 1; i >= 0; i-- {
@@ -1180,6 +1245,29 @@ func (orig *Metric) UnmarshalProto(buf []byte) error {
 			}
 			ov.HLLSketch = NewHLLSketch()
 			err = ov.HLLSketch.UnmarshalProto(buf[startPos:pos])
+			if err != nil {
+				return err
+			}
+			orig.Data = ov
+
+		case 18:
+			if wireType != proto.WireTypeLen {
+				return fmt.Errorf("proto: wrong wireType = %d for field SumAgg", wireType)
+			}
+			var length int
+			length, pos, err = proto.ConsumeLen(buf, pos)
+			if err != nil {
+				return err
+			}
+			startPos := pos - length
+			var ov *Metric_SumAgg
+			if !UseProtoPooling.IsEnabled() {
+				ov = &Metric_SumAgg{}
+			} else {
+				ov = ProtoPoolMetric_SumAgg.Get().(*Metric_SumAgg)
+			}
+			ov.SumAgg = NewSumAgg()
+			err = ov.SumAgg.UnmarshalProto(buf[startPos:pos])
 			if err != nil {
 				return err
 			}
