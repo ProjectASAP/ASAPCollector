@@ -187,6 +187,15 @@ type MetricFamily struct {
 	// The non-heap plain CountSketch keeps its attribute-set frequency keying
 	// regardless (B6).
 	ItemLabel string `mapstructure:"item_label"`
+
+	// HLLSparse selects the in-memory SPARSE base for an HLL family. Default
+	// false (dense). When true, low-cardinality warm series use the sparse
+	// HyperLogLog base (sketchlib-go NewSparseHyperLogLog) and hold far less
+	// than the dense ~16KB/series register array; the serialized output stays
+	// byte-identical to dense, so this is a pure in-memory footprint win at low
+	// cardinality with no wire change. Only consulted for `family: hll`; ignored
+	// for every other family.
+	HLLSparse bool `mapstructure:"hll_sparse"`
 }
 
 // ColdConfig configures the per-shard Gorilla cold archive. Each shard
