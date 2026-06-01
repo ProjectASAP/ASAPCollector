@@ -189,6 +189,15 @@ func (c *Config) Validate() error {
 				m.HeapSize = 100
 			}
 		}
+		// hll_sparse: only the HLL family has a sparse in-memory base. Reject
+		// it on any other family rather than silently ignoring so a
+		// misconfiguration surfaces at agent boot (mirrors the emit_heap family
+		// check above). It is a pure in-memory footprint choice; the serialized
+		// output is byte-identical to dense, so default false stays
+		// wire-unchanged.
+		if m.HLLSparse && m.Family != FamilyHLL {
+			return fmt.Errorf("asap_edge: metrics[%d] (%s): hll_sparse is only valid for family=hll (got %q)", i, m.Metric, m.Family)
+		}
 		// CountSketch row-hash budget (P0-1): sketchlib bit-slices a single
 		// 64-bit per-item hash as rows*ceil(log2(cols)); once that exceeds 64
 		// bits the high rows read shifted-out (zero) bits and silently

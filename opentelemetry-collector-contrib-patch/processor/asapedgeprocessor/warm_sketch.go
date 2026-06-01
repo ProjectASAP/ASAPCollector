@@ -250,7 +250,19 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		// degrading cardinality accuracy. Force no-sampling regardless of
 		// fam.SampleP.
 		st = precompute.SketchTypeHLLSketch
-		factory = func() precompute.Sketch { return sketches.NewHLLWrapper() }
+		// HLLSparse selects the in-memory sparse base (NewHLLWrapperSparse) so
+		// low-cardinality warm series avoid the dense ~16KB/series register
+		// array; default false keeps the dense base and is byte-identical on
+		// the wire (the sparse base serializes to the same proto). The choice
+		// is also surfaced as the documented HLL "sparse" SketchParam below so
+		// the emitted PrecomputeConfig reflects which base is in use. The
+		// constructor is the source of truth for the base selection; the
+		// SketchParam is for config introspection only.
+		if fam.HLLSparse {
+			factory = func() precompute.Sketch { return sketches.NewHLLWrapperSparse() }
+		} else {
+			factory = func() precompute.Sketch { return sketches.NewHLLWrapper() }
+		}
 		observer = sketches.HLLObserver{}
 		// item_label support: when set, hash the item_label's VALUE (the
 		// high-cardinality inner dimension, e.g. user_id) so the HLL counts
@@ -400,6 +412,14 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		// than the equivalent full snapshot. A non-zero value caps the delta
 		// at threshold * full-state size. No runtime default is substituted.
 		DeltaThreshold: opts.deltaThreshold,
+	}
+	// Surface the HLLSparse typed flag as the documented HLL "sparse"
+	// SketchParams key (1 = sparse base; absent/0 = dense default) so config
+	// introspection and the engine see one consistent representation. The base
+	// is actually selected by the factory constructor above; this only mirrors
+	// that choice onto the emitted PrecomputeConfig.
+	if fam.HLLSparse {
+		pcfg.SketchParams = precompute.SketchParams{"sparse": 1}
 	}
 	obsKind := observeKindFor(fam.Family)
 	if obsKindOverride != nil {
