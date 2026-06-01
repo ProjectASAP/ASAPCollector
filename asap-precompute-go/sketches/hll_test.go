@@ -72,14 +72,33 @@ func itoa5(i int) string {
 	return string(b)
 }
 
-// TestHLLWrapper_DeltaNeverLargerThanFull verifies the min(full, delta) clamp:
-// ComputeDeltaAgainst never returns a delta larger than the equivalent full
-// frame. With a large base and a tiny incremental change the clamp keeps a
-// (smaller) delta; with a near-empty base and a large change — where the
-// per-register-update delta exceeds the sparse-packed full frame — it emits
-// the full frame instead. Both directions respect payload ≤ full.
+// TestHLLWrapper_DeltaNeverLargerThanFull verifies the genuine anti-
+// pessimization invariant: ComputeDeltaAgainst never returns a payload LARGER
+// than the equivalent full snapshot of the same state. The wrapper enforces
+// this with a min(full, delta) clamp (hll.go: "if len(payload) >= len(full)
+// return full, isFull=true"), so the wire payload is always min(delta, full).
+//
+// Sparse-representation note (sketchlib-go #66 in-memory sparse HLL): the full
+// snapshot is now representation-adaptive. A low/medium-cardinality sketch
+// serializes to a small wire-sparse frame whose size grows with the number of
+// non-zero registers, and only a high-cardinality sketch reaches the dense
+// register array (~16.5KB). Because BOTH the full frame and the register delta
+// shrink with cardinality, whether the clamp fires is cardinality-dependent —
+// it does NOT fire for a small/medium increment (the delta legitimately wins),
+// and it DOES fire only once the register-delta cost catches up with the dense
+// full frame at high cardinality. So this test asserts the size invariant
+// directly (delta <= full, always) and checks the clamp's TWO genuine regimes
+// rather than hardcoding which fixed input forces a full.
+//
+// Measured payload vs full (bytes) on the merged sparse-HLL dependency:
+//
+//	base    extra   full    delta   isFull
+//	20000   +50     16532   88      false   (delta wins by a mile)
+//	1       +400    957     805     false   (sparse full > delta: delta still wins)
+//	0       +50000  16532   16532   true    (delta caught up -> clamp to full)
 func TestHLLWrapper_DeltaNeverLargerThanFull(t *testing.T) {
 	t.Parallel()
+	// check returns isFull and asserts the size invariant for the given case.
 	check := func(name string, base, extra int) bool {
 		w := NewHLLWrapper()
 		for i := 0; i < base; i++ {
@@ -100,22 +119,44 @@ func TestHLLWrapper_DeltaNeverLargerThanFull(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s delta: %v", name, err)
 		}
+		// The core invariant: the emitted payload is never larger than the
+		// equivalent full snapshot of the SAME state. Compared against the
+		// ACTUAL same-state full size, never a hardcoded dense constant — so
+		// it stays correct whether that full snapshot is sparse or dense.
 		if len(payload) > len(full) {
-			t.Fatalf("%s: clamp violated, payload %d > full %d", name, len(payload), len(full))
+			t.Fatalf("%s: pessimization — payload %d > same-state full %d", name, len(payload), len(full))
 		}
 		if len(payload) == 0 {
 			t.Fatalf("%s: empty payload", name)
 		}
+		// When the clamp fires (isFull) the payload must BE the full snapshot;
+		// when it does not, the payload must be a strictly smaller delta. This
+		// pins both regimes without assuming which input lands in which.
+		if isFull && len(payload) != len(full) {
+			t.Fatalf("%s: isFull but payload %d != full %d", name, len(payload), len(full))
+		}
+		if !isFull && len(payload) >= len(full) {
+			t.Fatalf("%s: kept a delta that is not smaller than full (%d >= %d)", name, len(payload), len(full))
+		}
 		return isFull
 	}
-	// Large base, tiny increment → delta far smaller than full → keep delta.
+	// Large established base, tiny increment → delta is tiny → keep delta.
 	if check("large-base", 20000, 50) {
 		t.Fatal("large base + tiny increment should stay a delta, not clamp to full")
 	}
-	// Near-empty base, large increment → per-register-update delta exceeds the
-	// sparse full frame → clamp emits full.
-	if !check("near-empty-base", 1, 400) {
-		t.Fatal("near-empty base + large increment should clamp to full")
+	// Near-empty base, medium increment. Under the sparse representation the
+	// full snapshot is itself small (wire-sparse) but the register delta is
+	// still smaller, so the delta is (correctly) KEPT — it is not a
+	// pessimization. (Pre-#66 the full frame here was the dense array; the
+	// delta-vs-full size relationship is what changed, not the invariant.)
+	if check("near-empty-base", 1, 400) {
+		t.Fatal("near-empty base + medium increment: delta is smaller than the sparse full, should be kept")
+	}
+	// High-cardinality from empty: the register delta grows until it reaches
+	// the dense full-frame size, at which point the clamp fires and emits full.
+	// This is the regime that genuinely exercises the min(full, delta) fallback.
+	if !check("high-card-from-empty", 0, 50000) {
+		t.Fatal("high-cardinality delta should reach the dense full size and clamp to full")
 	}
 }
 
