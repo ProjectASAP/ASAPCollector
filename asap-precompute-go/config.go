@@ -47,6 +47,69 @@ func (m AggregationMode) String() string {
 	return "unknown"
 }
 
+// AggMode picks the aggregation SCOPE — how a window groups observations into
+// sketch instances — orthogonally to the windowing strategy (AggregationMode,
+// which is Tumbling/Sliding/Batch). One config carries both: a Tumbling
+// PerSeries config is today's default behavior; a Tumbling WholeStream config
+// collapses every matching datapoint into a single sketch per AggID.
+//
+// The control plane selects the scope per aggregation given the query:
+// per-label-group queries → PerSeries; distinct-count / global-quantile /
+// grand-total / global-top-k queries → WholeStream.
+//
+// Naming note: the struct field is PrecomputeConfig.Scope rather than `Mode`
+// because PrecomputeConfig.Mode is already the AggregationMode (windowing)
+// field; the type stays AggMode and the constants stay Mode* so the enum reads
+// naturally at use sites (cfg.Scope == ModeWholeStream).
+type AggMode uint8
+
+const (
+	// ModePerSeries is the default (zero value): one sketch per series key
+	// (per AggregateBy group, honoring OmitResourceAttrs). Each datapoint's
+	// value folds into its own series' sketch and the window emits one
+	// envelope per series. This is the historical behavior, so existing
+	// plans that never set Scope are byte-compatible.
+	ModePerSeries AggMode = iota
+	// ModeWholeStream collapses grouping: a single sketch instance per AggID
+	// (per shard, merged at flush) ingests from EVERY matching datapoint
+	// regardless of series identity, and the window emits exactly one
+	// envelope per AggID per window. Resource attrs and data-point labels are
+	// stripped from both the series key and the emitted envelope (the emitted
+	// labels are AggregateBy-derived only). Per-family the ingested subject is
+	// the metric VALUE by default (Sum=grand total, DDSketch/KLL=pooled
+	// distribution, HLL=distinct values, CMS/CountSketch=value frequency);
+	// when an item source is configured (asap_edge ItemLabel) the inner item
+	// dimension is ingested instead (HLL=distinct items, CMS/TopK=heavy items).
+	// MaxSeries is a no-op in this scope (cardinality is 1).
+	ModeWholeStream
+)
+
+// String returns a debug name for the aggregation scope.
+func (m AggMode) String() string {
+	switch m {
+	case ModePerSeries:
+		return "PerSeries"
+	case ModeWholeStream:
+		return "WholeStream"
+	}
+	return "unknown"
+}
+
+// ParseAggMode parses an operator-facing scope string into an AggMode. It
+// accepts the canonical "per_series" / "whole_stream" spellings (plus a few
+// tolerant aliases), and an empty string maps to ModePerSeries (the default)
+// so an omitted `mode:` config key keeps today's behavior. An unrecognized
+// non-empty value returns ok=false so callers can reject it at validation.
+func ParseAggMode(s string) (AggMode, bool) {
+	switch s {
+	case "", "per_series", "perseries", "PerSeries", "series":
+		return ModePerSeries, true
+	case "whole_stream", "wholestream", "WholeStream", "whole", "global":
+		return ModeWholeStream, true
+	}
+	return ModePerSeries, false
+}
+
 // OnOverflow controls behavior when a window's series-cardinality
 // would exceed PrecomputeConfig.MaxSeries.
 //
@@ -129,8 +192,19 @@ type PrecomputeConfig struct {
 	// AggKindSketch for any SketchType-bearing config, so existing sketch
 	// configs are unaffected; a Sum config sets AggKindSum.
 	AggKind AggregationKind
-	// Mode picks the windowing strategy.
+	// Mode picks the windowing strategy (Tumbling / Sliding / Batch).
 	Mode AggregationMode
+	// Scope picks the aggregation SCOPE (PerSeries vs WholeStream),
+	// orthogonal to Mode's windowing strategy. Zero value (ModePerSeries) is
+	// today's behavior, so existing plans are byte-compatible. WholeStream
+	// collapses every matching observation into a single sketch per AggID and
+	// emits one envelope per AggID per window. See AggMode.
+	//
+	// Scope subsumes the legacy GlobalAggregation bool: a config with
+	// GlobalAggregation=true is treated as Scope=ModeWholeStream by
+	// effectiveScope(), so the two never disagree and one WholeStream code
+	// path drives both. Prefer Scope in new configs.
+	Scope AggMode
 	// Window configures size / slide / lateness.
 	Window WindowSpec
 	// Matchers select observations by metric name and label values.
@@ -227,16 +301,22 @@ type PrecomputeConfig struct {
 	// than `Include*` so the zero value is the today-correct default
 	// and existing PrecomputeConfig literals don't need to change.
 	OmitResourceAttrs bool
-	// GlobalAggregation collapses every admitted observation into a
-	// single "global" series — both resource attrs and dp-labels are
-	// ignored when constructing SeriesKey, and both are stripped from
-	// the emitted SketchEnvelope. Used by the legacy CountSketch
-	// processor when AggregateBy is empty (its `buildPartitionKey`
-	// returns the literal string "global", driving every observation
-	// into one shared sketch). When this is true the
-	// IncludeResourceAttrs flag is also implicitly false.
+	// GlobalAggregation is the LEGACY alias for Scope=ModeWholeStream; it
+	// collapses every admitted observation into a single "global" series —
+	// both resource attrs and dp-labels are ignored when constructing
+	// SeriesKey, and both are stripped from the emitted SketchEnvelope. Used
+	// by the legacy CountSketch / heap path when AggregateBy is empty (its
+	// `buildPartitionKey` returned the literal string "global", driving every
+	// observation into one shared sketch).
 	//
-	// Defaults to false; only the CountSketch shim sets it to true.
+	// DEPRECATED: set Scope=ModeWholeStream instead. This bool is retained
+	// for backward compatibility and is folded into the unified scope by
+	// effectiveScope() — a config with EITHER GlobalAggregation=true OR
+	// Scope=ModeWholeStream behaves identically through the one WholeStream
+	// code path. New code should not read GlobalAggregation directly; call
+	// effectiveScope() (or isWholeStream) so the two stay aligned.
+	//
+	// Defaults to false; existing CountSketch-heap shims still set it to true.
 	GlobalAggregation bool
 
 	// EmitWindowStats appends two operator-visibility attributes onto
@@ -256,8 +336,29 @@ type PrecomputeConfig struct {
 	EmitWindowStats bool
 }
 
+// effectiveScope resolves the aggregation scope, folding the legacy
+// GlobalAggregation bool into the unified AggMode: GlobalAggregation=true is
+// read as ModeWholeStream so the single WholeStream code path drives both. A
+// nil config is PerSeries (the default).
+func (cfg *PrecomputeConfig) effectiveScope() AggMode {
+	if cfg == nil {
+		return ModePerSeries
+	}
+	if cfg.Scope == ModeWholeStream || cfg.GlobalAggregation {
+		return ModeWholeStream
+	}
+	return ModePerSeries
+}
+
+// isWholeStream reports whether this config aggregates the whole stream into a
+// single sketch per AggID (Scope=ModeWholeStream, or the legacy
+// GlobalAggregation alias).
+func (cfg *PrecomputeConfig) isWholeStream() bool {
+	return cfg.effectiveScope() == ModeWholeStream
+}
+
 // SeriesKeyFor builds the canonical series key for an Observation,
-// honoring the OmitResourceAttrs and GlobalAggregation flags.
+// honoring the OmitResourceAttrs flag and the aggregation scope.
 //
 // This is the single call site used by both the window's observe
 // path and the serializeSeries flush path so the two stay aligned —
@@ -265,7 +366,8 @@ type PrecomputeConfig struct {
 // envelopes.
 //
 // Encoding rules:
-//   - GlobalAggregation=true   → key = "<aggID>|||" (one global bucket)
+//   - WholeStream (or legacy GlobalAggregation) → key = "<aggID>|||" (one
+//     global bucket per AggID; resource + dp labels collapsed)
 //   - OmitResourceAttrs=true   → resource segment is empty, dp segment
 //     is the AttributesKey of obs.Labels (legacy KLL/HLL/CMS shape)
 //   - default                  → resource and dp segments both populated
@@ -274,7 +376,7 @@ func (cfg *PrecomputeConfig) SeriesKeyFor(obs *Observation) string {
 	if cfg == nil {
 		return ""
 	}
-	if cfg.GlobalAggregation {
+	if cfg.isWholeStream() {
 		return SeriesKey(cfg.AggID, nil, nil, nil)
 	}
 	if cfg.OmitResourceAttrs {
@@ -292,7 +394,7 @@ func (cfg *PrecomputeConfig) buildSeriesKey(s *seriesKeyScratch, obs *Observatio
 	if cfg == nil {
 		return
 	}
-	if cfg.GlobalAggregation {
+	if cfg.isWholeStream() {
 		s.appendSeriesKey(cfg.AggID, nil, nil, nil)
 		return
 	}
@@ -311,7 +413,7 @@ func (cfg *PrecomputeConfig) SeriesKeyForEntry(resourceLabels, labels []KeyValue
 	if cfg == nil {
 		return ""
 	}
-	if cfg.GlobalAggregation {
+	if cfg.isWholeStream() {
 		return SeriesKey(cfg.AggID, nil, nil, nil)
 	}
 	if cfg.OmitResourceAttrs {
