@@ -50,10 +50,21 @@ that the two-stage, transmit-summaries design forces upon us.
 Edge collection runs \emph{co-located with production workloads} in the
 cloud, so its resource use is not free overhead --- it is stolen from the
 paying workload and billed at cloud rates. Cloud pricing is
-\emph{asymmetric}: memory-heavy instances cost more per unit than
-CPU-heavy ones, and cross-AZ/cross-region egress is billed
-separately and is often the dominant marginal cost~\cite{cloudpricing}.
-This asymmetry, not abstract big-$O$, is what ranks our objectives.
+\emph{asymmetric} in ways that rank our objectives more sharply than
+abstract big-$O$ does. On AWS EC2 (on-demand, Graviton, mid-2026), a
+memory-optimized \texttt{r7g} instance costs roughly $1.7\times$ the
+hourly price of a compute-optimized \texttt{c7g} with the same vCPU count
+(e.g.\ \texttt{r7g.large} \$0.151/hr vs \texttt{c7g.large}
+\$0.072/hr)~\cite{awsec2pricing}: \emph{RAM is the expensive
+axis}, so a memory floor on co-located agents is doubly costly --- it both
+consumes the scarcer resource and pushes nodes toward the pricier
+instance family. Transmission is billed separately and is frequently the
+dominant \emph{marginal} cost: internet egress is \$0.09/GB (first
+10\,TB/mo), cross-region \$0.01--0.02/GB, and even cross-AZ traffic
+\$0.01/GB \emph{in each direction}~\cite{awsdatatransfer}. These three
+prices --- \$/GB-RAM-hour, \$/vCPU-hour, \$/GB-egress --- are what our
+memory, computation, and communication objectives respectively optimize,
+and the asymmetry between them sets their priority.
 
 \paragraph{Memory efficiency.}
 Per-series, per-window sketches multiply: $|\text{series}| \times
@@ -64,9 +75,23 @@ floor is paid even by series of trivial cardinality, and even before any
 query is asked. We require that edge memory scale with \emph{useful
 information}, not with worst-case structure size: sketches that are
 sparse/adaptive at low cardinality and promote to dense only when
-warranted; the option to aggregate \emph{whole-stream} (one summary
-tracking many series) when the query does not need per-series resolution;
-and bounded total footprint via cardinality caps with graceful overflow.
+warranted; and bounded total footprint via cardinality caps with graceful
+overflow.
+
+\paragraph{Aggregation scope (per-series vs.\ whole-stream).}
+We treat the aggregation \emph{scope} as a first-class
+\emph{requirement}, not an optional optimization, because it changes the
+memory \emph{asymptotics} rather than a constant factor. In
+\emph{per-series} scope the edge keeps one summary per series, so memory is
+$|\text{series}| \times S_\text{sketch}$; in \emph{whole-stream} scope a
+single summary tracks the union of all matching series, so memory is
+$O(S_\text{sketch})$ --- independent of cardinality. For a query that does
+not need per-label resolution (a global distinct count, a fleet-wide
+quantile, a grand total), whole-stream is the difference between feasible
+and infeasible at high cardinality (e.g.\ for HLL, $\sim$16\,KB$\times N$
+vs $\sim$16\,KB). We therefore require that \emph{every} family support
+both scopes and that the \emph{query} select between them (via the control
+plane), so resolution is spent only where a query needs it.
 
 \paragraph{Computation efficiency.}
 Two cost centers, with different constraints.
@@ -118,10 +143,20 @@ hierarchy the key property is that \emph{merging summaries does not
 compound error}: assembling a window from $N$ slices must keep error at
 the base $\varepsilon$, independent of $N$ and of the merge order. This is
 exactly the \emph{mergeable summary} guarantee~\cite{agarwal2013mergeable}
-and it is what makes arbitrary-window assembly viable. Where bounded space
-forces \emph{approximate} window boundaries (below), the boundary error
-$\varepsilon_w$ \emph{adds} to the sketch error $\varepsilon_s$, and the
-two must be budgeted jointly.
+and it is what makes arbitrary-window assembly viable.
+
+Our \emph{headline accuracy promise is exact-to-$\tau$}: a window query is
+answered by assembling exactly the slices it covers, so the only error is
+the base sketch error $\varepsilon_s$ and window boundaries are exact up to
+the emission granularity $\tau$. This holds for any $[a,b]$ aligned to
+$\tau$ and is the regime we optimize for. Bounded-space windowing
+(\S\ref{sec:related}, exponential/smooth histograms) is a \emph{secondary
+tier} for the long-retention tail where storing every slice is infeasible:
+there the system trades an additive \emph{boundary} error
+$\varepsilon_w$ for sublinear space, and $\varepsilon_w$ \emph{adds} to
+$\varepsilon_s$, so the two must be budgeted jointly. The default and the
+core contribution is the exact-to-$\tau$ path; the approximate-boundary
+tier is an opt-in for horizons that cannot afford full slice retention.
 
 \paragraph{Freshness / timeliness.}
 We care about the end-to-end lag between when a sample is \emph{generated}
@@ -129,7 +164,25 @@ at the source and when it is \emph{reflected} in an accurate backend
 answer. This staleness is dominated by the emission period $\tau$ plus the
 backend's late-data grace, and it trades directly against communication
 cost. Freshness should be an explicit, tunable SLO, not an accident of the
-window size.
+window size --- and, crucially, \emph{decoupled} from the query window
+size: a query over a 1-hour window should still see data within $\tau$ of
+``now,'' not be an hour stale. This decoupling of freshness from window
+size is a central goal of the continuous design.
+
+\paragraph{Exactly-once slice application (idempotent ingest).}
+This is a \emph{correctness} requirement unique to continuous,
+delta-based, additive aggregation, and it is easy to overlook. Summary
+merge is associative but \emph{not idempotent}: re-applying the same
+additive slice (sum, CMS/Count-Sketch cells, DDSketch buckets)
+double-counts, and even register-max families mis-attribute a slice
+applied to the wrong time bucket. An at-least-once edge$\to$backend channel
+--- the realistic assumption under retries, reconnects, and failover ---
+will therefore corrupt aggregates unless the backend applies each slice
+\emph{exactly once}. We require either sequence-numbered slices with
+backend deduplication, or content-addressed idempotent slice identity, so
+that retransmission is safe. Because this constrains what a ``delta'' may
+be (it must be independently identifiable and replay-safe), it shapes the
+edge emission format directly and cannot be bolted on after the fact.
 
 \subsection{Cross-cutting requirements (forced by the design)}
 
@@ -145,14 +198,6 @@ window size.
   Window assembly must tolerate late slices landing in past time buckets
   within a bounded grace, with defined semantics for what falls outside
   it.
-
-  \item \textbf{Fault tolerance vs.\ idempotent merge.} Additive
-  summary merge is \emph{not} idempotent: an at-least-once retransmission
-  of a slice double-counts. Continuous delta transmission makes this
-  acute. We require either exactly-once slice application (sequence
-  numbers / dedup at the backend) or idempotent slice identity, so
-  retries do not corrupt aggregates. This requirement directly shapes the
-  ``what is a delta'' design.
 
   \item \textbf{Retention vs.\ space.} Storing every fine slice for a long
   horizon is often infeasible. We require bounded backend storage via
@@ -292,7 +337,13 @@ non-compounding error across the hierarchy.
 
 % =====================================================================
 % Suggested bibliography keys (fill in full entries):
-%  cloudpricing            - AWS/GCP/Azure pricing: memory vs vCPU, egress.
+%  awsec2pricing           - Amazon EC2 On-Demand Pricing,
+%                            https://aws.amazon.com/ec2/pricing/on-demand/
+%                            (r7g vs c7g per-vCPU price; accessed 2026-06).
+%  awsdatatransfer         - Amazon EC2 / VPC Data Transfer Pricing,
+%                            https://aws.amazon.com/vpc/pricing/ and
+%                            https://aws.amazon.com/ec2/pricing/on-demand/
+%                            (egress, cross-AZ, cross-region; accessed 2026-06).
 %  babcock2002models       - Babcock et al., Models and Issues in Data
 %                            Stream Systems, PODS 2002.
 %  cormode2013survey       - Cormode, The Continuous Distributed Monitoring
