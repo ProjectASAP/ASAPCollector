@@ -383,38 +383,37 @@ Prior work supplies the pieces but not the combination we need:
 
 ## References
 
-Citation keys above are placeholders; fill in full bibliographic entries when
-binding into the paper.
+Citation keys are placeholders; fill in full bibliographic entries when binding
+into the paper. Each title links directly to the paper (DOI where available,
+else the official PDF / arXiv).
 
-| Key | Reference |
-| --- | --- |
-| `awsec2pricing` | Amazon EC2 On-Demand Pricing, <https://aws.amazon.com/ec2/pricing/on-demand/> (r7g vs c7g per-vCPU price; accessed 2026-06). |
-| `awsdatatransfer` | Amazon EC2 / VPC Data Transfer Pricing, <https://aws.amazon.com/vpc/pricing/> and <https://aws.amazon.com/ec2/pricing/on-demand/> (egress, cross-AZ, cross-region; accessed 2026-06). |
-| `babcock2002models` | Babcock et al., Models and Issues in Data Stream Systems, PODS 2002. |
-| `cormode2013survey` | Cormode, The Continuous Distributed Monitoring Model, SIGMOD Record 2013. |
-| `cormode2008functional` | Cormode, Muthukrishnan, Yi, Algorithms for Distributed Functional Monitoring, SODA 2008 / ACM TALG 2011. |
-| `sharfman2006geometric` | Sharfman, Schuster, Keren, A Geometric Approach to Monitoring Threshold Functions over Distributed Data Streams, SIGMOD 2006. |
-| `cormode2005sketching` | Cormode, Garofalakis, Sketching Streams Through the Net, VLDB 2005. |
-| `cormode2005holistic` | Cormode et al., Holistic Aggregates in a Networked World (quantile tracking), SIGMOD 2005. |
-| `datar2002sliding` | Datar, Gionis, Indyk, Motwani, Maintaining Stream Statistics over Sliding Windows, SODA / SICOMP 2002 (Exponential Histograms). |
-| `gibbons2002distributed` | Gibbons, Tirthapura, Distributed Streams Algorithms for Sliding Windows, SPAA 2002. |
-| `braverman2007smooth` | Braverman, Ostrovsky, Smooth Histograms for Sliding Windows, FOCS 2007. |
-| `arasu2004quantiles` | Arasu, Manku, Approximate Counts and Quantiles over Sliding Windows, PODS 2004. |
-| `lee2006significant` | Lee, Ting, Maintaining Significant Stream Statistics over Sliding Windows, SODA 2006. |
-| `papapetrou2012ecm` | Papapetrou, Garofalakis, Deligiannakis, Sketch-based Querying of Distributed Sliding-Window Data Streams (ECM-sketch), VLDB 2012. |
-| `chabchoub2010sliding` | Chabchoub, Hébrail, Sliding HyperLogLog, 2010. |
-| `li2005nopane` | Li et al., No Pane, No Gain, SIGMOD Record 2005. |
-| `carbone2016cutty` | Carbone et al., Cutty, CIKM 2016. |
-| `traub2021scotty` | Traub et al., Scotty: Efficient Window Aggregation for Out-of-Order Stream Processing, ICDE 2018 / ACM TODS 2021. |
-| `tangwongsan2015flatfat` | Tangwongsan et al., General Incremental Sliding-Window Aggregation (FlatFAT), VLDB 2015. |
-| `tangwongsan2017daba` | Tangwongsan et al., Low-Latency Sliding-Window Aggregation in Worst-Case Constant Time (DABA), DEBS 2017. |
-| `tangwongsan2019fiba` | Tangwongsan et al., Optimal and General Out-of-Order Sliding-Window Aggregation (FiBA), VLDB 2019. |
-| `cohen2003timedecay` | Cohen, Strauss, Maintaining Time-Decaying Stream Aggregates, PODS 2003. |
-| `cormode2009forwarddecay` | Cormode et al., Forward Decay, ICDE 2009. |
-| `agarwal2013mergeable` | Agarwal et al., Mergeable Summaries, PODS 2012 / ACM TODS 2013. |
-| `karnin2016kll` | Karnin, Lang, Liberty, Optimal Quantile Approximation in Streams (KLL), FOCS 2016. |
-| `flajolet2007hyperloglog` | Flajolet et al., HyperLogLog, AofA 2007. |
-| `ertl2017new` | Ertl, New Cardinality Estimation Algorithms for HyperLogLog Sketches, arXiv:1702.01284. |
-| `cormode2005cm` | Cormode, Muthukrishnan, Count-Min Sketch, J. Algorithms 2005. |
-| `charikar2002frequent` | Charikar, Chen, Farach-Colton, Finding Frequent Items in Data Streams (Count Sketch), ICALP 2002. |
-| `masson2019ddsketch` | Masson, Rim, Lee, DDSketch, VLDB 2019. |
+- `awsec2pricing` — Amazon, [EC2 On-Demand Pricing](https://aws.amazon.com/ec2/pricing/on-demand/) (r7g vs c7g per-vCPU price; accessed 2026-06).
+- `awsdatatransfer` — Amazon, [EC2 / VPC Data Transfer Pricing](https://aws.amazon.com/vpc/pricing/) (egress, cross-AZ, cross-region; accessed 2026-06).
+- `babcock2002models` — Babcock et al., [Models and Issues in Data Stream Systems](https://doi.org/10.1145/543613.543615), PODS 2002.
+- `cormode2013survey` — Cormode, [The Continuous Distributed Monitoring Model](https://doi.org/10.1145/2481528.2481530), SIGMOD Record 2013.
+- `cormode2008functional` — Cormode, Muthukrishnan, Yi, [Algorithms for Distributed Functional Monitoring](https://doi.org/10.1145/1921659.1921667), SODA 2008 / ACM TALG 2011.
+- `sharfman2006geometric` — Sharfman, Schuster, Keren, [A Geometric Approach to Monitoring Threshold Functions over Distributed Data Streams](https://doi.org/10.1145/1142473.1142508), SIGMOD 2006.
+- `cormode2005sketching` — Cormode, Garofalakis, [Sketching Streams Through the Net](http://www.vldb.org/archives/website/2005/program/paper/tue/p13-cormode.pdf), VLDB 2005.
+- `cormode2005holistic` — Cormode et al., [Holistic Aggregates in a Networked World](https://doi.org/10.1145/1066157.1066161) (quantile tracking), SIGMOD 2005.
+- `datar2002sliding` — Datar, Gionis, Indyk, Motwani, [Maintaining Stream Statistics over Sliding Windows](https://doi.org/10.1137/S0097539701398363), SODA / SICOMP 2002 (Exponential Histograms).
+- `gibbons2002distributed` — Gibbons, Tirthapura, [Distributed Streams Algorithms for Sliding Windows](https://doi.org/10.1145/564870.564880), SPAA 2002.
+- `braverman2007smooth` — Braverman, Ostrovsky, [Smooth Histograms for Sliding Windows](https://doi.org/10.1109/FOCS.2007.55), FOCS 2007.
+- `arasu2004quantiles` — Arasu, Manku, [Approximate Counts and Quantiles over Sliding Windows](https://doi.org/10.1145/1055558.1055598), PODS 2004.
+- `lee2006significant` — Lee, Ting, [Maintaining Significant Stream Statistics over Sliding Windows](https://dl.acm.org/doi/10.5555/1109557.1109636), SODA 2006.
+- `papapetrou2012ecm` — Papapetrou, Garofalakis, Deligiannakis, [Sketch-based Querying of Distributed Sliding-Window Data Streams](https://doi.org/10.14778/2336664.2336672) (ECM-sketch), VLDB 2012.
+- `chabchoub2010sliding` — Chabchoub, Hébrail, [Sliding HyperLogLog](https://doi.org/10.1109/ICDMW.2010.18), ICDM Workshops 2010.
+- `li2005nopane` — Li et al., [No Pane, No Gain](https://doi.org/10.1145/1058150.1058158), SIGMOD Record 2005.
+- `carbone2016cutty` — Carbone et al., [Cutty: Aggregate Sharing for User-Defined Windows](https://doi.org/10.1145/2983323.2983807), CIKM 2016.
+- `traub2021scotty` — Traub et al., [Scotty: Efficient Window Aggregation for Out-of-Order Stream Processing](https://doi.org/10.1145/3433675), ICDE 2018 / ACM TODS 2021.
+- `tangwongsan2015flatfat` — Tangwongsan et al., [General Incremental Sliding-Window Aggregation](https://doi.org/10.14778/2752939.2752940) (FlatFAT), VLDB 2015.
+- `tangwongsan2017daba` — Tangwongsan et al., [Low-Latency Sliding-Window Aggregation in Worst-Case Constant Time](https://doi.org/10.1145/3093742.3093925) (DABA), DEBS 2017.
+- `tangwongsan2019fiba` — Tangwongsan et al., [Optimal and General Out-of-Order Sliding-Window Aggregation](https://doi.org/10.14778/3339490.3339499) (FiBA), VLDB 2019.
+- `cohen2003timedecay` — Cohen, Strauss, [Maintaining Time-Decaying Stream Aggregates](https://doi.org/10.1145/773153.773175), PODS 2003.
+- `cormode2009forwarddecay` — Cormode et al., [Forward Decay](https://doi.org/10.1109/ICDE.2009.65), ICDE 2009.
+- `agarwal2013mergeable` — Agarwal et al., [Mergeable Summaries](https://doi.org/10.1145/2500128), PODS 2012 / ACM TODS 2013.
+- `karnin2016kll` — Karnin, Lang, Liberty, [Optimal Quantile Approximation in Streams](https://doi.org/10.1109/FOCS.2016.17) (KLL), FOCS 2016.
+- `flajolet2007hyperloglog` — Flajolet et al., [HyperLogLog](https://doi.org/10.46298/dmtcs.3545), AofA 2007.
+- `ertl2017new` — Ertl, [New Cardinality Estimation Algorithms for HyperLogLog Sketches](https://arxiv.org/abs/1702.01284), arXiv:1702.01284.
+- `cormode2005cm` — Cormode, Muthukrishnan, [An Improved Data Stream Summary: The Count-Min Sketch and its Applications](https://doi.org/10.1016/j.jalgor.2003.12.001), J. Algorithms 2005.
+- `charikar2002frequent` — Charikar, Chen, Farach-Colton, [Finding Frequent Items in Data Streams](https://doi.org/10.1007/3-540-45465-9_59) (Count Sketch), ICALP 2002.
+- `masson2019ddsketch` — Masson, Rim, Lee, [DDSketch](https://doi.org/10.14778/3352063.3352135), VLDB 2019.
