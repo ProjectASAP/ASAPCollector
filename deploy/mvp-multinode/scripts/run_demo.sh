@@ -515,11 +515,36 @@ backend_up() {
     fi
 }
 
+# Wipe the persistent backend STATE dirs so each arm starts from empty — the
+# same clean slate the raw baselines get (MinIO/Thanos/VM run with
+# container-local storage that's removed with the container). The two ASAP
+# state dirs are HOST bind-mounts that survive container removal:
+#   - data/gorilla-merger   : the merger's pending/shipped TSDB blocks + WAL
+#   - data/sketch-persistence: the data_plane's flushed sketch index
+# Without this they accumulate across EVERY up/down cycle — the merger grew to
+# multiple GB (and inflated cold-query memory) across a day of runs because
+# its per-window blocks were never cleared between runs. Set
+# KEEP_BACKEND_DATA=1 to preserve them (e.g. to inspect blocks after a run).
+clean_backend_data() {
+    if [ "${KEEP_BACKEND_DATA:-0}" = 1 ]; then
+        log "KEEP_BACKEND_DATA=1 — preserving backend state dirs"
+        return
+    fi
+    log "wiping persistent backend state (gorilla-merger, sketch-persistence)"
+    # The merger writes subdirs as uid 65532; the parent dirs are 0777 so the
+    # ssh user can unlink them, but fall back to sudo if a stricter umask blocks.
+    for n in "${NODE1_HOST}" "${NODE2_HOST}"; do
+        on "${n}" 'd=/mydata/mvp-multinode/data; rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* 2>/dev/null || sudo rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* 2>/dev/null || true' || true
+    done
+}
+
 backend_down() {
     log "backend down — warm=node2, cold=node1"
     stop_node "${NODE2_HOST}"
     # Cold/thanos stack now lives on node1 (cold/warm split).
     stop_node "${NODE1_HOST}"
+    # Containers are gone — now safe to clear their persistent state dirs.
+    clean_backend_data
 }
 
 # ─── SERF-GATEWAY on node1 (b3 arm only) ────────────────────────────
