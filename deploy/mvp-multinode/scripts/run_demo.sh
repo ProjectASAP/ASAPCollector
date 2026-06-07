@@ -482,8 +482,8 @@ backend_up() {
             --streaming-config=/etc/asap/streaming.yaml \
             --query-port=9091 \
             --enable-otel-ingest \
-            --otel-grpc-port=4317 \
-            --otel-http-port=4318 \
+            --otel-grpc-port=${DP_OTLP_GRPC_PORT:-4317} \
+            --otel-http-port=${DP_OTLP_HTTP_PORT:-4318} \
             ${persist_flags}
 
         # asap-control-plane (ASAP only) — control plane process. Brought
@@ -504,6 +504,7 @@ backend_up() {
             -e RUST_LOG="info,controller=debug,control_plane=debug" \
             -e USE_TYPED_STAGE_SPLIT=1 \
             -e ASAP_EDGE_FUSED=1 \
+            -e ASAP_EDGE_BACKEND_OTLP_PORT=${ASAP_EDGE_BACKEND_OTLP_PORT:-4317} \
             -e CONTROLLER_ADDR=0.0.0.0:8080 \
             -e CONTROLLER_OPAMP_ADDR=0.0.0.0:4320 \
             -e CONTROLLER_GRPC_ADDR=0.0.0.0:4321 \
@@ -601,7 +602,9 @@ agents_up() {
             asap/asap-otel-supervised:dev \
             --config /etc/otel/supervisor.yaml
 
-        # Same on node3 → agent-b
+        # Same on node3 → agent-b (skipped in SINGLE_NODE mode: agent-b would
+        # collide with agent-a on host :4317 under --network host).
+        if [ "${SINGLE_NODE:-0}" != 1 ]; then
         log "node3 agent-b up (${arm}, supervised)"
         docker_run_on "${NODE3_HOST}" --cpus=4 --memory=12g --memory-swap=12g \
             --name asap-agent-b \
@@ -611,6 +614,7 @@ agents_up() {
             -v /mydata/mvp-multinode/configs/asap/supervisor.yaml:/etc/otel/supervisor.yaml:ro \
             asap/asap-otel-supervised:dev \
             --config /etc/otel/supervisor.yaml
+        fi
     else
         # Raw baselines: bare asap-otel collector, static mounted config, no
         # controller/OpAMP.
@@ -624,6 +628,7 @@ agents_up() {
             asap/asap-otel:dev \
             --config=/etc/otel/config.yaml
 
+        if [ "${SINGLE_NODE:-0}" != 1 ]; then
         log "node3 agent-b up (${arm})"
         docker_run_on "${NODE3_HOST}" --cpus=4 --memory=12g --memory-swap=12g \
             --name asap-agent-b \
@@ -633,6 +638,7 @@ agents_up() {
             -v /mydata/mvp-multinode/configs/${agent_cfg}:/etc/otel/config.yaml:ro \
             asap/asap-otel:dev \
             --config=/etc/otel/config.yaml
+        fi
     fi
 
     # Wait for agent OTLP receiver to come up
@@ -656,6 +662,7 @@ agents_up() {
             -seed=${OTELAPP_SEED:-42}
     done
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
+        [ "${SINGLE_NODE:-0}" = 1 ] && break
         log "node3 producer-b-${i} up"
         docker_run_on "${NODE3_HOST}" --cpus=1 --memory=4g --memory-swap=4g \
             --name asap-producer-b-${i} \
