@@ -1,0 +1,7 @@
+2026/05/29 13:37:52 pprof listening on :6060
+2026/05/29 13:37:52 otel-app sdk config: target=localhost:4317 window=15s agg=default projection="" duration=1m0s
+2026/05/29 13:37:52 freshness probes started: [http_freshness_probe_raw http_freshness_probe_warm http_freshness_probe_archive] at 1.00 Hz (period=1s)
+2026/05/29 13:37:52 otel-app starting (synthetic): metric=http_requests_total cardinality=500 freq_hz=200.0 schema=4x10x25x10 zipf(s=1.10,v=1.00,max=500,mean=250.0)
+2026/05/29 13:37:52 five-sketch workload starting: freq_hz=200.0 users=100 endpoints=50 zipf_s=1.20 rotate=1m0s outer_card=500
+2026/05/29 13:38:53 failed to upload metrics: context canceled
+2026/05/29 13:38:57 MeterProvider shutdown: failed to upload metrics: context deadline exceeded: rpc error: code = DeadlineExceeded desc = context deadline exceeded

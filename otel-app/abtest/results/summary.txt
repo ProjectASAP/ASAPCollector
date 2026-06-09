@@ -1,0 +1,9 @@
+params: freq_hz=200 cardinality=500 sdk_window=15s duration=60s
+nproc=40 GOMAXPROCS=default
+
+==================== AGG=default ====================
+  CPU_total_s = 310.01  (user=278.82 sys=31.19, %CPU=474%)
+  MaxRSS      = 2289 MB
+  sink        = 
+
+==================== AGG=dd-full ====================

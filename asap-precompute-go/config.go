@@ -1,6 +1,10 @@
 package precompute
 
-import "time"
+import (
+	"time"
+
+	"github.com/ProjectASAP/asap-precompute-go/monitor"
+)
 
 // AggId is the controller-plan join key. One PrecomputeConfig per
 // AggId; the controller's plan emits a flat list keyed by AggId.
@@ -335,6 +339,15 @@ type PrecomputeConfig struct {
 	// this to true so its envelope shape matches the legacy emission
 	// without a diff-side projection-strip.
 	EmitWindowStats bool
+
+	// Monitor configures continuous intra-window threshold monitoring
+	// (Discipline B) for this AggID. The zero value (Enabled=false) is the
+	// default and adds nothing to the hot path beyond a nil-check. When
+	// enabled and a monitor engine is installed (Precompute.SetMonitorEngine),
+	// the runtime reads the series' additive value on each observation and runs
+	// the slack-countdown protocol against the coordinator. See package
+	// github.com/ProjectASAP/asap-precompute-go/monitor.
+	Monitor monitor.Spec
 }
 
 // effectiveScope resolves the aggregation scope, folding the legacy

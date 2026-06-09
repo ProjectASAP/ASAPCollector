@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/ProjectASAP/asap-precompute-go/monitor"
 )
 
 // Sketch is the narrow interface the Layer-3 runtime needs from a
@@ -224,6 +227,12 @@ type Precompute interface {
 	// Pass nil to disable (sketches are dropped/GC'd). Safe to call
 	// concurrently; the runtime stores the function pointer atomically.
 	SetSketchSink(fn SketchSink)
+	// SetMonitorEngine installs (or replaces) the continuous-monitoring
+	// engine (Discipline B). Pass nil to disable. The adapter constructs the
+	// engine with the edge identity + a gRPC reporter to the coordinator and
+	// wires it here; the runtime activates the per-observation hook whenever
+	// the active config has Monitor.Enabled. Safe to call concurrently.
+	SetMonitorEngine(e *monitor.Engine)
 	// Shutdown flushes any in-progress state; intended for the
 	// shim's Shutdown path to run a final Tick before returning.
 	Shutdown(ctx context.Context) error
@@ -249,6 +258,11 @@ type precompute struct {
 	closed          atomic.Bool
 	latencyObserver atomic.Pointer[LatencyObserver]
 	sketchSink      atomic.Pointer[SketchSink]
+	// monitorEngine is the continuous-monitoring (Discipline B) engine. nil
+	// until SetMonitorEngine is called by the adapter; when set AND the active
+	// config has Monitor.Enabled, the window's per-observation hook routes the
+	// series' additive value into the engine.
+	monitorEngine atomic.Pointer[monitor.Engine]
 }
 
 // New constructs a Precompute given an initial config, a sketch
@@ -652,6 +666,10 @@ func (p *precompute) UpdateConfig(cs *PrecomputeConfigSet) {
 	}
 	p.cfg.Store(&cfgCopy)
 	p.sketchType = cfgCopy.SketchType
+	// Re-evaluate the monitor hooks against the newly installed config so a
+	// control-plane toggle of Monitor.Enabled (or a functional/key change)
+	// takes effect immediately.
+	p.rewireMonitorHooks()
 }
 
 // Stats implements Precompute.Stats.
@@ -682,6 +700,99 @@ func (p *precompute) SetSketchSink(fn SketchSink) {
 		return
 	}
 	p.sketchSink.Store(&fn)
+}
+
+// SetMonitorEngine implements Precompute.SetMonitorEngine.
+func (p *precompute) SetMonitorEngine(e *monitor.Engine) {
+	p.monitorEngine.Store(e)
+	p.rewireMonitorHooks()
+}
+
+// rewireMonitorHooks installs or clears the window's monitor hooks based on the
+// current (engine, config) pair. Called on engine install and on every config
+// swap so a control-plane flip of Monitor.Enabled takes effect at runtime. A
+// spec that fails validation (e.g. negative linear coefficients — non-monotone,
+// which would void the countdown's correctness) is treated as disabled.
+func (p *precompute) rewireMonitorHooks() {
+	eng := p.monitorEngine.Load()
+	cfg := p.activeConfig()
+	if eng == nil || cfg == nil || !cfg.Monitor.Enabled || cfg.Monitor.Validate() != nil {
+		p.window.setMonitorHooks(nil, nil)
+		return
+	}
+	spec := cfg.Monitor
+	aggID := uint64(cfg.AggID)
+	observe := func(entry *seriesEntry, windowStartMs uint64) {
+		v, ok := monitorValue(spec, entry.Sketch)
+		if !ok {
+			return
+		}
+		// Monitor key selects which monitored quantity this observation feeds:
+		//   - CMSPoint: the point-frequency key x (whole-stream over the agg).
+		//   - Sum / LinearBuckets: the SERIES GROUP key (the AggregateBy tuple),
+		//     so per-group series (e.g. one per zone) get independent monitor
+		//     state instead of colliding on a single agg-wide slot. The edge has
+		//     already folded all raw series of a group into this one entry, so
+		//     the value is the group's combined local aggregate — exactly the
+		//     per-(agg,group) quantity the coordinator sums across edges.
+		key := spec.Key
+		if spec.Functional != monitor.FunctionalCMSPoint {
+			key = groupKeyBytes(entry.Labels)
+		}
+		eng.Observe(aggID, key, v, windowStartMs)
+	}
+	reset := func(newWindowStartMs uint64) {
+		eng.EpochReset(newWindowStartMs)
+	}
+	p.window.setMonitorHooks(observe, reset)
+}
+
+// monitorValue reads the current additive value of a series' sketch for the
+// configured functional, using narrow read-only interfaces so the runtime never
+// depends on concrete sketch types. Returns ok=false when the sketch does not
+// implement the expected readout (a misconfiguration that disables the monitor
+// for that series rather than panicking on the hot path).
+func monitorValue(spec monitor.Spec, s Sketch) (float64, bool) {
+	switch spec.Functional {
+	case monitor.FunctionalSum:
+		if r, ok := s.(interface{ Sum() float64 }); ok {
+			return r.Sum(), true
+		}
+	case monitor.FunctionalCMSPoint:
+		if r, ok := s.(interface{ EstimateCount([]byte) float64 }); ok {
+			return r.EstimateCount(spec.Key), true
+		}
+	case monitor.FunctionalLinearBuckets:
+		if r, ok := s.(interface {
+			LinearReadout([]float64) float64
+		}); ok {
+			return r.LinearReadout(spec.Coeffs), true
+		}
+	}
+	return 0, false
+}
+
+// groupKeyBytes canonically encodes a series' grouping labels into a stable
+// monitor key so the same group (e.g. zone=z0) maps to identical bytes on every
+// edge — the coordinator merges per (agg_id, group) across edges. Empty labels
+// (whole-stream aggregation) yield a nil key (one global monitor per agg_id).
+func groupKeyBytes(labels []KeyValue) []byte {
+	if len(labels) == 0 {
+		return nil
+	}
+	sorted := make([]KeyValue, len(labels))
+	copy(sorted, labels)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Key < sorted[j].Key })
+	var b []byte
+	for i, kv := range sorted {
+		if i > 0 {
+			b = append(b, ';')
+		}
+		b = append(b, kv.Key...)
+		b = append(b, '=')
+		b = append(b, kv.Value...)
+	}
+	return b
 }
 
 // Shutdown implements Precompute.Shutdown.

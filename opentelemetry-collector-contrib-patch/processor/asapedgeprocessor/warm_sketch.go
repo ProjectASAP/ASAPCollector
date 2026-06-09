@@ -8,6 +8,8 @@ import (
 	"time"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
+	"github.com/ProjectASAP/asap-precompute-go/monitor"
+	"github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient"
 	oteladapter "github.com/ProjectASAP/asap-precompute-go/otel"
 	"github.com/ProjectASAP/asap-precompute-go/sketches"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -72,6 +74,11 @@ type sketchAggregator struct {
 	// counter the aggregator also bumps so all aggregators' encode failures
 	// roll up to one number.
 	procEncodeDropCount *atomic.Uint64
+
+	// monitorClient is the CDM gRPC transport for this aggregator's continuous
+	// monitor, when Threshold.Enabled. nil otherwise. Held so Shutdown can stop
+	// the background stream goroutine.
+	monitorClient *grpcclient.Client
 
 	// --- per-shard observe() scratch (P1-3) ---
 	// One sketchAggregator exists per (shard, metric) and the shard lock
@@ -172,6 +179,30 @@ type sketchOpts struct {
 	// is admitted — unlike the old coupling to the ~2s cold reorder grace,
 	// which dropped most processing-delayed-but-in-window samples.
 	allowedLateness time.Duration
+	// edgeID is this collector instance's stable identity, reported to the CDM
+	// coordinator at registration. Empty disables monitor registration.
+	edgeID string
+}
+
+// parseFunctional maps the YAML functional name to the monitor enum. Unknown /
+// empty defaults to Sum (the most common additive monitor).
+func parseFunctional(s string) monitor.Functional {
+	switch s {
+	case "cms_point":
+		return monitor.FunctionalCMSPoint
+	case "linear_buckets":
+		return monitor.FunctionalLinearBuckets
+	default:
+		return monitor.FunctionalSum
+	}
+}
+
+// closeMonitor stops the CDM transport's background stream goroutine, if any.
+func (s *sketchAggregator) closeMonitor() {
+	if s.monitorClient != nil {
+		s.monitorClient.Close()
+		s.monitorClient = nil
+	}
 }
 
 // newSketchAggregator builds the aggregator for fam, or (nil,false) if the
@@ -432,14 +463,54 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 	if fam.Family == FamilySum {
 		metricSuffix = ""
 	}
+
+	// Continuous monitoring (CDM Discipline B): if a threshold is configured,
+	// fold the monitor spec into the config BEFORE precompute.New (which copies
+	// it), then attach the engine + gRPC transport after construction.
+	if fam.Threshold != nil && fam.Threshold.Enabled {
+		pcfg.Monitor = monitor.Spec{
+			Enabled:        true,
+			Functional:     parseFunctional(fam.Threshold.Functional),
+			Key:            []byte(fam.Threshold.Key),
+			Coeffs:         fam.Threshold.Coeffs,
+			CoordinatorURL: fam.Threshold.CoordinatorURL,
+			Tau:            fam.Threshold.Tau,
+			Epsilon:        fam.Threshold.Epsilon,
+		}
+	}
+	pc := precompute.New(pcfg, factory, observer)
+	var monClient *grpcclient.Client
+	if pcfg.Monitor.Enabled {
+		if err := pcfg.Monitor.Validate(); err != nil {
+			// A non-monotone / malformed spec would void the countdown's
+			// correctness — disable monitoring for this metric and log loudly.
+			logger.Warn("disabling continuous monitor: invalid threshold spec",
+				zap.String("metric", metric), zap.Error(err))
+		} else if opts.edgeID == "" {
+			logger.Warn("disabling continuous monitor: empty edge_id",
+				zap.String("metric", metric))
+		} else {
+			windowMs := uint64(window / time.Millisecond)
+			eng := monitor.NewEngine(opts.edgeID, windowMs, nil)
+			monClient = grpcclient.New(pcfg.Monitor.CoordinatorURL, eng)
+			eng.SetReporter(monClient)
+			pc.SetMonitorEngine(eng)
+			logger.Info("continuous monitor enabled",
+				zap.String("metric", metric),
+				zap.String("functional", fam.Threshold.Functional),
+				zap.String("coordinator", pcfg.Monitor.CoordinatorURL))
+		}
+	}
+
 	return &sketchAggregator{
-		pc:        precompute.New(pcfg, factory, observer),
-		pcfg:      pcfg,
-		enc:       &oteladapter.AdapterConfig{MetricSuffix: metricSuffix, DropOriginal: true},
-		factory:   factory,
-		obsKind:   obsKind,
-		itemLabel: itemLabel,
-		logger:    logger,
+		pc:            pc,
+		pcfg:          pcfg,
+		enc:           &oteladapter.AdapterConfig{MetricSuffix: metricSuffix, DropOriginal: true},
+		factory:       factory,
+		obsKind:       obsKind,
+		itemLabel:     itemLabel,
+		logger:        logger,
+		monitorClient: monClient,
 	}, true
 }
 

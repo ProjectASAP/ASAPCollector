@@ -20,6 +20,7 @@ package sketches
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	envpb "github.com/ProjectASAP/sketchlib-go/proto/sketch_envelope"
 	ddsketch "github.com/ProjectASAP/sketchlib-go/sketches/DDSketch"
@@ -254,6 +255,44 @@ func (w *DDSketchWrapper) Quantile(q float64) float64 {
 		return 0
 	}
 	return v
+}
+
+// LinearReadout realizes the additive "linear functional over DDSketch buckets"
+// monitor functional (monitor.FunctionalLinearBuckets) in its MONOTONE,
+// non-negative form: a VALUE-RANGE COUNT — the number of recorded samples whose
+// bucket value lies in [lo, hi]. A value-range count is an additive
+// non-negative aggregate, so it is monotone non-decreasing within a tumbling
+// window (bucket counts only grow), which is exactly what the slack-countdown
+// monitoring protocol requires.
+//
+// v1 convention: the coeffs slice carries the value bounds —
+//
+//	coeffs[0]            → lo
+//	coeffs[1] (optional) → hi (defaults to +Inf, i.e. "count of samples ≥ lo")
+//
+// An empty slice counts nothing. The generic signed / positional linear
+// combination the cost-analysis doc also describes (the DDSketch
+// quantile-threshold form with a negative coefficient, and Count-Sketch's
+// signed cells) is NON-monotone and intentionally NOT implemented here;
+// monitor.Spec.Validate already rejects negative coefficients so such specs
+// never reach this path.
+func (w *DDSketchWrapper) LinearReadout(coeffs []float64) float64 {
+	if w.sk == nil || len(coeffs) == 0 {
+		return 0
+	}
+	lo := coeffs[0]
+	hi := math.Inf(1)
+	if len(coeffs) >= 2 {
+		hi = coeffs[1]
+	}
+	var total float64
+	w.sk.EachBucket(func(k int32, count uint64) {
+		v := w.sk.BucketValue(k)
+		if v >= lo && v <= hi {
+			total += float64(count)
+		}
+	})
+	return total
 }
 
 // decodeDDSketchEnvelope unwraps a SerializePortable envelope into a
