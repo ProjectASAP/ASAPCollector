@@ -542,6 +542,7 @@ func (p *precompute) serializeSubWindowSeries(entry *seriesEntry, cfg *Precomput
 	return &SketchEnvelope{
 		SchemaVersion:          1,
 		SketchType:             cfg.SketchType,
+		AggKind:                cfg.AggKind, // route Sum (SketchType=Unspecified) by AggKind at encode
 		AggID:                  cfg.AggID,
 		ResourceLabels:         entry.ResourceLabels,
 		Labels:                 labels,

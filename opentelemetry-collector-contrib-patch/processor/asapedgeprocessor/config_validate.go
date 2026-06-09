@@ -300,7 +300,10 @@ func (c *Config) Validate() error {
 // the only wired sketch family that does not (no ComputeDeltaAgainst).
 func (k FamilyKind) deltaCapable() bool {
 	switch k {
-	case FamilyDDSketch, FamilyCountSketch, FamilyHLL, FamilyCountMinSketch:
+	case FamilyDDSketch, FamilyCountSketch, FamilyHLL, FamilyCountMinSketch, FamilySum:
+		// Sum ships true incremental {Δsum,Δcount} deltas under the per-window-
+		// reset model (see sum.go), so it is delta- and sub-window-capable. KLL
+		// remains excluded — its delta is a full-state merge (cannot subtract).
 		return true
 	}
 	return false
@@ -316,7 +319,7 @@ func (m *MetricFamily) scope() precompute.AggMode {
 
 // effectiveDelta resolves the per-metric delta-transmission setting: the
 // explicit metrics[].delta_transmission if set, else the top-level default. It
-// is forced off for families that cannot do delta (KLL, Sum).
+// is forced off for families that cannot do delta (KLL).
 func (m *MetricFamily) effectiveDelta(globalDefault bool) bool {
 	if !m.Family.deltaCapable() {
 		return false

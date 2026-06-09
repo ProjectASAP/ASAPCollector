@@ -437,8 +437,8 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		OnOverflow: precompute.OnOverflowDrop,
 		// Delta transmission: when enabled the runtime emits PROTO_DELTA frames
 		// after the first PROTO_FULL snapshot. Only set for delta-capable
-		// families (KLL/Sum cannot delta) — opts.delta is already gated on
-		// family by config.effectiveDelta.
+		// families (KLL cannot delta) — opts.delta is already gated on family by
+		// config.effectiveDelta.
 		DeltaTransmission: opts.delta,
 		// DeltaThreshold: 0 is a real, correct value under the empty-base PWR
 		// contract — NOT an unfilled sentinel (P1-4). Each window's delta is
