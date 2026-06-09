@@ -52,6 +52,16 @@ type seriesEntry struct {
 	// the existing additive merge.
 	deltaWindowStartMs uint64
 	deltaWindowEndMs   uint64
+
+	// subWindowAcked / ackVal track the threshold-driven sub-window producer's
+	// divergence reference for this series: ackVal is the family-metric value at
+	// the last sub-window emit (Sum value / count N / HLL cardinality;
+	// Count-Sketch tracks its own cell snapshot in the wrapper). subWindowAcked
+	// is false until the first emit, so the first sub-window emit of a window
+	// always fires (and ships full state). Reset to zero on rotation (the series
+	// map is rebuilt), so each window's first sub-emit is full.
+	subWindowAcked bool
+	ackVal         float64
 }
 
 // windowState is the per-Precompute window manager. It supports
@@ -749,4 +759,36 @@ func (w *windowState) resetForScopeChange() {
 	defer w.mu.Unlock()
 	w.series = make(map[string]*seriesEntry)
 	w.panes = nil
+}
+
+// subWindowVisit walks the active (NOT-yet-rotated) series under the window
+// lock and calls visit once per live series. It is the read-side of a
+// sub-window emit: the runtime serializes each series' CURRENT accumulated
+// state into an incremental delta WITHOUT draining the map, resetting any
+// sketch, or advancing the window bounds — so accumulation continues into the
+// same window after the emit. Returns the active window range [start, end) that
+// every sub-window envelope must be stamped with (the SAME range the eventual
+// boundary rotate stamps, so the backend's per-window base rotation accumulates
+// all of a window's sub-emits and only rotates when window_start changes).
+//
+// visit runs while w.mu is held, so it must not call back into the window
+// (no re-entrant Observe/Tick); it only reads/serializes the sketch. Sliding
+// mode has no stable in-window base (panes rotate), so it is a no-op (zero
+// range) and the caller skips emission.
+func (w *windowState) subWindowVisit(
+	cfg *PrecomputeConfig,
+	visit func(entry *seriesEntry),
+) [2]uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.initialized || (cfg != nil && cfg.Mode == Sliding) {
+		return [2]uint64{0, 0}
+	}
+	if len(w.series) == 0 {
+		return [2]uint64{w.activeStartMs, w.activeEndMs}
+	}
+	for _, entry := range w.series {
+		visit(entry)
+	}
+	return [2]uint64{w.activeStartMs, w.activeEndMs}
 }

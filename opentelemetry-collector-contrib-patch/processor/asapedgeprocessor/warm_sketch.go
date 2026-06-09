@@ -182,6 +182,11 @@ type sketchOpts struct {
 	// edgeID is this collector instance's stable identity, reported to the CDM
 	// coordinator at registration. Empty disables monitor registration.
 	edgeID string
+	// subWindowInterval / subWindowEpsilon drive the threshold-driven sub-window
+	// delta producer (PrecomputeConfig.SubWindowInterval/SubWindowEpsilon). 0
+	// interval disables it; epsilon 0 = fixed mode.
+	subWindowInterval time.Duration
+	subWindowEpsilon  float64
 }
 
 // parseFunctional maps the YAML functional name to the monitor enum. Unknown /
@@ -443,6 +448,12 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		// than the equivalent full snapshot. A non-zero value caps the delta
 		// at threshold * full-state size. No runtime default is substituted.
 		DeltaThreshold: opts.deltaThreshold,
+		// Threshold-driven sub-window producer: the flush loop's check ticker
+		// fires EmitSubWindow every SubWindowInterval; SubWindowEpsilon gates
+		// per-series emission by divergence (0 = fixed mode). No-op without
+		// DeltaTransmission.
+		SubWindowInterval: opts.subWindowInterval,
+		SubWindowEpsilon:  opts.subWindowEpsilon,
 	}
 	// Surface the HLLSparse typed flag as the documented HLL "sparse"
 	// SketchParams key (1 = sparse base; absent/0 = dense default) so config
@@ -726,6 +737,30 @@ func (s *sketchAggregator) flush(dst pmetric.Metrics) {
 		return
 	}
 	if out.ResourceMetrics().Len() == 0 {
+		return
+	}
+	out.ResourceMetrics().MoveAndAppendTo(dst.ResourceMetrics())
+}
+
+// subWindowEnabled reports whether this aggregator runs the threshold-driven
+// sub-window producer: a positive interval AND delta transmission on (the
+// runtime no-ops EmitSubWindow without delta — there is no in-window base).
+func (s *sketchAggregator) subWindowEnabled() bool {
+	return s.pcfg.SubWindowInterval > 0 && s.pcfg.DeltaTransmission
+}
+
+// emitSubWindow fires an INCREMENTAL sub-window delta emit (no rotate) for this
+// aggregator's diverged series and appends the encoded pmetric to dst.
+func (s *sketchAggregator) emitSubWindow(dst pmetric.Metrics, nowMs uint64) {
+	if !s.subWindowEnabled() {
+		return
+	}
+	envs := s.pc.EmitSubWindow(nowMs)
+	if len(envs) == 0 {
+		return
+	}
+	out, err := oteladapter.Encode(envs, s.enc)
+	if err != nil || out.ResourceMetrics().Len() == 0 {
 		return
 	}
 	out.ResourceMetrics().MoveAndAppendTo(dst.ResourceMetrics())

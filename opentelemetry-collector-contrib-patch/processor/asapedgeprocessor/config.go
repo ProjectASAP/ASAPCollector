@@ -331,6 +331,19 @@ type Config struct {
 	// WindowDuration is the warm-tier (sum/sketch) flush cadence.
 	WindowDuration time.Duration `mapstructure:"window_duration"`
 
+	// SubWindowInterval is the CHECK cadence for the threshold-driven sub-window
+	// delta producer: how often, within a window, the runtime evaluates each
+	// series' divergence and emits an incremental sub-window delta for those
+	// past threshold — keeping the open window queryable under large windows. 0
+	// (default) disables it (one emit per window at the boundary). Must be <
+	// window_duration. Only effective for delta-capable families.
+	SubWindowInterval time.Duration `mapstructure:"sub_window_interval"`
+	// SubWindowEpsilon gates sub-window emission by divergence: a series emits
+	// only when its sketch has moved ≥ ε in the family norm since its last emit,
+	// so the backend's open-window answer stays within relative ε. 0 ⇒ emit
+	// every series every check tick (static "fixed" mode). Range [0, 1).
+	SubWindowEpsilon float64 `mapstructure:"sub_window_epsilon"`
+
 	// WarmAllowedLateness is the warm-window late-data grace: a sample whose
 	// event timestamp is older than the active window's aligned start by more
 	// than this is dropped as late (precompute ErrLateData). It is the WARM

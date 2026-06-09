@@ -26,6 +26,15 @@ import (
 // WindowDuration and flush all shards together (the original behavior).
 func (p *asapEdgeProcessor) flushLoop() {
 	defer close(p.doneCh)
+	// Optional threshold-driven sub-window check ticker: fires the per-series
+	// divergence-gated EmitSubWindow every SubWindowInterval, IN ADDITION to the
+	// window-boundary flush. Disabled (nil channel, never fires) unless enabled.
+	var subC <-chan time.Time
+	if p.subWindowEnabled() {
+		subT := time.NewTicker(p.cfg.SubWindowInterval)
+		defer subT.Stop()
+		subC = subT.C
+	}
 	if !p.staggered() {
 		t := time.NewTicker(p.cfg.WindowDuration)
 		defer t.Stop()
@@ -34,6 +43,8 @@ func (p *asapEdgeProcessor) flushLoop() {
 			case <-p.stopCh:
 				p.flushAll(context.Background())
 				return
+			case <-subC:
+				p.flushSubWindow(context.Background())
 			case <-t.C:
 				p.flushAll(context.Background())
 			}
@@ -51,12 +62,41 @@ func (p *asapEdgeProcessor) flushLoop() {
 			// shard is lost on Shutdown.
 			p.flushAll(context.Background())
 			return
+		case <-subC:
+			// Sub-window incremental emit across all shards (not staggered:
+			// each tick must cover every active series; threshold-gated emits
+			// are small).
+			p.flushSubWindow(context.Background())
 		case <-t.C:
 			shardIdx := tick % n
 			p.flushShardWarmCold(context.Background(), shardIdx)
 			tick++
 		}
 	}
+}
+
+// subWindowEnabled reports whether the threshold-driven sub-window producer is
+// active: a positive interval shorter than the window (validated at config).
+func (p *asapEdgeProcessor) subWindowEnabled() bool {
+	return p.cfg.SubWindowInterval > 0 && p.cfg.SubWindowInterval < p.cfg.WindowDuration
+}
+
+// flushSubWindow fires a divergence-gated sub-window delta emit for every
+// shard's sketch aggregators and forwards the result, WITHOUT rotating windows.
+func (p *asapEdgeProcessor) flushSubWindow(ctx context.Context) {
+	if !p.subWindowEnabled() {
+		return
+	}
+	nowMs := uint64(time.Now().UnixMilli())
+	out := pmetric.NewMetrics()
+	for _, sh := range p.shards {
+		sh.mu.Lock()
+		for _, sa := range sh.sketchAggs {
+			sa.emitSubWindow(out, nowMs)
+		}
+		sh.mu.Unlock()
+	}
+	p.forward(ctx, out)
 }
 
 // staggered reports whether the round-robin per-shard flush is active. It is

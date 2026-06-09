@@ -348,6 +348,18 @@ type PrecomputeConfig struct {
 	// the slack-countdown protocol against the coordinator. See package
 	// github.com/ProjectASAP/asap-precompute-go/monitor.
 	Monitor monitor.Spec
+
+	// SubWindowInterval is the CHECK cadence for the threshold-driven
+	// sub-window delta producer: how often the host fires EmitSubWindow within
+	// a window to evaluate per-series divergence. 0 disables sub-window emission
+	// (one delta per window at the boundary, as before). Must be < Window.Size.
+	SubWindowInterval time.Duration
+	// SubWindowEpsilon gates sub-window emission by divergence: a series emits a
+	// sub-window delta only when its sketch has diverged from the backend's
+	// last-acked copy by >= SubWindowEpsilon in the family's norm (so the
+	// backend's open-window answer stays within relative ε). 0 ⇒ emit every
+	// series every check tick (the static "fixed" mode). Range [0, 1).
+	SubWindowEpsilon float64
 }
 
 // effectiveScope resolves the aggregation scope, folding the legacy

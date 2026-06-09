@@ -6,6 +6,7 @@ package sketches
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/bits"
 
 	countsketch "github.com/ProjectASAP/sketchlib-go/sketches/CountSketch"
@@ -49,6 +50,57 @@ type CountSketchWrapper struct {
 	// heapSize is the bounded top-k heap capacity carried in the wire
 	// payload (the backend stores it and uses min(self,other) on merge).
 	heapSize int
+
+	// ackedCells is the cell matrix snapshot at the last sub-window emit, used
+	// by the threshold-driven sub-window producer to measure L2 divergence
+	// (Frobenius norm of current − acked) without decoding the wire base. nil
+	// until the first MarkSubWindowEmitted; cleared on Reset.
+	ackedCells [][]float64
+}
+
+// L2DivergenceSinceEmit reports the L2 (Frobenius) magnitude of the change in
+// the count matrix since the last MarkSubWindowEmitted, and the current matrix
+// L2 norm. The threshold-driven sub-window producer emits when
+// div >= ε·norm, giving the backend a Count-Sketch within ε·‖f‖₂ of the true
+// current state (the √rows factor cancels in the ratio, so the raw Frobenius
+// norms suffice).
+func (w *CountSketchWrapper) L2DivergenceSinceEmit() (div, norm float64) {
+	if w.cs == nil {
+		return 0, 0
+	}
+	var d2, n2 float64
+	for r := 0; r < w.rows; r++ {
+		for c := 0; c < w.cols; c++ {
+			cur := w.cs.GetCell(r, c)
+			n2 += cur * cur
+			prev := 0.0
+			if r < len(w.ackedCells) && c < len(w.ackedCells[r]) {
+				prev = w.ackedCells[r][c]
+			}
+			d := cur - prev
+			d2 += d * d
+		}
+	}
+	return math.Sqrt(d2), math.Sqrt(n2)
+}
+
+// MarkSubWindowEmitted captures the current cell matrix as the divergence
+// reference for the next L2DivergenceSinceEmit.
+func (w *CountSketchWrapper) MarkSubWindowEmitted() {
+	if w.cs == nil {
+		return
+	}
+	if len(w.ackedCells) != w.rows {
+		w.ackedCells = make([][]float64, w.rows)
+		for r := range w.ackedCells {
+			w.ackedCells[r] = make([]float64, w.cols)
+		}
+	}
+	for r := 0; r < w.rows; r++ {
+		for c := 0; c < w.cols; c++ {
+			w.ackedCells[r][c] = w.cs.GetCell(r, c)
+		}
+	}
 }
 
 // defaultCountSketchHeapSize mirrors sketchlib-go's CountSketch TOPK_SIZE
@@ -324,6 +376,7 @@ func (w *CountSketchWrapper) Reset() {
 		return
 	}
 	w.cs.Reset()
+	w.ackedCells = nil
 }
 
 // EstimateCount implements precompute.FrequencySketch. The key is

@@ -112,6 +112,16 @@ func (c *Config) Validate() error {
 	if c.WindowDuration <= 0 {
 		c.WindowDuration = 60 * time.Second
 	}
+	// Sub-window producer: 0 disables; positive must be shorter than the window.
+	if c.SubWindowInterval < 0 {
+		return fmt.Errorf("asap_edge: sub_window_interval must be >= 0 (0/unset => disabled)")
+	}
+	if c.SubWindowInterval > 0 && c.SubWindowInterval >= c.WindowDuration {
+		return fmt.Errorf("asap_edge: sub_window_interval (%s) must be < window_duration (%s)", c.SubWindowInterval, c.WindowDuration)
+	}
+	if c.SubWindowEpsilon < 0 || c.SubWindowEpsilon >= 1 {
+		return fmt.Errorf("asap_edge: sub_window_epsilon must be in [0, 1) (0 => fixed mode, emit every tick)")
+	}
 	// WarmAllowedLateness: the warm tier's own late-data grace, decoupled
 	// from cold.reorder_grace (P1-1). Default to the full WindowDuration so
 	// any sample that actually falls within the active window is admitted
