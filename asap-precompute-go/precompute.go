@@ -476,6 +476,16 @@ func (p *precompute) EmitSubWindow(nowMs uint64) []*SketchEnvelope {
 		// still emit the full frame.
 		return nil
 	}
+	if !subWindowEmissionSafe(cfg) {
+		// Sum/count and KLL produce FULL-STATE (not incremental) deltas — their
+		// ComputeDeltaAgainst ignores the base and returns the whole sketch. The
+		// backend accumulates sub-window emits ADDITIVELY within a window (same
+		// window_start), so re-shipping full state every tick would over-count
+		// Sum / re-merge-inflate KLL. Sub-window emission applies only to the
+		// incremental-delta families (DDSketch / Count-Min / Count-Sketch / HLL);
+		// Sum/KLL still emit once at the boundary.
+		return nil
+	}
 	var envelopes []*SketchEnvelope
 	rng := p.window.subWindowVisit(cfg, func(entry *seriesEntry) {
 		if !subWindowShouldEmit(entry, cfg) {
@@ -543,6 +553,16 @@ func (p *precompute) serializeSubWindowSeries(entry *seriesEntry, cfg *Precomput
 	}, nil
 }
 
+// subWindowEmissionSafe reports whether this config's family produces INCREMENTAL
+// deltas suitable for additive sub-window accumulation at the backend. Sum/count
+// (AggKindSum) and KLL ship full state from ComputeDeltaAgainst (their delta
+// ignores the base), so re-emitting every sub-window would over-count Sum /
+// re-merge-inflate KLL within a window. The incremental-delta families —
+// DDSketch, Count-Min, Count-Sketch, HLL — are safe.
+func subWindowEmissionSafe(cfg *PrecomputeConfig) bool {
+	return cfg.AggKind != AggKindSum && cfg.SketchType != SketchTypeKLLSketch
+}
+
 // subWindowShouldEmit gates a sub-window emit on per-family divergence: emit iff
 // the series has moved ≥ ε·norm since its last emit (ε=0 ⇒ always; first emit of
 // a window always fires and ships full state).
@@ -556,15 +576,11 @@ func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
 }
 
 // subWindowDivergence returns (divergence, norm) in the family's accuracy
-// metric: Sum→value, HLL→cardinality, Count-Sketch→L2 (Frobenius), and
-// DDSketch/KLL/CMS→count (rank/L1 staleness is bounded by the un-acked count).
+// metric: HLL→cardinality, Count-Sketch→L2 (Frobenius), and DDSketch/CMS→count
+// (rank/L1 staleness is bounded by the un-acked count). Only reached for the
+// incremental-delta families (subWindowEmissionSafe gates out Sum/KLL).
 func subWindowDivergence(entry *seriesEntry, cfg *PrecomputeConfig) (div, norm float64) {
 	switch {
-	case cfg.AggKind == AggKindSum:
-		if r, ok := entry.Sketch.(interface{ Sum() float64 }); ok {
-			cur := r.Sum()
-			return math.Abs(cur - entry.ackVal), math.Abs(cur)
-		}
 	case cfg.SketchType == SketchTypeHLLSketch:
 		if r, ok := entry.Sketch.(interface{ EstimateCardinality() float64 }); ok {
 			cur := r.EstimateCardinality()
@@ -587,10 +603,6 @@ func subWindowDivergence(entry *seriesEntry, cfg *PrecomputeConfig) (div, norm f
 func subWindowMarkEmitted(entry *seriesEntry, cfg *PrecomputeConfig) {
 	entry.subWindowAcked = true
 	switch {
-	case cfg.AggKind == AggKindSum:
-		if r, ok := entry.Sketch.(interface{ Sum() float64 }); ok {
-			entry.ackVal = r.Sum()
-		}
 	case cfg.SketchType == SketchTypeHLLSketch:
 		if r, ok := entry.Sketch.(interface{ EstimateCardinality() float64 }); ok {
 			entry.ackVal = r.EstimateCardinality()

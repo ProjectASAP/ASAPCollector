@@ -120,3 +120,38 @@ func TestCountSketchWrapper_L2Divergence(t *testing.T) {
 		t.Fatalf("divergence should grow after new updates, got %v", d)
 	}
 }
+
+// TestSubWindow_ExcludesFullStateFamilies verifies Sum/count and KLL — whose
+// ComputeDeltaAgainst returns full state (not incremental) — are excluded from
+// sub-window emission even with delta + sub-window configured, so the additive
+// backend can't over-count (Sum) / re-merge-inflate (KLL). They emit only at
+// the window boundary.
+func TestSubWindow_ExcludesFullStateFamilies(t *testing.T) {
+	ts := uint64(3_600_000)
+
+	sumCfg := &precompute.PrecomputeConfig{
+		AggID: 2, AggKind: precompute.AggKindSum, Mode: precompute.Tumbling,
+		Window:            precompute.WindowSpec{Size: time.Hour},
+		DeltaTransmission: true, SubWindowInterval: time.Second, SubWindowEpsilon: 0,
+	}
+	sumPC := precompute.New(sumCfg,
+		func() precompute.Sketch { return sketches.NewSumWrapper() }, sketches.SumObserver{})
+	_ = sumPC.Observe(ddObs(ts, 10))
+	_ = sumPC.Observe(ddObs(ts, 20))
+	if got := sumPC.EmitSubWindow(ts); got != nil {
+		t.Fatalf("Sum must be excluded from sub-window emission (full-state ⇒ over-count), got %d envelopes", len(got))
+	}
+
+	kllCfg := &precompute.PrecomputeConfig{
+		AggID: 3, SketchType: precompute.SketchTypeKLLSketch, Mode: precompute.Tumbling,
+		Window:            precompute.WindowSpec{Size: time.Hour},
+		DeltaTransmission: true, SubWindowInterval: time.Second, SubWindowEpsilon: 0,
+	}
+	kllPC := precompute.New(kllCfg,
+		func() precompute.Sketch { return sketches.NewKLLWrapper(200, nil) }, sketches.KLLObserver{})
+	_ = kllPC.Observe(ddObs(ts, 10))
+	_ = kllPC.Observe(ddObs(ts, 20))
+	if got := kllPC.EmitSubWindow(ts); got != nil {
+		t.Fatalf("KLL must be excluded from sub-window emission (full-state ⇒ inflate), got %d envelopes", len(got))
+	}
+}
