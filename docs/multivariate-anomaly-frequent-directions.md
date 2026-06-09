@@ -37,7 +37,8 @@
   monitoring costs **`O(k log 1/ε)` scalars — independent of `n` and `d`** —
   versus the periodic baseline's **`Θ(k d² · W/τ)`** words. Quadratic/spectral
   thresholds are data-dependent: `Θ(k d² · L/slack)` where `L` is the drift path
-  length.
+  length. The covariance-shipping regime is backed by **communication-optimal
+  distributed-covariance / distributed-PCA bounds** ([§7](#7-post-2013-theory--updated-related-work)).
 
 ---
 
@@ -80,7 +81,7 @@ G = AᵀA = Σ_t a_t a_tᵀ        (a_t ∈ ℝ^d : the metric vector at time t)
 | --- | --- | --- |
 | Additive (`G_{A∪B} = G_A + G_B`) | ✓ | mergeable across edges by summation |
 | **Subtractable** (`G_{[a,b]} = G_{≤b} − G_{≤a}`) | ✓ | **arbitrary `[a,b]` via prefix-difference, `O(1)`** |
-| Convex-combinable (`G = Σ λ_i G_i`) | ✓ | geometric monitoring applies ([§7](#7-alert-plane-hook-geometric-monitoring)) |
+| Convex-combinable (`G = Σ λ_i G_i`) | ✓ | geometric monitoring applies ([§8](#8-alert-plane-hook-geometric-monitoring)) |
 
 The FD *sketch* `B` is **none** of these (subtracting two FD sketches can yield
 an indefinite/invalid sketch — why a shipped FD sketch is stuck on the
@@ -99,7 +100,7 @@ FD's lossy truncation only earns its keep when `d` is so large that carrying `G`
   per (service, window-slice)** — cost `O(d²)`, **independent of series
   cardinality.** Per-series correlation is a non-goal for v1.
 - A **row** `a_t ∈ ℝ^d` is the vector of the `d` monitored metrics at time `t`,
-  aligned to a common tick and standardized ([§11](#11-open-questions--for-the-monitoring-integration-discussion)).
+  aligned to a common tick and standardized ([§12](#12-open-questions--for-the-monitoring-integration-discussion)).
 - The edge maintains running **un-centered moments** per `τ`-slice:
   `n` (count), `s = Σ a_t` (`d`-vector), `Q = Σ a_t a_tᵀ` (`d×d`, upper triangle).
   Covariance is recovered at the backend as `C = Q/n − (s/n)(s/n)ᵀ`. We transmit
@@ -134,7 +135,9 @@ projected Gram `Q̃ = Σ (Ra)(Ra)ᵀ = R Q Rᵀ ∈ ℝ^{m×m}`:
 
 `Q̃` is still additive/subtractable → `[a,b]` still works; FD lossiness lives at
 the backend. (Edge-side local FD with per-edge SVD, merged per [ghashami2016fd],
-is **rejected** for v1: SVD on the edge + non-subtractable.)
+is **rejected** for v1: SVD on the edge + non-subtractable.) The communication of
+this regime has a known optimum — see the distributed-covariance / distributed-PCA
+bounds in [§7.3](#73-distributed-pca--covariance-sketch-communication-the-backbone-for-this-doc).
 
 > **Decision.** Default to **§4.1 exact** unless configured `d > D_max`; above
 > it switch to **§4.2 projection**. Control plane selects `d`, `D_max`, `m`,
@@ -251,7 +254,7 @@ Subspace (Davis–Kahan):    sin Θ(Û_r, U_r) ≤ η / (λ_r − λ_{r+1})
 
 The subspace bound needs a **spectral gap** `λ_r − λ_{r+1}`; residual energy
 `r_r` does **not** (gap-robust) — a reason to alert on residual rather than on
-individual eigenvectors ([§7](#7-alert-plane-hook-geometric-monitoring)).
+individual eigenvectors ([§8](#8-alert-plane-hook-geometric-monitoring)).
 
 ### 6.4 Communication cost
 
@@ -320,10 +323,20 @@ its slack** (`L_f/ρ_safe ≪ W/τ`). F3 is strictly more expensive than F2 (the
 with the gap) — mitigate by monitoring gap-robust residual energy, not
 individual eigenvectors, and by floor-clamping `ρ_safe`.
 
+> **Use the modern local test, not covering spheres.** The `½‖ΔG_i‖` *ball*
+> above is Sharfman's original covering-spheres construction. It is **superseded**
+> by **safe zones** and **convex decompositions** [lazerson2015convex,
+> keren2014safezones], which are *provably never worse* than covering spheres and
+> often several × tighter, plus *lightweight* variants with cheaper local tests
+> [lazerson2016lightweight] — directly lowering both the `N_sync` and the per-edge
+> CPU of F2/F3. See [§7.2](#72-geometric-monitoring-after-2013-safe-zones--convex-decompositions).
+
 > **Lower-bound context.** Tracking quadratic/second-moment quantities under
 > insert+delete has a `Ω(k/ε²)` communication lower bound [woodruff2012tight];
-> our PSD, insert-only covariance is easier, but this sets the ceiling on what
-> any protocol can promise for the value-monitoring regime.
+> our PSD, insert-only covariance is easier, but this sets the ceiling. For the
+> covariance/PCA value-monitoring regime specifically, the communication-optimal
+> targets are now known [boutsidis2016optimalpca, huang2021covsketch] — see
+> [§7.3](#73-distributed-pca--covariance-sketch-communication-the-backbone-for-this-doc).
 
 ### 6.5 Edge computation cost
 
@@ -376,21 +389,107 @@ drifting; otherwise fall back to periodic + backend scoring.
 
 ---
 
-## 7. Alert-plane hook (geometric monitoring)
+## 7. Post-2013 Theory & Updated Related Work
 
-For the **last-`T`, real-time** alert plane, edges stay silent unless the score
-could cross `τ`, per [§6.4(d)](#64-communication-cost). The monitored state is
-the covariance `C` (additive ⇒ convex-hull / drift-ball machinery applies). The
-residual `r_r(C)` is **spectral — non-linear, non-smooth**; the ball test uses
-the **Weyl bound** (`|Δλ_i| ≤ ‖E‖₂`) to certify the whole drift ball stays one
-side of `τ`. Sliding `last-T` covariance via smooth histograms over the additive
-moments [braverman2007smooth]. This is intentionally a **hook**, not a spec — the
-CDM integration (control-plane back-channel, slack redistribution, exactly-once
-violation messages) is the next discussion.
+The 2013 CDM survey [cormode2013survey] predates four lines of work that
+directly tighten or modernize the analysis above. This section records them and
+how each one revises this design.
+
+### 7.1 Functional-monitoring lower bounds are now closed
+
+The survey listed Woodruff–Zhang as "recent"; the line has since matured into
+matching bounds we treat as ceilings:
+
+- **Woodruff–Zhang (STOC 2012)** [woodruff2012tight] — first bounds depending on
+  the **product `k·(1/ε²)`**: `F₀` randomized `Θ̃(k/ε²)`; `Fₚ (p>1)`
+  `Ω(k^{p−1}/ε²)`; analogous for heavy hitters / empirical entropy. This is the
+  ceiling cited in [§6.4](#64-communication-cost).
+- **Yi–Zhang** [yi2013optimalhh] — heavy hitters / quantiles in `O((k/ε) log n)`
+  with **matching lower bounds** ⇒ optimal. Recent work re-derives these with
+  simpler protocols [bhattacharya2025simpleoptimal].
+
+> *Effect on this doc:* our F1 bound (`O(k log 1/ε)`) and the `Ω(k/ε²)`
+> value-monitoring ceiling are exactly these results — no change to the design,
+> but the claims are now backed by tight theory.
+
+### 7.2 Geometric monitoring after 2013: safe zones & convex decompositions
+
+The biggest practical advance. Sharfman's covering-spheres (the `½‖ΔG_i‖` ball
+in [§6.4(d)](#64-communication-cost)) has been superseded:
+
+- **Safe zones** [keren2014safezones] — replace the sphere with an arbitrary
+  **convex safe region** per site; covering spheres are a special case.
+- **Convex decompositions** [lazerson2015convex] (VLDB 2015) — decompose the
+  admissible region; **provably never worse than covering spheres**, often
+  several × tighter.
+- **Lightweight monitoring** [lazerson2016lightweight] (KDD 2016) — much cheaper
+  *local* tests, addressing the per-edge CPU worry of our Weyl ball test.
+- **Composable safe zones via convex analysis** [samoladas2017composable]
+  (ICDT 2017) — safe zones that compose across multiple queries.
+- **Sketch-based geometric monitoring** [garofalakis2013sketchgm] — geometric
+  monitoring *on top of* linear sketches, the formal template for running GM over
+  our covariance/Count-Sketch state.
+
+> *Effect on this doc:* the alert plane ([§8](#8-alert-plane-hook-geometric-monitoring))
+> should use **safe zones / convex decomposition**, not covering spheres. This
+> lowers both `N_sync` and the per-edge local-test cost for F2/F3; the
+> covering-spheres `ρ_safe` in [§6.4(d)](#64-communication-cost) is an upper
+> bound on what the modern construction achieves.
+
+### 7.3 Distributed PCA / covariance-sketch communication: the backbone for this doc
+
+The survey omits matrix problems entirely; this is the line that makes our
+covariance-shipping choice *provably* right, not just convenient:
+
+- **Boutsidis–Woodruff–Zhang (STOC 2016)** [boutsidis2016optimalpca] — optimal
+  distributed PCA with communication **independent of `n` and `d`** (`O(skd/ε)`
+  bits-scale), with **matching lower bounds**.
+- **Communication-Efficient Distributed Covariance Sketch (JMLR 2021)**
+  [huang2021covsketch] — `s` sites each hold a matrix; build a covariance sketch
+  at the coordinator with **communication-optimal** protocols and lower bounds.
+  This is essentially the rigorous, optimal version of [§4](#4--edge--backend-split)
+  / [§6.4](#64-communication-cost).
+- **Frequent Directions optimality** [ghashami2016fd] — FD is space-optimal;
+  robust/parameterized variants exist.
+
+> *Effect on this doc:* cite [huang2021covsketch] and [boutsidis2016optimalpca]
+> as the optimality targets for [§4.2](#42-large-d-random-projection--backend-fd)
+> and the projected-regime communication, replacing the hand-derived path-length
+> bound as the *reference* point.
+
+### 7.4 The modern descendants (context, not yet adopted)
+
+Where CDM grew up; relevant as future directions, not v1 dependencies:
+
+- **Communication-efficient distributed/federated mean estimation**
+  [suresh2017distributedmean] — the value-monitoring problem reborn under bit
+  budgets; its quantization/sparsification toolbox applies *byte-level* on top of
+  our covariance shipment.
+- **Differential privacy under continual observation** [dwork2010continual] and
+  near-optimal **matrix-factorization mechanisms** [henzinger2023continual] — a
+  whole new axis: monitor while guaranteeing per-tenant privacy. A candidate v2
+  direction if telemetry aggregation crosses tenant boundaries.
 
 ---
 
-## 8. Windowing integration (the `[a,b]` payoff)
+## 8. Alert-plane hook (geometric monitoring)
+
+For the **last-`T`, real-time** alert plane, edges stay silent unless the score
+could cross `τ`, per [§6.4(d)](#64-communication-cost). The monitored state is
+the covariance `C` (additive ⇒ the convex-region machinery applies). We use
+**safe zones / convex decomposition** [lazerson2015convex, keren2014safezones]
+(not covering spheres — see [§7.2](#72-geometric-monitoring-after-2013-safe-zones--convex-decompositions))
+to derive each edge's local admissible region. The residual `r_r(C)` is
+**spectral — non-linear, non-smooth**; the local test certifies the safe region
+stays one side of `τ` via the **Weyl bound** (`|Δλ_i| ≤ ‖E‖₂`). Sliding `last-T`
+covariance via smooth histograms over the additive moments [braverman2007smooth].
+This is intentionally a **hook**, not a spec — the CDM integration (control-plane
+back-channel, slack redistribution, exactly-once violation messages) is the next
+discussion.
+
+---
+
+## 9. Windowing integration (the `[a,b]` payoff)
 
 `(n, s, Q)` are additive and subtractable, so this family slots into the
 **linear / prefix-difference** branch of the windowing substrate
@@ -409,7 +508,7 @@ the standardization scale per query window.
 
 ---
 
-## 9. Requirements mapping
+## 10. Requirements mapping
 
 | Requirement (related-work doc) | How this family satisfies it |
 | --- | --- |
@@ -424,16 +523,17 @@ the standardization scale per query window.
 
 ---
 
-## 10. Non-goals (v1)
+## 11. Non-goals (v1)
 
 - Per-series covariance (cardinality-proportional; deferred).
 - Edge-side SVD / edge-side FD (rejected: heavy + non-subtractable).
 - Causal / lagged correlation (only contemporaneous `a_t a_tᵀ`).
 - Automatic metric selection — the monitored `d`-set is operator/query-specified.
+- Differential privacy (a v2 axis — see [§7.4](#74-the-modern-descendants-context-not-yet-adopted)).
 
 ---
 
-## 11. Open questions — for the monitoring-integration discussion
+## 12. Open questions — for the monitoring-integration discussion
 
 1. **Row construction & standardization.** Alignment to a common tick and scaling
    (z-score with what reference μ/σ? robust scaling?) — wrong scaling makes
@@ -442,12 +542,14 @@ the standardization scale per query window.
    normal — and does it live only at the backend, or must edges hold it for the
    geometric alert plane?
 3. **`D_max` and `m`.** Where is the exact→projection crossover; what `m` meets
-   the `(1±ε)` residual target of [§6.3(iii)](#63-accuracy-guarantees)?
+   the `(1±ε)` residual target of [§6.3(iii)](#63-accuracy-guarantees), measured
+   against the optimal targets in [§7.3](#73-distributed-pca--covariance-sketch-communication-the-backbone-for-this-doc)?
 4. **Alert vs. analytics planes.** Does the residual feed only registered
    standing alerts (geometric, last-`T`), only ad-hoc `[a,b]` analytics, or both
    over the shared moment substrate?
-5. **Geometric local-test cost.** Is the Weyl-bound ball test cheap enough on the
-   edge, or do we fall back to filter/periodic emission for this family?
+5. **Geometric local-test cost.** Is the safe-zone/Weyl ball test cheap enough on
+   the edge ([§7.2](#72-geometric-monitoring-after-2013-safe-zones--convex-decompositions)),
+   or do we fall back to filter/periodic emission for this family?
 6. **Subsample rate `s`.** How much hot-path budget ([§6.5](#65-edge-computation-cost))
    do we spend, and how does the resulting variance compose with the accuracy
    budget?
@@ -459,7 +561,7 @@ the standardization scale per query window.
 Citation keys are placeholders; bind full entries when integrating into the paper.
 
 - `liberty2013fd` — E. Liberty, [Simple and Deterministic Matrix Sketching](https://doi.org/10.1145/2487575.2487623), KDD 2013 (Frequent Directions).
-- `ghashami2016fd` — Ghashami, Liberty, Phillips, Woodruff, [Frequent Directions: Simple and Deterministic Matrix Sketching](https://doi.org/10.1137/15M1009718), SICOMP 2016 (mergeability, tight bounds).
+- `ghashami2016fd` — Ghashami, Liberty, Phillips, Woodruff, [Frequent Directions: Simple and Deterministic Matrix Sketching](https://doi.org/10.1137/15M1009718), SICOMP 2016 (mergeability, space-optimality).
 - `halko2011randomized` — Halko, Martinsson, Tropp, [Finding Structure with Randomness: Probabilistic Algorithms for Constructing Approximate Matrix Decompositions](https://doi.org/10.1137/090771806), SIAM Review 2011 (randomized low-rank / projected PCA).
 - `huang2007anomaly` — Huang, Nguyen, Garofalakis, Hellerstein, Joseph, Jordan, Taft, [Communication-Efficient Online Detection of Network-Wide Anomalies](https://doi.org/10.1109/INFCOM.2007.24), IEEE INFOCOM 2007.
 - `lakhina2005` — Lakhina, Crovella, Diot, [Mining Anomalies Using Traffic Feature Distributions](https://doi.org/10.1145/1080091.1080118), ACM SIGCOMM 2005.
@@ -469,6 +571,18 @@ Citation keys are placeholders; bind full entries when integrating into the pape
 - `olston2003filters` — Olston, Jiang, Widom, [Adaptive Filters for Continuous Queries over Distributed Data Streams](https://doi.org/10.1145/872757.872825), SIGMOD 2003.
 - `liu2012nonmonotonic` — Liu, Radunović, Vojnović, [Continuous Distributed Counting for Non-monotonic Streams](https://doi.org/10.1145/2213556.2213600), PODS 2012.
 - `woodruff2012tight` — Woodruff, Zhang, [Tight Bounds for Distributed Functional Monitoring](https://doi.org/10.1145/2213977.2214063), STOC 2012.
+- `yi2013optimalhh` — Yi, Zhang, [Optimal Tracking of Distributed Heavy Hitters and Quantiles](https://doi.org/10.1007/s00453-011-9584-4), Algorithmica 2013 (PODS 2009).
+- `bhattacharya2025simpleoptimal` — [Simple and Optimal Algorithms for Heavy Hitters and Frequency Moments in Distributed Models](https://www.researchgate.net/publication/392720890), 2024/25.
+- `keren2014safezones` — Keren, Sharfman, Schuster, Korman, [Geometric Monitoring of Heterogeneous Streams / Safe Zones for Monitoring Distributed Streams](https://doi.org/10.1109/TKDE.2013.18), IEEE TKDE 2014.
+- `lazerson2015convex` — Lazerson, Sharfman, Keren, Schuster, Garofalakis, Samoladas, [Monitoring Distributed Streams using Convex Decompositions](http://www.vldb.org/pvldb/vol8/p545-lazerson.pdf), VLDB 2015.
+- `lazerson2016lightweight` — Lazerson, Keren, Schuster, [Lightweight Monitoring of Distributed Streams](https://doi.org/10.1145/2939672.2939820), KDD 2016.
+- `samoladas2017composable` — Samoladas, Garofalakis, [Distributed Query Monitoring through Convex Analysis: Towards Composable Safe Zones](https://doi.org/10.4230/LIPIcs.ICDT.2017.14), ICDT 2017.
+- `garofalakis2013sketchgm` — Garofalakis, Keren, Samoladas, [Sketch-based Geometric Monitoring of Distributed Stream Queries](https://doi.org/10.14778/2536222.2536233), VLDB 2013.
+- `boutsidis2016optimalpca` — Boutsidis, Woodruff, Zhong, [Optimal Principal Component Analysis in Distributed and Streaming Models](https://doi.org/10.1145/2897518.2897646), STOC 2016.
+- `huang2021covsketch` — Huang, Lin, Zhang, Zhang, [Communication-Efficient Distributed Covariance Sketch, with Application to Distributed PCA](https://www.jmlr.org/papers/volume22/20-705/20-705.pdf), JMLR 2021.
+- `suresh2017distributedmean` — Suresh, Yu, Kumar, McMahan, [Distributed Mean Estimation with Limited Communication](https://proceedings.mlr.press/v70/suresh17a.html), ICML 2017.
+- `dwork2010continual` — Dwork, Naor, Pitassi, Rothblum, [Differential Privacy under Continual Observation](https://doi.org/10.1145/1806689.1806787), STOC 2010.
+- `henzinger2023continual` — Henzinger, Upadhyay, Upadhyay, [Almost Tight Error Bounds for Differentially Private Continual Counting / Matrix-Factorization Mechanisms](https://doi.org/10.1137/1.9781611977554.ch200), SODA 2023.
 - `braverman2007smooth` — Braverman, Ostrovsky, [Smooth Histograms for Sliding Windows](https://doi.org/10.1109/FOCS.2007.55), FOCS 2007.
 - `agarwal2013mergeable` — Agarwal et al., [Mergeable Summaries](https://doi.org/10.1145/2500128), PODS 2012 / ACM TODS 2013.
 - `achlioptas2003jl` — D. Achlioptas, [Database-Friendly Random Projections: Johnson–Lindenstrauss with Binary Coins](https://doi.org/10.1016/S0022-0000(03)00025-4), JCSS 2003 (the edge projection `R`).

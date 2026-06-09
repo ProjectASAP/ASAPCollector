@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	precompute "github.com/ProjectASAP/asap-precompute-go"
 )
 
 // countSketchMaxRowHashBits mirrors sketchlib-go's 64-bit single-item hash
@@ -187,6 +189,15 @@ func (c *Config) Validate() error {
 				m.HeapSize = 100
 			}
 		}
+		// hll_sparse: only the HLL family has a sparse in-memory base. Reject
+		// it on any other family rather than silently ignoring so a
+		// misconfiguration surfaces at agent boot (mirrors the emit_heap family
+		// check above). It is a pure in-memory footprint choice; the serialized
+		// output is byte-identical to dense, so default false stays
+		// wire-unchanged.
+		if m.HLLSparse && m.Family != FamilyHLL {
+			return fmt.Errorf("asap_edge: metrics[%d] (%s): hll_sparse is only valid for family=hll (got %q)", i, m.Metric, m.Family)
+		}
 		// CountSketch row-hash budget (P0-1): sketchlib bit-slices a single
 		// 64-bit per-item hash as rows*ceil(log2(cols)); once that exceeds 64
 		// bits the high rows read shifted-out (zero) bits and silently
@@ -201,6 +212,12 @@ func (c *Config) Validate() error {
 			if err := validateCountSketchDims(i, m); err != nil {
 				return err
 			}
+		}
+		// mode: the per-series vs whole-stream aggregation scope (plumbed into
+		// precompute.PrecomputeConfig.Scope). Empty ⇒ per_series (default).
+		// Reject an unknown value at boot rather than silently defaulting.
+		if _, ok := precompute.ParseAggMode(m.Mode); !ok {
+			return fmt.Errorf("asap_edge: metrics[%d] (%s): mode must be per_series or whole_stream (got %q)", i, m.Metric, m.Mode)
 		}
 	}
 	// Cold defaults (only meaningful when enabled).
@@ -277,6 +294,14 @@ func (k FamilyKind) deltaCapable() bool {
 		return true
 	}
 	return false
+}
+
+// scope resolves the metric's aggregation scope (precompute.AggMode), applying
+// the per_series default for an empty Mode. Validate() checks Mode first, so the
+// parse always succeeds here; an unexpected bad value falls back to PerSeries.
+func (m *MetricFamily) scope() precompute.AggMode {
+	s, _ := precompute.ParseAggMode(m.Mode)
+	return s
 }
 
 // effectiveDelta resolves the per-metric delta-transmission setting: the

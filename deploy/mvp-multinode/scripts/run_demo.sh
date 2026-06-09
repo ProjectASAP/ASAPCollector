@@ -482,8 +482,8 @@ backend_up() {
             --streaming-config=/etc/asap/streaming.yaml \
             --query-port=9091 \
             --enable-otel-ingest \
-            --otel-grpc-port=4317 \
-            --otel-http-port=4318 \
+            --otel-grpc-port=${DP_OTLP_GRPC_PORT:-4317} \
+            --otel-http-port=${DP_OTLP_HTTP_PORT:-4318} \
             ${persist_flags}
 
         # asap-control-plane (ASAP only) — control plane process. Brought
@@ -504,6 +504,7 @@ backend_up() {
             -e RUST_LOG="info,controller=debug,control_plane=debug" \
             -e USE_TYPED_STAGE_SPLIT=1 \
             -e ASAP_EDGE_FUSED=1 \
+            -e ASAP_EDGE_BACKEND_OTLP_PORT=${ASAP_EDGE_BACKEND_OTLP_PORT:-4317} \
             -e CONTROLLER_ADDR=0.0.0.0:8080 \
             -e CONTROLLER_OPAMP_ADDR=0.0.0.0:4320 \
             -e CONTROLLER_GRPC_ADDR=0.0.0.0:4321 \
@@ -515,11 +516,36 @@ backend_up() {
     fi
 }
 
+# Wipe the persistent backend STATE dirs so each arm starts from empty — the
+# same clean slate the raw baselines get (MinIO/Thanos/VM run with
+# container-local storage that's removed with the container). The two ASAP
+# state dirs are HOST bind-mounts that survive container removal:
+#   - data/gorilla-merger   : the merger's pending/shipped TSDB blocks + WAL
+#   - data/sketch-persistence: the data_plane's flushed sketch index
+# Without this they accumulate across EVERY up/down cycle — the merger grew to
+# multiple GB (and inflated cold-query memory) across a day of runs because
+# its per-window blocks were never cleared between runs. Set
+# KEEP_BACKEND_DATA=1 to preserve them (e.g. to inspect blocks after a run).
+clean_backend_data() {
+    if [ "${KEEP_BACKEND_DATA:-0}" = 1 ]; then
+        log "KEEP_BACKEND_DATA=1 — preserving backend state dirs"
+        return
+    fi
+    log "wiping persistent backend state (gorilla-merger, sketch-persistence)"
+    # The merger writes subdirs as uid 65532; the parent dirs are 0777 so the
+    # ssh user can unlink them, but fall back to sudo if a stricter umask blocks.
+    for n in "${NODE1_HOST}" "${NODE2_HOST}"; do
+        on "${n}" 'd=/mydata/mvp-multinode/data; rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* 2>/dev/null || sudo rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* 2>/dev/null || true' || true
+    done
+}
+
 backend_down() {
     log "backend down — warm=node2, cold=node1"
     stop_node "${NODE2_HOST}"
     # Cold/thanos stack now lives on node1 (cold/warm split).
     stop_node "${NODE1_HOST}"
+    # Containers are gone — now safe to clear their persistent state dirs.
+    clean_backend_data
 }
 
 # ─── SERF-GATEWAY on node1 (b3 arm only) ────────────────────────────
@@ -601,7 +627,9 @@ agents_up() {
             asap/asap-otel-supervised:dev \
             --config /etc/otel/supervisor.yaml
 
-        # Same on node3 → agent-b
+        # Same on node3 → agent-b (skipped in SINGLE_NODE mode: agent-b would
+        # collide with agent-a on host :4317 under --network host).
+        if [ "${SINGLE_NODE:-0}" != 1 ]; then
         log "node3 agent-b up (${arm}, supervised)"
         docker_run_on "${NODE3_HOST}" --cpus=4 --memory=12g --memory-swap=12g \
             --name asap-agent-b \
@@ -611,6 +639,7 @@ agents_up() {
             -v /mydata/mvp-multinode/configs/asap/supervisor.yaml:/etc/otel/supervisor.yaml:ro \
             asap/asap-otel-supervised:dev \
             --config /etc/otel/supervisor.yaml
+        fi
     else
         # Raw baselines: bare asap-otel collector, static mounted config, no
         # controller/OpAMP.
@@ -624,6 +653,7 @@ agents_up() {
             asap/asap-otel:dev \
             --config=/etc/otel/config.yaml
 
+        if [ "${SINGLE_NODE:-0}" != 1 ]; then
         log "node3 agent-b up (${arm})"
         docker_run_on "${NODE3_HOST}" --cpus=4 --memory=12g --memory-swap=12g \
             --name asap-agent-b \
@@ -633,6 +663,7 @@ agents_up() {
             -v /mydata/mvp-multinode/configs/${agent_cfg}:/etc/otel/config.yaml:ro \
             asap/asap-otel:dev \
             --config=/etc/otel/config.yaml
+        fi
     fi
 
     # Wait for agent OTLP receiver to come up
@@ -656,6 +687,7 @@ agents_up() {
             -seed=${OTELAPP_SEED:-42}
     done
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
+        [ "${SINGLE_NODE:-0}" = 1 ] && break
         log "node3 producer-b-${i} up"
         docker_run_on "${NODE3_HOST}" --cpus=1 --memory=4g --memory-swap=4g \
             --name asap-producer-b-${i} \

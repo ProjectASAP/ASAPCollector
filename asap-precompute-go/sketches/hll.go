@@ -36,6 +36,17 @@ type HLLWrapper struct {
 	// across the re-construction paths (Reset / Merge / ApplyDelta) so a
 	// sampled wrapper stays sampled for its whole lifetime.
 	sampleP float64
+	// sparse selects the in-memory SPARSE base sketch
+	// (hll.NewSparseHyperLogLog) instead of the dense one
+	// (hll.NewHyperLogLog). It is preserved across every re-construction path
+	// (Reset / Merge / ApplyDelta via newSketch) so a wrapper built sparse
+	// stays sparse for its whole lifetime. The sparse base is API-compatible
+	// by design — byte-identical serialization, interoperable Merge/ApplyDelta
+	// with dense snapshots, and Reset returns to the empty sparse state — so
+	// the wrapper drives it exclusively through the same public methods used
+	// for the dense base and never touches the exported Registers field (which
+	// would force dense materialization and defeat the memory win).
+	sparse bool
 }
 
 // NewHLLWrapper builds an empty HLL sketch. The sketchlib-go
@@ -48,6 +59,23 @@ type HLLWrapper struct {
 // the pre-sampling format.
 func NewHLLWrapper() *HLLWrapper {
 	w := &HLLWrapper{sampleP: 1.0}
+	w.sk = w.newSketch()
+	return w
+}
+
+// NewHLLWrapperSparse builds an empty HLL sketch backed by the in-memory
+// SPARSE base (hll.NewSparseHyperLogLog) rather than the dense one. A
+// low-cardinality warm series then holds only its observed registers instead of
+// the dense ~16KB register array, so memory per series scales with cardinality
+// until the base promotes itself to dense automatically.
+//
+// Everything else is identical to NewHLLWrapper: precision is the fixed
+// hll.HLLPrecision = 14, sampling is disabled (sampleP=1.0) by default, and the
+// emitted wire bytes are byte-identical to the dense wrapper for the same
+// inputs (the sparse base serializes to the same proto). The sparse flag is
+// stamped on the wrapper so Reset / Merge / ApplyDelta rebuild a sparse base.
+func NewHLLWrapperSparse() *HLLWrapper {
+	w := &HLLWrapper{sampleP: 1.0, sparse: true}
 	w.sk = w.newSketch()
 	return w
 }
@@ -79,10 +107,18 @@ func (w *HLLWrapper) SampleP() float64 {
 }
 
 // newSketch builds a fresh sketchlib-go HLL carrying the wrapper's
-// configured sampling probability. Centralises the construction so every
-// re-creation path (New / Reset / Merge / ApplyDelta) keeps sampleP.
+// configured sampling probability and base representation. Centralises the
+// construction so every re-creation path (New / Reset / Merge / ApplyDelta)
+// keeps both sampleP and the sparse/dense choice: a sparse wrapper rebuilds a
+// sparse base on Reset (and when Merge/ApplyDelta lazily re-init a nil base),
+// so it never silently reverts to the dense ~16KB footprint.
 func (w *HLLWrapper) newSketch() *hll.HyperLogLog {
-	sk := hll.NewHyperLogLog()
+	var sk *hll.HyperLogLog
+	if w.sparse {
+		sk = hll.NewSparseHyperLogLog()
+	} else {
+		sk = hll.NewHyperLogLog()
+	}
 	if sk != nil && w.sampleP > 0 && w.sampleP < 1.0 {
 		sk.WithSampleP(w.sampleP)
 	}
