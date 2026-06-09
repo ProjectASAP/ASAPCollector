@@ -121,27 +121,12 @@ func TestCountSketchWrapper_L2Divergence(t *testing.T) {
 	}
 }
 
-// TestSubWindow_ExcludesFullStateFamilies verifies Sum/count and KLL — whose
-// ComputeDeltaAgainst returns full state (not incremental) — are excluded from
-// sub-window emission even with delta + sub-window configured, so the additive
-// backend can't over-count (Sum) / re-merge-inflate (KLL). They emit only at
-// the window boundary.
-func TestSubWindow_ExcludesFullStateFamilies(t *testing.T) {
+// TestSubWindow_ExcludesKLL verifies KLL — whose ComputeDeltaAgainst is a
+// full-state merge (it cannot subtract) — is excluded from sub-window emission
+// even with delta + sub-window configured, so the additive backend can't
+// re-merge-inflate it. KLL emits only at the window boundary.
+func TestSubWindow_ExcludesKLL(t *testing.T) {
 	ts := uint64(3_600_000)
-
-	sumCfg := &precompute.PrecomputeConfig{
-		AggID: 2, AggKind: precompute.AggKindSum, Mode: precompute.Tumbling,
-		Window:            precompute.WindowSpec{Size: time.Hour},
-		DeltaTransmission: true, SubWindowInterval: time.Second, SubWindowEpsilon: 0,
-	}
-	sumPC := precompute.New(sumCfg,
-		func() precompute.Sketch { return sketches.NewSumWrapper() }, sketches.SumObserver{})
-	_ = sumPC.Observe(ddObs(ts, 10))
-	_ = sumPC.Observe(ddObs(ts, 20))
-	if got := sumPC.EmitSubWindow(ts); got != nil {
-		t.Fatalf("Sum must be excluded from sub-window emission (full-state ⇒ over-count), got %d envelopes", len(got))
-	}
-
 	kllCfg := &precompute.PrecomputeConfig{
 		AggID: 3, SketchType: precompute.SketchTypeKLLSketch, Mode: precompute.Tumbling,
 		Window:            precompute.WindowSpec{Size: time.Hour},
@@ -152,6 +137,62 @@ func TestSubWindow_ExcludesFullStateFamilies(t *testing.T) {
 	_ = kllPC.Observe(ddObs(ts, 10))
 	_ = kllPC.Observe(ddObs(ts, 20))
 	if got := kllPC.EmitSubWindow(ts); got != nil {
-		t.Fatalf("KLL must be excluded from sub-window emission (full-state ⇒ inflate), got %d envelopes", len(got))
+		t.Fatalf("KLL must be excluded from sub-window emission (full-state merge ⇒ inflate), got %d envelopes", len(got))
+	}
+}
+
+// TestSubWindow_Sum_IncrementalReconstruction verifies Sum is now sub-window
+// capable: its incremental {Δsum,Δcount} deltas, accumulated additively at the
+// backend (which is what ApplyDelta does), reconstruct the window total — i.e.
+// multiple sub-window emits + the boundary emit do NOT over-count. Also checks
+// the per-window-reset: a new window's first emit is a delta from ZERO, not a
+// cross-window subtraction.
+func TestSubWindow_Sum_IncrementalReconstruction(t *testing.T) {
+	const w1 = uint64(3_600_000)
+	cfg := &precompute.PrecomputeConfig{
+		AggID: 2, AggKind: precompute.AggKindSum, Mode: precompute.Tumbling,
+		Window:            precompute.WindowSpec{Size: time.Second}, // 1000ms windows
+		DeltaTransmission: true, SubWindowInterval: 100 * time.Millisecond, SubWindowEpsilon: 0,
+	}
+	pc := precompute.New(cfg,
+		func() precompute.Sketch { return sketches.NewSumWrapper() }, sketches.SumObserver{})
+
+	// Reconstruct exactly as the additive backend does: reset on window_start
+	// change (PWR), then ApplyDelta every payload (full or delta — both additive).
+	recon := sketches.NewSumWrapper()
+	var lastStart uint64
+	var haveStart bool
+	apply := func(envs []*precompute.SketchEnvelope) {
+		for _, e := range envs {
+			if !haveStart || e.WindowStartMs != lastStart {
+				recon.Reset()
+				lastStart, haveStart = e.WindowStartMs, true
+			}
+			if err := recon.ApplyDelta(e.Payload); err != nil {
+				t.Fatalf("ApplyDelta: %v", err)
+			}
+		}
+	}
+
+	// --- Window 1: three sub-window emits + a boundary emit, total = 175 ---
+	_ = pc.Observe(ddObs(w1, 10))
+	_ = pc.Observe(ddObs(w1, 20)) // sum=30
+	apply(pc.EmitSubWindow(w1))   // full 30
+	_ = pc.Observe(ddObs(w1, 70)) // sum=100
+	apply(pc.EmitSubWindow(w1))   // Δ70
+	_ = pc.Observe(ddObs(w1, 50)) // sum=150
+	apply(pc.EmitSubWindow(w1))   // Δ50
+	_ = pc.Observe(ddObs(w1, 25)) // sum=175
+	apply(pc.Drain())             // boundary Δ25 (then PWR-resets the base to {0,0})
+	if got := recon.Sum(); got != 175 {
+		t.Fatalf("window 1 reconstructed sum = %v, want 175 (no over-count across sub-window + boundary emits)", got)
+	}
+
+	// --- Window 2 (later start): first emit must be a delta from ZERO ---
+	const w2 = w1 + 1000 // next 1000ms window
+	_ = pc.Observe(ddObs(w2, 40))
+	apply(pc.EmitSubWindow(w2))
+	if got := recon.Sum(); got != 40 {
+		t.Fatalf("window 2 reconstructed sum = %v, want 40 (PWR: delta from zero, not cross-window subtraction)", got)
 	}
 }

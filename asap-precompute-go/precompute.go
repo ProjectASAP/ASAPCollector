@@ -554,13 +554,13 @@ func (p *precompute) serializeSubWindowSeries(entry *seriesEntry, cfg *Precomput
 }
 
 // subWindowEmissionSafe reports whether this config's family produces INCREMENTAL
-// deltas suitable for additive sub-window accumulation at the backend. Sum/count
-// (AggKindSum) and KLL ship full state from ComputeDeltaAgainst (their delta
-// ignores the base), so re-emitting every sub-window would over-count Sum /
-// re-merge-inflate KLL within a window. The incremental-delta families —
-// DDSketch, Count-Min, Count-Sketch, HLL — are safe.
+// deltas suitable for additive sub-window accumulation at the backend. KLL ships
+// full state from ComputeDeltaAgainst (its delta is a full-state merge — it
+// cannot subtract), so re-emitting every sub-window would re-merge-inflate it.
+// Sum, DDSketch, Count-Min, Count-Sketch, and HLL all produce true incremental
+// deltas (Sum via {Δsum,Δcount} + PWR, see sum.go), so they are safe.
 func subWindowEmissionSafe(cfg *PrecomputeConfig) bool {
-	return cfg.AggKind != AggKindSum && cfg.SketchType != SketchTypeKLLSketch
+	return cfg.SketchType != SketchTypeKLLSketch
 }
 
 // subWindowShouldEmit gates a sub-window emit on per-family divergence: emit iff
@@ -576,11 +576,16 @@ func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
 }
 
 // subWindowDivergence returns (divergence, norm) in the family's accuracy
-// metric: HLL→cardinality, Count-Sketch→L2 (Frobenius), and DDSketch/CMS→count
-// (rank/L1 staleness is bounded by the un-acked count). Only reached for the
-// incremental-delta families (subWindowEmissionSafe gates out Sum/KLL).
+// metric: Sum→value, HLL→cardinality, Count-Sketch→L2 (Frobenius), and
+// DDSketch/CMS→count (rank/L1 staleness is bounded by the un-acked count). Only
+// reached for the incremental-delta families (subWindowEmissionSafe gates KLL).
 func subWindowDivergence(entry *seriesEntry, cfg *PrecomputeConfig) (div, norm float64) {
 	switch {
+	case cfg.AggKind == AggKindSum:
+		if r, ok := entry.Sketch.(interface{ Sum() float64 }); ok {
+			cur := r.Sum()
+			return math.Abs(cur - entry.ackVal), math.Abs(cur)
+		}
 	case cfg.SketchType == SketchTypeHLLSketch:
 		if r, ok := entry.Sketch.(interface{ EstimateCardinality() float64 }); ok {
 			cur := r.EstimateCardinality()
@@ -603,6 +608,10 @@ func subWindowDivergence(entry *seriesEntry, cfg *PrecomputeConfig) (div, norm f
 func subWindowMarkEmitted(entry *seriesEntry, cfg *PrecomputeConfig) {
 	entry.subWindowAcked = true
 	switch {
+	case cfg.AggKind == AggKindSum:
+		if r, ok := entry.Sketch.(interface{ Sum() float64 }); ok {
+			entry.ackVal = r.Sum()
+		}
 	case cfg.SketchType == SketchTypeHLLSketch:
 		if r, ok := entry.Sketch.(interface{ EstimateCardinality() float64 }); ok {
 			entry.ackVal = r.EstimateCardinality()

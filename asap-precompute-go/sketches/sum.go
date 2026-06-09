@@ -60,11 +60,39 @@ func (w *SumWrapper) Snapshot() ([]byte, error) {
 	return b, nil
 }
 
-// ComputeDeltaAgainst returns the full snapshot (Sum is full-only for now;
-// see the type doc). isFull = true so the runtime tags the frame PROTO_FULL.
-func (w *SumWrapper) ComputeDeltaAgainst(_ []byte, _ uint64) ([]byte, bool, error) {
-	full, err := w.Snapshot()
-	return full, true, err
+// ComputeDeltaAgainst returns the INCREMENTAL delta {Δsum, Δcount} = current −
+// prev. The backend's ApplyDelta is additive, so a sequence of these (against
+// the per-window base reset to empty at each boundary, see DeltaAgainstEmptyBase)
+// reconstructs the window total — which is what makes Sum sub-window-capable
+// (multiple emits per window accumulate instead of over-counting full state).
+// prev is always non-nil here (the SnapshotCache handles the first-emit-full
+// case via Snapshot).
+func (w *SumWrapper) ComputeDeltaAgainst(prev []byte, _ uint64) ([]byte, bool, error) {
+	var prevSum float64
+	var prevCount uint64
+	if len(prev) >= sumPayloadLen {
+		prevSum = math.Float64frombits(binary.LittleEndian.Uint64(prev[0:8]))
+		prevCount = binary.LittleEndian.Uint64(prev[8:16])
+	}
+	dSum := w.sum - prevSum
+	dCount := w.count - prevCount
+	if dSum == 0 && dCount == 0 {
+		return nil, false, nil // no change since the previous emit
+	}
+	b := make([]byte, sumPayloadLen)
+	binary.LittleEndian.PutUint64(b[0:8], math.Float64bits(dSum))
+	binary.LittleEndian.PutUint64(b[8:16], dCount)
+	return b, false, nil
+}
+
+// DeltaAgainstEmptyBase opts Sum into the per-window-reset (PWR) delta model used
+// by the other delta families: after each window-close emit the cached base is
+// reset to the EMPTY {0,0} sum, so the next window's emits are deltas from zero
+// (its own per-window total). Returns an explicit 16-byte zero payload (len>0) so
+// the SnapshotCache takes the reset branch; without it, window N+1's first delta
+// would be (currentₙ₊₁ − fullₙ), a bogus cross-window subtraction.
+func (w *SumWrapper) DeltaAgainstEmptyBase() ([]byte, error) {
+	return make([]byte, sumPayloadLen), nil
 }
 
 // ApplyDelta loads a 16-byte {sum,count} payload and folds it into this
