@@ -103,7 +103,7 @@ type windowState struct {
 	// run the slack compare — arithmetic plus a non-blocking enqueue, never
 	// network or lock I/O. nil (the default) costs one nil-check on the hot
 	// path. Installed by Precompute via setMonitorHook.
-	monitorHook func(sketch Sketch, windowStartMs uint64)
+	monitorHook func(entry *seriesEntry, windowStartMs uint64)
 	// monitorResetHook, when non-nil, is invoked from advanceWindow on every
 	// rotation with the NEW window start, so the monitor engine begins a fresh
 	// epoch aligned exactly to the window bounds (one window = one CDM epoch).
@@ -366,7 +366,7 @@ func (w *windowState) recordLocked(entry *seriesEntry, obs *Observation, observe
 	// hook. windowStart is the active window's lower bound, which equals the
 	// monitoring epoch id; the engine uses it to detect boundary crossings.
 	if w.monitorHook != nil {
-		w.monitorHook(entry.Sketch, w.activeStartMs)
+		w.monitorHook(entry, w.activeStartMs)
 	}
 	return nil
 }
@@ -713,7 +713,7 @@ func (w *windowState) fireMonitorReset() {
 // epoch-reset hook under the window lock so they are race-free against the
 // observe / rotate paths that read them.
 func (w *windowState) setMonitorHooks(
-	observe func(sketch Sketch, windowStartMs uint64),
+	observe func(entry *seriesEntry, windowStartMs uint64),
 	reset func(newWindowStartMs uint64),
 ) {
 	w.mu.Lock()

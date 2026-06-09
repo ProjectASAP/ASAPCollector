@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -721,12 +722,24 @@ func (p *precompute) rewireMonitorHooks() {
 	}
 	spec := cfg.Monitor
 	aggID := uint64(cfg.AggID)
-	observe := func(sketch Sketch, windowStartMs uint64) {
-		v, ok := monitorValue(spec, sketch)
+	observe := func(entry *seriesEntry, windowStartMs uint64) {
+		v, ok := monitorValue(spec, entry.Sketch)
 		if !ok {
 			return
 		}
-		eng.Observe(aggID, spec.Key, v, windowStartMs)
+		// Monitor key selects which monitored quantity this observation feeds:
+		//   - CMSPoint: the point-frequency key x (whole-stream over the agg).
+		//   - Sum / LinearBuckets: the SERIES GROUP key (the AggregateBy tuple),
+		//     so per-group series (e.g. one per zone) get independent monitor
+		//     state instead of colliding on a single agg-wide slot. The edge has
+		//     already folded all raw series of a group into this one entry, so
+		//     the value is the group's combined local aggregate — exactly the
+		//     per-(agg,group) quantity the coordinator sums across edges.
+		key := spec.Key
+		if spec.Functional != monitor.FunctionalCMSPoint {
+			key = groupKeyBytes(entry.Labels)
+		}
+		eng.Observe(aggID, key, v, windowStartMs)
 	}
 	reset := func(newWindowStartMs uint64) {
 		eng.EpochReset(newWindowStartMs)
@@ -757,6 +770,29 @@ func monitorValue(spec monitor.Spec, s Sketch) (float64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// groupKeyBytes canonically encodes a series' grouping labels into a stable
+// monitor key so the same group (e.g. zone=z0) maps to identical bytes on every
+// edge — the coordinator merges per (agg_id, group) across edges. Empty labels
+// (whole-stream aggregation) yield a nil key (one global monitor per agg_id).
+func groupKeyBytes(labels []KeyValue) []byte {
+	if len(labels) == 0 {
+		return nil
+	}
+	sorted := make([]KeyValue, len(labels))
+	copy(sorted, labels)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Key < sorted[j].Key })
+	var b []byte
+	for i, kv := range sorted {
+		if i > 0 {
+			b = append(b, ';')
+		}
+		b = append(b, kv.Key...)
+		b = append(b, '=')
+		b = append(b, kv.Value...)
+	}
+	return b
 }
 
 // Shutdown implements Precompute.Shutdown.
