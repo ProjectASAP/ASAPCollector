@@ -22,7 +22,8 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.12.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.11.2 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.5.0 // indirect
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260527012450-98a522055fc7 // indirect
+	github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient v0.0.0-00010101000000-000000000000
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260527012450-98a522055fc7
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b // indirect
 	github.com/aws/aws-sdk-go-v2 v1.41.7 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.31.12 // indirect
@@ -142,3 +143,5 @@ replace github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
 // where it takes precedence; a replace in this non-main module is ignored by
 // that build, so this does not change the asap-otel image's resolution.)
 replace github.com/ProjectASAP/asap-gorilla-go => ../../../asap-gorilla-go
+
+replace github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient => ../../../asap-precompute-go/monitor/grpcclient

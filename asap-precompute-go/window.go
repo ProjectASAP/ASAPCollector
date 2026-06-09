@@ -96,6 +96,18 @@ type windowState struct {
 	// any observation, in which case the empty-window rotate paths never
 	// dereference it.
 	sketchFactory SketchFactory
+
+	// monitorHook, when non-nil, is invoked on every admitted observation
+	// (under w.mu) for continuous intra-window threshold monitoring
+	// (Discipline B). It must be cheap: read the series' additive value and
+	// run the slack compare — arithmetic plus a non-blocking enqueue, never
+	// network or lock I/O. nil (the default) costs one nil-check on the hot
+	// path. Installed by Precompute via setMonitorHook.
+	monitorHook func(sketch Sketch, windowStartMs uint64)
+	// monitorResetHook, when non-nil, is invoked from advanceWindow on every
+	// rotation with the NEW window start, so the monitor engine begins a fresh
+	// epoch aligned exactly to the window bounds (one window = one CDM epoch).
+	monitorResetHook func(newWindowStartMs uint64)
 }
 
 // slidingPane is one closed slide-interval's worth of per-series
@@ -283,7 +295,10 @@ func (w *windowState) admitSeriesLocked(
 	sketchFactory SketchFactory,
 	stats *PrecomputeStats,
 ) (*seriesEntry, error) {
-	if cfg.MaxSeries > 0 && uint64(len(w.series)) >= cfg.MaxSeries {
+	// WholeStream collapses to a single bucket per AggID, so the
+	// series-cardinality cap is a no-op (cardinality is 1) — never reject the
+	// lone global series even when MaxSeries is set small.
+	if cfg.MaxSeries > 0 && !cfg.isWholeStream() && uint64(len(w.series)) >= cfg.MaxSeries {
 		switch cfg.OnOverflow {
 		case OnOverflowDrop, OnOverflowBlock:
 			// Block is degraded to Drop in Phase 2: latency-hostile
@@ -311,11 +326,12 @@ func (w *windowState) admitSeriesLocked(
 	}
 	sketch := sketchFactory()
 	// Honor the parity-mode flags by stripping the labels we promised not
-	// to surface. GlobalAggregation collapses everything; OmitResourceAttrs
-	// zeroes only the resource segment. The output envelope reads
-	// ResourceLabels/Labels straight from the entry.
+	// to surface. WholeStream (incl. the legacy GlobalAggregation alias)
+	// collapses everything; OmitResourceAttrs zeroes only the resource
+	// segment. The output envelope reads ResourceLabels/Labels straight from
+	// the entry.
 	var resourceCopy, labelsCopy []KeyValue
-	if !cfg.GlobalAggregation {
+	if !cfg.isWholeStream() {
 		labelsCopy = make([]KeyValue, len(obs.Labels))
 		copy(labelsCopy, obs.Labels)
 		if !cfg.OmitResourceAttrs {
@@ -346,6 +362,12 @@ func (w *windowState) recordLocked(entry *seriesEntry, obs *Observation, observe
 		return fmt.Errorf("sketch observe: %w", err)
 	}
 	entry.Count++
+	// Continuous intra-window monitoring (Discipline B): cheap nil-checked
+	// hook. windowStart is the active window's lower bound, which equals the
+	// monitoring epoch id; the engine uses it to detect boundary crossings.
+	if w.monitorHook != nil {
+		w.monitorHook(entry.Sketch, w.activeStartMs)
+	}
 	return nil
 }
 
@@ -661,6 +683,7 @@ func (w *windowState) advanceWindow(nowMs uint64, cfg *PrecomputeConfig) {
 		// as the new window start.
 		w.activeStartMs = nowMs
 		w.activeEndMs = nowMs
+		w.fireMonitorReset()
 		return
 	}
 	// Snap to the bucket containing nowMs to avoid lock-step
@@ -675,6 +698,28 @@ func (w *windowState) advanceWindow(nowMs uint64, cfg *PrecomputeConfig) {
 		w.activeStartMs = bucketStart
 	}
 	w.activeEndMs = w.activeStartMs + step
+	w.fireMonitorReset()
+}
+
+// fireMonitorReset notifies the monitor engine that a new epoch has begun,
+// aligned to the freshly-advanced window start. Caller holds w.mu.
+func (w *windowState) fireMonitorReset() {
+	if w.monitorResetHook != nil {
+		w.monitorResetHook(w.activeStartMs)
+	}
+}
+
+// setMonitorHooks installs (or clears) the per-observation monitor hook and the
+// epoch-reset hook under the window lock so they are race-free against the
+// observe / rotate paths that read them.
+func (w *windowState) setMonitorHooks(
+	observe func(sketch Sketch, windowStartMs uint64),
+	reset func(newWindowStartMs uint64),
+) {
+	w.mu.Lock()
+	w.monitorHook = observe
+	w.monitorResetHook = reset
+	w.mu.Unlock()
 }
 
 // activeSeriesCount returns the current series count. For tests
@@ -683,4 +728,25 @@ func (w *windowState) activeSeriesCount() int {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return len(w.series)
+}
+
+// resetForScopeChange drops all in-flight window state (the active series map
+// and any sliding panes) without emitting it. Called by Precompute.UpdateConfig
+// when the aggregation SCOPE flips (PerSeries <-> WholeStream): the two scopes
+// key the series map incompatibly (one bucket per AggID vs one per series), so
+// the old map's entries cannot be reused under the new scope. Discarding the
+// partial window is the conservative choice — at most the current sub-window's
+// observations are lost on a live scope change, which only happens on a control-
+// plane reconfiguration. A same-scope config change leaves the window untouched.
+//
+// The window bounds are kept (initialized stays true) so the next rotate still
+// advances on the established cadence; only the accumulated sketches are
+// dropped. Pooling is intentionally NOT invoked here (the sketches are released
+// to GC) because UpdateConfig has no access to the sketch sink and a scope
+// change is rare.
+func (w *windowState) resetForScopeChange() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.series = make(map[string]*seriesEntry)
+	w.panes = nil
 }

@@ -6,6 +6,7 @@ package asapedgeprocessor
 import (
 	"context"
 	"hash/maphash"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -78,9 +79,9 @@ type asapEdgeProcessor struct {
 	// failure dropped the window's envelopes silently; this keeps the loss
 	// observable across all aggregators.
 	sketchEncodeDropCount atomic.Uint64
-	stopCh       chan struct{}
-	doneCh       chan struct{}
-	flushStarted bool
+	stopCh                chan struct{}
+	doneCh                chan struct{}
+	flushStarted          bool
 
 	// ctrlChan is the optional control-plane poll channel (nil when the
 	// ControlChannel config block is unset). When set, Start() spawns a poll
@@ -139,6 +140,13 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 			}
 		}
 	}
+	// Default the edge identity to the OS hostname so continuous monitoring
+	// activates without explicit config; a blank hostname leaves it disabled.
+	if cfg.EdgeID == "" {
+		if hn, err := os.Hostname(); err == nil {
+			cfg.EdgeID = hn
+		}
+	}
 	for i := range p.shards {
 		sh := &shard{
 			sketchAggs: make(map[string]*sketchAggregator, len(p.sketchMetrics)),
@@ -154,6 +162,7 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 				// ~2s reorder grace, so processing-delayed-but-in-window
 				// samples are not dropped as late.
 				allowedLateness: cfg.WarmAllowedLateness,
+				edgeID:          cfg.EdgeID,
 			}
 			if sa, ok := newSketchAggregator(name, fam, opts, p.logger); ok {
 				sa.procDropCount = &p.sketchDropCount
@@ -197,6 +206,12 @@ func (p *asapEdgeProcessor) Start(_ context.Context, _ component.Host) error {
 func (p *asapEdgeProcessor) Shutdown(ctx context.Context) error {
 	// Stop the control-plane poll loop first so no config swap races the drain.
 	p.stopControlPlane()
+	// Stop any CDM monitor transports (background gRPC stream goroutines).
+	for i := range p.shards {
+		for _, sa := range p.shards[i].sketchAggs {
+			sa.closeMonitor()
+		}
+	}
 	// Stop the flush loop (its final flushAll enqueues the last batch). The
 	// previous code returned early on ctx.Done() while waiting on doneCh, which
 	// SKIPPED the cold-part accumulator force-seal AND the ship-worker drain,

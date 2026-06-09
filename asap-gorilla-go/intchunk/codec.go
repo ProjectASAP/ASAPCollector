@@ -32,9 +32,12 @@
 // Timestamps are always encoded with the design's t0 + delta-of-delta varint
 // scheme regardless of value codec, so the chunk is self-describing.
 //
-// This package is a standalone library: it is NOT wired into the agent encoder
-// or the merger (that is the follow-up PR6/PR7). It depends only on the
-// standard library plus prometheus/tsdb/chunkenc for the XOR fallback.
+// This package depends only on the standard library plus
+// prometheus/tsdb/chunkenc for the XOR fallback. It is wired into the edge
+// processor's cold path through the coldpart package: when cold.format is set
+// to "intchunk", asapedgeprocessor re-encodes each block's drained samples into
+// a coldpart.Part (coldpart.WritePart -> intchunk.Encode). This is opt-in; the
+// default cold format remains the gorilla-XOR fragment batch.
 package intchunk
 
 import (

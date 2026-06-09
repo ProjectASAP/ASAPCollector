@@ -1,0 +1,94 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package precompute_test
+
+// End-to-end (in-process) proof that a FunctionalLinearBuckets monitor on a
+// DDSketch series actually drives the slack countdown: Observe → window hook →
+// monitorValue → DDSketchWrapper.LinearReadout (value-range count) →
+// engine.Observe → report. Sum + CMS-point are covered elsewhere; this closes
+// the loop for the linear functional specifically.
+
+import (
+	"testing"
+	"time"
+
+	precompute "github.com/ProjectASAP/asap-precompute-go"
+	"github.com/ProjectASAP/asap-precompute-go/monitor"
+	"github.com/ProjectASAP/asap-precompute-go/sketches"
+)
+
+type capturingReporter struct {
+	reports []monitor.Report
+}
+
+func (c *capturingReporter) Register(monitor.Registration) {}
+func (c *capturingReporter) Report(r monitor.Report)       { c.reports = append(c.reports, r) }
+
+func TestMonitor_LinearBuckets_DDSketch_RangeCountDrivesReports(t *testing.T) {
+	const aggID = precompute.AggId(7)
+	// ts aligned to a 1h window so the window start is deterministic and the
+	// stream never rotates during the test.
+	const windowStart = uint64(3_600_000)
+
+	pcfg := &precompute.PrecomputeConfig{
+		AggID:      aggID,
+		SketchType: precompute.SketchTypeDDSketch,
+		Mode:       precompute.Tumbling,
+		Window:     precompute.WindowSpec{Size: time.Hour},
+		Monitor: monitor.Spec{
+			Enabled:        true,
+			Functional:     monitor.FunctionalLinearBuckets,
+			Coeffs:         []float64{50}, // count of samples with value >= 50
+			CoordinatorURL: "passthrough:///test",
+			Tau:            100,
+			Epsilon:        0.05,
+		},
+	}
+	factory := func() precompute.Sketch { return sketches.NewDDSketchWrapper(0.01) }
+	pc := precompute.New(pcfg, factory, sketches.DDSketchObserver{})
+
+	rep := &capturingReporter{}
+	eng := monitor.NewEngine("edge", uint64(time.Hour/time.Millisecond), rep)
+	pc.SetMonitorEngine(eng)
+
+	labels := []precompute.KeyValue{{Key: "svc", Value: "checkout"}}
+	obs := func(v float64) {
+		if err := pc.Observe(&precompute.Observation{
+			TimestampMs: windowStart,
+			Metric:      "latency_ms",
+			Labels:      labels,
+			Value:       precompute.FloatValue(v),
+		}); err != nil {
+			t.Fatalf("observe: %v", err)
+		}
+	}
+
+	// First observation registers the monitor (no grant yet → silent).
+	obs(1.0) // below 50 → range-count stays 0
+	if len(rep.reports) != 0 {
+		t.Fatalf("reported before any grant")
+	}
+
+	// Coordinator grants slack 3 for this round.
+	eng.OnGrant(monitor.Grant{AggID: uint64(aggID), Round: 1, LocalSlack: 3, WindowStartMs: windowStart})
+
+	// Two in-range samples: range-count = 2 < slack 3 → still silent.
+	obs(100.0)
+	obs(200.0)
+	// An out-of-range sample does NOT advance the count.
+	obs(2.0)
+	if len(rep.reports) != 0 {
+		t.Fatalf("reported too early: range-count below slack; got %d reports", len(rep.reports))
+	}
+
+	// Third in-range sample: range-count = 3 >= slack 3 → exactly one report,
+	// carrying the range-count (3), not the raw observed value.
+	obs(100.0)
+	if len(rep.reports) != 1 {
+		t.Fatalf("expected exactly one report once range-count crossed slack, got %d", len(rep.reports))
+	}
+	if got := rep.reports[0].LocalValue; got != 3 {
+		t.Fatalf("report should carry the value-range count (3), got %v", got)
+	}
+}

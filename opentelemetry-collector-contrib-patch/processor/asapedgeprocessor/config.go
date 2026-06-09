@@ -164,6 +164,36 @@ type MetricFamily struct {
 	// The non-heap plain CountSketch keeps its attribute-set frequency keying
 	// regardless (B6).
 	ItemLabel string `mapstructure:"item_label"`
+
+	// Threshold, when set and Enabled, turns on continuous intra-window
+	// monitoring (CDM Discipline B) for this metric: the edge runs the
+	// slack-countdown protocol against the coordinator and reports only when its
+	// local additive value climbs past the granted slack. Optional; nil/disabled
+	// adds nothing beyond a per-observation nil-check. Only additive (monotone)
+	// functionals are supported.
+	Threshold *ThresholdConfig `mapstructure:"threshold"`
+}
+
+// ThresholdConfig configures continuous-monitoring (CDM) for one metric family.
+// τ is authoritative at the coordinator; the edge copy here is advisory.
+type ThresholdConfig struct {
+	// Enabled gates the monitor.
+	Enabled bool `mapstructure:"enabled"`
+	// Functional selects the additive readout to threshold: "sum" (default),
+	// "cms_point", or "linear_buckets".
+	Functional string `mapstructure:"functional"`
+	// Key is the CMS point-frequency key x (functional=cms_point).
+	Key string `mapstructure:"key"`
+	// Coeffs are the linear-functional coefficients (functional=linear_buckets);
+	// must be non-negative (monotone) or the edge rejects the spec.
+	Coeffs []float64 `mapstructure:"coeffs"`
+	// CoordinatorURL is the data-plane MonitorService gRPC endpoint
+	// (e.g. "data-plane:4319").
+	CoordinatorURL string `mapstructure:"coordinator_url"`
+	// Tau / Epsilon are advisory at the edge (authoritative copies live at the
+	// coordinator's streaming-config `monitors:` entry for this agg_id).
+	Tau     float64 `mapstructure:"tau"`
+	Epsilon float64 `mapstructure:"epsilon"`
 }
 
 // ColdConfig configures the per-shard Gorilla cold archive. Each shard
@@ -259,6 +289,12 @@ type Config struct {
 	// are unchanged. Default 12 (a value that meaningfully smooths the curve
 	// under the dense raw-buffer workload while staying cheap). Must be >= 1.
 	ShardCount int `mapstructure:"shard_count"`
+
+	// EdgeID is this collector instance's stable identity, reported to the CDM
+	// monitor coordinator at registration (see MetricFamily.Threshold). Empty
+	// disables continuous monitoring even if a metric configures a threshold.
+	// Defaults to the OS hostname in the factory when left blank.
+	EdgeID string `mapstructure:"edge_id"`
 
 	// WindowDuration is the warm-tier (sum/sketch) flush cadence.
 	WindowDuration time.Duration `mapstructure:"window_duration"`
