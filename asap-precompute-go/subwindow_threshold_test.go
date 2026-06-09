@@ -121,23 +121,51 @@ func TestCountSketchWrapper_L2Divergence(t *testing.T) {
 	}
 }
 
-// TestSubWindow_ExcludesKLL verifies KLL — whose ComputeDeltaAgainst is a
-// full-state merge (it cannot subtract) — is excluded from sub-window emission
-// even with delta + sub-window configured, so the additive backend can't
-// re-merge-inflate it. KLL emits only at the window boundary.
-func TestSubWindow_ExcludesKLL(t *testing.T) {
-	ts := uint64(3_600_000)
-	kllCfg := &precompute.PrecomputeConfig{
+// TestSubWindow_KLL_SegmentsReconstruct verifies the disjoint-segment model for
+// KLL: each sub-window emit is a KLL over the data since the last emit (the
+// sketch is reset after emitting), so merging the emitted segments + the
+// boundary segment reconstructs the window total with NO inflation. The
+// disjointness check: the merged sample count equals the true observation count
+// (overlapping cumulative fulls would exceed it).
+func TestSubWindow_KLL_SegmentsReconstruct(t *testing.T) {
+	const ts = uint64(3_600_000)
+	cfg := &precompute.PrecomputeConfig{
 		AggID: 3, SketchType: precompute.SketchTypeKLLSketch, Mode: precompute.Tumbling,
 		Window:            precompute.WindowSpec{Size: time.Hour},
-		DeltaTransmission: true, SubWindowInterval: time.Second, SubWindowEpsilon: 0,
+		DeltaTransmission: true, SubWindowInterval: time.Second, SubWindowEpsilon: 0, // ε=0: emit every tick
 	}
-	kllPC := precompute.New(kllCfg,
+	pc := precompute.New(cfg,
 		func() precompute.Sketch { return sketches.NewKLLWrapper(200, nil) }, sketches.KLLObserver{})
-	_ = kllPC.Observe(ddObs(ts, 10))
-	_ = kllPC.Observe(ddObs(ts, 20))
-	if got := kllPC.EmitSubWindow(ts); got != nil {
-		t.Fatalf("KLL must be excluded from sub-window emission (full-state merge ⇒ inflate), got %d envelopes", len(got))
+
+	recon := sketches.NewKLLWrapper(200, nil)
+	applied := 0
+	apply := func(envs []*precompute.SketchEnvelope) {
+		for _, e := range envs {
+			if err := recon.ApplyDelta(e.Payload); err != nil {
+				t.Fatalf("ApplyDelta: %v", err)
+			}
+			applied++
+		}
+	}
+
+	total := 0
+	emit := func(n int) {
+		for i := 0; i < n; i++ {
+			_ = pc.Observe(ddObs(ts, float64(i)))
+			total++
+		}
+		apply(pc.EmitSubWindow(ts)) // segment + reset
+	}
+	emit(30)          // segment 1
+	emit(40)          // segment 2
+	emit(25)          // segment 3
+	apply(pc.Drain()) // boundary segment
+
+	if applied < 2 {
+		t.Fatalf("KLL should emit multiple disjoint segments (sub-window enabled), got %d", applied)
+	}
+	if got := recon.Count(); got != total {
+		t.Fatalf("merged KLL count = %d, want %d — segments must be DISJOINT (no cumulative-full inflation)", got, total)
 	}
 }
 

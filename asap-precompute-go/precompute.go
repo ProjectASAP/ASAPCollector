@@ -476,16 +476,7 @@ func (p *precompute) EmitSubWindow(nowMs uint64) []*SketchEnvelope {
 		// still emit the full frame.
 		return nil
 	}
-	if !subWindowEmissionSafe(cfg) {
-		// Sum/count and KLL produce FULL-STATE (not incremental) deltas — their
-		// ComputeDeltaAgainst ignores the base and returns the whole sketch. The
-		// backend accumulates sub-window emits ADDITIVELY within a window (same
-		// window_start), so re-shipping full state every tick would over-count
-		// Sum / re-merge-inflate KLL. Sub-window emission applies only to the
-		// incremental-delta families (DDSketch / Count-Min / Count-Sketch / HLL);
-		// Sum/KLL still emit once at the boundary.
-		return nil
-	}
+	segmentMode := subWindowSegmentMode(cfg)
 	var envelopes []*SketchEnvelope
 	rng := p.window.subWindowVisit(cfg, func(entry *seriesEntry) {
 		if !subWindowShouldEmit(entry, cfg) {
@@ -495,6 +486,20 @@ func (p *precompute) EmitSubWindow(nowMs uint64) []*SketchEnvelope {
 		if err == nil && env != nil {
 			envelopes = append(envelopes, env)
 			subWindowMarkEmitted(entry, cfg) // advance the divergence reference
+			if segmentMode {
+				// Disjoint-segment model (KLL and other non-subtractable
+				// mergeable summaries): the emit just serialized covers the
+				// data accumulated SINCE the last emit, so reset the sketch to
+				// empty and let the next segment accumulate fresh. The backend
+				// merges the disjoint segment rows (merge_all) into the window
+				// total — exactly as it merges [full, delta, delta] for the
+				// subtractive families — with no over-count, because the
+				// segments share no data. This is what aligns KLL with the
+				// other families: "full vs delta" is about WHAT data the frame
+				// covers (cumulative vs the between-emits segment), not whether
+				// the sketch can subtract.
+				entry.Sketch.Reset()
+			}
 		}
 	})
 	if rng == ([2]uint64{0, 0}) || len(envelopes) == 0 {
@@ -554,14 +559,17 @@ func (p *precompute) serializeSubWindowSeries(entry *seriesEntry, cfg *Precomput
 	}, nil
 }
 
-// subWindowEmissionSafe reports whether this config's family produces INCREMENTAL
-// deltas suitable for additive sub-window accumulation at the backend. KLL ships
-// full state from ComputeDeltaAgainst (its delta is a full-state merge — it
-// cannot subtract), so re-emitting every sub-window would re-merge-inflate it.
-// Sum, DDSketch, Count-Min, Count-Sketch, and HLL all produce true incremental
-// deltas (Sum via {Δsum,Δcount} + PWR, see sum.go), so they are safe.
-func subWindowEmissionSafe(cfg *PrecomputeConfig) bool {
-	return cfg.SketchType != SketchTypeKLLSketch
+// subWindowSegmentMode reports whether this family must use the DISJOINT-SEGMENT
+// sub-window model (emit-then-reset) rather than the subtractive-delta model.
+// KLL is a mergeable-but-not-subtractable summary: it cannot compute (current −
+// prev), so its "delta" can't be a subtractive diff. Instead the runtime resets
+// the sketch after each emit, so each emit is a KLL over the disjoint segment of
+// data since the last emit; the backend merges the segment rows into the window
+// total (merge is associative + no-compounding for mergeable summaries). The
+// subtractive families (Sum/DDSketch/Count-Min/Count-Sketch/HLL) keep the
+// cumulative sketch and ship subtractive deltas, so they are NOT segment-mode.
+func subWindowSegmentMode(cfg *PrecomputeConfig) bool {
+	return cfg.SketchType == SketchTypeKLLSketch
 }
 
 // subWindowShouldEmit gates a sub-window emit on per-family divergence: emit iff
@@ -578,8 +586,10 @@ func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
 
 // subWindowDivergence returns (divergence, norm) in the family's accuracy
 // metric: Sum→value, HLL→cardinality, Count-Sketch→L2 (Frobenius), and
-// DDSketch/CMS→count (rank/L1 staleness is bounded by the un-acked count). Only
-// reached for the incremental-delta families (subWindowEmissionSafe gates KLL).
+// DDSketch/KLL/CMS→count (rank/L1 staleness is bounded by the un-acked count;
+// KLL uses the SAME external-count trigger even though it emits disjoint
+// segments rather than subtractive deltas — the trigger is independent of the
+// sketch's subtractability).
 func subWindowDivergence(entry *seriesEntry, cfg *PrecomputeConfig) (div, norm float64) {
 	switch {
 	case cfg.AggKind == AggKindSum:

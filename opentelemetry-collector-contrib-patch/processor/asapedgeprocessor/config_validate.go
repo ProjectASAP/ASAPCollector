@@ -300,10 +300,14 @@ func (c *Config) Validate() error {
 // the only wired sketch family that does not (no ComputeDeltaAgainst).
 func (k FamilyKind) deltaCapable() bool {
 	switch k {
-	case FamilyDDSketch, FamilyCountSketch, FamilyHLL, FamilyCountMinSketch, FamilySum:
-		// Sum ships true incremental {Δsum,Δcount} deltas under the per-window-
-		// reset model (see sum.go), so it is delta- and sub-window-capable. KLL
-		// remains excluded — its delta is a full-state merge (cannot subtract).
+	case FamilyDDSketch, FamilyCountSketch, FamilyHLL, FamilyCountMinSketch, FamilySum, FamilyKLL:
+		// All families now ride the sub-window machinery (gated on this flag):
+		// the subtractive families (DDSketch/CMS/CountSketch/HLL) and Sum ({Δsum,
+		// Δcount}+PWR) ship incremental deltas; KLL — which cannot subtract —
+		// uses the disjoint-SEGMENT model (the runtime resets the sketch after
+		// each sub-window emit, so each frame covers only the between-emits data
+		// and the backend merges the segments). Either way the backend's
+		// merge_all reconstructs the window total without inflation.
 		return true
 	}
 	return false
