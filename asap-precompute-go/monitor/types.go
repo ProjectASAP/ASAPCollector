@@ -129,6 +129,14 @@ type Grant struct {
 	Round         uint64
 	LocalSlack    float64
 	WindowStartMs uint64
+	// SampleP is the distributed-NitroSketch update-sampling probability the
+	// coordinator allocates this edge (AllocateSampleRates: p_i ∝ √(f_i/rate_i)).
+	// 0 (unset) ⇒ no sampling grant (p=1). The edge applies it via WithSampleP on
+	// the metric's sketch wrapper at the next EpochReset (never mid-window, so
+	// both merge operands share one p). Orthogonal to LocalSlack (which governs
+	// emission/bandwidth; this governs update CPU). See
+	// docs/distributed-nitrosketch-coordinated-sampling.md.
+	SampleP float64
 }
 
 // Poll is the coordinator→edge demand for the current local value (round close).
