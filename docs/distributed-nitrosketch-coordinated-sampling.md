@@ -104,18 +104,80 @@ time — captures most of the win if rates are stable) and **adaptive** (start
 `p_i=1`, tighten on edges that report as hot — NitroSketch's "start coarse,
 refine," but driven by the fleet picture, over the existing round loop).
 
-## Interaction with the threshold-driven sub-window emitter
+## Combining with the CDM threshold — the joint bound
 
-Update-sampling (CPU axis) and the sub-window ε·‖f‖ emit-gate (bandwidth axis,
-see the taxonomy doc) are **orthogonal** — one decides how many items touch the
-counters, the other how often the sketch crosses the wire. They interact at one
-point: **update-sampling injects variance into the very value the emit-gate (and
-any threshold monitor) tests.** The coordinator should treat them as one error
-budget — split `ε² = ε²_sample + ε²_emit` and keep `(1−p_i)/p_i·f_i ≪ slack_i²`
-so sampling variance doesn't swamp the emit/alert decision.
+Update-sampling (CPU axis) and the CDM ε·‖f‖ emit-gate / slack-countdown alert
+(bandwidth + monitoring axis) are largely **orthogonal** — one decides how many
+items touch the counters, the other how often/whether the sketch crosses the
+wire. They interact at exactly one point: **update-sampling injects variance into
+the very value the CDM threshold tests.** When both run at the edge, the edge
+feeds the CDM mechanism an unbiased-but-noisy `f̂` (the 1/p-rescaled sampled
+sketch) with sampling error
+
+```
+ε_s  ≈  √( (1−p) / (p·N) )      (relative, w.h.p.; from Var[f̂] = f(1−p)/p)
+```
+
+**(A) ε-approximation mode (open-window freshness / value tracking) — bound holds
+additively.** The emit-gate keeps the backend within `ε_cdm·‖f‖` of the *local*
+sketch; the local sketch is within `ε_s` (sampling) + `ε_sk` (native sketch
+error) of truth. By the triangle inequality
+
+```
+‖backend − true‖  ≤  ε_sk + ε_s + ε_cdm        (random parts in quadrature)
+```
+
+so the guarantee **still holds**, as the sum of three sources. Because
+`ε_s = √((1−p)/(pN))` *shrinks with N*, **more samples per series make sampling
+near-free**: at high N the combined bound → `ε_sk + ε_cdm`.
+
+**(B) Threshold/alert mode (slack countdown, detect global > τ) — becomes
+probabilistic.** The CMY no-missed-crossing safety relies on the reported value
+being a faithful (one-sided) bound; a sampled `f̂` is unbiased but two-sided, so a
+downward fluctuation in `Σf̂_i` can *delay* firing past the true crossing. Recover
+the guarantee w.p. 1−δ by inflating the fire condition with a confidence margin:
+
+```
+fire when   Σ f̂_i  +  c_δ·√( Σ f_i(1−p_i)/p_i )  ≥  (1−ε)·τ
+```
+
+The deterministic bound becomes (1−δ)-probabilistic; the effective ε grows by the
+sampling confidence interval.
+
+**The real catch — communication.** The CDM emitter/reporter fires on threshold
+*crossings*; sampling noise makes the value **jitter across the threshold**,
+producing **spurious emits** — so the CDM communication/freshness bound does
+**not** hold automatically and can get *worse* under sampling. It is preserved
+only if the threshold band absorbs the noise, i.e. the **coupling rule**
+
+> **`ε_cdm  ≳  ε_s = √((1−p)/(p·N))`** — never sample so hard that the sampling
+> noise exceeds the CDM threshold tolerance.
+
+Under this single condition everything composes cleanly: accuracy
+`≈ ε_sk + 2·ε_cdm` (sampling absorbed within the CDM tolerance), no spurious-emit
+blow-up, and alert safety holds w.p. 1−δ. This is the concrete form of the joint
+budget: pick `p_i` and `ε_cdm` together so `ε_s ≤ ε_cdm`. It also closes the loop
+with §B.2 — higher per-series `N` shrinks `ε_s`, *relaxing* the coupling and
+letting you sample harder for the same `ε_cdm`.
 
 ## Honest assessment
 
+- **⚠️ Empirically, the CPU win does NOT materialize in the OTel collector — but
+  the bandwidth win does.** A multi-shape e2e (edge `asap-otel` + backend, CMS +
+  DDSketch, sub-window + delta, `sample_p` 1.0 vs 0.25, across 8→300 series and
+  120→3000 samples/s) found update-sampling left **edge CPU unchanged** (±2–8%,
+  all within run noise; sometimes slightly *up* from the sampler's own overhead)
+  while cutting **egress ~9%**. Reason: in this collector the per-item sketch-
+  update loop is a *small fraction* of per-sample work — **OTLP decode + per-
+  series key extraction + observe-framing + allocation dominate** (consistent
+  with this repo's allocation-bound precompute finding, where jemalloc gave
+  ~2.2×). NitroSketch's "the d-row counter loop is the line-rate bottleneck"
+  holds for a dedicated sketching engine, not for a collector. **Implication:**
+  the coordinated-`p_i` *bandwidth* objective is sound; the *CPU-minimization*
+  objective above only pays off where the sketch-update loop genuinely dominates
+  (extreme-cardinality CMS/Count-Sketch with a cheap decode path) — otherwise
+  attack decode/alloc first. Reframe the objective as **egress** minimization
+  unless a profile shows the counter loop dominates.
 - **Real but conditional.** Beats per-edge-independent NitroSketch *only* when
   `rate_i` is skewed; the win scales with the rate CV. Measure the actual
   per-collector rate distribution before building.
