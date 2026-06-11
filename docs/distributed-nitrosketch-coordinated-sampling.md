@@ -115,7 +115,8 @@ feeds the CDM mechanism an unbiased-but-noisy `f̂` (the 1/p-rescaled sampled
 sketch) with sampling error
 
 ```
-ε_s  ≈  √( (1−p) / (p·N) )      (relative, w.h.p.; from Var[f̂] = f(1−p)/p)
+ε_s  ≈  √( (1−p) / (p·N) )      (relative 1-σ, from Var[f̂]=f(1−p)/p; for a
+                                w.h.p. bound use ε_s(δ) — see the proof)
 ```
 
 **(A) ε-approximation mode (open-window freshness / value tracking) — bound holds
