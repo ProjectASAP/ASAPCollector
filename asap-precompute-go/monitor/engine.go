@@ -28,6 +28,20 @@ type monitorState struct {
 	grantedSlack float64
 	// lastValue is the most recent local additive value observed.
 	lastValue float64
+	// obsCount is the number of observations admitted for this monitor since
+	// the current epoch began. It is the edge's observed items/window (rate)
+	// reported to the coordinator so it can size this edge's sampling
+	// probability (AllocateSampleRates). Reset to 0 at each epoch boundary.
+	obsCount uint64
+	// grantedSampleP is the coordinator-allocated distributed-NitroSketch
+	// update-sampling probability for this monitor's agg. 0 (unset) ⇒ no
+	// sampling grant (treated as p=1). It is stored on grant and read by the
+	// precompute at the NEXT epoch boundary, where it is applied via WithSampleP
+	// to the new window's sketch wrapper (never mid-window). Unlike the slack
+	// fields it survives a round re-grant and is NOT cleared on epoch reset —
+	// the edge keeps sampling at the last granted p until told otherwise (a new
+	// grant or coordinator restart, which ForceReregister clears).
+	grantedSampleP float64
 
 	round      uint64
 	seq        uint64 // per-monitor monotonic report counter (idempotency)
@@ -100,6 +114,7 @@ func (e *Engine) Observe(aggID uint64, key []byte, value float64, windowStart ui
 		e.resetStateLocked(st, windowStart)
 	}
 	st.lastValue = value
+	st.obsCount++ // per-epoch observed rate (items/window) reported to the coordinator
 
 	if !st.registered {
 		st.registered = true
@@ -139,6 +154,11 @@ func (e *Engine) OnGrant(g Grant) {
 	}
 	st.round = g.Round
 	st.grantedSlack = g.LocalSlack
+	// Store the granted sampling probability for the precompute to read and
+	// apply at the next epoch boundary. A grant always carries the coordinator's
+	// current decision, so 0 means "no sampling this round" and is recorded as
+	// such; the precompute treats <=0 as p=1 (unsampled).
+	st.grantedSampleP = g.SampleP
 }
 
 // OnPoll answers a poll with the current local value and advances the baseline
@@ -197,8 +217,27 @@ func (e *Engine) ForceReregister() {
 		st.registered = false
 		st.roundBaseline = 0
 		st.grantedSlack = 0
+		st.grantedSampleP = 0 // a restarted coordinator has no sampling allocation for this edge
 		st.round = 0
 	}
+}
+
+// GrantedSampleP returns the coordinator-allocated distributed-NitroSketch
+// sampling probability for aggID, or 1.0 (unsampled) when no positive grant has
+// arrived. The coordinator allocates one p_i per edge per agg, so every monitor
+// state under aggID carries the same value; this returns the first positive one
+// it finds (falling back to 1.0). The precompute calls this at each epoch
+// boundary to stamp the new window's sampling-capable wrapper via WithSampleP —
+// never mid-window, so both merge operands share one p. Safe for concurrent use.
+func (e *Engine) GrantedSampleP(aggID uint64) float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, st := range e.states {
+		if st.aggID == aggID && st.grantedSampleP > 0 {
+			return st.grantedSampleP
+		}
+	}
+	return 1.0
 }
 
 func (e *Engine) resetStateLocked(st *monitorState, windowStart uint64) {
@@ -206,8 +245,15 @@ func (e *Engine) resetStateLocked(st *monitorState, windowStart uint64) {
 	st.roundBaseline = 0
 	st.grantedSlack = 0
 	st.lastValue = 0
+	st.obsCount = 0
 	st.round = 0
 	st.registered = false
+	// grantedSampleP is deliberately NOT reset: the coordinator's sampling
+	// allocation persists across epochs until a new grant changes it, so the
+	// edge keeps sampling at the last granted p (which the precompute applies to
+	// each new window's wrapper at rotation). A coordinator restart clears it via
+	// ForceReregister, not here.
+	//
 	// seq is per-monitor monotonic ACROSS epochs so the coordinator can dedup
 	// re-deliveries that straddle a boundary; intentionally NOT reset.
 }
@@ -224,5 +270,6 @@ func (e *Engine) sendReportLocked(st *monitorState) {
 		LocalValue:    st.lastValue,
 		Round:         st.round,
 		Seq:           st.seq,
+		Rate:          float64(st.obsCount),
 	})
 }

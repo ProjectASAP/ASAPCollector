@@ -92,6 +92,7 @@ func (c *Client) Report(r monitor.Report) {
 		LocalValue:    r.LocalValue,
 		Round:         r.Round,
 		Seq:           r.Seq,
+		Rate:          r.Rate,
 	}}})
 }
 
@@ -193,6 +194,7 @@ func (c *Client) deliver(msg *pb.CoordToEdge) {
 			Round:         g.Round,
 			LocalSlack:    g.LocalSlack,
 			WindowStartMs: g.WindowStartMs,
+			SampleP:       g.SampleP,
 		})
 	case *pb.CoordToEdge_Poll:
 		p := m.Poll
