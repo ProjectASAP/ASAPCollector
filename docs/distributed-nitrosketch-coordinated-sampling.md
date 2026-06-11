@@ -160,6 +160,174 @@ budget: pick `p_i` and `ε_cdm` together so `ε_s ≤ ε_cdm`. It also closes th
 with §B.2 — higher per-series `N` shrinks `ε_s`, *relaxing* the coupling and
 letting you sample harder for the same `ε_cdm`.
 
+## Sampling tier — why the CDM site is the edge collector
+
+*Where* the coordinator-allocated `p` is **applied** is a separate choice from
+where it is computed, and it is constrained by the CDM threshold's `k`.
+
+- **`k` must be a stable population.** The slack countdown gives each site slack
+  `Δ/(2k)` (`Monitor::slack` = `gap()/(2k)`), and the allocation `p_i ∝ √(f_i/rate_i)`
+  is likewise per-site. If the "sites" were **SDK / instrumentation instances** — a
+  dynamic, churning population — every join/leave perturbs both `k` (re-broadcasting
+  slack) and the `p_i` re-solve, adding synchronization cost and instability.
+  **Edge collectors are the stable tier; SDKs are not.** So the CDM site = the edge
+  collector, for both the threshold and the sampling allocation — which is exactly
+  what the as-built coupling does (`SampleP` applied in `asap_edge` via `WithSampleP`;
+  the coordinator coordinates over collectors).
+
+- **Cost of that choice.** Because the `otlpreceiver` fully decodes OTLP→pdata
+  *before* `asap_edge` runs, collector-side sampling can only skip the innermost
+  update loop — the measured ~3% (`0.124` vs `0.125` cores). It does not save the
+  dominant per-sample decode/key, nor the SDK→collector network.
+
+- **Capturing more without destabilizing `k`:**
+  1. **In-collector pre-decode shim (preferred next step).** Sample at the *decode
+     boundary* — a custom receiver/decode path that, for warm-sketch-*only* series,
+     applies the geometric skip *before* materializing a datapoint's attribute map +
+     value (wire-skip the dropped fraction). NitroSketch's decision is value-
+     independent, so this is sound. The edge is still the collector → `k` unchanged,
+     no cross-node synchronization. The win is gated by how cheaply the sketch-vs-raw
+     (warm/cold) class is decodable: **metric name ≫ single routing label ≫ full
+     series identity**. Requires the disjoint warm/cold routing (a series is sketched
+     **xor** cold-archived) so a dropped warm sample truly has no other consumer.
+  2. **SDK-source sampling via a hierarchical budget (optional, future).** To push
+     sampling to the source — saving decode *and* network — without exposing the
+     volatile SDK count to the global protocol: the coordinator allocates a sampling
+     **budget per stable collector** (`k` = collectors), and each collector fans that
+     budget out locally to its dynamic SDKs. SDK churn is absorbed at the collector;
+     the global coordination only ever sees collectors. This decouples *where
+     sampling executes* from *what `k` counts*. The granted `p` then rides one more
+     hop (collector→SDK control push), and exports carry `p` for the backend's `1/p`
+     rescale (the merged path).
+
+- **Bottom line:** keep the CDM site = edge collector. Take incremental CPU from the
+  in-collector pre-decode shim (stable, no sync cost); treat SDK-source sampling as a
+  later option behind a per-collector hierarchical budget, justified only if the
+  network/decode savings outweigh the control-plane fan-out complexity. Neither
+  touches the per-emit delta cost — that stays the CMS empty-base fix + emit-gating.
+
+## Filter-only push: SDK samples, collector sketches — does the guarantee survive?
+
+The lightest source-side option: push the **query-filter + `p`** to the SDK and
+keep the sketch at the collector.
+
+- **SDK:** evaluates the filter on its **native labels** (no decode — they're
+  in-memory objects), geometric-samples the matched stream at `p`, and sends only
+  **admitted raw points**, each tagged with its `p`.
+- **Collector:** decodes the admitted points, builds/merges the sketch, stays the
+  CDM site (`k` = collectors). The coordinator allocates a **per-collector** budget;
+  the collector sub-allocates `p` to its SDKs.
+
+**Why this cuts collector CPU (where *collector-side* sampling didn't):** the
+dropped `(1−p)` points **never reach the collector**, so its per-sample work —
+decode + key + update — scales with the **admitted fraction `p`**, not `N`.
+(Collector-side sampling only skipped the ~3% update *after* decoding; here decode
+*and* update vanish for dropped points.) It does **not** change the per-emit delta
+(cardinality-driven). The sketch is still built at the collector — moving *that* to
+the SDK is the next option.
+
+### Does the CDM sampling guarantee survive the SDK→collector split? **Yes.**
+
+Sampling at the SDK instead of the collector changes *where* the geometric draw
+happens, not the merged estimator:
+
+- **Unbiased.** Each admitted point is inserted with `×1/p_j` (its source SDK's
+  `p`); the sketch is linear/additive and merge is associative, so the merged
+  per-key estimate is unbiased — *provided each point carries its source `p_j`*
+  (the `sample_p` tag) so the collector rescales **per point**, not by a single
+  global `p`.
+- **Variance is partition-invariant under uniform `p`.** For a point-frequency
+  `f(x)`, the merged sampling variance is
+  `Σ_units f_u(x)·(1−p)/p = (1−p)/p · f(x)` — it depends only on the **total**
+  `f(x)` and `p`, **not** on whether the units are SDKs or collectors. So
+  `ε_s = √((1−p)/(pN))` with `N` = global count is **unchanged**, and the joint
+  bound `ε_sk + ε_s + ε_cdm` and the coupling `ε_cdm ≳ ε_s` hold **identically**.
+- **Per-SDK `p_j`.** With heterogeneous `p_j` the merged variance is
+  `Σ_j f_j(1−p_j)/p_j`; the ε-floor (coupling) is then enforced on the
+  **SDK-level** `p_j` (or on the merged variance) via the collector's
+  sub-allocation.
+- **Independence holds** — each SDK has its own RNG, so variance-as-a-sum is valid
+  (no cross-SDK correlation).
+- **Threshold/alert mode unchanged.** The collector reports its *merged* sampled
+  value, whose variance is the same partition-invariant quantity, so the
+  slack-countdown's no-missed-crossing safety stays probabilistic with the **same**
+  `ε_s` — nothing degrades beyond what the joint bound already states.
+- **Caveat (one level down).** A rare queried key that lives on a single **hot**
+  SDK with a small `p_j` concentrates all its variance there — the collector-level
+  rare-key failure mode, pushed to SDK granularity. Allocate on the queried key's
+  `f_j(x)` when the query is known.
+
+### Proof — unbiasedness and partition-invariant variance
+
+Fix a key `x`. Its global stream is `N(x) = f(x)` unit contributions, partitioned
+across sampling units `u` (SDKs *or* collectors) with `f_u(x)` at unit `u`, so
+`Σ_u f_u(x) = f(x)`. Each unit samples **independently**: each of its items is
+admitted with probability `p_u`, and an admitted item is rescaled by `1/p_u`.
+(NitroSketch's geometric skip is a faithful implementation of per-item
+`Bernoulli(p_u)` — same admit probability, so the admit count has the same first
+two moments.) Let `A_u(x)` = number of admitted `x`-items at `u`:
+
+```
+A_u(x) ~ Binomial( f_u(x), p_u ),    f̂_u(x) = A_u(x) / p_u,    f̂(x) = Σ_u f̂_u(x).
+```
+
+**Unbiased.** `E[A_u(x)] = f_u(x)·p_u`, so `E[f̂_u(x)] = f_u(x)` and
+
+```
+E[f̂(x)] = Σ_u f_u(x) = f(x).                                   (1)
+```
+
+This holds for **any** partition and **any** `p_u` (down to one item per unit),
+provided each admitted item is rescaled by *its own* admit probability — i.e. `p`
+must be carried per point.
+
+**Variance.** `Var[A_u(x)] = f_u(x)·p_u·(1−p_u)`, so
+`Var[f̂_u(x)] = f_u(x)·(1−p_u)/p_u`. Units sample with **independent** RNGs, so the
+variances add:
+
+```
+Var[f̂(x)] = Σ_u f_u(x)·(1−p_u)/p_u.                            (2)
+```
+
+**Partition invariance (uniform `p_u = p`).** Substituting into (2):
+
+```
+Var[f̂(x)] = (1−p)/p · Σ_u f_u(x) = (1−p)/p · f(x).             (3)
+```
+
+The right-hand side depends only on the **total** `f(x)` and `p` — not on the
+number of units or how the stream is split. So sampling at the SDK tier (many small
+`f_u`) or the collector tier (few large `f_u`) at the same `p` gives **identical**
+merged variance. ∎
+
+**Corollary (the guarantee transfers).** The relative sampling error is
+
+```
+ε_s(x) = √(Var[f̂(x)]) / f(x) = √( (1−p) / (p·N(x)) ),          (4)
+```
+
+`N(x) = f(x)` the global count — exactly the single-tier expression in the joint
+bound, so `ε_s`, `ε_sk + ε_s + ε_cdm`, and `ε_cdm ≳ ε_s` are unchanged.
+
+**Heterogeneous `p_u`.** Splitting a unit's mass `f_u = f_{u1}+f_{u2}` and sampling
+both parts at the same `p_u` leaves (2) unchanged (`f_{u1}(1−p_u)/p_u +
+f_{u2}(1−p_u)/p_u = f_u(1−p_u)/p_u`): only the **assignment of `p` to frequency
+mass** affects the variance, never the partition structure. Hence the ε-floor must
+bind on the `p_u` (or on the merged sum (2)) — the collector's sub-allocation
+does this.
+
+**Scope.** (1)–(4) are for **additive/linear** readouts (Count-Min and
+Count-Sketch point estimates, Sum, DDSketch *counts*) where `f̂` is a linear
+functional of per-item contributions and merge is additive. For DDSketch
+**quantiles** the governing quantity is the merged admitted count
+`Σ_u p_u·f_u = p·N` (under uniform `p`) — again partition-invariant — feeding the
+rank error `~1/√(p·N)`. **HLL** (non-additive max) is excluded, as elsewhere.
+
+**Net:** the guarantee is preserved *exactly* (same `ε_s`, same joint bound),
+because additive-sketch sampling variance is **partition-invariant**; the only new
+requirements are **carry `p` per point** and **enforce the ε-floor at the SDK
+level** through the per-collector hierarchical budget.
+
 ## Honest assessment
 
 - **⚠️ Empirically, the CPU win does NOT materialize in the OTel collector — but
