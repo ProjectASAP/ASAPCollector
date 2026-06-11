@@ -257,6 +257,72 @@ happens, not the merged estimator:
   rare-key failure mode, pushed to SDK granularity. Allocate on the queried key's
   `f_j(x)` when the query is known.
 
+### Proof — unbiasedness and partition-invariant variance
+
+Fix a key `x`. Its global stream is `N(x) = f(x)` unit contributions, partitioned
+across sampling units `u` (SDKs *or* collectors) with `f_u(x)` at unit `u`, so
+`Σ_u f_u(x) = f(x)`. Each unit samples **independently**: each of its items is
+admitted with probability `p_u`, and an admitted item is rescaled by `1/p_u`.
+(NitroSketch's geometric skip is a faithful implementation of per-item
+`Bernoulli(p_u)` — same admit probability, so the admit count has the same first
+two moments.) Let `A_u(x)` = number of admitted `x`-items at `u`:
+
+```
+A_u(x) ~ Binomial( f_u(x), p_u ),    f̂_u(x) = A_u(x) / p_u,    f̂(x) = Σ_u f̂_u(x).
+```
+
+**Unbiased.** `E[A_u(x)] = f_u(x)·p_u`, so `E[f̂_u(x)] = f_u(x)` and
+
+```
+E[f̂(x)] = Σ_u f_u(x) = f(x).                                   (1)
+```
+
+This holds for **any** partition and **any** `p_u` (down to one item per unit),
+provided each admitted item is rescaled by *its own* admit probability — i.e. `p`
+must be carried per point.
+
+**Variance.** `Var[A_u(x)] = f_u(x)·p_u·(1−p_u)`, so
+`Var[f̂_u(x)] = f_u(x)·(1−p_u)/p_u`. Units sample with **independent** RNGs, so the
+variances add:
+
+```
+Var[f̂(x)] = Σ_u f_u(x)·(1−p_u)/p_u.                            (2)
+```
+
+**Partition invariance (uniform `p_u = p`).** Substituting into (2):
+
+```
+Var[f̂(x)] = (1−p)/p · Σ_u f_u(x) = (1−p)/p · f(x).             (3)
+```
+
+The right-hand side depends only on the **total** `f(x)` and `p` — not on the
+number of units or how the stream is split. So sampling at the SDK tier (many small
+`f_u`) or the collector tier (few large `f_u`) at the same `p` gives **identical**
+merged variance. ∎
+
+**Corollary (the guarantee transfers).** The relative sampling error is
+
+```
+ε_s(x) = √(Var[f̂(x)]) / f(x) = √( (1−p) / (p·N(x)) ),          (4)
+```
+
+`N(x) = f(x)` the global count — exactly the single-tier expression in the joint
+bound, so `ε_s`, `ε_sk + ε_s + ε_cdm`, and `ε_cdm ≳ ε_s` are unchanged.
+
+**Heterogeneous `p_u`.** Splitting a unit's mass `f_u = f_{u1}+f_{u2}` and sampling
+both parts at the same `p_u` leaves (2) unchanged (`f_{u1}(1−p_u)/p_u +
+f_{u2}(1−p_u)/p_u = f_u(1−p_u)/p_u`): only the **assignment of `p` to frequency
+mass** affects the variance, never the partition structure. Hence the ε-floor must
+bind on the `p_u` (or on the merged sum (2)) — the collector's sub-allocation
+does this.
+
+**Scope.** (1)–(4) are for **additive/linear** readouts (Count-Min and
+Count-Sketch point estimates, Sum, DDSketch *counts*) where `f̂` is a linear
+functional of per-item contributions and merge is additive. For DDSketch
+**quantiles** the governing quantity is the merged admitted count
+`Σ_u p_u·f_u = p·N` (under uniform `p`) — again partition-invariant — feeding the
+rank error `~1/√(p·N)`. **HLL** (non-additive max) is excluded, as elsewhere.
+
 **Net:** the guarantee is preserved *exactly* (same `ε_s`, same joint bound),
 because additive-sketch sampling variance is **partition-invariant**; the only new
 requirements are **carry `p` per point** and **enforce the ε-floor at the SDK
