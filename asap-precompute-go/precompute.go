@@ -899,11 +899,12 @@ func (p *precompute) rewireMonitorHooks() {
 	eng := p.monitorEngine.Load()
 	cfg := p.activeConfig()
 	if eng == nil || cfg == nil || !cfg.Monitor.Enabled || cfg.Monitor.Validate() != nil {
-		p.window.setMonitorHooks(nil, nil)
+		p.window.setMonitorHooks(nil, nil, nil)
 		return
 	}
 	spec := cfg.Monitor
 	aggID := uint64(cfg.AggID)
+	sketchType := cfg.SketchType
 	observe := func(entry *seriesEntry, windowStartMs uint64) {
 		v, ok := monitorValue(spec, entry.Sketch)
 		if !ok {
@@ -926,7 +927,60 @@ func (p *precompute) rewireMonitorHooks() {
 	reset := func(newWindowStartMs uint64) {
 		eng.EpochReset(newWindowStartMs)
 	}
-	p.window.setMonitorHooks(observe, reset)
+	// sample stamps the coordinator-granted distributed-NitroSketch probability
+	// onto each new window's series wrapper at creation (the reverse of the
+	// observe path: precompute → engine here reads engine → wrapper). It is
+	// family-gated: only Count-Min, Count-Sketch and DDSketch expose update
+	// sampling; Sum/KLL/HLL are left untouched (HLL's hash-threshold sampling is
+	// force-disabled in this coordinated-sampling path). Reading the granted p
+	// here — at sketch birth, before any data — keeps p constant for the whole
+	// window so both merge operands share it.
+	sample := applyGrantedSampleP(eng, aggID, sketchType)
+	p.window.setMonitorHooks(observe, reset, sample)
+}
+
+// SampleSetter is the narrow boundary the coordinated-sampling wrappers expose
+// for the runtime to install a coordinator-granted update-sampling probability.
+// It mirrors each wrapper's chainable WithSampleP but is a plain mutator so a
+// SINGLE interface captures all three families regardless of their differing
+// (per-type) chaining return values — the bare interface{ WithSampleP(float64) }
+// cannot, since each wrapper's WithSampleP returns its own concrete type.
+//
+// Only Count-Min, Count-Sketch and DDSketch implement SampleSetter. Sum and KLL
+// have no sampling at all; HLL's hash-threshold sampling is deliberately kept
+// OUT of this coordinated path, so it does not implement SampleSetter either.
+// The runtime therefore gates first by SketchType (the configured family) and
+// then by this interface assert — a sketch that doesn't support coordinated
+// sampling is left untouched, never panicked on the observe path. Implemented in
+// the sketches package (which imports this one), so no import cycle.
+type SampleSetter interface {
+	SetSampleP(p float64)
+}
+
+// applyGrantedSampleP returns a window sample-hook that stamps the engine's
+// currently-granted sampling probability onto a new wrapper, or nil for families
+// that don't support coordinated sampling (Sum/KLL/HLL) — yielding a true no-op
+// (no hook installed) rather than a per-sketch type assertion on the hot path.
+func applyGrantedSampleP(eng *monitor.Engine, aggID uint64, st SketchType) func(s Sketch) {
+	switch st {
+	case SketchTypeCountMinSketch, SketchTypeCountSketch, SketchTypeDDSketch:
+		// supported below
+	default:
+		return nil // Sum / KLL / HLL: no-op, never call WithSampleP
+	}
+	return func(s Sketch) {
+		p := eng.GrantedSampleP(aggID)
+		// p==1 is the unsampled default; WithSampleP(1.0) is itself a no-op, but
+		// skip the call entirely so an unsampled config never touches the sketch.
+		if p >= 1.0 || p <= 0 {
+			return
+		}
+		// Family already vetted by SketchType above; the interface assert guards
+		// against a test double or mismatched factory — never panic on observe.
+		if ss, ok := s.(SampleSetter); ok {
+			ss.SetSampleP(p)
+		}
+	}
 }
 
 // monitorValue reads the current additive value of a series' sketch for the

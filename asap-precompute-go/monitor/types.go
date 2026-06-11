@@ -120,6 +120,12 @@ type Report struct {
 	LocalValue    float64
 	Round         uint64
 	Seq           uint64
+	// Rate is the edge's observed item count for this monitor over the current
+	// epoch (items/window). The coordinator feeds it into AllocateSampleRates
+	// (p_i ∝ √(f_i/rate_i)) to size this edge's distributed-NitroSketch sampling
+	// probability. 0 (unset) ⇒ the coordinator falls back to an unsampled
+	// allocation for this edge.
+	Rate float64
 }
 
 // Grant is the coordinator→edge per-round slack budget.

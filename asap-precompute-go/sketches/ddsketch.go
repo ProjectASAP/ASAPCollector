@@ -86,6 +86,11 @@ func (w *DDSketchWrapper) WithSampleP(p float64) *DDSketchWrapper {
 	return w
 }
 
+// SetSampleP applies the sampling probability via WithSampleP, discarding the
+// chained receiver so *DDSketchWrapper satisfies precompute.SampleSetter (the
+// coordinated-sampling stamp path).
+func (w *DDSketchWrapper) SetSampleP(p float64) { w.WithSampleP(p) }
+
 // SampleP returns the configured sampling probability (1.0 when disabled).
 func (w *DDSketchWrapper) SampleP() float64 {
 	if w.sampleP <= 0 {

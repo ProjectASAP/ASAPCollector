@@ -136,6 +136,7 @@ type MonitorReport struct {
 	LocalValue    float64                `protobuf:"fixed64,5,opt,name=local_value,json=localValue,proto3" json:"local_value,omitempty"`           // current additive local value at report time
 	Round         uint64                 `protobuf:"varint,6,opt,name=round,proto3" json:"round,omitempty"`                                        // round this report answers
 	Seq           uint64                 `protobuf:"varint,7,opt,name=seq,proto3" json:"seq,omitempty"`                                            // per-edge monotonic counter; idempotent-retransmit dedup
+	Rate          float64                `protobuf:"fixed64,8,opt,name=rate,proto3" json:"rate,omitempty"`                                         // edge's observed items/window for this agg+key — feeds the coordinator's sample-rate allocation (p_i ~ sqrt(f_i/rate_i))
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -219,6 +220,13 @@ func (x *MonitorReport) GetSeq() uint64 {
 	return 0
 }
 
+func (x *MonitorReport) GetRate() float64 {
+	if x != nil {
+		return x.Rate
+	}
+	return 0
+}
+
 // coordinator → edge: this round's per-edge slack budget. The edge reports once
 // its local increase since the grant reaches local_slack.
 type SlackGrant struct {
@@ -228,6 +236,13 @@ type SlackGrant struct {
 	Round         uint64                 `protobuf:"varint,3,opt,name=round,proto3" json:"round,omitempty"`
 	LocalSlack    float64                `protobuf:"fixed64,4,opt,name=local_slack,json=localSlack,proto3" json:"local_slack,omitempty"`
 	WindowStartMs uint64                 `protobuf:"varint,5,opt,name=window_start_ms,json=windowStartMs,proto3" json:"window_start_ms,omitempty"`
+	// sample_p is the distributed-NitroSketch update-sampling probability the
+	// coordinator allocates this edge (AllocateSampleRates: p_i ~ sqrt(f_i/rate_i)).
+	// 0 (unset) => no sampling grant (p=1). The edge applies it via WithSampleP on
+	// sampling-capable sketch wrappers (CMS/CountSketch/DDSketch) at the next
+	// EpochReset; other families ignore it. Orthogonal to local_slack (CPU vs
+	// bandwidth). See docs/distributed-nitrosketch-coordinated-sampling.md.
+	SampleP       float64 `protobuf:"fixed64,6,opt,name=sample_p,json=sampleP,proto3" json:"sample_p,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -293,6 +308,13 @@ func (x *SlackGrant) GetLocalSlack() float64 {
 func (x *SlackGrant) GetWindowStartMs() uint64 {
 	if x != nil {
 		return x.WindowStartMs
+	}
+	return 0
+}
+
+func (x *SlackGrant) GetSampleP() float64 {
+	if x != nil {
+		return x.SampleP
 	}
 	return 0
 }
@@ -698,7 +720,7 @@ const file_monitor_proto_rawDesc = "" +
 	"\x06agg_id\x18\x02 \x01(\x04R\x05aggId\x12\x10\n" +
 	"\x03key\x18\x03 \x01(\fR\x03key\x12&\n" +
 	"\x0fepoch_window_ms\x18\x04 \x01(\x04R\repochWindowMs\x12&\n" +
-	"\x0fwindow_start_ms\x18\x05 \x01(\x04R\rwindowStartMs\"\xc2\x01\n" +
+	"\x0fwindow_start_ms\x18\x05 \x01(\x04R\rwindowStartMs\"\xd6\x01\n" +
 	"\rMonitorReport\x12\x17\n" +
 	"\aedge_id\x18\x01 \x01(\tR\x06edgeId\x12\x15\n" +
 	"\x06agg_id\x18\x02 \x01(\x04R\x05aggId\x12\x10\n" +
@@ -707,7 +729,8 @@ const file_monitor_proto_rawDesc = "" +
 	"\vlocal_value\x18\x05 \x01(\x01R\n" +
 	"localValue\x12\x14\n" +
 	"\x05round\x18\x06 \x01(\x04R\x05round\x12\x10\n" +
-	"\x03seq\x18\a \x01(\x04R\x03seq\"\x94\x01\n" +
+	"\x03seq\x18\a \x01(\x04R\x03seq\x12\x12\n" +
+	"\x04rate\x18\b \x01(\x01R\x04rate\"\xaf\x01\n" +
 	"\n" +
 	"SlackGrant\x12\x15\n" +
 	"\x06agg_id\x18\x01 \x01(\x04R\x05aggId\x12\x10\n" +
@@ -715,7 +738,8 @@ const file_monitor_proto_rawDesc = "" +
 	"\x05round\x18\x03 \x01(\x04R\x05round\x12\x1f\n" +
 	"\vlocal_slack\x18\x04 \x01(\x01R\n" +
 	"localSlack\x12&\n" +
-	"\x0fwindow_start_ms\x18\x05 \x01(\x04R\rwindowStartMs\"r\n" +
+	"\x0fwindow_start_ms\x18\x05 \x01(\x04R\rwindowStartMs\x12\x19\n" +
+	"\bsample_p\x18\x06 \x01(\x01R\asampleP\"r\n" +
 	"\tPollLocal\x12\x15\n" +
 	"\x06agg_id\x18\x01 \x01(\x04R\x05aggId\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\fR\x03key\x12\x14\n" +

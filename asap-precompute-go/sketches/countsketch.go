@@ -90,6 +90,11 @@ func (w *CountSketchWrapper) WithSampleP(p float64) *CountSketchWrapper {
 	return w
 }
 
+// SetSampleP applies the sampling probability via WithSampleP, discarding the
+// chained receiver so *CountSketchWrapper satisfies precompute.SampleSetter (the
+// coordinated-sampling stamp path).
+func (w *CountSketchWrapper) SetSampleP(p float64) { w.WithSampleP(p) }
+
 // SampleP returns the active update-sampling probability (1.0 when disabled).
 func (w *CountSketchWrapper) SampleP() float64 {
 	if w == nil || w.sampleP <= 0 {

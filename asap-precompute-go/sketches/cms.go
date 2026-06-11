@@ -172,6 +172,12 @@ func (w *CMSWrapper) WithSampleP(p float64) *CMSWrapper {
 	return w
 }
 
+// SetSampleP applies the sampling probability via WithSampleP, discarding the
+// chained receiver so *CMSWrapper satisfies the runtime's precompute.SampleSetter
+// interface (used by the coordinated-sampling path to stamp a coordinator-granted
+// p onto a fresh window's wrapper).
+func (w *CMSWrapper) SetSampleP(p float64) { w.WithSampleP(p) }
+
 // SampleP returns the configured sampling probability (1.0 when disabled).
 func (w *CMSWrapper) SampleP() float64 {
 	if w.sampleP <= 0 {

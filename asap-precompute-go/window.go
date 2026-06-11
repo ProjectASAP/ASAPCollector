@@ -118,6 +118,16 @@ type windowState struct {
 	// rotation with the NEW window start, so the monitor engine begins a fresh
 	// epoch aligned exactly to the window bounds (one window = one CDM epoch).
 	monitorResetHook func(newWindowStartMs uint64)
+	// monitorSampleHook, when non-nil, is invoked on each freshly-created series
+	// sketch for the active (new) window — i.e. at the first observation a series
+	// receives in a window, before any data is folded in. It stamps the
+	// coordinator-granted distributed-NitroSketch sampling probability onto the
+	// wrapper via WithSampleP (family-gated; a no-op for non-sampling families).
+	// Because the sketch is empty when stamped, the same p governs the whole
+	// window's updates and every merge operand — the invariant that WithSampleP
+	// must NEVER be applied mid-window. Installed by Precompute via
+	// setMonitorHooks alongside the observe/reset hooks. nil ⇒ one nil-check.
+	monitorSampleHook func(s Sketch)
 }
 
 // slidingPane is one closed slide-interval's worth of per-series
@@ -335,6 +345,15 @@ func (w *windowState) admitSeriesLocked(
 		}
 	}
 	sketch := sketchFactory()
+	// Stamp the coordinator-granted distributed-NitroSketch sampling probability
+	// onto this brand-new (empty) series wrapper. Applying WithSampleP here —
+	// when the series first appears in a window, before any observation is folded
+	// in — guarantees the same p governs the whole window and every merge operand
+	// (never mid-window). The hook is family-gated: a no-op for sketches that
+	// don't support coordinated sampling.
+	if w.monitorSampleHook != nil {
+		w.monitorSampleHook(sketch)
+	}
 	// Honor the parity-mode flags by stripping the labels we promised not
 	// to surface. WholeStream (incl. the legacy GlobalAggregation alias)
 	// collapses everything; OmitResourceAttrs zeroes only the resource
@@ -725,10 +744,12 @@ func (w *windowState) fireMonitorReset() {
 func (w *windowState) setMonitorHooks(
 	observe func(entry *seriesEntry, windowStartMs uint64),
 	reset func(newWindowStartMs uint64),
+	sample func(s Sketch),
 ) {
 	w.mu.Lock()
 	w.monitorHook = observe
 	w.monitorResetHook = reset
+	w.monitorSampleHook = sample
 	w.mu.Unlock()
 }
 

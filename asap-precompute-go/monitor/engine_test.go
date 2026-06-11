@@ -178,3 +178,67 @@ func TestCMSPointKeyedMonitors(t *testing.T) {
 		t.Fatalf("expected two registrations (one per key), got %d", len(f.regs))
 	}
 }
+
+// TestOnGrantStoresSampleP checks that a grant's SampleP is recorded on the
+// per-(agg,key) state and is readable via GrantedSampleP for the precompute to
+// apply at the next epoch boundary.
+func TestOnGrantStoresSampleP(t *testing.T) {
+	e, _ := newTestEngine()
+	e.Observe(7, nil, 1, win) // create + register the monitor for agg 7
+
+	// No grant yet ⇒ unsampled default.
+	if got := e.GrantedSampleP(7); got != 1.0 {
+		t.Fatalf("GrantedSampleP before grant = %v, want 1.0", got)
+	}
+	// Unknown agg ⇒ unsampled default.
+	if got := e.GrantedSampleP(999); got != 1.0 {
+		t.Fatalf("GrantedSampleP(unknown) = %v, want 1.0", got)
+	}
+
+	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 10, WindowStartMs: win, SampleP: 0.3})
+	if got := e.GrantedSampleP(7); got != 0.3 {
+		t.Fatalf("GrantedSampleP after grant = %v, want 0.3", got)
+	}
+
+	// A grant carrying SampleP=0 means "no sampling this round"; it is recorded
+	// as such and reads back as the unsampled default.
+	e.OnGrant(Grant{AggID: 7, Round: 2, LocalSlack: 10, WindowStartMs: win, SampleP: 0})
+	if got := e.GrantedSampleP(7); got != 1.0 {
+		t.Fatalf("GrantedSampleP after SampleP=0 grant = %v, want 1.0 (treat-as-unset)", got)
+	}
+}
+
+// TestSampchPSurvivesEpochReset checks that the granted sampling probability is
+// preserved across an epoch boundary (so the new window keeps sampling at the
+// last granted p) but is cleared by ForceReregister (coordinator restart).
+func TestSamplePSurvivesEpochReset(t *testing.T) {
+	e, _ := newTestEngine()
+	e.Observe(7, nil, 1, win)
+	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 10, WindowStartMs: win, SampleP: 0.25})
+
+	e.EpochReset(win + win) // rotate to the next epoch
+	if got := e.GrantedSampleP(7); got != 0.25 {
+		t.Fatalf("GrantedSampleP after EpochReset = %v, want 0.25 (sampling persists across epochs)", got)
+	}
+	e.ForceReregister()
+	if got := e.GrantedSampleP(7); got != 1.0 {
+		t.Fatalf("GrantedSampleP after ForceReregister = %v, want 1.0 (restart clears allocation)", got)
+	}
+}
+
+// TestReportCarriesRate checks that a report emitted on a slack crossing carries
+// the edge's observed per-epoch item count as Report.Rate.
+func TestReportCarriesRate(t *testing.T) {
+	e, f := newTestEngine()
+	e.Observe(7, nil, 5, win) // obs #1, register
+	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 10, WindowStartMs: win})
+	e.Observe(7, nil, 8, win)  // obs #2, below slack → silent
+	e.Observe(7, nil, 12, win) // obs #3, crosses slack → report
+	r, ok := f.lastReport()
+	if !ok {
+		t.Fatalf("expected a report after crossing the slack")
+	}
+	if r.Rate != 3 {
+		t.Fatalf("report Rate = %v, want 3 (observed items this epoch)", r.Rate)
+	}
+}
