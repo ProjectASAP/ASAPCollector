@@ -102,6 +102,13 @@ if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/asap-gorilla-go" "${A
   echo "replace github.com/ProjectASAP/asap-gorilla-go => ${ROOT_DIR}/asap-gorilla-go" >> "${ASAP_OTEL_DIR}/go.mod"
 fi
 
+# monitor/grpcclient is a NESTED module under asap-precompute-go carrying the
+# CDM gRPC transport that the asapedgeprocessor imports for continuous
+# monitoring. Distinct module path → its own replace (same OCB-indirect trap).
+if ! grep -qE "^replace[[:space:]]+github\.com/ProjectASAP/asap-precompute-go/monitor/grpcclient" "${ASAP_OTEL_DIR}/go.mod" 2>/dev/null; then
+  echo "replace github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient => ${ROOT_DIR}/asap-precompute-go/monitor/grpcclient" >> "${ASAP_OTEL_DIR}/go.mod"
+fi
+
 cd "${ASAP_OTEL_DIR}"
 GONOSUMCHECK="github.com/ProjectASAP/*" GONOSUMDB="github.com/ProjectASAP/*" go build -o asap-otel . 2>&1
 
