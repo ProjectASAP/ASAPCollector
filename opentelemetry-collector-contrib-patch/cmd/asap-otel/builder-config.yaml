@@ -361,6 +361,12 @@ replaces:
   # (sketchlib-go uses one extra `..` because it lives as a sibling
   # repo of ASAPCollector, one level up from this repo root.)
   - github.com/ProjectASAP/asap-precompute-go => ../../../asap-precompute-go
+  # monitor/grpcclient is a NESTED module under asap-precompute-go (its own
+  # go.mod) carrying the CDM gRPC transport; the asapedgeprocessor imports it
+  # for continuous monitoring. It is a distinct module path, so it needs its own
+  # redirect to the in-repo subdirectory (../../../asap-precompute-go/monitor/grpcclient
+  # from the generated cmd/asap-otel/go.mod).
+  - github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient => ../../../asap-precompute-go/monitor/grpcclient
   # asap-gorilla-go is a private module living as a sibling subdirectory of
   # this repo (ASAPCollector/asap-gorilla-go). The asapedgeprocessor imports
   # its `coldpart` subpackage (the cold decode-on-read part format), which is
