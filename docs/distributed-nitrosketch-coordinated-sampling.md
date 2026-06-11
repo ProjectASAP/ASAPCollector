@@ -236,22 +236,39 @@ happens, not the merged estimator:
   per-key estimate is unbiased — *provided each point carries its source `p_j`*
   (the `sample_p` tag) so the collector rescales **per point**, not by a single
   global `p`.
-- **Variance is partition-invariant under uniform `p`.** For a point-frequency
-  `f(x)`, the merged sampling variance is
-  `Σ_units f_u(x)·(1−p)/p = (1−p)/p · f(x)` — it depends only on the **total**
-  `f(x)` and `p`, **not** on whether the units are SDKs or collectors. So
-  `ε_s = √((1−p)/(pN))` with `N` = global count is **unchanged**, and the joint
-  bound `ε_sk + ε_s + ε_cdm` and the coupling `ε_cdm ≳ ε_s` hold **identically**.
-- **Per-SDK `p_j`.** With heterogeneous `p_j` the merged variance is
-  `Σ_j f_j(1−p_j)/p_j`; the ε-floor (coupling) is then enforced on the
-  **SDK-level** `p_j` (or on the merged variance) via the collector's
-  sub-allocation.
-- **Independence holds** — each SDK has its own RNG, so variance-as-a-sum is valid
-  (no cross-SDK correlation).
-- **Threshold/alert mode unchanged.** The collector reports its *merged* sampled
-  value, whose variance is the same partition-invariant quantity, so the
-  slack-countdown's no-missed-crossing safety stays probabilistic with the **same**
-  `ε_s` — nothing degrades beyond what the joint bound already states.
+  Stronger statement of the rescale rule: each contribution must be divided by the
+  `p` that **admitted it**, **before** it is merged with contributions sampled at a
+  different `p`. **Insert-upweight** (`count /= p_j` at the source) realizes this by
+  construction — the rescale is local, so merge is pure addition of true-scale
+  estimates. **No-upweight + backend rescale** is correct *only if* the backend
+  rescales **per envelope before every merge**; merging raw admitted counts from
+  different-`p` envelopes and then applying one factor is **biased**. (Under uniform
+  `p` the two are identical.)
+- **Variance adds under uniform `p` — partition-invariant.** For a point-frequency
+  `f(x)`, *and assuming independent per-unit admission (see below)*, the merged
+  sampling variance is `Σ_units f_u(x)·(1−p)/p = (1−p)/p · f(x)` — it depends only on
+  the **total** `f(x)` and `p`, **not** on whether the units are SDKs or collectors.
+  So `ε_s = √((1−p)/(pN))` is **unchanged** and the joint bound holds **identically —
+  for uniform `p`**.
+- **Heterogeneous `p_j` does NOT give the same `ε_s`.** Then the merged variance is
+  `Σ_j f_j(x)(1−p_j)/p_j`, which is allocation-dependent. The guarantee transfers
+  **only if the collector sub-allocation explicitly enforces the variance-sum
+  budget** `Σ_j f_j(1−p_j)/p_j ≤ (ε·‖f‖)²`. A per-SDK ε-**floor** (`p_j ≥ floor`) or
+  an expected-admitted-count budget is **necessary but not sufficient** — many SDKs
+  near their floor can still blow the sum. Bound the sum itself.
+- **Independence must be engineered, not assumed.** Variance-addition needs
+  **independent admission streams per unit**. The current sampler wires a *fixed
+  shared seed* per family (`cms.go` `cmsSampleSeed`, `countsketch.go`
+  `countSketchSampleSeed`, `ddsketch.go` `ddSampleSeed`); copied to SDKs, they'd
+  replay the **same** skip sequence → **correlated** admissions → the cross-terms
+  don't vanish and variances **do not add**. SDK-source sampling MUST use an
+  independent stream per `(edge_id, agg_id, window)` (e.g. `seed = hash(edge_id,
+  agg_id, window_start)`) or **hash-based per-point admission** (`admit ⇔ h(item) <
+  p`, decorrelated across distinct items).
+- **Threshold/alert mode.** The collector reports its merged sampled value, with the
+  same variance, so the slack-countdown's no-missed-crossing safety stays
+  probabilistic — but as a *guarantee* `ε_s` must be the **w.h.p.** form `ε_s(δ)`
+  (below), not the 1-σ value.
 - **Caveat (one level down).** A rare queried key that lives on a single **hot**
   SDK with a small `p_j` concentrates all its variance there — the collector-level
   rare-key failure mode, pushed to SDK granularity. Allocate on the queried key's
@@ -261,11 +278,12 @@ happens, not the merged estimator:
 
 Fix a key `x`. Its global stream is `N(x) = f(x)` unit contributions, partitioned
 across sampling units `u` (SDKs *or* collectors) with `f_u(x)` at unit `u`, so
-`Σ_u f_u(x) = f(x)`. Each unit samples **independently**: each of its items is
-admitted with probability `p_u`, and an admitted item is rescaled by `1/p_u`.
-(NitroSketch's geometric skip is a faithful implementation of per-item
-`Bernoulli(p_u)` — same admit probability, so the admit count has the same first
-two moments.) Let `A_u(x)` = number of admitted `x`-items at `u`:
+`Σ_u f_u(x) = f(x)`. Each unit admits each item with probability `p_u` from an
+**independent** stream (an *assumption the implementation must enforce* — see the
+independence requirement above; not automatic under a shared seed), rescaling an
+admitted item by `1/p_u`. (NitroSketch's geometric skip implements per-item
+`Bernoulli(p_u)` — same admit probability, same first two moments.) Let `A_u(x)` =
+number of admitted `x`-items at `u`:
 
 ```
 A_u(x) ~ Binomial( f_u(x), p_u ),    f̂_u(x) = A_u(x) / p_u,    f̂(x) = Σ_u f̂_u(x).
@@ -282,12 +300,15 @@ provided each admitted item is rescaled by *its own* admit probability — i.e. 
 must be carried per point.
 
 **Variance.** `Var[A_u(x)] = f_u(x)·p_u·(1−p_u)`, so
-`Var[f̂_u(x)] = f_u(x)·(1−p_u)/p_u`. Units sample with **independent** RNGs, so the
-variances add:
+`Var[f̂_u(x)] = f_u(x)·(1−p_u)/p_u`. **If the per-unit admission streams are
+independent**, the covariances vanish and the variances add:
 
 ```
 Var[f̂(x)] = Σ_u f_u(x)·(1−p_u)/p_u.                            (2)
 ```
+
+(Under a *shared seed* the cross-covariances are non-zero and (2) fails — hence the
+independence requirement.)
 
 **Partition invariance (uniform `p_u = p`).** Substituting into (2):
 
@@ -295,38 +316,50 @@ Var[f̂(x)] = Σ_u f_u(x)·(1−p_u)/p_u.                            (2)
 Var[f̂(x)] = (1−p)/p · Σ_u f_u(x) = (1−p)/p · f(x).             (3)
 ```
 
-The right-hand side depends only on the **total** `f(x)` and `p` — not on the
-number of units or how the stream is split. So sampling at the SDK tier (many small
-`f_u`) or the collector tier (few large `f_u`) at the same `p` gives **identical**
-merged variance. ∎
+depends only on the **total** `f(x)` and `p` — so SDK-tier (many small `f_u`) and
+collector-tier (few large `f_u`) sampling at the same `p` give **identical** merged
+variance. ∎ For **heterogeneous** `p_u`, (2) is allocation-dependent and (3) does
+**not** hold: splitting mass at a *fixed* `p_u` is invariant
+(`f_{u1}(1−p_u)/p_u + f_{u2}(1−p_u)/p_u = f_u(1−p_u)/p_u`), so only the **assignment
+of `p` to mass** matters — but matching the uniform `ε_s` then requires **enforcing
+`Σ_u f_u(1−p_u)/p_u ≤ (ε‖f‖)²` directly**, which a per-unit floor does not
+guarantee.
 
-**Corollary (the guarantee transfers).** The relative sampling error is
+**From 1-σ to a guarantee (concentration).** Eq (4) is **one standard deviation**.
+`A_u(x)` is a sum of independent bounded `[0,1]` indicators, so by Bernstein/Chernoff
+`|f̂(x) − f(x)| ≤ ε_s(δ)·f(x)` with probability `≥ 1−δ`, where
 
 ```
-ε_s(x) = √(Var[f̂(x)]) / f(x) = √( (1−p) / (p·N(x)) ),          (4)
+ε_s(δ) ≈ √( 2(1−p)·ln(2/δ) / (p·N(x)) ).                       (4′)
 ```
 
-`N(x) = f(x)` the global count — exactly the single-tier expression in the joint
-bound, so `ε_s`, `ε_sk + ε_s + ε_cdm`, and `ε_cdm ≳ ε_s` are unchanged.
+Use `ε_s(δ)` (not the bare 1-σ) wherever the CDM safety is asserted *as a guarantee*.
 
-**Heterogeneous `p_u`.** Splitting a unit's mass `f_u = f_{u1}+f_{u2}` and sampling
-both parts at the same `p_u` leaves (2) unchanged (`f_{u1}(1−p_u)/p_u +
-f_{u2}(1−p_u)/p_u = f_u(1−p_u)/p_u`): only the **assignment of `p` to frequency
-mass** affects the variance, never the partition structure. Hence the ε-floor must
-bind on the `p_u` (or on the merged sum (2)) — the collector's sub-allocation
-does this.
+**Corollary.** The 1-σ relative sampling error is
 
-**Scope.** (1)–(4) are for **additive/linear** readouts (Count-Min and
-Count-Sketch point estimates, Sum, DDSketch *counts*) where `f̂` is a linear
-functional of per-item contributions and merge is additive. For DDSketch
-**quantiles** the governing quantity is the merged admitted count
-`Σ_u p_u·f_u = p·N` (under uniform `p`) — again partition-invariant — feeding the
-rank error `~1/√(p·N)`. **HLL** (non-additive max) is excluded, as elsewhere.
+```
+ε_s(x) = √(Var[f̂(x)]) / f(x) = √( (1−p) / (p·N(x)) ).          (4)
+```
 
-**Net:** the guarantee is preserved *exactly* (same `ε_s`, same joint bound),
-because additive-sketch sampling variance is **partition-invariant**; the only new
-requirements are **carry `p` per point** and **enforce the ε-floor at the SDK
-level** through the per-collector hierarchical budget.
+**Scope.** (1)–(4) bound the **sampling** variance of an **additive/linear**
+estimator — Sum, Count-Sketch row/point estimates, DDSketch *counts*, and the
+Count-Min **row counters**. The full **Count-Min point query** is `min` over rows
+**plus collision bias** (one-sided, `f̂ ≥ f`): the proof covers its sampling
+component, **not** the min-readout — the collision / no-underestimate interaction
+with sampling's *downward* noise is the separate caveat in the per-family table
+(sampling can push a heavy hitter below the threshold). For DDSketch **quantiles**
+the governing quantity is the merged admitted count `Σ_u p_u·f_u = p·N` (uniform
+`p`) — partition-invariant — feeding rank error `~1/√(p·N)`. **HLL** (non-additive
+max) is excluded.
+
+**Net:** for **uniform `p` with independent per-unit streams**, the guarantee is
+preserved *exactly* (same `ε_s`, same joint bound) — additive sampling variance is
+partition-invariant. The requirements: **carry `p` per point and rescale by the
+admitting `p` before merge** (insert-upweight, or per-envelope-before-merge backend
+rescale); **independent admission streams per `(edge, agg, window)`** (the
+shared-seed pattern must change); for **heterogeneous `p`**, **enforce the
+variance-sum budget** `Σ f_j(1−p_j)/p_j ≤ (ε‖f‖)²` (not merely a floor); and, stated
+as a guarantee, use the w.h.p. `ε_s(δ)` of (4′).
 
 ## Honest assessment
 
