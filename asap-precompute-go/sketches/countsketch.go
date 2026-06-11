@@ -9,10 +9,15 @@ import (
 	"math"
 	"math/bits"
 
+	"github.com/ProjectASAP/sketchlib-go/common"
 	countsketch "github.com/ProjectASAP/sketchlib-go/sketches/CountSketch"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
 )
+
+// countSketchSampleSeed seeds the geometric update-sampler so the admitted
+// subset is deterministic across runs (matches the CMS wrapper convention).
+const countSketchSampleSeed int64 = 0x5a3e06d
 
 // CountSketchWrapper adapts a sketchlib-go *countsketch.CountSketch to
 // the host-neutral precompute.Sketch + precompute.FrequencySketch
@@ -56,6 +61,41 @@ type CountSketchWrapper struct {
 	// (Frobenius norm of current − acked) without decoding the wire base. nil
 	// until the first MarkSubWindowEmitted; cleared on Reset.
 	ackedCells [][]float64
+
+	// sampler implements NitroSketch geometric update-sampling. When non-nil
+	// (sampleP<1), UpdateString admits each item with probability sampleP and
+	// upweights the admitted insert by 1/sampleP, so the frequency estimate stays
+	// unbiased while ~(1−sampleP) of the per-item d-row counter work is skipped —
+	// the distributed-NitroSketch CPU lever (the coordinator hands each edge a
+	// sampleP via Grant.SampleP; see docs/distributed-nitrosketch-coordinated-
+	// sampling.md). nil (sampleP=1) ⇒ every item updates, byte-identical to today.
+	sampler *common.GeometricSampler
+	sampleP float64
+}
+
+// WithSampleP enables geometric update-sampling at probability p (0<p<1). p>=1
+// (or NaN) disables it. Admitted inserts are upweighted by 1/p so the estimate
+// is unbiased without any backend rescale. Returns the wrapper for chaining.
+func (w *CountSketchWrapper) WithSampleP(p float64) *CountSketchWrapper {
+	if w == nil {
+		return w
+	}
+	if p >= 1.0 || p != p || p <= 0 { // p!=p ⇒ NaN
+		w.sampler = nil
+		w.sampleP = 1.0
+		return w
+	}
+	w.sampleP = p
+	w.sampler = common.NewGeometricSampler(p, countSketchSampleSeed)
+	return w
+}
+
+// SampleP returns the active update-sampling probability (1.0 when disabled).
+func (w *CountSketchWrapper) SampleP() float64 {
+	if w == nil || w.sampleP <= 0 {
+		return 1.0
+	}
+	return w.sampleP
 }
 
 // L2DivergenceSinceEmit reports the L2 (Frobenius) magnitude of the change in
@@ -173,6 +213,12 @@ func (w *CountSketchWrapper) UpdateString(key string, count float64) {
 	// than panic on the first sample (P0-1).
 	if w == nil || w.cs == nil {
 		return
+	}
+	if w.sampler != nil {
+		if !w.sampler.Admit() {
+			return // skip the d-row counter work for this item (CPU saved)
+		}
+		count /= w.sampleP // upweight the admitted insert ⇒ unbiased estimate
 	}
 	w.cs.UpdateString(key, count)
 }

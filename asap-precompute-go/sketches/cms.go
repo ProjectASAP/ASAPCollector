@@ -4,6 +4,7 @@
 package sketches
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/bits"
@@ -88,12 +89,23 @@ type CMSWrapper struct {
 	rows       int
 	cols       int
 	useMsgpack bool
+	// emptyBaseBytes memoizes the SerializeProtoBytesFO of an EMPTY sketch of
+	// this wrapper's exact shape + sampleP (the bytes DeltaAgainstEmptyBase
+	// hands the SnapshotCache as the outbound base). It is deterministic for a
+	// given (rows, cols, sampleP), so caching it once lets ComputeDeltaAgainst
+	// recognise the per-window-reset empty base by a cheap bytes.Equal and skip
+	// the redundant DeserializeCountMinSketchFromProtoBytes(prev) — which
+	// otherwise re-materialises + zeroes a full d×w matrix on EVERY emit purely
+	// to subtract zero (the profile's top flat cost). Lazily populated by
+	// DeltaAgainstEmptyBase / ensureEmptyBaseBytes; nil in msgpack mode.
 	// sampleP is the per-sketch sampling probability in (0,1]. 1.0 (the
 	// default) disables sampling so the sketch is byte-identical to an
 	// unsampled one. Set via WithSampleP; preserved across the
 	// re-construction paths (Reset / Merge / ApplyDelta) so a sampled
 	// wrapper stays sampled for its whole lifetime.
 	sampleP float64
+
+	emptyBaseBytes []byte
 }
 
 // cmsSampleSeed is the fixed seed handed to sketchlib-go's geometric
@@ -154,6 +166,9 @@ func (w *CMSWrapper) WithSampleP(p float64) *CMSWrapper {
 	if w.sk != nil {
 		w.sk.WithSampleP(w.sampleP, cmsSampleSeed)
 	}
+	// sampleP rides on the SketchEnvelope, so the empty-base bytes change with
+	// it; invalidate the memo so it is recomputed for the new probability.
+	w.emptyBaseBytes = nil
 	return w
 }
 
@@ -231,6 +246,36 @@ func (w *CMSWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) ([]byte,
 		full, err := w.Snapshot()
 		return full, true, err
 	}
+
+	// Fast path (per-window-reset / empty-base contract): under PWR the cache
+	// always hands back the snapshot of an EMPTY sketch as `prev` (see
+	// DeltaAgainstEmptyBase). That base is deterministic for this shape, so we
+	// recognise it by comparing against the memoized empty-base bytes — a cheap
+	// O(len) bytes.Equal — and, when it matches, compute the delta DIRECTLY from
+	// the current matrix's non-zero cells via ComputeDeltaAgainstEmpty. This
+	// skips DeserializeCountMinSketchFromProtoBytes(prev), which would otherwise
+	// re-materialise + zero a full d×w matrix every emit only to subtract zero
+	// (the profile's dominant alloc + memclr cost). The emitted bytes are
+	// byte-identical to the decode-and-diff path: ComputeDeltaAgainstEmpty
+	// produces the same Delta as ComputeDelta(zeroSketch, current), and the
+	// clamp below is unchanged.
+	if eb := w.ensureEmptyBaseBytes(); eb != nil && bytes.Equal(prev, eb) {
+		deltaMsg, err := cms.ComputeDeltaAgainstEmpty(w.sk, float64(threshold))
+		if err == nil {
+			payload, sErr := cms.SerializeDelta(deltaMsg)
+			if sErr == nil {
+				// Clamp: never emit a delta larger than the equivalent full frame.
+				full, fErr := w.Snapshot()
+				if fErr == nil && len(payload) >= len(full) {
+					return full, true, nil
+				}
+				return payload, false, nil
+			}
+		}
+		// On any failure, fall through to the standard decode-and-diff path,
+		// which itself falls back to a full snapshot on error.
+	}
+
 	prevSk, err := cms.DeserializeCountMinSketchFromProtoBytes(prev)
 	if err != nil {
 		full, fErr := w.Snapshot()
@@ -254,6 +299,32 @@ func (w *CMSWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) ([]byte,
 	return payload, false, nil
 }
 
+// ensureEmptyBaseBytes lazily computes and memoizes the SerializeProtoBytesFO
+// of an empty sketch of this wrapper's shape + sampleP — the exact bytes the
+// SnapshotCache caches as the outbound base under the PWR contract. Returns nil
+// in msgpack mode (no delta transmission) or on serialization failure, in which
+// case the empty-base fast path is simply skipped. The result is content-stable
+// across a wrapper's lifetime (dimensions and sampleP never change after
+// construction; WithSampleP would, but it invalidates the cache).
+func (w *CMSWrapper) ensureEmptyBaseBytes() []byte {
+	if w.useMsgpack {
+		return nil
+	}
+	if w.emptyBaseBytes != nil {
+		return w.emptyBaseBytes
+	}
+	empty := w.newSketch()
+	if empty == nil {
+		return nil
+	}
+	b, err := empty.SerializeProtoBytesFO()
+	if err != nil {
+		return nil
+	}
+	w.emptyBaseBytes = b
+	return w.emptyBaseBytes
+}
+
 // DeltaAgainstEmptyBase returns the snapshot of an EMPTY CMS of the
 // same dimensions (and sampling probability). The precompute.SnapshotCache
 // caches this as the outbound base after each window-close emit
@@ -273,15 +344,14 @@ func (w *CMSWrapper) DeltaAgainstEmptyBase() ([]byte, error) {
 	if w.useMsgpack {
 		return nil, nil
 	}
-	empty := w.newSketch()
-	if empty == nil {
-		return nil, nil
+	// Reuse the memoized bytes so the base the cache stores and the bytes the
+	// ComputeDeltaAgainst fast path compares against are guaranteed identical.
+	if b := w.ensureEmptyBaseBytes(); b != nil {
+		return b, nil
 	}
-	b, err := empty.SerializeProtoBytesFO()
-	if err != nil {
-		return nil, fmt.Errorf("cms.SerializeProtoBytesFO(empty): %w", err)
-	}
-	return b, nil
+	// ensureEmptyBaseBytes only returns nil on construction/serialization
+	// failure; surface that as an error to preserve the prior contract.
+	return nil, fmt.Errorf("cms.SerializeProtoBytesFO(empty): construction failed")
 }
 
 // ApplyDelta merges an inbound payload into the underlying sketch.
