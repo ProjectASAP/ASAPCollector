@@ -160,6 +160,52 @@ budget: pick `p_i` and `ε_cdm` together so `ε_s ≤ ε_cdm`. It also closes th
 with §B.2 — higher per-series `N` shrinks `ε_s`, *relaxing* the coupling and
 letting you sample harder for the same `ε_cdm`.
 
+## Sampling tier — why the CDM site is the edge collector
+
+*Where* the coordinator-allocated `p` is **applied** is a separate choice from
+where it is computed, and it is constrained by the CDM threshold's `k`.
+
+- **`k` must be a stable population.** The slack countdown gives each site slack
+  `Δ/(2k)` (`Monitor::slack` = `gap()/(2k)`), and the allocation `p_i ∝ √(f_i/rate_i)`
+  is likewise per-site. If the "sites" were **SDK / instrumentation instances** — a
+  dynamic, churning population — every join/leave perturbs both `k` (re-broadcasting
+  slack) and the `p_i` re-solve, adding synchronization cost and instability.
+  **Edge collectors are the stable tier; SDKs are not.** So the CDM site = the edge
+  collector, for both the threshold and the sampling allocation — which is exactly
+  what the as-built coupling does (`SampleP` applied in `asap_edge` via `WithSampleP`;
+  the coordinator coordinates over collectors).
+
+- **Cost of that choice.** Because the `otlpreceiver` fully decodes OTLP→pdata
+  *before* `asap_edge` runs, collector-side sampling can only skip the innermost
+  update loop — the measured ~3% (`0.124` vs `0.125` cores). It does not save the
+  dominant per-sample decode/key, nor the SDK→collector network.
+
+- **Capturing more without destabilizing `k`:**
+  1. **In-collector pre-decode shim (preferred next step).** Sample at the *decode
+     boundary* — a custom receiver/decode path that, for warm-sketch-*only* series,
+     applies the geometric skip *before* materializing a datapoint's attribute map +
+     value (wire-skip the dropped fraction). NitroSketch's decision is value-
+     independent, so this is sound. The edge is still the collector → `k` unchanged,
+     no cross-node synchronization. The win is gated by how cheaply the sketch-vs-raw
+     (warm/cold) class is decodable: **metric name ≫ single routing label ≫ full
+     series identity**. Requires the disjoint warm/cold routing (a series is sketched
+     **xor** cold-archived) so a dropped warm sample truly has no other consumer.
+  2. **SDK-source sampling via a hierarchical budget (optional, future).** To push
+     sampling to the source — saving decode *and* network — without exposing the
+     volatile SDK count to the global protocol: the coordinator allocates a sampling
+     **budget per stable collector** (`k` = collectors), and each collector fans that
+     budget out locally to its dynamic SDKs. SDK churn is absorbed at the collector;
+     the global coordination only ever sees collectors. This decouples *where
+     sampling executes* from *what `k` counts*. The granted `p` then rides one more
+     hop (collector→SDK control push), and exports carry `p` for the backend's `1/p`
+     rescale (the merged path).
+
+- **Bottom line:** keep the CDM site = edge collector. Take incremental CPU from the
+  in-collector pre-decode shim (stable, no sync cost); treat SDK-source sampling as a
+  later option behind a per-collector hierarchical budget, justified only if the
+  network/decode savings outweigh the control-plane fan-out complexity. Neither
+  touches the per-emit delta cost — that stays the CMS empty-base fix + emit-gating.
+
 ## Honest assessment
 
 - **⚠️ Empirically, the CPU win does NOT materialize in the OTel collector — but
