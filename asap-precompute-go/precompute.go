@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"sync/atomic"
@@ -209,6 +210,16 @@ type Precompute interface {
 	// natural rotation point (activeStartMs := activeEndMs;
 	// activeEndMs += windowSize).
 	Drain() []*SketchEnvelope
+	// EmitSubWindow emits an INCREMENTAL delta for active series WITHOUT
+	// rotating the window — the threshold-driven sub-window producer. On each
+	// call (the host's SubWindowInterval check tick) a series emits only if its
+	// sketch has diverged from the backend's last-acked copy by ≥
+	// SubWindowEpsilon in the family norm (ε=0 ⇒ emit every series, the static
+	// "fixed" mode). Keeps the open window queryable to relative ε under large
+	// tumbling windows. No-op unless DeltaTransmission is on (no in-window base
+	// to diff against) and for Sliding mode (no stable base). nowMs is the
+	// check-tick wall-clock for stats.
+	EmitSubWindow(nowMs uint64) []*SketchEnvelope
 	// UpdateConfig atomically swaps the active config. The
 	// in-flight window is preserved (matchers/aggregateBy may
 	// change, but bytes already accumulated stay where they are);
@@ -452,6 +463,177 @@ func (p *precompute) Drain() []*SketchEnvelope {
 	}
 	closed, rng := p.window.drain(cfg)
 	return p.finishRotate(closed, rng, rng[1])
+}
+
+// EmitSubWindow implements Precompute.EmitSubWindow: serialize an incremental
+// delta for each active series that has DIVERGED past the per-family threshold,
+// under the window lock, without rotating — so accumulation continues.
+func (p *precompute) EmitSubWindow(nowMs uint64) []*SketchEnvelope {
+	cfg := p.activeConfig()
+	if cfg == nil || !cfg.DeltaTransmission {
+		// Without delta encoding there is no in-window base to diff against —
+		// an emit-without-rotate would re-ship full state. Boundary Tick/Drain
+		// still emit the full frame.
+		return nil
+	}
+	segmentMode := subWindowSegmentMode(cfg)
+	var envelopes []*SketchEnvelope
+	rng := p.window.subWindowVisit(cfg, func(entry *seriesEntry) {
+		if !subWindowShouldEmit(entry, cfg) {
+			return // below the ε divergence threshold; keep accumulating
+		}
+		env, err := p.serializeSubWindowSeries(entry, cfg)
+		if err == nil && env != nil {
+			envelopes = append(envelopes, env)
+			subWindowMarkEmitted(entry, cfg) // advance the divergence reference
+			if segmentMode {
+				// Disjoint-segment model (KLL and other non-subtractable
+				// mergeable summaries): the emit just serialized covers the
+				// data accumulated SINCE the last emit, so reset the sketch to
+				// empty and let the next segment accumulate fresh. The backend
+				// merges the disjoint segment rows (merge_all) into the window
+				// total — exactly as it merges [full, delta, delta] for the
+				// subtractive families — with no over-count, because the
+				// segments share no data. This is what aligns KLL with the
+				// other families: "full vs delta" is about WHAT data the frame
+				// covers (cumulative vs the between-emits segment), not whether
+				// the sketch can subtract.
+				entry.Sketch.Reset()
+			}
+		}
+	})
+	if rng == ([2]uint64{0, 0}) || len(envelopes) == 0 {
+		return nil
+	}
+	for _, env := range envelopes {
+		env.WindowStartMs = rng[0]
+		env.WindowEndMs = rng[1]
+	}
+	p.stats.OutputEnvelopes.Add(uint64(len(envelopes)))
+	p.stats.LastEmittedEnvelopes.Store(uint64(len(envelopes)))
+	p.stats.LastTickMs.Store(nowMs)
+	return envelopes
+}
+
+// serializeSubWindowSeries turns a still-active series into an incremental
+// SketchEnvelope via the always-refresh in-window base (ComputeSubWindowDelta),
+// WITHOUT the boundary empty-base reset and WITHOUT detaching the live sketch.
+// WindowStart/End are stamped by the caller. The sketch MUST NOT be recycled
+// here — the live window is still writing it.
+func (p *precompute) serializeSubWindowSeries(entry *seriesEntry, cfg *PrecomputeConfig) (*SketchEnvelope, error) {
+	if entry == nil || entry.Sketch == nil {
+		return nil, nil
+	}
+	seriesKey := cfg.SeriesKeyForEntry(entry.ResourceLabels, entry.Labels)
+	payload, isFull, err := p.snapshotCache.ComputeSubWindowDelta(seriesKey, entry.Sketch, cfg.DeltaThreshold)
+	if err != nil {
+		return nil, fmt.Errorf("compute sub-window delta: %w", err)
+	}
+	if payload == nil {
+		return nil, nil
+	}
+	enc := EncodingProtoDelta
+	if isFull {
+		enc = EncodingProtoFull
+	}
+	labels := SeriesAttrs(entry.Labels, cfg.AggregateBy)
+	if cfg.EmitWindowStats {
+		windowSeconds := uint64(cfg.Window.Size / time.Second)
+		labels = append(labels,
+			KeyValue{Key: "sample_count", Value: strconv.FormatUint(entry.Count, 10)},
+			KeyValue{Key: "window_duration_seconds", Value: strconv.FormatUint(windowSeconds, 10)},
+		)
+	}
+	return &SketchEnvelope{
+		SchemaVersion:          1,
+		SketchType:             cfg.SketchType,
+		AggKind:                cfg.AggKind, // route Sum (SketchType=Unspecified) by AggKind at encode
+		AggID:                  cfg.AggID,
+		ResourceLabels:         entry.ResourceLabels,
+		Labels:                 labels,
+		Encoding:               enc,
+		Payload:                payload,
+		MetricName:             cfg.MetricName,
+		Count:                  entry.Count,
+		AggregationTemporality: cfg.Temporality,
+	}, nil
+}
+
+// subWindowSegmentMode reports whether this family must use the DISJOINT-SEGMENT
+// sub-window model (emit-then-reset) rather than the subtractive-delta model.
+// KLL is a mergeable-but-not-subtractable summary: it cannot compute (current −
+// prev), so its "delta" can't be a subtractive diff. Instead the runtime resets
+// the sketch after each emit, so each emit is a KLL over the disjoint segment of
+// data since the last emit; the backend merges the segment rows into the window
+// total (merge is associative + no-compounding for mergeable summaries). The
+// subtractive families (Sum/DDSketch/Count-Min/Count-Sketch/HLL) keep the
+// cumulative sketch and ship subtractive deltas, so they are NOT segment-mode.
+func subWindowSegmentMode(cfg *PrecomputeConfig) bool {
+	return cfg.SketchType == SketchTypeKLLSketch
+}
+
+// subWindowShouldEmit gates a sub-window emit on per-family divergence: emit iff
+// the series has moved ≥ ε·norm since its last emit (ε=0 ⇒ always; first emit of
+// a window always fires and ships full state).
+func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
+	eps := cfg.SubWindowEpsilon
+	if eps <= 0 || !entry.subWindowAcked {
+		return true
+	}
+	div, norm := subWindowDivergence(entry, cfg)
+	return norm <= 0 || div >= eps*norm
+}
+
+// subWindowDivergence returns (divergence, norm) in the family's accuracy
+// metric: Sum→value, HLL→cardinality, Count-Sketch→L2 (Frobenius), and
+// DDSketch/KLL/CMS→count (rank/L1 staleness is bounded by the un-acked count;
+// KLL uses the SAME external-count trigger even though it emits disjoint
+// segments rather than subtractive deltas — the trigger is independent of the
+// sketch's subtractability).
+func subWindowDivergence(entry *seriesEntry, cfg *PrecomputeConfig) (div, norm float64) {
+	switch {
+	case cfg.AggKind == AggKindSum:
+		if r, ok := entry.Sketch.(interface{ Sum() float64 }); ok {
+			cur := r.Sum()
+			return math.Abs(cur - entry.ackVal), math.Abs(cur)
+		}
+	case cfg.SketchType == SketchTypeHLLSketch:
+		if r, ok := entry.Sketch.(interface{ EstimateCardinality() float64 }); ok {
+			cur := r.EstimateCardinality()
+			return math.Abs(cur - entry.ackVal), cur
+		}
+	case cfg.SketchType == SketchTypeCountSketch:
+		if r, ok := entry.Sketch.(interface {
+			L2DivergenceSinceEmit() (float64, float64)
+		}); ok {
+			return r.L2DivergenceSinceEmit()
+		}
+	}
+	cur := float64(entry.Count)
+	return cur - entry.ackVal, cur
+}
+
+// subWindowMarkEmitted advances the divergence reference after a successful
+// emit (scalar families store it on the entry; Count-Sketch snapshots its cells
+// in the wrapper).
+func subWindowMarkEmitted(entry *seriesEntry, cfg *PrecomputeConfig) {
+	entry.subWindowAcked = true
+	switch {
+	case cfg.AggKind == AggKindSum:
+		if r, ok := entry.Sketch.(interface{ Sum() float64 }); ok {
+			entry.ackVal = r.Sum()
+		}
+	case cfg.SketchType == SketchTypeHLLSketch:
+		if r, ok := entry.Sketch.(interface{ EstimateCardinality() float64 }); ok {
+			entry.ackVal = r.EstimateCardinality()
+		}
+	case cfg.SketchType == SketchTypeCountSketch:
+		if r, ok := entry.Sketch.(interface{ MarkSubWindowEmitted() }); ok {
+			r.MarkSubWindowEmitted()
+		}
+	default:
+		entry.ackVal = float64(entry.Count)
+	}
 }
 
 // finishRotate is the shared envelope-serialization tail used by

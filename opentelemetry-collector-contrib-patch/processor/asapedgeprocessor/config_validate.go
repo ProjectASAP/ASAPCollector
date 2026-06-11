@@ -112,6 +112,16 @@ func (c *Config) Validate() error {
 	if c.WindowDuration <= 0 {
 		c.WindowDuration = 60 * time.Second
 	}
+	// Sub-window producer: 0 disables; positive must be shorter than the window.
+	if c.SubWindowInterval < 0 {
+		return fmt.Errorf("asap_edge: sub_window_interval must be >= 0 (0/unset => disabled)")
+	}
+	if c.SubWindowInterval > 0 && c.SubWindowInterval >= c.WindowDuration {
+		return fmt.Errorf("asap_edge: sub_window_interval (%s) must be < window_duration (%s)", c.SubWindowInterval, c.WindowDuration)
+	}
+	if c.SubWindowEpsilon < 0 || c.SubWindowEpsilon >= 1 {
+		return fmt.Errorf("asap_edge: sub_window_epsilon must be in [0, 1) (0 => fixed mode, emit every tick)")
+	}
 	// WarmAllowedLateness: the warm tier's own late-data grace, decoupled
 	// from cold.reorder_grace (P1-1). Default to the full WindowDuration so
 	// any sample that actually falls within the active window is admitted
@@ -290,7 +300,14 @@ func (c *Config) Validate() error {
 // the only wired sketch family that does not (no ComputeDeltaAgainst).
 func (k FamilyKind) deltaCapable() bool {
 	switch k {
-	case FamilyDDSketch, FamilyCountSketch, FamilyHLL, FamilyCountMinSketch:
+	case FamilyDDSketch, FamilyCountSketch, FamilyHLL, FamilyCountMinSketch, FamilySum, FamilyKLL:
+		// All families now ride the sub-window machinery (gated on this flag):
+		// the subtractive families (DDSketch/CMS/CountSketch/HLL) and Sum ({Δsum,
+		// Δcount}+PWR) ship incremental deltas; KLL — which cannot subtract —
+		// uses the disjoint-SEGMENT model (the runtime resets the sketch after
+		// each sub-window emit, so each frame covers only the between-emits data
+		// and the backend merges the segments). Either way the backend's
+		// merge_all reconstructs the window total without inflation.
 		return true
 	}
 	return false
@@ -306,7 +323,7 @@ func (m *MetricFamily) scope() precompute.AggMode {
 
 // effectiveDelta resolves the per-metric delta-transmission setting: the
 // explicit metrics[].delta_transmission if set, else the top-level default. It
-// is forced off for families that cannot do delta (KLL, Sum).
+// is forced off for families that cannot do delta (KLL).
 func (m *MetricFamily) effectiveDelta(globalDefault bool) bool {
 	if !m.Family.deltaCapable() {
 		return false

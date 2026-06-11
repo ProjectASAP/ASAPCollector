@@ -242,3 +242,49 @@ func (c *SnapshotCache) LenInbound() int {
 	defer c.mu.RUnlock()
 	return len(c.inbound)
 }
+
+// ComputeSubWindowDelta diffs the current (still-accumulating) sketch against
+// the immediately-preceding emit for seriesKey and refreshes the cached base to
+// the just-emitted full state — the always-refresh path applied WITHIN a window
+// between sub-window emits. Unlike the boundary ComputeDelta it NEVER applies
+// the per-window empty-base reset (that reset is the boundary action; doing it
+// mid-window would re-ship the whole window-to-date and defeat the savings) and
+// does NOT rotate/reset the sketch. The first emit of a window (no prior base)
+// is full; thereafter sub-window emits are sparse deltas against the previous
+// emit.
+func (c *SnapshotCache) ComputeSubWindowDelta(
+	seriesKey string,
+	current Sketch,
+	threshold uint64,
+) (payload []byte, isFull bool, err error) {
+	if current == nil {
+		return nil, false, fmt.Errorf("compute sub-window delta: nil sketch")
+	}
+	c.mu.RLock()
+	prev := c.outbound[seriesKey]
+	c.mu.RUnlock()
+	if prev == nil {
+		full, snapErr := current.Snapshot()
+		if snapErr != nil {
+			return nil, false, fmt.Errorf("snapshot: %w", snapErr)
+		}
+		c.CacheOutbound(seriesKey, full)
+		return full, true, nil
+	}
+	delta, full, dErr := current.ComputeDeltaAgainst(prev, threshold)
+	if dErr != nil {
+		return nil, false, fmt.Errorf("compute delta: %w", dErr)
+	}
+	// Always-refresh: cache the current full state as the base for the NEXT
+	// sub-window emit so it diffs against THIS emit (incremental), not empty.
+	if full {
+		c.CacheOutbound(seriesKey, delta)
+	} else {
+		fullSnap, snapErr := current.Snapshot()
+		if snapErr != nil {
+			return nil, false, fmt.Errorf("snapshot: %w", snapErr)
+		}
+		c.CacheOutbound(seriesKey, fullSnap)
+	}
+	return delta, full, nil
+}

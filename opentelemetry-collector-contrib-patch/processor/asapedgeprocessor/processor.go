@@ -161,8 +161,10 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 				// (default = WindowDuration), decoupled from the cold tier's
 				// ~2s reorder grace, so processing-delayed-but-in-window
 				// samples are not dropped as late.
-				allowedLateness: cfg.WarmAllowedLateness,
-				edgeID:          cfg.EdgeID,
+				allowedLateness:   cfg.WarmAllowedLateness,
+				edgeID:            cfg.EdgeID,
+				subWindowInterval: cfg.SubWindowInterval,
+				subWindowEpsilon:  cfg.SubWindowEpsilon,
 			}
 			if sa, ok := newSketchAggregator(name, fam, opts, p.logger); ok {
 				sa.procDropCount = &p.sketchDropCount
