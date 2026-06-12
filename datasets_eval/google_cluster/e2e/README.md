@@ -23,6 +23,23 @@ the same replayed rows — not the archive tier.
 | `query_client.py` | instant query against `:9091/api/v1/query`, captures `data_source` | ✅ (needs live stack to exercise) |
 | `run_e2e.py` | orchestrator: replay → wait → query → gt → compare → report | ✅ offline path verified |
 | `workload-google-cluster.yaml` | controller workload (families/grouping/item_label) | ⚠️ starting point — see CONSTRAINT |
+| `controller_alloc_eval.py` + `slas.json` | **Fig 12** controller-allocation eval: `{sketch,size,p,ε_cdm}` vs analytical oracle → coverage / cost-gap / accuracy-met / sensitivity | ✅ offline analytical; see `RESULTS.md` |
+| `RESULTS.md` | the Fig-12 numbers on this query set | ✅ |
+
+### Fig 12 — controller-allocation eval (offline, analytical)
+
+```
+python3 controller_alloc_eval.py            # text report
+python3 controller_alloc_eval.py --json     # machine-readable
+python3 controller_alloc_eval.py --use-optimizer http://host:port   # real /api/v1/plan
+```
+
+Maps each query + its SLA (`slas.json`, an **explicit input** — PromQL alone
+does not fix ε) + documented workload stats → a controller 4-tuple, and compares
+to the cost-minimal feasible 4-tuple (analytical oracle). The `{sketch,size}`
+allocator faithfully replicates the in-tree `control_plane` bind rules; the
+`{p, ε_cdm}` budget-split is the documented extension being evaluated. Reuses
+the real `wire.rs`/`tco.rs` cost shape. See `RESULTS.md` for the numbers.
 | `../queries.json` | +`id`/`metricsql`/`gt` specs, + CMS `frequency` query | ✅ `run.py validate` green |
 
 ## Recipe
