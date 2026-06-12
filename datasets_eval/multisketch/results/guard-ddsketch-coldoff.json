@@ -1,0 +1,67 @@
+{
+  "arm": "guard-ddsketch-wallclock",
+  "results": [
+    {
+      "id": "ddsketch-p99",
+      "kind": "quantile",
+      "metricsql": "quantile_over_time(0.99, google_cluster_2019_cpu_rate_q_ddsketch[60s])",
+      "true": 0.0494384765625,
+      "warm": null,
+      "data_source": "empty",
+      "at_time": null
+    },
+    {
+      "id": "ddsketch-p50",
+      "kind": "quantile",
+      "metricsql": "quantile_over_time(0.50, google_cluster_2019_cpu_rate_q_ddsketch[60s])",
+      "true": 0.019287109375,
+      "warm": null,
+      "data_source": "empty",
+      "at_time": null
+    },
+    {
+      "id": "sum-cpu",
+      "kind": "sum",
+      "metricsql": "sum(google_cluster_2019_cpu_rate)",
+      "true": 1883.9586305618286,
+      "warm": 1883.9586305618286,
+      "data_source": "asap_query",
+      "at_time": 1781292662,
+      "rel_err": 0.0
+    },
+    {
+      "id": "sum-mem-by-zone",
+      "kind": "sum",
+      "metricsql": "sum by (zone) (google_cluster_2019_memory_usage)",
+      "true": {},
+      "warm": null,
+      "data_source": "empty",
+      "at_time": null
+    }
+  ],
+  "edge_stats_after": {
+    "cpu": "0.08%",
+    "mem": "62.02MiB / 251.8GiB"
+  },
+  "data_plane_stats_after": {
+    "cpu": "0.01%",
+    "mem": "16.66MiB / 251.8GiB"
+  },
+  "all_stats_after": {
+    "asap-agent-a": {
+      "cpu": "0.08%",
+      "mem": "62.02MiB / 251.8GiB"
+    },
+    "asap-control-plane": {
+      "cpu": "0.00%",
+      "mem": "1.801MiB / 251.8GiB"
+    },
+    "asap-data-plane": {
+      "cpu": "0.01%",
+      "mem": "16.66MiB / 251.8GiB"
+    }
+  },
+  "agent_wire_bytes_to_backend": 1009639.0,
+  "agent_sent_metric_points": 2336.0,
+  "data_plane_rx_delta_bytes": 3618530
+}

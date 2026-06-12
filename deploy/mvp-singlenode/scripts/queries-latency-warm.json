@@ -1,0 +1,5 @@
+[
+  {"id": "ddsketch-p99", "kind": "quantile", "metricsql": "quantile_over_time(0.99, google_cluster_2019_cpu_rate_q_ddsketch[300s])"},
+  {"id": "ddsketch-p50", "kind": "quantile", "metricsql": "quantile_over_time(0.50, google_cluster_2019_cpu_rate_q_ddsketch[300s])"},
+  {"id": "sum-cpu", "kind": "sum", "metricsql": "sum(google_cluster_2019_cpu_rate)"}
+]

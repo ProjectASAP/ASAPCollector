@@ -1,0 +1,24 @@
+{
+  "arm": "countminsketch",
+  "kind": "frequency",
+  "at_time": 1781295129,
+  "agent_wire_bytes_to_backend": 10854406.0,
+  "agent_sent_metric_points": 2241.0,
+  "edge_stats": {
+    "cpu": "0.09%",
+    "mem": "187.7MiB / 251.8GiB"
+  },
+  "data_plane_stats": {
+    "cpu": "0.12%",
+    "mem": "112MiB / 251.8GiB"
+  },
+  "score": {
+    "data_source": "asap_query",
+    "f_hat": 244.0,
+    "f_true": 244,
+    "N": 100000,
+    "abs_over": 0.0,
+    "one_sided_ok": true,
+    "rel_err": 0.0
+  }
+}

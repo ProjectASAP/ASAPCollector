@@ -1,0 +1,41 @@
+{
+  "arm": "ddsketch",
+  "kind": "quantile",
+  "at_time": 1781294589,
+  "agent_wire_bytes_to_backend": 990707.0,
+  "agent_sent_metric_points": 2257.0,
+  "edge_stats": {
+    "cpu": "0.10%",
+    "mem": "44.6MiB / 251.8GiB"
+  },
+  "data_plane_stats": {
+    "cpu": "0.01%",
+    "mem": "19.9MiB / 251.8GiB"
+  },
+  "score": {
+    "0.99": {
+      "data_source": "asap_query",
+      "n_series_total": 1000,
+      "n_series_matched": 1000,
+      "mean_rel_err": 0.04791522719048002,
+      "median_rel_err": 0.026308647180477852,
+      "p95_rel_err": 0.17369239524794797,
+      "max_rel_err": 0.46418585428356124,
+      "frac_within_envelope": 0.435,
+      "envelope": 0.02,
+      "global_gt": 0.0494384765625
+    },
+    "0.5": {
+      "data_source": "asap_query",
+      "n_series_total": 1000,
+      "n_series_matched": 1000,
+      "mean_rel_err": 0.011188669905679079,
+      "median_rel_err": 0.006527567325529914,
+      "p95_rel_err": 0.034342219015867634,
+      "max_rel_err": 0.30905627049067613,
+      "frac_within_envelope": 0.874,
+      "envelope": 0.02,
+      "global_gt": 0.019287109375
+    }
+  }
+}

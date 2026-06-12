@@ -1,0 +1,34 @@
+[
+  {
+    "id": "hll-card-service",
+    "kind": "count_distinct",
+    "metricsql": "count(google_cluster_2019_cpu_rate_card_hll)",
+    "gt": {
+      "op": "count_distinct",
+      "key_label": "service",
+      "metric": "google_cluster_2019_cpu_rate_card_hll"
+    }
+  },
+  {
+    "id": "sum-cpu",
+    "kind": "sum",
+    "metricsql": "sum(google_cluster_2019_cpu_rate)",
+    "gt": {
+      "op": "sum",
+      "metric": "google_cluster_2019_cpu_rate",
+      "by": []
+    }
+  },
+  {
+    "id": "sum-mem-by-zone",
+    "kind": "sum",
+    "metricsql": "sum by (zone) (google_cluster_2019_memory_usage)",
+    "gt": {
+      "op": "sum",
+      "metric": "google_cluster_2019_memory_usage",
+      "by": [
+        "zone"
+      ]
+    }
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "ddsketch-p99",
+    "kind": "quantile",
+    "metricsql": "quantile_over_time(0.99, google_cluster_2019_cpu_rate_q_ddsketch[300s])",
+    "gt": {"op": "quantile", "metric": "google_cluster_2019_cpu_rate_q_ddsketch", "q": 0.99, "by": []}
+  },
+  {
+    "id": "ddsketch-p50",
+    "kind": "quantile",
+    "metricsql": "quantile_over_time(0.50, google_cluster_2019_cpu_rate_q_ddsketch[300s])",
+    "gt": {"op": "quantile", "metric": "google_cluster_2019_cpu_rate_q_ddsketch", "q": 0.50, "by": []}
+  },
+  {
+    "id": "kll-p99",
+    "kind": "quantile",
+    "metricsql": "quantile_over_time(0.99, google_cluster_2019_cpu_rate_q_kll[300s])",
+    "gt": {"op": "quantile", "metric": "google_cluster_2019_cpu_rate_q_kll", "q": 0.99, "by": []}
+  },
+  {
+    "id": "kll-p50",
+    "kind": "quantile",
+    "metricsql": "quantile_over_time(0.50, google_cluster_2019_cpu_rate_q_kll[300s])",
+    "gt": {"op": "quantile", "metric": "google_cluster_2019_cpu_rate_q_kll", "q": 0.50, "by": []}
+  },
+  {
+    "id": "countsketch-topk-host",
+    "kind": "topk",
+    "metricsql": "topk(10, sum by (host) (google_cluster_2019_cpu_rate_topk_cs))",
+    "gt": {"op": "topk_sum", "metric": "google_cluster_2019_cpu_rate_topk_cs", "k": 10, "key_label": "host"}
+  },
+  {
+    "id": "cmsheap-topk-host",
+    "kind": "topk",
+    "metricsql": "topk(10, sum by (host) (google_cluster_2019_cpu_rate_topk_cms))",
+    "gt": {"op": "topk_sum", "metric": "google_cluster_2019_cpu_rate_topk_cms", "k": 10, "key_label": "host"}
+  },
+  {
+    "id": "hll-card-service",
+    "kind": "count_unique",
+    "metricsql": "count(google_cluster_2019_cpu_rate_card_hll)",
+    "gt": {"op": "count_distinct", "metric": "google_cluster_2019_cpu_rate_card_hll", "key_label": "service"}
+  },
+  {
+    "id": "cms-freq-service",
+    "kind": "frequency",
+    "metricsql": "count_over_time(google_cluster_2019_cpu_rate_freq_cms{service=\"svc-000003\"}[300s])",
+    "gt": {"op": "frequency", "metric": "google_cluster_2019_cpu_rate_freq_cms", "item_label": "service", "item_value": "svc-000003"}
+  },
+  {
+    "id": "sum-cpu",
+    "kind": "sum",
+    "metricsql": "sum(google_cluster_2019_cpu_rate)",
+    "gt": {"op": "sum", "metric": "google_cluster_2019_cpu_rate", "by": []}
+  },
+  {
+    "id": "sum-mem-by-zone",
+    "kind": "sum",
+    "metricsql": "sum by (zone) (google_cluster_2019_memory_usage)",
+    "gt": {"op": "sum", "metric": "google_cluster_2019_memory_usage", "by": ["zone"]}
+  }
+]
