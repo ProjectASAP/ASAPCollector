@@ -164,10 +164,29 @@ sketch-vs-raw **+ the CMS empty-base delta opt (−63%)**. **◻ need the raw ba
 
 ---
 
-## Fig 7 — Query latency CDF: PromQL-native vs sketch-answered  ◻
+## Fig 7 — Query latency CDF: PromQL-native vs sketch-answered  ✅ (warm measured; cold-fallback arm blocked)
 **Claim (dim 5):** warm-tier p50/p99 production-usable; cold fallback ≤2×.
 **Layout:** latency CDF, lines for B0 (native) vs B3 (sketch warm) vs cold-fallback.
-**◻** — `metricsql_replay.py` exists; needs a run at fixed QPS.
+**Measured (real gct, cold-OFF stack, wall-clock-anchored, 599-query mix @15 QPS,
+guard-verified before timing — DDSketch read returned 691 real warm series,
+`sum`=exact GT 216.3535, all `data_source=asap_query`, 0 empties/errors):**
+
+| query kind | p50 | p95 | p99 | n |
+|---|---|---|---|---|
+| all (mix) | 18.25 | 19.45 | 20.03 ms | 599 |
+| `quantile_over_time` (DDSketch, 691-series reconstruction) | 18.34 | 19.56 | 20.65 ms | 400 |
+| `sum` (lossless) | 1.58 | 2.19 | 2.25 ms | 199 |
+
+CDF is **bimodal**: cheap lossless `sum` at ~1.5–2.3 ms, 691-series DDSketch
+quantile reconstruction at ~18–21 ms; tails tight (p99 within ~1 ms of p50 per
+kind). Headline: warm sketch-answered PromQL is production-usable single-digit-to-
+~20 ms server-side. **Cold-fallback arm attempted but blocked** (cold ship rides
+the disabled control channel → MinIO stayed empty, old-ts queries still served
+warm) → **warm-only reported, not faked**. **Single-node loopback — server-side
+latency only, no network RTT.** `count_over_time` excluded (does not resolve on the
+warm path — falls through to empty archive). Artifacts: `datasets_eval/latency/`
+(`latency_RESULTS.md`, `latency_cdf.png`, `per_query_latency.json`,
+`compute_latency.py`), branch `feat/query-latency-cdf`.
 
 ---
 
@@ -387,7 +406,7 @@ harness**, and the per-family **`ε_sk(size)` profiles** are the build-out for t
 | 6.2 | bandwidth ablation W×L×enc×p (Fig 2) | ◐ (p + encoding done; W, L to run) |
 | 6.headline | Pareto (Fig 1) | ◐ (corners done; one combined sweep) |
 | 6.2 | edge CPU/mem + soak (Fig 6) | ◻ |
-| 6.4 | query latency CDF (Fig 7) | ◻ |
+| 6.4 | query latency CDF (Fig 7) | ✅ warm (cold-fallback blocked) |
 | 6.3 | cross-layer placement (Fig 8) | ◐ (design+proof; bars to run) |
 | 6.x | coordinated vs uniform (Fig 9) | ◐ (differentiation shown; CV sweep) |
 | 6.x | scaling N∈{1,10,100} (Fig 10) | ◻ |
