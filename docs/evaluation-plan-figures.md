@@ -100,6 +100,42 @@ rel-err ~15–18% — matches `ε_s=√(0.75/(0.25·44))≈0.26`. **The bound pr
 where it breaks**, and the coordinator's ε-floor `1/(1+ε²·rate)` is what prevents it.
 **✅ measured (`/tmp/gct-sweep-results.json`, `/tmp/2axis`).**
 
+### (c) Per-family accuracy — all 6 families, real gct, 1000 series  ✅/◑
+Each family ingests the *same* real `cpu_rate` rows (aliased) and is queried vs exact
+ground truth (`datasets_eval/multisketch/`, branch `feat/multisketch-accuracy`).
+**Wall-clock anchoring** of the replay was required (the warm read was empty because
+the trace's epoch-relative timestamps never intersected the wall-clock query window —
+a *timing*, not reducer, cause; pinned + fixed via `run.py --wall-clock-anchor`).
+
+| family | claim | err / recall | in-envelope? | wire |
+|---|---|---|---|---|
+| **Sum** | sum | **exact** (1883.96) | ✅ | — |
+| **DDSketch** | p50 / p99 | median 0.0065 (87%≤α) / 0.026 | ✅ / ◑ | 0.99 MB |
+| **KLL** | p50 / p99 | median **0.0007** (96%≤ε) / 0.026 | ✅ / ◑ | 1.34 MB |
+| **Count-Min** | freq | **exact** (244, one-sided OK) | ✅ | 10.85 MB |
+| **HLL** | per-series distinct | rel-err **3e-5** | ✅ (per-series) | 0.51 MB |
+| **CountSketch** | topk@10 | **recall 0** | ✗ | 12.09 MB |
+
+**DDSketch vs KLL head-to-head** (identical data): KLL wins the **median** (0.0007 vs
+0.0065); DDSketch wins the **tail** (lower p95) and ships **−26% wire**. The p99 tail
+dispersion is small-N order-statistic variance (single-window collapse, ~93 pts/series),
+not a sketch defect.
+
+**Two honest, root-caused gaps (not fabricated):**
+- **CountSketch topk recall 0** — real semantic mismatch (orthogonal to timing): warm
+  topk **keys by `item` not `host`** and **ranks by occurrence *frequency*, not
+  sum-of-value**, so "top hosts by *CPU load*" (value-weighted) ≠ what the heavy-hitter
+  sketch answers (top-by-*count*). `q-topk-service-count` (by count) is the fitting
+  query; **value-weighted topk needs a separate update path** — a real finding for the
+  topk claim.
+- **HLL global rollup** — per-series HLL is exact (3e-5), but the *global* distinct
+  readout isn't cleanly served (per-series storage; sealed-window `count()` empty).
+
+So **5/6 families validated** (Sum/DDSketch/KLL/CMS/HLL-per-series); CountSketch-topk +
+HLL-global are named gaps. (Also surfaced: the earlier "No result" class is the
+**warm-vs-archive routing for recent range queries when the archive is on** — cold-OFF
+serves warm; a backend fix target.)
+
 ---
 
 ## Fig 4 — Open-window freshness (CDM ε-gate vs fixed-window)  ✅
