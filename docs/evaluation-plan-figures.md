@@ -363,6 +363,36 @@ harness**, and the per-family **`ε_sk(size)` profiles** are the build-out for t
 
 ---
 
+## Real-world cross-check — DEBS-2022 (second real axis, and an honest correction)  ✅
+Re-ran the ε-gate / delta / coordinated-sampling claims on the **real DEBS-2022
+last-trade stream** (Zenodo, 53.99 M rows; mapped the 09:00–09:30 CEST slice =
+**685,822 events / 3,912 symbols**, symbol = series key; top-1% of symbols = 11.3% of
+activity, max ASML rate 3,141 vs min 1 — genuine activity skew). It **partially
+corrects the synthetic claims** — which is the point of a second real axis:
+
+| claim | synthetic / gct | **DEBS (real)** | verdict |
+|---|---|---|---|
+| **ε-gate egress** (Table 1) | synth 70/30 → 1100→717 emits | per-window emits ~**flat (3271)** as the count-gate tightens; gate cuts wire only **0.94×** — the silence is **structural skew** (~640 rare symbols absent), *not* the ε threshold | **ε-gate is the open-window-freshness/correctness bound (Fig 4 ✅), NOT a primary bandwidth lever** on workloads where active series move |
+| **delta vs full** (Table 2/Fig 2) | synth ~2× wire | **4.10× on the serialized sketch *payload*** (bigger, as predicted for slowly-changing data) **but only 1.21× on the *gzipped wire*** (gzip already removes the static-bucket redundancy delta targets) | report delta as a **per-window state / pre-compression-payload** win (4.1×); on the gzipped wire it's small. **Sketch-vs-raw is still 26× on the wire** |
+| **coordinated sampling** (Fig 9) | hot 0.0065 / quiet 1.0 (gct) | **hot ASML (rate 3141) → p=0.031, rare (rate 1) → p=0.990 = 32× differentiation**, every grant on its ε-floor `1/(1+ε²·rate)`; static-p ingest ∝ p (26k→6.5k adm/s) | **strong on real skew** — the win the design predicts |
+| **accuracy** (Fig 3) | gct 0.3–1.9% | ASML last-trade median rel-err **0.9–1.1% ≈ DDSketch α**, inside `ε_sk+ε_s+ε_cdm` across the whole ε-gate & p sweep | **holds on real data** |
+
+**What this does to the paper's framing (lead with the robust wins):**
+- **Robust, real-data wins:** **sketch-vs-raw (26–44× wire)** + **coordinated sampling**
+  (ingest ∝ p, **32× differentiation** on real skew, accuracy held). These are the headline.
+- **Reframe, honestly:** the **ε-gate** is the **freshness/correctness** guarantee
+  (bounded open-window error, Fig 4), *not* a bandwidth headline — on real moving
+  workloads its incremental egress cut is ~0 (bandwidth comes from skew + sketch +
+  sampling). The **delta** win is on the **per-window sketch state / pre-gzip payload
+  (4.1×)**; **gzip absorbs most of it on the wire (1.21×)**.
+
+Two real datasets now back §6: **Google cluster** (resource, high-cardinality →
+accuracy, Pareto, cardinality/sum) and **DEBS-2022** (financial, skewed activity →
+coordinated sampling, topk, the ε-gate/delta regime). Driver+data:
+`datasets_eval/debs/cdm_eval/` (`RESULTS.md`, `results/*.json`).
+
+---
+
 ## Threats & answers (reviewer-facing)
 
 | threat | answer (and evidence) |
@@ -372,6 +402,8 @@ harness**, and the per-family **`ε_sk(size)` profiles** are the build-out for t
 | "Small-N accuracy degrades under aggressive `p`" | **Predicted, not surprising** — `ε_s=√((1−p)/(pN))`; high-N ≈α, low-N degrades as the formula says (Fig 3b), and the coordinator ε-floor bounds it. A *validated bound*, not a failure. |
 | "Single node only" | Scaling (Fig 10) + coordinated-vs-uniform (Fig 9) need multi-edge; flag as the main missing axis. |
 | "Per-emit delta cost" | Honest: cardinality-driven, addressed by the CMS empty-base opt, independent of sampling. |
+| "Delta cuts wire 2×" | **Corrected on real data (DEBS):** 4.10× on the sketch *payload* but only **1.21× on the gzipped wire** — gzip already removes the static-bucket redundancy. Claim delta as a per-window-state / pre-compression win, not a gzipped-wire headline. Sketch-vs-raw (26×) is the wire headline. |
+| "The ε-gate is your bandwidth win" | **It isn't, and we don't claim it is.** On real moving workloads (gct, DEBS) the gate's incremental egress cut ≈0 (suppression is structural skew, not ε). The ε-gate's value is the **bounded open-window freshness** (Fig 4); bandwidth = sketch + skew + sampling. |
 
 ---
 
