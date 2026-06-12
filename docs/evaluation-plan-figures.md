@@ -190,13 +190,44 @@ steady** egress cut (mean ~1.3× after first-window + periodic full re-sync).
 
 ---
 
-## Fig 6 — Edge CPU / memory: sketch vs raw, + long soak  ◻
+## Fig 6 — Edge CPU / memory: sketch vs raw, + long soak  ✅ edge bounded · ⚠ backend leak found
 **Claim (dims 2–3):** sketch edge CPU/RSS bounded vs raw-forwarding; no leak over 24 h.
-**Layout:** (a) stacked CPU bar per baseline (raw `b0` / gzip `b1` / sketch `b3`);
-(b) RSS-over-time line, 24 h, slope-based leak verdict.
+**Layout:** (a) stacked CPU bar per baseline (raw `b0` / sketch `b3`);
+(b) RSS-over-time line, slope-based leak verdict.
 **Note (honest framing):** this is the **sketch-vs-raw** CPU story — *not* a
 sampling-CPU claim. Sampling's win is bandwidth/ingest; the edge-CPU lever is
-sketch-vs-raw **+ the CMS empty-base delta opt (−63%)**. **◻ need the raw baseline + soak.**
+sketch-vs-raw **+ the CMS empty-base delta opt (−63%)**.
+
+**Measured (real gct, cold-OFF, constant 5000 pts/s, 30-min soak = 9.5M pts / 0
+errors; 24 h figures are linear extrapolations of the measured slope):**
+
+**(a) CPU / RSS — both arms measured (raw arm NOT skipped):**
+| arm | mean CPU% | p99 CPU% | steady RSS | n |
+|---|---|---|---|---|
+| b0 raw-forward edge (no asap_edge) | 2.75 | 3.33 | 207 MB | 60 |
+| b3 sketch edge (DDSketch+Sum) | 4.38 | 8.19 | 223 MB | 360 |
+| b0 data_plane | 7.69 | 8.13 | 28 MB | 60 |
+| b3 data_plane | 0.26 | 0.60 | 25→72 MB | 360 |
+
+Sketch edge costs **~1.6× CPU and +16 MB RSS** vs raw-forward — bounded, as claimed.
+
+**(b) Leak slope (edge and data_plane separately):**
+- **Edge: BOUNDED** — **+2.6 MB/h (≈0)**, flat ~223 MB the whole soak (24 h extrap +63 MB). ✅
+- **data_plane: CLIMBING (monotone, linear)** — **+89.9 MB/h** (/proc) / +85.2 MB/h (the
+  binary's own `MEMORY_DIAG` gauge — two independent sources agree); 25→72 MB over
+  30 min, no plateau (24 h extrap ~+2 GB). ⚠
+
+**Stale-sid finding ([[gct-memory-findings]]) — mechanism refined:** SketchStore **sid
+count plateaus hard at 1004** (the cardinality cap) — the "sid count keeps growing"
+reading does **not** reproduce. But **per-sid warm-sketch state grows unbounded**
+(`MEMORY_DIAG` payload 257 KB → 37.6 MB, **~146×**) and drives the backend RSS climb
+~1:1. So the backend memory growth the prior note flagged is **real and reproduces**;
+the driver is **per-sid DDSketch-state growth the evictable flusher doesn't reclaim
+under steady load**, not sid-count growth. Retention is **backend-side** — edge is flat.
+**Single-node loopback. Artifacts:** `datasets_eval/soak/` (`soak_RESULTS.md`,
+`rss_over_time.png`, `summary.json`, raw samples), branch `feat/soak-fig6`.
+**Follow-up:** the backend per-sid state growth is a real defect worth a fix (the
+flusher's evictable accounting under sustained ingest).
 
 ---
 
@@ -473,7 +504,7 @@ coordinated sampling, topk, the ε-gate/delta regime). Driver+data:
 | 6.1 | threshold alert (Fig 5) | ✅ |
 | 6.2 | bandwidth ablation W×L×enc×p (Fig 2) | ◐ (p + encoding done; W, L to run) |
 | 6.headline | Pareto (Fig 1) | ◐ (corners done; one combined sweep) |
-| 6.2 | edge CPU/mem + soak (Fig 6) | ◻ |
+| 6.2 | edge CPU/mem + soak (Fig 6) | ✅ edge bounded (+2.6 MB/h); ⚠ backend leak +90 MB/h |
 | 6.4 | query latency CDF (Fig 7) | ✅ warm (cold-fallback blocked) |
 | 6.3 | cross-layer placement (Fig 8) | ◐ (design+proof; bars to run) |
 | 6.x | coordinated vs uniform (Fig 9) | ◐ (differentiation shown; CV sweep) |
