@@ -1,0 +1,42 @@
+{
+  "_README": [
+    "Per-query accuracy + freshness SLAs for the Fig-12 controller-allocation harness.",
+    "",
+    "IMPORTANT: the SLA is an EXPLICIT INPUT to the controller/oracle. PromQL alone does",
+    "NOT fix the accuracy target -- `histogram_quantile(0.99, ...)` says WHAT to compute,",
+    "not how tight the answer must be. The accuracy budget comes from (a) a per-query",
+    "annotation (this file), (b) a per-kind class default, or (c) the sketch family's",
+    "native epsilon. Here we annotate per kind, anchored to the in-tree e2e thresholds",
+    "in `compare.py` (THRESHOLDS) so the harness SLAs match what the e2e PASS/FAIL gate",
+    "already enforces on real runs.",
+    "",
+    "accuracy_slo semantics by kind:",
+    "  quantile     -> max relative error on the returned quantile value (rel-err <= x)",
+    "  count_unique -> max relative error on the distinct count (rel-err <= x)",
+    "  sum          -> max relative error on the sum (sketch Sum is exact-ish; tiny x)",
+    "  topk         -> MIN recall@k (fraction of true top-k present); >= x",
+    "  frequency    -> max relative error on the point frequency estimate (rel-err <= x)",
+    "",
+    "freshness_slo_s: max open-window staleness in seconds the query tolerates. The",
+    "continuous-monitoring sub-window emit cadence must keep open-window error <= eps_cdm;",
+    "we map freshness_slo_s -> an eps_cdm budget via eps_cdm ~= staleness/window (the",
+    "fraction of a 30s window that can be un-emitted). See controller_alloc_eval.py."
+  ],
+
+  "window_seconds": 30,
+
+  "class_defaults": {
+    "quantile":     { "accuracy_slo": 0.02, "accuracy_kind": "rel_err", "freshness_slo_s": 5.0 },
+    "count_unique": { "accuracy_slo": 0.02, "accuracy_kind": "rel_err", "freshness_slo_s": 5.0 },
+    "sum":          { "accuracy_slo": 0.005, "accuracy_kind": "rel_err", "freshness_slo_s": 10.0 },
+    "topk":         { "accuracy_slo": 0.90, "accuracy_kind": "recall",  "freshness_slo_s": 5.0 },
+    "frequency":    { "accuracy_slo": 0.05, "accuracy_kind": "rel_err", "freshness_slo_s": 10.0 }
+  },
+
+  "per_query": {
+    "q-cpu-p99":          { "accuracy_slo": 0.01, "freshness_slo_s": 5.0 },
+    "q-cpu-p50":          { "accuracy_slo": 0.02, "freshness_slo_s": 10.0 },
+    "q-mem-p99-by-zone":  { "accuracy_slo": 0.01, "freshness_slo_s": 5.0 },
+    "q-card-service-task":{ "accuracy_slo": 0.015, "freshness_slo_s": 5.0 }
+  }
+}
