@@ -16,10 +16,16 @@ Legend: ✅ measured · ◐ partial (some data, needs completion) · ◻ not yet
 
 ## 0. The headline
 
-> **Across equivalent query coverage, ASAP's total resource (edge + wire + backend)
-> sits on a strictly better accuracy-vs-cost Pareto than raw forwarding — and two
-> new orthogonal knobs, SDK update-sampling (`p`) and CDM ε-gated delta emission
+> **Across equivalent query coverage, ASAP's total resource (edge + wire + backend +
+> storage) sits on a strictly better accuracy-vs-cost Pareto than raw forwarding — and
+> two new orthogonal knobs, SDK update-sampling (`p`) and CDM ε-gated delta emission
 > (`ε_cdm`), push that frontier further, with a proof that bounds the cost.**
+
+**Routing is disjoint:** every series is *either* warm-sketched (where sampling +
+CDM apply) *or* cold-archived to Gorilla (lossless, exact/historical) — never both.
+So the Pareto's "total cost" is the **sum of the two partitions' costs** (warm-half +
+cold-half, Fig 11), and **the controller allocates the partition** (which series →
+sketch[type,`W`,`L`,`p`] vs cold-Gorilla) from the query set (Fig 12).
 
 The contribution stack, from system to evidence:
 1. sketch-across-the-lifecycle + the `(W,L,agg_type)` planner (the base system);
@@ -190,6 +196,63 @@ gap ∝ the rate CV; the win **only appears on skewed fleets** (multi-edge).
 
 ---
 
+## Fig 11 — Cold-tier (Gorilla) overhead — the *disjoint* cold half  ◻
+**Routing model:** **disjoint** — a series is *either* warm-sketched (sampling + CDM
+apply) *or* cold-archived to Gorilla (lossless, exact/historical), **never both**.
+So the **total-resource Pareto = warm-half cost + cold-half cost**, partitioned
+across series; the cold half is the *entire* cost of the non-sketched series and
+sampling/CDM never touch it.
+**Claim:** the cold path's overhead is bounded and is the *price of exact/historical
+replay*; the lifecycle win is largest on **storage**.
+**Overhead axes (edge encodes Gorilla-XOR `ASAPFRG1` fragments → merger builds
+block+index → S3):**
+
+| component | layer | measured as |
+|---|---|---|
+| encode CPU | edge | XOR-encode per sample (`fragment`) vs FOR+delta (`intchunk`, more CPU) |
+| fragment RSS | edge | per-window batch before ship |
+| ship bytes | edge→merger | cold wire bytes (separate from warm sketch egress) |
+| merger CPU/IO | merger | block+index build + S3 PUT (decode-free ingest, PR #354) |
+| **storage** | S3/MinIO | **bytes/series/day — the dimension the 5 dims underweight** |
+
+**Cold-codec ablation** (`fragment` vs `intchunk` vs `intchunk`+zstd): per prior
+`intchunk` verdict, `intchunk` saves ~2.3× wire bytes but costs more encode CPU/mem
+(2.3×, not the designed 4.8×, because it dropped the zstd the real VM path uses).
+**Layout:** (a) cold overhead arm added to the CPU/mem/bandwidth bars (Fig 6/2);
+(b) a **storage figure** — bytes/series/day for raw vs gorilla-cold vs sketch-warm
+(the raw/cold blow-up: a prior long-run hit ~496 GB disk); (c) the codec ablation.
+**◻ to measure** (this session ran `cold: enabled=false` throughout). Prior data:
+`asap-gorilla-go/gorilla_edge_bench_test.go`, `GORILLA_MERGER_DESIGN.md`,
+`docs/design-archive-tier.md`. **Net cold into the disjoint Pareto.**
+
+---
+
+## Fig 12 — Controller allocation: routing + sketch + sampling matches the ideal  ◐
+**Claim (extends paper-outline's planner-match):** the controller parses the query
+set and **allocates, per metric/series, over a three-part space** — and that
+allocation matches the hand-tuned ideal within X%.
+The controller's optimizer (`control_plane/src/optimizer/`) already does the sketch
+part — **bind rules** (`BindHllOnCardinality`, `BindKllOnQuantile`, …) + a **cost
+model** (`cost/tco.rs`, `cost/wire.rs`: "family beats raw iff low-cardinality OR
+high-sample-per-window"). This requirement extends the *same* optimizer to allocate:
+
+1. **disjoint warm-sketch vs cold-Gorilla routing** — sketch if the queries on a
+   series are approximate/aggregate (quantile/topk/cardinality/sum) *and* the cost
+   model says sketch beats raw; **cold** if any query needs exact/historical replay
+   on it. (The wire/TCO cost model is the decision function.)
+2. **sketch type + `(W, L, agg_type)`** — the existing bind-rules + cost output.
+3. **sampling `p`** — which sketches are sampling-eligible (policy from the
+   controller) + the coordinated runtime allocation `p_i ∝ √(f_i/rate_i)` (data_plane
+   coordinator, ε-floored).
+
+**Layout:** match-rate curve — controller's `{routing, sketch, p}` choice vs the
+ground-truth-optimal over synthetic query sets; a confusion-style breakdown of which
+axis the controller gets wrong (routing? sketch type? `p`?).
+**◐** — bind-rules + cost model exist (the sketch axis); the **disjoint-routing** and
+**sampling-eligibility** allocation are the extension to build + evaluate.
+
+---
+
 ## Threats & answers (reviewer-facing)
 
 | threat | answer (and evidence) |
@@ -218,7 +281,9 @@ gap ∝ the rate CV; the win **only appears on skewed fleets** (multi-edge).
 | 6.3 | cross-layer placement (Fig 8) | ◐ (design+proof; bars to run) |
 | 6.x | coordinated vs uniform (Fig 9) | ◐ (differentiation shown; CV sweep) |
 | 6.x | scaling N∈{1,10,100} (Fig 10) | ◻ |
-| 6.x | planner match / drift / resilience | ◻ |
+| 6.2/6.storage | **cold-tier (Gorilla) overhead, disjoint** (Fig 11) | ◻ (cold disabled all session — measuring now) |
+| 6.5 | **controller allocation: routing+sketch+`p`** (Fig 12) | ◐ (bind-rules+cost exist; routing+sampling alloc = extension) |
+| 6.x | drift / resilience | ◻ |
 
 **Bottom line:** the *accuracy + CDM + composition* half of §6 already has real,
 defensible numbers (incl. a real-workload trace). The *cost-baseline* half (raw-vs-
