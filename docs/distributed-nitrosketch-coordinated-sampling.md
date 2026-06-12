@@ -392,6 +392,51 @@ as a guarantee, use the w.h.p. `ε_s(δ)` of (4′).
   CPU bottleneck, or the fleet is flat, the coordination win won't clear the
   complexity — ship a good static per-family `p` instead.
 
+## Empirical validation — CDM + SDK sampling, end-to-end (2026-06-12)
+
+Validated on the real stack: `otel-app` (SDK; warm geometric sampling, static or
+coordinator-granted) → `asap-otel` edge (per-series DDSketch + **ε-gated sub-window
+delta emission**) → `data_plane` backend (OTLP ingest + query engine + **CDM monitor
+coordinator**). Mixed **70% stable / 30% bursty** workload (so the ε-gate has stable
+series to suppress); 2019 Google-cluster trace used for the accuracy arm. Fresh
+edge+backend per arm (delta-query queryability).
+
+**`p × ε_cdm` matrix** — the two axes compose independently:
+
+| metric | p=1.0 ε=0 | p=1.0 ε=0.1 | p=1.0 ε=0.2 | p=0.25 ε=0 | p=0.25 ε=0.2 |
+|---|---|---|---|---|---|
+| sub-window emits/win | 1100 | 926 | **717** | 999 | **511** |
+| egress bytes/win | 56 438 | 37 612 | **30 333** | — | — |
+| ingest admitted/s | 171 | 171 | 171 | ~42 | ~42 |
+
+- **CDM ε-gate (egress):** emits/window and bytes **drop as `ε_cdm` rises** (gate
+  silences stable series) — vs `ε=0` emitting every tick.
+- **SDK sampling (ingest):** admitted/s **∝ `p`** (171→42), **independent of
+  `ε_cdm`** — orthogonal axes.
+
+**Both CDM branches confirmed together:**
+- **Open-window freshness:** with sub-window ON a *mid-window* query is live and its
+  p99 climbs within the window as bursts land (399→982 by t=26 s); with sub-window
+  OFF the mid-window query returns "No result" for ~28 s of every 30 s window
+  (stale until the boundary seals).
+- **Slack-countdown alert:** coordinator (`τ=24000, ε=0.05`, two skewed coordinated
+  edges) fired **once per epoch** at `global_estimate=22987 ≥ (1−ε)τ=22800` (within
+  ε), quiet below τ — while granting the hot edge `p≈0.032` and the quiet edge
+  `p=1.0` (coordinator-driven sampling running *concurrently* with the alert).
+
+**Accuracy (backend query vs ground truth):** `p=1.0` → **0.5–0.7%** (= DDSketch
+`ε_sk`≈0.01), independent of `ε_cdm`; `p=0.25` → p99 **1.8–2.1%** — the `ε_s`
+small-N tail, matching `√((1−p)/(pN))`. Confirms the joint bound
+`ε_sk + ε_s + ε_cdm` (and that delta+sub-window doesn't degrade accuracy).
+
+**Boundaries observed (consistent with the analysis above):** the first window
+always ships full state (delta floor — `ε_cdm` only bites window 2+, and a periodic
+full re-sync erodes the steady-state delta egress win from ~2× to ~1.3× mean);
+small-N per-series sampling degradation is exactly the `ε_s` term (the coordinator's
+ε-floor is what bounds it); per-series accuracy must be read on the *sealed* window
+(open/partial reads low — a query-timing artifact, not an `ε` effect). Artifacts:
+`/tmp/cdmsamp/` (matrix), `/tmp/gct-sweep-results.json` (pooled accuracy sweep).
+
 ## Recommendation
 
 Prototype **narrowly**: Count-Sketch on the highest-rate/high-cardinality metric,
