@@ -1,0 +1,184 @@
+{
+  "countminsketch": {
+    "arm": "countminsketch",
+    "kind": "frequency",
+    "at_time": 1781295129,
+    "agent_wire_bytes_to_backend": 10854406.0,
+    "agent_sent_metric_points": 2241.0,
+    "edge_stats": {
+      "cpu": "0.09%",
+      "mem": "187.7MiB / 251.8GiB"
+    },
+    "data_plane_stats": {
+      "cpu": "0.12%",
+      "mem": "112MiB / 251.8GiB"
+    },
+    "score": {
+      "data_source": "asap_query",
+      "f_hat": 244.0,
+      "f_true": 244,
+      "N": 100000,
+      "abs_over": 0.0,
+      "one_sided_ok": true,
+      "rel_err": 0.0
+    }
+  },
+  "countsketch": {
+    "arm": "countsketch",
+    "kind": "topk_h2h",
+    "at_time": 1781295782,
+    "agent_wire_bytes_to_backend": 12086701.0,
+    "agent_sent_metric_points": 2413.0,
+    "edge_stats": {
+      "cpu": "0.09%",
+      "mem": "109.9MiB / 251.8GiB"
+    },
+    "data_plane_stats": {
+      "cpu": "0.01%",
+      "mem": "117.9MiB / 251.8GiB"
+    },
+    "score": {
+      "countsketch_heap": {
+        "data_source": "asap_query",
+        "k": 10,
+        "n_warm": 0,
+        "recall_at_k": 0.0,
+        "warm_topk": {},
+        "gt_topk": {
+          "host-m-000836": 5.062762260437012,
+          "host-m-000918": 4.952019691467285,
+          "host-m-000289": 4.748056411743164,
+          "host-m-000767": 4.708229064941406,
+          "host-m-000310": 4.67326545715332,
+          "host-m-000611": 4.610149383544922,
+          "host-m-000944": 4.552204132080078,
+          "host-m-000203": 4.515572547912598,
+          "host-m-000899": 4.388130187988281,
+          "host-m-000438": 4.383225440979004
+        }
+      },
+      "countsketch_noheap": {
+        "data_source": "thanos_query",
+        "k": 10,
+        "n_warm": 0,
+        "recall_at_k": 0.0,
+        "warm_topk": {},
+        "gt_topk": {
+          "host-m-000836": 5.062762260437012,
+          "host-m-000918": 4.952019691467285,
+          "host-m-000289": 4.748056411743164,
+          "host-m-000767": 4.708229064941406,
+          "host-m-000310": 4.67326545715332,
+          "host-m-000611": 4.610149383544922,
+          "host-m-000944": 4.552204132080078,
+          "host-m-000203": 4.515572547912598,
+          "host-m-000899": 4.388130187988281,
+          "host-m-000438": 4.383225440979004
+        }
+      }
+    }
+  },
+  "ddsketch": {
+    "arm": "ddsketch",
+    "kind": "quantile",
+    "at_time": 1781294589,
+    "agent_wire_bytes_to_backend": 990707.0,
+    "agent_sent_metric_points": 2257.0,
+    "edge_stats": {
+      "cpu": "0.10%",
+      "mem": "44.6MiB / 251.8GiB"
+    },
+    "data_plane_stats": {
+      "cpu": "0.01%",
+      "mem": "19.9MiB / 251.8GiB"
+    },
+    "score": {
+      "0.99": {
+        "data_source": "asap_query",
+        "n_series_total": 1000,
+        "n_series_matched": 1000,
+        "mean_rel_err": 0.04791522719048002,
+        "median_rel_err": 0.026308647180477852,
+        "p95_rel_err": 0.17369239524794797,
+        "max_rel_err": 0.46418585428356124,
+        "frac_within_envelope": 0.435,
+        "envelope": 0.02,
+        "global_gt": 0.0494384765625
+      },
+      "0.5": {
+        "data_source": "asap_query",
+        "n_series_total": 1000,
+        "n_series_matched": 1000,
+        "mean_rel_err": 0.011188669905679079,
+        "median_rel_err": 0.006527567325529914,
+        "p95_rel_err": 0.034342219015867634,
+        "max_rel_err": 0.30905627049067613,
+        "frac_within_envelope": 0.874,
+        "envelope": 0.02,
+        "global_gt": 0.019287109375
+      }
+    }
+  },
+  "hll": {
+    "arm": "hll",
+    "kind": "cardinality",
+    "at_time": 1781295307,
+    "agent_wire_bytes_to_backend": 506167.0,
+    "agent_sent_metric_points": 2251.0,
+    "edge_stats": {
+      "cpu": "0.09%",
+      "mem": "51.46MiB / 251.8GiB"
+    },
+    "data_plane_stats": {
+      "cpu": "0.01%",
+      "mem": "28.27MiB / 251.8GiB"
+    },
+    "score": {
+      "data_source": "asap_query",
+      "card_hat": null,
+      "card_true": 1000.0,
+      "rel_err": null
+    }
+  },
+  "kll": {
+    "arm": "kll",
+    "kind": "quantile",
+    "at_time": 1781294769,
+    "agent_wire_bytes_to_backend": 1344585.0,
+    "agent_sent_metric_points": 2276.0,
+    "edge_stats": {
+      "cpu": "0.09%",
+      "mem": "58.58MiB / 251.8GiB"
+    },
+    "data_plane_stats": {
+      "cpu": "0.01%",
+      "mem": "24.88MiB / 251.8GiB"
+    },
+    "score": {
+      "0.99": {
+        "data_source": "asap_query",
+        "n_series_total": 1000,
+        "n_series_matched": 1000,
+        "mean_rel_err": 0.07068991168389868,
+        "median_rel_err": 0.026142877114497153,
+        "p95_rel_err": 0.30015121323893207,
+        "max_rel_err": 0.8858511275194602,
+        "frac_within_envelope": 0.64,
+        "envelope": 0.05,
+        "global_gt": 0.0494384765625
+      },
+      "0.5": {
+        "data_source": "asap_query",
+        "n_series_total": 1000,
+        "n_series_matched": 1000,
+        "mean_rel_err": 0.011164521878939166,
+        "median_rel_err": 0.0006583278472679394,
+        "p95_rel_err": 0.04007820136852395,
+        "max_rel_err": 0.9929015684153597,
+        "frac_within_envelope": 0.964,
+        "envelope": 0.05,
+        "global_gt": 0.019287109375
+      }
+    }
+  }
+}

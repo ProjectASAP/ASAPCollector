@@ -1,0 +1,17 @@
+- metric_name: google_cluster_2019_cpu_rate
+  query_string: sum(google_cluster_2019_cpu_rate)
+  accuracy_sla: 0.0
+  assign_to_role: agent
+- metric_name: google_cluster_2019_memory_usage
+  query_string: sum by (zone) (google_cluster_2019_memory_usage)
+  accuracy_sla: 0.0
+  assign_to_role: agent
+  grouping_labels:
+  - zone
+- metric_name: google_cluster_2019_cpu_rate_card_hll
+  query_string: count(google_cluster_2019_cpu_rate_card_hll)
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: HLL
+  target_path: warm
+  item_label: service

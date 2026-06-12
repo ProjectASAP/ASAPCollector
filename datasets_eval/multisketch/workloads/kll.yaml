@@ -1,0 +1,16 @@
+- metric_name: google_cluster_2019_cpu_rate
+  query_string: sum(google_cluster_2019_cpu_rate)
+  accuracy_sla: 0.0
+  assign_to_role: agent
+- metric_name: google_cluster_2019_memory_usage
+  query_string: sum by (zone) (google_cluster_2019_memory_usage)
+  accuracy_sla: 0.0
+  assign_to_role: agent
+  grouping_labels:
+  - zone
+- metric_name: google_cluster_2019_cpu_rate_q_kll
+  query_string: quantile_over_time(0.99, google_cluster_2019_cpu_rate_q_kll[60s])
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: KLL
+  target_path: warm

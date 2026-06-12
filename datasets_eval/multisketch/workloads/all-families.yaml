@@ -1,0 +1,74 @@
+# All-six-families compound workload for the google_cluster trace.
+#
+# Each entry pins a sketch_family_override so the controller routes the
+# (aliased) metric to exactly that family in the fused asap_edge config
+# AND in the backend streaming-config it POSTs to the data plane. The
+# alias metrics are produced by make_aliases.py from the same cpu_rate
+# rows, so every family ingests identical real values.
+#
+# Schema: control_plane workloads.rs::WorkloadEntry (see
+#   deploy/mvp-multinode/configs/asap/mvp-workload.yaml for the reference).
+
+# --- Sum / exact-agg: cluster-wide cpu + per-zone memory (lossless) ---
+- metric_name: google_cluster_2019_cpu_rate
+  query_string: "sum(google_cluster_2019_cpu_rate)"
+  accuracy_sla: 0.0
+  assign_to_role: agent
+
+- metric_name: google_cluster_2019_memory_usage
+  query_string: "sum by (zone) (google_cluster_2019_memory_usage)"
+  accuracy_sla: 0.0
+  assign_to_role: agent
+  grouping_labels: [zone]
+
+# --- DDSketch quantile (per-series) ---
+- metric_name: google_cluster_2019_cpu_rate_q_ddsketch
+  query_string: "quantile_over_time(0.99, google_cluster_2019_cpu_rate_q_ddsketch[120s])"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  sketch_family_override: DDSketch
+  target_path: warm
+
+# --- KLL quantile (per-series, head-to-head with DDSketch) ---
+- metric_name: google_cluster_2019_cpu_rate_q_kll
+  query_string: "quantile_over_time(0.99, google_cluster_2019_cpu_rate_q_kll[120s])"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  sketch_family_override: KLL
+  target_path: warm
+
+# --- CountSketch top-K by host CPU ---
+- metric_name: google_cluster_2019_cpu_rate_topk_cs
+  query_string: "topk(10, sum by (host) (google_cluster_2019_cpu_rate_topk_cs))"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountSketch
+  target_path: warm
+  item_label: host
+
+# --- CMS-with-heap top-K by host CPU (head-to-head with CountSketch) ---
+- metric_name: google_cluster_2019_cpu_rate_topk_cms
+  query_string: "topk(10, sum by (host) (google_cluster_2019_cpu_rate_topk_cms))"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountMinSketch
+  target_path: warm
+  item_label: host
+
+# --- HLL distinct-service cardinality ---
+- metric_name: google_cluster_2019_cpu_rate_card_hll
+  query_string: "count(google_cluster_2019_cpu_rate_card_hll)"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  sketch_family_override: HLL
+  target_path: warm
+  item_label: service
+
+# --- CountMinSketch per-item frequency ---
+- metric_name: google_cluster_2019_cpu_rate_freq_cms
+  query_string: "count_over_time(google_cluster_2019_cpu_rate_freq_cms[120s])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  sketch_family_override: CountMinSketch
+  target_path: warm
+  item_label: service

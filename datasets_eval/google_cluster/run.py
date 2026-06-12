@@ -147,6 +147,7 @@ def _replay_otlp_grpc(
     endpoint: str,
     pace_factor: float,
     max_lines: int,
+    wall_clock_anchor: bool = False,
 ) -> int:
     """OTLP/gRPC sender. Lazy-imports opentelemetry-proto deps.
 
@@ -179,6 +180,29 @@ def _replay_otlp_grpc(
     n = 0
     walk_start_ns = time.time_ns()
     trace_start_ms: int | None = None
+    # When wall_clock_anchor is set we re-stamp EVERY datapoint at a SINGLE
+    # wall-clock instant (captured once at replay start), discarding the
+    # trace's epoch-relative timestamps. Rationale:
+    #   - The trace spans ~31 days of trace-relative time; preserving that
+    #     spacing scatters rows across thousands of (epoch-1970) windows so no
+    #     recent-range [Ns] selector intersects the stored warm windows — the
+    #     original "quantile_over_time returns empty" defect was this timing
+    #     mismatch, NOT a reducer bug.
+    #   - Collapsing to ONE instant folds the entire replay into ONE agent
+    #     window, so every replayed series carries its full value multiset into
+    #     a single per-series sketch in one warm window. A quantile_over_time
+    #     /sum_over_time/count_over_time at now (range >= one window) then reads
+    #     that one window and reconstructs the full-replay aggregate for ALL
+    #     series (vs a send-time spread that splits a series across windows and
+    #     leaves only a subset queryable from any single window).
+    #   - GT is defined over ALL rows (window-bounds None) from VALUES only, so
+    #     a value-preserving timestamp rewrite leaves the offline GT identical.
+    # PRECONDITION: the replay must finish within one window_duration (the
+    # asap_edge seals on WALL-CLOCK passing the window end, so a replay slower
+    # than the window would have its instant's window seal mid-replay and drop
+    # late rows). The per-family arms (~200k rows) replay in << 60s; for a
+    # multi-minute all-families replay, slice per family or widen the window.
+    anchor_now_ns = time.time_ns()
 
     def flush(rows: list[dict[str, Any]]) -> None:
         if not rows:
@@ -199,7 +223,10 @@ def _replay_otlp_grpc(
             for r in mrows:
                 dp = metric.gauge.data_points.add()
                 dp.as_double = float(r["value"])
-                dp.time_unix_nano = int(r["timestamp_ms"]) * 1_000_000
+                if wall_clock_anchor:
+                    dp.time_unix_nano = anchor_now_ns
+                else:
+                    dp.time_unix_nano = int(r["timestamp_ms"]) * 1_000_000
                 for k, v in sorted(r["attributes"].items()):
                     a = common_pb2.AnyValue()
                     a.string_value = str(v)
@@ -219,6 +246,15 @@ def _replay_otlp_grpc(
                 obj = json.loads(line)
                 if trace_start_ms is None:
                     trace_start_ms = int(obj["timestamp_ms"])
+                    if wall_clock_anchor:
+                        print(
+                            f"replay: wall-clock anchor on — re-stamping ALL rows at a "
+                            f"single instant now={anchor_now_ns // 1_000_000} ms (collapse "
+                            f"31-day trace span into ONE window; trace epoch-relative ts "
+                            f"discarded, trace_start_ms={trace_start_ms}); a [Ns] query at "
+                            f"now intersects that window",
+                            file=sys.stderr,
+                        )
                 if pace_factor > 0:
                     target_offset_ms = (int(obj["timestamp_ms"]) - trace_start_ms) / pace_factor
                     target_ns = walk_start_ns + int(target_offset_ms * 1_000_000)
@@ -244,7 +280,8 @@ def _replay_otlp_grpc(
 def cmd_replay(args: argparse.Namespace) -> int:
     if args.dry_run or not args.endpoint:
         return _replay_dry_run(args.jsonl, args.max_lines)
-    rc = _replay_otlp_grpc(args.jsonl, args.endpoint, args.pace_factor, args.max_lines)
+    rc = _replay_otlp_grpc(args.jsonl, args.endpoint, args.pace_factor, args.max_lines,
+                           wall_clock_anchor=getattr(args, "wall_clock_anchor", False))
     if rc == 4:
         return _replay_dry_run(args.jsonl, args.max_lines)
     return rc
@@ -414,6 +451,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     pr.add_argument("--max-lines", type=int, default=0,
                     help="Cap rows sent (0 = all).")
+    pr.add_argument("--wall-clock-anchor", action="store_true",
+                    help="Re-stamp EVERY datapoint at one wall-clock instant "
+                         "(captured at replay start), collapsing the trace's "
+                         "epoch-relative span into ONE warm window at now. "
+                         "Required for recent-range PromQL ([Ns]) to intersect "
+                         "the warm sketch windows. Timestamp-only; GT unchanged. "
+                         "Replay must finish within one window_duration.")
     pr.add_argument("--dry-run", action="store_true",
                     help="Force dry-run even with --endpoint set.")
     pr.set_defaults(func=cmd_replay)
