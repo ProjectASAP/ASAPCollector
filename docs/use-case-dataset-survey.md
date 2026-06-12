@@ -1,0 +1,428 @@
+# Use-case & dataset survey — warm-sketch tier vs cold-archive tier
+
+> **Audience:** anyone choosing public workloads to back ASAP's §6 evaluation,
+> or sanity-checking that the **disjoint warm/cold routing** story matches a real
+> use case. Companion to [`evaluation-plan-figures.md`](evaluation-plan-figures.md)
+> (Fig 11 disjoint-routing, Fig 12 controller-allocation), [`paper-outline.md`](paper-outline.md),
+> [`design-archive-tier.md`](design-archive-tier.md) (the cold/archive tier of record),
+> and [`distributed-nitrosketch-coordinated-sampling.md`](distributed-nitrosketch-coordinated-sampling.md).
+>
+> **Status:** survey / dataset-selection reference, 2026-06-12.
+
+---
+
+## 0. The story this survey validates (terminology pinned to the repo)
+
+ASAP routes **every series disjointly** into exactly one of two tiers — never both
+(Fig 11, [`design-archive-tier.md` §1](design-archive-tier.md)):
+
+- **Warm sketch tier** — `(ε, δ)`-bounded approximate state (DDSketch / KLL /
+  Count-Min / Count-Sketch / HLL / Sum). **Lossy within a bounded ε; the per-series
+  raw sample stream is discarded.** Good for high-volume aggregation / quantile /
+  topk / cardinality queries amortised over a window. Bandwidth-efficient on the
+  wire (sketch envelopes ~10–100× smaller than raw); sampling (`p`) and CDM ε-gated
+  delta emission apply **only here**.
+- **Cold archive tier** — Gorilla-XOR (TSDB blocks) / `intchunk` best-of-N codec.
+  **Lossless, raw samples preserved**, cold-IO-class latency. The price of
+  exact / historical / forensic / regulator-visible replay.
+
+> *"A series is sketched **xor** cold-archived, so a dropped warm sample truly has
+> no other consumer"* — [`distributed-nitrosketch-coordinated-sampling.md`](distributed-nitrosketch-coordinated-sampling.md).
+
+The **controller allocates the partition from the query workload** (Fig 12,
+[`design-archive-tier.md` §4 "Mode selection"](design-archive-tier.md)): a series is
+warm if every query on it is approximate / aggregate (quantile / topk / cardinality /
+sum) **and** the cost model says sketch beats raw; **cold** if **any** query on it needs
+exact / historical replay. Total-resource cost on the Pareto is therefore **additive**:
+`warm-half cost + cold-half cost`, partitioned across series (Fig 11(d)).
+
+We already evaluate on two **anchor** datasets:
+- **Google cluster trace 2019** — resource / high-cardinality → accuracy, Pareto,
+  cardinality / sum (`datasets_eval/google_cluster/`).
+- **DEBS-2022 (Deutsche Börse / Infront tick data)** — financial / skewed activity →
+  coordinated sampling, topk, the ε-gate / delta regime (`datasets_eval/debs/`).
+
+This survey verifies those two and finds **more**, mapping each to the warm/cold split
+and to the user's seven query/data axes.
+
+### The seven axes (column legend for the matrix)
+
+1. **Large data volume** — high total ingest (events/s × series).
+2. **Aggregation queries** — quantile / sum / count / topk / cardinality (the warm-tier sweet spot).
+3. **Repeated queries** — the same query re-issued (dashboards, scheduled SLO checks).
+4. **Overlapping queries** — sliding/rolling windows that share sub-ranges.
+5. **Long-lookback queries** — queries reaching far back (historical / backtest / forensic).
+6. **High-cardinality** — many distinct series / active keys.
+7. **High-frequency-per-series** — many samples/s on a single series.
+
+---
+
+## 1. Summary matrix — datasets × the seven axes
+
+✓ = strongly exercises it · ~ = partially / conditionally · ✗ = not really.
+**Tier** = where the *bulk* of series land under our story (most datasets are mixed;
+the per-dataset cards give the split).
+
+| # | Dataset | Domain | 1 Vol | 2 Agg | 3 Rep | 4 Ovlp | 5 Long | 6 Card | 7 Freq | Dominant tier |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **A1** | **Google cluster 2019** (anchor) | observability/resource | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ (5-min) | **warm** (resource quantiles) + cold (audit) |
+| A2 | Alibaba cluster 2018 | observability/resource | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ (10–300s) | warm + cold |
+| A3 | Alibaba microservices 2021/2022 | observability/traces | ✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓ | **warm** (trace latency q) + cold (trace replay) |
+| A4 | Azure VM trace 2017/2019 | observability/resource | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | ~ (5-min) | **warm** (fleet quantiles) + cold (billing) |
+| A5 | Azure Functions 2019 | observability/metrics | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | ✓ (per-min invokes) | **warm** + cold (billing) |
+| A6 | OpenTelemetry Demo / synthetic | observability/all | ~ | ✓ | ✓ | ✓ | ✗ | ~ | ~ | warm (controllable) |
+| A7 | Wikimedia pageviews/webrequest | observability/CDN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓ | **warm** (topk/HLL) + cold (forensic) |
+| **F1** | **DEBS-2022 Deutsche Börse** (anchor) | finance/tick | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ (skewed) | **warm** (VWAP/q) + cold (audit) |
+| F2 | LOBSTER (NASDAQ LOB) | finance/order book | ✓ | ✓ | ~ | ✓ | ✓ | ~ | ✓✓ | **cold** (event-exact) + warm (depth q) |
+| F3 | NYSE Daily TAQ | finance/trades+quotes | ✓✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓✓ | **cold** (MiFID/SEC audit) + warm (VWAP) |
+| F4 | Deutsche Börse PDS (Xetra/Eurex) | finance/OHLCV 1-min | ~ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ (pre-agg) | warm (already aggregated) |
+| F5 | Binance/Kraken/Coinbase tick | finance/crypto tick | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | **warm** (q/VWAP) + cold (backtest replay) |
+
+**Headline read of the matrix:** the user's axes split cleanly along the tier line —
+**(2) aggregation, (3) repeated, (4) overlapping, (6) high-cardinality, (7)
+high-frequency** are exactly the warm-tier sweet spot, while **(5) long-lookback** is
+the axis that pulls series **cold** (exact/historical replay). **(1) large volume** is
+necessary for either tier to matter. No single public dataset maxes every axis at
+once — see §4 honest gaps.
+
+---
+
+## 2. Cloud observability — per-dataset cards
+
+### A1 — Google cluster trace 2019 *(anchor — already ours)*
+
+- **What:** per-instance Borg resource-usage stream (CPU/memory) over **8 cells, all of
+  May 2019**; `instance_usage` carries **CPU-usage histograms per 5-minute period**
+  (not a point sample), plus `instance_events`, `machine_events`, `collection_events`.
+- **Volume / scale:** **~2.4 TiB compressed**; "several hundred GiB to ~1 TiB per cell"
+  (8 cells). BigQuery-only access due to size. *(Exact `instance_usage` row count is
+  not published per-cell — approx/unverified; the repo subsamples
+  `instance_usage-000000000000.csv.gz` of cell `a`.)*
+- **Cardinality:** **high** — millions of `(machine, job, task/instance)` tuples; this
+  is the cardinality regime SDK-side sketch aggregation targets (`datasets_eval/google_cluster/README.md`).
+- **Per-series frequency:** **low-moderate** — 5-minute sampling cadence per instance;
+  high-frequency comes from *aggregate* rate, not per-series.
+- **Warm vs cold:** **per-instance CPU/memory utilization → warm DDSketch/KLL** —
+  queried only as fleet/percell quantiles ("p99 CPU across the cell"), raw per-instance
+  point never needed → lossy-OK. **Cold:** capacity-planning audit / "exact CPU of
+  instance X at 03:14 on May 12" forensic point-in-time (rare; pulls that metric cold).
+- **Axes:** 1 ✓, 2 ✓ (quantile/sum over the fleet), 3 ✓ (the same SLO dashboards),
+  4 ✓ (rolling windows), 5 ~ (1-month span limits true long-lookback), 6 ✓, 7 ~ (5-min).
+- **Obtain:** <https://github.com/google/cluster-data> ·
+  <https://github.com/google/cluster-data/blob/master/ClusterData2019.md>.
+- **In repo:** measured — accuracy sweep (Fig 3a, p99 rel-err 0.34–1.86% across `p`),
+  latency CDF (Fig 7). Already the resource anchor.
+
+### A2 — Alibaba cluster trace 2018
+
+- **What:** co-located batch + online-service jobs on a production cluster; machine
+  usage, batch task instances, container/online-service metrics.
+- **Volume / scale:** **4,201,015 batch jobs + 370,540 online-service jobs on 4,023
+  machines over 8 days**; **>450 GB uncompressed across 6 files**.
+- **Cardinality:** **high** — millions of task instances + per-machine series.
+- **Per-series frequency:** **moderate** — machine/container usage sampled on the order
+  of 10s–300s.
+- **Warm vs cold:** per-machine CPU/mem utilization → **warm** (cluster quantiles);
+  per-task scheduling/exit events → **cold** if exact post-mortem replay is required.
+- **Axes:** like A1 (1,2,3,4,6 ✓; 5 ~ at 8 days; 7 ~). Adds **co-location skew** — a
+  good complement to A1 for the controller-allocation story (mixed approximate vs exact
+  metrics on the same host).
+- **Obtain:** <https://github.com/alibaba/clusterdata> (`cluster-trace-v2018`).
+
+### A3 — Alibaba microservices trace 2021 / 2022
+
+- **What:** distributed-tracing + call-graph data — **20,000+ microservices** over
+  **12 hours** from **>10,000 bare-metal nodes** (2021); 2022 adds microarchitectural
+  metrics (AMTrace).
+- **Volume / scale:** very large (call-graph edges per request); the
+  highest-cardinality observability option here.
+- **Cardinality:** **very high (✓✓)** — services × instances × call edges; this is the
+  dataset for the high-cardinality axis.
+- **Per-series frequency:** **high** — per-request spans.
+- **Warm vs cold:** **per-service latency → warm DDSketch/KLL** (p50/p99 latency SLOs
+  are quantile queries — exactly Fig 7's `quantile_over_time` path); **distinct-callers
+  → warm HLL** (cardinality). **Cold:** *individual* trace replay for incident forensics
+  ("show me the exact span tree for trace-id … last Tuesday") needs the raw event —
+  lossless, cold. Clean illustration of the disjoint split: latency-quantile series go
+  warm, the raw span archive goes cold.
+- **Axes:** 1 ✓, 2 ✓, 3 ✓, 4 ✓, 5 ✓ (forensic lookback is the cold motivation), 6 ✓✓,
+  7 ✓.
+- **Obtain:** <https://github.com/alibaba/clusterdata> (`cluster-trace-microservices-v2021/2022`).
+
+### A4 — Azure Public Dataset VM trace (V1 2017 / V2 2019)
+
+- **What:** sanitized first-party Azure VM workload — 5-minute CPU-utilization
+  readings + VM-info + subscription tables.
+- **Volume / scale:** **V1 (2017): ~2 M VMs, ~1.2 B utilization readings**;
+  **V2 (2019): ~2.6 M VMs, ~1.9 B utilization readings.**
+- **Cardinality:** **very high (✓✓)** — millions of VMs = millions of series.
+- **Per-series frequency:** **low** — 5-minute readings (like A1).
+- **Warm vs cold:** **per-VM CPU utilization → warm DDSketch** (fleet quantiles for
+  capacity/SLO; raw per-VM point not needed). **Cold:** per-VM **billing / chargeback
+  counters** — exact replay required (a customer dispute can't be answered with an
+  ε-bounded number) → lossless cold. This is the textbook *"per-host CPU → warm vs
+  billing counter → cold"* example from the task framing.
+- **Axes:** 1 ✓, 2 ✓, 3 ✓, 4 ✓, 5 ~, 6 ✓✓, 7 ~.
+- **Obtain:** <https://github.com/Azure/AzurePublicDataset>.
+
+### A5 — Azure Functions trace 2019
+
+- **What:** serverless invocation counts — **per-minute invocations per function** +
+  trigger group + execution-duration distributions, July 2019.
+- **Volume / scale:** large invocation counts; the **per-function duration percentiles**
+  are explicitly published as *distributions* — a native warm-sketch fit.
+- **Cardinality:** **very high (✓✓)** — many functions × applications.
+- **Per-series frequency:** **higher than VM traces** — per-minute invocation series,
+  bursty.
+- **Warm vs cold:** **invocation rate → warm Sum/Count; execution-duration → warm
+  KLL/DDSketch** (the trace ships duration *percentiles* — exactly what a quantile
+  sketch reconstructs). **Cold:** per-invocation **billing** records (exact) → cold.
+- **Axes:** 1 ✓, 2 ✓, 3 ✓, 4 ✓, 5 ~, 6 ✓✓, 7 ✓.
+- **Obtain:** <https://github.com/Azure/AzurePublicDataset> (`AzureFunctionsDataset2019`).
+
+### A6 — OpenTelemetry Demo / synthetic generators
+
+- **What:** the OTel "Astronomy Shop" demo emits metrics + traces + logs across ~15
+  microservices; pairs naturally with this repo's `otel-app` SDK generator.
+- **Volume / scale:** **operator-controllable** (load-generator driven) — not a fixed
+  corpus, so it's the *knob* dataset, not a scale claim.
+- **Cardinality / frequency:** tunable; useful precisely because you can dial axes 1/6/7
+  to stress a specific figure (e.g. push cardinality to find the cost-model crossover).
+- **Warm vs cold:** mirror A3 — RED metrics (rate/errors/duration) → warm; raw trace
+  export → cold. Its real value is as the **controllable** workload for Fig 12 (sweep
+  the query set, watch the allocation move) rather than a citable scale number.
+- **Axes:** 2 ✓, 3 ✓, 4 ✓; 1/6/7 ~ (only as configured); 5 ✗ (no history).
+- **Obtain:** <https://github.com/open-telemetry/opentelemetry-demo>.
+
+### A7 — Wikimedia pageviews / webrequest
+
+- **What:** **pageviews** = hourly per-page aggregate dumps (public, since 2015);
+  **webrequest** = every hit to Wikimedia's CDN (page HTML, images, API) — the raw
+  request log (internal Hive, but the derived pageview dumps are fully public).
+- **Volume / scale:** webrequest is the full CDN firehose (billions of hits/day across
+  the edge fleet); public pageview dumps are **hourly per-page gzipped text**, retained
+  with raw webrequest **purged after 90 days for privacy**. *(Exact req/s
+  approx/unverified — published artifact is the hourly aggregate, not the raw rate.)*
+- **Cardinality:** **very high (✓✓)** — distinct pages/URLs is a classic heavy-hitter +
+  cardinality workload.
+- **Per-series frequency:** **high** at the request level.
+- **Warm vs cold:** **top-pages → warm Count-Sketch/Count-Min (topk/heavy-hitter);
+  distinct-clients → warm HLL (cardinality)** — the canonical sketch use cases. **Cold:**
+  per-request forensic / abuse investigation needs the raw log — *but Wikimedia's own
+  90-day purge is the real-world cold-retention constraint*, and the public artifact is
+  already the aggregate (the raw is privacy-gated). A good motivating example *and* an
+  honest gap (the cold-raw half is not publicly downloadable).
+- **Axes:** 1 ✓, 2 ✓, 3 ✓, 4 ✓, 5 ✓ (the dumps go back years), 6 ✓✓, 7 ✓.
+- **Obtain:** <https://dumps.wikimedia.org/other/pageviews/> ·
+  <https://dumps.wikimedia.org/other/pageview_complete/readme.html> ·
+  webrequest schema: <https://wikitech.wikimedia.org/wiki/Analytics/Data_Lake/Traffic/Webrequest>.
+
+---
+
+## 3. Finance — per-dataset cards
+
+### F1 — DEBS-2022 Grand Challenge (Deutsche Börse / Infront tick data) *(anchor — already ours)*
+
+- **What:** financial **tick data** (last-trade events) from **three European exchanges
+  — Paris (FR), Amsterdam (NL), Frankfurt/Xetra (ETR)** over a full week in 2021;
+  provided by Infront Financial Technology for the DEBS 2022 Grand Challenge.
+- **Volume / scale:** **289 million tick events** over **5,504 equities & indices**.
+  The repo maps the **09:00–09:30 CEST slice = 685,822 events / 3,912 symbols**
+  (`datasets_eval/debs/`); top-1% of symbols = 11.3% of activity (max ASML rate 3,141
+  ticks vs min 1 — genuine activity skew).
+- **Cardinality:** **moderate-high** — ~5.5k symbols (series key = symbol).
+- **Per-series frequency:** **high & skewed (✓)** — hot symbols at thousands of
+  ticks/window, a long quiet tail at ~1.
+- **Warm vs cold:** **VWAP / price quantiles / rolling-volume aggregates → warm
+  DDSketch/Sum**; the skew is exactly what the coordinated-`p` sampling exploits (hot
+  ASML → `p≈0.031`, rare symbol → `p≈0.990`, **32× differentiation**). **Cold:**
+  trade-by-trade **MiFID II / regulatory audit replay** → lossless raw.
+- **Axes:** 1 ✓, 2 ✓, 3 ✓, 4 ✓, 5 ~ (one week), 6 ✓, 7 ✓.
+- **Obtain:** Zenodo DOI <https://doi.org/10.5281/zenodo.6382482> ·
+  paper <https://arxiv.org/abs/2206.13237>.
+- **In repo:** measured — the §6 financial cross-check (accuracy 0.9–1.1% ≈ DDSketch α,
+  coordinated sampling 32×, ε-gate/delta regime); see `datasets_eval/debs/cdm_eval/`.
+
+### F2 — LOBSTER (NASDAQ reconstructed limit order book)
+
+- **What:** **event-by-event limit-order-book reconstruction** for any NASDAQ-traded
+  stock from June 2007 (Humboldt University). Message file = limit-order arrivals,
+  cancellations, executions, market orders, halts; book file = reconstructed depth.
+  **Free sample files for AAPL, AMZN, GOOG, INTC, MSFT.**
+- **Volume / scale:** **hundreds of thousands of book updates per active stock per
+  trading day** (e.g. ~300k–600k snapshots/stock on a busy day), nanosecond-precision
+  timestamps. Full coverage is a paid subscription; samples are free.
+- **Cardinality:** **moderate** per-stock (price levels), high across the universe of
+  symbols.
+- **Per-series frequency:** **very high (✓✓)** — sub-millisecond LOB events; the
+  highest per-series frequency in this survey.
+- **Warm vs cold:** **order-book depth/imbalance quantiles, rolling spread → warm**;
+  **but the LOB is fundamentally an event-exact, replay-driven artifact** — most LOB
+  research needs the *exact* event sequence (fill-probability, microstructure) →
+  **cold-dominant**. A good honest case where the split leans **cold** (exact replay is
+  the point), with only the aggregate-summary queries going warm. Illustrates "where the
+  split is ambiguous" from the quality bar.
+- **Axes:** 1 ✓, 2 ✓, 3 ~, 4 ✓, 5 ✓ (backtesting), 6 ~, 7 ✓✓.
+- **Obtain:** <https://lobsterdata.com> (free samples at
+  <https://data.lobsterdata.com/info/DataStructure.php>).
+
+### F3 — NYSE Daily TAQ (Trade and Quote)
+
+- **What:** **all trades and all quotes** for every issue on NYSE, Nasdaq and regional
+  exchanges — consolidated tape, **microsecond timestamps**, **>10,000 issues across 16
+  US exchanges**, history from 1993 to present.
+- **Volume / scale:** the **largest-volume (✓✓)** finance option — full-market trades +
+  the (far larger) quote stream; multi-billion-message days at peak. *(Exact daily
+  record/byte counts vary by day and aren't published as a single figure —
+  approx/unverified; obtain via WRDS for academics.)*
+- **Cardinality:** **very high (✓✓)** — 10k+ symbols × per-venue quote series.
+- **Per-series frequency:** **very high (✓✓)** — quote updates dominate, microsecond
+  cadence on liquid names.
+- **Warm vs cold:** **VWAP / volume / price quantiles per symbol → warm
+  DDSketch/Sum/KLL** (the quote *firehose* is the canonical "queried only as aggregates,
+  raw quotes never individually needed" warm case — discarding the per-quote stream is
+  the big win). **Cold:** **SEC / MiFID-style audit & exact trade reconstruction** →
+  lossless raw — the strongest real-world cold-raw / compliance motivation in the
+  survey. Clean disjoint split: quotes → warm aggregates, trades → cold audit.
+- **Axes:** 1 ✓✓, 2 ✓, 3 ✓, 4 ✓, 5 ✓, 6 ✓✓, 7 ✓✓.
+- **Obtain:** <https://www.nyse.com/market-data/historical/daily-taq> · academic via WRDS
+  <https://wrds-www.wharton.upenn.edu/pages/about/data-vendors/nyse-trade-and-quote-taq/>.
+  *(Access-gated — not freely downloadable; cite as the high-end scale reference.)*
+
+### F4 — Deutsche Börse Public Dataset (Xetra / Eurex, AWS Open Data)
+
+- **What:** trade data **pre-aggregated to 1-minute OHLCV** (open/high/low/close,
+  #trades, volume) per security from the Xetra and Eurex systems.
+- **Volume / scale:** modest (already minute-aggregated, not tick) — two S3 buckets in
+  eu-central-1; **freely downloadable** (NC license).
+- **Cardinality:** **moderate** — all tradeable Xetra/Eurex securities.
+- **Per-series frequency:** **low (✗)** — 1-minute bars (the raw ticks are already
+  collapsed by the publisher).
+- **Warm vs cold:** the data is **already an aggregate** — it *is* the warm-tier output
+  shape (OHLCV bars). Useful as a **ground-truth aggregate** to validate warm-sketch
+  answers against, or a low-frequency long-history series. Little cold motivation (no
+  raw ticks to preserve). Its honest role: **a check, not a stressor** — and a freely
+  downloadable, license-clean stand-in for the access-gated TAQ.
+- **Axes:** 2 ✓, 3 ✓, 4 ✓, 5 ✓ (multi-year), 6 ✓; 1 ~, 7 ✗.
+- **Obtain:** <https://registry.opendata.aws/deutsche-boerse-pds/>.
+
+### F5 — Binance / Kraken / Coinbase public crypto tick data
+
+- **What:** **tick-by-tick trade data** (and aggTrades) per trading pair, free bulk
+  download. Binance: `data.binance.vision` (daily/monthly aggTrades + trades per pair).
+  Kraken: full per-pair trade history CSVs from market inception. Coinbase: historical
+  exchange datasets.
+- **Volume / scale:** large and **continuously growing** — BTCUSDT and other majors run
+  to **millions of trades/day**; full multi-pair history is many tens of GB. *(Per-pair
+  daily counts vary widely — approx/unverified; download per-pair to measure.)*
+- **Cardinality:** **moderate** — hundreds of trading pairs (not host-fleet scale), but
+  24/7 (no market close) so continuous.
+- **Per-series frequency:** **very high (✓✓)** on majors; bursty around volatility.
+- **Warm vs cold:** **per-pair price quantiles / VWAP / rolling volume → warm
+  DDSketch/Sum** (the high-frequency, aggregate-queried case). **Cold:** **backtesting
+  replay** needs the exact trade sequence (a strategy backtest is a long-lookback,
+  exact-replay query) → lossless cold. Crypto is the **freely-downloadable, license-open
+  stand-in for TAQ** — it covers the high-frequency + long-lookback finance axes without
+  TAQ's access gate.
+- **Axes:** 1 ✓, 2 ✓, 3 ✓, 4 ✓, 5 ✓ (backtest), 6 ~, 7 ✓✓.
+- **Obtain:** <https://github.com/binance/binance-public-data> /
+  <https://data.binance.vision> · Kraken
+  <https://support.kraken.com/articles/360047543791> · Coinbase Institutional market
+  data. Aggregated CSVs: <https://www.cryptodatadownload.com/data/>.
+
+---
+
+## 4. Honest gaps
+
+- **No single public dataset is "high-cardinality AND long-retention-raw" at once.**
+  The cold-raw motivation (exact replay over a long horizon at fleet cardinality) is
+  exactly what real operators *don't* publish — it's expensive and often
+  privacy/compliance-gated. Azure/Google give high cardinality but **short spans**
+  (1 month) and **already-purged or histogram-summarized** raw; the long-history sets
+  (Deutsche Börse PDS, pageview dumps) are **already aggregated**. So axis 5
+  (long-lookback) + axis 6 (high-cardinality) + raw retention only co-occur in
+  **private** corpora.
+- **The strongest cold-raw / compliance cases are access-gated or private.** NYSE TAQ
+  (SEC/MiFID audit) is the textbook cold-raw motivation but is WRDS/subscription-gated;
+  Wikimedia webrequest (forensic) is privacy-purged at 90 days; real billing/audit
+  counters (the cleanest "must be exact" series) are proprietary. We cite these for the
+  *motivation* and use freely-downloadable stand-ins (crypto tick, Deutsche Börse PDS)
+  for the *measurements*.
+- **Per-series high-frequency at fleet cardinality is rare in resource traces.** Google/
+  Azure/Alibaba are 5-min/10-min cadence — high *aggregate* rate but low *per-series*
+  frequency. Axis 7 at scale comes from **finance tick** (TAQ, LOBSTER, crypto) and
+  **microservice traces** (A3), not resource traces.
+- **Several cited scale numbers are publisher-summarized, not raw counts** (Google 2019
+  per-cell row count, TAQ daily volume, crypto per-pair counts, Wikimedia req/s) —
+  flagged *approx/unverified* in the cards; download/BigQuery to pin them if a figure
+  becomes load-bearing.
+
+---
+
+## 5. What this means for ASAP's eval
+
+We already have the two anchors: **Google cluster 2019** (resource / high-cardinality →
+accuracy, Pareto, cardinality/sum) and **DEBS-2022** (finance / skewed → coordinated
+sampling, topk, ε-gate/delta). They cover axes 1/2/3/4/6 well and 7 partially (DEBS
+skew). The axes they **under-cover** are **(5) long-lookback** and **(7)
+high-frequency-per-series** — and neither anchor strongly exercises the **cold-raw /
+exact-replay** half of the disjoint story (both are dominated by warm-aggregate queries).
+
+**Top 3 datasets to add (each newly covers a specific gap):**
+
+1. **Alibaba microservices trace 2021/2022 (A3)** — newly covers **(6) very-high
+   cardinality + (7) high per-series frequency + (5) forensic long-lookback** in *one*
+   observability workload, and is the cleanest **disjoint-routing demo**: per-service
+   latency → warm KLL/DDSketch (Fig 7 quantile path) **xor** raw span archive → cold
+   (incident replay). Directly exercises the cold half that the current anchors don't.
+   Free, downloadable.
+
+2. **Binance/Kraken public crypto tick (F5)** — freely-downloadable, license-open,
+   **24/7 high-frequency (7 ✓✓)** finance stream with a genuine **long-lookback
+   backtest → cold-raw** query class (5 ✓). It's the practical stand-in for the
+   access-gated TAQ and gives us the high-frequency + exact-replay axes DEBS's one-week
+   slice can't. Adds a second, *continuous* finance axis next to DEBS.
+
+3. **Azure VM trace 2019 (A4)** — **~2.6 M VMs / ~1.9 B readings (6 ✓✓)** is the
+   highest *clean* cardinality of any resource trace and the textbook **warm-vs-cold
+   split**: per-VM CPU → warm DDSketch (fleet quantiles, raw discarded) **xor** per-VM
+   billing counter → cold (exact, dispute-grade). It stresses the controller-allocation
+   figure (Fig 12) at a cardinality Google's subsample doesn't reach.
+
+**Honorable mentions:** **NYSE TAQ (F3)** as the *cited* high-end scale + the strongest
+real compliance/cold-raw motivation (even if access-gated, name it in §6 framing);
+**Wikimedia pageviews (A7)** as the canonical **topk (Count-Sketch) + distinct (HLL)**
+workload with a real 90-day cold-retention story; **Deutsche Börse PDS (F4)** as a
+license-clean OHLCV ground-truth to validate warm-sketch aggregate answers against.
+
+---
+
+## 6. References
+
+### Datasets
+- Google cluster-data 2019 — <https://github.com/google/cluster-data/blob/master/ClusterData2019.md>
+- Alibaba clusterdata (2018, microservices 2021/2022) — <https://github.com/alibaba/clusterdata>
+- Azure Public Dataset (VM V1/V2, Functions 2019) — <https://github.com/Azure/AzurePublicDataset>
+- OpenTelemetry Demo — <https://github.com/open-telemetry/opentelemetry-demo>
+- Wikimedia pageviews / webrequest — <https://dumps.wikimedia.org/other/pageviews/> ·
+  <https://wikitech.wikimedia.org/wiki/Analytics/Data_Lake/Traffic/Webrequest>
+- DEBS-2022 Grand Challenge — Zenodo <https://doi.org/10.5281/zenodo.6382482> ·
+  paper <https://arxiv.org/abs/2206.13237>
+- LOBSTER — <https://lobsterdata.com> · <https://data.lobsterdata.com/info/DataStructure.php>
+- NYSE Daily TAQ — <https://www.nyse.com/market-data/historical/daily-taq> ·
+  WRDS <https://wrds-www.wharton.upenn.edu/pages/about/data-vendors/nyse-trade-and-quote-taq/>
+- Deutsche Börse PDS (AWS Open Data) — <https://registry.opendata.aws/deutsche-boerse-pds/>
+- Binance public data — <https://github.com/binance/binance-public-data> ·
+  Kraken <https://support.kraken.com/articles/360047543791> ·
+  CryptoDataDownload <https://www.cryptodatadownload.com/data/>
+
+### In-repo anchors
+- [`evaluation-plan-figures.md`](evaluation-plan-figures.md) — Fig 11 (disjoint cold-tier), Fig 12 (controller allocation), the DEBS-2022 cross-check.
+- [`paper-outline.md`](paper-outline.md) — §6 claims, the five evaluation dimensions.
+- [`design-archive-tier.md`](design-archive-tier.md) — the warm/cold (archive) two-tier design of record, Mode 1/2/3 selection.
+- [`distributed-nitrosketch-coordinated-sampling.md`](distributed-nitrosketch-coordinated-sampling.md) — coordinated sampling, the disjoint-routing requirement, the joint bound.
+- `datasets_eval/google_cluster/`, `datasets_eval/debs/` — the two anchor harnesses.
+
+---
+
+*End of survey.*
