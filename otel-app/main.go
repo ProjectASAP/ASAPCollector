@@ -117,6 +117,7 @@ type Config struct {
 	FreshnessProbeHz float64 `yaml:"freshness_probe_hz"` // tick rate Hz
 
 	// --- five-sketch workload ---
+	FiveSketchEnabled   bool          `yaml:"five_sketch_enabled"`    // emit the four extra sketch metrics (default true)
 	FiveSketchUserPool  int           `yaml:"five_sketch_user_pool"`  // HLL user-id cardinality
 	FiveSketchEndpoints int           `yaml:"five_sketch_endpoints"`  // Zipfian endpoint cardinality
 	FiveSketchZipfS     float64       `yaml:"five_sketch_zipf_s"`     // Zipfian s
@@ -127,6 +128,45 @@ type Config struct {
 
 	// --- run duration (fakemetricload heritage; 0 = run forever) ---
 	Duration time.Duration `yaml:"duration"`
+
+	// --- producer-side ("SDK") warm-part sampling ---
+	// WarmSampleP is the admitted fraction p of the warm-sketch metric
+	// (<metric>_latency_ms, a DDSketch). Each latency datapoint is
+	// independently kept with probability p before it enters the SDK's
+	// aggregation; the (1-p) dropped points are never sketched, exported,
+	// or sent over the network. The Sum counter is left whole.
+	// p=1.0 (default) = no sampling. DDSketch quantiles are
+	// rank-preserving, so thinning preserves quantile shape with no 1/p
+	// rescale needed for quantile accuracy.
+	//
+	// In trace-replay mode (-trace-file) the same admit-with-probability-p
+	// gate is applied to the replayed warm gauge before it enters the SDK
+	// aggregation, so the Google-cluster accuracy sweep exercises warm
+	// sampling on the real replayed metric (not just the synthetic one).
+	WarmSampleP float64 `yaml:"warm_sample_p"`
+
+	// TraceMetricName, when non-empty, overrides the replay gauge's metric
+	// name. By default the replay path emits `<metric>_trace`; setting this
+	// (e.g. to `google_cluster_2019_cpu_rate`) lets the replayed series land
+	// under the exact name a DDSketch streaming-config aggregation + the
+	// query suite reference, so the warm DDSketch path engages on the trace.
+	TraceMetricName string `yaml:"trace_metric_name"`
+
+	// --- CDM coordinated sampling (Priority 2) ---
+	// CoordinatorURL, when non-empty, makes the producer a CDM edge: it dials
+	// the coordinator's MonitorService, reports its observed warm-metric rate
+	// per window, and applies the coordinator-granted SampleP as the live
+	// warm-sample-p at the NEXT window boundary (never mid-window). The static
+	// -warm-sample-p is the bootstrap value used until the first grant arrives.
+	CoordinatorURL string `yaml:"coordinator_url"`
+	// MonitorAggID is the content-addressed agg_id this producer reports under;
+	// it MUST match the `monitors:` entry agg_id in the coordinator's
+	// streaming-config so the grant is routed back to this edge's metric.
+	MonitorAggID uint64 `yaml:"monitor_agg_id"`
+	// EdgeID is this producer's stable identity to the coordinator (the
+	// coordinator coordinates p across distinct edge ids). Defaults to
+	// ProducerID when empty.
+	EdgeID string `yaml:"edge_id"`
 }
 
 // defaultConfig returns the built-in defaults — the lowest-precedence
@@ -164,6 +204,7 @@ func defaultConfig() Config {
 		FreshnessProbes:  true,
 		FreshnessProbeHz: 1.0,
 
+		FiveSketchEnabled:   true,
 		FiveSketchUserPool:  100,
 		FiveSketchEndpoints: 50,
 		FiveSketchZipfS:     1.2,
@@ -172,6 +213,13 @@ func defaultConfig() Config {
 		ControlAddr: "",
 
 		Duration: 0,
+
+		WarmSampleP:     1.0,
+		TraceMetricName: "",
+
+		CoordinatorURL: "",
+		MonitorAggID:   0,
+		EdgeID:         "",
 	}
 }
 
@@ -215,6 +263,7 @@ func registerFlags(fs *flag.FlagSet, c *Config) {
 	fs.BoolVar(&c.FreshnessProbes, "freshness-probes", c.FreshnessProbes, "emit the three freshness probe counters")
 	fs.Float64Var(&c.FreshnessProbeHz, "freshness-probe-hz", c.FreshnessProbeHz, "freshness probe tick rate in Hz")
 
+	fs.BoolVar(&c.FiveSketchEnabled, "five-sketch", c.FiveSketchEnabled, "emit the four extra five-sketch metrics; set false to isolate the warm-sample metric on the wire")
 	fs.IntVar(&c.FiveSketchUserPool, "five-sketch-user-pool", c.FiveSketchUserPool, "five-sketch HLL user-id pool size")
 	fs.IntVar(&c.FiveSketchEndpoints, "five-sketch-endpoints", c.FiveSketchEndpoints, "five-sketch Zipfian endpoint cardinality")
 	fs.Float64Var(&c.FiveSketchZipfS, "five-sketch-zipf-s", c.FiveSketchZipfS, "five-sketch Zipfian s parameter")
@@ -223,6 +272,12 @@ func registerFlags(fs *flag.FlagSet, c *Config) {
 	fs.StringVar(&c.ControlAddr, "control-addr", c.ControlAddr, "HTTP /control/projection listen addr; empty = off")
 
 	fs.DurationVar(&c.Duration, "duration", c.Duration, "run duration; 0 = run until Ctrl+C")
+
+	fs.Float64Var(&c.WarmSampleP, "warm-sample-p", c.WarmSampleP, "producer-side warm-sketch sampling: admitted fraction p of the warm gauge datapoints; (1-p) dropped before export; 1.0 = no sampling. Applies to the synthetic <metric>_latency_ms AND the replayed trace gauge.")
+	fs.StringVar(&c.TraceMetricName, "trace-metric-name", c.TraceMetricName, "override the replay gauge metric name (default <metric>_trace); set to land the trace under a DDSketch-aggregated name")
+	fs.StringVar(&c.CoordinatorURL, "coordinator-url", c.CoordinatorURL, "CDM coordinator MonitorService endpoint (host:port); non-empty makes this producer a coordinated edge whose warm-sample-p comes from the coordinator's grant")
+	fs.Uint64Var(&c.MonitorAggID, "monitor-agg-id", c.MonitorAggID, "content-addressed agg_id reported to the coordinator; must match the monitors: entry agg_id")
+	fs.StringVar(&c.EdgeID, "edge-id", c.EdgeID, "edge identity reported to the coordinator; defaults to -producer-id when empty")
 }
 
 // loadConfig resolves the configuration with the locked precedence:
@@ -348,6 +403,9 @@ func applyExplicitFlags(dst, src *Config, set map[string]bool) {
 	if set["freshness-probe-hz"] {
 		dst.FreshnessProbeHz = src.FreshnessProbeHz
 	}
+	if set["five-sketch"] {
+		dst.FiveSketchEnabled = src.FiveSketchEnabled
+	}
 	if set["five-sketch-user-pool"] {
 		dst.FiveSketchUserPool = src.FiveSketchUserPool
 	}
@@ -365,6 +423,21 @@ func applyExplicitFlags(dst, src *Config, set map[string]bool) {
 	}
 	if set["duration"] {
 		dst.Duration = src.Duration
+	}
+	if set["warm-sample-p"] {
+		dst.WarmSampleP = src.WarmSampleP
+	}
+	if set["trace-metric-name"] {
+		dst.TraceMetricName = src.TraceMetricName
+	}
+	if set["coordinator-url"] {
+		dst.CoordinatorURL = src.CoordinatorURL
+	}
+	if set["monitor-agg-id"] {
+		dst.MonitorAggID = src.MonitorAggID
+	}
+	if set["edge-id"] {
+		dst.EdgeID = src.EdgeID
 	}
 }
 
@@ -661,6 +734,8 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 		metricName, cardinality, freqHz, zoneVals, rackVals, nodeVals, podVals,
 		cfg.ZipfS, cfg.ZipfV, cfg.ZipfMax, cfg.ZipfMean,
 	)
+	log.Printf("otel-app warm-sample-p=%.3f (admitted fraction of %s_latency_ms; 1.0=no sampling)",
+		cfg.WarmSampleP, metricName)
 
 	counter, err := meter.Float64Counter(metricName,
 		metric.WithDescription("Synthetic event counter — incremented by 1 per event"))
@@ -705,8 +780,10 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 	// (request_size_bytes / unique_users_per_min / top_endpoint_qps /
 	// endpoint_request_freq). Always emitted; reuses the same outer label
 	// schema as the counter above.
-	stopFiveSketch := startFiveSketchWorkload(ctx, meter, labelSets, freqHz, cfg)
-	defer stopFiveSketch()
+	if cfg.FiveSketchEnabled {
+		stopFiveSketch := startFiveSketchWorkload(ctx, meter, labelSets, freqHz, cfg)
+		defer stopFiveSketch()
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < cardinality; i++ {
@@ -735,13 +812,30 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 			zipf := rand.NewZipf(localRng, cfg.ZipfS, cfg.ZipfV, cfg.ZipfMax)
 			drawLat := func() float64 { return generateZipfValue(zipf) }
 
+			// Producer-side warm-part sampling: keep each latency
+			// datapoint with probability p. Dropped points never enter
+			// the SDK aggregation, so they are never sketched/exported/
+			// sent. The Sum counter (counter.Add) is always emitted.
+			warmP := cfg.WarmSampleP
+			keepWarm := func() bool {
+				if warmP >= 1.0 {
+					return true
+				}
+				if warmP <= 0.0 {
+					return false
+				}
+				return localRng.Float64() < warmP
+			}
+
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
 					counter.Add(ctx, 1, attrs)
-					latencyGauge.Record(ctx, drawLat(), attrs)
+					if keepWarm() {
+						latencyGauge.Record(ctx, drawLat(), attrs)
+					}
 				}
 			}
 		}(i)
@@ -766,6 +860,12 @@ func max64(a float64, b int) int {
 // runTraceReplay reads a CSV trace and emits its rows as gauges at the
 // recorded pace. Each unique series_id becomes label {series_id=…}; the
 // SDK config (window / projection / agg) applies uniformly.
+//
+// Warm sampling: each replayed point is admitted with probability p before
+// it enters the SDK aggregation, identical in spirit to the synthetic path
+// — so the Google-cluster accuracy sweep thins the REAL replayed warm
+// metric. p is either the static -warm-sample-p, or, when -coordinator-url
+// is set, the live coordinator-granted p applied at window boundaries.
 func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path string) {
 	scale := cfg.TraceScale
 	loop := cfg.TraceLoop
@@ -774,12 +874,17 @@ func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path st
 	if err != nil {
 		log.Fatalf("trace load: %v", err)
 	}
+
+	emitName := metricName + "_trace"
+	if cfg.TraceMetricName != "" {
+		emitName = cfg.TraceMetricName
+	}
 	log.Printf(
-		"otel-app starting (trace replay): metric=%s_trace rows=%d series=%d scale=%.2fx loop=%v",
-		metricName, len(rows), len(series), scale, loop,
+		"otel-app starting (trace replay): metric=%s rows=%d series=%d scale=%.2fx loop=%v warm-sample-p=%.3f",
+		emitName, len(rows), len(series), scale, loop, cfg.WarmSampleP,
 	)
 
-	gauge, err := meter.Float64Gauge(metricName+"_trace",
+	gauge, err := meter.Float64Gauge(emitName,
 		metric.WithDescription("Trace replay gauge"))
 	if err != nil {
 		log.Fatalf("gauge init: %v", err)
@@ -787,11 +892,38 @@ func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path st
 
 	labelSets := make(map[string][]attribute.KeyValue, len(series))
 	for _, s := range series {
-		labelSets[s] = []attribute.KeyValue{attribute.String("series_id", s)}
+		kv := []attribute.KeyValue{attribute.String("series_id", s)}
+		if cfg.ProducerID != "" {
+			kv = append([]attribute.KeyValue{attribute.String("producer_id", cfg.ProducerID)}, kv...)
+		}
+		labelSets[s] = kv
 	}
 
+	// Replay PRNG: deterministic when -seed set (so an accuracy sweep's arms
+	// admit a reproducible subset per p), else time-seeded.
+	var rng *rand.Rand
+	if cfg.Seed != 0 {
+		rng = rand.New(rand.NewSource(cfg.Seed))
+	} else {
+		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
+	// Admission accounting: count candidate vs admitted points so the
+	// accuracy sweep can report ingest load (admitted ∝ p) without needing a
+	// receiver-side metrics scrape. Logged at replay end (REPLAY_STATS line).
+	replayStats = &replayCounters{}
+
+	// CDM coordinated-sampling edge state (Priority 2). When CoordinatorURL is
+	// set, sampleCtl exposes the live p (updated at window boundaries from the
+	// coordinator grant) and reports the per-window admitted rate. When unset,
+	// it is a static holder returning the bootstrap -warm-sample-p.
+	sc := newSampleController(cfg, metricName)
+	defer sc.close()
+
 	for {
-		replayOnce(ctx, gauge, rows, labelSets, scale)
+		replayOnce(ctx, gauge, rows, labelSets, scale, rng, sc)
+		log.Printf("REPLAY_STATS candidate=%d admitted=%d p=%.4f",
+			replayStats.candidate, replayStats.admitted, cfg.WarmSampleP)
 		if !loop {
 			return
 		}
@@ -804,14 +936,26 @@ func runTraceReplay(ctx context.Context, meter metric.Meter, metricName, path st
 	}
 }
 
+// replayCounters tracks candidate vs admitted points across a replay pass.
+type replayCounters struct {
+	candidate uint64
+	admitted  uint64
+}
+
+var replayStats *replayCounters
+
 // replayOnce plays the rows list once at recorded pace scaled by `scale`
-// (1.0 = real-time, 2.0 = 2× faster, 0.5 = half-speed).
+// (1.0 = real-time, 2.0 = 2× faster, 0.5 = half-speed). Each point is
+// admitted into the SDK aggregation with the current warm-sample probability
+// p (static or coordinator-granted via sc).
 func replayOnce(
 	ctx context.Context,
 	gauge metric.Float64Gauge,
 	rows []traceRow,
 	labelSets map[string][]attribute.KeyValue,
 	scale float64,
+	rng *rand.Rand,
+	sc *sampleController,
 ) {
 	if len(rows) == 0 {
 		return
@@ -834,6 +978,20 @@ func replayOnce(
 				return
 			case <-t.C:
 			}
+		}
+		// Window boundary bookkeeping: at each SDK-window rotation the
+		// coordinated edge re-reads the granted p and reports last window's
+		// observed rate. No-op (returns the static p) when uncoordinated.
+		p := sc.currentP()
+		sc.observe() // count this candidate point toward the window's rate
+		if replayStats != nil {
+			replayStats.candidate++
+		}
+		if p < 1.0 && rng.Float64() >= p {
+			continue // dropped: never enters the SDK aggregation / wire
+		}
+		if replayStats != nil {
+			replayStats.admitted++
 		}
 		gauge.Record(ctx, r.value, metric.WithAttributes(labelSets[r.seriesID]...))
 	}
