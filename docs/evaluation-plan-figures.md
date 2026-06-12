@@ -196,7 +196,7 @@ gap ∝ the rate CV; the win **only appears on skewed fleets** (multi-edge).
 
 ---
 
-## Fig 11 — Cold-tier (Gorilla) overhead — the *disjoint* cold half  ◻
+## Fig 11 — Cold-tier (Gorilla) overhead — the *disjoint* cold half  ✅ (edge+ship measured; merger CPU/IO ◻)
 **Routing model:** **disjoint** — a series is *either* warm-sketched (sampling + CDM
 apply) *or* cold-archived to Gorilla (lossless, exact/historical), **never both**.
 So the **total-resource Pareto = warm-half cost + cold-half cost**, partitioned
@@ -204,26 +204,99 @@ across series; the cold half is the *entire* cost of the non-sketched series and
 sampling/CDM never touch it.
 **Claim:** the cold path's overhead is bounded and is the *price of exact/historical
 replay*; the lifecycle win is largest on **storage**.
-**Overhead axes (edge encodes Gorilla-XOR `ASAPFRG1` fragments → merger builds
-block+index → S3):**
 
-| component | layer | measured as |
-|---|---|---|
-| encode CPU | edge | XOR-encode per sample (`fragment`) vs FOR+delta (`intchunk`, more CPU) |
-| fragment RSS | edge | per-window batch before ship |
-| ship bytes | edge→merger | cold wire bytes (separate from warm sketch egress) |
-| merger CPU/IO | merger | block+index build + S3 PUT (decode-free ingest, PR #354) |
-| **storage** | S3/MinIO | **bytes/series/day — the dimension the 5 dims underweight** |
+Measured 2026-06-12 on this host (Xeon E5-2660 v2 @ 2.20 GHz, Go 1.26). Edge encode
++ footprint + bytes/sample are **deterministic** (`asap-gorilla-go`
+`gorilla_edge_bench_test.go`); the codec ablation is on the **real Serf/Chimp
+float corpus** (`/mydata/compress-bench/data_serf`, 12 series × 100k pts,
+`intchunk` `compare_table_test.go`/`bench_test.go`); ship bytes were confirmed
+**end-to-end over localhost HTTP** to a trivial sink (`zz_coldsink_e2e_test.go`,
+the gorilla-merger stand-in). The **gorilla-merger itself is NOT runnable in this
+tree** (it lives in the private `ASAPQuery-backend/gorilla-merger`, docker /
+BuildKit-secret only — see `deploy/mvp-multinode`), so **merger-side CPU/IO and S3
+PUT are NOT measured here**; storage is the on-disk-equivalent of the gzipped wire
+body (= the bytes the merger writes pre-recompaction).
 
-**Cold-codec ablation** (`fragment` vs `intchunk` vs `intchunk`+zstd): per prior
-`intchunk` verdict, `intchunk` saves ~2.3× wire bytes but costs more encode CPU/mem
-(2.3×, not the designed 4.8×, because it dropped the zstd the real VM path uses).
-**Layout:** (a) cold overhead arm added to the CPU/mem/bandwidth bars (Fig 6/2);
-(b) a **storage figure** — bytes/series/day for raw vs gorilla-cold vs sketch-warm
-(the raw/cold blow-up: a prior long-run hit ~496 GB disk); (c) the codec ablation.
-**◻ to measure** (this session ran `cold: enabled=false` throughout). Prior data:
-`asap-gorilla-go/gorilla_edge_bench_test.go`, `GORILLA_MERGER_DESIGN.md`,
-`docs/design-archive-tier.md`. **Net cold into the disjoint Pareto.**
+### (a) Cold-overhead table (edge + wire)
+
+| axis | `fragment` (Gorilla-XOR) | `intchunk` (FOR+delta best-of-N) | source |
+|---|---|---|---|
+| **encode CPU, codec-only** | 110 ns/sample | 219 ns/sample (best-of-N 301) | `compare_table` (INT-wins series) |
+| **encode CPU, full edge path** | ~1.38 µs/sample (XOR + ASAPFRG1 frame build) | — | `BenchmarkGorillaEdgeEncode_1kSeries` (165.6 ms / 120k samp) |
+| encode CPU scaling | 15.9 ms@100s · 165.6 ms@1k · 1.97 s@10k series | — | `BenchmarkGorillaEdgeEncode_*` |
+| **encode mem (allocs)** | 34 B/sample (codec) · ~29 MB/1k-series-window | 170 B/sample (5.0× — builds 5 candidates) | `compare_table`, `BenchmarkGorillaEdgeEncode` B/op |
+| **fragment RSS** | **1.79 KB / open series** (half-open XOR chunk + map + attrs) | similar order (same open-chunk state) | `TestGorillaEdgeFootprintBytesPerSeries` (10k series) |
+| **ship bytes, real corpus** (gzip wire) | **3.46 B/sample** mean (raw frame 5.92) | **1.37 B/sample** mean (raw 2.56) | `TestColdShipStorage` (Serf, 12 series) |
+| **ship bytes, random-walk** (gzip wire) | 7.26 B/sample (gzip ≈ no help, XOR already dense) | 6.70 B/sample | `TestColdShipStorageSynthetic` |
+| ship bytes/window (1k series × 120) | **782 919 B** (6.52 B/s, gzip only 1.07×) | — | `TestColdSinkE2EShipWindow` (localhost POST, sink-verified round-trip) |
+| merger CPU/IO + S3 PUT | **◻ not measured** (merger not runnable here) | ◻ | — |
+
+bytes/sample is **strongly data-dependent**: pure `chunkenc.XOR` is 1.3 B/s on an
+integer counter, 1.6 B/s on a smooth counter, ~7 B/s on the random-walk corpus,
+7.6 B/s on uniform noise (`TestGorillaXORBytesPerSampleByDataShape`) — the
+synthetic ~7 B/s is a property of that corpus, not a codec deficiency (it IS
+vanilla Prometheus gorilla by construction). Small edge chunks degrade the ratio:
+at chunk=120 the ASAPFRG1 frame is 7.16 B/s, rising to 15.2 B/s at chunk=10
+(2.12×) — the suboptimal edge ratio the merger re-chunk (to ~120/chunk) fixes.
+
+### (b) Storage dimension — raw vs gorilla-cold vs sketch-warm (bytes/series/day @ 1 s)
+
+| tier | bytes/series/day | vs raw | note |
+|---|---|---|---|
+| **raw** (16 B/sample) | **1 382 400** | 1.0× | 8 B ts + 8 B f64, uncompressed |
+| **gorilla-cold `fragment`** (gz, real corpus) | **≈ 299 000** | **4.62×** | lossless XOR, edge-encoded |
+| **gorilla-cold `intchunk`** (gz, real corpus) | **≈ 118 000** | **11.66×** | lossless FOR+delta, fixed-decimal telemetry |
+| sketch-warm (lossy) | — (not bytes/series/day comparable) | — | warm is `(ε,δ)`-bounded *aggregate* state, not per-sample replay; egress 30–56 KB/window for a *whole fleet* (Table 1) — the warm tier discards the per-series sample stream entirely, so its "bytes/series/day" is ≈0 for replay but it **cannot answer exact/historical** queries. The cold tier's bytes/series/day is the *price of exact replay* the warm tier doesn't pay. |
+
+The raw→cold blow-up is the headline lifecycle win: **4.6× (`fragment`) to 11.7×
+(`intchunk`)** smaller on real telemetry. A prior multi-day long-run hit **~496 GB
+on-disk** (210k sids, GC-lagged) in the *warm* persistence path — the cold tier's
+gzipped block layout is what keeps archived bytes bounded at the rates above.
+
+### (c) Codec ablation — `fragment` vs `intchunk` (vs `intchunk`+zstd) — MEASURED
+
+On the real Serf corpus, **best-of-N `intchunk` beats `fragment` (Gorilla-XOR) by
+2.33× bits/sample on the fixed-decimal class** (49.0 → 21.0 b/s) and **never loses**
+(it falls back to Gorilla on true high-precision floats — Motor-temp, Air-pressure);
+the gzipped-wire ratio is **2.52×** (`fragment` 3.46 → `intchunk` 1.37 B/s mean).
+But `intchunk` **costs CPU and memory**: encode **1.99×** the CPU (110 → 219 ns/s),
+best-of-N **2.74×** (301 ns/s), decode **1.10×** (49 → 55 ns/s — *slower*, not
+faster), and **5.0×** the encode allocations (34 → 170 B/s). This **confirms the
+prior verdict**: the win is ~2.3–2.5×, **not** the design's 4.8×, because the
+shipped `intchunk` **dropped the zstd stage** the real VictoriaMetrics path uses;
+`intchunk`+zstd is **not wired**, so that arm is unmeasured. On the high-entropy
+random-walk corpus `intchunk`'s edge shrinks to 1.08× — the codec win is
+**fixed-decimal-only**.
+
+### (d) Net into the disjoint Pareto
+
+Total cost = **warm-half** (sampled + CDM, Fig 2/Table 1-2: ingest cut ∝ `p`, egress
+30–56 KB/window/fleet, lossy `(ε_sk+ε_s+ε_cdm)`) **+ cold-half** (this fig: lossless,
+~299 KB/series/day `fragment` or ~118 KB/series/day `intchunk`, +110–219 ns/sample
+edge CPU, +1.79 KB/open-series RSS, no sampling/CDM).
+
+**Example partition (10 000 series, 30% cold / 70% warm):**
+- 3 000 cold series → storage **≈ 0.35 GB/day** (`intchunk`) or **0.90 GB/day**
+  (`fragment`); ship ≈ 4.1 MB/window (`intchunk`) — *exact/historical replay, no
+  accuracy loss*.
+- 7 000 warm series → no per-sample storage; egress dominated by the sketch-state
+  wire (Table 1-2), cut a further ~2× by delta and ∝`p` by sampling; *answers
+  bounded by `ε_sk+ε_s+ε_cdm`*.
+- The two are **additive and non-overlapping**: moving a series cold removes it from
+  the warm egress/ingest entirely and adds exactly its cold storage+ship cost. The
+  controller (Fig 12) picks the split from the query set — exact/historical queries
+  pull series cold; aggregate/threshold queries keep them warm-and-cheap.
+
+**Honesty ledger:** edge encode CPU/RSS/bytes-per-sample and the codec ablation are
+**deterministic bench** (real corpus); ship bytes/window were **verified end-to-end
+over a real localhost HTTP POST** to a sink that round-trips the body; **merger-side
+CPU/IO + S3 PUT were NOT measured** (merger is docker/BuildKit-only, out of this
+tree); `intchunk`+zstd is **not wired** (unmeasured). Storage = gzipped-wire
+on-disk-equivalent, pre-merger-recompaction (the merger re-chunks to ~120/chunk,
+which *improves* the edge ratio — so these are an **upper bound** on archived bytes).
+Repro: `cd asap-gorilla-go && go test -run 'GorillaEdge|ColdShip|ColdSink' -v .`
+and `cd intchunk && INTCHUNK_BENCH_DIR=/mydata/compress-bench/data_serf go test
+-run 'CompareCodecCPUMem|BenchmarkBitsPerSample' -v .`
 
 ---
 
@@ -245,11 +318,48 @@ high-sample-per-window"). This requirement extends the *same* optimizer to alloc
    controller) + the coordinated runtime allocation `p_i ∝ √(f_i/rate_i)` (data_plane
    coordinator, ε-floored).
 
-**Layout:** match-rate curve — controller's `{routing, sketch, p}` choice vs the
-ground-truth-optimal over synthetic query sets; a confusion-style breakdown of which
-axis the controller gets wrong (routing? sketch type? `p`?).
-**◐** — bind-rules + cost model exist (the sketch axis); the **disjoint-routing** and
-**sampling-eligibility** allocation are the extension to build + evaluate.
+### Methodology — how to evaluate the 4-tuple `{sketch, size, p, ε_cdm}`
+
+Maps `(PromQL + accuracy/freshness SLA + workload stats {cardinality, rate, value
+dist}) → {sketch type, size(α|k|rows×cols|precision), p, ε_cdm}`. The SLA is explicit
+(per-query annotation / class default / native ε) — PromQL alone doesn't fix ε.
+Evaluate on **two axes**: **soundness** (answers within the SLA) and **optimality**
+(near cost-minimal among assignments that do). Backbone = the proven joint bound
+`ε_total = ε_sk(size) + ε_s(p,N) + ε_cdm`.
+
+**Per-knob — what "correct" means / how measured:**
+
+| knob | correct = | measure |
+|---|---|---|
+| sketch **type** | sketch answers the query (quantile→KLL/DD, cardinality→HLL, topk→CountSketch/CMS-heap, sum→Sum) | **coverage**: % of query set with an answerable sketch |
+| **size** | smallest with `ε_sk(size) ≤ SLA − ε_s − ε_cdm` | (a) empirical answer ≤ SLA; (b) ≈ size-sweep knee (one notch smaller misses) |
+| **p** | largest sampling with `ε_s=√((1−p)/(pN)) ≤` budget | coupling holds at chosen p; p ≈ cost-optimal vs a p-sweep (bound predicts breakpoint) |
+| **ε_cdm** | matches the freshness SLA | open-window error ≤ ε_cdm (the Fig 4 test) |
+
+**Oracle** (ground-truth-optimal, for the cost-gap): per query, the **cost-minimal
+feasible 4-tuple** = `argmin cost(tco/wire)` s.t. predicted `ε_sk+ε_s+ε_cdm ≤ SLA` and
+freshness ≤ SLA — a constrained min over a grid via the per-family **accuracy-profile
+library** (`ε_sk(size)`) + the `ε_s(p,N)` bound + the cost model, spot-validated by a
+few empirical runs (which we already have and which confirm the bound).
+
+**Metrics / figures:** (1) **coverage** bar/confusion; (2) **accuracy-met** — CDF of
+rel-err/SLA, all ≤1, *driven by the controller's choice* vs ground truth; (3)
+**cost-gap** — CDF of `controller_cost/oracle_cost` (the "within X%" = its P95), split
+by which knob overpays; (4) **sensitivity** — tighten SLA → size↑, p↑, ε_cdm↓
+monotonically; (5) **drift** — change rate/cardinality → re-allocates onto the oracle
+within T s.
+
+**Hard parts to disclose:** (i) the SLA source must be fixed ("query implies ε" holds
+only for some shapes); (ii) the **accuracy-profile library is the lynchpin** — the
+`ε_s` half is validated (small-N matches `√((1−p)/(pN))`), the per-family `ε_sk(size)`
+profiles need the same (`sketch-bench`); (iii) the three terms trade against **one**
+SLA budget → the oracle is a *joint* min and the controller must *split* the budget
+sensibly (not blow it on a huge sketch then forbid sampling).
+
+**Layout:** match-rate curve + the (1)–(3) figures above.
+**◐ status:** the optimizer emits sketch type+size today (bind rules + `tco`/`wire`
+cost); the **disjoint routing + `p` + `ε_cdm`** allocation, the **oracle/cost-gap
+harness**, and the per-family **`ε_sk(size)` profiles** are the build-out for this fig.
 
 ---
 
@@ -281,7 +391,7 @@ axis the controller gets wrong (routing? sketch type? `p`?).
 | 6.3 | cross-layer placement (Fig 8) | ◐ (design+proof; bars to run) |
 | 6.x | coordinated vs uniform (Fig 9) | ◐ (differentiation shown; CV sweep) |
 | 6.x | scaling N∈{1,10,100} (Fig 10) | ◻ |
-| 6.2/6.storage | **cold-tier (Gorilla) overhead, disjoint** (Fig 11) | ◻ (cold disabled all session — measuring now) |
+| 6.2/6.storage | **cold-tier (Gorilla) overhead, disjoint** (Fig 11) | ✅ edge encode/RSS/ship + codec ablation + storage measured (real corpus, localhost-ship-verified); merger CPU/IO ◻ (not runnable in-tree) |
 | 6.5 | **controller allocation: routing+sketch+`p`** (Fig 12) | ◐ (bind-rules+cost exist; routing+sampling alloc = extension) |
 | 6.x | drift / resilience | ◻ |
 
