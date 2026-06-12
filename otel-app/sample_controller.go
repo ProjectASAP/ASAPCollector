@@ -1,0 +1,153 @@
+// sample_controller.go — CDM coordinated warm-sampling for the producer.
+//
+// Priority 2: turn otel-app into a CDM *edge*. Instead of a static
+// -warm-sample-p, the producer's admitted fraction p is driven by the
+// coordinator's grant (Grant.SampleP), computed by the data-plane monitor
+// coordinator from each edge's reported per-window rate
+// (AllocateSampleRates: p_i ∝ √(f_i/rate_i), so the hot edge gets a smaller
+// p). The grant is applied at the NEXT window boundary, never mid-window.
+//
+// The wire contract reuses the existing nested transport module
+// asap-precompute-go/monitor/grpcclient (grpcclient.New(coordURL, engine))
+// driving a monitor.Engine (NewEngine(edgeID, windowMs, reporter)). On each
+// window the edge calls Engine.Observe(aggID, key, value, windowStart) with
+// its running window value; the engine reports the rate (obsCount) and
+// crossings to the coordinator, and stores the granted p, which we read via
+// Engine.GrantedSampleP(aggID) at each boundary.
+package main
+
+import (
+	"log"
+	"sync"
+	"time"
+
+	"github.com/ProjectASAP/asap-precompute-go/monitor"
+	"github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient"
+)
+
+// monitorValuePerObs is the small per-candidate increment of the monitored
+// additive value (see observe). Kept tiny so per-window values stay far below
+// a modest tau (grant regime) while still crossing the per-round slack so a
+// Report — carrying this edge's rate — fires every window.
+const monitorValuePerObs = 0.5
+
+// sampleController holds the current warm-sample probability and, when
+// coordinated, the CDM engine + transport. currentP/observe are called on the
+// replay hot path; they are cheap and lock-guarded.
+type sampleController struct {
+	mu sync.Mutex
+
+	// p is the live admitted fraction. Bootstrapped to cfg.WarmSampleP; when
+	// coordinated, replaced at each window boundary by the granted p.
+	p float64
+
+	coordinated bool
+	aggID       uint64
+	edgeID      string
+	windowMs    uint64
+
+	engine *monitor.Engine
+	client *grpcclient.Client
+
+	// window bookkeeping
+	windowStartMs uint64 // current epoch's aligned start (ms since unix epoch)
+	windowCount   uint64 // admitted-candidate count this window (the reported rate)
+	windowValue   float64
+}
+
+// newSampleController builds the controller. When cfg.CoordinatorURL is empty
+// it is a static holder returning cfg.WarmSampleP. Otherwise it dials the
+// coordinator and starts reporting/observing under cfg.MonitorAggID.
+func newSampleController(cfg Config, metricName string) *sampleController {
+	sc := &sampleController{p: cfg.WarmSampleP}
+	if cfg.CoordinatorURL == "" {
+		return sc
+	}
+	sc.coordinated = true
+	sc.aggID = cfg.MonitorAggID
+	sc.edgeID = cfg.EdgeID
+	if sc.edgeID == "" {
+		sc.edgeID = cfg.ProducerID
+	}
+	if sc.edgeID == "" {
+		sc.edgeID = "edge-" + metricName
+	}
+	sc.windowMs = uint64(cfg.SDKWindow / time.Millisecond)
+	if sc.windowMs == 0 {
+		sc.windowMs = 1000
+	}
+	sc.engine = monitor.NewEngine(sc.edgeID, sc.windowMs, nil)
+	sc.client = grpcclient.New(cfg.CoordinatorURL, sc.engine)
+	sc.engine.SetReporter(sc.client)
+	sc.windowStartMs = sc.alignedNow()
+	log.Printf("otel-app CDM edge: coordinator=%s edge_id=%s agg_id=%d window_ms=%d bootstrap_p=%.3f",
+		cfg.CoordinatorURL, sc.edgeID, sc.aggID, sc.windowMs, sc.p)
+	return sc
+}
+
+func (sc *sampleController) alignedNow() uint64 {
+	now := uint64(time.Now().UnixMilli())
+	if sc.windowMs == 0 {
+		return now
+	}
+	return now - (now % sc.windowMs)
+}
+
+// currentP returns the live admitted fraction. On a coordinated edge it first
+// rolls the window if the wall clock crossed a boundary: it reports the closed
+// window's value (which carries the observed rate to the coordinator), then
+// re-reads the granted p for the new window. The grant therefore takes effect
+// only at boundaries — both SDK-aggregation merge operands share one p.
+func (sc *sampleController) currentP() float64 {
+	if !sc.coordinated {
+		return sc.p
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	now := sc.alignedNow()
+	if now != sc.windowStartMs {
+		// Close the prior window: a final Observe flushes its value+rate so the
+		// coordinator sees this edge's per-window rate (obsCount) and can size p.
+		sc.engine.Observe(sc.aggID, nil, sc.windowValue, sc.windowStartMs)
+		// Roll to the new epoch.
+		sc.engine.EpochReset(now)
+		sc.windowStartMs = now
+		sc.windowCount = 0
+		sc.windowValue = 0
+		// Apply the coordinator's granted p for the new window (1.0 if none).
+		newP := sc.engine.GrantedSampleP(sc.aggID)
+		if newP != sc.p {
+			log.Printf("otel-app CDM edge %s: applied granted warm-sample-p %.4f (was %.4f) at window %d",
+				sc.edgeID, newP, sc.p, sc.windowStartMs)
+		}
+		sc.p = newP
+	}
+	return sc.p
+}
+
+// observe counts one candidate point toward the current window's rate and
+// advances the window value, then feeds the engine so the reported rate
+// (obsCount) and value climb within the epoch.
+func (sc *sampleController) observe() {
+	if !sc.coordinated {
+		return
+	}
+	sc.mu.Lock()
+	sc.windowCount++
+	// The monitored VALUE climbs a small increment per candidate so the
+	// window value stays well under a modest tau (keeping the coordinator in
+	// the grant regime) yet still crosses the per-round slack so a Report
+	// fires — that Report is what carries this edge's per-window RATE
+	// (engine obsCount, the raw candidate count) to the coordinator, which is
+	// the skewed signal AllocateSampleRates coordinates over. Value and rate
+	// are thus decoupled: value gates emission, rate (obsCount) drives p.
+	sc.windowValue += monitorValuePerObs
+	sc.engine.Observe(sc.aggID, nil, sc.windowValue, sc.windowStartMs)
+	sc.mu.Unlock()
+}
+
+func (sc *sampleController) close() {
+	if sc.client != nil {
+		sc.client.Close()
+	}
+}
