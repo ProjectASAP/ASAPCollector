@@ -565,6 +565,68 @@ evaluates the *latency + cold-IO-pruning* story (F5/F3/A7), with the **bound-bas
 short-circuit** as the headline metric — the fraction of queries answered warm-only vs
 forced to drill into cold.
 
+### 5b. Top 5 datasets to use in evaluation (the actionable shortlist)
+
+The five that together cover **both modes, both domains, and every axis the anchors
+under-cover**. Two are already wired (anchors); three are the build-out.
+
+| # | dataset | domain | mode | evaluates (figure / claim) | status |
+|---|---|---|---|---|---|
+| 1 | **Google cluster 2019** (A1) | observability/resource | **M1** | warm accuracy in ε-envelope (Fig 3), latency CDF (Fig 7), storage/bw Pareto | ✅ wired |
+| 2 | **DEBS-2022** (F1) | finance/tick | **M2** | coordinated sampling 32× (Fig 9), ε-gate/delta, finance-tick edge-Gorilla cold | ✅ wired |
+| 3 | **Alibaba microservices 2021/22** (A3) | observability/traces | **M1** | high-card disjoint routing (Fig 11), latency-quantile warm xor span cold | ◻ to add |
+| 4 | **Azure VM 2019** (A4) | observability/resource | **M1** | controller allocation at ~2.6 M-series cardinality (Fig 12), metric-identity split | ◻ to add |
+| 5 | **Binance/Kraken crypto tick** (F5) | finance/tick | **M2** | bound-based short-circuit + two-axis edge compression (Mode 2), high-freq/low-card | ◻ to add |
+
+**Per-dataset use case + what it evaluates:**
+
+1. **Google cluster 2019 — M1, the warm-accuracy anchor.**
+   *Use case:* fleet / per-cell resource SLO dashboards ("p99 CPU across the cell",
+   capacity quantiles) — standing, repeated queries; the raw per-instance point is never
+   wanted. *Evaluates:* warm accuracy in the joint ε-envelope (Fig 3a, p99 rel-err
+   0.34–1.86 % across `p`), per-family accuracy (5/6), query-latency CDF (Fig 7, warm p50
+   18.3 ms), and the Mode-1 storage/bandwidth Pareto. *Warm:* per-instance CPU/mem →
+   DDSketch/KLL. *Cold:* rare forensic point-in-time.
+
+2. **DEBS-2022 — M2, the coordinated-sampling + finance-tick anchor.**
+   *Use case:* live VWAP / price-quantile dashboards + threshold alerts on a **skewed**
+   symbol fleet; MiFID audit / backtest on the *same* series → cold. *Evaluates:*
+   coordinated sampling `p_i ∝ √(f_i/rate_i)` (**32× differentiation**, Fig 9), the
+   ε-gate/delta regime, accuracy on real skew (0.9–1.1 % ≈ α), and the finance-tick
+   Mode-2 story (cheap edge-Gorilla cold + warm sketch — two orthogonal edge
+   compressions). *Warm:* VWAP/quantile/volume → DDSketch/Sum. *Cold:* trade-by-trade
+   audit (cheap via edge Gorilla-XOR/`intchunk`).
+
+3. **Alibaba microservices 2021/2022 — M1, the high-cardinality disjoint demo.**
+   *Use case:* per-service p50/p99 latency SLO alerting (RED metrics) + distinct-caller
+   cardinality; incident trace replay → cold. *Evaluates:* disjoint routing by
+   **metric-identity separation** (Fig 11) — covers the cold half the anchors lack —
+   very-high cardinality (Fig 12), and the warm `quantile_over_time` path at scale
+   (Fig 7). *Warm:* latency metric → KLL/DDSketch, distinct-callers → HLL. *Cold:* raw
+   span archive (a *separate* artifact, so condition 2 is provable).
+
+4. **Azure VM 2019 — M1, the controller-allocation stressor.**
+   *Use case:* per-VM CPU capacity/SLO dashboards across **~2.6 M VMs**; billing /
+   chargeback → cold. *Evaluates:* controller allocation (Fig 12) at the highest *clean*
+   cardinality, the textbook **metric-identity** warm-vs-cold split, and the cost-model
+   crossover. *Warm:* per-VM CPU → DDSketch fleet quantiles. *Cold:* per-VM billing
+   counter (separate series, dispute-grade exact).
+
+5. **Binance/Kraken crypto tick — M2, the Mode-2 / short-circuit showcase.**
+   *Use case:* live crypto VWAP/quantile alerts + "is this pair behaving oddly?" triage;
+   strategy **backtest** replays raw on the *same* series → cold. *Evaluates:* the
+   **bound-based short-circuit** (fraction answered warm-only vs forced to cold), the
+   **two orthogonal edge compressions** (Gorilla time-axis cold + sketch value-axis warm)
+   on a high-freq/low-card stream, and a second *continuous*, free, license-open finance
+   axis next to DEBS. *Warm:* per-pair quantile/VWAP → DDSketch/Sum. *Cold:* exact tick
+   replay for backtest (cheap via edge Gorilla).
+
+**Coverage check:** **Mode 1** = {A1, A3, A4} (storage/bandwidth Pareto) · **Mode 2** =
+{F1, F5} (latency + cold-IO-pruning short-circuit). **Observability** = {A1, A3, A4} ·
+**Finance** = {F1, F5}. **Cardinality ✓✓** from A3/A4 · **high-frequency ✓✓** from F1/F5
+· **long-lookback / cold-replay** from A3 (forensic) + F5 (backtest). Anchors {A1, F1}
+are wired; **{A3, A4, F5} are the three to build**.
+
 ---
 
 ## 6. References
