@@ -48,6 +48,12 @@ type sketchAggregator struct {
 	// emit_heap path). Empty => every sample keys by the metric name (the
 	// observer's DefaultKey), the degenerate single-key case.
 	itemLabel string
+	// weightMode selects how the obsKindKeyedItem (emit_heap) observe path
+	// weights each datapoint into the heap key: topkWeightValue (default) adds
+	// the datapoint VALUE (Σ value per item → top-k by total), topkWeightCount
+	// adds +1 (occurrence frequency → heavy-hitter top-k). Ignored by every
+	// non-heap observe path. Mirrors the backend's TopkWeight (PR #372).
+	weightMode topkWeight
 	logger    *zap.Logger
 	// lastObserveErr is the most recent ObserveKeyed result (nil when the last
 	// sample recorded cleanly). The observe error used to be discarded, which
@@ -139,6 +145,36 @@ const (
 	// path (obsKindBytesHash), byte-unchanged.
 	obsKindItemCMS
 )
+
+// topkWeight selects what quantity the heap-bearing CountSketch (emit_heap)
+// accumulates per heap key, i.e. how the agent-built top-k heap (Mode 1, the
+// modified-OTLP path) is RANKED. It mirrors the backend's TopkWeight::Value
+// (default) / Count enum (PR #372) so the agent-side modified-sketch path and
+// the raw-input precompute path agree on the default value-weighted semantics.
+type topkWeight uint8
+
+const (
+	// topkWeightValue (DEFAULT): each datapoint adds its VALUE to the key's
+	// running total, so the CountSketch matrix estimate (and therefore the
+	// wire heap built from it) ranks items by Σ value — "top-k <item> by total
+	// <metric>".
+	topkWeightValue topkWeight = iota
+	// topkWeightCount: each datapoint adds +1 (occurrence frequency), the
+	// textbook heavy-hitter / frequency top-k. Opt-in.
+	topkWeightCount
+)
+
+// parseTopkWeight maps the (already config_validate-normalised) weight_mode
+// string to the enum. Validation collapses every accepted alias to "value" or
+// "count" and rejects anything else, so the empty/default and the "value"
+// strings both yield value-weighting and an unrecognised value (only reachable
+// if a caller bypassed Validate) defaults to value-weighting too.
+func parseTopkWeight(mode string) topkWeight {
+	if mode == "count" {
+		return topkWeightCount
+	}
+	return topkWeightValue
+}
 
 // fnv64 derives a stable per-metric AggID (matches the standalone sketch
 // processors' seriesNameHash).
@@ -520,6 +556,7 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		factory:       factory,
 		obsKind:       obsKind,
 		itemLabel:     itemLabel,
+		weightMode:    parseTopkWeight(fam.WeightMode),
 		logger:        logger,
 		monitorClient: monClient,
 	}, true
@@ -672,9 +709,23 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 		// Reuse attrKeyScratch for the item key bytes (P1-3); aliases the
 		// scratch, consumed synchronously by the observer.
 		s.attrKeyScratch = append(s.attrKeyScratch[:0], key...)
+		// weight is what the CountSketch matrix + Space-Saving tracker (and so
+		// the wire heap built from the matrix estimate) accumulate per item:
+		//   * value-weighted (DEFAULT): the datapoint VALUE, so the heap ranks
+		//     items by Sum value (top-k <item> by total <metric>) -- matching the
+		//     backend reducer's value-sum ranking and PR #372's raw-input path.
+		//   * count-weighted (opt-in): +1 per event (occurrence frequency).
+		// The SS tracker's Update(key, w) and CountSketch UpdateString(key, w)
+		// both already honour an arbitrary weight, so no sketchlib / wire / proto
+		// / backend-decode change is needed: a value-built heap round-trips
+		// through the same MSGPACK frame and the backend ranks by value end-to-end.
+		weight := val
+		if s.weightMode == topkWeightCount {
+			weight = 1
+		}
 		obs.Value = precompute.ObservationValue{
 			Kind:  precompute.KindFloat,
-			Float: 1,
+			Float: weight,
 			Bytes: s.attrKeyScratch,
 		}
 	case obsKindItemHLL:

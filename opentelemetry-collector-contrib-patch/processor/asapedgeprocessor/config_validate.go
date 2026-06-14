@@ -8,6 +8,7 @@ import (
 	"math/bits"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
@@ -198,6 +199,23 @@ func (c *Config) Validate() error {
 			if m.HeapSize <= 0 {
 				m.HeapSize = 100
 			}
+			// weight_mode selects how the agent-built top-k heap is ranked
+			// (value-sum vs occurrence count). Normalise the accepted aliases
+			// to the canonical form here so the warm factory parse is a simple
+			// switch, and reject an unknown value at boot rather than silently
+			// defaulting (which would mask a config typo as value-weighted).
+			switch strings.ToLower(strings.TrimSpace(m.WeightMode)) {
+			case "", "value", "sum":
+				m.WeightMode = "value"
+			case "count", "frequency", "freq":
+				m.WeightMode = "count"
+			default:
+				return fmt.Errorf("asap_edge: metrics[%d] (%s): unknown weight_mode %q (want value|sum or count|frequency|freq)", i, m.Metric, m.WeightMode)
+			}
+		} else if m.WeightMode != "" {
+			// weight_mode only affects the heap-bearing CountSketch ranking;
+			// reject it elsewhere so a misplaced knob surfaces at boot.
+			return fmt.Errorf("asap_edge: metrics[%d] (%s): weight_mode is only valid for family=countsketch with emit_heap (got family=%q, emit_heap=%v)", i, m.Metric, m.Family, m.EmitHeap)
 		}
 		// hll_sparse: only the HLL family has a sparse in-memory base. Reject
 		// it on any other family rather than silently ignoring so a
