@@ -153,21 +153,25 @@ storage by keeping raw nobody reads.
 ✓ = strongly exercises it · ~ = partially / conditionally · ✗ = not really.
 **Tier** = where the *bulk* of series land under our story (most datasets are mixed;
 the per-dataset cards give the split).
+**Mode** (§0a) = **M1** disjoint warm xor cold (clean warm by metric-identity
+separation — the storage/bandwidth play) · **M2** co-resident warm+cold
+(raw mandatory anyway; warm is an accelerator + drill-down triage — the latency/IO-prune
+play) · *cold-lean* = M2 dominated by the exact-replay side.
 
-| # | Dataset | Domain | 1 Vol | 2 Agg | 3 Rep | 4 Ovlp | 5 Long | 6 Card | 7 Freq | Dominant tier |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **A1** | **Google cluster 2019** (anchor) | observability/resource | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ (5-min) | **warm** (resource quantiles) + cold (audit) |
-| A2 | Alibaba cluster 2018 | observability/resource | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ (10–300s) | warm + cold |
-| A3 | Alibaba microservices 2021/2022 | observability/traces | ✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓ | **warm** (trace latency q) + cold (trace replay) |
-| A4 | Azure VM trace 2017/2019 | observability/resource | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | ~ (5-min) | **warm** (fleet quantiles) + cold (billing) |
-| A5 | Azure Functions 2019 | observability/metrics | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | ✓ (per-min invokes) | **warm** + cold (billing) |
-| A6 | OpenTelemetry Demo / synthetic | observability/all | ~ | ✓ | ✓ | ✓ | ✗ | ~ | ~ | warm (controllable) |
-| A7 | Wikimedia pageviews/webrequest | observability/CDN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓ | **warm** (topk/HLL) + cold (forensic) |
-| **F1** | **DEBS-2022 Deutsche Börse** (anchor) | finance/tick | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ (skewed) | **warm** (VWAP/q) + cold (audit) |
-| F2 | LOBSTER (NASDAQ LOB) | finance/order book | ✓ | ✓ | ~ | ✓ | ✓ | ~ | ✓✓ | **cold** (event-exact) + warm (depth q) |
-| F3 | NYSE Daily TAQ | finance/trades+quotes | ✓✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓✓ | **cold** (MiFID/SEC audit) + warm (VWAP) |
-| F4 | Deutsche Börse PDS (Xetra/Eurex) | finance/OHLCV 1-min | ~ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ (pre-agg) | warm (already aggregated) |
-| F5 | Binance/Kraken/Coinbase tick | finance/crypto tick | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | **warm** (q/VWAP) + cold (backtest replay) |
+| # | Dataset | Domain | 1 Vol | 2 Agg | 3 Rep | 4 Ovlp | 5 Long | 6 Card | 7 Freq | Dominant tier | Mode |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **A1** | **Google cluster 2019** (anchor) | observability/resource | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ (5-min) | **warm** (resource quantiles) + cold (audit) | **M1** |
+| A2 | Alibaba cluster 2018 | observability/resource | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ~ (10–300s) | warm + cold | **M1** |
+| A3 | Alibaba microservices 2021/2022 | observability/traces | ✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓ | **warm** (trace latency q) + cold (trace replay) | **M1** |
+| A4 | Azure VM trace 2017/2019 | observability/resource | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | ~ (5-min) | **warm** (fleet quantiles) + cold (billing) | **M1** |
+| A5 | Azure Functions 2019 | observability/metrics | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | ✓ (per-min invokes) | **warm** + cold (billing) | **M1** |
+| A6 | OpenTelemetry Demo / synthetic | observability/all | ~ | ✓ | ✓ | ✓ | ✗ | ~ | ~ | warm (controllable) | **M1** |
+| A7 | Wikimedia pageviews/webrequest | observability/CDN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓ | **warm** (topk/HLL) + cold (forensic) | **M2** |
+| **F1** | **DEBS-2022 Deutsche Börse** (anchor) | finance/tick | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ (skewed) | **warm** (VWAP/q) + cold (audit) | **M2** |
+| F2 | LOBSTER (NASDAQ LOB) | finance/order book | ✓ | ✓ | ~ | ✓ | ✓ | ~ | ✓✓ | **cold** (event-exact) + warm (depth q) | **M2** *(cold-lean)* |
+| F3 | NYSE Daily TAQ | finance/trades+quotes | ✓✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓✓ | **cold** (MiFID/SEC audit) + warm (VWAP) | **M2** |
+| F4 | Deutsche Börse PDS (Xetra/Eurex) | finance/OHLCV 1-min | ~ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ (pre-agg) | warm (already aggregated) | **M1** *(warm-only check)* |
+| F5 | Binance/Kraken/Coinbase tick | finance/crypto tick | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | **warm** (q/VWAP) + cold (backtest replay) | **M2** |
 
 **Headline read of the matrix:** the user's axes split cleanly along the tier line —
 **(2) aggregation, (3) repeated, (4) overlapping, (6) high-cardinality, (7)
