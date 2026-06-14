@@ -94,7 +94,12 @@ a **lossy accelerator** over it. **A different value proposition from Mode 1:**
 
 - **Does *not* save storage or bandwidth** — raw still ships in full to cold and is
   stored losslessly; sampling / CDM can no longer drop it. The warm sketch is *added*
-  cost (small).
+  cost (small). **But "full lossless" ≠ "expensive":** on **high-frequency,
+  low-cardinality** streams (finance tick) the cold raw is a dense single-series time
+  stream that **edge Gorilla-XOR / `intchunk` time-dimension compression crushes**
+  (~1.3–3.5 B/sample, Fig 11), so the cold-ship cost is small in absolute terms and the
+  bandwidth caveat is largely neutralised — Mode 2 is **cheapest exactly where the
+  warm-eligibility predicate fails** (see §1 finance-tick note).
 - **Saves query latency + compute + cold IO** — repeated aggregate queries answer from
   the pre-aggregated sketch (~18 ms, Fig 7) instead of re-scanning cold blocks; the warm
   tier acts as a **materialised approximate view + a triage / drill-down filter**.
@@ -167,7 +172,7 @@ play) · *cold-lean* = M2 dominated by the exact-replay side.
 | A5 | Azure Functions 2019 | observability/metrics | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | ✓ (per-min invokes) | **warm** + cold (billing) | **M1** |
 | A6 | OpenTelemetry Demo / synthetic | observability/all | ~ | ✓ | ✓ | ✓ | ✗ | ~ | ~ | warm (controllable) | **M1** |
 | A7 | Wikimedia pageviews/webrequest | observability/CDN | ✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓ | **warm** (topk/HLL) + cold (forensic) | **M2** |
-| **F1** | **DEBS-2022 Deutsche Börse** (anchor) | finance/tick | ✓ | ✓ | ✓ | ✓ | ~ | ✓ | ✓ (skewed) | **warm** (VWAP/q) + cold (audit) | **M2** |
+| **F1** | **DEBS-2022 Deutsche Börse** (anchor) | finance/tick | ✓ | ✓ | ✓ | ✓ | ~ | ~ (5.5k sym) | ✓ (skewed) | **warm** (VWAP/q) + cold (audit) | **M2** |
 | F2 | LOBSTER (NASDAQ LOB) | finance/order book | ✓ | ✓ | ~ | ✓ | ✓ | ~ | ✓✓ | **cold** (event-exact) + warm (depth q) | **M2** *(cold-lean)* |
 | F3 | NYSE Daily TAQ | finance/trades+quotes | ✓✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓✓ | **cold** (MiFID/SEC audit) + warm (VWAP) | **M2** |
 | F4 | Deutsche Börse PDS (Xetra/Eurex) | finance/OHLCV 1-min | ~ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ (pre-agg) | warm (already aggregated) | **M1** *(warm-only check)* |
@@ -179,6 +184,27 @@ high-frequency** are exactly the warm-tier sweet spot, while **(5) long-lookback
 the axis that pulls series **cold** (exact/historical replay). **(1) large volume** is
 necessary for either tier to matter. No single public dataset maxes every axis at
 once — see §4 honest gaps.
+
+**Finance tick is the high-frequency / low-cardinality corner — which makes it the
+*ideal* Mode 2 fit.** Tick streams (F1/F3/F5) are **high per-series frequency (axis 7
+✓✓)** but **bounded cardinality (axis 6 ~)** — series key = symbol, so hundreds (crypto)
+to a few thousand (DEBS ~5.5k) keys, *not* the millions-of-series fleet scale of resource
+traces (A4 ✓✓). Only TAQ reaches high cardinality, and only by counting venue×symbol
+quote series (and it's access-gated). That corner is exactly where **Mode 2 is cheap on
+both halves**:
+- **cold half (time axis, lossless):** the mandatory cold-raw copy is a *dense,
+  high-frequency single-series time stream* — the **best case for edge-side Gorilla-XOR /
+  `intchunk` time-dimension compression** (Fig 11: ~1.3–3.5 B/sample on smooth /
+  fixed-decimal data), and **low cardinality ⇒ few open chunks ⇒ low encode RSS** (1.79
+  KB/open series × few series). So Mode 2's usual "raw still ships in full" caveat is
+  largely **neutralised** here — the exact cold half is *small in absolute bytes*.
+- **warm half (value axis, lossy):** the sketch compresses the *value* dimension into
+  bounded-ε aggregates for the fast alert / dashboard path.
+
+Net: on a low-cardinality tick stream you get **two orthogonal compressions at the edge**
+— **Gorilla on the time axis (cheap, exact, cold)** + **sketch on the value axis (fast,
+ε-bounded, warm)** — which is why finance tick is the strongest **Mode 2** workload in
+the survey, not despite needing cold raw but *because* its cold raw is so cheap to ship.
 
 ---
 
