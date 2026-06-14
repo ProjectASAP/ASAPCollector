@@ -195,6 +195,15 @@ func (p *asapEdgeProcessor) Start(_ context.Context, _ component.Host) error {
 	// Start the async ship worker (drains the spool + re-ships failed batches)
 	// before the flush loop so the first flush's batch has a worker to receive
 	// it. No-op when the cold tier is disabled.
+	//
+	// INVARIANT (cold-ship / control-channel DECOUPLING): cold-fragment shipping
+	// is gated SOLELY on cfg.Cold.Enabled — it is started here unconditionally and
+	// is NOT coupled to the control channel. The control channel
+	// (startControlPlane below) only carries coordinated-sampling config updates
+	// (precompute.PrecomputeConfigSet); it must NEVER gate whether cold fragments
+	// are shipped. So a static-config edge (cold.enabled: true,
+	// control_channel.enabled: false) still ships its cold tier to the merger.
+	// Pinned by TestColdShipsWithControlChannelDisabled; do not re-couple these.
 	p.shipWorker.start()
 	if p.cfg.WindowDuration > 0 {
 		p.flushStarted = true
