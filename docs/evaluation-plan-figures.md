@@ -266,11 +266,20 @@ Measured 2026-06-12 on this host (Xeon E5-2660 v2 @ 2.20 GHz, Go 1.26). Edge enc
 float corpus** (`/mydata/compress-bench/data_serf`, 12 series × 100k pts,
 `intchunk` `compare_table_test.go`/`bench_test.go`); ship bytes were confirmed
 **end-to-end over localhost HTTP** to a trivial sink (`zz_coldsink_e2e_test.go`,
-the gorilla-merger stand-in). The **gorilla-merger itself is NOT runnable in this
-tree** (it lives in the private `ASAPQuery-backend/gorilla-merger`, docker /
-BuildKit-secret only — see `deploy/mvp-multinode`), so **merger-side CPU/IO and S3
-PUT are NOT measured here**; storage is the on-disk-equivalent of the gzipped wire
-body (= the bytes the merger writes pre-recompaction).
+the gorilla-merger stand-in). The **gorilla-merger now builds and its tests pass
+in-tree** — `cd ASAPQuery-backend/gorilla-merger && GOPRIVATE='github.com/ProjectASAP/*'
+go test ./...` is green (`internal/merger` ~3.1 s, `internal/coldchunk`;
+`cmd/gorilla-merger` builds), and the pipeline test exercises ingest → WAL →
+window → pending block → compaction/re-chunk (~120/chunk) → shipped → S3 (in-memory
+bucket) + cold-part verbatim store, with no-gap/no-dup assertions. So the merger
+is **runnable and now measurable**. Its **CPU/IO performance numbers are still
+pending** (a gorilla-merger CPU/IO benchmark, separate PR), and an actual S3 PUT to
+a **live object store** (MinIO/S3) plus a full S3 → thanos-query → answer
+integration **remain unproven** (today's tests use an in-memory bucket; the
+container build also still needs a BuildKit secret for the private module, though
+local `go build`/`go test` work with `GOPRIVATE`). Storage here is the
+on-disk-equivalent of the gzipped wire body (= the bytes the merger writes
+pre-recompaction).
 
 ### (a) Cold-overhead table (edge + wire)
 
@@ -284,7 +293,7 @@ body (= the bytes the merger writes pre-recompaction).
 | **ship bytes, real corpus** (gzip wire) | **3.46 B/sample** mean (raw frame 5.92) | **1.37 B/sample** mean (raw 2.56) | `TestColdShipStorage` (Serf, 12 series) |
 | **ship bytes, random-walk** (gzip wire) | 7.26 B/sample (gzip ≈ no help, XOR already dense) | 6.70 B/sample | `TestColdShipStorageSynthetic` |
 | ship bytes/window (1k series × 120) | **782 919 B** (6.52 B/s, gzip only 1.07×) | — | `TestColdSinkE2EShipWindow` (localhost POST, sink-verified round-trip) |
-| merger CPU/IO + S3 PUT | **◻ not measured** (merger not runnable here) | ◻ | — |
+| merger CPU/IO + S3 PUT | **◐ runnable & measurable**, numbers pending (merger builds + tests green in-tree; CPU/IO via separate benchmark PR; S3 PUT verified vs in-memory bucket only) | ◐ | `internal/merger` pipeline test (`go test ./...`) |
 
 bytes/sample is **strongly data-dependent**: pure `chunkenc.XOR` is 1.3 B/s on an
 integer counter, 1.6 B/s on a smooth counter, ~7 B/s on the random-walk corpus,
@@ -344,9 +353,14 @@ edge CPU, +1.79 KB/open-series RSS, no sampling/CDM).
 
 **Honesty ledger:** edge encode CPU/RSS/bytes-per-sample and the codec ablation are
 **deterministic bench** (real corpus); ship bytes/window were **verified end-to-end
-over a real localhost HTTP POST** to a sink that round-trips the body; **merger-side
-CPU/IO + S3 PUT were NOT measured** (merger is docker/BuildKit-only, out of this
-tree); `intchunk`+zstd is **not wired** (unmeasured). Storage = gzipped-wire
+over a real localhost HTTP POST** to a sink that round-trips the body; the
+**gorilla-merger builds and its tests pass in-tree** (`GOPRIVATE='github.com/ProjectASAP/*'
+go test ./...` green — `internal/merger` pipeline + `internal/coldchunk`), so it is
+**runnable and measurable**, but **merger-side CPU/IO numbers are pending** (a
+gorilla-merger CPU/IO benchmark, separate PR) and the **S3 PUT is verified only
+against an in-memory bucket** — a live-object-store PUT and a full S3 →
+thanos-query → answer integration **remain unproven**; `intchunk`+zstd is **not
+wired** (unmeasured). Storage = gzipped-wire
 on-disk-equivalent, pre-merger-recompaction (the merger re-chunks to ~120/chunk,
 which *improves* the edge ratio — so these are an **upper bound** on archived bytes).
 Repro: `cd asap-gorilla-go && go test -run 'GorillaEdge|ColdShip|ColdSink' -v .`
@@ -478,7 +492,7 @@ coordinated sampling, topk, the ε-gate/delta regime). Driver+data:
 | 6.3 | cross-layer placement (Fig 8) | ◐ (design+proof; bars to run) |
 | 6.x | coordinated vs uniform (Fig 9) | ◐ (differentiation shown; CV sweep) |
 | 6.x | scaling N∈{1,10,100} (Fig 10) | ◻ |
-| 6.2/6.storage | **cold-tier (Gorilla) overhead, disjoint** (Fig 11) | ✅ edge encode/RSS/ship + codec ablation + storage measured (real corpus, localhost-ship-verified); merger CPU/IO ◻ (not runnable in-tree) |
+| 6.2/6.storage | **cold-tier (Gorilla) overhead, disjoint** (Fig 11) | ✅ edge encode/RSS/ship + codec ablation + storage measured (real corpus, localhost-ship-verified); merger builds + tests green in-tree (runnable & measurable), CPU/IO numbers ◐ pending (separate benchmark PR), live-S3 PUT + thanos integration unproven (in-memory bucket today) |
 | 6.5 | **controller allocation: routing+sketch+`p`** (Fig 12) | ◐ (bind-rules+cost exist; routing+sampling alloc = extension) |
 | 6.x | drift / resilience | ◻ |
 
