@@ -162,6 +162,25 @@ type MetricFamily struct {
 	// Defaults to 100 (sketchlib-go's CountSketch TOPK_SIZE) when <=0.
 	// Ignored when EmitHeap is false.
 	HeapSize int `mapstructure:"heap_size"`
+	// WeightMode selects what quantity the heap-bearing CountSketch (EmitHeap)
+	// accumulates PER heap key — i.e. how the agent-built top-k heap (Mode 1,
+	// the modified-OTLP path) is RANKED:
+	//
+	//   * "" / "value" / "sum" (DEFAULT) — Σ of the datapoint VALUE per key.
+	//     Answers "top-k <item_label> by total <metric>" (e.g. top-k endpoints
+	//     by total bytes). The CountSketch matrix AND the producer's
+	//     Space-Saving tracker both accumulate the sample value, so the wire
+	//     heap (the CS estimate per candidate) ranks by summed value end-to-end
+	//     and the backend reducer's "sort heap descending by value" is correct.
+	//   * "count" / "frequency" / "freq" — +1 per event per key (occurrence
+	//     frequency), the textbook heavy-hitter / frequency top-k ("which items
+	//     appear most often"). Opt-in.
+	//
+	// Mirrors the backend's TopkWeight::Value (default) / Count enum (PR #372)
+	// so the agent-side modified-sketch path (Mode 1) and the raw-input
+	// precompute path agree on the default value-weighted semantics. Only
+	// consulted for `family: countsketch` + emit_heap; ignored otherwise.
+	WeightMode string `mapstructure:"weight_mode"`
 	// ItemLabel names the data-point attribute whose VALUE is the inner
 	// high-cardinality dimension a sketch counts/ranks over (e.g. "endpoint"
 	// for top_endpoint_qps, "user_id" for unique_users_per_min). Consulted by:
