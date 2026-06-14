@@ -17,7 +17,7 @@ ASAP routes **every series disjointly** into exactly one of two tiers — never 
 (Fig 11, [`design-archive-tier.md` §1](design-archive-tier.md)):
 
 - **Warm sketch tier** — `(ε, δ)`-bounded approximate state (DDSketch / KLL /
-  Count-Min / Count-Sketch / HLL / Sum). **Lossy within a bounded ε; the per-series
+  CountMinSketch / CountSketch / HLL / Sum). **Lossy within a bounded ε; the per-series
   raw sample stream is discarded.** Good for high-volume aggregation / quantile /
   topk / cardinality queries amortised over a window. Bandwidth-efficient on the
   wire (sketch envelopes ~10–100× smaller than raw); sampling (`p`) and CDM ε-gated
@@ -121,7 +121,7 @@ needed *at all*:
 - **two-phase answer** — return the warm approximate value immediately (dashboard first
   paint), refine from cold in the background when exactness is requested.
 - **one-sided sketches for one-sided decisions** — pick a sketch whose error direction
-  matches the decision (CMS is one-sided) so warm can *certify* "definitely below/above"
+  matches the decision (CountMinSketch is one-sided) so warm can *certify* "definitely below/above"
   without cold.
 - **sampling still allowed on the warm copy** — `p` widens `ε_s`, which only widens the
   ambiguous band (more drill-downs): a tunable edge-cost ↔ cold-read trade (the cold raw
@@ -327,7 +327,7 @@ the survey, not despite needing cold raw but *because* its cold raw is so cheap 
 - **Cardinality:** **very high (✓✓)** — distinct pages/URLs is a classic heavy-hitter +
   cardinality workload.
 - **Per-series frequency:** **high** at the request level.
-- **Warm vs cold:** **top-pages → warm Count-Sketch/Count-Min (topk/heavy-hitter);
+- **Warm vs cold:** **top-pages → warm CountSketch-heap/CountMinSketch-heap (topk/heavy-hitter);
   distinct-clients → warm HLL (cardinality)** — the canonical sketch use cases. **Cold:**
   per-request forensic / abuse investigation needs the raw log — *but Wikimedia's own
   90-day purge is the real-world cold-retention constraint*, and the public artifact is
@@ -512,7 +512,7 @@ exact-replay** half of the disjoint story (both are dominated by warm-aggregate 
 
 **Honorable mentions:** **NYSE TAQ (F3)** as the *cited* high-end scale + the strongest
 real compliance/cold-raw motivation (even if access-gated, name it in §6 framing);
-**Wikimedia pageviews (A7)** as the canonical **topk (Count-Sketch) + distinct (HLL)**
+**Wikimedia pageviews (A7)** as the canonical **topk (CountSketch-heap) + distinct (HLL)**
 workload with a real 90-day cold-retention story; **Deutsche Börse PDS (F4)** as a
 license-clean OHLCV ground-truth to validate warm-sketch aggregate answers against.
 
