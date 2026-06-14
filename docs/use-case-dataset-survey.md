@@ -57,6 +57,97 @@ and to the user's seven query/data axes.
 
 ---
 
+## 0a. Two routing modes & the warm-eligibility predicate
+
+**Warm-eligibility predicate (when may a series be sketched at all).** A series is a
+*clean* warm candidate only when **both** hold:
+
+1. **Predictable queries** — every query on it is predefined and highly repeated
+   (standing alerting rules, scheduled SLO checks, fixed dashboards), so the sketch
+   type / size / freshness can be provisioned ahead and amortised over the repeats
+   (axes 2/3/4).
+2. **No latent raw need** — no future query on *that same series* will ever need
+   exact / historical / forensic replay. The raw stream is discarded once sketched, so
+   this must be *provable*, not hoped for.
+
+Condition 2 is the sharp one. The safest way to satisfy it is **metric-identity
+separation**: the warm series and the raw-needing series are *physically different
+metrics* (per-VM CPU → warm **vs** the per-VM billing counter → cold; latency-quantile
+metric → warm **vs** the raw span → cold). When the *same* series carries both an
+aggregate query and a raw claim — a price series queried live for VWAP **and** replayed
+raw for backtest — condition 2 fails and the series **cannot go cleanly warm**. That
+failure is exactly what **Mode 2** exists for.
+
+### Mode 1 — disjoint (warm xor cold) — the storage / bandwidth play
+
+The base story (Fig 11): each series lands in **exactly one** tier. Because a
+warm-sampled drop "has no other consumer", sampling (`p`) and CDM ε-gating can shed
+data, and total cost is **additive** (`warm-half + cold-half`). **Win: storage +
+bandwidth** (raw is never stored for warm series). **Requires the full predicate
+(both conditions).**
+
+### Mode 2 — co-resident (warm **and** cold) — the latency / IO-pruning play
+
+A series keeps an **authoritative cold raw** copy **and** a **warm sketch summary** on
+top. The cold raw is mandatory anyway (backtest / audit / forensic); the warm sketch is
+a **lossy accelerator** over it. **A different value proposition from Mode 1:**
+
+- **Does *not* save storage or bandwidth** — raw still ships in full to cold and is
+  stored losslessly; sampling / CDM can no longer drop it. The warm sketch is *added*
+  cost (small).
+- **Saves query latency + compute + cold IO** — repeated aggregate queries answer from
+  the pre-aggregated sketch (~18 ms, Fig 7) instead of re-scanning cold blocks; the warm
+  tier acts as a **materialised approximate view + a triage / drill-down filter**.
+
+**The core optimisation — bound-based short-circuit.** The warm sketch answers with a
+*bounded* interval `[v−ε, v+ε]`; the planner uses the bound to decide whether cold is
+needed *at all*:
+
+- decision query `agg ⋛ τ` (e.g. alerting `p99 > τ`): if `v+ε < τ` → **certainly
+  below**, return warm; if `v−ε > τ` → **certainly above**, fire from warm; only the
+  **ambiguous band** `[τ−ε, τ+ε]` falls through to an exact cold read.
+- Most queries sit far from `τ` → cold is touched for a **small fraction** of queries →
+  large cold-IO pruning, and the short-circuit is **provably correct** (ε is bounded).
+
+**Stacking optimisations:**
+- **warm-as-skip-index** — keep a per-cold-block sketch digest (quantile / min-max / HLL);
+  when a drill-down *is* needed, read only the blocks whose digest overlaps the predicate
+  (data-skipping / zone-map, sketch-grade).
+- **two-phase answer** — return the warm approximate value immediately (dashboard first
+  paint), refine from cold in the background when exactness is requested.
+- **one-sided sketches for one-sided decisions** — pick a sketch whose error direction
+  matches the decision (CMS is one-sided) so warm can *certify* "definitely below/above"
+  without cold.
+- **sampling still allowed on the warm copy** — `p` widens `ε_s`, which only widens the
+  ambiguous band (more drill-downs): a tunable edge-cost ↔ cold-read trade (the cold raw
+  is never sampled).
+
+### Adaptive controller — Mode 2 as a safe default that *collapses* to Mode 1
+
+Log each series' **cold hit-rate**. A Mode-2 series whose cold copy is *never* consulted
+is empirically condition-2-clean → **demote to Mode 1 disjoint-warm** (drop the raw,
+reclaim storage). A series whose warm bound *constantly* forces cold reads → **promote
+to cold-primary** (drop the wasted sketch). So warm / cold / both becomes
+**observed-behaviour-driven**, extending the Fig 12 allocator beyond the static
+query-set parse.
+
+### Which mode each dataset wants
+
+| series pattern | mode | examples |
+|---|---|---|
+| aggregate query only, raw provably unused (metric-identity separated) | **Mode 1** | Azure VM **CPU**, Google instance CPU, Azure Functions **duration**, Alibaba per-service **latency metric** |
+| raw **mandatory anyway** (backtest / audit / forensic) **and** common queries approximate | **Mode 2** | **finance tick** (live VWAP/q + backtest replay), DEBS / TAQ (dashboard + MiFID audit), Wikimedia (topk + forensic) |
+| raw needed, queries rarely aggregate | cold-primary | LOBSTER event-exact microstructure |
+
+**Mode 2 rescues the "condition-2 failures".** The datasets that *can't* go cleanly warm
+(finance tick / regulated / forensic) are exactly the ones where cold is mandatory — so
+the warm sketch is **pure upside** (its only cost is the small sketch storage + compute),
+serving fast approximate dashboards / alerts and **triaging which narrow slice of cold to
+replay**. Conversely, on a clean Mode-1 dataset (Azure VM CPU) Mode 2 would *waste*
+storage by keeping raw nobody reads.
+
+---
+
 ## 1. Summary matrix — datasets × the seven axes
 
 ✓ = strongly exercises it · ~ = partially / conditionally · ✗ = not really.
@@ -394,6 +485,55 @@ real compliance/cold-raw motivation (even if access-gated, name it in §6 framin
 **Wikimedia pageviews (A7)** as the canonical **topk (Count-Sketch) + distinct (HLL)**
 workload with a real 90-day cold-retention story; **Deutsche Börse PDS (F4)** as a
 license-clean OHLCV ground-truth to validate warm-sketch aggregate answers against.
+
+### 5a. Mode-aware recommendation (under the warm-eligibility predicate)
+
+Re-reading the picks through the **two-condition predicate** and the **two modes**
+(§0a) sharpens *which* mode each dataset evaluates — and **demotes one earlier "warm"
+pick** (crypto tick) from Mode 1 to Mode 2.
+
+**Mode 1 (disjoint, clean warm) — the four cleanest, by metric-identity separation:**
+
+1. **Alibaba microservices 2021/2022 (A3)** — per-service latency *metric* → warm
+   KLL/DDSketch; raw spans are a *separate* artifact → cold. The split is clean *by
+   construction* (different metrics), so condition 2 is provable. Strongest Mode-1
+   disjoint demo + the cold half the anchors lack.
+2. **Azure VM 2019 (A4)** — per-VM CPU → warm (fleet quantiles, raw discarded); the
+   billing counter is a *separate* series → cold. Textbook metric-identity split at the
+   highest clean cardinality (~2.6 M VMs); stresses Fig 12.
+3. **Azure Functions 2019 (A5)** — the trace ships duration *distributions*: the warm
+   query is *literally* a predefined percentile SLO; billing records are the separate
+   cold series. Cleanest fit for condition 1.
+4. **Google cluster 2019 (A1, anchor)** — per-instance CPU/mem → fixed SLO/capacity
+   dashboards (repeated), no standing raw consumer. Keep as the warm-accuracy anchor.
+
+**Mode 2 (co-resident, accelerate-then-drill-down) — where raw is mandatory anyway:**
+
+- **Binance/Kraken crypto tick (F5)** — *demoted from a Mode-1 warm pick*: the **same**
+  price series wanted live (VWAP/quantile alert) is replayed **raw** for backtest, so
+  condition 2 fails → it is a **Mode-2** dataset. Cold raw kept for backtest; warm sketch
+  added for fast live alerts + "is this pair behaving oddly?" triage. Free, 24/7,
+  high-frequency — the best public **Mode-2 evaluation** workload.
+- **NYSE TAQ (F3) / DEBS audit (F1)** — MiFID/SEC require the raw trade tape regardless;
+  warm VWAP/quantile sketches ride on top for dashboards and to **triage which narrow
+  window/symbol to pull from cold** for the audit.
+- **Wikimedia (A7)** — forensic raw retained (90-day); warm topk/HLL gives cheap
+  dashboards + narrows the forensic cold replay.
+
+**Use-case scenarios by mode:**
+
+| scenario | mode | warm role | cold role |
+|---|---|---|---|
+| fleet SLO / capacity dashboard (CPU p99, latency p99) | 1 | the answer (raw never wanted) | — |
+| serverless duration percentiles + invocation rate | 1 | the answer | (separate billing series) |
+| live crypto VWAP / quantile alert **+** strategy backtest | 2 | fast alert + triage | authoritative replay (backtest) |
+| trading dashboard **+** MiFID/SEC audit | 2 | dashboard + audit-window triage | regulator-grade exact tape |
+| CDN topk pages / distinct clients **+** abuse forensics | 2 | topk/HLL dashboard + triage | forensic raw log |
+
+**Net:** Mode 1 evaluates the *storage / bandwidth Pareto* (A1/A3/A4/A5); Mode 2
+evaluates the *latency + cold-IO-pruning* story (F5/F3/A7), with the **bound-based
+short-circuit** as the headline metric — the fraction of queries answered warm-only vs
+forced to drill into cold.
 
 ---
 
