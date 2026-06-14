@@ -578,6 +578,20 @@ under-cover**. Two are already wired (anchors); three are the build-out.
 | 4 | **Azure VM 2019** (A4) | observability/resource | **M1** | controller allocation at ~2.6 M-series cardinality (Fig 12), metric-identity split | ◻ to add |
 | 5 | **Binance/Kraken crypto tick** (F5) | finance/tick | **M2** | bound-based short-circuit + two-axis edge compression (Mode 2), high-freq/low-card | ◻ to add |
 
+**Scale per dataset — cardinality (axis 6) × per-series frequency (axis 7):**
+
+| # | dataset | cardinality (# series) | per-series frequency | overall scale |
+|---|---|---|---|---|
+| 1 | Google cluster 2019 | **high** — millions of `(machine, job, task/instance)` tuples (repo subsamples 1 cell) | **low** — 1 sample / **5 min** per instance | ~2.4 TiB compressed, 8 cells, all May 2019 |
+| 2 | DEBS-2022 | **moderate ~** — **~5,500** symbols (series key = symbol; repo slice **3,912**) | **high & skewed** — hot ASML **~3,141** ticks/window, quiet tail **~1** | **289 M** ticks over 5.5k symbols, 1 week |
+| 3 | Alibaba microservices 2021/22 | **very high ✓✓** — **20,000+** microservices × instances × call-edges, on **>10,000** nodes | **high** — per-**request** spans (sub-second) | 12 h trace, call-graph edges/request |
+| 4 | Azure VM 2019 | **very high ✓✓** — **~2.6 M** VMs = ~2.6 M series | **low** — 1 reading / **5 min** per VM | **~1.9 B** utilization readings |
+| 5 | Binance/Kraken crypto tick | **low–moderate ~** — **hundreds** of trading pairs (24/7, no close) | **very high ✓✓** — majors **millions** of trades/day, bursty at volatility | many tens of GB multi-pair, continuously growing |
+
+*(Read: the two **M1** observability adds — A3 microservices and A4 VM — supply the
+**high-cardinality ✓✓** axis; the two **M2** finance picks — F1 DEBS and F5 crypto —
+supply the **high-frequency-per-series ✓✓** axis. No single one maxes both, §4.)*
+
 **Per-dataset use case + what it evaluates:**
 
 1. **Google cluster 2019 — M1, the warm-accuracy anchor.**
