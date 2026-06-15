@@ -102,6 +102,51 @@ Deterministic Go benchmark on a node0 core (this hardware):
 bounded price of the lossless cold backup. (Cost model `costmodel_tables.txt`
 extends to storage/$ and the sampling sweep.)
 
+## Fig 1 — accuracy-vs-cost Pareto  (`figs/fig1_pareto.png`)
+Measured anchors (Fig 2 ingest wire normalized to raw-none; Fig 3 DDSketch p99
+median rel-err) + sampling extension from the cost model.
+
+| point | ingest cost (× raw-none) | accuracy (1−median rel-err) |
+|---|---|---|
+| raw (none/gzip) | 1.0 / 0.042 | 1.000 (exact) |
+| ASAP p=1.0 | 0.025 | 0.974 |
+| ASAP p=0.5 | 0.013 | 0.964 |
+| ASAP p=0.25 | 0.006 | 0.944 |
+
+**Conclusion:** ASAP sits far left of the raw baseline (40× cheaper ingest) at
+~0.97 accuracy; sampling slides the frontier further left at a small, predicted
+accuracy cost. Raw is exact but pays the full wire.
+
+## Fig 11 — cold gorilla storage vs uncompressed raw  (`figs/fig11_storage.png`, `fig11_storage_bench.txt`)
+MEASURED bytes/sample on this hardware (`asap-gorilla-go`
+`TestGorillaXORBytesPerSampleByDataShape`), bytes/series/day at 1 Hz:
+
+| tier | bytes/series/day | vs raw |
+|---|---|---|
+| raw (uncompressed, 16 B/sample) | 1 382 400 | 1.0× |
+| gorilla-XOR (counter, 1.34 B/s) | 115 776 | **12×** |
+| gorilla-XOR (smooth counter, 1.56 B/s) | 134 784 | 10× |
+| gorilla-XOR (random-walk, 6.96 B/s) | 601 344 | 2.3× |
+
+Edge footprint: **1765 B/series** open-window RSS.
+**Conclusion:** the cold gorilla tier shrinks archived bytes **2.3×–12×** vs
+uncompressed raw — strongly data-dependent (best on counters, worst on
+high-entropy gauges); it IS vanilla Prometheus gorilla by construction.
+
+## Fig 9 — coordinated vs uniform sampling  (SCOPED GAP — not run)
+Infrastructure verified present: the CDM coordinator runs in the data-plane
+(`data_plane/src/monitor/`, gRPC `--monitor-grpc-port 4319`), and producers
+support `-coordinator-url host:port -monitor-agg-id <id>` (`otel-app/sample_controller.go`).
+**Blocker:** the running stack's `streaming-config.monitors` is `[]` — the MVP
+workload has no threshold-functional metric, so the coordinator has no agg_id to
+coordinate. To run Fig 9: (1) add a threshold-monitored metric to the
+control-plane workload so a `monitors` entry with an agg_id is emitted; (2) launch
+a skewed fleet (different `-freq-hz` per source node) with
+`-coordinator-url node2:4319 -monitor-agg-id <id>`; (3) read each edge's granted
+`p` from its log (`otel-app CDM edge: ... bootstrap_p=`) and compare coordinated
+`p_i ∝ √(f_i/rate_i)` vs uniform-`p` at equal merged variance. `scale_fleet.sh`'s
+per-node launch is the natural base to extend.
+
 ---
 
 ## Reproduce
