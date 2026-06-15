@@ -1,0 +1,84 @@
+{
+  "ddsketch": {
+    "arm": "ddsketch",
+    "kind": "quantile",
+    "at_time": 1781547908,
+    "agent_wire_bytes_to_backend": 57542796.0,
+    "agent_sent_metric_points": 502699.0,
+    "edge_stats": {
+      "cpu": "0.13%",
+      "mem": "46.02MiB / 251.8GiB"
+    },
+    "data_plane_stats": {
+      "cpu": "0.01%",
+      "mem": "18.77MiB / 251.8GiB"
+    },
+    "score": {
+      "0.99": {
+        "data_source": "asap_query",
+        "n_series_total": 1000,
+        "n_series_matched": 385,
+        "mean_rel_err": 0.04874731627761533,
+        "median_rel_err": 0.02601643259894493,
+        "p95_rel_err": 0.1755808380996902,
+        "max_rel_err": 0.45817084478263836,
+        "frac_within_envelope": 0.43376623376623374,
+        "envelope": 0.02,
+        "global_gt": 0.0494384765625
+      },
+      "0.5": {
+        "data_source": "asap_query",
+        "n_series_total": 1000,
+        "n_series_matched": 385,
+        "mean_rel_err": 0.013120967939569276,
+        "median_rel_err": 0.006578399851519454,
+        "p95_rel_err": 0.04785870601799645,
+        "max_rel_err": 0.30905627049067613,
+        "frac_within_envelope": 0.8519480519480519,
+        "envelope": 0.02,
+        "global_gt": 0.019287109375
+      }
+    }
+  },
+  "kll": {
+    "arm": "kll",
+    "kind": "quantile",
+    "at_time": 1781548090,
+    "agent_wire_bytes_to_backend": 57860289.0,
+    "agent_sent_metric_points": 502587.0,
+    "edge_stats": {
+      "cpu": "0.12%",
+      "mem": "52.98MiB / 251.8GiB"
+    },
+    "data_plane_stats": {
+      "cpu": "0.02%",
+      "mem": "25.24MiB / 251.8GiB"
+    },
+    "score": {
+      "0.99": {
+        "data_source": "asap_query",
+        "n_series_total": 1000,
+        "n_series_matched": 316,
+        "mean_rel_err": 0.13465222147535966,
+        "median_rel_err": 0.0836159007286634,
+        "p95_rel_err": 0.4305594210965726,
+        "max_rel_err": 0.9679578844789052,
+        "frac_within_envelope": 0.39556962025316456,
+        "envelope": 0.05,
+        "global_gt": 0.0494384765625
+      },
+      "0.5": {
+        "data_source": "asap_query",
+        "n_series_total": 1000,
+        "n_series_matched": 316,
+        "mean_rel_err": 0.14231060072315213,
+        "median_rel_err": 0.043478260869565216,
+        "p95_rel_err": 0.7315875613747954,
+        "max_rel_err": 1.0388529139685476,
+        "frac_within_envelope": 0.509493670886076,
+        "envelope": 0.05,
+        "global_gt": 0.019287109375
+      }
+    }
+  }
+}

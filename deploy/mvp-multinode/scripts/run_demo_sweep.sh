@@ -13,7 +13,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(dirname "${SCRIPT_DIR}")"
-source "${PKG_DIR}/topology.env"
+TOPOLOGY_ENV="${TOPOLOGY_ENV:-${PKG_DIR}/topology.env}"
+source "${TOPOLOGY_ENV}"
 
 RUN_ID="${RUN_ID:-mvp-multinode-$(date +%Y%m%d-%H%M%S)}"
 RUN_DIR="${RUN_BASE}/${RUN_ID}"

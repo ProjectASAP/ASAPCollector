@@ -1,0 +1,104 @@
+### cost-model arm comparison (mvp workload)
+
+# Arm comparison — workload `mvp` (10,000 series @ 10 Hz, 2 metrics, us-east-1)
+
+arm       | wire Mbps | compute$ | storage$ | request$ | egress$ | TOTAL $/mo | $/GB-ingested
+----------+-----------+----------+----------+----------+---------+------------+--------------
+b0        | 18.59     | 17.79    | 53.91    | 0        | 60.23   | 131.9      | 0.02191      
+b1        | 1.5       | 17.79    | 53.91    | 0        | 4.86    | 76.57      | 0.1575       
+b2        | 3.03      | 17.79    | 53.91    | 0        | 9.817   | 81.52      | 0.08304      
+b3        | 9.1       | 18.52    | 53.91    | 0        | 29.48   | 101.9      | 0.03457      
+asap      | 0.98      | 51.75    | 11.43    | 1.054    | 3.175   | 67.41      | 0.2123       
+asap-gzip | 0.137     | 51.75    | 11.43    | 1.054    | 0.4439  | 64.68      | 1.457        
+
+## ASAP vs baselines — total $/mo and the tradeoff
+
+arm       | total $/mo | x vs b0 | Δ$ (arm - asap)
+----------+------------+---------+----------------
+b0        | 131.9      | 1       | 64.53          
+b1        | 76.57      | 0.5803  | 9.157          
+b2        | 81.52      | 0.6179  | 14.11          
+b3        | 101.9      | 0.7725  | 34.51          
+asap      | 67.41      | 0.5109  | 0              
+asap-gzip | 64.68      | 0.4902  | -2.731         
+
+## Dominant cost term per arm
+
+arm       | dominant term | $/mo  | share 
+----------+---------------+-------+-------
+b0        | egress        | 60.23 | 0.4565
+b1        | storage       | 53.91 | 0.7041
+b2        | storage       | 53.91 | 0.6613
+b3        | storage       | 53.91 | 0.529 
+asap      | compute       | 51.75 | 0.7677
+asap-gzip | compute       | 51.75 | 0.8001
+
+Verdict: asap total = $67.41/mo vs b0 raw = $131.94/mo (2.0x cheaper).
+  ASAP trades MORE edge-EC2 CPU (edge aggregation) for LESS egress + S3 + VM storage.
+
+
+## Resource table — arm `asap`, workload `mvp`
+   wire = 0.980 Mbps
+
+component            | cpu_vcpu | mem_gb   | egress_gb_mo | ebs_gb | s3_storage_gb | s3_put_per_mo | s3_get_per_mo
+---------------------+----------+----------+--------------+--------+---------------+---------------+--------------
+edge_agent           | 2.385    | 0.1693   | 317.5        | 0      | 0             | 0             | 0            
+data_plane           | 0.123    | 0.03291  | 0            | 0.1638 | 0             | 0             | 0            
+gorilla_merger       | 0.05     | 0.03906  | 0            | 0      | 0             | 1.728e+05     | 0            
+minio                | 0.037    | 0.2146   | 0            | 0      | 496.4         | 0             | 0            
+thanos_query         | 0.001    | 0.007812 | 0            | 0      | 0             | 0             | 0            
+thanos_store_gateway | 0.017    | 0.03018  | 0            | 0      | 0             | 0             | 2.592e+05    
+thanos_compact       | 0.001    | 0.02236  | 0            | 0      | 0             | 1.728e+04     | 0            
+controller           | 0.002    | 0.004492 | 0            | 0      | 0             | 0             | 0            
+TOTAL                | 2.616    | 0.5208   | 317.5        | 0.1638 | 496.4         | 1.901e+05     | 2.592e+05    
+
+## Cost breakdown — arm `asap`, workload `mvp`  (us-east-1)
+
+component            | compute$ | storage$ | request$ | egress$ | total$/mo
+---------------------+----------+----------+----------+---------+----------
+edge_agent           | 45.99    | 0        | 0        | 3.175   | 49.17    
+data_plane           | 2.466    | 0.01311  | 0        | 0       | 2.479    
+gorilla_merger       | 1.102    | 0        | 0.864    | 0       | 1.966    
+minio                | 1.538    | 11.42    | 0        | 0       | 12.96    
+thanos_query         | 0.04938  | 0        | 0        | 0       | 0.04938  
+thanos_store_gateway | 0.4405   | 0        | 0.1037   | 0       | 0.5441   
+thanos_compact       | 0.106    | 0        | 0.0864   | 0       | 0.1924   
+controller           | 0.05548  | 0        | 0        | 0       | 0.05548  
+TOTAL                | 51.75    | 11.43    | 1.054    | 3.175   | 67.41    
+
+## Cost breakdown — arm `b0`, workload `mvp`  (us-east-1)
+
+component | compute$ | storage$ | request$ | egress$ | total$/mo
+----------+----------+----------+----------+---------+----------
+raw_agent | 5.42     | 0        | 0        | 60.23   | 65.65    
+vm        | 12.37    | 53.91    | 0        | 0       | 66.29    
+TOTAL     | 17.79    | 53.91    | 0        | 60.23   | 131.9    
+
+### sampling sweep
+
+# Sampling-p sweep — arm `asap`, workload `mvp`
+
+sample_p | edge_cpu vCPU | edge compute$ | total $/mo
+---------+---------------+---------------+-----------
+1        | 2.385         | 45.99         | 67.41     
+0.75     | 2.007         | 38.81         | 60.22     
+0.5      | 1.574         | 30.57         | 51.99     
+0.25     | 1.038         | 20.39         | 41.81     
+
+Note: SAMPLING_CPU_EXPONENT=0.6 is ASSUMED pending the
+live sampling-bench at p=0.5; refine in coefficients.py.
+
+
+### cold-format sweep
+
+# Cold-format sweep — arm `asap`, workload `mvp`
+
+cold_format | batched | s3_storage_gb | PUT/mo    | storage$ | request$ | total $/mo
+------------+---------+---------------+-----------+----------+----------+-----------
+intchunk    | True    | 496.4         | 1.901e+05 | 11.43    | 1.054    | 67.41     
+intchunk    | False   | 496.4         | 1.14e+07  | 11.43    | 57.13    | 123.5     
+fragment    | True    | 1157          | 2.281e+06 | 26.62    | 11.51    | 93.05     
+
+Note: intchunk+batched (#442) is the deployed default — ~12-60x fewer PUTs
+than the per-window/per-emit path, and ~2.33x smaller stored bytes than fragment.
+

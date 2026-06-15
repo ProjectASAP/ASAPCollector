@@ -47,6 +47,14 @@ COPY opentelemetry-go     /src/opentelemetry-go
 COPY opentelemetry-proto  /src/opentelemetry-proto
 COPY otel-app             /src/otel-app
 
+# otel-app/sample_controller.go imports asap-precompute-go/monitor{,/grpcclient}
+# (the coordinated-sampling client), and otel-app/go.mod replaces them at
+# ../asap-precompute-go{,/monitor/grpcclient}. That sibling tree lives outside
+# this Dockerfile's default context, so supply it as a named build context and
+# COPY it to /src/asap-precompute-go (the `../` replace then resolves verbatim).
+#   docker build --build-context asap-precompute-go=/path/to/asap-precompute-go ...
+COPY --from=asap-precompute-go . /src/asap-precompute-go
+
 # Sketchlib-go pulled via named build context to avoid a submodule
 # hop outside this repo.
 COPY --from=sketchlib-go . /src/sketchlib-go
