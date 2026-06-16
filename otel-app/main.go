@@ -167,6 +167,14 @@ type Config struct {
 	// coordinator coordinates p across distinct edge ids). Defaults to
 	// ProducerID when empty.
 	EdgeID string `yaml:"edge_id"`
+	// MonitorKey, when non-empty, makes this a `cms_point` (heavy-hitter) edge:
+	// only events whose series_id equals MonitorKey count toward the reported
+	// per-window VALUE (f_i = the monitored key's frequency at this edge), while
+	// EVERY event counts toward the reported RATE (rate_i = total updates). This
+	// decouples f_i from rate_i so the coordinator's p_i ∝ √(f_i/rate_i) can
+	// differentiate (e.g. a fixed-frequency key on a higher-rate edge → smaller
+	// p). Empty ⇒ legacy `sum`-monitor behaviour (value ∝ rate ⇒ uniform p).
+	MonitorKey string `yaml:"monitor_key"`
 }
 
 // defaultConfig returns the built-in defaults — the lowest-precedence
@@ -276,6 +284,7 @@ func registerFlags(fs *flag.FlagSet, c *Config) {
 	fs.Float64Var(&c.WarmSampleP, "warm-sample-p", c.WarmSampleP, "producer-side warm-sketch sampling: admitted fraction p of the warm gauge datapoints; (1-p) dropped before export; 1.0 = no sampling. Applies to the synthetic <metric>_latency_ms AND the replayed trace gauge.")
 	fs.StringVar(&c.TraceMetricName, "trace-metric-name", c.TraceMetricName, "override the replay gauge metric name (default <metric>_trace); set to land the trace under a DDSketch-aggregated name")
 	fs.StringVar(&c.CoordinatorURL, "coordinator-url", c.CoordinatorURL, "CDM coordinator MonitorService endpoint (host:port); non-empty makes this producer a coordinated edge whose warm-sample-p comes from the coordinator's grant")
+	fs.StringVar(&c.MonitorKey, "monitor-key", c.MonitorKey, "cms_point heavy-hitter key: only this series_id counts toward the reported per-window value f_i (the monitored key's frequency), while every event counts toward rate_i — so the coordinator's p_i ∝ √(f_i/rate_i) differentiates. Empty = sum-monitor (value ∝ rate ⇒ uniform p)")
 	fs.Uint64Var(&c.MonitorAggID, "monitor-agg-id", c.MonitorAggID, "content-addressed agg_id reported to the coordinator; must match the monitors: entry agg_id")
 	fs.StringVar(&c.EdgeID, "edge-id", c.EdgeID, "edge identity reported to the coordinator; defaults to -producer-id when empty")
 }
@@ -983,7 +992,7 @@ func replayOnce(
 		// coordinated edge re-reads the granted p and reports last window's
 		// observed rate. No-op (returns the static p) when uncoordinated.
 		p := sc.currentP()
-		sc.observe() // count this candidate point toward the window's rate
+		sc.observe(r.seriesID) // rate += 1 always; value += 1 iff seriesID==MonitorKey
 		if replayStats != nil {
 			replayStats.candidate++
 		}

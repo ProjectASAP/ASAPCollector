@@ -45,6 +45,10 @@ type sampleController struct {
 	aggID       uint64
 	edgeID      string
 	windowMs    uint64
+	// monitorKey, when non-empty, is the cms_point heavy-hitter series whose
+	// per-window frequency is reported as f_i (the value), decoupled from the
+	// total rate. Empty ⇒ legacy sum-monitor (value ∝ rate).
+	monitorKey string
 
 	engine *monitor.Engine
 	client *grpcclient.Client
@@ -65,6 +69,7 @@ func newSampleController(cfg Config, metricName string) *sampleController {
 	}
 	sc.coordinated = true
 	sc.aggID = cfg.MonitorAggID
+	sc.monitorKey = cfg.MonitorKey
 	sc.edgeID = cfg.EdgeID
 	if sc.edgeID == "" {
 		sc.edgeID = cfg.ProducerID
@@ -128,20 +133,32 @@ func (sc *sampleController) currentP() float64 {
 // observe counts one candidate point toward the current window's rate and
 // advances the window value, then feeds the engine so the reported rate
 // (obsCount) and value climb within the epoch.
-func (sc *sampleController) observe() {
+func (sc *sampleController) observe(seriesID string) {
 	if !sc.coordinated {
 		return
 	}
 	sc.mu.Lock()
+	// EVERY candidate counts toward the reported RATE (rate_i = total updates).
 	sc.windowCount++
-	// The monitored VALUE climbs a small increment per candidate so the
-	// window value stays well under a modest tau (keeping the coordinator in
-	// the grant regime) yet still crosses the per-round slack so a Report
-	// fires — that Report is what carries this edge's per-window RATE
-	// (engine obsCount, the raw candidate count) to the coordinator, which is
-	// the skewed signal AllocateSampleRates coordinates over. Value and rate
-	// are thus decoupled: value gates emission, rate (obsCount) drives p.
-	sc.windowValue += monitorValuePerObs
+	// The reported VALUE is the monitored functional's per-window f_i:
+	//   - cms_point (MonitorKey set): f_i = the monitored key's FREQUENCY — only
+	//     events matching MonitorKey add to the value. This decouples f_i from
+	//     rate_i, so an edge where the key is a fixed-frequency needle in a
+	//     higher-rate haystack reports a SMALLER f_i/rate_i and the coordinator's
+	//     p_i ∝ √(f_i/rate_i) samples it harder (smaller p). This is the signal
+	//     coordinated sampling actually coordinates over.
+	//   - sum monitor (MonitorKey empty): legacy behaviour — every candidate adds
+	//     a small fixed increment, so the value climbs to cross the per-round
+	//     slack (gating emission) while staying below a modest tau. Here value ∝
+	//     rate, so the allocation is uniform (correct for a sum: every update is
+	//     equal-weight) and differentiation comes only from the ε-floor.
+	if sc.monitorKey != "" {
+		if seriesID == sc.monitorKey {
+			sc.windowValue += 1.0
+		}
+	} else {
+		sc.windowValue += monitorValuePerObs
+	}
 	sc.engine.Observe(sc.aggID, nil, sc.windowValue, sc.windowStartMs)
 	sc.mu.Unlock()
 }
