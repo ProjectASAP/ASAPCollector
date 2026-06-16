@@ -17,7 +17,11 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -69,7 +73,24 @@ func newSampleController(cfg Config, metricName string) *sampleController {
 	}
 	sc.coordinated = true
 	sc.aggID = cfg.MonitorAggID
+	// The cms_point key normally flows from the control plane: the controller
+	// pushes its monitors: config to the data-plane streaming-config, and the
+	// edge learns which key it is monitoring from the entry matching its agg_id.
+	// A non-empty -monitor-key flag is a manual override (tests / no config URL).
 	sc.monitorKey = cfg.MonitorKey
+	if sc.monitorKey == "" && cfg.MonitorConfigURL != "" {
+		if k, err := fetchMonitorKey(cfg.MonitorConfigURL, cfg.MonitorAggID); err != nil {
+			log.Printf("otel-app CDM edge: could not learn monitor key from %s (agg_id=%d): %v — counting all events as f_i (sum-monitor)",
+				cfg.MonitorConfigURL, cfg.MonitorAggID, err)
+		} else if k != "" {
+			sc.monitorKey = k
+			log.Printf("otel-app CDM edge: learned cms_point key %q from controller config (%s, agg_id=%d)",
+				k, cfg.MonitorConfigURL, cfg.MonitorAggID)
+		} else {
+			log.Printf("otel-app CDM edge: no monitor entry for agg_id=%d at %s — sum-monitor (value ∝ rate)",
+				cfg.MonitorAggID, cfg.MonitorConfigURL)
+		}
+	}
 	sc.edgeID = cfg.EdgeID
 	if sc.edgeID == "" {
 		sc.edgeID = cfg.ProducerID
@@ -167,4 +188,43 @@ func (sc *sampleController) close() {
 	if sc.client != nil {
 		sc.client.Close()
 	}
+}
+
+// fetchMonitorKey reads the data-plane streaming-config (the document the
+// controller POSTs its monitors: config to) and returns the cms_point key of the
+// monitors[] entry whose agg_id matches aggID. ("", nil) means there is no
+// matching monitor entry ⇒ the edge falls back to sum-monitor behaviour.
+func fetchMonitorKey(url string, aggID uint64) (string, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	// agg_id is a full uint64 (often > 2^53); encoding/json parses an integer
+	// JSON number straight into a uint64 field, so no float64 precision loss.
+	var doc struct {
+		StreamingConfig struct {
+			Monitors []struct {
+				AggID uint64 `json:"agg_id"`
+				Key   string `json:"key"`
+			} `json:"monitors"`
+		} `json:"streaming_config"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return "", err
+	}
+	for _, m := range doc.StreamingConfig.Monitors {
+		if m.AggID == aggID {
+			return m.Key, nil
+		}
+	}
+	return "", nil
 }

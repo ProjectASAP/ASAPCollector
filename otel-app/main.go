@@ -175,6 +175,14 @@ type Config struct {
 	// differentiate (e.g. a fixed-frequency key on a higher-rate edge → smaller
 	// p). Empty ⇒ legacy `sum`-monitor behaviour (value ∝ rate ⇒ uniform p).
 	MonitorKey string `yaml:"monitor_key"`
+	// MonitorConfigURL, when set and MonitorKey is empty, is the data-plane
+	// streaming-config endpoint (the document the controller PUSHES its
+	// `monitors:` config to, e.g. http://data-plane:9091/api/v1/streaming-config).
+	// The edge fetches it on startup, finds the `monitors[]` entry whose agg_id
+	// matches MonitorAggID, and uses that entry's `key` as the monitored key —
+	// so the cms_point key flows from the control plane instead of a static flag,
+	// closing the loop with the controller's monitor emission.
+	MonitorConfigURL string `yaml:"monitor_config_url"`
 }
 
 // defaultConfig returns the built-in defaults — the lowest-precedence
@@ -284,7 +292,8 @@ func registerFlags(fs *flag.FlagSet, c *Config) {
 	fs.Float64Var(&c.WarmSampleP, "warm-sample-p", c.WarmSampleP, "producer-side warm-sketch sampling: admitted fraction p of the warm gauge datapoints; (1-p) dropped before export; 1.0 = no sampling. Applies to the synthetic <metric>_latency_ms AND the replayed trace gauge.")
 	fs.StringVar(&c.TraceMetricName, "trace-metric-name", c.TraceMetricName, "override the replay gauge metric name (default <metric>_trace); set to land the trace under a DDSketch-aggregated name")
 	fs.StringVar(&c.CoordinatorURL, "coordinator-url", c.CoordinatorURL, "CDM coordinator MonitorService endpoint (host:port); non-empty makes this producer a coordinated edge whose warm-sample-p comes from the coordinator's grant")
-	fs.StringVar(&c.MonitorKey, "monitor-key", c.MonitorKey, "cms_point heavy-hitter key: only this series_id counts toward the reported per-window value f_i (the monitored key's frequency), while every event counts toward rate_i — so the coordinator's p_i ∝ √(f_i/rate_i) differentiates. Empty = sum-monitor (value ∝ rate ⇒ uniform p)")
+	fs.StringVar(&c.MonitorKey, "monitor-key", c.MonitorKey, "OVERRIDE for the cms_point heavy-hitter key: only this series_id counts toward the reported value f_i (the key's frequency), every event counts toward rate_i, so p_i ∝ √(f_i/rate_i) differentiates. Normally LEFT EMPTY and learned from the controller's pushed monitor config via -monitor-config-url; empty + no config URL = sum-monitor (value ∝ rate ⇒ uniform p)")
+	fs.StringVar(&c.MonitorConfigURL, "monitor-config-url", c.MonitorConfigURL, "data-plane streaming-config endpoint (where the controller pushes its monitors:) — when set and -monitor-key is empty, the edge learns its cms_point key from the monitors[] entry matching -monitor-agg-id")
 	fs.Uint64Var(&c.MonitorAggID, "monitor-agg-id", c.MonitorAggID, "content-addressed agg_id reported to the coordinator; must match the monitors: entry agg_id")
 	fs.StringVar(&c.EdgeID, "edge-id", c.EdgeID, "edge identity reported to the coordinator; defaults to -producer-id when empty")
 }
