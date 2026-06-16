@@ -488,7 +488,7 @@ backend_up() {
             --enable-otel-ingest \
             --otel-grpc-port=${DP_OTLP_GRPC_PORT:-4317} \
             --otel-http-port=${DP_OTLP_HTTP_PORT:-4318} \
-            ${persist_flags}
+            ${persist_flags} ${DP_MONITOR_FLAGS:-}
 
         # asap-control-plane (ASAP only) — control plane process. Brought
         # up AFTER the data plane so the control plane's startup pre-pop

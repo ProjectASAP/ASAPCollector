@@ -1,0 +1,4 @@
+edge,node,series,per_window_rate,cdm_connected,granted_p
+edge-hot,node3,hot,80000,1,1.0(no-grant)
+edge-med,node4,med,16000,1,1.0(no-grant)
+edge-quiet,node5,quiet,3200,1,1.0(no-grant)

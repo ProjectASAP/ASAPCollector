@@ -62,20 +62,23 @@ accuracy stack (Fig 3) resolves the same quantiles from sketch state directly.
 ## Fig 10 — scaling: per-agent bandwidth vs fleet size N  (`figs/fig10_scaling.png`, `fig10_scale_v1.csv`)
 One supervised asap agent per source host (node3–7), N ∈ {1..5}.
 
-| N | total sink MB/s | per-agent MB/s | agent RSS MiB |
-|---|---|---|---|
-| 1 | 0.047 | 0.047 | 1208 |
-| 2 | 0.095 | 0.048 | 1595 |
-| 3 | 0.187 | 0.062 | 1283 |
-| 4 | 0.758 | 0.190 | 1330 |
-| 5 | 1.244 | 0.249 | 1576 |
+Cleaned re-run (90 s soak, 6-sample averaged CPU):
 
-**Conclusion:** per-agent warm bandwidth is flat at N=1–3 (0.047–0.062 MB/s).
-N=4–5 show measurement variance (45 s window catches sketch-flush bursts; CPU
-column is single-snapshot-noisy). A longer-soak + averaged-CPU re-run
-(`STAT_SAMPLES`, 90 s soak — `scale_fleet.sh` supports both) is needed to confirm
-flatness past N=3; physical N is capped at 5 source nodes (extend to N=100 with
-`cost_model/simulator.py`).
+| N | total sink MB/s | per-agent MB/s | agent CPU % | agent RSS MiB |
+|---|---|---|---|---|
+| 1 | 0.056 | 0.056 | 138 | 1244 |
+| 2 | 0.094 | 0.047 | 100 | 1336 |
+| 3 | 0.181 | 0.060 | 85 | 1456 |
+| 4 | 0.508 | 0.127 | 73 | 1433 |
+| 5 | 0.725 | 0.145 | 77 | 1390 |
+
+**Conclusion:** per-agent warm bandwidth is flat at N=1–3 (0.047–0.060 MB/s) and
+rises modestly at N=4–5 (0.13–0.15) — backend-side per-agent overhead (control-plane
+scrape + OpAMP traffic that scales with the fleet) plus residual flush variance,
+not super-linear edge cost. Agent CPU is stable (73–138%). Physical N capped at 5
+source nodes; extend to N=100 with `cost_model/simulator.py`. (A v1 45 s-soak run
+showed the same trend with noisier CPU — the longer soak + averaged sampling
+cleaned it up.)
 
 ## Fig 3 — per-family accuracy (cold-OFF, wall-clock-anchored)  (`fig3_accuracy.json`)
 Google-cluster-2019 trace (100k rows → aliased per family), instant quantile
@@ -133,19 +136,34 @@ Edge footprint: **1765 B/series** open-window RSS.
 uncompressed raw — strongly data-dependent (best on counters, worst on
 high-entropy gauges); it IS vanilla Prometheus gorilla by construction.
 
-## Fig 9 — coordinated vs uniform sampling  (SCOPED GAP — not run)
-Infrastructure verified present: the CDM coordinator runs in the data-plane
-(`data_plane/src/monitor/`, gRPC `--monitor-grpc-port 4319`), and producers
-support `-coordinator-url host:port -monitor-agg-id <id>` (`otel-app/sample_controller.go`).
-**Blocker:** the running stack's `streaming-config.monitors` is `[]` — the MVP
-workload has no threshold-functional metric, so the coordinator has no agg_id to
-coordinate. To run Fig 9: (1) add a threshold-monitored metric to the
-control-plane workload so a `monitors` entry with an agg_id is emitted; (2) launch
-a skewed fleet (different `-freq-hz` per source node) with
-`-coordinator-url node2:4319 -monitor-agg-id <id>`; (3) read each edge's granted
-`p` from its log (`otel-app CDM edge: ... bootstrap_p=`) and compare coordinated
-`p_i ∝ √(f_i/rate_i)` vs uniform-`p` at equal merged variance. `scale_fleet.sh`'s
-per-node launch is the natural base to extend.
+## Fig 9 — coordinated sampling on a skewed fleet  (`fig9_partial.csv`)
+Driver: `scripts/fig9_coordinated.sh` + `configs/asap/mvp-workload-fig9.yaml`
+(adds a `monitor:` block to `http_requests_total`). **Pipeline now end-to-end
+wired and verified on hardware** (was an empty `monitors[]` gap before):
+
+1. The control-plane emits the monitor — `streaming-config.monitors` =
+   `[{agg_id: 16346598078036168951, tau, epsilon: 0.2, window_ms: 30000}]`.
+2. The data-plane runs the CDM coordinator (new `DP_MONITOR_FLAGS=
+   "--enable-monitor-coordinator --monitor-grpc-port 4319"` plumbed into `backend_up`).
+3. Three trace-replay edges (node3/4/5) **connect to the coordinator and report
+   a 25× skewed rate**:
+
+| edge | node | per-window rate | CDM connected | granted p |
+|---|---|---|---|---|
+| hot | node3 | 80 000 | ✓ | 1.0 |
+| med | node4 | 16 000 | ✓ | 1.0 |
+| quiet | node5 | 3 200 | ✓ | 1.0 |
+
+**Remaining:** the coordinator did **not** issue differentiated `p<1` grants even
+with the global sum ≫ τ (tried τ=5e6 and τ=1e5). The edges connect and report,
+but the grant-trigger (the CMY slack/round allocation in
+`data_plane/src/monitor/`) stayed at p=1 — needs investigation of the grant
+condition (likely edge round-registration on a τ change, or the value-functional
+not crossing the slack boundary the way the allocator expects). Note: coordination
+only activates in the producer's **trace-replay** path (`-trace-file`,
+`runTraceReplay`), not the synthetic-workload path — a synthetic `monitor_agg_id`
+producer never calls `newSampleController`. fig9_coordinated.sh uses synthetic
+`timestamp_ms,series_id,value` CSVs to drive skewed, sustained (`-trace-loop`) rates.
 
 ---
 
