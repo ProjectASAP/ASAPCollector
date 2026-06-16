@@ -56,8 +56,20 @@ cost-for-bandwidth trade.
 | asap (warm sketch) | 37.4 | 166.9 |
 
 **Caveat:** with the cold tier ON, `_over_time[5m]` range quantiles fail over to
-the Thanos archive (slow path), inflating ASAP latency. The cold-OFF warm-only
-accuracy stack (Fig 3) resolves the same quantiles from sketch state directly.
+the Thanos archive (slow path), inflating ASAP latency.
+
+### Fig 7 cold-OFF arm (warm-only, no archive failover) — `fig7_coldoff_*`
+Cold-OFF all-families stack, 599-query replay against the warm tier:
+
+| query | p50 ms | p99 ms |
+|---|---|---|
+| DDSketch quantile | 36.7 | **51.3** |
+| sum | 2.4 | 3.6 |
+
+**Conclusion:** turning the cold tier OFF drops the quantile p99 from 167 ms
+(cold-ON archive failover) to **51 ms** (warm sketch reconstruction) — confirming
+the cold-ON latency was archive routing, not the warm path. Instant `sum` resolves
+warm in ~2.4 ms.
 
 ## Fig 10 — scaling: per-agent bandwidth vs fleet size N  (`figs/fig10_scaling.png`, `fig10_scale_v1.csv`)
 One supervised asap agent per source host (node3–7), N ∈ {1..5}.
@@ -154,16 +166,24 @@ wired and verified on hardware** (was an empty `monitors[]` gap before):
 | med | node4 | 16 000 | ✓ | 1.0 |
 | quiet | node5 | 3 200 | ✓ | 1.0 |
 
-**Remaining:** the coordinator did **not** issue differentiated `p<1` grants even
-with the global sum ≫ τ (tried τ=5e6 and τ=1e5). The edges connect and report,
-but the grant-trigger (the CMY slack/round allocation in
-`data_plane/src/monitor/`) stayed at p=1 — needs investigation of the grant
-condition (likely edge round-registration on a τ change, or the value-functional
-not crossing the slack boundary the way the allocator expects). Note: coordination
-only activates in the producer's **trace-replay** path (`-trace-file`,
-`runTraceReplay`), not the synthetic-workload path — a synthetic `monitor_agg_id`
-producer never calls `newSampleController`. fig9_coordinated.sh uses synthetic
-`timestamp_ms,series_id,value` CSVs to drive skewed, sustained (`-trace-loop`) rates.
+**Root cause found (code investigation).** The coordinator did not issue
+differentiated `p<1` grants — and it *architecturally cannot* on the current code:
+`coordinator.rs::allocate_p()` calls
+`allocate_sample_rates(&rates, &rates, var_budget)` — it passes the **rate vector
+as BOTH the rate and the freq vector** ("freqs proxy = rates — no per-key split
+available at the coordinator"). Since the KKT solution is
+`p_i = clamp(√λ·√(f_i/rate_i), 0, 1)` and `f_i == rate_i`, every
+`√(f_i/rate_i) = 1`, so **all edges get an identical p — the differentiated
+`p_i ∝ √(f_i/rate_i)` Fig 9 claims is not wired**. Differentiation needs the
+per-key frequency `f_i` (≠ total rate) plumbed from the edge reports to the
+coordinator; today it isn't. Secondary findings: (a) coordination only activates
+in the producer **trace-replay** path (`-trace-file`/`runTraceReplay`), not the
+synthetic path; (b) `var_budget = (ε·τ)²` is constant; (c) `gap ≤ ε·τ` ⇒ alert
+(so τ must sit above the per-window global, ~900k here, for the throttle band to
+exist — τ=1e5 alerts instantly). **Fix path:** thread per-key `f_i` into
+`MonitorReport` and `allocate_p`, then re-run `fig9_coordinated.sh`.
+fig9_coordinated.sh drives skewed, sustained (`-trace-loop`) rates via synthetic
+`timestamp_ms,series_id,value` CSVs.
 
 ---
 
