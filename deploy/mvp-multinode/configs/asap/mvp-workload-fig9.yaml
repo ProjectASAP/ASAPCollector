@@ -86,11 +86,15 @@
   - zone
   # Fig 9 — make http_requests_total a monitored standing query so the
   # controller emits a backend `monitors:` entry (agg_id = agg_id_for_metric).
-  # Coordinated CDM edges then report their per-window rate under this agg_id
-  # and receive a differentiated sampling-p grant (p_i ∝ √(f_i/rate_i)).
+  # Coordinated CDM edges then report, under this agg_id, the per-window
+  # frequency f_i of the monitored series id `s0` (NOT their total rate) and
+  # receive a differentiated sampling-p grant (p_i ∝ √(f_i/rate_i)): s0 has
+  # ~equal frequency on every edge but the edges differ in total rate, so the
+  # busiest edge gets the smallest p.
   monitor:
     tau: 5000000.0       # global-sum threshold τ (arbitrary; coordination runs below it)
-    functional: sum
+    functional: cms_point  # point-frequency monitor on a single sid (CMS `key`)
+    key: s0              # the monitored series id; only its count is reported as f_i
     epsilon: 0.2         # alert fires at (1−ε)τ
     window_secs: 30      # MUST match the metric's 30s edge window
 

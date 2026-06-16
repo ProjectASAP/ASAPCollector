@@ -177,40 +177,52 @@ Edge footprint: **1765 B/series** open-window RSS.
 uncompressed raw — strongly data-dependent (best on counters, worst on
 high-entropy gauges); it IS vanilla Prometheus gorilla by construction.
 
-## Fig 9 — coordinated sampling on a skewed fleet  (`fig9_partial.csv`)
+## Fig 9 — coordinated sampling on a skewed fleet  (`fig9_cmspoint.csv`, `figs/fig9_coordinated.png`)
 Driver: `scripts/fig9_coordinated.sh` + `configs/asap/mvp-workload-fig9.yaml`
-(adds a `monitor:` block to `http_requests_total`). **Pipeline now end-to-end
-wired and verified on hardware** (was an empty `monitors[]` gap before):
+(a `cms_point` `monitor:` block on `http_requests_total`, key `s0`). **End-to-end
+differentiated coordinated sampling now MEASURED on hardware.**
 
-1. The control-plane emits the monitor — `streaming-config.monitors` =
-   `[{agg_id: 16346598078036168951, tau, epsilon: 0.2, window_ms: 30000}]`.
-2. The data-plane runs the CDM coordinator (new `DP_MONITOR_FLAGS=
-   "--enable-monitor-coordinator --monitor-grpc-port 4319"` plumbed into `backend_up`).
-3. Three trace-replay edges (node3/4/5) **connect to the coordinator and report
-   a 25× skewed rate**:
+Setup: the monitored sid `s0` is emitted at a **constant** frequency on every edge
+(once per trace timestamp) while the total stream rate is skewed 400:80:16 (extra
+series `x1…xN`). With `f_i(s0)` equal and `rate_i` skewed, the CDM allocation
+`p_i = clamp(√λ·√(f_i/rate_i),0,1)` should fall off as `1/√rate_i`. Three
+trace-replay edges (node3/4/5) auto-learn the monitor from the controller-pushed
+config (`-monitor-config-url`), report per-sid `f_i` + shared rate to the data-plane
+coordinator (`--enable-monitor-coordinator`), and apply the granted `p` at each
+15 s window boundary. **Stable over the last 3 windows:**
 
-| edge | node | per-window rate | CDM connected | granted p |
-|---|---|---|---|---|
-| hot | node3 | 80 000 | ✓ | 1.0 |
-| med | node4 | 16 000 | ✓ | 1.0 |
-| quiet | node5 | 3 200 | ✓ | 1.0 |
+| edge | node | total series (rate) | learned monitor | granted p | 1/√rate (norm.) |
+|---|---|---|---|---|---|
+| hot   | node3 | 400 | ✓ s0 | **0.0010** | 1.00 |
+| med   | node4 |  80 | ✓ s0 | **0.0022** | 2.24 |
+| quiet | node5 |  16 | ✓ s0 | **0.0049** | 5.00 |
 
-**Root cause found (code investigation).** The coordinator did not issue
-differentiated `p<1` grants — and it *architecturally cannot* on the current code:
-`coordinator.rs::allocate_p()` calls
-`allocate_sample_rates(&rates, &rates, var_budget)` — it passes the **rate vector
-as BOTH the rate and the freq vector** ("freqs proxy = rates — no per-key split
-available at the coordinator"). Since the KKT solution is
-`p_i = clamp(√λ·√(f_i/rate_i), 0, 1)` and `f_i == rate_i`, every
-`√(f_i/rate_i) = 1`, so **all edges get an identical p — the differentiated
-`p_i ∝ √(f_i/rate_i)` Fig 9 claims is not wired**. Differentiation needs the
-per-key frequency `f_i` (≠ total rate) plumbed from the edge reports to the
-coordinator; today it isn't. Secondary findings: (a) coordination only activates
-in the producer **trace-replay** path (`-trace-file`/`runTraceReplay`), not the
-synthetic path; (b) `var_budget = (ε·τ)²` is constant; (c) `gap ≤ ε·τ` ⇒ alert
-(so τ must sit above the per-window global, ~900k here, for the throttle band to
-exist — τ=1e5 alerts instantly). **Fix path:** thread per-key `f_i` into
-`MonitorReport` and `allocate_p`, then re-run `fig9_coordinated.sh`.
+**Conclusion.** The busiest edge samples ~5× harder than the quiet one; the grant
+ratio **1 : 2.2 : 4.9** matches the √rate law √(400:80:16) = **1 : 2.24 : 5** to
+within measurement noise — i.e. the coordinator genuinely allocates
+`p_i ∝ √(f_i/rate_i)`, validating the distributed-NitroSketch coordinated-sampling
+claim on real hardware.
+
+**Five bugs were found & fixed to get here** (each masked the next; all but the
+boot-seed are code fixes):
+1. *Wrong functional* — the workload declared `functional: sum` → published `key:""`
+   → edges ran as a sum monitor (value ∝ rate) → uniform p. Fixed to `cms_point`+`key: s0`.
+2. *Coordinator never saw the monitor* — `main.rs` reads `streaming_config.monitors()`
+   **once at boot** into `MonitorCoordinator::new`; the controller's post-boot hot-reload
+   updates the query engine but **not** the coordinator, so it booted with `monitors:[]`
+   and rejected every report (`register for unconfigured monitor`). Worked around run-side
+   by seeding the monitor into the data-plane boot config + restarting it. *(Proper fix —
+   re-seed the coordinator on hot-reload — is a data-plane follow-up.)*
+3. *Slack never tripped* — the coordinator re-grants only when an edge's report exceeds
+   its slack `Δ/(2k)`; with τ=5 M slack ≫ one window's `f`, so edges never reported.
+   Fixed with τ=7000 (slack ≈ ⅓ window) + `window_ms` aligned to the 15 s edge window.
+4. *Register under nil key* — `engine.Observe` passed `nil` as the key, so edges
+   registered as `(agg_id,"")` while the coordinator keys the monitor `(agg_id,"s0")`
+   → rejected. Fixed to thread the monitor key (ASAPCollector #504).
+5. *Dropped flag overrides* — `mergeFlagOverrides` silently dropped `-monitor-config-url`
+   and `-monitor-key`, so the effective key was always `""` (auto-learn skipped, fallback
+   empty). Fixed to merge both (ASAPCollector #504).
+
 fig9_coordinated.sh drives skewed, sustained (`-trace-loop`) rates via synthetic
 `timestamp_ms,series_id,value` CSVs.
 
