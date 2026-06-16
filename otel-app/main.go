@@ -457,6 +457,12 @@ func applyExplicitFlags(dst, src *Config, set map[string]bool) {
 	if set["edge-id"] {
 		dst.EdgeID = src.EdgeID
 	}
+	if set["monitor-key"] {
+		dst.MonitorKey = src.MonitorKey
+	}
+	if set["monitor-config-url"] {
+		dst.MonitorConfigURL = src.MonitorConfigURL
+	}
 }
 
 // resolveAggName picks the effective aggregation name. -agg is
