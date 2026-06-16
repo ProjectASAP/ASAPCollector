@@ -19,7 +19,10 @@ log(){ printf '[%s] [soak] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "${OUT}/soak.
 log "bringing up asap arm for ${SOAK_MIN}min soak"
 SKIP_BUILD=1 SKIP_LOAD=1 bash "${SCRIPT_DIR}/run_demo.sh" up asap >>"${OUT}/soak.log" 2>&1
 
-AGENT_NODES=("${NODE0_HOST}" "${NODE3_HOST}")
+# the two data-source hosts the asap arm runs agents on (role-based; these are
+# the harness's two NODE0/NODE3 source slots = the first two SRC_HOSTS).
+read -r _SRCA _SRCB _rest <<< "${SRC_HOSTS:-${NODE0_HOST:-node3} ${NODE3_HOST:-node4}}"
+AGENT_NODES=("${_SRCA}" "${_SRCB}")
 start=$(date +%s); end=$((start + SOAK_MIN*60))
 log "sampling RSS every 30s until +${SOAK_MIN}min"
 while [ "$(date +%s)" -lt "${end}" ]; do

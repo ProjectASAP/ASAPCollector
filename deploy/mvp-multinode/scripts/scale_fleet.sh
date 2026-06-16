@@ -22,7 +22,7 @@ WARMUP="${WARMUP_S:-60}"
 export RUN_DEMO_LIB=1
 source "${SCRIPT_DIR}/run_demo.sh"
 
-read -ra SRC <<< "${SRC_NODES:-node3 node4 node5 node6 node7}"
+read -ra SRC <<< "${SRC_HOSTS:-${SRC_NODES:-node3 node4 node5 node6 node7}}"
 RUN_ID="${RUN_ID:-scale-$(date +%Y%m%d-%H%M%S)}"
 OUT="${RUN_BASE}/${RUN_ID}"; mkdir -p "${OUT}"
 CSV="${OUT}/scale.csv"
@@ -93,8 +93,8 @@ PY
 scale_down() {
     local n
     for n in "${SRC[@]}"; do stop_node "$n" >/dev/null 2>&1 || true; done
-    stop_node "${NODE1_HOST}" >/dev/null 2>&1 || true
-    stop_node "${NODE2_HOST}" >/dev/null 2>&1 || true
+    stop_node "${COLD_HOST}" >/dev/null 2>&1 || true
+    stop_node "${WARM_HOST}" >/dev/null 2>&1 || true
     backend_down >/dev/null 2>&1 || true
 }
 
@@ -109,9 +109,9 @@ for N in ${N_LIST}; do
     active=(); for k in $(seq 0 $((N-1))); do launch_agent "${SRC[$k]}" "$((k+1))"; active+=("${SRC[$k]}"); done
     slog "warmup ${WARMUP}s"; sleep "${WARMUP}"
 
-    rx0=$(nic_rx "${NODE2_HOST}"); t0=$(date +%s.%N)
+    rx0=$(nic_rx "${WARM_HOST}"); t0=$(date +%s.%N)
     sleep "${SOAK}"
-    rx1=$(nic_rx "${NODE2_HOST}"); t1=$(date +%s.%N)
+    rx1=$(nic_rx "${WARM_HOST}"); t1=$(date +%s.%N)
     stats=$(agent_stats "${active[@]}")
     rxps=$(awk -v a="$rx0" -v b="$rx1" -v t0="$t0" -v t1="$t1" 'BEGIN{printf "%.3f",(b-a)/((t1-t0)*1e6)}')
     peragent=$(awk -v r="$rxps" -v n="$N" 'BEGIN{printf "%.3f", r/n}')
