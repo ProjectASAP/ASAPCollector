@@ -45,8 +45,13 @@ const monitorValuePerObs = 0.5
 // monitor's f_m; an empty key means a sum monitor (value ∝ rate). windowValue is
 // this monitor's running f_m for the current window.
 type monitorEntry struct {
-	aggID       uint64
-	key         string
+	aggID uint64
+	key   string
+	// keyBytes is key as []byte, precomputed once: the coordinator identifies a
+	// monitor by (agg_id, key), so the engine MUST register/report under this
+	// exact key (not nil) or the coordinator rejects it as an unconfigured
+	// monitor. Cached to avoid a per-observe allocation on the replay hot path.
+	keyBytes    []byte
 	windowValue float64
 }
 
@@ -93,7 +98,7 @@ func newSampleController(cfg Config, metricName string) *sampleController {
 			log.Printf("otel-app CDM edge: could not learn monitors from %s: %v", cfg.MonitorConfigURL, err)
 		} else {
 			for _, m := range ms {
-				sc.monitors = append(sc.monitors, monitorEntry{aggID: m.AggID, key: m.Key})
+				sc.monitors = append(sc.monitors, monitorEntry{aggID: m.AggID, key: m.Key, keyBytes: []byte(m.Key)})
 			}
 			descs := make([]string, len(ms))
 			for i, m := range ms {
@@ -105,7 +110,7 @@ func newSampleController(cfg Config, metricName string) *sampleController {
 	}
 	// Fallback / manual override: a single monitor from the flags.
 	if len(sc.monitors) == 0 {
-		sc.monitors = []monitorEntry{{aggID: cfg.MonitorAggID, key: cfg.MonitorKey}}
+		sc.monitors = []monitorEntry{{aggID: cfg.MonitorAggID, key: cfg.MonitorKey, keyBytes: []byte(cfg.MonitorKey)}}
 	}
 
 	sc.edgeID = cfg.EdgeID
@@ -152,7 +157,7 @@ func (sc *sampleController) currentP() float64 {
 	if now != sc.windowStartMs {
 		// Close the prior window: flush each monitor's value+rate.
 		for i := range sc.monitors {
-			sc.engine.Observe(sc.monitors[i].aggID, nil, sc.monitors[i].windowValue, sc.windowStartMs)
+			sc.engine.Observe(sc.monitors[i].aggID, sc.monitors[i].keyBytes, sc.monitors[i].windowValue, sc.windowStartMs)
 		}
 		sc.engine.EpochReset(now)
 		sc.windowStartMs = now
@@ -200,7 +205,7 @@ func (sc *sampleController) observe(seriesID string) {
 		}
 		// Observe under each agg_id every event so its rate (obsCount) is the
 		// TOTAL and its value is this monitor's f_m.
-		sc.engine.Observe(sc.monitors[i].aggID, nil, sc.monitors[i].windowValue, sc.windowStartMs)
+		sc.engine.Observe(sc.monitors[i].aggID, sc.monitors[i].keyBytes, sc.monitors[i].windowValue, sc.windowStartMs)
 	}
 	sc.mu.Unlock()
 }
