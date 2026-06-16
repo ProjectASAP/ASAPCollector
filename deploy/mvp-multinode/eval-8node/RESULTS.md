@@ -46,6 +46,35 @@ ships the full cold raw backup and still beats gzip'd raw on total wire.
 gorilla encode) to buy the 40–120× wire reduction. Not a free win — a favourable
 cost-for-bandwidth trade.
 
+### Fig 6b — memory-leak soak (`figs/fig6b_soak_rss.png`, `fig6b_soak.csv`)
+30-min soak (asap arm, 2 agents, 100 RSS samples), linear-fit RSS slope:
+
+| agent | first MiB | last MiB | slope MiB/hr |
+|---|---|---|---|
+| asap-agent-a | 1542 | 1603 | **−290** |
+| asap-agent-b | 1220 | 1100 | **−183** |
+
+**Conclusion:** agent RSS is flat-to-slightly-negative over the soak (GC reclaim,
+not growth) → **no leak**. 30-min in-session proxy for the 24h paper target; a
+true 24h run would confirm at scale but the slope is already non-positive.
+
+## Fig 8 — cross-layer placement  (`figs/fig8_placement.png`, `fig8_placement.csv`)
+Same DDSketch agg_type, only the producer's `-agg` changes: `raw-buffer` (agent
+sketches) vs `ddsketch` (SDK sketches, agent forwards). CPU% per layer:
+
+| placement | producer | agent | backend |
+|---|---|---|---|
+| **agent** (asap_edge sketches) | 240 | **111** | 90 |
+| **SDK** (producer sketches) | 99 | **4.5** | 6.6 |
+
+**Conclusion:** placement doesn't change correctness but shifts *where* the CPU
+lands — and **earlier (SDK) placement is cheaper at every downstream layer**
+because it aggregates before serialization/transport: moving the sketch to the SDK
+drops agent CPU **111% → 4.5% (~25×)**, backend 90% → 6.6%, and even the producer
+falls 240% → 99% (one compact sketch/window vs the full raw-buffer stream). The
+tradeoff: SDK placement needs the sketch library in every app; agent placement
+keeps apps thin at the cost of agent CPU.
+
 ## Fig 7 — PromQL query latency CDF  (`figs/fig7_latency_cdf.png`)
 599-query replay (queries-e2e.json).
 
