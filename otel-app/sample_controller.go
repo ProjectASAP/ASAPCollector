@@ -148,6 +148,15 @@ func newSampleController(cfg Config, metricName string) *sampleController {
 	if len(sc.monitors) == 0 {
 		sc.monitors = []monitorEntry{newMonitorEntry(cfg.MonitorAggID, cfg.MonitorKey, cfg.MonitorFunctional)}
 	}
+	// -monitor-functional OVERRIDES the learned/inferred functional on every
+	// monitor, so the flag forces the reporting mode even when the controller
+	// config omits/disagrees on `functional` (e.g. an older control plane). With
+	// the flag unset, the auto-learned functional stands.
+	if cfg.MonitorFunctional != "" {
+		for i := range sc.monitors {
+			sc.monitors[i] = newMonitorEntry(sc.monitors[i].aggID, sc.monitors[i].key, cfg.MonitorFunctional)
+		}
+	}
 
 	sc.edgeID = cfg.EdgeID
 	if sc.edgeID == "" {
