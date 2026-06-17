@@ -51,8 +51,44 @@ type monitorEntry struct {
 	// monitor by (agg_id, key), so the engine MUST register/report under this
 	// exact key (not nil) or the coordinator rejects it as an unconfigured
 	// monitor. Cached to avoid a per-observe allocation on the replay hot path.
-	keyBytes    []byte
+	keyBytes []byte
+	// functional selects what windowValue means: "cms_point" = count of `key`;
+	// "f2" = whole-sketch L2 mass Σ_x f(x)² (no key, identity (agg_id,"")); "" /
+	// "sum" = sum monitor (value ∝ rate). The coordinator allocation is the same
+	// p_i ∝ √(value/rate) regardless — only the reported scalar differs.
+	functional  string
 	windowValue float64
+	// counts is the per-series window count, F2 only: windowValue tracks the
+	// running Σ f(x)² incrementally (an event on x with old count c adds
+	// (c+1)²−c² = 2c+1), so the coordinator sees F2 grow monotonically within the
+	// epoch (it drives the slack countdown exactly like cms_point's count).
+	counts map[string]float64
+}
+
+// newMonitorEntry resolves the effective functional and initializes per-mode
+// state. An empty functional is inferred from the key (key set ⇒ cms_point, else
+// sum), matching pre-functional configs. F2 (whole-sketch L2) carries no key —
+// its identity is (agg_id, "") — and needs the per-series count map.
+func newMonitorEntry(aggID uint64, key, functional string) monitorEntry {
+	fn := functional
+	if fn == "l2" {
+		fn = "f2"
+	}
+	if fn == "" {
+		if key != "" {
+			fn = "cms_point"
+		} else {
+			fn = "sum"
+		}
+	}
+	if fn == "f2" {
+		key = "" // whole-sketch: no per-point key
+	}
+	e := monitorEntry{aggID: aggID, key: key, keyBytes: []byte(key), functional: fn}
+	if fn == "f2" {
+		e.counts = make(map[string]float64)
+	}
+	return e
 }
 
 // sampleController holds the current warm-sample probability and, when
@@ -98,11 +134,11 @@ func newSampleController(cfg Config, metricName string) *sampleController {
 			log.Printf("otel-app CDM edge: could not learn monitors from %s: %v", cfg.MonitorConfigURL, err)
 		} else {
 			for _, m := range ms {
-				sc.monitors = append(sc.monitors, monitorEntry{aggID: m.AggID, key: m.Key, keyBytes: []byte(m.Key)})
+				sc.monitors = append(sc.monitors, newMonitorEntry(m.AggID, m.Key, m.Functional))
 			}
 			descs := make([]string, len(ms))
 			for i, m := range ms {
-				descs[i] = fmt.Sprintf("agg_id=%d key=%q", m.AggID, m.Key)
+				descs[i] = fmt.Sprintf("agg_id=%d func=%q key=%q", m.AggID, sc.monitors[i].functional, m.Key)
 			}
 			log.Printf("otel-app CDM edge: learned %d monitor(s) from controller config (%s): [%s]",
 				len(ms), cfg.MonitorConfigURL, strings.Join(descs, "; "))
@@ -110,7 +146,16 @@ func newSampleController(cfg Config, metricName string) *sampleController {
 	}
 	// Fallback / manual override: a single monitor from the flags.
 	if len(sc.monitors) == 0 {
-		sc.monitors = []monitorEntry{{aggID: cfg.MonitorAggID, key: cfg.MonitorKey, keyBytes: []byte(cfg.MonitorKey)}}
+		sc.monitors = []monitorEntry{newMonitorEntry(cfg.MonitorAggID, cfg.MonitorKey, cfg.MonitorFunctional)}
+	}
+	// -monitor-functional OVERRIDES the learned/inferred functional on every
+	// monitor, so the flag forces the reporting mode even when the controller
+	// config omits/disagrees on `functional` (e.g. an older control plane). With
+	// the flag unset, the auto-learned functional stands.
+	if cfg.MonitorFunctional != "" {
+		for i := range sc.monitors {
+			sc.monitors[i] = newMonitorEntry(sc.monitors[i].aggID, sc.monitors[i].key, cfg.MonitorFunctional)
+		}
 	}
 
 	sc.edgeID = cfg.EdgeID
@@ -166,6 +211,9 @@ func (sc *sampleController) currentP() float64 {
 		maxP := 0.0
 		for i := range sc.monitors {
 			sc.monitors[i].windowValue = 0
+			if sc.monitors[i].counts != nil { // f2: clear per-series counts for the new epoch
+				clear(sc.monitors[i].counts)
+			}
 			pm := sc.engine.GrantedSampleP(sc.monitors[i].aggID)
 			if pm > maxP {
 				maxP = pm
@@ -195,17 +243,24 @@ func (sc *sampleController) observe(seriesID string) {
 	// EVERY candidate counts toward the shared RATE (rate_i = total updates).
 	sc.windowCount++
 	for i := range sc.monitors {
-		// per-monitor f_m: cms_point counts only its key; sum adds a fixed step.
-		if sc.monitors[i].key != "" {
-			if seriesID == sc.monitors[i].key {
-				sc.monitors[i].windowValue += 1.0
+		m := &sc.monitors[i]
+		switch m.functional {
+		case "f2":
+			// whole-sketch L2: windowValue = running Σ_x f(x)². Incremental:
+			// counts[x] c→c+1 raises the square by (c+1)²−c² = 2c+1.
+			c := m.counts[seriesID]
+			m.windowValue += 2*c + 1
+			m.counts[seriesID] = c + 1
+		case "cms_point":
+			if seriesID == m.key {
+				m.windowValue += 1.0
 			}
-		} else {
-			sc.monitors[i].windowValue += monitorValuePerObs
+		default: // sum / whole-stream: value ∝ rate
+			m.windowValue += monitorValuePerObs
 		}
 		// Observe under each agg_id every event so its rate (obsCount) is the
-		// TOTAL and its value is this monitor's f_m.
-		sc.engine.Observe(sc.monitors[i].aggID, sc.monitors[i].keyBytes, sc.monitors[i].windowValue, sc.windowStartMs)
+		// TOTAL and its value is this monitor's reported scalar (f_m / F2 / sum).
+		sc.engine.Observe(m.aggID, m.keyBytes, m.windowValue, sc.windowStartMs)
 	}
 	sc.mu.Unlock()
 }
@@ -218,8 +273,9 @@ func (sc *sampleController) close() {
 
 // monitorDecl is one entry of the data-plane streaming-config `monitors:` list.
 type monitorDecl struct {
-	AggID uint64 `json:"agg_id"`
-	Key   string `json:"key"`
+	AggID      uint64 `json:"agg_id"`
+	Functional string `json:"functional"` // "", "sum", "cms_point", "f2"
+	Key        string `json:"key"`
 }
 
 // fetchMonitors reads the data-plane streaming-config (the document the

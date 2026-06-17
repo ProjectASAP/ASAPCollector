@@ -183,6 +183,11 @@ type Config struct {
 	// so the cms_point key flows from the control plane instead of a static flag,
 	// closing the loop with the controller's monitor emission.
 	MonitorConfigURL string `yaml:"monitor_config_url"`
+	// MonitorFunctional overrides the reported readout: "cms_point" (count of
+	// MonitorKey), "f2" (whole-sketch L2 = Σ_x f(x)², no key), or "sum"/"".
+	// Normally LEFT EMPTY and learned from the controller config; empty infers
+	// cms_point when MonitorKey is set, else sum.
+	MonitorFunctional string `yaml:"monitor_functional"`
 }
 
 // defaultConfig returns the built-in defaults — the lowest-precedence
@@ -294,6 +299,7 @@ func registerFlags(fs *flag.FlagSet, c *Config) {
 	fs.StringVar(&c.CoordinatorURL, "coordinator-url", c.CoordinatorURL, "CDM coordinator MonitorService endpoint (host:port); non-empty makes this producer a coordinated edge whose warm-sample-p comes from the coordinator's grant")
 	fs.StringVar(&c.MonitorKey, "monitor-key", c.MonitorKey, "OVERRIDE for the cms_point heavy-hitter key: only this series_id counts toward the reported value f_i (the key's frequency), every event counts toward rate_i, so p_i ∝ √(f_i/rate_i) differentiates. Normally LEFT EMPTY and learned from the controller's pushed monitor config via -monitor-config-url; empty + no config URL = sum-monitor (value ∝ rate ⇒ uniform p)")
 	fs.StringVar(&c.MonitorConfigURL, "monitor-config-url", c.MonitorConfigURL, "data-plane streaming-config endpoint (where the controller pushes its monitors:) — when set, the edge learns ALL monitors and coordinates each (per-monitor f_m + shared rate, applying p=max over their grants); multiple cms_point monitors with different keys/series are supported. Falls back to a single -monitor-agg-id/-monitor-key monitor when unset")
+	fs.StringVar(&c.MonitorFunctional, "monitor-functional", c.MonitorFunctional, "OVERRIDE the reported readout: cms_point (count of -monitor-key) | f2 (whole-sketch L2 = Σ_x f(x)², no key, for keeping ANY point query within ε) | sum. Normally learned from -monitor-config-url; empty infers cms_point when -monitor-key is set, else sum")
 	fs.Uint64Var(&c.MonitorAggID, "monitor-agg-id", c.MonitorAggID, "content-addressed agg_id reported to the coordinator; must match the monitors: entry agg_id")
 	fs.StringVar(&c.EdgeID, "edge-id", c.EdgeID, "edge identity reported to the coordinator; defaults to -producer-id when empty")
 }
@@ -462,6 +468,9 @@ func applyExplicitFlags(dst, src *Config, set map[string]bool) {
 	}
 	if set["monitor-config-url"] {
 		dst.MonitorConfigURL = src.MonitorConfigURL
+	}
+	if set["monitor-functional"] {
+		dst.MonitorFunctional = src.MonitorFunctional
 	}
 }
 
