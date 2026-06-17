@@ -203,16 +203,19 @@ within measurement noise — i.e. the coordinator genuinely allocates
 `p_i ∝ √(f_i/rate_i)`, validating the distributed-NitroSketch coordinated-sampling
 claim on real hardware.
 
-**Five bugs were found & fixed to get here** (each masked the next; all but the
-boot-seed are code fixes):
+**Five bugs were found & fixed to get here** (each masked the next; all are code fixes):
 1. *Wrong functional* — the workload declared `functional: sum` → published `key:""`
    → edges ran as a sum monitor (value ∝ rate) → uniform p. Fixed to `cms_point`+`key: s0`.
-2. *Coordinator never saw the monitor* — `main.rs` reads `streaming_config.monitors()`
+2. *Coordinator never saw the monitor* — `main.rs` read `streaming_config.monitors()`
    **once at boot** into `MonitorCoordinator::new`; the controller's post-boot hot-reload
-   updates the query engine but **not** the coordinator, so it booted with `monitors:[]`
-   and rejected every report (`register for unconfigured monitor`). Worked around run-side
-   by seeding the monitor into the data-plane boot config + restarting it. *(Proper fix —
-   re-seed the coordinator on hot-reload — is a data-plane follow-up.)*
+   updated the query engine but **not** the coordinator, so it booted with `monitors:[]`
+   and rejected every report (`register for unconfigured monitor`). Fixed in
+   ASAPQuery-backend#379: a watcher re-applies the pushed `monitors:` to the live
+   coordinator (`MonitorCoordinator::reconfigure`) — no restart, no boot-config seed.
+   Live-validated: the data-plane logs `hot-reloaded monitors added=1` and the grants
+   below reproduce identically. (Before #379 was wired, this run seeded the monitor into
+   the boot config + restarted the data-plane; `fig9_coordinated.sh` now just waits for
+   the hot-reload.)
 3. *Slack never tripped* — the coordinator re-grants only when an edge's report exceeds
    its slack `Δ/(2k)`; with τ=5 M slack ≫ one window's `f`, so edges never reported.
    Fixed with τ=7000 (slack ≈ ⅓ window) + `window_ms` aligned to the 15 s edge window.

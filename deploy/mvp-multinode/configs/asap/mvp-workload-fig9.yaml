@@ -91,12 +91,17 @@
   # receive a differentiated sampling-p grant (p_i ∝ √(f_i/rate_i)): s0 has
   # ~equal frequency on every edge but the edges differ in total rate, so the
   # busiest edge gets the smallest p.
+  # These params are the COORDINATION params (not a placeholder τ): the data-plane
+  # coordinator picks this monitor up live from the controller push (hot-reload,
+  # ASAPQuery-backend#379) and uses them directly — no boot-config seed.
   monitor:
-    tau: 5000000.0       # global-sum threshold τ (arbitrary; coordination runs below it)
+    tau: 7000.0          # τ just above the per-window global s0 mass (~4500) so the
+                         #   slack Δ/(2k) trips each window without alerting (0.8τ=5600)
     functional: cms_point  # point-frequency monitor on a single sid (CMS `key`)
     key: s0              # the monitored series id; only its count is reported as f_i
     epsilon: 0.2         # alert fires at (1−ε)τ
-    window_secs: 30      # MUST match the metric's 30s edge window
+    window_secs: 15      # MUST match the edge SDK window (15 s) — the coordinator's
+                         #   on_register alignment guard rejects a mismatched window
 
 # 3. COMBINED WINDOW + LABEL AGGREGATION
 #    Inner: rate per series over 5m. Outer: sum-by(zone).

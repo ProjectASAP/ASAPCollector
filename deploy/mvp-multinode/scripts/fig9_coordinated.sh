@@ -35,35 +35,24 @@ done
 [ -z "${AGG}" ] && { slog "FATAL: no monitor agg_id"; exit 1; }
 slog "monitor agg_id=${AGG}"
 
-# 2b. Seed the monitor into the data-plane's BOOT streaming-config and restart it.
-#     The coordinator reads streaming_config.monitors() ONCE at boot
-#     (main.rs MonitorCoordinator::new) and is NOT re-seeded by the controller's
-#     post-boot hot-reload POST — so a monitor that only arrives via hot-reload
-#     leaves the coordinator empty and it rejects every edge report
-#     ("register for unconfigured monitor — ignored"). sync_all_nodes already
-#     overwrote this file with the clean repo copy, so a single append is idempotent
-#     across reruns. agg_id is taken live (content-addressed, stable run-to-run).
-BOOT_CFG=/mydata/mvp-multinode/configs/asap/backend-streaming.yaml
-ssh -o BatchMode=yes "${WARM_HOST}" "cat >> ${BOOT_CFG}" <<EOF
-
-monitors:
-  - agg_id: ${AGG}
-    key: s0
-    tau: 7000.0
-    epsilon: 0.2
-    window_ms: 15000
-EOF
-ssh -o BatchMode=yes "${WARM_HOST}" "docker restart asap-data-plane >/dev/null 2>&1"
-slog "seeded monitor (agg_id=${AGG}, key=s0) into boot config + restarted data-plane"
-# wait until the coordinator boots WITH the monitor (served at :9091 from boot)
+# 2b. Wait for the coordinator to HOT-RELOAD the controller-pushed monitor.
+#     The data-plane coordinator picks up `monitors:` live from the control plane's
+#     streaming-config push (ASAPQuery-backend#379, MonitorCoordinator::reconfigure)
+#     — no boot-config seed, no restart. The workload yaml carries the real
+#     coordination params (tau 7000 / window_secs 15) so the published monitor is
+#     directly usable. Earlier this step seeded the boot config + restarted the
+#     data-plane to work around the coordinator reading monitors() only at boot;
+#     #379 makes that unnecessary.
+slog "waiting for coordinator to hot-reload the monitor (no seed, no restart)..."
 for i in $(seq 1 30); do
-  k=$(curl -s "http://${WARM_IP}:9091/api/v1/streaming-config" 2>/dev/null | python3 -c "import json,sys
+  ssh -o BatchMode=yes "${WARM_HOST}" "docker logs asap-data-plane 2>&1 | grep -q 'hot-reloaded monitors'" && break
+  sleep 3
+done
+ssh -o BatchMode=yes "${WARM_HOST}" "docker logs asap-data-plane 2>&1 | grep -iE 'hot-reloaded monitors|no .monitors. yet' | tail -3"
+k=$(curl -s "http://${WARM_IP}:9091/api/v1/streaming-config" 2>/dev/null | python3 -c "import json,sys
 try: m=json.load(sys.stdin).get('streaming_config',{}).get('monitors',[]); print(m[0]['key'] if m else '')
 except: print('')" 2>/dev/null)
-  [ "${k}" = "s0" ] && break; sleep 3
-done
-ssh -o BatchMode=yes "${WARM_HOST}" "docker logs asap-data-plane 2>&1 | grep -iE 'monitor coordinator|no .monitors' | tail -2"
-slog "coordinator ready with monitor key=${k:-?}"
+slog "coordinator hot-reloaded; served monitor key=${k:-?}"
 
 # 3. generate constant-key CSVs (s0 once/timestamp = const freq; N-1 others) + ship
 gen(){ python3 -c "
