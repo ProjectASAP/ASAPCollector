@@ -1,0 +1,4 @@
+edge,node,rate_per_ts,learned_monitors,granted_p
+edge-lo,node3,16,1,0.0102
+edge-mid,node4,64,1,0.0026
+edge-hi,node5,256,1,0.0007
