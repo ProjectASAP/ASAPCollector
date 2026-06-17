@@ -96,8 +96,9 @@
   # live from the controller push (hot-reload, ASAPQuery-backend#379) and uses them
   # directly. No per-point key — whole-sketch identity is (agg_id, "").
   monitor:
-    tau: 20000000.0      # τ above the per-window global F2 (~7.6e6) so the slack
-                         #   Δ/(2k) trips each window without alerting (0.8τ=1.6e7)
+    tau: 30000000.0      # Σ≈1.7e7 (equal F2 on all 3 edges). τ keeps the shared
+                         #   slack Δ/(2k)≈2.1e6 below each edge's per-window F2 so
+                         #   ALL edges report, while 0.8τ=2.4e7 > Σ (no false alert)
     functional: f2       # whole-sketch L2; edge reports F2_i = Σ_x f_i(x)²
     epsilon: 0.2         # alert fires at (1−ε)τ
     window_secs: 15      # MUST match the edge SDK window (15 s)
