@@ -1,0 +1,242 @@
+# MVP demo controller input — three canonical query classes
+#
+# Read by the controller at startup (env: CONTROLLER_WORKLOADS,
+# default ./workloads.yaml). The controller's L1 query_language →
+# L5 stage_split pipeline plans sketches + stage placement based
+# on this workload.
+#
+# Schema mirrors deploy/mvp-singlenode/configs/workloads.yaml. See
+# controller/src/config/workloads.rs::WorkloadEntry.
+#
+# Each entry is one PromQL query class the demo will exercise.
+#
+# ── Operating-point assumptions for the bandwidth verdict ─────────
+#
+# Agents run at 10 Hz scrape (`-freq-hz=10`, see
+# `deploy/mvp-singlenode/docker-compose/base.yml` and `mvp-multi-stage.yml`); each
+# series therefore produces 600 samples per 60 s flush window. The
+# break-even against raw scrape depends on `samples_per_window`
+# (≈ `state_size_bytes / per_sample_raw_bytes`); at 600 samples the
+# four delta-capable families (DDSketch / HLL / CountSketch /
+# Count-Min) sit above or close to their break-even curves.
+#
+# The controller's plan emitter
+# (`controller/src/config/stage_config.rs::build_edge_processor_block`)
+# accordingly sets `delta_transmission: true` for those four families
+# in the wire YAML it pushes to each agent. KLL is the only family
+# without a delta variant (`Implementation.tex`: "KLL has no delta
+# variant and matches its full cost"), so its wire payload is always
+# full state — the controller does NOT emit `delta_transmission` for
+# KLL because the kllprocessor's `Config.Validate` rejects
+# `delta_transmission: true` outright.
+#
+# See `docs/mvp-demo-runbook.md` §"Bandwidth criterion ① — break-even
+# depends on samples_per_window" for the per-family table.
+
+# 1. WINDOW AGGREGATION PER SERIES — DDSketch family
+#    Inner: per-series quantile over a 30s sliding window.
+#    Stage: edge (per-agent sketch flushes at window close;
+#    backend only stores resulting sketch state).
+#
+#    Window-alignment note (issue #46 ε-bound bug, fix/quantile-
+#    window-alignment): the warm-tier ASAPQuery streaming pre-compute
+#    is configured with `windowSize: 30` (see
+#    `deploy/mvp-singlenode/configs/backend-streaming.yaml` and the `precompute_window
+#    [..) ms (width 30000 ms)` annotation the warm response stamps).
+#    The replay range MUST match that pre-compute width so the warm
+#    answer is computed over the same data the replay asks for; any
+#    mismatch (e.g. `[1m]` vs warm's 30s) produces rel-err well above
+#    the DDSketch ε bound (observed mean 0.126 with `[1m]`, ε=0.01).
+- metric_name: http_requests_total_latency_ms
+  query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"
+  accuracy_sla: 0.01
+  assign_to_role: agent
+  sketch_family_override: KLL   # KLL accuracy experiment (issue: rank-error vs DDSketch's value-error)
+  # NO grouping_labels — per-series KLL preserves PromQL semantics.
+  # `quantile_over_time` is per-series in PromQL; grouping the sketch at
+  # [zone] would merge all series in a zone into one sketch, returning
+  # zone-merged p99 (not per-series p99). That's a different quantity than
+  # baseline (b0/b1) computes from raw values. For accuracy comparison
+  # to be apples-to-apples, asap MUST keep per-series sketches here. The
+  # cost is ~25× more sketch state vs per-zone merge; the demo accepts
+  # that on this metric to enable correct quantile-accuracy validation.
+  # Outer aggregation operators (e.g. `max by (zone)`) then fold per-series
+  # rows correctly via the engine's apply_outer_agg_fold (PR #297).
+
+# 2. LABEL AGGREGATION ACROSS SERIES AT ONE TIMESTAMP
+#    Outer: sum-by(zone) at instant. Inner: identity.
+#    Stage: agent (per-agent Sum-by-zone is emitted under
+#    a stable sid; backend's `evaluate_exact_agg` reducer
+#    pulls sids from every agent at query time and merges
+#    across hosts — see ASAPQuery-backend PR #283/#287/#290).
+#
+#    Pre-#400 this used `assign_to_role: gateway`, which
+#    spawned an asap-gateway OTel-collector hop solely to
+#    do that cross-agent merge. Now that the backend does
+#    the merge natively, the gateway hop is redundant; the
+#    role flips to `agent` so the controller's typed
+#    stage_split emits only Edge + Backend stages (no
+#    Gateway stage → no gateway YAML emit → no asap-gateway
+#    container required).
+- metric_name: http_requests_total
+  query_string: "sum by (zone) (http_requests_total)"
+  accuracy_sla: 0.0
+  assign_to_role: agent
+  grouping_labels:
+  - zone
+  # Fig 9 (whole-sketch / F2 variant) — http_requests_total as a monitored
+  # standing query whose functional is the WHOLE-SKETCH L2 mass F2 = ‖f‖₂²
+  # (NOT a single point). This is the right model when the queried point is not
+  # known a priori: each edge reports its local F2_i = Σ_x f_i(x)² and gets
+  # p_i ∝ √(F2_i/rate_i), which keeps the entire sketch within ε so ANY future
+  # point query is accurate (see ASAPQuery-backend#380 decision rule).
+  #   Differentiation here is by DISTRIBUTION SKEW, not rate: the trace gives each
+  #   edge equal rate but different concentration (F2/rate = c), so p_i ∝ √c.
+  # COORDINATION params (not placeholders): the coordinator picks this monitor up
+  # live from the controller push (hot-reload, ASAPQuery-backend#379) and uses them
+  # directly. No per-point key — whole-sketch identity is (agg_id, "").
+  monitor:
+    tau: 30000000.0      # Σ≈1.7e7 (equal F2 on all 3 edges). τ keeps the shared
+                         #   slack Δ/(2k)≈2.1e6 below each edge's per-window F2 so
+                         #   ALL edges report, while 0.8τ=2.4e7 > Σ (no false alert)
+    functional: f2       # whole-sketch L2; edge reports F2_i = Σ_x f_i(x)²
+    epsilon: 0.2         # alert fires at (1−ε)τ
+    window_secs: 15      # MUST match the edge SDK window (15 s)
+
+# 3. COMBINED WINDOW + LABEL AGGREGATION
+#    Inner: rate per series over 5m. Outer: sum-by(zone).
+#    Stage: edge does rate (small per-series sliding window),
+#    gateway does sum-by-zone fan-in.
+- metric_name: http_requests_total
+  query_string: "sum by (zone) (rate(http_requests_total[5m]))"
+  accuracy_sla: 0.01
+  assign_to_role: agent
+  grouping_labels:
+  - zone
+
+# 4. AD-HOC COLD-FALLBACK PROBE — exercises Gorilla archive tier
+#    Metric is configured StorageBackend::GorillaS3 in
+#    backend-storage-routing.yaml so the warm tier doesn't cover
+#    it; the query forces routing to GorillaQueryEngine. Drives
+#    criterion ⑤ verification (data_source: gorilla_archive).
+#
+#    Predicate uses `zone="z0"` because the otel-app emits
+#    `zone, rack, node, pod` labels (see `otel-app/main.go`
+#    `attrSetsZRNP`); there is NO `service` label on the produced
+#    series, so the previous `service="payments"` selector matched
+#    zero series and surfaced as an empty (but HTTP-200) cold-tier
+#    response. `zone="z0"` matches roughly 1/4 of the produced
+#    series and exercises the same routing+engine code path.
+- metric_name: http_requests_total
+  query_string: "count(http_requests_total{zone=\"z0\"})"
+  accuracy_sla: 0.0
+  assign_to_role: archive
+  grouping_labels:
+  - zone
+
+# ── Five-sketch MVP coverage (issue #46) ──────────────────────────
+#
+# The four entries below register the new metrics emitted by the
+# otel-app's five-sketch workload (otel-app/
+# five_sketch_workload.go). Each entry pins a `sketch_family_override`
+# hint so the controller's planner picks the family the empirical
+# claim is scoped to (DDSketch claims rel-err on quantiles, KLL
+# claims rank-err, HLL claims cardinality, CountSketch claims
+# top-K, CountMinSketch claims one-sided frequency over-estimate).
+#
+# `target_path` records the storage tier the planner should
+# preferentially place each sketch in. Today's WorkloadEntry struct
+# (controller/src/config/workloads.rs) doesn't yet read these two
+# keys — `serde` ignores unknown fields by default, so they round-
+# trip silently until the parallel capability_matching + planner
+# work picks them up. The keys are spelled the same as the
+# capability_matching agent's expected schema so there's no rename
+# step at integration.
+
+# 5. KLL — rank-error quantile on a heavy-tailed body-size dist.
+#    Inner: per-series quantile over a 30s sliding window.
+#    Stage: edge — KLL state flushes per window close, no delta
+#    variant (kllprocessor's Config.Validate rejects
+#    delta_transmission: true). Backend stores the resulting KLL
+#    state.
+#
+#    See entry 1 above for the window-alignment rationale: the warm
+#    tier pre-computes 30s tumbling windows, so the replay range
+#    MUST be `[30s]` for warm answers to be valid against the
+#    archive ground truth.
+- metric_name: request_size_bytes
+  query_string: "quantile_over_time(0.99, request_size_bytes[30s])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  # NO grouping_labels — same rationale as http_requests_total_latency_ms:
+  # `quantile_over_time` is per-series in PromQL, and KLL's mergeability
+  # doesn't change the semantic that the inner returns per-series quantiles.
+  # Per-series KLL sketches keep accuracy validation apples-to-apples vs
+  # raw baseline.
+  sketch_family_override: KLL
+  target_path: warm
+
+# 6. HLL — distinct-cardinality query over rotating user pool.
+#    Inner: count of distinct user_id values seen in the most
+#    recent emission window.
+#    Stage: edge HLL register-set, gateway merge (HLL mergeable).
+- metric_name: unique_users_per_min
+  query_string: "count(unique_users_per_min)"
+  accuracy_sla: 0.02
+  assign_to_role: agent
+  grouping_labels:
+  - zone
+  sketch_family_override: HLL
+  target_path: warm
+  # Inner high-cardinality dimension the HLL counts distinct values of.
+  # The producer stamps user_id per event (five_sketch_workload.go); the
+  # controller emits this as the asap_edge `item_label`, so the edge hashes
+  # user_id into ONE HLL per zone (projecting user_id OUT of the series key)
+  # instead of building one cardinality-1 HLL per user_id.
+  item_label: user_id
+
+# 7. CountSketch — top-K over Zipfian endpoint distribution.
+#    Stage: edge CountSketch counters, gateway merge by sum of
+#    matching counter rows. The replay query is `topk(5, ...)`;
+#    the heavy hitters at the head of the Zipf tail dominate the
+#    top-K result.
+- metric_name: top_endpoint_qps
+  query_string: "topk(5, top_endpoint_qps)"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  grouping_labels:
+  - zone
+  sketch_family_override: CountSketch
+  target_path: warm
+  # Heavy-hitter dimension the CountSketch/top-k ranks (producer stamps
+  # `endpoint` per event). Emitted as the asap_edge `item_label`.
+  item_label: endpoint
+
+# 8. CountMinSketch — frequency query over the same Zipfian
+#    endpoint distribution, exercised through the CMS frequency
+#    query surface so the family scored is the one-sided
+#    over-estimator. The metric is split from top_endpoint_qps so
+#    per-family bandwidth + accuracy bookkeeping stays clean even
+#    though they share the same distribution shape on the producer side.
+#
+#    Query surface (ASAPQuery-backend sketch_reducer
+#    `function_to_family`): the CMS / CountSketch FrequencyEstimate
+#    family answers `count_over_time(m[w])` (the PromQL surface) /
+#    `frequency(m)` (canonical) — it decodes the per-window sketch
+#    matrix directly. `rate(...)` is NOT the CMS surface: the
+#    analyzer classifies `rate()` as a COUNTER op → `ExactAgg(Sum)`,
+#    which has no warm CMS sid and falls over to archive. Use
+#    `count_over_time` at the edge window width ([30s]) so the warm
+#    answer is computed over the same window the CMS sealed.
+- metric_name: endpoint_request_freq
+  query_string: "count_over_time(endpoint_request_freq[30s])"
+  accuracy_sla: 0.05
+  assign_to_role: agent
+  grouping_labels:
+  - zone
+  sketch_family_override: CountMinSketch
+  target_path: warm
+  # Frequency key the CMS estimates per-value counts for (producer stamps
+  # `endpoint` per event). Emitted as the asap_edge `item_label` so the CMS
+  # hashes endpoint into ONE sketch per zone instead of one per endpoint.
+  item_label: endpoint

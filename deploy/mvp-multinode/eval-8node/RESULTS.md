@@ -177,57 +177,25 @@ Edge footprint: **1765 B/series** open-window RSS.
 uncompressed raw — strongly data-dependent (best on counters, worst on
 high-entropy gauges); it IS vanilla Prometheus gorilla by construction.
 
-## Fig 9 — coordinated sampling on a skewed fleet  (`fig9_cmspoint.csv`, `figs/fig9_coordinated.png`)
-Driver: `scripts/fig9_coordinated.sh` + `configs/asap/mvp-workload-fig9.yaml`
-(a `cms_point` `monitor:` block on `http_requests_total`, key `s0`). **End-to-end
-differentiated coordinated sampling now MEASURED on hardware.**
+## Fig 9 — coordinated sampling: ONE law for every monitor  (`fig9_cmspoint.csv`, `fig9_f2.csv`, `figs/fig9_unified_sampling.png`)
+Drivers: `scripts/fig9_coordinated.sh` (cms_point) + `scripts/fig9_f2_coordinated.sh` (whole-sketch F2). Both run the CDM coordinator live (auto-learn from the controller-pushed config, hot-reload, no boot-seed).
 
-Setup: the monitored sid `s0` is emitted at a **constant** frequency on every edge
-(once per trace timestamp) while the total stream rate is skewed 400:80:16 (extra
-series `x1…xN`). With `f_i(s0)` equal and `rate_i` skewed, the CDM allocation
-`p_i = clamp(√λ·√(f_i/rate_i),0,1)` should fall off as `1/√rate_i`. Three
-trace-replay edges (node3/4/5) auto-learn the monitor from the controller-pushed
-config (`-monitor-config-url`), report per-sid `f_i` + shared rate to the data-plane
-coordinator (`--enable-monitor-coordinator`), and apply the granted `p` at each
-15 s window boundary. **Stable over the last 3 windows:**
+**Result — both monitor types obey the SAME per-edge sampling law, the whole-sketch ε-floor**
+```
+p_i = 1 / (1 + ε²·rate_i)            (ε = 0.2)
+```
+p depends only on each edge's rate, NOT on the monitored functional. Measured on hardware, stable over the last 3 windows:
 
-| edge | node | total series (rate) | learned monitor | granted p | 1/√rate (norm.) |
-|---|---|---|---|---|---|
-| hot   | node3 | 400 | ✓ s0 | **0.0010** | 1.00 |
-| med   | node4 |  80 | ✓ s0 | **0.0022** | 2.24 |
-| quiet | node5 |  16 | ✓ s0 | **0.0049** | 5.00 |
+| monitor (functional) | per-edge rate (hi→lo) | granted p |
+|---|---|---|
+| **cms_point** (`http_requests_total`, key `s0`) | 600k / 120k / 24k | 0.0001 / 0.0003 / 0.0013 |
+| **whole-sketch F2** (`Σ_x f(x)²`, no key) | 38400 / 9600 / 2400 | 0.0007 / 0.0026 / 0.0102 |
 
-**Conclusion.** The busiest edge samples ~5× harder than the quiet one; the grant
-ratio **1 : 2.2 : 4.9** matches the √rate law √(400:80:16) = **1 : 2.24 : 5** to
-within measurement noise — i.e. the coordinator genuinely allocates
-`p_i ∝ √(f_i/rate_i)`, validating the distributed-NitroSketch coordinated-sampling
-claim on real hardware.
+All six points lie on the single `1/(1+ε²·rate)` curve (`figs/fig9_unified_sampling.png`): the busiest edge is sampled hardest; F2 (whole-sketch) and cms_point (a declared point) are indistinguishable to the *sampler*.
 
-**Five bugs were found & fixed to get here** (each masked the next; all are code fixes):
-1. *Wrong functional* — the workload declared `functional: sum` → published `key:""`
-   → edges ran as a sum monitor (value ∝ rate) → uniform p. Fixed to `cms_point`+`key: s0`.
-2. *Coordinator never saw the monitor* — `main.rs` read `streaming_config.monitors()`
-   **once at boot** into `MonitorCoordinator::new`; the controller's post-boot hot-reload
-   updated the query engine but **not** the coordinator, so it booted with `monitors:[]`
-   and rejected every report (`register for unconfigured monitor`). Fixed in
-   ASAPQuery-backend#379: a watcher re-applies the pushed `monitors:` to the live
-   coordinator (`MonitorCoordinator::reconfigure`) — no restart, no boot-config seed.
-   Live-validated: the data-plane logs `hot-reloaded monitors added=1` and the grants
-   below reproduce identically. (Before #379 was wired, this run seeded the monitor into
-   the boot config + restarted the data-plane; `fig9_coordinated.sh` now just waits for
-   the hot-reload.)
-3. *Slack never tripped* — the coordinator re-grants only when an edge's report exceeds
-   its slack `Δ/(2k)`; with τ=5 M slack ≫ one window's `f`, so edges never reported.
-   Fixed with τ=7000 (slack ≈ ⅓ window) + `window_ms` aligned to the 15 s edge window.
-4. *Register under nil key* — `engine.Observe` passed `nil` as the key, so edges
-   registered as `(agg_id,"")` while the coordinator keys the monitor `(agg_id,"s0")`
-   → rejected. Fixed to thread the monitor key (ASAPCollector #504).
-5. *Dropped flag overrides* — `mergeFlagOverrides` silently dropped `-monitor-config-url`
-   and `-monitor-key`, so the effective key was always `""` (auto-learn skipped, fallback
-   empty). Fixed to merge both (ASAPCollector #504).
+**Why one law (and not a per-key `√(f_i/rate_i)` allocation).** Sampling protects the warm SKETCH, whose point/L2 estimate error is bounded by the stream norm (rate/L2 — NitroSketch), never by a single key's `f(x)`. So the only accuracy a per-edge `p` buys is keeping that edge's L2 mass within ε — `ε_s=√((1−p)/(p·rate))≤ε ⇒ p≥1/(1+ε²·rate)`. The `√(f/rate)` allocation (ASAP's own distributed-NitroSketch note, *not* a published theorem) assumed an **exact-count-one-key** variance model that does not hold for sketches; for whole-sketch it is structurally impossible (`F2=Σf²≥Σf=rate` forces the alert-tied budget too large to bind). It was **retired** (ASAPQuery-backend#381). The monitored functional now drives only the **threshold/alert** (`known_value → global_estimate`), not sampling. Earlier this figure reported cms_point as the √rate law (0.0010/0.0022/0.0049); that was the artifact, now superseded.
 
-fig9_coordinated.sh drives skewed, sustained (`-trace-loop`) rates via synthetic
-`timestamp_ms,series_id,value` CSVs.
+**Live-integration fixes that got the coordinated path working** (each masked the next): (1) workload `functional: sum`→`cms_point`/`f2`; (2) coordinator read monitors only at boot → hot-reload watcher (#379); (3) slack ≫ window mass → τ/window tuning; (4) edge registered under `nil` key → thread the monitor key (#504); (5) `mergeFlagOverrides` dropped `-monitor-config-url`/`-monitor-key` (#504). All five are code fixes; the F2 path additionally needed the `functional` round-trip (#381) + edge mode (#505).
 
 ---
 
