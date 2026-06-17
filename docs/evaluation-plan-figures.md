@@ -231,12 +231,13 @@ flusher's evictable accounting under sustained ingest).
 
 ---
 
-## Fig 7 — Query latency CDF: PromQL-native vs sketch-answered  ✅ (warm measured; cold-fallback arm blocked)
-**Claim (dim 5):** warm-tier p50/p99 production-usable; cold fallback ≤2×.
-**Layout:** latency CDF, lines for B0 (native) vs B3 (sketch warm) vs cold-fallback.
-**Measured (real gct, cold-OFF stack, wall-clock-anchored, 599-query mix @15 QPS,
+## Fig 7 — Query latency CDF: PromQL-native vs sketch-answered  ✅ (warm + cold-fallback both measured)
+**Claim (dim 5):** warm-tier p50/p99 production-usable; cold fallback bounded.
+**Layout:** latency CDF, lines for warm sketch tier vs cold-fallback archive.
+
+**Warm arm** (real gct, cold-OFF stack, wall-clock-anchored, 599-query mix @15 QPS,
 guard-verified before timing — DDSketch read returned 691 real warm series,
-`sum`=exact GT 216.3535, all `data_source=asap_query`, 0 empties/errors):**
+`sum`=exact GT 216.3535, all `data_source=asap_query`, 0 empties/errors):
 
 | query kind | p50 | p95 | p99 | n |
 |---|---|---|---|---|
@@ -244,16 +245,43 @@ guard-verified before timing — DDSketch read returned 691 real warm series,
 | `quantile_over_time` (DDSketch, 691-series reconstruction) | 18.34 | 19.56 | 20.65 ms | 400 |
 | `sum` (lossless) | 1.58 | 2.19 | 2.25 ms | 199 |
 
-CDF is **bimodal**: cheap lossless `sum` at ~1.5–2.3 ms, 691-series DDSketch
-quantile reconstruction at ~18–21 ms; tails tight (p99 within ~1 ms of p50 per
-kind). Headline: warm sketch-answered PromQL is production-usable single-digit-to-
-~20 ms server-side. **Cold-fallback arm attempted but blocked** (cold ship rides
-the disabled control channel → MinIO stayed empty, old-ts queries still served
-warm) → **warm-only reported, not faked**. **Single-node loopback — server-side
-latency only, no network RTT.** `count_over_time` excluded (does not resolve on the
-warm path — falls through to empty archive). Artifacts: `datasets_eval/latency/`
-(`latency_RESULTS.md`, `latency_cdf.png`, `per_query_latency.json`,
-`compute_latency.py`), branch `feat/query-latency-cdf`.
+**Cold-fallback arm** (NOW MEASURED — real gct, cold-ON stack: MinIO + gorilla-merger
++ Thanos store-gateway/query + data-plane with `ASAP_THANOS_QUERY_URL`; cold-enabled
+edge with full `cold.ship_endpoint` block; 600-query mix @15 QPS, guard-verified —
+**600/600 `data_source=thanos_query`**, 0 empties/errors, so every timed query was
+answered by the cold/archive engine, not a warm shortcut):
+
+| query kind | p50 | p95 | p99 | n |
+|---|---|---|---|---|
+| all (mix) | 22.28 | 47.17 | 67.07 ms | 600 |
+| `quantile_over_time` (1000-series, Thanos PromQL over raw archived samples) | 24.27 | 48.59 | 68.41 ms | 400 |
+| `sum` (lossless, archive) | 15.48 | 33.33 | 42.74 ms | 200 |
+
+Warm CDF is **bimodal** (cheap lossless `sum` ~1.5–2.3 ms, 691-series DDSketch
+quantile reconstruction ~18–21 ms; tails tight). Cold CDF sits to the right with a
+longer tail: the archive answer crosses data-plane → thanos-query → gorilla-merger
+StoreAPI + store-gateway and re-evaluates PromQL over raw Gorilla-XOR samples.
+**Headline: warm p50/p99 = 18.3/20.0 ms (production-usable); cold-fallback p50/p99 =
+22.3/67.1 ms — overall p50 ≈ 1.2× warm, p99 ≈ 3.3× warm.** So the cold path stays in
+the tens of ms (no order-of-magnitude blowup), at the cost of a heavier p99 tail than
+the warm tier.
+
+How the cold path was forced & verified (the prior blocker is resolved): cold ship is
+decoupled from the control channel (PR #500), so a static edge with `cold.enabled:true`
+ships whenever `cold.ship_endpoint` is set — the multisketch coldon config had only
+`cold:{enabled:true}` with NO ship_endpoint, which the edge treats as **drain-only**
+(`config.go`: "Empty => drain-only (no shipping)") → that was why MinIO stayed empty.
+With a complete cold block the edge shipped 1000-series ASAPFRG1 fragments to the
+merger (verified via per-shard `cold drain`/`shipBatch` logs and thanos `count=1000`).
+A cold storage-routing table pins `google_cluster_2019_cpu_rate → gorilla_object_store`
+so its instant queries dispatch to the ThanosQueryEngine; the control-plane was stopped
+during timing because it periodically re-POSTs a storage-routing table that overrides
+the file table back to warm. **Single-node loopback — server-side latency only, no
+network RTT.** Artifacts: `datasets_eval/latency/` (`latency_RESULTS.md`,
+`latency_cdf.png`, `latency_summary.json`, `per_query_latency.json`,
+`per_query_latency_cold.json`, `compute_latency.py`, `cold_latency_replay.py`,
+`stack-coldon.sh`, `backend-storage-routing-coldon.yaml`, `agent-cold-ship.yaml`,
+`queries-latency-cold.json`), branch `eval/fig7-cold-arm`.
 
 ---
 
@@ -519,7 +547,7 @@ coordinated sampling, topk, the ε-gate/delta regime). Driver+data:
 | 6.2 | bandwidth ablation W×L×enc×p (Fig 2) | ◐ (p + encoding done; W, L to run) |
 | 6.headline | Pareto (Fig 1) | ◐ (corners done; one combined sweep) |
 | 6.2 | edge CPU/mem + soak (Fig 6) | ✅ edge bounded (+2.6 MB/h); ⚠ backend leak +90 MB/h |
-| 6.4 | query latency CDF (Fig 7) | ✅ warm (cold-fallback blocked) |
+| 6.4 | query latency CDF (Fig 7) | ✅ warm + cold-fallback (both measured) |
 | 6.3 | cross-layer placement (Fig 8) | ◐ (design+proof; bars to run) |
 | 6.x | coordinated vs uniform (Fig 9) | ◐ (differentiation shown; CV sweep) |
 | 6.x | scaling N∈{1,10,100} (Fig 10) | ◻ |

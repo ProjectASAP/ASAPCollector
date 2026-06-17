@@ -1,0 +1,5 @@
+[
+  {"id": "cold-quantile-p99", "kind": "quantile", "metricsql": "quantile_over_time(0.99, google_cluster_2019_cpu_rate[300s])"},
+  {"id": "cold-quantile-p50", "kind": "quantile", "metricsql": "quantile_over_time(0.50, google_cluster_2019_cpu_rate[300s])"},
+  {"id": "cold-sum", "kind": "sum", "metricsql": "sum(google_cluster_2019_cpu_rate)"}
+]

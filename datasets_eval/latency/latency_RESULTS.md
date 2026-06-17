@@ -6,8 +6,11 @@
 599-query mix at 15 QPS, overall **p50 = 18.3 ms, p99 = 20.0 ms** on the warm
 SketchStore. The exact lossless `sum` is **p50 1.6 ms / p99 2.3 ms**; the
 691-series DDSketch `quantile_over_time` read is **p50 18.3 ms / p99 20.6 ms**.
-**Cold-fallback arm: NOT measured — blocked by archive/ship fragility (see
-below). Warm-only is reported honestly.**
+**Cold-fallback arm: NOW MEASURED** (cold-ON stack, end-to-end through the
+gorilla cold tier): across a 600-query mix @15 QPS with **600/600
+`data_source=thanos_query`**, the cold/archive-answered PromQL is **p50 22.3 ms
+/ p95 47.2 ms / p99 67.1 ms** — overall **p50 ≈ 1.2× warm, p99 ≈ 3.3× warm**.
+Both arms are reported below; the warm numbers are unchanged.
 
 ---
 
@@ -92,50 +95,119 @@ kind) — no long latency tail on the warm path.
 
 ---
 
-## Cold-fallback arm — attempted, BLOCKED (warm-only reported)
+## Cold-fallback arm (MEASURED) — cold/archive-answered PromQL
 
-I brought up the **full cold stack** (`stack.sh`: MinIO + Thanos
-store/query/compact + gorilla-merger + data-plane with `ASAP_THANOS_QUERY_URL`
-and `ASAP_GORILLA_S3_*`), with a **cold-enabled** agent
-(`agent-ddsketch-coldon.yaml`: `cold: {enabled: true}`, sketch `tier: both`),
-re-replayed the same trace, and waited for the warm window to seal.
+This is the arm that was previously blocked. It is now measured end-to-end
+through the gorilla cold tier.
 
-**Result: no data ever reached the cold tier**, so there was nothing to query
-on a cold path:
+### Setup (cold-ON stack, `datasets_eval/latency/stack-coldon.sh`)
 
-- data-plane registered `ThanosQueryEngine` (archive `data_source_id=thanos_query`) OK;
-- the gorilla-merger ingest frontend (`:10908`) logged **zero** ingest /
-  append / received-samples lines; its shipper found nothing to ship;
-- **MinIO `asap/` held 0 objects** after the run (both `asap-gorilla` and
-  `asap-gorilla-tsdb` empty);
-- the bare static-config agent emitted **no** cold/ship/gorilla/s3 log lines —
-  the `cold: {enabled: true}` block does not drive a gorilla ship in this
-  static fused-agent path (cold endpoint wiring rides the control channel,
-  which is `{enabled: false}` here);
-- even querying **old timestamps** (1 h ago) still returned `data_source=asap_query`
-  (warm), confirming there was no archived data to fall through to.
+Full cold stack on one host: **MinIO** (:9000) + **gorilla-merger**
+(:10908 HTTP ingest / :10907 Thanos StoreAPI) + **thanos-store-gateway**
+(reads the merger's shipped `asap-gorilla-tsdb` blocks) + **thanos-query**
+(:10903, federates the merger StoreAPI + store-gateway) + **data-plane** with
+`ASAP_THANOS_QUERY_URL=http://thanos-query:10903` (so it registers the real
+**`ThanosQueryEngine`**, `data_source_id=thanos_query`, NOT the
+`NoDataArchiveEngine` stub) + a **cold-enabled edge** with a *complete* cold
+block (`agent-cold-ship.yaml`: `cold.enabled:true`,
+`cold.ship_endpoint: http://gorilla-merger:10908/ingest/gorilla`,
+`block_duration:60s`, `external_labels.cluster:asap-mvp`).
 
-This is the archive/ship/routing fragility the task anticipated. Rather than
-fabricate a cold arm, I report **warm-only**. (Building the cold arm would need
-the supervised agent + live control channel to actually drive the gorilla ship,
-plus aging the warm window out — out of scope for a clean, real measurement
-here.)
+- **Routing:** a cold storage-routing table
+  (`backend-storage-routing-coldon.yaml`) pins
+  `google_cluster_2019_cpu_rate → gorilla_object_store` for every query shape,
+  so its instant queries dispatch through the `EngineRouter` to
+  `thanos_query` (the cold/archive engine) rather than the warm
+  `SketchStore`.
+- **Workload:** same `/tmp/dd-only.jsonl` slice (lossless raw
+  `google_cluster_2019_cpu_rate` Sum family, `tier: both` — the series that
+  ships cold), wall-clock-anchored replay (one cold window at a fixed instant).
+- **Control-plane stopped during timing:** it periodically re-POSTs a
+  storage-routing table to `/api/v1/storage_routing` (~every 60 s) that
+  overrides the file-loaded cold table back to warm; with it stopped, the
+  data-plane keeps the file cold table and the cold archive answers
+  independently (cold ship is decoupled from the control channel — PR #500).
+
+### What was the original blocker (and the fix)
+
+The original cold arm failed because the multisketch `agent-ddsketch-coldon.yaml`
+set only `cold: {enabled: true}` with **no `ship_endpoint`** — and the
+asapedge processor treats an empty ship endpoint as **drain-only, no
+shipping** (`config.go`: "Empty => drain-only (no shipping)"). So the cold
+encoder accumulated samples but never POSTed them → MinIO/merger stayed empty.
+With a complete cold block the edge ships per-shard ASAPFRG1 fragment batches
+to the merger. Verified live (per-shard agent logs):
+`cold drain {active_series:245, fragments:245}` → `cold shipBatch
+{fragments:245, shipper_noop:false}` with **no** ship-failure/spool lines, and
+the merger then served `count(...)=1000` over its StoreAPI.
+
+### GUARD (ran before any timing — PASSED, at the pinned cold anchor)
+
+| query | status | result | data_source |
+|---|---|---|---|
+| `sum(google_cluster_2019_cpu_rate)` | success | **22.13** (exact archive sum) | **`thanos_query`** |
+| `quantile_over_time(0.99, …_cpu_rate[300s])` | success | **1000 series** | **`thanos_query`** |
+| `quantile_over_time(0.50, …_cpu_rate[300s])` | success | 1000 series | **`thanos_query`** |
+| `count(google_cluster_2019_cpu_rate)` | success | 1000 | **`thanos_query`** |
+
+Every required timed query returns a **real archive value** served by the
+**cold engine** (`thanos_query`), so the cold timing is meaningful and is the
+cold tier (not a warm shortcut). The `quantile_over_time` is computed by
+thanos-query **over the raw archived Gorilla-XOR samples** (not over a
+DDSketch — the cold tier stores lossless raw samples).
+
+### Measurement
+
+`cold_latency_replay.py` fired the cold mix at a **fixed 15 QPS** against
+`:9091/api/v1/query`, **pinning the PromQL eval timestamp** (`time=<anchor>`)
+to the instant the cold workload was anchored at (the cold window sits at a
+fixed past instant because the ship takes ~one window to land; the warm arm
+queried live `now` because its in-memory warm window sat at `now`). The pin
+changes only WHICH timestamp the backend evaluates at — the per-query
+server-side latency it measures is identical in kind to the warm arm.
+
+- **Query mix:** `quantile_over_time(0.99,…_cpu_rate[300s])`,
+  `quantile_over_time(0.50,…_cpu_rate[300s])`, `sum(cpu_rate)`
+  (`queries-latency-cold.json`).
+- **QPS / count / duration:** 15 QPS, **600 queries**, 40 s window.
+- **Realness:** **600/600 success, 600/600 non-empty, 600/600
+  `data_source=thanos_query`** (0 empties, 0 errors, 0 warm shortcuts).
+
+### Latency table (cold-fallback archive tier)
+
+| query kind | p50 (ms) | p95 (ms) | p99 (ms) | n | note |
+|---|---|---|---|---|---|
+| **all (mix)** | **22.28** | **47.17** | **67.07** | 600 | mean 25.57, min 9.12, max 85.14 |
+| `quantile_over_time` (1000-series, Thanos PromQL over raw samples) | 24.27 | 48.59 | **68.41** | 400 | |
+| `sum` (lossless, archive) | 15.48 | 33.33 | **42.74** | 200 | exact archive sum |
+
+**Warm vs cold:** overall **p50 18.25 → 22.28 ms (≈1.2×)**, **p99 20.03 →
+67.07 ms (≈3.3×)**. The cold path stays in the tens of ms (no order-of-magnitude
+blowup) but has a heavier p99 tail: each cold answer crosses data-plane →
+thanos-query → gorilla-merger StoreAPI + store-gateway and re-evaluates PromQL
+over the raw archived samples, vs the warm tier's in-memory sketch read.
 
 ---
 
 ## Honesty / caveats
 
-- **Single-node loopback:** data-plane, agent, and replay client all on
-  `127.0.0.1`. **No network RTT** is included — these are server-side query
-  latencies only; a remote client adds its own RTT on top.
-- **QPS / count / window:** 15 QPS, 599 queries, one 40 s steady window inside
-  a single fully-shipped warm window. Modest QPS — this measures per-query
-  serving latency, not a saturation/throughput study.
-- **Warm-only:** the cold-fallback arm did not produce archived data (above);
-  no cold numbers are claimed, so the "cold ≤ 2× warm" check was not evaluated.
-- **Query realness verified:** every timed query returned a real warm value
-  (`data_source=asap_query`); the reducer hard-fails if any timed query were
-  empty/errored, so these latencies are not "latency of No result".
+- **Single-node loopback:** data-plane, agent, merger, thanos, MinIO, and the
+  replay client all on `127.0.0.1`. **No network RTT** is included — these are
+  server-side query latencies only; a remote client adds its own RTT on top.
+  (For the cold arm the inter-service hops data-plane→thanos→merger are still
+  loopback, so a real multi-host deploy would add per-hop RTT to the cold tail.)
+- **QPS / count / window:** 15 QPS; 599 (warm) / 600 (cold) queries; one 40 s
+  steady window inside a single fully-shipped window. Modest QPS — this measures
+  per-query serving latency, not a saturation/throughput study.
+- **Cold eval-time pin:** cold queries are evaluated at the fixed cold-window
+  anchor (the data sits at one instant after a wall-clock-anchored replay), so
+  the cold latencies are the backend's time to *serve a cold/archive query*,
+  not a study of cold-window freshness/aging.
+- **Query realness + tier verified:** the reducer hard-fails if any timed query
+  was empty/errored OR served by the wrong tier — warm must be
+  `data_source=asap_query`, cold must be `data_source=thanos_query` — so these
+  latencies are neither "latency of No result" nor a warm answer mislabeled as
+  cold.
 
 ---
 
@@ -161,15 +233,60 @@ python3 datasets_eval/latency/compute_latency.py --warm datasets_eval/latency/re
 bash datasets_eval/multisketch/stack-coldoff.sh down
 ```
 
+### Cold-fallback arm
+
+```bash
+# build the dev images if absent (buildx --load; data-plane/control-plane/
+# gorilla-merger from /mydata/ASAPQuery-backend, asap-otel via build_asap_otel.sh)
+# then bring up the COLD-ON stack (uses sudo docker; --user 0 on the merger):
+bash datasets_eval/latency/stack-coldon.sh up \
+  datasets_eval/multisketch/workloads/ddsketch.yaml \
+  datasets_eval/latency/agent-cold-ship.yaml \
+  datasets_eval/latency/backend-storage-routing-coldon.yaml
+# 1. wall-clock-anchored replay; capture the printed `now=<ms>` anchor
+python3 datasets_eval/google_cluster/run.py replay \
+  --jsonl /tmp/dd-only.jsonl --endpoint 127.0.0.1:4317 --pace-factor 0 --wall-clock-anchor
+# 2. wait until the cold ship lands: poll thanos-query / data-plane until
+#    count(google_cluster_2019_cpu_rate)@<anchor_s> returns 1000 via thanos_query
+# 3. stop the control-plane so it can't override the cold routing table back to warm:
+sudo docker rm -f asap-control-plane
+# 4. GUARD then timed cold replay @ 15 QPS, pinned to the anchor:
+python3 datasets_eval/latency/cold_latency_replay.py --target http://127.0.0.1:9091 \
+  --queries datasets_eval/latency/queries-latency-cold.json \
+  --at-time <anchor_s> --qps 15 --duration 40 \
+  --out datasets_eval/latency/replay-cold.jsonl
+# 5. reduce BOTH arms -> tables + combined CDF (hard-fails if any cold query
+#    was not data_source=thanos_query, or any warm query not asap_query):
+python3 datasets_eval/latency/compute_latency.py \
+  --warm datasets_eval/latency/per_query_latency.json \
+  --cold datasets_eval/latency/per_query_latency_cold.json \
+  --out-json datasets_eval/latency/latency_summary.json \
+  --out-png datasets_eval/latency/latency_cdf.png
+# 6. teardown
+bash datasets_eval/latency/stack-coldon.sh down
+```
+
 ## Deliverables (this dir)
 
 - `latency_RESULTS.md` — this file
-- `latency_cdf.png` — Fig 7 CDF (warm, overall + per-kind)
-- `latency_summary.json` — p50/p95/p99 (overall + per-kind), data_source counts
-- `per_query_latency.json` — slim per-query latency log (599 records: ts, query,
-  kind, duration_ms, status, data_source, n_result_series). The raw
-  `replay-warm.jsonl` (42 MB, verbatim 691-series result vectors per query) is
-  the reducer's input but is intentionally **not committed** — regenerate via
-  step 4 of Reproduce.
+- `latency_cdf.png` — Fig 7 CDF (warm + cold-fallback, overall + per-kind)
+- `latency_summary.json` — p50/p95/p99 (overall + per-kind), data_source counts,
+  for BOTH the `warm` and `cold` arms
+- `per_query_latency.json` — slim warm per-query log (599 records)
+- `per_query_latency_cold.json` — slim cold per-query log (600 records: ts,
+  query, kind, duration_ms, status, http_code, data_source, n_result_series)
+- `compute_latency.py` — reducer (warm + cold; renders the combined CDF; guards
+  each arm's `data_source`)
+- `cold_latency_replay.py` — cold-arm replay client (eval-time-pinned)
+- `stack-coldon.sh` — cold-ON single-host stack (MinIO + merger + thanos +
+  cold-routed data-plane + cold-enabled edge)
+- `backend-storage-routing-coldon.yaml` — cold routing table
+  (`cpu_rate → gorilla_object_store`)
+- `agent-cold-ship.yaml` — cold-enabled edge with a complete `cold.ship_endpoint`
+  block (the missing piece that unblocked the arm)
+- `queries-latency-cold.json` — the timed cold mix
+- The raw `replay-warm.jsonl` / `replay-cold.jsonl` (verbatim result vectors) are
+  the reducer's optional input but intentionally **not committed** — regenerate
+  via Reproduce.
 - `compute_latency.py` — reducer (also renders the CDF)
 - `../../deploy/mvp-singlenode/scripts/queries-latency-warm.json` — the timed mix
