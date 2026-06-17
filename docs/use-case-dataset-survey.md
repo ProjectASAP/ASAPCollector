@@ -42,6 +42,12 @@ We already evaluate on two **anchor** datasets:
 - **DEBS-2022 (Deutsche Börse / Infront tick data)** — financial / skewed activity →
   coordinated sampling, topk, the ε-gate / delta regime (`datasets_eval/debs/`).
 
+Beyond the two anchor *domains* (cloud observability, finance) this survey adds a
+**third domain — product analytics / clickstream** (§3b): the domain where
+approximate aggregates (DAU/MAU via HLL, top events via CountSketch/CMS) are already
+the industry default, and whose **GDPR/CCPA right-to-erasure** is the most universal —
+and *publicly-downloadable* — cold-raw motivation in the survey.
+
 This survey verifies those two and finds **more**, mapping each to the warm/cold split
 and to the user's seven query/data axes.
 
@@ -140,8 +146,8 @@ query-set parse.
 
 | series pattern | mode | examples |
 |---|---|---|
-| aggregate query only, raw provably unused (metric-identity separated) | **Mode 1** | Azure VM **CPU**, Google instance CPU, Azure Functions **duration**, Alibaba per-service **latency metric** |
-| raw **mandatory anyway** (backtest / audit / forensic) **and** common queries approximate | **Mode 2** | **finance tick** (live VWAP/q + backtest replay), DEBS / TAQ (dashboard + MiFID audit), Wikimedia (topk + forensic) |
+| aggregate query only, raw provably unused (metric-identity separated) | **Mode 1** | Azure VM **CPU**, Google instance CPU, Azure Functions **duration**, Alibaba per-service **latency metric**, **product-analytics DAU/topk rollups** (vs the raw event log) |
+| raw **mandatory anyway** (backtest / audit / forensic) **and** common queries approximate | **Mode 2** | **finance tick** (live VWAP/q + backtest replay), DEBS / TAQ (dashboard + MiFID audit), Wikimedia (topk + forensic), **product analytics** (dashboard + **GDPR/CCPA** export-erasure of the same user series) |
 | raw needed, queries rarely aggregate | cold-primary | LOBSTER event-exact microstructure |
 
 **Mode 2 rescues the "condition-2 failures".** The datasets that *can't* go cleanly warm
@@ -177,6 +183,9 @@ play) · *cold-lean* = M2 dominated by the exact-replay side.
 | F3 | NYSE Daily TAQ | finance/trades+quotes | ✓✓ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✓✓ | **cold** (MiFID/SEC audit) + warm (VWAP) | **M2** |
 | F4 | Deutsche Börse PDS (Xetra/Eurex) | finance/OHLCV 1-min | ~ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ (pre-agg) | warm (already aggregated) | **M1** *(warm-only check)* |
 | F5 | Binance/Kraken/Coinbase tick | finance/crypto tick | ✓ | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | **warm** (q/VWAP) + cold (backtest replay) | **M2** |
+| **P1** | **Taobao UserBehavior 2017** | product-analytics/clickstream | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | ✗ (sparse/user) | **warm** (DAU-HLL / topk) + cold (GDPR / ML-feature raw) | **M1+M2** |
+| P2 | REES46 eCommerce 2019 | product-analytics/clickstream | ✓ | ✓ | ✓ | ✓ | ~ | ✓✓ | ✗ | **warm** (funnel / topk / HLL) + cold (export / audit) | **M2** |
+| P3 | Wikipedia clickstream | product-analytics/web | ~ | ✓ | ✓ | ✓ | ✓ | ✓✓ | ✗ (pre-agg) | warm (topk referrers) | **M1** *(warm-only check)* |
 
 **Headline read of the matrix:** the user's axes split cleanly along the tier line —
 **(2) aggregation, (3) repeated, (4) overlapping, (6) high-cardinality, (7)
@@ -453,6 +462,90 @@ the survey, not despite needing cold raw but *because* its cold raw is so cheap 
 
 ---
 
+## 3b. Product analytics — per-dataset cards
+
+The **third domain** (after cloud observability and finance). Product analytics
+(Amplitude / Mixpanel / PostHog / Heap-style event tracking) is the domain where
+**approximate aggregates are already the cultural default** — DAU/MAU, funnels and
+top-events are answered with HLL / sketches at scale across the whole industry
+(Apache Druid, ClickHouse, BigQuery `APPROX_COUNT_DISTINCT`, Mixpanel), so the
+warm-tier "lossy within ε" pitch is *uncontroversial* here. It naturally headlines
+the two families the observability/finance anchors under-exercise — **HLL**
+(unique users) and **CountSketch/CMS-heap** (top events/features) — and carries the
+most *universal* cold-raw motivation in the survey: **GDPR/CCPA right-to-erasure &
+data-export**, which forces exact replay/deletion of one user's raw events (a clean
+Mode-2 drill-down). Unlike the access-gated finance/billing cold-raw cases (§4),
+product analytics has **freely-downloadable** public clickstream corpora.
+
+### P1 — Taobao UserBehavior 2017 (Alibaba) *(recommended product-analytics add)*
+
+- **What:** real user-behavior log from Taobao — `(user_id, item_id, category_id,
+  behavior, timestamp)` with `behavior ∈ {pv, cart, fav, buy}` over **2017-11-25 →
+  2017-12-03 (9 days)**. The canonical public clickstream / funnel dataset.
+- **Volume / scale:** **~987,994 users, ~4 M items, ~100 M behavior events**
+  (~3.5 GB CSV); freely downloadable (Alibaba Tianchi / `github.com/alibaba`,
+  same publisher as the A2/A3 cluster traces already cited).
+- **Cardinality:** **very high (✓✓)** — ~1 M users × ~4 M items; user_id is the
+  textbook HLL key.
+- **Per-series frequency:** **low / sparse (✗)** — a single user emits events
+  sporadically; like resource traces, the volume is *aggregate*, not per-series.
+- **Warm vs cold:** **DAU/MAU & unique-buyers → warm HLL; top items/categories →
+  warm CountSketch-heap/CMS; pv→cart→buy funnel counts → warm Sum/CMS;
+  dwell/value quantiles → warm DDSketch/KLL** — all predefined, repeated dashboard
+  queries (condition 1 ✓). **Cold:** **GDPR right-to-erasure / data-export** and
+  **ML-feature pipelines** need the exact per-user raw event stream → lossless cold.
+  The split is clean by **metric-identity separation** (the DAU rollup vs the raw
+  event log are different artifacts → Mode 1) *and* exposes a Mode-2 case where the
+  same `user_id` is both aggregated (dashboard) and exactly replayed (GDPR export)
+  → bound-based drill-down to one user.
+- **Axes:** 1 ✓, 2 ✓ (HLL/topk/funnel), 3 ✓ (standing product dashboards), 4 ✓
+  (rolling 7/28-day active users), 5 ~ (retention cohorts, but 9-day span limits it),
+  6 ✓✓, 7 ✗.
+- **Obtain:** <https://tianchi.aliyun.com/dataset/649> ·
+  <https://github.com/alibaba> (UserBehavior).
+
+### P2 — REES46 eCommerce behavior 2019
+
+- **What:** multi-category online-store event stream — `view / cart / remove /
+  purchase` events with `user_id, product_id, category, brand, price, user_session`,
+  Oct–Nov 2019. A richer-property funnel/segmentation corpus.
+- **Volume / scale:** **~285 M events** (~9 GB across two months); free on Kaggle.
+- **Cardinality:** **very high (✓✓)** — millions of users × products × sessions.
+- **Per-series frequency:** **low (✗)** per user/session.
+- **Warm vs cold:** **funnel conversion, revenue Sum, top brands/products
+  (CountSketch-heap), distinct-purchasers (HLL), basket-value quantiles (DDSketch)
+  → warm**; **per-user export / fraud-investigation raw → cold.** Strong **Mode-2**
+  case (live segmentation dashboard + exact export on the same user series).
+- **Axes:** 1 ✓, 2 ✓, 3 ✓, 4 ✓, 5 ~, 6 ✓✓, 7 ✗.
+- **Obtain:** <https://www.kaggle.com/datasets/mkechinov/ecommerce-behavior-data-from-multi-category-store>.
+
+### P3 — Wikipedia clickstream
+
+- **What:** monthly `(referrer → article)` navigation **click counts** — already a
+  per-pair aggregate, public since 2015.
+- **Volume / scale:** tens of millions of (referrer, article) pairs/month, gzipped
+  TSV; freely downloadable.
+- **Cardinality:** **very high (✓✓)** — distinct referrer×article pairs.
+- **Per-series frequency:** **n/a (✗)** — the artifact is *already* the monthly
+  aggregate (no raw click stream published).
+- **Warm vs cold:** like F4 Deutsche-Börse-PDS, it **is** the warm-tier output shape
+  — a **topk/heavy-hitter ground-truth** to validate CountSketch-heap answers
+  against, and a long-history (years of monthly dumps) low-frequency series. Little
+  cold motivation (raw is privacy-purged, not published). Role: **a check, not a
+  stressor** — the license-clean, public stand-in for real (private) clickstream.
+- **Axes:** 2 ✓, 3 ✓, 4 ✓, 5 ✓ (years of dumps), 6 ✓✓; 1 ~, 7 ✗.
+- **Obtain:** <https://dumps.wikimedia.org/other/clickstream/>.
+
+**Honest caveat for the domain:** product analytics adds **axis 6 (very-high
+cardinality) + axis 2 (HLL/topk aggregation)** and a *public* GDPR cold-raw story —
+but it does **not** add **axis 7 (high-frequency-per-series)** (a user's events are
+sparse), and the *richest* real data (production Amplitude/Mixpanel) is private, so
+lead measurements on the free Taobao/REES46 proxies and cite real SaaS scale only
+for motivation. It also partly overlaps A7 Wikimedia (topk/HLL) — frame it as the
+generalized, GDPR-motivated business-analytics version, not a fully orthogonal axis.
+
+---
+
 ## 4. Honest gaps
 
 - **No single public dataset is "high-cardinality AND long-retention-raw" at once.**
@@ -658,6 +751,9 @@ are wired; **{A3, A4, F5} are the three to build**.
 - NYSE Daily TAQ — <https://www.nyse.com/market-data/historical/daily-taq> ·
   WRDS <https://wrds-www.wharton.upenn.edu/pages/about/data-vendors/nyse-trade-and-quote-taq/>
 - Deutsche Börse PDS (AWS Open Data) — <https://registry.opendata.aws/deutsche-boerse-pds/>
+- Taobao UserBehavior 2017 — <https://tianchi.aliyun.com/dataset/649> · <https://github.com/alibaba>
+- REES46 eCommerce behavior 2019 — <https://www.kaggle.com/datasets/mkechinov/ecommerce-behavior-data-from-multi-category-store>
+- Wikipedia clickstream — <https://dumps.wikimedia.org/other/clickstream/>
 - Binance public data — <https://github.com/binance/binance-public-data> ·
   Kraken <https://support.kraken.com/articles/360047543791> ·
   CryptoDataDownload <https://www.cryptodatadownload.com/data/>

@@ -51,7 +51,10 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(dirname "${SCRIPT_DIR}")"
-source "${PKG_DIR}/topology.env"
+# TOPOLOGY_ENV lets a caller point at an alternate topology file (e.g. the
+# 8-node scaling cluster) without editing the committed 4-node default.
+TOPOLOGY_ENV="${TOPOLOGY_ENV:-${PKG_DIR}/topology.env}"
+source "${TOPOLOGY_ENV}"
 
 # Derive ROOT/CONFIG_SRC deterministically from this script's location so the
 # rsync source in sync_to() is always the configs that ship alongside this
@@ -152,6 +155,7 @@ build_images() {
     log "  → asap/otel-app:dev"
     DOCKER_BUILDKIT=1 docker build -f "${ROOT}/deploy/docker/Dockerfile.otel-app" \
         --build-context sketchlib-go="${SKETCHLIB_GO}" \
+        --build-context asap-precompute-go="${ROOT}/asap-precompute-go" \
         -t asap/otel-app:dev "${ROOT}"
 
     # ── gorilla-merger (cold sink) ──
@@ -216,7 +220,7 @@ sync_to() {
         "${CONFIG_SRC}/" \
         "${node}:/mydata/mvp-multinode/configs/"
     rsync -a "${ROOT}/deploy/mvp-singlenode/scripts/" "${node}:/mydata/mvp-multinode/scripts/"
-    rsync -a "${PKG_DIR}/topology.env" "${node}:/mydata/mvp-multinode/topology.env"
+    rsync -a "${TOPOLOGY_ENV}" "${node}:/mydata/mvp-multinode/topology.env"
 }
 
 sync_all_nodes() {
@@ -484,7 +488,7 @@ backend_up() {
             --enable-otel-ingest \
             --otel-grpc-port=${DP_OTLP_GRPC_PORT:-4317} \
             --otel-http-port=${DP_OTLP_HTTP_PORT:-4318} \
-            ${persist_flags}
+            ${persist_flags} ${DP_MONITOR_FLAGS:-}
 
         # asap-control-plane (ASAP only) — control plane process. Brought
         # up AFTER the data plane so the control plane's startup pre-pop
@@ -807,6 +811,11 @@ run_arm() {
     arm_measure "${arm}"
     arm_down || true
 }
+
+# Allow sourcing as a library so other drivers (e.g. scale_fleet.sh) can compose
+# backend_up + docker_run_on + topology for custom fleet sizes without invoking
+# the CLI dispatch below.
+if [ -n "${RUN_DEMO_LIB:-}" ]; then return 0 2>/dev/null || true; fi
 
 cmd=${1:-help}
 case "${cmd}" in
