@@ -688,6 +688,7 @@ agents_up() {
             -max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES} \
             -freshness-probes=${OTELAPP_FRESHNESS_PROBES} \
             -freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ} \
+            -warm-sample-p=${OTELAPP_WARM_SAMPLE_P:-1.0} \
             -seed=${OTELAPP_SEED:-42}
     done
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
@@ -705,6 +706,7 @@ agents_up() {
             -max-buffer-per-series=${OTELAPP_MAX_BUFFER_PER_SERIES} \
             -freshness-probes=${OTELAPP_FRESHNESS_PROBES} \
             -freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ} \
+            -warm-sample-p=${OTELAPP_WARM_SAMPLE_P:-1.0} \
             -seed=${OTELAPP_SEED:-42}
     done
 }
