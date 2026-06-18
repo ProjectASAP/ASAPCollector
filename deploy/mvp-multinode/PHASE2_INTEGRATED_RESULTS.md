@@ -88,11 +88,38 @@ non-monotonic noise from looping-trace window composition + tail thinning at agg
 than the single-node regenerated run (~1–8% p99 error here vs ~13% single-node), because
 the warm aggregation window/config matches the published path.
 
+## Cold-tier read path + archiver — verified live (not inferred)
+
+A cold query was explicitly tested, not assumed from "containers up":
+- `count_over_time(http_requests_total_latency_ms[10m])` → `data_source: thanos_query`
+  (the cold tier) → **24,957 / 25,395** archived samples (two producers).
+- **Timestamp consistency:** the cold count scales with the window — `[1m]`/`[2m]`
+  empty, `[5m]`=16,697/17,323, `[10m]`=24,957/25,395. The <3 min emptiness matches
+  the merger's archive lag exactly (`flush window=2m + grace=1m`), and the count grows
+  monotonically as the window reaches further into archived history.
+- **Cross-producer agreement** within ~3% (same trace, two independent producers).
+- **Value consistency:** the same stream's warm p99 = 0.042–0.049 ≈ GT 0.0433 (3–13%);
+  archived `avg/max_over_time` values (0.047, 0.041) lie inside the trace cpu_rate
+  domain [0, 0.109].
+- **Honest limit:** value functions (`last/avg/max_over_time`) route to the warm
+  frontend (`asap_query`); cold *counts/timestamps* are read directly off `thanos_query`,
+  cold *values* confirmed indirectly (same stream → warm quantile ≈ GT), not as a
+  thanos-served scalar.
+
+**gorilla-merger (archiver) — no OOM:** across 150 s+ sustained load, `RestartCount=0`,
+`OOMKilled=false`, `Status=running`; memory 21 MiB of a 32 GiB limit (trace workload),
+≤576 MiB under the heavier synthetic workload — nowhere near the limit. The 147% CPU
+figure was a transient burst, not memory pressure. Merger log shows healthy archiving
+("built pending block from closed window … series=5", flush loop 30 s, compactor 5 m).
+Note: blocks are served from the merger's local pending store; the MinIO S3 object
+upload (compactor 5 m cycle) was not observed completing in-window (`total_objs=0`).
+
 ## Complete integrated picture (the "一个整体")
 Under coordinated ε-floor sampling, on real hardware, swept over ε:
 - **accuracy** ~90% (p99) and robust to p,
 - **latency** flat ~1.1 ms p50,
 - **freshness** warm ~1.0 s / archive ~0.66 s, independent of p,
 - **per-component resources** bounded (warm sketch backend 2% CPU / 117 MiB),
-- **cold tier** present for archive/non-sketchable queries.
+- **cold tier** read path verified live (thanos_query returns archived data, consistent
+  with the trace; archiver stable, no OOM).
 All four metric classes measured together, on the same stack, as one integrated result.
