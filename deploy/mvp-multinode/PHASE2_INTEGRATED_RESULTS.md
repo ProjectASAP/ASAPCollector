@@ -111,8 +111,14 @@ A cold query was explicitly tested, not assumed from "containers up":
 ≤576 MiB under the heavier synthetic workload — nowhere near the limit. The 147% CPU
 figure was a transient burst, not memory pressure. Merger log shows healthy archiving
 ("built pending block from closed window … series=5", flush loop 30 s, compactor 5 m).
-Note: blocks are served from the merger's local pending store; the MinIO S3 object
-upload (compactor 5 m cycle) was not observed completing in-window (`total_objs=0`).
+
+**Cold→S3 persistence — verified durable.** Watching across compaction cycles, the
+merger ships closed blocks to MinIO on the 5 m compactor cycle: log shows
+`compact blocks` → `shipper uploaded blocks uploaded=1` to `bucket=asap-gorilla-tsdb`,
+and the object store then holds a real TSDB block
+(`/data/asap-gorilla-tsdb/01KVDRW…/{chunks,index,meta.json}`, MinIO erasure-coded).
+(An earlier `total_objs=0` reading was simply taken *before* the first compaction cycle
+fired — not a durability gap.)
 
 ## Complete integrated picture (the "一个整体")
 Under coordinated ε-floor sampling, on real hardware, swept over ε:
