@@ -678,6 +678,7 @@ agents_up() {
         log "node0 producer-a-${i} up"
         docker_run_on "${NODE0_HOST}" --cpus=1 --memory=4g --memory-swap=4g \
             --name asap-producer-a-${i} \
+            ${OTELAPP_TRACE_MOUNT:-} \
             asap/otel-app:dev \
             -target=agent-a:4317 \
             -producer-id=p-a-${i} \
@@ -689,6 +690,7 @@ agents_up() {
             -freshness-probes=${OTELAPP_FRESHNESS_PROBES} \
             -freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ} \
             -warm-sample-p=${OTELAPP_WARM_SAMPLE_P:-1.0} \
+            ${OTELAPP_TRACE_ARGS:-} \
             -seed=${OTELAPP_SEED:-42}
     done
     for i in $(seq 1 ${N_PRODUCERS_PER_NODE}); do
@@ -696,6 +698,7 @@ agents_up() {
         log "node3 producer-b-${i} up"
         docker_run_on "${NODE3_HOST}" --cpus=1 --memory=4g --memory-swap=4g \
             --name asap-producer-b-${i} \
+            ${OTELAPP_TRACE_MOUNT:-} \
             asap/otel-app:dev \
             -target=agent-b:4317 \
             -producer-id=p-b-${i} \
@@ -707,6 +710,7 @@ agents_up() {
             -freshness-probes=${OTELAPP_FRESHNESS_PROBES} \
             -freshness-probe-hz=${OTELAPP_FRESHNESS_PROBE_HZ} \
             -warm-sample-p=${OTELAPP_WARM_SAMPLE_P:-1.0} \
+            ${OTELAPP_TRACE_ARGS:-} \
             -seed=${OTELAPP_SEED:-42}
     done
 }
