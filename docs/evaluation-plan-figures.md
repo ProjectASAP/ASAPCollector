@@ -163,6 +163,34 @@ a *timing*, not reducer, cause; pinned + fixed via `run.py --wall-clock-anchor`)
 dispersion is small-N order-statistic variance (single-window collapse, ~93 pts/series),
 not a sketch defect.
 
+#### (c′) Re-run on current `main` (2026-06-19) — two regressions surfaced  ⚠
+Same harness (`run_perfamily.py`, real gct, 1000 series), now on `main` (post ε-floor
+unification + autonomous-allocation merges). Results **diverge from (c)** and flag two
+issues to fix before this figure is submission-ready:
+
+| family | kind | median rel-err | %≤ε | wire | vs (c) |
+|---|---|---|---|---|---|
+| **DDSketch** | p50 / p99 | 0.0072 / 0.0267 | 87% / 41% | **57.6 MB** | acc ≈ same; **wire 58× higher** |
+| **HLL** | cardinality | rel-err **0.0033** (996.7/1000) | ✅ | 57.0 MB | acc ≈ same ✅ |
+| **KLL** | p50 / p99 | **0.0597** / 0.0717 | 48% / 41% | 57.9 MB | **acc 85× worse** (was 0.0007) |
+| **Count-Min** | freq | f̂=143 / f_true=244 | **one-sided VIOLATED** | 67.4 MB | was "exact, one-sided OK" |
+| **CountSketch** | topk@10 | recall **0.0** (n_warm=0) | ✗ | 25.8 MB | unchanged-broken |
+
+**Two flags (NEEDS-INVESTIGATION, gating C1+C4):**
+1. **SDK aggregation regressed / not engaged** — the agent shipped **57 MB / ~500k raw
+   points** instead of (c)'s ~1 MB sketch envelopes. The warm sketch was built at the
+   **backend** from raw, not SDK-side. This directly undercuts the bandwidth claim (C1) if
+   it's a real regression vs a harness-config drift — must be root-caused.
+2. **KLL accuracy regression + CMS one-sided violation** — KLL p50 0.0007→0.0597; CMS now
+   *under*-counts (143<244), violating the Count-Min over-estimate guarantee. Either a
+   reducer regression from the merges or a window/placement-config difference.
+
+**Data-fitness finding (not a bug):** gct `cpu_rate` is a **gauge** — quantile (DDSketch)
++ cardinality (HLL) are the natural fit and behave well; the **frequency/heavy-hitter
+families (CMS, CountSketch, Topk) are mismatched to gauge data** (there is no meaningful
+"count of a cpu_rate value"). Those families are evaluated on **DEBS-2022** (symbol-trade
+frequency = the natural heavy-hitter workload), not gct.
+
 **Two honest, root-caused gaps (not fabricated):**
 - **CountSketch topk recall 0** — real semantic mismatch (orthogonal to timing): warm
   topk **keys by `item` not `host`** and **ranks by occurrence *frequency*, not
