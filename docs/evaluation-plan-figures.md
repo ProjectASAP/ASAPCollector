@@ -28,10 +28,52 @@ cold-half, Fig 11), and **the controller allocates the partition** (which series
 sketch[type,`W`,`L`,`p`] vs cold-Gorilla) from the query set (Fig 12).
 
 The contribution stack, from system to evidence:
-1. sketch-across-the-lifecycle + the `(W,L,agg_type)` planner (the base system);
-2. **coordinated SDK sampling** (`p_i ∝ √(f_i/rate_i)`, ε-floored) — new cost axis;
+1. sketch-across-the-lifecycle + the **autonomous `(ε, queries) → {sketch, W, L, p, τ}` planner** (the controller — the key originality);
+2. **coordinated SDK sampling** — the unified whole-sketch ε-floor `p = 1/(1+ε²·rate)` (the per-key `√(f/rate)` allocation was retired) — new cost axis;
 3. **CDM** — ε-gated sub-window delta emission (open-window freshness) + slack-countdown alert;
 4. the **joint bound** `ε_sk + ε_s + ε_cdm` (proof) tying accuracy to cost.
+
+---
+
+## Experiment matrix — claim × dataset × baseline (the comparative-rigor plan)
+
+The figures below are the *mechanism* demos. For a submission they must each run on
+**≥2 real-world datasets** against **real baselines**, with **multiple trials + 95% CIs**.
+This matrix is the contract; the per-figure sections carry the current numbers.
+
+### Real-world datasets (workload-credibility axis — NO synthetic in the headline)
+| dataset | domain | shape / regime | exercises | status |
+|---|---|---|---|---|
+| **Google-cluster-2019** (`cpu_rate`) | machine resource usage | millions of (machine,job,task); high cardinality; continuous gauge | quantile/sum sketches, cardinality regime | ✅ staged (`/tmp/gct-*`) |
+| **DEBS-2022** (last-trade) | financial tick stream | ~5k symbols; high rate; Zipf-skewed | frequency/heavy-hitter (CMS/CountSketch/Topk), skewed-rate sampling | ◐ downloading (`debs/data/`) |
+| **3rd real** (Alibaba-2022 / Azure-VM / node-exporter dump) | infra metrics | TBD | generality / scale | ◻ gap |
+
+### Baselines (comparative axis — the biggest current gap)
+| baseline | what it is | claim it stresses |
+|---|---|---|
+| **b0 raw-OTLP** | full samples, no aggregation | bw / CPU / mem floor |
+| **b0a/b0b/b1 raw+codec** | gzip / zstd / Snappy only | bw from compression *alone* (isolate the aggregation factor) |
+| **Prometheus+Thanos / VictoriaMetrics** | deployed TSDB remote-write | real-world reference point |
+| **NitroSketch / OmniSketch** | sampling-sketch prior art | sampling *accuracy* vs ASAP's ε-floor |
+| **Cormode-style CDM** | functional/threshold monitoring | delta-emission / freshness |
+| **ASAP ablations** | no-sampling · uniform-p · no-CDM-delta · single-tier (warm-only) · **static (non-autonomous) alloc** | the marginal value of each ASAP knob |
+
+### The matrix (✅ measured · ◐ partial · ◻ gap)
+| # | Claim | Experiment | Metric | gct-2019 | DEBS-2022 | 3rd | vs baselines | rigor (trials/CI) |
+|---|---|---|---|---|---|---|---|---|
+| C1 | Bandwidth reduction | sketch envelope vs raw, 3-axis (time×label×codec) + sampling | bytes_out/series | ◐ Fig 2 | ◻ | ◻ | ◐ vs raw only — **need b0a/b0b/Prom/Nitro** | ◻ single-run |
+| C2 | Edge CPU | sketch processors vs raw-forward, per-node | cpu cores | ◐ Fig 6 | ◻ | ◻ | ◐ vs raw | ◻ |
+| C3 | Edge memory | RSS bounded over long soak (no leak) | RSS slope | ✅ edge bounded; ⚠ backend leak (Fig 6) | ◻ | ◻ | ◐ vs raw | ◐ 1 soak |
+| C4 | Query accuracy | all-6-family error inside ε-envelope vs ground truth | rel-err, %≤ε, top-K recall | ◐ Fig 3 (DDSketch clean; CMS/HLL/KLL/CS partial) | ◻ (heavy-hitter natural here) | ◻ | ◻ **vs Nitro/Omni** | ◻ **need N trials + CI** |
+| C5 | Query latency | warm-sketch vs cold-fallback PromQL replay | p50/p99 ms | ✅ Fig 7 (warm+cold) | ◻ | ◻ | ◐ vs VM/Thanos native | ◐ |
+| H | **Pareto headline** | total (edge+wire+backend+storage) cost vs accuracy, swept over `(W,L,agg,p,ε)` | cost↔acc frontier | ◐ Fig 1 | ◻ | ◻ | ◻ **vs raw+Prom on same frontier** | ◻ |
+| N1 | **Autonomous allocation quality** | `(ε,queries)`→plan vs oracle/hand-tuned/naive | plan match-rate, cost↔acc gap | ◐ Fig 12 (mechanism ✅ on cluster; quality ◻) | ◻ | ◻ | vs static-alloc, all-DDSketch, all-raw | ◻ |
+| N2 | Controller adaptivity | inject query/workload drift → re-plan | re-plan latency, post-shift acc | ◻ | ◻ | ◻ | — | ◻ |
+| X1 | Coordinated vs uniform p | skewed-rate fleet, ε-floor vs uniform-p at equal admitted volume | error @ equal bw | ◐ Fig 9 (live grants ✅) | ◐ (Zipf-skew natural) | ◻ | vs uniform-p, Nitro | ◻ |
+| X2 | Two-tier coverage | fraction warm- vs cold-answerable over a real query set; per-tier acc/latency | coverage %, per-tier | ◐ Fig 11 | ◻ | ◻ | — | ◻ |
+| X3 | CDM delta savings | egress vs always-send, swept over τ | emits/window, bytes | ✅ Table 1 (gct) ; ✅ DEBS cross-check (structural-skew caveat) | ✅ | ◻ | vs Cormode-CDM | ◐ |
+
+**Headline gaps to close (priority order):** (1) **real baselines** — at minimum b0a/b0b + Prometheus/Thanos + one sampling-sketch (NitroSketch), on the same Pareto; (2) **statistical rigor** — ≥5 trials + 95% CI on every accuracy/cost number (current runs are single-shot and noisy); (3) **all-6-family accuracy** clean (only DDSketch is solid); (4) a **DEBS-2022 end-to-end** pass (downloading) as the 2nd real axis; (5) **autonomous-allocation quality vs oracle** (mechanism is validated, decision quality is not); (6) **scale** beyond the light workload.
 
 ---
 
