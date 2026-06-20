@@ -61,7 +61,7 @@ This matrix is the contract; the per-figure sections carry the current numbers.
 ### The matrix (✅ measured · ◐ partial · ◻ gap)
 | # | Claim | Experiment | Metric | gct-2019 | DEBS-2022 | 3rd | vs baselines | rigor (trials/CI) |
 |---|---|---|---|---|---|---|---|---|
-| C1 | Bandwidth reduction | sketch envelope vs raw, 3-axis (time×label×codec) + sampling | bytes_out/series | ◐ Fig 2 — **clean per-family wire blocked**: `make_perfamily.py` ships un-sliced 8-metric files + ship-wait coupled to the base metric; fix = true family slices + decouple ship-detect | ◻ | ◻ | ◐ vs raw only — **need b0a/b0b/Prom/Nitro** | ◻ single-run |
+| C1 | Bandwidth reduction | sketch-vs-raw on a true family slice (`c1_wire.py`) | wire bytes agent→backend | ✅ **DDSketch 33.8×±0.3, HLL 65.9×±0.8** (real gct, n=3 trials, 95% CI) | ◻ | ◻ | ◐ vs raw-forward arm ✅; **still need b0a/b0b/Prom/Nitro** | ✅ 3 trials + CI |
 | C2 | Edge CPU | sketch processors vs raw-forward, per-node | cpu cores | ◐ Fig 6 | ◻ | ◻ | ◐ vs raw | ◻ |
 | C3 | Edge memory | RSS bounded over long soak (no leak) | RSS slope | ✅ edge bounded; ⚠ backend leak (Fig 6) | ◻ | ◻ | ◐ vs raw | ◐ 1 soak |
 | C4 | Query accuracy | all-6-family error inside ε-envelope vs ground truth | rel-err, %≤ε, top-K recall | ✅ **DDSketch p50 0.72%/p99 2.67%, HLL 0.33%** (2026-06-20, root-caused valid); KLL small-N◐; CMS/CS → gauge-mismatch, use DEBS | ◻ (heavy-hitter natural here) | ◻ | ◻ **vs Nitro/Omni** | ◻ **need N trials + CI** |
@@ -196,6 +196,23 @@ issues to fix before this figure is submission-ready:
 families (CMS, CountSketch, Topk) are mismatched to gauge data** (there is no meaningful
 "count of a cpu_rate value"). Those families are evaluated on **DEBS-2022** (symbol-trade
 frequency = the natural heavy-hitter workload), not gct.
+
+#### (c″) CLEAN C1 bandwidth — fixed harness, real gct, 3 trials + 95% CI  ✅
+`c1_wire.py` (2026-06-20) closes the (c′) flags: it slices the data to a TRUE single-family
+set `{cpu_rate Sum-anchor, memory_usage, ONE sketch metric}` and replays the *same* slice
+through both a sketch agent and a **raw-forward agent** (`agent-raw-coldoff.yaml`, no
+`asap_edge`) for an apples-to-apples wire comparison.
+
+| family | W_sketch | W_raw (same slice) | **reduction (n=3, 95% CI)** | accuracy |
+|---|---|---|---|---|
+| **DDSketch** | **1.00 MB** | 33.7 MB | **33.8× ± 0.3** | p50 0.69% (84%≤ε), p99 2.82% |
+| **HLL** | **0.51 MB** | 33.7 MB | **65.9× ± 0.8** | card 0.33% |
+
+`W_sketch` reproduces the (c) committed numbers (DDSketch 0.99 MB, HLL 0.51 MB) **exactly**,
+which definitively settles the (c′) "57 MB" question: it was the un-sliced 8-metric data, NOT
+a code regression. Reduction CIs are tight (±0.3 / ±0.8 over 3 trials). HLL ships less (one
+register sketch) → ~2× the DDSketch reduction. *(Raw baseline here = OTLP-forward; the
+compression baselines b0a/b0b and Prometheus/Thanos are still the open comparative gap.)*
 
 **Two honest, root-caused gaps (not fabricated):**
 - **CountSketch topk recall 0** — real semantic mismatch (orthogonal to timing): warm
