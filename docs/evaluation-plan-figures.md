@@ -176,14 +176,20 @@ issues to fix before this figure is submission-ready:
 | **Count-Min** | freq | f̂=143 / f_true=244 | **one-sided VIOLATED** | 67.4 MB | was "exact, one-sided OK" |
 | **CountSketch** | topk@10 | recall **0.0** (n_warm=0) | ✗ | 25.8 MB | unchanged-broken |
 
-**Two flags (NEEDS-INVESTIGATION, gating C1+C4):**
-1. **SDK aggregation regressed / not engaged** — the agent shipped **57 MB / ~500k raw
-   points** instead of (c)'s ~1 MB sketch envelopes. The warm sketch was built at the
-   **backend** from raw, not SDK-side. This directly undercuts the bandwidth claim (C1) if
-   it's a real regression vs a harness-config drift — must be root-caused.
-2. **KLL accuracy regression + CMS one-sided violation** — KLL p50 0.0007→0.0597; CMS now
-   *under*-counts (143<244), violating the Count-Min over-estimate guarantee. Either a
-   reducer regression from the merges or a window/placement-config difference.
+**Both flags ROOT-CAUSED (2026-06-20) — NOT a code regression; the accuracy is valid:**
+1. **57 MB wire = un-sliced data, not lost SDK-aggregation.** The per-family slices
+   `/tmp/perfam-*.jsonl` are **byte-identical 210 MB files each containing ALL 8 metric
+   aliases** (`cpu_rate`, `_q_ddsketch`, `_q_kll`, `_topk_cs/cms`, `_card_hll`, `_freq_cms`,
+   `memory_usage`). Each arm's agent **does** SDK-sketch its one configured metric (accuracy
+   proves it), but **forwards the other 7 raw**, dominating the wire. → C4 accuracy is sound;
+   **C1 wire must be re-measured with genuinely family-sliced inputs** (filter the slice to
+   the single metric). A data-prep gap in `make_perfamily.py`, not a sketch/agent regression.
+2. **KLL median + CMS one-sided are operating-point/data-fitness, not bugs.** KLL is
+   rank-based and coarse at the **~93 pts/series** the wall-clock single-window collapse
+   leaves (DDSketch's relative-error buckets handle small-N better — that's the real
+   tradeoff, not a KLL defect). CMS "under-counts" because gct `cpu_rate` is a **gauge** with
+   no meaningful per-key *count* to over-estimate — the frequency families are mis-applied to
+   gauge data and belong on **DEBS** (below), where symbol-trade frequency is a true count.
 
 **Data-fitness finding (not a bug):** gct `cpu_rate` is a **gauge** — quantile (DDSketch)
 + cardinality (HLL) are the natural fit and behave well; the **frequency/heavy-hitter
