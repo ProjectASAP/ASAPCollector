@@ -61,10 +61,10 @@ This matrix is the contract; the per-figure sections carry the current numbers.
 ### The matrix (✅ measured · ◐ partial · ◻ gap)
 | # | Claim | Experiment | Metric | gct-2019 | DEBS-2022 | 3rd | vs baselines | rigor (trials/CI) |
 |---|---|---|---|---|---|---|---|---|
-| C1 | Bandwidth reduction | sketch envelope vs raw, 3-axis (time×label×codec) + sampling | bytes_out/series | ◐ Fig 2 | ◻ | ◻ | ◐ vs raw only — **need b0a/b0b/Prom/Nitro** | ◻ single-run |
+| C1 | Bandwidth reduction | sketch envelope vs raw, 3-axis (time×label×codec) + sampling | bytes_out/series | ◐ Fig 2 — **clean per-family wire blocked**: `make_perfamily.py` ships un-sliced 8-metric files + ship-wait coupled to the base metric; fix = true family slices + decouple ship-detect | ◻ | ◻ | ◐ vs raw only — **need b0a/b0b/Prom/Nitro** | ◻ single-run |
 | C2 | Edge CPU | sketch processors vs raw-forward, per-node | cpu cores | ◐ Fig 6 | ◻ | ◻ | ◐ vs raw | ◻ |
 | C3 | Edge memory | RSS bounded over long soak (no leak) | RSS slope | ✅ edge bounded; ⚠ backend leak (Fig 6) | ◻ | ◻ | ◐ vs raw | ◐ 1 soak |
-| C4 | Query accuracy | all-6-family error inside ε-envelope vs ground truth | rel-err, %≤ε, top-K recall | ◐ Fig 3 (DDSketch clean; CMS/HLL/KLL/CS partial) | ◻ (heavy-hitter natural here) | ◻ | ◻ **vs Nitro/Omni** | ◻ **need N trials + CI** |
+| C4 | Query accuracy | all-6-family error inside ε-envelope vs ground truth | rel-err, %≤ε, top-K recall | ✅ **DDSketch p50 0.72%/p99 2.67%, HLL 0.33%** (2026-06-20, root-caused valid); KLL small-N◐; CMS/CS → gauge-mismatch, use DEBS | ◻ (heavy-hitter natural here) | ◻ | ◻ **vs Nitro/Omni** | ◻ **need N trials + CI** |
 | C5 | Query latency | warm-sketch vs cold-fallback PromQL replay | p50/p99 ms | ✅ Fig 7 (warm+cold) | ◻ | ◻ | ◐ vs VM/Thanos native | ◐ |
 | H | **Pareto headline** | total (edge+wire+backend+storage) cost vs accuracy, swept over `(W,L,agg,p,ε)` | cost↔acc frontier | ◐ Fig 1 | ◻ | ◻ | ◻ **vs raw+Prom on same frontier** | ◻ |
 | N1 | **Autonomous allocation quality** | `(ε,queries)`→plan vs oracle/hand-tuned/naive | plan match-rate, cost↔acc gap | ◐ Fig 12 (mechanism ✅ on cluster; quality ◻) | ◻ | ◻ | vs static-alloc, all-DDSketch, all-raw | ◻ |
