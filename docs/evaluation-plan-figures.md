@@ -61,7 +61,7 @@ This matrix is the contract; the per-figure sections carry the current numbers.
 ### The matrix (✅ measured · ◐ partial · ◻ gap)
 | # | Claim | Experiment | Metric | gct-2019 | DEBS-2022 | 3rd | vs baselines | rigor (trials/CI) |
 |---|---|---|---|---|---|---|---|---|
-| C1 | Bandwidth reduction | sketch-vs-raw on a true family slice (`c1_wire.py`) | wire bytes agent→backend | ✅ **DDSketch 33.8×±0.3, HLL 65.9×±0.8** (real gct, n=3 trials, 95% CI) | ◻ | ◻ | ◐ vs raw-forward arm ✅; **still need b0a/b0b/Prom/Nitro** | ✅ 3 trials + CI |
+| C1 | Bandwidth reduction | sketch-vs-raw on a true family slice (`c1_wire.py`) | wire bytes agent→backend | ✅ **DDSketch 33.8×±0.3, HLL 65.9×±0.8** (real gct, n=3, 95% CI) | ◻ | ◻ | ✅ vs raw-OTLP; ◐ **vs raw+gzip = net 2.7×** (gzip 12.3×, offline); ◻ Prom/Nitro | ✅ 3 trials + CI |
 | C2 | Edge CPU | sketch processors vs raw-forward, per-node | cpu cores | ◐ Fig 6 | ◻ | ◻ | ◐ vs raw | ◻ |
 | C3 | Edge memory | RSS bounded over long soak (no leak) | RSS slope | ✅ edge bounded; ⚠ backend leak (Fig 6) | ◻ | ◻ | ◐ vs raw | ◐ 1 soak |
 | C4 | Query accuracy | all-6-family error inside ε-envelope vs ground truth | rel-err, %≤ε, top-K recall | ✅ **DDSketch p50 0.72%/p99 2.67%, HLL 0.33%** (2026-06-20, root-caused valid); KLL small-N◐; CMS/CS → gauge-mismatch, use DEBS | ◻ (heavy-hitter natural here) | ◻ | ◻ **vs Nitro/Omni** | ◻ **need N trials + CI** |
@@ -211,8 +211,31 @@ through both a sketch agent and a **raw-forward agent** (`agent-raw-coldoff.yaml
 `W_sketch` reproduces the (c) committed numbers (DDSketch 0.99 MB, HLL 0.51 MB) **exactly**,
 which definitively settles the (c′) "57 MB" question: it was the un-sliced 8-metric data, NOT
 a code regression. Reduction CIs are tight (±0.3 / ±0.8 over 3 trials). HLL ships less (one
-register sketch) → ~2× the DDSketch reduction. *(Raw baseline here = OTLP-forward; the
-compression baselines b0a/b0b and Prometheus/Thanos are still the open comparative gap.)*
+register sketch) → ~2× the DDSketch reduction.
+
+#### (c‴) Encoding-factor decomposition vs the gzip baseline (b0-gzip)  ◐
+The honest reviewer question: *does sketching still win after a deployment compresses the raw
+baseline?* Decomposition (DDSketch, real gct):
+
+| | wire | factor |
+|---|---|---|
+| raw OTLP | 33.7 MB | — |
+| **raw + gzip** (b0-gzip) | ~2.7 MB | **encoding 12.3×** (gzip-6 on the actual payload) |
+| **ASAP sketch** | 1.0 MB | total **33.8×** vs raw |
+| **ASAP vs raw+gzip** | — | **net ~2.7×** (= 33.8 / 12.3) |
+
+So ASAP's 33.8× decomposes as **encoding (12.3×, free to anyone with gzip) × residual
+aggregation (~2.7×, ASAP-unique)** — `12.3 × 2.7 ≈ 33.8`, internally consistent. **Sketching
+still beats a gzip-compressed raw baseline by ~2.7×**, the aggregation contribution
+compression can't replicate.
+
+**Measurement caveat (honest):** the encoding factor is `gzip(actual payload content)`
+measured **offline** (the single-node cold-off stack is `--network host`, so the
+agent→data-plane leg can't be isolated from the constant replay→agent leg on `lo` — the
+attempted loopback-byte method failed, all arms ≈ 35 MB). The configs `agent-raw-{gzip,zstd}.yaml`
++ `baselines.py` are ready; the *clean on-wire* compression number belongs on the **cluster**
+(Phase-2 per-node NIC isolates agent→backend bytes). Also unmeasured: sketch-envelope
+gzip (binary, compresses less) — so net ASAP-vs-raw+gzip is a conservative lower bound here.
 
 **Two honest, root-caused gaps (not fabricated):**
 - **CountSketch topk recall 0** — real semantic mismatch (orthogonal to timing): warm
