@@ -324,6 +324,37 @@ mod tests {
         assert_eq!(w.snapshot().unwrap().len(), 0);
     }
 
+    // #30: DDSketch samples to shed update/bandwidth cost. Admit ~p of updates
+    // (total_count ~p×) and stamp the wire sample_p; quantiles are scale-
+    // invariant so the SHAPE survives even though the raw count drops.
+    #[test]
+    fn sampling_admits_p_fraction_and_preserves_quantile_shape() {
+        use crate::precompute::SampleSetter;
+        let p = 0.1;
+        let mut w = DDSketchWrapper::new(0.01).with_sample_p(p);
+        assert_eq!(w.sample_p(), p);
+        let n = 100_000u64;
+        // uniform-ish stream 1..=1000 repeated, so the median is well-defined.
+        for i in 0..n {
+            w.update(1.0 + (i % 1000) as f64);
+        }
+        let admitted = w.sk.total_count();
+        let frac = admitted as f64 / n as f64;
+        assert!((frac - p).abs() < 0.03, "admitted fraction {frac} not ≈ p={p}");
+        // scale-invariance: median of the sampled sketch ≈ median of the stream (~500).
+        let med = w.quantile(0.5);
+        assert!((med - 500.0).abs() < 60.0, "sampled median {med} drifted from ~500");
+        // envelope stamps p; exact path would stamp 0.0.
+        let env = ProtoEnvelope::decode(w.snapshot().unwrap().as_slice()).unwrap();
+        assert!((env.sample_p - p).abs() < 1e-12, "envelope must stamp p, got {}", env.sample_p);
+
+        let mut ex = DDSketchWrapper::new(0.01);
+        SampleSetter::set_sample_p(&mut ex, 1.0); // disabled stays exact
+        ex.update(1.0);
+        let eenv = ProtoEnvelope::decode(ex.snapshot().unwrap().as_slice()).unwrap();
+        assert_eq!(eenv.sample_p, 0.0, "exact DDSketch must stamp 0.0 for byte-parity");
+    }
+
     #[test]
     fn update_then_quantile_within_bound() {
         let mut w = DDSketchWrapper::new(0.01);
