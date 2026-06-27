@@ -69,7 +69,7 @@ This matrix is the contract; the per-figure sections carry the current numbers.
 | H | **Pareto headline** | total (edge+wire+backend+storage) cost vs accuracy, swept over `(W,L,agg,p,ε)` | cost↔acc frontier | ◐ Fig 1 | ◻ | ◻ | ◻ **vs raw+Prom on same frontier** | ◻ |
 | N1 | **Autonomous allocation quality** | `(ε,queries)`→plan vs oracle/hand-tuned/naive | plan match-rate, cost↔acc gap | ◐ Fig 12 (mechanism ✅ on cluster; quality ◻) | ◻ | ◻ | vs static-alloc, all-DDSketch, all-raw | ◻ |
 | N2 | Controller adaptivity | inject query/workload drift → re-plan | re-plan latency, post-shift acc | ◻ | ◻ | ◻ | — | ◻ |
-| X1 | Coordinated vs uniform p | whole-sketch ε-floor (observable R) vs fixed-p; per-edge on a fleet | L2/heavy-hitter err, insert-tput | live grants ✅ | ◐ real CMS/DEBS: **17× insert-tput at bounded L2**; per-key/fleet metric ⚠ (Fig 9a — earlier 40–60× per-key claim RETRACTED, was circular) | ◻ | ◐ vs NitroSketch (same sampler; ε-floor derives p) | ◐ |
+| X1 | Coordinated vs uniform p | whole-sketch ε-floor (observable R) vs fixed-p; per-edge on a fleet | F1/heavy-hitter err, insert-tput | live grants ✅ | ✅ real CMS/DEBS: **22× insert-tput, F1 err held at ε (0.050@ε=.05)**; fleet cold-edge **7×** better than fixed-p (Fig 9a; earlier 40–60× per-key claim RETRACTED, was circular) | ◻ | ✅ vs NitroSketch (same sampler; ε-floor derives p) | ✅ |
 | X2 | Two-tier coverage | fraction warm- vs cold-answerable over a real query set; per-tier acc/latency | coverage %, per-tier | ◐ Fig 11 | ◻ | ◻ | — | ◻ |
 | X3 | CDM delta savings | egress vs always-send, swept over τ | emits/window, bytes | ✅ Table 1 (gct) ; ✅ DEBS cross-check (structural-skew caveat) | ✅ | ◻ | vs Cormode-CDM | ◐ |
 
@@ -411,7 +411,7 @@ per-layer CPU/mem bars. **◐**
 
 ---
 
-## Fig 9 — Coordinated ε-floor `p` vs fixed-p (NitroSketch)  ◐
+## Fig 9 — Coordinated ε-floor `p` vs fixed-p (NitroSketch)  ✅ (algorithm) / ◐ (system)
 **Claim (corrected):** the unified **whole-sketch** ε-floor `p = 1/(1+ε²·R)` (`R` = total
 update rate, OBSERVABLE) gives a *principled* sampling rate that (i) cuts insert cost ~`1/p`
 while bounding the whole-sketch L2 error to ε, and (ii) in a fleet adapts `p_i` to each edge's
@@ -424,27 +424,46 @@ own `R_i`. It is the SAME sampler as NitroSketch — the contribution is *derivi
 > counting, no sketch needed), and it resurrected the RETIRED per-key `√(f/rate)` allocation.
 > The unified ε-floor is **whole-sketch**: ONE `p=1/(1+ε²·R)`, `R`=total update count (OBSERVABLE).
 
-`epsilon_floor_vs_nitro_test.go` — real CMS (5×4096) over real DEBS (5,493 keys, 54M updates,
-`R` observable). Whole-sketch ε-floor `p` vs exact (`p=1`):
+`epsilon_floor_vs_nitro_test.go` — real CMS over real DEBS (5,493 keys, **R=54M** updates,
+observable). Whole-sketch ε-floor `p=1/(1+ε²R)` vs exact.
 
-| metric | exact (p=1) | ε-floor sampled (ε=0.05, p≈1e-5) | note |
+**(A) throughput / memory** (CMS 5×4096, sketchlib geometric skip-sampler):
+
+| metric | exact (p=1) | ε-floor (ε=0.05, p=7.4e-6) | note |
 |---|---|---|---|
-| **insert throughput** | 10 Mupd/s | **171 Mupd/s (≈17×)** | the NitroSketch win — sampling cuts update cost ~1/p |
-| **memory** | 164 KB (CMS) | 164 KB (CMS, constant) | vs exact key→count map 179 KB; CMS win is *asymptotic* in #keys |
-| **query latency** | ~100 ns/key | ~85 ns/key | unchanged (CMS query is O(rows)) |
+| **insert throughput** | 8.3 Mupd/s | **183 Mupd/s (22×)** | the NitroSketch win — skip-sampling cuts update work ~1/p |
+| **memory** | 164 KB | 164 KB (constant in #keys) | vs exact key→count map 179 KB; CMS win is *asymptotic* |
+| **query latency** | 96 ns/key | 76–82 ns/key | unchanged (CMS query is O(rows)) |
 
-**Honest accuracy finding:** the ε-floor bounds the **whole-sketch L2/F2 mass** to ε, **NOT
-per-key point queries**. Under heavy whole-sketch sampling (`p≈1e-5` at `R`=54M), per-key and
-especially **rare-key** estimates degrade badly (they fall below the sketch's noise floor) —
-this is inherent to sampling, not a defect. So the **right accuracy metric is the L2-norm /
-heavy-hitter error, not rare-key rel-err** (TODO: re-measure on that metric). The defensible
-ε-floor claim is: **~17× insert-throughput at a bounded whole-sketch L2 error**, with `p`
-*derived* from `ε`+observable `R` rather than hand-tuned (NitroSketch's `p` is a free knob).
+**(B) accuracy law — what the ε-floor actually bounds** (CMS 5×65536 to isolate sampling from
+collisions; mean of 5 seeds). The ε-floor bounds the **additive AGGREGATE** (F1=R) to ε; a
+**point query on key `k`** is protected only to `ε·√(R/f_k)`:
 
-### (a2) Per-edge fleet — modest with real exchanges  ◐
-Grouping DEBS by exchange gives only **3 edges** (R 30M / 17M / 10M — mild skew), so the
-ε-floor's per-edge `p_i` only beats fixed-`p` worst-edge error by **1.3×**. A convincingly
-skewed fleet (rate-CV ≫ 1, e.g. per-service metric streams) is needed to show the adaptation.
+| ε | **F1-total rel-err** (the bounded aggregate) | heaviest key (f≈1.5M) | rare keys (f≲1e3) |
+|---|---|---|---|
+| 0.05 | **0.050** (= ε ✓) | 0.26 (pred ε√(R/f)=0.30) | → 1.0 (lost) |
+| 0.10 | **0.080** (≈ ε ✓) | 0.39 (pred 0.61) | → 1.0 (lost) |
+
+So the honest, defensible claim is: **`p` derived from ε+observable R gives 22× insert
+throughput while holding the whole-sketch aggregate error at ≈ε** — same sampler as NitroSketch,
+the win is *how `p` is set* (not a hand-tuned knob). Per-key accuracy follows `ε·√(R/f_k)`:
+**heavy hitters survive, rare keys fall below the sampling floor — inherent to sampling, not a
+defect.** The right accuracy metric is therefore the aggregate / heavy-hitter error, never
+rare-key rel-err.
+
+### (a2) Per-edge fleet — the differentiation, on a skewed fleet  ✅
+Real DEBS has only **3 exchanges** (mild skew → fixed-p worst-edge only **1.3×** the ε-floor's),
+too weak to show it. On a **synthetic fleet** (64 edges, Zipf rates over ~2 decades,
+rate-CV=2.9), at matched total bandwidth:
+
+| | per-edge F1 sampling-err (analytical) | empirical F1 (real CMS, 5 seeds) |
+|---|---|---|
+| **ε-floor** (`p_i=1/(1+ε²R_i)`) | median 0.050, **max 0.050** (uniform) | hot 0.020 / **cold 0.020** |
+| **fixed-p** (matched bw) | median 0.103, **max 0.162** | hot 0.010 / **cold 0.148** |
+
+`→` fixed-p **over-protects the hot edge and under-protects the cold edge by 7×** (cold-edge
+0.148 vs 0.020); the ε-floor spends the same total bandwidth but equalizes error at ε across
+the fleet. This is the per-edge adaptation the coordinator grants live (see (b)).
 
 ### (b) System-level differentiated grant  ◐
 Live on the cluster: hot edge `p=0.09`, quiet `p=0.14` (coordinator-granted ε-floor from
