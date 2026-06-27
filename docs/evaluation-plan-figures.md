@@ -69,7 +69,7 @@ This matrix is the contract; the per-figure sections carry the current numbers.
 | H | **Pareto headline** | total (edge+wire+backend+storage) cost vs accuracy, swept over `(W,L,agg,p,ε)` | cost↔acc frontier | ◐ Fig 1 | ◻ | ◻ | ◻ **vs raw+Prom on same frontier** | ◻ |
 | N1 | **Autonomous allocation quality** | `(ε,queries)`→plan vs oracle/hand-tuned/naive | plan match-rate, cost↔acc gap | ◐ Fig 12 (mechanism ✅ on cluster; quality ◻) | ◻ | ◻ | vs static-alloc, all-DDSketch, all-raw | ◻ |
 | N2 | Controller adaptivity | inject query/workload drift → re-plan | re-plan latency, post-shift acc | ◻ | ◻ | ◻ | — | ◻ |
-| X1 | Coordinated vs uniform p | skewed-rate fleet, ε-floor vs uniform-p at equal admitted volume | error @ equal bw | ◐ Fig 9 (live grants ✅) | ◐ (Zipf-skew natural) | ◻ | vs uniform-p, Nitro | ◻ |
+| X1 | Coordinated vs uniform p | skewed-rate fleet, ε-floor vs fixed-p at equal admitted volume | error @ equal bw | live grants ✅ | ✅ **algo vs NitroSketch on real DEBS: ε-floor max-err 40–60× smaller** (Fig 9a) | ◻ | ✅ **vs NitroSketch fixed-p** | ✅ 3 ε points |
 | X2 | Two-tier coverage | fraction warm- vs cold-answerable over a real query set; per-tier acc/latency | coverage %, per-tier | ◐ Fig 11 | ◻ | ◻ | — | ◻ |
 | X3 | CDM delta savings | egress vs always-send, swept over τ | emits/window, bytes | ✅ Table 1 (gct) ; ✅ DEBS cross-check (structural-skew caveat) | ✅ | ◻ | vs Cormode-CDM | ◐ |
 
@@ -411,12 +411,31 @@ per-layer CPU/mem bars. **◐**
 
 ---
 
-## Fig 9 — Coordinated vs uniform `p` on a skewed fleet  ◐
-**Claim:** `p_i ∝ √(f_i/rate_i)` beats uniform-`p` at equal merged variance, with the
-gap ∝ the rate CV; the win **only appears on skewed fleets** (multi-edge).
-**Layout:** total edge work (or wire bytes) for coordinated vs uniform across rate-CV.
-**Have:** the differentiated grant — hot edge `p=0.0065`, quiet `p=1.0` (ε-floors
-0.0079 vs 0.444); single-edge ⇒ p=1 by design. **Need:** the CV sweep on ≥2 edges. **◐**
+## Fig 9 — Coordinated ε-floor `p` vs uniform/fixed-p on a skewed fleet  ✅ (algorithm) / ◐ (system)
+**Claim:** the unified ε-floor `p_k = 1/(1+ε²·rate_k)` holds the per-key 1/p-corrected
+error ≈ ε UNIFORMLY across keys; a single fixed `p` (NitroSketch) at the SAME bandwidth
+under-protects the long tail of rare keys, blowing up the worst-case error. (Per-key
+`√(f/rate)` was retired — see headline.)
+
+### (a) Standalone algorithm comparison — REAL DEBS-2022 rates  ✅
+`sketchlib-go/benchmark/epsilon_floor_vs_nitro_test.go` — pure in-process (no OTLP/system),
+real DEBS day-1 symbol-trade frequencies (5,493 keys, 54M events, max 1.46M, Zipf-skewed),
+ε-floor per-key `p` vs NitroSketch fixed-`p` at **equal admitted bandwidth**:
+
+| ε | admitted | **ε-floor** max rel-err / %≤ε | **fixed-p (Nitro)** max rel-err / %≤ε |
+|---|---|---|---|
+| 0.01 | 20.5% | **0.061** / 73% | **3.87** / 21% |
+| 0.05 | 2.7% | **0.33** / 70% | **12.97** / 29% |
+| 0.10 | 0.8% | **0.41** / 69% | **40.9** / 30% |
+
+At equal bandwidth the ε-floor's worst-case error is **40–60× smaller** than fixed-p:
+fixed-p drives rare keys to 0-or-huge estimates (max err up to **40.9**), while the ε-floor
+keeps `p_k≈1` for rare keys so they survive. This is the law's core advantage, on real data.
+
+### (b) System-level differentiated grant  ◐
+Live on the cluster: hot edge `p=0.09`, quiet `p=0.14` (coordinator-granted ε-floor from
+the autonomous `/plan/auto` loop, PR #382). **Need:** the rate-CV sweep on ≥2 edges for the
+system figure.
 
 ---
 
