@@ -191,6 +191,11 @@ func (e *Engine) OnClose(c Close) {
 	}
 }
 
+// OnRef is a no-op for the scalar countdown engine — geometric-F2 reference
+// broadcasts are consumed by F2Engine, not this one. Present so *Engine still
+// satisfies the Inbound interface.
+func (e *Engine) OnRef(RefBroadcast) {}
+
 // EpochReset is called by the runtime at every tumbling-window rotation. It
 // resets every monitor to a fresh epoch (baseline/slack/round cleared) so the
 // next window is an independent monitoring instance, and clears the registered

@@ -105,6 +105,23 @@ func (w *CountSketchWrapper) SampleP() float64 {
 
 // L2DivergenceSinceEmit reports the L2 (Frobenius) magnitude of the change in
 // the count matrix since the last MarkSubWindowEmitted, and the current matrix
+// CellMatrix returns a copy of the current rows×cols signed-count cell matrix —
+// the whole-sketch state the F2 monitor squares/merges and ships over the wire
+// (via asapmsgpack.MarshalCountSketch). Returns nil for an uninitialized sketch.
+func (w *CountSketchWrapper) CellMatrix() [][]float64 {
+	if w.cs == nil {
+		return nil
+	}
+	m := make([][]float64, w.rows)
+	for r := 0; r < w.rows; r++ {
+		m[r] = make([]float64, w.cols)
+		for c := 0; c < w.cols; c++ {
+			m[r][c] = w.cs.GetCell(r, c)
+		}
+	}
+	return m
+}
+
 // L2 norm. The threshold-driven sub-window producer emits when
 // div >= ε·norm, giving the backend a Count-Sketch within ε·‖f‖₂ of the true
 // current state (the √rows factor cancels in the ratio, so the raw Frobenius

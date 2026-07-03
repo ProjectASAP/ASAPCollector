@@ -137,6 +137,12 @@ type MonitorReport struct {
 	Round         uint64                 `protobuf:"varint,6,opt,name=round,proto3" json:"round,omitempty"`                                        // round this report answers
 	Seq           uint64                 `protobuf:"varint,7,opt,name=seq,proto3" json:"seq,omitempty"`                                            // per-edge monotonic counter; idempotent-retransmit dedup
 	Rate          float64                `protobuf:"fixed64,8,opt,name=rate,proto3" json:"rate,omitempty"`                                         // edge's observed items/window for this agg+key — feeds the coordinator's sample-rate allocation (p_i ~ sqrt(f_i/rate_i))
+	// Whole-sketch payload for non-scalar (F2/L2) monitors: a msgpack-serialized
+	// Count-Sketch cell matrix (asapmsgpack.MarshalCountSketch ↔ Rust
+	// portable::CountSketch codec). Empty for scalar (sum/cms_point) monitors,
+	// which use local_value. Distributed F2 ships this every window; geometric
+	// F2 ships it only on a local safe-zone violation or a PollLocal resync pull.
+	Sketch        []byte `protobuf:"bytes,9,opt,name=sketch,proto3" json:"sketch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -225,6 +231,13 @@ func (x *MonitorReport) GetRate() float64 {
 		return x.Rate
 	}
 	return 0
+}
+
+func (x *MonitorReport) GetSketch() []byte {
+	if x != nil {
+		return x.Sketch
+	}
+	return nil
 }
 
 // coordinator → edge: this round's per-edge slack budget. The edge reports once
@@ -449,6 +462,95 @@ func (x *RoundClose) GetWindowStartMs() uint64 {
 	return 0
 }
 
+// coordinator → edge: the broadcast reference `C_ref = Σ_j ref_j` (merged
+// Count-Sketch at the last sync) plus the current site count `k`, used by the
+// GEOMETRIC F2 protocol. Each edge runs a purely-local safe-zone test against
+// this reference (‖C_ref + (k/2)·ΔC_i‖ + (k/2)·‖ΔC_i‖ ≤ √(d·τ)) and stays
+// silent while safe. Sent after every resync.
+type RefBroadcast struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AggId         uint64                 `protobuf:"varint,1,opt,name=agg_id,json=aggId,proto3" json:"agg_id,omitempty"`
+	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Round         uint64                 `protobuf:"varint,3,opt,name=round,proto3" json:"round,omitempty"`
+	WindowStartMs uint64                 `protobuf:"varint,4,opt,name=window_start_ms,json=windowStartMs,proto3" json:"window_start_ms,omitempty"`
+	K             uint64                 `protobuf:"varint,5,opt,name=k,proto3" json:"k,omitempty"`                  // number of sites in the reference (for the (k/2) scaling)
+	CRef          []byte                 `protobuf:"bytes,6,opt,name=c_ref,json=cRef,proto3" json:"c_ref,omitempty"` // msgpack-serialized merged Count-Sketch matrix
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RefBroadcast) Reset() {
+	*x = RefBroadcast{}
+	mi := &file_monitor_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RefBroadcast) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RefBroadcast) ProtoMessage() {}
+
+func (x *RefBroadcast) ProtoReflect() protoreflect.Message {
+	mi := &file_monitor_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RefBroadcast.ProtoReflect.Descriptor instead.
+func (*RefBroadcast) Descriptor() ([]byte, []int) {
+	return file_monitor_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *RefBroadcast) GetAggId() uint64 {
+	if x != nil {
+		return x.AggId
+	}
+	return 0
+}
+
+func (x *RefBroadcast) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *RefBroadcast) GetRound() uint64 {
+	if x != nil {
+		return x.Round
+	}
+	return 0
+}
+
+func (x *RefBroadcast) GetWindowStartMs() uint64 {
+	if x != nil {
+		return x.WindowStartMs
+	}
+	return 0
+}
+
+func (x *RefBroadcast) GetK() uint64 {
+	if x != nil {
+		return x.K
+	}
+	return 0
+}
+
+func (x *RefBroadcast) GetCRef() []byte {
+	if x != nil {
+		return x.CRef
+	}
+	return nil
+}
+
 // Out-of-band (NOT carried on the Monitor stream): the coordinator serializes
 // this into the control-plane violation/notifier sink when the global aggregate
 // crosses τ. Defined here so both sides share the shape for logging/tests.
@@ -465,7 +567,7 @@ type GlobalAlert struct {
 
 func (x *GlobalAlert) Reset() {
 	*x = GlobalAlert{}
-	mi := &file_monitor_proto_msgTypes[5]
+	mi := &file_monitor_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -477,7 +579,7 @@ func (x *GlobalAlert) String() string {
 func (*GlobalAlert) ProtoMessage() {}
 
 func (x *GlobalAlert) ProtoReflect() protoreflect.Message {
-	mi := &file_monitor_proto_msgTypes[5]
+	mi := &file_monitor_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -490,7 +592,7 @@ func (x *GlobalAlert) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GlobalAlert.ProtoReflect.Descriptor instead.
 func (*GlobalAlert) Descriptor() ([]byte, []int) {
-	return file_monitor_proto_rawDescGZIP(), []int{5}
+	return file_monitor_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GlobalAlert) GetAggId() uint64 {
@@ -542,7 +644,7 @@ type EdgeToCoord struct {
 
 func (x *EdgeToCoord) Reset() {
 	*x = EdgeToCoord{}
-	mi := &file_monitor_proto_msgTypes[6]
+	mi := &file_monitor_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -554,7 +656,7 @@ func (x *EdgeToCoord) String() string {
 func (*EdgeToCoord) ProtoMessage() {}
 
 func (x *EdgeToCoord) ProtoReflect() protoreflect.Message {
-	mi := &file_monitor_proto_msgTypes[6]
+	mi := &file_monitor_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -567,7 +669,7 @@ func (x *EdgeToCoord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EdgeToCoord.ProtoReflect.Descriptor instead.
 func (*EdgeToCoord) Descriptor() ([]byte, []int) {
-	return file_monitor_proto_rawDescGZIP(), []int{6}
+	return file_monitor_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *EdgeToCoord) GetMsg() isEdgeToCoord_Msg {
@@ -619,6 +721,7 @@ type CoordToEdge struct {
 	//	*CoordToEdge_Grant
 	//	*CoordToEdge_Poll
 	//	*CoordToEdge_Close
+	//	*CoordToEdge_Ref
 	Msg           isCoordToEdge_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -626,7 +729,7 @@ type CoordToEdge struct {
 
 func (x *CoordToEdge) Reset() {
 	*x = CoordToEdge{}
-	mi := &file_monitor_proto_msgTypes[7]
+	mi := &file_monitor_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -638,7 +741,7 @@ func (x *CoordToEdge) String() string {
 func (*CoordToEdge) ProtoMessage() {}
 
 func (x *CoordToEdge) ProtoReflect() protoreflect.Message {
-	mi := &file_monitor_proto_msgTypes[7]
+	mi := &file_monitor_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -651,7 +754,7 @@ func (x *CoordToEdge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoordToEdge.ProtoReflect.Descriptor instead.
 func (*CoordToEdge) Descriptor() ([]byte, []int) {
-	return file_monitor_proto_rawDescGZIP(), []int{7}
+	return file_monitor_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CoordToEdge) GetMsg() isCoordToEdge_Msg {
@@ -688,6 +791,15 @@ func (x *CoordToEdge) GetClose() *RoundClose {
 	return nil
 }
 
+func (x *CoordToEdge) GetRef() *RefBroadcast {
+	if x != nil {
+		if x, ok := x.Msg.(*CoordToEdge_Ref); ok {
+			return x.Ref
+		}
+	}
+	return nil
+}
+
 type isCoordToEdge_Msg interface {
 	isCoordToEdge_Msg()
 }
@@ -704,11 +816,17 @@ type CoordToEdge_Close struct {
 	Close *RoundClose `protobuf:"bytes,3,opt,name=close,proto3,oneof"`
 }
 
+type CoordToEdge_Ref struct {
+	Ref *RefBroadcast `protobuf:"bytes,4,opt,name=ref,proto3,oneof"` // geometric-F2 reference broadcast (resync)
+}
+
 func (*CoordToEdge_Grant) isCoordToEdge_Msg() {}
 
 func (*CoordToEdge_Poll) isCoordToEdge_Msg() {}
 
 func (*CoordToEdge_Close) isCoordToEdge_Msg() {}
+
+func (*CoordToEdge_Ref) isCoordToEdge_Msg() {}
 
 var File_monitor_proto protoreflect.FileDescriptor
 
@@ -720,7 +838,7 @@ const file_monitor_proto_rawDesc = "" +
 	"\x06agg_id\x18\x02 \x01(\x04R\x05aggId\x12\x10\n" +
 	"\x03key\x18\x03 \x01(\fR\x03key\x12&\n" +
 	"\x0fepoch_window_ms\x18\x04 \x01(\x04R\repochWindowMs\x12&\n" +
-	"\x0fwindow_start_ms\x18\x05 \x01(\x04R\rwindowStartMs\"\xd6\x01\n" +
+	"\x0fwindow_start_ms\x18\x05 \x01(\x04R\rwindowStartMs\"\xee\x01\n" +
 	"\rMonitorReport\x12\x17\n" +
 	"\aedge_id\x18\x01 \x01(\tR\x06edgeId\x12\x15\n" +
 	"\x06agg_id\x18\x02 \x01(\x04R\x05aggId\x12\x10\n" +
@@ -730,7 +848,8 @@ const file_monitor_proto_rawDesc = "" +
 	"localValue\x12\x14\n" +
 	"\x05round\x18\x06 \x01(\x04R\x05round\x12\x10\n" +
 	"\x03seq\x18\a \x01(\x04R\x03seq\x12\x12\n" +
-	"\x04rate\x18\b \x01(\x01R\x04rate\"\xaf\x01\n" +
+	"\x04rate\x18\b \x01(\x01R\x04rate\x12\x16\n" +
+	"\x06sketch\x18\t \x01(\fR\x06sketch\"\xaf\x01\n" +
 	"\n" +
 	"SlackGrant\x12\x15\n" +
 	"\x06agg_id\x18\x01 \x01(\x04R\x05aggId\x12\x10\n" +
@@ -749,7 +868,14 @@ const file_monitor_proto_rawDesc = "" +
 	"RoundClose\x12\x15\n" +
 	"\x06agg_id\x18\x01 \x01(\x04R\x05aggId\x12\x14\n" +
 	"\x05round\x18\x02 \x01(\x04R\x05round\x12&\n" +
-	"\x0fwindow_start_ms\x18\x03 \x01(\x04R\rwindowStartMs\"\x99\x01\n" +
+	"\x0fwindow_start_ms\x18\x03 \x01(\x04R\rwindowStartMs\"\x98\x01\n" +
+	"\fRefBroadcast\x12\x15\n" +
+	"\x06agg_id\x18\x01 \x01(\x04R\x05aggId\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\fR\x03key\x12\x14\n" +
+	"\x05round\x18\x03 \x01(\x04R\x05round\x12&\n" +
+	"\x0fwindow_start_ms\x18\x04 \x01(\x04R\rwindowStartMs\x12\f\n" +
+	"\x01k\x18\x05 \x01(\x04R\x01k\x12\x13\n" +
+	"\x05c_ref\x18\x06 \x01(\fR\x04cRef\"\x99\x01\n" +
 	"\vGlobalAlert\x12\x15\n" +
 	"\x06agg_id\x18\x01 \x01(\x04R\x05aggId\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\fR\x03key\x12'\n" +
@@ -759,11 +885,12 @@ const file_monitor_proto_rawDesc = "" +
 	"\vEdgeToCoord\x124\n" +
 	"\x03reg\x18\x01 \x01(\v2 .asap.monitor.v1.MonitorRegisterH\x00R\x03reg\x128\n" +
 	"\x06report\x18\x02 \x01(\v2\x1e.asap.monitor.v1.MonitorReportH\x00R\x06reportB\x05\n" +
-	"\x03msg\"\xb0\x01\n" +
+	"\x03msg\"\xe3\x01\n" +
 	"\vCoordToEdge\x123\n" +
 	"\x05grant\x18\x01 \x01(\v2\x1b.asap.monitor.v1.SlackGrantH\x00R\x05grant\x120\n" +
 	"\x04poll\x18\x02 \x01(\v2\x1a.asap.monitor.v1.PollLocalH\x00R\x04poll\x123\n" +
-	"\x05close\x18\x03 \x01(\v2\x1b.asap.monitor.v1.RoundCloseH\x00R\x05closeB\x05\n" +
+	"\x05close\x18\x03 \x01(\v2\x1b.asap.monitor.v1.RoundCloseH\x00R\x05close\x121\n" +
+	"\x03ref\x18\x04 \x01(\v2\x1d.asap.monitor.v1.RefBroadcastH\x00R\x03refB\x05\n" +
 	"\x03msg2[\n" +
 	"\x0eMonitorService\x12I\n" +
 	"\aMonitor\x12\x1c.asap.monitor.v1.EdgeToCoord\x1a\x1c.asap.monitor.v1.CoordToEdge(\x010\x01BRZPgithub.com/ProjectASAP/asap-precompute-go/monitor/grpcclient/monitorpb;monitorpbb\x06proto3"
@@ -780,16 +907,17 @@ func file_monitor_proto_rawDescGZIP() []byte {
 	return file_monitor_proto_rawDescData
 }
 
-var file_monitor_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_monitor_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_monitor_proto_goTypes = []any{
 	(*MonitorRegister)(nil), // 0: asap.monitor.v1.MonitorRegister
 	(*MonitorReport)(nil),   // 1: asap.monitor.v1.MonitorReport
 	(*SlackGrant)(nil),      // 2: asap.monitor.v1.SlackGrant
 	(*PollLocal)(nil),       // 3: asap.monitor.v1.PollLocal
 	(*RoundClose)(nil),      // 4: asap.monitor.v1.RoundClose
-	(*GlobalAlert)(nil),     // 5: asap.monitor.v1.GlobalAlert
-	(*EdgeToCoord)(nil),     // 6: asap.monitor.v1.EdgeToCoord
-	(*CoordToEdge)(nil),     // 7: asap.monitor.v1.CoordToEdge
+	(*RefBroadcast)(nil),    // 5: asap.monitor.v1.RefBroadcast
+	(*GlobalAlert)(nil),     // 6: asap.monitor.v1.GlobalAlert
+	(*EdgeToCoord)(nil),     // 7: asap.monitor.v1.EdgeToCoord
+	(*CoordToEdge)(nil),     // 8: asap.monitor.v1.CoordToEdge
 }
 var file_monitor_proto_depIdxs = []int32{
 	0, // 0: asap.monitor.v1.EdgeToCoord.reg:type_name -> asap.monitor.v1.MonitorRegister
@@ -797,13 +925,14 @@ var file_monitor_proto_depIdxs = []int32{
 	2, // 2: asap.monitor.v1.CoordToEdge.grant:type_name -> asap.monitor.v1.SlackGrant
 	3, // 3: asap.monitor.v1.CoordToEdge.poll:type_name -> asap.monitor.v1.PollLocal
 	4, // 4: asap.monitor.v1.CoordToEdge.close:type_name -> asap.monitor.v1.RoundClose
-	6, // 5: asap.monitor.v1.MonitorService.Monitor:input_type -> asap.monitor.v1.EdgeToCoord
-	7, // 6: asap.monitor.v1.MonitorService.Monitor:output_type -> asap.monitor.v1.CoordToEdge
-	6, // [6:7] is the sub-list for method output_type
-	5, // [5:6] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	5, // 5: asap.monitor.v1.CoordToEdge.ref:type_name -> asap.monitor.v1.RefBroadcast
+	7, // 6: asap.monitor.v1.MonitorService.Monitor:input_type -> asap.monitor.v1.EdgeToCoord
+	8, // 7: asap.monitor.v1.MonitorService.Monitor:output_type -> asap.monitor.v1.CoordToEdge
+	7, // [7:8] is the sub-list for method output_type
+	6, // [6:7] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_monitor_proto_init() }
@@ -811,14 +940,15 @@ func file_monitor_proto_init() {
 	if File_monitor_proto != nil {
 		return
 	}
-	file_monitor_proto_msgTypes[6].OneofWrappers = []any{
+	file_monitor_proto_msgTypes[7].OneofWrappers = []any{
 		(*EdgeToCoord_Reg)(nil),
 		(*EdgeToCoord_Report)(nil),
 	}
-	file_monitor_proto_msgTypes[7].OneofWrappers = []any{
+	file_monitor_proto_msgTypes[8].OneofWrappers = []any{
 		(*CoordToEdge_Grant)(nil),
 		(*CoordToEdge_Poll)(nil),
 		(*CoordToEdge_Close)(nil),
+		(*CoordToEdge_Ref)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -826,7 +956,7 @@ func file_monitor_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_monitor_proto_rawDesc), len(file_monitor_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

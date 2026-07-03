@@ -93,6 +93,7 @@ func (c *Client) Report(r monitor.Report) {
 		Round:         r.Round,
 		Seq:           r.Seq,
 		Rate:          r.Rate,
+		Sketch:        r.Sketch,
 	}}})
 }
 
@@ -210,6 +211,16 @@ func (c *Client) deliver(msg *pb.CoordToEdge) {
 			AggID:         cl.AggId,
 			Round:         cl.Round,
 			WindowStartMs: cl.WindowStartMs,
+		})
+	case *pb.CoordToEdge_Ref:
+		r := m.Ref
+		c.inbound.OnRef(monitor.RefBroadcast{
+			AggID:         r.AggId,
+			Key:           r.Key,
+			Round:         r.Round,
+			WindowStartMs: r.WindowStartMs,
+			K:             r.K,
+			CRef:          r.CRef,
 		})
 	}
 }
