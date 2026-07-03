@@ -520,12 +520,27 @@ func (p *precompute) EmitSubWindow(nowMs uint64) []*SketchEnvelope {
 // WITHOUT the boundary empty-base reset and WITHOUT detaching the live sketch.
 // WindowStart/End are stamped by the caller. The sketch MUST NOT be recycled
 // here — the live window is still writing it.
+// gosDeltaThreshold returns the GOS F2 per-cell delta threshold when
+// GosDeltaEpsilon > 0 and the sketch exposes it (Count-Sketch), else the fixed
+// cfg.DeltaThreshold (unchanged behavior). Structural interface assert avoids a
+// change to the Sketch interface.
+func gosDeltaThreshold(sketch Sketch, cfg *PrecomputeConfig) uint64 {
+	if cfg.GosDeltaEpsilon > 0 {
+		if gt, ok := sketch.(interface {
+			GosDeltaThreshold(float64, uint32) uint64
+		}); ok {
+			return gt.GosDeltaThreshold(cfg.GosDeltaEpsilon, cfg.GosSites)
+		}
+	}
+	return cfg.DeltaThreshold
+}
+
 func (p *precompute) serializeSubWindowSeries(entry *seriesEntry, cfg *PrecomputeConfig) (*SketchEnvelope, error) {
 	if entry == nil || entry.Sketch == nil {
 		return nil, nil
 	}
 	seriesKey := cfg.SeriesKeyForEntry(entry.ResourceLabels, entry.Labels)
-	payload, isFull, err := p.snapshotCache.ComputeSubWindowDelta(seriesKey, entry.Sketch, cfg.DeltaThreshold)
+	payload, isFull, err := p.snapshotCache.ComputeSubWindowDelta(seriesKey, entry.Sketch, gosDeltaThreshold(entry.Sketch, cfg))
 	if err != nil {
 		return nil, fmt.Errorf("compute sub-window delta: %w", err)
 	}
@@ -712,7 +727,7 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 		err     error
 	)
 	if cfg.DeltaTransmission {
-		payload, isFull, err = p.snapshotCache.ComputeDelta(seriesKey, entry.Sketch, cfg.DeltaThreshold)
+		payload, isFull, err = p.snapshotCache.ComputeDelta(seriesKey, entry.Sketch, gosDeltaThreshold(entry.Sketch, cfg))
 		if err != nil {
 			return nil, fmt.Errorf("compute delta: %w", err)
 		}

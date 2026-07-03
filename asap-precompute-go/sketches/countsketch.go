@@ -176,13 +176,24 @@ func (w *CountSketchWrapper) MarkSubWindowEmitted() {
 // = lossless). The anisotropic (gradient-weighted) per-cell variant needs a
 // vector-threshold delta in sketchlib and is tracked as a follow-up.
 func (w *CountSketchWrapper) ComputeGosDelta(prev []byte, epsilon float64, k uint32) ([]byte, bool, error) {
+	return w.ComputeDeltaAgainst(prev, w.GosDeltaThreshold(epsilon, k))
+}
+
+// GosDeltaThreshold computes the F2 isotropic GOS per-cell delta threshold
+// `T = ε·‖Ĉ‖/(2k√(dw))` from the current sketch norm and dims, rounded up to an
+// integer (never below 1 = lossless). Used by the sub-window emit path to gate
+// the sparse delta with a relative, norm-adaptive threshold instead of a fixed
+// configured value. Returns 1 when ε ≤ 0 (GOS disabled → lossless).
+func (w *CountSketchWrapper) GosDeltaThreshold(epsilon float64, k uint32) uint64 {
+	if epsilon <= 0 || w.cs == nil {
+		return 1
+	}
 	_, norm := w.L2DivergenceSinceEmit()
 	t := F2IsotropicThreshold(epsilon, norm, k, w.rows, w.cols)
-	thr := uint64(1)
 	if !math.IsInf(t, 1) && !math.IsNaN(t) && t > 1.0 {
-		thr = uint64(math.Ceil(t))
+		return uint64(math.Ceil(t))
 	}
-	return w.ComputeDeltaAgainst(prev, thr)
+	return 1
 }
 
 // defaultCountSketchHeapSize mirrors sketchlib-go's CountSketch TOPK_SIZE
