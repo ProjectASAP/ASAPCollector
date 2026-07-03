@@ -165,6 +165,26 @@ func (w *CountSketchWrapper) MarkSubWindowEmitted() {
 	}
 }
 
+// ComputeGosDelta emits a per-cell delta against `prev` using the F2 GOS
+// isotropic threshold computed from the CURRENT sketch norm
+// (T = ε·‖Ĉ‖/(2k√(dw))) rather than a fixed configured value. This makes the
+// delta threshold relative and adaptive: it scales with the sketch magnitude so
+// the whole-sketch relative error stays within ε as the sketch grows (design
+// §7). It reuses the existing sparse-delta path (which already gates each cell
+// by `|ΔS[r][c]| ≥ threshold`), so no wire/serialization change is needed. The
+// integer rounding is conservative (never emits sub-threshold noise; floors at 1
+// = lossless). The anisotropic (gradient-weighted) per-cell variant needs a
+// vector-threshold delta in sketchlib and is tracked as a follow-up.
+func (w *CountSketchWrapper) ComputeGosDelta(prev []byte, epsilon float64, k uint32) ([]byte, bool, error) {
+	_, norm := w.L2DivergenceSinceEmit()
+	t := F2IsotropicThreshold(epsilon, norm, k, w.rows, w.cols)
+	thr := uint64(1)
+	if !math.IsInf(t, 1) && !math.IsNaN(t) && t > 1.0 {
+		thr = uint64(math.Ceil(t))
+	}
+	return w.ComputeDeltaAgainst(prev, thr)
+}
+
 // defaultCountSketchHeapSize mirrors sketchlib-go's CountSketch TOPK_SIZE
 // default (the heap the producer's Space-Saving tracker feeds). Used when
 // the caller passes heapSize <= 0.
