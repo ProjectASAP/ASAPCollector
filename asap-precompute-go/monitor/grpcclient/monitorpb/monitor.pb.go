@@ -473,8 +473,9 @@ type RefBroadcast struct {
 	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
 	Round         uint64                 `protobuf:"varint,3,opt,name=round,proto3" json:"round,omitempty"`
 	WindowStartMs uint64                 `protobuf:"varint,4,opt,name=window_start_ms,json=windowStartMs,proto3" json:"window_start_ms,omitempty"`
-	K             uint64                 `protobuf:"varint,5,opt,name=k,proto3" json:"k,omitempty"`                  // number of sites in the reference (for the (k/2) scaling)
-	CRef          []byte                 `protobuf:"bytes,6,opt,name=c_ref,json=cRef,proto3" json:"c_ref,omitempty"` // msgpack-serialized merged Count-Sketch matrix
+	K             uint64                 `protobuf:"varint,5,opt,name=k,proto3" json:"k,omitempty"`                            // number of sites in the reference (for the (k/2) scaling)
+	CRef          []byte                 `protobuf:"bytes,6,opt,name=c_ref,json=cRef,proto3" json:"c_ref,omitempty"`           // msgpack-serialized merged Count-Sketch matrix
+	IsDelta       bool                   `protobuf:"varint,7,opt,name=is_delta,json=isDelta,proto3" json:"is_delta,omitempty"` // c_ref carries a sparse [rows,cols,rowIdx,colIdx,vals] delta (apply to cached C_ref) vs a full matrix
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -549,6 +550,13 @@ func (x *RefBroadcast) GetCRef() []byte {
 		return x.CRef
 	}
 	return nil
+}
+
+func (x *RefBroadcast) GetIsDelta() bool {
+	if x != nil {
+		return x.IsDelta
+	}
+	return false
 }
 
 // Out-of-band (NOT carried on the Monitor stream): the coordinator serializes
@@ -868,14 +876,15 @@ const file_monitor_proto_rawDesc = "" +
 	"RoundClose\x12\x15\n" +
 	"\x06agg_id\x18\x01 \x01(\x04R\x05aggId\x12\x14\n" +
 	"\x05round\x18\x02 \x01(\x04R\x05round\x12&\n" +
-	"\x0fwindow_start_ms\x18\x03 \x01(\x04R\rwindowStartMs\"\x98\x01\n" +
+	"\x0fwindow_start_ms\x18\x03 \x01(\x04R\rwindowStartMs\"\xb3\x01\n" +
 	"\fRefBroadcast\x12\x15\n" +
 	"\x06agg_id\x18\x01 \x01(\x04R\x05aggId\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\fR\x03key\x12\x14\n" +
 	"\x05round\x18\x03 \x01(\x04R\x05round\x12&\n" +
 	"\x0fwindow_start_ms\x18\x04 \x01(\x04R\rwindowStartMs\x12\f\n" +
 	"\x01k\x18\x05 \x01(\x04R\x01k\x12\x13\n" +
-	"\x05c_ref\x18\x06 \x01(\fR\x04cRef\"\x99\x01\n" +
+	"\x05c_ref\x18\x06 \x01(\fR\x04cRef\x12\x19\n" +
+	"\bis_delta\x18\a \x01(\bR\aisDelta\"\x99\x01\n" +
 	"\vGlobalAlert\x12\x15\n" +
 	"\x06agg_id\x18\x01 \x01(\x04R\x05aggId\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\fR\x03key\x12'\n" +

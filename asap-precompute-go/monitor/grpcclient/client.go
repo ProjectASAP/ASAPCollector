@@ -221,6 +221,7 @@ func (c *Client) deliver(msg *pb.CoordToEdge) {
 			WindowStartMs: r.WindowStartMs,
 			K:             r.K,
 			CRef:          r.CRef,
+			IsDelta:       r.IsDelta,
 		})
 	}
 }

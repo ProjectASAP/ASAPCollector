@@ -217,7 +217,8 @@ type RefBroadcast struct {
 	Round         uint64
 	WindowStartMs uint64
 	K             uint64
-	CRef          []byte // msgpack-serialized merged Count-Sketch matrix
+	CRef          []byte // full matrix (is_delta=false) or sparse delta (is_delta=true)
+	IsDelta       bool   // CRef is a sparse [rows,cols,rowIdx,colIdx,vals] delta to apply
 }
 
 // Reporter is the transport boundary the engine calls to reach the coordinator.

@@ -166,24 +166,51 @@ func (e *F2Engine) OnWindow(aggID uint64, key []byte, matrix [][]float64, window
 	}
 }
 
-// OnRef stores the geometric-F2 reference broadcast (C_ref, k) for the local
-// safe-zone test. Implements part of the Inbound interface.
+// OnRef stores the geometric-F2 reference broadcast for the local safe-zone
+// test. A full frame (IsDelta=false) replaces the cached C_ref; a sparse delta
+// (IsDelta=true) is applied cell-wise to it (the coordinator ships only the
+// cells that changed since the last broadcast — no O(k) full-matrix
+// amplification). A delta with no cached base is dropped (a Full keyframe
+// follows for a fresh edge). Implements part of the Inbound interface.
 func (e *F2Engine) OnRef(rb RefBroadcast) {
-	_, _, matrix, err := asapmsgpack.UnmarshalCountSketch(rb.CRef)
-	if err != nil {
-		if f2Debug {
-			fmt.Fprintf(os.Stderr, "F2Engine.OnRef: UnmarshalCountSketch failed (%d bytes): %v\n", len(rb.CRef), err)
-		}
-		atomic.AddUint64(&e.refErrs, 1)
-		return
-	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if st, ok := e.states[mapKey{rb.AggID, string(rb.Key)}]; ok {
-		st.cRef = matrix
-		st.k = int(rb.K)
-		st.haveRef = true
+	st, ok := e.states[mapKey{rb.AggID, string(rb.Key)}]
+	if !ok {
+		return
 	}
+	if rb.IsDelta {
+		if st.cRef == nil {
+			atomic.AddUint64(&e.refErrs, 1) // no base to apply onto; await a Full
+			return
+		}
+		_, _, ri, ci, vs, err := asapmsgpack.UnmarshalCountSketchDeltaSparse(rb.CRef)
+		if err != nil {
+			if f2Debug {
+				fmt.Fprintf(os.Stderr, "F2Engine.OnRef: delta decode failed: %v\n", err)
+			}
+			atomic.AddUint64(&e.refErrs, 1)
+			return
+		}
+		for i := range vs {
+			r, c := int(ri[i]), int(ci[i])
+			if r < len(st.cRef) && c < len(st.cRef[r]) {
+				st.cRef[r][c] += vs[i]
+			}
+		}
+	} else {
+		_, _, matrix, err := asapmsgpack.UnmarshalCountSketch(rb.CRef)
+		if err != nil {
+			if f2Debug {
+				fmt.Fprintf(os.Stderr, "F2Engine.OnRef: full decode failed (%d bytes): %v\n", len(rb.CRef), err)
+			}
+			atomic.AddUint64(&e.refErrs, 1)
+			return
+		}
+		st.cRef = matrix
+	}
+	st.k = int(rb.K)
+	st.haveRef = true
 	atomic.AddUint64(&e.refsRecv, 1)
 }
 
