@@ -131,6 +131,30 @@ Three design points make this different from applying `p` at the collector:
    dropped at the source, so the collector **skips its deserialization and
    hashing entirely** — the CPU/bandwidth saving compounds.
 
+**SDK configuration prerequisite.** To decide row/counter admission the SDK must
+know, *per series*, (a) **which sketch** that series feeds and (b) that sketch's
+**configuration** — the counter fan-out per item and its dimensions. The
+controller therefore pushes the `series → (sketch type, dims, {p_{i,r}})` mapping
+to the SDK over the same config channel that carries the collector's plan (so the
+two stay consistent: the SDK admits the exact rows the collector is prepared to
+hash).
+
+**Applicability — linear counter-array sketches only.** Update-sampling with
+`1/p` weighting is unbiased **iff the counter is additive** (inverse-probability
+weighting is a linear correction). So it applies to:
+
+| Sketch | Counter fan-out / item | Admission | Why |
+|---|---|---|---|
+| **CountMinSketch** | `d` counters (one per row) | per-**row** | additive counters |
+| **CountSketch** | `d` signed counters | per-**row** | additive (signed) counters |
+| **DDSketch** | 1 bucket | per-**item** (the `d=1` case) | additive bucket counts |
+| **KLL** | — | ✗ **not sampled** | non-linear *random compaction*; dropping/weighting an insert breaks the rank guarantee |
+| **HLL** | — | ✗ **not sampled** | idempotent register **MAX**; a dropped max is unrecoverable (`1/p` can't correct a max), biasing cardinality low |
+
+So the SDK runs row-admission for **DDSketch / CMS / CountSketch** and leaves
+**KLL / HLL** unsampled (they emit every update). This matches the existing edge
+runtime, where the sampler is wired only for the additive families.
+
 **Unbiasedness.** For an admitted row-update the collector applies weight
 `1/p_{i,r}`; since `E[Z_r · 1/p_{i,r}] = 1`, each row-`r` sub-sketch is an
 unbiased estimator of `f`. The Count-Sketch readout `median_r s_r(x)·C[r][h_r(x)]`
