@@ -107,6 +107,9 @@ One fixed tumbling window is the universe of discourse.
 | $j$ | sketch cell/bucket index |
 | $a_j$ | linear readout coefficient for query $q(S)=\langle a,S\rangle$ |
 | $p_i$ | sampling probability at site $i$ |
+| $p_{i,r}$ | SDK/source-side sampling probability for row/counter-array $r$ at site/source $i$ |
+| $C_{i,r}$ | candidate counter-update rate or source-to-agent cost weight for site/source $i$, row $r$ |
+| $F_{i,r}$ | row-level protected mass or query sensitivity for site/source $i$, row $r$ |
 | $T_j$ | cell/bucket delta threshold |
 | $V_j$ | cell/bucket activity rate or expected change mass |
 | $B$ | staleness budget for a query/function |
@@ -171,7 +174,21 @@ $\delta/(|Q|M)$ in each concentration bound and union bound.
 
 ### 4.1 Horvitz-Thompson update sampling
 
-For an update $u$, site $i(u)$ admits it with probability $p_{i(u)}$:
+In the SDK-side Nitro-style deployment, the sampled unit is not a raw
+observation/packet. A raw measurement is first mapped to the sketch updates it
+would perform, for example one candidate counter update per CountSketch/CMS row.
+The SDK samples those candidate counter-array updates and sends only admitted,
+inverse-probability weighted counter updates to the edge collector. The edge
+collector then merges weighted sketch updates; it does not need the dropped raw
+measurement.
+
+Thus, in this section, $u$ should be read as the sampled update unit. For
+edge-admission baselines, $u$ may be a raw update. For the preferred
+Nitro-style design, $u=(\text{raw item},\text{row/counter-array})$ is one
+candidate sketch counter update.
+
+For sampled update unit $u$, site/source $i(u)$ admits it with probability
+$p_{i(u)}$:
 
 ```math
 Z_u \sim \mathrm{Bernoulli}(p_{i(u)}).
@@ -347,8 +364,22 @@ This is only algebraic regrouping: for all updates from site $i$, the sampling
 probability is the same $p_i$, so $(1-p_i)/p_i$ is constant and can be pulled
 outside the inner sum.
 
-This is the quantity the controller must budget. A per-site floor on $p_i$ is
-not sufficient by itself; the variance sum must be bounded.
+For SDK-side Nitro-style sampling, perform the same regrouping by
+site/source-row pair:
+
+```math
+\mathrm{Var}(X_q)
+=
+\sum_{i,r} \frac{1-p_{i,r}}{p_{i,r}}
+\sum_{u\in(i,r)} g_u^2.
+```
+
+Here $u\in(i,r)$ means candidate counter updates generated at source $i$ for row
+or counter array $r$.
+
+This is the quantity the controller must budget. A per-site floor on $p_i$, or a
+per-row floor on $p_{i,r}$, is not sufficient by itself; the variance sum must
+be bounded.
 
 ### 4.2 Concentration
 
@@ -441,7 +472,7 @@ The one-standard-deviation shorthand is
 
 Use the high-probability form in theorem statements and alert safety claims.
 
-## 5. Edge admission vs NitroSketch row sampling
+## 5. SDK-side Nitro-style counter-update sampling
 
 NitroSketch does not advocate naive packet-level sampling as the main design.
 Its key observation is that packet-level sampling can give poor sketch accuracy:
@@ -452,37 +483,39 @@ sketch counter-array updates and applies inverse-probability weights to the
 arrays that are updated. This preserves the expected counter value while keeping
 row-level sampling noise closer to the sketch's native amplification model.
 
-Therefore, the allocation below should not be cited as a NitroSketch theorem. It
-is an ASAPCollector control-plane extension inspired by NitroSketch's
-inverse-probability sketch-update sampling. There are two possible deployment
-levels:
+The ASAPCollector design should follow that distinction at the telemetry source.
+The OTel SDK/data source should not sample whole measurements before sketching.
+Instead, it should:
 
-- **Nitro-style row/counter-array sampling:** site $i$, row $r$ uses probability
-  $p_{i,r}$. This is closest to the NitroSketch paper and is the preferred
-  target for CountSketch/CMS point queries because row errors can still be
-  amplified across rows.
-- **Edge admission sampling:** site $i$ admits an entire raw update with
-  probability $p_i$. This is simpler and works cleanly for scalar sums/counts and
-  additive bucket counts, but for multi-row sketches it can inherit the
-  packet-level sampling weakness NitroSketch warns about.
+1. map a raw measurement $x$ to the sketch counter updates it would have
+   produced, e.g. $(r,h_r(x),s_r(x))$ for CountSketch;
+2. independently sample each candidate row/counter-array update with probability
+   $p_{i,r}$;
+3. send only admitted weighted counter updates to the edge collector, with
+   update weight $1/p_{i,r}$ times the original signed/count contribution;
+4. let the edge collector merge these weighted sketch updates into its local
+   sketch state.
 
-The derivation in this section is for the second case: edge-level
-Horvitz-Thompson admission. It is useful as a baseline controller and for
-single-readout additive summaries, but it should not be presented as the
-NitroSketch algorithm.
+This reduces traffic from OTel SDK/data source to the agent collector without
+falling back to packet-level sampling. The wire unit is a sampled sketch counter
+update, not a raw measurement. For multi-row sketches, this preserves
+independent row-level sampling noise, so CountSketch median and CMS row
+amplification remain meaningful.
 
-For a known point query/key $x$, the coordinator may choose different $p_i$
-across sites. Let $f_i=f_i(x)$ be the key mass or protected query sensitivity at
-site $i$, and let $r_i$ be the site's raw update rate or sketch-update cost
-weight. Under edge admission sampling, the expected update work at site $i$ is
-proportional to $r_i p_i$.
+For a known point query/key $x$, the controller may choose probabilities
+$p_{i,r}$ across telemetry sources/sites $i$ and sketch rows/counter arrays $r$.
+Let $F_{i,r}(x)$ be the row-level protected mass/sensitivity for that query, and
+let $C_{i,r}$ be the candidate counter-update rate or source-to-agent wire-cost
+weight for source $i$, row $r$. Under SDK-side counter-update sampling, the
+expected source-to-agent traffic and edge update work are proportional to
+$C_{i,r}p_{i,r}$.
 
-The query-specific CPU minimization problem is
+The query-specific cost minimization problem is
 
 ```math
 \begin{aligned}
-\min_{0<p_i\le 1}\quad & \sum_i r_i p_i \\
-\text{s.t.}\quad & \sum_i f_i\frac{1-p_i}{p_i} \le V .
+\min_{0<p_{i,r}\le 1}\quad & \sum_{i,r} C_{i,r}p_{i,r} \\
+\text{s.t.}\quad & \sum_{i,r} F_{i,r}(x)\frac{1-p_{i,r}}{p_{i,r}} \le V .
 \end{aligned}
 ```
 
@@ -491,51 +524,58 @@ Ignoring clamps, the Lagrangian is
 ```math
 \mathcal{L}
 =
-\sum_i r_i p_i
-+\lambda\left(\sum_i f_i\frac{1-p_i}{p_i}-V\right).
+\sum_{i,r} C_{i,r}p_{i,r}
++\lambda\left(\sum_{i,r}F_{i,r}(x)\frac{1-p_{i,r}}{p_{i,r}}-V\right).
 ```
 
-Since $(1-p_i)/p_i = 1/p_i - 1$,
+Since $(1-p_{i,r})/p_{i,r} = 1/p_{i,r} - 1$,
 
 ```math
-\frac{\partial \mathcal{L}}{\partial p_i}
+\frac{\partial \mathcal{L}}{\partial p_{i,r}}
 =
-r_i-\lambda f_i/p_i^2.
+C_{i,r}-\lambda F_{i,r}(x)/p_{i,r}^2.
 ```
 
 The interior optimum satisfies
 
 ```math
-p_i
+p_{i,r}
 =
-\sqrt{\lambda}\sqrt{\frac{f_i}{r_i}}.
+\sqrt{\lambda}\sqrt{\frac{F_{i,r}(x)}{C_{i,r}}}.
 ```
 
 The scalar $\sqrt{\lambda}$ is selected so that the variance constraint binds,
 and the result is clamped to $(0,1]$.
 
-For Nitro-style row sampling, the analogous controller would optimize
-probabilities $p_{i,r}$ over site/row pairs, with a cost term such as
-$\sum_{i,r} r_i p_{i,r}$ and row-level variance constraints. That is the more
-faithful extension for CountSketch/CMS. The row-level version is not derived in
-this note.
+This is the Nitro-style control-plane extension. It is not stated as a theorem
+in the NitroSketch paper, but it uses the same counter-array sampling unit.
+
+For comparison, an edge-admission baseline would choose one probability $p_i$
+per source and admit/drop the entire raw update. That baseline has objective
+$\sum_i R_i p_i$ and variance term $\sum_i F_i(1-p_i)/p_i$, yielding
+$p_i\propto\sqrt{F_i/R_i}$ under the same algebra. That baseline is appropriate
+for scalar sums/counts and additive bucket counts, but for CountSketch/CMS it can
+inherit the packet-level sampling weakness NitroSketch warns about and should
+not be used as the main design.
 
 For whole-sketch or unknown-key deployments, replace the query-specific
-$f_i(x)$ by the protected mass for the query class. A conservative whole-sketch
-floor commonly used in deployments is derived from
+$F_{i,r}(x)$ by the protected row/counter-array mass for the query class. A
+conservative whole-sketch floor commonly used in deployments is derived from
 
 ```math
-\frac{1-p_i}{p_i R_i}\le \epsilon_{sa}^2,
+\frac{1-p_{i,r}}{p_{i,r}M_{i,r}}\le \epsilon_{sa}^2,
 ```
 
-where $R_i$ is an observable per-site rate/mass. This gives
+where $M_{i,r}$ is an observable per-source, per-row mass. This gives
 
 ```math
-p_i \ge \frac{1}{1+\epsilon_{sa}^2 R_i}.
+p_{i,r} \ge \frac{1}{1+\epsilon_{sa}^2 M_{i,r}}.
 ```
 
 This floor protects aggregate sketch quality without pretending to optimize for
-one known key.
+one known key. In implementation, the controller can collapse $p_{i,r}$ to a
+shared $p_i$ only for sketch families where whole-update admission does not
+break the intended estimator.
 
 ## 6. Continuous Distributed Monitoring (CDM) / Geometric-OctoSketch (GOS) staleness model
 
@@ -1410,7 +1450,11 @@ and
   creates fractional weighted cells, the implementation can fall back to full
   frames. That preserves accuracy but weakens communication claims for the
   sampled+delta combination unless a fractional delta wire is added.
-- The strongest continuous $|rho_i[j]|<=T_j$ proof assumes an update-synchronous
+- SDK-side Nitro-style sampling requires a wire representation for sampled
+  weighted counter updates from SDK/data source to agent collector. For signed
+  sketches, the payload must preserve row, column, sign, and weight
+  $1/p_{i,r}$.
+- The strongest continuous $|\rho_i[j]|\le T_j$ proof assumes an update-synchronous
   threshold check. Current sub-window/tick-based emit paths should be stated
   with an overshoot term in formal claims.
 - For SDK-source or multi-unit sampling, the sampling randomness must make the
@@ -1424,9 +1468,12 @@ The system claim is only credible if the evaluation shows that ASAPCollector
 moves work off the central raw-sample path while preserving the advertised error
 envelope for supported queries. At minimum, measure:
 
-- **Edge update work:** sketch updates/sec, CPU, and memory as $p_i$ changes.
-- **Network load:** bytes/sec and messages/sec for full raw export, periodic
-  sketch export, and GOS thresholded deltas.
+- **SDK/source update work:** candidate sketch counter updates/sec, admitted
+  counter updates/sec, CPU, and memory as $p_{i,r}$ changes.
+- **Source-to-agent network load:** bytes/sec and messages/sec for raw OTLP
+  export versus sampled weighted counter-update export.
+- **Agent-to-backend network load:** bytes/sec and messages/sec for periodic
+  sketch export and GOS thresholded deltas.
 - **Backend ingest load:** accepted samples/sec or summary frames/sec, WAL/queue
   pressure, index/storage growth, and write amplification if applicable.
 - **Freshness:** open-window staleness measured as both wall-clock lag and
@@ -1434,8 +1481,8 @@ envelope for supported queries. At minimum, measure:
 - **Accuracy envelope:** empirical query error decomposed into sketch error,
   sampling error, and staleness error; report coverage of the claimed
   high-probability bound.
-- **Controller behavior:** selected $p_i$ and $T_j$ under hot/cold sites,
-  query-sensitive/query-insensitive cells, and changing workloads.
+- **Controller behavior:** selected $p_{i,r}$ and $T_j$ under hot/cold sources,
+  query-sensitive/query-insensitive rows or cells, and changing workloads.
 - **Fallback boundary:** unsupported query classes and cold raw fallback cost,
   so the paper does not imply arbitrary PromQL support.
 - **Failure modes:** tick-based overshoot, delayed ACKs, retries, collector
