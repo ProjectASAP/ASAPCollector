@@ -118,12 +118,14 @@ Three design points make this different from applying `p` at the collector:
    Flipping `d` coins per item costs `Θ(d·rate)` RNG. Instead the SDK draws a
    single geometric gap per *admitted* update and decrements a skip-counter, so
    the expensive RNG (`ln`, divide) is `O(1)` **amortized per admitted update** →
-   `Θ((Σ_r p_{i,r})·rate)`, independent of the unsampled `d` ("always line
-   rate"). With a uniform `p` the counter runs over the flattened stream, so an
-   item whose gap exceeds its `d` rows is skipped **whole in `O(1)`** — no
-   per-row iteration at all. (Per-row `p_{i,r}` uses `d` skip-counters, one per
-   row; still `O(1)` RNG per admit.) This is the existing
-   `sketchlib-go/common` `GeometricSampler`.
+   `Θ((Σ_r p_{i,r})·rate)` — the expensive part (RNG `ln`/divide) scales with
+   admits, not with the unsampled row count. The current implementation
+   (`UpdateStringSampledPerRow`) still steps the skip-counter once per row,
+   `Θ(d)` cheap integer decrements per item; the `O(1)` whole-item skip (draw the
+   gap, and if it exceeds the item's `d` rows skip the item without touching each
+   row) is an available optimization on the uniform-`p` flattened-stream variant,
+   not yet shipped. Either way the RNG is `∝ Σ_r p_{i,r}` ("always line rate" for
+   the costly draws). This is the existing `sketchlib-go/common` `GeometricSampler`.
 2. **The SDK decides *which rows*, not *which columns*.** It never computes a
    hash. The hash (row → column) is the collector's job, done *only for admitted
    rows*.
@@ -189,15 +191,18 @@ median-of-`d` rows turns it into the effective relative sampling error `ε_sa`.
 
 | | per raw item | scales with |
 |---|---|---|
-| **SDK CPU** | 1 geometric gap per *admit* + `O(1)` skip bookkeeping (whole-item skip is `O(1)`) | `(Σ_r p_{i,r})·rate` RNG — line-rate, independent of `d` |
+| **SDK CPU** | 1 geometric gap (RNG) per *admit* + `Θ(d)` cheap skip decrements per item | RNG `∝ (Σ_r p_{i,r})·rate`; bookkeeping `Θ(d·rate)` |
 | **Collector CPU** | `|R(x)| ≈ Σ_r p_{i,r}` hashes + updates | `(Σ_r p_{i,r}) · rate` (vs `d` unsampled) |
 | **Bandwidth / collector deserialization** | 0 if `R(x)=∅` | drop prob `∏_r(1−p_{i,r})` = `(1−p)^d` uniform |
 
 So `p_{i,r}` is a **joint edge-CPU + bandwidth** lever: lowering it cuts collector
 hashing (`Σ_r p_{i,r}`), cuts wire volume, and lets the SDK stay at line rate with
-only coin flips. The accuracy cost is the `ε_sa` term below; the water-filling of
-§7 allocates `p_{i,r}` against it (protecting high-sensitivity rows with a larger
-`p`).
+only coin flips. The accuracy cost is the `ε_sa` term below; §7 allocates the
+sampling budget against it. **Today the rate is per-site** (`p_{i,r}=p_i`,
+`AllocateSampleRates` gives one `p_i` per site with `p_i ∝ √(f_i/rate_i)`);
+per-row rate differentiation (a larger `p` for high-sensitivity rows) is a future
+refinement — the current benefit is the per-row *admission* decorrelation of §3.2,
+not per-row rate tuning.
 
 ### 3.2 Error and threshold-allocation math under per-row SDK sampling
 
@@ -223,8 +228,13 @@ independence is exactly what the two schemes do or do not give:
 - **Whole-item admission (current):** one `Z_x` shared by every row. A key `y`'s
   own contribution is `Δ_y·Z_y/p`, *identical in all rows*; if `y` is dropped
   (`Z_y=0`) it is missing from **all** rows at once and the median cannot recover
-  it. The sampling error is **common-mode** — it **survives the median**, adding
-  a separate `Θ(√((1−p)/p · F₂))` term that does **not** shrink with `d`.
+  it. The queried key's own contribution `Δ_y·(Z_y/p − 1)` (scale
+  `∝ f(y)·√((1−p)/p)`) is **identical in every row**, so this part is
+  **common-mode** — it **survives the median** and is **not** reduced by `d`.
+  (Cross-key collision noise carries independent row signs `s_r(·)` and does
+  partially decorrelate even here; the un-reducible piece is the key's own
+  term.) It must be bounded *before* the median and cannot be credited with the
+  `d`-fold amplification.
 
 > **Result.** At equal admitted work (`E[rows]=d·p` per item ⇒ same edge CPU),
 > per-row sampling keeps the sampling error inside the median's high-probability
@@ -232,57 +242,63 @@ independence is exactly what the two schemes do or do not give:
 > Per-row is the **strictly better estimator** — this, not the relocation, is the
 > reason to push the decision into the SDK.
 
-**Effective `ε_sa` (composition).** Under per-row independence the sampling term
-folds into the same median bound as collisions:
-`|f̂(y)−f(y)| ≤ (ε_sk+ε_sa)·‖f‖₂` w.p. `1−δ`, with
-`ε_sa = Θ(√((1−p)/(p·w)))` for uniform `p`. It composes **in quadrature** with
-`ε_sk=Θ(1/√w)` — exactly the `√(ε_sk²+ε_sa²)` of Theorem 1 (§4). Whole-item
-instead yields `ε_sk` plus a **linearly-added** common-mode `ε_sa` — strictly
-looser.
+**Effective `ε_sa` (composition).** Under per-row independence the sampling
+*variance* folds into the **same** `median_r` step as the collision variance —
+`Var[X_r] = F₂/w + (1−p)/p·S₂,r` under one median tail — so it composes **in
+quadrature** with `ε_sk`: `|f̂(y)−f(y)| ≤ √(ε_sk²+ε_sa²)·‖f‖₂` w.p. `1−δ`, with
+`ε_sa = Θ(√((1−p)/(p·w)))` (uniform `p`). This is exactly the random part of
+Theorem 1 (§4). Whole-item admission instead leaves a **common-mode** term that
+survives the median and adds to `ε_sk` **linearly** — strictly looser at equal
+edge cost.
 
 **Threshold-allocation coupling (row-dependent floor).** The delta gate `T_j` for
-cell `j=(r,c)` now sits over a *row-`r`-subsampled* counter, so the
-"don't-transmit-finer-than-you-sample" floor of §7 becomes **row-indexed**:
+cell `j=(r,c)` sits over a *row-`r`-subsampled* counter, so the
+"don't-transmit-finer-than-you-sample" floor of §7 is **row-indexed** by that
+row's admission rate:
 ```
-T_j ≥ T_j^floor = √( V_j · (1−p_r)/p_r )      (that cell's row rate p_r)
+T_j ≥ T_j^floor = √( V_j · (1−p_i)/p_i )      (rate is per-site p_i, admission per-row)
 ```
-The GOS water-filling is unchanged in form; only the floor is now per-row. Layer B
-(§7) still splits the budget `ε_res² = ε_sa² + ε_st²` — `ε_sa` funds `{p_r}`,
-`ε_st` funds `{T_j}` — and this row-aware floor closes the coupling.
+The GOS water-filling is unchanged in form; the ε-budget is split by §7 Layer B
+(staleness `ε_st` peeled linearly, then `ε_sk²+ε_sa² = (ε_q−ε_st)²`), and this
+floor closes the sampling↔threshold coupling.
 
-**Net.** Theorem 1 holds verbatim with the per-row reading of the sampling term;
-the change is that `ε_sa` now sits **inside** the `1−δ` median guarantee rather
-than as an added common-mode penalty. Moving to SDK-side per-row sampling
-**tightens** the envelope at equal edge cost — the quantitative justification for
-the code change.
+**Status.** The per-row *estimator* benefit above is **already realized** in code
+(collector-side `UpdateStringSampledPerRow`), so `ε_sa` already sits inside the
+`1−δ` median guarantee. What remains is the *location* move (admission into the
+SDK), which adds the upstream bandwidth/deserialization saving — not the
+estimator tightening (that is done).
 
 ---
 
 ## 4. Unified error bound
 
-The backend holds `Ĉ(t)`, perturbed from the ideal `C(t)` by three **independent**
-sources:
+The backend holds `Ĉ(t)`, perturbed from the ideal `C(t)` by two **random**
+sources that the Count-Sketch median absorbs together, plus one **deterministic**
+staleness term that adds on top:
 
-1. **Sketch** compression `L`: `|⟨r_q,C⟩ − q(f)| ≤ ε_sk‖f‖₂` w.p. `1−δ`, with
-   `ε_sk = Θ(1/√w)`, `δ = 2^{−d}`.
-2. **Sampling** `{p_i}`: site `i` admits w.p. `p_i`; the `1/p_i`-rescaled sketch is
-   unbiased with per-cell variance. Perturbation `η = Σ_i η_i`, `𝔼η = 0`,
-   `Var(η[j]) = Σ_j^{sa}({p_i}) ≈ Σ_i (1−p_i)/p_i · V_{ij}`, where `V_{ij}` is
-   cell-`j` activity at site `i`.
-3. **Staleness** `{T_j}`: site `i` withholds cell `j` until its accumulated change
-   reaches `T_j`, so `|Ĉ[j] − (C+η)[j]| ≤ k T_j =: e_j` **at all times**
-   (deterministic — this is the atomic quantity).
+1. **Sketch + sampling (random, one median).** Per row `r`, the cell estimate
+   carries hash-collision variance `≈ F₂/w` *and* per-row sampling variance
+   `≈ (1−p_i)/p_i · S₂,r` (§3.2 — the `1/p_i` weight is unbiased; per-row
+   admission keeps the rows independent). Because both live in the **same**
+   `median_r` step, they compose in quadrature into one high-probability tail:
+   `|q̂ − q(f)| ≤ √(ε_sk² + ε_sa²)·‖f‖₂` w.p. `1−δ`, with `ε_sk=Θ(1/√w)`,
+   `ε_sa=Θ(√((1−p)/(p·w)))`, `δ=2^{−Θ(d)}`. (Sampling rate is per-site `p_i`;
+   admission is per-row-independent, i.e. `p_{i,r}=p_i` uniform across rows.)
+2. **Staleness `{T_j}` (deterministic).** Site `i` withholds cell `j` until its
+   accumulated change reaches `T_j`, so `|Ĉ[j] − (C+η)[j]| ≤ k T_j =: e_j` **at
+   all times** — a worst-case bound, *not* a random variable, so it **adds
+   linearly** (it cannot be RMS-combined with the random tail).
 
 **Theorem 1 (unified relative error).** For any query `q` and any time `t`, w.p.
-`≥ 1 − 3δ`:
+`≥ 1 − δ`:
 
 ```
-              ┌ sketch ┐   ┌──────── sampling ────────┐   ┌──── staleness ────┐
-|q̂(t) − q(f)| ≤ ε_sk‖f‖₂ + z_δ·√( Σ_j r_{q,j}²·Σ_j^{sa} ) + k·Σ_j |r_{q,j}|·T_j
+              ┌──── random (one median) ────┐   ┌──── staleness (linear) ────┐
+|q̂(t) − q(f)| ≤ √(ε_sk² + ε_sa²)·‖f‖₂        +   k·Σ_j |r_{q,j}|·T_j
 ```
 
-Dividing by `‖f‖₂` gives the **relative** budget split (random parts in
-quadrature; deterministic staleness adds linearly):
+Dividing by `‖f‖₂` gives the **relative** budget: the random part (sketch ⊕
+sampling in quadrature) plus the deterministic staleness, linearly:
 
 > **√(ε_sk² + ε_sa²) + ε_st ≤ ε_q.**
 
@@ -355,13 +371,24 @@ subject to
 
 **Layer A — outer (small enumeration).** `d = ⌈log₂(1/δ)⌉`; choose `w`
 (`ε_sk = c/√w`) and `G` (grouping) to trade the memory term `w_m·G·n` against the
-accuracy the sketch must supply. Fix structural flags. Sets residual
-`ε_res² = ε_q² − ε_sk²`.
+accuracy the sketch must supply.
 
-**Layer B — budget split.** Split `ε_res` between **sampling** (`ε_sa`, buys edge
-CPU) and **staleness** (`ε_st`, buys communication) by a 1-D convex tradeoff of
-`w_e·Comp` vs `w_c·Comm`; unique (both convex, monotone). This is the
-sampling↔threshold coupling.
+**Layer B — budget split (staleness peeled linearly first).** Because staleness
+is deterministic it comes off the top of `ε_q` **linearly** (Theorem 1), *then*
+the remaining random budget is split in **quadrature**:
+
+1. choose `ε_st ∈ [0, ε_q − ε_sk]` — the edge-CPU↔communication knob (larger
+   `ε_st` ⇒ looser thresholds ⇒ less comm, but a smaller random budget ⇒ tighter
+   sampling ⇒ more CPU); pick it by the 1-D convex tradeoff of `w_e·Comp` vs
+   `w_c·Comm` (unique — both monotone);
+2. the random budget after the linear peel is `ε_rand = ε_q − ε_st`;
+3. split it in quadrature: `ε_sa² = ε_rand² − ε_sk²` (sketch ⊕ sampling), which
+   requires `ε_sk ≤ ε_rand`.
+
+So the composition is `√(ε_sk² + ε_sa²) + ε_st = ε_q`, matching §4 — **not** a
+three-way quadrature. (The code's `split_budget` uses the simpler
+`ε_sa² + ε_st² = ε_res²` quadrature, a first-order approximation valid when
+`ε_st ≪ ε_q`; tightening it to the linear peel above is tracked.)
 
 **Layer C — two water-fillings (same KKT tool, two variables).**
 
@@ -416,9 +443,14 @@ linear case (no reference-vector broadcast needed).
 
 ## 8. Optimality vs the Woodruff–Zhang lower bound
 
-At the optimum, communication `Σ_j V_j/T_j` with `w ∝ 1/ε²` (necessary sketch
-width) gives worst-case `Θ̃(k/ε²)` — **matching the Woodruff–Zhang STOC'12 tight
-lower bound** for continuous `(1±ε)` `F₂` monitoring. Consequences:
+**Rate vs total.** `Σ_j V_j/T_j` is an upload *rate*; the WZ `Θ̃(k/ε²)` is the
+*total* communication to maintain one continuous `(1±ε)` `F₂` estimate. Compare
+them over a fixed horizon of bounded total change: with `w ∝ 1/ε²` (the necessary
+sketch width) each sketch is `Θ(1/ε²)` and `k` sites must each be represented, so
+the total is `Θ̃(k/ε²)` — **matching the WZ STOC'12 tight lower bound** (bits vs
+words absorbed in the `Θ̃`). The measured normalization in
+[`gos-eval-results.md`](gos-eval-results.md) §3 uses the "one-round" unit `k·S`
+for exactly this comparison. Consequences:
 
 - The `1/ε²` and the linear-in-`k` are **fundamental**; no protocol (GM, AutoMon,
   OctoSketch, GOS) beats `k/ε²` adversarially. GOS's savings are **data-dependent**
