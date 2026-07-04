@@ -84,9 +84,76 @@ non-linear functionals `f_m(f)` (e.g. `F₂=‖f‖₂²`, entropy, ratios) answ
 |---|---|---|
 | `(d, w)` | sketch shape | accuracy ↔ memory |
 | `G` | # sketch instances (grouping over series) | accuracy ↔ **memory** |
-| `p_i ∈ (0,1]` | per-site sampling rate | edge **CPU** ↔ accuracy |
+| `p_{i,r} ∈ (0,1]` | per-**row** admission rate (SDK-side) | edge **CPU** ↔ accuracy |
 | `T_j ≥ 0` | per-cell transmission threshold | **communication**/freshness ↔ accuracy |
 | flags | delta-vs-full, geometric-refs, uniform-vs-aniso | comm ↔ edge/coord memory |
+
+### 3.1 The SDK↔collector sampling split (row-admission)
+
+The sampling knob is **per-row admission decided at the SDK**, not a whole-sketch
+Bernoulli at the collector — and, crucially, **the SDK does not hash**. A
+Count-Sketch/CMS update touches `d` rows, one counter per row; the natural
+sampled unit is therefore a *candidate row update* `u = (item x, row r)`, not the
+raw item. The pipeline is three stages with a clean responsibility split:
+
+```
+raw measurement (item x, value Δ)
+  │
+  ├─[SDK]  row-admission by GEOMETRIC skip-sampling (NitroSketch), NOT a coin
+  │        per row. The SDK keeps a running skip-counter over the flattened
+  │        candidate stream (item,row); on admit it draws one gap
+  │        g ~ Geometric(p_{i,r}) and skips g candidates before the next admit.
+  │        admitted rows  R(x) = { rows whose candidate index the counter lands on }.
+  │        if the gap overruns all d rows  →  DROP the sample in O(1)
+  │           (no per-row work, never sent, never deserialized).
+  │        else send  (x, Δ, R(x))  to the agent collector.
+  │
+  └─[collector]  for each admitted r ∈ R(x):  compute the column h_r(x) and sign
+           s_r(x), then  C[r][h_r(x)] += s_r(x)·Δ / p_{i,r}   (inverse-prob weight).
+```
+
+Three design points make this different from applying `p` at the collector:
+
+1. **Geometric skip-sampling, not per-candidate coin flips (NitroSketch).**
+   Flipping `d` coins per item costs `Θ(d·rate)` RNG. Instead the SDK draws a
+   single geometric gap per *admitted* update and decrements a skip-counter, so
+   the expensive RNG (`ln`, divide) is `O(1)` **amortized per admitted update** →
+   `Θ((Σ_r p_{i,r})·rate)`, independent of the unsampled `d` ("always line
+   rate"). With a uniform `p` the counter runs over the flattened stream, so an
+   item whose gap exceeds its `d` rows is skipped **whole in `O(1)`** — no
+   per-row iteration at all. (Per-row `p_{i,r}` uses `d` skip-counters, one per
+   row; still `O(1)` RNG per admit.) This is the existing
+   `sketchlib-go/common` `GeometricSampler`.
+2. **The SDK decides *which rows*, not *which columns*.** It never computes a
+   hash. The hash (row → column) is the collector's job, done *only for admitted
+   rows*.
+3. **Only admitted samples cross the wire.** A sample that admits no row is
+   dropped at the source, so the collector **skips its deserialization and
+   hashing entirely** — the CPU/bandwidth saving compounds.
+
+**Unbiasedness.** For an admitted row-update the collector applies weight
+`1/p_{i,r}`; since `E[Z_r · 1/p_{i,r}] = 1`, each row-`r` sub-sketch is an
+unbiased estimator of `f`. The Count-Sketch readout `median_r s_r(x)·C[r][h_r(x)]`
+keeps its `(ε_sk, δ)` guarantee; sampling only inflates the per-row variance.
+
+**Variance / `ε_sa`.** An admitted counter carries weight `1/p_{i,r}`, so its
+contribution to the row-`r` cell variance is `(1−p_{i,r})/p_{i,r}·Δ²`. Summed over
+a cell's traffic this is the sampling perturbation `Σ_r^{sa}` of §4; the
+median-of-`d` rows turns it into the effective relative sampling error `ε_sa`.
+
+**Costs (the whole point).**
+
+| | per raw item | scales with |
+|---|---|---|
+| **SDK CPU** | 1 geometric gap per *admit* + `O(1)` skip bookkeeping (whole-item skip is `O(1)`) | `(Σ_r p_{i,r})·rate` RNG — line-rate, independent of `d` |
+| **Collector CPU** | `|R(x)| ≈ Σ_r p_{i,r}` hashes + updates | `(Σ_r p_{i,r}) · rate` (vs `d` unsampled) |
+| **Bandwidth / collector deserialization** | 0 if `R(x)=∅` | drop prob `∏_r(1−p_{i,r})` = `(1−p)^d` uniform |
+
+So `p_{i,r}` is a **joint edge-CPU + bandwidth** lever: lowering it cuts collector
+hashing (`Σ_r p_{i,r}`), cuts wire volume, and lets the SDK stay at line rate with
+only coin flips. The accuracy cost is the `ε_sa` term below; the water-filling of
+§7 allocates `p_{i,r}` against it (protecting high-sensitivity rows with a larger
+`p`).
 
 ---
 
@@ -142,12 +209,20 @@ binds them → periodic heartbeat.)
 
 ```
 Memory_edge  = m·G·n·( 1 + 1{delta}[acked snapshot] + 1{aniso}[threshold vec] )
-Comp_edge    = c_u·Σ_i p_i·rate_i           (admitted updates — sampling cuts this)
-             + c_s·Σ_j V_j/T_j              (uploads      — thresholds cut this)
+Comp_sdk     = c_rng·(Σ_r p_{i,r})·rate     (geometric skip-sampling: O(1)/admit RNG)
+Comp_coll    = c_h·(Σ_r p_{i,r})·rate       (hash + update — only admitted rows)
+             + c_s·Σ_j V_j/T_j              (uploads       — thresholds cut this)
 Comm         = b·Σ_j V_j/T_j  (+ broadcast for geometric)
+             × (1 − ∏_r(1−p_{i,r}))         (samples with no admitted row aren't sent)
 Cost_coord   = m·n·(1 + k·1{geo})           (running merge + per-edge refs)
              + c_a·Σ_j V_j/T_j              (incremental apply_delta)
 ```
+
+The edge CPU is split across the two runtimes: the **SDK** pays only the
+geometric-sampler RNG (`Comp_sdk`, `O(1)` per admit, no hashing), and the **agent
+collector** pays the hashing/update (`Comp_coll`) *only for admitted rows* plus
+the delta uploads. Lowering `p_{i,r}` cuts SDK RNG, collector hashing, and wire
+volume together — one lever, three savings.
 
 **Structural insight.** `Comm`, the upload part of `Comp_edge`, and the apply part
 of `Cost_coord` are all `∝ Σ_j V_j/T_j` → they collapse into one effective weight
@@ -276,7 +351,9 @@ lower bound** for continuous `(1±ε)` `F₂` monitoring. Consequences:
 - **Function safe zone via DC decomposition of the Hessian (ADCD), gradient/
   Hessian bounds** — AutoMon [Sivan+ SIGMOD'22]; Geometric Monitoring [Sharfman+
   SIGMOD'06]. *Adopted.*
-- **Coordinated sampling** — NitroSketch; ASAP's own `AllocateSampleRates`.
+- **Coordinated sampling + geometric skip-sampling** — NitroSketch [Liu+
+  SIGCOMM'19]; ASAP's own `AllocateSampleRates` (rate allocation) and
+  `sketchlib-go/common.GeometricSampler` (the `O(1)`-amortized skip sampler).
   *Adopted.*
 - **Lower bound `Θ̃(k/ε²)`** — Woodruff–Zhang [STOC'12]. *Yardstick.*
 - **GOS (this doc)** — casts *per-cell threshold allocation* as water-filling with
@@ -341,4 +418,8 @@ executes a fixed per-cell comparison.
 - H. Sivan, M. Gabel, A. Schuster. *AutoMon: Automatic Distributed Monitoring for Arbitrary Multivariate Functions.* SIGMOD 2022.
 - Y. Zhang, P. Chen, Z. Liu. *OctoSketch: Enabling Real-Time, Continuous Network Monitoring over Multiple Cores.* NSDI 2024.
 - D. Woodruff, Q. Zhang. *Tight Bounds for Distributed Functional Monitoring.* STOC 2012 (arXiv:1112.5153).
-- Z. Liu et al. *NitroSketch.* SIGCOMM 2019 (coordinated update sampling).
+- Z. Liu, R. Ben-Basat, G. Einziger, Y. Kassner, V. Braverman, R. Friedman,
+  V. Sekar. *NitroSketch: Robust and General Sketch-Based Monitoring in Software
+  Switches.* SIGCOMM 2019. (Geometric skip-sampling: one RNG draw per admitted
+  update — `O(1)` amortized, "always line rate" — with inverse-probability
+  weighting; the SDK-side row-admission sampler here is this scheme.)
