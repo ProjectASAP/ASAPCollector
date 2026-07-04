@@ -441,11 +441,41 @@ The one-standard-deviation shorthand is
 
 Use the high-probability form in theorem statements and alert safety claims.
 
-## 5. Coordinated NitroSketch allocation
+## 5. Edge admission vs NitroSketch row sampling
+
+NitroSketch does not advocate naive packet-level sampling as the main design.
+Its key observation is that packet-level sampling can give poor sketch accuracy:
+when a packet is dropped before the sketch, all rows/counter arrays miss the same
+packet, so the sampling noise is correlated across rows and median/min
+amplification cannot remove that shared error. NitroSketch instead samples
+sketch counter-array updates and applies inverse-probability weights to the
+arrays that are updated. This preserves the expected counter value while keeping
+row-level sampling noise closer to the sketch's native amplification model.
+
+Therefore, the allocation below should not be cited as a NitroSketch theorem. It
+is an ASAPCollector control-plane extension inspired by NitroSketch's
+inverse-probability sketch-update sampling. There are two possible deployment
+levels:
+
+- **Nitro-style row/counter-array sampling:** site $i$, row $r$ uses probability
+  $p_{i,r}$. This is closest to the NitroSketch paper and is the preferred
+  target for CountSketch/CMS point queries because row errors can still be
+  amplified across rows.
+- **Edge admission sampling:** site $i$ admits an entire raw update with
+  probability $p_i$. This is simpler and works cleanly for scalar sums/counts and
+  additive bucket counts, but for multi-row sketches it can inherit the
+  packet-level sampling weakness NitroSketch warns about.
+
+The derivation in this section is for the second case: edge-level
+Horvitz-Thompson admission. It is useful as a baseline controller and for
+single-readout additive summaries, but it should not be presented as the
+NitroSketch algorithm.
 
 For a known point query/key $x$, the coordinator may choose different $p_i$
-across sites. Let $f_i=f_i(x)$ be the key mass at site $i$, and $r_i$ be the
-site's total update rate/cost weight for the sketch-update path.
+across sites. Let $f_i=f_i(x)$ be the key mass or protected query sensitivity at
+site $i$, and let $r_i$ be the site's raw update rate or sketch-update cost
+weight. Under edge admission sampling, the expected update work at site $i$ is
+proportional to $r_i p_i$.
 
 The query-specific CPU minimization problem is
 
@@ -481,8 +511,14 @@ p_i
 \sqrt{\lambda}\sqrt{\frac{f_i}{r_i}}.
 ```
 
-The scalar $\sqrt{\\lambda}$ is selected so that the variance constraint binds,
+The scalar $\sqrt{\lambda}$ is selected so that the variance constraint binds,
 and the result is clamped to $(0,1]$.
+
+For Nitro-style row sampling, the analogous controller would optimize
+probabilities $p_{i,r}$ over site/row pairs, with a cost term such as
+$\sum_{i,r} r_i p_{i,r}$ and row-level variance constraints. That is the more
+faithful extension for CountSketch/CMS. The row-level version is not derived in
+this note.
 
 For whole-sketch or unknown-key deployments, replace the query-specific
 $f_i(x)$ by the protected mass for the query class. A conservative whole-sketch
@@ -835,6 +871,11 @@ Then
 and its variance is the sum of inverse-probability variances of the sampled
 updates colliding into the queried cell. A median-of-rows bound follows by
 combining row-level concentration with the usual CountSketch row amplification.
+This row amplification statement assumes Nitro-style row/counter-array sampling
+or otherwise independent row-level sampling noise. If the implementation uses
+edge admission sampling, the true-key sampling noise is shared across rows; then
+the sampling term must be bounded before the median step and should not be
+credited with CountSketch row amplification.
 
 CDM staleness for row $r$ is
 
