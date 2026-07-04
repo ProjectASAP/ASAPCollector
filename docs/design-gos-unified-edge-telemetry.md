@@ -152,8 +152,28 @@ weighting is a linear correction). So it applies to:
 | **HLL** | — | ✗ **not sampled** | idempotent register **MAX**; a dropped max is unrecoverable (`1/p` can't correct a max), biasing cardinality low |
 
 So the SDK runs row-admission for **DDSketch / CMS / CountSketch** and leaves
-**KLL / HLL** unsampled (they emit every update). This matches the existing edge
-runtime, where the sampler is wired only for the additive families.
+**KLL / HLL** unsampled (they emit every update).
+
+**Implementation status (current vs this target).** Today's edge runtime
+implements a *weaker* form of this design, and closing the gap is tracked work:
+
+| | This design (target) | Current code |
+|---|---|---|
+| Algorithm | geometric skip-sampling | ✅ `sketchlib-go/common.GeometricSampler` |
+| Weighting | `1/p` on admit | ✅ `CountSketchWrapper.UpdateString` (`count /= sampleP`) |
+| Families | CMS/CS/DDSketch only | ✅ `applyGrantedSampleP` |
+| **Where** | SDK decides, then sends | ❌ **collector-side** (`precompute-go` wrapper) — the raw item already reached the collector |
+| **Granularity** | per-**row** `p_{i,r}` (admit a subset of the `d` rows) | ❌ per-**item**, whole-sketch (one `p`; an admitted item updates **all** `d` rows) |
+
+Consequences of the gap: the current code saves the `d`-row counter work only on
+*fully* dropped items and realizes **no** upstream bandwidth / deserialization
+saving (the collector still receives and decodes every raw item). Realizing the
+full design requires (i) moving the admission decision to the SDK (OTLP SDK
+patch — the SDK-side `countminsketch.go`/`ddsketch.go` aggregators already exist,
+so the sampler can be hosted there) and (ii) generalizing `sampleP` (scalar) to a
+per-row vector `p_{i,r}`. Until then, treat §3.1's SDK-side per-row scheme as the
+**design target**; the accuracy math (unbiasedness, `ε_sa`) already holds for the
+weaker per-item form as the `p_{i,r} ≡ p` special case.
 
 **Unbiasedness.** For an admitted row-update the collector applies weight
 `1/p_{i,r}`; since `E[Z_r · 1/p_{i,r}] = 1`, each row-`r` sub-sketch is an
