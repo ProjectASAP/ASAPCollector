@@ -162,18 +162,18 @@ implements a *weaker* form of this design, and closing the gap is tracked work:
 | Algorithm | geometric skip-sampling | ✅ `sketchlib-go/common.GeometricSampler` |
 | Weighting | `1/p` on admit | ✅ `CountSketchWrapper.UpdateString` (`count /= sampleP`) |
 | Families | CMS/CS/DDSketch only | ✅ `applyGrantedSampleP` |
-| **Where** | SDK decides, then sends | ❌ **collector-side** (`precompute-go` wrapper) — the raw item already reached the collector |
-| **Granularity** | per-**row** `p_{i,r}` (admit a subset of the `d` rows) | ❌ per-**item**, whole-sketch (one `p`; an admitted item updates **all** `d` rows) |
+| **Granularity** | per-**row** admission (subset of `d` rows; hash only if ≥1 admitted) | ✅ **per-row** — `CountSketch.UpdateStringSampledPerRow` (sketchlib), wired in the collector wrapper |
+| **Where** | SDK decides, then sends | ❌ still **collector-side** (`precompute-go` wrapper) — the raw item already reached the collector |
 
-Consequences of the gap: the current code saves the `d`-row counter work only on
-*fully* dropped items and realizes **no** upstream bandwidth / deserialization
-saving (the collector still receives and decodes every raw item). Realizing the
-full design requires (i) moving the admission decision to the SDK (OTLP SDK
-patch — the SDK-side `countminsketch.go`/`ddsketch.go` aggregators already exist,
-so the sampler can be hosted there) and (ii) generalizing `sampleP` (scalar) to a
-per-row vector `p_{i,r}`. Until then, treat §3.1's SDK-side per-row scheme as the
-**design target**; the accuracy math (unbiasedness, `ε_sa`) already holds for the
-weaker per-item form as the `p_{i,r} ≡ p` special case.
+The **granularity** now matches the design (per-row geometric admission,
+drop-before-hash, `1/p` weight — mirroring `asap_sketchlib/.../nitro.rs`), so the
+sampling term is the tight per-row estimator of §3.2 (median decorrelation, `ε_sa`
+in quadrature). What remains is the **location**: moving the admission decision
+into the OTLP SDK so a fully-unadmitted sample is dropped *before* the collector
+deserializes it (the SDK-side `countminsketch.go`/`ddsketch.go` aggregators
+already exist, so the sampler can be hosted there; the SDK→collector sample then
+carries the admitted rows). Until then the per-row *estimator* benefit is
+realized, but the upstream bandwidth/deserialization saving is not.
 
 **Unbiasedness.** For an admitted row-update the collector applies weight
 `1/p_{i,r}`; since `E[Z_r · 1/p_{i,r}] = 1`, each row-`r` sub-sketch is an
