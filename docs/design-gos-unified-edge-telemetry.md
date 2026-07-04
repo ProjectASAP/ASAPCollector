@@ -199,6 +199,63 @@ only coin flips. The accuracy cost is the `ε_sa` term below; the water-filling 
 §7 allocates `p_{i,r}` against it (protecting high-sensitivity rows with a larger
 `p`).
 
+### 3.2 Error and threshold-allocation math under per-row SDK sampling
+
+**Per-row estimator.** With per-row admission, row `r`'s cell is
+`C[r][c] = Σ_{x:h_r(x)=c} s_r(x)·Δ_x·(Z_{x,r}/p_{i,r})`, `Z_{x,r} ~ Bernoulli(p_{i,r})`
+**independent across rows**. The row estimate `X_r = s_r(y)·C[r][h_r(y)]` is
+unbiased (`E[Z_{x,r}/p_{i,r}]=1`); the point estimate is `f̂(y)=median_r X_r`.
+
+**Per-row variance = collisions + sampling.**
+```
+Var[X_r] ≈  F₂/w                     (Count-Sketch hash collisions, F₂=‖f‖₂²)
+         +  (1−p_r)/p_r · S₂,r(y)    (sampling; S₂,r(y)=Σ Δ² routed through y's row-r cell)
+```
+
+**The decisive point — median decorrelation (why per-row ≠ per-item).** The
+Count-Sketch `(ε,δ)` guarantee comes from the **median over `d` rows**: if each
+row fails w.p. `≤ ⅓` *independently*, the median fails w.p. `2^{−Θ(d)} = δ`. That
+independence is exactly what the two schemes do or do not give:
+
+- **Per-row admission (target):** `Z_{x,r}` is independent across `r`, so the
+  `X_r` are independent → the median concentrates **both** the collision **and**
+  the sampling error → sampling error lands **inside** the `δ` guarantee.
+- **Whole-item admission (current):** one `Z_x` shared by every row. A key `y`'s
+  own contribution is `Δ_y·Z_y/p`, *identical in all rows*; if `y` is dropped
+  (`Z_y=0`) it is missing from **all** rows at once and the median cannot recover
+  it. The sampling error is **common-mode** — it **survives the median**, adding
+  a separate `Θ(√((1−p)/p · F₂))` term that does **not** shrink with `d`.
+
+> **Result.** At equal admitted work (`E[rows]=d·p` per item ⇒ same edge CPU),
+> per-row sampling keeps the sampling error inside the median's high-probability
+> envelope; whole-item sampling leaves it as an irreducible common-mode penalty.
+> Per-row is the **strictly better estimator** — this, not the relocation, is the
+> reason to push the decision into the SDK.
+
+**Effective `ε_sa` (composition).** Under per-row independence the sampling term
+folds into the same median bound as collisions:
+`|f̂(y)−f(y)| ≤ (ε_sk+ε_sa)·‖f‖₂` w.p. `1−δ`, with
+`ε_sa = Θ(√((1−p)/(p·w)))` for uniform `p`. It composes **in quadrature** with
+`ε_sk=Θ(1/√w)` — exactly the `√(ε_sk²+ε_sa²)` of Theorem 1 (§4). Whole-item
+instead yields `ε_sk` plus a **linearly-added** common-mode `ε_sa` — strictly
+looser.
+
+**Threshold-allocation coupling (row-dependent floor).** The delta gate `T_j` for
+cell `j=(r,c)` now sits over a *row-`r`-subsampled* counter, so the
+"don't-transmit-finer-than-you-sample" floor of §7 becomes **row-indexed**:
+```
+T_j ≥ T_j^floor = √( V_j · (1−p_r)/p_r )      (that cell's row rate p_r)
+```
+The GOS water-filling is unchanged in form; only the floor is now per-row. Layer B
+(§7) still splits the budget `ε_res² = ε_sa² + ε_st²` — `ε_sa` funds `{p_r}`,
+`ε_st` funds `{T_j}` — and this row-aware floor closes the coupling.
+
+**Net.** Theorem 1 holds verbatim with the per-row reading of the sampling term;
+the change is that `ε_sa` now sits **inside** the `1−δ` median guarantee rather
+than as an added common-mode penalty. Moving to SDK-side per-row sampling
+**tightens** the envelope at equal edge cost — the quantitative justification for
+the code change.
+
 ---
 
 ## 4. Unified error bound
