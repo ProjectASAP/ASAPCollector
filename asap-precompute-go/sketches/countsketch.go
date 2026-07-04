@@ -273,10 +273,13 @@ func (w *CountSketchWrapper) UpdateString(key string, count float64) {
 		return
 	}
 	if w.sampler != nil {
-		if !w.sampler.Admit() {
-			return // skip the d-row counter work for this item (CPU saved)
-		}
-		count /= w.sampleP // upweight the admitted insert ⇒ unbiased estimate
+		// PER-ROW geometric admission (design §3.1/§3.2): the sampler decides
+		// which of the d rows this item updates; the key is hashed only if ≥1 row
+		// is admitted, and admitted rows carry the 1/p weight. Per-row (not
+		// per-item) admission decorrelates the row estimates so the median-of-rows
+		// concentrates the sampling error. Replaces the older whole-item admit.
+		w.cs.UpdateStringSampledPerRow(key, count, w.sampler)
+		return
 	}
 	w.cs.UpdateString(key, count)
 }
