@@ -420,6 +420,15 @@ universal query cap and freshness.
 - **F₂, isotropic** (`g_j = 2Ĉ_j`, `λ=2`, uniform, relative): `T = ε‖Ĉ‖ / (2k√(dw))`
   — adaptive: scales with the current norm.
 - **F₂ threshold-alert version** (monitor `F₂ ≥ τ`, one-sided band): `T = (1/k)√((1−ε)τ/w)`.
+  The whole-sketch `F₂` readout here is the **mean-of-rows** estimator
+  `F̂₂ = ‖C‖²/d` (each row's `‖C_r‖²` is an unbiased `F₂` estimate; averaging the
+  `d` independent rows reduces its variance by `1/d`) — *not* the median-of-rows
+  point-query estimator of §3.2. This is deliberate: the geometric safe-zone is a
+  **ball** `‖C‖ ≤ √(d(1−ε)τ) ⇔ ‖C‖²/d ≤ (1−ε)τ`, so edge silence and coordinator
+  alert test the identical functional (`all-sites-safe ⟺ F̂₂ < (1−ε)τ`). The two
+  estimators serve different readouts — median for individual-key location
+  (robust tail), mean for the aggregate energy the ball bounds (variance
+  reduction) — and must not be conflated.
 - **Linear `f` (sum/count/point)**: `λ = 0` → the curvature term vanishes → box
   degenerates to a **slab** = the classic CMY slack countdown.
 
