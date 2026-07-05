@@ -22,6 +22,11 @@ type countMinSketchSeries[N int64 | float64] struct {
 	sketch      *cms.CountMinSketch
 	sampleCount uint64
 
+	// sampler is the per-series per-row geometric admission sampler (non-nil only
+	// when 0 < sampleP < 1). Hosting it at the SDK aggregator is the "admission at
+	// the SDK" location of §3.1 of the GOS design.
+	sampler *common.GeometricSampler
+
 	measuredSince bool
 	idleCycles    uint8
 }
@@ -29,6 +34,11 @@ type countMinSketchSeries[N int64 | float64] struct {
 type countMinSketchValues[N int64 | float64] struct {
 	rows int
 	cols int
+
+	// sampleP is the per-row geometric admission rate. <=0 or >=1 disables
+	// sampling (every insert touches all rows); 0 < sampleP < 1 installs a
+	// per-series sampler routing inserts through InsertWithHashSampledPerRow.
+	sampleP float64
 
 	limit      limiter[countMinSketchSeries[N]]
 	values     map[attribute.Distinct]*countMinSketchSeries[N]
@@ -45,7 +55,7 @@ type countMinSketchValues[N int64 | float64] struct {
 	snapshotsMu sync.Mutex
 }
 
-func newCountMinSketchValues[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64) *countMinSketchValues[N] {
+func newCountMinSketchValues[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64, sampleP float64) *countMinSketchValues[N] {
 	if rows <= 0 {
 		rows = 4
 	}
@@ -58,6 +68,7 @@ func newCountMinSketchValues[N int64 | float64](rows, cols, limit int, deltaTran
 	v := &countMinSketchValues[N]{
 		rows:              rows,
 		cols:              cols,
+		sampleP:           sampleP,
 		limit:             newLimiter[countMinSketchSeries[N]](limit),
 		values:            make(map[attribute.Distinct]*countMinSketchSeries[N]),
 		deltaTransmission: deltaTransmission,
@@ -85,6 +96,17 @@ func (d *countMinSketchValues[N]) newSeries(attr attribute.Set) *countMinSketchS
 	series.sampleCount = 0
 	series.measuredSince = true
 	series.idleCycles = 0
+	// Install (or reset, on pool reuse) the per-row geometric sampler.
+	if d.sampleP > 0 && d.sampleP < 1 {
+		seed := samplerSeedForAttrs(attr)
+		if series.sampler == nil {
+			series.sampler = common.NewGeometricSampler(d.sampleP, seed)
+		} else {
+			series.sampler.Reset(d.sampleP, seed)
+		}
+	} else {
+		series.sampler = nil
+	}
 	return series
 }
 
@@ -113,7 +135,13 @@ func (d *countMinSketchValues[N]) measure(
 	series.measuredSince = true
 	key := fltrAttr.Encoded(attribute.DefaultEncoder())
 	input := common.FromString(key)
-	series.sketch.InsertWithHash(input.Hash)
+	if series.sampler != nil {
+		series.sketch.InsertWithHashSampledPerRow(input.Hash, series.sampler)
+	} else {
+		series.sketch.InsertWithHash(input.Hash)
+	}
+	// sampleCount tracks RAW observed items (not admitted rows); it is wire
+	// metadata independent of sampling, so increment unconditionally.
 	series.sampleCount++
 }
 
@@ -122,9 +150,9 @@ type countMinSketchAgg[N int64 | float64] struct {
 	start time.Time
 }
 
-func newCountMinSketchAgg[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64) *countMinSketchAgg[N] {
+func newCountMinSketchAgg[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64, sampleP float64) *countMinSketchAgg[N] {
 	return &countMinSketchAgg[N]{
-		countMinSketchValues: newCountMinSketchValues[N](rows, cols, limit, deltaTransmission, deltaThreshold),
+		countMinSketchValues: newCountMinSketchValues[N](rows, cols, limit, deltaTransmission, deltaThreshold, sampleP),
 		start:                now(),
 	}
 }

@@ -57,7 +57,7 @@ func TestDDSketchDelta(t *testing.T) {
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 3,
-	}.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	}.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	aliceCheckout := attribute.NewSet(
 		userAlice,
@@ -148,7 +148,7 @@ func TestDDSketchCumulativeNoMinMax(t *testing.T) {
 		Temporality:      metricdata.CumulativeTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 3,
-	}.DDSketch(testDDSketchAccuracy, true, true, false, 0)
+	}.DDSketch(testDDSketchAccuracy, true, true, false, 0, 0)
 
 	got := new(metricdata.Aggregation)
 
@@ -216,7 +216,7 @@ func TestDDSketchInsertThroughput(t *testing.T) {
 		Filter:           attrFltr,
 		AggregationLimit: numSeries + 8,
 	}
-	meas, comp := builder.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	meas, comp := builder.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	attrSets := make([]attribute.Set, numSeries)
 	rnd := rand.New(rand.NewSource(42))
@@ -290,7 +290,7 @@ func TestDDSketchThroughputMultiInterval(t *testing.T) {
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: numSeries + 8,
-	}.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	}.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	attrSets := make([]attribute.Set, numSeries)
 	rnd := rand.New(rand.NewSource(42))
@@ -366,7 +366,7 @@ func TestDDSketchLatencyPerMeasurement(t *testing.T) {
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 4,
-	}.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	}.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	attrs := attribute.NewSet(
 		attribute.String("service", "latency-analysis"),
@@ -465,7 +465,7 @@ func TestDDSketchPayloadIsSketchlibPortableEnvelope(t *testing.T) {
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 4,
-	}.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	}.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	attrs := attribute.NewSet(
 		attribute.String("service", "checkout"),
@@ -517,7 +517,7 @@ func TestDDSketchDeltaEncodingViaComputeDelta(t *testing.T) {
 		Temporality:      metricdata.CumulativeTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 4,
-	}.DDSketch(testDDSketchAccuracy, false, false, true, 1)
+	}.DDSketch(testDDSketchAccuracy, false, false, true, 1, 0)
 
 	attrs := attribute.NewSet(
 		attribute.String("service", "checkout"),

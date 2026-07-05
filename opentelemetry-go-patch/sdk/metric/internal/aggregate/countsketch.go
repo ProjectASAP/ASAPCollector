@@ -120,7 +120,7 @@ func (d *countSketchValues[N]) newSeries(attr attribute.Set) *countSketchSeries[
 	// deterministically from the series' attribute key so runs are reproducible
 	// and distinct series decorrelate their admission streams.
 	if d.sampleP > 0 && d.sampleP < 1 {
-		seed := csSamplerSeed(attr)
+		seed := samplerSeedForAttrs(attr)
 		if series.sampler == nil {
 			series.sampler = common.NewGeometricSampler(d.sampleP, seed)
 		} else {
@@ -132,10 +132,11 @@ func (d *countSketchValues[N]) newSeries(attr attribute.Set) *countSketchSeries[
 	return series
 }
 
-// csSamplerSeed derives a stable per-series RNG seed from the series' encoded
-// attribute set (FNV-1a-64), so the geometric sampler is reproducible across
-// process restarts and independent across series.
-func csSamplerSeed(attr attribute.Set) int64 {
+// samplerSeedForAttrs derives a stable per-series RNG seed from the series'
+// encoded attribute set (FNV-1a-64), so the geometric sampler is reproducible
+// across process restarts and independent across series. Shared by the
+// CountSketch / CountMinSketch / DDSketch aggregators.
+func samplerSeedForAttrs(attr attribute.Set) int64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(attr.Encoded(attribute.DefaultEncoder())))
 	return int64(h.Sum64())

@@ -212,8 +212,8 @@ func (b Builder[N]) ExponentialBucketHistogram(
 // DDSketch returns a DDSketch aggregate function input and output.
 // deltaTransmission enables sparse delta encoding for cumulative exports;
 // deltaThreshold is the minimum absolute bucket count change to include in a delta.
-func (b Builder[N]) DDSketch(relativeAccuracy float64, noMinMax, noSum bool, deltaTransmission bool, deltaThreshold uint64) (Measure[N], ComputeAggregation) {
-	agg := newDDSketch[N](relativeAccuracy, noMinMax, noSum, b.AggregationLimit, b.resFunc(), deltaTransmission, deltaThreshold)
+func (b Builder[N]) DDSketch(relativeAccuracy float64, noMinMax, noSum bool, deltaTransmission bool, deltaThreshold uint64, sampleP float64) (Measure[N], ComputeAggregation) {
+	agg := newDDSketch[N](relativeAccuracy, noMinMax, noSum, b.AggregationLimit, b.resFunc(), deltaTransmission, deltaThreshold, sampleP)
 	switch b.Temporality {
 	case metricdata.DeltaTemporality:
 		return b.filter(agg.measure), agg.delta
@@ -262,8 +262,8 @@ func (b Builder[N]) CountSketch(rows, cols int, epsilon, delta float64, dimensio
 // CountMinSketch returns a Count-Min Sketch aggregate function input and output.
 // deltaTransmission enables sparse delta encoding for cumulative exports;
 // deltaThreshold is the minimum absolute cell change to include in a delta.
-func (b Builder[N]) CountMinSketch(rows, cols int, deltaTransmission bool, deltaThreshold float64) (Measure[N], ComputeAggregation) {
-	agg := newCountMinSketchAgg[N](rows, cols, b.AggregationLimit, deltaTransmission, deltaThreshold)
+func (b Builder[N]) CountMinSketch(rows, cols int, deltaTransmission bool, deltaThreshold float64, sampleP float64) (Measure[N], ComputeAggregation) {
+	agg := newCountMinSketchAgg[N](rows, cols, b.AggregationLimit, deltaTransmission, deltaThreshold, sampleP)
 	switch b.Temporality {
 	case metricdata.DeltaTemporality:
 		return b.filter(agg.measure), agg.delta

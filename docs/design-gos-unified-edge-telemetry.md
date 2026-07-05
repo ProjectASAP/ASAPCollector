@@ -190,9 +190,13 @@ happens at the source. Two deployment modes and what each saves:
   on survivors. (Whole-item drop is the `R(x)=∅` fast path of the same geometric
   sampler.)
 
-CMS/DDSketch on the SDK-build path is follow-up: DDSketch is the `d=1` whole-item
-case (`WithSampleP` already exists); CMS needs a per-row sampled update added to
-`sketchlib-go` first (it has no `UpdateSampledPerRow` yet).
+All three families are wired on the SDK-build path via a `sample_p` knob:
+**CountSketch** and **CountMinSketch** host a per-series external `GeometricSampler`
+and route inserts through `UpdateStringSampledPerRow` /
+`InsertWithHashSampledPerRow` (per-row admission, `1/p` applied in-place, wire
+stays exact — no downstream rescale); **DDSketch** is the `d=1` whole-item case and
+uses the sketch's built-in `WithSampleP` (raw counts, wire stamps `p`, consumer
+rescales `×1/p`). `KLL`/`HLL` stay unsampled by design (§ applicability table).
 
 **Unbiasedness.** For an admitted row-update the collector applies weight
 `1/p_{i,r}`; since `E[Z_r · 1/p_{i,r}] = 1`, each row-`r` sub-sketch is an

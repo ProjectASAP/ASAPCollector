@@ -57,6 +57,13 @@ type ddSketchValues[N int64 | float64] struct {
 	noMinMax bool
 	noSum    bool
 
+	// sampleP is the geometric admission rate. DDSketch fans out to a single
+	// bucket per item, so this is the d=1 whole-item case of §3.1: <=0 or >=1
+	// disables sampling; 0 < sampleP < 1 enables NitroSketch skip-sampling via
+	// the sketch's built-in WithSampleP (raw admitted counts stored, the wire
+	// envelope stamps p and the consumer rescales ×1/p at query).
+	sampleP float64
+
 	// deltaTransmission enables sparse delta encoding for cumulative exports.
 	deltaTransmission bool
 	// deltaThreshold is the minimum absolute bucket count change to include.
@@ -83,6 +90,7 @@ func newDDSketchValues[N int64 | float64](
 	r func(attribute.Set) FilteredExemplarReservoir[N],
 	deltaTransmission bool,
 	deltaThreshold uint64,
+	sampleP float64,
 ) *ddSketchValues[N] {
 	if accuracy <= 0 || accuracy >= 1 {
 		accuracy = defaultDDSketchRelativeAccuracy
@@ -94,6 +102,7 @@ func newDDSketchValues[N int64 | float64](
 		accuracy:          accuracy,
 		noMinMax:          noMinMax,
 		noSum:             noSum,
+		sampleP:           sampleP,
 		deltaTransmission: deltaTransmission,
 		deltaThreshold:    deltaThreshold,
 		snapshots:         make(map[attribute.Distinct]*ddsketch.DDSketch),
@@ -111,6 +120,11 @@ func (d *ddSketchValues[N]) newSeries(attr attribute.Set, value N) *ddSketchSeri
 	// fresh sketch for a new series. The pool still amortizes the
 	// ddSketchSeries header allocation, which is the dominant cost.
 	series.sketch = ddsketch.NewDDSketch(d.accuracy)
+	// Enable geometric skip-sampling at the source (whole-item, d=1). Seeded
+	// deterministically from the attribute key for reproducibility.
+	if d.sampleP > 0 && d.sampleP < 1 {
+		series.sketch.WithSampleP(d.sampleP, samplerSeedForAttrs(attr))
+	}
 	series.attrs = attr
 	series.seriesID = 0
 	series.res = d.newRes(attr) // attr-dependent, always recreate
@@ -178,9 +192,10 @@ func newDDSketch[N int64 | float64](
 	r func(attribute.Set) FilteredExemplarReservoir[N],
 	deltaTransmission bool,
 	deltaThreshold uint64,
+	sampleP float64,
 ) *ddSketch[N] {
 	return &ddSketch[N]{
-		ddSketchValues: newDDSketchValues[N](accuracy, noMinMax, noSum, limit, r, deltaTransmission, deltaThreshold),
+		ddSketchValues: newDDSketchValues[N](accuracy, noMinMax, noSum, limit, r, deltaTransmission, deltaThreshold, sampleP),
 		start:          now(),
 	}
 }

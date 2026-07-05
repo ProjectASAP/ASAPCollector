@@ -203,6 +203,11 @@ type AggregationDDSketch struct {
 	// include a bucket in a delta payload. Defaults to 1 when DeltaTransmission
 	// is true and DeltaThreshold is 0.
 	DeltaThreshold uint64
+	// SampleP is the geometric admission rate applied at this SDK aggregator
+	// (whole-item, d=1). Values <=0 or >=1 disable sampling; 0 < SampleP < 1
+	// enables NitroSketch skip-sampling (raw counts stored, wire stamps p,
+	// consumer rescales ×1/p).
+	SampleP float64
 }
 
 var _ Aggregation = AggregationDDSketch{}
@@ -212,6 +217,9 @@ var errDDSketch = fmt.Errorf("%w: ddsketch", errAgg)
 func (a AggregationDDSketch) copy() Aggregation { return a }
 
 func (a AggregationDDSketch) err() error {
+	if a.SampleP < 0 || a.SampleP > 1 {
+		return fmt.Errorf("%w: sample_p %v must be in [0,1]", errDDSketch, a.SampleP)
+	}
 	if a.RelativeAccuracy == 0 {
 		return nil
 	}
@@ -310,6 +318,10 @@ type AggregationCountMinSketch struct {
 	// DeltaThreshold is the minimum absolute cell change required to include a
 	// cell in a delta payload. Defaults to 1.0 when DeltaTransmission is true.
 	DeltaThreshold float64
+	// SampleP is the per-row geometric admission rate applied at this SDK
+	// aggregator. Values <=0 or >=1 disable sampling; 0 < SampleP < 1 admits each
+	// row with probability SampleP and applies the 1/SampleP weight in-place.
+	SampleP float64
 }
 
 var _ Aggregation = AggregationCountMinSketch{}
@@ -324,6 +336,9 @@ func (a AggregationCountMinSketch) err() error {
 	}
 	if a.Cols < 0 {
 		return fmt.Errorf("%w: cols %d must be greater than or equal to zero", errCountMinSketch, a.Cols)
+	}
+	if a.SampleP < 0 || a.SampleP > 1 {
+		return fmt.Errorf("%w: sample_p %v must be in [0,1]", errCountMinSketch, a.SampleP)
 	}
 	return nil
 }
