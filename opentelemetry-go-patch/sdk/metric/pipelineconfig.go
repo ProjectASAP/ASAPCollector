@@ -76,6 +76,10 @@ type PipelineCountSketchParams struct {
 	Epsilon   float64 `yaml:"epsilon"`
 	Delta     float64 `yaml:"delta"`
 	Dimension string  `yaml:"dimension"`
+	// SampleP is the per-row geometric admission rate applied at the SDK
+	// aggregator. Omit or set >=1 to disable sampling; 0 < SampleP < 1 enables
+	// per-row NitroSketch admission with 1/p weighting.
+	SampleP float64 `yaml:"sample_p"`
 }
 
 // PipelineCountMinSketchParams are the tuning knobs for CountMinSketch aggregation.
@@ -189,6 +193,7 @@ func (c *PipelineConfig) ToAggregation() Aggregation {
 			Epsilon:   s.CountSketch.Epsilon,
 			Delta:     s.CountSketch.Delta,
 			Dimension: s.CountSketch.Dimension,
+			SampleP:   s.CountSketch.SampleP,
 		}
 	case "countminsketch":
 		return AggregationCountMinSketch{

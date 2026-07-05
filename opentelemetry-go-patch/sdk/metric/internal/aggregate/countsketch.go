@@ -5,9 +5,11 @@ package aggregate // import "go.opentelemetry.io/otel/sdk/metric/internal/aggreg
 
 import (
 	"context"
+	"hash/fnv"
 	"sync"
 	"time"
 
+	"github.com/ProjectASAP/sketchlib-go/common"
 	countsketch "github.com/ProjectASAP/sketchlib-go/sketches/CountSketch"
 
 	"go.opentelemetry.io/otel"
@@ -28,6 +30,14 @@ type countSketchSeries[N int64 | float64] struct {
 	epsilon   float64
 	delta     float64
 
+	// sampler is the per-series geometric row-admission sampler (NitroSketch
+	// skip-sampling). Non-nil only when 0 < sampleP < 1; nil means every update
+	// touches all d rows. Hosting it here — at the SDK aggregator, where the
+	// measurement enters — is the "admission at the SDK" location of §3.1 of the
+	// GOS design: the source decides which rows to admit and applies the 1/p
+	// weight, so downstream collectors never re-sample.
+	sampler *common.GeometricSampler
+
 	measuredSince bool
 	idleCycles    uint8
 }
@@ -38,6 +48,12 @@ type countSketchValues[N int64 | float64] struct {
 	epsilon   float64
 	delta     float64
 	dimension string
+
+	// sampleP is the per-row geometric admission rate. Values <=0 or >=1 disable
+	// sampling (every update touches all d rows); 0 < sampleP < 1 installs a
+	// per-series GeometricSampler and routes updates through the per-row
+	// drop-before-hash path with 1/p inverse-probability weighting.
+	sampleP float64
 
 	limit      limiter[countSketchSeries[N]]
 	values     map[attribute.Distinct]*countSketchSeries[N]
@@ -54,7 +70,7 @@ type countSketchValues[N int64 | float64] struct {
 	snapshotsMu sync.Mutex
 }
 
-func newCountSketchValues[N int64 | float64](rows, cols int, epsilon, delta float64, dimension string, limit int, deltaTransmission bool, deltaThreshold float64) *countSketchValues[N] {
+func newCountSketchValues[N int64 | float64](rows, cols int, epsilon, delta float64, dimension string, limit int, deltaTransmission bool, deltaThreshold float64, sampleP float64) *countSketchValues[N] {
 	if rows <= 0 {
 		rows = defaultCountSketchRows
 	}
@@ -70,6 +86,7 @@ func newCountSketchValues[N int64 | float64](rows, cols int, epsilon, delta floa
 		epsilon:           epsilon,
 		delta:             delta,
 		dimension:         dimension,
+		sampleP:           sampleP,
 		limit:             newLimiter[countSketchSeries[N]](limit),
 		values:            make(map[attribute.Distinct]*countSketchSeries[N]),
 		deltaTransmission: deltaTransmission,
@@ -99,7 +116,29 @@ func (d *countSketchValues[N]) newSeries(attr attribute.Set) *countSketchSeries[
 	series.delta = d.delta
 	series.measuredSince = true
 	series.idleCycles = 0
+	// Install (or reset, on pool reuse) the per-row geometric sampler. Seed it
+	// deterministically from the series' attribute key so runs are reproducible
+	// and distinct series decorrelate their admission streams.
+	if d.sampleP > 0 && d.sampleP < 1 {
+		seed := csSamplerSeed(attr)
+		if series.sampler == nil {
+			series.sampler = common.NewGeometricSampler(d.sampleP, seed)
+		} else {
+			series.sampler.Reset(d.sampleP, seed)
+		}
+	} else {
+		series.sampler = nil
+	}
 	return series
+}
+
+// csSamplerSeed derives a stable per-series RNG seed from the series' encoded
+// attribute set (FNV-1a-64), so the geometric sampler is reproducible across
+// process restarts and independent across series.
+func csSamplerSeed(attr attribute.Set) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(attr.Encoded(attribute.DefaultEncoder())))
+	return int64(h.Sum64())
 }
 
 func (d *countSketchValues[N]) measure(
@@ -127,7 +166,14 @@ func (d *countSketchValues[N]) measure(
 	series.measuredSince = true
 	// Use attribute set as the tracked key
 	key := fltrAttr.Encoded(attribute.DefaultEncoder())
-	series.sketch.UpdateString(key, float64(value))
+	if series.sampler != nil {
+		// Per-row geometric admission (drop-before-hash, 1/p weight). A fully
+		// unadmitted update touches no row — the source-side realization of the
+		// §3.1 sampling split.
+		series.sketch.UpdateStringSampledPerRow(key, float64(value), series.sampler)
+	} else {
+		series.sketch.UpdateString(key, float64(value))
+	}
 }
 
 type countSketchAgg[N int64 | float64] struct {
@@ -135,9 +181,9 @@ type countSketchAgg[N int64 | float64] struct {
 	start time.Time
 }
 
-func newCountSketchAgg[N int64 | float64](rows, cols int, epsilon, delta float64, dimension string, limit int, deltaTransmission bool, deltaThreshold float64) *countSketchAgg[N] {
+func newCountSketchAgg[N int64 | float64](rows, cols int, epsilon, delta float64, dimension string, limit int, deltaTransmission bool, deltaThreshold float64, sampleP float64) *countSketchAgg[N] {
 	return &countSketchAgg[N]{
-		countSketchValues: newCountSketchValues[N](rows, cols, epsilon, delta, dimension, limit, deltaTransmission, deltaThreshold),
+		countSketchValues: newCountSketchValues[N](rows, cols, epsilon, delta, dimension, limit, deltaTransmission, deltaThreshold, sampleP),
 		start:             now(),
 	}
 }

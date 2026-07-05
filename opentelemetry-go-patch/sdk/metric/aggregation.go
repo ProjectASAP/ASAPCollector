@@ -263,6 +263,12 @@ type AggregationCountSketch struct {
 	// DeltaThreshold is the minimum absolute cell change required to include a
 	// cell in a delta payload. Defaults to 1.0 when DeltaTransmission is true.
 	DeltaThreshold float64
+	// SampleP is the per-row geometric admission rate (NitroSketch skip-sampling)
+	// applied at this SDK aggregator. Values <=0 or >=1 disable sampling (every
+	// update touches all rows); 0 < SampleP < 1 admits each row with probability
+	// SampleP and applies the 1/SampleP inverse-probability weight. Hosting the
+	// admission here is the "sampling at the SDK" location of the GOS design.
+	SampleP float64
 }
 
 var _ Aggregation = AggregationCountSketch{}
@@ -283,6 +289,9 @@ func (a AggregationCountSketch) err() error {
 	}
 	if a.Delta != 0 && (a.Delta <= 0 || a.Delta >= 1) {
 		return fmt.Errorf("%w: delta %v must be in (0,1)", errCountSketch, a.Delta)
+	}
+	if a.SampleP < 0 || a.SampleP > 1 {
+		return fmt.Errorf("%w: sample_p %v must be in [0,1]", errCountSketch, a.SampleP)
 	}
 	return nil
 }

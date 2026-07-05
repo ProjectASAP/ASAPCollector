@@ -546,7 +546,7 @@ func (i *inserter[N]) aggregateFunc(
 	case AggregationKLLSketch:
 		meas, comp = b.KLLSketch(a.K)
 	case AggregationCountSketch:
-		meas, comp = b.CountSketch(a.Rows, a.Cols, a.Epsilon, a.Delta, a.Dimension, a.DeltaTransmission, a.DeltaThreshold)
+		meas, comp = b.CountSketch(a.Rows, a.Cols, a.Epsilon, a.Delta, a.Dimension, a.DeltaTransmission, a.DeltaThreshold, a.SampleP)
 	case AggregationCountMinSketch:
 		meas, comp = b.CountMinSketch(a.Rows, a.Cols, a.DeltaTransmission, a.DeltaThreshold)
 	case AggregationHLLSketch:

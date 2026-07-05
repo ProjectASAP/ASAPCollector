@@ -249,8 +249,8 @@ func (b Builder[N]) KLLSketch(k int) (Measure[N], ComputeAggregation) {
 // CountSketch returns a CountSketch aggregate function input and output.
 // deltaTransmission enables sparse delta encoding for cumulative exports;
 // deltaThreshold is the minimum absolute cell change to include in a delta.
-func (b Builder[N]) CountSketch(rows, cols int, epsilon, delta float64, dimension string, deltaTransmission bool, deltaThreshold float64) (Measure[N], ComputeAggregation) {
-	agg := newCountSketchAgg[N](rows, cols, epsilon, delta, dimension, b.AggregationLimit, deltaTransmission, deltaThreshold)
+func (b Builder[N]) CountSketch(rows, cols int, epsilon, delta float64, dimension string, deltaTransmission bool, deltaThreshold float64, sampleP float64) (Measure[N], ComputeAggregation) {
+	agg := newCountSketchAgg[N](rows, cols, epsilon, delta, dimension, b.AggregationLimit, deltaTransmission, deltaThreshold, sampleP)
 	switch b.Temporality {
 	case metricdata.DeltaTemporality:
 		return b.filter(agg.measure), agg.delta

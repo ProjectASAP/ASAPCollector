@@ -164,18 +164,35 @@ implements a *weaker* form of this design, and closing the gap is tracked work:
 | Algorithm | geometric skip-sampling | ✅ `sketchlib-go/common.GeometricSampler` |
 | Weighting | `1/p` on admit | ✅ `CountSketchWrapper.UpdateString` (`count /= sampleP`) |
 | Families | CMS/CS/DDSketch only | ✅ `applyGrantedSampleP` |
-| **Granularity** | per-**row** admission (subset of `d` rows; hash only if ≥1 admitted) | ✅ **per-row** — `CountSketch.UpdateStringSampledPerRow` (sketchlib), wired in the collector wrapper |
-| **Where** | SDK decides, then sends | ❌ still **collector-side** (`precompute-go` wrapper) — the raw item already reached the collector |
+| **Granularity** | per-**row** admission (subset of `d` rows; hash only if ≥1 admitted) | ✅ **per-row** — `CountSketch.UpdateStringSampledPerRow` (sketchlib), wired in both the collector wrapper and the SDK aggregator |
+| **Where** | SDK decides, then sends | ✅ **SDK-build path** — hosted in the OTLP SDK `CountSketch` aggregator (`opentelemetry-go-patch/.../aggregate/countsketch.go`, knob `sample_p`); collector-build path retains the wrapper fallback |
 
-The **granularity** now matches the design (per-row geometric admission,
+The **granularity** matches the design (per-row geometric admission,
 drop-before-hash, `1/p` weight — mirroring `asap_sketchlib/.../nitro.rs`), so the
 sampling term is the tight per-row estimator of §3.2 (median decorrelation, `ε_sa`
-in quadrature). What remains is the **location**: moving the admission decision
-into the OTLP SDK so a fully-unadmitted sample is dropped *before* the collector
-deserializes it (the SDK-side `countminsketch.go`/`ddsketch.go` aggregators
-already exist, so the sampler can be hosted there; the SDK→collector sample then
-carries the admitted rows). Until then the per-row *estimator* benefit is
-realized, but the upstream bandwidth/deserialization saving is not.
+in quadrature). The **location** is now realized on the **SDK-build path**: the
+OTLP metrics SDK's `CountSketch` aggregator hosts a per-series `GeometricSampler`
+and routes every measurement through `UpdateStringSampledPerRow`, so admission
+happens at the source. Two deployment modes and what each saves:
+
+- **SDK-build (sketch in the app).** The SDK builds the group sketch and ships
+  one matrix per window. Sampling here is the source-side realization of the
+  admission split: it cuts SDK hashing/update CPU (`∝ Σ_r p_{i,r}`) and keeps the
+  per-row estimator; the collector then deserializes **one sketch per series**
+  instead of the raw datapoint stream (the raw-datapoint deserialization saving
+  is intrinsic to sketch-in-SDK). Wire volume of the sketch matrix itself is
+  fixed (dense), so sampling's benefit here is CPU + estimator, not matrix bytes.
+- **Collector-build (raw datapoints to the edge).** The app SDK emits raw
+  `NumberDataPoint`s; the edge `otlpfilter` wire-thins **whole datapoints**
+  (per-metric geometric admission) *before* decode, so dropped datapoints are
+  never materialized — the bandwidth/deserialization saving lands at the edge
+  receiver. The per-row `1/p` weighting is then applied by the collector wrapper
+  on survivors. (Whole-item drop is the `R(x)=∅` fast path of the same geometric
+  sampler.)
+
+CMS/DDSketch on the SDK-build path is follow-up: DDSketch is the `d=1` whole-item
+case (`WithSampleP` already exists); CMS needs a per-row sampled update added to
+`sketchlib-go` first (it has no `UpdateSampledPerRow` yet).
 
 **Unbiasedness.** For an admitted row-update the collector applies weight
 `1/p_{i,r}`; since `E[Z_r · 1/p_{i,r}] = 1`, each row-`r` sub-sketch is an
@@ -262,11 +279,13 @@ The GOS water-filling is unchanged in form; the ε-budget is split by §7 Layer 
 (staleness `ε_st` peeled linearly, then `ε_sk²+ε_sa² = (ε_q−ε_st)²`), and this
 floor closes the sampling↔threshold coupling.
 
-**Status.** The per-row *estimator* benefit above is **already realized** in code
-(collector-side `UpdateStringSampledPerRow`), so `ε_sa` already sits inside the
-`1−δ` median guarantee. What remains is the *location* move (admission into the
-SDK), which adds the upstream bandwidth/deserialization saving — not the
-estimator tightening (that is done).
+**Status.** The per-row *estimator* benefit above is **realized** in code via
+`UpdateStringSampledPerRow`, so `ε_sa` sits inside the `1−δ` median guarantee. The
+*location* move is realized on the **SDK-build path** — the OTLP SDK `CountSketch`
+aggregator hosts the sampler (§3.1) — so admission happens at the source; the
+collector-build path realizes the pre-deserialization saving at the edge
+`otlpfilter` (whole-datapoint wire-thinning). CMS/DDSketch SDK-build hosting is
+the remaining follow-up.
 
 ---
 
