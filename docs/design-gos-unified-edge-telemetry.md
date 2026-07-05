@@ -386,9 +386,9 @@ the remaining random budget is split in **quadrature**:
    requires `ε_sk ≤ ε_rand`.
 
 So the composition is `√(ε_sk² + ε_sa²) + ε_st = ε_q`, matching §4 — **not** a
-three-way quadrature. (The code's `split_budget` uses the simpler
-`ε_sa² + ε_st² = ε_res²` quadrature, a first-order approximation valid when
-`ε_st ≪ ε_q`; tightening it to the linear peel above is tracked.)
+three-way quadrature. The code's `split_budget(ε_q, ε_sk, w_edge, w_comm)`
+implements exactly this linear peel (`ε_st = t·(ε_q−ε_sk)`,
+`ε_sa = √((ε_q−ε_st)²−ε_sk²)`, `t = w_comm/(w_edge+w_comm)`).
 
 **Layer C — two water-fillings (same KKT tool, two variables).**
 
