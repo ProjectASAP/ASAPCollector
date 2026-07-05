@@ -253,6 +253,20 @@ millisecond share decisions (same `(seed, occ)`): per-occurrence unbiasedness
 holds, but errors within a same-ms burst are correlated — acceptable, and the
 reason `occ` granularity is ms (exact cross-stage agreement) rather than ns.
 
+**Grant plumbing (implemented).** The coordinator's per-round sampling grant
+reaches the wire filter automatically: `Grant.SampleP` arrives on the monitor
+channel → `monitor.Engine.OnGrant` stores it and fires `SetSampleGrantHook`
+(accepted grants only — stale-epoch/unknown are dropped, mirroring
+`grantedSampleP`) → the `asap_edge` processor's hook (`warm_sketch.go`) does
+`otlpfilter.Default().Upsert(inputMetricName, {P: p, Rows: d})`, with `d` from
+the family config (`wireSampleRows`: CS/CMS matrix rows, DDSketch 1; Sum/KLL/
+HLL never installed — same gating as `applyGrantedSampleP`). `p≤0`/`p≥1`
+grants withdraw the entry (no thinning). The `asap_otlp` receiver reads the
+same process-wide `otlpfilter.Default()` state (its factory defaults to it),
+so a single-pipeline collector needs zero extra wiring. Note `AggID =
+FNV-1a-64(metric)` is the SAME function as `SeedForMetric` — the grant key and
+the sampling seed are one identity.
+
 Enforcement remains one plan-level bit (`sample_at: sdk | collector`; the
 unselected side sees `p=1`), but consistency no longer *depends* on it: a
 misconfigured extra evaluation reproduces the same admitted set instead of

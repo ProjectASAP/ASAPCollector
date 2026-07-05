@@ -68,6 +68,14 @@ type Engine struct {
 	reporter      Reporter
 	edgeID        string
 	epochWindowMs uint64
+
+	// onSampleGrant, when non-nil, is invoked (outside the engine mutex, on
+	// the transport read goroutine) for every ACCEPTED grant with the grant's
+	// aggID and sampling probability — the production hook that forwards the
+	// coordinator's sampling decision to the wire-level otlpfilter
+	// (OnGrant → SampleState.Upsert, design §3.1.1). Stale-epoch / unknown
+	// grants do not fire it, mirroring grantedSampleP storage.
+	onSampleGrant func(aggID uint64, sampleP float64)
 }
 
 // NewEngine builds an Engine for the given edge identity and tumbling window
@@ -86,6 +94,16 @@ func NewEngine(edgeID string, epochWindowMs uint64, reporter Reporter) *Engine {
 func (e *Engine) SetReporter(r Reporter) {
 	e.mu.Lock()
 	e.reporter = r
+	e.mu.Unlock()
+}
+
+// SetSampleGrantHook installs the callback fired for every accepted grant
+// with (aggID, Grant.SampleP). The hook runs on the transport read goroutine
+// OUTSIDE the engine mutex, so it may safely call back into shared state
+// (e.g. otlpfilter.SampleState.Upsert). Safe to call concurrently.
+func (e *Engine) SetSampleGrantHook(fn func(aggID uint64, sampleP float64)) {
+	e.mu.Lock()
+	e.onSampleGrant = fn
 	e.mu.Unlock()
 }
 
@@ -147,9 +165,9 @@ func (e *Engine) Observe(aggID uint64, key []byte, value float64, windowStart ui
 // unreported-but-below-slack mass.
 func (e *Engine) OnGrant(g Grant) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	st := e.states[mapKey{g.AggID, string(g.Key)}]
 	if st == nil || st.windowStart != g.WindowStartMs {
+		e.mu.Unlock()
 		return // unknown monitor or stale epoch
 	}
 	st.round = g.Round
@@ -159,6 +177,13 @@ func (e *Engine) OnGrant(g Grant) {
 	// current decision, so 0 means "no sampling this round" and is recorded as
 	// such; the precompute treats <=0 as p=1 (unsampled).
 	st.grantedSampleP = g.SampleP
+	hook := e.onSampleGrant
+	e.mu.Unlock()
+	// Forward the accepted grant's sampling decision to the wire filter
+	// (outside the mutex — the hook touches shared filter state).
+	if hook != nil {
+		hook(g.AggID, g.SampleP)
+	}
 }
 
 // OnPoll answers a poll with the current local value and advances the baseline

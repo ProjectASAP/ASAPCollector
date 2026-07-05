@@ -70,6 +70,54 @@ func NewSampleState() *SampleState {
 	return s
 }
 
+// defaultState is the process-wide shared SampleState: the asap_edge
+// processor's grant hook writes it (OnGrant → Upsert) and the asap_otlp
+// receiver's wire filter reads it. A package-level singleton is the in-process
+// channel between two independently-constructed collector components; a
+// deployment running multiple isolated collector pipelines in one process
+// should switch to per-pipeline states injected via a collector extension.
+var defaultState = NewSampleState()
+
+// Default returns the process-wide shared SampleState.
+func Default() *SampleState { return defaultState }
+
+// Upsert installs, updates, or removes the sampling params for ONE metric via
+// copy-on-write (grants arrive per metric; SetParams replaces the whole map).
+// P outside (0,1) removes the entry — the coordinator granting p=0 or p>=1
+// means "no wire thinning for this metric". A no-op update (same params, or
+// removing an absent entry) skips the copy, so per-round re-grants of an
+// unchanged p cost one map lookup. Safe for concurrent use with readers and
+// with other writers only via external ordering (grants for one metric arrive
+// on one transport goroutine; the swap itself is atomic).
+func (s *SampleState) Upsert(metric string, p SampleParams) {
+	cur := s.params.Load()
+	old := map[string]SampleParams{}
+	if cur != nil {
+		old = *cur
+	}
+	remove := p.P >= 1.0 || p.P <= 0
+	if p.Rows < 1 {
+		p.Rows = 1
+	}
+	existing, exists := old[metric]
+	if remove && !exists {
+		return // no-op
+	}
+	if !remove && exists && existing == p {
+		return // unchanged
+	}
+	cp := make(map[string]SampleParams, len(old)+1)
+	for k, v := range old {
+		cp[k] = v
+	}
+	if remove {
+		delete(cp, metric)
+	} else {
+		cp[metric] = p
+	}
+	s.params.Store(&cp)
+}
+
 // SetParams atomically replaces the metric -> params map. This is the writer
 // called by asap_edge's OnGrant in the real wiring. A copy of the supplied map
 // is stored so the caller may mutate its argument afterwards.
@@ -89,6 +137,14 @@ func (s *SampleState) SetP(m map[string]float64) {
 		cp[k] = SampleParams{P: v, Rows: 1}
 	}
 	s.params.Store(&cp)
+}
+
+// Params returns the currently-installed sampling params for a metric and
+// whether it is sampled (absent, or P outside (0,1), reports false). Read-only
+// introspection for hosts and tests; the filter's hot path uses paramsFor.
+func (s *SampleState) Params(metric string) (SampleParams, bool) {
+	p, _, ok := s.paramsFor(metric)
+	return p, ok
 }
 
 // paramsFor classifies a metric: (params, seed, true) when it is sampled, or
