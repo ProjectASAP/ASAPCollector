@@ -4,14 +4,22 @@ import (
 	"fmt"
 	"math"
 	"testing"
+	"time"
 
+	"github.com/ProjectASAP/sketchlib-go/common"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
+// testBaseNanos is an arbitrary fixed wall-clock origin so runs are
+// reproducible; datapoint i is stamped base + i·1ms so every datapoint has a
+// distinct occurrence id (occ = nanos/1e6).
+const testBaseNanos = uint64(1_700_000_000_000_000_000)
+
 // buildGaugeMetric returns a pmetric.Metrics with a single ResourceMetrics /
 // ScopeMetrics holding one Gauge metric named `name` with `n` NumberDataPoints.
-// Each datapoint carries a unique "idx" attribute and an int value so we can
-// verify survivors are intact and identify which were kept.
+// Each datapoint carries a unique "idx" attribute, an int value, and a unique
+// millisecond timestamp so the consistent decision varies per datapoint.
 func buildGaugeMetric(name string, n int) pmetric.Metrics {
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()
@@ -27,6 +35,7 @@ func buildGaugeMetric(name string, n int) pmetric.Metrics {
 		dp.Attributes().PutInt("idx", int64(i))
 		dp.Attributes().PutStr("label", "val")
 		dp.SetIntValue(int64(i))
+		dp.SetTimestamp(pcommon.Timestamp(testBaseNanos + uint64(i)*uint64(time.Millisecond)))
 	}
 	return md
 }
@@ -67,10 +76,10 @@ func gaugeDataPointCount(md pmetric.Metrics, name string) int {
 	return -1
 }
 
-// TestColdMetricPassthrough: a metric absent from the p-map keeps all of its
-// datapoints and the filtered bytes are byte-identical to the input.
+// TestColdMetricPassthrough: a metric absent from the params map keeps all of
+// its datapoints and the filtered bytes are byte-identical to the input.
 func TestColdMetricPassthrough(t *testing.T) {
-	s := NewSampleState() // empty p-map => nothing sampled
+	s := NewSampleState() // empty params map => nothing sampled
 	const n = 100
 	in := marshal(t, buildGaugeMetric("cold.metric", n))
 
@@ -85,9 +94,9 @@ func TestColdMetricPassthrough(t *testing.T) {
 	}
 }
 
-// TestWarmMetricThinned: a warm metric at p=0.25 keeps roughly p*N datapoints
-// (with N large), drops a strictly positive number, the result re-unmarshals,
-// and surviving datapoints retain their attributes/values exactly.
+// TestWarmMetricThinned: a warm metric at p=0.25, rows=1 keeps roughly p*N
+// datapoints, drops a strictly positive number, the result re-unmarshals, and
+// surviving datapoints retain their attributes/values exactly.
 func TestWarmMetricThinned(t *testing.T) {
 	const (
 		name = "warm.metric"
@@ -138,6 +147,100 @@ func TestWarmMetricThinned(t *testing.T) {
 	}
 }
 
+// TestPerRowFanoutKeepRate: with rows=d the keep probability is 1-(1-p)^d (a
+// datapoint survives iff ANY of the d per-row decisions admits — the R(x)=∅
+// wire-drop fast path of design §3.1).
+func TestPerRowFanoutKeepRate(t *testing.T) {
+	const (
+		name = "warm.perrow"
+		n    = 2000
+		p    = 0.25
+		d    = 4
+	)
+	s := NewSampleState()
+	s.SetParams(map[string]SampleParams{name: {P: p, Rows: d}})
+
+	in := marshal(t, buildGaugeMetric(name, n))
+	out := s.FilterRequest(in)
+	kept := gaugeDataPointCount(unmarshal(t, out), name)
+
+	pKeep := 1 - math.Pow(1-p, d) // ≈ 0.684 for p=.25, d=4
+	sigma := math.Sqrt(n * pKeep * (1 - pKeep))
+	if math.Abs(float64(kept)-pKeep*n) > 5*sigma+5 {
+		t.Fatalf("kept=%d, want ≈ %.0f (1-(1-p)^d = %.3f)", kept, pKeep*n, pKeep)
+	}
+	t.Logf("per-row d=%d p=%.2f: kept=%d of %d (expected ~%.0f)", d, p, kept, n, pKeep*n)
+}
+
+// TestConsistentDecisionsMatchSurvivors: survivors are EXACTLY the datapoints
+// for which the shared stateless decision (common.ConsistentAdmit with the
+// canonical seed and occ = time-ms) admits at least one row — the property
+// that lets the collector wrapper re-derive the identical decision set.
+func TestConsistentDecisionsMatchSurvivors(t *testing.T) {
+	const (
+		name = "warm.agree"
+		n    = 1000
+		p    = 0.2
+		d    = 3
+	)
+	s := NewSampleState()
+	s.SetParams(map[string]SampleParams{name: {P: p, Rows: d}})
+
+	in := marshal(t, buildGaugeMetric(name, n))
+	out := s.FilterRequest(in)
+	md := unmarshal(t, out)
+
+	// Recompute the expected survivor idx-set from shared inputs only.
+	seed := common.SeedForMetric(name)
+	expect := map[int64]bool{}
+	for i := 0; i < n; i++ {
+		occ := (testBaseNanos + uint64(i)*uint64(time.Millisecond)) / 1_000_000
+		for r := 0; r < d; r++ {
+			if common.ConsistentAdmit(seed, occ, r, p) {
+				expect[int64(i)] = true
+				break
+			}
+		}
+	}
+
+	g := firstGauge(t, md, name)
+	if g.DataPoints().Len() != len(expect) {
+		t.Fatalf("survivors=%d != recomputed admits=%d", g.DataPoints().Len(), len(expect))
+	}
+	for i := 0; i < g.DataPoints().Len(); i++ {
+		idx, _ := g.DataPoints().At(i).Attributes().Get("idx")
+		if !expect[idx.Int()] {
+			t.Fatalf("survivor idx=%d was not in the recomputed admit set", idx.Int())
+		}
+	}
+	t.Logf("filter survivors == stateless recomputation (%d of %d kept)", len(expect), n)
+}
+
+// TestZeroTimestampPassthrough: datapoints with no timestamp are kept
+// (fail-open — no wire identity to decide on); the wrapper samples them via
+// its occurrence-counter fallback instead, exactly once end-to-end.
+func TestZeroTimestampPassthrough(t *testing.T) {
+	const (
+		name = "warm.nots"
+		n    = 200
+	)
+	s := NewSampleState()
+	s.SetParams(map[string]SampleParams{name: {P: 0.1, Rows: 2}})
+
+	md := pmetric.NewMetrics()
+	g := md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	g.SetName(name)
+	gg := g.SetEmptyGauge()
+	for i := 0; i < n; i++ {
+		dp := gg.DataPoints().AppendEmpty()
+		dp.SetIntValue(int64(i)) // no SetTimestamp → time_unix_nano = 0
+	}
+	out := s.FilterRequest(marshal(t, md))
+	if kept := gaugeDataPointCount(unmarshal(t, out), name); kept != n {
+		t.Fatalf("zero-timestamp datapoints must pass through: kept=%d of %d", kept, n)
+	}
+}
+
 // TestMixedBatch: one warm + one cold metric in the same request. The cold
 // metric is fully preserved; the warm metric is thinned.
 func TestMixedBatch(t *testing.T) {
@@ -162,6 +265,7 @@ func TestMixedBatch(t *testing.T) {
 			dp := g.DataPoints().AppendEmpty()
 			dp.Attributes().PutInt("idx", int64(i))
 			dp.SetIntValue(int64(i))
+			dp.SetTimestamp(pcommon.Timestamp(testBaseNanos + uint64(i)*uint64(time.Millisecond)))
 		}
 	}
 	in := marshal(t, md)
@@ -176,42 +280,6 @@ func TestMixedBatch(t *testing.T) {
 		t.Fatalf("warm metric not thinned: kept=%d of %d", warmKept, n)
 	}
 	t.Logf("mixed: cold kept=%d (=N), warm kept=%d of %d (p=%.2f)", n, warmKept, n, p)
-}
-
-// TestSamplerAdmitsMatchSurvivors: the number of geometric admissions the
-// sampler grants equals the number of surviving datapoints, demonstrating that
-// dropped datapoints are exactly those the sampler rejected (and thus never
-// materialized).
-func TestSamplerAdmitsMatchSurvivors(t *testing.T) {
-	const (
-		name = "warm.count"
-		n    = 1000
-		p    = 0.2
-	)
-	// Reference sampler: replay the SAME deterministic sequence the filter will
-	// use (same p, same name-derived seed) and count admissions.
-	s := NewSampleState()
-	s.SetP(map[string]float64{name: p})
-	ms := s.samplerFor(name, p)
-	expectAdmits := 0
-	for i := 0; i < n; i++ {
-		if ms.gs.Admit() {
-			expectAdmits++
-		}
-	}
-
-	// Fresh state (fresh sampler, same seed) for the actual filter run.
-	s2 := NewSampleState()
-	s2.SetP(map[string]float64{name: p})
-	in := marshal(t, buildGaugeMetric(name, n))
-	out := s2.FilterRequest(in)
-	md := unmarshal(t, out)
-	kept := gaugeDataPointCount(md, name)
-
-	if kept != expectAdmits {
-		t.Fatalf("survivors=%d != sampler admits=%d (drops not aligned with sampler)", kept, expectAdmits)
-	}
-	t.Logf("sampler admits=%d == survivors=%d (dropped %d never materialized)", expectAdmits, kept, n-kept)
 }
 
 // TestValidityMultiResource: a request with multiple ResourceMetrics /
@@ -235,6 +303,7 @@ func TestValidityMultiResource(t *testing.T) {
 				for i := 0; i < 50; i++ {
 					dp := g.DataPoints().AppendEmpty()
 					dp.SetIntValue(int64(i))
+					dp.SetTimestamp(pcommon.Timestamp(testBaseNanos + uint64(i)*uint64(time.Millisecond)))
 				}
 			}
 		}

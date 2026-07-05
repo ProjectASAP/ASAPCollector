@@ -79,6 +79,18 @@ type CountSketchWrapper struct {
 	// sampling.md). nil (sampleP=1) ⇒ every item updates, byte-identical to today.
 	sampler *common.GeometricSampler
 	sampleP float64
+
+	// consistent replaces the geometric sampler once the runtime threads a
+	// per-item sample identity (SetSampleIdentity): a STATELESS decision per
+	// (FNV(metric), occurrence=TimestampMs, row), identical to what the
+	// wire-level otlpfilter evaluates on the raw bytes — so the filter's
+	// whole-datapoint drop (R(x)=∅) and this wrapper's per-row admissions are
+	// two views of ONE decision (design §3.1.1) and never compound. nil until
+	// the first identity arrives; geometric remains the fallback for direct
+	// UpdateString callers that never thread identities.
+	consistent        *common.ConsistentSampler
+	consistentSeed    uint64
+	consistentSeedSet bool
 }
 
 // WithSampleP enables geometric update-sampling at probability p (0<p<1). p>=1
@@ -90,11 +102,13 @@ func (w *CountSketchWrapper) WithSampleP(p float64) *CountSketchWrapper {
 	}
 	if p >= 1.0 || p != p || p <= 0 { // p!=p ⇒ NaN
 		w.sampler = nil
+		w.consistent = nil
 		w.sampleP = 1.0
 		return w
 	}
 	w.sampleP = p
 	w.sampler = common.NewGeometricSampler(p, countSketchSampleSeed)
+	w.consistent = nil // rebuilt with the new p on the next SetSampleIdentity
 	return w
 }
 
@@ -264,12 +278,42 @@ func NewCountSketchWithHeapWrapper(rows, cols, heapSize int) (*CountSketchWrappe
 // UpdateString mirrors the legacy ws.cs.UpdateString(itemKey, value)
 // call. Adapters that route a key/count pair (rather than an
 // ObservationValue) call this directly.
+// SetSampleIdentity threads the per-item consistent-sampling identity from
+// the runtime (precompute.SampleIdentitySetter): seed = FNV-1a(metric name)
+// (the canonical common.SeedForMetric convention shared with the wire-level
+// otlpfilter), occurrence = the observation's TimestampMs (the filter reads
+// the same value as time_unix_nano/1e6 on the raw bytes). A zero timestamp
+// leaves the sampler in counter mode for this item: the filter passed such
+// points through undecided (fail-open), so the wrapper's own occurrence
+// counter samples them exactly once end-to-end.
+func (w *CountSketchWrapper) SetSampleIdentity(metric string, timestampMs uint64) {
+	if w == nil || w.cs == nil || w.sampleP >= 1.0 || w.sampleP <= 0 {
+		return
+	}
+	if !w.consistentSeedSet {
+		w.consistentSeed = common.SeedForMetric(metric)
+		w.consistentSeedSet = true
+	}
+	if w.consistent == nil {
+		w.consistent = common.NewConsistentSampler(w.sampleP, w.consistentSeed)
+	}
+	if timestampMs != 0 {
+		w.consistent.Rebind(w.consistentSeed, timestampMs)
+	}
+}
+
 func (w *CountSketchWrapper) UpdateString(key string, count float64) {
 	// Nil guard: a wrapper whose constructor failed (e.g. dimensions
 	// exceeding the 64-bit row-hash budget) can be left with cs == nil if
 	// a caller discarded the constructor error. Skip the update rather
 	// than panic on the first sample (P0-1).
 	if w == nil || w.cs == nil {
+		return
+	}
+	if w.consistent != nil {
+		// Consistent per-row admission: same decisions as the wire filter
+		// (drop-before-hash, 1/p weight in place; see SetSampleIdentity).
+		w.cs.UpdateStringSampledPerRow(key, count, w.consistent)
 		return
 	}
 	if w.sampler != nil {

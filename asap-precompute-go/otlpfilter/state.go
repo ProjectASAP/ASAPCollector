@@ -1,159 +1,130 @@
-// Package otlpfilter implements a pre-decode OTLP wire-filter that
-// geometric-samples the datapoints of warm-sketch metrics directly at the
-// protobuf wire level — before the OTLP payload is decoded into pdata. The
-// dropped fraction is wire-skipped and therefore never materialized (no
-// attribute-map / value decode), which captures more of the decode cost than
-// post-decode sampling can (see
-// docs/distributed-nitrosketch-coordinated-sampling.md, "in-collector
-// pre-decode shim").
+// Package otlpfilter implements a pre-decode OTLP wire-filter that thins the
+// datapoints of warm-sketch metrics directly at the protobuf wire level —
+// before the OTLP payload is decoded into pdata. The dropped fraction is
+// wire-skipped and therefore never materialized (no attribute-map / value
+// decode), which captures more of the decode cost than post-decode sampling
+// can (see docs/distributed-nitrosketch-coordinated-sampling.md,
+// "in-collector pre-decode shim").
+//
+// Sampling is CONSISTENT (design §3.1.1, single-location sampling): the
+// per-datapoint decision is the stateless hash
+//
+//	admit(seed, occ, row) = common.ConsistentAdmit(...)
+//	seed = common.SeedForMetric(name)          (canonical FNV-1a-64)
+//	occ  = datapoint time_unix_nano / 1e6      (milliseconds — matches the
+//	                                            decoded Observation.TimestampMs
+//	                                            the collector wrapper sees)
+//
+// and a datapoint is dropped iff NONE of the target sketch's d rows admits
+// (the R(x)=∅ event, probability (1−p)^d). The collector wrapper re-evaluates
+// the identical per-row decisions on survivors and applies the 1/p weight —
+// the filter and the wrapper are two views of ONE sampling decision, so the
+// filter needs no RNG state, no mutexes, and re-evaluation anywhere is
+// idempotent. A datapoint with no/zero timestamp is passed through (fail-open
+// — the filter cannot decide without a wire identity); the wrapper then
+// samples such points via its per-series occurrence-counter fallback, so they
+// are still sampled exactly once end-to-end.
 //
 // The package is additive and self-contained: it touches no existing code and
-// only depends on OTLP pdata (for tests) and sketchlib-go's GeometricSampler.
+// only depends on sketchlib-go/common (pdata appears in tests only).
 package otlpfilter
 
 import (
-	"hash/fnv"
-	"sync"
 	"sync/atomic"
 
 	"github.com/ProjectASAP/sketchlib-go/common"
 )
 
-// SampleState is the shared, in-process sampling state consulted by the
-// wire-filter. It maps each warm-sketch metric name to an effective sampling
-// probability p in (0,1] and keeps a per-metric geometric sampler.
-//
-// The p-map is published lock-free via an atomic pointer so the real wiring
-// (asap_edge's OnGrant -> SetP) can swap the whole map without blocking the
-// hot read path. A metric absent from the map, or with p >= 1.0, is treated as
-// "not sampled" (cold / raw) and passes through untouched.
-//
-// The geometric samplers are NOT safe for concurrent use individually, so each
-// metric's sampler is guarded by its own mutex (the filter is expected to run
-// on a single receive path, but we make it safe regardless).
-type SampleState struct {
-	// pmap : metric-name -> effective p in (0,1]. nil/absent or p>=1 => not sampled.
-	pmap atomic.Pointer[map[string]float64]
-
-	// samplers : metric-name -> *metricSampler (lazily created on first admit).
-	samplers sync.Map
+// SampleParams configures consistent sampling for one warm metric.
+type SampleParams struct {
+	// P is the per-row admission probability in (0,1). Values outside the open
+	// interval mean "not sampled" (the metric passes through untouched).
+	P float64
+	// Rows is the counter fan-out d of the target sketch: the datapoint is kept
+	// iff at least one of rows 0..Rows-1 admits. Use the sketch's row count for
+	// per-row families (CountSketch / CountMinSketch) and 1 for whole-item
+	// families (DDSketch). Values < 1 are treated as 1.
+	Rows int
 }
 
-// metricSampler couples a GeometricSampler with a mutex and the p it was built
-// for, so SetP can detect a changed p and rebuild the sampler deterministically.
-type metricSampler struct {
-	mu sync.Mutex
-	gs *common.GeometricSampler
-	p  float64
+// SampleState is the shared, in-process sampling configuration consulted by
+// the wire-filter. It maps each warm-sketch metric name to its SampleParams.
+// The map is published lock-free via an atomic pointer so the real wiring
+// (asap_edge's OnGrant -> SetParams) can swap the whole map without blocking
+// the hot read path. A metric absent from the map, or with P outside (0,1),
+// is treated as "not sampled" (cold / raw) and passes through untouched.
+//
+// There is no per-metric sampler state: decisions are stateless hashes, so
+// SampleState is safe for concurrent use by construction.
+type SampleState struct {
+	params atomic.Pointer[map[string]SampleParams]
 }
 
 // NewSampleState returns an empty SampleState in which nothing is sampled
-// (every metric passes through). Call SetP to install per-metric probabilities.
+// (every metric passes through). Call SetParams (or the SetP convenience) to
+// install per-metric sampling.
 func NewSampleState() *SampleState {
 	s := &SampleState{}
-	empty := map[string]float64{}
-	s.pmap.Store(&empty)
+	empty := map[string]SampleParams{}
+	s.params.Store(&empty)
 	return s
 }
 
-// SetP atomically replaces the metric -> p map. This is the writer called by
-// asap_edge's OnGrant in the real wiring. A copy of the supplied map is stored
-// so the caller may mutate its argument afterwards. Per-metric samplers whose p
-// changed are dropped so they are rebuilt with the new p (and a fresh
-// deterministic seed) on the next admit.
-func (s *SampleState) SetP(m map[string]float64) {
-	cp := make(map[string]float64, len(m))
+// SetParams atomically replaces the metric -> params map. This is the writer
+// called by asap_edge's OnGrant in the real wiring. A copy of the supplied map
+// is stored so the caller may mutate its argument afterwards.
+func (s *SampleState) SetParams(m map[string]SampleParams) {
+	cp := make(map[string]SampleParams, len(m))
 	for k, v := range m {
 		cp[k] = v
 	}
-	s.pmap.Store(&cp)
-
-	// Invalidate samplers whose effective p changed (or which are no longer
-	// sampled), so admit() rebuilds them lazily and reproducibly.
-	s.samplers.Range(func(key, val any) bool {
-		name := key.(string)
-		ms := val.(*metricSampler)
-		newP, ok := cp[name]
-		if !ok || newP >= 1.0 {
-			s.samplers.Delete(name)
-			return true
-		}
-		ms.mu.Lock()
-		if ms.p != newP {
-			s.samplers.Delete(name)
-		}
-		ms.mu.Unlock()
-		return true
-	})
+	s.params.Store(&cp)
 }
 
-// effectiveP returns the configured p for a metric and whether it is sampled.
-// A metric absent from the map or with p >= 1.0 (or non-positive) is not sampled.
-func (s *SampleState) effectiveP(metric string) (float64, bool) {
-	mp := s.pmap.Load()
+// SetP is the whole-item (Rows=1) convenience form of SetParams, kept for
+// callers that predate per-row fan-out configuration.
+func (s *SampleState) SetP(m map[string]float64) {
+	cp := make(map[string]SampleParams, len(m))
+	for k, v := range m {
+		cp[k] = SampleParams{P: v, Rows: 1}
+	}
+	s.params.Store(&cp)
+}
+
+// paramsFor classifies a metric: (params, seed, true) when it is sampled, or
+// (_, _, false) for cold/raw metrics. The seed is the canonical per-metric
+// consistent-sampling seed shared with the collector wrapper.
+func (s *SampleState) paramsFor(metric string) (SampleParams, uint64, bool) {
+	mp := s.params.Load()
 	if mp == nil {
-		return 1.0, false
+		return SampleParams{}, 0, false
 	}
 	p, ok := (*mp)[metric]
-	if !ok || p >= 1.0 || p <= 0 {
-		return 1.0, false
+	if !ok || p.P >= 1.0 || p.P <= 0 {
+		return SampleParams{}, 0, false
 	}
-	return p, true
+	if p.Rows < 1 {
+		p.Rows = 1
+	}
+	return p, common.SeedForMetric(metric), true
 }
 
-// metricSeed derives a deterministic 64-bit seed from the metric name so test
-// runs are reproducible across processes. The geometric sampler reseeds its RNG
-// from this value.
-func metricSeed(metric string) int64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(metric))
-	return int64(h.Sum64())
-}
-
-// samplerFor returns (creating if needed) the per-metric geometric sampler for
-// a sampled metric. The sampler is seeded deterministically from the metric
-// name. Returns nil if the metric is not sampled.
-func (s *SampleState) samplerFor(metric string, p float64) *metricSampler {
-	if v, ok := s.samplers.Load(metric); ok {
-		ms := v.(*metricSampler)
-		ms.mu.Lock()
-		if ms.p == p {
-			ms.mu.Unlock()
-			return ms
+// keepDataPoint evaluates the consistent whole-datapoint decision for one
+// opaque datapoint of a sampled metric: keep iff at least one of the d rows
+// admits at (seed, occ = time ms). A datapoint whose time_unix_nano is absent
+// or zero is KEPT (fail-open — no wire identity to decide on; the wrapper
+// samples such points via its occurrence-counter fallback instead, exactly
+// once end-to-end).
+func keepDataPoint(p SampleParams, seed uint64, dp []byte) bool {
+	tNanos, ok := readDataPointTimeNanos(dp)
+	if !ok || tNanos == 0 {
+		return true
+	}
+	occ := tNanos / 1_000_000 // milliseconds — must match Observation.TimestampMs
+	for r := 0; r < p.Rows; r++ {
+		if common.ConsistentAdmit(seed, occ, r, p.P) {
+			return true
 		}
-		// p changed underneath us; rebuild.
-		ms.gs = common.NewGeometricSampler(p, metricSeed(metric))
-		ms.p = p
-		ms.mu.Unlock()
-		return ms
 	}
-	ms := &metricSampler{
-		gs: common.NewGeometricSampler(p, metricSeed(metric)),
-		p:  p,
-	}
-	actual, _ := s.samplers.LoadOrStore(metric, ms)
-	return actual.(*metricSampler)
-}
-
-// admit classifies a metric and, when it is sampled, draws one geometric
-// admission decision for the current datapoint.
-//
-//   - If the metric is not in the p-map or p >= 1 => (sampled=false, keep=true):
-//     the metric passes through unchanged; the caller must NOT have called this
-//     per-datapoint (it is called once per metric to learn it is cold).
-//   - If the metric IS sampled => (sampled=true, keep=<geometric Admit()>): the
-//     caller calls this once per datapoint and keeps the datapoint iff keep.
-//
-// admit consumes one RNG admission only when the metric is sampled, matching
-// NitroSketch's per-update geometric skip.
-func (s *SampleState) admit(metric string) (sampled bool, keep bool) {
-	p, isSampled := s.effectiveP(metric)
-	if !isSampled {
-		return false, true
-	}
-	ms := s.samplerFor(metric, p)
-	ms.mu.Lock()
-	keep = ms.gs.Admit()
-	ms.mu.Unlock()
-	return true, keep
+	return false
 }

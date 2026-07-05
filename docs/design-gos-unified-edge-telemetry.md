@@ -214,25 +214,56 @@ admit(seed_series, occ, row) ⇔ U(seed_series, occ, row) < p        (pure funct
 inputs — no RNG state — *any* pipeline stage evaluates it and gets the identical
 admitted-row set:
 
-- **SDK-build**: the SDK aggregator's `ConsistentSampler` owns the decision
-  (`occ` = per-series measurement counter). Downstream sees only sketch frames;
-  nothing to re-sample.
-- **Collector-build**: the raw datapoints cross the wire, and `occ` is taken
-  from a **wire-visible identity** (the datapoint's `TimeUnixNano`, plus a
-  within-batch ordinal for ties). Then the wire-level `otlpfilter` and the
-  collector wrapper become **two views of the same decision**: the filter drops
-  a datapoint iff *no* row admits (`R(x)=∅`, the `∏_r(1−p)` fast path, checked
-  by evaluating the same `d` decisions on the wire bytes), and the wrapper
-  re-evaluates the identical per-row admissions on survivors and applies the
-  `1/p` weight once. Re-evaluation is **idempotent** — recomputing a decision
-  never dilutes twice, because there is nothing stochastic left to re-draw.
+- **SDK-build** (implemented): the SDK aggregator's `ConsistentSampler` owns
+  the decision (`occ` = per-series measurement counter, seed = FNV(attrs) ⊕
+  window start). Downstream sees only sketch frames; nothing to re-sample.
+- **Collector-build** (implemented): the raw datapoints cross the wire, and
+  the identity is wire-visible — **seed = `common.SeedForMetric(name)`**
+  (canonical FNV-1a-64 of the metric name) and **occ = `time_unix_nano / 1e6`
+  in milliseconds**, chosen because the decoded `Observation.TimestampMs` the
+  wrapper sees is ms-resolution, so both stages compute the *same integer*.
+  The wire-level `otlpfilter` and the collector wrapper are then **two views
+  of the same decision**:
+  - `otlpfilter.SampleState.SetParams(name → {P, Rows})` configures per-metric
+    `(p, d)`; the filter reads `time_unix_nano` (field 3, fixed64) from the
+    opaque datapoint bytes and drops it iff *no* row admits (`R(x)=∅`, the
+    `(1−p)^d` fast path) — never decoding attributes or values.
+  - the runtime threads `(obs.Metric, obs.TimestampMs)` to the sketch via the
+    optional `precompute.SampleIdentitySetter` interface (one cached assert
+    per series entry, in `recordLocked`); the wrappers re-evaluate the
+    identical per-row admissions on survivors and apply the weight once:
+    **CountSketch/CMS** per-row with in-place `1/p` (CMS's internal whole-item
+    sampler is switched off — the wire envelope stays exact, no downstream
+    rescale); **DDSketch** is the `d=1` case — admission moves out of the
+    sketch into the wrapper's consistent decision, and `SetWireSampleP` keeps
+    the raw-counts + envelope-`p` convention for the consumer's `×1/p`.
+
+  Re-evaluation is **idempotent** — recomputing a decision never dilutes
+  twice, because there is nothing stochastic left to re-draw. Contract tests
+  pin this: filter survivors ≡ stateless recomputation ≡ wrapper touches
+  (`otlpfilter.TestConsistentDecisionsMatchSurvivors`,
+  `sketches.TestCSWrapper_ConsistentAgreesWithFilter`,
+  `TestDDSketchWrapper_ConsistentD1`).
+
+**Timestamp edge cases.** A datapoint with absent/zero `time_unix_nano` is
+passed through by the filter (fail-open — no wire identity to decide on) and
+sampled by the wrapper's per-series occurrence-counter fallback instead —
+exactly once end-to-end either way. Datapoints of the same metric sharing one
+millisecond share decisions (same `(seed, occ)`): per-occurrence unbiasedness
+holds, but errors within a same-ms burst are correlated — acceptable, and the
+reason `occ` granularity is ms (exact cross-stage agreement) rather than ns.
 
 Enforcement remains one plan-level bit (`sample_at: sdk | collector`; the
 unselected side sees `p=1`), but consistency no longer *depends* on it: a
 misconfigured extra evaluation reproduces the same admitted set instead of
 squaring the sampling rate. `occ` must vary per **occurrence** — never per key
 alone, or a key's admissions become all-or-nothing and the §3.2 per-row
-decorrelation collapses to whole-key sampling.
+decorrelation collapses to whole-key sampling. The filter's `Rows` must equal
+the target sketch's row count (plan consistency). A mismatch is asymmetric:
+`Rows` too LARGE is safe (the filter keeps extra points the wrapper then skips
+itself — wasted wire bytes, no bias); `Rows` too SMALL over-drops (the filter
+discards points whose higher rows the wrapper would have admitted — mass the
+`1/p` weight cannot recover, biasing estimates low). When in doubt, round up.
 
 **Window-start seed salt.** The per-series seed is XOR-salted with the window
 start (refreshed each delta-temporality collect). Without it, a series
