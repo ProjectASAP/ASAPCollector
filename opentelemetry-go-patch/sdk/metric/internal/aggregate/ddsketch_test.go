@@ -492,13 +492,14 @@ func TestDDSketchPayloadIsSketchlibPortableEnvelope(t *testing.T) {
 	state := env.GetDdsketch()
 	require.NotNil(t, state, "envelope must carry a DDSketchState variant")
 	require.InDelta(t, testDDSketchAccuracy, state.Alpha, 1e-12)
-	require.Equal(t, uint64(5), state.Count)
 
 	// Reconstruct via the canonical NewFromState entrypoint and confirm
 	// quantiles agree within the accuracy bound (the actual value the
-	// agent will emit on the consume side).
+	// agent will emit on the consume side). Count lives in the store buckets
+	// now (DDSketchState fields 4-7 were dropped from the wire).
 	recovered, err := ddsketch.NewFromState(state)
 	require.NoError(t, err)
+	require.Equal(t, uint64(5), recovered.GetCount())
 	q, ok := recovered.Quantile(0.99)
 	require.True(t, ok)
 	require.InDelta(t, 100.0, q, 100.0*testDDSketchAccuracy)
