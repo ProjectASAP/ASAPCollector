@@ -34,7 +34,10 @@ DRIVER="$WORK/f2driver"
 ( cd "$GO_DIR/monitor/grpcclient" && go build -o "$DRIVER" ./cmd/f2driver/ )
 
 run () { # workload mode port
-  local pat="$1" mode="$2" port="$3" out="$WORK/h_${pat}_${mode}.out"
+  local pat="$1" mode="$2" port="$3"
+  # Separate statement: ${pat} in the same `local` would expand before the
+  # assignments take effect (unbound under set -u).
+  local out="$WORK/h_${pat}_${mode}.out"
   "$HARNESS" "$port" "$mode" 1 "$TAU" "$EPS" "$ROWS" "$COLS" 3600000 "$TIMEOUT" >"$out" 2>/dev/null &
   local hp=$!
   for _ in $(seq 1 50); do grep -q HARNESS_READY "$out" && break; sleep 0.1; done
