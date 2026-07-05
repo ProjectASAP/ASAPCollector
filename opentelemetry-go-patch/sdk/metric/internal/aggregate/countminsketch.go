@@ -22,10 +22,12 @@ type countMinSketchSeries[N int64 | float64] struct {
 	sketch      *cms.CountMinSketch
 	sampleCount uint64
 
-	// sampler is the per-series per-row geometric admission sampler (non-nil only
-	// when 0 < sampleP < 1). Hosting it at the SDK aggregator is the "admission at
-	// the SDK" location of §3.1 of the GOS design.
-	sampler *common.GeometricSampler
+	// sampler is the per-series CONSISTENT row-admission sampler (non-nil only
+	// when 0 < sampleP < 1): a stateless hash decision per (seed, occurrence,
+	// row), so any other pipeline stage recomputing it agrees exactly — one
+	// sampling owner regardless of location (design §3.1). Hosting it at the
+	// SDK aggregator is the "admission at the SDK" location.
+	sampler *common.ConsistentSampler
 
 	measuredSince bool
 	idleCycles    uint8
@@ -35,10 +37,13 @@ type countMinSketchValues[N int64 | float64] struct {
 	rows int
 	cols int
 
-	// sampleP is the per-row geometric admission rate. <=0 or >=1 disables
-	// sampling (every insert touches all rows); 0 < sampleP < 1 installs a
-	// per-series sampler routing inserts through InsertWithHashSampledPerRow.
+	// sampleP is the per-row admission rate. <=0 or >=1 disables sampling
+	// (every insert touches all rows); 0 < sampleP < 1 installs a per-series
+	// ConsistentSampler routing inserts through InsertWithHashSampledPerRow.
 	sampleP float64
+	// seedSalt decorrelates admission patterns across windows (mixed into every
+	// series' sampler seed; refreshed to the window start in delta()).
+	seedSalt uint64
 
 	limit      limiter[countMinSketchSeries[N]]
 	values     map[attribute.Distinct]*countMinSketchSeries[N]
@@ -96,11 +101,12 @@ func (d *countMinSketchValues[N]) newSeries(attr attribute.Set) *countMinSketchS
 	series.sampleCount = 0
 	series.measuredSince = true
 	series.idleCycles = 0
-	// Install (or reset, on pool reuse) the per-row geometric sampler.
+	// Install (or reset, on pool reuse) the per-row consistent sampler. Seed =
+	// FNV(attrs) ⊕ window salt (see countsketch.go).
 	if d.sampleP > 0 && d.sampleP < 1 {
-		seed := samplerSeedForAttrs(attr)
+		seed := uint64(samplerSeedForAttrs(attr)) ^ d.seedSalt
 		if series.sampler == nil {
-			series.sampler = common.NewGeometricSampler(d.sampleP, seed)
+			series.sampler = common.NewConsistentSampler(d.sampleP, seed)
 		} else {
 			series.sampler.Reset(d.sampleP, seed)
 		}
@@ -151,10 +157,12 @@ type countMinSketchAgg[N int64 | float64] struct {
 }
 
 func newCountMinSketchAgg[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64, sampleP float64) *countMinSketchAgg[N] {
-	return &countMinSketchAgg[N]{
+	a := &countMinSketchAgg[N]{
 		countMinSketchValues: newCountMinSketchValues[N](rows, cols, limit, deltaTransmission, deltaThreshold, sampleP),
 		start:                now(),
 	}
+	a.seedSalt = uint64(a.start.UnixNano())
+	return a
 }
 
 func (d *countMinSketchAgg[N]) measure(
@@ -207,6 +215,8 @@ func (d *countMinSketchAgg[N]) delta(
 	}
 	clear(d.values)
 	d.start = t
+	// New window → new admission salt (fresh decorrelated pattern next window).
+	d.seedSalt = uint64(t.UnixNano())
 
 	data.DataPoints = dPts
 	*dest = data
@@ -298,7 +308,11 @@ func (d *countMinSketchValues[N]) payloadFor(key attribute.Distinct, sketch *cms
 			payload, err = cms.SerializeDelta(deltaMsg)
 		}
 		enc = metricdata.CountMinSketchEncodingDelta
-	} else {
+		// Fall through to a full frame on any delta error (mirrors the
+		// DDSketch payloadFor contract): always produce a valid payload and
+		// refresh the snapshot, never wedge the series.
+	}
+	if payload == nil || err != nil {
 		payload, err = serializeCMSketch(sketch)
 		enc = metricdata.CountMinSketchEncodingProto
 	}

@@ -63,6 +63,9 @@ type ddSketchValues[N int64 | float64] struct {
 	// the sketch's built-in WithSampleP (raw admitted counts stored, the wire
 	// envelope stamps p and the consumer rescales ×1/p at query).
 	sampleP float64
+	// seedSalt decorrelates admission patterns across windows (mixed into every
+	// series' sampler seed; refreshed to the window start in delta()).
+	seedSalt uint64
 
 	// deltaTransmission enables sparse delta encoding for cumulative exports.
 	deltaTransmission bool
@@ -120,10 +123,11 @@ func (d *ddSketchValues[N]) newSeries(attr attribute.Set, value N) *ddSketchSeri
 	// fresh sketch for a new series. The pool still amortizes the
 	// ddSketchSeries header allocation, which is the dominant cost.
 	series.sketch = ddsketch.NewDDSketch(d.accuracy)
-	// Enable geometric skip-sampling at the source (whole-item, d=1). Seeded
-	// deterministically from the attribute key for reproducibility.
+	// Enable geometric skip-sampling at the source (whole-item, d=1). Seed =
+	// FNV(attrs) ⊕ window salt: reproducible within a window, independent
+	// across series, decorrelated across windows.
 	if d.sampleP > 0 && d.sampleP < 1 {
-		series.sketch.WithSampleP(d.sampleP, samplerSeedForAttrs(attr))
+		series.sketch.WithSampleP(d.sampleP, samplerSeedForAttrs(attr)^int64(d.seedSalt))
 	}
 	series.attrs = attr
 	series.seriesID = 0
@@ -194,10 +198,12 @@ func newDDSketch[N int64 | float64](
 	deltaThreshold uint64,
 	sampleP float64,
 ) *ddSketch[N] {
-	return &ddSketch[N]{
+	a := &ddSketch[N]{
 		ddSketchValues: newDDSketchValues[N](accuracy, noMinMax, noSum, limit, r, deltaTransmission, deltaThreshold, sampleP),
 		start:          now(),
 	}
+	a.seedSalt = uint64(a.start.UnixNano())
+	return a
 }
 
 func (d *ddSketch[N]) measure(
@@ -256,6 +262,8 @@ func (d *ddSketch[N]) delta(
 	}
 	clear(d.values)
 	d.start = t
+	// New window → new admission salt (fresh decorrelated pattern next window).
+	d.seedSalt = uint64(t.UnixNano())
 
 	data.DataPoints = dPts
 	*dest = data

@@ -167,12 +167,12 @@ implements a *weaker* form of this design, and closing the gap is tracked work:
 | **Granularity** | per-**row** admission (subset of `d` rows; hash only if ≥1 admitted) | ✅ **per-row** — `CountSketch.UpdateStringSampledPerRow` (sketchlib), wired in both the collector wrapper and the SDK aggregator |
 | **Where** | SDK decides, then sends | ✅ **SDK-build path** — hosted in the OTLP SDK `CountSketch` aggregator (`opentelemetry-go-patch/.../aggregate/countsketch.go`, knob `sample_p`); collector-build path retains the wrapper fallback |
 
-The **granularity** matches the design (per-row geometric admission,
-drop-before-hash, `1/p` weight — mirroring `asap_sketchlib/.../nitro.rs`), so the
-sampling term is the tight per-row estimator of §3.2 (median decorrelation, `ε_sa`
-in quadrature). The **location** is now realized on the **SDK-build path**: the
-OTLP metrics SDK's `CountSketch` aggregator hosts a per-series `GeometricSampler`
-and routes every measurement through `UpdateStringSampledPerRow`, so admission
+The **granularity** matches the design (per-row admission, drop-before-hash,
+`1/p` weight — mirroring `asap_sketchlib/.../nitro.rs`), so the sampling term is
+the tight per-row estimator of §3.2 (median decorrelation, `ε_sa` in
+quadrature). The **location** is now realized on the **SDK-build path**: the
+OTLP metrics SDK's `CountSketch` aggregator hosts a per-series sampler and
+routes every measurement through `UpdateStringSampledPerRow`, so admission
 happens at the source. Two deployment modes and what each saves:
 
 - **SDK-build (sketch in the app).** The SDK builds the group sketch and ships
@@ -191,12 +191,64 @@ happens at the source. Two deployment modes and what each saves:
   sampler.)
 
 All three families are wired on the SDK-build path via a `sample_p` knob:
-**CountSketch** and **CountMinSketch** host a per-series external `GeometricSampler`
-and route inserts through `UpdateStringSampledPerRow` /
-`InsertWithHashSampledPerRow` (per-row admission, `1/p` applied in-place, wire
-stays exact — no downstream rescale); **DDSketch** is the `d=1` whole-item case and
-uses the sketch's built-in `WithSampleP` (raw counts, wire stamps `p`, consumer
-rescales `×1/p`). `KLL`/`HLL` stay unsampled by design (§ applicability table).
+**CountSketch** and **CountMinSketch** host a per-series sampler and route
+inserts through `UpdateStringSampledPerRow` / `InsertWithHashSampledPerRow`
+(per-row admission, `1/p` applied in-place, wire stays exact — no downstream
+rescale); **DDSketch** is the `d=1` whole-item case and uses the sketch's
+built-in `WithSampleP` (raw counts, wire stamps `p`, consumer rescales `×1/p`).
+`KLL`/`HLL` stay unsampled by design (§ applicability table).
+
+### 3.1.1 Single-location sampling via consistent (stateless) decisions
+
+The design has exactly **one** sampling stage per series — never SDK *and*
+collector compounding. Rather than relying on configuration alone to prevent
+double sampling, the admission decision itself is made **location-independent**:
+
+```
+admit(seed_series, occ, row) ⇔ U(seed_series, occ, row) < p        (pure function)
+```
+
+`U` is a splitmix64-derived uniform (`sketchlib-go/common.ConsistentAdmit`);
+`seed_series = FNV-1a(series key) ⊕ window-start` and `occ` is the item's
+**occurrence id**. Because the decision is a deterministic function of shared
+inputs — no RNG state — *any* pipeline stage evaluates it and gets the identical
+admitted-row set:
+
+- **SDK-build**: the SDK aggregator's `ConsistentSampler` owns the decision
+  (`occ` = per-series measurement counter). Downstream sees only sketch frames;
+  nothing to re-sample.
+- **Collector-build**: the raw datapoints cross the wire, and `occ` is taken
+  from a **wire-visible identity** (the datapoint's `TimeUnixNano`, plus a
+  within-batch ordinal for ties). Then the wire-level `otlpfilter` and the
+  collector wrapper become **two views of the same decision**: the filter drops
+  a datapoint iff *no* row admits (`R(x)=∅`, the `∏_r(1−p)` fast path, checked
+  by evaluating the same `d` decisions on the wire bytes), and the wrapper
+  re-evaluates the identical per-row admissions on survivors and applies the
+  `1/p` weight once. Re-evaluation is **idempotent** — recomputing a decision
+  never dilutes twice, because there is nothing stochastic left to re-draw.
+
+Enforcement remains one plan-level bit (`sample_at: sdk | collector`; the
+unselected side sees `p=1`), but consistency no longer *depends* on it: a
+misconfigured extra evaluation reproduces the same admitted set instead of
+squaring the sampling rate. `occ` must vary per **occurrence** — never per key
+alone, or a key's admissions become all-or-nothing and the §3.2 per-row
+decorrelation collapses to whole-key sampling.
+
+**Window-start seed salt.** The per-series seed is XOR-salted with the window
+start (refreshed each delta-temporality collect). Without it, a series
+recreated each window (occurrence counter rewound) would repeat the identical
+admission pattern every window — per-window unbiased, but with sampling errors
+correlated across windows instead of averaging out. (The collector-build wire
+identity gets this for free: `TimeUnixNano` never repeats across windows.)
+
+**Fractional counts on the wire.** Per-row `1/p` weighting makes cells and
+deltas non-integral, so the proto wire carries them losslessly: full frames
+switch to packed-float64 `counts_float` when any cell is fractional (integral
+matrices keep the compact sint64 wire, byte-identical to before), and sparse
+deltas ride the new `d_counts_float` field under the same rule. The SDK's
+`payloadFor` additionally falls back to a full frame on any delta error, so an
+export can never wedge a series. (The msgpack-heap delta wire keeps its i64
+contract with the Rust backend and is unaffected.)
 
 **Unbiasedness.** For an admitted row-update the collector applies weight
 `1/p_{i,r}`; since `E[Z_r · 1/p_{i,r}] = 1`, each row-`r` sub-sketch is an
