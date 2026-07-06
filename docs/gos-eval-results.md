@@ -87,18 +87,36 @@ Both sketch modes fire the **same** alert (observed 921,600, inside the
 `[(1−ε)τ, τ) = [900k, 10⁶)` band). Geometric wins in **both** regimes vs
 distributed.
 
-**Raw baseline honesty.** The raw rows ship every sample as a msgpack
-`[ts, key, value]` record (real serialized frames, exact-F2 alert ground
-truth — `f2driver … raw`). On THIS workload raw is far cheaper than the
-sketches — **by construction**: the protocol-stress workload has only `H=4`
-distinct keys (~9 samples/step total), while a sketch ship costs a fixed
-`d·w ≈ 11.5 KB` regardless of `H`. Raw bytes scale `∝ H` (~1,957 B/key over
-the 20-step run at `H=2048`: 4,007,440 B measured via `F2_KEYS=2048`), sketch
-bytes do not — the crossover on this run shape is `H* ≈ 470` keys vs
-distributed and `H* ≈ 270` vs ramp-geometric; at `H=2048` the sketch wins
-**4.3×** (distributed) / **7.5×** (geometric). For realistic
-cardinality/rate the gap is the C1-wire result (33.8×/65.9× on the
-Google-cluster trace). Sweep `F2_KEYS` to reproduce the crossover.
+**Raw baseline honesty — and why this workload is protocol-stress, not
+bandwidth-scale.** The raw rows ship every sample as a real msgpack
+`[ts, key, value]` frame (exact-F2 alert ground truth — `f2driver … raw`). On
+the DEFAULT workload raw is the cheapest of all — **by construction, and it
+does not generalize**: the workload has only `H=4` distinct keys, so raw is
+~320 samples (~7 KB), while a sketch ship is a **fixed** `d·w ≈ 11.5 KB`
+regardless of `H`. A sketch only pays off once cardinality is large enough
+that raw exceeds that fixed cost. Measured crossover (`F2_KEYS` sweep, ramp,
+`k=4` edges, 20 steps; distributed is fixed at 923,280 and geometric at
+531,132 — sketch size is `H`-independent):
+
+| `H` distinct keys | raw bytes | raw / distributed | raw / geometric |
+|---|---|---|---|
+| 4 (default) | 7,120 | 0.01× | 0.01× |
+| 256 | 482,960 | 0.52× | 0.91× |
+| **512** | 974,480 | **1.06×** (raw now loses) | 1.83× |
+| 2,048 | 4,007,440 | 4.34× | 7.55× |
+| 8,192 | 16,295,440 | 17.65× | 30.68× |
+| 32,768 | 67,268,880 | 72.86× | 126.65× |
+
+So **raw wins only below ~500 keys** (vs distributed) / ~280 (vs geometric);
+real telemetry cardinality (10³–10⁶ series) puts you deep in the sketch-wins
+regime — consistent with the C1-wire dataset result (33.8×/65.9× reduction on
+the Google-cluster trace). **Two orthogonal claims live here:** (1)
+sketch-vs-raw is a *cardinality* question (settled by the crossover above, and
+by C1-wire at real scale); (2) geometric-vs-distributed is a *monitoring*
+question — ship-on-violation vs ship-every-window — whose 4.0×/1.74× ratio is
+`H`-independent (it depends on the F2 trajectory vs the safe zone, not the
+sketch size), so it holds at any cardinality. The `H=4` run isolates (2); use
+`F2_KEYS≥2048` (with a retuned `τ`) or the C1-wire dataset for (1).
 
 ### Effect of the `C_ref` delta broadcast (design §12 open-problem #1)
 
