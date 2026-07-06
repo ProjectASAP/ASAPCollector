@@ -224,6 +224,12 @@ type sketchOpts struct {
 	// interval disables it; epsilon 0 = fixed mode.
 	subWindowInterval time.Duration
 	subWindowEpsilon  float64
+	// gosDeltaEpsilon / gosSites / gosAnisotropic configure the GOS norm-adaptive
+	// relative delta gate (PrecomputeConfig.GosDeltaEpsilon/GosSites/GosAnisotropic).
+	// gosDeltaEpsilon 0 disables it (fixed DeltaThreshold path). Count-Sketch only.
+	gosDeltaEpsilon float64
+	gosSites        uint32
+	gosAnisotropic  bool
 }
 
 // parseFunctional maps the YAML functional name to the monitor enum. Unknown /
@@ -491,6 +497,13 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		// DeltaTransmission.
 		SubWindowInterval: opts.subWindowInterval,
 		SubWindowEpsilon:  opts.subWindowEpsilon,
+		// GOS norm-adaptive relative delta gate (control-plane knobs). When
+		// GosDeltaEpsilon > 0 the runtime's applyGosMode replaces the fixed
+		// DeltaThreshold with the GOS threshold (isotropic scalar, or anisotropic
+		// per-cell {T_j} when GosAnisotropic). 0 keeps the DeltaThreshold path.
+		GosDeltaEpsilon: opts.gosDeltaEpsilon,
+		GosSites:        opts.gosSites,
+		GosAnisotropic:  opts.gosAnisotropic,
 	}
 	// Surface the HLLSparse typed flag as the documented HLL "sparse"
 	// SketchParams key (1 = sparse base; absent/0 = dense default) so config

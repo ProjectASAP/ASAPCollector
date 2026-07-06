@@ -142,6 +142,23 @@ type MetricFamily struct {
 	// sketch-specific (bucket counts / cells); see PrecomputeConfig.DeltaThreshold.
 	DeltaThreshold uint64 `mapstructure:"delta_threshold"`
 
+	// GosDeltaEpsilon, when > 0, replaces the fixed DeltaThreshold with the GOS
+	// norm-adaptive relative delta gate (T = ε‖Ĉ‖/(2k√(dw)); see
+	// PrecomputeConfig.GosDeltaEpsilon and design-gos-unified-edge-telemetry.md
+	// §7). Count-Sketch families only — the control plane emits this key
+	// (`gos_delta_epsilon`) only for `family: countsketch`. 0 (default) keeps the
+	// fixed DeltaThreshold path unchanged.
+	GosDeltaEpsilon float64 `mapstructure:"gos_delta_epsilon"`
+	// GosSites is the site count k in the GOS threshold (bigger fleet ⇒ tighter
+	// per-edge threshold). Only meaningful when GosDeltaEpsilon > 0.
+	GosSites uint32 `mapstructure:"gos_sites"`
+	// GosAnisotropic selects the per-cell threshold shape when GosDeltaEpsilon>0:
+	// false (default) → isotropic scalar (O(1) edge memory); true →
+	// gradient-weighted per-cell {T_j} water-filling (O(d·w) memory, less comm on
+	// skewed sketches). The control plane emits `gos_anisotropic: true` only when
+	// it selects the anisotropic shape.
+	GosAnisotropic bool `mapstructure:"gos_anisotropic"`
+
 	// EmitHeap selects the heap-bearing CountSketch wire variant for a
 	// `family: countsketch` metric: the emitted sketch carries a bounded
 	// top-k min-heap of heavy-hitter items alongside the count matrix,
