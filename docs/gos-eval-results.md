@@ -113,10 +113,43 @@ regime — consistent with the C1-wire dataset result (33.8×/65.9× reduction o
 the Google-cluster trace). **Two orthogonal claims live here:** (1)
 sketch-vs-raw is a *cardinality* question (settled by the crossover above, and
 by C1-wire at real scale); (2) geometric-vs-distributed is a *monitoring*
-question — ship-on-violation vs ship-every-window — whose 4.0×/1.74× ratio is
-`H`-independent (it depends on the F2 trajectory vs the safe zone, not the
-sketch size), so it holds at any cardinality. The `H=4` run isolates (2); use
-`F2_KEYS≥2048` (with a retuned `τ`) or the C1-wire dataset for (1).
+question — ship-on-violation vs ship-every-window. The geometric **ship count**
+(the monitoring decision) is ~`H`-independent (F2 trajectory vs safe zone), but
+its **byte count is not**, because the `C_ref` broadcast size grows with sketch
+density — see the H=2048 run below.
+
+### Realistic cardinality (H=2048, τ auto-scaled) — sketch beats raw, but geometric's broadcast blows up
+
+`f2_wholesketch_cluster.sh` now defaults to `H=2048` distinct keys with
+`τ = 250000·H` (keeps the ramp crossing at the same fractional step; recorded at
+`eval-8node/f2_wholesketch_cluster_h2048.csv`):
+
+| workload | mode | alert | total bytes | vs distributed |
+|---|---|---|---|---|
+| stable | raw | none ✓ | 204,056 | — |
+| stable | distributed | none ✓ | 923,280 | 1.0× |
+| stable | **geometric** | none ✓ | **230,820** | **0.25× (4.0× less)** |
+| ramp | raw | fired ✓ | 4,007,440 | — |
+| ramp | **distributed** | fired ✓ | **923,280** | **1.0× — beats raw 4.3×** |
+| ramp | geometric | fired ✓ | 1,647,966 | **1.78× (LOSES to distributed)** |
+
+Two findings, both honest:
+- **Sketch beats raw at scale.** Ramp distributed (923,280, fixed `d·w`) is
+  **4.3× smaller** than raw (4,007,440) — the cardinality concern is resolved
+  once `H` is realistic.
+- **Geometric's ramp win does NOT survive a dense sketch.** Geometric ramp rose
+  from 531,132 (H=4) to 1,647,966 (H=2048) and now *loses* to distributed. The
+  egress decomposes as `1,647,966 − 28·11,541 (ingress) = 1,324,818 ≈
+  4·28·11,541` — i.e. **the sparse `C_ref` deltas have degenerated into
+  near-full matrices**: 2048 keys in a 1280-cell (`d·w=5·256`) sketch saturate
+  almost every cell, so "changed cells" ≈ "all cells" and the O(k) broadcast
+  amplification returns. Stable geometric still wins 4× (only 4 ships → 4
+  broadcasts), but ramp (28 ships × near-full broadcast) does not. This is
+  exactly the design §12 #1 (anisotropic/thresholded broadcast) + small-norm
+  limit, now *measured*: the geometric protocol pays off when the sketch is
+  **sparse relative to its cell budget**; an overloaded sketch needs a larger
+  `w`, a thresholded (not `Δ≠0`) broadcast gate, or both. The `H=4` run isolates
+  the monitoring logic; this run shows the real-scale communication reality.
 
 ### Effect of the `C_ref` delta broadcast (design §12 open-problem #1)
 

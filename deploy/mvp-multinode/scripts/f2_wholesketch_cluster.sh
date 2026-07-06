@@ -25,7 +25,14 @@ read -r EDGE_HOST _ <<< "${SRC_HOSTS}"   # first source node runs the edges
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"; ssh -o BatchMode=yes "${WARM_HOST}" "pkill -f f2_monitor_harness" 2>/dev/null || true' EXIT
 
-TAU=1000000; EPS=0.1; ROWS=5; COLS=256; EDGES=4; STEPS=20; DRIFT=8; TIMEOUT=25
+EPS=0.1; ROWS=5; COLS=256; EDGES=4; STEPS=20; DRIFT=8; TIMEOUT=25
+# Distinct-key cardinality H (default 2048 — a realistic per-metric series count,
+# where the fixed d·w sketch cost is well below raw). τ auto-scales with H so the
+# ramp keeps the same trajectory: ramp F2_max = H·(k·drift·STEPS)², so a τ ∝ H
+# fires the alert at the same fractional step regardless of H (τ(4)=1e6 → 250000·H).
+KEYS="${F2_KEYS:-2048}"
+TAU=$(( 250000 * KEYS ))
+export F2_KEYS="${KEYS}"
 
 echo "building + shipping harness (→${WARM_HOST}) and f2driver (→${EDGE_HOST})…"
 ( cd "$BACKEND" && cargo build --release --bin f2_monitor_harness >/dev/null 2>&1 )
@@ -42,7 +49,7 @@ run () { # workload mode port
   for _ in $(seq 1 80); do grep -q HARNESS_READY "$out" 2>/dev/null && break; sleep 0.2; done
   grep -q HARNESS_READY "$out" || { echo "  $pat/$mode: harness not ready — skipped"; kill "$hp" 2>/dev/null; return; }
   ssh -o BatchMode=yes "${EDGE_HOST}" \
-    "/tmp/f2driver ${WARM_IP}:$port $mode 1 $TAU $EPS $ROWS $COLS $EDGES $STEPS $DRIFT $pat" 2>"$err"
+    "F2_KEYS=$KEYS /tmp/f2driver ${WARM_IP}:$port $mode 1 $TAU $EPS $ROWS $COLS $EDGES $STEPS $DRIFT $pat" 2>"$err"
   sleep 0.5
   local alert total ships silent
   alert=$(grep -c MONITOR_ALERT "$out" || true)
@@ -63,7 +70,7 @@ raw () { # workload
   local pat="$1"
   local err="$WORK/d_${pat}_raw.err"
   ssh -o BatchMode=yes "${EDGE_HOST}" \
-    "/tmp/f2driver - raw 1 $TAU $EPS $ROWS $COLS $EDGES $STEPS $DRIFT $pat" 2>"$err"
+    "F2_KEYS=$KEYS /tmp/f2driver - raw 1 $TAU $EPS $ROWS $COLS $EDGES $STEPS $DRIFT $pat" 2>"$err"
   local line total alert
   line=$(grep 'mode=raw' "$err")
   total=$(sed -E 's/.*total_bytes=([0-9]+).*/\1/' <<<"$line")
@@ -75,7 +82,7 @@ raw () { # workload
 
 CSV="${F2_CLUSTER_OUT:-${MV}/eval-8node/f2_wholesketch_cluster.csv}"
 echo "workload,mode,alert,total_bytes,ships,silent" > "$CSV"
-echo "== whole-sketch F2 over the real NIC: edges on ${EDGE_HOST} → coordinator on ${WARM_HOST} (${WARM_IP}) =="
+echo "== whole-sketch F2 over the real NIC (H=${KEYS} keys, tau=${TAU}): edges on ${EDGE_HOST} → coordinator on ${WARM_HOST} =="
 echo "== stable workload (F2 stays below tau) =="
 raw stable
 run stable distributed "$BASE_PORT"
