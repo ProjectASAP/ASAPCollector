@@ -39,6 +39,13 @@ Cross-language (Rust coordinator + Go multi-edge driver), `k=4` edges, 20
 sub-window steps, `d=5`, `w=256`, `τ=10⁶`, `ε=0.1`. Total bytes = edge→coord
 sketch bytes + coord→edge `C_ref` broadcast bytes.
 
+**Cluster (real NIC):** the same matrix reproduced across the 8-node CloudLab
+fabric — edges on a source node, coordinator on the WARM node, every ship and
+broadcast crossing the 10 GbE LAN — with byte-identical totals (the protocol is
+deterministic) and the same alert decisions. Reproduce:
+`deploy/mvp-multinode/scripts/f2_wholesketch_cluster.sh` → recorded at
+`deploy/mvp-multinode/eval-8node/f2_wholesketch_cluster.csv`.
+
 | Workload | Mode | Alert | Total bytes | vs distributed |
 |---|---|---|---|---|
 | **stable** (F₂ < τ) | distributed | none ✓ | 923,280 | 1.0× |

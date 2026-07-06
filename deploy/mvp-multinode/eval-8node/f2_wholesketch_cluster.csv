@@ -1,0 +1,5 @@
+workload,mode,alert,total_bytes,ships,silent
+stable,distributed,0,923280,80,0
+stable,geometric,0,230820,4,76
+ramp,distributed,1,923280,80,0
+ramp,geometric,1,531132,28,52
