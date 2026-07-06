@@ -24,12 +24,40 @@ At equal accuracy budget `B`, the per-cell water-filling gives communication
 | 1.5 | 0.1283 | 0.1283 | 87.2% |
 | 2.0 (heavy) | 0.0284 | 0.0284 | 97.2% |
 
-**Measured `ρ` matches the predicted Cauchy–Schwarz factor exactly** — confirming
-both the analysis and that `AllocateThresholds` realizes the water-filling
-optimum. Savings scale with skew: for a heavy-tailed sketch (a few cells carry
-the F₂ mass) anisotropic uses a **small fraction** of the uniform communication;
-for a flat sketch there is (correctly) no difference. The cost is the `O(d·w)`
-edge-memory threshold vector — the `GosAnisotropic` toggle exposes the tradeoff.
+The `ρ` above is a **closed-form check**: both columns evaluate the same
+Cauchy–Schwarz factor on a synthetic cell vector, so the exact match confirms
+only that `AllocateThresholds` realizes the water-filling optimum — it is **not**
+a measurement of communication on a real stream (a caveat first raised in the
+code review). The cost of anisotropic mode is the `O(d·w)` edge-memory threshold
+vector; the `GosAnisotropic` toggle exposes the tradeoff.
+
+### Cluster measurement (real agents, iptables byte count)
+
+Replaces the closed-form check with an end-to-end measurement:
+`deploy/mvp-multinode/scripts/gos_aniso_cluster.sh` runs a real asap-otel agent
+(CountSketch `top_endpoint_qps`, `gos_delta_epsilon=0.1`, iso vs `gos_anisotropic:
+true`) fed by the otel-app five-sketch producer with Zipf(`s`) endpoint labels,
+and counts the delta bytes that reach the sink node's `:4317` with an iptables
+counter (kernel-side, exact), over 70 s of steady state per arm after a warmup:
+
+| Zipf `s` | iso bytes | aniso bytes | measured `ρ` |
+|---|---|---|---|
+| 1.1 | 503,230 | 303,901 | **0.60** (40% saving) |
+| 1.5 | 301,851 | 302,328 | 1.00 |
+| 2.0 | 303,693 | 300,198 | 0.99 |
+
+**This is the honest result, and it does NOT match the closed-form story.**
+Anisotropic saves ~40% at *low* input skew (`s=1.1`) but is a wash at higher
+skew — the OPPOSITE of the closed-form prediction that savings grow with skew.
+Two likely confounds, still to be run down: (a) a ~303 KB floor across most
+cells suggests a fixed per-window cost (full keyframe / re-fill after
+window-reset) dominating the *delta* the gate controls; (b) the CountSketch hash
+SPREADS a heavy Zipf endpoint across `d` random-sign cells, so high *input* skew
+does not straightforwardly produce high *cell-magnitude* skew — the quantity the
+water-filling actually exploits. Treat the anisotropic per-cell win as
+**unconfirmed on real workloads** pending this investigation; the mechanism
+(config parse → `applyGosMode` → per-cell `{T_j}`) is verified live end-to-end,
+the payoff is not.
 
 ---
 
