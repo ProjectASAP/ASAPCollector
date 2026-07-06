@@ -62,6 +62,28 @@ regime. Delta-encoding the broadcast (sparse changed cells only):
 
 Egress dropped **5.3×**, flipping geometric from a loss to a `1.74×` win.
 
+### Delta-loss resilience (safety under a dropped `C_ref` delta)
+
+The sparse delta is a dependency chain, so a lost/corrupt `ΔC_ref` could leave an
+edge running its safe-zone test against a diverged reference — a *silent missed
+violation*. Reproduce: `deploy/mvp-multinode/scripts/f2_deltaloss_demo.sh`
+(injects loss on edge-0's 2nd delta via the f2driver `F2_INJECT` knob), same
+ramp/geometric scenario three ways:
+
+| scenario | alert | total bytes | ref_errs | behavior |
+|---|---|---|---|---|
+| no loss | **1** ✓ | 531,132 | 0 | baseline |
+| corrupt delta | **1** ✓ | 531,132 | 1 | edge-0 **detects** the bad delta → `needFull` → force-ship |
+| dropped delta | **1** ✓ | 506,106 | 0 | silent loss undetected by that edge; recovered by the periodic keyframe + the other edges' true sketches in the global merge |
+
+**The alert fires in all three cases** — safety is preserved under delta loss. A
+*corrupt* delta is caught at the edge (`ref_errs=1`, force-ship); a *silently
+dropped* delta has no sequence gap for that edge to detect (`ref_errs=0`), so its
+recovery rests on the coordinator's periodic Full keyframe (`F2_KEYFRAME_INTERVAL`)
+and the fact that the global `mean_f2` still sums the other edges' exact sketches.
+A per-broadcast sequence number (edge-detected gap → on-demand resync request)
+would close the silent-drop detection gap; it is noted as future work.
+
 ---
 
 ## 3. Woodruff–Zhang `k/ε²` reference

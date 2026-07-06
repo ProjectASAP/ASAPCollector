@@ -52,6 +52,47 @@ func argOr(i int, def string) string {
 
 const numSharedKeys = 4
 
+// lossyInbound wraps an F2Engine to SIMULATE C_ref delta loss on the
+// coordinator→edge path, so the eval can exercise the delta-loss guards
+// (f2engine needFull force-ship + coordinator periodic keyframe). Gated by env
+// vars, default OFF (the wrapper forwards every message unchanged):
+//
+//	F2_INJECT=corrupt  — replace the Nth delta's bytes with garbage → the edge's
+//	                     OnRef decode fails → needFull → force-ship (detected).
+//	F2_INJECT=drop     — silently swallow the Nth delta → the edge never sees it,
+//	                     so needFull is NOT set (a pure mid-stream loss has no
+//	                     sequence gap to detect); safety then rests on the
+//	                     coordinator's periodic Full keyframe recovery.
+//	F2_INJECT_NTH=<n>  — which delta broadcast (1-based) to affect (default 1).
+//
+// Only the injected edge is wrapped, modelling "one edge misses a delta".
+type lossyInbound struct {
+	inner *monitor.F2Engine
+	mode  string
+	nth   int
+	seen  int
+}
+
+func (l *lossyInbound) OnGrant(g monitor.Grant) { l.inner.OnGrant(g) }
+func (l *lossyInbound) OnPoll(p monitor.Poll)   { l.inner.OnPoll(p) }
+func (l *lossyInbound) OnClose(c monitor.Close) { l.inner.OnClose(c) }
+func (l *lossyInbound) OnRef(rb monitor.RefBroadcast) {
+	if l.nth > 0 && rb.IsDelta {
+		l.seen++
+		if l.seen == l.nth {
+			switch l.mode {
+			case "drop":
+				fmt.Fprintf(os.Stderr, "f2driver: INJECT drop delta #%d on edge-0 (silent loss)\n", l.seen)
+				return
+			case "corrupt":
+				fmt.Fprintf(os.Stderr, "f2driver: INJECT corrupt delta #%d on edge-0\n", l.seen)
+				rb.CRef = []byte{0xff, 0xff, 0xff, 0xff}
+			}
+		}
+	}
+	l.inner.OnRef(rb)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: f2driver <url> <mode> <agg_id> <tau> <eps> <rows> <cols> <edges> <steps> <drift>")
@@ -72,6 +113,11 @@ func main() {
 	const windowMs = uint64(3_600_000)
 	windowStart := uint64(time.Now().UnixMilli()) / windowMs * windowMs
 
+	// Optional delta-loss injection (edge-0 only), gated by env vars — see
+	// lossyInbound. Default OFF, so a normal eval run is byte-identical.
+	injectMode := os.Getenv("F2_INJECT")
+	injectNth := atoiOr(os.Getenv("F2_INJECT_NTH"), 1)
+
 	type edge struct {
 		eng    *monitor.F2Engine
 		client *grpcclient.Client
@@ -90,7 +136,11 @@ func main() {
 			SketchCols:     cols,
 			Mode:           mode,
 		})
-		client := grpcclient.New(url, eng)
+		var inbound monitor.Inbound = eng
+		if i == 0 && (injectMode == "corrupt" || injectMode == "drop") {
+			inbound = &lossyInbound{inner: eng, mode: injectMode, nth: injectNth}
+		}
+		client := grpcclient.New(url, inbound)
 		eng.SetReporter(client)
 		cs, err := sketches.NewCountSketchWrapper(rows, cols)
 		if err != nil {
