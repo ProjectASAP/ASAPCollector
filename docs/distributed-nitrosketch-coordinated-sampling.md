@@ -1,5 +1,8 @@
 # Distributed NitroSketch — coordinator-allocated update-sampling across edge collectors
 
+> **Part of the CDM/GOS theory set.** The canonical, unified derivations live in [`sampling-cdm-gos-derivations.md`](sampling-cdm-gos-derivations.md) — start there. This doc is retained for the SDK→collector split survival proof (unbiasedness + partition-invariant variance), per-family applicability, and the 2026-06 empirical validation, which the canonical doc does not reproduce.
+
+
 > Design note. Extends [NitroSketch](https://doi.org/10.1145/3341302.3342076)
 > (per-sketch update-sampling, single stream) to a multi-edge setting using the
 > coordinated-sampling idea from the
