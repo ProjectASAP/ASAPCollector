@@ -473,10 +473,15 @@ func (w *CountSketchWrapper) gosThresholdMatrix(prev *countsketch.CountSketch) [
 	}
 	_, norm := w.L2DivergenceSinceEmit()
 	flat := AllocateThresholds(cells, GosParams{
-		Budget:     w.gosEpsilon * norm * norm,
-		K:          w.gosSites,
-		TQueryCap:  math.Inf(1),
-		SampleP:    1.0,
+		Budget:    w.gosEpsilon * norm * norm,
+		K:         w.gosSites,
+		TQueryCap: math.Inf(1),
+		// Thread the coordinator-granted update-sampling p so the coupling floor
+		// T_j ≥ √(V_j(1−p)/p) binds ("don't transmit finer than you sample"):
+		// when a grant sets p<1 and cells go quiet, the delta gate must not emit
+		// below the sampling noise. w.SampleP() is 1.0 when unsampled, which
+		// GosParams.floor treats as no floor — byte-identical to before.
+		SampleP:    w.SampleP(),
 		FreshDelta: math.Inf(1),
 	})
 	m := make([][]float64, w.rows)

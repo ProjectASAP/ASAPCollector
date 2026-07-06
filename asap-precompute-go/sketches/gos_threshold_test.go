@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"testing"
+
+	countsketch "github.com/ProjectASAP/sketchlib-go/sketches/CountSketch"
 )
 
 // TestGosModeToggle exercises the isotropic/anisotropic delta toggle end-to-end:
@@ -43,6 +45,62 @@ func TestGosModeToggle(t *testing.T) {
 
 func params(budget float64, k uint32) GosParams {
 	return GosParams{Budget: budget, K: k, TQueryCap: math.Inf(1), SampleP: 1.0, FreshDelta: math.Inf(1)}
+}
+
+// TestGosThresholdMatrixHonorsSampleFloor pins the coupling floor wiring: when a
+// grant sets p<1, gosThresholdMatrix must clamp each active cell's threshold up
+// to the sampling floor √(V_j(1−p)/p) ("don't transmit finer than you sample").
+// With p=1 (unsampled) the floor is inert, so at least one active cell sits below
+// that same floor — proving the change is the granted p, not something else.
+func TestGosThresholdMatrixHonorsSampleFloor(t *testing.T) {
+	w, err := NewCountSketchWrapper(5, 256)
+	if err != nil {
+		t.Fatalf("new wrapper: %v", err)
+	}
+	w.UpdateString("hot", 1000) // heavy cell → large activity → large floor
+	for i := 0; i < 50; i++ {
+		w.UpdateString(fmt.Sprintf("k%d", i), 1)
+	}
+	w.SetGosMode(0.1, true /*anisotropic*/, 4)
+
+	base, err := w.DeltaAgainstEmptyBase()
+	if err != nil {
+		t.Fatalf("empty base: %v", err)
+	}
+	prevCS, err := countsketch.DeserializeCountSketchFromProtoBytes(base)
+	if err != nil {
+		t.Fatalf("deserialize prev: %v", err)
+	}
+
+	// p=1: pure water-filling, floor disabled.
+	w.WithSampleP(1.0)
+	unsampled := w.gosThresholdMatrix(prevCS)
+
+	// p<1: the coupling floor must bind.
+	const p = 0.3
+	w.WithSampleP(p)
+	sampled := w.gosThresholdMatrix(prevCS)
+
+	floorBelowUnsampled := false
+	for r := 0; r < w.rows; r++ {
+		for c := 0; c < w.cols; c++ {
+			activity := math.Abs(w.cs.GetCell(r, c))
+			if activity <= 0 {
+				continue
+			}
+			floor := math.Sqrt(activity * (1 - p) / p)
+			// Every active cell in the sampled matrix respects its floor.
+			if sampled[r][c] < floor*(1-1e-9) {
+				t.Errorf("cell (%d,%d): sampled T=%g below floor=%g", r, c, sampled[r][c], floor)
+			}
+			if unsampled[r][c] < floor*(1-1e-9) {
+				floorBelowUnsampled = true
+			}
+		}
+	}
+	if !floorBelowUnsampled {
+		t.Fatal("expected at least one active cell below the p=0.3 floor when unsampled (p=1); the floor wiring is not observable")
+	}
 }
 
 // Mirrors Rust threshold_alloc::tests::f2_closed_form_matches_formula.
