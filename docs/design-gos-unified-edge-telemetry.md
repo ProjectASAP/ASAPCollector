@@ -316,11 +316,12 @@ median-of-`d` rows turns it into the effective relative sampling error `ε_sa`.
 So `p_{i,r}` is a **joint edge-CPU + bandwidth** lever: lowering it cuts collector
 hashing (`Σ_r p_{i,r}`), cuts wire volume, and lets the SDK stay at line rate with
 only coin flips. The accuracy cost is the `ε_sa` term below; §7 allocates the
-sampling budget against it. **Today the rate is per-site** (`p_{i,r}=p_i`,
-`AllocateSampleRates` gives one `p_i` per site with `p_i ∝ √(f_i/rate_i)`);
-per-row rate differentiation (a larger `p` for high-sensitivity rows) is a future
-refinement — the current benefit is the per-row *admission* decorrelation of §3.2,
-not per-row rate tuning.
+sampling budget against it. **Today the rate is per-site** (`p_{i,r}=p_i`): the
+coordinator gives one `p_i` per site via the whole-sketch ε-floor
+`p_i = 1/(1+ε²·rate_i)` (see §7C — the per-key `√(f_i/rate_i)` water-filling is
+retired for sketch sampling). Per-row rate differentiation (a larger `p` for
+high-sensitivity rows) is a future refinement — the current benefit is the
+per-row *admission* decorrelation of §3.2, not per-row rate tuning.
 
 ### 3.2 Error and threshold-allocation math under per-row SDK sampling
 
@@ -512,10 +513,20 @@ implements exactly this linear peel (`ε_st = t·(ε_q−ε_sk)`,
 
 **Layer C — two water-fillings (same KKT tool, two variables).**
 
-- **Sampling** (per-site; existing ASAP `AllocateSampleRates`):
+- **Sampling** (per-site). The per-key KKT water-filling
+  `p_i ∝ √(f_i/rate_i)` (binding `Σ_i f_i(1−p_i)/p_i ≤ V_sa(ε_sa)`) is the
+  general form, but it has been **retired for sketch sampling**: a sketch
+  point/L2 estimate's error is bounded by the sketch *norm*, not a single key's
+  `f(x)`, so the accuracy a per-edge `p_i` buys is only "keep this edge's L2
+  contribution within ε." The **implemented** allocation is therefore the
+  whole-sketch ε-floor
   ```
-  p_i ∝ √( f_i / rate_i ),  clamped to (0,1],  binding Σ_i f_i(1−p_i)/p_i ≤ V_sa(ε_sa).
+  p_i = 1 / (1 + ε²·rate_i),   clamped to (0,1]
   ```
+  (`data_plane monitor::coordinator::allocate_p` → `epsilon_sample_floor`; see
+  derivations §5). The `√(f/rate)` split remains valid only when a key is
+  exact-counted *outside* the sketch — where sampling that one counter is
+  pointless anyway.
 - **Thresholds** (per-cell; GOS). Effective weight `W` (§5), per-cell price
   `c_j = k|g_j|` (function) or `k|r_{q,j}|` (query — take the binding constraint),
   budget `B` (relative: `B = ε_m‖Ĉ‖²` for F₂):
@@ -634,35 +645,69 @@ executes a fixed per-cell comparison.
 
 - **Controller** (offline, per registered metric/query): runs ADCD (AD → Hessian
   eigenvalue bounds → `∇f, λ`), estimates `{V_j}` from the workload, solves (P)'s
-  layers A–C, emits `(d, w, G, {p_i}, {T_j}, flags)` via OpAMP. This slots into the
-  existing controller multi-objective (`controller-optimization-problem.md` SP-6:
+  layers A–C, emits `(d, w, G, {p_i}, scalar GOS knobs, flags)` via OpAMP. This
+  slots into the existing controller multi-objective
+  (`controller-optimization-problem.md` SP-6:
   `min w_bw·bw + w_cpu·cpu + w_mem·mem + …`) — GOS thresholds are new decision
-  variables there.
-- **Edge**: maintain sketch + acked snapshot; per flush, upload cells with
-  `|ΔC_j| ≥ T_j` as a sparse delta; run one generic `isLocallySafe` for monitored
-  functions. No AD, no optimization at the edge.
+  variables there. **Note:** the controller ships *scalars*
+  (`ε_delta`, sites, aniso flag), **not** the full per-cell vector `{T_j}`; the
+  edge reconstructs `{T_j}` locally from those scalars plus its live sketch state
+  (see §7C, `sketches/gos_threshold.go`), so the `O(d·w)` vector never crosses the
+  wire.
+- **Edge**: maintain sketch + acked snapshot; per flush, recompute `{T_j}` from
+  the pushed scalars + local `{V_j}`, upload cells with `|ΔC_j| ≥ T_j` as a sparse
+  delta; run one generic `isLocallySafe` for monitored functions. No AD, no
+  water-filling solve at the edge — only the closed-form threshold evaluation.
 - **Backend**: `apply_delta` into a running merge (`O(#delta cells)`), keeping the
   global sketch continuously queryable within the Theorem-1 envelope, surfaced in
   the `accuracy: ε=…` response annotation.
 
 **Ties to existing code:**
-- `ASAPQuery-backend/control_plane/src/epsilon_alloc.rs` — extend to the ε-budget
-  split `ε² = ε_sk² + ε_sa² + ε_st²`.
-- `ASAPCollector/asap-precompute-go/monitor/sampling_alloc.go` (`AllocateSampleRates`)
-  — the sampling water-filling (already present).
-- new `threshold_alloc` — the per-cell threshold water-filling (this doc's §7C).
+- `ASAPQuery-backend/control_plane/src/epsilon_alloc.rs` — the ε-budget split.
+  Staleness is peeled **linearly** first (Theorem 1), then the remaining random
+  budget splits in quadrature: `√(ε_sk² + ε_sa²) + ε_st = ε_q` (see §7 Layer B).
+  This is **not** a three-way quadrature `ε² = ε_sk² + ε_sa² + ε_st²` — staleness
+  is deterministic and comes off the top linearly.
+- `ASAPQuery-backend/data_plane/src/monitor/sampling_alloc.rs`
+  (`epsilon_sample_floor`) — the live whole-sketch sampling floor. (The Go
+  `monitor/sampling_alloc.go` `AllocateSampleRates` is the *retired* per-key
+  water-filling, kept only as a reference impl with no production caller.)
+- `threshold_alloc` (`AllocateThresholds`, Go `sketches/gos_threshold.go` + Rust
+  `control_plane/src/threshold_alloc.rs`) — the per-cell threshold water-filling
+  (this doc's §7C).
 - `data_plane/src/monitor/f2_coord.rs`, `asap-precompute-go/monitor/f2engine.go`
   — generalize the F₂-specific ball to the `(∇f, λ)` DC safe zone; use the relative
   radius `ε‖Ĉ‖/(2k√(dw))`.
 - reuse `asap_sketchlib` `CountSketchDelta` + `compute_delta`/`apply_delta`
   (byte-parity Go/Rust) for the sparse per-cell delta wire format.
 
+**Implementation status (as of this writing).** The pieces exist but the GOS
+threshold control loop is **not yet wired end-to-end**:
+- **Live today:** the scalar CDM loop (register → grant `(slack, sample_p)` →
+  countdown → report → alert) and the sampling grant path (`Grant.SampleP` →
+  `otlpfilter` Upsert + wrapper `WithSampleP`).
+- **Implemented but unreachable from a production config:** the control plane
+  *derives and emits* the scalar GOS knobs (`gos_delta_epsilon`, `gos_sites`,
+  `gos_anisotropic` in `emit/agent.rs`), and the edge *consumes*
+  `PrecomputeConfig.GosDeltaEpsilon` (`applyGosMode` → `gosThresholdMatrix`), but
+  **no collector processor parses those YAML keys into the config**, so
+  `applyGosMode` is a production no-op and the per-cell delta-gating path is
+  exercised only by tests/eval. The sampling↔threshold coupling floor
+  `T_j ≥ √(V_j(1−p)/p)` (§3.2) is likewise implemented but inert — its only
+  production-shaped caller hardcodes `SampleP=1`. Closing this last hop
+  (a knob parser + threading the granted `p` into `GosParams`) is tracked work.
+
 ---
 
 ## 12. Open problems / next steps
 
-1. **Anisotropic delta broadcast** — encode `ΔC_ref` as sparse cells (OctoSketch on
-   the coordinator→edge path); removes the `O(k)` broadcast amplification.
+1. **Anisotropic delta broadcast** — *partially done.* The **sparse-cell**
+   encoding of `ΔC_ref` on the coordinator→edge path is implemented and measured
+   (`CRefUpdate::Delta`; removes the `O(k)` broadcast amplification — see
+   gos-eval-results.md §2). Still **open:** the broadcast gate is currently
+   isotropic (ships every changed cell, `Δ ≠ 0`); giving it *anisotropic per-cell
+   thresholds* (the §7C water-filling, as already done on the edge→coordinator
+   upload path via `ComputeDeltaPerCell`) is the remaining work.
 2. **Relative-error under small norm** — heartbeat / additive floor when `‖Ĉ‖` is
    small (WZ / OctoSketch fundamental limit).
 3. **Verified eigenvalue bounds** — AutoMon's numerical `λ` may miss the true

@@ -136,7 +136,7 @@ type MonitorReport struct {
 	LocalValue    float64                `protobuf:"fixed64,5,opt,name=local_value,json=localValue,proto3" json:"local_value,omitempty"`           // current additive local value at report time
 	Round         uint64                 `protobuf:"varint,6,opt,name=round,proto3" json:"round,omitempty"`                                        // round this report answers
 	Seq           uint64                 `protobuf:"varint,7,opt,name=seq,proto3" json:"seq,omitempty"`                                            // per-edge monotonic counter; idempotent-retransmit dedup
-	Rate          float64                `protobuf:"fixed64,8,opt,name=rate,proto3" json:"rate,omitempty"`                                         // edge's observed items/window for this agg+key — feeds the coordinator's sample-rate allocation (p_i ~ sqrt(f_i/rate_i))
+	Rate          float64                `protobuf:"fixed64,8,opt,name=rate,proto3" json:"rate,omitempty"`                                         // edge's observed items/window for this agg+key — feeds the coordinator's whole-sketch sampling floor (p_i = 1/(1+eps^2*rate_i))
 	// Whole-sketch payload for non-scalar (F2/L2) monitors: a msgpack-serialized
 	// Count-Sketch cell matrix (asapmsgpack.MarshalCountSketch ↔ Rust
 	// portable::CountSketch codec). Empty for scalar (sum/cms_point) monitors,
@@ -250,7 +250,8 @@ type SlackGrant struct {
 	LocalSlack    float64                `protobuf:"fixed64,4,opt,name=local_slack,json=localSlack,proto3" json:"local_slack,omitempty"`
 	WindowStartMs uint64                 `protobuf:"varint,5,opt,name=window_start_ms,json=windowStartMs,proto3" json:"window_start_ms,omitempty"`
 	// sample_p is the distributed-NitroSketch update-sampling probability the
-	// coordinator allocates this edge (AllocateSampleRates: p_i ~ sqrt(f_i/rate_i)).
+	// coordinator allocates this edge via the whole-sketch epsilon-floor
+	// (p_i = 1/(1+eps^2*rate_i); see data_plane allocate_p / epsilon_sample_floor).
 	// 0 (unset) => no sampling grant (p=1). The edge applies it via WithSampleP on
 	// sampling-capable sketch wrappers (CMS/CountSketch/DDSketch) at the next
 	// EpochReset; other families ignore it. Orthogonal to local_slack (CPU vs

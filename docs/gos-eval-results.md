@@ -49,7 +49,7 @@ sketch bytes + coord→edge `C_ref` broadcast bytes.
 Both modes fire the **same** alert (observed 921,600, inside the
 `[(1−ε)τ, τ) = [900k, 10⁶)` band). Geometric wins in **both** regimes.
 
-### Effect of the `C_ref` delta broadcast (design §D)
+### Effect of the `C_ref` delta broadcast (design §12 open-problem #1)
 
 The geometric coordinator→edge `C_ref` was originally a full `~11.5 KB` matrix
 per resync × `k` edges (O(k) amplification), which made geometric *lose* the ramp

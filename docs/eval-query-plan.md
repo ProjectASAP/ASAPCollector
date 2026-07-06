@@ -105,7 +105,7 @@ fleet; MiFID audit / backtest on the *same* series → cold.
 | `debs-vwap` | `sum(debs_last_price_sum * debs_volume_sum) / sum(debs_volume_sum)` *(per symbol)* | sum | **Sum** (exact) | 2,7 | VWAP exactness |
 | `debs-roll-vol` | `sum_over_time(debs_volume_sum{symbol="ASML.NL"}[300s])` | sum | **Sum** | 2,4,7 | rolling-volume dashboard |
 | `debs-topk-active` | `topk(10, sum by (symbol) (debs_ticks_topk_<sketch>))` | topk | **CountSketch-heap, CountMinSketch-heap** | 2,7 | most-active-symbol board |
-| `debs-coord-sample` | per-symbol ingest under `p_i ∝ √(f_i/rate_i)` (skew sweep) | sampling | **DDSketch, KLL** (under `p`) | 1,7 | **Fig 9** coordinated 32× |
+| `debs-coord-sample` | per-symbol ingest under the ε-floor `p_i = 1/(1+ε²·rate_i)` (skew sweep) | sampling | **DDSketch, KLL** (under `p`) | 1,7 | **Fig 9** coordinated 32× |
 
 ### M2 short-circuit (decision queries — warm-first, cold on ambiguity; per sketch)
 

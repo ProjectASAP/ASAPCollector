@@ -611,8 +611,9 @@ high-sample-per-window"). This requirement extends the *same* optimizer to alloc
    on it. (The wire/TCO cost model is the decision function.)
 2. **sketch type + `(W, L, agg_type)`** — the existing bind-rules + cost output.
 3. **sampling `p`** — which sketches are sampling-eligible (policy from the
-   controller) + the coordinated runtime allocation `p_i ∝ √(f_i/rate_i)` (data_plane
-   coordinator, ε-floored).
+   controller) + the coordinated runtime allocation, the whole-sketch ε-floor
+   `p_i = 1/(1+ε²·rate_i)` (data_plane coordinator; the per-key `√(f/rate)` law
+   was retired).
 
 ### Methodology — how to evaluate the 4-tuple `{sketch, size, p, ε_cdm}`
 

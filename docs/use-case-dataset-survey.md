@@ -698,7 +698,8 @@ supply the **high-frequency-per-series ✓✓** axis. No single one maxes both, 
 2. **DEBS-2022 — M2, the coordinated-sampling + finance-tick anchor.**
    *Use case:* live VWAP / price-quantile dashboards + threshold alerts on a **skewed**
    symbol fleet; MiFID audit / backtest on the *same* series → cold. *Evaluates:*
-   coordinated sampling `p_i ∝ √(f_i/rate_i)` (**32× differentiation**, Fig 9), the
+   coordinated sampling via the ε-floor `p_i = 1/(1+ε²·rate_i)` (**32×
+   differentiation**, Fig 9), the
    ε-gate/delta regime, accuracy on real skew (0.9–1.1 % ≈ α), and the finance-tick
    Mode-2 story (cheap edge-Gorilla cold + warm sketch — two orthogonal edge
    compressions). *Warm:* VWAP/quantile/volume → DDSketch/Sum. *Cold:* trade-by-trade

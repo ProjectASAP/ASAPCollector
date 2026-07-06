@@ -32,21 +32,30 @@ whole sketch).
   so that all-safe ⇒ `F2 < (1−ε)τ`; using the raw `τ` (the original bug) let
   edges stay silent through the whole `[(1−ε)τ, τ)` band and fire the alert late.
 - **Distributed** — an **eval-only baseline** (≈ centralization): every edge ships
-  its Count-Sketch every window; the coordinator merges and estimates
-  `F2̂ = estimate_f2(Σ latest_i)`, alerting at `F2̂ ≥ (1−ε)τ`. It is *not* a
-  separate algorithm — it is geometric with an empty safe zone, kept only as the
-  communication upper bound and the accuracy ground truth. Production uses the
-  geometric protocol.
+  its Count-Sketch every window; the coordinator merges and estimates F2 with the
+  **mean-of-rows** estimator `F̂₂ = ‖ΣCᵢ‖²/d`, alerting at `F̂₂ ≥ (1−ε)τ`. It is
+  *not* a separate algorithm — it is geometric with an empty safe zone, kept only
+  as the communication upper bound and the accuracy ground truth. Production uses
+  the geometric protocol. **Both modes use the same mean-of-rows estimator**
+  (`F2CoordMonitor::mean_f2`), which is exactly the functional the geometric ball
+  `‖C‖ ≤ √(d(1−ε)τ) ⇔ ‖C‖²/d ≤ (1−ε)τ` bounds — so edge silence and coordinator
+  alert test one identical quantity (design doc §7). This is deliberately *not*
+  the median-of-rows point-query estimator (`estimate_f2`); the two must not be
+  conflated — median for individual-key location, mean for the aggregate energy
+  the ball bounds.
 
 The alert decision is identical in both modes (verified: both fire at
 `observed=921,600`, inside `[900000, 1000000)`); only the communication differs.
 
 ## Cross-language correctness
 
-- Sketches cross the wire as the 3-element msgpack array `[rows, cols, matrix]`
+- Full sketches cross the wire as the 3-element msgpack array `[rows, cols, matrix]`
   (`asapmsgpack.MarshalCountSketch` ↔ Rust `rmp_serde` 3-tuple). **Note:** Rust
   `portable::CountSketch::to_msgpack` writes a *4-element* array (adds `topk`),
   which the Go decoder rejects — so both directions use the explicit 3-tuple.
+- Sparse `C_ref` deltas (coordinator→edge) cross as a **5-element** msgpack array
+  `[rows, cols, rowIdx[], colIdx[], vals[]]` of changed cells (`CRefUpdate::Delta`
+  ↔ `asapmsgpack` sparse codec); the edge applies it to its cached `C_ref`.
 - The safe-zone verdict is guarded by a **golden-vector parity test** evaluated
   in both languages on identical matrices: Go
   `monitor.TestF2LocallySafeGolden` and Rust `f2::tests::is_locally_safe_matches_go_golden`.
@@ -61,21 +70,33 @@ d=5, w=256, τ=1e6, ε=0.1):
 | **stable** (F2 < τ) | distributed | none ✓ | 923,280 | 80 | 0 |
 | **stable** | **geometric** | none ✓ | **230,820** | 4 | 76 |
 | **ramp** (F2 crosses τ) | distributed | fired ✓ | 923,280 | 80 | 0 |
-| **ramp** | geometric | fired ✓ | 1,384,920 | 24 | 56 |
+| **ramp** | **geometric** | fired ✓ | **531,132** | 28 | 52 |
 
 - **Stable regime (the realistic monitoring case): geometric uses ~4× less
   communication** while reaching the same (correct) no-alert decision — sites
   stay locally safe and go silent, so the coordinator receives almost nothing.
-- **Ramp regime**: geometric still detects the crossing and ships 3× fewer
-  sketches, but loses overall because the coordinator re-broadcasts the full
-  ~11.5 KB `C_ref` to every edge on each ship.
+- **Ramp regime**: geometric still detects the crossing, ships fewer sketches,
+  **and now wins overall (1.74× less)** — the `C_ref` re-broadcast is
+  delta-encoded (see below), so it no longer dominates cost.
 
-## Known limitation / next step
+See [`gos-eval-results.md`](gos-eval-results.md) §2 for the full breakdown
+(including the delta-broadcast ablation) and the Woodruff–Zhang `k/ε²` reference.
 
-The geometric `C_ref` re-broadcast sends the **full** reference matrix to every
-edge on each resync, which dominates cost in high-drift regimes. Delta-encoding
-the broadcast (OctoSketch-style — only changed cells) would cut it sharply and
-let geometric win the ramp regime too. The `F2Engine` is wired to the coordinator
-over real gRPC and driven by the eval; hooking it into the main runtime's
-per-window flush path in `precompute.go` (alongside the scalar `monitorValue`
-hook) is the remaining productionization step.
+## Delta broadcast (done) + remaining productionization
+
+The geometric `C_ref` re-broadcast originally sent the **full** reference matrix
+to every edge on each resync (`O(k)` amplification), which made geometric *lose*
+the ramp regime. It is now **delta-encoded** (`CRefUpdate::Delta`, sparse changed
+cells only — the 5-element msgpack frame above), which cut egress ~5.3× and
+flipped ramp geometric from a loss to a 1.74× win. The gate is still isotropic
+(ships every `Δ ≠ 0` cell); giving the broadcast *anisotropic per-cell
+thresholds* is design §12 open-problem #1.
+
+**Remaining productionization.** The `F2Engine` is wired to the coordinator over
+real gRPC and driven by the eval, but it is **not reachable from the production
+edge runtime**: `precompute.go`'s `monitorValue` switch handles only
+Sum/CMSPoint/LinearBuckets, so a `FunctionalF2` spec falls through to `ok=false`
+and silently disables monitoring for that series. Hooking `F2Engine` into the
+per-window flush path (alongside the scalar `monitorValue` hook) is the remaining
+step before "production uses the geometric protocol" is true of the edge as well
+as the coordinator.

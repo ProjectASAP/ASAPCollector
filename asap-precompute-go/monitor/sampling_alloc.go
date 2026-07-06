@@ -2,6 +2,16 @@ package monitor
 
 import "math"
 
+// RETIRED — this per-key √(f_i/rate_i) KKT water-filling is NOT the allocation
+// the system runs. The live coordinator (data_plane monitor::coordinator
+// allocate_p → epsilon_sample_floor) uses the whole-sketch ε-floor
+// p_i = 1/(1+ε²·rate_i) instead: sketch point/L2 accuracy is bounded by the
+// sketch NORM, not a single key's f(x), so the only accuracy a per-edge p_i can
+// buy is keeping this edge's L2 contribution within ε — which gives the floor,
+// not the √(f/rate) split. This Go copy is kept only as an executable record of
+// the retired derivation and is exercised solely by its unit test; it has no
+// production caller. Do not wire it into a live grant path.
+//
 // AllocateSampleRates computes the distributed-NitroSketch per-edge update-
 // sampling probabilities p_i that MINIMIZE total edge update work Σ rate_i·p_i
 // subject to a merged sampling-variance budget
