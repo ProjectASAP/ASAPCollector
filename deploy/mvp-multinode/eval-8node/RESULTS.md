@@ -177,7 +177,11 @@ Edge footprint: **1765 B/series** open-window RSS.
 uncompressed raw — strongly data-dependent (best on counters, worst on
 high-entropy gauges); it IS vanilla Prometheus gorilla by construction.
 
-## Fig 9 — coordinated sampling: ONE law for every monitor  (`fig9_cmspoint.csv`, `fig9_f2.csv`, `figs/fig9_unified_sampling.png`)
+## Fig 9 — coordinated sampling: ONE law for every monitor  (`fig9_cmspoint.csv`, `figs/fig9_unified_sampling.png`)
+> Note: the whole-sketch F2 row below was measured by `fig9_f2_coordinated.sh`;
+> its `fig9_f2.csv` was retired when the eval axis moved to the whole-sketch
+> GEOMETRIC protocol (`f2_wholesketch_cluster.csv`) — the granted-p values are
+> preserved inline in the table here.
 Drivers: `scripts/fig9_coordinated.sh` (cms_point) + `scripts/fig9_f2_coordinated.sh` (whole-sketch F2). Both run the CDM coordinator live (auto-learn from the controller-pushed config, hot-reload, no boot-seed).
 
 **Result — both monitor types obey the SAME per-edge sampling law, the whole-sketch ε-floor**
