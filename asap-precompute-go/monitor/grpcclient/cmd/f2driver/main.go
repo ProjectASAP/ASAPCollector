@@ -246,6 +246,22 @@ func main() {
 	mode := monitor.ParseF2Mode(modeArg)
 	wkKeys := sharedKeys()
 
+	// Zipf per-key weights for the "zipf" (skewed) ramp: weight_k ∝ 1/(k+1)^s,
+	// normalized so Σ weight_k = wkKeys (same total mass as the uniform ramp).
+	zipfW := make([]float64, wkKeys)
+	if pattern == "zipf" {
+		const s = 1.2
+		var sum float64
+		for k := 0; k < wkKeys; k++ {
+			zipfW[k] = math.Pow(float64(k+1), -s)
+			sum += zipfW[k]
+		}
+		norm := float64(wkKeys) / sum
+		for k := range zipfW {
+			zipfW[k] *= norm
+		}
+	}
+
 	// Optional delta-loss injection (edge-0 only), gated by env vars — see
 	// lossyInbound. Default OFF, so a normal eval run is byte-identical.
 	injectMode := os.Getenv("F2_INJECT")
@@ -309,6 +325,15 @@ func main() {
 				// the global F2 barely moves and stays below τ.
 				edges[i].cs.UpdateString(fmt.Sprintf("k%d", step%wkKeys), drift)
 				edges[i].cs.UpdateString(fmt.Sprintf("k%d", (step+1)%wkKeys), -drift)
+			case "zipf": // SKEWED ramp: heavy keys get most of the mass, so the
+				// sketch cells are magnitude-skewed — the regime the thresholded
+				// C_ref broadcast gate exploits (a few heavy cells cross T, the
+				// long light tail accumulates below it). Total per-step mass
+				// matches the uniform ramp (Σ weight = wkKeys·drift) so τ is
+				// comparable.
+				for k := 0; k < wkKeys; k++ {
+					edges[i].cs.UpdateString(fmt.Sprintf("k%d", k), drift*zipfW[k])
+				}
 			default: // ramp: monotone growth that crosses τ
 				for k := 0; k < wkKeys; k++ {
 					edges[i].cs.UpdateString(fmt.Sprintf("k%d", k), drift)

@@ -151,6 +151,43 @@ Two findings, both honest:
   `w`, a thresholded (not `Δ≠0`) broadcast gate, or both. The `H=4` run isolates
   the monitoring logic; this run shows the real-scale communication reality.
 
+**Density sweep — confirms fill ratio, not cardinality, is the cause.** Fixing
+`H=2048` and sweeping the sketch width `w` (ramp, geometric ÷ distributed bytes):
+
+| `w` | fill `H/(d·w)` | distributed | geometric | geo/dist |
+|---|---|---|---|---|
+| 256 | 1.60 (overloaded) | 923,280 | 1,647,966 | 1.78× |
+| 1024 | 0.40 | 3,688,080 | 6,044,478 | 1.64× |
+| 4096 | 0.10 | 14,747,280 | 16,160,883 | 1.10× |
+
+The `geo/dist` ratio falls monotonically as the sketch gets sparser (1.78 → 1.10),
+so **density is the root cause**. But a wider sketch is not the whole fix:
+`distributed` absolute cost explodes with `w` (it ships the full matrix every
+window).
+
+### Thresholded C_ref broadcast gate (design §12 #1) — implemented, and an honest limit
+
+Implemented the OctoSketch-style gate in the coordinator: broadcast only cells
+that moved by more than the §7 F2 per-cell threshold `T = ε‖C‖/(2k√(dw))`, and
+fold **only the shipped cells** back into `last_broadcast` so sub-`T` changes
+accumulate and eventually ship (C_ref error bounded by `T` per cell;
+`f2.rs::sparse_delta_cells_thresholded` + `apply_cells`, tested). **Safe and
+correct:** the `H=4` numbers are byte-identical (531,132 — the gate never fires
+on a sparse sketch), alerts still fire, and the coordinator↔edge references stay
+consistent.
+
+**But its empirical payoff on a Count-Sketch is small** — an honest negative
+result. At `H=2048, w=256` the gate cut geometric ramp only 1,647,966 →
+1,316,158 (~20%), and on a *skewed* Zipf(1.2) ramp it did no better (1.80 M).
+The reason is structural: a Count-Sketch hashes each key into `d` cells with
+**random signs**, and at overload many keys collide per cell, so **input skew
+does not become cell-magnitude skew** — the cell values are homogenized, and a
+threshold has little sparse structure to exploit (unlike Count-Min, where a heavy
+key *is* a heavy cell). So the gate is the right mechanism but the Count-Sketch
+cell homogenization caps its benefit; the effective lever for high cardinality
+remains **sizing `w` to the key count** (keep fill `H/(d·w) ≪ 1`), with the
+threshold gate as a safe, free add-on that helps whenever real cell skew exists.
+
 ### Effect of the `C_ref` delta broadcast (design §12 open-problem #1)
 
 The geometric coordinator→edge `C_ref` was originally a full `~11.5 KB` matrix
