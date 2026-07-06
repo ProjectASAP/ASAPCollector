@@ -244,6 +244,18 @@ type Precompute interface {
 	// wires it here; the runtime activates the per-observation hook whenever
 	// the active config has Monitor.Enabled. Safe to call concurrently.
 	SetMonitorEngine(e *monitor.Engine)
+	// SetF2Engine installs (or replaces) the whole-sketch F2 monitor engine.
+	// Pass nil to disable. The adapter constructs and Configures it (dims/mode/
+	// gRPC reporter) for a FunctionalF2 monitor; DriveF2Monitor then feeds it the
+	// current cumulative cell matrix each sub-window tick. Safe to call
+	// concurrently.
+	SetF2Engine(e *monitor.F2Engine)
+	// DriveF2Monitor runs the whole-sketch F2 monitor for the current sub-window:
+	// for each active series whose sketch exposes a cell matrix it feeds the
+	// current cumulative matrix to the F2 engine, which runs the geometric
+	// safe-zone test and ships/stays-silent. No-op unless an F2 engine is
+	// attached. Called on the sub-window ticker (the continuous cadence).
+	DriveF2Monitor(nowMs uint64)
 	// Shutdown flushes any in-progress state; intended for the
 	// shim's Shutdown path to run a final Tick before returning.
 	Shutdown(ctx context.Context) error
@@ -274,6 +286,13 @@ type precompute struct {
 	// config has Monitor.Enabled, the window's per-observation hook routes the
 	// series' additive value into the engine.
 	monitorEngine atomic.Pointer[monitor.Engine]
+	// f2Engine is the whole-sketch F2 (‖f‖₂²) monitor. Unlike the scalar
+	// monitorEngine (a per-observation additive readout), F2 is non-linear over
+	// the whole Count-Sketch, so it runs per SUB-WINDOW on the current cumulative
+	// cell matrix (the continuous cadence the geometric safe-zone protocol needs),
+	// driven by DriveF2Monitor from the adapter's sub-window flush tick. nil until
+	// SetF2Engine is called for a FunctionalF2 monitor.
+	f2Engine atomic.Pointer[monitor.F2Engine]
 }
 
 // New constructs a Precompute given an initial config, a sketch
@@ -907,6 +926,40 @@ func (p *precompute) SetSketchSink(fn SketchSink) {
 func (p *precompute) SetMonitorEngine(e *monitor.Engine) {
 	p.monitorEngine.Store(e)
 	p.rewireMonitorHooks()
+}
+
+// SetF2Engine implements Precompute.SetF2Engine.
+func (p *precompute) SetF2Engine(e *monitor.F2Engine) {
+	p.f2Engine.Store(e)
+}
+
+// DriveF2Monitor implements Precompute.DriveF2Monitor. It feeds the current
+// cumulative cell matrix of each active whole-sketch series to the F2 engine.
+// For a whole-stream F2 monitor (the intended scope) there is exactly one
+// series, whose grouping key is empty — matching the engine's Configure(aggID,
+// nil, …). The engine's OnWindow is a no-op for any (aggID,key) it was not
+// configured for, so a stray per-series key is harmlessly ignored.
+func (p *precompute) DriveF2Monitor(_ uint64) {
+	eng := p.f2Engine.Load()
+	if eng == nil {
+		return
+	}
+	cfg := p.activeConfig()
+	if cfg == nil || !cfg.Monitor.Enabled || cfg.Monitor.Functional != monitor.FunctionalF2 {
+		return
+	}
+	aggID := uint64(cfg.AggID)
+	p.window.f2Visit(func(labels []KeyValue, sketch Sketch, windowStart uint64) {
+		cm, ok := sketch.(interface{ CellMatrix() [][]float64 })
+		if !ok {
+			return
+		}
+		matrix := cm.CellMatrix()
+		if matrix == nil {
+			return
+		}
+		eng.OnWindow(aggID, groupKeyBytes(labels), matrix, windowStart)
+	})
 }
 
 // rewireMonitorHooks installs or clears the window's monitor hooks based on the

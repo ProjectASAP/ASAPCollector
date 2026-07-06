@@ -830,3 +830,18 @@ func (w *windowState) subWindowVisit(
 	}
 	return [2]uint64{w.activeStartMs, w.activeEndMs}
 }
+
+// f2Visit yields each active series' grouping labels, live sketch, and the
+// current epoch's window start under the window lock, for the whole-sketch F2
+// monitor. The visit MUST NOT retain the sketch past the callback (the live
+// window keeps writing it); F2's OnWindow copies the matrix it needs.
+func (w *windowState) f2Visit(visit func(labels []KeyValue, sketch Sketch, windowStart uint64)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.initialized {
+		return
+	}
+	for _, entry := range w.series {
+		visit(entry.Labels, entry.Sketch, w.activeStartMs)
+	}
+}

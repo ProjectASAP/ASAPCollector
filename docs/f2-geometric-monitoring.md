@@ -108,11 +108,16 @@ safe-zone test could then wrongly pass (a *silent missed violation*). Two guards
   measured communication figures are unchanged. A faster on-demand resync (an
   explicit edge→coordinator keyframe request) is a possible future refinement.
 
-**Remaining productionization.** The `F2Engine` is wired to the coordinator over
-real gRPC and driven by the eval, but it is **not reachable from the production
-edge runtime**: `precompute.go`'s `monitorValue` switch handles only
-Sum/CMSPoint/LinearBuckets, so a `FunctionalF2` spec falls through to `ok=false`
-and silently disables monitoring for that series. Hooking `F2Engine` into the
-per-window flush path (alongside the scalar `monitorValue` hook) is the remaining
-step before "production uses the geometric protocol" is true of the edge as well
-as the coordinator.
+**Production edge wiring.** The `F2Engine` is now reachable from the production
+edge runtime, not just the eval driver. Because F2 is whole-sketch and
+non-linear it does **not** use the scalar per-observation `monitorValue` hook
+(that switch is Sum/CMSPoint/LinearBuckets only); instead precompute exposes
+`SetF2Engine` + `DriveF2Monitor`, and the adapter drives it once per **sub-window
+tick** (`emitSubWindow`) on the current cumulative cell matrix — the continuous
+cadence the geometric safe-zone needs. Config: `threshold.functional: f2` with
+`f2_mode: geometric|distributed`; the F2 sketch dims come from the family's
+CountSketch `rows`/`cols`, and the monitor is whole-stream (one sketch keyed by
+the empty group key). A `FunctionalF2` spec therefore requires a CountSketch
+family with `sub_window_interval` set (the tick that drives it). End-to-end
+coverage: `TestMonitor_F2_CountSketch_DriveShipsMatrix` (Observe → DriveF2Monitor
+→ ship the serialized matrix).

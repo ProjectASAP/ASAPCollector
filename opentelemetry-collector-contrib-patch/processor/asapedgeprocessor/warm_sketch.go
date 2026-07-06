@@ -240,9 +240,20 @@ func parseFunctional(s string) monitor.Functional {
 		return monitor.FunctionalCMSPoint
 	case "linear_buckets":
 		return monitor.FunctionalLinearBuckets
+	case "f2":
+		return monitor.FunctionalF2
 	default:
 		return monitor.FunctionalSum
 	}
+}
+
+// parseF2Mode maps the config string to the F2 protocol variant; unknown /
+// empty defaults to the production geometric safe-zone protocol.
+func parseF2Mode(s string) monitor.F2Mode {
+	if s == "distributed" {
+		return monitor.F2ModeDistributed
+	}
+	return monitor.F2ModeGeometric
 }
 
 // closeMonitor stops the CDM transport's background stream goroutine, if any.
@@ -529,6 +540,7 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 	// fold the monitor spec into the config BEFORE precompute.New (which copies
 	// it), then attach the engine + gRPC transport after construction.
 	if fam.Threshold != nil && fam.Threshold.Enabled {
+		f2Rows, f2Cols := csmDims(fam)
 		pcfg.Monitor = monitor.Spec{
 			Enabled:        true,
 			Functional:     parseFunctional(fam.Threshold.Functional),
@@ -537,6 +549,11 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 			CoordinatorURL: fam.Threshold.CoordinatorURL,
 			Tau:            fam.Threshold.Tau,
 			Epsilon:        fam.Threshold.Epsilon,
+			// F2 (whole-sketch) fields — dims from the family's CountSketch so the
+			// coordinator's linear merge is meaningful; ignored by scalar monitors.
+			SketchRows: f2Rows,
+			SketchCols: f2Cols,
+			Mode:       parseF2Mode(fam.Threshold.F2Mode),
 		}
 	}
 	pc := precompute.New(pcfg, factory, observer)
@@ -550,6 +567,21 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		} else if opts.edgeID == "" {
 			logger.Warn("disabling continuous monitor: empty edge_id",
 				zap.String("metric", metric))
+		} else if pcfg.Monitor.Functional == monitor.FunctionalF2 {
+			// Whole-sketch F2 monitor: a separate engine (per-sub-window matrix,
+			// not per-observation scalar). One monitor per agg keyed by the empty
+			// whole-stream group key — matching precompute.DriveF2Monitor, which
+			// feeds it the cumulative cell matrix each sub-window tick.
+			windowMs := uint64(window / time.Millisecond)
+			f2eng := monitor.NewF2Engine(opts.edgeID, windowMs, nil)
+			f2eng.Configure(uint64(pcfg.AggID), nil, pcfg.Monitor)
+			monClient = grpcclient.New(pcfg.Monitor.CoordinatorURL, f2eng)
+			f2eng.SetReporter(monClient)
+			pc.SetF2Engine(f2eng)
+			logger.Info("continuous F2 monitor enabled",
+				zap.String("metric", metric),
+				zap.String("mode", fam.Threshold.F2Mode),
+				zap.String("coordinator", pcfg.Monitor.CoordinatorURL))
 		} else {
 			windowMs := uint64(window / time.Millisecond)
 			eng := monitor.NewEngine(opts.edgeID, windowMs, nil)
@@ -856,6 +888,12 @@ func (s *sketchAggregator) subWindowEnabled() bool {
 // emitSubWindow fires an INCREMENTAL sub-window delta emit (no rotate) for this
 // aggregator's diverged series and appends the encoded pmetric to dst.
 func (s *sketchAggregator) emitSubWindow(dst pmetric.Metrics, nowMs uint64) {
+	// Whole-sketch F2 monitor: run the geometric safe-zone test on the current
+	// cumulative matrix each sub-window tick (the continuous cadence), independent
+	// of the delta-emission gate below. No-op unless this aggregator has an F2
+	// engine, so it is safe to call for every family. F2 therefore needs
+	// SubWindowInterval configured (the tick that drives it).
+	s.pc.DriveF2Monitor(nowMs)
 	if !s.subWindowEnabled() {
 		return
 	}
