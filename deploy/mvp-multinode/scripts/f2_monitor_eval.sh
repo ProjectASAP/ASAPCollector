@@ -54,9 +54,29 @@ run () { # workload mode port
   kill "$hp" 2>/dev/null || true; wait "$hp" 2>/dev/null || true
 }
 
+# Raw (no sketch aggregation) baseline: every sample ships as a msgpack
+# [ts,key,value] record — no coordinator, bytes counted from the real frames,
+# alert from the EXACT global F2. NOTE: on this tiny-H protocol-stress workload
+# (4 keys) raw is CHEAPER than sketches by construction (sketch cost is fixed
+# d·w); the sketch wins past H ≈ d·w·9B / bytes-per-sample keys. Sweep with
+# F2_KEYS to see the crossover.
+raw () { # workload
+  local pat="$1"
+  local err="$WORK/d_${pat}_raw.err"
+  "$DRIVER" - raw 1 "$TAU" "$EPS" "$ROWS" "$COLS" "$EDGES" "$STEPS" "$DRIFT" "$pat" 2>"$err"
+  local line total alert
+  line=$(grep 'mode=raw' "$err")
+  total=$(sed -E 's/.*total_bytes=([0-9]+).*/\1/' <<<"$line")
+  alert=$(sed -E 's/.*alert=([0-9]+).*/\1/' <<<"$line")
+  printf "  %-8s %-12s alert=%-2s total_bytes=%-9s (exact; no aggregation)\n" \
+    "$pat" "raw" "$alert" "$total"
+}
+
 echo "== stable workload (F2 stays below tau) =="
+raw stable
 run stable distributed "$BASE_PORT"
 run stable geometric   "$((BASE_PORT+1))"
 echo "== ramp workload (F2 crosses tau) =="
+raw ramp
 run ramp distributed "$((BASE_PORT+2))"
 run ramp geometric   "$((BASE_PORT+3))"

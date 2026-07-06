@@ -50,7 +50,130 @@ func argOr(i int, def string) string {
 	return def
 }
 
-const numSharedKeys = 4
+const defaultSharedKeys = 4
+
+// sharedKeys returns the workload's distinct-key count H (default 4). The
+// F2_KEYS env var overrides it so the raw-vs-sketch crossover can be swept:
+// raw bytes scale with samples (∝ H·steps), sketch bytes with d·w — on the
+// default tiny-H protocol-stress workload RAW IS CHEAPER, by design.
+func sharedKeys() int {
+	if v := atoiOr(os.Getenv("F2_KEYS"), 0); v > 0 {
+		return v
+	}
+	return defaultSharedKeys
+}
+
+// mpRawBatch serializes one step's raw samples as a msgpack array of
+// [ts_ms(uint64), series_key(str), value(float64)] triples — the "no sketch
+// aggregation" baseline's wire unit (matched-none: no compression), hand-rolled
+// with the same msgpack primitives style as asapmsgpack. Returns the frame.
+func mpRawBatch(ts uint64, keys []string, vals []float64) []byte {
+	var b []byte
+	appendUint := func(u uint64) {
+		b = append(b, 0xcf, byte(u>>56), byte(u>>48), byte(u>>40), byte(u>>32),
+			byte(u>>24), byte(u>>16), byte(u>>8), byte(u))
+	}
+	appendF64 := func(f float64) {
+		u := math.Float64bits(f)
+		b = append(b, 0xcb, byte(u>>56), byte(u>>48), byte(u>>40), byte(u>>32),
+			byte(u>>24), byte(u>>16), byte(u>>8), byte(u))
+	}
+	appendArrHdr := func(n int) {
+		if n < 16 {
+			b = append(b, 0x90|byte(n))
+		} else {
+			b = append(b, 0xdc, byte(n>>8), byte(n))
+		}
+	}
+	appendStr := func(s string) {
+		if len(s) < 32 {
+			b = append(b, 0xa0|byte(len(s)))
+		} else {
+			b = append(b, 0xd9, byte(len(s)))
+		}
+		b = append(b, s...)
+	}
+	appendArrHdr(len(keys))
+	for i := range keys {
+		appendArrHdr(3)
+		appendUint(ts)
+		appendStr(keys[i])
+		appendF64(vals[i])
+	}
+	return b
+}
+
+// runRaw is the no-aggregation baseline: every edge ships its raw samples
+// every step (serialized per-step msgpack batches; bytes counted from the real
+// frames). No coordinator: the protocol is trivial (ship everything), and the
+// alert ground truth is computed EXACTLY from the raw data (the coordinator
+// would hold complete information) — alert when global F2 = Σ_k f(k)² crosses
+// (1−ε)τ, the same rule the sketch modes fire on.
+func runRaw(tau, eps float64, nEdges, nSteps int, drift float64, pattern string, windowStart uint64) {
+	h := sharedKeys()
+	global := make(map[string]float64) // merged exact frequency vector
+	var totalBytes, samples uint64
+	alertStep := -1
+	exactF2 := func() float64 {
+		var s float64
+		for _, f := range global {
+			s += f * f
+		}
+		return s
+	}
+	shipBatch := func(ts uint64, keys []string, vals []float64) {
+		frame := mpRawBatch(ts, keys, vals)
+		totalBytes += uint64(len(frame))
+		samples += uint64(len(keys))
+	}
+	// Stable preload is raw data too — it must cross the wire like any sample.
+	if pattern == "stable" {
+		baseline := 0.6 * math.Sqrt(tau/float64(h)) / float64(nEdges)
+		keys := make([]string, h)
+		vals := make([]float64, h)
+		for k := 0; k < h; k++ {
+			keys[k] = fmt.Sprintf("k%d", k)
+			vals[k] = baseline
+		}
+		for i := 0; i < nEdges; i++ {
+			shipBatch(windowStart, keys, vals)
+			for k := 0; k < h; k++ {
+				global[keys[k]] += baseline
+			}
+		}
+	}
+	for step := 0; step < nSteps; step++ {
+		ts := windowStart + uint64(step)*80
+		for i := 0; i < nEdges; i++ {
+			var keys []string
+			var vals []float64
+			switch pattern {
+			case "stable":
+				keys = []string{fmt.Sprintf("k%d", step%h), fmt.Sprintf("k%d", (step+1)%h)}
+				vals = []float64{drift, -drift}
+			default: // ramp
+				for k := 0; k < h; k++ {
+					keys = append(keys, fmt.Sprintf("k%d", k))
+					vals = append(vals, drift)
+				}
+			}
+			shipBatch(ts, keys, vals)
+			for j := range keys {
+				global[keys[j]] += vals[j]
+			}
+		}
+		if alertStep < 0 && exactF2() >= (1.0-eps)*tau {
+			alertStep = step
+		}
+	}
+	alert := 0
+	if alertStep >= 0 {
+		alert = 1
+	}
+	fmt.Fprintf(os.Stderr,
+		"f2driver: done mode=raw edges=%d steps=%d keys=%d drift=%g raw_samples=%d total_bytes=%d alert=%d alert_step=%d exact_f2=%.0f\n",
+		nEdges, nSteps, h, drift, samples, totalBytes, alert, alertStep, exactF2())
+}
 
 // lossyInbound wraps an F2Engine to SIMULATE C_ref delta loss on the
 // coordinator→edge path, so the eval can exercise the delta-loss guards
@@ -99,7 +222,7 @@ func main() {
 		os.Exit(64)
 	}
 	url := os.Args[1]
-	mode := monitor.ParseF2Mode(argOr(2, "distributed"))
+	modeArg := argOr(2, "distributed")
 	aggID := uint64(atoiOr(argOr(3, "1"), 1))
 	tau := atofOr(argOr(4, "1000000"), 1_000_000)
 	eps := atofOr(argOr(5, "0.1"), 0.1)
@@ -112,6 +235,16 @@ func main() {
 
 	const windowMs = uint64(3_600_000)
 	windowStart := uint64(time.Now().UnixMilli()) / windowMs * windowMs
+
+	// Raw (no-aggregation) baseline: ship every sample, no sketch, no
+	// coordinator. url is accepted-but-unused so the CLI shape stays uniform.
+	if modeArg == "raw" {
+		_ = url
+		runRaw(tau, eps, nEdges, nSteps, drift, pattern, windowStart)
+		return
+	}
+	mode := monitor.ParseF2Mode(modeArg)
+	wkKeys := sharedKeys()
 
 	// Optional delta-loss injection (edge-0 only), gated by env vars — see
 	// lossyInbound. Default OFF, so a normal eval run is byte-identical.
@@ -160,9 +293,9 @@ func main() {
 
 	// Stable baseline: preload each edge so the merged F2 sits below τ.
 	if pattern == "stable" {
-		baseline := 0.6 * math.Sqrt(tau/float64(numSharedKeys)) / float64(nEdges)
+		baseline := 0.6 * math.Sqrt(tau/float64(wkKeys)) / float64(nEdges)
 		for i := range edges {
-			for k := 0; k < numSharedKeys; k++ {
+			for k := 0; k < wkKeys; k++ {
 				edges[i].cs.UpdateString(fmt.Sprintf("k%d", k), baseline)
 			}
 		}
@@ -174,10 +307,10 @@ func main() {
 			case "stable":
 				// Zero-mean perturbation: shift a little mass between two keys so
 				// the global F2 barely moves and stays below τ.
-				edges[i].cs.UpdateString(fmt.Sprintf("k%d", step%numSharedKeys), drift)
-				edges[i].cs.UpdateString(fmt.Sprintf("k%d", (step+1)%numSharedKeys), -drift)
+				edges[i].cs.UpdateString(fmt.Sprintf("k%d", step%wkKeys), drift)
+				edges[i].cs.UpdateString(fmt.Sprintf("k%d", (step+1)%wkKeys), -drift)
 			default: // ramp: monotone growth that crosses τ
-				for k := 0; k < numSharedKeys; k++ {
+				for k := 0; k < wkKeys; k++ {
 					edges[i].cs.UpdateString(fmt.Sprintf("k%d", k), drift)
 				}
 			}
@@ -186,7 +319,7 @@ func main() {
 		if pattern != "stable" {
 			// Exact merged F2 = H*(N*drift*(step+1))² (ramp ground truth).
 			f := float64(nEdges) * drift * float64(step+1)
-			exactF2 := float64(numSharedKeys) * f * f
+			exactF2 := float64(wkKeys) * f * f
 			fmt.Fprintf(os.Stderr, "f2driver: step=%d exact_f2=%.0f tau=%.0f\n", step, exactF2, tau)
 		}
 		// Grace for geometric RefBroadcast to propagate before the next step.

@@ -48,13 +48,29 @@ deterministic) and the same alert decisions. Reproduce:
 
 | Workload | Mode | Alert | Total bytes | vs distributed |
 |---|---|---|---|---|
-| **stable** (F₂ < τ) | distributed | none ✓ | 923,280 | 1.0× |
+| **stable** (F₂ < τ) | raw (no aggregation) | none ✓ | 3,956 | — |
+| **stable** | distributed | none ✓ | 923,280 | 1.0× |
 | **stable** | **geometric** | none ✓ | **230,820** | **0.25× (4.0× less)** |
-| **ramp** (F₂ crosses τ) | distributed | fired @921,600 ✓ | 923,280 | 1.0× |
+| **ramp** (F₂ crosses τ) | raw (no aggregation) | fired (exact) ✓ | 7,120 | — |
+| **ramp** | distributed | fired @921,600 ✓ | 923,280 | 1.0× |
 | **ramp** | **geometric** | fired @921,600 ✓ | **531,132** | **0.58× (1.74× less)** |
 
-Both modes fire the **same** alert (observed 921,600, inside the
-`[(1−ε)τ, τ) = [900k, 10⁶)` band). Geometric wins in **both** regimes.
+Both sketch modes fire the **same** alert (observed 921,600, inside the
+`[(1−ε)τ, τ) = [900k, 10⁶)` band). Geometric wins in **both** regimes vs
+distributed.
+
+**Raw baseline honesty.** The raw rows ship every sample as a msgpack
+`[ts, key, value]` record (real serialized frames, exact-F2 alert ground
+truth — `f2driver … raw`). On THIS workload raw is far cheaper than the
+sketches — **by construction**: the protocol-stress workload has only `H=4`
+distinct keys (~9 samples/step total), while a sketch ship costs a fixed
+`d·w ≈ 11.5 KB` regardless of `H`. Raw bytes scale `∝ H` (~1,957 B/key over
+the 20-step run at `H=2048`: 4,007,440 B measured via `F2_KEYS=2048`), sketch
+bytes do not — the crossover on this run shape is `H* ≈ 470` keys vs
+distributed and `H* ≈ 270` vs ramp-geometric; at `H=2048` the sketch wins
+**4.3×** (distributed) / **7.5×** (geometric). For realistic
+cardinality/rate the gap is the C1-wire result (33.8×/65.9× on the
+Google-cluster trace). Sweep `F2_KEYS` to reproduce the crossover.
 
 ### Effect of the `C_ref` delta broadcast (design §12 open-problem #1)
 

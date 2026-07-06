@@ -55,13 +55,33 @@ run () { # workload mode port
   wait "$hp" 2>/dev/null || true
 }
 
+# Raw (no sketch aggregation) baseline: runs on the edge host; bytes counted
+# from real serialized [ts,key,value] frames, alert from the EXACT global F2.
+# On this tiny-H workload raw is cheaper than sketches by construction (sketch
+# cost is fixed d·w) — sweep F2_KEYS for the crossover.
+raw () { # workload
+  local pat="$1"
+  local err="$WORK/d_${pat}_raw.err"
+  ssh -o BatchMode=yes "${EDGE_HOST}" \
+    "/tmp/f2driver - raw 1 $TAU $EPS $ROWS $COLS $EDGES $STEPS $DRIFT $pat" 2>"$err"
+  local line total alert
+  line=$(grep 'mode=raw' "$err")
+  total=$(sed -E 's/.*total_bytes=([0-9]+).*/\1/' <<<"$line")
+  alert=$(sed -E 's/.*alert=([0-9]+).*/\1/' <<<"$line")
+  printf "  %-8s %-12s alert=%-2s total_bytes=%-9s (exact; no aggregation)\n" \
+    "$pat" "raw" "$alert" "$total"
+  echo "$pat,raw,$alert,$total,," >> "$CSV"
+}
+
 CSV="${F2_CLUSTER_OUT:-${MV}/eval-8node/f2_wholesketch_cluster.csv}"
 echo "workload,mode,alert,total_bytes,ships,silent" > "$CSV"
 echo "== whole-sketch F2 over the real NIC: edges on ${EDGE_HOST} → coordinator on ${WARM_HOST} (${WARM_IP}) =="
 echo "== stable workload (F2 stays below tau) =="
+raw stable
 run stable distributed "$BASE_PORT"
 run stable geometric   "$((BASE_PORT+1))"
 echo "== ramp workload (F2 crosses tau) =="
+raw ramp
 run ramp distributed "$((BASE_PORT+2))"
 run ramp geometric   "$((BASE_PORT+3))"
 echo "recorded → $CSV"
