@@ -50,7 +50,16 @@ type f2State struct {
 	cRef        [][]float64 // broadcast merged reference (geometric mode)
 	k           int         // site count from the last RefBroadcast
 	haveRef     bool        // a RefBroadcast has been received this epoch
-	seq         uint64
+	// needFull marks the cached cRef as UNTRUSTWORTHY: a sparse delta could not
+	// be applied (arrived with no base, or failed to decode), so cRef has
+	// diverged from the coordinator's and every later delta compounds onto a
+	// wrong base. While set, the edge refuses to stay silent (a corrupt cRef
+	// could make the safe-zone test wrongly pass → a silent missed violation) and
+	// force-ships its sketch every window, keeping the coordinator's global
+	// estimate exact until a Full keyframe (IsDelta=false) resyncs the reference
+	// and clears the flag.
+	needFull bool
+	seq      uint64
 }
 
 // NewF2Engine builds an F2 engine for one edge. epochWindowMs is reported at
@@ -109,6 +118,7 @@ func (e *F2Engine) OnWindow(aggID uint64, key []byte, matrix [][]float64, window
 		st.ownRef = nil
 		st.cRef = nil
 		st.haveRef = false
+		st.needFull = false // fresh epoch: coordinator resets refs, no divergence yet
 		registered = false
 	}
 
@@ -119,8 +129,13 @@ func (e *F2Engine) OnWindow(aggID uint64, key []byte, matrix [][]float64, window
 		// bug) let edges stay silent through the whole [(1-ε)τ, τ) band, so the
 		// coordinator never resynced and the alert fired late; √(d·(1-ε)τ) makes
 		// geometric fire in the same band as the distributed baseline.
+		//
+		// !st.needFull guards against a diverged cRef: if a delta could not be
+		// applied the cached reference is untrustworthy, so the edge must NOT
+		// trust f2LocallySafe (it could wrongly pass) — force-ship until a Full
+		// keyframe resyncs it.
 		radius := math.Sqrt(float64(st.rows) * (1.0 - st.eps) * st.tau)
-		if st.haveRef && f2LocallySafe(matrix, st.ownRef, st.cRef, st.k, radius) {
+		if st.haveRef && !st.needFull && f2LocallySafe(matrix, st.ownRef, st.cRef, st.k, radius) {
 			ship = false
 		}
 	}
@@ -181,7 +196,11 @@ func (e *F2Engine) OnRef(rb RefBroadcast) {
 	}
 	if rb.IsDelta {
 		if st.cRef == nil {
-			atomic.AddUint64(&e.refErrs, 1) // no base to apply onto; await a Full
+			// No base to apply onto: the reference is now behind the coordinator's.
+			// Mark it untrustworthy so the edge force-ships (never silently trusts
+			// a missing/stale ref) until a Full keyframe arrives.
+			st.needFull = true
+			atomic.AddUint64(&e.refErrs, 1)
 			return
 		}
 		_, _, ri, ci, vs, err := asapmsgpack.UnmarshalCountSketchDeltaSparse(rb.CRef)
@@ -189,6 +208,9 @@ func (e *F2Engine) OnRef(rb RefBroadcast) {
 			if f2Debug {
 				fmt.Fprintf(os.Stderr, "F2Engine.OnRef: delta decode failed: %v\n", err)
 			}
+			// The delta is undecodable → applying nothing leaves cRef diverged
+			// from the coordinator for the rest of the epoch. Force resync.
+			st.needFull = true
 			atomic.AddUint64(&e.refErrs, 1)
 			return
 		}
@@ -208,6 +230,7 @@ func (e *F2Engine) OnRef(rb RefBroadcast) {
 			return
 		}
 		st.cRef = matrix
+		st.needFull = false // a Full keyframe resyncs the reference exactly
 	}
 	st.k = int(rb.K)
 	st.haveRef = true

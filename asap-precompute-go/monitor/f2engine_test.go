@@ -107,3 +107,58 @@ func TestF2EngineGeometricStaysSilentUnderSmallDrift(t *testing.T) {
 		t.Errorf("want silent=1 refs=1 errs=0, got silent=%d refs=%d errs=%d", silent, refs, errs)
 	}
 }
+
+// TestF2EngineForceShipsAfterDeltaLoss pins the delta-loss safety fix: an edge
+// whose cached C_ref diverged (a sparse delta it could not decode/apply) must
+// NOT stay silent against that untrustworthy reference — a corrupt ref could
+// make the safe-zone test wrongly pass, a silent missed violation. It force-ships
+// until a Full keyframe resyncs it.
+func TestF2EngineForceShipsAfterDeltaLoss(t *testing.T) {
+	rep := &countingReporter{}
+	eng := NewF2Engine("e0", 60000, rep)
+	eng.Configure(1, nil, Spec{
+		Enabled: true, Functional: FunctionalF2, Mode: F2ModeGeometric,
+		Tau: 1e6, Epsilon: 0.1, SketchRows: 2, SketchCols: 3,
+	})
+	base := [][]float64{{100, 0, 0}, {0, 100, 0}}
+	eng.OnWindow(1, nil, base, 60000) // bootstrap ship
+	cref, err := asapmsgpack.MarshalCountSketch(2, 3, base)
+	if err != nil {
+		t.Fatalf("marshal C_ref: %v", err)
+	}
+	eng.OnRef(RefBroadcast{AggID: 1, K: 1, CRef: cref}) // full reference
+
+	// Baseline: with a valid ref, a small (safe) drift stays silent.
+	small := [][]float64{{101, 0, 0}, {0, 100, 0}}
+	eng.OnWindow(1, nil, small, 60000)
+	if rep.reports != 1 {
+		t.Fatalf("with a valid ref, small drift must stay silent: reports=%d", rep.reports)
+	}
+
+	// A corrupt/undecodable sparse delta arrives → the cached ref is now stale.
+	eng.OnRef(RefBroadcast{AggID: 1, K: 1, IsDelta: true, CRef: []byte{0xff, 0xff, 0xff, 0xff}})
+	if _, _, _, errs := eng.Stats(); errs != 1 {
+		t.Fatalf("corrupt delta must count one refErr, got %d", errs)
+	}
+
+	// The SAME small (safe) drift must now FORCE-SHIP: the edge no longer trusts
+	// its diverged reference, so it cannot stay silent (no missed violation).
+	before := rep.reports
+	eng.OnWindow(1, nil, small, 60000)
+	if rep.reports != before+1 {
+		t.Errorf("after delta loss a diverged edge must force-ship even when 'safe': reports=%d want %d", rep.reports, before+1)
+	}
+
+	// A Full keyframe resyncs the reference → the edge trusts it again and a small
+	// safe drift returns to silent (recovered).
+	full2, err := asapmsgpack.MarshalCountSketch(2, 3, small)
+	if err != nil {
+		t.Fatalf("marshal keyframe: %v", err)
+	}
+	eng.OnRef(RefBroadcast{AggID: 1, K: 1, CRef: full2})
+	before = rep.reports
+	eng.OnWindow(1, nil, small, 60000)
+	if rep.reports != before {
+		t.Errorf("after a Full keyframe the edge must recover to silent: reports=%d want %d", rep.reports, before)
+	}
+}

@@ -92,6 +92,22 @@ flipped ramp geometric from a loss to a 1.74× win. The gate is still isotropic
 (ships every `Δ ≠ 0` cell); giving the broadcast *anisotropic per-cell
 thresholds* is design §12 open-problem #1.
 
+**Delta-loss resilience.** A sparse delta creates a dependency chain: an edge
+that misses or fails to decode one `ΔC_ref` runs the rest of the epoch against a
+diverged reference, and later deltas compound onto a wrong base — a corrupt
+safe-zone test could then wrongly pass (a *silent missed violation*). Two guards:
+- **Edge (safety):** when a delta cannot be applied (`f2engine.go` marks the
+  reference `needFull`), the edge stops trusting it and **force-ships every
+  window** until a Full keyframe resyncs it. The coordinator's global `mean_f2`
+  therefore always sees that edge's true sketch, so the alert fires correctly —
+  the divergence can no longer hide a crossing.
+- **Coordinator (recovery):** the broadcast is a Full keyframe at epoch start and
+  every `F2_KEYFRAME_INTERVAL` rounds (I-frame style), bounding how long a
+  diverged edge stays in the force-ship state; it also self-heals at the epoch
+  boundary. The interval is set above the eval's per-mode broadcast count, so the
+  measured communication figures are unchanged. A faster on-demand resync (an
+  explicit edge→coordinator keyframe request) is a possible future refinement.
+
 **Remaining productionization.** The `F2Engine` is wired to the coordinator over
 real gRPC and driven by the eval, but it is **not reachable from the production
 edge runtime**: `precompute.go`'s `monitorValue` switch handles only
