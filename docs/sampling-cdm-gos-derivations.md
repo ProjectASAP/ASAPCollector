@@ -1344,6 +1344,22 @@ readout:
 m_{cdm}=k\sum_j |a_j|T_j.
 ```
 
+**Implementation (scalar coordinator).** `Monitor::rebroadcast`
+(`data_plane/src/monitor/coordinator.rs`) fires when
+$\widehat G + m_{sa} \ge (1-\epsilon)\tau$, i.e. it folds $m_{sa}$ into the band.
+The $m_{cdm}$ term is not added separately because the slack countdown already
+realizes it: $\widehat G=\sum_i \mathrm{known\_value}_i$ is a lower bound each
+edge maintains within its granted slack, so firing on $\widehat G$ is already
+$m_{cdm}$-safe. The sampling term is the aggregate 1-σ standard deviation
+$m_{sa}=\sqrt{\sum_i \mathrm{kv}_i(1-p_i)/p_i}$, with $p_i$ the coordinator's own
+allocated floor $1/(1+\epsilon^2\,\mathrm{rate}_i)$ (self-consistent with the
+`sample_p` it grants). It is **0 whenever sampling is not granted** (a single
+edge, or `rate=0`), so the unsampled path is unchanged. Caveats: this is the 1-σ
+heuristic (not the high-probability Bernstein margin — a theorem-grade alert
+multiplies by $z_\delta$); and the $\mathrm{kv}_i(1-p_i)/p_i$ variance assumes a
+unit-weight count readout (exact for CMS/CountSketch point counts, conservative
+for a non-unit-weight Sum — where the margin only fires earlier, never later).
+
 For quantiles, convert the alert predicate to a rank/count predicate first. For
 example, a DDSketch predicate $q_\phi > v^*$ is equivalent to a bucket-prefix
 count predicate up to the DDSketch value bucket error. The sampling and CDM
