@@ -1,5 +1,8 @@
 # Label-axis 4× CPU regression — root cause + fix
 
+> **Archived / resolved.** A completed 2026-05 root-cause investigation (label-axis 4× CPU regression), kept for provenance.
+
+
 _Investigation date: 2026-05-05. Triggered by paper blocker #2
 in `PROGRESS.md`._
 

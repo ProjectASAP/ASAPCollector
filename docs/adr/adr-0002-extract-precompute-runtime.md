@@ -256,7 +256,7 @@ ASAPCollector/
 
 ## Phase-2 / Phase-3 execution plan
 
-See [`docs/phase-2-execution-plan.md`](../phase-2.md)
+See [`docs/phase-2.md` §execution plan](../phase-2.md)
 for the file-by-file extraction map covering all 5 OTel
 processors.
 
