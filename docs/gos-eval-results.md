@@ -188,6 +188,36 @@ cell homogenization caps its benefit; the effective lever for high cardinality
 remains **sizing `w` to the key count** (keep fill `H/(d·w) ≪ 1`), with the
 threshold gate as a safe, free add-on that helps whenever real cell skew exists.
 
+### Real dataset — DEBS 2022 trading day (no synthetic workload)
+
+Replays the **real DEBS 2022 Grand-Challenge trading-day** feed (Infront
+Financial; 54M market events). Each ticker symbol is a monitored key; the global
+`F2 = Σ_symbol (cumulative event count)²` (trade-concentration / self-join size)
+grows over the day, and the monitor fires when it crosses `τ` ("trading got too
+concentrated"). The first 4M events → 20 sub-windows × 4 edges (symbol→edge by
+hash), `H = 5493` real distinct symbols, `d=5, w=4096` (fill `0.27`, not
+overloaded), `τ = 2.5·10¹⁰` (crosses at step 14). Reproduce:
+`deploy/mvp-multinode/scripts/f2_debs_eval.sh` (preprocessor
+`datasets_eval/debs/scripts/debs_f2_trace.py` + f2driver `F2_TRACE` replay),
+recorded at `eval-8node/f2_debs.csv`:
+
+| mode | total bytes | alert | vs raw |
+|---|---|---|---|
+| raw (ship every event) | 99,122,250 (99 MB) | fired ✓ | 1.0× |
+| **distributed** | 14,747,280 (14.7 MB) | fired ✓ | **0.15× (6.7× less)** |
+| **geometric** | 13,033,555 (13.0 MB, 40/80 ships) | fired ✓ | **0.13× (7.6× less)** |
+
+**On real data every claim holds, and cleanly:** the sketch beats raw **6.7×**
+(distributed) / **7.6×** (geometric) — the cardinality is real (`H=5493`), so
+the fixed `d·w` cost is far below the 4M-event raw stream; and **geometric beats
+distributed** (13.0 vs 14.7 MB, ships 40/80) because a properly-sized `w=4096`
+sketch is sparse (no dense-broadcast amplification). The geometric margin is
+modest here because DEBS `F2` is a monotone all-day ramp (the sketch keeps
+drifting past the safe zone, so it ships ~half the windows); a stable/low-drift
+period — the scenario geometric targets — silences more and widens the gap. This
+is the honest end state of the whole thread: on a real workload, sketch ≫ raw and
+geometric > distributed, both by construction rather than a tuned synthetic.
+
 ### Effect of the `C_ref` delta broadcast (design §12 open-problem #1)
 
 The geometric coordinator→edge `C_ref` was originally a full `~11.5 KB` matrix

@@ -20,6 +20,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"math"
 	"os"
@@ -30,6 +31,40 @@ import (
 	"github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient"
 	"github.com/ProjectASAP/asap-precompute-go/sketches"
 )
+
+// trkc is one (key, count) update in a replay trace.
+type trkc struct {
+	key   string
+	count float64
+}
+
+// loadTrace reads a real-dataset F2 trace (`step edge key count` per line, e.g.
+// from datasets_eval/debs/scripts/debs_f2_trace.py) into a [step*nEdges+edge]
+// index, so the driver can replay real per-(edge,step) key counts instead of a
+// synthetic workload. Gated by the F2_TRACE env var / pattern="trace".
+func loadTrace(path string, nSteps, nEdges int) [][]trkc {
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "f2driver: F2_TRACE open:", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	idx := make([][]trkc, nSteps*nEdges)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		var st, ed int
+		var sym string
+		var c float64
+		if _, err := fmt.Sscanf(sc.Text(), "%d %d %s %f", &st, &ed, &sym, &c); err != nil {
+			continue
+		}
+		if st >= 0 && st < nSteps && ed >= 0 && ed < nEdges {
+			idx[st*nEdges+ed] = append(idx[st*nEdges+ed], trkc{sym, c})
+		}
+	}
+	return idx
+}
 
 func atoiOr(s string, def int) int {
 	if v, err := strconv.Atoi(s); err == nil {
@@ -125,6 +160,33 @@ func runRaw(tau, eps float64, nEdges, nSteps int, drift float64, pattern string,
 		frame := mpRawBatch(ts, keys, vals)
 		totalBytes += uint64(len(frame))
 		samples += uint64(len(keys))
+	}
+	// Real-dataset replay: raw ships every event as a [ts,key,value] record.
+	// Bytes = Σ_line (one-record frame size × count); the exact F2 uses the
+	// cumulative per-key counts, same as the sketch modes' ground truth.
+	if pattern == "trace" {
+		trace := loadTrace(os.Getenv("F2_TRACE"), nSteps, nEdges)
+		for step := 0; step < nSteps; step++ {
+			for edge := 0; edge < nEdges; edge++ {
+				for _, u := range trace[step*nEdges+edge] {
+					rec := mpRawBatch(windowStart+uint64(step)*80, []string{u.key}, []float64{1})
+					totalBytes += uint64(len(rec)) * uint64(u.count)
+					samples += uint64(u.count)
+					global[u.key] += u.count
+				}
+			}
+			if alertStep < 0 && exactF2() >= (1.0-eps)*tau {
+				alertStep = step
+			}
+		}
+		alert := 0
+		if alertStep >= 0 {
+			alert = 1
+		}
+		fmt.Fprintf(os.Stderr,
+			"f2driver: done mode=raw pattern=trace edges=%d steps=%d keys=%d raw_samples=%d total_bytes=%d alert=%d alert_step=%d exact_f2=%.0f\n",
+			nEdges, nSteps, len(global), samples, totalBytes, alert, alertStep, exactF2())
+		return
 	}
 	// Stable preload is raw data too — it must cross the wire like any sample.
 	if pattern == "stable" {
@@ -317,9 +379,19 @@ func main() {
 		}
 	}
 
+	var trace [][]trkc
+	if pattern == "trace" {
+		trace = loadTrace(os.Getenv("F2_TRACE"), nSteps, nEdges)
+	}
+
 	for step := 0; step < nSteps; step++ {
 		for i := range edges {
 			switch pattern {
+			case "trace": // replay a REAL dataset (F2_TRACE): apply this edge's
+				// actual (key, count) events for this step.
+				for _, u := range trace[step*nEdges+i] {
+					edges[i].cs.UpdateString(u.key, u.count)
+				}
 			case "stable":
 				// Zero-mean perturbation: shift a little mass between two keys so
 				// the global F2 barely moves and stays below τ.
