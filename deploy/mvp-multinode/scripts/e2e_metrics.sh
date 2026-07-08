@@ -43,6 +43,8 @@ slog(){ printf '[%s] [e2e] %s\n' "$(date +%H:%M:%S)" "$*"; }
 slog "sync configs + bring up the multinode 'asap' stack (cold=${NODE1_HOST}, warm=${NODE2_HOST}, agents=${NODE0_HOST}/${NODE3_HOST})"
 SKIP_BUILD=1 SKIP_LOAD="${SKIP_LOAD:-1}" ensure_images
 sync_all_nodes
+arm_down || true   # clear any leftover containers from a prior run (name conflicts)
+sleep 2
 arm_up asap
 
 # 2. Per-component resources + bandwidth (snapshot_resources.sh — the WORKING

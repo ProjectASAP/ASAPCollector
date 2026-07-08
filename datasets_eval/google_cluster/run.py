@@ -148,6 +148,7 @@ def _replay_otlp_grpc(
     pace_factor: float,
     max_lines: int,
     wall_clock_anchor: bool = False,
+    anchor_span_s: float = 0.0,
 ) -> int:
     """OTLP/gRPC sender. Lazy-imports opentelemetry-proto deps.
 
@@ -203,6 +204,28 @@ def _replay_otlp_grpc(
     # late rows). The per-family arms (~200k rows) replay in << 60s; for a
     # multi-minute all-families replay, slice per family or widen the window.
     anchor_now_ns = time.time_ns()
+    # anchor_span_s > 0: instead of collapsing EVERY point onto a single
+    # instant, spread the points across the last `anchor_span_s` seconds with a
+    # distinct nanosecond each (still one window when span < window_duration and
+    # the send is boundary-aligned). Single-instant anchoring gives every event
+    # of a key an IDENTICAL (series, ts, value) tuple, so count-type sketches
+    # (CountSketch/CountMin: value==1.0 per event) see the duplicates collapse
+    # and lose all per-key multiplicity — topk/frequency then read ~1 per key.
+    # A quantile workload is unaffected (its values differ), but a spread is
+    # strictly safer for it too. Requires a pre-count to size the step.
+    span_ns = int(anchor_span_s * 1_000_000_000)
+    total_pts = 0
+    if wall_clock_anchor and span_ns > 0:
+        with open(jsonl_path, "r", encoding="utf-8") as _fp:
+            total_pts = sum(1 for _l in _fp if _l.strip())
+    step_ns = span_ns // max(1, total_pts - 1) if total_pts > 1 else 0
+    # Spread FORWARD from now: [now, now+span]. now is boundary-aligned to a
+    # fresh window start, so the whole span lands in the OPEN window. A backward
+    # spread [now-span, now] would backdate points into the PREVIOUS window,
+    # which has already sealed on wall-clock — the agent then drops them as
+    # late-arriving (only the points nearest `now` survive). Keep span <
+    # window_duration so it doesn't spill into the next window.
+    anchor_start_ns = anchor_now_ns
 
     def flush(rows: list[dict[str, Any]]) -> None:
         if not rows:
@@ -224,7 +247,7 @@ def _replay_otlp_grpc(
                 dp = metric.gauge.data_points.add()
                 dp.as_double = float(r["value"])
                 if wall_clock_anchor:
-                    dp.time_unix_nano = anchor_now_ns
+                    dp.time_unix_nano = r.get("_ts_ns", anchor_now_ns)
                 else:
                     dp.time_unix_nano = int(r["timestamp_ms"]) * 1_000_000
                 for k, v in sorted(r["attributes"].items()):
@@ -261,6 +284,8 @@ def _replay_otlp_grpc(
                     sleep_ns = target_ns - time.time_ns()
                     if sleep_ns > 0:
                         time.sleep(sleep_ns / 1e9)
+                if wall_clock_anchor and step_ns > 0:
+                    obj["_ts_ns"] = anchor_start_ns + n * step_ns
                 batch.append(obj)
                 if len(batch) >= BATCH_SIZE:
                     flush(batch)
@@ -281,7 +306,8 @@ def cmd_replay(args: argparse.Namespace) -> int:
     if args.dry_run or not args.endpoint:
         return _replay_dry_run(args.jsonl, args.max_lines)
     rc = _replay_otlp_grpc(args.jsonl, args.endpoint, args.pace_factor, args.max_lines,
-                           wall_clock_anchor=getattr(args, "wall_clock_anchor", False))
+                           wall_clock_anchor=getattr(args, "wall_clock_anchor", False),
+                           anchor_span_s=getattr(args, "anchor_span_s", 0.0))
     if rc == 4:
         return _replay_dry_run(args.jsonl, args.max_lines)
     return rc
@@ -458,6 +484,12 @@ def main(argv: list[str] | None = None) -> int:
                          "Required for recent-range PromQL ([Ns]) to intersect "
                          "the warm sketch windows. Timestamp-only; GT unchanged. "
                          "Replay must finish within one window_duration.")
+    pr.add_argument("--anchor-span-s", type=float, default=0.0,
+                    help="With --wall-clock-anchor, spread points across the last "
+                         "N seconds (distinct ns each) instead of one instant, so "
+                         "count-type sketches (value==1.0 per event) keep per-key "
+                         "multiplicity. Keep N < window_duration so it stays one "
+                         "window (e.g. 50 for a 60s window).")
     pr.add_argument("--dry-run", action="store_true",
                     help="Force dry-run even with --endpoint set.")
     pr.set_defaults(func=cmd_replay)
