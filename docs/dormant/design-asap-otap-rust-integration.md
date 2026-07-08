@@ -1,5 +1,8 @@
 # ASAP OTAP-Rust Integration — Design
 
+> **DORMANT.** This integration is not active on the current branch — the `otel-arrow` path/submodule is uninitialized and no build or eval arm exercises it. Kept for design reference; revisit before reactivating.
+
+
 _Status: **draft** — 2026-05-02. Doc-only; gates the OTAP-Rust
 adapter work that becomes Phase 5 of the edge-framework migration._
 
@@ -582,7 +585,7 @@ shipped in #241 / #242).
   — five-layer model, bandwidth invariant, Strategy A/B,
   per-platform encoding, `Adapter` / `ControlChannel` traits,
   R6 (OTAP pre-1.0), §7.4 (integration model).
-- [`docs/design-asap-telegraf-integration.md`](./design-asap-telegraf-integration.md)
+- [`design-asap-telegraf-integration.md`](./design-asap-telegraf-integration.md)
   — Phase-4 adapter design that this Phase-5 design mirrors
   structurally (two-layer split, unified-plugin shape, build
   pipeline).

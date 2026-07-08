@@ -587,9 +587,9 @@ Tracked, in flight, or explicitly out of scope today.
   (merged from the older `design-jsonl-deprecation-…` and
   `design-gorilla-s3-cold-engine` docs in PR #325).
 - **`docs/design-asap-edge-framework.md`** — asap-otel agent design.
-- **`docs/design-asap-otap-rust-integration.md`** — asap-otap agent
+- **`docs/dormant/design-asap-otap-rust-integration.md` (dormant)** — asap-otap agent
   design.
-- **`docs/design-asap-telegraf-integration.md`** — asap-telegraf
+- **`docs/dormant/design-asap-telegraf-integration.md` (dormant)** — asap-telegraf
   agent design.
 - **`docs/control-plane-design.md`** — controller architecture; OpAMP
   and HTTP-push plumbing.

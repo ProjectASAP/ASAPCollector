@@ -1,5 +1,8 @@
 # Continuous Monitoring — Aggregation Taxonomy & the `[t1,t2]` Window Question
 
+> **Part of the CDM/GOS theory set.** The canonical, unified derivations live in [`sampling-cdm-gos-derivations.md`](sampling-cdm-gos-derivations.md) — start there. This doc is retained for the full per-series×window / series×timestamp / series×window taxonomy and the (agg_id, group_key) monitor-keying rule, which the canonical doc does not reproduce.
+
+
 > Design note. Companion to
 > [continuous-monitoring-tumbling-cost-analysis.md](continuous-monitoring-tumbling-cost-analysis.md)
 > (the per-family cost theory) and

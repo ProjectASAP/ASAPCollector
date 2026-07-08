@@ -36,8 +36,12 @@ HARNESS_BIN="$BACKEND_ROOT/target/debug/monitor_coordinator_harness"
 echo "==> Building Go edge driver"
 ( cd "$GRPCCLIENT_DIR" && GOFLAGS=-mod=mod go build -o /tmp/e2edriver ./cmd/e2edriver )
 
-echo "==> Starting coordinator on :$PORT (agg_id=$AGG_ID tau=$TAU window_ms=$WINDOW_MS)"
-"$HARNESS_BIN" "$PORT" "$AGG_ID" "$TAU" "$WINDOW_MS" 30 >"$HARNESS_LOG" 2>&1 &
+# Sum monitors register under the series-group key (the edge's canonical
+# `k=v;k2=v2` label encoding), so the harness config must carry the same key.
+MON_KEY="svc=checkout"
+
+echo "==> Starting coordinator on :$PORT (agg_id=$AGG_ID tau=$TAU window_ms=$WINDOW_MS key=$MON_KEY)"
+"$HARNESS_BIN" "$PORT" "$AGG_ID" "$TAU" "$WINDOW_MS" 30 "$MON_KEY" >"$HARNESS_LOG" 2>&1 &
 HARNESS_PID=$!
 
 # Wait for the harness to report readiness.

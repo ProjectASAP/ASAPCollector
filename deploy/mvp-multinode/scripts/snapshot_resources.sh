@@ -10,14 +10,21 @@ DUR=${2:-60}
 OUT=${3:-/mydata/mvp-multinode/results/snap}
 mkdir -p "$OUT"
 
-NODES=(node0 node1 node2 node3)
+# Node set is configurable so the same snapshotter works for the 4-node MVP
+# and the 8-node scaling cluster. Defaults to the original 4 nodes.
+read -ra NODES <<< "${SNAP_NODES:-node0 node1 node2 node3}"
+
+# Resolve the experiment-LAN NIC by IP subnet instead of a hard-coded name —
+# CloudLab hardware varies (enp130s0f0 on the original 4-node profile, eno2 on
+# the 8-node profile). Mirrors the auto-detect already in measure_nic_bw.sh.
+IFACE_PROBE='iface=$(ip -4 -o addr show | awk '"'"'$4 ~ /^10\.10\.1\./ {print $2; exit}'"'"'); iface=${iface:-eth0}'
 
 echo "[snap] arm=${ARM} duration=${DUR}s out=${OUT}"
 
 # 1. Capture START NIC bytes on each node and START container stats.
 declare -A start_rx start_tx start_t end_rx end_tx end_t
 for n in "${NODES[@]}"; do
-  start=$(ssh "$n" 'iface=enp130s0f0; echo "$(cat /sys/class/net/$iface/statistics/rx_bytes) $(cat /sys/class/net/$iface/statistics/tx_bytes) $(date +%s.%N)"')
+  start=$(ssh "$n" "${IFACE_PROBE}"'; echo "$(cat /sys/class/net/$iface/statistics/rx_bytes) $(cat /sys/class/net/$iface/statistics/tx_bytes) $(date +%s.%N)"')
   start_rx[$n]=$(echo "$start" | awk '{print $1}')
   start_tx[$n]=$(echo "$start" | awk '{print $2}')
   start_t[$n]=$(echo "$start" | awk '{print $3}')
@@ -58,7 +65,7 @@ wait
 
 # 3. Capture END NIC bytes on each node.
 for n in "${NODES[@]}"; do
-  ev=$(ssh "$n" 'iface=enp130s0f0; echo "$(cat /sys/class/net/$iface/statistics/rx_bytes) $(cat /sys/class/net/$iface/statistics/tx_bytes) $(date +%s.%N)"')
+  ev=$(ssh "$n" "${IFACE_PROBE}"'; echo "$(cat /sys/class/net/$iface/statistics/rx_bytes) $(cat /sys/class/net/$iface/statistics/tx_bytes) $(date +%s.%N)"')
   end_rx[$n]=$(echo "$ev" | awk '{print $1}')
   end_tx[$n]=$(echo "$ev" | awk '{print $2}')
   end_t[$n]=$(echo "$ev" | awk '{print $3}')

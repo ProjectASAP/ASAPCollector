@@ -52,3 +52,12 @@ otel-app/otel-app
 deploy/scripts/__pycache__/
 *.pyc
 deploy/eval-results/
+
+# Compiled eval-driver binaries (built by the f2 eval scripts into their cmd dirs)
+asap-precompute-go/monitor/grpcclient/f2driver
+asap-precompute-go/monitor/grpcclient/e2edriver
+asap-precompute-go/monitor/grpcclient/cmd/*/f2driver
+asap-precompute-go/monitor/grpcclient/cmd/*/e2edriver
+
+# Local dataset working copies (not part of the repo)
+datasets_eval/debs/data/

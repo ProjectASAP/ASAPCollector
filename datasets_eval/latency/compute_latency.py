@@ -41,21 +41,36 @@ def pct(sorted_vals, p):
     return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
 
 
-def summarize(rows, label, require_warm=True):
+def _n_result(r) -> int:
+    """Result count from either the full replay schema (`result` vector) or
+    the slim per-query schema (`n_result_series`)."""
+    res = r.get("result")
+    if res is not None:
+        return len(res)
+    return int(r.get("n_result_series") or 0)
+
+
+def summarize(rows, label, require_real=True, require_source=None):
     """Returns (summary_dict, {kind: [latencies]}, [all_latencies]).
-    Hard-fails if require_warm and any timed query was empty/errored."""
+    Hard-fails if require_real and any timed query was empty/errored, or if
+    require_source is set and any timed query was served by a different
+    data_source (guards that the arm's answers came from the intended tier)."""
     bad = []
+    wrong_src = []
     by_kind: dict[str, list[float]] = {}
     alllat: list[float] = []
     src_counter: dict[str, int] = {}
     for r in rows:
-        res = r.get("result") or []
+        n = _n_result(r)
         src = r.get("data_source")
         src_counter[src] = src_counter.get(src, 0) + 1
-        ok = r.get("status") == "success" and bool(res)
-        if require_warm and not ok:
+        ok = r.get("status") == "success" and n > 0
+        if require_real and not ok:
             bad.append({"query": r.get("query"), "status": r.get("status"),
-                        "n_result": len(res), "data_source": src})
+                        "n_result": n, "data_source": src})
+            continue
+        if require_source is not None and src != require_source:
+            wrong_src.append({"query": r.get("query"), "data_source": src})
             continue
         if not ok:
             continue
@@ -63,10 +78,14 @@ def summarize(rows, label, require_warm=True):
         alllat.append(lat)
         by_kind.setdefault(r["kind"], []).append(lat)
 
-    if require_warm and bad:
+    if require_real and bad:
         sys.exit(f"[{label}] {len(bad)} timed queries returned no real result "
                  f"(empty/errored) — latency would be meaningless. First few: "
                  f"{bad[:3]}")
+    if require_source is not None and wrong_src:
+        sys.exit(f"[{label}] {len(wrong_src)} timed queries were NOT served by "
+                 f"data_source={require_source} (wrong tier — this arm must "
+                 f"measure that tier only). First few: {wrong_src[:3]}")
 
     def stats(vals):
         s = sorted(vals)
@@ -98,24 +117,41 @@ def cdf_xy(vals):
     return s, ys
 
 
+def load_any(path: str):
+    """Load either a JSONL replay log (one object per line) or a JSON array
+    (the committed slim per_query_latency*.json)."""
+    text = Path(path).read_text().lstrip()
+    if text.startswith("["):
+        return json.loads(text)
+    return load(path)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--warm", required=True)
-    ap.add_argument("--cold", default=None)
+    ap.add_argument("--warm", required=True,
+                    help="warm replay JSONL or committed per_query_latency.json")
+    ap.add_argument("--cold", default=None,
+                    help="cold replay JSONL or per_query_latency_cold.json")
     ap.add_argument("--out-json", required=True)
     ap.add_argument("--out-png", required=True)
     args = ap.parse_args()
 
-    warm_rows = load(args.warm)
-    warm_sum, warm_by_kind, warm_all = summarize(warm_rows, "warm", require_warm=True)
+    warm_rows = load_any(args.warm)
+    # Warm arm: every timed query must be a real warm answer (data_source=asap_query).
+    warm_sum, warm_by_kind, warm_all = summarize(
+        warm_rows, "warm", require_real=True, require_source="asap_query")
 
     out = {"warm": warm_sum}
 
     cold_all = None
+    cold_by_kind = None
     if args.cold and Path(args.cold).exists():
-        cold_rows = load(args.cold)
-        # cold arm: don't hard-fail on empties (route may differ); report what landed
-        cold_sum, _, cold_all = summarize(cold_rows, "cold", require_warm=False)
+        cold_rows = load_any(args.cold)
+        # Cold arm: GUARD that every timed query landed real AND was served by
+        # the cold/archive engine (data_source=thanos_query) — we are measuring
+        # the cold-fallback tier, so a warm shortcut would invalidate the arm.
+        cold_sum, cold_by_kind, cold_all = summarize(
+            cold_rows, "cold", require_real=True, require_source="thanos_query")
         out["cold"] = cold_sum
 
     Path(args.out_json).write_text(json.dumps(out, indent=2) + "\n")
@@ -136,28 +172,47 @@ def main():
                 color=palette.get(kind, "#7f7f7f"), lw=1.4, ls="--", alpha=0.85)
     if cold_all:
         x, y = cdf_xy(cold_all)
-        ax.plot(x, y, label=f"cold-fallback ({len(cold_all)} q)",
-                color="#d62728", lw=2.0)
+        ax.plot(x, y, label=f"cold-fallback — all ({len(cold_all)} q)",
+                color="#d62728", lw=2.2)
+        cold_palette = {"quantile": "#8c564b", "sum": "#e377c2"}
+        for kind, vals in sorted((cold_by_kind or {}).items()):
+            x, y = cdf_xy(vals)
+            ax.plot(x, y, label=f"cold — {kind} ({len(vals)} q)",
+                    color=cold_palette.get(kind, "#d62728"), lw=1.4, ls="--", alpha=0.85)
 
+    # percentile guide lines: warm (solid grey) + cold (red) overall p50/p99
     for p, ls in ((50, ":"), (99, "-.")):
         v = pct(sorted(warm_all), p)
         ax.axvline(v, color="#888", ls=ls, lw=0.9)
-        ax.text(v, 0.04, f"p{p}={v:.1f}ms", rotation=90, fontsize=7,
+        ax.text(v, 0.04, f"warm p{p}={v:.1f}ms", rotation=90, fontsize=6,
                 va="bottom", ha="right", color="#555")
+        if cold_all:
+            cv = pct(sorted(cold_all), p)
+            ax.axvline(cv, color="#d62728", ls=ls, lw=0.8, alpha=0.6)
+            ax.text(cv, 0.04, f"cold p{p}={cv:.1f}ms", rotation=90, fontsize=6,
+                    va="bottom", ha="right", color="#d62728")
 
     ax.set_xlabel("backend query latency (ms)")
     ax.set_ylabel("CDF (fraction of queries ≤ x)")
-    ax.set_title("Fig 7 — backend query latency CDF (warm sketch tier, single-node loopback)")
+    title = "Fig 7 — backend query latency CDF (single-node loopback)"
+    if cold_all:
+        title = ("Fig 7 — backend query latency CDF: warm sketch tier vs "
+                 "cold-fallback archive\n(single-node loopback)")
+    ax.set_title(title)
     ax.set_ylim(0, 1.02)
     ax.set_xlim(left=0)
     ax.grid(True, alpha=0.3)
-    ax.legend(loc="lower right", fontsize=8)
+    ax.legend(loc="lower right", fontsize=7)
     fig.tight_layout()
     fig.savefig(args.out_png, dpi=140)
     print(f"wrote {args.out_json} and {args.out_png}")
-    print(json.dumps(out["warm"]["overall"], indent=2))
+    print("WARM:", json.dumps(out["warm"]["overall"]))
     for k, v in out["warm"]["by_kind"].items():
-        print(f"  {k:14s} p50={v['p50_ms']:.2f}  p95={v['p95_ms']:.2f}  p99={v['p99_ms']:.2f}  (n={v['n']})")
+        print(f"  warm {k:10s} p50={v['p50_ms']:.2f}  p95={v['p95_ms']:.2f}  p99={v['p99_ms']:.2f}  (n={v['n']})")
+    if cold_all:
+        print("COLD:", json.dumps(out["cold"]["overall"]))
+        for k, v in out["cold"]["by_kind"].items():
+            print(f"  cold {k:10s} p50={v['p50_ms']:.2f}  p95={v['p95_ms']:.2f}  p99={v['p99_ms']:.2f}  (n={v['n']})")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,4 @@
+mode,total_bytes,alert,ships,note
+raw,99122250,1,,ship-every-event
+distributed,14747280,1,80,,
+geometric,13033555,1,40,,

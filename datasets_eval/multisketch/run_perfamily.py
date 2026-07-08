@@ -26,7 +26,7 @@ Writes results/perfamily-<arm>.json per arm and an aggregate
 results/perfamily-all.json.
 """
 from __future__ import annotations
-import argparse, json, math, subprocess, sys, time, urllib.parse, urllib.request
+import argparse, json, math, os, subprocess, sys, time, urllib.parse, urllib.request
 from collections import defaultdict
 from pathlib import Path
 
@@ -36,8 +36,13 @@ GCT = HERE.parent / "google_cluster"
 sys.path.insert(0, str(GCT / "e2e"))
 import gt_eval  # noqa: E402
 
-BASE = "http://127.0.0.1:9091"
-AGENT_METRICS = "http://127.0.0.1:8890/metrics"
+# Endpoints are env-overridable so the SAME accuracy scorers run against a
+# remote MULTINODE backend (e2e_metrics.sh sets E2E_BACKEND=node2:9091 etc.)
+# instead of the single-host stack.
+BASE = os.environ.get("E2E_BACKEND", "http://127.0.0.1:9091")
+AGENT_METRICS = os.environ.get("E2E_AGENT_METRICS", "http://127.0.0.1:8890/metrics")
+REPLAY_ENDPOINT = os.environ.get("E2E_REPLAY_ENDPOINT", "127.0.0.1:4317")
+EXTERNAL_STACK = os.environ.get("E2E_EXTERNAL_STACK") == "1"
 STACK = str(HERE / "stack-coldoff.sh")
 
 
@@ -242,17 +247,21 @@ ARMS = {
 
 
 def stack_up(workload, agent):
+    if EXTERNAL_STACK:  # multinode: the stack is already up (e2e_metrics.sh)
+        return
     subprocess.run([STACK, "up", str(HERE / workload), str(HERE / agent)],
                    cwd=str(ROOT), check=True, timeout=180)
 
 
 def stack_down():
+    if EXTERNAL_STACK:
+        return
     subprocess.run([STACK, "down"], cwd=str(ROOT), timeout=60)
 
 
 def replay(jsonl):
     subprocess.call([sys.executable, str(GCT / "run.py"), "replay",
-                     "--jsonl", jsonl, "--endpoint", "127.0.0.1:4317",
+                     "--jsonl", jsonl, "--endpoint", REPLAY_ENDPOINT,
                      "--pace-factor", "0", "--wall-clock-anchor"])
 
 

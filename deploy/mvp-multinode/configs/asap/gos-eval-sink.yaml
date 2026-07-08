@@ -1,0 +1,22 @@
+# GOS per-cell eval — OTLP sink for the WARM node: accept + ACK everything,
+# store nothing. The byte measurement happens in the kernel (iptables dport
+# 4317 counter); the sink only needs to keep the gRPC stream healthy so the
+# agent's exporter never backs off/retries (which would distort bytes).
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 4096
+
+exporters:
+  nop:
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [nop]
+  telemetry:
+    logs:
+      level: warn

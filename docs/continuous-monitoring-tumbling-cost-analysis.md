@@ -1,5 +1,8 @@
 # Continuous Monitoring over Tumbling Windows — Cost Analysis of the Existing Sketch Families
 
+> **Part of the CDM/GOS theory set.** The canonical, unified derivations live in [`sampling-cdm-gos-derivations.md`](sampling-cdm-gos-derivations.md) — start there. This doc is retained for its per-family (Sum/CMS/CS/DDSketch/KLL/HLL) tumbling-window cost derivations under the two disciplines, which the canonical doc does not reproduce.
+
+
 > **Design-doc / paper section** — theory only. For each sketch family we
 > already ship (Sum, DDSketch, KLL, Count-Min, Count-Sketch, HyperLogLog),
 > derive, under the **continuous distributed monitoring (CDM)** model

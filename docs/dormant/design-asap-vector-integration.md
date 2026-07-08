@@ -1,5 +1,8 @@
 # ASAP Vector Integration — Design
 
+> **DORMANT.** This integration is not active on the current branch — the `vector` path/submodule is uninitialized and no build or eval arm exercises it. Kept for design reference; revisit before reactivating.
+
+
 _Status: **draft** — 2026-05-02. Doc-only; gates the Vector adapter
 work that becomes the Phase 5 sister of the OTAP-Rust adapter in
 the edge-framework migration._
@@ -582,11 +585,11 @@ already on `main` (Phase 5 step A — #248).
   R6 / R7, §7.2 (per-platform Strategy-B carriers — Vector row),
   §7.3 (per-platform integration — Vector
   `TaskTransform<EventArray>`), §7.4 (integration model).
-- [`docs/design-asap-otap-rust-integration.md`](./design-asap-otap-rust-integration.md)
+- [`design-asap-otap-rust-integration.md`](./design-asap-otap-rust-integration.md)
   — Phase-5 sister adapter design that this doc mirrors
   structurally (two-layer split, unified-plugin shape, build
   pipeline, cross-language parity reasoning).
-- [`docs/design-asap-telegraf-integration.md`](./design-asap-telegraf-integration.md)
+- [`design-asap-telegraf-integration.md`](./design-asap-telegraf-integration.md)
   — Phase-4 adapter design that this doc inherits the
   unified-plugin and patch-overlay shape from.
 - [`docs/adr/adr-0002-extract-precompute-runtime.md`](./adr/adr-0002-extract-precompute-runtime.md)
