@@ -12,6 +12,11 @@ const (
 	// ExportMetricsServiceRequest
 	fieldResourceMetrics = 1 // repeated ResourceMetrics
 
+	// NumberDataPoint / HistogramDataPoint / ExponentialHistogramDataPoint /
+	// SummaryDataPoint all carry `fixed64 time_unix_nano = 3` — the wire-visible
+	// occurrence identity for consistent sampling.
+	fieldDPTimeUnixNano = 3
+
 	// ResourceMetrics
 	fieldRMScopeMetrics = 2 // repeated ScopeMetrics
 	// (field 1 = Resource, field 3 = schema_url — copied verbatim)
@@ -36,8 +41,11 @@ const (
 
 // FilterRequest takes a marshalled OTLP ExportMetricsServiceRequest and returns
 // a new, byte-valid ExportMetricsServiceRequest in which the datapoints of
-// warm-sketch (sampled) metrics have been geometrically thinned at the wire
-// level. Cold metrics (absent from the p-map or p>=1) and all non-target fields
+// warm-sketch (sampled) metrics have been CONSISTENTLY thinned at the wire
+// level: a datapoint is dropped iff none of the target sketch's d rows admits
+// at (SeedForMetric(name), time_unix_nano/1e6) — the same stateless decision
+// the collector wrapper re-derives on survivors (design §3.1.1). Cold metrics
+// (absent from the params map or p outside (0,1)) and all non-target fields
 // are copied through verbatim — never decoded. Kept datapoints are copied
 // opaque, so their attribute maps and values are never materialized inside the
 // filter.
@@ -74,28 +82,29 @@ func (s *SampleState) rewriteScopeMetrics(sm []byte) []byte {
 }
 
 // rewriteMetric rewrites one Metric message. It first reads the metric name
-// (field 1) cheaply, classifies via admit, and:
-//   - if NOT sampled (cold / p>=1): returns the metric bytes unchanged.
+// (field 1) cheaply, classifies via paramsFor, and:
+//   - if NOT sampled (cold / p outside (0,1)): returns the metric bytes
+//     unchanged.
 //   - if sampled (warm): locates the present data-oneof variant (gauge/sum/...)
 //     and rewrites that sub-message's repeated data_points (field 1), keeping
-//     each datapoint iff the per-metric geometric sampler admits it.
+//     each datapoint iff the CONSISTENT decision keeps it — i.e. at least one
+//     of the target sketch's d rows admits at (seed(name), time-ms(dp)). The
+//     collector wrapper re-derives the identical decisions on survivors.
 func (s *SampleState) rewriteMetric(metric []byte) []byte {
 	name, ok := readMetricName(metric)
 	if !ok {
 		return metric // unparseable name; pass through.
 	}
-	sampled, _ := s.admit(name)
+	params, seed, sampled := s.paramsFor(name)
 	if !sampled {
-		// Cold / raw / p>=1: copy the whole Metric through unchanged. We do NOT
-		// consume a sampler admission for cold metrics.
+		// Cold / raw / p>=1: copy the whole Metric through unchanged.
 		return metric
 	}
 
 	// Warm metric: rewrite the data-oneof variant that is present. Exactly one
 	// of the data fields is set in a well-formed Metric; we rewrite whichever we
 	// encounter and copy everything else (name, description, unit, metadata)
-	// verbatim. The per-datapoint admission for THIS metric is drawn inside
-	// dropOrKeepDataPoint via the metric name captured here.
+	// verbatim.
 	out := make([]byte, 0, len(metric))
 	b := metric
 	for len(b) > 0 {
@@ -114,7 +123,10 @@ func (s *SampleState) rewriteMetric(metric []byte) []byte {
 			// This is the data-oneof sub-message; rewrite its data_points.
 			dataMsg, _ := protowire.ConsumeBytes(b[tagLen:])
 			newData, dok := s.rewriteRepeated(dataMsg, fieldDataPoints, func(dp []byte) []byte {
-				return s.keepOrDropDataPoint(name, dp)
+				if keepDataPoint(params, seed, dp) {
+					return dp
+				}
+				return nil
 			})
 			if !dok {
 				// Malformed data sub-message: copy verbatim.
@@ -132,16 +144,31 @@ func (s *SampleState) rewriteMetric(metric []byte) []byte {
 	return out
 }
 
-// keepOrDropDataPoint draws one geometric admission for `name` and returns the
-// datapoint bytes verbatim (keep) or nil (drop). The datapoint is NEVER
-// decoded: a kept datapoint is copied opaque, preserving its attributes/value
-// exactly; a dropped datapoint is wire-skipped and never materialized.
-func (s *SampleState) keepOrDropDataPoint(name string, dp []byte) []byte {
-	_, keep := s.admit(name)
-	if !keep {
-		return nil
+// readDataPointTimeNanos extracts time_unix_nano (field 3, fixed64) from an
+// opaque datapoint message without decoding any other field. Returns
+// (0, false) on a malformed datapoint; (0, true) when the field is absent
+// (proto3 zero-value omission) — both are treated as "no timestamp" upstream.
+func readDataPointTimeNanos(dp []byte) (uint64, bool) {
+	b := dp
+	for len(b) > 0 {
+		num, typ, tagLen := protowire.ConsumeTag(b)
+		if tagLen < 0 {
+			return 0, false
+		}
+		if num == fieldDPTimeUnixNano && typ == protowire.Fixed64Type {
+			v, n := protowire.ConsumeFixed64(b[tagLen:])
+			if n < 0 {
+				return 0, false
+			}
+			return v, true
+		}
+		valLen := protowire.ConsumeFieldValue(num, typ, b[tagLen:])
+		if valLen < 0 {
+			return 0, false
+		}
+		b = b[tagLen+valLen:]
 	}
-	return dp
+	return 0, true
 }
 
 // readMetricName extracts the Metric.name (field 1, string) without decoding any

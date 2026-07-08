@@ -17,7 +17,7 @@ saved too.
 
 | file | role | built/tested |
 | --- | --- | --- |
-| `state.go` | `SampleState`: atomic metric→p map + per-metric geometric samplers; `SetP`, `admit` | yes |
+| `state.go` | `SampleState`: atomic metric→`{P, Rows}` map, stateless consistent decisions; `SetParams`/`Upsert`/`SetP`, `keepDataPoint` | yes |
 | `filter.go` | `FilterRequest` + generic `rewriteRepeated` protowire walk | yes |
 | `filter_test.go` | unit tests (pdata-built OTLP round-trips through the filter) | yes (5 tests green) |
 | `receiver.go` | `receiver.Metrics` component **sketch** (build tag `asap_otlp_receiver_sketch`) | shell only — needs collector receiver SDK |
@@ -53,14 +53,18 @@ re-emitted, `nil` drops the element. Recursion is just `rewriteRepeated` calling
 itself down the tree (request→rm→sm→metric→data→data_points).
 
 Per `Metric`: read `name` (field 1) cheaply (`readMetricName`), classify via
-`SampleState.admit`:
+`SampleState.paramsFor`:
 
-- **not sampled** (name absent from p-map, or p≥1) → copy the whole `Metric`
-  bytes through unchanged (no sampler draw consumed).
+- **not sampled** (name absent from the params map, or p outside (0,1)) → copy
+  the whole `Metric` bytes through unchanged.
 - **sampled** (warm) → find the present data-oneof variant and rewrite its
-  `data_points`: for each datapoint, `admit` draws one geometric decision —
-  **keep** ⇒ copy the datapoint bytes verbatim (attributes/value never decoded);
-  **drop** ⇒ wire-skip.
+  `data_points`: for each datapoint, read `time_unix_nano` (field 3, fixed64)
+  from the opaque bytes and evaluate the CONSISTENT decision
+  `keep ⇔ ∃ r < Rows: ConsistentAdmit(SeedForMetric(name), timeNanos/1e6, r, P)`
+  — **keep** ⇒ copy the datapoint bytes verbatim (attributes/value never
+  decoded); **drop** ⇒ wire-skip (`R(x)=∅`, probability `(1−p)^d`). Zero/absent
+  timestamp ⇒ keep (fail-open; the wrapper's occurrence-counter fallback
+  samples such points instead).
 
 Output is a freshly assembled, **byte-valid** `ExportMetricsServiceRequest` that
 the stock `pmetric.ProtoUnmarshaler` decodes without error. The filter is
@@ -69,20 +73,22 @@ the stock `pmetric.ProtoUnmarshaler` decodes without error. The filter is
 ## `SampleState` — the shared hook
 
 ```go
-s := otlpfilter.NewSampleState()       // empty => nothing sampled (passthrough)
-s.SetP(map[string]float64{"http.server.duration": 0.25}) // asap_edge OnGrant writer
-sampled, keep := s.admit("http.server.duration")          // lock-free reader (per datapoint)
+s := otlpfilter.Default()               // process-wide shared instance
+// PRODUCTION writer — installed automatically by asap_edge's grant hook
+// (warm_sketch.go: Engine.SetSampleGrantHook), one Upsert per accepted grant:
+s.Upsert("http.server.duration", otlpfilter.SampleParams{P: 0.25, Rows: 6})
+p, sampled := s.Params("http.server.duration") // read-only introspection
 ```
 
-- `pmap atomic.Pointer[map[string]float64]` — metric→effective `p` in (0,1].
-  `1.0`/absent ⇒ not sampled. `SetP` swaps the whole map lock-free; the read path
-  never blocks.
-- per-metric `common.GeometricSampler` (reused from
-  `sketchlib-go/common/sampling.go`), seeded **deterministically from the metric
-  name** (FNV-1a) so runs are reproducible. `SetP` invalidates a sampler whose
-  `p` changed so it is rebuilt lazily.
-- `admit(metric) (sampled, keep)`: not-sampled ⇒ `(false, true)`; sampled ⇒
-  `(true, geometricSampler.Admit())`.
+- `params atomic.Pointer[map[string]SampleParams]` — metric→`{P, Rows}`.
+  Absent / P outside (0,1) ⇒ not sampled. `SetParams` swaps the whole map;
+  `Upsert` does a copy-on-write single-entry update (P≥1 or ≤0 removes the
+  entry; identical re-grants are no-ops). The read path never blocks.
+- decisions are STATELESS (`common.ConsistentAdmit` with the canonical
+  `common.SeedForMetric` seed and `occ = time_unix_nano/1e6` ms) — no sampler
+  objects, no mutexes, and the collector wrappers re-derive the identical
+  per-row admissions on survivors (design §3.1.1: one sampling decision,
+  evaluated at any stage, idempotent under re-evaluation).
 
 ## Receiver component + OCB wiring (sketch)
 
@@ -116,23 +122,27 @@ service:
     logs:    { receivers: [otlp], ... }   # unchanged
 ```
 
-The shared `SampleState` is injected so `asap_edge`'s `OnGrant` (the writer) and
-the receiver (the reader) reference **one in-process map** (e.g. via a host
-extension or a shared singleton passed to both factories).
+The shared `SampleState` is `otlpfilter.Default()`: `asap_edge`'s grant hook
+(the writer, wired in `warm_sketch.go` via `Engine.SetSampleGrantHook`) and the
+receiver (the reader; `NewFactory(nil)` defaults to `Default()`) reference
+**one in-process map** with no extra wiring. Inject a dedicated state into
+`NewFactory` only for isolated multi-pipeline builds.
 
 ## Integration contract (asap_edge + backend)
 
-1. **The edge must NOT re-sample.** The receiver already applied the geometric
-   skip at the wire. `asap_edge` ingests the thinned datapoints at face value
-   (it must keep its own sampler at `p=1` for these metrics, or it would compound
-   the sampling and double-rescale).
-2. **The edge stamps `SketchEnvelope.sample_p = the receiver's p`** for the
-   metric, so the backend applies the `×1/p` rescale exactly once. The receiver's
-   `p` is the same value `OnGrant` wrote into `SampleState`, so the edge reads it
-   from the shared grant.
-3. **Backend needs NO changes for this prototype.** The `1/p` rescale already
-   exists where it matters — CMS, DDSketch (Count), HLL cardinality rescale on
-   `sample_p`; Count-Sketch is self-contained (insert-upweight inside the sketch).
+1. **The edge re-evaluates, never re-samples.** Filter and wrappers compute the
+   SAME stateless decision from shared inputs (`SeedForMetric(name)`,
+   `time ms`, row), so the wrapper's per-row admissions on survivors are the
+   decision the filter already took — idempotent, no compounding. The filter's
+   `Rows` comes from the same family config the wrapper uses
+   (`wireSampleRows`); too-large is safe (wasted wire), too-small over-drops.
+2. **Weighting is applied exactly once, at the wrapper.** CountSketch/CMS put
+   the `1/p` weight in place (wire envelope stays EXACT — no backend rescale);
+   DDSketch (d=1) keeps raw admitted counts and stamps `sample_p` via
+   `SetWireSampleP`, so the backend's existing `×1/p` rescale applies there
+   only.
+3. **Backend needs NO changes.** Exact-wire families need no rescale by
+   construction; DDSketch reuses the existing `sample_p` envelope path.
    Because the contract just sets `sample_p` on the envelope (a value the backend
    already honors), **asapquery-backend requires no change**.
 

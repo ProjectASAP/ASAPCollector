@@ -520,11 +520,29 @@ func (p *precompute) EmitSubWindow(nowMs uint64) []*SketchEnvelope {
 // WITHOUT the boundary empty-base reset and WITHOUT detaching the live sketch.
 // WindowStart/End are stamped by the caller. The sketch MUST NOT be recycled
 // here — the live window is still writing it.
+// applyGosMode configures the sketch's GOS delta mode from cfg when
+// GosDeltaEpsilon > 0 and the sketch supports it (Count-Sketch). The sketch's
+// ComputeDeltaAgainst then gates the delta with the GOS relative threshold
+// (isotropic scalar or anisotropic per-cell). A no-op otherwise → the fixed
+// DeltaThreshold path is unchanged. Structural assert avoids a Sketch iface
+// change.
+func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
+	if cfg.GosDeltaEpsilon <= 0 {
+		return
+	}
+	if gm, ok := sketch.(interface {
+		SetGosMode(epsilon float64, anisotropic bool, k uint32)
+	}); ok {
+		gm.SetGosMode(cfg.GosDeltaEpsilon, cfg.GosAnisotropic, cfg.GosSites)
+	}
+}
+
 func (p *precompute) serializeSubWindowSeries(entry *seriesEntry, cfg *PrecomputeConfig) (*SketchEnvelope, error) {
 	if entry == nil || entry.Sketch == nil {
 		return nil, nil
 	}
 	seriesKey := cfg.SeriesKeyForEntry(entry.ResourceLabels, entry.Labels)
+	applyGosMode(entry.Sketch, cfg)
 	payload, isFull, err := p.snapshotCache.ComputeSubWindowDelta(seriesKey, entry.Sketch, cfg.DeltaThreshold)
 	if err != nil {
 		return nil, fmt.Errorf("compute sub-window delta: %w", err)
@@ -712,6 +730,7 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 		err     error
 	)
 	if cfg.DeltaTransmission {
+		applyGosMode(entry.Sketch, cfg)
 		payload, isFull, err = p.snapshotCache.ComputeDelta(seriesKey, entry.Sketch, cfg.DeltaThreshold)
 		if err != nil {
 			return nil, fmt.Errorf("compute delta: %w", err)
@@ -955,6 +974,21 @@ func (p *precompute) rewireMonitorHooks() {
 // the sketches package (which imports this one), so no import cycle.
 type SampleSetter interface {
 	SetSampleP(p float64)
+}
+
+// SampleIdentitySetter is the optional companion to SampleSetter for
+// CONSISTENT sampling (design §3.1.1, single-location sampling): before each
+// observation is routed into the sketch, the window threads the item's sample
+// identity — the metric name (seed source: the canonical FNV-1a-64 of
+// common.SeedForMetric, computed by the wrapper so this runtime package stays
+// sketchlib-free) and the observation's TimestampMs (occurrence id; the
+// wire-level otlpfilter reads the same value as time_unix_nano/1e6 from the
+// raw bytes). A wrapper that implements this makes its admission decisions a
+// pure function of (seed, occurrence, row), so the wire filter's
+// whole-datapoint drop and the wrapper's per-row admissions agree exactly and
+// never compound. Wrappers without it keep their stateful samplers unchanged.
+type SampleIdentitySetter interface {
+	SetSampleIdentity(metric string, timestampMs uint64)
 }
 
 // applyGrantedSampleP returns a window sample-hook that stamps the engine's

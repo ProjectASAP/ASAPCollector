@@ -172,16 +172,6 @@ processors:
   # the agent-tier countmin/count processors emit. Same binary
   # serves agent (sketch-from-raw) and gateway (sketch-merge);
   # the gateway-only role is selected via config.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchmergeprocessor v0.141.0
-    path: ./processor/countminsketchmergeprocessor
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchmergeprocessor v0.141.0
-    path: ./processor/countsketchmergeprocessor
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/kllmergeprocessor v0.141.0
-    path: ./processor/kllmergeprocessor
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/ddsketchmergeprocessor v0.141.0
-    path: ./processor/ddsketchmergeprocessor
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/hllmergeprocessor v0.141.0
-    path: ./processor/hllmergeprocessor
   # Paper baseline B1: Serf (ASAP XOR-with-quantization).
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/serfprocessor v0.141.0
     path: ./processor/serfprocessor

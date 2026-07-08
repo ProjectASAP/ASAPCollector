@@ -32,11 +32,18 @@ fn clamp_rows_for_hash_bits(rows: usize, cols: usize) -> usize {
     rows.min(max_rows).max(1)
 }
 
+/// Fixed seed for CountSketch admission sampling, mirroring Go's
+/// `countSketchSampleSeed` (`asap-precompute-go/sketches/countsketch.go`).
+const COUNTSKETCH_SAMPLE_SEED: u64 = 0x5a3e06d;
+
 /// CountSketch wrapper.
 pub struct CountSketchWrapper {
     sk: CountSketch,
     rows: usize,
     cols: usize,
+    /// Per-sketch admission-sampling probability in (0,1]; 1.0 = exact (default).
+    sample_p: f64,
+    sampler: crate::sampling::GeometricSampler,
 }
 
 impl CountSketchWrapper {
@@ -62,11 +69,40 @@ impl CountSketchWrapper {
             sk: CountSketch::new(rows, cols),
             rows,
             cols,
+            sample_p: 1.0,
+            sampler: crate::sampling::GeometricSampler::new(1.0, COUNTSKETCH_SAMPLE_SEED),
         }
     }
 
-    /// Insert a string-keyed observation.
+    /// Enable producer-side admission sampling at probability `p` (builder
+    /// form). Mirrors Go's `CountSketchWrapper.WithSampleP`.
+    pub fn with_sample_p(mut self, p: f64) -> Self {
+        self.set_sample_p(p);
+        self
+    }
+
+    /// Set the admission-sampling probability and reseed. Used by the
+    /// [`crate::precompute::SampleSetter`] coordinated path.
+    pub fn set_sample_p(&mut self, p: f64) {
+        self.sample_p = if !(p > 0.0) || p >= 1.0 || p.is_nan() {
+            1.0
+        } else {
+            p
+        };
+        self.sampler.reset(self.sample_p, COUNTSKETCH_SAMPLE_SEED);
+    }
+
+    /// The configured admission-sampling probability (1.0 = exact).
+    pub fn sample_p(&self) -> f64 {
+        self.sample_p
+    }
+
+    /// Insert a string-keyed observation, admitted with probability `p` when
+    /// sampling is active.
     pub fn update(&mut self, key: &str, value: f64) {
+        if !self.sampler.admit() {
+            return;
+        }
         self.sk.update(key, value);
     }
 
@@ -109,7 +145,7 @@ impl CountSketchWrapper {
             format_version: 1,
             producer: None,
             hash_spec: None,
-            sample_p: 0.0,
+            sample_p: crate::sampling::wire_sample_p(self.sample_p),
             sketch_state: Some(sketch_envelope::SketchState::CountSketch(
                 self.build_state(),
             )),
@@ -260,6 +296,7 @@ impl Sketch for CountSketchWrapper {
 
     fn reset(&mut self) {
         self.sk = CountSketch::new(self.rows, self.cols);
+        self.sampler.reset(self.sample_p, COUNTSKETCH_SAMPLE_SEED);
     }
 
     fn delta_against_empty_base(&self) -> Result<Option<Vec<u8>>, PrecomputeError> {
@@ -281,6 +318,12 @@ impl Sketch for CountSketchWrapper {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+impl crate::precompute::SampleSetter for CountSketchWrapper {
+    fn set_sample_p(&mut self, p: f64) {
+        CountSketchWrapper::set_sample_p(self, p);
     }
 }
 

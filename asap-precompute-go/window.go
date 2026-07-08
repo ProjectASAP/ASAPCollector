@@ -29,6 +29,11 @@ type seriesEntry struct {
 	// LastSeenMs tracks the most recent observation timestamp;
 	// used for OnOverflowEvictOldest.
 	LastSeenMs uint64
+	// sampleIdentity caches the Sketch's optional SampleIdentitySetter
+	// assertion (checked once per entry, not per observation). Non-nil
+	// only for wrappers that support consistent identity sampling.
+	sampleIdentity        SampleIdentitySetter
+	sampleIdentityChecked bool
 	// Count is the total observation count accumulated for this
 	// series in the active window. Incremented once per scalar
 	// observation; envelope-valued observations contribute the
@@ -386,6 +391,18 @@ func (w *windowState) admitSeriesLocked(
 func (w *windowState) recordLocked(entry *seriesEntry, obs *Observation, observer SketchObserver) error {
 	if obs.TimestampMs > entry.LastSeenMs {
 		entry.LastSeenMs = obs.TimestampMs
+	}
+	// Consistent-sampling identity threading (design §3.1.1): hand the sketch
+	// the (metric, timestamp) identity of THIS observation before it decides
+	// row admissions, so its decisions are the same pure function the wire
+	// filter evaluated on the raw bytes. The interface assert is cached per
+	// entry; wrappers without identity support cost one nil check.
+	if !entry.sampleIdentityChecked {
+		entry.sampleIdentity, _ = entry.Sketch.(SampleIdentitySetter)
+		entry.sampleIdentityChecked = true
+	}
+	if entry.sampleIdentity != nil {
+		entry.sampleIdentity.SetSampleIdentity(obs.Metric, obs.TimestampMs)
 	}
 	if err := observer.Observe(entry.Sketch, obs.Value); err != nil {
 		return fmt.Errorf("sketch observe: %w", err)
