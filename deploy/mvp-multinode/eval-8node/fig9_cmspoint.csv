@@ -1,4 +1,0 @@
-edge,node,total_series,learned_monitors,granted_p
-edge-hot,node3,400,1,0.0001
-edge-med,node4,80,1,0.0003
-edge-quiet,node5,16,1,0.0013

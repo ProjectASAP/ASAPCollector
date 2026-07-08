@@ -1,7 +1,0 @@
-placement,layer,container,cpu_perc,rss_mib
-agent,producer,asap-prod-f8,239.9,1325
-agent,agent,asap-agent-a,111.1,1590
-agent,backend,asap-data-plane,89.9,28
-sdk,producer,asap-prod-f8,99.1,104
-sdk,agent,asap-agent-a,4.5,2167
-sdk,backend,asap-data-plane,6.6,80
