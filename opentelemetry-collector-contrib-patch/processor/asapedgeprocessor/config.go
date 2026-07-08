@@ -248,8 +248,7 @@ type ThresholdConfig struct {
 	// Enabled gates the monitor.
 	Enabled bool `mapstructure:"enabled"`
 	// Functional selects the readout to threshold: "sum" (default), "cms_point",
-	// "linear_buckets", or "f2" (the whole-sketch second moment ‖f‖₂², a
-	// non-linear monitor for CountSketch families — see F2Mode).
+	// or "linear_buckets".
 	Functional string `mapstructure:"functional"`
 	// Key is the CMS point-frequency key x (functional=cms_point).
 	Key string `mapstructure:"key"`
@@ -263,11 +262,6 @@ type ThresholdConfig struct {
 	// coordinator's streaming-config `monitors:` entry for this agg_id).
 	Tau     float64 `mapstructure:"tau"`
 	Epsilon float64 `mapstructure:"epsilon"`
-	// F2Mode selects the whole-sketch F2 protocol (functional=f2 only):
-	// "geometric" (default — Sharfman–Schuster–Keren safe zone, ship only on a
-	// local violation) or "distributed" (ship every window; eval baseline). The
-	// F2 sketch dimensions are taken from the family's CountSketch rows/cols.
-	F2Mode string `mapstructure:"f2_mode"`
 }
 
 // ColdConfig configures the per-shard Gorilla cold archive. Each shard
