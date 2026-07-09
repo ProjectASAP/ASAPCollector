@@ -1,6 +1,5 @@
 // Package precompute is the host-neutral edge precompute runtime
-// described in `docs/design-asap-edge-framework.md` §6 and pinned
-// by `docs/adr/adr-0002-extract-precompute-runtime.md`.
+// described in `docs/design-asap-edge-framework.md` §6.
 //
 // This package owns the windowing, snapshot caching, and delta
 // encoding runtime logic that today lives inside each OTel

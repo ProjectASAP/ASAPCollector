@@ -11,6 +11,7 @@ import (
 	"github.com/ProjectASAP/asap-precompute-go/monitor"
 	"github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient"
 	oteladapter "github.com/ProjectASAP/asap-precompute-go/otel"
+	"github.com/ProjectASAP/asap-precompute-go/otlpfilter"
 	"github.com/ProjectASAP/asap-precompute-go/sketches"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
@@ -223,6 +224,12 @@ type sketchOpts struct {
 	// interval disables it; epsilon 0 = fixed mode.
 	subWindowInterval time.Duration
 	subWindowEpsilon  float64
+	// gosDeltaEpsilon / gosSites / gosAnisotropic configure the GOS norm-adaptive
+	// relative delta gate (PrecomputeConfig.GosDeltaEpsilon/GosSites/GosAnisotropic).
+	// gosDeltaEpsilon 0 disables it (fixed DeltaThreshold path). Count-Sketch only.
+	gosDeltaEpsilon float64
+	gosSites        uint32
+	gosAnisotropic  bool
 }
 
 // parseFunctional maps the YAML functional name to the monitor enum. Unknown /
@@ -490,6 +497,13 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		// DeltaTransmission.
 		SubWindowInterval: opts.subWindowInterval,
 		SubWindowEpsilon:  opts.subWindowEpsilon,
+		// GOS norm-adaptive relative delta gate (control-plane knobs). When
+		// GosDeltaEpsilon > 0 the runtime's applyGosMode replaces the fixed
+		// DeltaThreshold with the GOS threshold (isotropic scalar, or anisotropic
+		// per-cell {T_j} when GosAnisotropic). 0 keeps the DeltaThreshold path.
+		GosDeltaEpsilon: opts.gosDeltaEpsilon,
+		GosSites:        opts.gosSites,
+		GosAnisotropic:  opts.gosAnisotropic,
 	}
 	// Surface the HLLSparse typed flag as the documented HLL "sparse"
 	// SketchParams key (1 = sparse base; absent/0 = dense default) so config
@@ -542,6 +556,25 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 			monClient = grpcclient.New(pcfg.Monitor.CoordinatorURL, eng)
 			eng.SetReporter(monClient)
 			pc.SetMonitorEngine(eng)
+			// OnGrant → wire-filter production wiring (design §3.1.1): forward
+			// the coordinator's coordinated-sampling grant to the shared
+			// otlpfilter SampleState, keyed by the INPUT metric name (what the
+			// pre-decode filter matches on the raw OTLP bytes) with the
+			// family's counter fan-out d. The filter then wire-drops the
+			// R(x)=∅ datapoints the wrappers would skip anyway — the same
+			// consistent decision, evaluated before decode. p<=0 / p>=1
+			// grants remove the entry (no thinning).
+			if rows, sampleable := wireSampleRows(fam); sampleable {
+				grantAggID := uint64(pcfg.AggID)
+				inputMetric := metric
+				eng.SetSampleGrantHook(func(aggID uint64, sampleP float64) {
+					if aggID != grantAggID {
+						return
+					}
+					otlpfilter.Default().Upsert(inputMetric,
+						otlpfilter.SampleParams{P: sampleP, Rows: rows})
+				})
+			}
 			logger.Info("continuous monitor enabled",
 				zap.String("metric", metric),
 				zap.String("functional", fam.Threshold.Functional),
@@ -589,6 +622,26 @@ func csmDims(fam *MetricFamily) (rows, cols int) {
 		cols = 2048
 	}
 	return rows, cols
+}
+
+// wireSampleRows maps a metric family to the counter fan-out d the wire
+// filter needs for its keep-iff-any-row-admits decision (SampleParams.Rows),
+// and whether the family supports coordinated update-sampling at all.
+// CountSketch / CountMinSketch admit per row (d = matrix rows, matching the
+// wrappers' per-row consistent path); DDSketch is the d=1 whole-item case.
+// Sum / KLL / HLL are never update-sampled (same gating as
+// precompute.applyGrantedSampleP), so no filter entry is ever installed and
+// their datapoints always pass the wire untouched.
+func wireSampleRows(fam *MetricFamily) (int, bool) {
+	switch fam.Family {
+	case FamilyCountSketch, FamilyCountMinSketch:
+		rows, _ := csmDims(fam)
+		return rows, true
+	case FamilyDDSketch:
+		return 1, true
+	default:
+		return 0, false
+	}
 }
 
 func kvFromMap(am map[string]string) []precompute.KeyValue {
