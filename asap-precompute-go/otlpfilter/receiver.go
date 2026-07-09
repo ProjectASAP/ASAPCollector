@@ -35,9 +35,13 @@ type Config struct {
 	// Protocols would embed otlpreceiver.Protocols here.
 	// Protocols otlpreceiver.Protocols `mapstructure:"protocols"`
 
-	// sampleState is injected by the host (asap_edge) so OnGrant's writer and
-	// this receiver's reader share one in-process map. Not part of YAML; set via
-	// the extension/host wiring described in README.md.
+	// sampleState is the shared map read by this receiver's wire filter. The
+	// PRODUCTION writer is the asap_edge processor's grant hook
+	// (warm_sketch.go: Engine.SetSampleGrantHook → otlpfilter.Default().Upsert),
+	// so a nil value here defaults to otlpfilter.Default() — the same
+	// process-wide instance — and no extra wiring is required in a
+	// single-pipeline collector. Inject a dedicated state only for isolated
+	// multi-pipeline builds.
 	sampleState *SampleState
 }
 
@@ -46,6 +50,9 @@ type Config struct {
 // transports; only the metrics handler is replaced with one that wire-filters
 // before decode. (Traces/logs delegate straight to the stock handlers.)
 func NewFactory(state *SampleState) receiver.Factory {
+	if state == nil {
+		state = Default() // shared with the asap_edge grant hook (the writer)
+	}
 	return receiver.NewFactory(
 		component.MustNewType("asap_otlp"),
 		func() component.Config { return &Config{sampleState: state} },

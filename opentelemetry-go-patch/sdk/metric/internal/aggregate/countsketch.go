@@ -5,9 +5,11 @@ package aggregate // import "go.opentelemetry.io/otel/sdk/metric/internal/aggreg
 
 import (
 	"context"
+	"hash/fnv"
 	"sync"
 	"time"
 
+	"github.com/ProjectASAP/sketchlib-go/common"
 	countsketch "github.com/ProjectASAP/sketchlib-go/sketches/CountSketch"
 
 	"go.opentelemetry.io/otel"
@@ -28,6 +30,18 @@ type countSketchSeries[N int64 | float64] struct {
 	epsilon   float64
 	delta     float64
 
+	// sampler is the per-series CONSISTENT row-admission sampler: a stateless
+	// hash decision per (series-seed, occurrence, row), so the admitted-row set
+	// is a pure function of shared inputs and any other pipeline stage
+	// (otlpfilter, collector wrapper) recomputing it agrees exactly — the
+	// sampling decision has one owner regardless of location, and double
+	// application is idempotent (design §3.1, single-location sampling).
+	// Non-nil only when 0 < sampleP < 1. Hosting it here — at the SDK
+	// aggregator, where the measurement enters — realizes "admission at the
+	// SDK": the source decides which rows to admit and applies the 1/p weight,
+	// so downstream never re-samples.
+	sampler *common.ConsistentSampler
+
 	measuredSince bool
 	idleCycles    uint8
 }
@@ -38,6 +52,19 @@ type countSketchValues[N int64 | float64] struct {
 	epsilon   float64
 	delta     float64
 	dimension string
+
+	// sampleP is the per-row admission rate. Values <=0 or >=1 disable sampling
+	// (every update touches all d rows); 0 < sampleP < 1 installs a per-series
+	// ConsistentSampler and routes updates through the per-row drop-before-hash
+	// path with 1/p inverse-probability weighting.
+	sampleP float64
+	// seedSalt decorrelates admission patterns ACROSS WINDOWS: it is mixed into
+	// every series' sampler seed and refreshed to the window start when the
+	// delta-temporality collect advances d.start. Without it a recreated series
+	// (same attrs, occurrence counter rewound) would repeat the identical
+	// admission sequence every window, correlating the sampling error across
+	// windows instead of averaging it out.
+	seedSalt uint64
 
 	limit      limiter[countSketchSeries[N]]
 	values     map[attribute.Distinct]*countSketchSeries[N]
@@ -54,7 +81,7 @@ type countSketchValues[N int64 | float64] struct {
 	snapshotsMu sync.Mutex
 }
 
-func newCountSketchValues[N int64 | float64](rows, cols int, epsilon, delta float64, dimension string, limit int, deltaTransmission bool, deltaThreshold float64) *countSketchValues[N] {
+func newCountSketchValues[N int64 | float64](rows, cols int, epsilon, delta float64, dimension string, limit int, deltaTransmission bool, deltaThreshold float64, sampleP float64) *countSketchValues[N] {
 	if rows <= 0 {
 		rows = defaultCountSketchRows
 	}
@@ -70,6 +97,7 @@ func newCountSketchValues[N int64 | float64](rows, cols int, epsilon, delta floa
 		epsilon:           epsilon,
 		delta:             delta,
 		dimension:         dimension,
+		sampleP:           sampleP,
 		limit:             newLimiter[countSketchSeries[N]](limit),
 		values:            make(map[attribute.Distinct]*countSketchSeries[N]),
 		deltaTransmission: deltaTransmission,
@@ -99,7 +127,30 @@ func (d *countSketchValues[N]) newSeries(attr attribute.Set) *countSketchSeries[
 	series.delta = d.delta
 	series.measuredSince = true
 	series.idleCycles = 0
+	// Install (or reset, on pool reuse) the per-row consistent sampler. Seed =
+	// FNV(attrs) ⊕ window salt: reproducible within a window, independent across
+	// series, decorrelated across windows.
+	if d.sampleP > 0 && d.sampleP < 1 {
+		seed := uint64(samplerSeedForAttrs(attr)) ^ d.seedSalt
+		if series.sampler == nil {
+			series.sampler = common.NewConsistentSampler(d.sampleP, seed)
+		} else {
+			series.sampler.Reset(d.sampleP, seed)
+		}
+	} else {
+		series.sampler = nil
+	}
 	return series
+}
+
+// samplerSeedForAttrs derives a stable per-series RNG seed from the series'
+// encoded attribute set (FNV-1a-64), so the geometric sampler is reproducible
+// across process restarts and independent across series. Shared by the
+// CountSketch / CountMinSketch / DDSketch aggregators.
+func samplerSeedForAttrs(attr attribute.Set) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(attr.Encoded(attribute.DefaultEncoder())))
+	return int64(h.Sum64())
 }
 
 func (d *countSketchValues[N]) measure(
@@ -127,7 +178,14 @@ func (d *countSketchValues[N]) measure(
 	series.measuredSince = true
 	// Use attribute set as the tracked key
 	key := fltrAttr.Encoded(attribute.DefaultEncoder())
-	series.sketch.UpdateString(key, float64(value))
+	if series.sampler != nil {
+		// Per-row geometric admission (drop-before-hash, 1/p weight). A fully
+		// unadmitted update touches no row — the source-side realization of the
+		// §3.1 sampling split.
+		series.sketch.UpdateStringSampledPerRow(key, float64(value), series.sampler)
+	} else {
+		series.sketch.UpdateString(key, float64(value))
+	}
 }
 
 type countSketchAgg[N int64 | float64] struct {
@@ -135,11 +193,13 @@ type countSketchAgg[N int64 | float64] struct {
 	start time.Time
 }
 
-func newCountSketchAgg[N int64 | float64](rows, cols int, epsilon, delta float64, dimension string, limit int, deltaTransmission bool, deltaThreshold float64) *countSketchAgg[N] {
-	return &countSketchAgg[N]{
-		countSketchValues: newCountSketchValues[N](rows, cols, epsilon, delta, dimension, limit, deltaTransmission, deltaThreshold),
+func newCountSketchAgg[N int64 | float64](rows, cols int, epsilon, delta float64, dimension string, limit int, deltaTransmission bool, deltaThreshold float64, sampleP float64) *countSketchAgg[N] {
+	a := &countSketchAgg[N]{
+		countSketchValues: newCountSketchValues[N](rows, cols, epsilon, delta, dimension, limit, deltaTransmission, deltaThreshold, sampleP),
 		start:             now(),
 	}
+	a.seedSalt = uint64(a.start.UnixNano())
+	return a
 }
 
 func (d *countSketchAgg[N]) measure(
@@ -191,6 +251,9 @@ func (d *countSketchAgg[N]) delta(
 	}
 	clear(d.values)
 	d.start = t
+	// New window → new admission salt (series recreated next interval draw a
+	// fresh, decorrelated admission pattern).
+	d.seedSalt = uint64(t.UnixNano())
 
 	data.DataPoints = dPts
 	*dest = data
@@ -280,7 +343,11 @@ func (d *countSketchValues[N]) payloadFor(key attribute.Distinct, sketch *counts
 			payload, err = countsketch.SerializeDelta(deltaMsg)
 		}
 		enc = metricdata.CountSketchEncodingDelta
-	} else {
+		// Fall through to a full frame on any delta error (mirrors the
+		// DDSketch payloadFor contract): the emit path must always produce a
+		// valid payload and refresh the snapshot, never wedge the series.
+	}
+	if payload == nil || err != nil {
 		payload, err = sketch.SerializeProtoBytes()
 		enc = metricdata.CountSketchEncodingProto
 	}

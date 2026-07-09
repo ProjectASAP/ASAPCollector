@@ -57,7 +57,7 @@ func TestDDSketchDelta(t *testing.T) {
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 3,
-	}.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	}.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	aliceCheckout := attribute.NewSet(
 		userAlice,
@@ -148,7 +148,7 @@ func TestDDSketchCumulativeNoMinMax(t *testing.T) {
 		Temporality:      metricdata.CumulativeTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 3,
-	}.DDSketch(testDDSketchAccuracy, true, true, false, 0)
+	}.DDSketch(testDDSketchAccuracy, true, true, false, 0, 0)
 
 	got := new(metricdata.Aggregation)
 
@@ -216,7 +216,7 @@ func TestDDSketchInsertThroughput(t *testing.T) {
 		Filter:           attrFltr,
 		AggregationLimit: numSeries + 8,
 	}
-	meas, comp := builder.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	meas, comp := builder.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	attrSets := make([]attribute.Set, numSeries)
 	rnd := rand.New(rand.NewSource(42))
@@ -290,7 +290,7 @@ func TestDDSketchThroughputMultiInterval(t *testing.T) {
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: numSeries + 8,
-	}.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	}.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	attrSets := make([]attribute.Set, numSeries)
 	rnd := rand.New(rand.NewSource(42))
@@ -366,7 +366,7 @@ func TestDDSketchLatencyPerMeasurement(t *testing.T) {
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 4,
-	}.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	}.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	attrs := attribute.NewSet(
 		attribute.String("service", "latency-analysis"),
@@ -465,7 +465,7 @@ func TestDDSketchPayloadIsSketchlibPortableEnvelope(t *testing.T) {
 		Temporality:      metricdata.DeltaTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 4,
-	}.DDSketch(testDDSketchAccuracy, false, false, false, 0)
+	}.DDSketch(testDDSketchAccuracy, false, false, false, 0, 0)
 
 	attrs := attribute.NewSet(
 		attribute.String("service", "checkout"),
@@ -492,13 +492,14 @@ func TestDDSketchPayloadIsSketchlibPortableEnvelope(t *testing.T) {
 	state := env.GetDdsketch()
 	require.NotNil(t, state, "envelope must carry a DDSketchState variant")
 	require.InDelta(t, testDDSketchAccuracy, state.Alpha, 1e-12)
-	require.Equal(t, uint64(5), state.Count)
 
 	// Reconstruct via the canonical NewFromState entrypoint and confirm
 	// quantiles agree within the accuracy bound (the actual value the
-	// agent will emit on the consume side).
+	// agent will emit on the consume side). Count lives in the store buckets
+	// now (DDSketchState fields 4-7 were dropped from the wire).
 	recovered, err := ddsketch.NewFromState(state)
 	require.NoError(t, err)
+	require.Equal(t, uint64(5), recovered.GetCount())
 	q, ok := recovered.Quantile(0.99)
 	require.True(t, ok)
 	require.InDelta(t, 100.0, q, 100.0*testDDSketchAccuracy)
@@ -517,7 +518,7 @@ func TestDDSketchDeltaEncodingViaComputeDelta(t *testing.T) {
 		Temporality:      metricdata.CumulativeTemporality,
 		Filter:           attrFltr,
 		AggregationLimit: 4,
-	}.DDSketch(testDDSketchAccuracy, false, false, true, 1)
+	}.DDSketch(testDDSketchAccuracy, false, false, true, 1, 0)
 
 	attrs := attribute.NewSet(
 		attribute.String("service", "checkout"),
