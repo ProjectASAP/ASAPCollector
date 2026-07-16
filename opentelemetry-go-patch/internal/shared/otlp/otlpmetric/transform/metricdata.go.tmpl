@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	cpb "go.opentelemetry.io/proto/otlp/common/v1"
 	mpb "go.opentelemetry.io/proto/otlp/metrics/v1"
@@ -105,6 +106,24 @@ func metric(m metricdata.Metrics) (*mpb.Metric, error) {
 		out.Data, err = DDSketch(a)
 	case metricdata.Summary:
 		out.Data = Summary(a)
+	case metricdata.KLLSketch[int64]:
+		out.Data, err = KLLSketch(a)
+	case metricdata.KLLSketch[float64]:
+		out.Data, err = KLLSketch(a)
+	case metricdata.CountSketch[int64]:
+		out.Data, err = CountSketch(a)
+	case metricdata.CountSketch[float64]:
+		out.Data, err = CountSketch(a)
+	case metricdata.CountMinSketch[int64]:
+		out.Data, err = CountMinSketch(a)
+	case metricdata.CountMinSketch[float64]:
+		out.Data, err = CountMinSketch(a)
+	case metricdata.HLLSketch:
+		out.Data, err = HLLSketch(a)
+	case metricdata.RowSampledSketch[int64]:
+		out.Data = RowSampledSketch(a)
+	case metricdata.RowSampledSketch[float64]:
+		out.Data = RowSampledSketch(a)
 	default:
 		return out, fmt.Errorf("%w: %T", errUnknownAggregation, a)
 	}
@@ -140,11 +159,13 @@ func Sum[N int64 | float64](s metricdata.Sum[N]) (*mpb.Metric_Sum, error) {
 func DataPoints[N int64 | float64](dPts []metricdata.DataPoint[N]) []*mpb.NumberDataPoint {
 	out := make([]*mpb.NumberDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		ndp := &mpb.NumberDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 		}
 		switch v := any(dPt.Value).(type) {
 		case int64:
@@ -155,6 +176,65 @@ func DataPoints[N int64 | float64](dPts []metricdata.DataPoint[N]) []*mpb.Number
 			ndp.Value = &mpb.NumberDataPoint_AsDouble{
 				AsDouble: v,
 			}
+		}
+		out = append(out, ndp)
+	}
+	return out
+}
+
+// rowSampledAdmittedRowsKey / rowSampledRowsKey / rowSampledSamplePKey are
+// RESERVED attribute keys carrying RowSampledSketchDataPoint's sketch-
+// routing fields on the wire. RowSampledSketch reuses the STANDARD OTLP
+// Gauge/NumberDataPoint shape rather than a new custom mpb.Metric_* message
+// (unlike CountSketch/CountMinSketch/DDSketch/KLL/HLL): a row-sampled point
+// carries no sketch STATE at all — it is one individually admitted raw
+// occurrence plus a handful of scalars — so the standard NumberDataPoint
+// (attrs + value + timestamps) already fits, with these three extras
+// stamped as ordinary attributes instead of new proto fields. The
+// collector's ingest path (asapedgeprocessor) reads these three keys back
+// out and MUST strip them before they'd ever reach a real backend query
+// (they are wire-transport metadata, not series-identifying dimensions).
+const (
+	rowSampledAdmittedRowsKey = "__asap_row_sampled_admitted_rows"
+	rowSampledRowsKey         = "__asap_row_sampled_rows"
+	rowSampledSamplePKey      = "__asap_row_sampled_sample_p"
+)
+
+// RowSampledSketch returns an OTLP Metric_Gauge generated from r — see the
+// rowSampled*Key doc for why this reuses the standard Gauge shape instead
+// of a new custom message type.
+func RowSampledSketch[N int64 | float64](r metricdata.RowSampledSketch[N]) *mpb.Metric_Gauge {
+	return &mpb.Metric_Gauge{
+		Gauge: &mpb.Gauge{
+			DataPoints: RowSampledSketchDataPoints(r.DataPoints),
+		},
+	}
+}
+
+// RowSampledSketchDataPoints returns a slice of OTLP NumberDataPoint
+// generated from dPts, each carrying AdmittedRows/Rows/SampleP as the three
+// reserved attributes documented on rowSampledAdmittedRowsKey.
+func RowSampledSketchDataPoints[N int64 | float64](
+	dPts []metricdata.RowSampledSketchDataPoint[N],
+) []*mpb.NumberDataPoint {
+	out := make([]*mpb.NumberDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		attrs := AttrIter(dPt.Attributes.Iter())
+		attrs = append(attrs, KeyValues([]attribute.KeyValue{
+			attribute.Int64(rowSampledAdmittedRowsKey, int64(dPt.AdmittedRows)),
+			attribute.Int64(rowSampledRowsKey, int64(dPt.Rows)),
+			attribute.Float64(rowSampledSamplePKey, dPt.SampleP),
+		})...)
+		ndp := &mpb.NumberDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+		}
+		switch v := any(dPt.Value).(type) {
+		case int64:
+			ndp.Value = &mpb.NumberDataPoint_AsInt{AsInt: v}
+		case float64:
+			ndp.Value = &mpb.NumberDataPoint_AsDouble{AsDouble: v}
 		}
 		out = append(out, ndp)
 	}
@@ -182,8 +262,9 @@ func HistogramDataPoints[N int64 | float64](dPts []metricdata.HistogramDataPoint
 	out := make([]*mpb.HistogramDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
 		sum := float64(dPt.Sum)
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		hdp := &mpb.HistogramDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
@@ -191,6 +272,7 @@ func HistogramDataPoints[N int64 | float64](dPts []metricdata.HistogramDataPoint
 			BucketCounts:      dPt.BucketCounts,
 			ExplicitBounds:    dPt.Bounds,
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 		}
 		if v, ok := dPt.Min.Value(); ok {
 			vF64 := float64(v)
@@ -230,8 +312,9 @@ func ExponentialHistogramDataPoints[N int64 | float64](
 	out := make([]*mpb.ExponentialHistogramDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
 		sum := float64(dPt.Sum)
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		ehdp := &mpb.ExponentialHistogramDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
@@ -239,6 +322,7 @@ func ExponentialHistogramDataPoints[N int64 | float64](
 			Scale:             dPt.Scale,
 			ZeroCount:         dPt.ZeroCount,
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 
 			Positive: ExponentialHistogramDataPointBuckets(dPt.PositiveBucket),
 			Negative: ExponentialHistogramDataPointBuckets(dPt.NegativeBucket),
@@ -308,13 +392,15 @@ func DDSketchDataPoints[N int64 | float64](
 		// land on the wire (see
 		// `opentelemetry-proto-patch/.../metrics.proto`'s
 		// `reserved 4, 5, 6, 7, 12, 13, 14;` line).
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.DDSketchDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 		}
 
 		out = append(out, dp)
@@ -399,13 +485,15 @@ func Summary(s metricdata.Summary) *mpb.Metric_Summary {
 func SummaryDataPoints(dPts []metricdata.SummaryDataPoint) []*mpb.SummaryDataPoint {
 	out := make([]*mpb.SummaryDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		sdp := &mpb.SummaryDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
 			Sum:               dPt.Sum,
 			QuantileValues:    QuantileValues(dPt.QuantileValues),
+			SeriesId:          seriesID,
 		}
 		out = append(out, sdp)
 	}
@@ -424,4 +512,247 @@ func QuantileValues(quantiles []metricdata.QuantileValue) []*mpb.SummaryDataPoin
 		out = append(out, quantile)
 	}
 	return out
+}
+
+func seriesIdentity(attrs []*cpb.KeyValue, seriesID uint64) ([]*cpb.KeyValue, uint64) {
+	if seriesID == 0 {
+		return attrs, 0
+	}
+	return nil, seriesID
+}
+
+// KLLSketch returns an OTLP Metric_Kllsketch generated from k. An error is
+// returned if the temporality of k is unknown.
+func KLLSketch[N int64 | float64](k metricdata.KLLSketch[N]) (*mpb.Metric_Kllsketch, error) {
+	t, err := Temporality(k.Temporality)
+	if err != nil {
+		return nil, err
+	}
+	dPts, err := KLLSketchDataPoints(k.DataPoints)
+	if err != nil {
+		return nil, err
+	}
+	return &mpb.Metric_Kllsketch{
+		Kllsketch: &mpb.KLLSketch{
+			AggregationTemporality: t,
+			DataPoints:             dPts,
+		},
+	}, nil
+}
+
+// KLLSketchDataPoints returns a slice of OTLP KLLSketchDataPoint generated from dPts.
+func KLLSketchDataPoints[N int64 | float64](
+	dPts []metricdata.KLLSketchDataPoint[N],
+) ([]*mpb.KLLSketchDataPoint, error) {
+	out := make([]*mpb.KLLSketchDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		encoding, err := KLLSketchEncodingValue(dPt.Encoding)
+		if err != nil {
+			return nil, err
+		}
+
+		// Refactor-2026-05: KLLSketchDataPoint dropped the precomputed
+		// count/sum/min/max fields (derivable from the sketch payload).
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
+		dp := &mpb.KLLSketchDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+			Sketch:            dPt.Sketch,
+			Encoding:          encoding,
+			SeriesId:          seriesID,
+		}
+		out = append(out, dp)
+	}
+	return out, nil
+}
+
+// KLLSketchEncodingValue returns an OTLP KLLSketchEncoding generated from enc.
+func KLLSketchEncodingValue(enc metricdata.KLLSketchEncoding) (mpb.KLLSketchEncoding, error) {
+	switch enc {
+	case metricdata.KLLSketchEncodingProto:
+		return mpb.KLLSketchEncoding_KLL_SKETCH_ENCODING_PROTO, nil
+	default:
+		return mpb.KLLSketchEncoding_KLL_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownKLLSketchEncoding, enc)
+	}
+}
+
+// CountSketch returns an OTLP Metric_Countsketch generated from c. An error is
+// returned if the temporality of c is unknown.
+func CountSketch[N int64 | float64](c metricdata.CountSketch[N]) (*mpb.Metric_Countsketch, error) {
+	t, err := Temporality(c.Temporality)
+	if err != nil {
+		return nil, err
+	}
+	dPts, err := CountSketchDataPoints(c.DataPoints)
+	if err != nil {
+		return nil, err
+	}
+	return &mpb.Metric_Countsketch{
+		Countsketch: &mpb.CountSketch{
+			AggregationTemporality: t,
+			DataPoints:             dPts,
+		},
+	}, nil
+}
+
+// CountSketchDataPoints returns a slice of OTLP CountSketchDataPoint generated from dPts.
+func CountSketchDataPoints[N int64 | float64](
+	dPts []metricdata.CountSketchDataPoint[N],
+) ([]*mpb.CountSketchDataPoint, error) {
+	out := make([]*mpb.CountSketchDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		encoding, err := CountSketchEncodingValue(dPt.Encoding)
+		if err != nil {
+			return nil, err
+		}
+
+		// Refactor-2026-05: CountSketchDataPoint dropped Dimension /
+		// Epsilon / Delta — those are sketch-instance config, sent
+		// at the CountSketch wrapper level (or derivable from the
+		// payload), not per-DataPoint.
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
+		dp := &mpb.CountSketchDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+			Sketch:            dPt.Sketch,
+			Encoding:          encoding,
+			SeriesId:          seriesID,
+		}
+		out = append(out, dp)
+	}
+	return out, nil
+}
+
+// CountSketchEncodingValue returns an OTLP CountSketchEncoding generated from enc.
+func CountSketchEncodingValue(enc metricdata.CountSketchEncoding) (mpb.CountSketchEncoding, error) {
+	switch enc {
+	case metricdata.CountSketchEncodingProto:
+		return mpb.CountSketchEncoding_COUNT_SKETCH_ENCODING_PROTO, nil
+	case metricdata.CountSketchEncodingDelta:
+		return mpb.CountSketchEncoding_COUNT_SKETCH_ENCODING_DELTA, nil
+	default:
+		return mpb.CountSketchEncoding_COUNT_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownCountSketchEncoding, enc)
+	}
+}
+
+// CountMinSketch returns an OTLP Metric_Countminsketch generated from c. An error is
+// returned if the temporality of c is unknown.
+func CountMinSketch[N int64 | float64](c metricdata.CountMinSketch[N]) (*mpb.Metric_Countminsketch, error) {
+	t, err := Temporality(c.Temporality)
+	if err != nil {
+		return nil, err
+	}
+	dPts, err := CountMinSketchDataPoints(c.DataPoints)
+	if err != nil {
+		return nil, err
+	}
+	return &mpb.Metric_Countminsketch{
+		Countminsketch: &mpb.CountMinSketch{
+			AggregationTemporality: t,
+			DataPoints:             dPts,
+		},
+	}, nil
+}
+
+// CountMinSketchDataPoints returns a slice of OTLP CountMinSketchDataPoint generated from dPts.
+func CountMinSketchDataPoints[N int64 | float64](
+	dPts []metricdata.CountMinSketchDataPoint[N],
+) ([]*mpb.CountMinSketchDataPoint, error) {
+	out := make([]*mpb.CountMinSketchDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		encoding, err := CountMinSketchEncodingValue(dPt.Encoding)
+		if err != nil {
+			return nil, err
+		}
+
+		// Refactor-2026-05: CountMinSketchDataPoint dropped
+		// SampleCount / Rows / Cols — sketch-instance config moved
+		// to the CountMinSketch wrapper or is derivable from the
+		// payload, not per-DataPoint.
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
+		dp := &mpb.CountMinSketchDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+			Sketch:            dPt.Sketch,
+			Encoding:          encoding,
+			SeriesId:          seriesID,
+		}
+		out = append(out, dp)
+	}
+	return out, nil
+}
+
+// CountMinSketchEncodingValue returns an OTLP CountMinSketchEncoding generated from enc.
+func CountMinSketchEncodingValue(enc metricdata.CountMinSketchEncoding) (mpb.CountMinSketchEncoding, error) {
+	switch enc {
+	case metricdata.CountMinSketchEncodingProto:
+		return mpb.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_PROTO, nil
+	case metricdata.CountMinSketchEncodingDelta:
+		return mpb.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_DELTA, nil
+	default:
+		return mpb.CountMinSketchEncoding_COUNT_MIN_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownCountMinSketchEncoding, enc)
+	}
+}
+
+// HLLSketch returns an OTLP Metric_Hllsketch generated from h. An error is
+// returned if the temporality of h is unknown.
+func HLLSketch(h metricdata.HLLSketch) (*mpb.Metric_Hllsketch, error) {
+	t, err := Temporality(h.Temporality)
+	if err != nil {
+		return nil, err
+	}
+	dPts, err := HLLSketchDataPoints(h.DataPoints)
+	if err != nil {
+		return nil, err
+	}
+	return &mpb.Metric_Hllsketch{
+		Hllsketch: &mpb.HLLSketch{
+			AggregationTemporality: t,
+			DataPoints:             dPts,
+		},
+	}, nil
+}
+
+// HLLSketchDataPoints returns a slice of OTLP HLLSketchDataPoint generated from dPts.
+func HLLSketchDataPoints(
+	dPts []metricdata.HLLSketchDataPoint,
+) ([]*mpb.HLLSketchDataPoint, error) {
+	out := make([]*mpb.HLLSketchDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		encoding, err := HLLSketchEncodingValue(dPt.Encoding)
+		if err != nil {
+			return nil, err
+		}
+
+		// Refactor-2026-05: HLLSketchDataPoint dropped Count /
+		// Cardinality / Precision — sketch-instance config moved
+		// to the HLLSketch wrapper or is derivable from the payload,
+		// not per-DataPoint.
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
+		dp := &mpb.HLLSketchDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+			Sketch:            dPt.Sketch,
+			Encoding:          encoding,
+			SeriesId:          seriesID,
+		}
+		out = append(out, dp)
+	}
+	return out, nil
+}
+
+// HLLSketchEncodingValue returns an OTLP HLLSketchEncoding generated from enc.
+func HLLSketchEncodingValue(enc metricdata.HLLSketchEncoding) (mpb.HLLSketchEncoding, error) {
+	switch enc {
+	case metricdata.HLLSketchEncodingProto:
+		return mpb.HLLSketchEncoding_HLL_SKETCH_ENCODING_PROTO, nil
+	case metricdata.HLLSketchEncodingDelta:
+		return mpb.HLLSketchEncoding_HLL_SKETCH_ENCODING_DELTA, nil
+	default:
+		return mpb.HLLSketchEncoding_HLL_SKETCH_ENCODING_UNSPECIFIED, fmt.Errorf("%w: %s", errUnknownHLLSketchEncoding, enc)
+	}
 }
