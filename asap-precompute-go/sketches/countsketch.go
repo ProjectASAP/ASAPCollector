@@ -284,6 +284,31 @@ func (w *CountSketchWrapper) UpdateString(key string, count float64) {
 	w.cs.UpdateString(key, count)
 }
 
+// ApplyAdmittedOccurrence applies a row-admission decision made UPSTREAM —
+// typically by an OTel SDK running NitroSketch admission at Record() time,
+// before the occurrence was ever serialized (metricdata.RowSampledSketch;
+// see AggregationRowSampledSketch in the SDK). admittedRows is a bitmask
+// over this sketch's rows (bit r set ⇒ row r admits); count is the
+// occurrence's raw magnitude and sampleP is the admission probability in
+// effect when the SDK made the decision.
+//
+// admittedRows == 0 (R(x)=∅) is a no-op — the SDK is expected to have
+// already dropped such occurrences before they ever reached the wire.
+// Unlike UpdateString, this NEVER consults w.sampler: the admission
+// decision is given, not made here.
+//
+// This does NOT touch w.sampleP or stamp anything on the envelope: the
+// 1/sampleP correction is baked into the cell here (mirrors
+// UpdateStringSampledPerRow's contract) — a query-time consumer must NOT
+// also rescale by this sketch's envelope p, or the correction applies
+// twice.
+func (w *CountSketchWrapper) ApplyAdmittedOccurrence(key string, count float64, admittedRows uint64, sampleP float64) {
+	if w == nil || w.cs == nil {
+		return
+	}
+	w.cs.UpdateStringAtRows(key, count, admittedRows, sampleP)
+}
+
 // Snapshot returns the canonical proto-encoded SketchEnvelope bytes,
 // byte-identical to the legacy processor's serializeCountSketch
 // output (SerializePortable + proto.Marshal). In heap-msgpack mode it

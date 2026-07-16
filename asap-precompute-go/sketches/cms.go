@@ -210,6 +210,31 @@ func (w *CMSWrapper) InsertHash(h uint64) {
 	w.sk.InsertWithHash(h)
 }
 
+// ApplyAdmittedOccurrence applies a row-admission decision made UPSTREAM —
+// typically by an OTel SDK running NitroSketch admission at Record() time,
+// before the occurrence was ever serialized (metricdata.RowSampledSketch;
+// see AggregationRowSampledSketch in the SDK). h is the SAME hash
+// convention InsertHash takes (common.FromBytes/common.FromString);
+// admittedRows is a bitmask over this sketch's rows (bit r set ⇒ row r
+// admits); value is the occurrence's raw magnitude (1.0 for pure frequency
+// counting) and sampleP is the admission probability in effect when the
+// SDK made the decision.
+//
+// admittedRows == 0 (R(x)=∅) is a no-op — the SDK is expected to have
+// already dropped such occurrences before they ever reached the wire.
+//
+// This does NOT touch w.sampleP or stamp anything on the envelope: the
+// 1/sampleP correction is baked into the cell here (mirrors
+// InsertWithHashSampledPerRow's "exact envelope, no double-correct"
+// contract) — a query-time consumer must NOT also rescale by this
+// sketch's envelope p, or the correction applies twice.
+func (w *CMSWrapper) ApplyAdmittedOccurrence(h uint64, value float64, admittedRows uint64, sampleP float64) {
+	if w.sk == nil {
+		return
+	}
+	w.sk.InsertWithHashAtRows(h, value, admittedRows, sampleP)
+}
+
 // Snapshot serializes via SerializeProtoBytesFO (the legacy emit
 // path's default) or SerializeMsgpack when the wrapper was configured
 // for msgpack. The backend's modified-OTLP CMS decoder accepts both
