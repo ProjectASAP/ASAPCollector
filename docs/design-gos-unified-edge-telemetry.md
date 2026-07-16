@@ -156,24 +156,12 @@ weighting is a linear correction). So it applies to:
 So the SDK runs row-admission for **DDSketch / CMS / CountSketch** and leaves
 **KLL / HLL** unsampled (they emit every update).
 
-**Implementation status (current vs this target).** Today's edge runtime
-implements a *weaker* form of this design, and closing the gap is tracked work:
-
-| | This design (target) | Current code |
-|---|---|---|
-| Algorithm | geometric skip-sampling | ✅ `sketchlib-go/common.GeometricSampler` |
-| Weighting | `1/p` on admit | ✅ `CountSketchWrapper.UpdateString` (`count /= sampleP`) |
-| Families | CMS/CS/DDSketch only | ✅ `applyGrantedSampleP` |
-| **Granularity** | per-**row** admission (subset of `d` rows; hash only if ≥1 admitted) | ✅ **per-row** — `CountSketch.UpdateStringSampledPerRow` (sketchlib), wired in both the collector wrapper and the SDK aggregator |
-| **Where** | SDK decides, then sends | ✅ **SDK-build path** — hosted in the OTLP SDK `CountSketch` aggregator (`opentelemetry-go-patch/.../aggregate/countsketch.go`, knob `sample_p`); collector-build path retains the wrapper fallback |
-
-The **granularity** matches the design (per-row admission, drop-before-hash,
-`1/p` weight — mirroring `asap_sketchlib/.../nitro.rs`), so the sampling term is
-the tight per-row estimator of §3.2 (median decorrelation, `ε_sa` in
-quadrature). The **location** is now realized on the **SDK-build path**: the
-OTLP metrics SDK's `CountSketch` aggregator hosts a per-series sampler and
-routes every measurement through `UpdateStringSampledPerRow`, so admission
-happens at the source. Two deployment modes and what each saves:
+**Implemented as designed**, hosted on the SDK-build path (OTLP SDK
+`CountSketch` aggregator, knob `sample_p`, routing through
+`UpdateStringSampledPerRow`) with per-row admission, drop-before-hash, and
+`1/p` weighting — mirroring `asap_sketchlib/.../nitro.rs`, giving the
+sampling term the tight per-row estimator of §3.2 (median decorrelation,
+`ε_sa` in quadrature). Two deployment modes exist, with different savings:
 
 - **SDK-build (sketch in the app).** The SDK builds the group sketch and ships
   one matrix per window. Sampling here is the source-side realization of the
@@ -190,12 +178,11 @@ happens at the source. Two deployment modes and what each saves:
   on survivors. (Whole-item drop is the `R(x)=∅` fast path of the same geometric
   sampler.)
 
-All three families are wired on the SDK-build path via a `sample_p` knob:
-**CountSketch** and **CountMinSketch** host a per-series sampler and route
-inserts through `UpdateStringSampledPerRow` / `InsertWithHashSampledPerRow`
-(per-row admission, `1/p` applied in-place, wire stays exact — no downstream
-rescale); **DDSketch** is the `d=1` whole-item case and uses the sketch's
-built-in `WithSampleP` (raw counts, wire stamps `p`, consumer rescales `×1/p`).
+**CountSketch** and **CountMinSketch** route inserts through
+`UpdateStringSampledPerRow` / `InsertWithHashSampledPerRow` (per-row
+admission, `1/p` applied in-place, wire stays exact — no downstream rescale);
+**DDSketch** is the `d=1` whole-item case via the sketch's built-in
+`WithSampleP` (raw counts, wire stamps `p`, consumer rescales `×1/p`).
 `KLL`/`HLL` stay unsampled by design (§ applicability table).
 
 ### 3.1.1 Single-location sampling via consistent (stateless) decisions
@@ -380,14 +367,6 @@ T_j ≥ T_j^floor = √( V_j · (1−p_i)/p_i )      (rate is per-site p_i, admi
 The GOS water-filling is unchanged in form; the ε-budget is split by §7 Layer B
 (staleness `ε_st` peeled linearly, then `ε_sk²+ε_sa² = (ε_q−ε_st)²`), and this
 floor closes the sampling↔threshold coupling.
-
-**Status.** The per-row *estimator* benefit above is **realized** in code via
-`UpdateStringSampledPerRow`, so `ε_sa` sits inside the `1−δ` median guarantee. The
-*location* move is realized on the **SDK-build path** — the OTLP SDK `CountSketch`
-aggregator hosts the sampler (§3.1) — so admission happens at the source; the
-collector-build path realizes the pre-deserialization saving at the edge
-`otlpfilter` (whole-datapoint wire-thinning). CMS/DDSketch SDK-build hosting is
-the remaining follow-up.
 
 ---
 
@@ -783,10 +762,11 @@ executes a fixed per-cell comparison.
   (`controller-optimization-problem.md` SP-6:
   `min w_bw·bw + w_cpu·cpu + w_mem·mem + …`) — GOS thresholds are new decision
   variables there. **Note:** the controller ships *scalars*
-  (`ε_delta`, sites, aniso flag), **not** the full per-cell vector `{T_j}`; the
-  edge reconstructs `{T_j}` locally from those scalars plus its live sketch state
-  (see §7C, `sketches/gos_threshold.go`), so the `O(d·w)` vector never crosses the
-  wire.
+  (`ε_delta`, sites), **not** a full per-cell vector `{T_j}`; the isotropic
+  case (§11, all 6 families) reconstructs its single scalar `T` from those
+  plus live sketch state, so no vector ever crosses the wire. The anisotropic
+  per-cell `{T_j}` water-filling described here is CountSketch-only and, per
+  §11's open items, not currently implemented.
 - **Edge**: maintain sketch + acked snapshot; per flush, recompute `{T_j}` from
   the pushed scalars + local `{V_j}`, upload cells with `|ΔC_j| ≥ T_j` as a sparse
   delta; run one generic `isLocallySafe` for monitored functions. No AD, no
@@ -802,39 +782,13 @@ executes a fixed per-cell comparison.
   the `accuracy: ε=…` response annotation.
 
 **Ties to existing code:**
-- `ASAPQuery-backend/control_plane/src/epsilon_alloc.rs` — the ε-budget split.
-  Staleness is peeled **linearly** first (Theorem 1), then the remaining random
-  budget splits in quadrature: `√(ε_sk² + ε_sa²) + ε_st = ε_q` (see §7 Layer B).
-  This is **not** a three-way quadrature `ε² = ε_sk² + ε_sa² + ε_st²` — staleness
-  is deterministic and comes off the top linearly.
+- `ASAPQuery-backend/control_plane/src/epsilon_alloc.rs` — the ε-budget split
+  (linear staleness peel, then quadrature split: `√(ε_sk² + ε_sa²) + ε_st = ε_q`,
+  §7 Layer B — not a three-way quadrature).
 - `ASAPQuery-backend/data_plane/src/monitor/sampling_alloc.rs`
-  (`epsilon_sample_floor`) — the live whole-sketch sampling floor. (The Go
-  `monitor/sampling_alloc.go` `AllocateSampleRates` is the *retired* per-key
-  water-filling, kept only as a reference impl with no production caller.)
-- `threshold_alloc` (`AllocateThresholds`, Go `sketches/gos_threshold.go` + Rust
-  `control_plane/src/threshold_alloc.rs`) — the per-cell threshold water-filling
-  (this doc's §7C).
-- `data_plane/src/monitor/f2_coord.rs`, `asap-precompute-go/monitor/f2engine.go`
-  — generalize the F₂-specific ball to the `(∇f, λ)` DC safe zone; use the relative
-  radius `ε‖Ĉ‖/(2k√(dw))`.
-- reuse `asap_sketchlib` `CountSketchDelta` + `compute_delta`/`apply_delta`
-  (byte-parity Go/Rust) for the sparse per-cell delta wire format.
-
-**Implementation status (as of this writing).** The pieces exist but the GOS
-threshold control loop is **not yet wired end-to-end**:
-- **Live today:** the scalar CDM loop (register → grant `(slack, sample_p)` →
-  countdown → report → alert) and the sampling grant path (`Grant.SampleP` →
-  `otlpfilter` Upsert + wrapper `WithSampleP`).
-- **Implemented but unreachable from a production config:** the control plane
-  *derives and emits* the scalar GOS knobs (`gos_delta_epsilon`, `gos_sites`,
-  `gos_anisotropic` in `emit/agent.rs`), and the edge *consumes*
-  `PrecomputeConfig.GosDeltaEpsilon` (`applyGosMode` → `gosThresholdMatrix`), but
-  **no collector processor parses those YAML keys into the config**, so
-  `applyGosMode` is a production no-op and the per-cell delta-gating path is
-  exercised only by tests/eval. The sampling↔threshold coupling floor
-  `T_j ≥ √(V_j(1−p)/p)` (§3.2) is likewise implemented but inert — its only
-  production-shaped caller hardcodes `SampleP=1`. Closing this last hop
-  (a knob parser + threading the granted `p` into `GosParams`) is tracked work.
+  (`epsilon_sample_floor`) — the live whole-sketch sampling floor.
+- `asap_sketchlib` `CountSketchDelta` + `compute_delta`/`apply_delta`
+  (byte-parity Go/Rust) — the sparse per-cell delta wire format.
 
 ---
 
