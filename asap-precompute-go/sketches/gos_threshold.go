@@ -30,3 +30,22 @@ func F2IsotropicThreshold(epsilon, norm float64, k uint32, d, w int) float64 {
 	}
 	return epsilon * norm / (2.0 * kk * math.Sqrt(n))
 }
+
+// CMSIsotropicThreshold is the GOS closed form for CountMinSketch's per-cell
+// insert-time delta threshold — see
+// docs/sampling-cdm-gos-derivations.md §8.2 "CDM isotropic threshold (L1,
+// max-composition)":
+//
+//	T = ε·N / k
+//
+// where N is the sketch's current total (nonnegative) mass — the L1 scale,
+// as opposed to CountSketch's F2IsotropicThreshold, which scales with the
+// L2/Frobenius norm. There is deliberately no √(d·w) factor here: CMS's
+// point query is a min over d cells, so its staleness is bounded by the
+// single worst stale cell (max-composition), not combined per-row mass —
+// the water-filling/Frobenius derivation that produces CountSketch's √(dw)
+// term does not apply to a min-composed estimator.
+func CMSIsotropicThreshold(epsilon, n float64, k uint32) float64 {
+	kk := math.Max(1, float64(k))
+	return epsilon * n / kk
+}

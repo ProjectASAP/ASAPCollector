@@ -225,7 +225,8 @@ type sketchOpts struct {
 	subWindowEpsilon  float64
 	// gosDeltaEpsilon / gosSites configure the GOS isotropic insert-time delta
 	// gate (PrecomputeConfig.GosDeltaEpsilon/GosSites). gosDeltaEpsilon 0
-	// disables it (fixed DeltaThreshold path). Count-Sketch only.
+	// disables it (fixed DeltaThreshold path). CountSketch (non-heap) and
+	// CountMinSketch today.
 	gosDeltaEpsilon float64
 	gosSites        uint32
 }
@@ -429,7 +430,21 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 	case FamilyCountMinSketch:
 		rows, cols := csmDims(fam)
 		st = precompute.SketchTypeCountMinSketch
-		factory = func() precompute.Sketch { return sketches.NewCMSWrapper(rows, cols, false).WithSampleP(sampleP) }
+		gosEpsilon, gosSites := opts.gosDeltaEpsilon, opts.gosSites
+		factory = func() precompute.Sketch {
+			w := sketches.NewCMSWrapper(rows, cols, false).WithSampleP(sampleP)
+			// Prime GOS mode at series creation (not just at the next flush's
+			// applyGosMode call) so inserts before this brand-new series' first
+			// flush are already insert-time gated. precompute.applyGosMode
+			// re-stamps this on every already-live series at flush time, so a
+			// control-plane change to gos_delta_epsilon still takes effect —
+			// this priming only matters for the gap between series birth and
+			// that series' first flush. Mirrors the plain CountSketch factory.
+			if gosEpsilon > 0 {
+				w.SetGosMode(gosEpsilon, gosSites)
+			}
+			return w
+		}
 		observer = sketches.CMSObserver{}
 		// item_label support: when set, key frequency by the item_label's VALUE
 		// (the inner dimension, e.g. endpoint) so the CMS counts per-endpoint
@@ -507,7 +522,7 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		SubWindowInterval: opts.subWindowInterval,
 		SubWindowEpsilon:  opts.subWindowEpsilon,
 		// GosDeltaEpsilon/GosSites configure the isotropic GOS insert-time
-		// delta gate (Count-Sketch only today). 0 leaves the fixed
+		// delta gate (CountSketch non-heap and CountMinSketch today). 0 leaves the fixed
 		// DeltaThreshold path unchanged.
 		GosDeltaEpsilon: opts.gosDeltaEpsilon,
 		GosSites:        opts.gosSites,
