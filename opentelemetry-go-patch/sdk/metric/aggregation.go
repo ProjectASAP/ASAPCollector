@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+
+	precompute "github.com/ProjectASAP/asap-precompute-go"
 )
 
 // errAgg is wrapped by misconfigured aggregations.
@@ -339,6 +341,61 @@ func (a AggregationCountMinSketch) err() error {
 	}
 	if a.SampleP < 0 || a.SampleP > 1 {
 		return fmt.Errorf("%w: sample_p %v must be in [0,1]", errCountMinSketch, a.SampleP)
+	}
+	return nil
+}
+
+// AggregationRowSampledSketch summarizes recorded measurements by deciding,
+// PER RAW OCCURRENCE, row admission into a downstream (collector-side)
+// row/col sketch — NitroSketch-style geometric skip-sampling run at the SDK,
+// before the occurrence is ever serialized. An occurrence that admits no
+// row is discarded here and never leaves the process; an occurrence that
+// admits at least one row is exported individually (never pre-merged with
+// any other occurrence — merging would destroy the per-occurrence key the
+// collector needs to pick that occurrence's column). See
+// metricdata.RowSampledSketch and precompute.AggregationRouter for the
+// full design rationale.
+type AggregationRowSampledSketch struct {
+	// Router maps a series' retained attributes to the target collector-
+	// side aggregation instance (precompute.AggregationIdentity) it folds
+	// into and that target's row fan-out. Required — a policy with no
+	// router cannot route anything.
+	//
+	// The common case (one metric feeds one collector-side sketch) is
+	// precompute.AggregationPolicy{...}.Router(); a metric that fans out
+	// to multiple physically distinct sketches supplies a custom router.
+	Router precompute.AggregationRouter
+
+	// CoordinatorURL is the data-plane MonitorService gRPC endpoint this
+	// policy's live sample-rate grant is read from — the SAME protocol
+	// otel-app/sample_controller.go and the edge collector's continuous
+	// monitor already use, dialed DIRECTLY (bypassing the collector).
+	// Empty disables live grants; BootstrapSampleP is then permanent.
+	CoordinatorURL string
+	// EdgeID identifies this process to the coordinator (Registration.EdgeID).
+	EdgeID string
+	// WindowSizeSecs is the CDM epoch length — should match the collector's
+	// warm-tier window (the coordinator's slack-countdown protocol is a
+	// per-epoch round).
+	WindowSizeSecs uint64
+	// BootstrapSampleP is used before the first live grant arrives (and
+	// permanently if CoordinatorURL is empty). 1.0 (default) admits every
+	// row of every occurrence — byte-equivalent to unsampled passthrough.
+	BootstrapSampleP float64
+}
+
+var _ Aggregation = AggregationRowSampledSketch{}
+
+var errRowSampledSketch = fmt.Errorf("%w: row-sampled sketch", errAgg)
+
+func (a AggregationRowSampledSketch) copy() Aggregation { return a }
+
+func (a AggregationRowSampledSketch) err() error {
+	if a.Router == nil {
+		return fmt.Errorf("%w: router is required", errRowSampledSketch)
+	}
+	if a.BootstrapSampleP < 0 || a.BootstrapSampleP > 1 {
+		return fmt.Errorf("%w: bootstrap_sample_p %v must be in [0,1]", errRowSampledSketch, a.BootstrapSampleP)
 	}
 	return nil
 }

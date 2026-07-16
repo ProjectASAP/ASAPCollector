@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	precompute "github.com/ProjectASAP/asap-precompute-go"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -270,6 +272,15 @@ func (b Builder[N]) CountMinSketch(rows, cols int, deltaTransmission bool, delta
 	default:
 		return b.filter(agg.measure), agg.cumulative
 	}
+}
+
+// RowSampledSketch returns a row-sampled-sketch aggregate function input and
+// output — see rowSampledSketchValues.measure's doc for the mechanism.
+// Ignores b.Temporality: this aggregation's cumulative() aliases delta()
+// (see rowSampledSketchAgg.cumulative's doc for why).
+func (b Builder[N]) RowSampledSketch(router precompute.AggregationRouter, coordinatorURL, edgeID string, windowSizeSecs uint64, bootstrapSampleP float64) (Measure[N], ComputeAggregation) {
+	agg := newRowSampledSketchAgg[N](router, coordinatorURL, edgeID, windowSizeSecs*1000, bootstrapSampleP)
+	return b.filter(agg.measure), agg.delta
 }
 
 // HLLSketch returns a HyperLogLog sketch aggregate function input and output.

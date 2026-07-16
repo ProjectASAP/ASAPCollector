@@ -549,6 +549,8 @@ func (i *inserter[N]) aggregateFunc(
 		meas, comp = b.CountSketch(a.Rows, a.Cols, a.Epsilon, a.Delta, a.Dimension, a.DeltaTransmission, a.DeltaThreshold, a.SampleP)
 	case AggregationCountMinSketch:
 		meas, comp = b.CountMinSketch(a.Rows, a.Cols, a.DeltaTransmission, a.DeltaThreshold, a.SampleP)
+	case AggregationRowSampledSketch:
+		meas, comp = b.RowSampledSketch(a.Router, a.CoordinatorURL, a.EdgeID, a.WindowSizeSecs, a.BootstrapSampleP)
 	case AggregationHLLSketch:
 		meas, comp = b.HLLSketch(a.DeltaTransmission)
 	case AggregationRawBuffer:
@@ -584,6 +586,7 @@ func isAggregatorCompatible(kind InstrumentKind, agg Aggregation) error {
 		AggregationCountSketch,
 		AggregationCountMinSketch,
 		AggregationHLLSketch,
+		AggregationRowSampledSketch,
 		AggregationRawBuffer:
 		switch kind {
 		case InstrumentKindCounter,
