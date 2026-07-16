@@ -607,6 +607,11 @@ skip unknown encodings or treat them as full sketches.
 deltas. This is the mirror of Phase 3.
 
 **New processors:** `countminsketchmergeprocessor` / `countsketchmergeprocessor`
+> **Removed.** These Go merge processors implemented the gateway-side sketch
+> accumulator. The asap-gateway hop was retired (#400) and cross-edge merge now
+> happens on the backend `data_plane` (Rust), so the Go merge processors were
+> deleted (no pipeline ever wired them). This section is kept as the design of
+> record for the delta-reconstruction mechanism, now realized backend-side.
 
 **Per-partition accumulator state:**
 ```go
