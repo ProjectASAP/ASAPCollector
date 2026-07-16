@@ -176,15 +176,97 @@ func parseTopkWeight(mode string) topkWeight {
 	return topkWeightValue
 }
 
-// fnv64 derives a stable per-metric AggID (matches the standalone sketch
-// processors' seriesNameHash).
-func fnv64(s string) uint64 {
-	var h uint64 = 1469598103934665603
-	for i := 0; i < len(s); i++ {
-		h ^= uint64(s[i])
-		h *= 1099511628211
+// backendAggregationType maps a family to ASAPQuery-backend's
+// AggregationType PascalCase name (crates/promql_utilities/src/query_logics/
+// enums.rs::AggregationType::as_str), mirroring the control plane's
+// sketch_kind_to_backend_type (control_plane/src/emit/stage_config.rs). Must
+// stay byte-identical to that mapping — it feeds PolicyFingerprint (see
+// aggID below), and a wrong string here silently desyncs this edge's AggID
+// from the backend's independently-computed one for the same policy.
+func backendAggregationType(fam *MetricFamily) string {
+	switch fam.Family {
+	case FamilyDDSketch:
+		return "DDSketch"
+	case FamilyKLL:
+		return "DatasketchesKLL"
+	case FamilyHLL:
+		return "HLL"
+	case FamilyCountSketch:
+		if fam.EmitHeap {
+			return "CountSketchWithHeap"
+		}
+		return "CountSketch"
+	case FamilyCountMinSketch:
+		// This edge never wires a heap-bearing CMS path (see
+		// newSketchAggregator's FamilyCountMinSketch case) — always the
+		// plain form.
+		return "CountMinSketch"
+	case FamilySum:
+		return "Sum"
+	default:
+		return string(fam.Family)
 	}
-	return h
+}
+
+// backendAggregationParameters mirrors sketch_params_to_json
+// (control_plane/src/emit/stage_config.rs): the SAME parameter key names
+// the control plane emits, so this edge's PolicyFingerprint hash input
+// matches the backend's byte-for-byte. w=cols, d=rows (sketchlib/backend
+// convention). Only CountSketch's JSON carries "with_heap" — CMS's does
+// not, even for a heap-bearing CMS (distinguished via aggregation_type
+// alone there); this edge never emits heap-bearing CMS regardless.
+func backendAggregationParameters(fam *MetricFamily, rows, cols int) map[string]any {
+	params := map[string]any{}
+	switch fam.Family {
+	case FamilyCountSketch:
+		params["d"] = rows
+		params["w"] = cols
+		params["with_heap"] = fam.EmitHeap
+	case FamilyCountMinSketch:
+		params["d"] = rows
+		params["w"] = cols
+	case FamilyDDSketch:
+		params["alpha"] = fam.RelativeAccuracy
+	case FamilyKLL:
+		k := fam.K
+		if k < 2 {
+			k = 200
+		}
+		params["k"] = k
+	case FamilyHLL:
+		// No configurable precision surfaced on this edge today (fixed
+		// register width); nothing to add.
+	}
+	if fam.ItemLabel != "" {
+		params["item_label"] = fam.ItemLabel
+	}
+	return params
+}
+
+// aggID computes this metric's AggID as ASAPQuery-backend's
+// PolicyFingerprint (crates/asap_types/src/policy_fingerprint.rs) — the
+// SAME content-addressed xxh64 hash the backend independently derives from
+// its own AggregationConfig for this metric's policy. CDM (this monitor
+// identity) and the sketch-DB's materialized-view identity are ONE system;
+// computing AggID any other way (e.g. hashing only the metric name, as this
+// used to) silently desyncs the two. window is the tumbling window
+// duration; this edge always runs tumbling windows, so slide_interval ==
+// window_size and window_type == "tumbling". aggregated_labels /
+// rollup_labels are always empty — the control plane never sets them for
+// warm-tier sketch policies today.
+func aggID(metric string, fam *MetricFamily, window time.Duration, rows, cols int) precompute.AggId {
+	fp := precompute.PolicyFingerprint(precompute.PolicyFingerprintInput{
+		Metric:             metric,
+		AggregationType:    backendAggregationType(fam),
+		AggregationSubType: "",
+		Parameters:         backendAggregationParameters(fam, rows, cols),
+		GroupingLabels:     fam.AggregateBy,
+		WindowSizeSecs:     uint64(window.Seconds()),
+		SlideIntervalSecs:  uint64(window.Seconds()),
+		WindowType:         "tumbling",
+		SpatialFilter:      fam.SpatialFilter,
+	})
+	return precompute.AggId(fp)
 }
 
 // sketchOpts bundles the cross-cutting runtime settings (window length, the
@@ -443,8 +525,9 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 	default:
 		return nil, false
 	}
+	fmRows, fmCols := csmDims(fam)
 	pcfg := &precompute.PrecomputeConfig{
-		AggID:      precompute.AggId(fnv64(metric)),
+		AggID:      aggID(metric, fam, window, fmRows, fmCols),
 		SketchType: st,
 		AggKind:    aggKind,
 		Mode:       precompute.Tumbling,
@@ -667,7 +750,15 @@ func (s *sketchAggregator) attrKeyBytes(kv []precompute.KeyValue) []byte {
 // still allocated per sample — the keyed precompute entry point takes a
 // string and there is no exported zero-alloc keyed path — so that one
 // allocation remains.
-func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint64) {
+// rowSampled/admittedRows/sampleP carry an SDK-side pre-decided row-admission
+// bitmask (NitroSketch-style skip sampling, see AggregationRowSampledSketch
+// in the SDK). When rowSampled is true, the ObservationValue built below is
+// tagged so the CMS/CountSketch observer applies the bitmask verbatim via
+// Sketch.ApplyAdmittedOccurrence instead of the plain insert path — see the
+// precompute.ObservationValue.RowSampled doc for why this must not be
+// re-derived collector-side. Every non-row-sampled caller passes
+// rowSampled=false (admittedRows/sampleP ignored).
+func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint64, rowSampled bool, admittedRows uint64, sampleP float64) {
 	// For the HLL / CMS item_label paths the item_label attribute is the sketch
 	// subject (its value is hashed below), so it must NOT appear in the series
 	// key or the emitted labels — project it out of the observation labels here.
@@ -755,6 +846,26 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 		// The item_label was projected out of obs.Labels above.
 		s.attrKeyScratch = append(s.attrKeyScratch[:0], am[s.itemLabel]...)
 		obs.Value = precompute.BytesValue(s.attrKeyScratch)
+	}
+	if rowSampled {
+		switch s.obsKind {
+		case obsKindBytesHash, obsKindKeyedFreq, obsKindKeyedItem:
+			obs.Value.RowSampled = true
+			obs.Value.AdmittedRows = admittedRows
+			obs.Value.SampleP = sampleP
+		default:
+			// obsKindFloat/obsKindItemHLL/obsKindItemCMS have no *AtRows
+			// sketchlib primitive (DDSketch/KLL/HLL aren't row-replicated
+			// matrices) — this can only happen if the SDK's AggregationRouter
+			// and this collector's AggID disagreed about which family a
+			// PolicyFingerprint targets. Drop rather than silently misapply
+			// an unrelated observer.
+			s.droppedSamples.Add(1)
+			if s.procDropCount != nil {
+				s.procDropCount.Add(1)
+			}
+			return
+		}
 	}
 	if err := s.pc.ObserveKeyed(s.pcfg.SeriesKeyFor(obs), obs); err != nil {
 		s.lastObserveErr = err

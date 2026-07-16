@@ -1,5 +1,8 @@
 # Distributed NitroSketch — coordinator-allocated update-sampling across edge collectors
 
+> **Part of the CDM/GOS theory set.** The canonical, unified derivations live in [`sampling-cdm-gos-derivations.md`](sampling-cdm-gos-derivations.md) — start there. This doc is retained for the SDK→collector split survival proof (unbiasedness + partition-invariant variance), per-family applicability, and the 2026-06 empirical validation, which the canonical doc does not reproduce.
+
+
 > Design note. Extends [NitroSketch](https://doi.org/10.1145/3341302.3342076)
 > (per-sketch update-sampling, single stream) to a multi-edge setting using the
 > coordinated-sampling idea from the
@@ -7,6 +10,16 @@
 > while holding backend query accuracy. Companion to
 > [continuous-monitoring-aggregation-taxonomy.md](continuous-monitoring-aggregation-taxonomy.md)
 > and [continuous-monitoring-tumbling-cost-analysis.md](continuous-monitoring-tumbling-cost-analysis.md).
+
+> ⚠️ **Allocation law updated.** This note derives the per-key KKT water-filling
+> `p_i ∝ √(f_i/rate_i)`. For **sketch** sampling that allocation has been
+> **retired**: a sketch point/L2 estimate's error is bounded by the sketch
+> *norm*, not a single key's `f(x)`, so the implemented coordinator allocation is
+> the whole-sketch ε-floor `p_i = 1/(1+ε²·rate_i)`
+> (`data_plane monitor::coordinator::allocate_p` → `epsilon_sample_floor`; see
+> [design-gos-unified-edge-telemetry.md](design-gos-unified-edge-telemetry.md)
+> §7C and derivations §5). The `√(f/rate)` form below is retained for its
+> derivation and applies only when a key is exact-counted *outside* the sketch.
 
 ## Context
 

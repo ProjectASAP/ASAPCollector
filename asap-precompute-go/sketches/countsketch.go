@@ -271,12 +271,40 @@ func (w *CountSketchWrapper) UpdateString(key string, count float64) {
 		return
 	}
 	if w.sampler != nil {
-		if !w.sampler.Admit() {
-			return // skip the d-row counter work for this item (CPU saved)
-		}
-		count /= w.sampleP // upweight the admitted insert ⇒ unbiased estimate
+		// PER-ROW geometric admission (design §3.1/§3.2): the sampler decides
+		// which of the d rows this item updates; the key is hashed only if ≥1 row
+		// is admitted, and admitted rows carry the 1/p weight. Per-row (not
+		// per-item) admission decorrelates the row estimates so the median-of-rows
+		// concentrates the sampling error. Replaces the older whole-item admit.
+		w.cs.UpdateStringSampledPerRow(key, count, w.sampler)
+		return
 	}
 	w.cs.UpdateString(key, count)
+}
+
+// ApplyAdmittedOccurrence applies a row-admission decision made UPSTREAM —
+// typically by an OTel SDK running NitroSketch admission at Record() time,
+// before the occurrence was ever serialized (metricdata.RowSampledSketch;
+// see AggregationRowSampledSketch in the SDK). admittedRows is a bitmask
+// over this sketch's rows (bit r set ⇒ row r admits); count is the
+// occurrence's raw magnitude and sampleP is the admission probability in
+// effect when the SDK made the decision.
+//
+// admittedRows == 0 (R(x)=∅) is a no-op — the SDK is expected to have
+// already dropped such occurrences before they ever reached the wire.
+// Unlike UpdateString, this NEVER consults w.sampler: the admission
+// decision is given, not made here.
+//
+// This does NOT touch w.sampleP or stamp anything on the envelope: the
+// 1/sampleP correction is baked into the cell here (mirrors
+// UpdateStringSampledPerRow's contract) — a query-time consumer must NOT
+// also rescale by this sketch's envelope p, or the correction applies
+// twice.
+func (w *CountSketchWrapper) ApplyAdmittedOccurrence(key string, count float64, admittedRows uint64, sampleP float64) {
+	if w == nil || w.cs == nil {
+		return
+	}
+	w.cs.UpdateStringAtRows(key, count, admittedRows, sampleP)
 }
 
 // Snapshot returns the canonical proto-encoded SketchEnvelope bytes,
@@ -542,8 +570,10 @@ type CountSketchObserver struct {
 	DefaultKey string
 }
 
-// Observe routes a precompute.ObservationValue into the wrapped
-// CountSketch via UpdateString.
+// Observe routes a precompute.ObservationValue into the wrapped CountSketch
+// via UpdateString — or, when v.RowSampled, via ApplyAdmittedOccurrence with
+// the SDK's pre-decided admission bitmask, using the same key and v.Float
+// weight the plain path would have used.
 func (o CountSketchObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) error {
 	w, ok := s.(*CountSketchWrapper)
 	if !ok {
@@ -555,6 +585,10 @@ func (o CountSketchObserver) Observe(s precompute.Sketch, v precompute.Observati
 	key := o.DefaultKey
 	if len(v.Bytes) > 0 {
 		key = string(v.Bytes)
+	}
+	if v.RowSampled {
+		w.ApplyAdmittedOccurrence(key, v.Float, v.AdmittedRows, v.SampleP)
+		return nil
 	}
 	w.UpdateString(key, v.Float)
 	return nil

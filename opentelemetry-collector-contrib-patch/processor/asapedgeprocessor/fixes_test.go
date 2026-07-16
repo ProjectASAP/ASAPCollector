@@ -89,7 +89,7 @@ func TestSketchMaxSeriesBounds(t *testing.T) {
 	base := uint64(time.Unix(1700000000, 0).UnixMilli())
 	// 5 distinct series; only 2 fit.
 	for i := 0; i < 5; i++ {
-		sa.observe(map[string]string{"series": string(rune('a' + i))}, float64(i), base)
+		sa.observe(map[string]string{"series": string(rune('a' + i))}, float64(i), base, false, 0, 0)
 	}
 	snap := sa.pc.Stats().Snapshot()
 	if snap.ActiveSeries > 2 {
@@ -127,7 +127,7 @@ func TestCountSketchCountsAttributeSet(t *testing.T) {
 	am := map[string]string{"zone": "z0"}
 	base := uint64(time.Unix(1700000000, 0).UnixMilli())
 	for i := 0; i < n; i++ {
-		sa.observe(am, float64(100+i), base+uint64(i)) // values vary; count must not
+		sa.observe(am, float64(100+i), base+uint64(i), false, 0, 0) // values vary; count must not
 	}
 	if sa.lastObserveErr != nil {
 		t.Fatalf("CountSketch observe errored: %v", sa.lastObserveErr)
@@ -190,7 +190,7 @@ func TestDeltaTransmissionEmitsDeltaEncoding(t *testing.T) {
 
 	// Window 1 -> PROTO_FULL (first snapshot for the series).
 	for i := 0; i < 10; i++ {
-		sa.observe(am, float64(i), base+uint64(i))
+		sa.observe(am, float64(i), base+uint64(i), false, 0, 0)
 	}
 	envs1 := sa.pc.Drain()
 	if !hasEncoding(envs1, precompute.EncodingProtoFull) {
@@ -199,7 +199,7 @@ func TestDeltaTransmissionEmitsDeltaEncoding(t *testing.T) {
 
 	// Window 2 -> PROTO_DELTA (against the cached window-1 snapshot).
 	for i := 0; i < 10; i++ {
-		sa.observe(am, float64(i), base+1000+uint64(i))
+		sa.observe(am, float64(i), base+1000+uint64(i), false, 0, 0)
 	}
 	envs2 := sa.pc.Drain()
 	if !hasEncoding(envs2, precompute.EncodingProtoDelta) {
@@ -296,11 +296,11 @@ func TestControlPlaneAppliesConfig(t *testing.T) {
 	// Build a config set targeting the live aggregator's AggID so UpdateConfig
 	// picks it. A high MaxSeries proves the update is applied (the swap is
 	// in-place; we only assert it doesn't panic and the version is acked).
-	aggID := precompute.AggId(fnv64("lat"))
+	wantAggID := aggID("lat", &cfg.Metrics[0], cfg.WindowDuration, 0, 0)
 	set := &precompute.PrecomputeConfigSet{
 		Version: 7,
 		Configs: []precompute.PrecomputeConfig{{
-			AggID:      aggID,
+			AggID:      wantAggID,
 			SketchType: precompute.SketchTypeDDSketch,
 			Mode:       precompute.Tumbling,
 			Window:     precompute.WindowSpec{Size: time.Hour},
@@ -322,7 +322,7 @@ func TestControlPlaneAppliesConfig(t *testing.T) {
 	// The aggregator must still observe cleanly after the in-place swap (state
 	// preserved, no rebuild).
 	sa := p.shards[0].sketchAggs["lat"]
-	sa.observe(map[string]string{"zone": "z0"}, 1, uint64(time.Now().UnixMilli()))
+	sa.observe(map[string]string{"zone": "z0"}, 1, uint64(time.Now().UnixMilli()), false, 0, 0)
 	if sa.lastObserveErr != nil {
 		t.Fatalf("observe after UpdateConfig errored: %v", sa.lastObserveErr)
 	}
@@ -349,7 +349,7 @@ func TestControlPlanePollLoop(t *testing.T) {
 	fake.push(&precompute.PrecomputeConfigSet{
 		Version: 11,
 		Configs: []precompute.PrecomputeConfig{{
-			AggID:      precompute.AggId(fnv64("lat")),
+			AggID:      aggID("lat", &cfg.Metrics[0], cfg.WindowDuration, 0, 0),
 			SketchType: precompute.SketchTypeDDSketch,
 			Mode:       precompute.Tumbling,
 			Window:     precompute.WindowSpec{Size: time.Hour},

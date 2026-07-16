@@ -67,6 +67,15 @@ type MetricFamily struct {
 	// sketches, empty means per-series (group by full attribute set).
 	AggregateBy []string `mapstructure:"aggregate_by"`
 
+	// SpatialFilter is the extra WHERE-clause-shaped predicate this policy's
+	// materialized view is scoped to (e.g. `service="checkout"`), mirroring
+	// ASAPQuery-backend's AggregationConfig.spatial_filter. Empty for every
+	// family configured today. Feeds PolicyFingerprint (see AggID) — MUST
+	// match whatever the control plane would set for the same logical
+	// policy, or this edge's AggID silently disagrees with the backend's
+	// independently-computed one for the same metric.
+	SpatialFilter string `mapstructure:"spatial_filter"`
+
 	// Mode selects the aggregation SCOPE, decided by the control plane given
 	// the query:
 	//   "per_series"   (default / empty) — one sketch per series key (per

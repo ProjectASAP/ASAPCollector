@@ -33,6 +33,38 @@ func getAttrMap(src pcommon.Map) map[string]string {
 
 func putAttrMap(m map[string]string) { attrMapPool.Put(m) }
 
+// rowSampledAdmittedRowsKey / rowSampledRowsKey / rowSampledSamplePKey mirror
+// the reserved attribute keys the SDK's OTLP wire transform stamps on a
+// RowSampledSketchDataPoint (see otlpmetricgrpc/otlpmetrichttp's
+// internal/transform/metricdata.go). A data point carrying these attrs is
+// not a normal aggregated sample — it is one individually admitted RAW
+// occurrence, already row-sampled at Record() time by an OTel SDK running
+// AggregationRowSampledSketch (NitroSketch-style skip sampling). They MUST
+// be stripped before the remaining attributes are used as series identity
+// (gorilla key / AggregateBy grouping / emitted labels) — they are
+// wire-transport metadata, not series-identifying dimensions.
+const (
+	rowSampledAdmittedRowsKey = "__asap_row_sampled_admitted_rows"
+	rowSampledRowsKey         = "__asap_row_sampled_rows"
+	rowSampledSamplePKey      = "__asap_row_sampled_sample_p"
+)
+
+// extractRowSampledMeta reports whether dp is a row-sampled raw occurrence
+// (signaled by the presence of rowSampledAdmittedRowsKey, which the SDK
+// always stamps alongside the other two reserved keys) and, if so, decodes
+// the admission bitmask and sample probability the SDK computed.
+func extractRowSampledMeta(attrs pcommon.Map) (rowSampled bool, admittedRows uint64, sampleP float64) {
+	v, ok := attrs.Get(rowSampledAdmittedRowsKey)
+	if !ok {
+		return false, 0, 0
+	}
+	admittedRows = uint64(v.Int())
+	if p, ok := attrs.Get(rowSampledSamplePKey); ok {
+		sampleP = p.Double()
+	}
+	return true, admittedRows, sampleP
+}
+
 func (p *asapEdgeProcessor) shardForKey(key string) int {
 	if len(p.shards) <= 1 {
 		return 0
@@ -119,7 +151,13 @@ func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
+		rowSampled, admittedRows, sampleP := extractRowSampledMeta(dp.Attributes())
 		am := getAttrMap(dp.Attributes()) // shared decode (once)
+		if rowSampled {
+			delete(am, rowSampledAdmittedRowsKey)
+			delete(am, rowSampledRowsKey)
+			delete(am, rowSampledSamplePKey)
+		}
 		key := gorilla.SeriesKey(name, am, p.coldExtLabels)
 		val := numberValue(dp)
 		ts := dp.Timestamp().AsTime()
@@ -128,7 +166,12 @@ func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 		tsMs := uint64(ts.UnixMilli())
 		sh := p.shards[p.shardForKey(key)]
 		sh.mu.Lock()
-		if sh.cold != nil && coldArchive {
+		// A row-sampled data point is one individually admitted raw
+		// occurrence, not a normal aggregated sample — it is never
+		// cold-archived (the cold path expects real aggregate samples, and
+		// the whole point of SDK-side row sampling is fewer, not more, raw
+		// points reaching the collector).
+		if sh.cold != nil && coldArchive && !rowSampled {
 			// The fragment encoder rekeys internally by (metric, attrs); the
 			// shared SeriesKey above is kept for shard selection only.
 			_ = sh.cold.AddSample(gorilla.TSDBSample{
@@ -139,7 +182,7 @@ func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 			})
 		}
 		if sa := sh.sketchAggs[name]; sa != nil {
-			sa.observe(am, val, tsMs)
+			sa.observe(am, val, tsMs, rowSampled, admittedRows, sampleP)
 		}
 		sh.mu.Unlock()
 		putAttrMap(am)

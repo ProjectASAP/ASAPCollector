@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+
+	precompute "github.com/ProjectASAP/asap-precompute-go"
 )
 
 // errAgg is wrapped by misconfigured aggregations.
@@ -203,6 +205,11 @@ type AggregationDDSketch struct {
 	// include a bucket in a delta payload. Defaults to 1 when DeltaTransmission
 	// is true and DeltaThreshold is 0.
 	DeltaThreshold uint64
+	// SampleP is the geometric admission rate applied at this SDK aggregator
+	// (whole-item, d=1). Values <=0 or >=1 disable sampling; 0 < SampleP < 1
+	// enables NitroSketch skip-sampling (raw counts stored, wire stamps p,
+	// consumer rescales ×1/p).
+	SampleP float64
 }
 
 var _ Aggregation = AggregationDDSketch{}
@@ -212,6 +219,9 @@ var errDDSketch = fmt.Errorf("%w: ddsketch", errAgg)
 func (a AggregationDDSketch) copy() Aggregation { return a }
 
 func (a AggregationDDSketch) err() error {
+	if a.SampleP < 0 || a.SampleP > 1 {
+		return fmt.Errorf("%w: sample_p %v must be in [0,1]", errDDSketch, a.SampleP)
+	}
 	if a.RelativeAccuracy == 0 {
 		return nil
 	}
@@ -263,6 +273,12 @@ type AggregationCountSketch struct {
 	// DeltaThreshold is the minimum absolute cell change required to include a
 	// cell in a delta payload. Defaults to 1.0 when DeltaTransmission is true.
 	DeltaThreshold float64
+	// SampleP is the per-row geometric admission rate (NitroSketch skip-sampling)
+	// applied at this SDK aggregator. Values <=0 or >=1 disable sampling (every
+	// update touches all rows); 0 < SampleP < 1 admits each row with probability
+	// SampleP and applies the 1/SampleP inverse-probability weight. Hosting the
+	// admission here is the "sampling at the SDK" location of the GOS design.
+	SampleP float64
 }
 
 var _ Aggregation = AggregationCountSketch{}
@@ -284,6 +300,9 @@ func (a AggregationCountSketch) err() error {
 	if a.Delta != 0 && (a.Delta <= 0 || a.Delta >= 1) {
 		return fmt.Errorf("%w: delta %v must be in (0,1)", errCountSketch, a.Delta)
 	}
+	if a.SampleP < 0 || a.SampleP > 1 {
+		return fmt.Errorf("%w: sample_p %v must be in [0,1]", errCountSketch, a.SampleP)
+	}
 	return nil
 }
 
@@ -301,6 +320,10 @@ type AggregationCountMinSketch struct {
 	// DeltaThreshold is the minimum absolute cell change required to include a
 	// cell in a delta payload. Defaults to 1.0 when DeltaTransmission is true.
 	DeltaThreshold float64
+	// SampleP is the per-row geometric admission rate applied at this SDK
+	// aggregator. Values <=0 or >=1 disable sampling; 0 < SampleP < 1 admits each
+	// row with probability SampleP and applies the 1/SampleP weight in-place.
+	SampleP float64
 }
 
 var _ Aggregation = AggregationCountMinSketch{}
@@ -315,6 +338,64 @@ func (a AggregationCountMinSketch) err() error {
 	}
 	if a.Cols < 0 {
 		return fmt.Errorf("%w: cols %d must be greater than or equal to zero", errCountMinSketch, a.Cols)
+	}
+	if a.SampleP < 0 || a.SampleP > 1 {
+		return fmt.Errorf("%w: sample_p %v must be in [0,1]", errCountMinSketch, a.SampleP)
+	}
+	return nil
+}
+
+// AggregationRowSampledSketch summarizes recorded measurements by deciding,
+// PER RAW OCCURRENCE, row admission into a downstream (collector-side)
+// row/col sketch — NitroSketch-style geometric skip-sampling run at the SDK,
+// before the occurrence is ever serialized. An occurrence that admits no
+// row is discarded here and never leaves the process; an occurrence that
+// admits at least one row is exported individually (never pre-merged with
+// any other occurrence — merging would destroy the per-occurrence key the
+// collector needs to pick that occurrence's column). See
+// metricdata.RowSampledSketch and precompute.AggregationRouter for the
+// full design rationale.
+type AggregationRowSampledSketch struct {
+	// Router maps a series' retained attributes to the target collector-
+	// side aggregation instance (precompute.AggregationIdentity) it folds
+	// into and that target's row fan-out. Required — a policy with no
+	// router cannot route anything.
+	//
+	// The common case (one metric feeds one collector-side sketch) is
+	// precompute.AggregationPolicy{...}.Router(); a metric that fans out
+	// to multiple physically distinct sketches supplies a custom router.
+	Router precompute.AggregationRouter
+
+	// CoordinatorURL is the data-plane MonitorService gRPC endpoint this
+	// policy's live sample-rate grant is read from — the SAME protocol
+	// otel-app/sample_controller.go and the edge collector's continuous
+	// monitor already use, dialed DIRECTLY (bypassing the collector).
+	// Empty disables live grants; BootstrapSampleP is then permanent.
+	CoordinatorURL string
+	// EdgeID identifies this process to the coordinator (Registration.EdgeID).
+	EdgeID string
+	// WindowSizeSecs is the CDM epoch length — should match the collector's
+	// warm-tier window (the coordinator's slack-countdown protocol is a
+	// per-epoch round).
+	WindowSizeSecs uint64
+	// BootstrapSampleP is used before the first live grant arrives (and
+	// permanently if CoordinatorURL is empty). 1.0 (default) admits every
+	// row of every occurrence — byte-equivalent to unsampled passthrough.
+	BootstrapSampleP float64
+}
+
+var _ Aggregation = AggregationRowSampledSketch{}
+
+var errRowSampledSketch = fmt.Errorf("%w: row-sampled sketch", errAgg)
+
+func (a AggregationRowSampledSketch) copy() Aggregation { return a }
+
+func (a AggregationRowSampledSketch) err() error {
+	if a.Router == nil {
+		return fmt.Errorf("%w: router is required", errRowSampledSketch)
+	}
+	if a.BootstrapSampleP < 0 || a.BootstrapSampleP > 1 {
+		return fmt.Errorf("%w: bootstrap_sample_p %v must be in [0,1]", errRowSampledSketch, a.BootstrapSampleP)
 	}
 	return nil
 }

@@ -147,9 +147,9 @@ func (e *Engine) Observe(aggID uint64, key []byte, value float64, windowStart ui
 // unreported-but-below-slack mass.
 func (e *Engine) OnGrant(g Grant) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	st := e.states[mapKey{g.AggID, string(g.Key)}]
 	if st == nil || st.windowStart != g.WindowStartMs {
+		e.mu.Unlock()
 		return // unknown monitor or stale epoch
 	}
 	st.round = g.Round
@@ -159,6 +159,7 @@ func (e *Engine) OnGrant(g Grant) {
 	// current decision, so 0 means "no sampling this round" and is recorded as
 	// such; the precompute treats <=0 as p=1 (unsampled).
 	st.grantedSampleP = g.SampleP
+	e.mu.Unlock()
 }
 
 // OnPoll answers a poll with the current local value and advances the baseline
