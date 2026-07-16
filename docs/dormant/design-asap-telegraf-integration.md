@@ -1,5 +1,8 @@
 # ASAP Telegraf Integration — Design
 
+> **DORMANT.** This integration is not active on the current branch — the `telegraf` path/submodule is uninitialized and no build or eval arm exercises it. Kept for design reference; revisit before reactivating.
+
+
 _Status: **draft** — 2026-05-02. Doc-only; gates the Telegraf
 adapter work that becomes Phase 4 of the edge-framework migration._
 

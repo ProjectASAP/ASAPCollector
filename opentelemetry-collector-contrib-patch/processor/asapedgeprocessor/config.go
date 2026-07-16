@@ -230,8 +230,8 @@ type MetricFamily struct {
 type ThresholdConfig struct {
 	// Enabled gates the monitor.
 	Enabled bool `mapstructure:"enabled"`
-	// Functional selects the additive readout to threshold: "sum" (default),
-	// "cms_point", or "linear_buckets".
+	// Functional selects the readout to threshold: "sum" (default), "cms_point",
+	// or "linear_buckets".
 	Functional string `mapstructure:"functional"`
 	// Key is the CMS point-frequency key x (functional=cms_point).
 	Key string `mapstructure:"key"`

@@ -31,7 +31,7 @@ type monitorState struct {
 	// obsCount is the number of observations admitted for this monitor since
 	// the current epoch began. It is the edge's observed items/window (rate)
 	// reported to the coordinator so it can size this edge's sampling
-	// probability (AllocateSampleRates). Reset to 0 at each epoch boundary.
+	// probability via the whole-sketch ε-floor. Reset to 0 at each epoch boundary.
 	obsCount uint64
 	// grantedSampleP is the coordinator-allocated distributed-NitroSketch
 	// update-sampling probability for this monitor's agg. 0 (unset) ⇒ no

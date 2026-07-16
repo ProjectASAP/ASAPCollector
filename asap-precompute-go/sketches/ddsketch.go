@@ -102,7 +102,9 @@ func (w *DDSketchWrapper) SampleP() float64 {
 // Update feeds a single observation into the underlying DDSketch.
 // Used by DDSketchObserver; exposed publicly so adapter code that
 // already has a typed handle can bypass the observer interface.
-func (w *DDSketchWrapper) Update(v float64) { w.sk.Update(v) }
+func (w *DDSketchWrapper) Update(v float64) {
+	w.sk.Update(v)
+}
 
 // Snapshot serializes via SerializePortable + proto.Marshal — the
 // canonical wire format the backend's modified-OTLP DDSketch decoder

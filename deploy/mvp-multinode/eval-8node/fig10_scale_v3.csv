@@ -1,6 +1,0 @@
-n_agents,arm,sink_rx_MB_s,per_agent_rx_MB_s,agent_cpu_mean_perc,agent_mem_mean_mib
-1,asap,0.056,0.056,137.8,1244.2
-2,asap,0.094,0.047,100.0,1335.7
-3,asap,0.181,0.060,85.4,1455.5
-4,asap,0.508,0.127,73.4,1432.9
-5,asap,0.725,0.145,76.9,1390.8

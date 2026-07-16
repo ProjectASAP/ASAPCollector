@@ -1,5 +1,0 @@
-# Fig 7 cold-OFF warm latency (all-families stack, 599-query replay)
-quantile (DDSketch): p50=36.69 p99=51.30 ms
-sum: p50=2.37 p99=3.64 ms
-all: p50=29.24 p99=49.81 ms
-vs cold-ON multinode sweep (archive failover): quantile p99=167ms
