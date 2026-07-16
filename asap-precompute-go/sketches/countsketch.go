@@ -64,11 +64,11 @@ type CountSketchWrapper struct {
 
 	// GOS delta mode (set per emit by the runtime from PrecomputeConfig). When
 	// gosEpsilon>0, ComputeDeltaAgainst overrides the passed threshold with the
-	// GOS relative threshold: isotropic scalar (default, O(1) memory) or, when
-	// gosAnisotropic, gradient-weighted per-cell {T_j} (O(d·w) memory).
-	gosEpsilon     float64
-	gosAnisotropic bool
-	gosSites       uint32
+	// GOS relative isotropic threshold (O(1) memory). The anisotropic
+	// (gradient-weighted per-cell {T_j}) mode that used to live alongside this
+	// has been removed pending an Activity_j redesign — see gos_threshold.go.
+	gosEpsilon float64
+	gosSites   uint32
 
 	// sampler implements NitroSketch geometric update-sampling. When non-nil
 	// (sampleP<1), UpdateString admits each item with probability sampleP and
@@ -174,13 +174,11 @@ func (w *CountSketchWrapper) MarkSubWindowEmitted() {
 }
 
 // SetGosMode configures the GOS delta mode. When epsilon>0, ComputeDeltaAgainst
-// gates the delta with the GOS relative threshold instead of the passed fixed
-// value: isotropic (anisotropic=false, one scalar, O(1) memory) or anisotropic
-// (gradient-weighted per-cell {T_j}, O(d·w) memory). epsilon≤0 disables GOS
+// gates the delta with the GOS relative isotropic threshold instead of the
+// passed fixed value (one scalar, O(1) memory). epsilon≤0 disables GOS
 // (unchanged behavior). The runtime calls this from PrecomputeConfig per emit.
-func (w *CountSketchWrapper) SetGosMode(epsilon float64, anisotropic bool, k uint32) {
+func (w *CountSketchWrapper) SetGosMode(epsilon float64, k uint32) {
 	w.gosEpsilon = epsilon
-	w.gosAnisotropic = anisotropic
 	w.gosSites = k
 }
 
@@ -310,12 +308,8 @@ func (w *CountSketchWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) 
 		return nil, true, nil
 	}
 	// GOS delta gating: override the fixed threshold with the relative GOS
-	// threshold. Anisotropic uses a per-cell {T_j} matrix (proto path only);
-	// isotropic overrides the scalar. Falls back to isotropic for the heap path.
+	// isotropic threshold.
 	if w.gosEpsilon > 0 {
-		if w.gosAnisotropic && !w.heapMsgpack {
-			return w.computeAnisotropicDelta(prev)
-		}
 		threshold = w.GosDeltaThreshold(w.gosEpsilon, w.gosSites)
 	}
 	// Heap-msgpack mode: produce a DELTA-HEAP frame — a sparse matrix
@@ -371,82 +365,6 @@ func (w *CountSketchWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) 
 		return full, true, nil
 	}
 	return payload, false, nil
-}
-
-// computeAnisotropicDelta emits a GOS anisotropic (gradient-weighted per-cell)
-// delta against `prev`: each cell (r,c) is included when |ΔC| ≥ T[r][c], where
-// {T_j} is the water-filled threshold matrix (T_j ∝ √(V_j/|g_j|), g_j=2|Ĉ_j|,
-// V_j = |current − prev|). Reuses sketchlib's ComputeDeltaPerCell + SerializeDelta
-// (identical wire; ApplyDelta unchanged). Falls back to a full frame on any
-// decode/compute failure.
-func (w *CountSketchWrapper) computeAnisotropicDelta(prev []byte) ([]byte, bool, error) {
-	if len(prev) == 0 {
-		full, err := w.Snapshot()
-		return full, true, err
-	}
-	prevCS, err := countsketch.DeserializeCountSketchFromProtoBytes(prev)
-	if err != nil {
-		full, fErr := w.Snapshot()
-		return full, true, fErr
-	}
-	thresholds := w.gosThresholdMatrix(prevCS)
-	deltaMsg, err := countsketch.ComputeDeltaPerCell(prevCS, w.cs, thresholds)
-	if err != nil {
-		full, fErr := w.Snapshot()
-		return full, true, fErr
-	}
-	payload, err := countsketch.SerializeDelta(deltaMsg)
-	if err != nil {
-		full, fErr := w.Snapshot()
-		return full, true, fErr
-	}
-	full, fErr := w.Snapshot()
-	if fErr == nil && len(payload) >= len(full) {
-		return full, true, nil
-	}
-	return payload, false, nil
-}
-
-// gosThresholdMatrix builds the per-cell threshold matrix {T_j} via the GOS
-// water-filling (AllocateThresholds) from local state: grad_j = 2|Ĉ_j| (F2
-// sensitivity), activity_j = |current − prev| (per-window change mass), relative
-// budget B = ε·‖Ĉ‖². This is the O(d·w) allocation the anisotropic mode trades
-// edge memory for.
-func (w *CountSketchWrapper) gosThresholdMatrix(prev *countsketch.CountSketch) [][]float64 {
-	cells := make([]GosCell, 0, w.rows*w.cols)
-	for r := 0; r < w.rows; r++ {
-		for c := 0; c < w.cols; c++ {
-			cur := w.cs.GetCell(r, c)
-			pv := 0.0
-			if r < len(prev.Count) && c < len(prev.Count[r]) {
-				pv = prev.Count[r][c]
-			}
-			cells = append(cells, GosCell{Grad: 2 * math.Abs(cur), Activity: math.Abs(cur - pv)})
-		}
-	}
-	_, norm := w.L2DivergenceSinceEmit()
-	flat := AllocateThresholds(cells, GosParams{
-		Budget:    w.gosEpsilon * norm * norm,
-		K:         w.gosSites,
-		TQueryCap: math.Inf(1),
-		// Thread the coordinator-granted update-sampling p so the coupling floor
-		// T_j ≥ √(V_j(1−p)/p) binds ("don't transmit finer than you sample"):
-		// when a grant sets p<1 and cells go quiet, the delta gate must not emit
-		// below the sampling noise. w.SampleP() is 1.0 when unsampled, which
-		// GosParams.floor treats as no floor — byte-identical to before.
-		SampleP:    w.SampleP(),
-		FreshDelta: math.Inf(1),
-	})
-	m := make([][]float64, w.rows)
-	idx := 0
-	for r := 0; r < w.rows; r++ {
-		m[r] = make([]float64, w.cols)
-		for c := 0; c < w.cols; c++ {
-			m[r][c] = flat[idx]
-			idx++
-		}
-	}
-	return m
 }
 
 // DeltaAgainstEmptyBase returns the snapshot of an EMPTY CountSketch of

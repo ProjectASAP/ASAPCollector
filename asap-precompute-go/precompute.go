@@ -522,18 +522,17 @@ func (p *precompute) EmitSubWindow(nowMs uint64) []*SketchEnvelope {
 // here — the live window is still writing it.
 // applyGosMode configures the sketch's GOS delta mode from cfg when
 // GosDeltaEpsilon > 0 and the sketch supports it (Count-Sketch). The sketch's
-// ComputeDeltaAgainst then gates the delta with the GOS relative threshold
-// (isotropic scalar or anisotropic per-cell). A no-op otherwise → the fixed
-// DeltaThreshold path is unchanged. Structural assert avoids a Sketch iface
-// change.
+// ComputeDeltaAgainst then gates the delta with the GOS relative isotropic
+// threshold. A no-op otherwise → the fixed DeltaThreshold path is unchanged.
+// Structural assert avoids a Sketch iface change.
 func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
 	if cfg.GosDeltaEpsilon <= 0 {
 		return
 	}
 	if gm, ok := sketch.(interface {
-		SetGosMode(epsilon float64, anisotropic bool, k uint32)
+		SetGosMode(epsilon float64, k uint32)
 	}); ok {
-		gm.SetGosMode(cfg.GosDeltaEpsilon, cfg.GosAnisotropic, cfg.GosSites)
+		gm.SetGosMode(cfg.GosDeltaEpsilon, cfg.GosSites)
 	}
 }
 

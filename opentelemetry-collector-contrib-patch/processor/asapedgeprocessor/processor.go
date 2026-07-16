@@ -167,7 +167,6 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 				subWindowEpsilon:  cfg.SubWindowEpsilon,
 				gosDeltaEpsilon:   fam.GosDeltaEpsilon,
 				gosSites:          fam.GosSites,
-				gosAnisotropic:    fam.GosAnisotropic,
 			}
 			if sa, ok := newSketchAggregator(name, fam, opts, p.logger); ok {
 				sa.procDropCount = &p.sketchDropCount

@@ -152,12 +152,6 @@ type MetricFamily struct {
 	// GosSites is the site count k in the GOS threshold (bigger fleet ⇒ tighter
 	// per-edge threshold). Only meaningful when GosDeltaEpsilon > 0.
 	GosSites uint32 `mapstructure:"gos_sites"`
-	// GosAnisotropic selects the per-cell threshold shape when GosDeltaEpsilon>0:
-	// false (default) → isotropic scalar (O(1) edge memory); true →
-	// gradient-weighted per-cell {T_j} water-filling (O(d·w) memory, less comm on
-	// skewed sketches). The control plane emits `gos_anisotropic: true` only when
-	// it selects the anisotropic shape.
-	GosAnisotropic bool `mapstructure:"gos_anisotropic"`
 
 	// EmitHeap selects the heap-bearing CountSketch wire variant for a
 	// `family: countsketch` metric: the emitted sketch carries a bounded

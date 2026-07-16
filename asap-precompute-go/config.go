@@ -242,15 +242,6 @@ type PrecomputeConfig struct {
 	// Applies to Count-Sketch families only. GosSites is the site count k.
 	GosDeltaEpsilon float64
 	GosSites        uint32
-	// GosAnisotropic selects the per-cell threshold shape when GosDeltaEpsilon>0:
-	//   false (default) → ISOTROPIC: one scalar T = ε‖Ĉ‖/(2k√(dw)) for all cells.
-	//                     O(1) edge memory.
-	//   true            → ANISOTROPIC: gradient-weighted per-cell {T_j} (water-
-	//                     filling T_j ∝ √(V_j/|g_j|)), sending heavy cells at a
-	//                     tighter threshold. Less communication on skewed data,
-	//                     but +O(d·w) edge memory for the threshold vector.
-	// The knob makes the edge-memory-vs-communication tradeoff tunable.
-	GosAnisotropic bool
 	// Encoding overrides the wire encoding of emitted envelopes.
 	// Default zero value (PROTO_FULL) is used for non-delta
 	// transmissions. When DeltaTransmission is true, the runtime
