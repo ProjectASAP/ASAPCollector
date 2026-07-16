@@ -219,18 +219,19 @@ func (c *Config) Validate() error {
 		}
 		// gos_delta_epsilon: implemented by the plain (non-heap) CountSketch
 		// wrapper (F2 isotropic gate), the CountMinSketch wrapper (L1
-		// max-composition gate), and the DDSketch wrapper (L1 value-range
-		// gate, T=ε·N/(k·B), derivations §8.4). Reject it on every other
-		// family — and on emit_heap=true CountSketch, whose DELTA-HEAP wire
-		// form isn't GOS-converted — rather than silently ignoring it. CMS
-		// and DDSketch have no heap variant, so no emit_heap exclusion is
-		// needed for them.
+		// max-composition gate), the DDSketch wrapper (L1 value-range gate,
+		// T=ε·N/(k·B), derivations §8.4), and the Sum wrapper (the B=1
+		// degenerate case, T=ε·N/k). Reject it on every other family — and
+		// on emit_heap=true CountSketch, whose DELTA-HEAP wire form isn't
+		// GOS-converted — rather than silently ignoring it. CMS/DDSketch/Sum
+		// have no heap variant, so no emit_heap exclusion is needed for them.
 		if m.GosDeltaEpsilon > 0 {
 			gosOK := m.Family == FamilyCountMinSketch ||
 				m.Family == FamilyDDSketch ||
+				m.Family == FamilySum ||
 				(m.Family == FamilyCountSketch && !m.EmitHeap)
 			if !gosOK {
-				return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon is only valid for family=countsketch (emit_heap=false), countminsketch, or ddsketch (got family=%q, emit_heap=%v)", i, m.Metric, m.Family, m.EmitHeap)
+				return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon is only valid for family=countsketch (emit_heap=false), countminsketch, ddsketch, or sum (got family=%q, emit_heap=%v)", i, m.Metric, m.Family, m.EmitHeap)
 			}
 			if m.GosDeltaEpsilon >= 1 {
 				return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon must be in (0, 1), got %v", i, m.Metric, m.GosDeltaEpsilon)

@@ -26,22 +26,123 @@ import (
 // bytes field. The backend decodes the same fixed layout (no proto, no
 // sketchlib dependency).
 //
-// Delta: Sum is additively mergeable, but this wrapper is FULL-ONLY for now
-// (like KLLWrapper) — ComputeDeltaAgainst returns the full snapshot. The
-// 16-byte payload makes a delta pointless. True per-window delta is a
-// documented follow-up.
+// Delta: Sum is additively mergeable. ComputeDeltaAgainst computes the
+// INCREMENTAL {Δsum,Δcount} = current−prev by default; when GOS insert-time
+// mode is active (SetGosMode), it instead drains the pending GOS delta (see
+// below) and ignores prev entirely.
 type SumWrapper struct {
 	sum   float64
 	count uint64
+
+	// gosEpsilon/gosSites configure the GOS isotropic insert-time delta gate
+	// (design-gos-unified-edge-telemetry.md §11, derivations §8.1): when
+	// gosEpsilon>0, Update checks the accumulated-since-last-crossing
+	// magnitude against the closed-form threshold T=ε·|sum|/k immediately,
+	// in place of the periodic decode-prev-diff sub-window model
+	// (subWindowDivergence in precompute.go). gosEpsilon<=0 (the default)
+	// leaves Update/ComputeDeltaAgainst/Snapshot on the pre-existing
+	// diff-two-totals path, byte-identical to before GOS existed. Set via
+	// SetGosMode.
+	gosEpsilon float64
+	gosSites   uint32
+
+	// gosSinceCrossSum/gosSinceCrossCount track the amount added since the
+	// last insert-time threshold crossing — the degenerate single-scalar
+	// analogue of CountSketch's per-cell "since last touch" accumulator.
+	// Reset to 0 ("subtract the reported amount") the instant a crossing is
+	// captured, per design-gos-unified-edge-telemetry.md §11's per-family
+	// reset table ("Sum | scalar | zero it (subtract reported amount) |
+	// degenerate 1-cell case"), so the next threshold check starts fresh
+	// against the (now larger) current total.
+	gosSinceCrossSum   float64
+	gosSinceCrossCount uint64
+
+	// gosReadySum/gosReadyCount stage already-crossed (already-reset)
+	// amounts awaiting the next drain (ComputeDeltaAgainst at flush time). A
+	// burst of multiple crossings between two flushes folds additively into
+	// these two scalars — Sum is associative, so summing several captured
+	// crossings is exactly equivalent to one crossing of their total,
+	// unlike CountSketch's per-cell gosDirty list.
+	gosReadySum   float64
+	gosReadyCount uint64
+
+	// gosWake is armed the instant gosReady{Sum,Count} transitions from
+	// "nothing captured" to "something captured" since the last drain, and
+	// consumed exactly once by ConsumeWakeSignal — a burst of many
+	// crossings between two flushes wakes the out-of-cycle flush loop once,
+	// not once per crossing.
+	gosWake bool
 }
 
 // NewSumWrapper builds an empty Sum aggregate.
 func NewSumWrapper() *SumWrapper { return &SumWrapper{} }
 
-// Update folds one observation into the running sum.
+// SetGosMode configures the GOS isotropic insert-time delta gate. epsilon<=0
+// disables it (existing diff-two-totals path, unchanged behavior).
+// Idempotent — callers (the Sum factory, at series creation, and the
+// runtime's applyGosMode, at flush, on every already-live series) may call
+// this repeatedly with the same config; it just re-stamps the two scalars.
+func (w *SumWrapper) SetGosMode(epsilon float64, sites uint32) {
+	w.gosEpsilon = epsilon
+	w.gosSites = sites
+}
+
+// Update folds one observation into the running sum, and — when GOS mode is
+// active — checks the accumulated-since-last-crossing magnitude against the
+// closed-form threshold T=ε·|sum|/k (SumIsotropicThreshold), recomputed from
+// the CURRENT total on every insert. Crossing captures the accumulated
+// amount into the pending-drain accumulators, resets the since-crossing
+// accumulator in place, and arms the wake signal.
 func (w *SumWrapper) Update(v float64) {
 	w.sum += v
 	w.count++
+	if w.gosEpsilon <= 0 {
+		return
+	}
+	w.gosSinceCrossSum += v
+	w.gosSinceCrossCount++
+	threshold := SumIsotropicThreshold(w.gosEpsilon, math.Abs(w.sum), w.gosSites)
+	if math.Abs(w.gosSinceCrossSum) < threshold {
+		return
+	}
+	if w.gosReadyCount == 0 {
+		w.gosWake = true // armed on the first capture since the last drain
+	}
+	w.gosReadySum += w.gosSinceCrossSum
+	w.gosReadyCount += w.gosSinceCrossCount
+	w.gosSinceCrossSum = 0
+	w.gosSinceCrossCount = 0
+}
+
+// ConsumeWakeSignal implements the runtime's narrow wake-signal interface
+// (asap-precompute-go window.go's recordLocked): reports whether an
+// insert-time GOS threshold crossing happened since the last call, clearing
+// the flag. Always false when GOS mode is inactive.
+func (w *SumWrapper) ConsumeWakeSignal() bool {
+	if !w.gosWake {
+		return false
+	}
+	w.gosWake = false
+	return true
+}
+
+// drainGosDelta serializes whatever has been captured (crossed + reset)
+// since the last drain as the {Δsum,Δcount} wire payload — the insert-time
+// counterpart of the old decode-prev-diff path: the amount was already
+// accumulated cell-by-cell (insert-by-insert) at Update time, so no previous
+// snapshot needs decoding here. Returns (nil, false, nil) when nothing has
+// crossed since the last drain — the caller (precompute.SnapshotCache's
+// compute-delta paths) treats a nil payload as "nothing to emit".
+func (w *SumWrapper) drainGosDelta() ([]byte, bool, error) {
+	if w.gosReadyCount == 0 {
+		return nil, false, nil
+	}
+	b := make([]byte, sumPayloadLen)
+	binary.LittleEndian.PutUint64(b[0:8], math.Float64bits(w.gosReadySum))
+	binary.LittleEndian.PutUint64(b[8:16], w.gosReadyCount)
+	w.gosReadySum = 0
+	w.gosReadyCount = 0
+	return b, false, nil
 }
 
 // sumPayloadLen is the fixed Sum payload size: float64 sum || uint64 count.
@@ -50,13 +151,36 @@ const sumPayloadLen = 16
 // Snapshot emits the fixed 16-byte {sum,count} payload (little-endian). An
 // empty window (count == 0) emits nothing (nil), matching the sketch
 // wrappers' empty-window behavior.
+//
+// GOS mode subtlety: when GOS is active, Snapshot excludes whatever has
+// already been captured (crossed + reset) and is staged in
+// gosReadySum/gosReadyCount awaiting its own drain via ComputeDeltaAgainst.
+// Without this exclusion, the ONE call site that can still invoke Snapshot
+// under GOS — SnapshotCache's prev==nil "first emit ever for this series"
+// fallback (both ComputeDelta and ComputeSubWindowDelta take this branch
+// instead of calling ComputeDeltaAgainst when there is no cached base yet) —
+// would report the captured amount, and a later drain of gosReadySum would
+// report that SAME amount again: additive reconstruction (the backend sums
+// every fragment it receives, design-gos-unified-edge-telemetry.md §11)
+// would then double-count it. Excluding gosReadySum here makes the full
+// snapshot and the later drained delta disjoint, non-overlapping fragments
+// that sum to the true total, matching CountSketch's equivalent property
+// (its full snapshot reads the actual matrix cells, which are already
+// zeroed in place at crossing time, so it never needs a subtraction here).
+// A no-op (gosReadySum/gosReadyCount are always 0) when GOS is inactive, so
+// the wire bytes are byte-identical to before GOS existed.
 func (w *SumWrapper) Snapshot() ([]byte, error) {
 	if w.count == 0 {
 		return nil, nil
 	}
+	sum, count := w.sum, w.count
+	if w.gosEpsilon > 0 {
+		sum -= w.gosReadySum
+		count -= w.gosReadyCount
+	}
 	b := make([]byte, sumPayloadLen)
-	binary.LittleEndian.PutUint64(b[0:8], math.Float64bits(w.sum))
-	binary.LittleEndian.PutUint64(b[8:16], w.count)
+	binary.LittleEndian.PutUint64(b[0:8], math.Float64bits(sum))
+	binary.LittleEndian.PutUint64(b[8:16], count)
 	return b, nil
 }
 
@@ -67,7 +191,16 @@ func (w *SumWrapper) Snapshot() ([]byte, error) {
 // (multiple emits per window accumulate instead of over-counting full state).
 // prev is always non-nil here (the SnapshotCache handles the first-emit-full
 // case via Snapshot).
+//
+// GOS mode: cells (here, the single scalar accumulator) were already
+// detected + reset at insert time (Update), so the delta is just draining
+// the pending gosReadySum/gosReadyCount — prev is never consulted (nothing
+// to decode: the mechanism doesn't need a "previous total" reference at
+// all). Mirrors CountSketchWrapper.ComputeDeltaAgainst's GOS branch.
 func (w *SumWrapper) ComputeDeltaAgainst(prev []byte, _ uint64) ([]byte, bool, error) {
+	if w.gosEpsilon > 0 {
+		return w.drainGosDelta()
+	}
 	var prevSum float64
 	var prevCount uint64
 	if len(prev) >= sumPayloadLen {
@@ -124,10 +257,18 @@ func (w *SumWrapper) Merge(other precompute.Sketch) error {
 	return nil
 }
 
-// Reset zeros the aggregate in place.
+// Reset zeros the aggregate in place, including any pending GOS accumulators
+// (mirrors CountSketchWrapper.Reset). Does NOT clear gosEpsilon/gosSites —
+// mode config persists across Reset, orthogonal to per-window accumulation,
+// and is re-stamped by applyGosMode at every flush regardless.
 func (w *SumWrapper) Reset() {
 	w.sum = 0
 	w.count = 0
+	w.gosSinceCrossSum = 0
+	w.gosSinceCrossCount = 0
+	w.gosReadySum = 0
+	w.gosReadyCount = 0
+	w.gosWake = false
 }
 
 // Sum returns the accumulated sum (used by the otel adapter encode path to

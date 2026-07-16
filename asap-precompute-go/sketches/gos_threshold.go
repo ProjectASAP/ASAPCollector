@@ -82,3 +82,25 @@ func DDSketchIsotropicThreshold(epsilon, n float64, k, b uint32) float64 {
 	kk := math.Max(1, float64(k))
 	return epsilon * n / (kk * float64(b))
 }
+
+// SumIsotropicThreshold is the GOS closed form for the scalar Sum/Count
+// functional's insert-time delta threshold — see
+// docs/design-gos-unified-edge-telemetry.md §11 and
+// docs/sampling-cdm-gos-derivations.md §8.1/§11 ("Sum/count | T=ε·N/k, the
+// B=1 case of DDSketch"): the linear-f case (Hessian eigenvalue λ=0, no
+// curvature term), so unlike F2IsotropicThreshold there is no dimensional
+// √(d·w) factor — Sum has exactly one "cell", and n is that cell's own
+// current magnitude (the running total, or its absolute value since a Sum
+// can go negative):
+//
+//	T = ε·n / k
+//
+// where k is the number of coordinating sites (edges) sharing the accuracy
+// budget. The threshold scales with the current total so relative error
+// stays bounded as the total grows (cold start: n≈0 at window start ⇒ T≈0 ⇒
+// the very first insert crosses almost immediately, which is intentional —
+// see design doc §11 "Cold start is a feature, not a bug").
+func SumIsotropicThreshold(epsilon, n float64, k uint32) float64 {
+	kk := math.Max(1, float64(k))
+	return epsilon * n / kk
+}
