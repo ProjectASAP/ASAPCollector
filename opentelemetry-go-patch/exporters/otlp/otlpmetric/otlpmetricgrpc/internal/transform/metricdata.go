@@ -553,6 +553,7 @@ func KLLSketchDataPoints[N int64 | float64](
 
 		// Refactor-2026-05: KLLSketchDataPoint dropped the precomputed
 		// count/sum/min/max fields (derivable from the sketch payload).
+		// See metrics.proto's `reserved 4, 5, 6, 7;` line.
 		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.KLLSketchDataPoint{
 			Attributes:        attrs,
@@ -610,7 +611,8 @@ func CountSketchDataPoints[N int64 | float64](
 		// Refactor-2026-05: CountSketchDataPoint dropped Dimension /
 		// Epsilon / Delta — those are sketch-instance config, sent
 		// at the CountSketch wrapper level (or derivable from the
-		// payload), not per-DataPoint.
+		// payload), not per-DataPoint. See metrics.proto's
+		// `reserved 6, 7, 8;` line.
 		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.CountSketchDataPoint{
 			Attributes:        attrs,
@@ -670,7 +672,8 @@ func CountMinSketchDataPoints[N int64 | float64](
 		// Refactor-2026-05: CountMinSketchDataPoint dropped
 		// SampleCount / Rows / Cols — sketch-instance config moved
 		// to the CountMinSketch wrapper or is derivable from the
-		// payload, not per-DataPoint.
+		// payload, not per-DataPoint. See metrics.proto's
+		// `reserved 4, 7, 8;` line.
 		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.CountMinSketchDataPoint{
 			Attributes:        attrs,
@@ -730,7 +733,7 @@ func HLLSketchDataPoints(
 		// Refactor-2026-05: HLLSketchDataPoint dropped Count /
 		// Cardinality / Precision — sketch-instance config moved
 		// to the HLLSketch wrapper or is derivable from the payload,
-		// not per-DataPoint.
+		// not per-DataPoint. See metrics.proto's `reserved 4, 5, 8;` line.
 		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.HLLSketchDataPoint{
 			Attributes:        attrs,
