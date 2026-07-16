@@ -45,6 +45,8 @@ func (p *asapEdgeProcessor) flushLoop() {
 				return
 			case <-subC:
 				p.flushSubWindow(context.Background())
+			case <-p.wakeCh:
+				p.flushSubWindow(context.Background())
 			case <-t.C:
 				p.flushAll(context.Background())
 			}
@@ -67,11 +69,30 @@ func (p *asapEdgeProcessor) flushLoop() {
 			// each tick must cover every active series; threshold-gated emits
 			// are small).
 			p.flushSubWindow(context.Background())
+		case <-p.wakeCh:
+			// Out-of-cycle wake (e.g. an insert-time GOS threshold crossing).
+			// Same handler as subC: emits whatever's currently divergent/dirty
+			// across every shard, just triggered early instead of by the timer.
+			p.flushSubWindow(context.Background())
 		case <-t.C:
 			shardIdx := tick % n
 			p.flushShardWarmCold(context.Background(), shardIdx)
 			tick++
 		}
+	}
+}
+
+// wakeSubWindow requests an out-of-cycle sub-window flush — e.g. an
+// insert-time GOS threshold crossing that shouldn't wait for the next
+// SubWindowInterval tick (or, for a GOS-only family with no sub-window
+// ticker configured at all, that would otherwise have no flush path short of
+// window close). Non-blocking: if a wake is already pending, this is a
+// no-op — the pending flushSubWindow call will pick up every series'
+// current dirty state, including whatever just crossed threshold.
+func (p *asapEdgeProcessor) wakeSubWindow() {
+	select {
+	case p.wakeCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -83,10 +104,17 @@ func (p *asapEdgeProcessor) subWindowEnabled() bool {
 
 // flushSubWindow fires a divergence-gated sub-window delta emit for every
 // shard's sketch aggregators and forwards the result, WITHOUT rotating windows.
+//
+// No p.subWindowEnabled() guard here: this now runs from two triggers (the
+// legacy subC ticker, gated at the call site by subWindowEnabled(), and the
+// wakeCh out-of-cycle signal, which is NOT gated by it — a GOS-driven family
+// must be able to wake a flush even with SubWindowInterval unset). Per-series
+// gating happens inside sa.emitSubWindow / s.subWindowEnabled(); that gate
+// still requires SubWindowInterval>0 today, so a GOS-only family with no
+// sub-window interval configured won't yet see any effect from a wake — that
+// per-series gate is next in line to be decoupled from SubWindowInterval as
+// GOS families land (tracked starting with the CountSketch conversion).
 func (p *asapEdgeProcessor) flushSubWindow(ctx context.Context) {
-	if !p.subWindowEnabled() {
-		return
-	}
 	nowMs := uint64(time.Now().UnixMilli())
 	out := pmetric.NewMetrics()
 	for _, sh := range p.shards {

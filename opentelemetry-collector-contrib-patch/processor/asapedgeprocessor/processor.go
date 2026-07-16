@@ -83,6 +83,14 @@ type asapEdgeProcessor struct {
 	doneCh                chan struct{}
 	flushStarted          bool
 
+	// wakeCh requests an out-of-cycle sub-window flush (see wakeSubWindow in
+	// flush.go). Buffered 1 and drained non-blocking: a pending wake already
+	// covers any crossing that arrives before the flush loop gets to it, so
+	// callers never block on send. Always present, independent of whether
+	// SubWindowInterval/subC is configured — a family with insert-time GOS
+	// detection wakes the loop regardless of the legacy sub-window ticker.
+	wakeCh chan struct{}
+
 	// ctrlChan is the optional control-plane poll channel (nil when the
 	// ControlChannel config block is unset). When set, Start() spawns a poll
 	// loop that applies received config updates to the live Precompute
@@ -109,6 +117,7 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 		coldExtLabels: cfg.Cold.ExternalLabels,
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
+		wakeCh:        make(chan struct{}, 1),
 	}
 	for i := range cfg.Metrics {
 		m := &cfg.Metrics[i]
@@ -165,6 +174,9 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 				edgeID:            cfg.EdgeID,
 				subWindowInterval: cfg.SubWindowInterval,
 				subWindowEpsilon:  cfg.SubWindowEpsilon,
+				gosDeltaEpsilon:   fam.GosDeltaEpsilon,
+				gosSites:          fam.GosSites,
+				gosAnisotropic:    fam.GosAnisotropic,
 			}
 			if sa, ok := newSketchAggregator(name, fam, opts, p.logger); ok {
 				sa.procDropCount = &p.sketchDropCount
