@@ -225,8 +225,8 @@ type sketchOpts struct {
 	subWindowEpsilon  float64
 	// gosDeltaEpsilon / gosSites configure the GOS isotropic insert-time delta
 	// gate (PrecomputeConfig.GosDeltaEpsilon/GosSites). gosDeltaEpsilon 0
-	// disables it (fixed DeltaThreshold path). CountSketch (non-heap) and
-	// CountMinSketch today.
+	// disables it (fixed DeltaThreshold path). Supported by the plain
+	// CountSketch (non-heap), CountMinSketch, and DDSketch factories today.
 	gosDeltaEpsilon float64
 	gosSites        uint32
 }
@@ -312,7 +312,22 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 	case FamilyDDSketch:
 		alpha := fam.RelativeAccuracy
 		st = precompute.SketchTypeDDSketch
-		factory = func() precompute.Sketch { return sketches.NewDDSketchWrapper(alpha).WithSampleP(sampleP) }
+		gosEpsilon, gosSites := opts.gosDeltaEpsilon, opts.gosSites
+		factory = func() precompute.Sketch {
+			w := sketches.NewDDSketchWrapper(alpha).WithSampleP(sampleP)
+			// Prime GOS mode at series creation (not just at the next flush's
+			// applyGosMode call) so inserts before this brand-new series' first
+			// flush are already insert-time gated — same convention as the
+			// plain CountSketch factory. precompute.applyGosMode re-stamps this
+			// on every already-live series at flush time, so a control-plane
+			// change to gos_delta_epsilon still takes effect; this priming only
+			// matters for the gap between series birth and that series' first
+			// flush.
+			if gosEpsilon > 0 {
+				w.SetGosMode(gosEpsilon, gosSites)
+			}
+			return w
+		}
 		observer = sketches.DDSketchObserver{}
 	case FamilyKLL:
 		k := fam.K

@@ -582,13 +582,14 @@ func subWindowSegmentMode(cfg *PrecomputeConfig) bool {
 }
 
 // applyGosMode configures the sketch's GOS insert-time delta mode from cfg
-// when GosDeltaEpsilon > 0 and the sketch supports it (Count-Sketch today).
-// A no-op otherwise, leaving the fixed DeltaThreshold path unchanged. Called
-// at flush time (on every already-live series, so a control-plane config
-// change takes effect at the next flush) — the CountSketch factory ALSO
-// primes this at series creation (warm_sketch.go) so inserts before the
-// first flush of a brand-new window are gated too. Structural interface
-// assert avoids a Sketch-interface change for a Count-Sketch-only knob.
+// when GosDeltaEpsilon > 0 and the sketch supports it (Count-Sketch and
+// DDSketch today). A no-op otherwise, leaving the fixed DeltaThreshold path
+// unchanged. Called at flush time (on every already-live series, so a
+// control-plane config change takes effect at the next flush) — the
+// CountSketch/DDSketch factories ALSO prime this at series creation
+// (warm_sketch.go) so inserts before the first flush of a brand-new window
+// are gated too. Structural interface assert avoids a Sketch-interface
+// change for a GOS-only knob that not every family implements.
 func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
 	if cfg.GosDeltaEpsilon <= 0 {
 		return
@@ -610,7 +611,7 @@ func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
 // a family detects crossings at insert time), so always attempt the emit and
 // let the empty-dirty-set case fall out as a nil payload downstream.
 func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
-	if (cfg.SketchType == SketchTypeCountSketch || cfg.SketchType == SketchTypeCountMinSketch) && cfg.GosDeltaEpsilon > 0 {
+	if (cfg.SketchType == SketchTypeCountSketch || cfg.SketchType == SketchTypeCountMinSketch || cfg.SketchType == SketchTypeDDSketch) && cfg.GosDeltaEpsilon > 0 {
 		return true
 	}
 	eps := cfg.SubWindowEpsilon
@@ -687,6 +688,17 @@ func subWindowMarkEmitted(entry *seriesEntry, cfg *PrecomputeConfig) {
 			return
 		}
 		entry.ackVal = float64(entry.Count)
+	case cfg.SketchType == SketchTypeDDSketch:
+		// Unlike CountSketch, DDSketch has no O(dw)-equivalent snapshot to
+		// skip here in GOS mode: the default branch's ackVal update below is
+		// already an O(1) copy of entry.Count (not a sketch-internal scan),
+		// and subWindowShouldEmit bypasses the ackVal-based divergence check
+		// entirely once GosDeltaEpsilon>0 for this family, so this value is
+		// simply unread while GOS is active. Keep it updated anyway (fall
+		// through to the same O(1) update every other family gets) so a
+		// control-plane toggle back to fixed mode has a correct reference
+		// immediately rather than a stale pre-GOS value.
+		fallthrough
 	default:
 		entry.ackVal = float64(entry.Count)
 	}

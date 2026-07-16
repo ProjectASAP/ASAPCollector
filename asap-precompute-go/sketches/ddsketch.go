@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 
+	ddpb "github.com/ProjectASAP/sketchlib-go/proto/ddsketch"
 	envpb "github.com/ProjectASAP/sketchlib-go/proto/sketch_envelope"
 	ddsketch "github.com/ProjectASAP/sketchlib-go/sketches/DDSketch"
 	"google.golang.org/protobuf/proto"
@@ -48,6 +49,29 @@ type DDSketchWrapper struct {
 	// disables sampling so the sketch is byte-identical to an unsampled one.
 	// Preserved across Reset so a sampled wrapper stays sampled for its life.
 	sampleP float64
+
+	// gosEpsilon/gosSites configure the GOS isotropic insert-time delta gate
+	// (design-gos-unified-edge-telemetry.md §11): when gosEpsilon>0, Update
+	// checks the just-touched bucket against the closed-form threshold
+	// T=ε·N/(k·B) (derivations §8.4) immediately, in place of the periodic
+	// decode-prev-diff delta model. gosEpsilon<=0 (the default) leaves
+	// Update/ComputeDeltaAgainst on the pre-existing ComputeDelta path,
+	// unchanged. Set via SetGosMode.
+	gosEpsilon float64
+	gosSites   uint32
+	// gosDirty accumulates buckets that crossed the insert-time GOS
+	// threshold since the last drainGosDelta call. Each entry's Count
+	// already equals that bucket's full accumulation since it was last sent
+	// (sketchlib zeroes it in place at the moment of crossing), so no
+	// separate per-bucket accumulator is needed — draining is just
+	// serializing this list.
+	gosDirty []ddsketch.DDSketchGOSUpdate
+	// gosWake is armed on the FIRST bucket added to gosDirty since the last
+	// drain, and consumed exactly once by ConsumeWakeSignal — a burst of many
+	// crossings between two flushes wakes the out-of-cycle flush loop once,
+	// not once per crossing (the pending flush picks up everything
+	// accumulated by the time it runs).
+	gosWake bool
 }
 
 // NewDDSketchWrapper builds an empty DDSketch with the configured
@@ -99,10 +123,93 @@ func (w *DDSketchWrapper) SampleP() float64 {
 	return w.sampleP
 }
 
+// SetGosMode configures the GOS isotropic insert-time delta gate. epsilon<=0
+// disables it (fixed ComputeDelta path, unchanged behavior). Idempotent —
+// callers (the DDSketch factory, at series creation, and the runtime's
+// applyGosMode, at flush, on every already-live series) may call this
+// repeatedly with the same config; it just re-stamps the two scalars.
+func (w *DDSketchWrapper) SetGosMode(epsilon float64, sites uint32) {
+	w.gosEpsilon = epsilon
+	w.gosSites = sites
+}
+
+// GosDeltaThreshold computes the DDSketch isotropic GOS insert-time bucket
+// threshold T=ε·N/(k·B) (derivations §8.4) from the sketch's current total
+// count (N) and incrementally-tracked populated-bucket count (B), rounded up
+// to an integer (never below 1 = ship-on-first-touch, the "cold start is a
+// feature" floor). Returns 1 when ε<=0 or the sketch is nil (GOS disabled /
+// unusable) — mirrors CountSketchWrapper.GosDeltaThreshold's convention.
+func (w *DDSketchWrapper) GosDeltaThreshold(epsilon float64, k uint32) uint64 {
+	if epsilon <= 0 || w.sk == nil {
+		return 1
+	}
+	t := DDSketchIsotropicThreshold(epsilon, float64(w.sk.Count()), k, w.sk.PopulatedBuckets())
+	if !math.IsInf(t, 1) && !math.IsNaN(t) && t > 1.0 {
+		return uint64(math.Ceil(t))
+	}
+	return 1
+}
+
+// recordDirty appends a newly-crossed bucket to the pending GOS drain list
+// and arms the wake signal on the first addition since the last drain.
+func (w *DDSketchWrapper) recordDirty(u ddsketch.DDSketchGOSUpdate) {
+	if len(w.gosDirty) == 0 {
+		w.gosWake = true
+	}
+	w.gosDirty = append(w.gosDirty, u)
+}
+
+// ConsumeWakeSignal implements the runtime's narrow wake-signal interface
+// (asap-precompute-go window.go's recordLocked): reports whether an
+// insert-time GOS threshold crossing happened since the last call, clearing
+// the flag. Always false when GOS isotropic mode is inactive.
+func (w *DDSketchWrapper) ConsumeWakeSignal() bool {
+	if !w.gosWake {
+		return false
+	}
+	w.gosWake = false
+	return true
+}
+
+// drainGosDelta serializes the buckets accumulated in gosDirty since the
+// last drain as a proto-marshalled DDSketchDelta — the insert-time
+// counterpart of the old decode-prev-diff path (ddsketch.ComputeDelta): the
+// dirty list was already built bucket-by-bucket at insert time
+// (Update -> sk.UpdateGOS), so no previous snapshot needs decoding or
+// scanning here. Returns (nil, false, nil) when nothing has crossed since
+// the last drain — the caller (precompute.SnapshotCache.ComputeSubWindowDelta)
+// treats a nil payload as "nothing to emit" (design-gos-unified-edge-
+// telemetry.md §11: Gate 1's periodic divergence pre-check is redundant for
+// a GOS-converted family — an empty dirty set at flush time already IS
+// "nothing to send").
+func (w *DDSketchWrapper) drainGosDelta() ([]byte, bool, error) {
+	if len(w.gosDirty) == 0 {
+		return nil, false, nil
+	}
+	delta := &ddpb.DDSketchDelta{Buckets: make([]*ddpb.DDSketchBucketDelta, len(w.gosDirty))}
+	for i, u := range w.gosDirty {
+		delta.Buckets[i] = &ddpb.DDSketchBucketDelta{Index: u.Index, DCount: u.Count}
+	}
+	w.gosDirty = w.gosDirty[:0]
+	payload, err := proto.Marshal(delta)
+	if err != nil {
+		full, fErr := w.Snapshot()
+		return full, true, fErr
+	}
+	return payload, false, nil
+}
+
 // Update feeds a single observation into the underlying DDSketch.
 // Used by DDSketchObserver; exposed publicly so adapter code that
 // already has a typed handle can bypass the observer interface.
 func (w *DDSketchWrapper) Update(v float64) {
+	if w.gosEpsilon > 0 {
+		threshold := w.GosDeltaThreshold(w.gosEpsilon, w.gosSites)
+		if crossed, upd := w.sk.UpdateGOS(v, threshold); crossed {
+			w.recordDirty(upd)
+		}
+		return
+	}
 	w.sk.Update(v)
 }
 
@@ -127,6 +234,13 @@ func (w *DDSketchWrapper) Snapshot() ([]byte, error) {
 func (w *DDSketchWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) ([]byte, bool, error) {
 	if w.sk == nil {
 		return nil, true, nil
+	}
+	// GOS isotropic mode: buckets were already detected + reset at insert
+	// time (Update -> sk.UpdateGOS), so the delta is just draining the
+	// pending list — prev is never consulted (nothing to decode: the
+	// mechanism doesn't need a "previous full state" reference at all).
+	if w.gosEpsilon > 0 {
+		return w.drainGosDelta()
 	}
 	if len(prev) == 0 {
 		full, err := w.Snapshot()
@@ -230,6 +344,13 @@ func (w *DDSketchWrapper) Reset() {
 	if w.sampleP > 0 && w.sampleP < 1.0 {
 		w.sk.WithSampleP(w.sampleP, ddSampleSeed)
 	}
+	// gosEpsilon/gosSites are per-series CONFIG (survive resets, like
+	// sampleP); gosDirty/gosWake are per-WINDOW state that must not leak into
+	// the next window (sk.Clear() above already zeroed d.gosPopulated/d.count
+	// on the underlying sketch, so a threshold computed after this Reset
+	// starts fresh too).
+	w.gosDirty = nil
+	w.gosWake = false
 }
 
 // clampQuantile clamps q to the [0,1] range required by the

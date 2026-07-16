@@ -49,3 +49,36 @@ func CMSIsotropicThreshold(epsilon, n float64, k uint32) float64 {
 	kk := math.Max(1, float64(k))
 	return epsilon * n / kk
 }
+
+// DDSketchIsotropicThreshold is the GOS closed form for DDSketch's L1
+// (linear, sum-composition) value-range-count functional's uniform
+// insert-time bucket threshold — see
+// docs/sampling-cdm-gos-derivations.md §8.4 "CDM isotropic threshold (L1,
+// sum-composition)":
+//
+//	T = ε·N / (k·B)
+//
+// where N is the sketch's current total count (sum of all bucket counts)
+// and B is the current number of POPULATED buckets. Unlike CMS/CountSketch's
+// d,w (fixed at construction), B here MUST be a genuine, always-current
+// count — the derivation is explicit that understating it doesn't just
+// loosen the staleness guarantee, it silently VIOLATES it (staleness scales
+// as ε·N·(B_actual/B_assumed), only bounded when B_assumed >= B_actual).
+// Callers pass sketchlib-go DDSketch.PopulatedBuckets(), which tracks this
+// incrementally and exactly (first-touch detection), never an assumed
+// constant. k is the number of coordinating sites (edges) sharing the
+// accuracy budget.
+//
+// Returns +Inf when b==0 (no populated buckets — nothing inserted yet, so N
+// is also 0), which callers treat as "no gating" the same way
+// F2IsotropicThreshold treats degenerate dims; cold start (N=0, B=0)
+// naturally falls through to the caller's floor-at-1 fallback ("cold start
+// is a feature, not a bug" — design doc §11: the first insert to any bucket
+// ships immediately).
+func DDSketchIsotropicThreshold(epsilon, n float64, k, b uint32) float64 {
+	if b == 0 {
+		return math.Inf(1)
+	}
+	kk := math.Max(1, float64(k))
+	return epsilon * n / (kk * float64(b))
+}
