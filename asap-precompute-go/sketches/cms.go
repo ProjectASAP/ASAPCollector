@@ -105,18 +105,6 @@ type CMSWrapper struct {
 	// wrapper stays sampled for its whole lifetime.
 	sampleP float64
 
-	// consistent replaces the sketch's INTERNAL whole-item sampler once the
-	// runtime threads a per-item sample identity (SetSampleIdentity): per-row
-	// stateless decisions shared with the wire-level otlpfilter (design
-	// §3.1.1), applied via InsertWithHashSampledPerRow with the 1/p weight in
-	// place — so the wire envelope stays EXACT (no downstream ×1/p rescale)
-	// and the filter's whole-datapoint drop never compounds with this stage.
-	// While non-nil, the internal sk.WithSampleP stays disabled (see
-	// newSketch / SetSampleIdentity).
-	consistent        *common.ConsistentSampler
-	consistentSeed    uint64
-	consistentSeedSet bool
-
 	emptyBaseBytes []byte
 }
 
@@ -174,14 +162,9 @@ func (w *CMSWrapper) WithSampleP(p float64) *CMSWrapper {
 		w.sampleP = p
 	}
 	// Re-apply to the live sketch so a WithSampleP after construction
-	// takes effect immediately — unless consistent identity sampling owns
-	// admission (internal sampler stays off; consistent is rebuilt with the
-	// new p on the next SetSampleIdentity).
-	if w.sk != nil && w.consistent == nil {
+	// takes effect immediately.
+	if w.sk != nil {
 		w.sk.WithSampleP(w.sampleP, cmsSampleSeed)
-	}
-	if w.consistent != nil {
-		w.consistent = nil // rebuilt with the new p on the next SetSampleIdentity
 	}
 	// sampleP rides on the SketchEnvelope, so the empty-base bytes change with
 	// it; invalidate the memo so it is recomputed for the new probability.
@@ -208,10 +191,7 @@ func (w *CMSWrapper) SampleP() float64 {
 // re-creation path (New / Reset / Merge / ApplyDelta) keeps sampleP.
 func (w *CMSWrapper) newSketch() *cms.CountMinSketch {
 	sk, _ := cms.NewCountMinSketch(w.rows, w.cols)
-	// Internal whole-item sampling only when consistent identity sampling is
-	// NOT active (the latter admits per row with in-place 1/p weights and
-	// must keep the wire envelope exact).
-	if sk != nil && w.consistent == nil && w.sampleP > 0 && w.sampleP < 1.0 {
+	if sk != nil && w.sampleP > 0 && w.sampleP < 1.0 {
 		sk.WithSampleP(w.sampleP, cmsSampleSeed)
 	}
 	return sk
@@ -223,42 +203,8 @@ func (w *CMSWrapper) newSketch() *cms.CountMinSketch {
 // here; the hash agrees with what the legacy processor computes from
 // the same attrs because both go through common.FromString /
 // common.FromBytes.
-// SetSampleIdentity threads the per-item consistent-sampling identity from
-// the runtime (precompute.SampleIdentitySetter): seed = common.SeedForMetric
-// (shared with the wire-level otlpfilter), occurrence = TimestampMs. The
-// first identity switches the wrapper from the sketch's internal whole-item
-// sampler (raw counts + envelope p) to per-row consistent admission with the
-// 1/p weight in place — disabling the internal sampler so the two never
-// compound and the envelope stays exact. A zero timestamp leaves the sampler
-// in counter mode for this item (the filter passed such points through
-// undecided, so this stage samples them exactly once end-to-end).
-func (w *CMSWrapper) SetSampleIdentity(metric string, timestampMs uint64) {
-	if w == nil || w.sk == nil || w.sampleP >= 1.0 || w.sampleP <= 0 {
-		return
-	}
-	if !w.consistentSeedSet {
-		w.consistentSeed = common.SeedForMetric(metric)
-		w.consistentSeedSet = true
-	}
-	if w.consistent == nil {
-		w.consistent = common.NewConsistentSampler(w.sampleP, w.consistentSeed)
-		// Hand admission over to the consistent path: internal sampler off,
-		// envelope back to exact (weights are applied in place from now on).
-		w.sk.WithSampleP(1.0, cmsSampleSeed)
-		w.emptyBaseBytes = nil // envelope p changed → empty-base memo stale
-	}
-	if timestampMs != 0 {
-		w.consistent.Rebind(w.consistentSeed, timestampMs)
-	}
-}
-
 func (w *CMSWrapper) InsertHash(h uint64) {
 	if w.sk == nil {
-		return
-	}
-	if w.consistent != nil {
-		// Consistent per-row admission (same decisions as the wire filter).
-		w.sk.InsertWithHashSampledPerRow(h, w.consistent)
 		return
 	}
 	w.sk.InsertWithHash(h)

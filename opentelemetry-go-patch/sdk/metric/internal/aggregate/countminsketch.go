@@ -22,12 +22,11 @@ type countMinSketchSeries[N int64 | float64] struct {
 	sketch      *cms.CountMinSketch
 	sampleCount uint64
 
-	// sampler is the per-series CONSISTENT row-admission sampler (non-nil only
-	// when 0 < sampleP < 1): a stateless hash decision per (seed, occurrence,
-	// row), so any other pipeline stage recomputing it agrees exactly — one
-	// sampling owner regardless of location (design §3.1). Hosting it at the
-	// SDK aggregator is the "admission at the SDK" location.
-	sampler *common.ConsistentSampler
+	// sampler is the per-series row-admission sampler (NitroSketch geometric
+	// skip-sampling), non-nil only when 0 < sampleP < 1. Hosting it at the SDK
+	// aggregator decides admission before the sample is ever serialized, so no
+	// downstream stage re-samples or re-derives the decision.
+	sampler *common.GeometricSampler
 
 	measuredSince bool
 	idleCycles    uint8
@@ -39,7 +38,7 @@ type countMinSketchValues[N int64 | float64] struct {
 
 	// sampleP is the per-row admission rate. <=0 or >=1 disables sampling
 	// (every insert touches all rows); 0 < sampleP < 1 installs a per-series
-	// ConsistentSampler routing inserts through InsertWithHashSampledPerRow.
+	// GeometricSampler routing inserts through InsertWithHashSampledPerRow.
 	sampleP float64
 	// seedSalt decorrelates admission patterns across windows (mixed into every
 	// series' sampler seed; refreshed to the window start in delta()).
@@ -101,12 +100,12 @@ func (d *countMinSketchValues[N]) newSeries(attr attribute.Set) *countMinSketchS
 	series.sampleCount = 0
 	series.measuredSince = true
 	series.idleCycles = 0
-	// Install (or reset, on pool reuse) the per-row consistent sampler. Seed =
+	// Install (or reset, on pool reuse) the per-row geometric sampler. Seed =
 	// FNV(attrs) ⊕ window salt (see countsketch.go).
 	if d.sampleP > 0 && d.sampleP < 1 {
-		seed := uint64(samplerSeedForAttrs(attr)) ^ d.seedSalt
+		seed := int64(uint64(samplerSeedForAttrs(attr)) ^ d.seedSalt)
 		if series.sampler == nil {
-			series.sampler = common.NewConsistentSampler(d.sampleP, seed)
+			series.sampler = common.NewGeometricSampler(d.sampleP, seed)
 		} else {
 			series.sampler.Reset(d.sampleP, seed)
 		}
