@@ -42,10 +42,6 @@ processors:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchprocessor v0.141.0
     path: ./processor/countminsketchprocessor
   # Merge processors
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchmergeprocessor v0.141.0
-    path: ./processor/countsketchmergeprocessor
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/countminsketchmergeprocessor v0.141.0
-    path: ./processor/countminsketchmergeprocessor
 
 exporters:
   - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.141.0

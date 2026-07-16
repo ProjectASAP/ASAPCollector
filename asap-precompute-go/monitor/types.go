@@ -121,8 +121,9 @@ type Report struct {
 	Round         uint64
 	Seq           uint64
 	// Rate is the edge's observed item count for this monitor over the current
-	// epoch (items/window). The coordinator feeds it into AllocateSampleRates
-	// (p_i ∝ √(f_i/rate_i)) to size this edge's distributed-NitroSketch sampling
+	// epoch (items/window). The coordinator feeds it into the whole-sketch
+	// ε-floor (p_i = 1/(1+ε²·rate_i); see data_plane allocate_p /
+	// epsilon_sample_floor) to size this edge's distributed-NitroSketch sampling
 	// probability. 0 (unset) ⇒ the coordinator falls back to an unsampled
 	// allocation for this edge.
 	Rate float64
@@ -136,7 +137,8 @@ type Grant struct {
 	LocalSlack    float64
 	WindowStartMs uint64
 	// SampleP is the distributed-NitroSketch update-sampling probability the
-	// coordinator allocates this edge (AllocateSampleRates: p_i ∝ √(f_i/rate_i)).
+	// coordinator allocates this edge via the whole-sketch ε-floor
+	// (p_i = 1/(1+ε²·rate_i); see data_plane allocate_p / epsilon_sample_floor).
 	// 0 (unset) ⇒ no sampling grant (p=1). The edge applies it via WithSampleP on
 	// the metric's sketch wrapper at the next EpochReset (never mid-window, so
 	// both merge operands share one p). Orthogonal to LocalSlack (which governs

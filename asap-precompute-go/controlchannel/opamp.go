@@ -11,8 +11,8 @@ import (
 // OpAmpChannel is the OpAMP-backed ControlChannel implementation.
 //
 // TODO(phase-5): wire real OpAMP client (github.com/open-telemetry/
-// opamp-go/client) per docs/adr/adr-0003-adapter-trait-and-control-channel.md;
-// today this is an interface-satisfying stub so the controller side
+// opamp-go/client); today this is an interface-satisfying stub so the
+// controller side
 // can compile against the trait without forcing a transitive
 // opamp-go dep into Phase 2.
 type OpAmpChannel struct {
