@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/ProjectASAP/sketchlib-go/common"
 	envpb "github.com/ProjectASAP/sketchlib-go/proto/sketch_envelope"
 	ddsketch "github.com/ProjectASAP/sketchlib-go/sketches/DDSketch"
 	"google.golang.org/protobuf/proto"
@@ -49,16 +48,6 @@ type DDSketchWrapper struct {
 	// disables sampling so the sketch is byte-identical to an unsampled one.
 	// Preserved across Reset so a sampled wrapper stays sampled for its life.
 	sampleP float64
-
-	// consistent replaces the sketch's internal geometric sampler once the
-	// runtime threads a per-item sample identity (SetSampleIdentity): the d=1
-	// whole-item stateless decision shared with the wire-level otlpfilter
-	// (design §3.1.1). The sketch keeps its raw-counts + envelope-p convention
-	// — admission moves OUT to this wrapper, and SetWireSampleP stamps p on
-	// the envelope so the consumer still rescales ×1/p.
-	consistent        *common.ConsistentSampler
-	consistentSeed    uint64
-	consistentSeedSet bool
 }
 
 // NewDDSketchWrapper builds an empty DDSketch with the configured
@@ -92,15 +81,7 @@ func (w *DDSketchWrapper) WithSampleP(p float64) *DDSketchWrapper {
 		w.sampleP = p
 	}
 	if w.sk != nil {
-		if w.consistent == nil {
-			w.sk.WithSampleP(w.sampleP, ddSampleSeed)
-		} else {
-			// Consistent identity sampling owns admission: keep the internal
-			// sampler off, refresh the envelope stamp, and rebuild the
-			// consistent sampler with the new p on the next SetSampleIdentity.
-			w.sk.SetWireSampleP(w.sampleP)
-			w.consistent = nil
-		}
+		w.sk.WithSampleP(w.sampleP, ddSampleSeed)
 	}
 	return w
 }
@@ -121,42 +102,7 @@ func (w *DDSketchWrapper) SampleP() float64 {
 // Update feeds a single observation into the underlying DDSketch.
 // Used by DDSketchObserver; exposed publicly so adapter code that
 // already has a typed handle can bypass the observer interface.
-// SetSampleIdentity threads the per-item consistent-sampling identity from
-// the runtime (precompute.SampleIdentitySetter): seed = common.SeedForMetric
-// (shared with the wire-level otlpfilter), occurrence = TimestampMs. DDSketch
-// is the d=1 whole-item case: the first identity moves admission OUT of the
-// sketch (internal sampler off) into this wrapper's consistent decision —
-// identical to the filter's row-0 decision, so the two stages never compound
-// — while SetWireSampleP keeps the envelope-p convention (raw admitted
-// counts, consumer rescales ×1/p). A zero timestamp leaves the sampler in
-// counter mode for this item (the filter passed such points through
-// undecided, so this stage samples them exactly once end-to-end).
-func (w *DDSketchWrapper) SetSampleIdentity(metric string, timestampMs uint64) {
-	if w == nil || w.sk == nil || w.sampleP >= 1.0 || w.sampleP <= 0 {
-		return
-	}
-	if !w.consistentSeedSet {
-		w.consistentSeed = common.SeedForMetric(metric)
-		w.consistentSeedSet = true
-	}
-	if w.consistent == nil {
-		w.consistent = common.NewConsistentSampler(w.sampleP, w.consistentSeed)
-		w.sk.WithSampleP(1.0, ddSampleSeed) // internal sampler off
-		w.sk.SetWireSampleP(w.sampleP)      // envelope still advertises p
-	}
-	if timestampMs != 0 {
-		w.consistent.Rebind(w.consistentSeed, timestampMs)
-	}
-}
-
 func (w *DDSketchWrapper) Update(v float64) {
-	if w.consistent != nil {
-		// d=1 consistent whole-item admission (same decision as the filter).
-		w.consistent.BeginItem()
-		if !w.consistent.Admit() {
-			return
-		}
-	}
 	w.sk.Update(v)
 }
 
@@ -281,12 +227,7 @@ func (w *DDSketchWrapper) Reset() {
 		w.sk.Clear()
 	}
 	// Re-apply sampling so a sampled wrapper stays sampled across window resets.
-	// In consistent-identity mode the internal sampler stays OFF (admission
-	// lives in this wrapper); only the envelope stamp is refreshed.
-	if w.consistent != nil {
-		w.sk.WithSampleP(1.0, ddSampleSeed)
-		w.sk.SetWireSampleP(w.sampleP)
-	} else if w.sampleP > 0 && w.sampleP < 1.0 {
+	if w.sampleP > 0 && w.sampleP < 1.0 {
 		w.sk.WithSampleP(w.sampleP, ddSampleSeed)
 	}
 }

@@ -976,21 +976,6 @@ type SampleSetter interface {
 	SetSampleP(p float64)
 }
 
-// SampleIdentitySetter is the optional companion to SampleSetter for
-// CONSISTENT sampling (design §3.1.1, single-location sampling): before each
-// observation is routed into the sketch, the window threads the item's sample
-// identity — the metric name (seed source: the canonical FNV-1a-64 of
-// common.SeedForMetric, computed by the wrapper so this runtime package stays
-// sketchlib-free) and the observation's TimestampMs (occurrence id; the
-// wire-level otlpfilter reads the same value as time_unix_nano/1e6 from the
-// raw bytes). A wrapper that implements this makes its admission decisions a
-// pure function of (seed, occurrence, row), so the wire filter's
-// whole-datapoint drop and the wrapper's per-row admissions agree exactly and
-// never compound. Wrappers without it keep their stateful samplers unchanged.
-type SampleIdentitySetter interface {
-	SetSampleIdentity(metric string, timestampMs uint64)
-}
-
 // applyGrantedSampleP returns a window sample-hook that stamps the engine's
 // currently-granted sampling probability onto a new wrapper, or nil for families
 // that don't support coordinated sampling (Sum/KLL/HLL) — yielding a true no-op
