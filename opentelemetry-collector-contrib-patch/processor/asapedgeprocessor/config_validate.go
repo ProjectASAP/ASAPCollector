@@ -217,6 +217,18 @@ func (c *Config) Validate() error {
 			// reject it elsewhere so a misplaced knob surfaces at boot.
 			return fmt.Errorf("asap_edge: metrics[%d] (%s): weight_mode is only valid for family=countsketch with emit_heap (got family=%q, emit_heap=%v)", i, m.Metric, m.Family, m.EmitHeap)
 		}
+		// gos_delta_epsilon: only the plain (non-heap) CountSketch wrapper
+		// implements the insert-time GOS gate today; reject it elsewhere
+		// (including emit_heap=true CountSketch, whose DELTA-HEAP wire form
+		// isn't GOS-converted) rather than silently ignoring it.
+		if m.GosDeltaEpsilon > 0 {
+			if m.Family != FamilyCountSketch || m.EmitHeap {
+				return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon is only valid for family=countsketch with emit_heap=false (got family=%q, emit_heap=%v)", i, m.Metric, m.Family, m.EmitHeap)
+			}
+			if m.GosDeltaEpsilon >= 1 {
+				return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon must be in (0, 1), got %v", i, m.Metric, m.GosDeltaEpsilon)
+			}
+		}
 		// hll_sparse: only the HLL family has a sparse in-memory base. Reject
 		// it on any other family rather than silently ignoring so a
 		// misconfiguration surfaces at agent boot (mirrors the emit_heap family

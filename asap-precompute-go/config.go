@@ -360,6 +360,18 @@ type PrecomputeConfig struct {
 	// backend's open-window answer stays within relative ε). 0 ⇒ emit every
 	// series every check tick (the static "fixed" mode). Range [0, 1).
 	SubWindowEpsilon float64
+
+	// GosDeltaEpsilon, when > 0, switches a GOS-capable family (Count-Sketch
+	// today) from the fixed DeltaThreshold path to the isotropic GOS
+	// insert-time delta gate: each cell is checked against the closed-form
+	// threshold T=ε‖Ĉ‖/(2k√(dw)) (design-gos-unified-edge-telemetry.md §7/§11)
+	// the moment it's touched, rather than via a periodic decode-prev-diff
+	// scan. 0 (the default) leaves the fixed DeltaThreshold path unchanged.
+	GosDeltaEpsilon float64
+	// GosSites is k, the number of coordinating sites (edges) sharing the
+	// relative accuracy budget in the GosDeltaEpsilon threshold formula.
+	// Meaningless when GosDeltaEpsilon<=0.
+	GosSites uint32
 }
 
 // effectiveScope resolves the aggregation scope, folding the legacy
