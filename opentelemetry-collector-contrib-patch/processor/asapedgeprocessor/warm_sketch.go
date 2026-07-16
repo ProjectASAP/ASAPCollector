@@ -226,8 +226,8 @@ type sketchOpts struct {
 	// gosDeltaEpsilon / gosSites configure the GOS isotropic insert-time delta
 	// gate (PrecomputeConfig.GosDeltaEpsilon/GosSites). gosDeltaEpsilon 0
 	// disables it (fixed DeltaThreshold path). Supported by the plain
-	// CountSketch (non-heap), CountMinSketch, DDSketch, and Sum factories
-	// today.
+	// CountSketch (non-heap), CountMinSketch, DDSketch, Sum, and KLL
+	// factories today.
 	gosDeltaEpsilon float64
 	gosSites        uint32
 }
@@ -336,7 +336,20 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 			k = 200
 		}
 		st = precompute.SketchTypeKLLSketch
-		factory = func() precompute.Sketch { return sketches.NewKLLWrapper(k, nil) }
+		gosEpsilon := opts.gosDeltaEpsilon
+		factory = func() precompute.Sketch {
+			w := sketches.NewKLLWrapper(k, nil)
+			// Prime GOS mode at series creation (not just at the next flush's
+			// applyGosMode call) so inserts before this brand-new series' first
+			// flush are already insert-time gated — mirrors the CountSketch
+			// factory priming below. precompute.applyGosMode re-stamps this on
+			// every already-live series at flush time, so a control-plane
+			// change to gos_delta_epsilon still takes effect.
+			if gosEpsilon > 0 {
+				w.SetGosMode(gosEpsilon)
+			}
+			return w
+		}
 		observer = sketches.KLLObserver{}
 	case FamilyHLL:
 		// HLL is never sampled: the hash is needed for both the admission
@@ -553,8 +566,8 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		SubWindowInterval: opts.subWindowInterval,
 		SubWindowEpsilon:  opts.subWindowEpsilon,
 		// GosDeltaEpsilon/GosSites configure the isotropic GOS insert-time
-		// delta gate (CountSketch non-heap, CountMinSketch, DDSketch, and Sum
-		// today). 0 leaves the fixed DeltaThreshold path unchanged.
+		// delta gate (CountSketch non-heap, CountMinSketch, DDSketch, Sum,
+		// and KLL today). 0 leaves the fixed DeltaThreshold path unchanged.
 		GosDeltaEpsilon: opts.gosDeltaEpsilon,
 		GosSites:        opts.gosSites,
 	}
