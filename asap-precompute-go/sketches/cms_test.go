@@ -239,3 +239,36 @@ func TestCMSObserver(t *testing.T) {
 		t.Fatalf("post-observe estimate: %f", got)
 	}
 }
+
+// TestCMSObserver_RowSampled verifies a RowSampled observation routes
+// through ApplyAdmittedOccurrence (not InsertHash), applying the SDK's
+// admission bitmask verbatim.
+func TestCMSObserver_RowSampled(t *testing.T) {
+	t.Parallel()
+	w := NewCMSWrapper(5, 1024, false)
+	allRows := uint64(0b11111)
+	for i := 0; i < 500; i++ {
+		v := precompute.ObservationValue{
+			Kind: precompute.KindBytes, Bytes: []byte("hot"),
+			RowSampled: true, AdmittedRows: allRows, SampleP: 1.0,
+		}
+		if err := (CMSObserver{}).Observe(w, v); err != nil {
+			t.Fatalf("Observe(RowSampled): %v", err)
+		}
+	}
+	if got := w.EstimateCount([]byte("hot")); got < 490 || got > 510 {
+		t.Fatalf("estimate = %v, want ~500 (all rows admitted at p=1)", got)
+	}
+
+	w2 := NewCMSWrapper(5, 1024, false)
+	zero := precompute.ObservationValue{
+		Kind: precompute.KindBytes, Bytes: []byte("x"),
+		RowSampled: true, AdmittedRows: 0, SampleP: 0.3,
+	}
+	if err := (CMSObserver{}).Observe(w2, zero); err != nil {
+		t.Fatalf("Observe(RowSampled, zero mask): %v", err)
+	}
+	if got := w2.EstimateCount([]byte("x")); got != 0 {
+		t.Fatalf("zero admittedRows must be a no-op, got estimate %v", got)
+	}
+}

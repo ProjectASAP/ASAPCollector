@@ -462,8 +462,11 @@ func (w *CMSWrapper) TopK(_ int) []precompute.FrequencyEntry { return nil }
 // `common.FromString(flowKey)` hash) and routes here.
 type CMSObserver struct{}
 
-// Observe routes a precompute.ObservationValue (KindBytes) into the
-// wrapped CMS via InsertHash.
+// Observe routes a precompute.ObservationValue (KindBytes) into the wrapped
+// CMS via InsertHash — or, when v.RowSampled, via ApplyAdmittedOccurrence
+// with the SDK's pre-decided admission bitmask (value 1.0: this observer's
+// sole purpose is frequency counting, matching InsertHash's implicit
+// weight-1 semantics).
 func (CMSObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) error {
 	w, ok := s.(*CMSWrapper)
 	if !ok {
@@ -472,7 +475,12 @@ func (CMSObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) e
 	if v.Kind != precompute.KindBytes {
 		return fmt.Errorf("CMSObserver: expected KindBytes, got %s", v.Kind)
 	}
-	w.InsertHash(common.FromBytes(v.Bytes).Hash)
+	h := common.FromBytes(v.Bytes).Hash
+	if v.RowSampled {
+		w.ApplyAdmittedOccurrence(h, 1.0, v.AdmittedRows, v.SampleP)
+		return nil
+	}
+	w.InsertHash(h)
 	return nil
 }
 

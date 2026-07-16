@@ -188,6 +188,31 @@ func TestCountSketchObserver(t *testing.T) {
 	}
 }
 
+// TestCountSketchObserver_RowSampled verifies a RowSampled observation
+// routes through ApplyAdmittedOccurrence (not UpdateString), rescaling by
+// 1/SampleP the same way the plain sketchlib primitive does.
+func TestCountSketchObserver_RowSampled(t *testing.T) {
+	t.Parallel()
+	w, _ := NewCountSketchWrapper(5, 2048)
+	obs := CountSketchObserver{DefaultKey: "default"}
+	allRows := uint64(0b11111)
+	const n, p = 1000, 0.5
+	for i := 0; i < n; i++ {
+		v := precompute.ObservationValue{
+			Kind: precompute.KindFloat, Float: 1.0, Bytes: []byte("hot"),
+			RowSampled: true, AdmittedRows: allRows, SampleP: p,
+		}
+		if err := obs.Observe(w, v); err != nil {
+			t.Fatalf("Observe(RowSampled): %v", err)
+		}
+	}
+	want := float64(n) / p
+	got := w.EstimateCount([]byte("hot"))
+	if rel := (got - want) / want; rel < -0.1 || rel > 0.1 {
+		t.Fatalf("estimate = %v, want ~%v (n/p)", got, want)
+	}
+}
+
 // TestCountSketchWithHeapWrapper_PWRDeltaRoundTrips drives the DELTA-HEAP
 // path through the precompute.SnapshotCache: window 1 emits a full
 // heap-msgpack frame (isFull); window 2 — a fresh per-window heap sketch —

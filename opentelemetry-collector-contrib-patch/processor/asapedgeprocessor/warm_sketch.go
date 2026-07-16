@@ -752,7 +752,15 @@ func (s *sketchAggregator) attrKeyBytes(kv []precompute.KeyValue) []byte {
 // still allocated per sample — the keyed precompute entry point takes a
 // string and there is no exported zero-alloc keyed path — so that one
 // allocation remains.
-func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint64) {
+// rowSampled/admittedRows/sampleP carry an SDK-side pre-decided row-admission
+// bitmask (NitroSketch-style skip sampling, see AggregationRowSampledSketch
+// in the SDK). When rowSampled is true, the ObservationValue built below is
+// tagged so the CMS/CountSketch observer applies the bitmask verbatim via
+// Sketch.ApplyAdmittedOccurrence instead of the plain insert path — see the
+// precompute.ObservationValue.RowSampled doc for why this must not be
+// re-derived collector-side. Every non-row-sampled caller passes
+// rowSampled=false (admittedRows/sampleP ignored).
+func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint64, rowSampled bool, admittedRows uint64, sampleP float64) {
 	// For the HLL / CMS item_label paths the item_label attribute is the sketch
 	// subject (its value is hashed below), so it must NOT appear in the series
 	// key or the emitted labels — project it out of the observation labels here.
@@ -840,6 +848,26 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 		// The item_label was projected out of obs.Labels above.
 		s.attrKeyScratch = append(s.attrKeyScratch[:0], am[s.itemLabel]...)
 		obs.Value = precompute.BytesValue(s.attrKeyScratch)
+	}
+	if rowSampled {
+		switch s.obsKind {
+		case obsKindBytesHash, obsKindKeyedFreq, obsKindKeyedItem:
+			obs.Value.RowSampled = true
+			obs.Value.AdmittedRows = admittedRows
+			obs.Value.SampleP = sampleP
+		default:
+			// obsKindFloat/obsKindItemHLL/obsKindItemCMS have no *AtRows
+			// sketchlib primitive (DDSketch/KLL/HLL aren't row-replicated
+			// matrices) — this can only happen if the SDK's AggregationRouter
+			// and this collector's AggID disagreed about which family a
+			// PolicyFingerprint targets. Drop rather than silently misapply
+			// an unrelated observer.
+			s.droppedSamples.Add(1)
+			if s.procDropCount != nil {
+				s.procDropCount.Add(1)
+			}
+			return
+		}
 	}
 	if err := s.pc.ObserveKeyed(s.pcfg.SeriesKeyFor(obs), obs); err != nil {
 		s.lastObserveErr = err

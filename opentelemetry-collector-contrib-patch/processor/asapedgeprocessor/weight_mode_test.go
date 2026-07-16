@@ -41,7 +41,7 @@ func feedAdversarial(t *testing.T, sa *sketchAggregator) []asapmsgpack.HeapItem 
 	tick := uint64(0)
 	for _, f := range adversarialFeed {
 		for i := 0; i < f.n; i++ {
-			sa.observe(map[string]string{"endpoint": f.ep}, f.value, base+tick)
+			sa.observe(map[string]string{"endpoint": f.ep}, f.value, base+tick, false, 0, 0)
 			tick++
 		}
 	}

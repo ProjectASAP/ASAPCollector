@@ -72,6 +72,26 @@ type ObservationValue struct {
 	Hash     uint64
 	Bytes    []byte
 	Envelope *SketchEnvelope
+
+	// RowSampled, when true, indicates this ObservationValue is a
+	// pre-sampled RAW occurrence: an OTel SDK already ran row-admission
+	// (NitroSketch-style skip sampling) at Record() time — see
+	// AggregationRowSampledSketch in the SDK — and AdmittedRows/SampleP
+	// below record that decision. SketchObserver implementations that
+	// support admitted-occurrence application (CMSObserver,
+	// CountSketchObserver) must route through Sketch.ApplyAdmittedOccurrence
+	// instead of the plain insert path, so the SDK's row-selection is
+	// applied verbatim rather than re-derived by a second, independent
+	// collector-side sampler. Observers with no *AtRows sketchlib primitive
+	// (DDSketch/KLL/HLL aren't row-replicated matrices) do not support this
+	// and must reject it rather than silently ignore it.
+	RowSampled bool
+	// AdmittedRows is the bitmask over the target sketch's rows (bit r set
+	// => row r admits this occurrence). Meaningful only when RowSampled.
+	AdmittedRows uint64
+	// SampleP is the admission probability in effect when the SDK made the
+	// row-admission decision. Meaningful only when RowSampled.
+	SampleP float64
 }
 
 // ObservationValueKind is the Kind discriminator on

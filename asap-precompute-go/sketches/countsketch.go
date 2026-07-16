@@ -652,8 +652,10 @@ type CountSketchObserver struct {
 	DefaultKey string
 }
 
-// Observe routes a precompute.ObservationValue into the wrapped
-// CountSketch via UpdateString.
+// Observe routes a precompute.ObservationValue into the wrapped CountSketch
+// via UpdateString — or, when v.RowSampled, via ApplyAdmittedOccurrence with
+// the SDK's pre-decided admission bitmask, using the same key and v.Float
+// weight the plain path would have used.
 func (o CountSketchObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) error {
 	w, ok := s.(*CountSketchWrapper)
 	if !ok {
@@ -665,6 +667,10 @@ func (o CountSketchObserver) Observe(s precompute.Sketch, v precompute.Observati
 	key := o.DefaultKey
 	if len(v.Bytes) > 0 {
 		key = string(v.Bytes)
+	}
+	if v.RowSampled {
+		w.ApplyAdmittedOccurrence(key, v.Float, v.AdmittedRows, v.SampleP)
+		return nil
 	}
 	w.UpdateString(key, v.Float)
 	return nil
