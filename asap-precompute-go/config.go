@@ -361,16 +361,30 @@ type PrecomputeConfig struct {
 	// series every check tick (the static "fixed" mode). Range [0, 1).
 	SubWindowEpsilon float64
 
-	// GosDeltaEpsilon, when > 0, switches a GOS-capable family (Count-Sketch
-	// today) from the fixed DeltaThreshold path to the isotropic GOS
-	// insert-time delta gate: each cell is checked against the closed-form
-	// threshold T=ε‖Ĉ‖/(2k√(dw)) (design-gos-unified-edge-telemetry.md §7/§11)
-	// the moment it's touched, rather than via a periodic decode-prev-diff
-	// scan. 0 (the default) leaves the fixed DeltaThreshold path unchanged.
+	// GosDeltaEpsilon, when > 0, switches a GOS-capable family from the fixed
+	// DeltaThreshold path to its insert-time delta gate. The FIELD IS
+	// OVERLOADED across families rather than growing PrecomputeConfig with a
+	// family-specific knob per family:
+	//   - Count-Sketch: an ε relative-error budget, (0,1). Each cell is
+	//     checked against the closed-form isotropic threshold
+	//     T=ε‖Ĉ‖/(2k√(dw)) (design-gos-unified-edge-telemetry.md §7/§11) the
+	//     moment it's touched, rather than via a periodic decode-prev-diff
+	//     scan.
+	//   - HLL: REINTERPRETED as τ, a count of "doublings" (>=~1, no upper
+	//     bound — NOT an ε fraction, so it is not restricted to (0,1)). Each
+	//     register is checked against the linearized threshold
+	//     |2^C'-2^C|>=2^τ (sampling-cdm-gos-derivations.md §8.7) the moment
+	//     its max-update actually changes it. See sketches.HLLWrapper.SetGosMode
+	//     for the full rationale for reusing this field instead of adding a
+	//     second GOS config knob.
+	// 0 (the default) leaves the fixed DeltaThreshold path unchanged for
+	// every family.
 	GosDeltaEpsilon float64
 	// GosSites is k, the number of coordinating sites (edges) sharing the
 	// relative accuracy budget in the GosDeltaEpsilon threshold formula.
-	// Meaningless when GosDeltaEpsilon<=0.
+	// Meaningless when GosDeltaEpsilon<=0. Also meaningless for HLL (its
+	// boxed formula has no multi-site k term); accepted there purely so
+	// SetGosMode has the same signature across GOS-capable families.
 	GosSites uint32
 }
 

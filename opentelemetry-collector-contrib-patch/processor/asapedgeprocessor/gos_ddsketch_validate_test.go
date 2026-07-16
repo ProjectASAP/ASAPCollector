@@ -11,9 +11,9 @@ import (
 
 // TestGosDeltaEpsilon_FamilyValidation locks in that config_validate accepts
 // gos_delta_epsilon on the GOS-converted families available at this point in
-// the stack (ddsketch, countminsketch, sum, kll, and non-heap countsketch)
-// and rejects it everywhere else. Uses a minimal, otherwise-valid Config per
-// case so only the gos gate is under test.
+// the stack (ddsketch, countminsketch, sum, kll, dense hll, and non-heap
+// countsketch) and rejects it everywhere else. Uses a minimal, otherwise-valid
+// Config per case so only the gos gate is under test.
 func TestGosDeltaEpsilon_FamilyValidation(t *testing.T) {
 	mk := func(fam FamilyKind, emitHeap bool, eps float64) *Config {
 		m := MetricFamily{
@@ -50,7 +50,7 @@ func TestGosDeltaEpsilon_FamilyValidation(t *testing.T) {
 		{"ddsketch epsilon>=1 rejected", mk(FamilyDDSketch, false, 1.0), true},
 		{"sum accepted", mk(FamilySum, false, 0.5), false},
 		{"kll accepted", mk(FamilyKLL, false, 0.5), false},
-		{"hll rejected", mk(FamilyHLL, false, 0.5), true},
+		{"hll dense accepted", mk(FamilyHLL, false, 0.5), false},
 		{"countmin accepted", mk(FamilyCountMinSketch, false, 0.5), false},
 	}
 	for _, tc := range cases {

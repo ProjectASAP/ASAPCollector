@@ -584,18 +584,20 @@ func subWindowSegmentMode(cfg *PrecomputeConfig) bool {
 // applyGosMode configures the sketch's GOS insert-time delta mode from cfg
 // when GosDeltaEpsilon > 0 and the sketch supports it (Count-Sketch, CMS,
 // DDSketch, and Sum today via the shared (epsilon, k) structural interface
-// below, plus KLL via its own family-specific branch — more families follow
-// the same pattern as their GOS conversions land). A no-op otherwise,
-// leaving the fixed DeltaThreshold path unchanged. Called at flush time (on
-// every already-live series, so a control-plane config change takes effect
-// at the next flush) — each GOS-converted family's factory ALSO primes this
-// at series creation (warm_sketch.go) so inserts before the first flush of
-// a brand-new window are gated too. Structural interface asserts avoid a
-// Sketch-interface change for these per-family knobs.
+// below, HLL via the same interface — reinterpreting GosDeltaEpsilon as τ,
+// see sketches.HLLWrapper.SetGosMode — and KLL via its own family-specific
+// branch — more families follow the same pattern as their GOS conversions
+// land). A no-op otherwise, leaving the fixed DeltaThreshold path unchanged.
+// Called at flush time (on every already-live series, so a control-plane
+// config change takes effect at the next flush) — each GOS-converted
+// family's factory ALSO primes this at series creation (warm_sketch.go) so
+// inserts before the first flush of a brand-new window are gated too.
+// Structural interface asserts avoid a Sketch-interface change for these
+// per-family knobs.
 //
 // KLL's trigger (derivations doc §8.6: R>=epsilon*N) has no per-cell/sites
 // term, so its SetGosMode takes epsilon alone — a distinct structural shape
-// from Count-Sketch/CMS/DDSketch/Sum's (epsilon, k), hence the
+// from Count-Sketch/CMS/DDSketch/Sum/HLL's (epsilon, k), hence the
 // family-specific branch here.
 func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
 	if cfg.GosDeltaEpsilon <= 0 {
@@ -618,14 +620,14 @@ func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
 // the series has moved ≥ ε·norm since its last emit (ε=0 ⇒ always; first emit of
 // a window always fires and ships full state).
 //
-// GOS-converted families (Count-Sketch, Sum) bypass this entirely: their own
-// insert-time threshold check already decided what's dirty (design-gos-
-// unified-edge-telemetry.md §11 — Gate 1's periodic divergence pre-check is
-// redundant once a family detects crossings at insert time), so always
-// attempt the emit and let the empty-dirty-set case fall out as a nil
-// payload downstream.
+// GOS-converted families (Count-Sketch, CMS, DDSketch, Sum, KLL, HLL) bypass
+// this entirely: their own insert-time threshold check already decided
+// what's dirty (design-gos-unified-edge-telemetry.md §11 — Gate 1's periodic
+// divergence pre-check is redundant once a family detects crossings at
+// insert time), so always attempt the emit and let the empty-dirty-set case
+// fall out as a nil payload downstream.
 func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
-	if (cfg.SketchType == SketchTypeCountSketch || cfg.SketchType == SketchTypeCountMinSketch || cfg.SketchType == SketchTypeDDSketch) && cfg.GosDeltaEpsilon > 0 {
+	if (cfg.SketchType == SketchTypeCountSketch || cfg.SketchType == SketchTypeCountMinSketch || cfg.SketchType == SketchTypeDDSketch || cfg.SketchType == SketchTypeHLLSketch) && cfg.GosDeltaEpsilon > 0 {
 		return true
 	}
 	if cfg.AggKind == AggKindSum && cfg.GosDeltaEpsilon > 0 {
@@ -698,6 +700,15 @@ func subWindowMarkEmitted(entry *seriesEntry, cfg *PrecomputeConfig) {
 			entry.ackVal = r.Sum()
 		}
 	case cfg.SketchType == SketchTypeHLLSketch:
+		if cfg.GosDeltaEpsilon > 0 {
+			// GOS mode already detected + queued each crossed register in
+			// place at insert time (UpdateValue/UpdateBytes ->
+			// recordGosCrossing) and never reads entry.ackVal
+			// (subWindowShouldEmit bypasses subWindowDivergence for this
+			// family+mode entirely) — skip the EstimateCardinality() call the
+			// old divergence path below would otherwise do.
+			return
+		}
 		if r, ok := entry.Sketch.(interface{ EstimateCardinality() float64 }); ok {
 			entry.ackVal = r.EstimateCardinality()
 		}

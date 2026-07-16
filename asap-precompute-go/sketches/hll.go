@@ -5,6 +5,7 @@ package sketches
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/ProjectASAP/sketchlib-go/common"
 	hll "github.com/ProjectASAP/sketchlib-go/sketches/HLL"
@@ -47,6 +48,174 @@ type HLLWrapper struct {
 	// for the dense base and never touches the exported Registers field (which
 	// would force dense materialization and defeat the memory win).
 	sparse bool
+
+	// gosTau configures the GOS register-change adapter's Layer-D insert-time
+	// delta gate (sampling-cdm-gos-derivations.md §8.7, design-gos-unified-
+	// edge-telemetry.md §11/§12 item 4): >0 routes every insert through the
+	// per-register linearized-threshold check (recordGosCrossing) instead of
+	// the pre-existing decode-prev-diff RegisterDelta path
+	// (hll.ComputeRegisterDelta). <=0 (the default) leaves
+	// UpdateValue/UpdateBytes/ComputeDeltaAgainst exactly as before.
+	//
+	// Knob mapping (a deliberate config-surface decision — see SetGosMode):
+	// gosTau REUSES PrecomputeConfig.GosDeltaEpsilon, REINTERPRETED as τ (a
+	// count of "doublings" of a register's linearized 2^C contribution)
+	// rather than as CountSketch's ε relative-error budget. HLL and
+	// CountSketch never share a live sketch instance, so overloading the one
+	// generic float64 field with a per-SketchType meaning avoids adding a
+	// second GOS config field for a single family. See config.go's
+	// PrecomputeConfig.GosDeltaEpsilon doc for the full rationale.
+	gosTau float64
+	// gosLastSent[i] is the register value AT WHICH register i was last
+	// reported to a caller (0 = never reported). This is per-register POLICY
+	// state the wrapper must track that sketchlib-go's HyperLogLog does NOT:
+	// unlike CountSketch (whose cell is reset to 0 on send, so "since last
+	// sent" is always readable straight off the cell), an HLL register is
+	// NEVER reset — so "how far has this register moved since it was last
+	// sent" cannot be read off the register itself; only its raw CURRENT
+	// value is available there. Lazily allocated (hll.HLLRegisterCount bytes)
+	// on the first GOS-gated insert, so a non-GOS wrapper pays nothing extra.
+	gosLastSent []uint8
+	// gosDirty accumulates registers that crossed the insert-time GOS
+	// threshold since the last drainGosDelta call. Each entry carries the
+	// register's CURRENT value (never a subtractive delta — HLL deltas are
+	// always "here is the value", since MAX-merge is idempotent and
+	// monotone). Analogous to CountSketchWrapper.gosDirty, but — critically —
+	// the underlying registers are NEVER reset when this list is drained; see
+	// drainGosDelta.
+	gosDirty []hll.RegisterUpdate
+	// gosWake mirrors CountSketchWrapper.gosWake: armed on the first register
+	// added to gosDirty since the last drain, consumed exactly once by
+	// ConsumeWakeSignal so a burst of crossings between two flushes wakes the
+	// out-of-cycle flush loop once, not once per crossing.
+	gosWake bool
+}
+
+// SetGosMode configures the GOS register-change adapter (sampling-cdm-gos-
+// derivations.md §8.7). tau<=0 disables it (the pre-existing decode-prev-diff
+// RegisterDelta path, unchanged behavior). Idempotent — callers (the HLL
+// factory, at series creation, and the runtime's applyGosMode, at flush, on
+// every already-live series) may call this repeatedly with the same tau; it
+// just re-stamps the scalar.
+//
+// sites is accepted (so *HLLWrapper has the SAME structural method shape,
+// SetGosMode(float64, uint32), as *CountSketchWrapper — precompute.go's
+// applyGosMode calls it via one generic interface assert with no
+// SketchType-specific branching) but UNUSED: HLL's boxed formula
+// |2^C'-2^C|>=2^τ has no multi-site k term the way CountSketch's isotropic F2
+// threshold T=ε‖Ĉ‖/(2k√(dw)) does.
+func (w *HLLWrapper) SetGosMode(tau float64, _ uint32) {
+	w.gosTau = tau
+}
+
+// gosRegisterCrossed implements sampling-cdm-gos-derivations.md §8.7's boxed
+// formula |2^C'-2^C|>=2^τ, where C=last (the value at which this register was
+// last reported, 0 if never) and C'=cur (its current value after this
+// insert), PLUS the first-nonzero-write mitigation the design doc proposes
+// (§12 open item 4) for the small-cardinality regime: a register's
+// first-ever nonzero write (last==0, cur>0) is always reported, regardless
+// of τ. THAT MITIGATION IS EXPLICITLY UNVERIFIED per the design doc — it is
+// a cheap, plausible fix, not a proven one.
+//
+// C, C' are small non-negative integers (<= hll.HLLRegisterBits+1, i.e. well
+// under 64), so 1<<C is EXACT integer arithmetic here — never a floating
+// math.Pow call, per the design doc.
+func gosRegisterCrossed(last, cur uint8, tau float64) bool {
+	if cur <= last {
+		return false // MAX-merge is monotone non-decreasing; nothing to report
+	}
+	if last == 0 {
+		return true // first-ever nonzero write: unconditional (unverified mitigation, see doc comment above)
+	}
+	diff := (uint64(1) << cur) - (uint64(1) << last)
+	threshold := uint64(1)
+	if tau > 0 {
+		threshold = uint64(1) << uint(tau)
+	}
+	return diff >= threshold
+}
+
+// recordGosCrossing applies gosRegisterCrossed to a register that just
+// mechanically changed (reported by InsertWithHashReportingChange /
+// UpdateValueReportingChange), and — if it crosses — appends it to gosDirty
+// and arms the wake signal. A register that changed but did NOT cross is
+// left alone: its gosLastSent entry is untouched, so the next crossing check
+// for that register is measured against the same last-sent baseline (the
+// linearized gap keeps growing across subsequent inserts until it finally
+// crosses, at which point the whole accumulated jump is reported in one
+// shot and gosLastSent catches up to the just-reported value).
+func (w *HLLWrapper) recordGosCrossing(index int, newVal uint8) {
+	if w.gosLastSent == nil {
+		w.gosLastSent = make([]uint8, hll.HLLRegisterCount)
+	}
+	last := w.gosLastSent[index]
+	if !gosRegisterCrossed(last, newVal, w.gosTau) {
+		return
+	}
+	w.gosLastSent[index] = newVal
+	if len(w.gosDirty) == 0 {
+		w.gosWake = true
+	}
+	w.gosDirty = append(w.gosDirty, hll.RegisterUpdate{Index: uint32(index), Value: newVal})
+}
+
+// ConsumeWakeSignal implements the runtime's narrow wake-signal interface
+// (asap-precompute-go window.go's recordLocked): reports whether an
+// insert-time GOS threshold crossing happened since the last call, clearing
+// the flag. Always false when GOS mode is inactive (gosTau<=0, so
+// recordGosCrossing/gosWake are never touched).
+func (w *HLLWrapper) ConsumeWakeSignal() bool {
+	if !w.gosWake {
+		return false
+	}
+	w.gosWake = false
+	return true
+}
+
+// drainGosDelta serializes the registers accumulated in gosDirty since the
+// last drain as a sparse hll.RegisterDelta — the insert-time counterpart of
+// the decode-prev-diff path (hll.ComputeRegisterDelta): each dirty entry was
+// already individually threshold-checked at insert time (UpdateValue /
+// UpdateBytes -> recordGosCrossing), so no previous snapshot needs decoding
+// or diffing here.
+//
+// CRITICAL correctness difference from every other GOS-converted family in
+// this workstream: this does NOT reset any register. HLL registers are
+// monotone (MAX-merge) and must never regress; the underlying
+// *hll.HyperLogLog is completely untouched by this call — only the
+// pending-to-send LIST (gosDirty) is drained. Re-sending an unchanged or
+// already-known value is harmless downstream (max(x,x)=x), which is exactly
+// what makes this safe.
+//
+// A register that crossed more than once between two drains is de-duplicated
+// to its LATEST (highest) value — monotonicity guarantees the latest value
+// always supersedes any earlier one already queued — and the result is
+// sorted ascending by register index: hll.SerializeRegisterDelta's
+// varint-packed wire form requires strictly increasing indices.
+func (w *HLLWrapper) drainGosDelta() ([]byte, bool, error) {
+	if len(w.gosDirty) == 0 {
+		return nil, false, nil
+	}
+	latest := make(map[uint32]uint8, len(w.gosDirty))
+	for _, u := range w.gosDirty {
+		latest[u.Index] = u.Value
+	}
+	updates := make([]hll.RegisterUpdate, 0, len(latest))
+	for idx, val := range latest {
+		updates = append(updates, hll.RegisterUpdate{Index: idx, Value: val})
+	}
+	sort.Slice(updates, func(i, j int) bool { return updates[i].Index < updates[j].Index })
+	w.gosDirty = w.gosDirty[:0]
+	payload, err := hll.SerializeRegisterDelta(&hll.RegisterDelta{Updates: updates})
+	if err != nil {
+		full, fErr := w.Snapshot()
+		return full, true, fErr
+	}
+	full, fErr := w.Snapshot()
+	if fErr == nil && len(payload) >= len(full) {
+		return full, true, nil
+	}
+	return payload, false, nil
 }
 
 // NewHLLWrapper builds an empty HLL sketch. The sketchlib-go
@@ -129,9 +298,17 @@ func (w *HLLWrapper) newSketch() *hll.HyperLogLog {
 // sketch via UpdateValue (matching legacy hllprocessor's batch and
 // window paths that call bs.sketch.UpdateValue(dp.DoubleValue())).
 func (w *HLLWrapper) UpdateValue(v float64) {
-	if w.sk != nil {
-		w.sk.UpdateValue(v)
+	if w.sk == nil {
+		return
 	}
+	if w.gosTau > 0 {
+		idx, _, newVal, changed := w.sk.UpdateValueReportingChange(v)
+		if changed {
+			w.recordGosCrossing(idx, newVal)
+		}
+		return
+	}
+	w.sk.UpdateValue(v)
 }
 
 // UpdateBytes feeds the canonical hash of an opaque byte key (e.g. an
@@ -146,7 +323,15 @@ func (w *HLLWrapper) UpdateBytes(b []byte) {
 	if w.sk == nil || len(b) == 0 {
 		return
 	}
-	w.sk.InsertWithHash(common.FromBytes(b).Hash)
+	hash := common.FromBytes(b).Hash
+	if w.gosTau > 0 {
+		idx, _, newVal, changed := w.sk.InsertWithHashReportingChange(hash)
+		if changed {
+			w.recordGosCrossing(idx, newVal)
+		}
+		return
+	}
+	w.sk.InsertWithHash(hash)
 }
 
 // Snapshot serializes via SerializeProtoBytes — the canonical wire
@@ -170,6 +355,14 @@ func (w *HLLWrapper) Snapshot() ([]byte, error) {
 func (w *HLLWrapper) ComputeDeltaAgainst(prev []byte, _ uint64) ([]byte, bool, error) {
 	if w.sk == nil {
 		return nil, true, nil
+	}
+	// GOS mode: registers were already detected + threshold-checked at
+	// insert time (UpdateValue/UpdateBytes -> recordGosCrossing), so the
+	// delta is just draining the pending list — prev is never consulted
+	// (nothing to decode: the mechanism doesn't need a "previous full
+	// state" reference at all). Mirrors CountSketchWrapper's GOS bypass.
+	if w.gosTau > 0 {
+		return w.drainGosDelta()
 	}
 	if len(prev) == 0 {
 		full, err := w.Snapshot()
@@ -277,8 +470,19 @@ func (w *HLLWrapper) Merge(other precompute.Sketch) error {
 // Reset zeros the sketch in place by replacing it with a fresh HLL
 // (carrying the same sampling probability). Window rotation calls this
 // when the runtime decides to recycle entries.
+//
+// Also clears the GOS per-window bookkeeping (gosLastSent/gosDirty/gosWake,
+// mirroring CountSketchWrapper.Reset): the fresh sketch's registers all
+// start at 0, so "last sent" must restart at 0 too — a new window is a new,
+// independent register set, consistent with the pre-existing per-window
+// (PWR) HLL delta model. gosTau itself is NOT cleared: it is a mode
+// configuration, not per-window accumulation state, and survives rotation
+// exactly like gosEpsilon does on CountSketchWrapper.
 func (w *HLLWrapper) Reset() {
 	w.sk = w.newSketch()
+	w.gosLastSent = nil
+	w.gosDirty = nil
+	w.gosWake = false
 }
 
 // EstimateCardinality satisfies precompute.CardinalitySketch — adapter

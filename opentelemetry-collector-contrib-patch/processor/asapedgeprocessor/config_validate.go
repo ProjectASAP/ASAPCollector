@@ -217,26 +217,41 @@ func (c *Config) Validate() error {
 			// reject it elsewhere so a misplaced knob surfaces at boot.
 			return fmt.Errorf("asap_edge: metrics[%d] (%s): weight_mode is only valid for family=countsketch with emit_heap (got family=%q, emit_heap=%v)", i, m.Metric, m.Family, m.EmitHeap)
 		}
-		// gos_delta_epsilon: implemented by the plain (non-heap) CountSketch
-		// wrapper (F2 isotropic gate), the CountMinSketch wrapper (L1
-		// max-composition gate), the DDSketch wrapper (L1 value-range gate,
-		// T=ε·N/(k·B), derivations §8.4), the Sum wrapper (the B=1
-		// degenerate case, T=ε·N/k), and the KLL wrapper (count-based gate,
-		// R≥ε·N, derivations §8.6). Reject it on every other family — and
-		// on emit_heap=true CountSketch, whose DELTA-HEAP wire form isn't
-		// GOS-converted — rather than silently ignoring it. CMS/DDSketch/Sum/KLL
-		// have no heap variant, so no emit_heap exclusion is needed for them.
+		// gos_delta_epsilon: the insert-time GOS gate is implemented for
+		// several families today, with the SAME config field carrying a
+		// DIFFERENT per-family meaning for HLL (so no second knob is needed):
+		//   - CountSketch (plain, non-heap), CountMinSketch, DDSketch, Sum,
+		//     and KLL: an ε relative-error / count-fraction budget, (0,1).
+		//     (F2 isotropic gate for CountSketch; L1 max-composition for
+		//     CountMinSketch; L1 value-range gate, T=ε·N/(k·B), derivations
+		//     §8.4, for DDSketch; the B=1 degenerate case, T=ε·N/k, for Sum;
+		//     count-based gate, R≥ε·N, derivations §8.6, for KLL.) The
+		//     emit_heap DELTA-HEAP wire form of CountSketch isn't
+		//     GOS-converted, so it is rejected. None of CMS/DDSketch/Sum/KLL
+		//     have a heap variant, so no emit_heap exclusion is needed for
+		//     them.
+		//   - HLL (dense only): REINTERPRETED as τ, a count of "doublings"
+		//     (>=~1, NOT a fraction — so the (0,1) upper-bound check does NOT
+		//     apply to it). The SPARSE base has no per-register GOS path, so
+		//     gos_delta_epsilon + hll_sparse is rejected.
+		// Reject it on every other family rather than silently ignoring so a
+		// misconfiguration surfaces at agent boot.
 		if m.GosDeltaEpsilon > 0 {
-			gosOK := m.Family == FamilyCountMinSketch ||
-				m.Family == FamilyDDSketch ||
-				m.Family == FamilySum ||
-				m.Family == FamilyKLL ||
-				(m.Family == FamilyCountSketch && !m.EmitHeap)
-			if !gosOK {
-				return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon is only valid for family=countsketch (emit_heap=false), countminsketch, ddsketch, sum, or kll (got family=%q, emit_heap=%v)", i, m.Metric, m.Family, m.EmitHeap)
-			}
-			if m.GosDeltaEpsilon >= 1 {
-				return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon must be in (0, 1), got %v", i, m.Metric, m.GosDeltaEpsilon)
+			switch {
+			case m.Family == FamilyCountMinSketch || m.Family == FamilyDDSketch ||
+				m.Family == FamilySum || m.Family == FamilyKLL ||
+				(m.Family == FamilyCountSketch && !m.EmitHeap):
+				if m.GosDeltaEpsilon >= 1 {
+					return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon (ε) must be in (0, 1) for family=%q, got %v", i, m.Metric, m.Family, m.GosDeltaEpsilon)
+				}
+			case m.Family == FamilyHLL:
+				if m.HLLSparse {
+					return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon (τ) is not supported with hll_sparse=true (the sparse base has no per-register GOS path); use the dense HLL base", i, m.Metric)
+				}
+				// τ is a doublings count with no (0,1) upper bound; only >0 is
+				// required (already guaranteed by the enclosing check).
+			default:
+				return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon is only valid for family=countsketch (emit_heap=false), countminsketch, ddsketch, sum, kll, or hll (got family=%q, emit_heap=%v)", i, m.Metric, m.Family, m.EmitHeap)
 			}
 		}
 		// hll_sparse: only the HLL family has a sparse in-memory base. Reject

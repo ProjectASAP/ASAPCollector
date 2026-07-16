@@ -226,8 +226,8 @@ type sketchOpts struct {
 	// gosDeltaEpsilon / gosSites configure the GOS isotropic insert-time delta
 	// gate (PrecomputeConfig.GosDeltaEpsilon/GosSites). gosDeltaEpsilon 0
 	// disables it (fixed DeltaThreshold path). Supported by the plain
-	// CountSketch (non-heap), CountMinSketch, DDSketch, Sum, and KLL
-	// factories today.
+	// CountSketch (non-heap), CountMinSketch, DDSketch, Sum, KLL, and HLL
+	// factories today (HLL reinterprets gosDeltaEpsilon as τ).
 	gosDeltaEpsilon float64
 	gosSites        uint32
 }
@@ -365,10 +365,28 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		// the emitted PrecomputeConfig reflects which base is in use. The
 		// constructor is the source of truth for the base selection; the
 		// SketchParam is for config introspection only.
+		//
+		// GOS mode: gos_delta_epsilon is REINTERPRETED as τ for HLL (a count of
+		// "doublings"; see PrecomputeConfig.GosDeltaEpsilon /
+		// HLLWrapper.SetGosMode). Prime it at series creation — exactly like the
+		// CountSketch factory below — so inserts before a brand-new series' first
+		// flush are already register-change gated; precompute.applyGosMode
+		// re-stamps it at each flush so a control-plane change still takes
+		// effect. Scoped to the DENSE base only: the SPARSE base has no
+		// per-register GOS path (its inserts route through sparseInsert, not the
+		// dense register-change accessors), so config_validate rejects
+		// gos_delta_epsilon together with hll_sparse (see config_validate.go).
+		hllGosTau, hllGosSites := opts.gosDeltaEpsilon, opts.gosSites
 		if fam.HLLSparse {
 			factory = func() precompute.Sketch { return sketches.NewHLLWrapperSparse() }
 		} else {
-			factory = func() precompute.Sketch { return sketches.NewHLLWrapper() }
+			factory = func() precompute.Sketch {
+				w := sketches.NewHLLWrapper()
+				if hllGosTau > 0 {
+					w.SetGosMode(hllGosTau, hllGosSites)
+				}
+				return w
+			}
 		}
 		observer = sketches.HLLObserver{}
 		// item_label support: when set, hash the item_label's VALUE (the
@@ -567,7 +585,8 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		SubWindowEpsilon:  opts.subWindowEpsilon,
 		// GosDeltaEpsilon/GosSites configure the isotropic GOS insert-time
 		// delta gate (CountSketch non-heap, CountMinSketch, DDSketch, Sum,
-		// and KLL today). 0 leaves the fixed DeltaThreshold path unchanged.
+		// KLL, and HLL today). 0 leaves the fixed DeltaThreshold path
+		// unchanged.
 		GosDeltaEpsilon: opts.gosDeltaEpsilon,
 		GosSites:        opts.gosSites,
 	}
