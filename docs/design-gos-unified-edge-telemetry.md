@@ -525,6 +525,81 @@ chase high-frequency noise); cells the monitored function is sensitive to
 (`|g_j|` large) get smaller thresholds (report early); everything capped by the
 universal query cap and freshness.
 
+**Layer D — when: insert-time, no periodic scan.** Layers A–C fix *what*
+threshold each cell gets; this layer is *when* a crossing is actually
+detected and shipped. One mechanism for every family (Sum, CMS, CountSketch,
+DDSketch, KLL, HLL), isotropic case: check at insert time whether the
+accumulated-since-last-sync delta crosses the cell's `T_j` — or, for
+KLL/HLL, the family's whole-sketch trigger; every family's exact formula is
+in `sampling-cdm-gos-derivations.md` §8. If it crosses, that cell's (or
+scalar's) delta needs to reach the backend. The sole purpose is data
+synchronization — keeping the backend's reconstructed state accurate.
+Alerting and any other query-time decision is made entirely at the backend
+against that synced state; the edge does not make alerting decisions
+itself (see Retirements in §11 for what this replaces in the current code).
+
+### Wake-on-demand flush
+
+The existing OTLP export chain (SDK `PeriodicReader` → collector processor
+→ exporter) is unchanged; only *when a flush cycle runs* differs from a
+purely timer-driven cadence — it is timer-**or**-woken:
+
+```go
+for {
+    select {
+    case <-ticker.C:   // slow fallback cadence, in case a wake is ever missed
+        flush()
+    case <-wakeCh:      // fired the instant something crosses threshold
+        flush()
+    }
+}
+```
+
+Insert path, non-blocking (never waits for the flush loop):
+
+```go
+select {
+case wakeCh <- struct{}{}:
+default: // a wake is already pending; nothing to add
+}
+```
+
+`flush()` keeps using the existing `SnapshotCache`/`ComputeDeltaAgainst`
+machinery (full-frame fallback on cold start, the "never emit a delta
+larger than a full frame" clamp) — only the trigger changed. A per-cell
+`dirtySet`, populated as cells cross threshold, replaces the old periodic
+whole-sketch divergence pre-check: an empty `dirtySet` at flush time IS
+"nothing was worth sending," computed once per crossing instead of by a
+periodic `O(dw)` full-matrix scan.
+
+### Per-family detection unit and reset semantics
+
+| Family | Detection unit | Reset on send? | Notes |
+|---|---|---|---|
+| CountSketch (isotropic) | matrix cell | zero it | `normSqAll` tracked incrementally (`+= 2·old·Δ+Δ²`), O(1) |
+| CountMinSketch | matrix cell | zero it | same mechanism, $L_1$-scale threshold (derivations §8.2) |
+| DDSketch | bucket count | zero it | bucket count `B` tracked incrementally too (+1 on genuinely new bucket), no config constant needed (derivations §8.4) |
+| Sum | scalar | zero it (subtract reported amount) | degenerate 1-cell case |
+| KLL | whole sketch (no per-cell structure) | full `Reset()` | trigger is `Count() >= εN`, not a per-cell check; already the existing disjoint-segment mechanism, just re-triggered by count instead of a timer |
+| HLL | register | **never** — MAX-merge is idempotent, only clear a dirty flag | trigger is $\lvert 2^{C'}-2^{C}\rvert \ge 2^{\tau}$ on the linearized value, not raw register value (derivations §8.7) |
+
+Backend reconstruction is unchanged for the additive families (Sum/CMS/CS/
+DDSketch): summing every fragment ever received for a cell — regardless of
+how many times or when it was individually reset — telescopes to the true
+cumulative value (`v_1+v_2+...+v_n+v_{residual}` = true total). Resets can
+therefore happen asynchronously, at different times per cell, without
+breaking correctness — it only affects *when* transmission happens, never
+*what* the backend eventually reconstructs.
+
+### Cold start is a feature, not a bug
+
+Every family's threshold scales with an accumulated quantity (`‖Ĉ‖`, `N`,
+`R`) that starts near zero at window start, so the very first few inserts
+cross threshold almost immediately. This is intentional: it gets the
+backend a usable initial estimate as fast as possible, rather than waiting
+for data to accumulate before syncing anything. No floor/minimum-threshold
+mechanism is needed to suppress this.
+
 ### Closed forms
 
 - **F₂, isotropic** (`g_j = 2Ĉ_j`, `λ=2`, uniform, relative): `T = ε‖Ĉ‖ / (2k√(dw))`
@@ -617,169 +692,60 @@ for exactly this comparison. Consequences:
 
 ---
 
-## 11. The 2026-07 redesign: no sub-window, insert-time detection for all 6 families
-
-Everything above (§1-10) establishes *what threshold to use*. This section is
-about *when transmission actually happens* — a mechanism-level redesign that
-applies uniformly across Sum, CMS, CountSketch, DDSketch, KLL, and HLL,
-replacing the periodic sub-window tick with per-insert detection while
-keeping the existing OTLP/`SketchEnvelope` wire and pipeline unchanged.
-
-### The unified model
-
-One mechanism for every family, isotropic case: **check at insert time
-whether the accumulated-since-last-sync delta crosses the family's threshold
-(§8 of `sampling-cdm-gos-derivations.md`); if it does, that cell's (or
-scalar's) delta needs to reach the backend.** The sole purpose is data
-synchronization — keeping the backend's reconstructed state accurate. Alerting
-and any other query-time decision is made entirely at the backend against
-that synced state; the edge no longer makes alerting decisions itself. This
-retires the previously-separate Discipline B "continuous monitoring" path
-(`monitor.Engine.Observe` → immediate `sendReportLocked` over
-`monitor/grpcclient`) as a distinct alerting mechanism — Sum becomes just
-another family running the same insert-time check, synced over the normal
-`SketchEnvelope` pipeline like everything else. `Engine.Observe` today
-conflates two things in one function: `obsCount++` (rate tracking, feeding
-the coordinator's `SampleP` grant negotiation) and the
-`value-baseline>=slack` alerting check (which calls `sendReportLocked`). Only
-the *alerting* half retires; `obsCount`/rate-tracking must be preserved (it
-feeds a genuinely separate concern — sampling-rate negotiation, not data
-sync) — these two halves need to be split apart, not deleted together.
-
-### Wake-on-demand flush (keeps the existing OTLP pipeline)
-
-The naive read of "insert-time, no sub-window" is "bypass the pipeline
-entirely, send out-of-band" — this was considered and rejected. The OTLP
-export chain (SDK `PeriodicReader` → collector processor → exporter) stays
-exactly as-is; only *when a flush cycle runs* changes, from purely
-timer-driven to timer-**or**-woken:
-
-```go
-for {
-    select {
-    case <-ticker.C:   // slow fallback cadence, in case a wake is ever missed
-        flush()
-    case <-wakeCh:      // fired the instant something crosses threshold
-        flush()
-    }
-}
-```
-
-Insert path, non-blocking (never waits for the flush loop):
-
-```go
-select {
-case wakeCh <- struct{}{}:
-default: // a wake is already pending; nothing to add
-}
-```
-
-`flush()` keeps using the existing `SnapshotCache`/`ComputeDeltaAgainst`
-machinery (full-frame fallback on cold start, the "never emit a delta larger
-than a full frame" clamp) unchanged — the only thing that changed is the
-trigger. This makes **Gate 1 (the old `subWindowShouldEmit` /
-`L2DivergenceSinceEmit` divergence pre-check / `ackedCells`) redundant**: an
-empty `dirtySet` at flush time IS "nothing was worth sending," computed once
-per crossing instead of by a periodic O(dw) full-matrix scan. All of that
-(`ackedCells`, `subWindowDivergence`, `subWindowShouldEmit`) is dead code
-under this design and should be deleted, not kept as a fallback path.
-
-CMS's local point-query read (`ThresholdConfig.Functional: cms_point`)
-retires alongside Discipline B's alerting: once cells reset in place at
-insert time, a `min`-based local read is corrupted by any single recently-
-reset row. All point/alert reads move to the backend's reconstructed copy.
-
-### Per-family cell / threshold / reset semantics
-
-See `sampling-cdm-gos-derivations.md` §8 for the derivations; summary of the
-*mechanism* (not the math) each family needs:
-
-| Family | Detection unit | Reset on send? | Notes |
-|---|---|---|---|
-| CountSketch (isotropic) | matrix cell | zero it | `normSqAll` tracked incrementally (`+= 2·old·Δ+Δ²`), O(1) |
-| CountMinSketch | matrix cell | zero it | same mechanism, $L_1$-scale threshold (§8.2) |
-| DDSketch | bucket count | zero it | bucket count `B` tracked incrementally too (+1 on genuinely new bucket), no config constant needed (§8.4) |
-| Sum | scalar | zero it (subtract reported amount) | degenerate 1-cell case |
-| KLL | whole sketch (no per-cell structure) | full `Reset()` | trigger is `Count() >= εN`, not a per-cell check; already the existing disjoint-segment mechanism, just re-triggered by count instead of a timer |
-| HLL | register | **never** — MAX-merge is idempotent, only clear a dirty flag | trigger is $\lvert 2^{C'}-2^{C}\rvert \ge 2^{\tau}$ on the linearized value, not raw register value (§8.7) |
-
-Backend reconstruction is unchanged for the additive families (Sum/CMS/CS/
-DDSketch): summing every fragment ever received for a cell — regardless of
-how many times or when it was individually reset — telescopes to the true
-cumulative value (`v_1+v_2+...+v_n+v_{residual}` = true total). This is why
-resets can happen asynchronously, at different times per cell, without
-breaking correctness — it only affects when transmission happens, never
-what the backend eventually reconstructs.
-
-### Cold start is a feature, not a bug
-
-Every family's threshold scales with an accumulated quantity (`‖Ĉ‖`, `N`,
-`R`) that starts near zero at window start, so the very first few inserts
-cross threshold almost immediately. This is intentional: it gets the backend
-a usable initial estimate as fast as possible, rather than waiting for data
-to accumulate before syncing anything. No floor/minimum-threshold mechanism
-is needed to suppress this.
-
-### Open items (not blocking)
-
-- **Anisotropic CountSketch's `Activity_j`** needs redefinition. The old
-  `Activity_j=|current-prev|` assumed a single, uniformly-timed `prev`
-  snapshot; under per-cell async reset, different cells' "since last touch"
-  windows are no longer comparable, and naively diffing against any
-  snapshot double-counts/under-counts around individual cell resets. A
-  per-cell EMA of `|Δ|` (`activityRate[r][c] = decay·activityRate[r][c] +
-  (1-decay)·|Δ|`, updated every insert) is the leading candidate — cheap,
-  reset-timing-independent — but it replaces the derivation's exact
-  `Activity_j=V_j` with a heuristic, and whether the §7 closed-form
-  water-filling solution still carries the same error guarantee under that
-  substitution has not been checked. The anisotropic water-filling solve
-  itself also still requires a periodic $O(dw)$ pass (unlike every other
-  family here) — per-cell detection at insert time only avoids the
-  "decode a serialized `prev`" cost, not the joint solve.
-- **DDSketch's unbounded contiguous bucket-array growth** on outlier values
-  is a real memory-safety gap, independent of this redesign — tracked as
-  sketchlib-go#72. The dynamically-tracked `B` used in the threshold formula
-  above does not require fixing this; it is a separate, likely
-  higher-priority issue.
-- **HLL's small-cardinality regime**: the register-change adapter's accuracy
-  proof (OctoSketch's Appendix B) is stated for "sufficiently large"
-  cardinality; behavior when most registers are still at 0 (early in a
-  window) has not been separately verified. A candidate mitigation (always
-  send a register's first-ever nonzero write unconditionally) is proposed
-  but unverified.
-
----
-
-## 12. Implementation notes (controller synthesizes, edge executes)
+## 11. Implementation notes (controller synthesizes, edge executes)
 
 Everything expensive is a **controller (backend) decision**; the edge only
 executes a fixed per-cell comparison.
 
 - **Controller** (offline, per registered metric/query): runs ADCD (AD → Hessian
   eigenvalue bounds → `∇f, λ`), estimates `{V_j}` from the workload, solves (P)'s
-  layers A–C, emits `(d, w, G, {p_i}, scalar GOS knobs, flags)` via OpAMP. This
+  layers A–D, emits `(d, w, G, {p_i}, scalar GOS knobs, flags)` via OpAMP. This
   slots into the existing controller multi-objective
   (`controller-optimization-problem.md` SP-6:
   `min w_bw·bw + w_cpu·cpu + w_mem·mem + …`) — GOS thresholds are new decision
   variables there. **Note:** the controller ships *scalars*
   (`ε_delta`, sites), **not** a full per-cell vector `{T_j}`; the isotropic
-  case (§11, all 6 families) reconstructs its single scalar `T` from those
-  plus live sketch state, so no vector ever crosses the wire. The anisotropic
-  per-cell `{T_j}` water-filling described here is CountSketch-only and, per
-  §11's open items, not currently implemented.
-- **Edge**: maintain sketch + acked snapshot; per flush, recompute `{T_j}` from
-  the pushed scalars + local `{V_j}`, upload cells with `|ΔC_j| ≥ T_j` as a sparse
-  delta; run one generic `isLocallySafe` for monitored functions. No AD, no
-  water-filling solve at the edge — only the closed-form threshold evaluation.
-  **Superseded for the isotropic case by §11**: there is no longer a
-  periodic "per flush" cadence or a separate acked-snapshot copy — the
-  per-cell comparison happens at insert time and the cell resets in place
-  on send. This paragraph's *acked-snapshot, periodic-flush* model still
-  describes anisotropic CountSketch's water-filling solve, which §11 flags
-  as an open item, not yet redesigned.
+  case (§7 Layer D, all 6 families) reconstructs its single scalar `T` from
+  those plus live sketch state, so no vector ever crosses the wire. The
+  anisotropic per-cell `{T_j}` water-filling described here is
+  CountSketch-only and, per Open problems below, not currently implemented.
+- **Edge**: maintain sketch state; per insert, compare against `{T_j}`
+  (recomputed from the pushed scalars + local `{V_j}` — §7 Layer D) and mark
+  crossed cells dirty; a wake fires a flush of the current dirty set as a
+  sparse delta; run one generic `isLocallySafe` for monitored functions. No
+  AD, no water-filling solve at the edge for the isotropic case — only the
+  closed-form threshold evaluation, checked continuously rather than on a
+  periodic scan. The anisotropic CountSketch water-filling solve is the one
+  remaining case that still needs a periodic `O(dw)` re-solve and a separate
+  acked-snapshot copy (see Open problems).
 - **Backend**: `apply_delta` into a running merge (`O(#delta cells)`), keeping the
   global sketch continuously queryable within the Theorem-1 envelope, surfaced in
   the `accuracy: ε=…` response annotation.
+
+**Retirements.** The insert-time model (§7 Layer D) replaces the following
+in the current code — tracked here since it isn't deleted yet:
+
+- **Gate 1** (`subWindowShouldEmit` / `L2DivergenceSinceEmit` / `ackedCells`):
+  the old periodic whole-sketch divergence pre-check, run once per
+  `SubWindowInterval` tick regardless of whether anything had actually
+  crossed threshold. An empty per-cell `dirtySet` at flush time already
+  answers "nothing to send," computed once per crossing instead of by a
+  periodic `O(dw)` scan — dead code under Layer D, not kept as a fallback.
+- **CMS's local point-query read** (`ThresholdConfig.Functional: cms_point`):
+  once cells reset in place at insert time, a `min`-based local read is
+  corrupted by any single recently-reset row. All point/alert reads move to
+  the backend's reconstructed copy.
+- **Discipline B's alerting path** (`monitor.Engine.Observe` →
+  `sendReportLocked` over `monitor/grpcclient`): Sum becomes just another
+  family running the Layer D insert-time check, synced over the normal
+  `SketchEnvelope` pipeline like everything else. `Engine.Observe` today
+  conflates two things in one function: `obsCount++` (rate tracking,
+  feeding the coordinator's `SampleP` grant negotiation) and the
+  `value-baseline>=slack` alerting check (which calls `sendReportLocked`).
+  Only the *alerting* half retires; `obsCount`/rate-tracking must be
+  preserved (it feeds a genuinely separate concern — sampling-rate
+  negotiation, not data sync) — the two halves need to be split apart, not
+  deleted together.
 
 **Ties to existing code:**
 - `ASAPQuery-backend/control_plane/src/epsilon_alloc.rs` — the ε-budget split
@@ -792,20 +758,45 @@ executes a fixed per-cell comparison.
 
 ---
 
-## 13. Open problems / next steps
+## 12. Open problems / next steps
 
-1. **Anisotropic delta broadcast** — *partially done.* The **sparse-cell**
+1. **Anisotropic CountSketch's `Activity_j`** needs redefinition. The old
+   `Activity_j=|current-prev|` assumed a single, uniformly-timed `prev`
+   snapshot; under per-cell async reset (§7 Layer D), different cells'
+   "since last touch" windows are no longer comparable, and naively diffing
+   against any snapshot double-counts/under-counts around individual cell
+   resets. A per-cell EMA of `|Δ|` (`activityRate[r][c] =
+   decay·activityRate[r][c] + (1-decay)·|Δ|`, updated every insert) is the
+   leading candidate — cheap, reset-timing-independent — but it replaces the
+   derivation's exact `Activity_j=V_j` with a heuristic, and whether the §7
+   closed-form water-filling solution still carries the same error guarantee
+   under that substitution has not been checked. The anisotropic
+   water-filling solve itself also still requires a periodic `O(dw)` pass
+   (unlike every other family) — per-cell detection at insert time only
+   avoids the "decode a serialized `prev`" cost, not the joint solve.
+2. **Anisotropic delta broadcast** — *partially done.* The **sparse-cell**
    encoding of `ΔC_ref` on the coordinator→edge path is implemented and measured
    (`CRefUpdate::Delta`; removes the `O(k)` broadcast amplification — see
    gos-eval-results.md §2). Still **open:** the broadcast gate is currently
    isotropic (ships every changed cell, `Δ ≠ 0`); giving it *anisotropic per-cell
    thresholds* (the §7C water-filling, as already done on the edge→coordinator
    upload path via `ComputeDeltaPerCell`) is the remaining work.
-2. **Relative-error under small norm** — heartbeat / additive floor when `‖Ĉ‖` is
+3. **DDSketch's unbounded contiguous bucket-array growth** on outlier values
+   is a real memory-safety gap, independent of Layer D — tracked as
+   sketchlib-go#72. The dynamically-tracked `B` used in the threshold formula
+   (derivations §8.4) does not require fixing this; it is a separate, likely
+   higher-priority issue.
+4. **HLL's small-cardinality regime**: the register-change adapter's accuracy
+   proof (OctoSketch's Appendix B) is stated for "sufficiently large"
+   cardinality; behavior when most registers are still at 0 (early in a
+   window) has not been separately verified. A candidate mitigation (always
+   send a register's first-ever nonzero write unconditionally) is proposed
+   but unverified.
+5. **Relative-error under small norm** — heartbeat / additive floor when `‖Ĉ‖` is
    small (WZ / OctoSketch fundamental limit).
-3. **Verified eigenvalue bounds** — AutoMon's numerical `λ` may miss the true
+6. **Verified eigenvalue bounds** — AutoMon's numerical `λ` may miss the true
    extreme → reserve an `ε_eig` slice of the budget or use interval bounds.
-4. **Empirical validation** — measure achieved communication as a fraction of the
+7. **Empirical validation** — measure achieved communication as a fraction of the
    WZ `k/ε²`, sweep `(w_m, w_e, w_c)` to trace the Pareto surface.
 
 ---
