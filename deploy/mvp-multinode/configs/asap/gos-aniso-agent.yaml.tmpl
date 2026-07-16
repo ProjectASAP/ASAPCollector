@@ -1,0 +1,75 @@
+# GOS per-cell threshold eval — minimal agent config template.
+# Rendered by scripts/gos_aniso_cluster.sh: __ANISO__ → true|false,
+# __WARM_IP__ → the sink node's IP, __EDGE_ID__ → arm label.
+#
+# One CountSketch metric (top_endpoint_qps, Zipf endpoint label from the
+# otel-app five-sketch workload), delta transmission gated by the GOS
+# norm-adaptive threshold: isotropic scalar vs anisotropic per-cell {T_j}
+# (the arm under test). The filter keeps every other metric off the wire so
+# the node2 port-4317 byte counter measures ONLY this metric's delta frames.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 4096
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1280
+    spike_limit_mib: 256
+
+  # Keep ONLY the metric under test: unconfigured metrics would otherwise
+  # passthrough raw (drop_original forwards unmatched metrics) and pollute the
+  # byte measurement.
+  filter/only_countsketch:
+    metrics:
+      include:
+        match_type: strict
+        metric_names:
+          - top_endpoint_qps
+
+  cumulativetodelta:
+    include:
+      metrics:
+        - top_endpoint_qps
+      match_type: strict
+
+  asap_edge:
+    shard_count: 4
+    window_duration: 15s
+    edge_id: __EDGE_ID__
+    drop_original: true
+    metrics:
+      - metric: top_endpoint_qps
+        family: countsketch
+        tier: warm
+        rows: 5
+        cols: 2048
+        delta_transmission: true
+        item_label: endpoint
+        # GOS norm-adaptive relative delta gate (the knobs under test). Note:
+        # emit_heap must stay OFF — the anisotropic per-cell path is gated on
+        # the non-heap wire format.
+        gos_delta_epsilon: 0.1
+        gos_sites: 4
+        gos_anisotropic: __ANISO__
+    cold:
+      enabled: false
+
+exporters:
+  otlp/backend:
+    endpoint: __WARM_IP__:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/only_countsketch, cumulativetodelta, asap_edge]
+      exporters: [otlp/backend]
+  telemetry:
+    logs:
+      level: info
