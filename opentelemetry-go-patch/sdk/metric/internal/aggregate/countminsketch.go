@@ -22,6 +22,12 @@ type countMinSketchSeries[N int64 | float64] struct {
 	sketch      *cms.CountMinSketch
 	sampleCount uint64
 
+	// sampler is the per-series row-admission sampler (NitroSketch geometric
+	// skip-sampling), non-nil only when 0 < sampleP < 1. Hosting it at the SDK
+	// aggregator decides admission before the sample is ever serialized, so no
+	// downstream stage re-samples or re-derives the decision.
+	sampler *common.GeometricSampler
+
 	measuredSince bool
 	idleCycles    uint8
 }
@@ -29,6 +35,14 @@ type countMinSketchSeries[N int64 | float64] struct {
 type countMinSketchValues[N int64 | float64] struct {
 	rows int
 	cols int
+
+	// sampleP is the per-row admission rate. <=0 or >=1 disables sampling
+	// (every insert touches all rows); 0 < sampleP < 1 installs a per-series
+	// GeometricSampler routing inserts through InsertWithHashSampledPerRow.
+	sampleP float64
+	// seedSalt decorrelates admission patterns across windows (mixed into every
+	// series' sampler seed; refreshed to the window start in delta()).
+	seedSalt uint64
 
 	limit      limiter[countMinSketchSeries[N]]
 	values     map[attribute.Distinct]*countMinSketchSeries[N]
@@ -45,7 +59,7 @@ type countMinSketchValues[N int64 | float64] struct {
 	snapshotsMu sync.Mutex
 }
 
-func newCountMinSketchValues[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64) *countMinSketchValues[N] {
+func newCountMinSketchValues[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64, sampleP float64) *countMinSketchValues[N] {
 	if rows <= 0 {
 		rows = 4
 	}
@@ -58,6 +72,7 @@ func newCountMinSketchValues[N int64 | float64](rows, cols, limit int, deltaTran
 	v := &countMinSketchValues[N]{
 		rows:              rows,
 		cols:              cols,
+		sampleP:           sampleP,
 		limit:             newLimiter[countMinSketchSeries[N]](limit),
 		values:            make(map[attribute.Distinct]*countMinSketchSeries[N]),
 		deltaTransmission: deltaTransmission,
@@ -85,6 +100,18 @@ func (d *countMinSketchValues[N]) newSeries(attr attribute.Set) *countMinSketchS
 	series.sampleCount = 0
 	series.measuredSince = true
 	series.idleCycles = 0
+	// Install (or reset, on pool reuse) the per-row geometric sampler. Seed =
+	// FNV(attrs) ⊕ window salt (see countsketch.go).
+	if d.sampleP > 0 && d.sampleP < 1 {
+		seed := int64(uint64(samplerSeedForAttrs(attr)) ^ d.seedSalt)
+		if series.sampler == nil {
+			series.sampler = common.NewGeometricSampler(d.sampleP, seed)
+		} else {
+			series.sampler.Reset(d.sampleP, seed)
+		}
+	} else {
+		series.sampler = nil
+	}
 	return series
 }
 
@@ -113,7 +140,13 @@ func (d *countMinSketchValues[N]) measure(
 	series.measuredSince = true
 	key := fltrAttr.Encoded(attribute.DefaultEncoder())
 	input := common.FromString(key)
-	series.sketch.InsertWithHash(input.Hash)
+	if series.sampler != nil {
+		series.sketch.InsertWithHashSampledPerRow(input.Hash, series.sampler)
+	} else {
+		series.sketch.InsertWithHash(input.Hash)
+	}
+	// sampleCount tracks RAW observed items (not admitted rows); it is wire
+	// metadata independent of sampling, so increment unconditionally.
 	series.sampleCount++
 }
 
@@ -122,11 +155,13 @@ type countMinSketchAgg[N int64 | float64] struct {
 	start time.Time
 }
 
-func newCountMinSketchAgg[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64) *countMinSketchAgg[N] {
-	return &countMinSketchAgg[N]{
-		countMinSketchValues: newCountMinSketchValues[N](rows, cols, limit, deltaTransmission, deltaThreshold),
+func newCountMinSketchAgg[N int64 | float64](rows, cols, limit int, deltaTransmission bool, deltaThreshold float64, sampleP float64) *countMinSketchAgg[N] {
+	a := &countMinSketchAgg[N]{
+		countMinSketchValues: newCountMinSketchValues[N](rows, cols, limit, deltaTransmission, deltaThreshold, sampleP),
 		start:                now(),
 	}
+	a.seedSalt = uint64(a.start.UnixNano())
+	return a
 }
 
 func (d *countMinSketchAgg[N]) measure(
@@ -179,6 +214,8 @@ func (d *countMinSketchAgg[N]) delta(
 	}
 	clear(d.values)
 	d.start = t
+	// New window → new admission salt (fresh decorrelated pattern next window).
+	d.seedSalt = uint64(t.UnixNano())
 
 	data.DataPoints = dPts
 	*dest = data
@@ -270,7 +307,11 @@ func (d *countMinSketchValues[N]) payloadFor(key attribute.Distinct, sketch *cms
 			payload, err = cms.SerializeDelta(deltaMsg)
 		}
 		enc = metricdata.CountMinSketchEncodingDelta
-	} else {
+		// Fall through to a full frame on any delta error (mirrors the
+		// DDSketch payloadFor contract): always produce a valid payload and
+		// refresh the snapshot, never wedge the series.
+	}
+	if payload == nil || err != nil {
 		payload, err = serializeCMSketch(sketch)
 		enc = metricdata.CountMinSketchEncodingProto
 	}

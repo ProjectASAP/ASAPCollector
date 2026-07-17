@@ -62,6 +62,9 @@ type PipelineSketchConfig struct {
 type PipelineDDSketchParams struct {
 	RelativeAccuracy float64 `yaml:"relative_accuracy"`
 	NoMinMax         bool    `yaml:"no_min_max"`
+	// SampleP is the geometric admission rate applied at the SDK aggregator
+	// (whole-item, d=1). Omit or set >=1 to disable.
+	SampleP float64 `yaml:"sample_p"`
 }
 
 // PipelineKLLParams are the tuning knobs for KLL sketch aggregation.
@@ -76,12 +79,20 @@ type PipelineCountSketchParams struct {
 	Epsilon   float64 `yaml:"epsilon"`
 	Delta     float64 `yaml:"delta"`
 	Dimension string  `yaml:"dimension"`
+	// SampleP is the per-row geometric admission rate applied at the SDK
+	// aggregator. Omit or set >=1 to disable sampling; 0 < SampleP < 1 enables
+	// per-row NitroSketch admission with 1/p weighting.
+	SampleP float64 `yaml:"sample_p"`
 }
 
 // PipelineCountMinSketchParams are the tuning knobs for CountMinSketch aggregation.
 type PipelineCountMinSketchParams struct {
 	Rows int `yaml:"rows"`
 	Cols int `yaml:"cols"`
+	// SampleP is the per-row geometric admission rate applied at the SDK
+	// aggregator. Omit or set >=1 to disable; 0 < SampleP < 1 enables per-row
+	// NitroSketch admission with 1/p weighting.
+	SampleP float64 `yaml:"sample_p"`
 }
 
 // PipelineInstrument describes a single OTel instrument to be aggregated.
@@ -177,6 +188,7 @@ func (c *PipelineConfig) ToAggregation() Aggregation {
 		return AggregationDDSketch{
 			RelativeAccuracy: s.DDSketch.RelativeAccuracy,
 			NoMinMax:         s.DDSketch.NoMinMax,
+			SampleP:          s.DDSketch.SampleP,
 		}
 	case "kll":
 		return AggregationKLLSketch{K: s.KLL.K}
@@ -189,11 +201,13 @@ func (c *PipelineConfig) ToAggregation() Aggregation {
 			Epsilon:   s.CountSketch.Epsilon,
 			Delta:     s.CountSketch.Delta,
 			Dimension: s.CountSketch.Dimension,
+			SampleP:   s.CountSketch.SampleP,
 		}
 	case "countminsketch":
 		return AggregationCountMinSketch{
-			Rows: s.CountMinSketch.Rows,
-			Cols: s.CountMinSketch.Cols,
+			Rows:    s.CountMinSketch.Rows,
+			Cols:    s.CountMinSketch.Cols,
+			SampleP: s.CountMinSketch.SampleP,
 		}
 	default: // "baseline" or unrecognised
 		return nil
