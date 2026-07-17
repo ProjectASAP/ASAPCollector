@@ -352,22 +352,71 @@ func (w *CountSketchWrapper) UpdateString(key string, count float64) {
 	if w == nil || w.cs == nil {
 		return
 	}
+	// PER-ROW geometric admission (design §3.1/§3.2): the sampler decides
+	// which of the d rows this item updates; the key is hashed only if ≥1 row
+	// is admitted, and admitted rows carry the 1/p weight. Per-row (not
+	// per-item) admission decorrelates the row estimates so the median-of-rows
+	// concentrates the sampling error. When GOS is also active, the
+	// *SampledPerRowGOS variant runs the identical per-row admission and
+	// additionally checks each ADMITTED row's touched cell against threshold,
+	// so a sampled insert still participates in insert-time detection instead
+	// of silently bypassing it (a non-admitted row never changes, so it can't
+	// cross on this occurrence either way). Heap-msgpack mode isn't
+	// GOS-converted (its DELTA-HEAP wire form has no per-cell dirty-list
+	// counterpart yet), so it always takes the plain sampled/unsampled insert
+	// regardless of gosEpsilon — ComputeDeltaAgainst mirrors this same
+	// condition on its side.
+	gosActive := w.gosEpsilon > 0 && !w.heapMsgpack
 	if w.sampler != nil {
-		if !w.sampler.Admit() {
-			return // skip the d-row counter work for this item (CPU saved)
+		if gosActive {
+			threshold := float64(w.GosDeltaThreshold(w.gosEpsilon, w.gosSites))
+			w.recordDirty(w.cs.UpdateStringSampledPerRowGOS(key, count, w.sampler, threshold))
+			return
 		}
-		count /= w.sampleP // upweight the admitted insert ⇒ unbiased estimate
+		w.cs.UpdateStringSampledPerRow(key, count, w.sampler)
+		return
 	}
-	// Heap-msgpack mode isn't GOS-converted (its DELTA-HEAP wire form has no
-	// per-cell dirty-list counterpart yet), so it always takes the plain
-	// insert path regardless of gosEpsilon — ComputeDeltaAgainst mirrors this
-	// same condition on its side.
-	if w.gosEpsilon > 0 && !w.heapMsgpack {
+	if gosActive {
 		threshold := float64(w.GosDeltaThreshold(w.gosEpsilon, w.gosSites))
 		w.recordDirty(w.cs.UpdateStringGOS(key, count, threshold))
 		return
 	}
 	w.cs.UpdateString(key, count)
+}
+
+// ApplyAdmittedOccurrence applies a row-admission decision made UPSTREAM —
+// typically by an OTel SDK running NitroSketch admission at Record() time,
+// before the occurrence was ever serialized (metricdata.RowSampledSketch;
+// see AggregationRowSampledSketch in the SDK). admittedRows is a bitmask
+// over this sketch's rows (bit r set ⇒ row r admits); count is the
+// occurrence's raw magnitude and sampleP is the admission probability in
+// effect when the SDK made the decision.
+//
+// When GOS is active, this composes with insert-time detection the same way
+// UpdateString does — UpdateStringAtRowsGOS checks each ADMITTED row's
+// touched cell against threshold and reports/resets any crossing, so an
+// SDK-row-sampled occurrence still participates in GOS.
+//
+// admittedRows == 0 (R(x)=∅) is a no-op — the SDK is expected to have
+// already dropped such occurrences before they ever reached the wire.
+// Unlike UpdateString, this NEVER consults w.sampler: the admission
+// decision is given, not made here.
+//
+// This does NOT touch w.sampleP or stamp anything on the envelope: the
+// 1/sampleP correction is baked into the cell here (mirrors
+// UpdateStringSampledPerRow's contract) — a query-time consumer must NOT
+// also rescale by this sketch's envelope p, or the correction applies
+// twice.
+func (w *CountSketchWrapper) ApplyAdmittedOccurrence(key string, count float64, admittedRows uint64, sampleP float64) {
+	if w == nil || w.cs == nil {
+		return
+	}
+	if w.gosEpsilon > 0 && !w.heapMsgpack {
+		threshold := float64(w.GosDeltaThreshold(w.gosEpsilon, w.gosSites))
+		w.recordDirty(w.cs.UpdateStringAtRowsGOS(key, count, admittedRows, sampleP, threshold))
+		return
+	}
+	w.cs.UpdateStringAtRows(key, count, admittedRows, sampleP)
 }
 
 // Snapshot returns the canonical proto-encoded SketchEnvelope bytes,
@@ -640,8 +689,10 @@ type CountSketchObserver struct {
 	DefaultKey string
 }
 
-// Observe routes a precompute.ObservationValue into the wrapped
-// CountSketch via UpdateString.
+// Observe routes a precompute.ObservationValue into the wrapped CountSketch
+// via UpdateString — or, when v.RowSampled, via ApplyAdmittedOccurrence with
+// the SDK's pre-decided admission bitmask, using the same key and v.Float
+// weight the plain path would have used.
 func (o CountSketchObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) error {
 	w, ok := s.(*CountSketchWrapper)
 	if !ok {
@@ -653,6 +704,10 @@ func (o CountSketchObserver) Observe(s precompute.Sketch, v precompute.Observati
 	key := o.DefaultKey
 	if len(v.Bytes) > 0 {
 		key = string(v.Bytes)
+	}
+	if v.RowSampled {
+		w.ApplyAdmittedOccurrence(key, v.Float, v.AdmittedRows, v.SampleP)
+		return nil
 	}
 	w.UpdateString(key, v.Float)
 	return nil

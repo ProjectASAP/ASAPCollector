@@ -348,6 +348,42 @@ func (w *CMSWrapper) InsertHash(h uint64) {
 	w.sk.InsertWithHash(h)
 }
 
+// ApplyAdmittedOccurrence applies a row-admission decision made UPSTREAM —
+// typically by an OTel SDK running NitroSketch admission at Record() time,
+// before the occurrence was ever serialized (metricdata.RowSampledSketch;
+// see AggregationRowSampledSketch in the SDK). h is the SAME hash
+// convention InsertHash takes (common.FromBytes/common.FromString);
+// admittedRows is a bitmask over this sketch's rows (bit r set ⇒ row r
+// admits); value is the occurrence's raw magnitude (1.0 for pure frequency
+// counting) and sampleP is the admission probability in effect when the SDK
+// made the decision.
+//
+// When GOS is active, this composes with insert-time detection the same way
+// InsertHash does — the per-row update (InsertWithHashAtRowsGOS) checks each
+// ADMITTED row's touched cell against threshold and reports/resets any
+// crossing, so an SDK-row-sampled occurrence still participates in GOS
+// rather than silently bypassing it.
+//
+// admittedRows == 0 (R(x)=∅) is a no-op — the SDK is expected to have
+// already dropped such occurrences before they ever reached the wire.
+//
+// This does NOT touch w.sampleP or stamp anything on the envelope: the
+// 1/sampleP correction is baked into the cell here (mirrors
+// InsertWithHashSampledPerRow's "exact envelope, no double-correct"
+// contract) — a query-time consumer must NOT also rescale by this sketch's
+// envelope p, or the correction applies twice.
+func (w *CMSWrapper) ApplyAdmittedOccurrence(h uint64, value float64, admittedRows uint64, sampleP float64) {
+	if w.sk == nil {
+		return
+	}
+	if w.gosEpsilon > 0 {
+		threshold := float64(w.GosDeltaThreshold(w.gosEpsilon, w.gosSites))
+		w.recordDirty(w.sk.InsertWithHashAtRowsGOS(h, value, admittedRows, sampleP, threshold))
+		return
+	}
+	w.sk.InsertWithHashAtRows(h, value, admittedRows, sampleP)
+}
+
 // Snapshot serializes via SerializeProtoBytesFO (the legacy emit
 // path's default) or SerializeMsgpack when the wrapper was configured
 // for msgpack. The backend's modified-OTLP CMS decoder accepts both
@@ -587,8 +623,11 @@ func (w *CMSWrapper) TopK(_ int) []precompute.FrequencyEntry { return nil }
 // `common.FromString(flowKey)` hash) and routes here.
 type CMSObserver struct{}
 
-// Observe routes a precompute.ObservationValue (KindBytes) into the
-// wrapped CMS via InsertHash.
+// Observe routes a precompute.ObservationValue (KindBytes) into the wrapped
+// CMS via InsertHash — or, when v.RowSampled, via ApplyAdmittedOccurrence
+// with the SDK's pre-decided admission bitmask (value 1.0: this observer's
+// sole purpose is frequency counting, matching InsertHash's implicit
+// weight-1 semantics).
 func (CMSObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) error {
 	w, ok := s.(*CMSWrapper)
 	if !ok {
@@ -597,7 +636,12 @@ func (CMSObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) e
 	if v.Kind != precompute.KindBytes {
 		return fmt.Errorf("CMSObserver: expected KindBytes, got %s", v.Kind)
 	}
-	w.InsertHash(common.FromBytes(v.Bytes).Hash)
+	h := common.FromBytes(v.Bytes).Hash
+	if v.RowSampled {
+		w.ApplyAdmittedOccurrence(h, 1.0, v.AdmittedRows, v.SampleP)
+		return nil
+	}
+	w.InsertHash(h)
 	return nil
 }
 
