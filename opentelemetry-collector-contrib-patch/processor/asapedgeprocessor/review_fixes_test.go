@@ -129,10 +129,10 @@ func TestWarmWindowAdmitsProcessingDelayedSample(t *testing.T) {
 	// start is well-defined, then feed an earlier-but-in-window sample.
 	base := uint64(time.Unix(1700000040, 0).UnixMilli()) // 40s into a 60s-aligned window
 	am := map[string]string{"zone": "z0"}
-	sa.observe(am, 1, base)
+	sa.observe(am, 1, base, false, 0, 0)
 	// A sample 30s earlier in event-time: older than a 2s grace, but inside the
 	// 60s window. Must be admitted (no observe drop).
-	sa.observe(am, 2, base-30_000)
+	sa.observe(am, 2, base-30_000, false, 0, 0)
 	if sa.lastObserveErr != nil {
 		t.Fatalf("in-window-but-delayed sample dropped: %v", sa.lastObserveErr)
 	}
@@ -157,7 +157,7 @@ func TestObserveScratchPreservesCounts(t *testing.T) {
 		// Re-create the map each iter (as the real ingest path does) so the
 		// scratch reuse is the only thing carrying state across samples.
 		am := map[string]string{"zone": "z0", "method": "GET"}
-		sa.observe(am, float64(i), base+uint64(i))
+		sa.observe(am, float64(i), base+uint64(i), false, 0, 0)
 	}
 	if sa.lastObserveErr != nil {
 		t.Fatalf("observe errored: %v", sa.lastObserveErr)
@@ -207,7 +207,7 @@ func TestObserveScratchReusesBuffers(t *testing.T) {
 	base := uint64(time.Unix(1700000000, 0).UnixMilli())
 	// Warm up so the scratch buffers reach steady-state capacity.
 	for i := 0; i < 100; i++ {
-		sa.observe(am, 1, base+uint64(i))
+		sa.observe(am, 1, base+uint64(i), false, 0, 0)
 	}
 
 	// Irreducible baseline: everything observe() must do that is NOT in our
@@ -227,7 +227,7 @@ func TestObserveScratchReusesBuffers(t *testing.T) {
 	})
 
 	got := testing.AllocsPerRun(500, func() {
-		sa.observe(am, 1, base)
+		sa.observe(am, 1, base, false, 0, 0)
 	})
 	t.Logf("observe allocs/op = %v, irreducible baseline = %v", got, baseline)
 
