@@ -144,11 +144,14 @@ type MetricFamily struct {
 
 	// GosDeltaEpsilon, when > 0, switches this family's delta gate from the
 	// fixed DeltaThreshold to the GOS isotropic insert-time threshold
-	// T=ε·‖Ĉ‖/(2·GosSites·√(dw)) (design-gos-unified-edge-telemetry.md §7/§11):
-	// each cell is checked the moment it's touched, in place of a periodic
+	// (design-gos-unified-edge-telemetry.md §7/§11): each cell/bucket is
+	// checked the moment it's touched, in place of a periodic
 	// decode-prev-diff scan, and the flush loop wakes immediately on a
 	// crossing instead of waiting for the next tick. 0 (default) leaves
-	// DeltaThreshold unchanged. Count-Sketch only today.
+	// DeltaThreshold unchanged. Supported families: Count-Sketch (F2
+	// isotropic, T=ε·‖Ĉ‖/(2·GosSites·√(dw))) and DDSketch (L1 value-range,
+	// T=ε·N/(GosSites·B) where B is the live populated-bucket count,
+	// derivations §8.4).
 	GosDeltaEpsilon float64 `mapstructure:"gos_delta_epsilon"`
 	// GosSites is k, the number of coordinating sites (edges) sharing the
 	// relative accuracy budget in the GosDeltaEpsilon threshold formula.
