@@ -43,6 +43,7 @@ pub mod observation;
 #[cfg(feature = "otap")]
 pub mod otap;
 pub mod precompute;
+pub mod sampling;
 pub mod sketches;
 pub mod snapshot_cache;
 pub mod window;
@@ -55,6 +56,6 @@ pub use envelope::{Encoding, SketchEnvelope, SketchType};
 pub use matchers::{LabelMatcher, MatchOp};
 pub use observation::{KeyValue, Observation, ObservationValue, ObservationValueKind};
 pub use precompute::{
-    CardinalitySketch, FrequencyEntry, FrequencySketch, Precompute, QuantileSketch, Sketch,
-    SketchObserver,
+    CardinalitySketch, FrequencyEntry, FrequencySketch, Precompute, QuantileSketch, SampleSetter,
+    Sketch, SketchObserver,
 };
