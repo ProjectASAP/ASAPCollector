@@ -610,7 +610,7 @@ func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
 // a family detects crossings at insert time), so always attempt the emit and
 // let the empty-dirty-set case fall out as a nil payload downstream.
 func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
-	if cfg.SketchType == SketchTypeCountSketch && cfg.GosDeltaEpsilon > 0 {
+	if (cfg.SketchType == SketchTypeCountSketch || cfg.SketchType == SketchTypeCountMinSketch) && cfg.GosDeltaEpsilon > 0 {
 		return true
 	}
 	eps := cfg.SubWindowEpsilon
@@ -675,6 +675,18 @@ func subWindowMarkEmitted(entry *seriesEntry, cfg *PrecomputeConfig) {
 		if r, ok := entry.Sketch.(interface{ MarkSubWindowEmitted() }); ok {
 			r.MarkSubWindowEmitted()
 		}
+	case cfg.SketchType == SketchTypeCountMinSketch:
+		if cfg.GosDeltaEpsilon > 0 {
+			// GOS mode already reset each sent cell in place at insert time
+			// (InsertWithHashGOS) — CMS has no ackedCells-style snapshot to
+			// advance in the first place (unlike CountSketch), so this is a
+			// pure documentation/symmetry no-op; falling to the default
+			// branch below would have been equally harmless (ackVal is never
+			// consulted once subWindowShouldEmit bypasses divergence for
+			// GOS-mode CMS entirely).
+			return
+		}
+		entry.ackVal = float64(entry.Count)
 	default:
 		entry.ackVal = float64(entry.Count)
 	}

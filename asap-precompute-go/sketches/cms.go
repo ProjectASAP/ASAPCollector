@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"math/bits"
 
 	"github.com/ProjectASAP/sketchlib-go/common"
@@ -106,6 +107,38 @@ type CMSWrapper struct {
 	sampleP float64
 
 	emptyBaseBytes []byte
+
+	// gosEpsilon/gosSites configure the GOS isotropic insert-time delta gate
+	// (design-gos-unified-edge-telemetry.md §11, derivations §8.2): when
+	// gosEpsilon>0, InsertHash checks each just-touched cell against the
+	// closed-form threshold T=ε·N/k immediately (N = the sketch's current
+	// total mass, tracked incrementally — see currentMass), in place of the
+	// periodic decode-prev-diff sub-window model. gosEpsilon<=0 (the
+	// default) leaves InsertHash/ComputeDeltaAgainst on the pre-existing
+	// fixed-DeltaThreshold path, unchanged. Set via SetGosMode.
+	gosEpsilon float64
+	gosSites   uint32
+	// gosDirty accumulates cells that crossed the insert-time GOS threshold
+	// since the last drainGosDelta call. Each entry's Delta already equals
+	// that cell's full accumulation since it was last sent (sketchlib zeroes
+	// it in place at the moment of crossing), so no separate per-cell
+	// accumulator is needed — draining is just serializing this list.
+	gosDirty []cms.GOSCellUpdate
+	// gosWake is armed on the FIRST cell added to gosDirty since the last
+	// drain, and consumed exactly once by ConsumeWakeSignal — a burst of many
+	// crossings between two flushes wakes the out-of-cycle flush loop once,
+	// not once per crossing (the pending flush picks up everything
+	// accumulated by the time it runs).
+	gosWake bool
+	// gosL1Baseline snapshots the sketch's own per-row L1 accumulator (w.sk.L1,
+	// already incrementally maintained by sketchlib on every insert and
+	// adjusted on every GOS reset) at the last drain, so drainGosDelta can
+	// report each row's L1 change since then in O(rows) — cheap even though
+	// it isn't itself insert-time-incremental, since rows is small (typically
+	// ≤8), unlike the O(rows·cols) matrix scan this whole mechanism replaces.
+	// CMS has no L2 (sketchlib-go#78 — a min-composed estimator can't validly
+	// use sum-of-squares the way CountSketch's median-of-signed-rows does).
+	gosL1Baseline []float64
 }
 
 // cmsSampleSeed is the fixed seed handed to sketchlib-go's geometric
@@ -197,6 +230,106 @@ func (w *CMSWrapper) newSketch() *cms.CountMinSketch {
 	return sk
 }
 
+// SetGosMode configures the GOS isotropic insert-time delta gate. epsilon<=0
+// disables it (fixed DeltaThreshold path, unchanged behavior). Idempotent —
+// callers (the CMS factory, at series creation, and the runtime's
+// applyGosMode, at flush, on every already-live series) may call this
+// repeatedly with the same config; it just re-stamps the two scalars.
+func (w *CMSWrapper) SetGosMode(epsilon float64, sites uint32) {
+	w.gosEpsilon = epsilon
+	w.gosSites = sites
+}
+
+// currentMass returns N, the sketch's current total (nonnegative) mass, in
+// O(rows) via the sketch's own incrementally-maintained per-row L1
+// accumulator (cms.CM_L1, which already takes the conservative min across
+// rows — the same convention CMS's min-composed point query uses) — cheap
+// enough to call on every insert, unlike an O(rows·cols) full-matrix scan.
+func (w *CMSWrapper) currentMass() float64 {
+	if w.sk == nil {
+		return 0
+	}
+	return w.sk.CM_L1()
+}
+
+// GosDeltaThreshold computes the CMS isotropic GOS per-cell delta threshold
+// T=ε·N/k (derivations §8.2) from the current sketch mass, rounded up to an
+// integer (never below 1 = lossless). Returns 1 when ε<=0 (GOS disabled).
+func (w *CMSWrapper) GosDeltaThreshold(epsilon float64, k uint32) uint64 {
+	if epsilon <= 0 || w.sk == nil {
+		return 1
+	}
+	t := CMSIsotropicThreshold(epsilon, w.currentMass(), k)
+	if !math.IsInf(t, 1) && !math.IsNaN(t) && t > 1.0 {
+		return uint64(math.Ceil(t))
+	}
+	return 1
+}
+
+// recordDirty appends newly-crossed cells to the pending GOS drain list and
+// arms the wake signal on the first addition since the last drain.
+func (w *CMSWrapper) recordDirty(cells []cms.GOSCellUpdate) {
+	if len(cells) == 0 {
+		return
+	}
+	if len(w.gosDirty) == 0 {
+		w.gosWake = true
+	}
+	w.gosDirty = append(w.gosDirty, cells...)
+}
+
+// ConsumeWakeSignal implements the runtime's narrow wake-signal interface
+// (asap-precompute-go window.go's recordLocked): reports whether an
+// insert-time GOS threshold crossing happened since the last call, clearing
+// the flag. Always false when GOS isotropic mode is inactive.
+func (w *CMSWrapper) ConsumeWakeSignal() bool {
+	if !w.gosWake {
+		return false
+	}
+	w.gosWake = false
+	return true
+}
+
+// drainGosDelta serializes the cells accumulated in gosDirty since the last
+// drain as a sparse CMS delta — the insert-time counterpart of the old
+// decode-prev-diff path (cms.ComputeDelta): the dirty list was already built
+// cell-by-cell at insert time (InsertHash -> InsertWithHashGOS), so no
+// previous snapshot needs decoding or scanning here. Returns (nil, false,
+// nil) when nothing has crossed since the last drain — the caller
+// (precompute.SnapshotCache.ComputeSubWindowDelta) treats a nil payload as
+// "nothing to emit" (design-gos-unified-edge-telemetry.md §11: Gate 1's
+// periodic divergence pre-check is redundant for a GOS-converted family — an
+// empty dirty set at flush time already IS "nothing to send").
+func (w *CMSWrapper) drainGosDelta() ([]byte, bool, error) {
+	if len(w.gosDirty) == 0 {
+		return nil, false, nil
+	}
+	d := &cms.Delta{
+		Rows:  uint32(w.rows),
+		Cols:  uint32(w.cols),
+		Cells: make([]cms.CellDelta, len(w.gosDirty)),
+		L1:    make([]float64, w.rows),
+	}
+	for i, c := range w.gosDirty {
+		d.Cells[i] = cms.CellDelta{Row: c.Row, Col: c.Col, DValue: c.Delta}
+	}
+	w.gosDirty = w.gosDirty[:0]
+	if len(w.gosL1Baseline) != w.rows {
+		w.gosL1Baseline = make([]float64, w.rows)
+	}
+	for r := 0; r < w.rows; r++ {
+		curL1 := w.sk.L1[r]
+		d.L1[r] = curL1 - w.gosL1Baseline[r]
+		w.gosL1Baseline[r] = curL1
+	}
+	payload, err := cms.SerializeDelta(d)
+	if err != nil {
+		full, fErr := w.Snapshot()
+		return full, true, fErr
+	}
+	return payload, false, nil
+}
+
 // InsertHash mirrors the legacy CMS processor's
 // `ws.cms.InsertWithHash(common.FromString(flowKey).Hash)` call.
 // Adapter code feeds the encoded data-point attribute set as bytes
@@ -204,9 +337,15 @@ func (w *CMSWrapper) newSketch() *cms.CountMinSketch {
 // the same attrs because both go through common.FromString /
 // common.FromBytes.
 func (w *CMSWrapper) InsertHash(h uint64) {
-	if w.sk != nil {
-		w.sk.InsertWithHash(h)
+	if w.sk == nil {
+		return
 	}
+	if w.gosEpsilon > 0 {
+		threshold := float64(w.GosDeltaThreshold(w.gosEpsilon, w.gosSites))
+		w.recordDirty(w.sk.InsertWithHashGOS(h, 1.0, threshold))
+		return
+	}
+	w.sk.InsertWithHash(h)
 }
 
 // Snapshot serializes via SerializeProtoBytesFO (the legacy emit
@@ -243,6 +382,15 @@ func (w *CMSWrapper) Snapshot() ([]byte, error) {
 func (w *CMSWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) ([]byte, bool, error) {
 	if w.sk == nil {
 		return nil, true, nil
+	}
+	// GOS isotropic mode: cells were already detected + reset at insert time
+	// (InsertHash -> InsertWithHashGOS), so the delta is just draining the
+	// pending list — prev is never consulted (nothing to decode: the
+	// mechanism doesn't need a "previous full state" reference at all).
+	// Msgpack mode isn't GOS-converted (no delta transmission at all in that
+	// mode), so it falls through to the existing full-snapshot path below.
+	if w.gosEpsilon > 0 && !w.useMsgpack {
+		return w.drainGosDelta()
 	}
 	if w.useMsgpack {
 		full, err := w.Snapshot()
@@ -410,6 +558,9 @@ func (w *CMSWrapper) Merge(other precompute.Sketch) error {
 // recycle entries.
 func (w *CMSWrapper) Reset() {
 	w.sk = w.newSketch()
+	w.gosDirty = nil
+	w.gosWake = false
+	w.gosL1Baseline = nil
 }
 
 // EstimateCount returns the estimated frequency for a hashed key.
