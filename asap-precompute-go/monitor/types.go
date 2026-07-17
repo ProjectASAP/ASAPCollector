@@ -1,11 +1,20 @@
-// Package monitor implements the edge side of the continuous distributed
-// monitoring (CDM) model — Discipline B from ASAPCollector
-// docs/continuous-monitoring-tumbling-cost-analysis.md. The runtime already
-// emits one sketch per tumbling window (Discipline A); this package adds the
-// intra-window early-alert protocol: the edge holds a per-monitor slack budget
-// granted by the coordinator and sends a report only when its LOCAL additive
-// value climbs past that slack, staying silent otherwise. State resets at the
-// tumbling boundary (one window = one independent monitoring epoch).
+// Package monitor implements the edge side of coordinated update-sampling —
+// what used to be called "Discipline B" in ASAPCollector
+// docs/continuous-monitoring-tumbling-cost-analysis.md.
+//
+// Global-threshold ALERTING (the CMY slack-countdown: register → grant
+// (slack, sample_p) → countdown → report → alert) is RETIRED as of the
+// 2026-07 insert-time-GOS redesign (docs/design-gos-unified-edge-telemetry.md
+// §11): "Alerting and any other query-time decision is made entirely at the
+// backend against [the reconstructed sketch state]; the edge no longer makes
+// alerting decisions itself." This edge never decides to fire an alert.
+//
+// What's left: the edge reports its per-epoch observation RATE (obsCount) on
+// its own periodic cadence (Engine.Observe, decoupled from any value/slack
+// threshold — see reportEveryN), and the coordinator answers with a
+// coordinated-sampling grant (Grant.SampleP), the whole-sketch ε-floor
+// p_i = 1/(1+ε²·rate_i). State resets at the tumbling boundary (one window =
+// one independent monitoring epoch).
 //
 // The package is intentionally gRPC-free: the engine talks to the coordinator
 // through the Reporter / Inbound interfaces, which the nested
@@ -15,27 +24,25 @@ package monitor
 
 import "fmt"
 
-// Functional selects which additive readout of a series' sketch the monitor
-// thresholds. v1 covers only ADDITIVE functionals, which are monotone
-// non-decreasing within a tumbling window — the property the slack countdown
-// relies on.
+// Functional selects which additive readout of a series' sketch a monitor
+// reports as Report.LocalValue — informational only since alerting retired
+// (see the package doc comment); it no longer drives any threshold decision.
+// Identity is still (AggID, Key): CmsPoint carries a point-frequency key,
+// Sum/LinearBuckets are whole-stream (key="").
 type Functional uint8
 
 const (
-	// FunctionalSum thresholds the running window-sum (SumWrapper.Sum). O(1).
+	// FunctionalSum reports the running window-sum (SumWrapper.Sum). O(1).
 	FunctionalSum Functional = iota
-	// FunctionalCMSPoint thresholds a Count-Min point-frequency f(x) for a
+	// FunctionalCMSPoint reports a Count-Min point-frequency f(x) for a
 	// fixed key x (CMSWrapper.EstimateCount). O(rows).
 	FunctionalCMSPoint
-	// FunctionalLinearBuckets thresholds a non-negative linear functional over an
+	// FunctionalLinearBuckets reports a non-negative linear functional over an
 	// additive sketch's buckets. In v1 the only sketch that implements it is
-	// DDSketch, where the monotone realization is a VALUE-RANGE COUNT: Coeffs
-	// carries the value bounds — Coeffs[0]=lo, Coeffs[1]=hi (optional, default
-	// +Inf) — and the readout is the count of samples whose bucket value is in
-	// [lo, hi] (e.g. "number of requests slower than 500ms"). This is an
-	// additive non-negative aggregate, hence monotone within a window. The
-	// signed/quantile-threshold variants the cost-analysis doc also describes are
-	// non-monotone and out of scope; Validate rejects negative coefficients.
+	// DDSketch, where the realization is a VALUE-RANGE COUNT: Coeffs carries
+	// the value bounds — Coeffs[0]=lo, Coeffs[1]=hi (optional, default +Inf) —
+	// and the readout is the count of samples whose bucket value is in
+	// [lo, hi] (e.g. "number of requests slower than 500ms").
 	FunctionalLinearBuckets
 )
 
@@ -52,23 +59,22 @@ func (f Functional) String() string {
 	}
 }
 
-// Spec is the per-AggID threshold-monitor configuration. It rides inside
+// Spec is the per-AggID monitor configuration. It rides inside
 // PrecomputeConfig and is delivered to edges through the existing control
-// channel. τ is advisory at the edge (used for diagnostics); the authoritative
-// τ lives at the coordinator.
+// channel. Tau is vestigial (alerting retired — see the package doc comment);
+// Epsilon still feeds the coordinator's whole-sketch ε-floor sampling law.
 type Spec struct {
 	Enabled        bool
 	Functional     Functional
 	Key            []byte    // CMS point-frequency key x (FunctionalCMSPoint)
 	Coeffs         []float64 // linear-functional coefficients (FunctionalLinearBuckets); non-negative
 	CoordinatorURL string    // edge→coordinator dial target
-	Tau            float64   // advisory threshold (authoritative copy at coordinator)
-	Epsilon        float64   // advisory relative tolerance
+	Tau            float64   // unused (alerting retired); kept for wire/config-schema compatibility
+	Epsilon        float64   // feeds the coordinator's whole-sketch ε-floor sampling law
 }
 
-// Validate rejects specs whose functional would violate the within-window
-// monotonicity the slack countdown requires (negative linear coefficients), or
-// that are missing required fields.
+// Validate rejects specs with malformed per-functional fields (e.g. a missing
+// CMSPoint key, or negative LinearBuckets coefficients).
 func (s Spec) Validate() error {
 	if !s.Enabled {
 		return nil
@@ -86,7 +92,7 @@ func (s Spec) Validate() error {
 		}
 		for i, c := range s.Coeffs {
 			if c < 0 {
-				return fmt.Errorf("monitor: linear_buckets coeff[%d]=%g is negative; only non-negative (monotone) functionals are supported in v1", i, c)
+				return fmt.Errorf("monitor: linear_buckets coeff[%d]=%g is negative; only non-negative value-range bounds are supported", i, c)
 			}
 		}
 	default:
@@ -109,9 +115,10 @@ type Registration struct {
 	WindowStartMs uint64
 }
 
-// Report is one outbound edge→coordinator message: the current local additive
-// value for a monitor, sent when the local increase since round start crossed
-// the granted slack, or in answer to a Poll at round close.
+// Report is one outbound edge→coordinator message, sent on the engine's own
+// periodic cadence (reportEveryN observations, decoupled from any value/slack
+// threshold — see the package doc comment). LocalValue is informational only
+// (alerting retired); Rate is what the coordinator actually acts on.
 type Report struct {
 	EdgeID        string
 	AggID         uint64
@@ -129,11 +136,14 @@ type Report struct {
 	Rate float64
 }
 
-// Grant is the coordinator→edge per-round slack budget.
+// Grant is the coordinator's reply to one Report: this edge's freshly
+// computed coordinated-sampling grant.
 type Grant struct {
 	AggID         uint64
 	Key           []byte
 	Round         uint64
+	// LocalSlack is unused (alerting retired); kept for SlackGrant wire
+	// compatibility. The edge no longer gates anything on it.
 	LocalSlack    float64
 	WindowStartMs uint64
 	// SampleP is the distributed-NitroSketch update-sampling probability the
@@ -141,13 +151,12 @@ type Grant struct {
 	// (p_i = 1/(1+ε²·rate_i); see data_plane allocate_p / epsilon_sample_floor).
 	// 0 (unset) ⇒ no sampling grant (p=1). The edge applies it via WithSampleP on
 	// the metric's sketch wrapper at the next EpochReset (never mid-window, so
-	// both merge operands share one p). Orthogonal to LocalSlack (which governs
-	// emission/bandwidth; this governs update CPU). See
+	// both merge operands share one p). See
 	// docs/distributed-nitrosketch-coordinated-sampling.md.
 	SampleP float64
 }
 
-// Poll is the coordinator→edge demand for the current local value (round close).
+// Poll is the coordinator→edge demand for an immediate out-of-cadence report.
 type Poll struct {
 	AggID         uint64
 	Key           []byte
@@ -155,8 +164,7 @@ type Poll struct {
 	WindowStartMs uint64
 }
 
-// Close is the coordinator→edge round-closed notice; the edge advances its
-// round baseline.
+// Close is the coordinator→edge round-closed notice.
 type Close struct {
 	AggID         uint64
 	Round         uint64

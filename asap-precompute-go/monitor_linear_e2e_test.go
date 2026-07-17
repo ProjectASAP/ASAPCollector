@@ -4,10 +4,11 @@
 package precompute_test
 
 // End-to-end (in-process) proof that a FunctionalLinearBuckets monitor on a
-// DDSketch series actually drives the slack countdown: Observe → window hook →
-// monitorValue → DDSketchWrapper.LinearReadout (value-range count) →
-// engine.Observe → report. Sum + CMS-point are covered elsewhere; this closes
-// the loop for the linear functional specifically.
+// DDSketch series actually drives the report pipeline: Observe → window hook
+// → monitorValue → DDSketchWrapper.LinearReadout (value-range count) →
+// engine.Observe → report, on the engine's own reportEveryN cadence (no
+// slack/grant involved — alerting retired). Sum + CMS-point are covered
+// elsewhere; this closes the loop for the linear functional specifically.
 
 import (
 	"testing"
@@ -42,7 +43,6 @@ func TestMonitor_LinearBuckets_DDSketch_RangeCountDrivesReports(t *testing.T) {
 			Functional:     monitor.FunctionalLinearBuckets,
 			Coeffs:         []float64{50}, // count of samples with value >= 50
 			CoordinatorURL: "passthrough:///test",
-			Tau:            100,
 			Epsilon:        0.05,
 		},
 	}
@@ -65,35 +65,44 @@ func TestMonitor_LinearBuckets_DDSketch_RangeCountDrivesReports(t *testing.T) {
 		}
 	}
 
-	// First observation registers the monitor (no grant yet → silent).
-	obs(1.0) // below 50 → range-count stays 0
-	if len(rep.reports) != 0 {
-		t.Fatalf("reported before any grant")
+	// First observation registers the monitor AND fires an immediate report
+	// (obsCount==1), carrying the range-count at that point (0: 1.0 < 50).
+	obs(1.0)
+	if len(rep.reports) != 1 {
+		t.Fatalf("expected an immediate report on the first observation, got %d", len(rep.reports))
+	}
+	if got := rep.reports[0].LocalValue; got != 0 {
+		t.Fatalf("first report should carry range-count 0, got %v", got)
 	}
 
-	// Coordinator grants slack 3 for this round.
+	// Coordinator grants a sampling probability for this group — no longer
+	// gates reporting at all (that was the retired slack-crossing trigger).
 	// Sum/LinearBuckets monitors key by the series GROUP key (the canonical
 	// AggregateBy/label tuple), so the grant must target that same group.
 	groupKey := []byte("svc=checkout")
-	eng.OnGrant(monitor.Grant{AggID: uint64(aggID), Key: groupKey, Round: 1, LocalSlack: 3, WindowStartMs: windowStart})
+	eng.OnGrant(monitor.Grant{AggID: uint64(aggID), Key: groupKey, Round: 1, WindowStartMs: windowStart, SampleP: 0.5})
 
-	// Two in-range samples: range-count = 2 < slack 3 → still silent.
+	// More in-range samples, short of the ReportEveryN cadence → no new report.
 	obs(100.0)
 	obs(200.0)
-	// An out-of-range sample does NOT advance the count.
-	obs(2.0)
-	if len(rep.reports) != 0 {
-		t.Fatalf("reported too early: range-count below slack; got %d reports", len(rep.reports))
+	obs(2.0) // out-of-range, does not advance the range-count
+	obsCount := 4
+	if len(rep.reports) != 1 {
+		t.Fatalf("reported too early, before the cadence: got %d reports", len(rep.reports))
 	}
 
-	// Third in-range sample: range-count = 3 >= slack 3 → exactly one report,
-	// carrying the range-count (3), not the raw observed value.
-	obs(100.0)
-	if len(rep.reports) != 1 {
-		t.Fatalf("expected exactly one report once range-count crossed slack, got %d", len(rep.reports))
+	// Drive obsCount up to the ReportEveryN cadence to trigger report #2.
+	for obsCount < monitor.ReportEveryN+1 {
+		obs(1.0) // out-of-range; keeps range-count fixed while advancing obsCount
+		obsCount++
 	}
-	if got := rep.reports[0].LocalValue; got != 3 {
-		t.Fatalf("report should carry the value-range count (3), got %v", got)
+	if len(rep.reports) != 2 {
+		t.Fatalf("expected a second report once the cadence was reached, got %d", len(rep.reports))
+	}
+	// range-count at this point: two in-range samples (100, 200) from above;
+	// every filler observation was out-of-range, so the count stays 2.
+	if got := rep.reports[1].LocalValue; got != 2 {
+		t.Fatalf("second report should carry the value-range count (2), got %v", got)
 	}
 }
 
@@ -125,23 +134,37 @@ func TestMonitor_Sum_PerGroup_NoCollision(t *testing.T) {
 			Value:  precompute.FloatValue(v),
 		})
 	}
-	obs("a", 0) // registers group "zone=a"
-	obs("b", 0) // registers group "zone=b"
-	// Grant each group its own slack (keyed by the group bytes).
-	eng.OnGrant(monitor.Grant{AggID: uint64(aggID), Key: []byte("zone=a"), Round: 1, LocalSlack: 5, WindowStartMs: windowStart})
-	eng.OnGrant(monitor.Grant{AggID: uint64(aggID), Key: []byte("zone=b"), Round: 1, LocalSlack: 5, WindowStartMs: windowStart})
+	// Each group's first observation registers AND immediately reports (its
+	// own obsCount==1) — independent of the other group.
+	obs("a", 10) // registers + reports group "zone=a"
+	obs("b", 2)  // registers + reports group "zone=b"
+	if len(rep.reports) != 2 {
+		t.Fatalf("expected one immediate report per group, got %d", len(rep.reports))
+	}
+	byKey := map[string]monitor.Report{}
+	for _, r := range rep.reports {
+		byKey[string(r.Key)] = r
+	}
+	if byKey["zone=a"].LocalValue != 10 || byKey["zone=b"].LocalValue != 2 {
+		t.Fatalf("per-group first report should carry that group's own sum, got %+v", rep.reports)
+	}
 
-	obs("a", 10) // zone=a sum=10 >= 5 → reports group a
-	obs("b", 2)  // zone=b sum=2  <  5 → silent (no collision with a)
-	if len(rep.reports) != 1 {
-		t.Fatalf("expected exactly 1 report (only zone=a crossed), got %d", len(rep.reports))
+	// Grant each group its own sampling probability (keyed by the group bytes)
+	// — no longer gates reporting, only SampleP.
+	eng.OnGrant(monitor.Grant{AggID: uint64(aggID), Key: []byte("zone=a"), Round: 1, WindowStartMs: windowStart, SampleP: 0.5})
+	eng.OnGrant(monitor.Grant{AggID: uint64(aggID), Key: []byte("zone=b"), Round: 1, WindowStartMs: windowStart, SampleP: 0.9})
+
+	// Drive ONLY zone=a to the ReportEveryN cadence (obsCount 1 → ReportEveryN+1);
+	// zone=b stays far short of it. Only zone=a should produce a second
+	// report — no collision.
+	for i := 0; i < monitor.ReportEveryN; i++ {
+		obs("a", 1)
 	}
-	if string(rep.reports[0].Key) != "zone=a" {
-		t.Fatalf("report should be keyed by group zone=a, got %q", rep.reports[0].Key)
+	obs("b", 1) // zone=b's second observation — nowhere near its own cadence
+	if len(rep.reports) != 3 {
+		t.Fatalf("expected exactly one new report (zone=a's cadence), got %d total", len(rep.reports))
 	}
-	obs("b", 10) // zone=b sum=10 >= 5 → now reports group b independently
-	if len(rep.reports) != 2 || string(rep.reports[1].Key) != "zone=b" {
-		t.Fatalf("expected an independent zone=b report; got %d reports, last key %q",
-			len(rep.reports), rep.reports[len(rep.reports)-1].Key)
+	if string(rep.reports[2].Key) != "zone=a" {
+		t.Fatalf("the new report should be zone=a's, got key %q", rep.reports[2].Key)
 	}
 }

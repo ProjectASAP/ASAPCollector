@@ -1,12 +1,15 @@
-// Command e2edriver is the EDGE side of the cross-language CDM e2e
-// (deploy/mvp-multinode/scripts/monitor_e2e.sh). It wires the REAL edge
-// runtime — precompute.Precompute (Sum) + monitor.Engine + the gRPC
+// Command e2edriver is the EDGE side of the cross-language coordinated-
+// sampling e2e (deploy/mvp-multinode/scripts/monitor_e2e.sh). It wires the
+// REAL edge runtime — precompute.Precompute (Sum) + monitor.Engine + the gRPC
 // grpcclient transport — against a running Rust monitor-coordinator harness,
-// then feeds a monotone stream of observations whose running window-sum climbs
-// past τ. The coordinator should grant slack, receive the edge's reports over
-// the live bidi stream, and fire the global-threshold alert.
+// then feeds a stream of observations. The engine reports its observed rate
+// on its own periodic cadence (monitor.ReportEveryN observations — alerting
+// retired, see the monitor package docs), and the coordinator should answer
+// with a computed coordinated-sampling grant (SlackGrant.sample_p) over the
+// live bidi stream.
 //
 // Usage: e2edriver <coordinator_url> [agg_id] [tau] [per_obs] [count]
+// (tau is accepted for CLI/back-compat but unused — alerting retired.)
 package main
 
 import (
@@ -96,8 +99,8 @@ func main() {
 		})
 		time.Sleep(30 * time.Millisecond)
 	}
-	// Grace for the final report → alert round-trip.
+	// Grace for the final report → grant round-trip.
 	time.Sleep(1 * time.Second)
-	fmt.Fprintf(os.Stderr, "e2edriver: fed %d observations of %g (sum=%g, tau=%g), dropped_reports=%d\n",
+	fmt.Fprintf(os.Stderr, "e2edriver: fed %d observations of %g (sum=%g, tau=%g unused), dropped_reports=%d\n",
 		count, perObs, float64(count)*perObs, tau, client.DroppedReports())
 }
