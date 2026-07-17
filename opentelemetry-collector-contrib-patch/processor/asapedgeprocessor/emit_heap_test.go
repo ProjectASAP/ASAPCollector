@@ -78,7 +78,7 @@ func TestEmitHeap_CountSketchHeapRoundTrips(t *testing.T) {
 	tick := uint64(0)
 	for _, f := range feed {
 		for i := 0; i < f.n; i++ {
-			sa.observe(map[string]string{"endpoint": f.ep}, 1.0, base+tick)
+			sa.observe(map[string]string{"endpoint": f.ep}, 1.0, base+tick, false, 0, 0)
 			tick++
 		}
 	}
@@ -206,7 +206,7 @@ func TestEmitHeap_DeltaFrameAfterFirstWindow(t *testing.T) {
 		tick := start
 		for ep, n := range counts {
 			for i := 0; i < n; i++ {
-				sa.observe(map[string]string{"endpoint": ep}, 1.0, tick)
+				sa.observe(map[string]string{"endpoint": ep}, 1.0, tick, false, 0, 0)
 				tick++
 			}
 		}
@@ -287,7 +287,7 @@ func TestEmitHeap_NonHeapCountSketchUnchanged(t *testing.T) {
 
 	base := uint64(time.Unix(1700000000, 0).UnixMilli())
 	for i := 0; i < 20; i++ {
-		sa.observe(map[string]string{"endpoint": "/a"}, 1.0, base+uint64(i))
+		sa.observe(map[string]string{"endpoint": "/a"}, 1.0, base+uint64(i), false, 0, 0)
 	}
 	if sa.lastObserveErr != nil {
 		t.Fatalf("observe errored: %v", sa.lastObserveErr)

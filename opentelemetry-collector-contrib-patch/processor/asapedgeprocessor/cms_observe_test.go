@@ -42,7 +42,7 @@ func TestCountMinSketchRecordsFrequency(t *testing.T) {
 	am := map[string]string{"zone": "z0"}
 	base := uint64(time.Unix(1700000000, 0).UnixMilli())
 	for i := 0; i < n; i++ {
-		sa.observe(am, float64(i), base+uint64(i))
+		sa.observe(am, float64(i), base+uint64(i), false, 0, 0)
 	}
 
 	// Core invariant: the value kind matches the observer. Pre-fix this is
