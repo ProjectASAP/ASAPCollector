@@ -32,7 +32,7 @@ require (
 
 // Use the local sketchlib-go checkout — same approach the OTel
 // processors use. Path is relative to asap-precompute-go.
-replace github.com/ProjectASAP/sketchlib-go => /mydata/sketchlib-gos-combined
+replace github.com/ProjectASAP/sketchlib-go => ../../sketchlib-go
 
 // Use the patched pdata that exposes the modified-OTLP sketch
 // data variants (DDSketch / KLLSketch / HLLSketch / CountSketch /
