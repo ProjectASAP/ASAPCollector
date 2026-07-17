@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	cpb "go.opentelemetry.io/proto/otlp/common/v1"
 	mpb "go.opentelemetry.io/proto/otlp/metrics/v1"
@@ -119,6 +120,10 @@ func metric(m metricdata.Metrics) (*mpb.Metric, error) {
 		out.Data, err = CountMinSketch(a)
 	case metricdata.HLLSketch:
 		out.Data, err = HLLSketch(a)
+	case metricdata.RowSampledSketch[int64]:
+		out.Data = RowSampledSketch(a)
+	case metricdata.RowSampledSketch[float64]:
+		out.Data = RowSampledSketch(a)
 	default:
 		return out, fmt.Errorf("%w: %T", errUnknownAggregation, a)
 	}
@@ -154,11 +159,13 @@ func Sum[N int64 | float64](s metricdata.Sum[N]) (*mpb.Metric_Sum, error) {
 func DataPoints[N int64 | float64](dPts []metricdata.DataPoint[N]) []*mpb.NumberDataPoint {
 	out := make([]*mpb.NumberDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		ndp := &mpb.NumberDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 		}
 		switch v := any(dPt.Value).(type) {
 		case int64:
@@ -169,6 +176,65 @@ func DataPoints[N int64 | float64](dPts []metricdata.DataPoint[N]) []*mpb.Number
 			ndp.Value = &mpb.NumberDataPoint_AsDouble{
 				AsDouble: v,
 			}
+		}
+		out = append(out, ndp)
+	}
+	return out
+}
+
+// rowSampledAdmittedRowsKey / rowSampledRowsKey / rowSampledSamplePKey are
+// RESERVED attribute keys carrying RowSampledSketchDataPoint's sketch-
+// routing fields on the wire. RowSampledSketch reuses the STANDARD OTLP
+// Gauge/NumberDataPoint shape rather than a new custom mpb.Metric_* message
+// (unlike CountSketch/CountMinSketch/DDSketch/KLL/HLL): a row-sampled point
+// carries no sketch STATE at all — it is one individually admitted raw
+// occurrence plus a handful of scalars — so the standard NumberDataPoint
+// (attrs + value + timestamps) already fits, with these three extras
+// stamped as ordinary attributes instead of new proto fields. The
+// collector's ingest path (asapedgeprocessor) reads these three keys back
+// out and MUST strip them before they'd ever reach a real backend query
+// (they are wire-transport metadata, not series-identifying dimensions).
+const (
+	rowSampledAdmittedRowsKey = "__asap_row_sampled_admitted_rows"
+	rowSampledRowsKey         = "__asap_row_sampled_rows"
+	rowSampledSamplePKey      = "__asap_row_sampled_sample_p"
+)
+
+// RowSampledSketch returns an OTLP Metric_Gauge generated from r — see the
+// rowSampled*Key doc for why this reuses the standard Gauge shape instead
+// of a new custom message type.
+func RowSampledSketch[N int64 | float64](r metricdata.RowSampledSketch[N]) *mpb.Metric_Gauge {
+	return &mpb.Metric_Gauge{
+		Gauge: &mpb.Gauge{
+			DataPoints: RowSampledSketchDataPoints(r.DataPoints),
+		},
+	}
+}
+
+// RowSampledSketchDataPoints returns a slice of OTLP NumberDataPoint
+// generated from dPts, each carrying AdmittedRows/Rows/SampleP as the three
+// reserved attributes documented on rowSampledAdmittedRowsKey.
+func RowSampledSketchDataPoints[N int64 | float64](
+	dPts []metricdata.RowSampledSketchDataPoint[N],
+) []*mpb.NumberDataPoint {
+	out := make([]*mpb.NumberDataPoint, 0, len(dPts))
+	for _, dPt := range dPts {
+		attrs := AttrIter(dPt.Attributes.Iter())
+		attrs = append(attrs, KeyValues([]attribute.KeyValue{
+			attribute.Int64(rowSampledAdmittedRowsKey, int64(dPt.AdmittedRows)),
+			attribute.Int64(rowSampledRowsKey, int64(dPt.Rows)),
+			attribute.Float64(rowSampledSamplePKey, dPt.SampleP),
+		})...)
+		ndp := &mpb.NumberDataPoint{
+			Attributes:        attrs,
+			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
+			TimeUnixNano:      timeUnixNano(dPt.Time),
+		}
+		switch v := any(dPt.Value).(type) {
+		case int64:
+			ndp.Value = &mpb.NumberDataPoint_AsInt{AsInt: v}
+		case float64:
+			ndp.Value = &mpb.NumberDataPoint_AsDouble{AsDouble: v}
 		}
 		out = append(out, ndp)
 	}
@@ -196,8 +262,9 @@ func HistogramDataPoints[N int64 | float64](dPts []metricdata.HistogramDataPoint
 	out := make([]*mpb.HistogramDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
 		sum := float64(dPt.Sum)
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		hdp := &mpb.HistogramDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
@@ -205,6 +272,7 @@ func HistogramDataPoints[N int64 | float64](dPts []metricdata.HistogramDataPoint
 			BucketCounts:      dPt.BucketCounts,
 			ExplicitBounds:    dPt.Bounds,
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 		}
 		if v, ok := dPt.Min.Value(); ok {
 			vF64 := float64(v)
@@ -244,8 +312,9 @@ func ExponentialHistogramDataPoints[N int64 | float64](
 	out := make([]*mpb.ExponentialHistogramDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
 		sum := float64(dPt.Sum)
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		ehdp := &mpb.ExponentialHistogramDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
@@ -253,6 +322,7 @@ func ExponentialHistogramDataPoints[N int64 | float64](
 			Scale:             dPt.Scale,
 			ZeroCount:         dPt.ZeroCount,
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 
 			Positive: ExponentialHistogramDataPointBuckets(dPt.PositiveBucket),
 			Negative: ExponentialHistogramDataPointBuckets(dPt.NegativeBucket),
@@ -322,13 +392,15 @@ func DDSketchDataPoints[N int64 | float64](
 		// land on the wire (see
 		// `opentelemetry-proto-patch/.../metrics.proto`'s
 		// `reserved 4, 5, 6, 7, 12, 13, 14;` line).
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.DDSketchDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
 			Exemplars:         Exemplars(dPt.Exemplars),
+			SeriesId:          seriesID,
 		}
 
 		out = append(out, dp)
@@ -413,13 +485,15 @@ func Summary(s metricdata.Summary) *mpb.Metric_Summary {
 func SummaryDataPoints(dPts []metricdata.SummaryDataPoint) []*mpb.SummaryDataPoint {
 	out := make([]*mpb.SummaryDataPoint, 0, len(dPts))
 	for _, dPt := range dPts {
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		sdp := &mpb.SummaryDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Count:             dPt.Count,
 			Sum:               dPt.Sum,
 			QuantileValues:    QuantileValues(dPt.QuantileValues),
+			SeriesId:          seriesID,
 		}
 		out = append(out, sdp)
 	}
@@ -438,6 +512,13 @@ func QuantileValues(quantiles []metricdata.QuantileValue) []*mpb.SummaryDataPoin
 		out = append(out, quantile)
 	}
 	return out
+}
+
+func seriesIdentity(attrs []*cpb.KeyValue, seriesID uint64) ([]*cpb.KeyValue, uint64) {
+	if seriesID == 0 {
+		return attrs, 0
+	}
+	return nil, seriesID
 }
 
 // KLLSketch returns an OTLP Metric_Kllsketch generated from k. An error is
@@ -473,12 +554,14 @@ func KLLSketchDataPoints[N int64 | float64](
 		// Refactor-2026-05: KLLSketchDataPoint dropped the precomputed
 		// count/sum/min/max fields (derivable from the sketch payload).
 		// See metrics.proto's `reserved 4, 5, 6, 7;` line.
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.KLLSketchDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
+			SeriesId:          seriesID,
 		}
 		out = append(out, dp)
 	}
@@ -530,12 +613,14 @@ func CountSketchDataPoints[N int64 | float64](
 		// at the CountSketch wrapper level (or derivable from the
 		// payload), not per-DataPoint. See metrics.proto's
 		// `reserved 6, 7, 8;` line.
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.CountSketchDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
+			SeriesId:          seriesID,
 		}
 		out = append(out, dp)
 	}
@@ -589,12 +674,14 @@ func CountMinSketchDataPoints[N int64 | float64](
 		// to the CountMinSketch wrapper or is derivable from the
 		// payload, not per-DataPoint. See metrics.proto's
 		// `reserved 4, 7, 8;` line.
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.CountMinSketchDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
+			SeriesId:          seriesID,
 		}
 		out = append(out, dp)
 	}
@@ -647,12 +734,14 @@ func HLLSketchDataPoints(
 		// Cardinality / Precision — sketch-instance config moved
 		// to the HLLSketch wrapper or is derivable from the payload,
 		// not per-DataPoint. See metrics.proto's `reserved 4, 5, 8;` line.
+		attrs, seriesID := seriesIdentity(AttrIter(dPt.Attributes.Iter()), dPt.SeriesID)
 		dp := &mpb.HLLSketchDataPoint{
-			Attributes:        AttrIter(dPt.Attributes.Iter()),
+			Attributes:        attrs,
 			StartTimeUnixNano: timeUnixNano(dPt.StartTime),
 			TimeUnixNano:      timeUnixNano(dPt.Time),
 			Sketch:            dPt.Sketch,
 			Encoding:          encoding,
+			SeriesId:          seriesID,
 		}
 		out = append(out, dp)
 	}
