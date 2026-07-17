@@ -142,6 +142,19 @@ type MetricFamily struct {
 	// sketch-specific (bucket counts / cells); see PrecomputeConfig.DeltaThreshold.
 	DeltaThreshold uint64 `mapstructure:"delta_threshold"`
 
+	// GosDeltaEpsilon, when > 0, switches this family's delta gate from the
+	// fixed DeltaThreshold to the GOS isotropic insert-time threshold
+	// T=ε·‖Ĉ‖/(2·GosSites·√(dw)) (design-gos-unified-edge-telemetry.md §7/§11):
+	// each cell is checked the moment it's touched, in place of a periodic
+	// decode-prev-diff scan, and the flush loop wakes immediately on a
+	// crossing instead of waiting for the next tick. 0 (default) leaves
+	// DeltaThreshold unchanged. Count-Sketch only today.
+	GosDeltaEpsilon float64 `mapstructure:"gos_delta_epsilon"`
+	// GosSites is k, the number of coordinating sites (edges) sharing the
+	// relative accuracy budget in the GosDeltaEpsilon threshold formula.
+	// Meaningless when GosDeltaEpsilon<=0.
+	GosSites uint32 `mapstructure:"gos_sites"`
+
 	// EmitHeap selects the heap-bearing CountSketch wire variant for a
 	// `family: countsketch` metric: the emitted sketch carries a bounded
 	// top-k min-heap of heavy-hitter items alongside the count matrix,

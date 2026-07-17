@@ -174,10 +174,17 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 				edgeID:            cfg.EdgeID,
 				subWindowInterval: cfg.SubWindowInterval,
 				subWindowEpsilon:  cfg.SubWindowEpsilon,
+				gosDeltaEpsilon:   fam.GosDeltaEpsilon,
+				gosSites:          fam.GosSites,
 			}
 			if sa, ok := newSketchAggregator(name, fam, opts, p.logger); ok {
 				sa.procDropCount = &p.sketchDropCount
 				sa.procEncodeDropCount = &p.sketchEncodeDropCount
+				// Wire the insert-time GOS wake signal to this processor's
+				// out-of-cycle flush trigger (flush.go). Every shard's
+				// aggregator for this metric wakes the SAME wakeCh; concurrent
+				// calls are safe (wakeSubWindow is a non-blocking channel send).
+				sa.pc.SetWakeHook(p.wakeSubWindow)
 				sh.sketchAggs[name] = sa
 			}
 		}

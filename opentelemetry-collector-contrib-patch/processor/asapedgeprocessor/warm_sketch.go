@@ -223,6 +223,11 @@ type sketchOpts struct {
 	// interval disables it; epsilon 0 = fixed mode.
 	subWindowInterval time.Duration
 	subWindowEpsilon  float64
+	// gosDeltaEpsilon / gosSites configure the GOS isotropic insert-time delta
+	// gate (PrecomputeConfig.GosDeltaEpsilon/GosSites). gosDeltaEpsilon 0
+	// disables it (fixed DeltaThreshold path). Count-Sketch only.
+	gosDeltaEpsilon float64
+	gosSites        uint32
 }
 
 // parseFunctional maps the YAML functional name to the monitor enum. Unknown /
@@ -402,10 +407,21 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 					zap.String("metric", metric), zap.Int("rows", rows), zap.Int("cols", cols), zap.Error(err))
 				return nil, false
 			}
+			gosEpsilon, gosSites := opts.gosDeltaEpsilon, opts.gosSites
 			factory = func() precompute.Sketch {
 				w, err := sketches.NewCountSketchWrapper(rows, cols)
 				if err != nil {
 					return nil
+				}
+				// Prime GOS mode at series creation (not just at the next flush's
+				// applyGosMode call) so inserts before this brand-new series' first
+				// flush are already insert-time gated. precompute.applyGosMode
+				// re-stamps this on every already-live series at flush time, so a
+				// control-plane change to gos_delta_epsilon still takes effect —
+				// this priming only matters for the gap between series birth and
+				// that series' first flush.
+				if gosEpsilon > 0 {
+					w.SetGosMode(gosEpsilon, gosSites)
 				}
 				return w
 			}
@@ -490,6 +506,11 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		// DeltaTransmission.
 		SubWindowInterval: opts.subWindowInterval,
 		SubWindowEpsilon:  opts.subWindowEpsilon,
+		// GosDeltaEpsilon/GosSites configure the isotropic GOS insert-time
+		// delta gate (Count-Sketch only today). 0 leaves the fixed
+		// DeltaThreshold path unchanged.
+		GosDeltaEpsilon: opts.gosDeltaEpsilon,
+		GosSites:        opts.gosSites,
 	}
 	// Surface the HLLSparse typed flag as the documented HLL "sparse"
 	// SketchParams key (1 = sparse base; absent/0 = dense default) so config
@@ -794,10 +815,16 @@ func (s *sketchAggregator) flush(dst pmetric.Metrics) {
 }
 
 // subWindowEnabled reports whether this aggregator runs the threshold-driven
-// sub-window producer: a positive interval AND delta transmission on (the
+// sub-window producer: EITHER a positive SubWindowInterval (the legacy
+// periodic-tick path) OR GOS insert-time detection active (which drives
+// EmitSubWindow via wakeSubWindow instead of a ticker, so it needs no
+// interval configured at all) — in both cases AND delta transmission on (the
 // runtime no-ops EmitSubWindow without delta — there is no in-window base).
 func (s *sketchAggregator) subWindowEnabled() bool {
-	return s.pcfg.SubWindowInterval > 0 && s.pcfg.DeltaTransmission
+	if !s.pcfg.DeltaTransmission {
+		return false
+	}
+	return s.pcfg.SubWindowInterval > 0 || s.pcfg.GosDeltaEpsilon > 0
 }
 
 // emitSubWindow fires an INCREMENTAL sub-window delta emit (no rotate) for this

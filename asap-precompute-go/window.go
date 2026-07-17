@@ -128,6 +128,27 @@ type windowState struct {
 	// must NEVER be applied mid-window. Installed by Precompute via
 	// setMonitorHooks alongside the observe/reset hooks. nil ⇒ one nil-check.
 	monitorSampleHook func(s Sketch)
+	// wakeHook, when non-nil, is invoked from recordLocked whenever the
+	// just-observed sketch reports (via the wakeSignaler interface) that an
+	// insert-time GOS threshold crossing happened on this observation — the
+	// out-of-cycle counterpart to monitorHook, requesting an immediate
+	// sub-window flush instead of waiting for the next tick. Installed once at
+	// construction via Precompute.SetWakeHook (unlike the monitor hooks, this
+	// is not re-installed per config swap). nil ⇒ one nil-check on the hot
+	// path.
+	wakeHook func()
+}
+
+// wakeSignaler is implemented by a Sketch that can trigger an out-of-cycle
+// flush from insert-time GOS threshold detection
+// (design-gos-unified-edge-telemetry.md §11). ConsumeWakeSignal reports
+// whether a crossing happened since the last call, clearing the flag —
+// checked once per observation so a burst of crossings between two flushes
+// wakes the loop exactly once. Sketches that don't support GOS (or have it
+// disabled) simply don't implement this, so the type-assert in recordLocked
+// is a one-time no-op for them.
+type wakeSignaler interface {
+	ConsumeWakeSignal() bool
 }
 
 // slidingPane is one closed slide-interval's worth of per-series
@@ -396,6 +417,14 @@ func (w *windowState) recordLocked(entry *seriesEntry, obs *Observation, observe
 	// monitoring epoch id; the engine uses it to detect boundary crossings.
 	if w.monitorHook != nil {
 		w.monitorHook(entry, w.activeStartMs)
+	}
+	// Insert-time GOS wake: cheap nil-checked hook + narrow interface assert.
+	// A sketch with GOS disabled (or that doesn't support it) never
+	// implements wakeSignaler, so this costs one type-assert on the hot path.
+	if w.wakeHook != nil {
+		if ws, ok := entry.Sketch.(wakeSignaler); ok && ws.ConsumeWakeSignal() {
+			w.wakeHook()
+		}
 	}
 	return nil
 }
@@ -750,6 +779,14 @@ func (w *windowState) setMonitorHooks(
 	w.monitorHook = observe
 	w.monitorResetHook = reset
 	w.monitorSampleHook = sample
+	w.mu.Unlock()
+}
+
+// setWakeHook installs (or clears) the per-observation wake hook (see
+// wakeHook / recordLocked), race-free against the observe path.
+func (w *windowState) setWakeHook(fn func()) {
+	w.mu.Lock()
+	w.wakeHook = fn
 	w.mu.Unlock()
 }
 

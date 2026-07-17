@@ -244,6 +244,14 @@ type Precompute interface {
 	// wires it here; the runtime activates the per-observation hook whenever
 	// the active config has Monitor.Enabled. Safe to call concurrently.
 	SetMonitorEngine(e *monitor.Engine)
+	// SetWakeHook installs (or replaces) the out-of-cycle wake hook: invoked
+	// whenever an insert-time GOS threshold crossing happens on any series
+	// (see window.go's wakeSignaler). Pass nil to disable. The host adapter
+	// wires this to its flush loop's wake-on-demand trigger (e.g. the
+	// asap_edge processor's wakeSubWindow) at construction time — unlike
+	// SetMonitorEngine/config, this is installed once, not per config swap.
+	// Safe to call concurrently.
+	SetWakeHook(fn func())
 	// Shutdown flushes any in-progress state; intended for the
 	// shim's Shutdown path to run a final Tick before returning.
 	Shutdown(ctx context.Context) error
@@ -525,6 +533,7 @@ func (p *precompute) serializeSubWindowSeries(entry *seriesEntry, cfg *Precomput
 		return nil, nil
 	}
 	seriesKey := cfg.SeriesKeyForEntry(entry.ResourceLabels, entry.Labels)
+	applyGosMode(entry.Sketch, cfg)
 	payload, isFull, err := p.snapshotCache.ComputeSubWindowDelta(seriesKey, entry.Sketch, cfg.DeltaThreshold)
 	if err != nil {
 		return nil, fmt.Errorf("compute sub-window delta: %w", err)
@@ -572,10 +581,38 @@ func subWindowSegmentMode(cfg *PrecomputeConfig) bool {
 	return cfg.SketchType == SketchTypeKLLSketch
 }
 
+// applyGosMode configures the sketch's GOS insert-time delta mode from cfg
+// when GosDeltaEpsilon > 0 and the sketch supports it (Count-Sketch today).
+// A no-op otherwise, leaving the fixed DeltaThreshold path unchanged. Called
+// at flush time (on every already-live series, so a control-plane config
+// change takes effect at the next flush) — the CountSketch factory ALSO
+// primes this at series creation (warm_sketch.go) so inserts before the
+// first flush of a brand-new window are gated too. Structural interface
+// assert avoids a Sketch-interface change for a Count-Sketch-only knob.
+func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
+	if cfg.GosDeltaEpsilon <= 0 {
+		return
+	}
+	if gm, ok := sketch.(interface {
+		SetGosMode(epsilon float64, k uint32)
+	}); ok {
+		gm.SetGosMode(cfg.GosDeltaEpsilon, cfg.GosSites)
+	}
+}
+
 // subWindowShouldEmit gates a sub-window emit on per-family divergence: emit iff
 // the series has moved ≥ ε·norm since its last emit (ε=0 ⇒ always; first emit of
 // a window always fires and ships full state).
+//
+// GOS-converted families bypass this entirely: their own insert-time
+// threshold check already decided what's dirty (design-gos-unified-edge-
+// telemetry.md §11 — Gate 1's periodic divergence pre-check is redundant once
+// a family detects crossings at insert time), so always attempt the emit and
+// let the empty-dirty-set case fall out as a nil payload downstream.
 func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
+	if cfg.SketchType == SketchTypeCountSketch && cfg.GosDeltaEpsilon > 0 {
+		return true
+	}
 	eps := cfg.SubWindowEpsilon
 	if eps <= 0 || !entry.subWindowAcked {
 		return true
@@ -628,6 +665,13 @@ func subWindowMarkEmitted(entry *seriesEntry, cfg *PrecomputeConfig) {
 			entry.ackVal = r.EstimateCardinality()
 		}
 	case cfg.SketchType == SketchTypeCountSketch:
+		if cfg.GosDeltaEpsilon > 0 {
+			// GOS mode already reset each sent cell in place at insert time
+			// (UpdateStringGOS) and never reads ackedCells (subWindowShouldEmit
+			// bypasses subWindowDivergence for this family+mode entirely) — skip
+			// the O(rows·cols) snapshot copy MarkSubWindowEmitted would do.
+			return
+		}
 		if r, ok := entry.Sketch.(interface{ MarkSubWindowEmitted() }); ok {
 			r.MarkSubWindowEmitted()
 		}
@@ -712,6 +756,7 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 		err     error
 	)
 	if cfg.DeltaTransmission {
+		applyGosMode(entry.Sketch, cfg)
 		payload, isFull, err = p.snapshotCache.ComputeDelta(seriesKey, entry.Sketch, cfg.DeltaThreshold)
 		if err != nil {
 			return nil, fmt.Errorf("compute delta: %w", err)
@@ -888,6 +933,13 @@ func (p *precompute) SetSketchSink(fn SketchSink) {
 func (p *precompute) SetMonitorEngine(e *monitor.Engine) {
 	p.monitorEngine.Store(e)
 	p.rewireMonitorHooks()
+}
+
+// SetWakeHook implements Precompute.SetWakeHook. windowState already owns its
+// own mutex (guarding the same field the observe path reads), so this
+// delegates directly rather than adding an atomic pointer here too.
+func (p *precompute) SetWakeHook(fn func()) {
+	p.window.setWakeHook(fn)
 }
 
 // rewireMonitorHooks installs or clears the window's monitor hooks based on the

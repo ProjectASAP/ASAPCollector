@@ -71,6 +71,139 @@ type CountSketchWrapper struct {
 	// sampling.md). nil (sampleP=1) ⇒ every item updates, byte-identical to today.
 	sampler *common.GeometricSampler
 	sampleP float64
+
+	// gosEpsilon/gosSites configure the GOS isotropic insert-time delta gate
+	// (design-gos-unified-edge-telemetry.md §11): when gosEpsilon>0,
+	// UpdateString checks each just-touched cell against the closed-form
+	// threshold T=ε‖Ĉ‖/(2k√(dw)) immediately, in place of the periodic
+	// decode-prev-diff sub-window model. gosEpsilon<=0 (the default) leaves
+	// UpdateString/ComputeDeltaAgainst on the pre-existing fixed-DeltaThreshold
+	// path, unchanged. Set via SetGosMode.
+	gosEpsilon float64
+	gosSites   uint32
+	// gosDirty accumulates cells that crossed the insert-time GOS threshold
+	// since the last drainGosDelta call. Each entry's Delta already equals
+	// that cell's full accumulation since it was last sent (sketchlib zeroes
+	// it in place at the moment of crossing), so no separate per-cell
+	// accumulator is needed — draining is just serializing this list.
+	gosDirty []countsketch.GOSCellUpdate
+	// gosWake is armed on the FIRST cell added to gosDirty since the last
+	// drain, and consumed exactly once by ConsumeWakeSignal — a burst of many
+	// crossings between two flushes wakes the out-of-cycle flush loop once,
+	// not once per crossing (the pending flush picks up everything
+	// accumulated by the time it runs).
+	gosWake bool
+	// gosL2Baseline snapshots the sketch's own per-row L2 accumulators
+	// (w.cs.L2, already incrementally maintained by sketchlib on every
+	// insert) at the last drain, so drainGosDelta can report each row's L2
+	// change since then in O(rows) — cheap even though it isn't itself
+	// insert-time-incremental, since rows is small (typically ≤8), unlike
+	// the O(rows·cols) matrix scan this whole mechanism replaces.
+	gosL2Baseline []float64
+}
+
+// SetGosMode configures the GOS isotropic insert-time delta gate. epsilon<=0
+// disables it (fixed DeltaThreshold path, unchanged behavior). Idempotent —
+// callers (the CountSketch factory, at series creation, and the runtime's
+// applyGosMode, at flush, on every already-live series) may call this
+// repeatedly with the same config; it just re-stamps the two scalars.
+func (w *CountSketchWrapper) SetGosMode(epsilon float64, sites uint32) {
+	w.gosEpsilon = epsilon
+	w.gosSites = sites
+}
+
+// currentNorm returns ‖Ĉ‖ (the whole matrix's Frobenius norm) in O(rows) via
+// the sketch's own incrementally-maintained per-row L2 accumulators (the same
+// median-of-rows F2 estimator QueryWithHash(QuerySum2,·) uses) — cheap enough
+// to call on every insert, unlike the O(rows·cols) full-matrix scan
+// L2DivergenceSinceEmit does for the (unrelated) fixed sub-window path.
+func (w *CountSketchWrapper) currentNorm() float64 {
+	if w.cs == nil {
+		return 0
+	}
+	norm, _ := w.cs.QueryWithHash(common.QuerySum2, 0)
+	return norm
+}
+
+// GosDeltaThreshold computes the F2 isotropic GOS per-cell delta threshold
+// T=ε·‖Ĉ‖/(2k√(dw)) from the current sketch norm and dims, rounded up to an
+// integer (never below 1 = lossless). Returns 1 when ε<=0 (GOS disabled).
+func (w *CountSketchWrapper) GosDeltaThreshold(epsilon float64, k uint32) uint64 {
+	if epsilon <= 0 || w.cs == nil {
+		return 1
+	}
+	t := F2IsotropicThreshold(epsilon, w.currentNorm(), k, w.rows, w.cols)
+	if !math.IsInf(t, 1) && !math.IsNaN(t) && t > 1.0 {
+		return uint64(math.Ceil(t))
+	}
+	return 1
+}
+
+// recordDirty appends newly-crossed cells to the pending GOS drain list and
+// arms the wake signal on the first addition since the last drain.
+func (w *CountSketchWrapper) recordDirty(cells []countsketch.GOSCellUpdate) {
+	if len(cells) == 0 {
+		return
+	}
+	if len(w.gosDirty) == 0 {
+		w.gosWake = true
+	}
+	w.gosDirty = append(w.gosDirty, cells...)
+}
+
+// ConsumeWakeSignal implements the runtime's narrow wake-signal interface
+// (asap-precompute-go window.go's recordLocked): reports whether an
+// insert-time GOS threshold crossing happened since the last call, clearing
+// the flag. Always false when GOS isotropic mode is inactive.
+func (w *CountSketchWrapper) ConsumeWakeSignal() bool {
+	if !w.gosWake {
+		return false
+	}
+	w.gosWake = false
+	return true
+}
+
+// drainGosDelta serializes the cells accumulated in gosDirty since the last
+// drain as a sparse CountSketch delta — the insert-time counterpart of the
+// old decode-prev-diff path (countsketch.ComputeDelta): the dirty list was
+// already built cell-by-cell at insert time (UpdateString -> UpdateStringGOS),
+// so no previous snapshot needs decoding or scanning here. Returns
+// (nil, false, nil) when nothing has crossed since the last drain — the
+// caller (precompute.SnapshotCache.ComputeSubWindowDelta) treats a nil
+// payload as "nothing to emit" (design-gos-unified-edge-telemetry.md §11:
+// Gate 1's periodic divergence pre-check is redundant for a GOS-converted
+// family — an empty dirty set at flush time already IS "nothing to send").
+func (w *CountSketchWrapper) drainGosDelta() ([]byte, bool, error) {
+	if len(w.gosDirty) == 0 {
+		return nil, false, nil
+	}
+	d := &countsketch.Delta{
+		Rows:  uint32(w.rows),
+		Cols:  uint32(w.cols),
+		Cells: make([]countsketch.CellDelta, len(w.gosDirty)),
+		L2:    make([]float64, w.rows),
+	}
+	for i, c := range w.gosDirty {
+		d.Cells[i] = countsketch.CellDelta{Row: c.Row, Col: c.Col, DValue: c.Delta}
+	}
+	w.gosDirty = w.gosDirty[:0]
+	if len(w.gosL2Baseline) != w.rows {
+		w.gosL2Baseline = make([]float64, w.rows)
+	}
+	for r := 0; r < w.rows; r++ {
+		cur := w.cs.L2[r]
+		d.L2[r] = cur - w.gosL2Baseline[r]
+		w.gosL2Baseline[r] = cur
+	}
+	if w.cs.SS != nil && w.cs.SS.Len() > 0 {
+		d.HHKeys = w.cs.SS.Candidates()
+	}
+	payload, err := countsketch.SerializeDelta(d)
+	if err != nil {
+		full, fErr := w.Snapshot()
+		return full, true, fErr
+	}
+	return payload, false, nil
 }
 
 // WithSampleP enables geometric update-sampling at probability p (0<p<1). p>=1
@@ -225,6 +358,15 @@ func (w *CountSketchWrapper) UpdateString(key string, count float64) {
 		}
 		count /= w.sampleP // upweight the admitted insert ⇒ unbiased estimate
 	}
+	// Heap-msgpack mode isn't GOS-converted (its DELTA-HEAP wire form has no
+	// per-cell dirty-list counterpart yet), so it always takes the plain
+	// insert path regardless of gosEpsilon — ComputeDeltaAgainst mirrors this
+	// same condition on its side.
+	if w.gosEpsilon > 0 && !w.heapMsgpack {
+		threshold := float64(w.GosDeltaThreshold(w.gosEpsilon, w.gosSites))
+		w.recordDirty(w.cs.UpdateStringGOS(key, count, threshold))
+		return
+	}
 	w.cs.UpdateString(key, count)
 }
 
@@ -255,6 +397,15 @@ func (w *CountSketchWrapper) Snapshot() ([]byte, error) {
 func (w *CountSketchWrapper) ComputeDeltaAgainst(prev []byte, threshold uint64) ([]byte, bool, error) {
 	if w.cs == nil {
 		return nil, true, nil
+	}
+	// GOS isotropic mode: cells were already detected + reset at insert time
+	// (UpdateString -> UpdateStringGOS), so the delta is just draining the
+	// pending list — prev is never consulted (nothing to decode: the
+	// mechanism doesn't need a "previous full state" reference at all).
+	// Heap-msgpack mode isn't converted; it falls through to the existing
+	// decode-prev-diff path below.
+	if w.gosEpsilon > 0 && !w.heapMsgpack {
+		return w.drainGosDelta()
 	}
 	// Heap-msgpack mode: produce a DELTA-HEAP frame — a sparse matrix
 	// delta of this window's sketch against the cached base (an empty
@@ -428,6 +579,9 @@ func (w *CountSketchWrapper) Reset() {
 	}
 	w.cs.Reset()
 	w.ackedCells = nil
+	w.gosDirty = nil
+	w.gosWake = false
+	w.gosL2Baseline = nil
 }
 
 // EstimateCount implements precompute.FrequencySketch. The key is
