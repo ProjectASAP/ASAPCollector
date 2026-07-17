@@ -38,76 +38,82 @@ func newTestEngine() (*Engine, *fakeReporter) {
 	return NewEngine("edge-test", win, f), f
 }
 
-func TestSilentBeforeGrant(t *testing.T) {
+// TestFirstObservationRegistersAndReports checks that the very first
+// observation of an epoch both registers the monitor AND fires an immediate
+// report (an early, if noisy, rate signal) — no grant is needed first:
+// alerting retired, so reporting is no longer gated on a coordinator-granted
+// budget.
+func TestFirstObservationRegistersAndReports(t *testing.T) {
 	e, f := newTestEngine()
-	// Many observations, no grant yet → must stay silent (but register once).
-	for v := 1.0; v <= 100; v++ {
-		e.Observe(7, nil, v, win)
-	}
-	if len(f.reports) != 0 {
-		t.Fatalf("expected zero reports before any grant, got %d", len(f.reports))
-	}
+	e.Observe(7, nil, 5, win)
 	if len(f.regs) != 1 {
 		t.Fatalf("expected exactly one registration, got %d", len(f.regs))
+	}
+	if len(f.reports) != 1 {
+		t.Fatalf("expected an immediate report on the first observation, got %d", len(f.reports))
 	}
 	if f.regs[0].AggID != 7 || f.regs[0].EpochWindowMs != win {
 		t.Fatalf("registration fields wrong: %+v", f.regs[0])
 	}
 }
 
-func TestReportsWhenSlackCrossed(t *testing.T) {
+// TestReportsOnFixedCadence checks the ReportEveryN cadence: after the
+// obsCount==1 report, the next report fires only once obsCount reaches
+// ReportEveryN observations — reporting no longer depends on the observed
+// VALUE at all (unlike the retired slack-crossing trigger).
+func TestReportsOnFixedCadence(t *testing.T) {
 	e, f := newTestEngine()
-	e.Observe(7, nil, 5, win) // register; baseline=0 (epoch start), no grant yet
-	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 10, WindowStartMs: win})
-	// baseline stays 0; report fires when value-0 >= 10.
-	e.Observe(7, nil, 8, win) // 8 < 10 → silent
-	if len(f.reports) != 0 {
-		t.Fatalf("reported too early: %d reports", len(f.reports))
-	}
-	e.Observe(7, nil, 12, win) // 12 >= 10 → report; baseline advances to 12
-	e.Observe(7, nil, 18, win) // 18-12=6 < 10 → silent
+	e.Observe(7, nil, 0, win) // obs #1 → report #1
 	if len(f.reports) != 1 {
-		t.Fatalf("expected one report after first crossing, got %d", len(f.reports))
+		t.Fatalf("expected one report after the first observation, got %d", len(f.reports))
 	}
-	e.Observe(7, nil, 23, win) // 23-12=11 >= 10 → second report; baseline=23
+	for i := 2; i < ReportEveryN+1; i++ {
+		e.Observe(7, nil, float64(i), win)
+	}
+	if len(f.reports) != 1 {
+		t.Fatalf("expected still one report short of the cadence, got %d", len(f.reports))
+	}
+	e.Observe(7, nil, 999, win) // obsCount reaches ReportEveryN+1 → report #2
 	if len(f.reports) != 2 {
-		t.Fatalf("expected a second report once baseline+slack crossed again, got %d", len(f.reports))
+		t.Fatalf("expected a second report once the cadence was reached, got %d", len(f.reports))
 	}
 	r, _ := f.lastReport()
-	if r.LocalValue != 23 || r.Round != 1 || r.Seq != 2 {
-		t.Fatalf("report fields wrong: %+v", r)
+	if r.Rate != float64(ReportEveryN+1) {
+		t.Fatalf("second report Rate = %v, want %v", r.Rate, ReportEveryN+1)
 	}
 }
 
-func TestShrinkingSlackLowersBar(t *testing.T) {
+// TestGrantOnlyUpdatesSampleP checks that OnGrant no longer perturbs the
+// report cadence at all — it only records SampleP (LocalSlack is vestigial,
+// kept solely for SlackGrant wire compatibility).
+func TestGrantOnlyUpdatesSampleP(t *testing.T) {
 	e, f := newTestEngine()
-	e.Observe(7, nil, 0, win)
-	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 10, WindowStartMs: win})
-	e.Observe(7, nil, 12, win) // report #1; baseline=12
-	// Coordinator re-grants a SMALLER slack (no baseline reset on the edge).
-	e.OnGrant(Grant{AggID: 7, Round: 2, LocalSlack: 5, WindowStartMs: win})
-	e.Observe(7, nil, 14, win) // 14-12=2 < 5 → silent
-	e.Observe(7, nil, 18, win) // 18-12=6 >= 5 → report #2; baseline=18
-	if len(f.reports) != 2 {
-		t.Fatalf("expected 2 reports, got %d", len(f.reports))
+	e.Observe(7, nil, 5, win) // report #1
+	before := len(f.reports)
+	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 999, WindowStartMs: win, SampleP: 0.4})
+	if len(f.reports) != before {
+		t.Fatalf("OnGrant must not itself trigger a report, got %d reports", len(f.reports))
 	}
-	r, _ := f.lastReport()
-	if r.Round != 2 || r.LocalValue != 18 {
-		t.Fatalf("second report wrong: %+v", r)
+	if got := e.GrantedSampleP(7); got != 0.4 {
+		t.Fatalf("GrantedSampleP after grant = %v, want 0.4", got)
 	}
 }
 
-func TestPollProducesAuthoritativeReport(t *testing.T) {
+// TestPollProducesImmediateReport checks that a Poll forces a report right
+// away, independent of the ReportEveryN cadence.
+func TestPollProducesImmediateReport(t *testing.T) {
 	e, f := newTestEngine()
-	e.Observe(7, nil, 0, win)
-	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 100, WindowStartMs: win})
-	e.Observe(7, nil, 33, win) // below slack → no spontaneous report
-	if len(f.reports) != 0 {
-		t.Fatalf("unexpected spontaneous report")
+	e.Observe(7, nil, 0, win) // obs #1 → report #1
+	if len(f.reports) != 1 {
+		t.Fatalf("expected one report after the first observation, got %d", len(f.reports))
+	}
+	e.Observe(7, nil, 33, win) // obs #2, short of cadence → no new report
+	if len(f.reports) != 1 {
+		t.Fatalf("unexpected spontaneous report before the cadence, got %d", len(f.reports))
 	}
 	e.OnPoll(Poll{AggID: 7, Round: 1, WindowStartMs: win})
-	if len(f.reports) != 1 {
-		t.Fatalf("poll did not produce a report")
+	if len(f.reports) != 2 {
+		t.Fatalf("poll did not produce an immediate report, got %d", len(f.reports))
 	}
 	r, _ := f.lastReport()
 	if r.LocalValue != 33 {
@@ -117,35 +123,29 @@ func TestPollProducesAuthoritativeReport(t *testing.T) {
 
 func TestEpochResetReRegisters(t *testing.T) {
 	e, f := newTestEngine()
-	e.Observe(7, nil, 0, win)
-	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 5, WindowStartMs: win})
-	e.Observe(7, nil, 10, win) // report in epoch 1
+	e.Observe(7, nil, 0, win) // report in epoch 1
 	// New epoch via explicit reset (mirrors rotateLocked).
 	next := win + win
 	e.EpochReset(next)
 	if len(f.regs) != 1 {
 		t.Fatalf("re-register should be lazy (on next Observe), regs=%d", len(f.regs))
 	}
-	e.Observe(7, nil, 1, next) // re-register; baseline cleared; no grant yet → silent
+	e.Observe(7, nil, 1, next) // re-register; fresh epoch → immediate report
 	if len(f.regs) != 2 {
 		t.Fatalf("expected re-registration in new epoch, regs=%d", len(f.regs))
 	}
 	if f.regs[1].EpochWindowMs != win {
 		t.Fatalf("epoch window size wrong on re-register: %+v", f.regs[1])
 	}
-	// A grant from the OLD epoch must be ignored.
-	before := len(f.reports)
-	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 1, WindowStartMs: win})
-	e.Observe(7, nil, 100, next)
-	if len(f.reports) != before {
-		t.Fatalf("stale-epoch grant should not enable reporting")
+	if len(f.reports) != 2 {
+		t.Fatalf("expected a report in the new epoch too, got %d", len(f.reports))
 	}
 }
 
 func TestEpochChangeViaObserveResets(t *testing.T) {
 	e, _ := newTestEngine()
 	e.Observe(7, nil, 0, win)
-	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 5, WindowStartMs: win})
+	e.OnGrant(Grant{AggID: 7, Round: 1, WindowStartMs: win, SampleP: 0.5})
 	e.Observe(7, nil, 50, win)
 	// Observe with a new windowStart triggers an in-line epoch reset.
 	next := win + win
@@ -153,29 +153,31 @@ func TestEpochChangeViaObserveResets(t *testing.T) {
 	e.mu.Lock()
 	st := e.states[mapKey{7, ""}]
 	e.mu.Unlock()
-	if st.windowStart != next || st.grantedSlack != 0 || st.registered != true {
+	if st.windowStart != next || st.obsCount != 1 || st.registered != true {
 		t.Fatalf("epoch change did not reset state: %+v", st)
 	}
 }
 
-func TestCMSPointKeyedMonitors(t *testing.T) {
+// TestKeyedMonitorsAreIndependent checks that two monitors under the same
+// AggID but different keys (e.g. two CMSPoint keys) get fully independent
+// registration/report state.
+func TestKeyedMonitorsAreIndependent(t *testing.T) {
 	e, f := newTestEngine()
 	ka, kb := []byte("svc=a"), []byte("svc=b")
-	e.Observe(9, ka, 0, win)
-	e.Observe(9, kb, 0, win)
-	e.OnGrant(Grant{AggID: 9, Key: ka, Round: 1, LocalSlack: 10, WindowStartMs: win})
-	e.OnGrant(Grant{AggID: 9, Key: kb, Round: 1, LocalSlack: 10, WindowStartMs: win})
-	e.Observe(9, ka, 20, win) // a crosses
-	e.Observe(9, kb, 5, win)  // b does not
-	if len(f.reports) != 1 {
-		t.Fatalf("expected one report (only key a crossed), got %d", len(f.reports))
-	}
-	r, _ := f.lastReport()
-	if string(r.Key) != "svc=a" {
-		t.Fatalf("report should be for key a, got %q", r.Key)
+	e.Observe(9, ka, 20, win) // report #1 for a
+	e.Observe(9, kb, 5, win)  // report #1 for b
+	if len(f.reports) != 2 {
+		t.Fatalf("expected one report per key on first observation, got %d", len(f.reports))
 	}
 	if len(f.regs) != 2 {
 		t.Fatalf("expected two registrations (one per key), got %d", len(f.regs))
+	}
+	keys := map[string]bool{}
+	for _, r := range f.reports {
+		keys[string(r.Key)] = true
+	}
+	if !keys["svc=a"] || !keys["svc=b"] {
+		t.Fatalf("expected reports for both keys, got %+v", f.reports)
 	}
 }
 
@@ -195,26 +197,26 @@ func TestOnGrantStoresSampleP(t *testing.T) {
 		t.Fatalf("GrantedSampleP(unknown) = %v, want 1.0", got)
 	}
 
-	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 10, WindowStartMs: win, SampleP: 0.3})
+	e.OnGrant(Grant{AggID: 7, Round: 1, WindowStartMs: win, SampleP: 0.3})
 	if got := e.GrantedSampleP(7); got != 0.3 {
 		t.Fatalf("GrantedSampleP after grant = %v, want 0.3", got)
 	}
 
 	// A grant carrying SampleP=0 means "no sampling this round"; it is recorded
 	// as such and reads back as the unsampled default.
-	e.OnGrant(Grant{AggID: 7, Round: 2, LocalSlack: 10, WindowStartMs: win, SampleP: 0})
+	e.OnGrant(Grant{AggID: 7, Round: 2, WindowStartMs: win, SampleP: 0})
 	if got := e.GrantedSampleP(7); got != 1.0 {
 		t.Fatalf("GrantedSampleP after SampleP=0 grant = %v, want 1.0 (treat-as-unset)", got)
 	}
 }
 
-// TestSampchPSurvivesEpochReset checks that the granted sampling probability is
+// TestSamplePSurvivesEpochReset checks that the granted sampling probability is
 // preserved across an epoch boundary (so the new window keeps sampling at the
 // last granted p) but is cleared by ForceReregister (coordinator restart).
 func TestSamplePSurvivesEpochReset(t *testing.T) {
 	e, _ := newTestEngine()
 	e.Observe(7, nil, 1, win)
-	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 10, WindowStartMs: win, SampleP: 0.25})
+	e.OnGrant(Grant{AggID: 7, Round: 1, WindowStartMs: win, SampleP: 0.25})
 
 	e.EpochReset(win + win) // rotate to the next epoch
 	if got := e.GrantedSampleP(7); got != 0.25 {
@@ -226,19 +228,17 @@ func TestSamplePSurvivesEpochReset(t *testing.T) {
 	}
 }
 
-// TestReportCarriesRate checks that a report emitted on a slack crossing carries
-// the edge's observed per-epoch item count as Report.Rate.
+// TestReportCarriesRate checks that a report carries the edge's observed
+// per-epoch item count as Report.Rate.
 func TestReportCarriesRate(t *testing.T) {
 	e, f := newTestEngine()
-	e.Observe(7, nil, 5, win) // obs #1, register
-	e.OnGrant(Grant{AggID: 7, Round: 1, LocalSlack: 10, WindowStartMs: win})
-	e.Observe(7, nil, 8, win)  // obs #2, below slack → silent
-	e.Observe(7, nil, 12, win) // obs #3, crosses slack → report
+	e.Observe(7, nil, 5, win) // obs #1 → report #1, Rate=1
+	e.Observe(7, nil, 8, win) // obs #2, short of cadence → no new report
 	r, ok := f.lastReport()
 	if !ok {
-		t.Fatalf("expected a report after crossing the slack")
+		t.Fatalf("expected a report after the first observation")
 	}
-	if r.Rate != 3 {
-		t.Fatalf("report Rate = %v, want 3 (observed items this epoch)", r.Rate)
+	if r.Rate != 1 {
+		t.Fatalf("report Rate = %v, want 1 (observed items at report time)", r.Rate)
 	}
 }
