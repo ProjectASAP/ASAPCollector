@@ -581,15 +581,17 @@ func subWindowSegmentMode(cfg *PrecomputeConfig) bool {
 	return cfg.SketchType == SketchTypeKLLSketch
 }
 
-// applyGosMode configures the sketch's GOS insert-time delta mode from cfg
-// when GosDeltaEpsilon > 0 and the sketch supports it (Count-Sketch and
-// DDSketch today). A no-op otherwise, leaving the fixed DeltaThreshold path
-// unchanged. Called at flush time (on every already-live series, so a
-// control-plane config change takes effect at the next flush) — the
-// CountSketch/DDSketch factories ALSO prime this at series creation
-// (warm_sketch.go) so inserts before the first flush of a brand-new window
-// are gated too. Structural interface assert avoids a Sketch-interface
-// change for a GOS-only knob that not every family implements.
+// when GosDeltaEpsilon > 0 and the sketch supports it (Count-Sketch, CMS,
+// DDSketch, and Sum today, via the shared (epsilon, k) structural interface
+// below — more families follow the same pattern, some with their own
+// family-specific branch, as their GOS conversions land). A no-op
+// otherwise, leaving the fixed DeltaThreshold path unchanged. Called at
+// flush time (on every already-live series, so a control-plane config
+// change takes effect at the next flush) — each GOS-converted family's
+// factory ALSO primes this at series creation (warm_sketch.go) so inserts
+// before the first flush of a brand-new window are gated too. Structural
+// interface assert avoids a Sketch-interface change for a GOS-only knob
+// that not every family implements.
 func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
 	if cfg.GosDeltaEpsilon <= 0 {
 		return
@@ -605,13 +607,17 @@ func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
 // the series has moved ≥ ε·norm since its last emit (ε=0 ⇒ always; first emit of
 // a window always fires and ships full state).
 //
-// GOS-converted families bypass this entirely: their own insert-time
-// threshold check already decided what's dirty (design-gos-unified-edge-
-// telemetry.md §11 — Gate 1's periodic divergence pre-check is redundant once
-// a family detects crossings at insert time), so always attempt the emit and
-// let the empty-dirty-set case fall out as a nil payload downstream.
+// GOS-converted families (Count-Sketch, Sum) bypass this entirely: their own
+// insert-time threshold check already decided what's dirty (design-gos-
+// unified-edge-telemetry.md §11 — Gate 1's periodic divergence pre-check is
+// redundant once a family detects crossings at insert time), so always
+// attempt the emit and let the empty-dirty-set case fall out as a nil
+// payload downstream.
 func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
 	if (cfg.SketchType == SketchTypeCountSketch || cfg.SketchType == SketchTypeCountMinSketch || cfg.SketchType == SketchTypeDDSketch) && cfg.GosDeltaEpsilon > 0 {
+		return true
+	}
+	if cfg.AggKind == AggKindSum && cfg.GosDeltaEpsilon > 0 {
 		return true
 	}
 	eps := cfg.SubWindowEpsilon
@@ -658,6 +664,15 @@ func subWindowMarkEmitted(entry *seriesEntry, cfg *PrecomputeConfig) {
 	entry.subWindowAcked = true
 	switch {
 	case cfg.AggKind == AggKindSum:
+		if cfg.GosDeltaEpsilon > 0 {
+			// GOS mode already captured + reset the since-crossing
+			// accumulator in place at insert time (SumWrapper.Update) and
+			// never reads entry.ackVal (subWindowShouldEmit bypasses
+			// subWindowDivergence for this family+mode entirely) — skip the
+			// Sum() read/store, mirroring Count-Sketch's analogous skip
+			// below.
+			return
+		}
 		if r, ok := entry.Sketch.(interface{ Sum() float64 }); ok {
 			entry.ackVal = r.Sum()
 		}
