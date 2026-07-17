@@ -20,10 +20,11 @@ import (
 
 type capturingReporter struct {
 	reports []monitor.Report
+	regs    []monitor.Registration
 }
 
-func (c *capturingReporter) Register(monitor.Registration) {}
-func (c *capturingReporter) Report(r monitor.Report)       { c.reports = append(c.reports, r) }
+func (c *capturingReporter) Register(r monitor.Registration) { c.regs = append(c.regs, r) }
+func (c *capturingReporter) Report(r monitor.Report)         { c.reports = append(c.reports, r) }
 
 func TestMonitor_LinearBuckets_DDSketch_RangeCountDrivesReports(t *testing.T) {
 	const aggID = precompute.AggId(7)

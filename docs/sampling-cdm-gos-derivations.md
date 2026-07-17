@@ -1608,13 +1608,18 @@ and
   asynchronously at different times (naive `|current-prev|` against a stale or
   per-cell-inconsistent reference double-counts or under-counts activity
   around individual cell resets). TODO, not blocking the other 5 families.
-- CMS's local point-query readout (`cms_point` functional) is retired as part
-  of the same redesign: once cells reset in place at insert time, a `min`-based
-  local read is no longer a valid point-in-time estimate (a single recently-
-  reset row poisons the whole `min`). Alerting/point-query reads move
-  entirely to the backend, which reconstructs exact state via additive
-  fragment-summation (see the transport doc) regardless of when any given
-  edge-side cell was last reset.
+- CMS's local point-query readout (`cms_point` functional) is retired for CMS
+  series specifically once GOS mode is active (`gos_delta_epsilon>0`): once a
+  cell resets in place at insert time, CMS's `min`-based local read is no
+  longer a valid point-in-time estimate (a single recently-reset row poisons
+  the whole `min`). Those reads move to the backend, which reconstructs exact
+  state via additive fragment-summation (see the transport doc) regardless of
+  when any given edge-side cell was last reset. This is scoped to CMS only:
+  plain CountSketch's `EstimateCount` serves the same `cms_point` functional
+  via a *median* across signed rows rather than a `min`, which tolerates a
+  single reset row fine — it is unaffected by GOS mode and keeps serving
+  point-query reads. A CMS series NOT running in GOS mode is likewise
+  unaffected (cells never reset mid-window in fixed mode).
 - For SDK-source or multi-unit sampling, the sampling randomness must make the
   admission indicators independent per `(edge_id, agg_id, window)` or hash-based
   per item. Shared sampler seeds can correlate admissions and invalidate

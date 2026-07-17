@@ -1037,6 +1037,18 @@ func (p *precompute) rewireMonitorHooks() {
 		p.window.setMonitorHooks(nil, nil, nil)
 		return
 	}
+	// CMS's local point-query readout (FunctionalCMSPoint / EstimateCount) is a
+	// min-across-rows estimate, poisoned by ANY single row a GOS-active cell
+	// reset in place at insert time. The asapedgeprocessor's boot-time YAML
+	// validation already rejects this combination, but a live control-plane
+	// config push (UpdateConfig) reaches PrecomputeConfig directly and skips
+	// that path — so gate it here too rather than serve a corrupted read.
+	// Plain CountSketch is UNAFFECTED (median-based EstimateCount tolerates a
+	// reset row) and keeps using this same functional untouched.
+	if cfg.SketchType == SketchTypeCountMinSketch && cfg.Monitor.Functional == monitor.FunctionalCMSPoint && cfg.GosDeltaEpsilon > 0 {
+		p.window.setMonitorHooks(nil, nil, nil)
+		return
+	}
 	spec := cfg.Monitor
 	aggID := uint64(cfg.AggID)
 	sketchType := cfg.SketchType
