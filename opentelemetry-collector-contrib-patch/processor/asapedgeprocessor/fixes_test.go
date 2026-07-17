@@ -296,7 +296,7 @@ func TestControlPlaneAppliesConfig(t *testing.T) {
 	// Build a config set targeting the live aggregator's AggID so UpdateConfig
 	// picks it. A high MaxSeries proves the update is applied (the swap is
 	// in-place; we only assert it doesn't panic and the version is acked).
-	aggID := precompute.AggId(fnv64("lat"))
+	aggID := aggID("lat", &cfg.Metrics[0], cfg.WindowDuration, 0, 0)
 	set := &precompute.PrecomputeConfigSet{
 		Version: 7,
 		Configs: []precompute.PrecomputeConfig{{
@@ -349,7 +349,7 @@ func TestControlPlanePollLoop(t *testing.T) {
 	fake.push(&precompute.PrecomputeConfigSet{
 		Version: 11,
 		Configs: []precompute.PrecomputeConfig{{
-			AggID:      precompute.AggId(fnv64("lat")),
+			AggID:      aggID("lat", &cfg.Metrics[0], cfg.WindowDuration, 0, 0),
 			SketchType: precompute.SketchTypeDDSketch,
 			Mode:       precompute.Tumbling,
 			Window:     precompute.WindowSpec{Size: time.Hour},
