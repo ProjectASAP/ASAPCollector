@@ -1,4 +1,4 @@
-// Copyright The OpenTelemetry Authors
+// Copyright ProjectASAP Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // Package sketches provides production-grade wrappers that adapt the

@@ -1,4 +1,4 @@
-// Copyright The OpenTelemetry Authors
+// Copyright ProjectASAP Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // Package asapedgeprocessor fuses the asap edge cold tier (gorilla TSDB
