@@ -581,19 +581,30 @@ func subWindowSegmentMode(cfg *PrecomputeConfig) bool {
 	return cfg.SketchType == SketchTypeKLLSketch
 }
 
+// applyGosMode configures the sketch's GOS insert-time delta mode from cfg
 // when GosDeltaEpsilon > 0 and the sketch supports it (Count-Sketch, CMS,
-// DDSketch, and Sum today, via the shared (epsilon, k) structural interface
-// below — more families follow the same pattern, some with their own
-// family-specific branch, as their GOS conversions land). A no-op
-// otherwise, leaving the fixed DeltaThreshold path unchanged. Called at
-// flush time (on every already-live series, so a control-plane config
-// change takes effect at the next flush) — each GOS-converted family's
-// factory ALSO primes this at series creation (warm_sketch.go) so inserts
-// before the first flush of a brand-new window are gated too. Structural
-// interface assert avoids a Sketch-interface change for a GOS-only knob
-// that not every family implements.
+// DDSketch, and Sum today via the shared (epsilon, k) structural interface
+// below, plus KLL via its own family-specific branch — more families follow
+// the same pattern as their GOS conversions land). A no-op otherwise,
+// leaving the fixed DeltaThreshold path unchanged. Called at flush time (on
+// every already-live series, so a control-plane config change takes effect
+// at the next flush) — each GOS-converted family's factory ALSO primes this
+// at series creation (warm_sketch.go) so inserts before the first flush of
+// a brand-new window are gated too. Structural interface asserts avoid a
+// Sketch-interface change for these per-family knobs.
+//
+// KLL's trigger (derivations doc §8.6: R>=epsilon*N) has no per-cell/sites
+// term, so its SetGosMode takes epsilon alone — a distinct structural shape
+// from Count-Sketch/CMS/DDSketch/Sum's (epsilon, k), hence the
+// family-specific branch here.
 func applyGosMode(sketch Sketch, cfg *PrecomputeConfig) {
 	if cfg.GosDeltaEpsilon <= 0 {
+		return
+	}
+	if cfg.SketchType == SketchTypeKLLSketch {
+		if gm, ok := sketch.(interface{ SetGosMode(epsilon float64) }); ok {
+			gm.SetGosMode(cfg.GosDeltaEpsilon)
+		}
 		return
 	}
 	if gm, ok := sketch.(interface {
@@ -618,6 +629,16 @@ func subWindowShouldEmit(entry *seriesEntry, cfg *PrecomputeConfig) bool {
 		return true
 	}
 	if cfg.AggKind == AggKindSum && cfg.GosDeltaEpsilon > 0 {
+		return true
+	}
+	if cfg.SketchType == SketchTypeKLLSketch && cfg.GosDeltaEpsilon > 0 {
+		// KLL's own insert-time trigger (R>=epsilon*N, derivations doc
+		// §8.6) already decided this series is due; always attempt the
+		// emit. If nothing was actually inserted since the last segment
+		// reset (R==0), KLLWrapper.Snapshot returns a nil payload and
+		// serializeSubWindowSeries/EmitSubWindow skip it as "nothing to
+		// send" — the same harmless empty case Count-Sketch's bypass
+		// relies on.
 		return true
 	}
 	eps := cfg.SubWindowEpsilon
@@ -700,6 +721,18 @@ func subWindowMarkEmitted(entry *seriesEntry, cfg *PrecomputeConfig) {
 			// branch below would have been equally harmless (ackVal is never
 			// consulted once subWindowShouldEmit bypasses divergence for
 			// GOS-mode CMS entirely).
+			return
+		}
+		entry.ackVal = float64(entry.Count)
+	case cfg.SketchType == SketchTypeKLLSketch:
+		if cfg.GosDeltaEpsilon > 0 {
+			// GOS mode's trigger state (windowTotal/gosWake) lives entirely
+			// inside the KLLWrapper and updates itself at insert time;
+			// ackVal (the OLD external-count Gate-1 reference) is never read
+			// for this family+mode since subWindowShouldEmit bypasses
+			// subWindowDivergence entirely. Nothing to advance here — the
+			// segment Reset() that follows this call (EmitSubWindow) already
+			// zeros the sketch's own R via KLLWrapper.Reset.
 			return
 		}
 		entry.ackVal = float64(entry.Count)

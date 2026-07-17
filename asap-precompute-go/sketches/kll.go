@@ -30,6 +30,33 @@ type KLLWrapper struct {
 	sk   *kll.KLLSketch
 	k    int
 	seed *int64
+
+	// windowTotal is N — the WINDOW's running observation count since the
+	// window itself started (design-gos-unified-edge-telemetry.md §11;
+	// derivations doc §8.6 "Emit trigger"). Unlike every other piece of
+	// state in this wrapper, it must NOT be reset when the sketch resets
+	// on a GOS-triggered segment emit (Reset() below): the trigger
+	// R>=epsilon*N compares the just-reset segment's own count R
+	// (w.sk.Count(), which DOES zero on Reset) against this window-
+	// lifetime total, so the two counters have to live independently. A
+	// window BOUNDARY rotation (as opposed to a mid-window segment reset)
+	// never calls Reset() on a live wrapper at all — the runtime discards
+	// the whole seriesEntry and builds a brand-new wrapper via the
+	// factory for the next window (precompute.go's finishRotate) — so
+	// windowTotal only ever needs to survive the mid-window segment
+	// Reset(), never an explicit zeroing of its own.
+	windowTotal uint64
+	// gosEpsilon configures the GOS insert-time emit trigger; <=0 (the
+	// default) disables it and leaves Update byte-identical to before.
+	// Unlike CountSketchWrapper's SetGosMode, KLL's formula (R>=epsilon*N)
+	// has no per-cell/sites term, so there is no second scalar to store.
+	gosEpsilon float64
+	// gosWake is armed the first time an insert's R>=epsilon*N check
+	// crosses since the last ConsumeWakeSignal, and consumed exactly once
+	// — mirrors CountSketchWrapper.gosWake (countsketch.go): a burst of
+	// crossings between two flushes wakes the out-of-cycle flush loop
+	// once, not once per insert.
+	gosWake bool
 }
 
 // NewKLLWrapper builds an empty KLL sketch honoring the provided
@@ -55,11 +82,52 @@ func buildKLL(k int, seed *int64) *kll.KLLSketch {
 	return sk
 }
 
-// Update feeds a single observation into the underlying KLL sketch.
+// Update feeds a single observation into the underlying KLL sketch, then
+// (when GOS mode is enabled) checks the insert-time emit trigger R>=epsilon*N
+// — derivations doc §8.6 "Emit trigger" — where R is the sketch's own
+// since-last-reset item count (Count(), which zeros on the segment Reset()
+// below) and N is windowTotal, the window-lifetime count that never resets.
+// A crossing arms gosWake; it does NOT emit or reset here — that still
+// happens later through the existing EmitSubWindow/segment-mode path
+// (precompute.go), which the wake only requests out-of-cycle.
 func (w *KLLWrapper) Update(v float64) {
-	if w.sk != nil {
-		w.sk.Update(v)
+	if w.sk == nil {
+		return
 	}
+	w.sk.Update(v)
+	w.windowTotal++
+	if w.gosEpsilon > 0 {
+		r := float64(w.sk.Count())
+		n := float64(w.windowTotal)
+		if r >= w.gosEpsilon*n {
+			w.gosWake = true
+		}
+	}
+}
+
+// SetGosMode configures the GOS insert-time emit trigger. epsilon<=0
+// disables it (Update behaves exactly as before: segment resets remain
+// driven solely by the pre-existing SubWindowInterval periodic tick's
+// external-count check). Idempotent — callers (the KLL factory, at series
+// creation, and the runtime's applyGosMode, at flush, on every already-live
+// series) may call this repeatedly with the same epsilon; it just re-stamps
+// the scalar. No `k`/sites parameter: derivations doc §8.6's R>=epsilon*N
+// trigger has no per-cell/sites term, unlike CountSketch's threshold.
+func (w *KLLWrapper) SetGosMode(epsilon float64) {
+	w.gosEpsilon = epsilon
+}
+
+// ConsumeWakeSignal implements the runtime's narrow wake-signal interface
+// (asap-precompute-go window.go's wakeSignaler / recordLocked): reports
+// whether an insert-time GOS threshold crossing (R>=epsilon*N) happened
+// since the last call, clearing the flag. Always false when GOS mode is
+// inactive.
+func (w *KLLWrapper) ConsumeWakeSignal() bool {
+	if !w.gosWake {
+		return false
+	}
+	w.gosWake = false
+	return true
 }
 
 // Snapshot serializes via SerializePortableRawF64 + proto.Marshal — the
@@ -138,9 +206,16 @@ func (w *KLLWrapper) Merge(other precompute.Sketch) error {
 }
 
 // Reset zeros the sketch in place by rebuilding from scratch with
-// the same (k, seed) so deterministic seeds replay identically.
+// the same (k, seed) so deterministic seeds replay identically. This is the
+// disjoint-SEGMENT reset (precompute.go's subWindowSegmentMode/EmitSubWindow):
+// called mid-window, right after a segment has been successfully emitted, so
+// the next segment starts fresh. windowTotal is DELIBERATELY left untouched —
+// it tracks the window's lifetime count N, a different quantity from the
+// segment's own R (=Count()), which this rebuild does zero. gosWake is
+// cleared since the segment that armed it has just been emitted-and-reset.
 func (w *KLLWrapper) Reset() {
 	w.sk = buildKLL(w.k, w.seed)
+	w.gosWake = false
 }
 
 // Quantile returns the q-th rank value via the KLL CDF query. q is
