@@ -731,10 +731,17 @@ in the current code — tracked here since it isn't deleted yet:
   crossed threshold. An empty per-cell `dirtySet` at flush time already
   answers "nothing to send," computed once per crossing instead of by a
   periodic `O(dw)` scan — dead code under Layer D, not kept as a fallback.
-- **CMS's local point-query read** (`ThresholdConfig.Functional: cms_point`):
-  once cells reset in place at insert time, a `min`-based local read is
-  corrupted by any single recently-reset row. All point/alert reads move to
-  the backend's reconstructed copy.
+- **CMS's local point-query read** (`ThresholdConfig.Functional: cms_point`,
+  `CMSWrapper.EstimateCount`): once a cell resets in place at insert time
+  (GOS mode), CMS's `min`-across-rows estimate is corrupted by any single
+  recently-reset row — rejected at boot (`config_validate.go`) and gated at
+  runtime (`precompute.rewireMonitorHooks`) whenever `family=countminsketch`
+  and `gos_delta_epsilon>0` are combined with this functional. Scoped to CMS
+  only: plain CountSketch implements the SAME functional via a *median*
+  across signed rows, which tolerates a single reset row fine, so it keeps
+  serving `cms_point` unaffected by GOS mode. A CMS series not running in
+  GOS mode is also unaffected — the corruption is specifically an
+  insert-time-reset problem, not an inherent property of CMS's estimator.
 - **Discipline B's alerting path** (`monitor.Engine.Observe` →
   `sendReportLocked` over `monitor/grpcclient`): Sum becomes just another
   family running the Layer D insert-time check, synced over the normal

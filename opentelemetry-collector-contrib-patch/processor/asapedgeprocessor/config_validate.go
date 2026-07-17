@@ -254,6 +254,18 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("asap_edge: metrics[%d] (%s): gos_delta_epsilon is only valid for family=countsketch (emit_heap=false), countminsketch, ddsketch, sum, kll, or hll (got family=%q, emit_heap=%v)", i, m.Metric, m.Family, m.EmitHeap)
 			}
 		}
+		// cms_point + GOS: CMS's local point-query readout (threshold.functional
+		// = cms_point) is a min-across-rows estimate — poisoned by ANY single
+		// row that was reset in place, which is exactly what a GOS-active CMS
+		// cell does at insert time (design-gos-unified-edge-telemetry.md §11).
+		// Reject the combination at boot rather than silently serving a
+		// corrupted read. Plain CountSketch is UNAFFECTED and keeps using this
+		// same functional: its EstimateCount is a median across signed rows,
+		// which tolerates a single reset row fine, so it is not gated here.
+		if m.Family == FamilyCountMinSketch && m.GosDeltaEpsilon > 0 &&
+			m.Threshold != nil && m.Threshold.Enabled && m.Threshold.Functional == "cms_point" {
+			return fmt.Errorf("asap_edge: metrics[%d] (%s): threshold.functional=cms_point is not valid for family=countminsketch once gos_delta_epsilon>0 (GOS resets cells in place, poisoning the min-based local read); remove gos_delta_epsilon or the cms_point monitor", i, m.Metric)
+		}
 		// hll_sparse: only the HLL family has a sparse in-memory base. Reject
 		// it on any other family rather than silently ignoring so a
 		// misconfiguration surfaces at agent boot (mirrors the emit_heap family
