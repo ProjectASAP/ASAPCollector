@@ -500,6 +500,57 @@ type CountSketchDataPoint[N int64 | float64] struct {
 	Encoding CountSketchEncoding
 }
 
+// RowSampledSketch represents individually admitted raw occurrences bound
+// for a downstream (collector-side) row/col sketch (CountSketch /
+// CountMinSketch). Unlike every other Aggregation in this package, the
+// point count per collect is NOT one-per-series — it is however many raw
+// occurrences were admitted by NitroSketch-style row sampling since the
+// last collect (zero to many), because each occurrence's key determines a
+// DIFFERENT column at the collector and so cannot be pre-merged with any
+// other occurrence's value in the SDK.
+type RowSampledSketch[N int64 | float64] struct {
+	// DataPoints are the individually admitted raw occurrences recorded
+	// since the last collect. Multiple points may share the same
+	// Attributes (repeated occurrences of the same series, each
+	// independently admitted).
+	DataPoints []RowSampledSketchDataPoint[N]
+	// Temporality is always DeltaTemporality — see RowSampledSketch's doc.
+	Temporality Temporality
+}
+
+func (RowSampledSketch[N]) privateAggregation() {}
+
+// RowSampledSketchDataPoint is one admitted raw occurrence's contribution
+// to a downstream row/col sketch.
+type RowSampledSketchDataPoint[N int64 | float64] struct {
+	// Attributes is the set of key value pairs that uniquely identify the
+	// timeseries this occurrence belongs to.
+	Attributes attribute.Set
+
+	// StartTime is when this collect interval began.
+	StartTime time.Time
+	// Time is when this specific occurrence was recorded (not when the
+	// interval ended — each occurrence carries its own timestamp).
+	Time time.Time
+
+	// Value is the RAW, unscaled value of this occurrence. The consumer
+	// rescales ×1/SampleP (Horvitz-Thompson), matching every other sampled
+	// sketch family's envelope-p convention — the SDK never pre-scales.
+	Value N
+	// AdmittedRows is a bitmask over the target sketch's Rows: bit r set
+	// means row r's independent NitroSketch draw admitted this occurrence.
+	// The collector inserts this Value into ONLY the admitted rows, at
+	// column = hash_r(key) mod w for each — column selection is the
+	// collector's job and is unrelated to sampling.
+	AdmittedRows uint64
+	// Rows is the target sketch's row fan-out d (AdmittedRows' valid bit
+	// range is [0, Rows)).
+	Rows int32
+	// SampleP is the admission probability in effect when this occurrence
+	// was recorded.
+	SampleP float64
+}
+
 // CountMinSketch represents frequency estimations encoded as Count-Min Sketch payloads.
 type CountMinSketch[N int64 | float64] struct {
 	// DataPoints are the individual aggregated measurements with unique
