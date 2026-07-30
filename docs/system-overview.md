@@ -1,14 +1,5 @@
 # ASAP system overview
 
-> **Audience.** A new engineer, a reviewer, or a paper reader who wants
-> the whole picture in one sitting.
->
-> **Scope.** Current state. This doc tells the *narrative* — what the
-> pipeline does and why it's shaped this way — and points at
-> per-component docs for mechanism-level detail. It deliberately does
-> not enumerate file paths/function names; those live in the docs
-> linked from §8.
-
 ---
 
 ## 1. TL;DR
