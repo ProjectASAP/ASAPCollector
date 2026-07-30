@@ -139,6 +139,16 @@ which hasn't been stress-tested. Flagged here because it's a real
 correctness dependency of the spatial query path, not because it's
 handled.
 
+One way to sidestep the problem rather than solve clock sync directly:
+have the **backend** stamp each incoming sample/delta into a window by
+its **arrival time at the backend**, instead of trusting each
+collector's own notion of "current window." Window boundaries would
+then be defined by a single clock (the backend's), so independent
+collectors' contributions land in the same window without needing
+their clocks to agree — at the cost of conflating network/queueing
+delay with the sample's actual generation time (a stale-but-arriving
+sample lands in "now," not in the window it actually belongs to).
+
 ---
 
 ## 4. Why this design — mapping mechanism to cost saved
