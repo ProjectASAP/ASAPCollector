@@ -1,653 +1,279 @@
 # ASAP system overview
 
 > **Audience.** A new engineer, a reviewer, or a paper reader who wants
-> the whole picture in one sitting — what the system is, what each
-> component does, how the pieces wire up end-to-end, and where the
-> design rationale lives.
+> the whole picture in one sitting.
 >
-> **Scope.** Current state, post-Phase-α through Phase-ε.1.5. This is
-> the canonical "this is the system, today" reference. Per-component
-> design docs and the demo runbook stay authoritative on rationale and
-> operational steps; this doc points at them.
+> **Scope.** Current state. This doc tells the *narrative* — what the
+> pipeline does and why it's shaped this way — and points at
+> per-component docs for mechanism-level detail. It deliberately does
+> not enumerate file paths/function names; those live in the docs
+> linked from §8.
 
 ---
 
 ## 1. TL;DR
 
-ASAP is a sketch-aware, controller-planned observability pipeline. It
-ingests metrics from a fleet of edge agents and answers PromQL queries
-out of a **two-tier serving stack**:
-
-- **Warm sketch tier** (`SimpleEngine` in `ASAPQuery-backend`) —
-  bounded-error sketch summaries, sub-millisecond per query.
-- **Exact archive tier** (Prometheus-TSDB blocks on MinIO, served by
-  `thanos-query` via the backend's `ThanosForwardEngine`) — exact
-  PromQL for everything the warm tier can't answer.
-
-A single planner — the **controller** — chooses, per metric, whether
-to (a) sketch at the edge, (b) ship raw and sketch at ingest, or
-(c) ship raw straight into the Prometheus archive. The choice is
-driven by a per-sketch-family wire-cost break-even table
-(Phase ε.1's `WireCostTable`) and an accuracy SLA on the query.
+ASAP is a **continuous-monitoring observability pipeline**: instead of
+scanning raw samples at query time, it keeps a live, incrementally
+updated sketch of every metric at the backend, fed by a steady trickle
+of small deltas from the edge. The point of the design is to make
+**high-frequency, high-cardinality metrics** affordable to collect and
+fast to query, without giving up freshness.
 
 ```
-                 ┌──────────────────────────────────────────────────────┐
-                 │                    controller                        │
-                 │  L1 query_language → L2 logical_plan → L3 intent     │
-                 │  → L4 sketch_algebra → L5 stage_split → emitters     │
-                 │  ┌────────────────────────────────────────────────┐  │
-                 │  │ WireCostTable + per-metric BindMode selection  │  │
-                 │  └────────────────────────────────────────────────┘  │
-                 └────────────┬────────────────────────────┬────────────┘
-                              │ OpAMP RemoteConfig         │ HTTP push
-              ┌───────────────┼───────────────────┐        │
-              │               │                   │        ▼
-              ▼               ▼                   ▼   ┌──────────────────────┐
-        ┌──────────┐   ┌──────────────┐    ┌────────────────┐                │
-        │asap-otel │   │ asap-otap   │    │ asap-telegraf │                │
-        │(Go)      │   │ (Rust, OTAP) │    │ (Go, Telegraf) │                │
-        └────┬─────┘   └───────┬──────┘    └────────┬───────┘                │
-             │                 │                    │                        │
-             │ OTLP (modified — five sketch tags 13–17) +                    │
-             │ raw OTLP for Mode 2 / Mode 3                                  │
-             ▼                 ▼                    ▼                        │
-        ┌──────────────────────────────────────────────────┐                 │
-        │   gateway (otelcol-contrib + sketch processors,  │                 │
-        │   gorillas3processor — Mode 3 splits off here)   │                 │
-        └────────┬───────────────────────────────┬─────────┘                 │
-                 │ sketch envelopes               │ raw samples (Mode 3)     │
-                 ▼                                ▼                          │
-        ┌────────────────────┐         ┌─────────────────────────┐           │
-        │ ASAPQuery-backend  │         │   Prometheus            │           │
-        │   SimpleEngine     │         │   (TSDB; OTLP receiver  │           │
-        │   (warm sketch)    │         │   on /api/v1/otlp/...)  │           │
-        │                    │         └─────────────────────────┘           │
-        │   EngineRouter     │                                               │
-        │  ──────────────    │                                               │
-        │   ThanosForward    │ ───── HTTP /api/v1/query ─────┐               │
-        │   Engine           │                               │               │
-        │   PrometheusForward│ ── HTTP /api/v1/query ── (in flight Phase ε.2)│
-        │   Engine                                                           │
-        └─────┬──────────────┘                               ▼               │
-              │                                    ┌──────────────────┐     │
-              │ TSDB blocks via                    │  thanos-query    │     │
-              │ gorillas3processor                 │  (HTTP :19092)   │     │
-              ▼                                    └─────────┬────────┘     │
-        ┌────────────────┐  scan blocks    ┌─────────────────┴─────────┐    │
-        │     MinIO      │ ◄──────────────┤  thanos-store-gateway      │    │
-        │  (S3-compat)   │  bucket index   │  (gRPC :10901)             │    │
-        │  TSDB blocks   │ ◄──────────────┤  thanos-compact            │    │
-        └────────────────┘  compaction    └────────────────────────────┘    │
-                                                                            │
-        client PromQL  ─────────────────────────────────────────────────────┘
-        (X-ASAP-Engine override / ?engine= param honored)
+SDK (in-app)                agent collector (asap-otel)         backend (ASAPQuery-backend)
+─────────────                ────────────────────────────         ───────────────────────────
+raw samples          sampling      insert into a live       continuous     apply each delta into
+generated at    ───▶  decision ──▶  sketch / aggregation ──▶ delta sync ──▶ the running sketch;
+native rate           (SDK-side)    (one sketch per series)  (small,        reconstruct tumbling-
+(e.g. 100ms)                                                 threshold-     window sketches; the
+                                                              triggered)     newest window is open
+                                                                             and queryable NOW
 ```
 
-The single-frame point: **edge → gateway → backend** for the warm
-sketch path; **edge → gateway → MinIO** (parallel) for the archive
-path; **backend forwards** archive PromQL to `thanos-query`. The
-controller — sole planner — drives all of this via OpAMP +
-HTTP-push, never inline at query time.
+Three mechanisms, three different costs cut:
+
+1. **SDK-side sampling** — not every raw sample is even hashed into
+   the sketch. Cuts SDK CPU, SDK↔collector wire bytes, and the
+   collector's own hashing/update work.
+2. **Sketch-in-collector** — the agent collector maintains the sketch,
+   not the backend, so the wire to the backend carries sketch *state*
+   (bounded size), not the raw stream.
+3. **Delta transmission, continuously** — the collector doesn't wait
+   for a window to close and flush a full sketch; it streams small
+   per-cell deltas the moment they cross a threshold. This is what
+   buys **freshness**: the backend's current window is always
+   reconstructable from what's arrived so far, not stale until a
+   flush boundary.
+
+None of this requires raw samples to ever leave the edge process for
+most metrics — the backend answers from sketch state it continuously
+reconstructs, not from a raw-data warehouse. See §7 for the fallback
+path (exact archive tier) when a query genuinely needs raw fidelity.
 
 ---
 
-## 2. The three operational modes
+## 2. The pipeline, one stage at a time
 
-The controller picks one of three `BindMode`s per metric per
-deployment. All three speak OTLP on the wire (the fork's "modified
-OTLP" with five sketch-typed `Metric.data` variants is a strict
-superset of stock OTLP).
+### SDK: sampling decision
 
-| # | Name | Edge | Wire | Backend role | Accuracy |
-|---|---|---|---|---|---|
-| 1 | `SketchAtEdge` | Sketch processor at edge → flushes envelopes | Modified OTLP (sketch tags 13–17) | `SimpleEngine` over sketch envelopes | Bounded ε > 0 |
-| 2 | `RawAtEdgeSketchAtBackend` | No sketch; ship raw OTLP | Stock OTLP raw | Backend's `precompute_engine` builds sketches at ingest | Bounded ε > 0 |
-| 3 | `RawAtEdgePrometheusArchive` | No sketch; ship raw OTLP | OTLP HTTP to Prometheus's native receiver `/api/v1/otlp/v1/metrics` | Backend HTTP-forwards to Prometheus's `/api/v1/query` (`PrometheusForwardEngine`, in flight Phase ε.2) | Exact (ε = 0) |
+The SDK sees every raw measurement at its native rate (can be far
+higher than the metric's nominal scrape/push interval — e.g. samples
+every 100ms while the "emit period" is 1s). It decides, per sample,
+whether to admit it into the sketch update stream at all — a much
+cheaper decision than building the sketch itself. Admitted samples
+carry an inverse-probability weight so the sketch stays unbiased. The
+sampling math (per-row geometric skip-sampling, why it must decide
+*which sketch rows*, not raw items) is its own doc — see
+[`design-gos-unified-edge-telemetry.md`](./design-gos-unified-edge-telemetry.md)
+§3.
 
-The choice is a cost-model output:
+**Why at the SDK, not the collector?** Because the alternative — ship
+every raw sample to the collector and sample there — still pays the
+serialization/transmission cost SDK-side sampling avoids. Deciding
+early is strictly cheaper.
 
-- **Mode 1** wins when the per-window sample count crosses the
-  sketch family's break-even threshold (see §10) **and** an
-  ε > 0 SLA is tolerable.
-- **Mode 2** wins when edge CPU is the binding constraint (sketch
-  build cost is centralized, edge ships compact raw OTLP).
-- **Mode 3** wins for low-cardinality metrics where the sketch
-  envelope overhead never amortizes, **or** when the query needs
-  exact answers (`histogram_quantile`, `delta`, `idelta`, `absent`,
-  vector matching, etc. — the eleven archive-only intents in §6).
+### Agent collector (`asap-otel`): sketch build + continuous sync
 
-Source of break-even constants: `controller/src/planner/wire_cost.rs`
-(`WireCostTable::default_phase_eps_1`) — see §10 for the table.
+`asap-otel` is the **only edge runtime this doc assumes** — the sole
+one actively maintained. (An earlier Rust/OTAP variant, `asap-otap`,
+exists in history but is unmaintained; see
+[`docs/dormant/`](./dormant/).)
 
----
+Admitted samples are inserted into a per-series sketch/aggregation
+(DDSketch, KLL, HLL, Count-Min, Count-Sketch, or a plain running
+sum/count — see §6). The collector does **not** batch-and-flush on a
+timer as its primary mechanism. Instead, every insert checks whether
+the sketch's accumulated-since-last-sync state has crossed a
+threshold; if so, that delta gets synced to the backend right away.
+This "continuous monitoring" behavior — and the threshold math behind
+it — is the subject of
+[`design-gos-unified-edge-telemetry.md`](./design-gos-unified-edge-telemetry.md)
+§11.
 
-## 3. Three edge runtimes
+### Backend (`ASAPQuery-backend`): delta apply + tumbling reconstruction
 
-All three runtimes consume the same precompute libraries (Go and
-Rust ports are byte-parity-tested — see §8). The runtime pick is
-deployment-shaped: `asap-otel` for OTel-Collector-native deployments,
-`asap-otap` for high-throughput OTAP/Arrow pipelines, `asap-telegraf`
-for Telegraf-native sites.
+The backend applies each incoming delta into a running merge per
+series/cell. Because every family here is additively mergeable, it
+doesn't matter how many small deltas arrive or when — summing them
+telescopes to the correct cumulative state. The backend buckets this
+running state into **tumbling windows**; the **newest window is
+always open** — still accepting deltas, and still queryable, with
+whatever partial state has landed so far. A query against "now" never
+waits for a window-close event; it reads the freshest reconstructed
+state directly. Older, closed windows are immutable and archivable.
 
-| Runtime | Lang | Library | Status | Mode 1 emit (sketch envelopes) | Mode 3 emit (raw → Prometheus) |
-|---|---|---|---|---|---|
-| `asap-otel` | Go | `asap-precompute-go` | shipped | Embedded sketch processors → otlphttp exporter | `otlphttp/prometheus` exporter to `/api/v1/otlp/v1/metrics` |
-| `asap-otap` | Rust | `asap-precompute-rs` | shipped | OTAP DAG nodes → `urn:otel:exporter:otlp_http` | OTAP passthrough → `exporter:otlp_http` |
-| `asap-telegraf` | Go | `asap-precompute-go` | shipped | Telegraf processor → `outputs.opentelemetry` | `outputs.http` with `data_format = "prometheusremotewrite"` (the shipped Telegraf otel plugin is gRPC-only — HTTP-postable Prometheus remote-write keeps the path lossless) |
-
-Sources:
-- `controller/src/config/stage_config.rs` (`emit_edge_yaml` for
-  asap-otel)
-- `controller/src/config/stage_config_otap.rs` (`emit_otap_dag_yaml`
-  for asap-otap)
-- `controller/src/config/stage_config_telegraf.rs`
-  (`emit_telegraf_toml` for asap-telegraf)
-
-The sketch-processor logic itself is the same observation-loop in
-both libraries (`asap-precompute-go/precompute.go`,
-`asap-precompute-rs/src/precompute.rs`); the runtimes differ only
-in *how the processor is hosted* (collector pipeline vs. OTAP DAG vs.
-Telegraf processor).
+This is the core freshness claim of the design: **staleness is bounded
+by how fast deltas arrive, not by a fixed flush interval.**
 
 ---
 
-## 4. The five sketch families
+## 3. Two shapes of query — and why they're handled differently
 
-The fork's modified-OTLP wire format extends `Metric.data oneof` with
-five new tags (13–17), one per sketch family. All five are typed,
-schemaful, and accumulator-symmetric — i.e. the gateway, the backend,
-and any downstream merger build identical results from identical
-inputs.
+Not every query is "the same series, over time." ASAP has to support
+two structurally different aggregation shapes, and they hit the
+pipeline very differently.
 
-| Family | Tag | Use | Backend accumulator | Accuracy envelope (typical) | Break-even (samples/window @ 50 B/sample) |
-|---|---|---|---|---|---|
-| **DDSketch** | 13 | Quantiles over numeric values (latencies, sizes) | `aggregate_ddsketch` (relative-error merge) | ε ≈ 0.01 (rank error) | **16** (delta-encoded) |
-| **KLL** | 14 | Quantiles when relative-error guarantees aren't enough | `aggregate_kll` (compactor-hierarchy merge) | ε ≈ 0.005 (rank error), δ via Hoeffding | **64** (full state — KLL has no delta variant) |
-| **HLL** | 15 | Distinct-cardinality (`count(distinct …)`) | `aggregate_hll` (register-max merge) | ε ≈ 1.04 / √m relative | **204** (delta-encoded register array) |
-| **Count-Min** | 16 | Heavy-hitters / point-frequency on label values | `aggregate_cms` (row-by-row sum merge) | ε(N), δ(d) bounded | **84** (delta-encoded rows) |
-| **Count-Sketch** | 17 | Estimated frequencies that need signed estimators | `aggregate_count_sketch` (cell-sum merge) | ε(N), δ(d) bounded | **5,004** (delta-encoded sparse cells) |
+### (a) Temporal — continuous monitoring over one series
 
-Cross-runtime parity: identical input → byte-identical
-`SerializePortable` envelope from any of `asap-otel`,
-`asap-otap`, or `asap-telegraf`. Verified via golden-fixture
-parity tests under `integration/cross-host-parity/` and
-`integration/parity/`.
+`rate(m[5m])`, `quantile_over_time(...)`, a dashboard panel tracking
+one series across a tumbling window. This is exactly the model in §2:
+one series' sketch, continuously synced, read out of whichever
+window(s) the query's time range covers. No cross-agent merge is
+needed if that series lives on one collector.
 
-Source: `Implementation.tex` impl-components table; cost table
-implemented in `controller/src/planner/wire_cost.rs`.
+### (b) Spatial — aggregation across label dimensions, at a timestamp
+
+`sum by (region) (m)`, `topk(5, m)` — these group **across series**,
+and those series may be produced by *different, independent agent
+collectors* (each collector owns a partition of the fleet). Answering
+this means merging sketches contributed by multiple collectors, and
+whether a merge is even necessary depends on the query's `group by`
+granularity — a query that keys by the same label the data is already
+partitioned on may need no cross-agent merge at all; one that
+collapses across that label does.
+
+**Open question, not yet solved:** merging state from independent
+collectors is only correct if their windows line up — i.e. their
+notion of "the current tumbling window" must be aligned in wall-clock
+time. The pipeline has no explicit clock-skew or cross-collector
+window-alignment mechanism today; this is effectively an assumption
+that collector clocks are synchronized closely enough to not matter,
+which hasn't been stress-tested. Flagged here because it's a real
+correctness dependency of the spatial query path, not because it's
+handled.
 
 ---
 
-## 5. Backend (`ASAPQuery-backend`, post-Phase-γ)
+## 4. Why this design — mapping mechanism to cost saved
 
-```
-asap-query-engine/src/
-  engines/
-    simple/      ← SimpleEngine — warm sketch tier
-    gorilla/     ← ThanosForwardEngine + legacy GorillaQueryEngine
-    prometheus/  ← PrometheusForwardEngine (Phase ε.2, in flight)
-    physical/    ← lower-level operator nodes
-    logical/     ← logical-plan rewrites
-  routing/
-    backend_storage_routing.rs  ← controller-pushed multi-target table
-    engine_router.rs            ← dispatcher + override surface
-  precompute_engine/  ← Mode 2 ingest (builds sketches from raw OTLP)
-  drivers/            ← HTTP server, ingest endpoints
-  stores/             ← sketch_db, gorilla_s3, etc.
-```
-
-### Engines
-
-- **`SimpleEngine`** (`engines/simple/`) — the warm sketch tier.
-  Pattern-matches incoming PromQL against 33 supported
-  PromQL pattern matchers (PR #79 — spatial multi-quantile,
-  `quantile_over_time(φ ∈ {0.5, 0.9, 0.95, 0.99}, …[1m|2m|5m])`,
-  `sum_over_time` / `count_over_time`, `rate` / `increase`, spatial
-  `count` / `sum` / `avg`, `topk(k ∈ {5, 10, 50}, …)`). Misses fall
-  through to the archive engine.
-- **`ThanosForwardEngine`** (`engines/gorilla/thanos_forward.rs`) —
-  archive tier. HTTP-forwards PromQL queries to a co-located
-  `thanos-query` sidecar. Registered under both `engine_id =
-  "thanos_archive"` (its native id) and `engine_id =
-  "gorilla_archive"` (legacy alias, so existing routing tables and
-  failover sequences continue to work). Activated when
-  `ASAP_THANOS_QUERY_URL` is set.
-- **`PrometheusForwardEngine`** (`engines/prometheus/`) — Mode 3
-  archive engine. HTTP-forwards to Prometheus's native
-  `/api/v1/query`. `engine_id = "prometheus_remote"`. **Status:
-  Phase ε.2, in flight.**
-- **Legacy `GorillaQueryEngine`** (`engines/gorilla/engine.rs`) — the
-  pre-Path-A2 in-process engine over Gorilla-XOR chunks. Curated
-  PromQL subset (`sum / count / avg / min / max / rate / increase /
-  quantile_over_time / topk`). Kept as a fallback for sites without
-  a thanos sidecar.
-
-### Routing
-
-- `BackendStorageRouting` is a **per-metric, multi-target** table
-  pushed by the controller (`POST /api/v1/storage_routing`). One
-  metric can have entries for the warm tier *and* the archive tier;
-  the dispatcher picks one based on the query shape's archive-only
-  flag and the `accuracy` SLA.
-- `EngineRouter` is the per-query dispatcher. It honors two
-  override surfaces:
-  - **`X-ASAP-Engine: <id>` HTTP header**
-  - **`?engine=<id>` query parameter**
-  Both bypass the routing table for the override id when present,
-  and fall back to the routing table otherwise. Used by the demo
-  driver and operator-side debugging.
-
-### Configuration
-
-| Env var | Purpose | Default |
+| Mechanism | Cost it cuts | Where |
 |---|---|---|
-| `ASAP_THANOS_QUERY_URL` | Upstream `thanos-query` URL for `ThanosForwardEngine` | unset → forward engine not registered; fall back to legacy `GorillaQueryEngine` |
-| `ASAP_PROMETHEUS_QUERY_URL` | Upstream Prometheus URL for `PrometheusForwardEngine` (Phase ε.2) | unset → engine not registered |
-| `ASAP_GORILLA_S3_*` | Legacy in-process `GorillaQueryEngine` config (endpoint, bucket, region, credentials, cache size) | unset → warm-only mode |
-| `CONTROLLER_BACKEND_ENDPOINT` | URL the controller pushes plans to (`POST /api/v1/streaming-config`, `POST /api/v1/storage_routing`) | unset → static-config mode |
+| SDK-side sampling | SDK CPU (fewer hashes), SDK→collector wire bytes, collector hashing/update work | SDK |
+| Sketch built at the collector, not the backend | Backend ingest CPU; backend never sees the raw stream | Agent collector |
+| Continuous, threshold-triggered delta sync (not periodic full-flush) | Backend→query freshness (no flush-boundary wait); wire bytes (deltas ≪ full sketch state) | Collector → backend |
+| Sketch store + tumbling-window reconstruction at the backend | Query latency and query-time compute (no raw scan) | Backend |
 
-(See `ASAPQuery-backend/README.md` §"Backend env vars" for the
-authoritative table.)
+The **freshness** win and the **cost** wins come from different
+mechanisms and shouldn't be conflated: continuous delta sync is what
+buys freshness; sampling and sketching are what buy cost reduction.
+A design that only sketched (batch-flush per window) would be
+cost-efficient but not fresh; a design that only streamed continuously
+without sketching (raw continuous streaming) would be fresh but not
+cheap.
 
 ---
 
-## 6. Controller (`ASAPCollector/controller`)
+## 5. Evaluating the win — the fair-baseline framing
 
-The controller is the **sole planner**. No inline planning happens
-at query time, no agent picks its own configuration, no backend
-chooses an engine without a routing-table entry. Everything traces
-back to a controller plan.
+A naive comparison against "what OTel/Prometheus does by default" is
+not a fair baseline, and inflates ASAP's apparent advantage: standard
+OTel push-based collection already **downsamples** — it picks (e.g.)
+the last raw sample in each emit period and sends just that one,
+discarding the rest, even when the true signal is generated far more
+frequently (e.g. every 100ms against a 1s emit period). That's an
+accuracy loss baked into the comparison, not a cost ASAP is actually
+beating fairly.
 
-### Five-layer pipeline
+The three pipelines to compare:
 
-| Layer | Module | Role |
+| Pipeline | What crosses the wire | Signal fidelity |
 |---|---|---|
-| L1 query_language | `controller/src/query_language/` | Parse PromQL (and SQL / Elastic DSL where supported) → `language_ast` |
-| L2 logical_plan | `controller/src/language_logical_plan/` | AST → language-orthogonal logical operators |
-| L3 intent_algebra | `controller/src/intent_algebra/` | Logical → `AggIntent` + `QueryExpr` DAG + typed `Schema`. Each intent has an `archive_only` flag. |
-| L4 sketch_algebra | `controller/src/sketch_algebra/` | `QueryExpr` → `SketchExpr` via Bind* rules: `bind_ddsketch_quantile`, `bind_kll_quantile`, `bind_hll_cardinality`, `bind_cms_count`, `bind_cms_topk`, `bind_archive_only` |
-| L5 stage_split | `controller/src/stage_split/` | Allocate stages (edge / gateway / backend); colored DAG → per-stage configs |
+| **OTel default** | 1 sample/emit-period (e.g. 1/1s), picked from a much higher raw rate | Lossy — most raw samples never leave the SDK |
+| **Fair raw baseline** | *every* raw sample, at native rate (e.g. every 100ms), to the collector or straight to a backend | Full fidelity, no sampling anywhere |
+| **ASAP** | SDK-admitted samples only, inserted into a sketch at the collector, synced as deltas | Bounded-error, tunable via the sampling rate / threshold |
 
-### Eleven archive-only intents
+The claim to validate is against the **fair raw baseline**, not
+against OTel-default: at comparable signal fidelity (both see the
+full 100ms-rate stream), ASAP's sketch store + query engine should
+answer queries at lower latency and lower serving cost than computing
+the same query directly over the raw high-frequency stream. Comparing
+against OTel-default instead would conflate "ASAP is cheaper" with
+"OTel-default already threw away most of the data" — a different and
+much weaker claim.
 
-Phase β lifted these from the legacy planner's "unsupported" branch
-into L3 vocabulary so they get a `StreamingConfig` entry (routed
-to the archive tier rather than the warm sketch tier):
+---
 
-```
-HistogramQuantile, Absent, Present, Delta, Deriv,
-PredictLinear, HoltWinters, Idelta, Irate, Resets, Changes
-```
+## 6. Sketch families
 
-Source: `controller/src/intent_algebra/agg_intent.rs` (variant
-list + `archive_only()` predicate); module-level docs in
-`controller/src/intent_algebra/mod.rs`.
-
-### Cost model
-
-`controller/src/planner/wire_cost.rs` owns the `WireCostTable`
-and per-metric `BindMode` selection. The model collapses two
-older axes (raw-vs-sketch from `delta_cost_model.rs`,
-exact-vs-approximate from `cost_model.rs`) into a single tri-mode
-selector that names where the work happens (see §2). All three
-modes use OTLP on the wire — the agent's exporter vocabulary is
-collapsed to `otlp` / `otlphttp` only (no separate
-`prometheusremotewrite` exporter on the OTel-collector path).
-
-### Per-runtime emitters
-
-| Emitter | Output | Consumer |
+| Family | Answers | Merge |
 |---|---|---|
-| `emit_edge_yaml` | otelcol-contrib YAML | `asap-otel` agent |
-| `emit_otap_dag_yaml` | OTAP DAG YAML | `asap-otap` agent |
-| `emit_telegraf_toml` | Telegraf TOML | `asap-telegraf` agent |
-| `emit_gateway_yaml` | otelcol-contrib YAML (gateway role) | gateway |
-| `emit_backend_config_json` | StreamingConfig JSON | backend `/api/v1/streaming-config` |
-| `emit_backend_storage_routing` (and `…_with_prometheus` for Mode 3) | BackendStorageRouting JSON | backend `/api/v1/storage_routing` |
+| **DDSketch** | Quantiles (relative-error) | Additive |
+| **KLL** | Quantiles (rank-error, tighter guarantee) | Compactor-hierarchy merge (no delta variant — always full state) |
+| **HLL** | Distinct-cardinality | Register-wise max (idempotent — never "resets" a register, only clears a dirty flag) |
+| **Count-Min** | Heavy-hitters / point frequency | Additive |
+| **Count-Sketch** | Signed frequency estimates | Additive |
+| Sum/Count | Exact aggregates | Additive (degenerate 1-cell case) |
 
-### Push surfaces
-
-- **OpAMP `RemoteConfig`** — pushed over WebSocket (`GET /v1/opamp`)
-  to all registered agents and the gateway. The OpAMP server
-  implementation is `controller/src/opamp/mod.rs`.
-- **HTTP push** — `POST /api/v1/streaming-config` and
-  `POST /api/v1/storage_routing` to the backend, via
-  `controller/src/backend_client.rs`.
-
-### Bootstrap fetch surface
-
-- **`GET /api/v1/collector-config/agent`** — the static URL each
-  freshly-started agent reads at boot. Under
-  `USE_TYPED_STAGE_SPLIT=1` the handler runs the same typed L5
-  pipeline as `POST /api/v1/plan` and emits per the
-  `X-Agent-Runtime` header (defaults to `AsapOtel`). The
-  handler walks the `WorkloadRegistry` (or the `X-Agent-ID`-keyed
-  pinned plan if present) and dispatches through `emit_for_runtime`,
-  so bootstrap-fetched configs already carry Phase 3.2.5's
-  `gorillas3` archive emit + warm-passthrough routing — no
-  `POST /api/v1/plan` post-startup nudge required. When the gate is
-  off (legacy deployments) the handler falls back to
-  `generate_agent_config` for backwards-compat.
+All are typed, schema-ful entries on the wire (modified OTLP, five
+extra `Metric.data` variants) — see
+[`design-gos-unified-edge-telemetry.md`](./design-gos-unified-edge-telemetry.md)
+for the accuracy math and §11's per-family insert-time detection rules.
 
 ---
 
-## 7. Archive tier on MinIO + Thanos
+## 7. When the sketch store isn't enough: the archive tier
 
-The archive tier serves exact PromQL out of standard
-Prometheus-TSDB blocks on object storage.
-
-```
-edge / gateway → gorillas3processor → MinIO bucket (TSDB blocks)
-                                           │
-                                           ▼
-                            thanos-store-gateway (gRPC :10901)
-                                           │
-                                           ▼
-                            thanos-query (HTTP :19092 in MVP)
-                                           ▲
-                                           │ HTTP /api/v1/query
-                                           │
-                            backend ThanosForwardEngine
-                                           ▲
-                                           │ PromQL with archive-only intent
-                                           │
-                                       client
-```
-
-### Block writer — `gorillas3processor`
-
-Lives in `opentelemetry-collector-contrib-patch/processor/gorillas3processor/`.
-Emits Prometheus-TSDB blocks with the standard layout:
-
-```
-<bucket>/<ulid>/
-  ├── chunks/000001
-  ├── index
-  └── meta.json
-```
-
-Each block is a stock TSDB block readable by any Prometheus-compatible
-tool. MVP step 2.1 (PR #311) shipped this writer.
-
-### Thanos stack
-
-| Component | Port | Role |
-|---|---|---|
-| `thanos-store-gateway` | gRPC :10901 | Scans the MinIO bucket; exposes blocks as a Thanos `StoreAPI` |
-| `thanos-query` | HTTP :10903 (host :19092 in MVP demo) | Prometheus-compatible HTTP query server; fans out to store-gateway |
-| `thanos-compact` | (no listener) | Compacts and downsamples raw blocks. Retention: raw=30d / 5m=180d / 1h=1y. Phase δ.1 — replaced the deleted `gorilla-compactor` Rust binary. |
-
-### Backend forwarding
-
-Backend's `ThanosForwardEngine` HTTP-forwards archive-tier queries
-to `thanos-query`. The `data_source: thanos_archive` info string is
-attached to forwarded responses; the legacy alias
-`gorilla_archive` is kept so existing routing tables and failover
-sequences continue to work.
-
-Path-A2 (Steps 2.1–2.4, 2026-05-07) verified end-to-end:
-`histogram_quantile` over the archive matches a hand-computed
-reference exactly; 4 TSDB blocks land in MinIO; thanos-query
-sidecar healthy; the full Prometheus PromQL surface is now
-answered exactly by the archive tier (these query shapes were
-rejected by the prior curated-subset `GorillaQueryEngine` and are
-the qualitative win of the Path-A2 consolidation).
-
-Source: `docs/mvp-demo-runbook.md` §"Path A2 verification";
-design rationale in `docs/design-archive-tier.md`.
+Some query shapes have no summary realization by design — they need
+richer partial state than any single sketch can carry, or an exact
+answer (`histogram_quantile`, `absent`, vector matching, etc.). These
+fail over to an **exact archive tier**: edge/gateway also write
+standard Prometheus-TSDB blocks to object storage (MinIO), served
+through a Thanos-compatible query path. This is a parallel path, not a
+fallback that raw samples take by default — most metrics never touch
+it. See [`design-archive-tier.md`](./design-archive-tier.md).
 
 ---
 
-## 8. Wire format + cross-language byte parity
+## 8. Controller — planning is separate from this doc
 
-The wire format is **modified OTLP**: stock OTLP plus five new
-typed `Metric.data` variants on tags 13–17. Each variant carries
-a `SketchEnvelope` whose `Payload` field is the
-language-portable, byte-stable serialization of the sketch
-together with its accuracy envelope (ε, δ, kind).
-
-```
-SketchEnvelope {
-  payload: bytes (SerializePortable output),
-  accuracy: AccuracyEnvelope { kind, eps, delta },
-  sketch_params: SketchParams { … },
-  ...
-}
-```
-
-### Cross-language byte parity gate
-
-Same input → byte-identical `SerializePortable` envelope from any
-of the three runtimes (`asap-otel`, `asap-otap`,
-`asap-telegraf`). This is enforced by:
-
-- `asap-precompute-go/envelope_test.go` — Go-side golden fixtures
-- `asap-precompute-rs/src/envelope.rs` (and tests) — Rust-side
-  parity tests against the same fixtures
-- `integration/parity/` and `integration/cross-host-parity/` —
-  end-to-end fixtures running both stacks side by side
-
-The gate is load-bearing: the gateway and the backend assume that
-two envelopes for the same logical observation merge to the same
-sketch state regardless of which runtime produced them. Any
-divergence (compactor RNG drift, label-set ordering, float
-canonicalization) breaks the merge invariant.
-
-Source: `Implementation.tex` impl-components §"OTLP wire-format
-extension (tags 13–17)".
+*Who* decides sketch family, parameters, and stage placement is a
+separate planning-time concern (a five-layer L1→L5 pipeline, split
+between the `ASAPController` library and `ASAPQuery-backend`'s
+deployment-specific planner). It doesn't change the dataflow narrative
+above — it just decides the sketch family/params each series uses
+before any of §2 runs. Detail:
+[`control-plane-design.md`](./control-plane-design.md) and
+`ASAPQuery-backend/control_plane/docs/design-target-architecture.md`.
 
 ---
 
-## 9. Deployment shapes
+## 9. Cross-references
 
-### Single-host MVP demo
-
-The demo (`docs/mvp-demo-runbook.md`) brings up a full stack on
-one host:
-
-```
-10 producers
-  ↓
-2 agents (asap-otel)
-  ↓
-1 gateway (asap-otel with gorillas3processor)
-  ↓
-1 backend (ASAPQuery-backend)
-  ↓
-1 MinIO + 3 thanos sidecars (store-gateway, query, compact)
-  ↓ (optional, opt-in)
-1 Prometheus (raw-baseline path)
-```
-
-This is the canonical reproducer. It exercises every layer
-(controller plans, OpAMP push, sketch envelopes, archive blocks,
-backend routing, both forward engines).
-
-### Production pyramid
-
-```
-many SDKs              ← O(100–1,000) series each
-  ↓
-many collectors        ← O(10K–100K) aggregated series each
-  ↓
-backend                ← O(millions) series total
-```
-
-A controller-emitted plan covers the whole pyramid via OpAMP fan-out.
-The collector tier is where most of the wire reduction happens
-(sketches at edge for high-cardinality metrics; raw passthrough
-for low-cardinality ones).
-
-### Multi-host federation
-
-Not designed today. The controller is single-tenant, single-cluster.
-See §12.
-
----
-
-## 10. Operating-point math (cost-model break-even)
-
-For sketch family `f` with per-flush wire cost
-`per_flush_f = state_bytes_f + envelope_bytes_f`, and per-sample raw
-OTLP cost `per_sample_bytes` (default 50 — typical observability
-counter / gauge with a small label set, after OTLP delta encoding
-at the SDK):
-
-```
-break_even_samples_per_window = ceil(per_flush_f / per_sample_bytes)
-```
-
-The Phase ε.1 default table (`WireCostTable::default_phase_eps_1`):
-
-| Family | `state_bytes` | `envelope_bytes` | `per_flush` | Break-even @ 50 B/sample |
-|---|---:|---:|---:|---:|
-| DDSketch (delta) | 600 | 200 | 800 | **16** |
-| KLL (full — no delta variant) | 3,000 | 200 | 3,200 | **64** |
-| HLL (delta) | 10,000 | 200 | 10,200 | **204** |
-| Count-Min (delta) | 4,000 | 200 | 4,200 | **84** |
-| Count-Sketch (delta) | 250,000 | 200 | 250,200 | **5,004** |
-
-### When raw passthrough wins
-
-When `samples_per_window_per_series < break_even_f` for every
-sketch family that could answer the query. At that point
-Mode 1 (sketch at edge) costs more per window than just shipping
-all the samples — and the controller picks Mode 2 (raw at edge,
-sketch at backend) or Mode 3 (raw at edge, exact at archive)
-instead.
-
-### Sensitivity
-
-Break-even is linear in `per_sample_bytes` and inverse-linear in
-the sketch family's `per_flush` cost, so the dominant scaling
-inputs are:
-
-- **Scrape rate × cardinality** (`samples_per_window_per_series`)
-  — the workload-side knob.
-- **OTLP per-sample size** (`per_sample_bytes`) — affected by label
-  set size, delta encoding at the SDK.
-- **Sketch family parameters** — DDSketch γ, KLL k, HLL m,
-  Count-Min (d, w). These set the wire-cost row.
-
-Source: `controller/src/planner/wire_cost.rs`
-(`break_even_samples` + the `break_even_table_at_50_bytes_per_sample`
-test snapshot).
-
----
-
-## 11. What was deleted (architecture is settled, not journey-narrative)
-
-This is the canonical "what is no longer in the system" list.
-The architecture today is the result of these subtractions, not
-the union of every prototype.
-
-| Deletion | When | Why |
-|---|---|---|
-| **JSONL cold-fallback path** | Step 1 (PR #95) | Replaced by `GorillaS3ColdStore` (later renamed `GorillaS3Store`) — the JSONL format never made it past the bring-up phase |
-| **`asap-planner-rs` library + CLI** | Phase γ (PR #99) | All planning logic absorbed into the controller's L3/L4/L5 pipeline; no remaining caller |
-| **`gorilla-compactor` Rust binary** | Phase δ.1 (PR #321) | Replaced by stock `thanos compact` running as a sidecar — same job (decode + re-encode TSDB blocks), zero ASAP-specific code |
-| **`prometheus_remote_write` ingest from backend** | PR #100 | The backend no longer accepts Prometheus remote-write directly; ingest is OTLP-only |
-| **`LocalFsColdStore` enum variant** | Step 1 | Local-fs cold tier was a pre-MinIO bring-up convenience; obsolete once MinIO became the only target |
-| **Cold-tier "scan bytes" line item from cost model** | Step 1 | The JSONL deletion removed the line-item; archive scan cost is now folded into the forward-engine HTTP cost |
-
-These are listed here so a reader doesn't go hunting for them in
-older docs and assume they're load-bearing.
-
----
-
-## 12. What's not yet implemented
-
-Tracked, in flight, or explicitly out of scope today.
-
-| Item | Status |
-|---|---|
-| **Phase 3.1 warm-tier null-answer fix** | In flight. MVP demo criterion ④ reports UNKNOWN until landed. |
-| **Phase 3.2.5 freshness probe routing** | In flight. MVP demo criterion ⑥ reports UNKNOWN until landed. |
-| **Phase 3.3 final demo re-run** | Pending Phase 3.1 + 3.2.5. |
-| **Phase ε.2 backend `prometheus_remote` engine kind** | In flight. `PrometheusForwardEngine` skeleton lives under `engines/prometheus/`; controller-side BackendStorageRouting emit (`emit_backend_storage_routing_with_prometheus`) is in place. |
-| **Per-tenant routing** | `BackendStorageRouting` is global today. Multi-tenant slicing of the table is open work. |
-| **Hot-reload signal-driven** | Controller-pushed only today. The backend will accept a `POST /api/v1/streaming-config` at any time but it doesn't watch a filesystem path or react to a SIGHUP. |
-| **Multi-host federation** | Not designed. The controller is single-cluster. |
-
----
-
-## 13. Cross-references
-
-### Operational
-
-- **`docs/mvp-demo-runbook.md`** — how to run the single-host MVP
-  demo end-to-end. Authoritative on bring-up sequence, port
-  layout, criteria pass/fail, and the in-flight bugs called out
-  in §12.
-
-### Design rationale
-
-- **`docs/design-archive-tier.md`** — archive-tier design rationale,
-  wire format details, and the JSONL → Path-A2 consolidation history
-  (merged from the older `design-jsonl-deprecation-…` and
-  `design-gorilla-s3-cold-engine` docs in PR #325).
-- **`docs/design-asap-edge-framework.md`** — asap-otel agent design.
-- **`docs/design-asap-otap-rust-integration.md`** — asap-otap agent
-  design.
-- **`docs/design-asap-telegraf-integration.md`** — asap-telegraf
-  agent design.
-- **`docs/control-plane-design.md`** — controller architecture; OpAMP
-  and HTTP-push plumbing.
-- **`docs/sketch-algebra-query-mapping.md`** — L3/L4 query → sketch
-  binding rules, from the controller's side.
-- **`docs/opamp-config-push.md`** — OpAMP `RemoteConfig` push wire
-  format and the WebSocket transport.
-- **`controller/docs/design.md`** — controller-internal design notes;
-  source for §6's pipeline + cost-model details.
-
-### Comparison
-
-- **`docs/comparison-asap-vs-databricks-pantheon-hydra.md`** — ASAP
-  vs. Databricks Pantheon + Hydra, with a column on the
-  Gorilla-S3 archive tier vs. Hydra's exact tier.
-
-### Paper
-
-- **`Super_resolution_ingestion_with_sketching_VLDB_or_SIGMOD/main.pdf`**
-  (compiled from `Implementation.tex`, `Design.tex`, etc. in the
-  same directory). Source-of-truth for the wire-format extension
-  (§8) and the impl-components table (§4).
+- [`design-gos-unified-edge-telemetry.md`](./design-gos-unified-edge-telemetry.md) — the mechanism and math behind §2's sampling and continuous delta sync (error bounds, threshold allocation).
+- [`sampling-cdm-gos-derivations.md`](./sampling-cdm-gos-derivations.md) — per-family threshold derivations referenced above.
+- [`design-archive-tier.md`](./design-archive-tier.md) — §7's exact tier.
+- [`design-asap-edge-framework.md`](./design-asap-edge-framework.md) — `asap-otel` agent design.
+- [`docs/dormant/`](./dormant/) — the unmaintained `asap-otap` integration design.
+- [`control-plane-design.md`](./control-plane-design.md) — planning-time architecture (§8).
+- [`mvp-demo-runbook.md`](./mvp-demo-runbook.md) — how to run the single-host demo end-to-end.
+- [`comparison-asap-vs-databricks-pantheon-hydra.md`](./comparison-asap-vs-databricks-pantheon-hydra.md) — positioning vs. related systems.
 
 ---
 
 ## Glossary
 
-- **AggIntent** — the L3 vocabulary: a *what to compute* node
-  (`Quantile`, `Cardinality`, `TopK`, `HistogramQuantile`, …).
-  Sketch family is *not* picked at L3.
-- **Archive-only intent** — an `AggIntent` that the warm tier can't
-  serve from any sketch family, so it's pre-flagged for the
-  archive tier (`HistogramQuantile`, `Delta`, `Idelta`, `Irate`,
-  `Resets`, `Changes`, `Absent`, `Present`, `Deriv`,
-  `PredictLinear`, `HoltWinters` — the eleven from §6).
-- **BindMode** — one of `SketchAtEdge` / `RawAtEdgeSketchAtBackend` /
-  `RawAtEdgePrometheusArchive`. Per-metric controller decision.
-- **BackendStorageRouting** — the controller-pushed, per-metric,
-  multi-target routing table the `EngineRouter` consults at query
-  time.
-- **EngineRouter** — backend per-query dispatcher. Consults the
-  routing table; honors `X-ASAP-Engine` header / `?engine=` query
-  param overrides.
-- **Modified OTLP** — stock OTLP plus five new typed `Metric.data`
-  variants on tags 13–17, one per sketch family. Strict superset
-  of stock OTLP (a stock OTLP receiver ignores unknown tags).
-- **Path A2** — the post-Step-2.4 archive-tier shape: edge writes
-  Prometheus-TSDB blocks via `gorillas3processor`; backend
-  HTTP-forwards PromQL to `thanos-query`. The qualitative win is
-  full Prometheus PromQL on the archive tier.
-- **WireCostTable** — Phase ε.1 per-sketch-family wire cost model.
-  Drives the `BindMode` selection. Lives in
-  `controller/src/planner/wire_cost.rs`.
+- **Continuous monitoring** — syncing sketch deltas to the backend as
+  they cross a threshold, rather than on a fixed flush timer; the
+  mechanism that makes the newest tumbling window fresh.
+- **Tumbling window** — a fixed, non-overlapping time bucket the
+  backend reconstructs a sketch's state into; the newest one is open
+  (still accepting deltas) and queryable.
+- **Temporal query** — a query over one series' history (rate,
+  quantile_over_time, ...); answered from that series' own windowed
+  sketch, no cross-agent merge needed.
+- **Spatial query** — a query that aggregates across series/labels at
+  one timestamp (`sum by (...)`, `topk`); may require merging sketches
+  from multiple independent agent collectors, depending on `group by`
+  granularity relative to how the fleet is partitioned across
+  collectors.
+- **Fair raw baseline** — the evaluation baseline that ships *every*
+  raw sample at native rate (no SDK sampling), used to isolate ASAP's
+  win from the unrelated fact that OTel-default already downsamples.
 
 ---
 
-*Maintainer note.* When a new operational mode, sketch family, or
-engine lands, update §2, §4, or §5 respectively, and add the
-deletion (if any) to §11. Per-component design docs stay
-authoritative on rationale; this doc is the single-frame
-"current-state architecture" reference.
+*Maintainer note.* This doc is the narrative reference — what the
+pipeline does and why. Mechanism-level detail (accuracy math,
+threshold derivations, wire formats, per-layer planning interfaces)
+belongs in the linked per-component docs, not here.
