@@ -10,650 +10,269 @@ Woodruff–Zhang lower bound `Θ̃(k/ε²)`.
 
 We call the construction **GOS** (Geometric-OctoSketch).
 
+> **Math lives elsewhere.** This doc states *what's true and why it matters*,
+> in prose. Every formula, derivation, and proof is in
+> [`sampling-cdm-gos-derivations.md`](./sampling-cdm-gos-derivations.md)
+> ("derivations" below) — section references point there. Treat this doc as
+> the map, that one as the territory.
+
 ---
 
 ## 1. Context and requirements
 
-Distributed data collection and transmission with a centralized analytics
-backend. Edge telemetry must be **memory-, computation-, and
-communication-efficient** under cloud economics, while the backend serves
-**continuous, accurate, fresh** queries.
+Distributed data collection with a centralized analytics backend, under four
+simultaneous constraints:
 
-- **Memory efficiency.** Cloud memory instances are priced above CPU instances.
-  With high-cardinality, high-frequency time-series metrics from many
-  distributed services, allocating *one sketch per series per window* puts heavy
-  memory pressure on the data-source nodes. Memory must be controlled across the
-  series×window space.
-- **Computation efficiency.** Per-sample sketch update work at the edge must stay
-  within line-rate CPU budgets on shared instances.
-- **Communication efficiency.** Cross-AZ egress is billed per byte; transmission
-  must be minimized.
-- **Continuous & accurate queries.** Monitoring queries are *long-running* over
-  the stream, not the database "on-demand" model. We care about the
-  **freshness/timeliness** gap between when a sample is generated at the source
-  and when it can be queried accurately at the backend.
+- **Memory** — cloud memory is priced above CPU; one sketch per series per
+  window doesn't scale across a high-cardinality fleet.
+- **Computation** — per-sample update work at the edge must stay within
+  line-rate CPU budgets on shared instances.
+- **Communication** — cross-AZ egress is billed per byte.
+- **Freshness** — monitoring queries are long-running over the stream, not
+  one-shot "on demand." What matters is the gap between when a sample is
+  generated and when it's queryable at the backend, not just query latency
+  once landed.
 
 These four axes are exactly the decision variables and constraints of the
-optimization below.
+optimization in §6.
 
 ---
 
 ## 2. Positioning: what each prior line gives, and what it lacks
 
-All four lines are instances of "keep the local drift inside a **safe zone**,
-communicate on violation." They differ in the *shape* of the safe zone and in
-*what* they bound. (Attribution matters; see §10.)
+All four lines below are instances of "keep the local drift inside a **safe
+zone**, communicate on violation." They differ in the *shape* of the safe
+zone and in *what* they bound. (Attribution: §10.)
 
 | Line | Bounds | Safe-zone shape | Continuous query? | Gap |
 |---|---|---|---|---|
-| **Error-bounded sketching** (Count-Sketch [Charikar+02], CMY [Cormode+08]) | one function, per window | — | window granularity only | intra-window staleness |
-| **Geometric Monitoring** (Sharfman–Schuster–Keren [SIGMOD'06]; AutoMon [Sivan+ SIGMOD'22]) | one scalar `f(x̄)` | DC-quadric (ball / slab / general) | that **one function** only | not per-cell; not query-general |
-| **OctoSketch** [Zhang+ NSDI'24] | **every counter cell** `|ΔC[j]|<T` | axis-aligned **box** | whole sketch, **any query, any time** | function-agnostic (uniform T) |
+| **Error-bounded sketching** (Count-Sketch, CMY) | one function, per window | — | window granularity only | intra-window staleness |
+| **Geometric Monitoring** (GM/AutoMon) | one scalar `f(x̄)` | DC-quadric (ball / slab / general) | that one function only | not per-cell; not query-general |
+| **OctoSketch** | every counter cell `\|ΔC[j]\|<T` | axis-aligned box | whole sketch, any query, any time | function-agnostic (uniform T) |
 | **Coordinated sampling** (NitroSketch; ASAP `AllocateSampleRates`) | edge CPU / counts | per-site rate `p_i` | — | ingestion-side only |
-| **Lower bound** (Woodruff–Zhang [STOC'12]) | `F_p` continuous, `(1±ε)` | — (yardstick) | — | it is a *limit*, not a protocol |
+| **Lower bound** (Woodruff–Zhang) | `F_p` continuous, `(1±ε)` | — (yardstick) | — | it's a limit, not a protocol |
 
-Key facts used below:
-- **GM's scalar safe zone is a special case of the box** (OctoSketch box = GM with
-  an `L∞` safe zone), and **linear functions (sum/count/point) = GM with `λ=0` →
-  slab**, **`F_2` = GM with constant Hessian `2I` → ball**. So *counter-based* and
-  *`F_2`* monitoring are the same monitor at different Hessians (§7).
-- **OctoSketch gives the "whole sketch continuously queryable" property that GM
-  does not** — because it bounds every cell, not one function.
-- **GOS = adopt water-filling (classic; already used in ASAP for sampling) to
-  allocate *per-cell* thresholds, weighted by GM/AutoMon's gradient `∇f`, capped
+Key facts that make the unification possible:
+
+- **GM's scalar safe zone is a special case of OctoSketch's box** (the box is
+  GM with an `L∞` safe zone); linear functions (sum/count/point) are GM with
+  `λ=0` → a slab; `F_2` is GM with a constant Hessian `2I` → a ball. Counter-based
+  and `F_2` monitoring are the same monitor at different Hessians (§7).
+- **OctoSketch gives "whole sketch continuously queryable"; GM alone doesn't** —
+  because it bounds every cell, not one function.
+- **GOS = water-filling (classic, already used in ASAP for sampling) to
+  allocate per-cell thresholds, weighted by GM/AutoMon's gradient `∇f`, capped
   by OctoSketch's query bound.** The optimization tool is off-the-shelf; the
-  contribution is the *combination*.
+  contribution is the combination.
 
 ---
 
-## 3. Model and decision variables
+## 3. The SDK↔collector sampling split (row-admission)
 
-`k` edge sites, one backend/coordinator. Site `i` observes a substream with true
-frequency vector `f_i`; the global signal is `f = Σ_i f_i`. Each site maintains a
-**linear sketch** `x_i = L f_i ∈ ℝⁿ`, `n = d·w` (Count-Sketch: `d` rows of ±1
-hashing, `w` buckets). Sketches merge additively: ideal global `C = Σ_i x_i = L f`.
+The sampling knob is **per-row admission decided at the SDK**, not a
+whole-sketch coin flip at the collector — and the SDK never hashes. A
+Count-Sketch/CMS update touches `d` rows; the natural sampled unit is a
+*candidate row update* `(item, row)`, not the raw item.
 
-**Workload.** A set `Q` of linear queries `q(f)=⟨a_q,f⟩` (point, sum,
-heavy-hitter), each answered by a sketch estimator `q̂=⟨r_q,C⟩`; plus monitored
-non-linear functionals `f_m(f)` (e.g. `F₂=‖f‖₂²`, entropy, ratios) answered by
-`f̂_m = F_m(C)`.
+**Three design points**, each doing real work:
 
-**Decision variables** (per metric group):
+1. **Geometric skip-sampling, not per-row coin flips.** The SDK draws one
+   geometric gap per *admitted* update and decrements a skip-counter, so the
+   expensive RNG cost scales with admits, not with the unsampled row count —
+   "always line rate." (`sketchlib-go/common.GeometricSampler`; math and cost
+   accounting: derivations §5.)
+2. **The SDK decides *which rows*, never *which columns*.** Hashing
+   (row → column) happens only for admitted rows, and only at the collector.
+3. **Only admitted samples cross the wire** — a sample admitting no row is
+   dropped at the source, so the collector skips deserialization and hashing
+   for it entirely.
 
-| Variable | Meaning | Trades |
-|---|---|---|
-| `(d, w)` | sketch shape | accuracy ↔ memory |
-| `G` | # sketch instances (grouping over series) | accuracy ↔ **memory** |
-| `p_{i,r} ∈ (0,1]` | per-**row** admission rate (SDK-side) | edge **CPU** ↔ accuracy |
-| `T_j ≥ 0` | per-cell transmission threshold | **communication**/freshness ↔ accuracy |
-| flags | delta-vs-full, geometric-refs, uniform-vs-aniso | comm ↔ edge/coord memory |
+**Applicability.** Update-sampling with `1/p` inverse-probability weighting
+is only unbiased for *additive* counters. So the SDK row-samples
+**CountMinSketch, CountSketch, and DDSketch** (the `d=1` whole-item case);
+**KLL** (non-linear random compaction) and **HLL** (idempotent register-max)
+are left unsampled by design — dropping or reweighting either breaks its
+guarantee.
 
-### 3.1 The SDK↔collector sampling split (row-admission)
+**Why per-row beats whole-item at equal edge cost.** Count-Sketch's `(ε,δ)`
+guarantee comes from the median over `d` rows, which only concentrates
+sampling error the same way it concentrates collision error if each row's
+admission is independent. Per-row admission gives that independence, so
+sampling noise lands *inside* the median's `δ` guarantee. Whole-item
+admission shares one coin across all `d` rows, so a dropped key is missing
+from every row at once — an irreducible common-mode term the median cannot
+average away. Same edge CPU, strictly better estimator; full derivation
+(including why the two variance terms compose in quadrature) in
+derivations §3–§5, and design consequence in §4 below.
 
-The sampling knob is **per-row admission decided at the SDK**, not a whole-sketch
-Bernoulli at the collector — and, crucially, **the SDK does not hash**. A
-Count-Sketch/CMS update touches `d` rows, one counter per row; the natural
-sampled unit is therefore a *candidate row update* `u = (item x, row r)`, not the
-raw item. The pipeline is three stages with a clean responsibility split:
+**Status.** Implemented as designed, on the **SDK-build path**: the OTLP
+metrics SDK's `CountSketch`/`CountMinSketch`/`DDSketch` aggregators host a
+per-series sampler (`sample_p` knob) and route inserts through
+`UpdateStringSampledPerRow` / `InsertWithHashSampledPerRow` (per-row) or the
+sketch's built-in `WithSampleP` (DDSketch's `d=1` case). The
+**collector-build** path (raw datapoints reach the edge) realizes the
+equivalent saving earlier — wire-thinning whole datapoints before decode via
+`otlpfilter` — with the collector wrapper applying the same per-row `1/p`
+weighting on survivors.
 
-```
-raw measurement (item x, value Δ)
-  │
-  ├─[SDK]  row-admission by GEOMETRIC skip-sampling (NitroSketch), NOT a coin
-  │        per row. The SDK keeps a running skip-counter over the flattened
-  │        candidate stream (item,row); on admit it draws one gap
-  │        g ~ Geometric(p_{i,r}) and skips g candidates before the next admit.
-  │        admitted rows  R(x) = { rows whose candidate index the counter lands on }.
-  │        if the gap overruns all d rows  →  DROP the sample in O(1)
-  │           (no per-row work, never sent, never deserialized).
-  │        else send  (x, Δ, R(x))  to the agent collector.
-  │
-  └─[collector]  for each admitted r ∈ R(x):  compute the column h_r(x) and sign
-           s_r(x), then  C[r][h_r(x)] += s_r(x)·Δ / p_{i,r}   (inverse-prob weight).
-```
-
-Three design points make this different from applying `p` at the collector:
-
-1. **Geometric skip-sampling, not per-candidate coin flips (NitroSketch).**
-   Flipping `d` coins per item costs `Θ(d·rate)` RNG. Instead the SDK draws a
-   single geometric gap per *admitted* update and decrements a skip-counter, so
-   the expensive RNG (`ln`, divide) is `O(1)` **amortized per admitted update** →
-   `Θ((Σ_r p_{i,r})·rate)` — the expensive part (RNG `ln`/divide) scales with
-   admits, not with the unsampled row count. The current implementation
-   (`UpdateStringSampledPerRow`) still steps the skip-counter once per row,
-   `Θ(d)` cheap integer decrements per item; the `O(1)` whole-item skip (draw the
-   gap, and if it exceeds the item's `d` rows skip the item without touching each
-   row) is an available optimization on the uniform-`p` flattened-stream variant,
-   not yet shipped. Either way the RNG is `∝ Σ_r p_{i,r}` ("always line rate" for
-   the costly draws). This is the existing `sketchlib-go/common` `GeometricSampler`.
-2. **The SDK decides *which rows*, not *which columns*.** It never computes a
-   hash. The hash (row → column) is the collector's job, done *only for admitted
-   rows*.
-3. **Only admitted samples cross the wire.** A sample that admits no row is
-   dropped at the source, so the collector **skips its deserialization and
-   hashing entirely** — the CPU/bandwidth saving compounds.
-
-**SDK configuration prerequisite.** To decide row/counter admission the SDK must
-know, *per series*, (a) **which sketch** that series feeds and (b) that sketch's
-**configuration** — the counter fan-out per item and its dimensions. The
-controller therefore pushes the `series → (sketch type, dims, {p_{i,r}})` mapping
-to the SDK over the same config channel that carries the collector's plan (so the
-two stay consistent: the SDK admits the exact rows the collector is prepared to
-hash).
-
-**Applicability — linear counter-array sketches only.** Update-sampling with
-`1/p` weighting is unbiased **iff the counter is additive** (inverse-probability
-weighting is a linear correction). So it applies to:
-
-| Sketch | Counter fan-out / item | Admission | Why |
-|---|---|---|---|
-| **CountMinSketch** | `d` counters (one per row) | per-**row** | additive counters |
-| **CountSketch** | `d` signed counters | per-**row** | additive (signed) counters |
-| **DDSketch** | 1 bucket | per-**item** (the `d=1` case) | additive bucket counts |
-| **KLL** | — | ✗ **not sampled** | non-linear *random compaction*; dropping/weighting an insert breaks the rank guarantee |
-| **HLL** | — | ✗ **not sampled** | idempotent register **MAX**; a dropped max is unrecoverable (`1/p` can't correct a max), biasing cardinality low |
-
-So the SDK runs row-admission for **DDSketch / CMS / CountSketch** and leaves
-**KLL / HLL** unsampled (they emit every update).
-
-**Implemented as designed**, hosted on the SDK-build path (OTLP SDK
-`CountSketch` aggregator, knob `sample_p`, routing through
-`UpdateStringSampledPerRow`) with per-row admission, drop-before-hash, and
-`1/p` weighting — mirroring `asap_sketchlib/.../nitro.rs`, giving the
-sampling term the tight per-row estimator of §3.2 (median decorrelation,
-`ε_sa` in quadrature). Two deployment modes exist, with different savings:
-
-- **SDK-build (sketch in the app).** The SDK builds the group sketch and ships
-  one matrix per window. Sampling here is the source-side realization of the
-  admission split: it cuts SDK hashing/update CPU (`∝ Σ_r p_{i,r}`) and keeps the
-  per-row estimator; the collector then deserializes **one sketch per series**
-  instead of the raw datapoint stream (the raw-datapoint deserialization saving
-  is intrinsic to sketch-in-SDK). Wire volume of the sketch matrix itself is
-  fixed (dense), so sampling's benefit here is CPU + estimator, not matrix bytes.
-- **Collector-build (raw datapoints to the edge).** The app SDK emits raw
-  `NumberDataPoint`s; the edge `otlpfilter` wire-thins **whole datapoints**
-  (per-metric geometric admission) *before* decode, so dropped datapoints are
-  never materialized — the bandwidth/deserialization saving lands at the edge
-  receiver. The per-row `1/p` weighting is then applied by the collector wrapper
-  on survivors. (Whole-item drop is the `R(x)=∅` fast path of the same geometric
-  sampler.)
-
-**CountSketch** and **CountMinSketch** route inserts through
-`UpdateStringSampledPerRow` / `InsertWithHashSampledPerRow` (per-row
-admission, `1/p` applied in-place, wire stays exact — no downstream rescale);
-**DDSketch** is the `d=1` whole-item case via the sketch's built-in
-`WithSampleP` (raw counts, wire stamps `p`, consumer rescales `×1/p`).
-`KLL`/`HLL` stay unsampled by design (§ applicability table).
-
-### 3.1.1 Single-location sampling via consistent (stateless) decisions
-
-The design has exactly **one** sampling stage per series — never SDK *and*
-collector compounding. Rather than relying on configuration alone to prevent
-double sampling, the admission decision itself is made **location-independent**:
-
-```
-admit(seed_series, occ, row) ⇔ U(seed_series, occ, row) < p        (pure function)
-```
-
-`U` is a splitmix64-derived uniform (`sketchlib-go/common.ConsistentAdmit`);
-`seed_series = FNV-1a(series key) ⊕ window-start` and `occ` is the item's
-**occurrence id**. Because the decision is a deterministic function of shared
-inputs — no RNG state — *any* pipeline stage evaluates it and gets the identical
-admitted-row set:
-
-- **SDK-build** (implemented): the SDK aggregator's `ConsistentSampler` owns
-  the decision (`occ` = per-series measurement counter, seed = FNV(attrs) ⊕
-  window start). Downstream sees only sketch frames; nothing to re-sample.
-- **Collector-build** (implemented): the raw datapoints cross the wire, and
-  the identity is wire-visible — **seed = `common.SeedForMetric(name)`**
-  (canonical FNV-1a-64 of the metric name) and **occ = `time_unix_nano / 1e6`
-  in milliseconds**, chosen because the decoded `Observation.TimestampMs` the
-  wrapper sees is ms-resolution, so both stages compute the *same integer*.
-  The wire-level `otlpfilter` and the collector wrapper are then **two views
-  of the same decision**:
-  - `otlpfilter.SampleState.SetParams(name → {P, Rows})` configures per-metric
-    `(p, d)`; the filter reads `time_unix_nano` (field 3, fixed64) from the
-    opaque datapoint bytes and drops it iff *no* row admits (`R(x)=∅`, the
-    `(1−p)^d` fast path) — never decoding attributes or values.
-  - the runtime threads `(obs.Metric, obs.TimestampMs)` to the sketch via the
-    optional `precompute.SampleIdentitySetter` interface (one cached assert
-    per series entry, in `recordLocked`); the wrappers re-evaluate the
-    identical per-row admissions on survivors and apply the weight once:
-    **CountSketch/CMS** per-row with in-place `1/p` (CMS's internal whole-item
-    sampler is switched off — the wire envelope stays exact, no downstream
-    rescale); **DDSketch** is the `d=1` case — admission moves out of the
-    sketch into the wrapper's consistent decision, and `SetWireSampleP` keeps
-    the raw-counts + envelope-`p` convention for the consumer's `×1/p`.
-
-  Re-evaluation is **idempotent** — recomputing a decision never dilutes
-  twice, because there is nothing stochastic left to re-draw. Contract tests
-  pin this: filter survivors ≡ stateless recomputation ≡ wrapper touches
-  (`otlpfilter.TestConsistentDecisionsMatchSurvivors`,
-  `sketches.TestCSWrapper_ConsistentAgreesWithFilter`,
-  `TestDDSketchWrapper_ConsistentD1`).
-
-**Timestamp edge cases.** A datapoint with absent/zero `time_unix_nano` is
-passed through by the filter (fail-open — no wire identity to decide on) and
-sampled by the wrapper's per-series occurrence-counter fallback instead —
-exactly once end-to-end either way. Datapoints of the same metric sharing one
-millisecond share decisions (same `(seed, occ)`): per-occurrence unbiasedness
-holds, but errors within a same-ms burst are correlated — acceptable, and the
-reason `occ` granularity is ms (exact cross-stage agreement) rather than ns.
-
-**Grant plumbing (implemented).** The coordinator's per-round sampling grant
-reaches the wire filter automatically: `Grant.SampleP` arrives on the monitor
-channel → `monitor.Engine.OnGrant` stores it and fires `SetSampleGrantHook`
-(accepted grants only — stale-epoch/unknown are dropped, mirroring
-`grantedSampleP`) → the `asap_edge` processor's hook (`warm_sketch.go`) does
-`otlpfilter.Default().Upsert(inputMetricName, {P: p, Rows: d})`, with `d` from
-the family config (`wireSampleRows`: CS/CMS matrix rows, DDSketch 1; Sum/KLL/
-HLL never installed — same gating as `applyGrantedSampleP`). `p≤0`/`p≥1`
-grants withdraw the entry (no thinning). The `asap_otlp` receiver reads the
-same process-wide `otlpfilter.Default()` state (its factory defaults to it),
-so a single-pipeline collector needs zero extra wiring. Note `AggID =
-FNV-1a-64(metric)` is the SAME function as `SeedForMetric` — the grant key and
-the sampling seed are one identity.
-
-Enforcement remains one plan-level bit (`sample_at: sdk | collector`; the
-unselected side sees `p=1`), but consistency no longer *depends* on it: a
-misconfigured extra evaluation reproduces the same admitted set instead of
-squaring the sampling rate. `occ` must vary per **occurrence** — never per key
-alone, or a key's admissions become all-or-nothing and the §3.2 per-row
-decorrelation collapses to whole-key sampling. The filter's `Rows` must equal
-the target sketch's row count (plan consistency). A mismatch is asymmetric:
-`Rows` too LARGE is safe (the filter keeps extra points the wrapper then skips
-itself — wasted wire bytes, no bias); `Rows` too SMALL over-drops (the filter
-discards points whose higher rows the wrapper would have admitted — mass the
-`1/p` weight cannot recover, biasing estimates low). When in doubt, round up.
-
-**Window-start seed salt.** The per-series seed is XOR-salted with the window
-start (refreshed each delta-temporality collect). Without it, a series
-recreated each window (occurrence counter rewound) would repeat the identical
-admission pattern every window — per-window unbiased, but with sampling errors
-correlated across windows instead of averaging out. (The collector-build wire
-identity gets this for free: `TimeUnixNano` never repeats across windows.)
-
-**Fractional counts on the wire.** Per-row `1/p` weighting makes cells and
-deltas non-integral, so the proto wire carries them losslessly: full frames
-switch to packed-float64 `counts_float` when any cell is fractional (integral
-matrices keep the compact sint64 wire, byte-identical to before), and sparse
-deltas ride the new `d_counts_float` field under the same rule. The SDK's
-`payloadFor` additionally falls back to a full frame on any delta error, so an
-export can never wedge a series. (The msgpack-heap delta wire keeps its i64
-contract with the Rust backend and is unaffected.)
-
-**Unbiasedness.** For an admitted row-update the collector applies weight
-`1/p_{i,r}`; since `E[Z_r · 1/p_{i,r}] = 1`, each row-`r` sub-sketch is an
-unbiased estimator of `f`. The Count-Sketch readout `median_r s_r(x)·C[r][h_r(x)]`
-keeps its `(ε_sk, δ)` guarantee; sampling only inflates the per-row variance.
-
-**Variance / `ε_sa`.** An admitted counter carries weight `1/p_{i,r}`, so its
-contribution to the row-`r` cell variance is `(1−p_{i,r})/p_{i,r}·Δ²`. Summed over
-a cell's traffic this is the sampling perturbation `Σ_r^{sa}` of §4; the
-median-of-`d` rows turns it into the effective relative sampling error `ε_sa`.
-
-**Costs (the whole point).**
-
-| | per raw item | scales with |
-|---|---|---|
-| **SDK CPU** | 1 geometric gap (RNG) per *admit* + `Θ(d)` cheap skip decrements per item | RNG `∝ (Σ_r p_{i,r})·rate`; bookkeeping `Θ(d·rate)` |
-| **Collector CPU** | `|R(x)| ≈ Σ_r p_{i,r}` hashes + updates | `(Σ_r p_{i,r}) · rate` (vs `d` unsampled) |
-| **Bandwidth / collector deserialization** | 0 if `R(x)=∅` | drop prob `∏_r(1−p_{i,r})` = `(1−p)^d` uniform |
-
-So `p_{i,r}` is a **joint edge-CPU + bandwidth** lever: lowering it cuts collector
-hashing (`Σ_r p_{i,r}`), cuts wire volume, and lets the SDK stay at line rate with
-only coin flips. The accuracy cost is the `ε_sa` term below; §7 allocates the
-sampling budget against it. **Today the rate is per-site** (`p_{i,r}=p_i`): the
-coordinator gives one `p_i` per site via the whole-sketch ε-floor
-`p_i = 1/(1+ε²·rate_i)` (see §7C — the per-key `√(f_i/rate_i)` water-filling is
-retired for sketch sampling). Per-row rate differentiation (a larger `p` for
-high-sensitivity rows) is a future refinement — the current benefit is the
-per-row *admission* decorrelation of §3.2, not per-row rate tuning.
-
-### 3.2 Error and threshold-allocation math under per-row SDK sampling
-
-**Per-row estimator.** With per-row admission, row `r`'s cell is
-`C[r][c] = Σ_{x:h_r(x)=c} s_r(x)·Δ_x·(Z_{x,r}/p_{i,r})`, `Z_{x,r} ~ Bernoulli(p_{i,r})`
-**independent across rows**. The row estimate `X_r = s_r(y)·C[r][h_r(y)]` is
-unbiased (`E[Z_{x,r}/p_{i,r}]=1`); the point estimate is `f̂(y)=median_r X_r`.
-
-**Per-row variance = collisions + sampling.**
-```
-Var[X_r] ≈  F₂/w                     (Count-Sketch hash collisions, F₂=‖f‖₂²)
-         +  (1−p_r)/p_r · S₂,r(y)    (sampling; S₂,r(y)=Σ Δ² routed through y's row-r cell)
-```
-
-**The decisive point — median decorrelation (why per-row ≠ per-item).** The
-Count-Sketch `(ε,δ)` guarantee comes from the **median over `d` rows**: if each
-row fails w.p. `≤ ⅓` *independently*, the median fails w.p. `2^{−Θ(d)} = δ`. That
-independence is exactly what the two schemes do or do not give:
-
-- **Per-row admission (target):** `Z_{x,r}` is independent across `r`, so the
-  `X_r` are independent → the median concentrates **both** the collision **and**
-  the sampling error → sampling error lands **inside** the `δ` guarantee.
-- **Whole-item admission (current):** one `Z_x` shared by every row. A key `y`'s
-  own contribution is `Δ_y·Z_y/p`, *identical in all rows*; if `y` is dropped
-  (`Z_y=0`) it is missing from **all** rows at once and the median cannot recover
-  it. The queried key's own contribution `Δ_y·(Z_y/p − 1)` (scale
-  `∝ f(y)·√((1−p)/p)`) is **identical in every row**, so this part is
-  **common-mode** — it **survives the median** and is **not** reduced by `d`.
-  (Cross-key collision noise carries independent row signs `s_r(·)` and does
-  partially decorrelate even here; the un-reducible piece is the key's own
-  term.) It must be bounded *before* the median and cannot be credited with the
-  `d`-fold amplification.
-
-> **Result.** At equal admitted work (`E[rows]=d·p` per item ⇒ same edge CPU),
-> per-row sampling keeps the sampling error inside the median's high-probability
-> envelope; whole-item sampling leaves it as an irreducible common-mode penalty.
-> Per-row is the **strictly better estimator** — this, not the relocation, is the
-> reason to push the decision into the SDK.
-
-**Effective `ε_sa` (composition).** Under per-row independence the sampling
-*variance* folds into the **same** `median_r` step as the collision variance —
-`Var[X_r] = F₂/w + (1−p)/p·S₂,r` under one median tail — so it composes **in
-quadrature** with `ε_sk`: `|f̂(y)−f(y)| ≤ √(ε_sk²+ε_sa²)·‖f‖₂` w.p. `1−δ`, with
-`ε_sa = Θ(√((1−p)/(p·w)))` (uniform `p`). This is exactly the random part of
-Theorem 1 (§4). Whole-item admission instead leaves a **common-mode** term that
-survives the median and adds to `ε_sk` **linearly** — strictly looser at equal
-edge cost.
-
-**Threshold-allocation coupling (row-dependent floor).** The delta gate `T_j` for
-cell `j=(r,c)` sits over a *row-`r`-subsampled* counter, so the
-"don't-transmit-finer-than-you-sample" floor of §7 is **row-indexed** by that
-row's admission rate:
-```
-T_j ≥ T_j^floor = √( V_j · (1−p_i)/p_i )      (rate is per-site p_i, admission per-row)
-```
-The GOS water-filling is unchanged in form; the ε-budget is split by §7 Layer B
-(staleness `ε_st` peeled linearly, then `ε_sk²+ε_sa² = (ε_q−ε_st)²`), and this
-floor closes the sampling↔threshold coupling.
+**Single-location sampling.** The design allows exactly one sampling stage
+per series, enforced not by configuration discipline but by making the
+admission decision itself a **pure, stateless function** of shared inputs
+(`admit(seed, occurrence, row) ⇔ U(seed, occurrence, row) < p`, a
+splitmix64-derived uniform — `sketchlib-go/common.ConsistentAdmit`) rather
+than RNG state. Any pipeline stage that recomputes the decision gets the
+*same* admitted set, so re-evaluating it is idempotent — nothing stochastic
+is left to re-draw. This is what lets the SDK-build path (decision owned by
+the SDK aggregator) and the collector-build path (decision re-derived from
+wire-visible `time_unix_nano`) agree without coordination, and it's what a
+misconfigured "sample at both stages" plan degrades to (same set twice) 
+instead of squaring the drop rate. Contract tests pin filter-survivors ≡
+stateless-recomputation ≡ wrapper-touches agreement.
 
 ---
 
 ## 4. Unified error bound
 
-The backend holds `Ĉ(t)`, perturbed from the ideal `C(t)` by two **random**
-sources that the Count-Sketch median absorbs together, plus one **deterministic**
-staleness term that adds on top:
+The backend's reconstructed state diverges from the true state through three
+sources: sketch collision error, sampling error, and staleness (unsynced
+deltas). The first two are **random** and land inside the *same* median-of-`d`
+step (§3), so they compose **in quadrature**; staleness is a **deterministic,
+worst-case** bound (each cell can be off by at most its threshold `T_j`), so
+it **adds linearly** on top — it cannot be RMS-combined with a random tail.
 
-1. **Sketch + sampling (random, one median).** Per row `r`, the cell estimate
-   carries hash-collision variance `≈ F₂/w` *and* per-row sampling variance
-   `≈ (1−p_i)/p_i · S₂,r` (§3.2 — the `1/p_i` weight is unbiased; per-row
-   admission keeps the rows independent). Because both live in the **same**
-   `median_r` step, they compose in quadrature into one high-probability tail:
-   `|q̂ − q(f)| ≤ √(ε_sk² + ε_sa²)·‖f‖₂` w.p. `1−δ`, with `ε_sk=Θ(1/√w)`,
-   `ε_sa=Θ(√((1−p)/(p·w)))`, `δ=2^{−Θ(d)}`. (Sampling rate is per-site `p_i`;
-   admission is per-row-independent, i.e. `p_{i,r}=p_i` uniform across rows.)
-2. **Staleness `{T_j}` (deterministic).** Site `i` withholds cell `j` until its
-   accumulated change reaches `T_j`, so `|Ĉ[j] − (C+η)[j]| ≤ k T_j =: e_j` **at
-   all times** — a worst-case bound, *not* a random variable, so it **adds
-   linearly** (it cannot be RMS-combined with the random tail).
+> **√(ε_sk² + ε_sa²) + ε_st ≤ ε_q**
 
-**Theorem 1 (unified relative error).** For any query `q` and any time `t`, w.p.
-`≥ 1 − δ`:
-
-```
-              ┌──── random (one median) ────┐   ┌──── staleness (linear) ────┐
-|q̂(t) − q(f)| ≤ √(ε_sk² + ε_sa²)·‖f‖₂        +   k·Σ_j |r_{q,j}|·T_j
-```
-
-Dividing by `‖f‖₂` gives the **relative** budget: the random part (sketch ⊕
-sampling in quadrature) plus the deterministic staleness, linearly:
-
-> **√(ε_sk² + ε_sa²) + ε_st ≤ ε_q.**
-
-For a monitored non-linear `f_m` (`g_m = ∇f_m`, Hessian spectral bound `λ_m` from
-AutoMon/ADCD), a Taylor + DC bound gives
-
-```
-|f̂_m − f_m| ≤ |g_m|ᵀ(ε_sk + ε_sa terms) + k·Σ_j|g_{m,j}|T_j + ½·λ_m·k²‖T‖₂²  ≤  ε_m·|f_m|.
-```
-
-This holds **continuously**, not only at window boundaries — the OctoSketch
-"online accuracy at any query time" property, here generalized to arbitrary
-queries and to gradient-weighted function monitoring.
+This holds **continuously**, not only at window boundaries — OctoSketch's
+"queryable at any time" property, generalized here to arbitrary queries and
+to gradient-weighted monitoring of non-linear functionals (F₂, entropy,
+ratios — via a Taylor + DC/Hessian bound, same shape with an added curvature
+term). Formal statement (Theorem 1), the generic three-term error
+decomposition it's built from, and the non-linear extension: derivations §3
+and §12.
 
 ### Freshness
 
-Cell `j` (activity `V_j = Σ_i V_{ij}`) reaches `T_j` after time `T_j / V_j`, so its
-max staleness age is `Δ_j = T_j / V_j`. To guarantee query freshness `Δ*`:
-`T_j ≤ V_j Δ*`. (Quiet cells have large `Δ_j` even at small `T_j`, so freshness
-binds them → periodic heartbeat.)
+A cell only reaches its threshold `T_j` after enough activity accumulates
+(`V_j`, its per-window rate), so its own worst-case staleness age is
+`T_j / V_j` — quiet cells stay "fresher-looking" only because they change
+less, not because they sync faster; a low-activity cell can still go stale
+if `T_j` isn't capped. Guaranteeing a query-facing freshness target `Δ*`
+means capping every cell's threshold at `V_j·Δ*`. This cap is one of the
+three clamps in §7's water-filling solution.
 
 ---
 
-## 5. Cost models (per unit time)
+## 5. Cost models
 
-```
-Memory_edge  = m·G·n·( 1 + 1{delta}[acked snapshot] + 1{aniso}[threshold vec] )
-Comp_sdk     = c_rng·(Σ_r p_{i,r})·rate     (geometric skip-sampling: O(1)/admit RNG)
-Comp_coll    = c_h·(Σ_r p_{i,r})·rate       (hash + update — only admitted rows)
-             + c_s·Σ_j V_j/T_j              (uploads       — thresholds cut this)
-Comm         = b·Σ_j V_j/T_j  (+ broadcast for geometric)
-             × (1 − ∏_r(1−p_{i,r}))         (samples with no admitted row aren't sent)
-Cost_coord   = m·n·(1 + k·1{geo})           (running merge + per-edge refs)
-             + c_a·Σ_j V_j/T_j              (incremental apply_delta)
-```
+Four cost terms, one per requirement in §1:
 
-The edge CPU is split across the two runtimes: the **SDK** pays only the
-geometric-sampler RNG (`Comp_sdk`, `O(1)` per admit, no hashing), and the **agent
-collector** pays the hashing/update (`Comp_coll`) *only for admitted rows* plus
-the delta uploads. Lowering `p_{i,r}` cuts SDK RNG, collector hashing, and wire
-volume together — one lever, three savings.
+| Term | What it counts | Dominant driver |
+|---|---|---|
+| `Memory_edge` | Sketch state at each site, times group count `G`, plus optional delta/aniso bookkeeping | Sketch width `w` and shape `(d,w)`; grouping `G` |
+| `Comp_sdk` | SDK-side geometric-sampler RNG | `∝ Σ_r p_{i,r}` (admits), **not** the unsampled row count |
+| `Comp_coll` | Collector hashing/update (admitted rows only) + delta uploads | `∝ Σ_r p_{i,r}` for hashing; `∝ Σ_j V_j/T_j` for uploads |
+| `Comm` | Edge→backend bytes | `∝ Σ_j V_j/T_j`, scaled down by the fraction of samples that admit no row at all |
+| `Cost_coord` | Backend running-merge + incremental delta apply | `∝ Σ_j V_j/T_j` |
 
-**Structural insight.** `Comm`, the upload part of `Comp_edge`, and the apply part
-of `Cost_coord` are all `∝ Σ_j V_j/T_j` → they collapse into one effective weight
-`W = w_c·b + w_e·c_s + w_b·c_a`. Hence the *cost weights do not change the optimal
-threshold shape* — the accuracy constraint pins `T_j`; the weights instead select
-the **structural knobs** (uniform-vs-aniso, delta-vs-full, sampling `p`, per-edge
-refs), which is where the memory/compute tradeoffs live.
+**The one structural insight that matters:** the upload term inside
+`Comp_coll`, all of `Comm`, and the apply term inside `Cost_coord` are *all*
+proportional to `Σ_j V_j/T_j`. They collapse into one effective weight
+`W = w_c·b + w_e·c_s + w_b·c_a`. Consequence: **the cost weights don't change
+the shape of the optimal threshold** — the accuracy constraint alone pins
+`T_j` (§7); the weights instead choose the *structural* knobs (uniform vs.
+anisotropic, delta vs. full, sampling rate `p`, per-edge reference vectors),
+which is where the actual memory/compute/communication tradeoffs live.
 
 ---
 
-## 6. The optimization problem (P)
+## 6. The optimization problem
 
-```
-minimize   w_m·Memory_edge + w_e·Comp_edge + w_c·Comm + w_b·Cost_coord
-over       d, w, G, {p_i}, {T_j}, structural flags
-subject to
-  (query,    ∀ q ∈ Q)   √(ε_sk(w)² + ε_sa({p_i})²) + k·Σ_j|r_{q,j}|T_j/‖f‖  ≤  ε_q
-  (function, ∀ f_m)      k·Σ_j|g_{m,j}|T_j + ½·λ_m·k²‖T‖²                    ≤  ε_m·|f_m|
-  (freshness)            T_j ≤ V_j·Δ*
-  (confidence)           d ≥ log₂(1/δ)
-                         p_i ∈ (0,1],  T_j ≥ 0,  w ≥ 1,  G ≥ 1
-```
-
-`w_b` (coordinator) is the least-weighted axis by requirement.
+Minimize the weighted sum of the four §5 cost terms over the sketch shape
+`(d,w)`, grouping `G`, per-site sampling rates `{p_i}`, and per-cell
+thresholds `{T_j}`, subject to: every query's accuracy bound
+(§4's `√(ε_sk²+ε_sa²) + staleness ≤ ε_q`), every monitored function's
+accuracy bound, the freshness cap `T_j ≤ V_j·Δ*`, and confidence
+`d ≥ log₂(1/δ)`. Full constraint set: derivations §7 (intro) and
+`controller-optimization-problem.md` SP-6, which this slots into as
+additional decision variables. `w_b` (coordinator cost) is the
+least-weighted axis by requirement — the backend is not where the fleet's
+cost pressure lives.
 
 ---
 
 ## 7. Solution: hierarchical decomposition + two water-fillings
 
-**Layer A — outer (small enumeration).** `d = ⌈log₂(1/δ)⌉`; choose `w`
-(`ε_sk = c/√w`) and `G` (grouping) to trade the memory term `w_m·G·n` against the
-accuracy the sketch must supply.
+Solving the full problem directly is intractable; it decomposes into three
+layers that can each be solved cheaply:
 
-**Layer B — budget split (staleness peeled linearly first).** Because staleness
-is deterministic it comes off the top of `ε_q` **linearly** (Theorem 1), *then*
-the remaining random budget is split in **quadrature**:
+**Layer A — outer, small enumeration.** Fix `d = ⌈log₂(1/δ)⌉`, then choose
+sketch width `w` (sets `ε_sk`) and grouping `G` to trade the memory term
+against the accuracy the sketch must supply.
 
-1. choose `ε_st ∈ [0, ε_q − ε_sk]` — the edge-CPU↔communication knob (larger
-   `ε_st` ⇒ looser thresholds ⇒ less comm, but a smaller random budget ⇒ tighter
-   sampling ⇒ more CPU); pick it by the 1-D convex tradeoff of `w_e·Comp` vs
-   `w_c·Comm` (unique — both monotone);
-2. the random budget after the linear peel is `ε_rand = ε_q − ε_st`;
-3. split it in quadrature: `ε_sa² = ε_rand² − ε_sk²` (sketch ⊕ sampling), which
-   requires `ε_sk ≤ ε_rand`.
+**Layer B — budget split.** Staleness is deterministic, so it comes off the
+top of the accuracy budget `ε_q` **linearly first**; what's left splits
+between sketch and sampling error **in quadrature**. The staleness fraction
+itself is a 1-D convex tradeoff (more staleness tolerance → looser
+thresholds → less communication, but a smaller random budget → tighter
+sampling → more edge CPU) — unique because both sides are monotone. Code:
+`epsilon_alloc.rs`'s `split_budget`.
 
-So the composition is `√(ε_sk² + ε_sa²) + ε_st = ε_q`, matching §4 — **not** a
-three-way quadrature. The code's `split_budget(ε_q, ε_sk, w_edge, w_comm)`
-implements exactly this linear peel (`ε_st = t·(ε_q−ε_sk)`,
-`ε_sa = √((ε_q−ε_st)²−ε_sk²)`, `t = w_comm/(w_edge+w_comm)`).
+**Layer C — two water-fillings, same tool, two variables:**
 
-**Layer C — two water-fillings (same KKT tool, two variables).**
+- **Sampling (per-site).** The textbook per-key water-filling
+  (`p_i ∝ √(f_i/rate_i)`) has been **retired for sketch sampling**: a
+  sketch's point/L2 error is bounded by the sketch's *norm*, not any single
+  key's frequency, so a per-key rate doesn't buy the accuracy the formula
+  assumes. What's actually implemented is a simpler whole-sketch ε-floor,
+  `p_i = 1/(1+ε²·rate_i)` — see `sampling_alloc.rs`'s `epsilon_sample_floor`.
+  The per-key formula remains valid only when a key is counted exactly
+  *outside* the sketch, where sampling it would be pointless anyway.
+- **Thresholds (per-cell — this is GOS).** A closed-form water-filling over
+  `T_j`, weighted by activity `V_j` and priced by query/function sensitivity
+  `c_j` (`k|r_{q,j}|` or `k|g_j|`), clamped by three things: a
+  **sampling-coupling floor** (don't transmit finer than you sampled —
+  `T_j ≳ √(V_j(1−p)/p)`), a **query cap**, and the **freshness cap** from
+  §4. Clamped cells release budget back to the pool; a few redistribution
+  passes converge it. Closed form, the Lagrangian derivation, and the
+  clamped iterative solution: derivations §7 and Theorem 2 (§12). Code:
+  `sketches/gos_threshold.go` (Go) / `threshold_alloc.rs` (Rust).
 
-- **Sampling** (per-site). The per-key KKT water-filling
-  `p_i ∝ √(f_i/rate_i)` (binding `Σ_i f_i(1−p_i)/p_i ≤ V_sa(ε_sa)`) is the
-  general form, but it has been **retired for sketch sampling**: a sketch
-  point/L2 estimate's error is bounded by the sketch *norm*, not a single key's
-  `f(x)`, so the accuracy a per-edge `p_i` buys is only "keep this edge's L2
-  contribution within ε." The **implemented** allocation is therefore the
-  whole-sketch ε-floor
-  ```
-  p_i = 1 / (1 + ε²·rate_i),   clamped to (0,1]
-  ```
-  (`data_plane monitor::coordinator::allocate_p` → `epsilon_sample_floor`; see
-  derivations §5). The `√(f/rate)` split remains valid only when a key is
-  exact-counted *outside* the sketch — where sampling that one counter is
-  pointless anyway.
-- **Thresholds** (per-cell; GOS). Effective weight `W` (§5), per-cell price
-  `c_j = k|g_j|` (function) or `k|r_{q,j}|` (query — take the binding constraint),
-  budget `B` (relative: `B = ε_m‖Ĉ‖²` for F₂):
+**Reading the result without the algebra:** high-activity cells get bigger
+thresholds (don't chase noise on a cell that changes constantly anyway);
+cells the monitored function is *sensitive to* get smaller thresholds
+(report those early); everything is capped by the query's own accuracy
+budget and by the freshness target. The counter-based (linear) and F₂
+(quadratic) cases are the *same* monitor at different Hessians — `λ=0`
+degenerates the general quadric safe-zone to a slab (the classic CMY
+countdown); `λ=const·I` gives a ball. One `isLocallySafe` check serves both.
 
-  ```
-              ┌ water-filling ┐   ┌──── clamps ────┐
-  T_j = clamp( (B/Σ_ℓ√(c_ℓ V_ℓ))·√(V_j/c_j),  T_j^floor,  min(T_q, V_j·Δ*) )
-  ```
+### Threshold vs. tracking band
 
-  with **sampling-coupling floor** `T_j^floor = √( V_j(1−p)/p )` ("don't transmit
-  finer than you sample"), **query cap** `T_q = ε_q‖Ĉ‖/(k·s_q)`, **freshness cap**
-  `V_j·Δ*`. Clamped cells release budget → box water-filling redistributes (a few
-  iterations).
-
-**Reading.** `T_j ∝ √(V_j/|g_j|)`: high-activity cells get larger thresholds (don't
-chase high-frequency noise); cells the monitored function is sensitive to
-(`|g_j|` large) get smaller thresholds (report early); everything capped by the
-universal query cap and freshness.
-
-**Layer D — when: insert-time, no periodic scan.** Layers A–C fix *what*
-threshold each cell gets; this layer is *when* a crossing is actually
-detected and shipped. One mechanism for every family (Sum, CMS, CountSketch,
-DDSketch, KLL, HLL), isotropic case: check at insert time whether the
-accumulated-since-last-sync delta crosses the cell's `T_j` — or, for
-KLL/HLL, the family's whole-sketch trigger; every family's exact formula is
-in `sampling-cdm-gos-derivations.md` §8. If it crosses, that cell's (or
-scalar's) delta needs to reach the backend. The sole purpose is data
-synchronization — keeping the backend's reconstructed state accurate.
-Alerting and any other query-time decision is made entirely at the backend
-against that synced state; the edge does not make alerting decisions
-itself (see Retirements in §11 for what this replaces in the current code).
-
-### Wake-on-demand flush
-
-The existing OTLP export chain (SDK `PeriodicReader` → collector processor
-→ exporter) is unchanged; only *when a flush cycle runs* differs from a
-purely timer-driven cadence — it is timer-**or**-woken:
-
-```go
-for {
-    select {
-    case <-ticker.C:   // slow fallback cadence, in case a wake is ever missed
-        flush()
-    case <-wakeCh:      // fired the instant something crosses threshold
-        flush()
-    }
-}
-```
-
-Insert path, non-blocking (never waits for the flush loop):
-
-```go
-select {
-case wakeCh <- struct{}{}:
-default: // a wake is already pending; nothing to add
-}
-```
-
-`flush()` keeps using the existing `SnapshotCache`/`ComputeDeltaAgainst`
-machinery (full-frame fallback on cold start, the "never emit a delta
-larger than a full frame" clamp) — only the trigger changed. A per-cell
-`dirtySet`, populated as cells cross threshold, replaces the old periodic
-whole-sketch divergence pre-check: an empty `dirtySet` at flush time IS
-"nothing was worth sending," computed once per crossing instead of by a
-periodic `O(dw)` full-matrix scan.
-
-### Per-family detection unit and reset semantics
-
-| Family | Detection unit | Reset on send? | Notes |
-|---|---|---|---|
-| CountSketch (isotropic) | matrix cell | zero it | `normSqAll` tracked incrementally (`+= 2·old·Δ+Δ²`), O(1) |
-| CountMinSketch | matrix cell | zero it | same mechanism, $L_1$-scale threshold (derivations §8.2) |
-| DDSketch | bucket count | zero it | bucket count `B` tracked incrementally too (+1 on genuinely new bucket), no config constant needed (derivations §8.4) |
-| Sum | scalar | zero it (subtract reported amount) | degenerate 1-cell case |
-| KLL | whole sketch (no per-cell structure) | full `Reset()` | trigger is `Count() >= εN`, not a per-cell check; already the existing disjoint-segment mechanism, just re-triggered by count instead of a timer |
-| HLL | register | **never** — MAX-merge is idempotent, only clear a dirty flag | trigger is $\lvert 2^{C'}-2^{C}\rvert \ge 2^{\tau}$ on the linearized value, not raw register value (derivations §8.7) |
-
-Backend reconstruction is unchanged for the additive families (Sum/CMS/CS/
-DDSketch): summing every fragment ever received for a cell — regardless of
-how many times or when it was individually reset — telescopes to the true
-cumulative value (`v_1+v_2+...+v_n+v_{residual}` = true total). Resets can
-therefore happen asynchronously, at different times per cell, without
-breaking correctness — it only affects *when* transmission happens, never
-*what* the backend eventually reconstructs.
-
-### Cold start is a feature, not a bug
-
-Every family's threshold scales with an accumulated quantity (`‖Ĉ‖`, `N`,
-`R`) that starts near zero at window start, so the very first few inserts
-cross threshold almost immediately. This is intentional: it gets the
-backend a usable initial estimate as fast as possible, rather than waiting
-for data to accumulate before syncing anything. No floor/minimum-threshold
-mechanism is needed to suppress this.
-
-### Closed forms
-
-- **F₂, isotropic** (`g_j = 2Ĉ_j`, `λ=2`, uniform, relative): `T = ε‖Ĉ‖ / (2k√(dw))`
-  — adaptive: scales with the current norm.
-- **F₂ threshold-alert version** (monitor `F₂ ≥ τ`, one-sided band): `T = (1/k)√((1−ε)τ/w)`.
-  The whole-sketch `F₂` readout here is the **mean-of-rows** estimator
-  `F̂₂ = ‖C‖²/d` (each row's `‖C_r‖²` is an unbiased `F₂` estimate; averaging the
-  `d` independent rows reduces its variance by `1/d`) — *not* the median-of-rows
-  point-query estimator of §3.2. This is deliberate: the geometric safe-zone is a
-  **ball** `‖C‖ ≤ √(d(1−ε)τ) ⇔ ‖C‖²/d ≤ (1−ε)τ`, so edge silence and coordinator
-  alert test the identical functional (`all-sites-safe ⟺ F̂₂ < (1−ε)τ`). The two
-  estimators serve different readouts — median for individual-key location
-  (robust tail), mean for the aggregate energy the ball bounds (variance
-  reduction) — and must not be conflated.
-- **Linear `f` (sum/count/point)**: `λ = 0` → the curvature term vanishes → box
-  degenerates to a **slab** = the classic CMY slack countdown.
-
-### Unification of counter-based and F₂
-
-Both are `f(x̄)` vs a band `[L,U]`, with the safe zone from the DC bound; the only
-difference is the Hessian eigenvalue: `λ=0` → slab (counter-based), `λ=const·I` →
-ball (F₂), general → ADCD quadric. One monitor, one edge check
-`isLocallySafe(Δ, x₀, ∇f, λ, L, U)`; keep the scalar-countdown fast-path for the
-linear case (no reference-vector broadcast needed).
-
-### Threshold band vs tracking band
-
-- **Threshold/alert**: one-sided band `[−∞, τ]` → fire on crossing.
-- **Continuous ε-query**: moving band `[f(x₀)−ε, f(x₀)+ε]` → backend answers
-  `f(x̄)=f(x₀)±ε` at all times. Same monitor, different band — this is how
-  threshold monitoring and continuous approximate querying unify (Cormode–
-  Garofalakis continuous querying = GM with a tracking band).
+The same per-cell mechanism serves two different query modes, depending only
+on which band is checked: a one-sided band `[−∞, τ]` gives
+threshold/alerting semantics (fire on crossing); a symmetric moving band
+`[f(x₀)−ε, f(x₀)+ε]` gives continuous approximate-query semantics (the
+backend can answer `f(x̄)=f(x₀)±ε` at any time). This is how alerting and
+continuous querying — historically separate literatures — turn out to be one
+mechanism with a different band. Derivations §10.
 
 ---
 
-## 8. Optimality vs the Woodruff–Zhang lower bound
+## 8. Optimality vs. the Woodruff–Zhang lower bound
 
-**Rate vs total.** `Σ_j V_j/T_j` is an upload *rate*; the WZ `Θ̃(k/ε²)` is the
-*total* communication to maintain one continuous `(1±ε)` `F₂` estimate. Compare
-them over a fixed horizon of bounded total change: with `w ∝ 1/ε²` (the necessary
-sketch width) each sketch is `Θ(1/ε²)` and `k` sites must each be represented, so
-the total is `Θ̃(k/ε²)` — **matching the WZ STOC'12 tight lower bound** (bits vs
-words absorbed in the `Θ̃`). The measured normalization in
-[`gos-eval-results.md`](gos-eval-results.md) §3 uses the "one-round" unit `k·S`
-for exactly this comparison. Consequences:
-
-- The `1/ε²` and the linear-in-`k` are **fundamental**; no protocol (GM, AutoMon,
-  OctoSketch, GOS) beats `k/ε²` adversarially. GOS's savings are **data-dependent**
-  (small `V_j/‖Ĉ‖` on stable streams).
-- Report GOS's measured bytes as a **fraction of `k/ε²`** — a stronger baseline
-  than comparing to naive centralization.
-- The relative-error caveat: relative bounds require the norm bounded below
-  (WZ tightness / OctoSketch `L1 > ε⁻¹k'τ`); relative error on a near-zero signal
-  is fundamentally not cheap.
+`Σ_j V_j/T_j` (§5) is an upload *rate*; the Woodruff–Zhang bound
+`Θ̃(k/ε²)` is *total* communication to maintain one continuous `(1±ε)` `F_2`
+estimate across `k` sites. Normalized the same way (derivations, and the
+"one-round" unit `k·S` in [`gos-eval-results.md`](gos-eval-results.md) §3),
+GOS's worst case matches WZ exactly — the `1/ε²` scaling and the linear-in-`k`
+factor are fundamental, and no protocol in §2's family beats them
+adversarially. GOS's actual savings are **data-dependent**: they come from
+`V_j/‖Ĉ‖` being small on real, non-adversarial streams, not from beating the
+bound. Report measured bytes as a *fraction* of `k/ε²` — a meaningfully
+stronger baseline than comparing against naive centralization. One caveat
+that doesn't go away: relative-error bounds need the norm bounded away from
+zero (both here and in the WZ tightness construction) — relative error on a
+near-zero signal is fundamentally not cheap, at any layer of this stack.
 
 ---
 
@@ -661,150 +280,165 @@ for exactly this comparison. Consequences:
 
 | Requirement | Mechanism |
 |---|---|
-| **Memory efficiency** | `(w,G)` + `w_m`: grouping `G` avoids one sketch per series; `w=Θ(1/ε²)` is the WZ-minimum; delta/aniso flags dropped under high `w_m` (no snapshot / threshold vector) |
-| **Computation efficiency** | `w_e`: sampling `p_i` (fewer updates) + threshold size (fewer uploads); both fold into one effective weight |
-| **Communication efficiency** | `w_c`: per-cell water-filling thresholds + geometric silence; `Θ̃(k/ε²)` worst case, far less on stable data |
-| **Continuous, accurate, fresh** | Theorem 1 bounds every query at **any** `t`, **relative**; freshness cap `T_j ≤ V_jΔ*` bounds staleness age; whole sketch queryable (OctoSketch), monitored `f_m` tighter (GM/AutoMon) |
+| **Memory** | Grouping `G` avoids one sketch per series; `w=Θ(1/ε²)` is the WZ-minimum sketch width; delta/aniso bookkeeping drops under high memory weight |
+| **Computation** | Sampling `p_i` (fewer updates) and threshold size (fewer uploads) fold into one effective weight (§5) |
+| **Communication** | Per-cell water-filling thresholds + geometric silence; `Θ̃(k/ε²)` worst case, far less on stable data (§8) |
+| **Continuous, accurate, fresh** | Theorem 1 bounds every query at any time, relative; freshness cap bounds staleness age; whole sketch stays queryable, monitored functions get a tighter (gradient-weighted) bound |
 
 ---
 
-## 10. What is adopted vs contributed (attribution)
+## 10. What is adopted vs. contributed (attribution)
 
-- **Water-filling** — classic (information theory / convex optimization; optimal
-  power allocation across parallel channels). Already used in ASAP for sampling
-  (`p_i ∝ √(f_i/rate_i)`). *Adopted, not contributed.*
-- **Per-cell change transmission with a threshold** — OctoSketch [Zhang+ NSDI'24].
-  *Adopted.*
-- **Function safe zone via DC decomposition of the Hessian (ADCD), gradient/
-  Hessian bounds** — AutoMon [Sivan+ SIGMOD'22]; Geometric Monitoring [Sharfman+
+- **Water-filling** — classic (information theory / convex optimization).
+  Already used in ASAP for sampling (`p_i ∝ √(f_i/rate_i)`). *Adopted.*
+- **Per-cell change transmission with a threshold** — OctoSketch [Zhang+
+  NSDI'24]. *Adopted.*
+- **Function safe zone via DC decomposition (ADCD), gradient/Hessian
+  bounds** — AutoMon [Sivan+ SIGMOD'22]; Geometric Monitoring [Sharfman+
   SIGMOD'06]. *Adopted.*
 - **Coordinated sampling + geometric skip-sampling** — NitroSketch [Liu+
-  SIGCOMM'19]; ASAP's own `AllocateSampleRates` (rate allocation) and
-  `sketchlib-go/common.GeometricSampler` (the `O(1)`-amortized skip sampler).
-  *Adopted.*
+  SIGCOMM'19]; ASAP's own `AllocateSampleRates` and
+  `sketchlib-go/common.GeometricSampler`. *Adopted.*
 - **Lower bound `Θ̃(k/ε²)`** — Woodruff–Zhang [STOC'12]. *Yardstick.*
-- **GOS (this doc)** — casts *per-cell threshold allocation* as water-filling with
-  **gradient-derived weights** (GM/AutoMon) and a **per-cell query cap**
-  (OctoSketch), coupled to **per-site sampling** through a shared ε-budget and a
-  granularity floor `T_j ≳ √(V_j(1−p)/p)`, inside one **tunable
-  memory/compute/communication objective**. *The synthesis is the contribution;
-  the optimization tools are off-the-shelf.*
+- **GOS (this doc)** — casts per-cell threshold allocation as water-filling
+  with gradient-derived weights (GM/AutoMon) and a per-cell query cap
+  (OctoSketch), coupled to per-site sampling through a shared ε-budget and a
+  granularity floor, inside one tunable memory/compute/communication
+  objective. *The synthesis is the contribution; the optimization tools are
+  off-the-shelf.*
 
 ---
 
-## 11. Implementation notes (controller synthesizes, edge executes)
+## 11. The 2026-07 redesign: insert-time detection, no sub-window, for all 6 families
 
-Everything expensive is a **controller (backend) decision**; the edge only
-executes a fixed per-cell comparison.
+§1–10 establish *what threshold to use*. This section is about *when
+transmission actually happens* — replacing a periodic sub-window tick with
+per-insert detection, uniformly across Sum, CMS, CountSketch, DDSketch, KLL,
+and HLL, on the existing OTLP/`SketchEnvelope` wire.
 
-- **Controller** (offline, per registered metric/query): runs ADCD (AD → Hessian
-  eigenvalue bounds → `∇f, λ`), estimates `{V_j}` from the workload, solves (P)'s
-  layers A–D, emits `(d, w, G, {p_i}, scalar GOS knobs, flags)` via OpAMP. This
-  slots into the existing controller multi-objective
-  (`controller-optimization-problem.md` SP-6:
-  `min w_bw·bw + w_cpu·cpu + w_mem·mem + …`) — GOS thresholds are new decision
-  variables there. **Note:** the controller ships *scalars*
-  (`ε_delta`, sites), **not** a full per-cell vector `{T_j}`; the isotropic
-  case (§7 Layer D, all 6 families) reconstructs its single scalar `T` from
-  those plus live sketch state, so no vector ever crosses the wire. The
-  anisotropic per-cell `{T_j}` water-filling described here is
-  CountSketch-only and, per Open problems below, not currently implemented.
-- **Edge**: maintain sketch state; per insert, compare against `{T_j}`
-  (recomputed from the pushed scalars + local `{V_j}` — §7 Layer D) and mark
-  crossed cells dirty; a wake fires a flush of the current dirty set as a
-  sparse delta; run one generic `isLocallySafe` for monitored functions. No
-  AD, no water-filling solve at the edge for the isotropic case — only the
-  closed-form threshold evaluation, checked continuously rather than on a
-  periodic scan. The anisotropic CountSketch water-filling solve is the one
-  remaining case that still needs a periodic `O(dw)` re-solve and a separate
-  acked-snapshot copy (see Open problems).
-- **Backend**: `apply_delta` into a running merge (`O(#delta cells)`), keeping the
-  global sketch continuously queryable within the Theorem-1 envelope, surfaced in
-  the `accuracy: ε=…` response annotation.
+**The unified mechanism.** Check at insert time whether the
+accumulated-since-last-sync delta crosses the cell's threshold (§7 / §4;
+exact per-family formulas: derivations §8). If it crosses, that delta needs
+to reach the backend — the sole purpose is keeping the backend's
+reconstructed state accurate. Alerting and every other query-time decision
+happen entirely at the backend against that synced state; the edge no
+longer decides to alert. This **retires the old, separate "continuous
+monitoring" alerting path** (`monitor.Engine.Observe` →
+`sendReportLocked`) — Sum becomes just another family running the same
+insert-time check. `Engine.Observe` today conflates two things that must be
+split, not deleted together: `obsCount++` (rate tracking, feeds the
+coordinator's sampling-rate grant — keep) and the alerting check that calls
+`sendReportLocked` (retire).
 
-**Retirements.** The insert-time model (§7 Layer D) replaces the following
-in the current code — tracked here since it isn't deleted yet:
+**Wake-on-demand flush.** The naive reading — "insert-time means bypass the
+pipeline, send out-of-band" — was considered and rejected. The OTLP export
+chain (SDK `PeriodicReader` → collector processor → exporter) is unchanged;
+only *when a flush cycle runs* changes, from purely timer-driven to
+timer-**or**-woken:
 
-- **Gate 1** (`subWindowShouldEmit` / `L2DivergenceSinceEmit` / `ackedCells`):
-  the old periodic whole-sketch divergence pre-check, run once per
-  `SubWindowInterval` tick regardless of whether anything had actually
-  crossed threshold. An empty per-cell `dirtySet` at flush time already
-  answers "nothing to send," computed once per crossing instead of by a
-  periodic `O(dw)` scan — dead code under Layer D, not kept as a fallback.
-- **CMS's local point-query read** (`ThresholdConfig.Functional: cms_point`,
-  `CMSWrapper.EstimateCount`): once a cell resets in place at insert time
-  (GOS mode), CMS's `min`-across-rows estimate is corrupted by any single
-  recently-reset row — rejected at boot (`config_validate.go`) and gated at
-  runtime (`precompute.rewireMonitorHooks`) whenever `family=countminsketch`
-  and `gos_delta_epsilon>0` are combined with this functional. Scoped to CMS
-  only: plain CountSketch implements the SAME functional via a *median*
-  across signed rows, which tolerates a single reset row fine, so it keeps
-  serving `cms_point` unaffected by GOS mode. A CMS series not running in
-  GOS mode is also unaffected — the corruption is specifically an
-  insert-time-reset problem, not an inherent property of CMS's estimator.
-- **Discipline B's alerting path** (`monitor.Engine.Observe` →
-  `sendReportLocked` over `monitor/grpcclient`): Sum becomes just another
-  family running the Layer D insert-time check, synced over the normal
-  `SketchEnvelope` pipeline like everything else. `Engine.Observe` today
-  conflates two things in one function: `obsCount++` (rate tracking,
-  feeding the coordinator's `SampleP` grant negotiation) and the
-  `value-baseline>=slack` alerting check (which calls `sendReportLocked`).
-  Only the *alerting* half retires; `obsCount`/rate-tracking must be
-  preserved (it feeds a genuinely separate concern — sampling-rate
-  negotiation, not data sync) — the two halves need to be split apart, not
-  deleted together.
+```go
+for {
+    select {
+    case <-ticker.C:  // slow fallback, in case a wake is ever missed
+        flush()
+    case <-wakeCh:     // fired the instant something crosses threshold
+        flush()
+    }
+}
+```
 
-**Ties to existing code:**
-- `ASAPQuery-backend/control_plane/src/epsilon_alloc.rs` — the ε-budget split
-  (linear staleness peel, then quadrature split: `√(ε_sk² + ε_sa²) + ε_st = ε_q`,
-  §7 Layer B — not a three-way quadrature).
-- `ASAPQuery-backend/data_plane/src/monitor/sampling_alloc.rs`
-  (`epsilon_sample_floor`) — the live whole-sketch sampling floor.
-- `asap_sketchlib` `CountSketchDelta` + `compute_delta`/`apply_delta`
-  (byte-parity Go/Rust) — the sparse per-cell delta wire format.
+The insert path pushes a non-blocking wake (`select { case wakeCh <- struct{}{}: default: }`)
+and `flush()` keeps using the existing snapshot/delta machinery unchanged —
+only the trigger changed. This makes the old periodic full-matrix
+divergence pre-check redundant (an empty dirty-set at flush time already
+means "nothing worth sending," computed once per crossing instead of by a
+periodic O(dw) scan) — that whole mechanism is dead code to delete, not a
+fallback to keep. CMS's local point-query read retires alongside it: once
+cells reset in place at insert time, a local `min`-read is corrupted by any
+recently-reset row; all point/alert reads move to the backend's copy.
+
+**Per-family mechanism** (math: derivations §8):
+
+| Family | Detection unit | Reset on send? | Note |
+|---|---|---|---|
+| CountSketch (isotropic) | matrix cell | zero it | norm tracked incrementally, O(1) |
+| CountMinSketch | matrix cell | zero it | same mechanism, L1-scale threshold |
+| DDSketch | bucket count | zero it | bucket count tracked incrementally, no extra config |
+| Sum | scalar | zero it (subtract reported amount) | degenerate 1-cell case |
+| KLL | whole sketch | full reset | trigger is `Count() ≥ εN`, not per-cell — same existing disjoint-segment mechanism, re-triggered by count instead of a timer |
+| HLL | register | never (MAX-merge is idempotent) — only clears a dirty flag | trigger is on the *linearized* register value, not the raw one |
+
+Backend reconstruction is unaffected for every additive family: summing
+every fragment ever received for a cell telescopes to the true cumulative
+value regardless of how many times, or when, it was reset — which is why
+resets can happen asynchronously per cell without breaking correctness.
+
+**Cold start is intentional, not a bug.** Every threshold scales with an
+accumulated quantity that starts near zero, so the first few inserts cross
+it almost immediately — the backend gets a usable estimate fast rather than
+waiting for data to build up. No floor is needed to suppress this.
+
+**Open, not blocking:**
+- **Anisotropic CountSketch's per-cell activity** needs redefining under
+  async per-cell resets (the old "diff against one snapshot" definition
+  assumed synchronized flushes). Leading candidate: a per-cell EMA of `|Δ|`
+  — cheap, reset-timing-independent — but it's a heuristic replacing the
+  derivation's exact `Activity_j=V_j`, unverified against §7's guarantee.
+  Its water-filling solve also still needs a periodic O(dw) pass, unlike
+  every other family here.
+- **DDSketch's unbounded bucket-array growth** on outlier values is a real
+  memory-safety gap, independent of this redesign (tracked separately,
+  sketchlib-go#72).
+- **HLL's small-cardinality regime** — the register-change accuracy proof
+  assumes "sufficiently large" cardinality; behavior with mostly-zero
+  registers early in a window is unverified. A candidate fix (always send a
+  register's first nonzero write) is proposed, unverified.
 
 ---
 
-## 12. Open problems / next steps
+## 12. Implementation notes (controller synthesizes, edge executes)
 
-1. **Anisotropic CountSketch's `Activity_j`** needs redefinition. The old
-   `Activity_j=|current-prev|` assumed a single, uniformly-timed `prev`
-   snapshot; under per-cell async reset (§7 Layer D), different cells'
-   "since last touch" windows are no longer comparable, and naively diffing
-   against any snapshot double-counts/under-counts around individual cell
-   resets. A per-cell EMA of `|Δ|` (`activityRate[r][c] =
-   decay·activityRate[r][c] + (1-decay)·|Δ|`, updated every insert) is the
-   leading candidate — cheap, reset-timing-independent — but it replaces the
-   derivation's exact `Activity_j=V_j` with a heuristic, and whether the §7
-   closed-form water-filling solution still carries the same error guarantee
-   under that substitution has not been checked. The anisotropic
-   water-filling solve itself also still requires a periodic `O(dw)` pass
-   (unlike every other family) — per-cell detection at insert time only
-   avoids the "decode a serialized `prev`" cost, not the joint solve.
-2. **Anisotropic delta broadcast** — *partially done.* The **sparse-cell**
-   encoding of `ΔC_ref` on the coordinator→edge path is implemented and measured
-   (`CRefUpdate::Delta`; removes the `O(k)` broadcast amplification — see
-   gos-eval-results.md §2). Still **open:** the broadcast gate is currently
-   isotropic (ships every changed cell, `Δ ≠ 0`); giving it *anisotropic per-cell
-   thresholds* (the §7C water-filling, as already done on the edge→coordinator
-   upload path via `ComputeDeltaPerCell`) is the remaining work.
-3. **DDSketch's unbounded contiguous bucket-array growth** on outlier values
-   is a real memory-safety gap, independent of Layer D — tracked as
-   sketchlib-go#72. The dynamically-tracked `B` used in the threshold formula
-   (derivations §8.4) does not require fixing this; it is a separate, likely
-   higher-priority issue.
-4. **HLL's small-cardinality regime**: the register-change adapter's accuracy
-   proof (OctoSketch's Appendix B) is stated for "sufficiently large"
-   cardinality; behavior when most registers are still at 0 (early in a
-   window) has not been separately verified. A candidate mitigation (always
-   send a register's first-ever nonzero write unconditionally) is proposed
-   but unverified.
-5. **Relative-error under small norm** — heartbeat / additive floor when `‖Ĉ‖` is
-   small (WZ / OctoSketch fundamental limit).
-6. **Verified eigenvalue bounds** — AutoMon's numerical `λ` may miss the true
-   extreme → reserve an `ε_eig` slice of the budget or use interval bounds.
-7. **Empirical validation** — measure achieved communication as a fraction of the
-   WZ `k/ε²`, sweep `(w_m, w_e, w_c)` to trace the Pareto surface.
+Everything expensive is a controller decision; the edge only executes a
+fixed per-cell comparison. The controller runs the ADCD/eigenvalue-bound
+analysis, estimates `{V_j}` from the workload, solves §7's layers, and ships
+**scalars** (`ε_delta`, sites, aniso flag) via OpAMP — not the full per-cell
+`{T_j}` vector; the edge reconstructs `{T_j}` locally from those scalars
+plus its own live `{V_j}` (`sketches/gos_threshold.go`), so the `O(d·w)`
+vector never crosses the wire. The edge maintains the sketch, recomputes
+`{T_j}` per flush (or, under §11, per insert), and uploads only cells that
+crossed. The backend applies each delta into a running merge
+(`O(#delta cells)`) and annotates responses with the resulting
+`accuracy: ε=…`.
+
+**Status as of this writing** — the pieces exist but the loop is **not
+fully wired end-to-end**:
+- **Live today:** the scalar CDM loop (register → grant → countdown →
+  report → alert) and the sampling grant path (`Grant.SampleP` →
+  `otlpfilter` → wrapper `WithSampleP`).
+- **Implemented but unreachable from a production config:** the control
+  plane derives and emits the scalar GOS knobs, and the edge consumes them
+  (`applyGosMode` → `gosThresholdMatrix`) — but no collector processor yet
+  parses those YAML keys into config, so the per-cell delta-gating path
+  only runs under test/eval, not production. The sampling↔threshold
+  coupling floor (§7) is similarly implemented but inert — its only
+  production-shaped caller hardcodes `SampleP=1`. Closing this (a knob
+  parser + threading the granted `p` into `GosParams`) is the remaining hop.
+
+---
+
+## 13. Open problems
+
+1. **Anisotropic delta broadcast, partially done.** The coordinator→edge
+   sparse-cell encoding is implemented and measured (removes the `O(k)`
+   broadcast amplification — see `gos-eval-results.md` §2). Still open:
+   giving that broadcast gate anisotropic per-cell thresholds, matching what
+   the edge→coordinator upload path already does.
+2. **Relative error under small norm** — needs a heartbeat/additive floor
+   when `‖Ĉ‖` is small (a WZ/OctoSketch fundamental limit, not a bug).
+3. **Verified eigenvalue bounds** — AutoMon's numerical `λ` may miss the
+   true extreme; reserve an `ε_eig` budget slice or use interval bounds.
+4. **Empirical validation** — measure achieved communication as a fraction
+   of `k/ε²`, sweep the cost weights to trace the Pareto surface.
 
 ---
 
@@ -818,6 +452,4 @@ in the current code — tracked here since it isn't deleted yet:
 - D. Woodruff, Q. Zhang. *Tight Bounds for Distributed Functional Monitoring.* STOC 2012 (arXiv:1112.5153).
 - Z. Liu, R. Ben-Basat, G. Einziger, Y. Kassner, V. Braverman, R. Friedman,
   V. Sekar. *NitroSketch: Robust and General Sketch-Based Monitoring in Software
-  Switches.* SIGCOMM 2019. (Geometric skip-sampling: one RNG draw per admitted
-  update — `O(1)` amortized, "always line rate" — with inverse-probability
-  weighting; the SDK-side row-admission sampler here is this scheme.)
+  Switches.* SIGCOMM 2019.
