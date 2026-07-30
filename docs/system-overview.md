@@ -4,7 +4,7 @@
 
 ## 1. TL;DR
 
-ASAP is a **continuous-monitoring observability pipeline**: instead of
+ASAPCollector is a **continuous-monitoring observability pipeline**: instead of
 scanning raw samples at query time, it keeps a live, incrementally
 updated sketch of every metric at the backend, fed by a steady trickle
 of small deltas from the edge. The point of the design is to make
