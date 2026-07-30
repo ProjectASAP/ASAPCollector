@@ -16,11 +16,16 @@ SDK (in-app)                agent collector (asap-otel)         backend (ASAPQue
 ─────────────                ────────────────────────────         ───────────────────────────
 raw samples          sampling      insert into a live       continuous     apply each delta into
 generated at    ───▶  decision ──▶  sketch / aggregation ──▶ delta sync ──▶ the running sketch;
-native rate           (SDK-side)    (one sketch per series)  (small,        reconstruct tumbling-
-(e.g. 100ms)                                                 threshold-     window sketches; the
-                                                              triggered)     newest window is open
-                                                                             and queryable NOW
+native rate           (SDK-side)    (allocation is a         (small,        reconstruct tumbling-
+(e.g. 100ms)                         control-plane decision)  threshold-     window sketches; the
+                                                               triggered)     newest window is open
+                                                                              and queryable NOW
 ```
+
+(Which sketch a series feeds into — family, parameters, and whether
+several series share one sketch — is decided by the control plane
+from the query workload, not a fixed one-sketch-per-series rule; see
+§8.)
 
 Three mechanisms, three different costs cut:
 
