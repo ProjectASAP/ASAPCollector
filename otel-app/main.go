@@ -52,12 +52,14 @@ import (
 	"net/http"
 	_ "net/http/pprof" // expose /debug/pprof/* on -pprof-addr
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ProjectASAP/sketchlib-go/common"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -144,6 +146,48 @@ type Config struct {
 	// aggregation, so the Google-cluster accuracy sweep exercises warm
 	// sampling on the real replayed metric (not just the synthetic one).
 	WarmSampleP float64 `yaml:"warm_sample_p"`
+
+	// GaugeOnly, when true, skips the synthetic Sum counter entirely (no
+	// creation, no Add call) so the only instrument the synthetic
+	// producer emits is the warm-sample latency gauge. Needed because the
+	// View in runSynthetic matches Instrument{Name: "*"} — the SAME
+	// aggregation (e.g. raw-buffer) applies to the counter as to the
+	// gauge, and the counter's Add(ctx, 1, attrs) fires every tick
+	// unconditionally, NOT gated by WarmSampleP/keepWarm(). With raw-buffer
+	// aggregation this means the counter buffers+exports one raw sample
+	// per series per tick regardless of sampling, silently swamping any
+	// SDK-sampling comparison that assumes WarmSampleP controls 100% of
+	// the exported data volume. Default false preserves existing behavior
+	// for callers that want the counter.
+	GaugeOnly bool `yaml:"gauge_only"`
+
+	// GeometricSampling, when true, replaces the naive per-tick Bernoulli
+	// coin-flip (localRng.Float64() < warmP, evaluated on EVERY tick
+	// regardless of outcome) with sketchlib-go/common.GeometricSampler —
+	// the real NitroSketch-style skip-sampler this system's design
+	// actually specifies (docs/design-gos-unified-edge-telemetry.md §3.1).
+	// The coin-flip pays one PRNG float draw per tick unconditionally;
+	// GeometricSampler pays only a cheap int64 decrement on skipped ticks
+	// and defers the (pricier) PRNG draw to once per ADMITTED tick. This
+	// changes the SDK-sampling CPU/memory measurement materially — the
+	// coin-flip's per-tick draw is a fixed, p-independent cost that
+	// GeometricSampler mostly eliminates. Default false preserves prior
+	// behavior/comparability with earlier measurement rounds.
+	GeometricSampling bool `yaml:"geometric_sampling"`
+
+	// WorkerCount, when >0, replaces the default one-goroutine-per-series
+	// model in runSynthetic with a shared worker pool: WorkerCount
+	// goroutines, each owning a shard of series and one shared ticker, doing
+	// each shard's per-tick work in a plain loop instead of one
+	// goroutine+ticker+select per series. Profiling (go tool pprof, real
+	// CPU profile, not inferred) found that with one-goroutine-per-series,
+	// Go's GC stack-scanning cost (runtime.gcBgMarkWorker + markroot/
+	// scanstack) scales with goroutine COUNT — i.e. with cardinality — and
+	// dominates CPU (~35-40%+ of total, growing as a *share* under
+	// sampling, not shrinking), unrelated to and much larger than the
+	// admission-check cost sampling actually targets. 0 (default) = auto:
+	// runtime.GOMAXPROCS(0)*4, capped at cardinality.
+	WorkerCount int `yaml:"worker_count"`
 
 	// TraceMetricName, when non-empty, overrides the replay gauge's metric
 	// name. By default the replay path emits `<metric>_trace`; setting this
@@ -295,6 +339,9 @@ func registerFlags(fs *flag.FlagSet, c *Config) {
 	fs.DurationVar(&c.Duration, "duration", c.Duration, "run duration; 0 = run until Ctrl+C")
 
 	fs.Float64Var(&c.WarmSampleP, "warm-sample-p", c.WarmSampleP, "producer-side warm-sketch sampling: admitted fraction p of the warm gauge datapoints; (1-p) dropped before export; 1.0 = no sampling. Applies to the synthetic <metric>_latency_ms AND the replayed trace gauge.")
+	fs.BoolVar(&c.GaugeOnly, "gauge-only", c.GaugeOnly, "synthetic mode: skip the Sum counter entirely (no Add call), emit only the warm-sample latency gauge. Use this for SDK-sampling comparisons — otherwise the counter's unsampled per-tick Add() shares the same wildcard View/aggregation as the gauge and is NOT gated by -warm-sample-p, contaminating the comparison.")
+	fs.BoolVar(&c.GeometricSampling, "geometric-sampling", c.GeometricSampling, "use sketchlib-go/common.GeometricSampler (real NitroSketch-style skip-sampling: O(1) cheap decrement per skipped tick, one PRNG draw only per admitted tick) instead of the naive per-tick Bernoulli coin-flip for -warm-sample-p admission. Default false = coin-flip (prior behavior).")
+	fs.IntVar(&c.WorkerCount, "worker-count", c.WorkerCount, "synthetic mode: number of shared worker goroutines driving all series (each owns a shard + one ticker), replacing one-goroutine-per-series. Profiling found per-series goroutines make GC stack-scanning cost scale with cardinality, dominating CPU independent of sampling. 0 (default) = auto (GOMAXPROCS*4, capped at cardinality).")
 	fs.StringVar(&c.TraceMetricName, "trace-metric-name", c.TraceMetricName, "override the replay gauge metric name (default <metric>_trace); set to land the trace under a DDSketch-aggregated name")
 	fs.StringVar(&c.CoordinatorURL, "coordinator-url", c.CoordinatorURL, "CDM coordinator MonitorService endpoint (host:port); non-empty makes this producer a coordinated edge whose warm-sample-p comes from the coordinator's grant")
 	fs.StringVar(&c.MonitorKey, "monitor-key", c.MonitorKey, "OVERRIDE for the cms_point heavy-hitter key: only this series_id counts toward the reported value f_i (the key's frequency), every event counts toward rate_i, so p_i ∝ √(f_i/rate_i) differentiates. Normally LEFT EMPTY and learned from the controller's pushed monitor config via -monitor-config-url; empty + no config URL = sum-monitor (value ∝ rate ⇒ uniform p)")
@@ -508,7 +555,17 @@ func resolveAggName(c Config) string {
 // Unrecognised values fall back to AggregationDefault with a warning so
 // experiments don't silently run the wrong shape. (cold_density_test.go
 // depends on this signature.)
-func parseAgg(name string, maxBufferPerSeries int) sdkmetric.Aggregation {
+//
+// sampleP is threaded into the sketch aggregators' own SampleP field
+// (DDSketch/CountSketch/CountMinSketch) so that -warm-sample-p drives the
+// REAL production per-row/per-item geometric admission built into these
+// aggregators (opentelemetry-go-patch/sdk/metric/internal/aggregate/*.go,
+// which already use sketchlib-go/common.GeometricSampler internally) —
+// not the application-level coin-flip/GeometricSampler gate used on the
+// raw-buffer/default (Gauge) path. Pass 0 or 1.0 for "no sampling" (matches
+// each aggregation's own convention that SampleP<=0 or >=1 disables
+// sampling). Only the sketch aggregations consume it; other cases ignore it.
+func parseAgg(name string, maxBufferPerSeries int, sampleP float64) sdkmetric.Aggregation {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "default":
 		return sdkmetric.AggregationDefault{}
@@ -517,19 +574,19 @@ func parseAgg(name string, maxBufferPerSeries int) sdkmetric.Aggregation {
 	case "raw-buffer":
 		return sdkmetric.AggregationRawBuffer{MaxEventsPerSeries: maxBufferPerSeries}
 	case "dd-full", "ddsketch", "ddsketch-full":
-		return sdkmetric.AggregationDDSketch{}
+		return sdkmetric.AggregationDDSketch{SampleP: sampleP}
 	case "dd-delta", "ddsketch-delta":
-		return sdkmetric.AggregationDDSketch{DeltaTransmission: true}
+		return sdkmetric.AggregationDDSketch{DeltaTransmission: true, SampleP: sampleP}
 	case "kll", "kll-full":
 		return sdkmetric.AggregationKLLSketch{}
 	case "cms-full", "count-min", "count-min-full":
-		return sdkmetric.AggregationCountMinSketch{}
+		return sdkmetric.AggregationCountMinSketch{SampleP: sampleP}
 	case "cms-delta", "count-min-delta":
-		return sdkmetric.AggregationCountMinSketch{DeltaTransmission: true}
+		return sdkmetric.AggregationCountMinSketch{DeltaTransmission: true, SampleP: sampleP}
 	case "cs-full", "countsketch", "count-sketch", "count-sketch-full":
-		return sdkmetric.AggregationCountSketch{}
+		return sdkmetric.AggregationCountSketch{SampleP: sampleP}
 	case "cs-delta", "count-sketch-delta":
-		return sdkmetric.AggregationCountSketch{DeltaTransmission: true}
+		return sdkmetric.AggregationCountSketch{DeltaTransmission: true, SampleP: sampleP}
 	case "hll-full", "hyperloglog", "hyperloglog-full":
 		return sdkmetric.AggregationHLLSketch{}
 	case "hll-delta", "hyperloglog-delta":
@@ -662,7 +719,7 @@ func main() {
 	// Three-axis SDK config.
 	aggName := resolveAggName(cfg)
 	projection := parseProjection(cfg.SDKProjection)
-	agg := parseAgg(aggName, cfg.MaxBufferPerSeries)
+	agg := parseAgg(aggName, cfg.MaxBufferPerSeries, cfg.WarmSampleP)
 
 	// Run-duration context (fakemetricload heritage). 0 = run forever.
 	var ctx context.Context
@@ -770,10 +827,16 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 	log.Printf("otel-app warm-sample-p=%.3f (admitted fraction of %s_latency_ms; 1.0=no sampling)",
 		cfg.WarmSampleP, metricName)
 
-	counter, err := meter.Float64Counter(metricName,
-		metric.WithDescription("Synthetic event counter — incremented by 1 per event"))
-	if err != nil {
-		log.Fatalf("counter init: %v", err)
+	var counter metric.Float64Counter
+	var err error
+	if !cfg.GaugeOnly {
+		counter, err = meter.Float64Counter(metricName,
+			metric.WithDescription("Synthetic event counter — incremented by 1 per event"))
+		if err != nil {
+			log.Fatalf("counter init: %v", err)
+		}
+	} else {
+		log.Printf("otel-app gauge-only=true: skipping the Sum counter entirely, warm-sample-p now gates 100%% of exported data volume")
 	}
 	latencyGauge, err := meter.Float64Gauge(metricName+"_latency_ms",
 		metric.WithDescription("Synthetic Zipf-distributed latency sample per event"),
@@ -809,6 +872,31 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 	const seriesSeedPrime int64 = 2654435761
 	useSeededRng := baseSeed != 0
 
+	// When the resolved SDK aggregation is one of the sketch aggregators
+	// that hosts its own SampleP-driven admission internally (DDSketch/
+	// CountSketch/CountMinSketch — see parseAgg), that aggregator's real
+	// per-row/per-item GeometricSampler already does the sampling, inside
+	// the actual production aggregate/*.go code, not a stand-in. In that
+	// case every tick must call Record() unconditionally (never gated by
+	// this file's own keepWarm()/GeometricSampling logic) — sampling at
+	// both this application layer AND inside the aggregator would compound
+	// two independent admission draws into one event, which is exactly the
+	// double-sampling design docs/design-gos-unified-edge-telemetry.md
+	// §3.1.1 says to avoid ("exactly one sampling stage per series").
+	aggregatorSelfSamples := func() bool {
+		switch strings.ToLower(strings.TrimSpace(resolveAggName(cfg))) {
+		case "dd-full", "ddsketch", "ddsketch-full", "dd-delta", "ddsketch-delta",
+			"cms-full", "count-min", "count-min-full", "cms-delta", "count-min-delta",
+			"cs-full", "countsketch", "count-sketch", "count-sketch-full", "cs-delta", "count-sketch-delta":
+			return true
+		default:
+			return false
+		}
+	}()
+	if aggregatorSelfSamples {
+		log.Printf("otel-app: resolved aggregation %q hosts its own SampleP=%.3f admission — this producer's own keepWarm()/-geometric-sampling gate is disabled to avoid double-sampling; Record() is called unconditionally every tick", resolveAggName(cfg), cfg.WarmSampleP)
+	}
+
 	// Five-sketch MVP workload (issue #46) — emits the four new metrics
 	// (request_size_bytes / unique_users_per_min / top_endpoint_qps /
 	// endpoint_request_freq). Always emitted; reuses the same outer label
@@ -818,39 +906,73 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 		defer stopFiveSketch()
 	}
 
-	var wg sync.WaitGroup
-	for i := 0; i < cardinality; i++ {
-		wg.Add(1)
-		go func(seriesIdx int) {
-			defer wg.Done()
-			// Stagger start so all series don't fire simultaneously.
-			time.Sleep(time.Duration(seriesIdx%int(max64(freqHz, 1))) * period /
-				time.Duration(max64(freqHz, 1)))
+	// --- Per-series state, precomputed once, read by the shared worker
+	// pool below. Historically this state (attrs/localRng/zipf/keepWarm)
+	// lived as local variables inside a dedicated goroutine per series;
+	// that model was found (real go tool pprof profiling, not inferred)
+	// to make Go's GC stack-scanning cost scale with cardinality
+	// (runtime.gcBgMarkWorker + markroot/scanstack ran ~35-40%+ of total
+	// CPU with 20,000 concurrent per-series goroutines, and that SHARE
+	// grew under sampling rather than shrinking) — dwarfing the
+	// admission-check cost sampling actually targets. Precomputing this
+	// state into slices and driving it from a small, fixed-size worker
+	// pool removes that goroutine-count-driven cost entirely; nothing
+	// about the per-series logic itself changes.
+	type seriesState struct {
+		attrs    metric.MeasurementOption
+		drawLat  func() float64
+		keepWarm func() bool
+	}
+	states := make([]seriesState, cardinality)
+	for seriesIdx := 0; seriesIdx < cardinality; seriesIdx++ {
+		attrs := metric.WithAttributes(labelSets[seriesIdx]...)
 
-			ticker := time.NewTicker(period)
-			defer ticker.Stop()
-			attrs := metric.WithAttributes(labelSets[seriesIdx]...)
+		// Per-series PRNG: when -seed is set, deterministic per
+		// (producer_id, series_idx). Otherwise the global PRNG.
+		var localRng *rand.Rand
+		if useSeededRng {
+			seriesSeed := baseSeed ^ producerIDHash ^ (int64(seriesIdx+1) * seriesSeedPrime)
+			localRng = rand.New(rand.NewSource(seriesSeed))
+		} else {
+			localRng = rand.New(rand.NewSource(time.Now().UnixNano() + int64(seriesIdx)))
+		}
+		// Zipf generator over the per-series RNG (fakemetricload value
+		// model). NewZipf requires s > 1 strictly, validated above.
+		zipf := rand.NewZipf(localRng, cfg.ZipfS, cfg.ZipfV, cfg.ZipfMax)
+		drawLat := func() float64 { return generateZipfValue(zipf) }
 
-			// Per-series PRNG: when -seed is set, deterministic per
-			// (producer_id, series_idx). Otherwise the global PRNG.
-			var localRng *rand.Rand
+		// Producer-side warm-part sampling: keep each latency
+		// datapoint with probability p. Dropped points never enter
+		// the SDK aggregation, so they are never sketched/exported/
+		// sent. The Sum counter (counter.Add) is always emitted.
+		warmP := cfg.WarmSampleP
+		var keepWarm func() bool
+		if aggregatorSelfSamples {
+			// The aggregator's own SampleP does the admission — see
+			// the note above where aggregatorSelfSamples is computed.
+			// Always record; never gate here.
+			keepWarm = func() bool { return true }
+		} else if cfg.GeometricSampling {
+			// Real NitroSketch-style skip-sampling
+			// (sketchlib-go/common.GeometricSampler): a skipped tick
+			// costs one cheap int64 decrement, no RNG draw — the PRNG
+			// is only touched once per ADMITTED tick (to draw the next
+			// gap). Contrast with the coin-flip branch below, which
+			// draws a PRNG float on every tick regardless of outcome.
+			// Seed is salted distinctly from localRng's (used for the
+			// Zipf value draws) so the two random streams don't
+			// correlate.
+			const geometricSamplerSalt int64 = 0x5DEECE66D
+			var samplerSeed int64
 			if useSeededRng {
-				seriesSeed := baseSeed ^ producerIDHash ^ (int64(seriesIdx+1) * seriesSeedPrime)
-				localRng = rand.New(rand.NewSource(seriesSeed))
+				samplerSeed = baseSeed ^ producerIDHash ^ (int64(seriesIdx+1) * seriesSeedPrime) ^ geometricSamplerSalt
 			} else {
-				localRng = rand.New(rand.NewSource(time.Now().UnixNano() + int64(seriesIdx)))
+				samplerSeed = time.Now().UnixNano() + int64(seriesIdx) + geometricSamplerSalt
 			}
-			// Zipf generator over the per-series RNG (fakemetricload value
-			// model). NewZipf requires s > 1 strictly, validated above.
-			zipf := rand.NewZipf(localRng, cfg.ZipfS, cfg.ZipfV, cfg.ZipfMax)
-			drawLat := func() float64 { return generateZipfValue(zipf) }
-
-			// Producer-side warm-part sampling: keep each latency
-			// datapoint with probability p. Dropped points never enter
-			// the SDK aggregation, so they are never sketched/exported/
-			// sent. The Sum counter (counter.Add) is always emitted.
-			warmP := cfg.WarmSampleP
-			keepWarm := func() bool {
+			sampler := common.NewGeometricSampler(warmP, samplerSeed)
+			keepWarm = sampler.Admit
+		} else {
+			keepWarm = func() bool {
 				if warmP >= 1.0 {
 					return true
 				}
@@ -859,19 +981,57 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 				}
 				return localRng.Float64() < warmP
 			}
+		}
+
+		states[seriesIdx] = seriesState{attrs: attrs, drawLat: drawLat, keepWarm: keepWarm}
+	}
+
+	// Shared worker pool: workerCount goroutines, each a fixed-size shard
+	// of series (round-robin assignment), each with its own ticker
+	// (phase-staggered across the period so shards don't all fire at
+	// once) driving a plain loop over its shard instead of one
+	// goroutine+ticker+select per series.
+	workerCount := cfg.WorkerCount
+	if workerCount <= 0 {
+		workerCount = runtime.GOMAXPROCS(0) * 4
+	}
+	if workerCount > cardinality {
+		workerCount = cardinality
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	log.Printf("otel-app: %d series driven by %d shared worker(s) (was: one goroutine per series)", cardinality, workerCount)
+
+	var wg sync.WaitGroup
+	for w := 0; w < workerCount; w++ {
+		wg.Add(1)
+		go func(workerIdx int) {
+			defer wg.Done()
+			// Phase-stagger workers across the tick period (successor to
+			// the old per-series stagger) so shards don't all fire at once.
+			time.Sleep(time.Duration(workerIdx) * period / time.Duration(workerCount))
+
+			ticker := time.NewTicker(period)
+			defer ticker.Stop()
 
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					counter.Add(ctx, 1, attrs)
-					if keepWarm() {
-						latencyGauge.Record(ctx, drawLat(), attrs)
+					for seriesIdx := workerIdx; seriesIdx < cardinality; seriesIdx += workerCount {
+						s := &states[seriesIdx]
+						if !cfg.GaugeOnly {
+							counter.Add(ctx, 1, s.attrs)
+						}
+						if s.keepWarm() {
+							latencyGauge.Record(ctx, s.drawLat(), s.attrs)
+						}
 					}
 				}
 			}
-		}(i)
+		}(w)
 	}
 	wg.Wait()
 }
@@ -881,13 +1041,6 @@ func runSynthetic(ctx context.Context, meter metric.Meter, metricName string) {
 func generateZipfValue(zipf *rand.Zipf) float64 {
 	scaleFactor := cfg.ZipfMean / (float64(cfg.ZipfMax) / 2.0)
 	return float64(zipf.Uint64()+1) * scaleFactor
-}
-
-func max64(a float64, b int) int {
-	if int(a) < b {
-		return b
-	}
-	return int(a)
 }
 
 // runTraceReplay reads a CSV trace and emits its rows as gauges at the

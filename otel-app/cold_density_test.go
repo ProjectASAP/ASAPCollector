@@ -23,7 +23,7 @@ import (
 func collectCounterDataPoints(t *testing.T, aggName string, maxBuf, cardinality, events int) int {
 	t.Helper()
 
-	agg := parseAgg(aggName, maxBuf)
+	agg := parseAgg(aggName, maxBuf, 0)
 	stream := sdkmetric.Stream{Aggregation: agg}
 	view := sdkmetric.NewView(sdkmetric.Instrument{Name: "*"}, stream)
 
