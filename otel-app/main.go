@@ -175,6 +175,17 @@ type Config struct {
 	// behavior/comparability with earlier measurement rounds.
 	GeometricSampling bool `yaml:"geometric_sampling"`
 
+	// DisableSeriesDictionary, when true, turns off the OTLP/gRPC exporter's
+	// ASAP-specific series-ID dictionary (otlpmetricgrpc.WithSeriesDictionary
+	// (false)): the mechanism that lets an already-registered series send
+	// only a collector-confirmed numeric ID instead of full Attributes on
+	// the wire. Use this for a passthrough-all-raw-samples baseline being
+	// compared against a sampled/sketched arm — otherwise the baseline
+	// picks up this ASAP-specific wire optimization too and the reported
+	// sampling/sketching savings undercount. Default false preserves prior
+	// behavior (dictionary on) for every other run.
+	DisableSeriesDictionary bool `yaml:"disable_series_dictionary"`
+
 	// WorkerCount, when >0, replaces the default one-goroutine-per-series
 	// model in runSynthetic with a shared worker pool: WorkerCount
 	// goroutines, each owning a shard of series and one shared ticker, doing
@@ -341,6 +352,7 @@ func registerFlags(fs *flag.FlagSet, c *Config) {
 	fs.Float64Var(&c.WarmSampleP, "warm-sample-p", c.WarmSampleP, "producer-side warm-sketch sampling: admitted fraction p of the warm gauge datapoints; (1-p) dropped before export; 1.0 = no sampling. Applies to the synthetic <metric>_latency_ms AND the replayed trace gauge.")
 	fs.BoolVar(&c.GaugeOnly, "gauge-only", c.GaugeOnly, "synthetic mode: skip the Sum counter entirely (no Add call), emit only the warm-sample latency gauge. Use this for SDK-sampling comparisons — otherwise the counter's unsampled per-tick Add() shares the same wildcard View/aggregation as the gauge and is NOT gated by -warm-sample-p, contaminating the comparison.")
 	fs.BoolVar(&c.GeometricSampling, "geometric-sampling", c.GeometricSampling, "use sketchlib-go/common.GeometricSampler (real NitroSketch-style skip-sampling: O(1) cheap decrement per skipped tick, one PRNG draw only per admitted tick) instead of the naive per-tick Bernoulli coin-flip for -warm-sample-p admission. Default false = coin-flip (prior behavior).")
+	fs.BoolVar(&c.DisableSeriesDictionary, "disable-series-dictionary", c.DisableSeriesDictionary, "turn off the OTLP/gRPC exporter's series-ID dictionary (full Attributes sent on every DataPoint, never just a cached ID). Use for a passthrough-all-raw-samples baseline compared against a sampled/sketched arm, so the comparison doesn't credit sampling/sketching with savings that actually came from this separate wire optimization. Default false = dictionary on (prior behavior).")
 	fs.IntVar(&c.WorkerCount, "worker-count", c.WorkerCount, "synthetic mode: number of shared worker goroutines driving all series (each owns a shard + one ticker), replacing one-goroutine-per-series. Profiling found per-series goroutines make GC stack-scanning cost scale with cardinality, dominating CPU independent of sampling. 0 (default) = auto (GOMAXPROCS*4, capped at cardinality).")
 	fs.StringVar(&c.TraceMetricName, "trace-metric-name", c.TraceMetricName, "override the replay gauge metric name (default <metric>_trace); set to land the trace under a DDSketch-aggregated name")
 	fs.StringVar(&c.CoordinatorURL, "coordinator-url", c.CoordinatorURL, "CDM coordinator MonitorService endpoint (host:port); non-empty makes this producer a coordinated edge whose warm-sample-p comes from the coordinator's grant")
@@ -735,6 +747,7 @@ func main() {
 		otlpmetricgrpc.WithEndpoint(cfg.Target),
 		otlpmetricgrpc.WithInsecure(),
 		otlpmetricgrpc.WithCompressor("gzip"),
+		otlpmetricgrpc.WithSeriesDictionary(!cfg.DisableSeriesDictionary),
 	)
 	if err != nil {
 		log.Fatalf("otlp exporter init: %v", err)
@@ -749,15 +762,36 @@ func main() {
 
 	// One View covers every instrument this producer emits. The stream
 	// config is what the three-axis sweep varies — aggregation + attribute
-	// filter. AttributeFilter is wrapped in a swappableFilter so the
-	// controller can change the label projection L mid-run via
-	// POST /control/projection (see swappable_filter.go).
-	swappable := newSwappableFilter(projection)
-	stream := sdkmetric.Stream{Aggregation: agg, AttributeFilter: swappable.Filter()}
-	view := sdkmetric.NewView(sdkmetric.Instrument{Name: "*"}, stream)
+	// filter.
+	//
+	// AttributeFilter is ONLY wrapped in a swappableFilter when -control-addr
+	// is actually set (i.e. runtime label-projection swapping via
+	// POST /control/projection — see swappable_filter.go — is genuinely in
+	// use). swappableFilter.Filter() always returns a non-nil closure, even
+	// when its inner filter is unset (keep-all) — and the SDK's
+	// aggregate.Builder.filter only takes the fast, uncached path when
+	// Stream.AttributeFilter is a literal nil (opentelemetry-go/sdk/metric/
+	// internal/aggregate/aggregate.go); any non-nil value, including a
+	// keep-all no-op wrapper, routes every measurement through
+	// filteredAttrCache's sync.Map lookup instead. That cache is a real,
+	// deliberate ASAP patch (see its doc comment) for a real problem
+	// (non-trivial AttributeFilter was ~4x CPU without it) — it is NOT
+	// upstream OTel SDK behavior, and it should not be paying for a filter
+	// that is a no-op 100% of the time because nothing ever calls Swap().
+	// Real profiling (2026-08-01, 300K-cardinality round) found this
+	// unconditional wrapping was a dominant, cardinality-scaling cost
+	// unrelated to sampling. Skipping the wrapper when -control-addr is
+	// unset lets keep-all runs take the SDK's real nil-filter fast path.
+	var view sdkmetric.View
 	if cfg.ControlAddr != "" {
+		swappable := newSwappableFilter(projection)
+		stream := sdkmetric.Stream{Aggregation: agg, AttributeFilter: swappable.Filter()}
+		view = sdkmetric.NewView(sdkmetric.Instrument{Name: "*"}, stream)
 		log.Printf("control plane listening on %s (POST /control/projection)", cfg.ControlAddr)
 		_ = installControlServer(cfg.ControlAddr, swappable)
+	} else {
+		stream := sdkmetric.Stream{Aggregation: agg, AttributeFilter: projection}
+		view = sdkmetric.NewView(sdkmetric.Instrument{Name: "*"}, stream)
 	}
 
 	provider := sdkmetric.NewMeterProvider(

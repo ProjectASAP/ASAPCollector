@@ -261,6 +261,18 @@ func annotateNumberDataPoints[N int64 | float64](src *sourceState, scopeKey, met
 	for i := range dps {
 		dp := &dps[i]
 		assignSeriesID(src, scopeKey, metricName, metricType, gen, &dp.SeriesID, &dp.Attributes)
+		if dp.SeriesIDSink != nil {
+			*dp.SeriesIDSink = dp.SeriesID
+			dp.SeriesIDSink = nil
+		}
+		// Only clear attrs once the collector has confirmed the series (SeriesID
+		// assigned). Until then, attrs must survive in the aggregator so they are
+		// re-sent on subsequent export cycles and forwarded through any
+		// intermediate collector hops (agent → gateway).
+		if dp.AttrsClearer != nil && dp.SeriesID != 0 {
+			*dp.AttrsClearer = attribute.Set{}
+			dp.AttrsClearer = nil
+		}
 	}
 }
 

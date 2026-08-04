@@ -34,11 +34,19 @@ type Exporter struct {
 	aggregationSelector metric.AggregationSelector
 
 	seriesState *series.Dictionary
+	// seriesDictionaryEnabled gates seriesState.Annotate (and applying its
+	// response-driven confirmations) entirely. Disabled via
+	// WithSeriesDictionary(false) — intended for a "naive" comparison arm
+	// that must pay full Attributes-on-every-DataPoint cost with none of
+	// this ASAP-specific series-ID wire optimization, e.g. a
+	// passthrough-all-raw-samples baseline being measured against a
+	// sampled/sketched arm that DOES use it.
+	seriesDictionaryEnabled bool
 
 	shutdownOnce sync.Once
 }
 
-func newExporter(c *client, cfg oconf.Config) (*Exporter, error) {
+func newExporter(c *client, cfg oconf.Config, seriesDictionaryEnabled bool) (*Exporter, error) {
 	ts := cfg.Metrics.TemporalitySelector
 	if ts == nil {
 		ts = func(metric.InstrumentKind) metricdata.Temporality {
@@ -54,9 +62,10 @@ func newExporter(c *client, cfg oconf.Config) (*Exporter, error) {
 	return &Exporter{
 		client: c,
 
-		temporalitySelector: ts,
-		aggregationSelector: as,
-		seriesState:         series.NewDictionary(),
+		temporalitySelector:     ts,
+		aggregationSelector:     as,
+		seriesState:             series.NewDictionary(),
+		seriesDictionaryEnabled: seriesDictionaryEnabled,
 	}, nil
 }
 
@@ -77,14 +86,16 @@ func (e *Exporter) Aggregation(k metric.InstrumentKind) metric.Aggregation {
 func (e *Exporter) Export(ctx context.Context, rm *metricdata.ResourceMetrics) error {
 	defer global.Debug("OTLP/gRPC exporter export", "Data", rm)
 
-	e.seriesState.Annotate(rm)
+	if e.seriesDictionaryEnabled {
+		e.seriesState.Annotate(rm)
+	}
 
 	otlpRm, err := transform.ResourceMetrics(rm)
 	// Best effort upload of transformable metrics.
 	e.clientMu.Lock()
 	resp, upErr := e.client.UploadMetrics(ctx, otlpRm)
 	e.clientMu.Unlock()
-	if resp != nil {
+	if resp != nil && e.seriesDictionaryEnabled {
 		applySeriesAssignments(e.seriesState, resp)
 		applyUnknownSeriesIds(e.seriesState, resp)
 	}
@@ -161,12 +172,44 @@ func (*Exporter) MarshalLog() any {
 // on options. If a connection cannot be establishes in the lifetime of ctx,
 // an error will be returned.
 func New(ctx context.Context, options ...Option) (*Exporter, error) {
-	cfg := oconf.NewGRPCConfig(asGRPCOptions(options)...)
+	seriesDictionaryEnabled := true
+	filtered := make([]Option, 0, len(options))
+	for _, o := range options {
+		if sd, ok := o.(seriesDictionaryOption); ok {
+			seriesDictionaryEnabled = bool(sd)
+			continue
+		}
+		filtered = append(filtered, o)
+	}
+
+	cfg := oconf.NewGRPCConfig(asGRPCOptions(filtered)...)
 	c, err := newClient(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return newExporter(c, cfg)
+	return newExporter(c, cfg, seriesDictionaryEnabled)
+}
+
+// seriesDictionaryOption is a standalone Option that never touches
+// oconf.Config (an upstream gotmpl-generated file — see
+// internal/oconf/options.go's header comment — that this exporter's ASAP
+// patches otherwise avoid modifying). New() intercepts it directly.
+type seriesDictionaryOption bool
+
+func (seriesDictionaryOption) applyGRPCOption(cfg oconf.Config) oconf.Config { return cfg }
+
+// WithSeriesDictionary controls whether the Exporter runs the ASAP-specific
+// series-ID dictionary (internal/series.Dictionary): the mechanism that lets
+// a repeatedly-exported series send only a collector-confirmed numeric ID
+// instead of its full Attributes on the wire. Default true, matching prior
+// behavior. Pass false for a "naive" comparison arm — e.g. a
+// passthrough-all-raw-samples baseline — that should pay the full
+// Attributes-on-every-DataPoint cost with none of this optimization, so a
+// benchmark comparing it against a sampled/sketched arm attributes 100% of
+// the difference to sampling/sketching rather than partly to this exporter
+// wire-format trick.
+func WithSeriesDictionary(enabled bool) Option {
+	return seriesDictionaryOption(enabled)
 }
 
 func applySeriesAssignments(dict *series.Dictionary, resp *colmetricpb.ExportMetricsServiceResponse) {
