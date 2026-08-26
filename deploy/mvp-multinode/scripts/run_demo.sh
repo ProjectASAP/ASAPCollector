@@ -71,6 +71,16 @@ mkdir -p "${RUN_DIR}" "${LOG_BASE}"
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "${LOG_BASE}/${RUN_ID}.log" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 
+write_run_manifest() {
+    # Immutable paired-run provenance. Delayed until `all` so help/library
+    # invocations do not create misleading run directories or require the
+    # sibling backend checkout.
+    ROOT="${ROOT}" BACKEND="${BACKEND}" RUN_ID="${RUN_ID}" RUN_DIR="${RUN_DIR}" \
+    PER_AGENT_CARDINALITY="${PER_AGENT_CARDINALITY}" OTELAPP_FREQ_HZ="${OTELAPP_FREQ_HZ}" \
+    SOAK_S="${SOAK_S}" OTELAPP_SEED="${OTELAPP_SEED:-42}" \
+    python3 -c 'import datetime,json,os,subprocess; root=os.environ["ROOT"]; backend=os.environ["BACKEND"]; rid=os.environ["RUN_ID"]; seed=int(os.environ["OTELAPP_SEED"]); commit=lambda p: subprocess.check_output(["git","-C",p,"rev-parse","HEAD"],text=True).strip(); json.dump({"schema_version":1,"run_id":rid,"started_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"collector_commit":commit(root),"backend_commit":commit(backend),"workload":{"cardinality":int(os.environ["PER_AGENT_CARDINALITY"]),"frequency_hz":float(os.environ["OTELAPP_FREQ_HZ"]),"soak_s":float(os.environ["SOAK_S"])},"arms":{"b1":{"seed":seed},"asap-gzip":{"seed":seed}}},open(os.path.join(os.environ["RUN_DIR"],"run-manifest.json"),"w"),indent=2)'
+}
+
 # ── ssh wrapper that runs commands on a remote node with our env ──
 on() {
     local node=$1; shift
@@ -783,6 +793,7 @@ arm_measure() {
     log "[measure ${arm}] MetricsQL replay against ${query_endpoint} for ${SOAK_S}s"
     python3 "${ROOT}/deploy/mvp-singlenode/scripts/metricsql_replay.py" \
         --target "${query_endpoint}" \
+        --controller "http://${NODE2_IP}:8080" \
         --queries "${ROOT}/deploy/mvp-singlenode/scripts/queries-e2e.json" \
         --duration "${SOAK_S}" \
         --out "${out}/replay.jsonl" \
@@ -791,6 +802,20 @@ arm_measure() {
 
     # Wait for soak to complete
     wait ${REPLAY_PID} 2>/dev/null || true
+
+    if is_asap_arm "${arm}"; then
+        # Controller-side acknowledgement is the proof that the supervisor
+        # applied the pushed plan; seeing only a plan in the controller is not
+        # sufficient for functional correctness.
+        on "${NODE2_HOST}" "curl -fsS http://127.0.0.1:8080/api/v1/agents" \
+            > "${out}/controller-agents.json"
+    fi
+
+    # Freshness is part of the acceptance gate, not an optional report extra.
+    # It runs after replay while the arm is still live.
+    ARM="${arm}" OUT="${out}" NODE2_IP="${NODE2_IP}" \
+        N_SAMPLES="${FRESHNESS_SAMPLES:-20}" POLL_MS="${FRESHNESS_POLL_MS:-100}" \
+        bash "${SCRIPT_DIR}/measure_freshness.sh" > "${out}/freshness.log" 2>&1
     sleep 3   # let measurement scripts on remote nodes finish
 
     # Pull CSVs back from each node
@@ -827,6 +852,7 @@ case "${cmd}" in
     measure)         arm_measure "${2:?need arm name}" ;;
     arm)             ensure_images; sync_all_nodes; run_arm "${2:?need arm name}" ;;
     all)
+        write_run_manifest
         ensure_images
         sync_all_nodes
         # Compression-matched bandwidth sweep — six arms. The two clean
@@ -837,9 +863,10 @@ case "${cmd}" in
         for arm in b0 b1 b2 b3 asap asap-gzip; do
             run_arm "${arm}"
         done
-        log "=== generating MVP_REPORT.md ==="
-        python3 "${SCRIPT_DIR}/aggregate_report.py" --run-dir "${RUN_DIR}" --out "${RUN_DIR}/MVP_REPORT.md" \
-            || log "report aggregation failed (non-fatal); inspect ${RUN_DIR}/"
+        log "=== evaluating issue #46 acceptance contract ==="
+        python3 "${SCRIPT_DIR}/mvp_evaluate.py" \
+            --run-dir "${RUN_DIR}" \
+            --config "${PKG_DIR}/mvp-acceptance.json"
         log "=== run complete: ${RUN_DIR} ==="
         ;;
     help|*)

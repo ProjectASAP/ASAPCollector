@@ -4,8 +4,8 @@ Two demos, two packages, plus shared infrastructure pieces:
 
 | Path | What | Read |
 |---|---|---|
-| [`mvp-singlenode/`](mvp-singlenode/README.md) | Single-host docker-compose harness — N=1 / N=10 / N=100 scale dials, baseline sweeps, sweep driver, MVP cell smoke tests | [mvp-singlenode/README.md](mvp-singlenode/README.md) |
-| [`mvp-multinode/`](mvp-multinode/README.md) | 4-node multinode orchestrator — bandwidth claim under a real 10 Gbps LAN, not loopback-flattered | [mvp-multinode/README.md](mvp-multinode/README.md) |
+| `mvp-singlenode/scripts/` | Shared replay and measurement utilities retained after removal of the legacy single-host deployment | — |
+| [`mvp-multinode/`](mvp-multinode/README.md) | Canonical issue-#46 paired harness on a real 10 Gbps LAN | [mvp-multinode/README.md](mvp-multinode/README.md) |
 | `helm/` | Helm charts (K8s / scale path) | — |
 | `docker/` | Dockerfiles built once and consumed by both demos (`Dockerfile.asap-otel`, `Dockerfile.otel-app`). The data-plane / control-plane images build from ASAPQuery-backend's `data_plane/Dockerfile` + `control_plane/Dockerfile` (data_plane reorg, 2026-05 — the old combined `Dockerfile.backend` is retired). | — |
 | `otel-app/` | Go source for the synthetic producer image | — |
@@ -14,10 +14,10 @@ Two demos, two packages, plus shared infrastructure pieces:
 
 | Question | Use |
 |---|---|
-| Does the new analyzer route compound PromQL correctly? Does `MVP_REPORT.md` render? Fast PR-time smoke. | `mvp-singlenode/scripts/run_mvp_demo.sh` |
-| Are the bandwidth-reduction claims real on a 10 Gbps LAN, not loopback-flattered? | `mvp-multinode/scripts/run_demo.sh` |
+| Does the acceptance evaluator fail closed on missing/stale/invalid evidence? | `python3 deploy/mvp-multinode/scripts/tests/test_mvp_evaluate.py` |
+| Are correctness, accuracy, freshness, latency, and cost claims supported on a real LAN? | `deploy/mvp-multinode/scripts/run_demo.sh all` |
 
 ## Layout invariants
 
-- `mvp-singlenode/docker-compose/*.yml` reference configs via `../configs/...` — both dirs live under `mvp-singlenode/`, so the relative paths resolve.
-- `mvp-multinode/scripts/run_demo.sh` Phase 0 rsyncs `mvp-singlenode/scripts/` (per-node Python utilities) and `mvp-multinode/configs/` (per-arm YAML bundles) to each of node0–node3 under `/mydata/mvp-multinode/{scripts,configs}/`. The Python utilities are shared across the two demos; the configs are not.
+- `mvp-multinode/scripts/run_demo.sh` rsyncs the shared utilities and per-arm
+  configs to node0–node3 under `/mydata/mvp-multinode/{scripts,configs}/`.

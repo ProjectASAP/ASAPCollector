@@ -44,14 +44,14 @@ echo "arm,probe,tier,poll_idx,poll_ts_ms,observed_value_ms,delta_ms" > "${CSV}"
 # so this is only applied on the VM path.
 VM_QARGS=()
 case "${ARM}" in
-    b0|b1)
+    b0|b1|b2|b3)
         # Raw baseline lands in VictoriaMetrics, which serves PromQL on :8428
         # (NOT :9090 — there is no Prometheus in this topology; :9090 is
         # unreachable and was the cause of the prior "no successful polls").
         PROBES=('raw|{__name__=~"http_freshness_probe_raw.*"}|http://'"${NODE2_IP}"':8428')
         VM_QARGS=(--data-urlencode "latency_offset=1ms")
         ;;
-    asap)
+    asap|asap-gzip)
         # The asap backend's EngineRouter keys on the EXACT raw metric name
         # (backend-storage-routing.yaml routes http_freshness_probe_{warm,archive}
         # → gorilla_s3_archive and serves last_over_time from the archive). A

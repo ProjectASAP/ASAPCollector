@@ -1,8 +1,12 @@
 # 4-node MVP demo orchestrator
 
-CloudLab / multi-host driver for the MVP demo (issue #46). Runs the baseline (B0 Prometheus) and ASAP arms across 4 nodes on a 10 Gbps LAN, so wire-bytes per-edge counters reflect a real NIC instead of loopback.
+CloudLab / multi-host driver for the MVP demo (issue #46). Runs exact raw-data
+and ASAP arms across 4 nodes on a 10 Gbps LAN, so wire-byte measurements use a
+real NIC instead of loopback.
 
-Single-host driver: `deploy/mvp-singlenode/scripts/run_mvp_demo.sh` (runs all containers on one box; faster smoke iteration, but bandwidth claims are loopback-flattered).
+This is the canonical issue-#46 harness. The former single-host deployment was
+removed because it used legacy per-sketch processors; `mvp-singlenode/scripts`
+now contains only shared measurement utilities.
 
 ## Topology
 
@@ -48,7 +52,7 @@ Prereqs:
 - 4 CloudLab-style nodes with `/mydata` mounted on each, passwordless SSH from node0, docker buildkit installed.
 - Nodes named `node0..node3` (or override via `NODE{0..3}_HOST` in `topology.env`).
 
-From node0:
+From node0, the complete paired experiment is one command:
 
 ```bash
 # 1) Build the images on node0.
@@ -79,8 +83,8 @@ DOCKER_BUILDKIT=1 docker build \
 
 # 2) Distribute + run the demo. `run_demo.sh` Phase 0 rsyncs configs/scripts,
 #    docker-save-distributes the images, and pulls externals on each node.
-cd /mydata/ASAPCollector/deploy/mvp-multinode
-bash run_demo.sh --mode both
+cd /mydata/ASAPCollector
+bash deploy/mvp-multinode/scripts/run_demo.sh all
 ```
 
 Knobs (env-overridable, see `topology.env` for defaults):
@@ -91,7 +95,8 @@ Knobs (env-overridable, see `topology.env` for defaults):
 ## Where artifacts land
 
 - **Per-node** (transient): `/mydata/mvp-multinode/results/`, `/mydata/mvp-multinode/logs/`.
-- **Aggregated on node0**: `results/edge-*.csv` (per-edge bandwidth from each node's NIC counters), `results/mvp-report.md`.
+- **Aggregated on node0**: one run-ID directory containing per-arm raw
+  observations, `run-manifest.json`, `MVP_RESULTS.json`, and `MVP_REPORT.md`.
 
 `results/` and `logs/` are `.gitignore`d — per the repo's eval-artifact convention (the single-host runbook says the same: never commit historical reports, they get stale fast and look like source of truth).
 
@@ -103,12 +108,33 @@ Knobs (env-overridable, see `topology.env` for defaults):
 | `scripts/run_demo.sh` | Main driver — per-arm bring-up / soak / teardown across all 4 nodes |
 | `scripts/run_demo_sweep.sh` | Wraps `run_demo.sh` with sweeps (e.g. cardinality grid, sketch-family grid) |
 | `scripts/validate_arm.sh` | Smoke-check a single arm without running the full demo |
-| `scripts/snapshot_resources.sh` | Per-container `docker stats` snapshot — used by run_demo.sh Phase 2 |
-| `scripts/measure_freshness.sh` | Probe-based freshness measurement — used by run_demo.sh Phase 3 |
+| `mvp-acceptance.json` | Checked-in, pre-run accuracy/freshness/latency/cost acceptance thresholds |
+| `scripts/mvp_evaluate.py` | Fail-closed acceptance evaluator and report generator |
+| `scripts/measure_freshness.sh` | Probe-based sample-to-query freshness measurement |
 | `scripts/measure_nic_bw.sh` | Per-NIC `cat /sys/class/net/.../statistics` snapshot — fed into per-edge CSV |
 | `configs/{b0,b1,asap,shared}/` | Per-arm + shared YAML bundles — rsync'd to each node at Phase 0 |
 
-The per-node Python utilities (`metricsql_replay.py`, `measure_*.py`, `accuracy_reduce.py`, etc.) live in `deploy/mvp-singlenode/scripts/` and `run_demo.sh` rsyncs that directory to each node's `/mydata/mvp-multinode/scripts/` at bring-up. They are shared across the two demos.
+The per-node Python utilities live in `deploy/mvp-singlenode/scripts/`; the
+driver rsyncs them to each node at bring-up.
+
+## Acceptance and exit status
+
+The `all` command finishes by evaluating the primary compression-matched pair:
+raw OTLP+gzip (`b1`) versus sketched OTLP+gzip (`asap-gzip`). Both arms use the
+same deterministic generator seed and workload shape. The evaluator requires:
+
+- valid, current-run provenance and non-empty query results;
+- controller acknowledgement that remote configuration was applied, with both
+  full- and delta-sketch decisions visible in the effective configuration;
+- per-query accuracy within the checked-in SLA;
+- freshness p95 and maximum lag within SLA;
+- lower ASAP p50 and p95 query latency;
+- lower normalized Collector and end-to-end costs, with per-resource
+  regression guardrails.
+
+Missing, malformed, empty, or previous-run artifacts fail the run. The driver
+returns non-zero when any category fails. Thresholds must be edited and
+reviewed before a measurement run, never after observing its results.
 
 ## Differences vs the single-host driver
 

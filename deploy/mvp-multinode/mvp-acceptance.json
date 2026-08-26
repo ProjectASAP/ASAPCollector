@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "baseline_arm": "b1",
+  "asap_arm": "asap-gzip",
+  "minimum_successful_queries_per_kind": 5,
+  "accuracy": {
+    "relative_error_by_kind": {
+      "quantile": 0.05,
+      "sum": 0.000001,
+      "frequency": 0.05,
+      "count_unique": 0.05,
+      "topk": 0.10
+    },
+    "minimum_within_sla_fraction": 0.95
+  },
+  "freshness": {
+    "p95_ms": 5000,
+    "maximum_ms": 15000,
+    "minimum_samples_per_tier": 5
+  },
+  "query_latency": {
+    "require_asap_lower_p50": true,
+    "require_asap_lower_p95": true
+  },
+  "cost": {
+    "cpu_core_weight": 1.0,
+    "rss_gib_weight": 0.1,
+    "network_mib_per_s_weight": 0.01,
+    "storage_gib_weight": 0.01,
+    "collector_regression_guardrail_ratio": 2.0,
+    "require_collector_total_lower": true,
+    "require_end_to_end_total_lower": true
+  }
+}
