@@ -1,4 +1,17 @@
 # Benchmark: Raw Samples vs Full Sketch vs Delta Sketch
+
+<!-- Design metadata -->
+
+## TL;DR
+
+Benchmark of raw, full-summary, and delta-summary transmission costs.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
 **Date:** 2026-03-28
 **Tool:** `otel-app/cmd/deltaaccbench`
 **Config:** 20 windows · 5 000 inserts/window · Zipf(s=1.10, v=1.00, max=5 000) · delta-threshold=1.0

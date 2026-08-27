@@ -1,5 +1,18 @@
 # Multivariate Correlation Anomaly via Covariance Sketching (Frequent Directions)
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Future summary family for fleet-wide multivariate correlation anomaly detection.
+
+**Status:** draft
+
+**MVP relationship:** future.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 > **Design-doc / paper section** — a new sketch family for the ASAP backend:
 > fleet-wide, multi-metric *correlation* anomaly detection. The edge ships a
 > **linear covariance summary**; the backend does all spectral work
@@ -12,7 +25,6 @@
 
 ---
 
-## TL;DR
 
 - **What it adds.** A query family none of our current sketches answer:
   **cross-metric correlation drift** — "did the *joint* behavior of

@@ -1,5 +1,18 @@
 # Stateful Metrics Collection Protocol
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Stateful metadata transmission model that reduces repeated series identity data.
+
+**Status:** draft
+
+**MVP relationship:** future.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 ## Problem
 
 Current telemetry protocols (OTLP, Prometheus exposition, InfluxDB line protocol)

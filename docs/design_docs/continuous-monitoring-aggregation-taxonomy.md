@@ -1,5 +1,18 @@
 # Continuous Monitoring — Aggregation Taxonomy & the `[t1,t2]` Window Question
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Classification of aggregation shapes and the monitoring model each shape requires.
+
+**Status:** active
+
+**MVP relationship:** in-scope.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 > Design note. Companion to
 > [continuous-monitoring-tumbling-cost-analysis.md](continuous-monitoring-tumbling-cost-analysis.md)
 > (the per-family cost theory) and
@@ -8,7 +21,6 @@
 > a continuous-monitoring protocol, which don't, and what model each uses**, and
 > records the open question for arbitrary `[t1,t2]` sub-window queries.
 
-## TL;DR
 
 Continuous monitoring is **not one model**. It depends on which axis you
 aggregate over:

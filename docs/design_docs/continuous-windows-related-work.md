@@ -1,5 +1,18 @@
 # Continuous, Arbitrary-Window Queries over Distributed Sketch Telemetry
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Requirements and related work for fresh queries over distributed summary windows.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 > **Design-doc / paper section** — Problem, Requirements, Related Work.
 > Distributed sketch telemetry with continuous, arbitrary-window queries
 > (edge collection → centralized analytics backend).
@@ -8,7 +21,6 @@
 
 ---
 
-## TL;DR
 
 - **Setting.** A fleet of edge agents each summarize a local metric substream
   into mergeable sketches and ship them to a central backend that answers

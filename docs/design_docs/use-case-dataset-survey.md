@@ -1,5 +1,18 @@
 # Use-case & dataset survey — warm-sketch tier vs cold-archive tier
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Survey used to select workloads and datasets for warm-summary and cold-archive evaluation.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 > **Audience:** anyone choosing public workloads to back ASAP's §6 evaluation,
 > or sanity-checking that the **disjoint warm/cold routing** story matches a real
 > use case.

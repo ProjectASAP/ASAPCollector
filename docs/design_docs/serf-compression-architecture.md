@@ -1,5 +1,18 @@
 # Serf Compression — Architecture & Integration
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Compression design for paths that preserve raw or archived telemetry.
+
+**Status:** dormant
+
+**MVP relationship:** future.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 This document describes where Serf compression is inserted in the
 DataCollector pipeline, what each component does, and where decompression
 is implemented.

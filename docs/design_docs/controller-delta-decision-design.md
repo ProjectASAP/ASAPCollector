@@ -1,5 +1,18 @@
 # Controller Delta Transmission Decision — Design Document
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Decision policy for choosing raw, full-summary, or delta transmission.
+
+**Status:** active
+
+**MVP relationship:** in-scope.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 **Branch:** `67-controller-delta-transmission-decision`
 **Date:** 2026-03-22
 **Status:** Implemented

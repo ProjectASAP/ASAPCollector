@@ -4,6 +4,12 @@ Design docs capture the problem, goals, constraints, proposed behavior, and trad
 for the ASAPCollector system. They are written for readers who need to understand or
 review a design without first reading the implementation.
 
+Every document starts with a short TL;DR, an explicit lifecycle status, and its
+relationship to the MVP. These documents are design specifications: implementation
+details, code walkthroughs, and links to current implementation files do not belong
+here. A document may reference another design scope when that relationship is needed,
+but each file owns the scope named by its title.
+
 ## System and deployment
 
 - [System overview](system-overview.md)

@@ -1,5 +1,18 @@
 # Sampling + Continuous Distributed Monitoring (CDM) / Geometric-OctoSketch (GOS) derivations for windowed sketch telemetry
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Mathematical derivations connecting sampling, monitoring, and summary error budgets.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 > Paper-facing derivation note. This document ties together
 > [distributed-nitrosketch-coordinated-sampling.md](distributed-nitrosketch-coordinated-sampling.md),
 > [continuous-monitoring-aggregation-taxonomy.md](continuous-monitoring-aggregation-taxonomy.md),

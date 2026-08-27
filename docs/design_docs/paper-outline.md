@@ -1,5 +1,18 @@
 # Paper outline — across-data-lifecycle sketch observability
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Research narrative and evaluation claims for the ASAP summary-based observability system.
+
+**Status:** draft
+
+**MVP relationship:** future.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 Working title candidates:
 - *"ASAP: Across Data Lifecycle Sketch-based Observability Pipeline"*
 - *"Controller-Planned Edge Sketches for Observability at Scale"*

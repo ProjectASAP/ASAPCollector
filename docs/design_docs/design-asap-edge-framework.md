@@ -1,5 +1,18 @@
 # ASAP Edge Precompute Framework — Design
 
+<!-- Design metadata -->
+
+## TL;DR
+
+A runtime-level abstraction for edge summarization independent of a host data plane.
+
+**Status:** draft
+
+**MVP relationship:** future.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 _Status: **draft** — 2026-05-01. Forward-looking; gates the adapter
 work tracked in the repository issue tracker._
 

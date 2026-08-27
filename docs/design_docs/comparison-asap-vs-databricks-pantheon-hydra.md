@@ -1,5 +1,18 @@
 # ASAP vs. Databricks Pantheon + Hydra
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Scope and positioning comparison between ASAP and related observability systems.
+
+**Status:** draft
+
+**MVP relationship:** future.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 ## Why this doc
 
 Databricks published an architecture overview of their internal monitoring stack

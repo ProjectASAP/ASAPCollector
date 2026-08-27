@@ -1,5 +1,18 @@
 # Delta Transmission over Time Windows — Design Document
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Protocol design for incremental summary transmission over time windows.
+
+**Status:** draft
+
+**MVP relationship:** in-scope.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 **Branch:** `63-delta-transmission-over-time-windows`
 **Date:** 2026-03-20
 **Status:** Draft

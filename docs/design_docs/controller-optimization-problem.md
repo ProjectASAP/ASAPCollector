@@ -1,5 +1,18 @@
 # Controller Optimization Problem
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Optimization formulation for selecting summaries and resource trade-offs from query SLAs.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 ## Overview
 
 The controller optimization problem takes as input a set of **PromQL or SQL queries** that will be executed by [ASAPQuery](https://github.com/ProjectASAP/ASAPQuery) and produces an optimal **collection and computation plan** across the full data lifecycle. At each stage the controller decides what to compute, which sketch or aggregation to apply, whether to compress or preserve raw samples, and where to store results. The objective is to minimize resource consumption (memory, CPU, bandwidth, storage cost, query latency) subject to accuracy SLAs.

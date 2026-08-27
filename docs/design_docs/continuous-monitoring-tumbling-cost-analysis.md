@@ -1,5 +1,18 @@
 # Continuous Monitoring over Tumbling Windows — Cost Analysis of the Existing Sketch Families
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Cost and error model for summary families under continuous tumbling-window monitoring.
+
+**Status:** active
+
+**MVP relationship:** in-scope.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 > **Design-doc / paper section** — theory only. For each sketch family we
 > already ship (Sum, DDSketch, KLL, Count-Min, Count-Sketch, HyperLogLog),
 > derive, under the **continuous distributed monitoring (CDM)** model
@@ -13,7 +26,6 @@
 
 ---
 
-## TL;DR
 
 - A **tumbling window is the degenerate-optimal case for CDM**: each window is an
   independent monitoring epoch with a **known horizon** and a **reset** at the

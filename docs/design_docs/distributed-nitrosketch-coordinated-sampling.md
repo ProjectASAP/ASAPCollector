@@ -1,5 +1,18 @@
 # Distributed NitroSketch — coordinator-allocated update-sampling across edge collectors
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Coordinator-assigned update sampling across edges with bounded aggregate error.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 > Design note. Extends [NitroSketch](https://doi.org/10.1145/3341302.3342076)
 > (per-sketch update-sampling, single stream) to a multi-edge setting using the
 > coordinated-sampling idea from the

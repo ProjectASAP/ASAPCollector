@@ -1,5 +1,18 @@
 # SDK cost evaluation
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Evaluation scope for SDK-side sampling decisions and their resource effects.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 ## Why this doc exists
 
 The ASAP pipeline has three data-plane decision points —

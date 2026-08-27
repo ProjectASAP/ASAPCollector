@@ -1,5 +1,18 @@
 # GOS: A Unified Error / Threshold / Cost Framework for Distributed Edge Telemetry
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Unified error, threshold, and cost framework for distributed edge summaries.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 **One line.** One framework that unifies error-bounded sketching, coordinated
 sampling, Geometric Monitoring (GM/AutoMon), and OctoSketch-style change
 transmission into a single per-cell decision — reducing to **one atomic quantity**

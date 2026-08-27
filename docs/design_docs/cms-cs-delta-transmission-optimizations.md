@@ -1,4 +1,17 @@
 # CMS / CS Delta Transmission — Payload Optimisation Design
+
+<!-- Design metadata -->
+
+## TL;DR
+
+Design options for reducing CMS and Count-Sketch transmission overhead.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
 **Date:** 2026-03-28
 **Status:** Proposal
 **Context:** Benchmark findings from `docs/benchmark-delta-vs-raw-baseline-2026-03-28.md`

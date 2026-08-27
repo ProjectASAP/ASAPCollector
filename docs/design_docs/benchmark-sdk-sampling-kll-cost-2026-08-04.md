@@ -1,5 +1,18 @@
 # Benchmark: SDK Sampling + Collector-Side KLL Sketching — Real Deployment Cost Analysis
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Deployment-cost evidence for SDK sampling and collector-side KLL summarization.
+
+**Status:** draft
+
+**MVP relationship:** supporting.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 **Date:** 2026-08-04
 **Tools:** `otel-app` (real SDK/OTLP load generator), `asap-otel` (real collector binary),
 `ASAPQuery-backend/data_plane` (real backend binary)

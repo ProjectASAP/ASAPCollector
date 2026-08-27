@@ -1,5 +1,18 @@
 # Control Plane Design: DataCollector Controller
 
+<!-- Design metadata -->
+
+## TL;DR
+
+Design of workload-driven planning and collection decisions across the pipeline.
+
+**Status:** active
+
+**MVP relationship:** in-scope.
+
+This document is design-level: it defines scope, behavior, constraints, and trade-offs; implementation details are intentionally out of scope.
+
+
 ## Overview
 
 The controller is the "brain" that observes the query workload and drives configuration across the entire pipeline — from agent OTel collectors to SimpleStore precomputation — to minimize bandwidth and latency while meeting accuracy SLAs.
