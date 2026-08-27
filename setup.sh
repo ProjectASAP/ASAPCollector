@@ -164,17 +164,17 @@ section "Initialising git submodules"
 
 cd "${ROOT_DIR}"
 
-# Check if submodules are populated (telegraf is the largest; use it as a probe)
-if [[ ! -f "${ROOT_DIR}/telegraf/go.mod" ]]; then
+# Check whether the OTel submodules required by the MVP are populated.
+if [[ ! -f "${ROOT_DIR}/opentelemetry-collector/go.mod" ]]; then
   info "Submodules not yet initialised. Running git submodule update --init --recursive ..."
-  git submodule update --init --recursive
+  git submodule update --init opentelemetry-collector opentelemetry-collector-contrib opentelemetry-go opentelemetry-proto
   success "Submodules initialised."
 else
   info "Submodules already initialised."
 
   # Still update in case the recorded commit has advanced
   info "Syncing submodules to recorded commits ..."
-  git submodule update --recursive
+  git submodule update opentelemetry-collector opentelemetry-collector-contrib opentelemetry-go opentelemetry-proto
   success "Submodules up-to-date."
 fi
 

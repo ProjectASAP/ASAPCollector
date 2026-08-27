@@ -17,7 +17,7 @@
 #   ./build_asap_telegraf.sh --skip-patches   # skip re-applying patches
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 SKIP_PATCHES=false
 for arg in "$@"; do
@@ -27,20 +27,20 @@ for arg in "$@"; do
 	esac
 done
 
-TELEGRAF_DIR="${ROOT_DIR}/telegraf"
+TELEGRAF_DIR="${ROOT_DIR}/future-support/telegraf/telegraf"
 SKETCHLIB_GO_DIR="${ROOT_DIR}/../sketchlib-go"
 ASAP_PRECOMPUTE_GO_DIR="${ROOT_DIR}/asap-precompute-go"
 
 if [[ ! -d "${TELEGRAF_DIR}/cmd/telegraf" ]]; then
-	echo "Telegraf submodule not initialized at ${TELEGRAF_DIR} — run 'git submodule update --init telegraf'" >&2
+	echo "Telegraf submodule not initialized at ${TELEGRAF_DIR} — run 'git submodule update --init --recursive'" >&2
 	exit 1
 fi
 
 # Step 1: Stage the allsketches plugin onto the Telegraf submodule
-# (telegraf-patch/ is the source-of-truth; submodule stays clean).
+# (future-support/telegraf/telegraf-patch is the source-of-truth; submodule stays clean).
 if [[ "${SKIP_PATCHES}" == false ]]; then
 	echo "==> Applying patches to telegraf submodule..."
-	bash "${ROOT_DIR}/restore_telegraf_patches.sh"
+	bash "${ROOT_DIR}/future-support/telegraf/restore_telegraf_patches.sh"
 	echo ""
 fi
 

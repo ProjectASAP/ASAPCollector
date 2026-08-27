@@ -102,49 +102,27 @@ The script is safe to re-run: each step is skipped when already satisfied.
 
 ## Cloning
 
-Clone with submodules on first checkout so the embedded Telegraf tree is pulled
-automatically:
+Clone with the OTel submodules needed by the MVP:
 
 ```bash
-git clone --recurse-submodules git@github.com:ProjectASAP/DataCollector.git
+git clone git@github.com:ProjectASAP/DataCollector.git
 # or
-git clone --recurse-submodules https://github.com/ProjectASAP/DataCollector.git
+git clone https://github.com/ProjectASAP/DataCollector.git
 ```
 
-If you have an existing clone, pull down the submodule once:
+If you have an existing clone, initialize the OTel submodules:
 
 ```bash
 cd DataCollector
-git submodule update --init --recursive
+git submodule update --init opentelemetry-collector opentelemetry-collector-contrib opentelemetry-go opentelemetry-proto
 ```
 
-## Working with the Telegraf submodule
+## Future support
 
-1. Enter the vendored repo and install Go dependencies:
-
-   ```bash
-   cd telegraf
-   go mod tidy
-   ```
-
-2. Build or test Telegraf just like the upstream project:
-
-   ```bash
-   make telegraf   # or `make test`
-   ```
-
-3. When upstream Telegraf updates are needed, pull them into the submodule:
-
-   ```bash
-   git submodule update --remote telegraf
-   ```
-
-#### Code organization
-```
-telegraf/                     # upstream InfluxData Telegraf checkout
-telegraf-patch/               # tracked overlay of our custom Telegraf changes
-telegraf_benchmarks/          # local benchmark harness that uses the submodule
-```
+Telegraf and OTAP integrations are intentionally out of the current
+OpenTelemetry MVP path. Their submodules, patches, builders, and benchmarks
+are grouped under `future-support/` and are not initialized or built by the
+MVP commands.
 
 ## Working with the OpenTelemetry submodule
 
