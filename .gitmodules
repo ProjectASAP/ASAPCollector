@@ -1,5 +1,5 @@
 [submodule "telegraf"]
-	path = telegraf
+	path = future-support/telegraf/telegraf
 	url = https://github.com/influxdata/telegraf.git
 	branch = release-1.37
 [submodule "opentelemetry-go"]
@@ -17,5 +17,5 @@
 	url = https://github.com/open-telemetry/opentelemetry-collector-contrib.git
 	branch = release/v0.141.0
 [submodule "otel-arrow"]
-	path = otel-arrow
+	path = future-support/otap/otel-arrow
 	url = https://github.com/open-telemetry/otel-arrow.git

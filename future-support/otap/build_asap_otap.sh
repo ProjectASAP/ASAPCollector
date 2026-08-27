@@ -88,7 +88,7 @@
 #                                         # registration crate)
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 SKIP_PATCHES=false
 for arg in "$@"; do
@@ -98,11 +98,11 @@ for arg in "$@"; do
   esac
 done
 
-OTAP_SUBMODULE_DIR="${ROOT_DIR}/otel-arrow"
+OTAP_SUBMODULE_DIR="${ROOT_DIR}/future-support/otap/otel-arrow"
 OTAP_WORKSPACE_DIR="${OTAP_SUBMODULE_DIR}/rust/otap-dataflow"
 OTAP_BINARY_DIR="${OTAP_WORKSPACE_DIR}"  # main.rs + Cargo.toml live at the workspace root
 
-PATCH_DIR="${ROOT_DIR}/otap-patch"
+PATCH_DIR="${ROOT_DIR}/future-support/otap/otap-patch"
 REGISTRATION_SRC_DIR="${PATCH_DIR}/all"
 REGISTRATION_DEST_DIR="${OTAP_WORKSPACE_DIR}/crates/asap-sketches-registry"
 
@@ -117,11 +117,11 @@ export CARGO_TERM_COLOR=auto
 # Step 1: Initialize submodule (idempotent; no-ops if already present).
 echo "==> Ensuring otel-arrow submodule is initialized..."
 if [[ ! -d "${OTAP_WORKSPACE_DIR}" ]] || [[ -z "$(ls -A "${OTAP_WORKSPACE_DIR}" 2>/dev/null)" ]]; then
-  git -C "${ROOT_DIR}" submodule update --init --recursive otel-arrow
+  git -C "${ROOT_DIR}" submodule update --init --recursive future-support/otap/otel-arrow
 fi
 if [[ ! -f "${OTAP_WORKSPACE_DIR}/Cargo.toml" ]]; then
   echo "OTAP submodule did not initialize correctly at ${OTAP_WORKSPACE_DIR}" >&2
-  echo "Run: git submodule update --init --recursive otel-arrow" >&2
+  echo "Run: git submodule update --init --recursive future-support/otap/otel-arrow" >&2
   exit 1
 fi
 
