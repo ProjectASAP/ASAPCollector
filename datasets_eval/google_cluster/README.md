@@ -1,7 +1,8 @@
 # Google Cluster Trace — real-workload evidence for ASAP
 
 Implements the public Google cluster traces (2011 and 2019) as a real
-workload feeding the five evaluation claims in `docs/paper-outline.md`.
+workload feeding the MVP evaluation claims in
+`docs/design_docs/system-overview.md`.
 Without this dataset, every claim rests on synthetic data; this
 directory is the workload-credibility hook.
 
@@ -158,8 +159,9 @@ to exercise the 1k cardinality cap with U ≈ 50–100k.
 ## See also
 
 - the paper evaluation goal
-- `docs/paper-outline.md` "Measurable benefits — five evaluation dimensions"
-- `docs/sdk-cost-evaluation.md` (the OTLP wire-shape reference)
+- `docs/design_docs/system-overview.md` (MVP evaluation claims)
+- `docs/design_docs/summary-aggregation-and-transmission.md` (summary and
+  transmission semantics)
 - `datasets_eval/debs/` (sister dataset: financial / DEBS 2022)
 - ClusterData2011_2 schema: <https://github.com/google/cluster-data/blob/master/ClusterData2011_2.md>
 - ClusterData2019 schema:   <https://github.com/google/cluster-data/blob/master/ClusterData2019.md>

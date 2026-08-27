@@ -1,35 +1,29 @@
-# Design docs
+# Design documents
 
-Design docs capture the problem, goals, constraints, proposed behavior, and trade-offs
-for the ASAPCollector system. They are written for readers who need to understand or
-review a design without first reading the implementation.
+These documents define ASAPCollector's system boundary, collector-specific
+control-plane contract, summary semantics, and explicitly deferred designs.
+They describe goals, behavior, constraints, trade-offs, and acceptance
+conditions. Code walkthroughs, implementation plans, benchmark results, and
+paper-planning material do not belong in this directory.
 
-## System and deployment
+## Active MVP design
 
-- [System overview](system-overview.md)
-- [Edge precompute framework](design-asap-edge-framework.md)
-- [Control plane design](control-plane-design.md)
-- [Controller optimization problem](controller-optimization-problem.md)
-- [Stateful metrics protocol](design-stateful-protocol.md)
-- [ASAP and related systems](comparison-asap-vs-databricks-pantheon-hydra.md)
+- [System overview](system-overview.md) — end-to-end architecture, system
+  boundary, goals, and MVP claims.
+- [ASAPCollector control plane](control-plane-design.md) — the collector-side
+  contract for plans issued by the ASAPQuery-backend control plane using
+  planning information from ASAPPlanner, plus the boundary with the
+  ASAPQuery-backend data plane that applies its plan portion and executes
+  summary-based queries.
+- [Summary aggregation and transmission](summary-aggregation-and-transmission.md)
+  — summary families, aggregation shapes, windows, accuracy, freshness, and
+  raw/full/delta transmission semantics.
 
-## Aggregation, sketches, and transmission
+## Future design
 
-- [Delta transmission](delta-transmission-design.md)
-- [CMS/CountSketch transmission](cms-cs-delta-transmission-optimizations.md)
-- [Continuous monitoring](continuous-windows-related-work.md)
-- [Aggregation taxonomy](continuous-monitoring-aggregation-taxonomy.md)
-- [Tumbling-window cost analysis](continuous-monitoring-tumbling-cost-analysis.md)
-- [Distributed coordinated sampling](distributed-nitrosketch-coordinated-sampling.md)
-- [GOS unified telemetry](design-gos-unified-edge-telemetry.md)
-- [Multivariate anomaly detection](multivariate-anomaly-frequent-directions.md)
-- [Serf compression](serf-compression-architecture.md)
+- [Future summary families and compression](future-summary-and-compression.md)
+  — deferred multivariate summaries and raw/archive compression.
 
-## Evidence and research context
-
-- [SDK cost evaluation](sdk-cost-evaluation.md)
-- [Sampling and GOS derivations](sampling-cdm-gos-derivations.md)
-- [Benchmark: raw vs. sketches](benchmark-delta-vs-raw-baseline-2026-03-28.md)
-- [Benchmark: SDK sampling and KLL](benchmark-sdk-sampling-kll-cost-2026-08-04.md)
-- [Use-case and dataset survey](use-case-dataset-survey.md)
-- [Paper outline](paper-outline.md)
+Every document begins with a TL;DR, lifecycle status, and MVP relationship.
+The overview owns system architecture; focused documents define only their
+named scope and avoid repeating the full architecture.
