@@ -1031,7 +1031,7 @@ T=\frac{\epsilon N}{k\cdot B}
 $B$ must be a genuine, always-current bound on the number of populated
 buckets — not a fixed assumed constant. Unlike CMS/CountSketch's $d,w$
 (fixed at construction), DDSketch's bucket count is dynamic in the current
-implementation (unbounded growth on demand — see sketchlib-go#72 for a
+implementation (unbounded growth on demand — see the sketch library for a
 related, independent memory-safety concern with that growth). $B$ is,
 however, cheap to track exactly: increment a counter by 1 the first time a
 given bucket index is touched (an $O(1)$ event, far rarer than raw inserts

@@ -2,9 +2,8 @@
 
 > **Audience:** anyone choosing public workloads to back ASAP's §6 evaluation,
 > or sanity-checking that the **disjoint warm/cold routing** story matches a real
-> use case. Companion to [`evaluation-plan-figures.md`](evaluation-plan-figures.md)
-> (Fig 11 disjoint-routing, Fig 12 controller-allocation), [`paper-outline.md`](paper-outline.md),
-> [`design-archive-tier.md`](design-archive-tier.md) (the cold/archive tier of record),
+> use case.
+> [`paper-outline.md`](paper-outline.md),
 > and [`distributed-nitrosketch-coordinated-sampling.md`](distributed-nitrosketch-coordinated-sampling.md).
 >
 > **Status:** survey / dataset-selection reference, 2026-06-12.
@@ -14,7 +13,7 @@
 ## 0. The story this survey validates (terminology pinned to the repo)
 
 ASAP routes **every series disjointly** into exactly one of two tiers — never both
-(Fig 11, [`design-archive-tier.md` §1](design-archive-tier.md)):
+(the archive-tier design):
 
 - **Warm sketch tier** — `(ε, δ)`-bounded approximate state (DDSketch / KLL /
   CountMinSketch / CountSketch / HLL / Sum). **Lossy within a bounded ε; the per-series
@@ -30,7 +29,7 @@ ASAP routes **every series disjointly** into exactly one of two tiers — never 
 > no other consumer"* — [`distributed-nitrosketch-coordinated-sampling.md`](distributed-nitrosketch-coordinated-sampling.md).
 
 The **controller allocates the partition from the query workload** (Fig 12,
-[`design-archive-tier.md` §4 "Mode selection"](design-archive-tier.md)): a series is
+the archive-tier mode-selection design): a series is
 warm if every query on it is approximate / aggregate (quantile / topk / cardinality /
 sum) **and** the cost model says sketch beats raw; **cold** if **any** query on it needs
 exact / historical replay. Total-resource cost on the Pareto is therefore **additive**:
@@ -759,9 +758,7 @@ are wired; **{A3, A4, F5} are the three to build**.
   CryptoDataDownload <https://www.cryptodatadownload.com/data/>
 
 ### In-repo anchors
-- [`evaluation-plan-figures.md`](evaluation-plan-figures.md) — Fig 11 (disjoint cold-tier), Fig 12 (controller allocation), the DEBS-2022 cross-check.
 - [`paper-outline.md`](paper-outline.md) — §6 claims, the five evaluation dimensions.
-- [`design-archive-tier.md`](design-archive-tier.md) — the warm/cold (archive) two-tier design of record, Mode 1/2/3 selection.
 - [`distributed-nitrosketch-coordinated-sampling.md`](distributed-nitrosketch-coordinated-sampling.md) — coordinated sampling, the disjoint-routing requirement, the joint bound.
 - `datasets_eval/google_cluster/`, `datasets_eval/debs/` — the two anchor harnesses.
 

@@ -299,7 +299,7 @@ is intentionally hardcoded and should not be changed.
 ## Benchmark harness
 
 The legacy per-collector `cmd/bench.sh` harness was removed alongside the
-`serfcol` / `gorillacol` / per-sketch builder dirs (cleanup PR #363). Re-run
+`serfcol` / `gorillacol` / per-sketch builder dirs (cleanup ). Re-run
 the Serf comparisons through the unified `asap-otel` build with a config file
 selecting the relevant processor pipeline; the `serfprocessor` itself is still
 in the patched contrib tree (`opentelemetry-collector-contrib-patch/processor/serfprocessor/`)

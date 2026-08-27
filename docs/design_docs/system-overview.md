@@ -73,8 +73,7 @@ early is strictly cheaper.
 
 `asap-otel` is the **only edge runtime this doc assumes** — the sole
 one actively maintained. (An earlier Rust/OTAP variant, `asap-otap`,
-exists in history but is unmaintained; see
-[`docs/dormant/`](./dormant/).)
+exists in history but is unmaintained.)
 
 Admitted samples are inserted into a per-series sketch/aggregation
 (DDSketch, KLL, HLL, Count-Min, Count-Sketch, or a plain running
@@ -217,7 +216,7 @@ fail over to an **exact archive tier**: edge/gateway also write
 standard Prometheus-TSDB blocks to object storage (MinIO), served
 through a Thanos-compatible query path. This is a parallel path, not a
 fallback that raw samples take by default — most metrics never touch
-it. See [`design-archive-tier.md`](./design-archive-tier.md).
+it. See the archive-tier discussion in the deployment design documents.
 
 ---
 
@@ -238,11 +237,9 @@ before any of §2 runs. Detail:
 
 - [`design-gos-unified-edge-telemetry.md`](./design-gos-unified-edge-telemetry.md) — the mechanism and math behind §2's sampling and continuous delta sync (error bounds, threshold allocation).
 - [`sampling-cdm-gos-derivations.md`](./sampling-cdm-gos-derivations.md) — per-family threshold derivations referenced above.
-- [`design-archive-tier.md`](./design-archive-tier.md) — §7's exact tier.
 - [`design-asap-edge-framework.md`](./design-asap-edge-framework.md) — `asap-otel` agent design.
-- [`docs/dormant/`](./dormant/) — the unmaintained `asap-otap` integration design.
 - [`control-plane-design.md`](./control-plane-design.md) — planning-time architecture (§8).
-- [`mvp-demo-runbook.md`](./mvp-demo-runbook.md) — how to run the canonical four-node MVP demo.
+- [`MVP demo runbook`](../user_guide/mvp-demo-runbook.md) — how to run the canonical four-node MVP demo.
 - [`comparison-asap-vs-databricks-pantheon-hydra.md`](./comparison-asap-vs-databricks-pantheon-hydra.md) — positioning vs. related systems.
 
 ---

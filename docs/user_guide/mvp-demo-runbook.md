@@ -1,7 +1,7 @@
 # ASAP MVP demo runbook
 
 The canonical issue-#46 demo is the four-node harness in
-[`deploy/mvp-multinode`](../deploy/mvp-multinode/README.md). It compares raw
+[`deploy/mvp-multinode`](../../deploy/mvp-multinode/README.md). It compares raw
 OTLP/gzip ingestion into VictoriaMetrics (`b1`) with sketched OTLP/gzip
 ingestion into ASAP (`asap-gzip`) using the same deterministic workload.
 

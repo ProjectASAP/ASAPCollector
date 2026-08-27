@@ -1,8 +1,8 @@
 # OpAMP Config Push: Controller → Supervisor → Collector
 
-**Status**: implemented and working end-to-end as of [#133](https://github.com/ProjectASAP/DataCollector/pull/133) (commit `4b196e1`, "feat: OpAMP Supervisor config — push-based config from controller to collector"). This document captures the architecture, the restart semantics, and the test surface so future contributors don't have to re-derive it from the commit history.
+**Status**: implemented and working end-to-end as of [#133]() (commit `4b196e1`, "feat: OpAMP Supervisor config — push-based config from controller to collector"). This document captures the architecture, the restart semantics, and the test surface so future contributors don't have to re-derive it from the commit history.
 
-This is the **control plane** side of the pipeline. The data plane — sketch bytes flowing from collector processors to the ASAPQuery-backend ingest path over modified OTLP — is covered in [`docs/pipeline-query-catalog.md`](pipeline-query-catalog.md).
+This is the **control plane** side of the pipeline. The data plane — sketch bytes flowing from collector processors to the ASAPQuery-backend ingest path over modified OTLP — is.
 
 ---
 
@@ -129,7 +129,7 @@ DataCollector uses supervisor restart (option 2) because it's the only pattern t
 The downside is **in-flight loss**: any sketch window currently being assembled on the old collector is lost when the child exits. This is acceptable for Phase 1 because:
 
 1. Config changes are rare (SLA-driven replans, not per-query)
-2. The backend's precompute engine tolerates gaps via late-data-policy fallback (see `pipeline-query-catalog.md` §5.2)
+2. The backend's precompute engine tolerates gaps via late-data-policy fallback (see the documented late-data policy)
 3. A restart is observable to the controller via the `opampextension`'s health reports, so consecutive restarts trip a circuit-breaker rather than looping
 
 If in-process hot-reload becomes available upstream, the supervisor layer can be removed and the `opampextension` wired to apply configs directly. The controller push API doesn't change — only the agent-side apply mechanism does.
@@ -140,7 +140,7 @@ If in-process hot-reload becomes available upstream, the supervisor layer can be
 
 Commit `4b196e1`'s testing originally surfaced this as an open issue: the controller had to know which sketch processors a given collector binary supported, because pushing a KLL config to a per-sketch builder (e.g. an old `countminsketchcol` that only had countmin compiled in) would crash the restarted collector on config load.
 
-The cleanup that consolidated all per-sketch builder dirs into the single unified `asap-otel` binary (cleanup PR #363) collapsed this problem: every supervisor advertising `role: agent` now runs `asap-otel`, and `asap-otel` compiles in every sketch processor. The controller's `push_to_role` only needs to ensure the YAML it pushes uses processor names the unified builder registered (`countminsketchprocessor`, `ddsketchprocessor`, `kllprocessor`, `hllprocessor`, `countsketchprocessor`, `serfprocessor`, `gorillaprocessor`, …), which it does by construction — these are the same names the controller's emit table uses when generating configs.
+The cleanup that consolidated all per-sketch builder dirs into the single unified `asap-otel` binary (cleanup ) collapsed this problem: every supervisor advertising `role: agent` now runs `asap-otel`, and `asap-otel` compiles in every sketch processor. The controller's `push_to_role` only needs to ensure the YAML it pushes uses processor names the unified builder registered (`countminsketchprocessor`, `ddsketchprocessor`, `kllprocessor`, `hllprocessor`, `countsketchprocessor`, `serfprocessor`, `gorillaprocessor`, …), which it does by construction — these are the same names the controller's emit table uses when generating configs.
 
 If a future deployment ever ships a stripped-down collector with a subset of processors, the supervisor registration can be extended to include a `processors_available: [...]` list in `non_identifying_attributes`, and `push_to_role` can filter by that list before sending. Not needed today.
 
@@ -161,7 +161,7 @@ All three are fast (seconds), hermetic (no real supervisor, no real collector), 
 ### 5b. What's NOT tested today
 
 - **Real supervisor binary → controller → supervisor loop**. The existing tests use mock WebSocket clients; they do not spawn `opampsupervisor` or a real collector binary.
-- **End-to-end restart observability**. The assertion that the child collector actually restarts and picks up the new config was done manually in PR #133 and is not part of the automated suite.
+- **End-to-end restart observability**. The assertion that the child collector actually restarts and picks up the new config was done manually in  and is not part of the automated suite.
 
 ### 5c. Proposed supervisor integration test (follow-up)
 
@@ -176,7 +176,7 @@ A stand-alone integration test file `controller/tests/opamp_supervisor_integrati
 
 The `#[ignore]` gate is important because the test depends on an external binary (`opampsupervisor` from `open-telemetry/opentelemetry-collector`) being installed and on filesystem/process primitives that are flaky on some CI runners. Marking it `#[ignore]` keeps it available for manual verification without blocking the fast suite.
 
-**This follow-up is tracked but not shipping in PR F** — PR F ships the architecture doc + the control-plane-design.md correction, and the proposed test layout above. The test itself can land independently once the opampsupervisor binary is pinned in CI.
+**This follow-up is tracked but not shipping in the planned change** — the planned change ships the architecture doc + the control-plane-design.md correction, and the proposed test layout above. The test itself can land independently once the opampsupervisor binary is pinned in CI.
 
 ---
 

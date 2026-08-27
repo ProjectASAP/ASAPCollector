@@ -23,7 +23,7 @@ implementations, so none of those are reachable without a
 fork-and-rewrite. This doc defines the framework, the wire
 contract, the per-platform encoding choices, and a phased
 migration that doesn't break the working e2e (b3-delta with #210
-+ #211 + ASAPQuery-backend#71).
++ #211 + the query service).
 
 **Distribution model: common library + per-platform custom
 build.** The framework's core deliverable is the Layer 3 runtime
@@ -403,7 +403,7 @@ message Metric {
 
 Pro: type-safe at platform level, native tooling recognizes
 sketches, smallest serialization overhead. Con: requires forking
-the platform schema or upstream PR. Realistic only for
+the platform schema or upstream change. Realistic only for
 OTel-family platforms.
 
 **Strategy B — Opaque bytes in the platform's nearest
@@ -589,7 +589,7 @@ Verified for each platform:
 
 | Platform | Reload behavior | ASAP-state survives? |
 |---|---|---|
-| OTel Collector | SIGHUP and OpAMP supervisor restart both call `service.Shutdown()` → `setupConfigurationComponents()` (`otelcol/collector.go::reloadConfiguration`); processors are reconstructed from factories. `component.Component` has only `Start`/`Shutdown` — no `OnConfigChange` hook. `ConfigWatcher` fires for extensions only. Issues #5966 / #6226 confirm no hot-reload path is planned. | **No.** |
+| OTel Collector | SIGHUP and OpAMP supervisor restart both call `service.Shutdown()` → `setupConfigurationComponents()` (`otelcol/collector.go::reloadConfiguration`); processors are reconstructed from factories. `component.Component` has only `Start`/`Shutdown` — no `OnConfigChange` hook. `ConfigWatcher` fires for extensions only.  / #6226 confirm no hot-reload path is planned. | **No.** |
 | Telegraf | `--watch-config` triggers SIGHUP → `reloadLoop` → `loadConfiguration` rebuilds plugins. `StatefulPlugin` interface can save/restore but is itself opt-in and lossy for live sketch maps. | **No.** |
 | Vector | `reload_config_and_respawn` computes a `ConfigDiff`; components whose configs changed are shut down and rebuilt. | **No.** |
 | OTAP Dataflow | `NodeControlMsg::Config { config }` arrives on the same inbox as data; the processor *can* in principle update in place, but the canonical pattern is the same internal-poll pattern as the others for cross-platform consistency. | Yes (in principle), but use internal poll for uniformity. |
@@ -630,8 +630,8 @@ delivery channels with non-overlapping responsibility.
 
 Phased so each phase is independently shippable. `sketch-core`
 retirement (the first cleanup that enabled this design) already
-landed in `asap_sketchlib#36` + `ASAPQuery-backend#73` +
-`ASAPQuery#309`; recorded in `adr-0001-retire-sketch-core.md`.
+landed in the sketch library + `the query service` +
+`the query service`; recorded in `adr-0001-retire-sketch-core.md`.
 
 | Phase | Scope | Exit criterion |
 |---|---|---|

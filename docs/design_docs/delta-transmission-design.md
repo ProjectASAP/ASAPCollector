@@ -398,7 +398,7 @@ sketch.Reset()                           // at window close
 sketch.SerializeToBytes()                // full sketch, fallback / window-close path
 ```
 
-The `Worker`/`Aggregator`/`AdaptiveTau` from sketchlib-go PR #41 are internal implementation
+The `Worker`/`Aggregator`/`AdaptiveTau` from sketchlib-go  are internal implementation
 details of `Add()`. DataCollector does not instantiate them directly.
 
 ---
@@ -701,10 +701,10 @@ DataCollector (all depend on Phase 2 being merged and go.mod bumped):
     └── Phase 8  (adaptive threshold — CMS + CS)
   Phase 5  (HLL processor delta mode)           [independent of Phase 3]
   Phase 6  (DDSketch processor delta mode)      [independent of Phase 3]
-  Phase 7  (KLL guard)                          [trivial, any PR]
+  Phase 7  (KLL guard)                          [trivial, any change]
 ```
 
-**Recommended PR order:**
+**Recommended implementation order:**
 1. sketchlib-go: Phase 1 (proto messages + codec swap)
 2. sketchlib-go: Phase 2 (delta functions for all four sketches)
 3. DataCollector: bump sketchlib-go version in go.mod
