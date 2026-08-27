@@ -27,13 +27,12 @@ the `mc du --recursive asap/asap-gorilla` listing.
 
 Output CSV columns:
 
-    baseline,stage,container,cpu_cores,rss_mib,
+    baseline,stage,container,cpu_cores,cpu_time_s,rss_mib,peak_rss_mib,
     net_in_kibps,net_out_kibps,disk_mib
 
-Each container produces ONE row per (baseline, stage); the values
-are time-averages over the window (CPU as mean cores; RSS as mean
-MiB; net rx/tx as window-rate KiB/s; disk as the measured-window-end
-sample). Stdlib only — uses `docker stats` and `docker exec`.
+Each container produces ONE row per (baseline, stage). CPU time is integrated
+over the measurement window; CPU cores, RSS and network are steady-state
+values, and peak RSS is reported separately.
 
 Exits cleanly after `--duration`.
 
@@ -110,6 +109,10 @@ def default_stage_for(container: str, baseline: str) -> list[str]:
         if "asap" in baseline or "gorilla" in baseline:
             return ["backend-storage"]
         return []
+    if bare == "gorilla-merger":
+        return ["backend-storage"]
+    if bare in {"thanos-query", "thanos-store-gateway", "thanos-compact"}:
+        return ["backend-query" if bare == "thanos-query" else "backend-storage"]
     if bare in {"controller", "control-plane"}:
         return ["controller"]
     # grafana, minio-setup, cold-store-init, etc.
@@ -292,7 +295,9 @@ def sample_window(duration_s: float, period_s: float = 1.0) -> dict[str, dict]:
                     first_tx = tx
                 last_tx = tx
         cpu_cores = (sum(cpu_pcts) / len(cpu_pcts) / 100.0) if cpu_pcts else float("nan")
+        cpu_time_s = cpu_cores * window if cpu_cores == cpu_cores else float("nan")
         rss_mib = (sum(rss_vals) / len(rss_vals)) if rss_vals else float("nan")
+        peak_rss_mib = max(rss_vals) if rss_vals else float("nan")
         net_in_kibps = (
             ((last_rx - first_rx) / window / 1024.0)
             if (last_rx == last_rx and first_rx == first_rx)
@@ -305,7 +310,9 @@ def sample_window(duration_s: float, period_s: float = 1.0) -> dict[str, dict]:
         )
         out[name] = {
             "cpu_cores": cpu_cores,
+            "cpu_time_s": cpu_time_s,
             "rss_mib": rss_mib,
+            "peak_rss_mib": peak_rss_mib,
             "net_in_kibps": net_in_kibps,
             "net_out_kibps": net_out_kibps,
         }
@@ -379,7 +386,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                     stage,
                     container,
                     f"{vals['cpu_cores']:.4f}",
+                    f"{vals['cpu_time_s']:.4f}",
                     f"{vals['rss_mib']:.2f}",
+                    f"{vals['peak_rss_mib']:.2f}",
                     f"{vals['net_in_kibps']:.2f}",
                     f"{vals['net_out_kibps']:.2f}",
                     f"{disk:.2f}" if disk == disk else "",
@@ -388,7 +397,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     header = (
         "baseline", "stage", "container",
-        "cpu_cores", "rss_mib",
+        "cpu_cores", "cpu_time_s", "rss_mib", "peak_rss_mib",
         "net_in_kibps", "net_out_kibps",
         "disk_mib",
     )
@@ -403,7 +412,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     for r in rows:
         st = r[1]
         try:
-            cpu = float(r[3]); rss = float(r[4])
+            cpu = float(r[3]); rss = float(r[5])
         except ValueError:
             continue
         agg = by_stage.setdefault(st, {"cpu_cores": 0.0, "rss_mib": 0.0, "n": 0.0})

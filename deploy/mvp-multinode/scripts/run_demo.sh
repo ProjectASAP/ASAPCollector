@@ -55,7 +55,7 @@ write_run_manifest() {
     ROOT="${ROOT}" BACKEND="${BACKEND}" RUN_ID="${RUN_ID}" RUN_DIR="${RUN_DIR}" \
     PER_AGENT_CARDINALITY="${PER_AGENT_CARDINALITY}" OTELAPP_FREQ_HZ="${OTELAPP_FREQ_HZ}" \
     SOAK_S="${SOAK_S}" OTELAPP_SEED="${OTELAPP_SEED:-42}" \
-    python3 -c 'import datetime,json,os,subprocess; root=os.environ["ROOT"]; backend=os.environ["BACKEND"]; rid=os.environ["RUN_ID"]; seed=int(os.environ["OTELAPP_SEED"]); commit=lambda p: subprocess.check_output(["git","-C",p,"rev-parse","HEAD"],text=True).strip(); json.dump({"schema_version":1,"run_id":rid,"started_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"collector_commit":commit(root),"backend_commit":commit(backend),"time_alignment":{"mode":"relative_logical_sequence","contract":"same seed, query id, per-query sequence and bounded elapsed-time skew"},"workload":{"cardinality":int(os.environ["PER_AGENT_CARDINALITY"]),"frequency_hz":float(os.environ["OTELAPP_FREQ_HZ"]),"soak_s":float(os.environ["SOAK_S"])},"arms":{"b1":{"seed":seed},"asap-gzip":{"seed":seed}}},open(os.path.join(os.environ["RUN_DIR"],"run-manifest.json"),"w"),indent=2)'
+    PKG_DIR="${PKG_DIR}" python3 -c 'import datetime,hashlib,json,os,subprocess; root=os.environ["ROOT"]; backend=os.environ["BACKEND"]; pkg=os.environ["PKG_DIR"]; rid=os.environ["RUN_ID"]; seed=int(os.environ["OTELAPP_SEED"]); commit=lambda p: subprocess.check_output(["git","-C",p,"rev-parse","HEAD"],text=True).strip(); digest=lambda p: hashlib.sha256(open(p,"rb").read()).hexdigest(); image=lambda n: subprocess.run(["docker","image","inspect",n,"--format={{.Id}}"],text=True,capture_output=True).stdout.strip() or "missing"; configs={p:digest(os.path.join(pkg,p)) for p in ["harness/acceptance.json","harness/queries/e2e.json","configs/asap/mvp-workload.yaml","configs/asap-gzip/asap-otel-agent-asap-gzip.yaml","configs/b1/asap-otel-agent-b1-otlp-gzip.yaml"]}; json.dump({"schema_version":2,"run_id":rid,"started_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"collector_commit":commit(root),"backend_commit":commit(backend),"load_generator":{"commit":commit(root),"path":"otel-app"},"exact_backend":{"name":"VictoriaMetrics","image":"victoriametrics/victoria-metrics:v1.110.0","configuration":["retentionPeriod=24h"]},"images":{n:image(n) for n in ["asap/otel-app:dev","asap/asap-otel:dev","asap/data-plane:dev","asap/control-plane:dev","asap/gorilla-merger:dev","victoriametrics/victoria-metrics:v1.110.0","prom/prometheus:v2.55.0","quay.io/thanos/thanos:v0.41.0"]},"configuration_sha256":configs,"time_alignment":{"mode":"result_timestamp","contract":"labels and returned sample timestamps must match exactly"},"workload":{"cardinality":int(os.environ["PER_AGENT_CARDINALITY"]),"frequency_hz":float(os.environ["OTELAPP_FREQ_HZ"]),"soak_s":float(os.environ["SOAK_S"]),"agents":2,"series_cardinality":2*int(os.environ["PER_AGENT_CARDINALITY"]),"query_mix":"harness/queries/e2e.json","sketch_parameters":"controller-config.yaml (captured effective configuration)"},"arms":{"b1":{"seed":seed},"asap-gzip":{"seed":seed}}},open(os.path.join(os.environ["RUN_DIR"],"run-manifest.json"),"w"),indent=2)'
     cp "${PKG_DIR}/harness/acceptance.json" "${RUN_DIR}/acceptance.json"
     cp "${PKG_DIR}/harness/queries/e2e.json" "${RUN_DIR}/queries-e2e.json"
 }
@@ -739,6 +739,17 @@ arm_measure() {
         on "${NODE2_HOST}" "curl -fsS -H 'X-Agent-ID: agent-a' http://127.0.0.1:8080/api/v1/collector-config/agent" \
             > "${out}/controller-config.yaml"
         on "${NODE2_HOST}" "docker logs asap-control-plane 2>&1" > "${out}/controller.log"
+        # This operator is outside the sketch-accelerated MVP surface. Preserve
+        # the raw response so the evaluator can require an explicit rejection
+        # or an identified exact fallback, never a plausible sketch answer.
+        python3 -c 'import json,sys,urllib.parse,urllib.request,urllib.error; base=sys.argv[1]; q="predict_linear(http_requests_total[30s], 60)"; url=base+"/api/v1/query?"+urllib.parse.urlencode({"query":q});
+try:
+ r=urllib.request.urlopen(url,timeout=10); body=r.read().decode(); code=r.status
+except urllib.error.HTTPError as e:
+ body=e.read().decode(); code=e.code
+try: payload=json.loads(body)
+except Exception: payload={"raw_body":body}
+json.dump({"query":q,"http_code":code,"response":payload},open(sys.argv[2],"w"),indent=2)' "${query_endpoint}" "${out}/unsupported-query.json"
     fi
 
     # Freshness is part of the acceptance gate, not an optional report extra.
@@ -785,8 +796,8 @@ case "${cmd}" in
     measure)         arm_measure "${2:?need arm name}" ;;
     arm)             ensure_images; sync_all_nodes; run_arm "${2:?need arm name}" ;;
     all)
-        write_run_manifest
         ensure_images
+        write_run_manifest
         sync_all_nodes
         for arm in b1 asap-gzip; do
             run_arm "${arm}"

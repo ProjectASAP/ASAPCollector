@@ -56,5 +56,12 @@ resource CSVs, host-NIC samples, and storage measurements. The evaluator emits
 `MVP_RESULTS.json` and `MVP_REPORT.md`; any missing, stale, empty, or
 incomparable required evidence makes the overall verdict `FAIL`.
 
+Replay performs explicit per-query warm-up requests and excludes them from
+scoring. Accuracy comparisons require identical label sets and returned sample
+timestamps. Freshness is reported per query class and transmission mode.
+Resource evidence includes CPU time, steady-state and peak RSS, network traffic,
+storage, and every active ASAP/Thanos backend process. The checked-in cost
+weights convert only those measured quantities into the normalized comparison.
+
 The MVP excludes Serf comparisons, analytical/projected savings, fleet/figure
 sweeps, and archive fallback validation.

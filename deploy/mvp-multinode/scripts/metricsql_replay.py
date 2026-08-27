@@ -221,10 +221,14 @@ def run_query(
     target: str,
     metricsql: str,
     timeout_s: float = 10.0,
+    evaluation_time: float | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Returns (duration_ms, result_dict). On any error the
     result_dict has a `status` key explaining what happened."""
-    qs = urllib.parse.urlencode({"query": metricsql})
+    params: dict[str, Any] = {"query": metricsql}
+    if evaluation_time is not None:
+        params["time"] = f"{evaluation_time:.3f}"
+    qs = urllib.parse.urlencode(params)
     url = f"{target.rstrip('/')}/api/v1/query?{qs}"
     started = time.perf_counter()
     try:
@@ -303,6 +307,10 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="JSONL output path")
     ap.add_argument("--timeout", type=float, default=10.0,
                     help="per-query HTTP timeout (s)")
+    ap.add_argument("--warmup-per-query", type=int, default=2,
+                    help="unscored warm-up requests made for every query")
+    ap.add_argument("--evaluation-start-ms", type=int,
+                    help="shared logical evaluation-time anchor; each scored round advances one period")
     ap.add_argument("--no-plan-poll", action="store_true",
                     help="disable controller /metrics polling (run without plan tagging)")
     args = ap.parse_args()
@@ -310,6 +318,19 @@ def main() -> int:
     queries = load_queries(args.queries)
     if not queries:
         sys.exit("no queries in input")
+
+    # Warm every query path explicitly. These observations are retained but
+    # tagged and are never eligible for latency or accuracy scoring.
+    warmup_rows: list[dict[str, Any]] = []
+    for q in queries:
+        for warmup_seq in range(max(0, args.warmup_per_query)):
+            dur_ms, res = run_query(args.target, q["metricsql"], args.timeout)
+            warmup_rows.append({
+                "ts": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                "query": q["metricsql"], "query_id": q["id"], "kind": q["kind"],
+                "measurement_phase": "warmup", "warmup_seq": warmup_seq,
+                "duration_ms": dur_ms, "plan_id": None, **res,
+            })
 
     tracker = None
     if not args.no_plan_poll:
@@ -329,6 +350,8 @@ def main() -> int:
 
     try:
         with open(args.out, "w") as out:
+            for rec in warmup_rows:
+                out.write(json.dumps(rec) + "\n")
             while time.monotonic() < end_at:
                 q = queries[n % len(queries)]
                 n += 1
@@ -336,13 +359,18 @@ def main() -> int:
                 logical_seq = per_query_seq.get(query_id, 0)
                 per_query_seq[query_id] = logical_seq + 1
                 t_start = time.perf_counter()
-                dur_ms, res = run_query(args.target, q["metricsql"], args.timeout)
+                evaluation_time = None
+                if args.evaluation_start_ms is not None:
+                    evaluation_time = (args.evaluation_start_ms + logical_seq * period_s * len(queries) * 1000) / 1000
+                dur_ms, res = run_query(args.target, q["metricsql"], args.timeout, evaluation_time)
                 rec = {
                     "ts": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
                     "query": q["metricsql"],
                     "query_id": query_id,
                     "logical_seq": logical_seq,
                     "logical_elapsed_ms": (time.monotonic() - replay_started) * 1000.0,
+                    "evaluation_timestamp_ms": int(evaluation_time * 1000) if evaluation_time is not None else None,
+                    "measurement_phase": "steady_state",
                     "kind": q["kind"],
                     "duration_ms": dur_ms,
                     "plan_id": tracker.latest() if tracker else None,
