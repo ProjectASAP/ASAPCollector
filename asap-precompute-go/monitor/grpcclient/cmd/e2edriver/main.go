@@ -1,5 +1,5 @@
 // Command e2edriver is the EDGE side of the cross-language coordinated-
-// sampling e2e (deploy/mvp-multinode/scripts/monitor_e2e.sh). It wires the
+// sampling e2e. It wires the
 // REAL edge runtime — precompute.Precompute (Sum) + monitor.Engine + the gRPC
 // grpcclient transport — against a running Rust monitor-coordinator harness,
 // then feeds a stream of observations. The engine reports its observed rate

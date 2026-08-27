@@ -22,7 +22,7 @@
     "p95_ms": 5000,
     "maximum_ms": 15000,
     "minimum_samples_per_tier": 5
-    ,"required_tiers": ["warm", "archive"]
+    ,"required_tiers": ["warm"]
   },
   "query_latency": {
     "require_asap_lower_p50": true,

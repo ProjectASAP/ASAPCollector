@@ -9,16 +9,14 @@ deploy/
 └── mvp-multinode/      issue-#46 demo
     ├── harness/        immutable run inputs (acceptance, queries, topology)
     ├── configs/        container and controller runtime configuration
-    ├── scripts/        orchestration, measurement, and evaluation
-    └── cost_model/     analytical cost experiments
+    └── scripts/        orchestration, measurement, and evaluation
 ```
 
 | Path | What | Read |
 |---|---|---|
 | [`mvp-multinode/`](mvp-multinode/README.md) | Canonical issue-#46 paired harness on a real 10 Gbps LAN | [mvp-multinode/README.md](mvp-multinode/README.md) |
 | `helm/` | Helm charts (K8s / scale path) | — |
-| `docker/` | Dockerfiles built once and consumed by both demos (`Dockerfile.asap-otel`, `Dockerfile.otel-app`). The data-plane / control-plane images build from ASAPQuery-backend's `data_plane/Dockerfile` + `control_plane/Dockerfile` (data_plane reorg, 2026-05 — the old combined `Dockerfile.backend` is retired). | — |
-| `otel-app/` | Go source for the synthetic producer image | — |
+| `docker/` | Collector and load-generator image definitions; ASAPQuery images build from its sibling repository | — |
 
 ## Which one should I run?
 

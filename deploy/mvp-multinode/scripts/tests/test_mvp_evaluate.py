@@ -26,7 +26,7 @@ class EvaluatorTest(unittest.TestCase):
             "queries": {"sum-one": {"metric": "relative_error", "sla": 0.05}},
             "accuracy": {"minimum_within_sla_fraction": 1.0},
             "freshness": {"p95_ms": 1000, "maximum_ms": 2000, "minimum_samples_per_tier": 2,
-                          "required_tiers": ["warm", "archive"]},
+                          "required_tiers": ["warm"]},
             "query_latency": {"require_asap_lower_p50": True, "require_asap_lower_p95": True},
             "cost": {"cpu_core_weight": 1.0, "rss_gib_weight": 0.1, "network_mib_per_s_weight": 0.01,
                      "storage_gib_weight": 0.01,
@@ -65,7 +65,6 @@ class EvaluatorTest(unittest.TestCase):
         with (self.run / "asap-gzip" / "freshness-asap-gzip.csv").open("w", newline="") as handle:
             writer = csv.writer(handle); writer.writerow(["arm", "probe", "tier", "poll_idx", "poll_ts_ms", "observed_value_ms", "delta_ms"])
             writer.writerow(["asap-gzip", "probe", "warm", 1, 100, 90, 10]); writer.writerow(["asap-gzip", "probe", "warm", 2, 200, 180, 20])
-            writer.writerow(["asap-gzip", "probe", "archive", 1, 100, 90, 10]); writer.writerow(["asap-gzip", "probe", "archive", 2, 200, 180, 20])
         (self.run / "asap-gzip" / "controller-agents.json").write_text(json.dumps({"agent-a": "agent", "agent-b": "agent"}))
         (self.run / "asap-gzip" / "controller-config.yaml").write_text("delta_transmission: true\ndelta_transmission: false\n")
         (self.run / "asap-gzip" / "controller.log").write_text("agent reported remote-config status agent=agent-a status=Applied\nagent reported remote-config status agent=agent-b status=Applied\n")
@@ -95,10 +94,10 @@ class EvaluatorTest(unittest.TestCase):
         self.assertEqual("FAIL", result["overall_verdict"])
         self.assertIn("no Applied", " ".join(result["failures"]))
 
-    def test_missing_archive_freshness_fails(self) -> None:
+    def test_empty_required_freshness_fails(self) -> None:
         self.write_fixture()
         path = self.run / "asap-gzip" / "freshness-asap-gzip.csv"
-        path.write_text("arm,probe,tier,poll_idx,poll_ts_ms,observed_value_ms,delta_ms\nasap-gzip,p,warm,1,100,90,10\nasap-gzip,p,warm,2,200,180,20\n")
+        path.write_text("arm,probe,tier,poll_idx,poll_ts_ms,observed_value_ms,delta_ms\n")
         self.assertEqual("FAIL", MODULE.evaluate(str(self.run), self.config)["overall_verdict"])
 
     def test_missing_storage_component_fails(self) -> None:

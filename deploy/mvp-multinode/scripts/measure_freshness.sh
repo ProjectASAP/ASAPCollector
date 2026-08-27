@@ -9,9 +9,8 @@
 # Per #46 runbook §"Freshness probe protocol":
 #   - For B0/B1 the only landing is Prometheus (no warm/archive tiers in use).
 #     We use http_freshness_probe_raw (lands in Prometheus via PRW).
-#   - For ASAP, both warm (asap-query-backend) and archive (Thanos→MinIO via
-#     gorillas3processor) probes exist; we measure each independently against
-#     the right query endpoint. raw still lands in Prometheus.
+#   - For ASAP, measure the warm ASAPQuery-backend result. Archive fallback is
+#     explicitly outside the MVP acceptance scope.
 #
 # Inputs (env):
 #   ARM      b0 | b1 | asap
@@ -60,7 +59,6 @@ case "${ARM}" in
         # (No raw-tier probe in asap: it isn't routed/queryable at the backend.)
         PROBES=(
             'warm|http_freshness_probe_warm|http://'"${NODE2_IP}"':9091'
-            'archive|http_freshness_probe_archive|http://'"${NODE2_IP}"':9091'
         )
         ;;
     *) echo "unknown arm ${ARM}" >&2; exit 1 ;;

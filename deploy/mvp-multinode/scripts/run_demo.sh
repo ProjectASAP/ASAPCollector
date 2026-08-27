@@ -2,8 +2,8 @@
 # run_demo.sh — multi-node MVP demo orchestrator (issue #46).
 #
 # Drives the six issue-#46 MVP acceptance criteria.
-# (bandwidth, query latency, e2e resource, accuracy, cold-fallback,
-# freshness) but distributed across 4 hosts on 10.10.1.0/24:
+# (functional correctness, accuracy, freshness, latency, Collector cost,
+# end-to-end cost) across four hosts on 10.10.1.0/24:
 #
 #   node0 (10.10.1.1)  producers + agent-a   (data source)
 #   node1 (10.10.1.2)  (unused since #400 — the asap-gateway double-hop
@@ -13,32 +13,9 @@
 #                                             thanos-{query,store-gateway,compact})
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
-# Compression-matched bandwidth sweep — SIX arms run back-to-back over
-# the same workload. The whole point is that the compression codec
-# MATCHES within each aggregation comparison: PRW is Snappy-only, OTLP
-# supports none/gzip/zstd (not Snappy), so the matched comparisons use
-# OTLP+{none,gzip} on BOTH the raw baseline and the asap arm. PRW/Snappy
-# (b2) and serf (b3) are kept as real-world reference points.
-#
-#   b0         raw   OTLP→VM,  compression none   matched-none baseline
-#   b1         raw   OTLP→VM,  compression gzip   matched-gzip baseline (primary)
-#   b2         raw   PRW →VM   (Snappy, native)   Prometheus reference
-#   b3         raw   serf wire codec → gw → VM    serf-compressed wire ref
-#   asap       agg   OTLP→backend, none           matched-none asap
-#   asap-gzip  agg   OTLP→backend, gzip           matched-gzip asap (primary)
-#
-# b3 is serf as a REAL wire codec: the agent serf-XOR-COMPRESSES and
-# ships compressed SERF1 blocks to a serf-gateway (node1) that
-# DECOMPRESSES and inserts raw into VM (node2). No PRW. The
-# serf-compressed wire is the agent→gateway hop (node1 RX). This is
-# serf's analog of b1's gzip / b2's Snappy compressed wire.
-#
-# Two clean apples-to-apples aggregation comparisons (same codec, only
-# aggregation differs):
-#   none:  b0 vs asap          gzip:  b1 vs asap-gzip   (primary)
-# Reading down a codec column shows compression gains; comparing within
-# a codec row shows aggregation gains. Backend RX (node2 enp130s0f0) is
-# the bandwidth metric.
+# The only paired comparison is codec-matched OTLP/gzip:
+#   b1         raw metrics → VictoriaMetrics
+#   asap-gzip  sketches/deltas → ASAPQuery-backend
 #
 # Scope notes vs. the canonical single-host `run_mvp_demo.sh`:
 # - Uses `docker run --network host --add-host` (no docker-compose, no
@@ -268,18 +245,13 @@ docker_run_on() {
 
 # ─── BACKEND STACK on node2 ────────────────────────────────────────
 #
-# Common services across all arms: prometheus, minio (b0/b1 don't use
-# minio but it's harmless idle), and the control plane. ASAP arm adds
-# the data plane + thanos-{query,store-gateway,compact}.
+# The exact arm runs VictoriaMetrics. The ASAP arm runs its data/control plane
+# and persistent services.
 
-# is_asap_arm — true for the aggregation arms (full backend stack), false
-# for the raw baselines (b0/b1/b2/b3, VictoriaMetrics sink). The two asap
-# arms (`asap`, `asap-gzip`) are identical at the backend; they differ
-# only in the agent's otlp/backend wire codec (none vs gzip), which the
-# backend's `.accept_compressed(Gzip)` handles transparently.
+# True for the single sketch arm; false for the b1 exact baseline.
 is_asap_arm() {
     case "$1" in
-        asap|asap-gzip) return 0 ;;
+        asap-gzip) return 0 ;;
         *)              return 1 ;;
     esac
 }
@@ -292,14 +264,7 @@ backend_up() {
     # make any runaway a recoverable container OOM-kill, not a host freeze.
     log "backend up (${arm}) — cold=node1, warm=node2"
 
-    # Raw baselines (b0/b1/b2/b3): VictoriaMetrics on node1:8428.
-    #   - b0/b1 push OTLP HTTP to /opentelemetry/v1/metrics (compression
-    #     none / gzip respectively).
-    #   - b2 pushes Prometheus remote_write (Snappy) to /api/v1/write.
-    #   - b3 (serf wire codec) ships serf-compressed blocks to the
-    #     serf-gateway (node1), which DECOMPRESSES and inserts raw into
-    #     VM via OTLP HTTP /opentelemetry/v1/metrics. No PRW on b3.
-    # VM serves PromQL on the same port for all four.
+    # The b1 baseline pushes raw OTLP/gzip to VictoriaMetrics on node1:8428.
     #
     # `-opentelemetry.usePrometheusNaming` is LEFT OFF so VM stores the
     # OTLP metric names verbatim (`http_requests_total`,
@@ -307,9 +272,8 @@ backend_up() {
     # (queries-e2e.json). With the flag ON, VM would sanitize names and
     # append the gauge's `ms` unit suffix
     # (→ `http_requests_total_latency_ms_milliseconds`), breaking the
-    # quantile queries. The PRW arms (b2/b3) already pin
-    # `add_metric_suffixes: false` agent-side for the same reason; the
-    # OTLP arms (b0/b1) rely on VM's default (no Prometheus naming) to get
+    # quantile queries. The b1 agent pins naming consistently and relies on
+    # VM's default (no Prometheus naming) to get
     # the verbatim names. If a future VM bump changes the default OTLP
     # naming, pin `-opentelemetry.usePrometheusNaming=false` here.
     #
@@ -565,52 +529,20 @@ backend_down() {
     clean_backend_data
 }
 
-# ─── SERF-GATEWAY on node1 (b3 arm only) ────────────────────────────
-#
-# The decompression half of the serf-as-real-wire-codec arm. The b3
-# agents serf-XOR-COMPRESS the metric stream and POST SERF1 blocks to
-# `http://serf-gw:9000/serf` (serf-gw → node1 via ADD_HOSTS). This
-# gateway runs the asap-otel binary with a serfreceiver pipeline that
-# DECODES the blocks back to raw points and inserts them into VM (node2)
-# over OTLP HTTP. The only compressed hop is agent(node0/3) → gw(node1);
-# the gw → VM hop carries raw decompressed OTLP. So the serf-compressed
-# wire == node1 NIC RX == the serfexporter's bytes_sent counter.
-#
-# Brought up BEFORE the b3 agents so the serfreceiver is already
-# listening when the agents' first window flushes. node1 is otherwise
-# idle (the asap-gateway double-hop was retired in #400), and arm_down's
-# `stop_node node1` reaps this container at teardown.
-serf_gateway_up() {
-    log "node1 serf-gateway up (b3 serf wire codec)"
-    docker_run_on "${NODE1_HOST}" --cpus=4 --memory=8g --memory-swap=8g \
-        --name asap-serf-gateway \
-        --hostname serf-gw \
-        -v /mydata/mvp-multinode/configs/b3/serf-gateway.yaml:/etc/otel/config.yaml:ro \
-        asap/asap-otel:dev \
-        --config=/etc/otel/config.yaml
-}
-
 # ─── AGENTS + PRODUCERS on node0 and node3 ──────────────────────────
 agents_up() {
     local arm=$1
     local agent_cfg
-    # Compression-matched bandwidth sweep — six arms. The codec MUST
-    # match within each aggregation comparison (none: b0/asap; gzip:
-    # b1/asap-gzip). PRW/Snappy (b2) and serf (b3) are real-world
-    # reference points, NOT matched pairs.
+    # Codec-matched paired arms.
     case "${arm}" in
-        b0)        agent_cfg=b0/asap-otel-agent-b0-otlp-none.yaml ;;        # raw OTLP→VM, compression none  (matched-none baseline)
-        b1)        agent_cfg=b1/asap-otel-agent-b1-otlp-gzip.yaml ;;        # raw OTLP→VM, compression gzip  (matched-gzip baseline)
-        b2)        agent_cfg=b2/asap-otel-agent-b2-prw-snappy.yaml ;;       # raw PRW→VM   (Snappy, native)  (Prometheus ref)
-        b3)        agent_cfg=b3/asap-otel-agent-b3-serf.yaml ;;             # serf wire codec → gw → VM      (serf-compressed wire ref)
-        asap)      agent_cfg=asap/asap-otel-agent-asapedge.yaml ;;             # fused asap_edge edge-agg, OTLP→backend none (matched-none asap)
-        asap-gzip) agent_cfg=asap-gzip/asap-otel-agent-asap-gzip.yaml ;;    # edge-agg, OTLP→backend gzip   (matched-gzip asap)
+        b1)        agent_cfg=b1/asap-otel-agent-b1-otlp-gzip.yaml ;;
+        asap-gzip) agent_cfg=asap-gzip/asap-otel-agent-asap-gzip.yaml ;;
         *) die "unknown arm ${arm}" ;;
     esac
 
     # ── agent launch: supervised (asap arms) vs static (baselines) ──────
     #
-    # The asap/asap-gzip arms talk to the controller, so they run the
+    # The asap-gzip arm talks to the controller, so it runs the
     # OpenTelemetry opamp-supervisor (asap-otel-supervised image) instead of
     # the bare collector. The supervisor connects to the controller's OpAMP
     # server, receives the pushed remote config, merges it with its own
@@ -629,7 +561,7 @@ agents_up() {
     # remote config's opamp block, merged last, clobbers the supervisor's and
     # the collector phones the controller directly instead of the supervisor).
     #
-    # The b0/b1/b2/b3 baselines have no controller OpAMP server, so they keep
+    # The b1 baseline has no controller OpAMP server, so it keeps
     # running the bare asap-otel collector with their static mounted config.
     if is_asap_arm "${arm}"; then
         # node0 → agent-a (binds 0.0.0.0:4317 on node0). Producers on node0
@@ -734,13 +666,6 @@ arm_up() {
     log "=== ARM UP: ${arm} ==="
     backend_up "${arm}"
     sleep 5
-    # b3 serf wire codec: bring up the serf-gateway (node1) AFTER the VM
-    # backend (node2) is up but BEFORE the agents, so the serfreceiver is
-    # listening when the agents' first compressed window flushes.
-    if [[ "${arm}" == "b3" ]]; then
-        serf_gateway_up
-        sleep 3
-    fi
     agents_up "${arm}"
     log "=== arm ${arm} all containers started; waiting WARMUP_S=${WARMUP_S} ==="
     sleep "${WARMUP_S}"
@@ -780,10 +705,10 @@ arm_measure() {
 
     # PromQL replay endpoint:
     #   asap arm  → asap-data-plane on node2:9091
-    #   b0 / b1   → VictoriaMetrics on node2:8428 (serves PromQL on the
+    #   b1        → VictoriaMetrics on node1:8428 (serves PromQL on the
     #               same port as its /api/v1/write PRW receive). Prior to
     #               2026-05 this pointed at :9090 (Prometheus), but the
-    #               b0/b1 backend_up() path brings up `asap-victoriametrics`
+    #               b1 backend_up() path brings up `asap-victoriametrics`
     #               not Prometheus, so :9090 was unreachable → 100% timeout.
     local query_endpoint
     if is_asap_arm "${arm}"; then
@@ -847,9 +772,7 @@ run_arm() {
     arm_down || true
 }
 
-# Allow sourcing as a library so other drivers (e.g. scale_fleet.sh) can compose
-# backend_up + docker_run_on + topology for custom fleet sizes without invoking
-# the CLI dispatch below.
+# Allow sourcing for focused development checks without invoking CLI dispatch.
 if [ -n "${RUN_DEMO_LIB:-}" ]; then return 0 2>/dev/null || true; fi
 
 cmd=${1:-help}
@@ -865,12 +788,7 @@ case "${cmd}" in
         write_run_manifest
         ensure_images
         sync_all_nodes
-        # Compression-matched bandwidth sweep — six arms. The two clean
-        # apples-to-apples aggregation comparisons (same codec, only
-        # aggregation differs):
-        #   none: b0 vs asap        gzip: b1 vs asap-gzip  (primary)
-        # b2 (PRW/Snappy) + b3 (serf) are real-world reference points.
-        for arm in b0 b1 b2 b3 asap asap-gzip; do
+        for arm in b1 asap-gzip; do
             run_arm "${arm}"
         done
         log "=== evaluating issue #46 acceptance contract ==="
@@ -889,16 +807,12 @@ usage: $0 <cmd> [arm]
                       (cold/warm split: warm→node2, agents→node0/3, cold→node1)
   sync                rsync /mydata/ASAPCollector configs+scripts to all 4 nodes
   up <arm>            build + load + sync, then bring up containers for an arm
-                      arms: b0 b1 b2 b3 asap asap-gzip
-                        b0        raw OTLP→VM,  compression none  (matched-none baseline)
-                        b1        raw OTLP→VM,  compression gzip  (matched-gzip baseline)
-                        b2        raw PRW→VM    (Snappy, native)  (Prometheus ref)
-                        b3        serf wire codec → gw → VM       (serf-compressed wire ref)
-                        asap      edge-agg, OTLP→backend none     (matched-none asap)
-                        asap-gzip edge-agg, OTLP→backend gzip     (matched-gzip asap)
+                      arms: b1 asap-gzip
+                        b1        raw OTLP/gzip → VictoriaMetrics
+                        asap-gzip sketches/deltas over OTLP/gzip → ASAPQuery-backend
   down                stop and remove all asap-* containers cluster-wide
   arm <arm>           build + load + sync, then full single-arm lifecycle: up → measure → down
-  all                 build + load + sync + run all 6 arms back-to-back + report
+  all                 run the paired b1/asap-gzip experiment and report
 
   Source is rebuilt and re-shipped on every up/arm/all so a deploy never runs a
   stale image. Escape hatches when iterating on config only:

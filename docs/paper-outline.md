@@ -36,9 +36,9 @@ workload + SLAs.
      the agent → backend wire are smaller than raw samples,
      vs. raw and vs. compression baselines (b0a / b0b / b1 /
      b5).
-     - *Evidence:* `deploy/mvp-multinode/scripts/run_demo_sweep.sh` (P7) →
+     - *Evidence:* fresh artifacts from `deploy/mvp-multinode/scripts/run_demo.sh` →
        per-cell `bytes_in / bytes_out` columns →
-       `deploy/mvp-multinode/scripts/plots.py` (P9) bandwidth-vs-N plot.
+       the machine-readable MVP result (P9).
        Single-host pre-compare:
        `otel_collector_benchmark/cardinality_crossover/`
        (sketch-bytes vs raw-bytes across `N ∈ {100…5M}`).

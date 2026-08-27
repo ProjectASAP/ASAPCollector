@@ -1,6 +1,6 @@
 # Static fused asap_edge agent config for the multi-sketch family eval.
 #
-# Mirrors deploy/mvp-multinode/configs/asap/asap-otel-agent-asapedge.yaml but
+# Standalone no-delta evaluation config with
 # (a) routes the google_cluster aliased metrics to the SIX sketch families,
 # (b) exports to data-plane:14317 (collapsed single-host port map), and
 # (c) carries its own `opamp`-free service block so it runs as a bare

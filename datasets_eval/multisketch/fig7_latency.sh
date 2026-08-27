@@ -11,7 +11,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT=/mydata/ASAPCollector
 GCT="${ROOT}/datasets_eval/google_cluster"
 TRACE="${TRACE:-/tmp/perfam-ddsketch.jsonl}"   # aliased trace (contains _q_ddsketch)
-QUERIES="${ROOT}/deploy/mvp-multinode/harness/queries/latency-warm.json"
+QUERIES="${ROOT}/datasets_eval/latency/queries-warm.json"
 OUT="${OUT:-/mydata/eval/results/fig7}"; mkdir -p "${OUT}"
 log(){ printf '[%s] [fig7] %s\n' "$(date +%H:%M:%S)" "$*"; }
 

@@ -7,7 +7,7 @@
 # same image, same receiver, same backend endpoint, same constant load; the
 # ONLY difference is whether asap_edge is in the pipeline.
 #
-# Mirrors deploy/mvp-multinode/configs/b0/asap-otel-agent-b0-otlp-none.yaml
+# Standalone raw OTLP/no-compression soak configuration
 # (the matched-NONE raw baseline) but (1) drops the opamp extension (bare
 # agent, like stack-coldoff runs it) and (2) points the OTLP exporter at the
 # cold-OFF data_plane (data-plane:14317) instead of VictoriaMetrics, so both

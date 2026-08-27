@@ -71,7 +71,7 @@ per-query wall-clock latency.
 
 - **Query mix:** `quantile_over_time(0.99,…[300s])`,
   `quantile_over_time(0.50,…[300s])`, `sum(cpu_rate)`
-  (`deploy/mvp-multinode/harness/queries/latency-warm.json`).
+  (`datasets_eval/latency/queries-warm.json`).
 - **QPS:** 15 (aggregate across the 3 queries).
 - **Query count:** **599** (40 s steady window).
 - **Window:** 2026-06-12T20:41:36Z → 20:42:16Z, inside one fully-shipped warm window.
@@ -224,7 +224,7 @@ python3 datasets_eval/google_cluster/run.py replay \
 # 3. wait for warm sum(cpu_rate) == 216.35351276397705 (window sealed+shipped), GUARD
 # 4. timed replay @ 15 QPS
 python3 deploy/mvp-multinode/scripts/metricsql_replay.py --target http://127.0.0.1:9091 \
-  --queries deploy/mvp-multinode/harness/queries/latency-warm.json \
+  --queries datasets_eval/latency/queries-warm.json \
   --qps 15 --duration 40 --no-plan-poll --out datasets_eval/latency/replay-warm.jsonl
 # 5. reduce -> table + CDF
 python3 datasets_eval/latency/compute_latency.py --warm datasets_eval/latency/replay-warm.jsonl \
@@ -289,4 +289,4 @@ bash datasets_eval/latency/stack-coldon.sh down
   the reducer's optional input but intentionally **not committed** — regenerate
   via Reproduce.
 - `compute_latency.py` — reducer (also renders the CDF)
-- `../../deploy/mvp-multinode/harness/queries/latency-warm.json` — the timed mix
+- `queries-warm.json` — the timed mix
