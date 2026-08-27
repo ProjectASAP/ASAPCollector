@@ -18,8 +18,10 @@ The repository has four relevant layers:
 
 The reusable contracts live in `asap-precompute-go`; collector integrations implement
 the OpenTelemetry processor factory contract and translate configuration into the
-precompute configuration. Query-facing mappings are documented separately in the
-[sketch algebra reference](sketch-algebra-query-mapping.md).
+precompute configuration. Query parsing, query-to-summary mapping, sketch algebra,
+and rewrite rules are owned by
+[ASAPPlanner](https://github.com/ProjectASAP/ASAPPlanner); the local
+[query-mapping pointer](sketch-algebra-query-mapping.md) records that ownership.
 
 ## 2. Interfaces and definitions
 
