@@ -243,7 +243,7 @@ Tracked separately from this comparison doc.
 - Databricks blog: *10 trillion samples per day: scaling beyond traditional
   monitoring infra at Databricks* —
   https://www.databricks.com/blog/10-trillion-samples-day-scaling-beyond-traditional-monitoring-infra-databricks
-- ASAP design — `docs/design-archive-tier.md`,
+- ASAP design — the archive-tier design,
   `Super_resolution_ingestion_with_sketching_VLDB_or_SIGMOD/Design.tex`
 - Thanos — https://thanos.io/
 - Telegraf — https://www.influxdata.com/time-series-platform/telegraf/

@@ -207,7 +207,7 @@ Input: QueryWorkload W
 
 ## Config Push: OpAMP (Open Agent Management Protocol) Integration
 
-OpAMP is an open protocol (defined by the OpenTelemetry project) for remotely managing telemetry agents over a persistent WebSocket or HTTP connection. The server pushes new config to agents; agents receive the push and apply the new configuration via the **OpAMP Supervisor pattern** — the supervisor writes an effective config file and restarts the collector binary so the new YAML takes effect. See [`docs/opamp-config-push.md`](opamp-config-push.md) for the full push/apply architecture, including the restart semantics, why the supervisor pattern is used instead of in-process hot-reload, and the concrete file-by-file wiring.
+OpAMP is an open protocol (defined by the OpenTelemetry project) for remotely managing telemetry agents over a persistent WebSocket or HTTP connection. The server pushes new config to agents; agents receive the push and apply the new configuration via the **OpAMP Supervisor pattern** — the supervisor writes an effective config file and restarts the collector binary so the new YAML takes effect. See [`docs/developer_docs/opamp-config-push.md`](../developer_docs/opamp-config-push.md) for the full push/apply architecture, including the restart semantics, why the supervisor pattern is used instead of in-process hot-reload, and the concrete file-by-file wiring.
 
 ### OpAMP Server — the Controller
 
@@ -222,7 +222,7 @@ OpAMP is an open protocol (defined by the OpenTelemetry project) for remotely ma
 - On startup, the supervisor connects to the controller, receives a `ServerToAgent` message containing a `RemoteConfig`, merges it with the local base config, writes `effective.yaml`, and **restarts the child collector** so it picks up the new config
 - The embedded `opampextension` inside the collector binary reports health and current config hash back to the controller on the same socket
 
-**Important**: The pipeline does not hot-reload in-process. Config changes trigger a process restart through the supervisor. This is a deliberate design choice — see `docs/opamp-config-push.md` §3 for the rationale.
+**Important**: The pipeline does not hot-reload in-process. Config changes trigger a process restart through the supervisor. This is a deliberate design choice — see `docs/developer_docs/opamp-config-push.md` §3 for the rationale.
 
 ```
 ┌─────────────────────────────────┐
@@ -340,7 +340,7 @@ The controller is implemented in **Rust**, enabling direct in-process integratio
 | Plan format | YAML (collector native) | No translation layer; controller generates the exact YAML collectors accept |
 | Implementation language | Rust | Direct in-process integration with `asap-planner-rs`; future integration with ASAPQuery query planner |
 | OpAMP server | Implemented from spec (`tokio-tungstenite`) | No mature Rust OpAMP server library; one-time implementation cost |
-| Planner core | `asap-planner-rs` (in-process) | Already in development (PR #174); no subprocess boundary in Rust |
+| Planner core | `asap-planner-rs` (in-process) | Already in development (); no subprocess boundary in Rust |
 | Re-planning trigger | Time-based + SLA violation | Simple and predictable; avoids oscillation |
 | Sketch mergeability | Guaranteed by sketchlib-go | DDSketch, KLL, HLL all support merge — enables hierarchical aggregation |
 | Fallback | Raw samples always valid | If planner is down or uncertain, default to raw (safe) |

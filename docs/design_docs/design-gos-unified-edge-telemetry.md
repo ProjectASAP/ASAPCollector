@@ -643,7 +643,7 @@ them over a fixed horizon of bounded total change: with `w ∝ 1/ε²` (the nece
 sketch width) each sketch is `Θ(1/ε²)` and `k` sites must each be represented, so
 the total is `Θ̃(k/ε²)` — **matching the WZ STOC'12 tight lower bound** (bits vs
 words absorbed in the `Θ̃`). The measured normalization in
-[`gos-eval-results.md`](gos-eval-results.md) §3 uses the "one-round" unit `k·S`
+the evaluation model uses the "one-round" unit `k·S`
 for exactly this comparison. Consequences:
 
 - The `1/ε²` and the linear-in-`k` are **fundamental**; no protocol (GM, AutoMon,
@@ -784,13 +784,13 @@ in the current code — tracked here since it isn't deleted yet:
 2. **Anisotropic delta broadcast** — *partially done.* The **sparse-cell**
    encoding of `ΔC_ref` on the coordinator→edge path is implemented and measured
    (`CRefUpdate::Delta`; removes the `O(k)` broadcast amplification — see
-   gos-eval-results.md §2). Still **open:** the broadcast gate is currently
+   the evaluation model §2). Still **open:** the broadcast gate is currently
    isotropic (ships every changed cell, `Δ ≠ 0`); giving it *anisotropic per-cell
    thresholds* (the §7C water-filling, as already done on the edge→coordinator
    upload path via `ComputeDeltaPerCell`) is the remaining work.
 3. **DDSketch's unbounded contiguous bucket-array growth** on outlier values
    is a real memory-safety gap, independent of Layer D — tracked as
-   sketchlib-go#72. The dynamically-tracked `B` used in the threshold formula
+   the sketch library. The dynamically-tracked `B` used in the threshold formula
    (derivations §8.4) does not require fixing this; it is a separate, likely
    higher-priority issue.
 4. **HLL's small-cardinality regime**: the register-change adapter's accuracy

@@ -18,7 +18,7 @@ in:
 - [`delta-transmission-design.md`](delta-transmission-design.md)
   — Mode 1 / 2 / 3 terminology used throughout the collector
   side
-- [`sketch-algebra-query-mapping.md`](sketch-algebra-query-mapping.md)
+- [`sketch-algebra-query-mapping.md`](../developer_docs/sketch-algebra-query-mapping.md)
   — how queries compile to the algebra the planner consumes
 
 ## The three orthogonal knobs
@@ -81,8 +81,7 @@ mapping:
 
 The three-axis framing in this doc is strictly more general and
 is the one the planner emits. The Mode 1/2/3 vocabulary is kept
-in the collector-side doc because it matches historical PR /
-issue numbering; treat it as shorthand for three common cells
+in the collector-side doc because it matches historical tracking / issue numbering; treat it as shorthand for three common cells
 of the `(W, L, agg_type)` grid.
 
 ## How the controller produces `(W, L, agg_type)` from queries
@@ -105,7 +104,7 @@ The planner owns this mapping. Its output is pushed through
 OpAMP to the SDK, which hot-reloads the corresponding View
 config. Details of the planner's internals (layered IR,
 optimizer rewrites) live in
-[`sketch-algebra-query-mapping.md`](sketch-algebra-query-mapping.md)
+[`sketch-algebra-query-mapping.md`](../developer_docs/sketch-algebra-query-mapping.md)
 and `controller/docs/query-to-sketch-translation.md`.
 
 ## SDK implementation surface
@@ -283,7 +282,7 @@ triple and holds the other two fixed at a representative
 operating point.
 
 **The workload driver is
-[`otel-app/`](../otel-app/) — a
+[`otel-app/`](../../otel-app/) — a
 synthetic *instrumented application*, not an OTel `Exporter` and
 not a Prometheus client.** The misleading name is historical.
 Concretely it imports the ASAP-patched OTel Go SDK, stands up
@@ -307,10 +306,8 @@ agent / gateway / backend stats from Prometheus.
 | **Encoding** | `W = 60s`, `L = typical projection` | `agg ∈ {raw-buffer, dd-full, dd-delta, kll, cms-full, cms-delta, hll-full, hll-delta}` | What each encoding costs at a fixed `(W, L)`. Sketches vs raw-buffer for bandwidth + RSS; full vs delta for the memory/bw tradeoff. |
 | **Combined** | — | best `(W, L, agg)` picked for each metric, vs. a baseline at `W=15s`, full `L`, `agg=raw-buffer` | End-to-end bandwidth reduction as the product of the three per-axis factors. |
 
-The driver is
-[`deploy/mvp-singlenode/scripts/run-sdk-cost-grid.sh`](../deploy/mvp-singlenode/scripts/run-sdk-cost-grid.sh);
-the wrapper that runs all four above is
-[`deploy/mvp-singlenode/scripts/run-sdk-cost-eval.sh`](../deploy/mvp-singlenode/scripts/run-sdk-cost-eval.sh).
+The driver and wrapper are maintained with the evaluation harness. Generated CSVs
+and findings live under `deploy/eval-results/sdk-cost/` when that harness is run.
 CSVs and a findings write-up live under
 `deploy/eval-results/sdk-cost/`.
 
