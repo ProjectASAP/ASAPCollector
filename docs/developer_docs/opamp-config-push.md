@@ -34,6 +34,10 @@ the whole plan atomically and reports the active plan identity.
 This document defines the target interface. The final section distinguishes it
 from the narrower interface implemented today.
 
+It is the collector-side companion to ASAPQuery-backend's
+[compiled-plan split design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/docs/asapplanner-workload-planner-migration/control_plane/docs/design-compiled-plan-collector-backend-split.md).
+Both documents use the same plan identity and physical-planning boundary.
+
 ## Ownership boundary
 
 | Component | Owns | Must not own |
@@ -62,6 +66,8 @@ selected candidate's semantics:
 | `col` | `input.value` or `input.item_label` | Readout input metadata |
 | `Reduction::PerEntity` | `reduction.kind: per_entity` | Preserve each source series identity |
 | `Reduction::Reduce(GroupKeys)` | `reduction.kind: reduce` plus explicit `by` or `without` labels | Matching group/roll-up shape |
+| `GroupingStrategy::PerSubpopulationInstance` | `grouping.kind: per_subpopulation_instance` | One independent state instance per reduction group |
+| `GroupingStrategy::SharedMultiSubpopulation` | `grouping.kind: shared_multi_subpopulation` plus Hydra kind and parameters | The identical shared-state layout and readout contract |
 | Time-range semantics around `SummaryAgg` | Concrete streaming `window` and lateness policy | Compatible query-window/read range |
 | `SummaryEstimate` | No collector readout; collector emits summary state | Query-time readout, such as quantile, cardinality, point count, or top-k |
 | `Logical` subtree | Raw pass-through only when the physical plan explicitly selects it | Exact execution or configured fallback |
@@ -84,8 +90,8 @@ The interface has two layers:
 The OpAMP `AgentConfigMap` entry is named `asap-collector-plan.yaml`. A receiver
 must select this exact entry; it must not silently choose an arbitrary first
 file. `AgentRemoteConfig.config_hash` is the hash used by OpAMP delivery. It is
-separate from `metadata.content_hash`, which identifies the canonical plan
-content across transports and processes.
+separate from `metadata.plan_id`, which identifies the compiled plan across
+transports and processes.
 
 The plan is YAML because it is an operator-visible configuration artifact and
 fits OpAMP's configuration-file model. YAML is only the serialization: fields
@@ -102,23 +108,25 @@ receiver must never guess it.
 | --- | --- | --- | --- |
 | `api_version` | string | yes | Schema version. MVP value: `asap.io/v1alpha1`. |
 | `kind` | string | yes | Must be `CollectorPlan`. |
-| `metadata.plan_id` | string | yes | Identity shared by this collector plan and its matching backend plan. |
-| `metadata.revision` | uint64 | yes | Monotonically increasing revision for this target. |
-| `metadata.content_hash` | string | yes | SHA-256 of the canonical plan with this field omitted. |
-| `metadata.generated_at` | RFC 3339 timestamp | yes | Time the control plane produced this revision. |
-| `metadata.valid_from` | RFC 3339 timestamp | yes | Earliest activation time. |
-| `metadata.expires_at` | RFC 3339 timestamp | yes | Time after which the collector must stop using the plan. |
+| `metadata.plan_id` | string | yes | Content-addressed identity of the selected DAG, topology identity, and semantic constraints, shared with the matching backend plan. Mutable sizing/lifecycle settings are excluded. |
+| `metadata.plan_version` | uint64 | yes | Monotonic version within a `plan_id`, bumped when the same selection is recompiled, for example after resizing. |
+| `metadata.generated_at` | RFC 3339 timestamp | yes | Time the control plane produced this plan version. |
+| `metadata.activation` | RFC 3339 timestamp | yes | Earliest time at which this plan becomes authoritative. |
+| `metadata.expiry` | RFC 3339 timestamp or null | yes | Optional time after which the collector must stop using the plan; null means until superseded. |
+| `metadata.backend_compat` | string | yes | Required backend plan and emitted-state schema compatibility identity. |
 | `metadata.planner_revision` | string | yes | ASAPPlanner commit/version used to create the candidate DAG. |
 | `metadata.candidate_id` | string | yes | Stable identifier of the selected candidate post-ASAP plan. |
 | `metadata.query_ids` | list of strings | yes | Workload queries whose selected plan requires these materializations. |
 | `target.instance_uid` | string | yes | Exact OpAMP agent instance this plan targets. |
+| `target.edge_id` | string | yes | Deployment edge assignment produced by the physical allocator. |
 | `target.capability_hash` | string | yes | Capability snapshot against which the physical plan was validated. |
 | `on_unsupported` | enum | yes | `reject_plan` for MVP. No silent downgrade or substitution is allowed. |
 | `materializations` | list | yes | Collector-side producers. An empty list is valid only for an explicit no-op plan. |
 
-`plan_id` groups compatible collector and backend portions. `revision` orders
-updates. `content_hash` makes a revision immutable. Reusing the same
-`(plan_id, revision)` with different content is an error.
+`plan_id` identifies the compiled structure. `plan_version` orders recompiles
+of that structure. Reusing the same `(plan_id, plan_version)` for different
+collector bytes is an error; the OpAMP `config_hash` identifies those exact
+bytes.
 
 ### Materialization identity and input
 
@@ -141,7 +149,7 @@ rejected during physical planning.
 | --- | --- | --- | --- |
 | `summary.family` | enum | yes | `exact_aggregate`, `sketch`, `sample`, `wavelet`, or `stat_model`, matching Planner `SummaryFamilyType`. |
 | `summary.algorithm` | enum | yes | Concrete algorithm within the family. |
-| `summary.parameters` | tagged object | yes | Parameters belonging to exactly that algorithm. Empty object for parameterless exact accumulators. |
+| `summary.parameters` | object | yes | Typed parameters belonging to exactly that algorithm. Empty object for parameterless exact accumulators. |
 | `summary.accuracy` | tagged object | yes | Original Planner constraint: `exact`, `epsilon`, or `epsilon_delta`. |
 
 When a Planner exact aggregation carries no explicit accuracy field, the
@@ -183,13 +191,16 @@ summary:
 The control plane must validate the algorithm/parameter pair against the
 selected Planner `SketchKind`. A DDSketch with KLL's `k` parameter is invalid.
 
-### Reduction and windows
+### Reduction, grouping, and windows
 
 | Field | Type | Required | Definition |
 | --- | --- | --- | --- |
 | `reduction.kind` | enum | yes | `per_entity` or `reduce`; preserves Planner's distinction. |
 | `reduction.by` | list of strings | for `reduce` | Labels retained when `without` is false. An empty list means a real global reduction. |
 | `reduction.without` | boolean | for `reduce` | When true, `by` names excluded labels and all other labels are retained. |
+| `grouping.kind` | enum | yes | `per_subpopulation_instance` or `shared_multi_subpopulation`, matching Planner `GroupingStrategy`. |
+| `grouping.hydra_kind` | enum | for shared grouping | `hydra_cms` or `hydra_count_sketch` for Planner alternatives with a modeled error guarantee. |
+| `grouping.parameters` | object | for shared grouping | Hydra parameters, including the inner sketch dimensions and shared structure dimensions. |
 | `window.kind` | enum | yes | `tumbling` for the MVP. |
 | `window.size` | duration | yes | Logical summary window. |
 | `window.slide` | duration | yes | Window start interval; equal to `size` for tumbling windows. |
@@ -199,6 +210,16 @@ selected Planner `SketchKind`. A DDSketch with KLL's `k` parameter is invalid.
 keeps one result per input series; the latter merges every matching series
 into one global group. This distinction comes directly from ASAPPlanner's
 `Reduction` type and must survive physical lowering.
+
+Reduction and grouping are orthogonal. Reduction defines which logical
+subpopulations exist; grouping defines whether each subpopulation owns an
+independent summary instance or shares a multi-subpopulation structure. For
+example, a CMS reduced by `region` can use either one CMS per region or one
+Hydra-CMS serving all regions. Shared grouping is invalid for
+`Reduction::PerEntity` and for algorithms without a Planner-approved shared
+variant. The MVP collector may advertise only `per_subpopulation_instance`;
+if so, the control plane must select another candidate rather than erase a
+Planner-selected shared grouping strategy.
 
 Planner time-range semantics describe what the query means. The physical
 control plane selects a concrete streaming window representation capable of
@@ -223,7 +244,7 @@ be deployed.
 Transmission is a physical decision made by ASAPQuery-backend, not by
 ASAPPlanner. `full` and `delta` change representation, not logical query
 semantics. Delta is legal only when the advertised algorithm/state encoding
-supports it. Each delta payload must carry plan ID, revision, materialization
+supports it. Each delta payload must carry plan ID, plan version, materialization
 ID, window identity, producer identity, sequence number, and base/checkpoint
 identity so the backend can reject gaps or incompatible state.
 
@@ -248,17 +269,18 @@ aggregation at the collector, ASAPQuery-backend may send:
 api_version: asap.io/v1alpha1
 kind: CollectorPlan
 metadata:
-  plan_id: workload-dashboard-a
-  revision: 42
-  content_hash: sha256:6d9f...
+  plan_id: sha256:6d9f...
+  plan_version: 42
   generated_at: 2026-08-27T20:00:00Z
-  valid_from: 2026-08-27T20:00:05Z
-  expires_at: 2026-08-28T20:00:05Z
+  activation: 2026-08-27T20:00:05Z
+  expiry: 2026-08-28T20:00:05Z
+  backend_compat: asap.backend-plan.v1
   planner_revision: 7278505
   candidate_id: candidate-quantile-ddsketch
   query_ids: [dashboard-latency-p95]
 target:
   instance_uid: 550e8400-e29b-41d4-a716-446655440000
+  edge_id: edge-a
   capability_hash: sha256:a31c...
 on_unsupported: reject_plan
 materializations:
@@ -276,6 +298,8 @@ materializations:
       accuracy: {kind: epsilon, epsilon: 0.01}
     reduction:
       kind: per_entity
+    grouping:
+      kind: per_subpopulation_instance
     window:
       kind: tumbling
       size: 1m
@@ -295,7 +319,8 @@ materializations:
       endpoint_ref: asapquery-primary
 ```
 
-The matching backend plan uses the same `plan_id`, `revision`, and
+The matching backend plan uses the same `plan_id`, `plan_version`,
+`backend_compat`, and
 materialization ID. It records DDSketch with `alpha: 0.01`, the source/filter,
 per-entity reduction, compatible windows, storage route, and the quantile
 readout. Query time reads that decision; it must not run ASAPPlanner again and
@@ -305,24 +330,27 @@ independently choose KLL or different DDSketch parameters.
 
 Before activation, ASAPCollector validates:
 
-1. schema version, target instance, revision ordering, content hash, lifetime,
+1. schema version, target instance, plan-version ordering, OpAMP config hash,
+   lifetime, backend compatibility,
    and capability hash;
 2. unique materialization IDs and query/node traceability;
 3. source matcher and value-input types;
 4. summary family/algorithm/parameter/accuracy compatibility;
-5. reduction and window invariants;
+5. reduction, grouping, and window invariants;
 6. transmission support, including delta checkpoint and sequence rules; and
 7. exporter references and resource guardrails.
 
 The plan is all-or-nothing. An invalid materialization rejects the candidate;
 the collector keeps the previous unexpired plan. A valid plan is staged and
-activated atomically at `valid_from`. Existing windows follow an explicitly
-reported transition policy; state from incompatible revisions is never merged.
+activated atomically at `activation`. Existing windows follow an explicitly
+reported transition policy; state from incompatible plan versions is never
+merged.
 
-Re-delivery of the same `(plan_id, revision, content_hash)` is idempotent. An
-older revision is rejected. Reusing `(plan_id, revision)` with another hash is
-rejected. An expired plan stops producing state unless a separately configured,
-bounded last-known-good policy explicitly permits a grace interval.
+Re-delivery of the same `(plan_id, plan_version, config_hash)` is idempotent. An
+older plan version is rejected. Reusing `(plan_id, plan_version)` with another
+config hash is rejected. An expired plan stops producing state unless a
+separately configured, bounded last-known-good policy explicitly permits a
+grace interval.
 
 ## Application report
 
@@ -332,7 +360,7 @@ returns a typed OpAMP custom message with:
 
 | Field | Definition |
 | --- | --- |
-| `plan_id`, `revision`, `content_hash` | Candidate being reported. |
+| `plan_id`, `plan_version`, `backend_compat` | Candidate being reported. |
 | `remote_config_hash` | OpAMP configuration hash that carried it. |
 | `status` | `rejected`, `staged`, `active`, `expired`, or `failed`. |
 | `observed_at`, `activated_at` | Status and activation timestamps. |
@@ -356,7 +384,7 @@ payloads carrying the same identities, and successful backend ingestion.
 | `per_entity`/`reduce` semantics are ambiguous | Reject. |
 | Delta requested for an incompatible family/encoding | Reject. |
 | Backend plan lacks the same materialization identity and contract | Do not activate the bundle or reject emitted state. |
-| Revision is stale, conflicting, premature, or expired | Preserve the current valid plan and report the reason. |
+| Plan version is stale or conflicting, or activation/expiry disallows use | Preserve the current valid plan and report the reason. |
 | Application evidence is missing | MVP verdict is FAIL, not UNKNOWN or PASS. |
 
 ## Current implementation gap
