@@ -1,198 +1,415 @@
-# OpAMP Config Push: Controller → Supervisor → Collector
+# ASAPQuery-to-ASAPCollector collection-plan interface
 
-**Status**: implemented and working end-to-end as of [#133]() (commit `4b196e1`, "feat: OpAMP Supervisor config — push-based config from controller to collector"). This document captures the architecture, the restart semantics, and the test surface so future contributors don't have to re-derive it from the commit history.
+## TL;DR
 
-This is the **control plane** side of the pipeline. The data plane — sketch bytes flowing from collector processors to the ASAPQuery-backend ingest path over modified OTLP — is.
+ASAPPlanner produces candidate **logical**
+[post-ASAP DAGs](https://github.com/ProjectASAP/ASAPPlanner/blob/main/docs/design_docs/post-asap-ir.md).
+It chooses summary
+semantics, such as `SummaryAgg`, a summary family and parameters, a reduction,
+and `SummaryEstimate`; it does not choose where operators run or how state is
+transmitted.
 
----
+The ASAPQuery-backend control plane selects a candidate and compiles it into a
+physical plan bundle:
 
-## 1. Three-process topology
-
-```
-┌────────────────────┐
-│     Controller     │        (Rust, long-running)
-│   asap-controller  │
-│                    │
-│  ┌──────────────┐  │
-│  │ OpAMP Server │◀─┼── WebSocket /v1/opamp  (default :4320)
-│  │ (axum)       │  │
-│  └──────┬───────┘  │
-│         │ push()   │
-│         ▼          │
-│    replanner       │        (SLA-violation loop, REST /api/v1/plan)
-└────────────────────┘
-            ▲
-            │ persistent WebSocket
-            │ (agent-initiated)
-            │
-┌───────────┼────────────────────────────────────────────┐
-│           ▼                                             │
-│ ┌──────────────────┐                                    │
-│ │ OpAMP Supervisor │   (Go, github.com/open-telemetry/  │
-│ │  (binary)        │    opentelemetry-collector/cmd/    │
-│ │                  │    opampsupervisor)                │
-│ └──────┬───────────┘                                    │
-│        │                                                │
-│        │ fork/exec + SIGTERM on config change           │
-│        ▼                                                │
-│ ┌──────────────────┐                                    │
-│ │  asap-otel       │  (the unified collector binary —   │
-│ │  collector       │   every sketch processor compiled  │
-│ │                  │   in: countmin, ddsketch, kll,     │
-│ │                  │   hll, countsketch, serf, gorilla) │
-│ │  ┌────────────┐  │                                    │
-│ │  │ opamp-     │  │                                    │
-│ │  │ extension  │  │  (reports health + config_hash     │
-│ │  │            │◀─┼── back to controller on the        │
-│ │  └────────────┘  │    supervisor's socket)            │
-│ └──────────────────┘                                    │
-│                                                         │
-│                    one collector host                   │
-└─────────────────────────────────────────────────────────┘
+```text
+ASAPPlanner candidate post-ASAP DAG
+                  |
+                  v
+ASAPQuery-backend control plane
+  candidate selection + stage allocation + runtime policy
+             /                         \
+            v                           v
+CollectorPlan                       BackendPlan
+build/transmit materializations     ingest/route/read materializations
+            \                           /
+             +-- same plan and materialization identities --+
 ```
 
-The supervisor and the collector are **two separate OS processes** on the same host. The supervisor owns the long-lived WebSocket connection to the controller and the lifecycle of the child collector.
+The collector portion is sent in an OpAMP protobuf `AgentRemoteConfig`. Its
+body is a versioned YAML `CollectorPlan`, not a serialized ASAPPlanner DAG and
+not an untyped map of processor options. The collector validates and applies
+the whole plan atomically and reports the active plan identity.
 
----
+This document defines the target interface. The final section distinguishes it
+from the narrower interface implemented today.
 
-## 2. Push call graph
+It is the collector-side companion to ASAPQuery-backend's
+[compiled-plan split design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/docs/asapplanner-workload-planner-migration/control_plane/docs/design-compiled-plan-collector-backend-split.md).
+Both documents use the same plan identity and physical-planning boundary.
 
-### 2a. Controller side (Rust)
+## Ownership boundary
 
-**File**: `controller/src/opamp/mod.rs`
+| Component | Owns | Must not own |
+| --- | --- | --- |
+| ASAPPlanner | Query parsing and canonicalization; candidate post-ASAP DAGs; summary family, algorithm, parameters, reduction, and readout semantics | Collector/backend placement, runtime resources, transmission mode, OpAMP encoding |
+| ASAPQuery-backend control plane | Candidate selection; physical placement; source binding; window materialization; transmission policy; plan versioning; splitting one decision into collector and backend portions | Reimplementing PromQL-to-summary rules already represented by ASAPPlanner |
+| ASAPCollector | Validating and executing `CollectorPlan`; building and transmitting the named materializations | Selecting a different summary, changing parameters, or inferring omitted query semantics |
+| ASAPQuery-backend data plane | Installing the matching `BackendPlan`; ingesting materializations; applying `SummaryEstimate` and remaining logical operators | Re-planning a different summary at query time |
 
-| Symbol | Line | Role |
-|---|---|---|
-| `OpampServer` | 77–101 | Axum handler + connected-agent registry |
-| `OpampServer::ws_handler` | 121–144 | HTTP `GET /v1/opamp` → WebSocket upgrade, calls `handle_socket` |
-| `OpampServer::push` | 147 | Send a `RemoteConfig` to one specific agent by `agent_id` |
-| `OpampServer::push_to_role` | 162 | Broadcast a `RemoteConfig` to all agents matching a role (`AgentRole::Agent`, `AgentRole::Backend`, etc.) |
-| `OpampServer::push_all` | 156 | Broadcast to every connected agent |
+ASAPPlanner's documented
+[scope](https://github.com/ProjectASAP/ASAPPlanner#scope) excludes stage and
+physical-resource assignment. It also describes the downstream split as an
+open integration question: one post-ASAP plan must become a streaming graph
+that constructs summaries and a query plan that reads them. This interface
+places that split in the ASAPQuery-backend physical-planning layer.
 
-**Triggers** (all in `controller/src/main.rs`):
+## From ASAPPlanner DAG to the two runtime plans
 
-1. **`POST /api/v1/plan`** — external HTTP entry point that accepts a new plan payload. The handler (lines 310–404) computes agent and backend configs, then calls:
-   - `opamp.push_to_role(AgentRole::Agent, agent_config)` — lines 337–340
-   - `opamp.push_to_role(AgentRole::Backend, backend_config)` — lines 350–353
+The control plane performs the following compilation, without changing the
+selected candidate's semantics:
 
-2. **On-connect callback** (lines 133–159) — fires when a new agent's WebSocket arrives. Looks up the agent's registered metrics, calls `replanner.push_config_to_agent(agent_id)` which pulls the current plan for those metrics and pushes it. This is how a newly-started supervisor bootstraps its first config.
+| ASAPPlanner concept | Collector plan | Backend plan |
+| --- | --- | --- |
+| `SummaryAgg` | A `materialization` producer | A materialization declaration and storage route |
+| `SummaryFamilyType` | `summary.family`, `summary.algorithm`, and typed `summary.parameters` | The identical family, algorithm, and parameters |
+| `col` | `input.value` or `input.item_label` | Readout input metadata |
+| `Reduction::PerEntity` | `reduction.kind: per_entity` | Preserve each source series identity |
+| `Reduction::Reduce(GroupKeys)` | `reduction.kind: reduce` plus explicit `by` or `without` labels | Matching group/roll-up shape |
+| `GroupingStrategy::PerSubpopulationInstance` | `grouping.kind: per_subpopulation_instance` | One independent state instance per reduction group |
+| `GroupingStrategy::SharedMultiSubpopulation` | `grouping.kind: shared_multi_subpopulation` plus Hydra kind and parameters | The identical shared-state layout and readout contract |
+| Time-range semantics around `SummaryAgg` | Concrete streaming `window` and lateness policy | Compatible query-window/read range |
+| `SummaryEstimate` | No collector readout; collector emits summary state | Query-time readout, such as quantile, cardinality, point count, or top-k |
+| `Logical` subtree | Raw pass-through only when the physical plan explicitly selects it | Exact execution or configured fallback |
+| `SummaryMerge` | Shard/stage outputs with the same materialization contract | Merge only states with identical compatibility fields |
 
-3. **Replanner** (`controller/src/replan.rs:123–178`):
-   - `replan_metric(metric)` — invoked when a metric's accuracy or latency SLA is violated. Recomputes the plan for that metric and pushes to every agent registered as a producer for it.
-   - `handle_violation(agent_id)` — the SLA-breach entry point wired to the monitoring loop.
+A control-plane-assigned reference to a Planner node is useful for traceability
+but is not a runtime identity. The physical control plane creates stable,
+content-addressed materialization identities after source binding, placement,
+windowing, and transmission have been decided.
 
-### 2b. Supervisor side (Go binary)
+## Wire encoding
 
-**Bootstrap config**: `opentelemetry-collector-contrib/cmd/asap-otel-opamp/supervisor-config.yaml`
+The interface has two layers:
+
+| Layer | Encoding | Contract |
+| --- | --- | --- |
+| Transport | OpAMP Protocol Buffers | Delivery, targeting, retry, and remote-config hash |
+| `CollectorPlan` body | UTF-8 YAML with `content_type: application/yaml` | Versioned ASAP collector execution contract |
+
+The OpAMP `AgentConfigMap` entry is named `asap-collector-plan.yaml`. A receiver
+must select this exact entry; it must not silently choose an arbitrary first
+file. `AgentRemoteConfig.config_hash` is the hash used by OpAMP delivery. It is
+separate from `metadata.plan_id`, which identifies the compiled plan across
+transports and processes.
+
+The plan is YAML because it is an operator-visible configuration artifact and
+fits OpAMP's configuration-file model. YAML is only the serialization: fields
+below form a closed, versioned schema. Unknown required fields, unknown enum
+values, and type mismatches are validation failures. JSON may be supported in
+a later schema version, but a sender must identify the media type and a
+receiver must never guess it.
+
+## `CollectorPlan` schema
+
+### Envelope
+
+| Field | Type | Required | Definition |
+| --- | --- | --- | --- |
+| `api_version` | string | yes | Schema version. MVP value: `asap.io/v1alpha1`. |
+| `kind` | string | yes | Must be `CollectorPlan`. |
+| `metadata.plan_id` | string | yes | Content-addressed identity of the selected DAG, topology identity, and semantic constraints, shared with the matching backend plan. Mutable sizing/lifecycle settings are excluded. |
+| `metadata.plan_version` | uint64 | yes | Monotonic version within a `plan_id`, bumped when the same selection is recompiled, for example after resizing. |
+| `metadata.generated_at` | RFC 3339 timestamp | yes | Time the control plane produced this plan version. |
+| `metadata.activation` | RFC 3339 timestamp | yes | Earliest time at which this plan becomes authoritative. |
+| `metadata.expiry` | RFC 3339 timestamp or null | yes | Optional time after which the collector must stop using the plan; null means until superseded. |
+| `metadata.backend_compat` | string | yes | Required backend plan and emitted-state schema compatibility identity. |
+| `metadata.planner_revision` | string | yes | ASAPPlanner commit/version used to create the candidate DAG. |
+| `metadata.candidate_id` | string | yes | Stable identifier of the selected candidate post-ASAP plan. |
+| `metadata.query_ids` | list of strings | yes | Workload queries whose selected plan requires these materializations. |
+| `target.instance_uid` | string | yes | Exact OpAMP agent instance this plan targets. |
+| `target.edge_id` | string | yes | Deployment edge assignment produced by the physical allocator. |
+| `target.capability_hash` | string | yes | Capability snapshot against which the physical plan was validated. |
+| `on_unsupported` | enum | yes | `reject_plan` for MVP. No silent downgrade or substitution is allowed. |
+| `materializations` | list | yes | Collector-side producers. An empty list is valid only for an explicit no-op plan. |
+
+`plan_id` identifies the compiled structure. `plan_version` orders recompiles
+of that structure. Reusing the same `(plan_id, plan_version)` for different
+collector bytes is an error; the OpAMP `config_hash` identifies those exact
+bytes.
+
+### Materialization identity and input
+
+| Field | Type | Required | Definition |
+| --- | --- | --- | --- |
+| `materializations[].id` | string | yes | Content-addressed identity shared with the backend `Materialization.fingerprint`. |
+| `materializations[].logical_node_ref` | string | yes | Deterministic reference assigned by the control plane to the selected Planner `SummaryAgg` or logical pass-through node. |
+| `materializations[].input.metric` | string | yes | Exact input metric name. |
+| `materializations[].input.matchers` | list | yes | Canonical label matchers; each has `label`, `op`, and `value`. Empty means all series of the metric. |
+| `materializations[].input.value` | enum | yes | `sample_value` for numeric summaries, or `label` with `label_name` for item/set summaries. |
+
+Matcher `op` is one of `eq`, `neq`, `regex`, or `not_regex`. The collector
+must apply the same matcher semantics used when ASAPPlanner canonicalized the
+query. A metric-name regex or unresolved source is outside the MVP and must be
+rejected during physical planning.
+
+### Summary
+
+| Field | Type | Required | Definition |
+| --- | --- | --- | --- |
+| `summary.family` | enum | yes | `exact_aggregate`, `sketch`, `sample`, `wavelet`, or `stat_model`, matching Planner `SummaryFamilyType`. |
+| `summary.algorithm` | enum | yes | Concrete algorithm within the family. |
+| `summary.parameters` | object | yes | Typed parameters belonging to exactly that algorithm. Empty object for parameterless exact accumulators. |
+| `summary.accuracy` | tagged object | yes | Original Planner constraint: `exact`, `epsilon`, or `epsilon_delta`. |
+
+When a Planner exact aggregation carries no explicit accuracy field, the
+physical control plane normalizes this field to `{kind: exact}`.
+
+The MVP algorithms and parameter objects are:
+
+| Family | Algorithm | Parameters |
+| --- | --- | --- |
+| `exact_aggregate` | `sum`, `count`, `min_max`, `increase`, `rate` | `{}` |
+| `sketch` | `kll` | `k` |
+| `sketch` | `ddsketch` | `alpha` |
+| `sketch` | `hll` | `precision` |
+| `sketch` | `cms` | `width`, `depth` |
+| `sketch` | `cms_with_heap` | `width`, `depth`, `heap_size` |
+| `sketch` | `count_sketch` | `width`, `depth` |
+| `sketch` | `count_sketch_with_heap` | `width`, `depth`, `heap_size` |
+
+ASAPPlanner also defines KMV, Theta, reservoir sampling, Haar wavelets, and
+statistical models. They remain valid Planner alternatives but are rejected by
+this interface until both ASAPCollector and ASAPQuery-backend advertise and
+implement matching wire/state capabilities. The control plane must not map an
+unsupported algorithm to a vaguely similar supported algorithm.
+
+`accuracy` records the constraint that justified the selected candidate; it
+does not replace the concrete parameters. For example:
 
 ```yaml
-server:
-  endpoint: ws://localhost:4320/v1/opamp
-  tls:
-    insecure: true
-agent:
-  executable: ./asap-otel         # path to the collector binary
-  description:
-    non_identifying_attributes:
-      role: agent                 # consumed by controller's push_to_role()
+summary:
+  family: sketch
+  algorithm: ddsketch
+  parameters:
+    alpha: 0.01
+  accuracy:
+    kind: epsilon
+    epsilon: 0.01
 ```
 
-The supervisor:
+The control plane must validate the algorithm/parameter pair against the
+selected Planner `SketchKind`. A DDSketch with KLL's `k` parameter is invalid.
 
-1. Opens a WebSocket to the controller and sends an `AgentToServer` registration message including the `non_identifying_attributes.role` value (so the controller knows whether to route `push_to_role(AgentRole::Agent, ...)` to this supervisor).
-2. Waits for a `ServerToAgent` message with a populated `remote_config` field.
-3. On receipt, merges the received YAML with the bootstrap `config-with-opamp.yaml`, writes the merged content to `effective.yaml` in its working directory, and sends a `SIGTERM` (or platform equivalent) to the running collector child process.
-4. Forks a new collector child with the new `effective.yaml`.
+### Reduction, grouping, and windows
 
-### 2c. Collector side (Go binary)
+| Field | Type | Required | Definition |
+| --- | --- | --- | --- |
+| `reduction.kind` | enum | yes | `per_entity` or `reduce`; preserves Planner's distinction. |
+| `reduction.by` | list of strings | for `reduce` | Labels retained when `without` is false. An empty list means a real global reduction. |
+| `reduction.without` | boolean | for `reduce` | When true, `by` names excluded labels and all other labels are retained. |
+| `grouping.kind` | enum | yes | `per_subpopulation_instance` or `shared_multi_subpopulation`, matching Planner `GroupingStrategy`. |
+| `grouping.hydra_kind` | enum | for shared grouping | `hydra_cms` or `hydra_count_sketch` for Planner alternatives with a modeled error guarantee. |
+| `grouping.parameters` | object | for shared grouping | Hydra parameters, including the inner sketch dimensions and shared structure dimensions. |
+| `window.kind` | enum | yes | `tumbling` for the MVP. |
+| `window.size` | duration | yes | Logical summary window. |
+| `window.slide` | duration | yes | Window start interval; equal to `size` for tumbling windows. |
+| `window.allowed_lateness` | duration | yes | Maximum late-arrival update interval. |
 
-The collector binary (e.g. `asap-otel` built from `opentelemetry-collector-contrib/cmd/asap-otel`) runs the stock `opampextension`. Its role is **reporting**, not applying — the extension sends `AgentToServer` messages with:
+`per_entity` is not encoded as `reduce` with an empty `by` list. The former
+keeps one result per input series; the latter merges every matching series
+into one global group. This distinction comes directly from ASAPPlanner's
+`Reduction` type and must survive physical lowering.
 
-- Current `config_hash` (so the controller can confirm the push landed)
-- Agent health status (the supervisor's restart loop proves the new config is loadable)
+Reduction and grouping are orthogonal. Reduction defines which logical
+subpopulations exist; grouping defines whether each subpopulation owns an
+independent summary instance or shares a multi-subpopulation structure. For
+example, a CMS reduced by `region` can use either one CMS per region or one
+Hydra-CMS serving all regions. Shared grouping is invalid for
+`Reduction::PerEntity` and for algorithms without a Planner-approved shared
+variant. The MVP collector may advertise only `per_subpopulation_instance`;
+if so, the control plane must select another candidate rather than erase a
+Planner-selected shared grouping strategy.
 
-The extension does **not** hot-reload the collector pipeline. All pipeline changes happen via supervisor restart.
+Planner time-range semantics describe what the query means. The physical
+control plane selects a concrete streaming window representation capable of
+answering that range. If the chosen windows cannot compose to the Planner
+query's range without violating semantics or accuracy, the candidate cannot
+be deployed.
 
----
+### Placement output and transmission
 
-## 3. Why supervisor restart, not in-process hot-reload?
+| Field | Type | Required | Definition |
+| --- | --- | --- | --- |
+| `placement.stage` | enum | yes | Must be `collector` in this document. |
+| `placement.shards` | uint32 | yes | Number of local producer shards. Physical policy, not a Planner field. |
+| `transmission.mode` | enum | yes | `raw`, `full`, or `delta`. |
+| `transmission.encoding` | string | yes | State encoding understood by both collector and backend. |
+| `transmission.schema_version` | uint32 | yes | Version of the emitted materialization payload. |
+| `transmission.emit_every` | duration | yes | Full or delta emission cadence within/following a window. |
+| `transmission.full_checkpoint_every` | duration | for `delta` | Maximum interval between full checkpoints used to recover delta state. |
+| `transmission.sequence_scope` | enum | for `delta` | MVP value `materialization_window_producer`. |
+| `output.endpoint_ref` | string | yes | Reference to a preconfigured exporter endpoint; no credentials are embedded in the plan. |
 
-The OpenTelemetry collector's pipeline is constructed at startup from the parsed YAML — processor factories build concrete `Processor` instances into a pinned DAG, and the runtime has no graceful "swap the DAG under live traffic" primitive. A config change that adds, removes, or retypes a processor cannot be applied by mutating the running pipeline; it requires re-running the factory graph.
+Transmission is a physical decision made by ASAPQuery-backend, not by
+ASAPPlanner. `full` and `delta` change representation, not logical query
+semantics. Delta is legal only when the advertised algorithm/state encoding
+supports it. Each delta payload must carry plan ID, plan version, materialization
+ID, window identity, producer identity, sequence number, and base/checkpoint
+identity so the backend can reject gaps or incompatible state.
 
-Two approaches exist in principle:
+`raw` means explicit pass-through selected for a logical subtree that is not
+materialized at the collector. It must not be represented as an unknown
+summary family or as `drop_original: false` attached to an unrelated summary.
 
-- **In-process hot-reload**: pause the pipeline, rebuild the processor graph, resume. Requires every processor to support clean shutdown and state handoff. Not supported upstream as of the current collector release.
-- **Supervisor restart**: kill the child, start a new child with the new config. Loses a few seconds of in-flight traffic but requires no processor-level cooperation.
+## Complete example
 
-DataCollector uses supervisor restart (option 2) because it's the only pattern that works with stock collector processors today. The commit that introduced this (`4b196e1`) confirmed the chain works end-to-end on a sketch config change, including the collector restart observably picking up a new KLL processor config.
+For the PromQL query:
 
-The downside is **in-flight loss**: any sketch window currently being assembled on the old collector is lost when the child exits. This is acceptable for Phase 1 because:
+```promql
+quantile_over_time(0.95, request_duration_seconds{region="us-east"}[5m])
+```
 
-1. Config changes are rare (SLA-driven replans, not per-query)
-2. The backend's precompute engine tolerates gaps via late-data-policy fallback (see the documented late-data policy)
-3. A restart is observable to the controller via the `opampextension`'s health reports, so consecutive restarts trip a circuit-breaker rather than looping
+ASAPPlanner may produce a candidate containing a DDSketch `SummaryAgg` over
+the sample value, `Reduction::PerEntity`, and a quantile
+`SummaryEstimate { q: 0.95 }`. After selecting that candidate and placing the
+aggregation at the collector, ASAPQuery-backend may send:
 
-If in-process hot-reload becomes available upstream, the supervisor layer can be removed and the `opampextension` wired to apply configs directly. The controller push API doesn't change — only the agent-side apply mechanism does.
+```yaml
+api_version: asap.io/v1alpha1
+kind: CollectorPlan
+metadata:
+  plan_id: sha256:6d9f...
+  plan_version: 42
+  generated_at: 2026-08-27T20:00:00Z
+  activation: 2026-08-27T20:00:05Z
+  expiry: 2026-08-28T20:00:05Z
+  backend_compat: asap.backend-plan.v1
+  planner_revision: 7278505
+  candidate_id: candidate-quantile-ddsketch
+  query_ids: [dashboard-latency-p95]
+target:
+  instance_uid: 550e8400-e29b-41d4-a716-446655440000
+  edge_id: edge-a
+  capability_hash: sha256:a31c...
+on_unsupported: reject_plan
+materializations:
+  - id: mat:sha256:98f1...
+    logical_node_ref: summary-agg-7
+    input:
+      metric: request_duration_seconds
+      matchers:
+        - {label: region, op: eq, value: us-east}
+      value: sample_value
+    summary:
+      family: sketch
+      algorithm: ddsketch
+      parameters: {alpha: 0.01}
+      accuracy: {kind: epsilon, epsilon: 0.01}
+    reduction:
+      kind: per_entity
+    grouping:
+      kind: per_subpopulation_instance
+    window:
+      kind: tumbling
+      size: 1m
+      slide: 1m
+      allowed_lateness: 10s
+    placement:
+      stage: collector
+      shards: 4
+    transmission:
+      mode: delta
+      encoding: asap.summary.ddsketch
+      schema_version: 1
+      emit_every: 10s
+      full_checkpoint_every: 1m
+      sequence_scope: materialization_window_producer
+    output:
+      endpoint_ref: asapquery-primary
+```
 
----
+The matching backend plan uses the same `plan_id`, `plan_version`,
+`backend_compat`, and
+materialization ID. It records DDSketch with `alpha: 0.01`, the source/filter,
+per-entity reduction, compatible windows, storage route, and the quantile
+readout. Query time reads that decision; it must not run ASAPPlanner again and
+independently choose KLL or different DDSketch parameters.
 
-## 4. Sketch-type capability matching
+## Validation and atomic application
 
-Commit `4b196e1`'s testing originally surfaced this as an open issue: the controller had to know which sketch processors a given collector binary supported, because pushing a KLL config to a per-sketch builder (e.g. an old `countminsketchcol` that only had countmin compiled in) would crash the restarted collector on config load.
+Before activation, ASAPCollector validates:
 
-The cleanup that consolidated all per-sketch builder dirs into the single unified `asap-otel` binary (cleanup ) collapsed this problem: every supervisor advertising `role: agent` now runs `asap-otel`, and `asap-otel` compiles in every sketch processor. The controller's `push_to_role` only needs to ensure the YAML it pushes uses processor names the unified builder registered (`countminsketchprocessor`, `ddsketchprocessor`, `kllprocessor`, `hllprocessor`, `countsketchprocessor`, `serfprocessor`, `gorillaprocessor`, …), which it does by construction — these are the same names the controller's emit table uses when generating configs.
+1. schema version, target instance, plan-version ordering, OpAMP config hash,
+   lifetime, backend compatibility,
+   and capability hash;
+2. unique materialization IDs and query/node traceability;
+3. source matcher and value-input types;
+4. summary family/algorithm/parameter/accuracy compatibility;
+5. reduction, grouping, and window invariants;
+6. transmission support, including delta checkpoint and sequence rules; and
+7. exporter references and resource guardrails.
 
-If a future deployment ever ships a stripped-down collector with a subset of processors, the supervisor registration can be extended to include a `processors_available: [...]` list in `non_identifying_attributes`, and `push_to_role` can filter by that list before sending. Not needed today.
+The plan is all-or-nothing. An invalid materialization rejects the candidate;
+the collector keeps the previous unexpired plan. A valid plan is staged and
+activated atomically at `activation`. Existing windows follow an explicitly
+reported transition policy; state from incompatible plan versions is never
+merged.
 
----
+Re-delivery of the same `(plan_id, plan_version, config_hash)` is idempotent. An
+older plan version is rejected. Reusing `(plan_id, plan_version)` with another
+config hash is rejected. An expired plan stops producing state unless a
+separately configured, bounded last-known-good policy explicitly permits a
+grace interval.
 
-## 5. Test surface
+## Application report
 
-### 5a. What's tested today
+OpAMP `RemoteConfigStatus` reports delivery/application of the config hash, but
+the ASAP contract needs a semantic application report as well. The collector
+returns a typed OpAMP custom message with:
 
-**File**: `controller/src/main.rs` lines 991–1238. Three Rust integration tests that use a mock WebSocket client to decode `ServerToAgent` protobufs and assert on their contents:
+| Field | Definition |
+| --- | --- |
+| `plan_id`, `plan_version`, `backend_compat` | Candidate being reported. |
+| `remote_config_hash` | OpAMP configuration hash that carried it. |
+| `status` | `rejected`, `staged`, `active`, `expired`, or `failed`. |
+| `observed_at`, `activated_at` | Status and activation timestamps. |
+| `active_materialization_ids` | Exact materializations installed. |
+| `effective_capability_hash` | Collector capabilities used during validation. |
+| `errors[]` | Machine-readable `code`, field `path`, and human-readable message. |
 
-1. **`agent_receives_config_on_connect_via_workload_registry`** (992–1110) — agent connects, on-connect callback triggers `push_config_to_agent`, mock client verifies the pushed YAML matches the expected plan for the agent's registered metrics.
-2. **`replan_pushes_only_to_registered_agent`** (1114–1184) — `replan_metric(metric)` is called, mock clients confirm only the producer for that metric receives the push (not unrelated agents).
-3. **`generated_agent_yaml_contains_opamp_extension`** (1188–1238) — static YAML validation: `extensions.opamp.server.ws.endpoint` is set, `service.extensions` includes `"opamp"`, etc.
+The custom-message capability is `io.asap.collector.plan.v1`; message type is
+`application_report`; its data is protobuf-encoded. `RemoteConfigStatus.APPLIED`
+without an `active` application report does not prove semantic activation.
+The MVP harness must additionally observe post-activation input, emitted
+payloads carrying the same identities, and successful backend ingestion.
 
-All three are fast (seconds), hermetic (no real supervisor, no real collector), and run as part of `cargo test -p controller`.
+## Fail-closed behavior
 
-### 5b. What's NOT tested today
+| Condition | Required result |
+| --- | --- |
+| Unknown schema version, enum, or required field | Reject the entire plan. |
+| Candidate uses a Planner summary unsupported by the collector | Control plane must choose another candidate or exact fallback; collector rejects if still sent. |
+| Family, algorithm, and parameters disagree | Reject; never substitute defaults. |
+| `per_entity`/`reduce` semantics are ambiguous | Reject. |
+| Delta requested for an incompatible family/encoding | Reject. |
+| Backend plan lacks the same materialization identity and contract | Do not activate the bundle or reject emitted state. |
+| Plan version is stale or conflicting, or activation/expiry disallows use | Preserve the current valid plan and report the reason. |
+| Application evidence is missing | MVP verdict is FAIL, not UNKNOWN or PASS. |
 
-- **Real supervisor binary → controller → supervisor loop**. The existing tests use mock WebSocket clients; they do not spawn `opampsupervisor` or a real collector binary.
-- **End-to-end restart observability**. The assertion that the child collector actually restarts and picks up the new config was done manually in  and is not part of the automated suite.
+## Current implementation gap
 
-### 5c. Proposed supervisor integration test (follow-up)
+The current ASAPCollector OpAMP extension does not yet implement this target
+interface. Today it:
 
-A stand-alone integration test file `controller/tests/opamp_supervisor_integration_test.rs` marked `#[ignore]` by default (so it doesn't run in `cargo test` but can be invoked with `cargo test -- --ignored`):
+- reads an arbitrary `AgentConfigFile.body` as a complete OTel Collector YAML;
+- writes that YAML to a configured path and relies on a supervisor restart;
+- identifies it only by OpAMP `config_hash`; and
+- reports `APPLIED` after a syntactic YAML check and file write.
 
-1. Start the controller HTTP + OpAMP servers on ephemeral ports
-2. `exec` the `opampsupervisor` binary with a temp-dir `supervisor-config.yaml` pointing at the controller's port
-3. `exec` a stub child collector that just writes its argv + config path to a known temp file and sleeps
-4. `POST /api/v1/plan` with a known sketch config
-5. Poll the temp file until it reflects the new config (child was re-execed)
-6. Assert the new config hash matches what the controller pushed
+It does not yet parse a versioned `CollectorPlan`, validate Planner-derived
+semantics, apply a plan atomically in-process, or report plan/materialization
+identities. The separate JSON `PrecomputeConfigSet` HTTP polling interface is
+also not this target contract; the runtime OpAMP control-channel adapter is
+currently a stub.
 
-The `#[ignore]` gate is important because the test depends on an external binary (`opampsupervisor` from `open-telemetry/opentelemetry-collector`) being installed and on filesystem/process primitives that are flaky on some CI runners. Marking it `#[ignore]` keeps it available for manual verification without blocking the fast suite.
+Until the target interface is implemented, tests must not claim that
+`config_hash` or `APPLIED` proves a compatible versioned plan was active.
 
-**This follow-up is tracked but not shipping in the planned change** — the planned change ships the architecture doc + the control-plane-design.md correction, and the proposed test layout above. The test itself can land independently once the opampsupervisor binary is pinned in CI.
+## Non-goals
 
----
-
-## 6. Quick reference — file:line index
-
-| Thing | Path | Line |
-|---|---|---|
-| OpAMP server struct | `controller/src/opamp/mod.rs` | 77–101 |
-| WebSocket handler | `controller/src/opamp/mod.rs` | 121–144 |
-| Push unicast | `controller/src/opamp/mod.rs` | 147 |
-| Push to role | `controller/src/opamp/mod.rs` | 162 |
-| `ServerToAgent` remote_config build | `controller/src/opamp/mod.rs` | 256–283 |
-| Plan push REST handler | `controller/src/main.rs` | 310–404 |
-| On-connect callback | `controller/src/main.rs` | 133–159 |
-| Replanner push | `controller/src/replan.rs` | 123–178 |
-| Supervisor bootstrap config | `opentelemetry-collector-contrib/cmd/asap-otel-opamp/supervisor-config.yaml` | — |
-| Collector-with-opamp config | `opentelemetry-collector-contrib/cmd/asap-otel-opamp/config-with-opamp.yaml` | — |
-| Existing mock-client tests | `controller/src/main.rs` | 991–1238 |
-| Original supervisor e2e commit | `git show 4b196e1` | — |
+This interface does not serialize ASAPPlanner's internal DAG, define PromQL
+parsing, rank Planner candidates, define backend query execution, or specify
+summary-state byte encoding. It defines the physical control-plane boundary
+between ASAPQuery-backend and ASAPCollector and the identities that bind it to
+the corresponding backend plan.
