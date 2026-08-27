@@ -3,7 +3,7 @@
 `asap-precompute-rs` is the Rust mirror of
 [`asap-precompute-go`](../asap-precompute-go/), the host-neutral
 edge precompute runtime described in
-[`docs/design-asap-edge-framework.md`](../docs/design-asap-edge-framework.md)
+[`docs/design_docs/system-overview.md`](../docs/design_docs/system-overview.md)
 §6 and pinned by
 [ADR-0002](../docs/adr/adr-0002-extract-precompute-runtime.md).
 

@@ -133,12 +133,12 @@ not silently include it in the results.
 
 ## Related design scopes
 
-- `control-plane-design.md`: planning and collection decisions.
-- `delta-transmission-design.md`: full-state and delta semantics.
-- `continuous-windows-related-work.md`: windowing and freshness concerns.
-- `design-gos-unified-edge-telemetry.md`: sampling and continuous updates.
-- `continuous-monitoring-aggregation-taxonomy.md`: supported aggregation
-  shapes.
+- `control-plane-design.md`: the ASAPCollector-side contract for collection
+  plans produced by ASAPPlanner.
+- `summary-aggregation-and-transmission.md`: summary families, aggregation
+  shapes, windows, accuracy, freshness, and transmission semantics.
+- `future-summary-and-compression.md`: deferred summary families and raw or
+  archival compression.
 
 Each related document owns its detailed design; this document only states the
 system-level relationship.
