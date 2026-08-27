@@ -101,8 +101,8 @@ where it breaks**, and the coordinator's ε-floor `1/(1+ε²·rate)` is what pre
 **✅ measured (`/tmp/gct-sweep-results.json`, `/tmp/2axis`).**
 
 ### (c) Per-family accuracy — all 6 families, real gct, 1000 series  ✅/◑
-Each family ingests the *same* real `cpu_rate` rows (aliased) and is queried vs exact
-ground truth (`datasets_eval/multisketch/`, branch `feat/multisketch-accuracy`).
+Each family ingested the same real `cpu_rate` rows and was queried against exact
+ground truth in a historical standalone experiment whose artifacts were removed.
 **Wall-clock anchoring** of the replay was required (the warm read was empty because
 the trace's epoch-relative timestamps never intersected the wall-clock query window —
 a *timing*, not reducer, cause; pinned + fixed via `run.py --wall-clock-anchor`).
@@ -277,11 +277,8 @@ A cold storage-routing table pins `google_cluster_2019_cpu_rate → gorilla_obje
 so its instant queries dispatch to the ThanosQueryEngine; the control-plane was stopped
 during timing because it periodically re-POSTs a storage-routing table that overrides
 the file table back to warm. **Single-node loopback — server-side latency only, no
-network RTT.** Artifacts: `datasets_eval/latency/` (`latency_RESULTS.md`,
-`latency_cdf.png`, `latency_summary.json`, `per_query_latency.json`,
-`per_query_latency_cold.json`, `compute_latency.py`, `cold_latency_replay.py`,
-`stack-coldon.sh`, `backend-storage-routing-coldon.yaml`, `agent-cold-ship.yaml`,
-`queries-latency-cold.json`), branch `eval/fig7-cold-arm`.
+network RTT.** The historical standalone latency artifact bundle was removed;
+the issue-46 harness is now the source of latency evidence.
 
 ---
 
