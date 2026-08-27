@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""measure_stages.py — issue #46 v4 stage-separated resource breakdown.
+"""Stage-separated resource measurement for the multinode MVP harness.
 
 Samples per-container CPU cores, RSS MiB, net rx/tx KiB/s, and disk
 usage MiB at 1Hz over a measurement window (default 60s), then
@@ -35,7 +35,7 @@ are time-averages over the window (CPU as mean cores; RSS as mean
 MiB; net rx/tx as window-rate KiB/s; disk as the measured-window-end
 sample). Stdlib only — uses `docker stats` and `docker exec`.
 
-Independent of `run_mvp_demo.sh`. Exits cleanly after `--duration`.
+Exits cleanly after `--duration`.
 
 Usage:
 
@@ -48,7 +48,7 @@ Usage:
   python3 measure_stages.py \\
       --baseline b0-prometheus \\
       --duration 60 \\
-      --stages-yaml deploy/mvp-singlenode/configs/stages-mapping.yaml \\
+      --stages-yaml optional-stages-mapping.yaml \\
       --out stages.csv
 """
 from __future__ import annotations

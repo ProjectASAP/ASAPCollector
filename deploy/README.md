@@ -1,10 +1,9 @@
 # ASAP deployment
 
-Two demos, two packages, plus shared infrastructure pieces:
+One canonical MVP demo plus shared deployment infrastructure:
 
 | Path | What | Read |
 |---|---|---|
-| `mvp-singlenode/scripts/` | Shared replay and measurement utilities retained after removal of the legacy single-host deployment | — |
 | [`mvp-multinode/`](mvp-multinode/README.md) | Canonical issue-#46 paired harness on a real 10 Gbps LAN | [mvp-multinode/README.md](mvp-multinode/README.md) |
 | `helm/` | Helm charts (K8s / scale path) | — |
 | `docker/` | Dockerfiles built once and consumed by both demos (`Dockerfile.asap-otel`, `Dockerfile.otel-app`). The data-plane / control-plane images build from ASAPQuery-backend's `data_plane/Dockerfile` + `control_plane/Dockerfile` (data_plane reorg, 2026-05 — the old combined `Dockerfile.backend` is retired). | — |
@@ -19,5 +18,5 @@ Two demos, two packages, plus shared infrastructure pieces:
 
 ## Layout invariants
 
-- `mvp-multinode/scripts/run_demo.sh` rsyncs the shared utilities and per-arm
+- `mvp-multinode/scripts/run_demo.sh` rsyncs its utilities and per-arm
   configs to node0–node3 under `/mydata/mvp-multinode/{scripts,configs}/`.

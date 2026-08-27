@@ -242,7 +242,7 @@ before any of §2 runs. Detail:
 - [`design-asap-edge-framework.md`](./design-asap-edge-framework.md) — `asap-otel` agent design.
 - [`docs/dormant/`](./dormant/) — the unmaintained `asap-otap` integration design.
 - [`control-plane-design.md`](./control-plane-design.md) — planning-time architecture (§8).
-- [`mvp-demo-runbook.md`](./mvp-demo-runbook.md) — how to run the single-host demo end-to-end.
+- [`mvp-demo-runbook.md`](./mvp-demo-runbook.md) — how to run the canonical four-node MVP demo.
 - [`comparison-asap-vs-databricks-pantheon-hydra.md`](./comparison-asap-vs-databricks-pantheon-hydra.md) — positioning vs. related systems.
 
 ---

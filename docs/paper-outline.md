@@ -36,9 +36,9 @@ workload + SLAs.
      the agent → backend wire are smaller than raw samples,
      vs. raw and vs. compression baselines (b0a / b0b / b1 /
      b5).
-     - *Evidence:* `deploy/mvp-singlenode/scripts/run_e2e_sweep.sh` (P7) →
+     - *Evidence:* `deploy/mvp-multinode/scripts/run_demo_sweep.sh` (P7) →
        per-cell `bytes_in / bytes_out` columns →
-       `deploy/mvp-singlenode/scripts/e2e_plots.py` (P9) bandwidth-vs-N plot.
+       `deploy/mvp-multinode/scripts/plots.py` (P9) bandwidth-vs-N plot.
        Single-host pre-compare:
        `otel_collector_benchmark/cardinality_crossover/`
        (sketch-bytes vs raw-bytes across `N ∈ {100…5M}`).
@@ -63,7 +63,7 @@ workload + SLAs.
      `infos` of every response.
      - *Evidence:* `otel-app/raw_tee.go` (P4)
        writes ground truth to MinIO/S3 raw JSONL;
-       `deploy/mvp-singlenode/scripts/accuracy_reduce.py` (P8) joins query
+       `deploy/mvp-multinode/scripts/mvp_evaluate.py` (P8) joins query
        answers vs. truth and computes per-row relative
        error / top-K recall; bound-derivation crib in
        `ASAPQuery-backend/TODO.md` "Accuracy-profile library
@@ -72,10 +72,10 @@ workload + SLAs.
      Backend p50 / p99 query latency is production-usable.
      Headline target: ≤2× warm-hot for cold-fallback;
      warm-tier is the headline number.
-     - *Evidence:* `deploy/mvp-singlenode/scripts/metricsql_replay.py` (P5)
+     - *Evidence:* `deploy/mvp-multinode/scripts/metricsql_replay.py` (P5)
        captures p50 / p99 per query at fixed QPS; P9
        `query_latency_cdf.png` plot;
-       `deploy/mvp-singlenode/scripts/plan_transition.py` (P6)
+       the plan IDs captured by `deploy/mvp-multinode/scripts/metricsql_replay.py` (P6)
        `t_query_in / t_first_hit / t_steady` against the
        controller's plan-id stream.
 

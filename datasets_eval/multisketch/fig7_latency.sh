@@ -11,7 +11,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT=/mydata/ASAPCollector
 GCT="${ROOT}/datasets_eval/google_cluster"
 TRACE="${TRACE:-/tmp/perfam-ddsketch.jsonl}"   # aliased trace (contains _q_ddsketch)
-QUERIES="${ROOT}/deploy/mvp-singlenode/scripts/queries-latency-warm.json"
+QUERIES="${ROOT}/deploy/mvp-multinode/queries-latency-warm.json"
 OUT="${OUT:-/mydata/eval/results/fig7}"; mkdir -p "${OUT}"
 log(){ printf '[%s] [fig7] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
@@ -35,7 +35,7 @@ for i in $(seq 1 30); do
 done
 
 log "replay latency queries (60s @ 15 qps)"
-python3 "${ROOT}/deploy/mvp-singlenode/scripts/metricsql_replay.py" \
+python3 "${ROOT}/deploy/mvp-multinode/scripts/metricsql_replay.py" \
     --target http://127.0.0.1:9091 --queries "${QUERIES}" \
     --qps 15 --duration 60 --no-plan-poll --out "${OUT}/fig7_latency.jsonl" \
     >"${OUT}/replay_lat.log" 2>&1 || true

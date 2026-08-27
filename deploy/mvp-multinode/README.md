@@ -4,9 +4,8 @@ CloudLab / multi-host driver for the MVP demo (issue #46). Runs exact raw-data
 and ASAP arms across 4 nodes on a 10 Gbps LAN, so wire-byte measurements use a
 real NIC instead of loopback.
 
-This is the canonical issue-#46 harness. The former single-host deployment was
-removed because it used legacy per-sketch processors; `mvp-singlenode/scripts`
-now contains only shared measurement utilities.
+This is the canonical issue-#46 harness. The retired single-host deployment and
+its duplicate measurement path have been removed.
 
 ## Topology
 
@@ -113,8 +112,8 @@ Knobs (env-overridable, see `topology.env` for defaults):
 | `scripts/measure_storage.sh` | Persistent host-volume bytes for VictoriaMetrics and ASAP storage |
 | `configs/{b0,b1,asap,shared}/` | Per-arm + shared YAML bundles — rsync'd to each node at Phase 0 |
 
-The per-node Python utilities live in `deploy/mvp-singlenode/scripts/`; the
-driver rsyncs them to each node at bring-up.
+The per-node utilities live beside the driver in `scripts/`; the driver rsyncs
+that directory to each node at bring-up.
 
 ## Acceptance and exit status
 
@@ -134,18 +133,6 @@ same deterministic generator seed and workload shape. The evaluator requires:
 Missing, malformed, empty, or previous-run artifacts fail the run. The driver
 returns non-zero when any category fails. Thresholds must be edited and
 reviewed before a measurement run, never after observing its results.
-
-## Differences vs the single-host driver
-
-| | `deploy/mvp-singlenode/scripts/run_mvp_demo.sh` | `deploy/mvp-multinode/scripts/run_demo.sh` |
-|---|---|---|
-| Topology | All containers on one host | 4 nodes on 10.10.1.x |
-| Image distribution | Built once, used in place | `docker save | ssh load` to each node |
-| Bandwidth measurement | Loopback (flattered) | Real NIC counters per node |
-| Compose | `docker-compose` overlays under `deploy/mvp-singlenode/docker-compose/` | Plain `docker run --network host` + `--add-host` (no compose, no overlay merging) |
-| `MVP_REPORT.md` | Rendered by `mvp_report.py` (Phase 8) | Generated on node0 from aggregated per-node CSVs |
-
-Pick the single-host driver for fast iteration and PR-time smoke. Use the 4-node driver when bandwidth claims need to land on a real LAN.
 
 ## gorilla-merger integration (issues #32 / #24)
 
@@ -171,7 +158,7 @@ no direct-to-S3 PUT; the merger builds the TSDB block + index and cuts the windo
 block to MinIO's `asap-gorilla-tsdb` bucket. (This supersedes the old `gorillas3`
 OTel processor, which wrote Prometheus TSDB blocks directly to MinIO and had no
 HTTP-ship endpoint — that path, and the old per-sketch routing-connector agent
-config `asap-otel-agent-b6-asap-single-sketch.yaml`, are retired.)
+legacy per-sketch routing configuration, are retired.)
 
 The fused agent config is delivered to the supervised agent as an OpAMP
 RemoteConfig PUSH from the control plane (run_demo starts it with

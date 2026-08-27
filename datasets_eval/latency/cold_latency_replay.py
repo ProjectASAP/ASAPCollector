@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cold-arm query-latency replay (Fig 7 cold-fallback arm).
 
-Mirrors deploy/mvp-singlenode/scripts/metricsql_replay.py (warm arm) but
+Mirrors deploy/mvp-multinode/scripts/metricsql_replay.py (warm arm) but
 pins the PromQL *evaluation timestamp* (`time=<at_time>`) to the instant
 the cold workload was anchored at, so every instant query deterministically
 intersects the cold-archived window in MinIO/Thanos. (The warm arm queried

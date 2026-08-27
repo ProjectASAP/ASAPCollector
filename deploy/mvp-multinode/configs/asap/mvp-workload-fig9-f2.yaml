@@ -5,15 +5,13 @@
 # L5 stage_split pipeline plans sketches + stage placement based
 # on this workload.
 #
-# Schema mirrors deploy/mvp-singlenode/configs/workloads.yaml. See
-# controller/src/config/workloads.rs::WorkloadEntry.
+# Schema: controller/src/config/workloads.rs::WorkloadEntry.
 #
 # Each entry is one PromQL query class the demo will exercise.
 #
 # ── Operating-point assumptions for the bandwidth verdict ─────────
 #
-# Agents run at 10 Hz scrape (`-freq-hz=10`, see
-# `deploy/mvp-singlenode/docker-compose/base.yml` and `mvp-multi-stage.yml`); each
+# Agents run at 10 Hz scrape (`OTELAPP_FREQ_HZ` in `topology.env`); each
 # series therefore produces 600 samples per 60 s flush window. The
 # break-even against raw scrape depends on `samples_per_window`
 # (≈ `state_size_bytes / per_sample_raw_bytes`); at 600 samples the
@@ -40,8 +38,7 @@
 #
 #    Window-alignment note (issue #46 ε-bound bug, fix/quantile-
 #    window-alignment): the warm-tier ASAPQuery streaming pre-compute
-#    is configured with `windowSize: 30` (see
-#    `deploy/mvp-singlenode/configs/backend-streaming.yaml` and the `precompute_window
+#    is configured with `windowSize: 30` (see `backend-streaming.yaml` and the `precompute_window
 #    [..) ms (width 30000 ms)` annotation the warm response stamps).
 #    The replay range MUST match that pre-compute width so the warm
 #    answer is computed over the same data the replay asks for; any

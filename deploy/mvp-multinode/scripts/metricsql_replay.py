@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MetricsQL replay client for the e2e harness (P5).
+"""MetricsQL replay client for the multinode MVP harness.
 
 Fires MetricsQL queries at the backend's HTTP query surface
 (`:19091/api/v1/query`) at a fixed QPS, captures wall-clock

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_demo.sh — multi-node MVP demo orchestrator (issue #46).
 #
-# Drives the same six criteria as deploy/mvp-singlenode/scripts/run_mvp_demo.sh
+# Drives the six issue-#46 MVP acceptance criteria.
 # (bandwidth, query latency, e2e resource, accuracy, cold-fallback,
 # freshness) but distributed across 4 hosts on 10.10.1.0/24:
 #
@@ -80,7 +80,7 @@ write_run_manifest() {
     SOAK_S="${SOAK_S}" OTELAPP_SEED="${OTELAPP_SEED:-42}" \
     python3 -c 'import datetime,json,os,subprocess; root=os.environ["ROOT"]; backend=os.environ["BACKEND"]; rid=os.environ["RUN_ID"]; seed=int(os.environ["OTELAPP_SEED"]); commit=lambda p: subprocess.check_output(["git","-C",p,"rev-parse","HEAD"],text=True).strip(); json.dump({"schema_version":1,"run_id":rid,"started_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"collector_commit":commit(root),"backend_commit":commit(backend),"time_alignment":{"mode":"relative_logical_sequence","contract":"same seed, query id, per-query sequence and bounded elapsed-time skew"},"workload":{"cardinality":int(os.environ["PER_AGENT_CARDINALITY"]),"frequency_hz":float(os.environ["OTELAPP_FREQ_HZ"]),"soak_s":float(os.environ["SOAK_S"])},"arms":{"b1":{"seed":seed},"asap-gzip":{"seed":seed}}},open(os.path.join(os.environ["RUN_DIR"],"run-manifest.json"),"w"),indent=2)'
     cp "${PKG_DIR}/mvp-acceptance.json" "${RUN_DIR}/mvp-acceptance.json"
-    cp "${ROOT}/deploy/mvp-singlenode/scripts/queries-e2e.json" "${RUN_DIR}/queries-e2e.json"
+    cp "${PKG_DIR}/queries-e2e.json" "${RUN_DIR}/queries-e2e.json"
 }
 
 # ── ssh wrapper that runs commands on a remote node with our env ──
@@ -231,7 +231,8 @@ sync_to() {
     rsync -a --delete \
         "${CONFIG_SRC}/" \
         "${node}:/mydata/mvp-multinode/configs/"
-    rsync -a "${ROOT}/deploy/mvp-singlenode/scripts/" "${node}:/mydata/mvp-multinode/scripts/"
+    rsync -a --exclude '__pycache__' --exclude 'tests/' \
+        "${SCRIPT_DIR}/" "${node}:/mydata/mvp-multinode/scripts/"
     rsync -a "${TOPOLOGY_ENV}" "${node}:/mydata/mvp-multinode/topology.env"
 }
 
@@ -445,10 +446,8 @@ backend_up() {
         # ship as TWO separate images — `asap/control-plane:dev` (entrypoint
         # `/usr/local/bin/control_plane`) and `asap/data-plane:dev`
         # (entrypoint `/usr/local/bin/data_plane`) — built from
-        # ASAPQuery-backend's per-crate Dockerfiles. They still run as TWO
-        # separate processes/containers. The single-node
-        # `deploy/mvp-singlenode/docker-compose/base.yml` models them as two
-        # compose services; mirror that here.
+        # ASAPQuery-backend's per-crate Dockerfiles. They run as two separate
+        # processes/containers.
         #
         # Without the control-plane container the data plane never receives
         # the control plane's POST /api/v1/streaming-config and falls back
@@ -794,10 +793,10 @@ arm_measure() {
     fi
 
     log "[measure ${arm}] MetricsQL replay against ${query_endpoint} for ${SOAK_S}s"
-    python3 "${ROOT}/deploy/mvp-singlenode/scripts/metricsql_replay.py" \
+    python3 "${SCRIPT_DIR}/metricsql_replay.py" \
         --target "${query_endpoint}" \
         --controller "http://${NODE2_IP}:8080" \
-        --queries "${ROOT}/deploy/mvp-singlenode/scripts/queries-e2e.json" \
+        --queries "${PKG_DIR}/queries-e2e.json" \
         --duration "${SOAK_S}" \
         --out "${out}/replay.jsonl" \
         > "${out}/replay.log" 2>&1 &

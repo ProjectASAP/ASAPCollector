@@ -29,7 +29,7 @@ echo "[sweep] sync configs to all 4 nodes" | tee -a "${RUN_DIR}/run.log"
 bash "${SCRIPT_DIR}/run_demo.sh" sync >> "${RUN_DIR}/run.log" 2>&1
 
 # ── replay queries ──
-QUERIES_JSON="${ROOT}/deploy/mvp-singlenode/scripts/queries-e2e.json"
+QUERIES_JSON="${ROOT}/deploy/mvp-multinode/queries-e2e.json"
 
 run_arm() {
     local arm=$1
@@ -56,7 +56,7 @@ run_arm() {
 
     # background: MetricsQL replay
     if [ -f "${QUERIES_JSON}" ]; then
-        timeout $((SOAK+10)) python3 "${ROOT}/deploy/mvp-singlenode/scripts/metricsql_replay.py" \
+        timeout $((SOAK+10)) python3 "${SCRIPT_DIR}/metricsql_replay.py" \
             --target "${q_endpoint}" \
             --queries "${QUERIES_JSON}" \
             --duration "${SOAK}" \
