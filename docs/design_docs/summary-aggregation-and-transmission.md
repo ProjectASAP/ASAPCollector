@@ -85,7 +85,7 @@ window cannot be reconstructed from the collected state is unsupported.
 
 | Family | Result | Accuracy model | Merge model | Delta mode |
 | --- | --- | --- | --- | --- |
-| Sum/Count | exact scalar aggregate | numeric tolerance | addition | additive delta |
+| Sum/Count | exact scalar aggregate | predeclared absolute/relative tolerance | addition | additive delta |
 | DDSketch | quantiles | relative value error | compatible-state merge | supported |
 | KLL | quantiles | rank error | compatible-state merge | full state for MVP |
 | HLL | distinct cardinality | cardinality error | register-wise maximum | changed registers |
@@ -214,10 +214,25 @@ For the same observations, plan, and logical interval, applying all valid
 deltas must produce query semantics equivalent to receiving the corresponding
 full state. Equivalence means:
 
-- exact families match within numeric tolerance;
+- exact families match under their predeclared absolute and relative numeric
+  tolerances;
 - approximate families remain within the same configured accuracy SLA;
 - no series, labels, or timestamps are lost or invented; and
 - duplicate or missing deltas cannot produce an apparently valid result.
+
+For an exact result point, the checked-in acceptance configuration declares
+`absolute_tolerance` and `relative_tolerance`. A finite pair passes when:
+
+```text
+abs(ASAP - exact) <= max(
+  absolute_tolerance,
+  relative_tolerance * abs(exact)
+)
+```
+
+The absolute tolerance governs exact values at or near zero. NaN matches only
+NaN; positive and negative infinity match only the same infinity; finite and
+non-finite values never match. These rules are fixed before the run.
 
 Periodic or requested full-state synchronization provides a recovery point
 when delta continuity cannot be established.
@@ -297,9 +312,17 @@ allowed 1% of out-of-bound numeric results.
 
 ## Freshness contract
 
-Freshness is the time from source observation timestamp to the first successful
-query that includes the corresponding observation or window contribution. The
-MVP reports freshness separately by aggregation class and transmission mode.
+Freshness is the time from a source observation timestamp to the first
+successful query whose backend progress evidence proves that the corresponding
+observation or window contribution has been applied. The MVP reports freshness
+separately by aggregation class and transmission mode.
+
+The load generator assigns a run identity and monotonically increasing source
+sequence to test observations. For each plan, group, and window, the collector
+and backend expose their applied high-watermark. A query response is fresh for
+sequence `N` only when its recorded backend watermark is at least `N` and its
+run, plan, group, and window identities match. The harness uses this progress
+evidence rather than inferring inclusion from the numeric answer.
 
 An answer from an earlier run, earlier plan, or earlier window is stale even if
 its numeric value appears plausible. Run identity, plan identity, and window
@@ -312,8 +335,10 @@ sum by (service) (increase(http_requests_total[1m]))
 ```
 
 An observation timestamped `12:00:20` first appears in a valid result for this
-query at `12:00:24.5`, producing a 4.5-second freshness lag. A cached answer
-from a previous run does not satisfy this measurement.
+query at `12:00:24.5`, and the response evidence reports the matching run and
+plan with a watermark at or beyond that observation's sequence. Its freshness
+lag is 4.5 seconds. A cached answer from a previous run does not satisfy this
+measurement.
 
 ## Cost model
 
@@ -325,6 +350,28 @@ No transmission mode is universally cheaper. The fair comparison measures the
 same observation stream and reports CPU, memory, bytes, storage, and query work
 separately before applying fixed cost weights.
 
+The checked-in acceptance configuration defines one cost model used by both
+arms:
+
+```text
+normalized_cost =
+  cpu_weight     * CPU-seconds +
+  memory_weight  * GiB-seconds +
+  network_weight * GiB-transmitted +
+  storage_weight * GiB-hours-stored
+```
+
+The model includes collector processing, transmission, backend ingestion,
+storage, and query execution. A stage may not be omitted because it regresses.
+All weights and per-resource regression guardrails are fixed before the run.
+
+The collector-cost gate passes only when ASAPCollector's normalized cost is
+lower than the raw-forwarding collector and every CPU, memory, and network
+guardrail passes. The end-to-end gate passes only when ASAPCollector plus the
+ASAPQuery-backend has lower normalized cost than the full exact pipeline and
+the functional, accuracy, freshness, and latency gates also pass. Unlike units
+are never added without these declared weights.
+
 **Example:** Compare a workload that transmits every 100 ms raw observation
 with one that emits five-second summary deltas. Measure collector CPU and
 memory, transmitted bytes, backend ingest and query CPU, and stored bytes for
@@ -334,7 +381,7 @@ both arms before applying the checked-in cost weights.
 
 | Failure scenario | Example | Required behavior |
 | --- | --- | --- |
-| Unsupported query | `request_errors_total / on (service) group_left request_total` cannot be realized from the selected summaries. | Reject it or route it to the configured exact path. |
+| Unsupported query | `request_errors_total / on (service) group_left request_total` cannot be realized from the selected summaries. | Reject it or route it to the configured exact backend and mark the result `exact-fallback`. |
 | Incompatible summaries | Two DDSketch states use different accuracy parameters. | Keep them separate and report incompatibility. |
 | Missing delta base | Delta sequence `43` arrives without the required base or sequence `42`. | Resynchronize or fail; do not query incomplete state. |
 | Stale result | A response carries an earlier run or plan identity. | Fail validation even if its value looks reasonable. |
