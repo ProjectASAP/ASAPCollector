@@ -27,10 +27,20 @@ among several metrics when each metric remains individually plausible.
 Multivariate summaries could support questions such as whether latency, load,
 memory, and error rate have developed an unusual joint pattern.
 
-**Example query:** "During the last ten minutes, did the relationship among
-request rate, CPU usage, memory usage, p99 latency, and error rate for
-`service="checkout"` deviate from its reference behavior?" Each individual
-metric may remain inside its normal range while their correlation changes.
+**PromQL input workload:**
+
+```promql
+sum by (service) (rate(http_requests_total{service="checkout"}[10m]))
+avg by (service) (rate(process_cpu_seconds_total{service="checkout"}[10m]))
+avg by (service) (process_resident_memory_bytes{service="checkout"})
+quantile by (service) (0.99, request_duration_seconds{service="checkout"})
+sum by (service) (rate(http_request_errors_total{service="checkout"}[10m]))
+```
+
+The future query asks whether the relationship among these result series has
+deviated from its reference behavior. Correlation drift is not standard
+PromQL, so this document does not invent a PromQL function for the final
+score; it treats the expressions above as the declared input workload.
 
 ### Proposed summary
 
@@ -72,10 +82,15 @@ mergeable.
 - How are sparse, delayed, or partially observed vectors handled?
 - When does a raw exact fallback remain necessary?
 
-**Fallback example:** An operator asks which exact pair of source observations
-caused a correlation alert. A covariance summary cannot reconstruct those raw
-observations, so that investigation requires a separately configured exact
-path.
+**Exact fallback PromQL example:**
+
+```promql
+request_duration_seconds{service="checkout", instance="worker-7"}
+```
+
+The query-range API retrieves the exact source series for the incident. A
+covariance summary cannot reconstruct those observations, so the investigation
+requires a separately configured exact path.
 
 This direction becomes active only after an end-to-end workload, accuracy SLA,
 and exact comparison method are checked in.
@@ -89,10 +104,15 @@ because no supported summary has been selected. Lossless compression may lower
 the transmission or storage cost of those paths without changing query
 semantics.
 
-**Example query scenario:** An audit query requests the exact
-`queue_depth{instance="worker-7"}` values for every second of a one-hour
-incident. The stream remains raw, while lossless compression may reduce its
-transmission and archive cost.
+**PromQL range-query example:**
+
+```promql
+queue_depth{instance="worker-7"}
+```
+
+The query-range API evaluates this expression over the incident's one-hour
+`start`, `end`, and one-second `step`. The stream remains raw, while lossless
+compression may reduce its transmission and archive cost.
 
 ### Design boundary
 
@@ -134,9 +154,15 @@ values, timestamps, and labels.
 - How does random access affect archival layout?
 - Which recovery and compatibility guarantees are required?
 
-**Archive example:** If an exact query reads only the final five minutes of a
-one-hour archive, the framing design determines whether it can decode that
-range directly or must process the preceding 55 minutes.
+**Archive PromQL example:**
+
+```promql
+queue_depth{instance="worker-7"}
+```
+
+If a query-range request evaluates this expression over only the final five
+minutes of a one-hour archive, the framing design determines whether it can
+decode that range directly or must process the preceding 55 minutes.
 
 Compression is excluded from the MVP unless introduced as a separately scoped
 exact-baseline or archive experiment.
