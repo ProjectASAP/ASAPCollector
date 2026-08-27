@@ -4,9 +4,19 @@
 
 This document defines the implemented interface used by the ASAPQuery-backend
 control plane to configure ASAPCollector. Query-to-summary planning belongs to
-[ASAPPlanner](https://github.com/ProjectASAP/ASAPPlanner). The
-ASAPQuery-backend control plane turns that planning output into a collector
-configuration and delivers it through OpAMP.
+[ASAPPlanner](https://github.com/ProjectASAP/ASAPPlanner), which selects a
+candidate post-ASAP logical DAG (`SummaryAgg`/summary family, algorithm, and
+parameters/`Reduction`/`SummaryEstimate` — see its
+`crates/types/src/post_asap` module) and explicitly does not choose
+collector/backend placement, transport mode, or physical resources (its own
+README "Scope" and `asap-aware-mapping/README.md` "Non-Goals"). The
+ASAPQuery-backend control plane compiles that selected DAG — it does not
+serialize it directly — into this collector configuration and a companion
+backend configuration that share one plan identity; see
+[ASAPQuery-backend's compiled-plan design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/docs/asapplanner-workload-planner-migration/control_plane/docs/design-compiled-plan-collector-backend-split.md)
+(proposed, [PR #444](https://github.com/ProjectASAP/ASAPQuery-backend/pull/444))
+for that compile step, and the "Current contract gap" section below for what
+of it is not implemented on this wire yet.
 
 ## What is sent: protobuf containing YAML
 
@@ -191,6 +201,19 @@ Until those fields are implemented and validated, the MVP harness must record
 the OpAMP `config_hash` and independently prove which backend plan was active.
 It must not infer plan ordering, expiry, or collector/backend compatibility
 from `APPLIED` alone.
+
+ASAPQuery-backend's compiled-plan design (linked above) proposes closing this
+gap by having the control plane's compile step stamp `plan_id`/
+`plan_version`/`activation`/`expiry`/`backend_compat` identically onto both
+the collector configuration this document describes and the companion
+`BackendPlan` it compiles alongside it, so the two can be checked for
+agreement directly instead of only through `config_hash`. That design does
+not yet specify where in this document's OpAMP envelope those fields should
+live — a sibling key next to `processors.asap_edge`, a field inside
+`asap_edge` itself, or a separate `AgentConfigFile` entry are all still
+open — and none of them are implemented on this wire today. This section
+should be updated to document the chosen encoding once that decision is
+made and implemented here, not before.
 
 ## Failure behavior
 
