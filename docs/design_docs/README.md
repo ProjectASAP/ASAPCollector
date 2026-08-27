@@ -31,11 +31,9 @@ but each file owns the scope named by its title.
 - [Multivariate anomaly detection](multivariate-anomaly-frequent-directions.md)
 - [Serf compression](serf-compression-architecture.md)
 
-## Evidence and research context
+## Evaluation and research design
 
 - [SDK cost evaluation](sdk-cost-evaluation.md)
 - [Sampling and GOS derivations](sampling-cdm-gos-derivations.md)
-- [Benchmark: raw vs. sketches](benchmark-delta-vs-raw-baseline-2026-03-28.md)
-- [Benchmark: SDK sampling and KLL](benchmark-sdk-sampling-kll-cost-2026-08-04.md)
 - [Use-case and dataset survey](use-case-dataset-survey.md)
 - [Paper outline](paper-outline.md)
