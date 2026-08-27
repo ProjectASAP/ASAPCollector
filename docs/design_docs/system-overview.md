@@ -79,6 +79,11 @@ they applied compatible portions of the issued plan. A control-plane response
 alone is not evidence of execution. Full and delta transmission must have
 equivalent query semantics within the configured accuracy bound.
 
+Here, compatible means that both portions agree on the plan identity and
+version, metric selection, retained labels, summary family and parameters,
+window and grouping rules, transmission mode, and any delta base and sequence
+rules. A mismatch fails plan application or ingestion.
+
 ## Query model
 
 The MVP claims only cover query classes that have an explicit summary
@@ -88,9 +93,26 @@ realization:
 - aggregation across label groups at a timestamp; and
 - aggregation across both a time window and label groups.
 
-Queries outside the supported set must be rejected explicitly or routed to a
-configured exact fallback. They must not receive a plausible but incorrect
-sketch answer.
+A query is **supported** only when the checked-in MVP query catalog contains:
+
+- its PromQL expression or normalized query pattern;
+- the result semantics and aggregation shape;
+- the selected summary family and parameters;
+- the required collector and backend plan behavior;
+- its accuracy, freshness, and latency SLAs; and
+- whether exact fallback is permitted.
+
+Absence from that catalog means unsupported, even if the backend can parse the
+PromQL expression. Unsupported queries must be rejected explicitly or routed
+to the configured exact fallback. They must not receive a plausible but
+incorrect summary result.
+
+The ASAPQuery-backend control plane selects an allowed fallback. The data plane
+sends the query to the configured Prometheus or VictoriaMetrics exact backend
+and marks the response provenance as `exact-fallback`. Such a response is
+validated for functional correctness but is excluded from claims about
+summary-query accuracy and acceleration. Missing or ambiguous provenance is a
+failure.
 
 ## Summary families
 

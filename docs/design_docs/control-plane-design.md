@@ -59,6 +59,19 @@ window and grouping semantics, merge behavior, and the supported query
 realization. Collector output and backend query state with different plan
 identities must not be combined silently.
 
+Collector and backend plan portions are compatible only when they agree on:
+
+- plan identity and version;
+- metric selection and retained label dimensions;
+- summary family and all accuracy parameters;
+- aggregation shape and window identity rules;
+- raw, full-summary, or delta-summary transmission mode; and
+- for deltas, base identity, sequence, and merge operation.
+
+Every field above is compared explicitly. A missing field, unresolved default,
+or mismatch rejects activation or ingestion; compatibility is not inferred
+from payload shape alone.
+
 ## ASAPQuery-backend data-plane contract
 
 The ASAPQuery-backend data plane:
@@ -123,11 +136,21 @@ by the ASAPQuery-backend control plane.
 
 - Invalid or unsupported plans are rejected explicitly.
 - Loss of the control-plane connection does not invent a new plan.
-- A configured last-known-good policy may continue only while it remains
-  valid and its identity remains observable.
+- A configured last-known-good policy may continue only until the earlier of
+  its declared expiry time or the checked-in maximum control-plane disconnect
+  duration. The collector exposes the disconnect start time, active plan
+  identity, and remaining validity. When that limit is reached, it stops the
+  affected planned processing or switches to an explicitly configured safe
+  mode; it must not silently extend the plan.
 - Processing, encoding, and delivery failures are surfaced as failures rather
   than reported as successful plan application.
 - Stale plans and acknowledgements from previous runs are not valid evidence.
+
+**MVP disconnect example:** If the acceptance configuration allows a
+last-known-good plan for 60 seconds, the harness disconnects the control plane,
+verifies that the same plan remains observable for at most 60 seconds, and
+verifies the configured stop or safe-mode transition after the limit. Continued
+use beyond 60 seconds fails the scenario.
 
 ## MVP acceptance contract
 
