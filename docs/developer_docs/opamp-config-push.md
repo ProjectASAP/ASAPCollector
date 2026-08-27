@@ -141,6 +141,29 @@ The precise PromQL-to-summary choice is supplied by ASAPPlanner and the
 ASAPQuery-backend control plane; the collector only applies the delivered
 execution configuration.
 
+### Proposed: align these fields with the post-ASAP DAG's own vocabulary
+
+**Not implemented.** The table above matches
+`opentelemetry-collector-contrib-patch/processor/asapedgeprocessor/config.go`
+today. That struct predates ASAPPlanner's current `post_asap` IR and
+reinvents two vocabularies instead of naming it directly: `mode` is a bare
+string with exactly two values (`per_series`/`whole_stream`) and
+`aggregate_by` is a plain string list — neither can distinguish
+`Reduction::PerEntity` from a genuine zero-key `Reduce`, and `family` has no
+discriminator for the four non-`Sum` exact kinds or any field for
+`GroupingStrategy` (Hydra). ASAPQuery-backend's compiled-plan design
+proposes renaming/extending `metrics[]` so every field and enum value is
+spelled directly from `post_asap` —
+`source`/`family`/`exact_kind`/`reduce_by`/`reduce_without`/`per_entity`/
+`grouping`/`hydra_kind`/`shared_rows`/`shared_columns` — as a flat,
+`mapstructure`-shaped struct (matching this same file's existing
+`FamilyKind`/`Tier`/`ColdFormat` pattern), not a nested tagged union. See
+[§5 of that design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/docs/asapplanner-workload-planner-migration/control_plane/docs/design-compiled-plan-collector-backend-split.md#5-redesigning-asap_edgemetrics-to-match-the-dags-own-shape)
+for the full field-by-field redesign and a worked example. This section
+should be rewritten against the table above once that redesign lands in
+`config.go`, with old field names accepted as deprecated aliases for one
+release.
+
 ## Apply behavior and response
 
 On receipt, ASAPCollector:
