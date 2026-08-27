@@ -36,7 +36,7 @@ documents listed in the design-doc index.
   aggregates retain exact semantics.
 - **Freshness:** updates remain queryable while the current time window is
   open; freshness is measured from source timestamp to query visibility.
-- **Performance:** supported sketch-backed queries avoid repeated scans of the
+- **Performance:** supported summary-based queries avoid repeated scans of the
   raw stream.
 - **Cost reduction:** edge and end-to-end resource use is lower than the
   declared full-raw-data baseline.
@@ -48,15 +48,13 @@ the ASAP and exact arms.
 ## Logical architecture
 
 ```text
-source samples
-      |
-      v
-control-plane collection plan
-      |
-      v
-edge collector -- full state or delta --> ASAPQuery
-      |                                      |
-      +-- exact/pass-through when selected  +--> supported query result
+query workload --> ASAPPlanner --> ASAPQuery-backend control plane
+                                      |                  |
+                              collector plan      backend plan
+                                      |                  |
+source samples --> ASAPCollector --> summary state --> ASAPQuery data plane
+                         |                                |
+                         +-- exact/pass-through           +--> summary-based query
 
 exact baseline: the same source samples --> Prometheus/VictoriaMetrics
                                              |
@@ -76,10 +74,10 @@ The control plane may select one of three MVP transmission modes:
 - **delta sketch:** transmit an incremental update for a sketch family that
   supports delta encoding.
 
-The collector must expose evidence that it applied the issued plan. A control
-plane response alone is not evidence of collection behavior. Full and delta
-transmission must have equivalent query semantics within the configured
-accuracy bound.
+The collector and the ASAPQuery-backend data plane must expose evidence that
+they applied compatible portions of the issued plan. A control-plane response
+alone is not evidence of execution. Full and delta transmission must have
+equivalent query semantics within the configured accuracy bound.
 
 ## Query model
 

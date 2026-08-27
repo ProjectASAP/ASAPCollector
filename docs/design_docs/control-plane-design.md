@@ -6,8 +6,10 @@ ASAPPlanner analyzes the query workload and identifies suitable summary
 semantics. The ASAPQuery-backend control plane chooses aggregation placement
 and transmission mode, then issues the resulting collection plan.
 ASAPCollector validates that it can execute the requested behavior, applies
-the plan atomically, and reports evidence of the active plan. This document
-defines only that ASAPCollector-specific contract.
+the collector portion atomically, and reports evidence of the active plan.
+The ASAPQuery-backend data plane applies the backend portion, reconstructs
+summary state, and executes supported summary-based queries. This document
+focuses on the ASAPCollector contract while defining that boundary explicitly.
 
 **Status:** active
 
@@ -25,14 +27,16 @@ The control plane spans two distinct responsibilities:
 | Choose aggregation placement and transmission mode | ASAPQuery-backend control plane |
 | Assemble, version, and deliver the collection plan | ASAPQuery-backend control plane |
 | Validate collector capabilities | ASAPCollector |
-| Apply, expose, and acknowledge the active plan | ASAPCollector |
+| Apply, expose, and acknowledge the collector portion of the plan | ASAPCollector |
+| Apply the backend portion and ingest summary state | ASAPQuery-backend data plane |
+| Execute supported summary-based queries | ASAPQuery-backend data plane |
 
 ASAPPlanner supplies query-to-summary planning information. The
 ASAPQuery-backend control plane owns deployment decisions, including where
 aggregation occurs and whether raw, full-summary, or delta-summary
 transmission is selected. ASAPCollector must not reproduce either layer's
-policy. The collector is an execution target with an explicit capability and
-lifecycle contract.
+policy. ASAPCollector and the ASAPQuery-backend data plane are distinct
+execution targets, each with an explicit capability and lifecycle contract.
 
 ## Collection plan
 
@@ -48,6 +52,28 @@ A plan addressed to ASAPCollector identifies:
 A plan must be explicit enough that an observer can determine what the
 collector was instructed to compute and transmit. Defaults that change query
 semantics must be resolved before the plan becomes active.
+
+The same plan identity also binds the backend behavior needed to interpret the
+collector output. The backend portion identifies compatible summary state,
+window and grouping semantics, merge behavior, and the supported query
+realization. Collector output and backend query state with different plan
+identities must not be combined silently.
+
+## ASAPQuery-backend data-plane contract
+
+The ASAPQuery-backend data plane:
+
+1. validates and applies the backend portion of the issued plan;
+2. accepts only payloads compatible with the active plan;
+3. reconstructs full or delta summary state for the correct groups and
+   windows;
+4. executes supported summary-based queries against that state;
+5. rejects unsupported queries or routes them to the configured exact path;
+6. exposes the plan identity used for ingestion and query execution; and
+7. surfaces missing, stale, incompatible, or failed state transitions.
+
+A query result is not valid plan evidence unless both the collector and the
+backend data plane applied compatible portions of the same plan.
 
 ## Capability contract
 
@@ -111,11 +137,15 @@ decisions. For each decision it verifies that:
 1. the ASAPQuery-backend control plane issued an explicit plan using the
    workload planning information supplied by ASAPPlanner;
 2. ASAPCollector accepted and activated that exact plan;
-3. observed metrics were processed under it;
-4. emitted payloads match the selected mode; and
-5. failures or unsupported behavior were reported explicitly.
+3. the ASAPQuery-backend data plane accepted and activated its corresponding
+   backend portion;
+4. observed metrics were processed under the collector portion;
+5. emitted payloads match the selected mode;
+6. the backend reconstructed compatible summary state and executed the
+   supported summary-based queries; and
+7. failures or unsupported behavior were reported explicitly.
 
 Query-to-summary planning quality and deployment decision quality are outside
 this document. They belong to ASAPPlanner and the ASAPQuery-backend control
-plane respectively; this contract only requires an executable, observable
-plan at the collector boundary.
+plane respectively. The MVP contract requires compatible, observable plan
+application at both the collector and backend data-plane boundaries.

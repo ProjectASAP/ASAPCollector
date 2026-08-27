@@ -110,7 +110,8 @@ The collector sends only the change since an identified base state. A delta is
 valid only when the family defines a safe update operation and the receiver has
 the required base or ordering context.
 
-Delta transmission reduces repeated state but introduces lifecycle
+The ASAPQuery-backend data plane applies the backend portion of the active
+plan when ingesting either form. Delta transmission reduces repeated state but introduces lifecycle
 requirements: base identity, duplicate handling, loss recovery, ordering
 rules, and resynchronization must all be explicit.
 
