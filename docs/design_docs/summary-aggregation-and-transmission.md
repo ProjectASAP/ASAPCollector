@@ -286,6 +286,32 @@ Before calculating numeric error, ASAP and exact results are aligned by labels
 and timestamps. Missing or extra series and points are validation errors; they
 are not treated as zero-valued answers or excluded from the denominator.
 
+**Alignment example:** Evaluate this query at timestamp `12:05:00`:
+
+```promql
+quantile_over_time(0.99, request_duration_seconds[5m])
+```
+
+The two systems return:
+
+| Labels | Timestamp | Exact | ASAP | Classification |
+| --- | --- | ---: | ---: | --- |
+| `{service="checkout", region="us"}` | `12:05:00` | 200 ms | 202 ms | aligned point; relative error is 1% |
+| `{service="checkout", region="eu"}` | `12:05:00` | 180 ms | missing | missing ASAP point; validation fails |
+| `{service="checkout", region="apac"}` | `12:05:00` | absent | 170 ms | extra ASAP point; validation fails |
+
+Only the `us` row has the same labels and timestamp in both responses, so only
+that row has a numeric error to calculate. The missing `eu` point is not
+converted to `ASAP = 0`, because that would turn missing data into a fabricated
+100% numeric error. It is also not removed silently, because then an empty ASAP
+response could appear perfectly accurate. The extra `apac` point fails for the
+same reason: ASAP returned a series that does not exist in the exact result.
+
+Timestamp mismatches follow the same rule. For example, an ASAP point at
+`12:05:05` does not match the exact point at `12:05:00` unless the checked-in
+query configuration declared a timestamp-alignment tolerance and both points
+fall within it.
+
 Sampling error, summary error, delayed-delta error, and merge error must fit
 within one declared end-to-end budget. Internal error budgets may be divided
 among mechanisms, but the user-facing SLA applies to the final query result.
