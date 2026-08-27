@@ -440,7 +440,7 @@ func (AggregationHLLSketch) err() error { return nil }
 //     MaxEventsPerSeries, new measurements on that attribute are
 //     silently dropped. Drop accounting is per-attribute (in-memory
 //     only for v1 — exposing the drop count as a side-channel
-//     counter is a follow-up noted in PROGRESS.md).
+//     counter remains follow-up work).
 type AggregationRawBuffer struct {
 	// MaxEventsPerSeries caps the per-attribute buffer length to
 	// prevent unbounded memory growth when the exporter stalls.

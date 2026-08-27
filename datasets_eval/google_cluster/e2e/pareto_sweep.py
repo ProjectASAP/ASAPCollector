@@ -31,7 +31,7 @@ The two knobs the sweep exercises:
                     cuts steady-state wire vs dd-full). The trace is LOOPED so
                     multiple SDK windows elapse and the per-window delta benefit
                     emerges at steady state (the first-window-full-state is
-                    amortized — see the honest caveats in RESULTS.md).
+                    amortized).
 
 NB: this minimal topology runs the SDK pre-aggregation as the "edge" (the
 otel-app SDK View IS the edge sketch). A separate asap-otel collector hop is

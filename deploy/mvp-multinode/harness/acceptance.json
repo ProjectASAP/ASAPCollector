@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "baseline_arm": "b1",
+  "asap_arm": "asap-gzip",
+  "minimum_successful_queries_per_query": 5,
+  "logical_time_max_skew_ms": 2000,
+  "expected_agents": ["agent-a", "agent-b"],
+  "queries": {
+    "window-p99": {"metric": "relative_error", "sla": 0.05},
+    "window-p50": {"metric": "relative_error", "sla": 0.05},
+    "window-label-p99-max": {"metric": "relative_error", "sla": 0.05},
+    "window-sum": {"metric": "relative_error", "sla": 0.000001},
+    "label-sum": {"metric": "relative_error", "sla": 0.000001},
+    "window-label-rate-sum": {"metric": "relative_error", "sla": 0.05},
+    "window-label-topk": {"metric": "topk_recall", "sla": 0.90},
+    "label-count": {"metric": "relative_error", "sla": 0.05}
+  },
+  "accuracy": {
+    "minimum_within_sla_fraction": 0.95,
+    "result_timestamp_tolerance_s": 0
+  },
+  "freshness": {
+    "p95_ms": 5000,
+    "maximum_ms": 15000,
+    "minimum_samples_per_tier": 5
+    ,"required_tiers": ["warm"],
+    "required_query_modes": [
+      "window-per-series:delta",
+      "label-at-timestamp:full",
+      "window-and-label:full"
+    ]
+  },
+  "query_latency": {
+    "minimum_steady_state_repetitions": 5,
+    "require_asap_lower_p50": true,
+    "require_asap_lower_p95": true
+  },
+  "cost": {
+    "cpu_core_weight": 1.0,
+    "rss_gib_weight": 0.1,
+    "network_mib_per_s_weight": 0.01,
+    "storage_gib_weight": 0.01,
+    "collector_regression_guardrail_ratio": 2.0,
+    "baseline_storage_components": ["victoriametrics"],
+    "asap_storage_components": ["minio", "gorilla-merger", "sketch-persistence"],
+    "baseline_required_processes": ["agent-a", "agent-b", "victoriametrics"],
+    "asap_required_processes": ["agent-a", "agent-b", "data-plane", "control-plane", "minio", "gorilla-merger", "thanos-query", "thanos-store-gateway", "thanos-compact"],
+    "require_collector_total_lower": true,
+    "require_end_to_end_total_lower": true
+  }
+}

@@ -100,7 +100,7 @@ Ten queries grouped by ASAP evaluation claim:
 | #5 distinct cardinality | 3 | `count_unique` | distinct services / hosts / instances |
 
 Each entry has `kind`, `promql` (matching the schema of
-`deploy/scripts/queries-e2e.json`), `expected_ground_truth_query`
+`deploy/mvp-multinode/harness/queries/e2e.json`), `expected_ground_truth_query`
 (for the accuracy reducer), and a `rationale` string explaining why
 this query is "natural" for the Google trace.
 
@@ -157,7 +157,7 @@ to exercise the 1k cardinality cap with U ≈ 50–100k.
 
 ## See also
 
-- `PROGRESS.md` "Outstanding — paper blockers" #6 (the goal)
+- the paper evaluation goal
 - `docs/paper-outline.md` "Measurable benefits — five evaluation dimensions"
 - `docs/sdk-cost-evaluation.md` (the OTLP wire-shape reference)
 - `datasets_eval/debs/` (sister dataset: financial / DEBS 2022)

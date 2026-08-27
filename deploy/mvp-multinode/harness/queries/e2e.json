@@ -1,0 +1,42 @@
+[
+    {
+        "id": "window-p99",
+        "kind": "quantile",
+        "metricsql": "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"
+    },
+    {
+        "id": "window-p50",
+        "kind": "quantile",
+        "metricsql": "quantile_over_time(0.5, http_requests_total_latency_ms[30s])"
+    },
+    {
+        "id": "window-label-p99-max",
+        "kind": "quantile",
+        "metricsql": "max by (zone) (quantile_over_time(0.99, http_requests_total_latency_ms[30s]))"
+    },
+    {
+        "id": "window-sum",
+        "kind": "sum",
+        "metricsql": "sum_over_time(http_requests_total[30s])"
+    },
+    {
+        "id": "label-sum",
+        "kind": "sum",
+        "metricsql": "sum by (zone) (http_requests_total)"
+    },
+    {
+        "id": "window-label-rate-sum",
+        "kind": "sum",
+        "metricsql": "sum by (zone) (rate(http_requests_total[30s]))"
+    },
+    {
+        "id": "window-label-topk",
+        "kind": "topk",
+        "metricsql": "topk(5, sum by (zone) (rate(http_requests_total[30s])))"
+    },
+    {
+        "id": "label-count",
+        "kind": "count_unique",
+        "metricsql": "count(http_requests_total{zone=\"z0\"})"
+    }
+]

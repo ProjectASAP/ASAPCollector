@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # run_demo.sh — multi-node MVP demo orchestrator (issue #46).
 #
-# Drives the same six criteria as deploy/mvp-singlenode/scripts/run_mvp_demo.sh
-# (bandwidth, query latency, e2e resource, accuracy, cold-fallback,
-# freshness) but distributed across 4 hosts on 10.10.1.0/24:
+# Drives the six issue-#46 MVP acceptance criteria.
+# (functional correctness, accuracy, freshness, latency, Collector cost,
+# end-to-end cost) across four hosts on 10.10.1.0/24:
 #
 #   node0 (10.10.1.1)  producers + agent-a   (data source)
 #   node1 (10.10.1.2)  (unused since #400 — the asap-gateway double-hop
@@ -13,32 +13,9 @@
 #                                             thanos-{query,store-gateway,compact})
 #   node3 (10.10.1.4)  producers + agent-b   (data source)
 #
-# Compression-matched bandwidth sweep — SIX arms run back-to-back over
-# the same workload. The whole point is that the compression codec
-# MATCHES within each aggregation comparison: PRW is Snappy-only, OTLP
-# supports none/gzip/zstd (not Snappy), so the matched comparisons use
-# OTLP+{none,gzip} on BOTH the raw baseline and the asap arm. PRW/Snappy
-# (b2) and serf (b3) are kept as real-world reference points.
-#
-#   b0         raw   OTLP→VM,  compression none   matched-none baseline
-#   b1         raw   OTLP→VM,  compression gzip   matched-gzip baseline (primary)
-#   b2         raw   PRW →VM   (Snappy, native)   Prometheus reference
-#   b3         raw   serf wire codec → gw → VM    serf-compressed wire ref
-#   asap       agg   OTLP→backend, none           matched-none asap
-#   asap-gzip  agg   OTLP→backend, gzip           matched-gzip asap (primary)
-#
-# b3 is serf as a REAL wire codec: the agent serf-XOR-COMPRESSES and
-# ships compressed SERF1 blocks to a serf-gateway (node1) that
-# DECOMPRESSES and inserts raw into VM (node2). No PRW. The
-# serf-compressed wire is the agent→gateway hop (node1 RX). This is
-# serf's analog of b1's gzip / b2's Snappy compressed wire.
-#
-# Two clean apples-to-apples aggregation comparisons (same codec, only
-# aggregation differs):
-#   none:  b0 vs asap          gzip:  b1 vs asap-gzip   (primary)
-# Reading down a codec column shows compression gains; comparing within
-# a codec row shows aggregation gains. Backend RX (node2 enp130s0f0) is
-# the bandwidth metric.
+# The only paired comparison is codec-matched OTLP/gzip:
+#   b1         raw metrics → VictoriaMetrics
+#   asap-gzip  sketches/deltas → ASAPQuery-backend
 #
 # Scope notes vs. the canonical single-host `run_mvp_demo.sh`:
 # - Uses `docker run --network host --add-host` (no docker-compose, no
@@ -53,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(dirname "${SCRIPT_DIR}")"
 # TOPOLOGY_ENV lets a caller point at an alternate topology file (e.g. the
 # 8-node scaling cluster) without editing the committed 4-node default.
-TOPOLOGY_ENV="${TOPOLOGY_ENV:-${PKG_DIR}/topology.env}"
+TOPOLOGY_ENV="${TOPOLOGY_ENV:-${PKG_DIR}/harness/topology/4node.env}"
 source "${TOPOLOGY_ENV}"
 
 # Derive ROOT/CONFIG_SRC deterministically from this script's location so the
@@ -70,6 +47,45 @@ mkdir -p "${RUN_DIR}" "${LOG_BASE}"
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "${LOG_BASE}/${RUN_ID}.log" >&2; }
 die() { log "FATAL: $*"; exit 1; }
+
+write_run_manifest() {
+    # Immutable paired-run provenance. Delayed until `all` so help/library
+    # invocations do not create misleading run directories or require the
+    # sibling backend checkout.
+    ROOT="${ROOT}" BACKEND="${BACKEND}" RUN_ID="${RUN_ID}" RUN_DIR="${RUN_DIR}" \
+    PER_AGENT_CARDINALITY="${PER_AGENT_CARDINALITY}" OTELAPP_FREQ_HZ="${OTELAPP_FREQ_HZ}" \
+    SOAK_S="${SOAK_S}" OTELAPP_SEED="${OTELAPP_SEED:-42}" \
+    PKG_DIR="${PKG_DIR}" python3 -c 'import datetime,hashlib,json,os,subprocess; root=os.environ["ROOT"]; backend=os.environ["BACKEND"]; pkg=os.environ["PKG_DIR"]; rid=os.environ["RUN_ID"]; seed=int(os.environ["OTELAPP_SEED"]); commit=lambda p: subprocess.check_output(["git","-C",p,"rev-parse","HEAD"],text=True).strip(); digest=lambda p: hashlib.sha256(open(p,"rb").read()).hexdigest(); image=lambda n: subprocess.run(["docker","image","inspect",n,"--format={{.Id}}"],text=True,capture_output=True).stdout.strip() or "missing"; configs={p:digest(os.path.join(pkg,p)) for p in ["harness/acceptance.json","harness/queries/e2e.json","configs/asap/mvp-workload.yaml","configs/asap-gzip/asap-otel-agent-asap-gzip.yaml","configs/b1/asap-otel-agent-b1-otlp-gzip.yaml"]}; json.dump({"schema_version":2,"run_id":rid,"started_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"collector_commit":commit(root),"backend_commit":commit(backend),"load_generator":{"commit":commit(root),"path":"otel-app"},"exact_backend":{"name":"VictoriaMetrics","image":"victoriametrics/victoria-metrics:v1.110.0","configuration":["retentionPeriod=24h"]},"images":{n:image(n) for n in ["asap/otel-app:dev","asap/asap-otel:dev","asap/data-plane:dev","asap/control-plane:dev","asap/gorilla-merger:dev","victoriametrics/victoria-metrics:v1.110.0","prom/prometheus:v2.55.0","quay.io/thanos/thanos:v0.41.0"]},"configuration_sha256":configs,"time_alignment":{"mode":"result_timestamp","contract":"labels and returned sample timestamps must match exactly"},"workload":{"cardinality":int(os.environ["PER_AGENT_CARDINALITY"]),"frequency_hz":float(os.environ["OTELAPP_FREQ_HZ"]),"soak_s":float(os.environ["SOAK_S"]),"agents":2,"series_cardinality":2*int(os.environ["PER_AGENT_CARDINALITY"]),"query_mix":"harness/queries/e2e.json","sketch_parameters":"controller-config.yaml (captured effective configuration)"},"arms":{"b1":{"seed":seed},"asap-gzip":{"seed":seed}}},open(os.path.join(os.environ["RUN_DIR"],"run-manifest.json"),"w"),indent=2)'
+    cp "${PKG_DIR}/harness/acceptance.json" "${RUN_DIR}/acceptance.json"
+    cp "${PKG_DIR}/harness/queries/e2e.json" "${RUN_DIR}/queries-e2e.json"
+}
+
+capture_remote_image_provenance() {
+    local out="${RUN_DIR}/image-digests.json"
+    local node images
+    images='victoriametrics/victoria-metrics:v1.110.0 prom/prometheus:v2.55.0 quay.io/thanos/thanos:v0.41.0 minio/minio:latest minio/mc:latest'
+    : > "${out}.tmp"
+    for node in "${NODE1_HOST}" "${NODE2_HOST}"; do
+        for image in ${images}; do
+            on "${node}" "docker image inspect '${image}' --format='${image}|{{.Id}}'" 2>/dev/null || true
+        done
+    done | sort -u | python3 -c 'import json,sys; d={};
+for line in sys.stdin:
+ p=line.strip().split("|",1)
+ if len(p)==2 and p[1]: d[p[0]]=p[1]
+json.dump(d,open(sys.argv[1],"w"),indent=2)' "${out}.tmp"
+    mv "${out}.tmp" "${out}"
+}
+
+finalize_manifest_provenance() {
+    python3 - "${RUN_DIR}/run-manifest.json" "${RUN_DIR}/image-digests.json" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+remote = json.load(open(sys.argv[2]))
+manifest["remote_image_digests"] = remote
+json.dump(manifest, open(sys.argv[1], "w"), indent=2)
+PY
+}
 
 # ── ssh wrapper that runs commands on a remote node with our env ──
 on() {
@@ -219,14 +235,15 @@ sync_to() {
     rsync -a --delete \
         "${CONFIG_SRC}/" \
         "${node}:/mydata/mvp-multinode/configs/"
-    rsync -a "${ROOT}/deploy/mvp-singlenode/scripts/" "${node}:/mydata/mvp-multinode/scripts/"
+    rsync -a --exclude '__pycache__' --exclude 'tests/' \
+        "${SCRIPT_DIR}/" "${node}:/mydata/mvp-multinode/scripts/"
     rsync -a "${TOPOLOGY_ENV}" "${node}:/mydata/mvp-multinode/topology.env"
 }
 
 sync_all_nodes() {
     for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
         # `data/gorilla-merger` is the merger's tsdb volume mount on node2.
-        on "${n}" 'mkdir -p /mydata/mvp-multinode/{configs,scripts,logs,results,data/gorilla-merger,data/sketch-persistence}'
+        on "${n}" 'mkdir -p /mydata/mvp-multinode/{configs,scripts,logs,results,data/gorilla-merger,data/sketch-persistence,data/victoriametrics,data/minio}'
         # gorilla-merger runs distroless nonroot (UID 65532); mkdir leaves the
         # dir owned by the ssh user, so 65532 can't write /data/lock → crash-loop.
         # 0777 lets the nonroot UID write without sudo (harmless on the other nodes).
@@ -255,18 +272,13 @@ docker_run_on() {
 
 # ─── BACKEND STACK on node2 ────────────────────────────────────────
 #
-# Common services across all arms: prometheus, minio (b0/b1 don't use
-# minio but it's harmless idle), and the control plane. ASAP arm adds
-# the data plane + thanos-{query,store-gateway,compact}.
+# The exact arm runs VictoriaMetrics. The ASAP arm runs its data/control plane
+# and persistent services.
 
-# is_asap_arm — true for the aggregation arms (full backend stack), false
-# for the raw baselines (b0/b1/b2/b3, VictoriaMetrics sink). The two asap
-# arms (`asap`, `asap-gzip`) are identical at the backend; they differ
-# only in the agent's otlp/backend wire codec (none vs gzip), which the
-# backend's `.accept_compressed(Gzip)` handles transparently.
+# True for the single sketch arm; false for the b1 exact baseline.
 is_asap_arm() {
     case "$1" in
-        asap|asap-gzip) return 0 ;;
+        asap-gzip) return 0 ;;
         *)              return 1 ;;
     esac
 }
@@ -279,14 +291,7 @@ backend_up() {
     # make any runaway a recoverable container OOM-kill, not a host freeze.
     log "backend up (${arm}) — cold=node1, warm=node2"
 
-    # Raw baselines (b0/b1/b2/b3): VictoriaMetrics on node1:8428.
-    #   - b0/b1 push OTLP HTTP to /opentelemetry/v1/metrics (compression
-    #     none / gzip respectively).
-    #   - b2 pushes Prometheus remote_write (Snappy) to /api/v1/write.
-    #   - b3 (serf wire codec) ships serf-compressed blocks to the
-    #     serf-gateway (node1), which DECOMPRESSES and inserts raw into
-    #     VM via OTLP HTTP /opentelemetry/v1/metrics. No PRW on b3.
-    # VM serves PromQL on the same port for all four.
+    # The b1 baseline pushes raw OTLP/gzip to VictoriaMetrics on node1:8428.
     #
     # `-opentelemetry.usePrometheusNaming` is LEFT OFF so VM stores the
     # OTLP metric names verbatim (`http_requests_total`,
@@ -294,9 +299,8 @@ backend_up() {
     # (queries-e2e.json). With the flag ON, VM would sanitize names and
     # append the gauge's `ms` unit suffix
     # (→ `http_requests_total_latency_ms_milliseconds`), breaking the
-    # quantile queries. The PRW arms (b2/b3) already pin
-    # `add_metric_suffixes: false` agent-side for the same reason; the
-    # OTLP arms (b0/b1) rely on VM's default (no Prometheus naming) to get
+    # quantile queries. The b1 agent pins naming consistently and relies on
+    # VM's default (no Prometheus naming) to get
     # the verbatim names. If a future VM bump changes the default OTLP
     # naming, pin `-opentelemetry.usePrometheusNaming=false` here.
     #
@@ -305,6 +309,7 @@ backend_up() {
     if ! is_asap_arm "${arm}"; then
         docker_run_on "${NODE1_HOST}" --cpus=4 --memory=16g --memory-swap=16g \
             --name asap-victoriametrics \
+            -v /mydata/mvp-multinode/data/victoriametrics:/victoria-metrics-data \
             victoriametrics/victoria-metrics:v1.110.0 \
             --httpListenAddr=:8428 \
             --retentionPeriod=24h
@@ -324,6 +329,7 @@ backend_up() {
         # MinIO + bucket setup
         docker_run_on "${NODE1_HOST}" --cpus=2 --memory=16g --memory-swap=16g \
             --name asap-minio \
+            -v /mydata/mvp-multinode/data/minio:/data \
             -e MINIO_ROOT_USER=asap \
             -e MINIO_ROOT_PASSWORD=asap-local-only \
             minio/minio:latest server /data --console-address :9001
@@ -431,10 +437,8 @@ backend_up() {
         # ship as TWO separate images — `asap/control-plane:dev` (entrypoint
         # `/usr/local/bin/control_plane`) and `asap/data-plane:dev`
         # (entrypoint `/usr/local/bin/data_plane`) — built from
-        # ASAPQuery-backend's per-crate Dockerfiles. They still run as TWO
-        # separate processes/containers. The single-node
-        # `deploy/mvp-singlenode/docker-compose/base.yml` models them as two
-        # compose services; mirror that here.
+        # ASAPQuery-backend's per-crate Dockerfiles. They run as two separate
+        # processes/containers.
         #
         # Without the control-plane container the data plane never receives
         # the control plane's POST /api/v1/streaming-config and falls back
@@ -535,11 +539,11 @@ clean_backend_data() {
         log "KEEP_BACKEND_DATA=1 — preserving backend state dirs"
         return
     fi
-    log "wiping persistent backend state (gorilla-merger, sketch-persistence)"
+    log "wiping persistent backend state"
     # The merger writes subdirs as uid 65532; the parent dirs are 0777 so the
     # ssh user can unlink them, but fall back to sudo if a stricter umask blocks.
     for n in "${NODE1_HOST}" "${NODE2_HOST}"; do
-        on "${n}" 'd=/mydata/mvp-multinode/data; rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* 2>/dev/null || sudo rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* 2>/dev/null || true' || true
+        on "${n}" 'd=/mydata/mvp-multinode/data; rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* "$d"/victoriametrics/* "$d"/minio/* 2>/dev/null || sudo rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* "$d"/victoriametrics/* "$d"/minio/* 2>/dev/null || true' || true
     done
 }
 
@@ -552,52 +556,20 @@ backend_down() {
     clean_backend_data
 }
 
-# ─── SERF-GATEWAY on node1 (b3 arm only) ────────────────────────────
-#
-# The decompression half of the serf-as-real-wire-codec arm. The b3
-# agents serf-XOR-COMPRESS the metric stream and POST SERF1 blocks to
-# `http://serf-gw:9000/serf` (serf-gw → node1 via ADD_HOSTS). This
-# gateway runs the asap-otel binary with a serfreceiver pipeline that
-# DECODES the blocks back to raw points and inserts them into VM (node2)
-# over OTLP HTTP. The only compressed hop is agent(node0/3) → gw(node1);
-# the gw → VM hop carries raw decompressed OTLP. So the serf-compressed
-# wire == node1 NIC RX == the serfexporter's bytes_sent counter.
-#
-# Brought up BEFORE the b3 agents so the serfreceiver is already
-# listening when the agents' first window flushes. node1 is otherwise
-# idle (the asap-gateway double-hop was retired in #400), and arm_down's
-# `stop_node node1` reaps this container at teardown.
-serf_gateway_up() {
-    log "node1 serf-gateway up (b3 serf wire codec)"
-    docker_run_on "${NODE1_HOST}" --cpus=4 --memory=8g --memory-swap=8g \
-        --name asap-serf-gateway \
-        --hostname serf-gw \
-        -v /mydata/mvp-multinode/configs/b3/serf-gateway.yaml:/etc/otel/config.yaml:ro \
-        asap/asap-otel:dev \
-        --config=/etc/otel/config.yaml
-}
-
 # ─── AGENTS + PRODUCERS on node0 and node3 ──────────────────────────
 agents_up() {
     local arm=$1
     local agent_cfg
-    # Compression-matched bandwidth sweep — six arms. The codec MUST
-    # match within each aggregation comparison (none: b0/asap; gzip:
-    # b1/asap-gzip). PRW/Snappy (b2) and serf (b3) are real-world
-    # reference points, NOT matched pairs.
+    # Codec-matched paired arms.
     case "${arm}" in
-        b0)        agent_cfg=b0/asap-otel-agent-b0-otlp-none.yaml ;;        # raw OTLP→VM, compression none  (matched-none baseline)
-        b1)        agent_cfg=b1/asap-otel-agent-b1-otlp-gzip.yaml ;;        # raw OTLP→VM, compression gzip  (matched-gzip baseline)
-        b2)        agent_cfg=b2/asap-otel-agent-b2-prw-snappy.yaml ;;       # raw PRW→VM   (Snappy, native)  (Prometheus ref)
-        b3)        agent_cfg=b3/asap-otel-agent-b3-serf.yaml ;;             # serf wire codec → gw → VM      (serf-compressed wire ref)
-        asap)      agent_cfg=asap/asap-otel-agent-asapedge.yaml ;;             # fused asap_edge edge-agg, OTLP→backend none (matched-none asap)
-        asap-gzip) agent_cfg=asap-gzip/asap-otel-agent-asap-gzip.yaml ;;    # edge-agg, OTLP→backend gzip   (matched-gzip asap)
+        b1)        agent_cfg=b1/asap-otel-agent-b1-otlp-gzip.yaml ;;
+        asap-gzip) agent_cfg=asap-gzip/asap-otel-agent-asap-gzip.yaml ;;
         *) die "unknown arm ${arm}" ;;
     esac
 
     # ── agent launch: supervised (asap arms) vs static (baselines) ──────
     #
-    # The asap/asap-gzip arms talk to the controller, so they run the
+    # The asap-gzip arm talks to the controller, so it runs the
     # OpenTelemetry opamp-supervisor (asap-otel-supervised image) instead of
     # the bare collector. The supervisor connects to the controller's OpAMP
     # server, receives the pushed remote config, merges it with its own
@@ -616,7 +588,7 @@ agents_up() {
     # remote config's opamp block, merged last, clobbers the supervisor's and
     # the collector phones the controller directly instead of the supervisor).
     #
-    # The b0/b1/b2/b3 baselines have no controller OpAMP server, so they keep
+    # The b1 baseline has no controller OpAMP server, so it keeps
     # running the bare asap-otel collector with their static mounted config.
     if is_asap_arm "${arm}"; then
         # node0 → agent-a (binds 0.0.0.0:4317 on node0). Producers on node0
@@ -721,13 +693,6 @@ arm_up() {
     log "=== ARM UP: ${arm} ==="
     backend_up "${arm}"
     sleep 5
-    # b3 serf wire codec: bring up the serf-gateway (node1) AFTER the VM
-    # backend (node2) is up but BEFORE the agents, so the serfreceiver is
-    # listening when the agents' first compressed window flushes.
-    if [[ "${arm}" == "b3" ]]; then
-        serf_gateway_up
-        sleep 3
-    fi
     agents_up "${arm}"
     log "=== arm ${arm} all containers started; waiting WARMUP_S=${WARMUP_S} ==="
     sleep "${WARMUP_S}"
@@ -753,13 +718,12 @@ arm_measure() {
     local out="${RUN_DIR}/${arm}"
     mkdir -p "${out}"
 
-    log "[measure ${arm}] starting per-node docker stats sampling for ${SOAK_S}s"
+    log "[measure ${arm}] starting per-node host NIC and process sampling for ${SOAK_S}s"
     # On each node, sample container stats and capture to local file.
     for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
-        on "${n}" "python3 /mydata/mvp-multinode/scripts/measure_per_edge_bandwidth.py \
-            --duration ${SOAK_S} --period 1.0 \
-            --out /mydata/mvp-multinode/results/edge-${n}.csv \
-            > /mydata/mvp-multinode/results/edge-${n}.log 2>&1 &"
+        on "${n}" "bash /mydata/mvp-multinode/scripts/measure_nic_bw.sh \
+            ${SOAK_S} /mydata/mvp-multinode/results/nic-${n}.csv \
+            > /mydata/mvp-multinode/results/nic-${n}.log 2>&1 &"
         on "${n}" "python3 /mydata/mvp-multinode/scripts/measure_stages.py \
             --baseline ${arm} --duration ${SOAK_S} \
             --out /mydata/mvp-multinode/results/stages-${n}.csv \
@@ -768,22 +732,23 @@ arm_measure() {
 
     # PromQL replay endpoint:
     #   asap arm  → asap-data-plane on node2:9091
-    #   b0 / b1   → VictoriaMetrics on node2:8428 (serves PromQL on the
+    #   b1        → VictoriaMetrics on node1:8428 (serves PromQL on the
     #               same port as its /api/v1/write PRW receive). Prior to
     #               2026-05 this pointed at :9090 (Prometheus), but the
-    #               b0/b1 backend_up() path brings up `asap-victoriametrics`
+    #               b1 backend_up() path brings up `asap-victoriametrics`
     #               not Prometheus, so :9090 was unreachable → 100% timeout.
     local query_endpoint
     if is_asap_arm "${arm}"; then
         query_endpoint="http://${NODE2_IP}:9091"
     else
-        query_endpoint="http://${NODE2_IP}:8428"
+        query_endpoint="http://${NODE1_IP}:8428"
     fi
 
     log "[measure ${arm}] MetricsQL replay against ${query_endpoint} for ${SOAK_S}s"
-    python3 "${ROOT}/deploy/mvp-singlenode/scripts/metricsql_replay.py" \
+    python3 "${SCRIPT_DIR}/metricsql_replay.py" \
         --target "${query_endpoint}" \
-        --queries "${ROOT}/deploy/mvp-singlenode/scripts/queries-e2e.json" \
+        --controller "http://${NODE2_IP}:8080" \
+        --queries "${PKG_DIR}/harness/queries/e2e.json" \
         --duration "${SOAK_S}" \
         --out "${out}/replay.jsonl" \
         > "${out}/replay.log" 2>&1 &
@@ -791,13 +756,58 @@ arm_measure() {
 
     # Wait for soak to complete
     wait ${REPLAY_PID} 2>/dev/null || true
+
+    if is_asap_arm "${arm}"; then
+        # Controller-side acknowledgement is the proof that the supervisor
+        # applied the pushed plan; seeing only a plan in the controller is not
+        # sufficient for functional correctness.
+        on "${NODE2_HOST}" "curl -fsS http://127.0.0.1:8080/api/v1/agents" \
+            > "${out}/controller-agents.json"
+        on "${NODE2_HOST}" "curl -fsS -H 'X-Agent-ID: agent-a' http://127.0.0.1:8080/api/v1/collector-config/agent" \
+            > "${out}/controller-config.yaml"
+        for agent in agent-a agent-b; do
+            on "${NODE2_HOST}" "curl -fsS -H 'X-Agent-ID: ${agent}' http://127.0.0.1:8080/api/v1/collector-config/agent" \
+                > "${out}/controller-config-${agent}.yaml"
+        done
+        on "${NODE2_HOST}" "docker logs asap-control-plane 2>&1" > "${out}/controller.log"
+        # This operator is outside the sketch-accelerated MVP surface. Preserve
+        # the raw response so the evaluator can require an explicit rejection
+        # or an identified exact fallback, never a plausible sketch answer.
+        python3 -c 'import json,sys,urllib.parse,urllib.request,urllib.error; base=sys.argv[1]; q="predict_linear(http_requests_total[30s], 60)"; url=base+"/api/v1/query?"+urllib.parse.urlencode({"query":q});
+try:
+ r=urllib.request.urlopen(url,timeout=10); body=r.read().decode(); code=r.status
+except urllib.error.HTTPError as e:
+ body=e.read().decode(); code=e.code
+try: payload=json.loads(body)
+except Exception: payload={"raw_body":body}
+json.dump({"query":q,"http_code":code,"response":payload},open(sys.argv[2],"w"),indent=2)' "${query_endpoint}" "${out}/unsupported-query.json"
+    fi
+
+    # Preserve every service log before the arm is torn down. This makes
+    # dropped payloads, OOMs, and query failures reviewable from the run.
+    mkdir -p "${out}/logs"
+    for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
+        on "${n}" 'docker ps -a --format "{{.Names}}" | grep "^asap-" | while read -r c; do docker logs "$c" 2>&1 | sed "s/^/[${c}] /"; done' \
+            > "${out}/logs/${n}.log" || true
+    done
+
+    # Freshness is part of the acceptance gate, not an optional report extra.
+    # It runs after replay while the arm is still live.
+    ARM="${arm}" OUT="${out}" NODE1_IP="${NODE1_IP}" NODE2_IP="${NODE2_IP}" \
+        N_SAMPLES="${FRESHNESS_SAMPLES:-20}" POLL_MS="${FRESHNESS_POLL_MS:-100}" \
+        bash "${SCRIPT_DIR}/measure_freshness.sh" > "${out}/freshness.log" 2>&1
     sleep 3   # let measurement scripts on remote nodes finish
+
+    on "${NODE1_HOST}" "bash /mydata/mvp-multinode/scripts/measure_storage.sh ${arm} node1 /mydata/mvp-multinode/results/storage-node1.csv"
+    on "${NODE2_HOST}" "bash /mydata/mvp-multinode/scripts/measure_storage.sh ${arm} node2 /mydata/mvp-multinode/results/storage-node2.csv"
 
     # Pull CSVs back from each node
     for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
-        scp "${n}:/mydata/mvp-multinode/results/edge-${n}.csv"     "${out}/edge-${n}.csv"     2>/dev/null || true
+        scp "${n}:/mydata/mvp-multinode/results/nic-${n}.csv"      "${out}/nic-${n}.csv"      2>/dev/null || true
         scp "${n}:/mydata/mvp-multinode/results/stages-${n}.csv"   "${out}/stages-${n}.csv"   2>/dev/null || true
     done
+    scp "${NODE1_HOST}:/mydata/mvp-multinode/results/storage-node1.csv" "${out}/storage-node1.csv"
+    scp "${NODE2_HOST}:/mydata/mvp-multinode/results/storage-node2.csv" "${out}/storage-node2.csv"
 
     log "[measure ${arm}] done; outputs in ${out}/"
 }
@@ -812,9 +822,7 @@ run_arm() {
     arm_down || true
 }
 
-# Allow sourcing as a library so other drivers (e.g. scale_fleet.sh) can compose
-# backend_up + docker_run_on + topology for custom fleet sizes without invoking
-# the CLI dispatch below.
+# Allow sourcing for focused development checks without invoking CLI dispatch.
 if [ -n "${RUN_DEMO_LIB:-}" ]; then return 0 2>/dev/null || true; fi
 
 cmd=${1:-help}
@@ -828,18 +836,17 @@ case "${cmd}" in
     arm)             ensure_images; sync_all_nodes; run_arm "${2:?need arm name}" ;;
     all)
         ensure_images
+        write_run_manifest
         sync_all_nodes
-        # Compression-matched bandwidth sweep — six arms. The two clean
-        # apples-to-apples aggregation comparisons (same codec, only
-        # aggregation differs):
-        #   none: b0 vs asap        gzip: b1 vs asap-gzip  (primary)
-        # b2 (PRW/Snappy) + b3 (serf) are real-world reference points.
-        for arm in b0 b1 b2 b3 asap asap-gzip; do
+        for arm in b1 asap-gzip; do
             run_arm "${arm}"
         done
-        log "=== generating MVP_REPORT.md ==="
-        python3 "${SCRIPT_DIR}/aggregate_report.py" --run-dir "${RUN_DIR}" --out "${RUN_DIR}/MVP_REPORT.md" \
-            || log "report aggregation failed (non-fatal); inspect ${RUN_DIR}/"
+        capture_remote_image_provenance
+        finalize_manifest_provenance
+        log "=== evaluating issue #46 acceptance contract ==="
+        python3 "${SCRIPT_DIR}/mvp_evaluate.py" \
+            --run-dir "${RUN_DIR}" \
+            --config "${PKG_DIR}/harness/acceptance.json"
         log "=== run complete: ${RUN_DIR} ==="
         ;;
     help|*)
@@ -852,16 +859,12 @@ usage: $0 <cmd> [arm]
                       (cold/warm split: warm→node2, agents→node0/3, cold→node1)
   sync                rsync /mydata/ASAPCollector configs+scripts to all 4 nodes
   up <arm>            build + load + sync, then bring up containers for an arm
-                      arms: b0 b1 b2 b3 asap asap-gzip
-                        b0        raw OTLP→VM,  compression none  (matched-none baseline)
-                        b1        raw OTLP→VM,  compression gzip  (matched-gzip baseline)
-                        b2        raw PRW→VM    (Snappy, native)  (Prometheus ref)
-                        b3        serf wire codec → gw → VM       (serf-compressed wire ref)
-                        asap      edge-agg, OTLP→backend none     (matched-none asap)
-                        asap-gzip edge-agg, OTLP→backend gzip     (matched-gzip asap)
+                      arms: b1 asap-gzip
+                        b1        raw OTLP/gzip → VictoriaMetrics
+                        asap-gzip sketches/deltas over OTLP/gzip → ASAPQuery-backend
   down                stop and remove all asap-* containers cluster-wide
   arm <arm>           build + load + sync, then full single-arm lifecycle: up → measure → down
-  all                 build + load + sync + run all 6 arms back-to-back + report
+  all                 run the paired b1/asap-gzip experiment and report
 
   Source is rebuilt and re-shipped on every up/arm/all so a deploy never runs a
   stale image. Escape hatches when iterating on config only:

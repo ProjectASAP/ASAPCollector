@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
 # measure_freshness.sh — sample-generation-to-backend-write delay.
 #
-# Mechanism: otel-app emits `http_freshness_probe_{raw,warm,archive}`
-# counters whose cumulative value is the Unix-epoch-ms at emission. We poll
-# the relevant backend for `<probe>` (instant query — gives the latest sample's
-# value as a number == its emission ts_ms). Δ = poll_response_ts_ms − value.
+# Mechanism: poll `max(timestamp(metric))` for the source metric behind each
+# query class. Its numeric result is the newest source-sample timestamp that
+# the backend can query. Delta is poll-response time minus that value.
 #
-# Per #46 runbook §"Freshness probe protocol":
-#   - For B0/B1 the only landing is Prometheus (no warm/archive tiers in use).
-#     We use http_freshness_probe_raw (lands in Prometheus via PRW).
-#   - For ASAP, both warm (asap-query-backend) and archive (Thanos→MinIO via
-#     gorillas3processor) probes exist; we measure each independently against
-#     the right query endpoint. raw still lands in Prometheus.
+# ASAP is measured separately for all three query classes and both full and
+# delta modes used by the checked-in plan. Archive fallback is outside scope.
 #
 # Inputs (env):
 #   ARM      b0 | b1 | asap
@@ -24,10 +19,11 @@ OUT=${OUT:?out}
 N_SAMPLES=${N_SAMPLES:-60}
 POLL_MS=${POLL_MS:-100}
 NODE2_IP=${NODE2_IP:-10.10.1.3}
+NODE1_IP=${NODE1_IP:-10.10.1.2}
 
 mkdir -p "${OUT}"
 CSV="${OUT}/freshness-${ARM}.csv"
-echo "arm,probe,tier,poll_idx,poll_ts_ms,observed_value_ms,delta_ms" > "${CSV}"
+echo "arm,query_class,transmission_mode,tier,poll_idx,poll_ts_ms,observed_timestamp_ms,delta_ms" > "${CSV}"
 
 # Per-tier endpoint + probe metric mapping
 # NOTE: the probe is a Float64Counter WithUnit("ms"); depending on the OTLP→VM
@@ -44,37 +40,37 @@ echo "arm,probe,tier,poll_idx,poll_ts_ms,observed_value_ms,delta_ms" > "${CSV}"
 # so this is only applied on the VM path.
 VM_QARGS=()
 case "${ARM}" in
-    b0|b1)
+    b0|b1|b2|b3)
         # Raw baseline lands in VictoriaMetrics, which serves PromQL on :8428
         # (NOT :9090 — there is no Prometheus in this topology; :9090 is
         # unreachable and was the cause of the prior "no successful polls").
-        PROBES=('raw|{__name__=~"http_freshness_probe_raw.*"}|http://'"${NODE2_IP}"':8428')
+        PROBES=('all|raw|warm|max(timestamp(http_requests_total))|http://'"${NODE1_IP}"':8428')
         VM_QARGS=(--data-urlencode "latency_offset=1ms")
         ;;
-    asap)
+    asap|asap-gzip)
         # The asap backend's EngineRouter keys on the EXACT raw metric name
         # (backend-storage-routing.yaml routes http_freshness_probe_{warm,archive}
         # → gorilla_s3_archive and serves last_over_time from the archive). A
         # __name__ regex would defeat that name-keyed routing, so use bare names.
         # (No raw-tier probe in asap: it isn't routed/queryable at the backend.)
         PROBES=(
-            'warm|http_freshness_probe_warm|http://'"${NODE2_IP}"':9091'
-            'archive|http_freshness_probe_archive|http://'"${NODE2_IP}"':9091'
+            'window-per-series|delta|warm|max(timestamp(http_requests_total_latency_ms))|http://'"${NODE2_IP}"':9091'
+            'label-at-timestamp|full|warm|max(timestamp(http_requests_total))|http://'"${NODE2_IP}"':9091'
+            'window-and-label|full|warm|max(timestamp(http_requests_total))|http://'"${NODE2_IP}"':9091'
         )
         ;;
     *) echo "unknown arm ${ARM}" >&2; exit 1 ;;
 esac
 
 for spec in "${PROBES[@]}"; do
-    IFS='|' read -r TIER PROBE Q <<< "${spec}"
-    echo "[freshness ${ARM}/${TIER}] polling ${Q} every ${POLL_MS}ms × ${N_SAMPLES}"
+    IFS='|' read -r QUERY_CLASS MODE TIER PROBE Q <<< "${spec}"
+    echo "[freshness ${ARM}/${QUERY_CLASS}/${MODE}] polling ${Q} every ${POLL_MS}ms × ${N_SAMPLES}"
     deltas=()
     for i in $(seq 1 ${N_SAMPLES}); do
-        # Use last_over_time for a 10s window so a slightly delayed write still
-        # registers. The result `value[1]` is the sample's value (the encoded
-        # emission ts_ms).
+        # Each spec is a complete instant query. Freshness uses the returned
+        # Prometheus sample timestamp, not a metric value convention.
         body=$(curl -s --max-time 2 \
-            --data-urlencode "query=last_over_time(${PROBE}[15s])" \
+            --data-urlencode "query=${PROBE}" \
             "${VM_QARGS[@]}" \
             "${Q}/api/v1/query" 2>/dev/null || echo '')
         poll_ts_ms=$(($(date +%s%N)/1000000))
@@ -83,18 +79,17 @@ import sys,json
 try:
     d=json.load(sys.stdin)
     r=d['data']['result']
-    # Multiple producers each emit the probe → one series each; take the most
-    # recent (max) encoded emission ts_ms across all matching series.
-    vals=[float(s['value'][1]) for s in r if s.get('value')]
+    # `timestamp()` returns source time in seconds as the sample value.
+    vals=[float(s['value'][1])*1000 for s in r if s.get('value')]
     print(int(max(vals)) if vals else '')
 except: print('')
 " 2>/dev/null)
         if [ -n "${v}" ]; then
             delta=$((poll_ts_ms - v))
-            echo "${ARM},${PROBE},${TIER},${i},${poll_ts_ms},${v},${delta}" >> "${CSV}"
+            echo "${ARM},${QUERY_CLASS},${MODE},${TIER},${i},${poll_ts_ms},${v},${delta}" >> "${CSV}"
             deltas+=(${delta})
         else
-            echo "${ARM},${PROBE},${TIER},${i},${poll_ts_ms},," >> "${CSV}"
+            echo "${ARM},${QUERY_CLASS},${MODE},${TIER},${i},${poll_ts_ms},," >> "${CSV}"
         fi
         # sleep POLL_MS
         python3 -c "import time; time.sleep(${POLL_MS}/1000)" 2>/dev/null || true

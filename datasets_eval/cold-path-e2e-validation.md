@@ -39,7 +39,7 @@ channel only applies `precompute.PrecomputeConfigSet` updates to live sketch
 aggregators (coordinated sampling); it does not touch the cold tier.
 
 The static deploy configs confirm the intended decoupling already works:
-`deploy/mvp-multinode/configs/asap/asap-otel-agent-asapedge.yaml` sets
+The dedicated cold-path collector configuration sets
 `cold.enabled: true` + `cold.ship_endpoint: …/ingest/gorilla` with
 `control_channel` DISABLED, and the code ships under exactly that config.
 

@@ -306,5 +306,5 @@ in the patched contrib tree (`opentelemetry-collector-contrib-patch/processor/se
 and registered in `cmd/asap-otel/builder-config.yaml`.
 
 Bandwidth / CPU / throughput measurements now share the MVP demo's
-`measure_stages.py` and `measure_per_edge_bandwidth.py` instrumentation
-under `deploy/mvp-singlenode/scripts/`.
+`measure_stages.py` and host-NIC instrumentation under
+`deploy/mvp-multinode/scripts/`.

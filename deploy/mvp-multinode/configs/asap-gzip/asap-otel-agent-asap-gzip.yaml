@@ -3,9 +3,8 @@
 # with `compression: gzip`.
 #
 # ── Role in the compression-matched bandwidth sweep ──────────────────
-# This is a VERBATIM COPY of the plain `asap` arm config
-# (configs/asap/asap-otel-agent-b6-asap-single-sketch.yaml) with EXACTLY
-# ONE change: `exporters.otlp/backend.compression: none` → `gzip`. The
+# This matches the plain `asap` arm config with exactly one change:
+# `exporters.otlp/backend.compression: none` → `gzip`. The
 # aggregation behaviour (edge Sum-by-zone via metricstransform, per-
 # series DDSketch/KLL/HLL/CountSketch/CountMinSketch, gorillas3 cold
 # tier) is identical; only the wire codec differs.

@@ -510,7 +510,7 @@ answers to delta-OFF (full-frame).**
    `sketch_snapshots[series_key]` equals an independently-built full sketch
    of each window, and that the negative/decrease cells are applied (not
    dropped) at `T=1`.
-3. **E2E query equality:** run `deploy/scripts/queries-e2e.json`
+3. **E2E query equality:** run `deploy/mvp-multinode/harness/queries/e2e.json`
    (`count_over_time`, `quantile_over_time(φ, …)`, distinct-count) against
    two backends — one fed delta-ON, one fed delta-OFF — and assert
    byte/numeric-equal PromQL responses.
@@ -520,9 +520,9 @@ answers to delta-OFF (full-frame).**
 The Go and Rust edge runtimes **must emit byte-identical deltas** before
 any of this is trustable in a mixed fleet — the bit-identical wire-format
 promise of [#243](https://github.com/ProjectASAP/ASAPCollector/issues/243)
-(closed; see `PROGRESS.md` "Cross-language byte-format parity, 5/5
-sketches"). That parity was guarded by the
-`integration/cross_host_parity/` golden harness (`PROGRESS.md:67-78`), which
+(closed after cross-language byte-format parity was established for all five
+sketches). That parity was guarded by the
+`integration/cross_host_parity/` golden harness, which
 asserted `asap-otel` (Go) ↔ `asap-otap` (Rust) byte-identical
 `SketchEnvelope.Payload`s plus PromQL response equality.
 
