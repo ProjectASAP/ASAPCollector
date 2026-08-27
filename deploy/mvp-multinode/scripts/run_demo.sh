@@ -60,6 +60,33 @@ write_run_manifest() {
     cp "${PKG_DIR}/harness/queries/e2e.json" "${RUN_DIR}/queries-e2e.json"
 }
 
+capture_remote_image_provenance() {
+    local out="${RUN_DIR}/image-digests.json"
+    local node images
+    images='victoriametrics/victoria-metrics:v1.110.0 prom/prometheus:v2.55.0 quay.io/thanos/thanos:v0.41.0 minio/minio:latest minio/mc:latest'
+    : > "${out}.tmp"
+    for node in "${NODE1_HOST}" "${NODE2_HOST}"; do
+        for image in ${images}; do
+            on "${node}" "docker image inspect '${image}' --format='${image}|{{.Id}}'" 2>/dev/null || true
+        done
+    done | sort -u | python3 -c 'import json,sys; d={};
+for line in sys.stdin:
+ p=line.strip().split("|",1)
+ if len(p)==2 and p[1]: d[p[0]]=p[1]
+json.dump(d,open(sys.argv[1],"w"),indent=2)' "${out}.tmp"
+    mv "${out}.tmp" "${out}"
+}
+
+finalize_manifest_provenance() {
+    python3 - "${RUN_DIR}/run-manifest.json" "${RUN_DIR}/image-digests.json" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+remote = json.load(open(sys.argv[2]))
+manifest["remote_image_digests"] = remote
+json.dump(manifest, open(sys.argv[1], "w"), indent=2)
+PY
+}
+
 # ── ssh wrapper that runs commands on a remote node with our env ──
 on() {
     local node=$1; shift
@@ -738,6 +765,10 @@ arm_measure() {
             > "${out}/controller-agents.json"
         on "${NODE2_HOST}" "curl -fsS -H 'X-Agent-ID: agent-a' http://127.0.0.1:8080/api/v1/collector-config/agent" \
             > "${out}/controller-config.yaml"
+        for agent in agent-a agent-b; do
+            on "${NODE2_HOST}" "curl -fsS -H 'X-Agent-ID: ${agent}' http://127.0.0.1:8080/api/v1/collector-config/agent" \
+                > "${out}/controller-config-${agent}.yaml"
+        done
         on "${NODE2_HOST}" "docker logs asap-control-plane 2>&1" > "${out}/controller.log"
         # This operator is outside the sketch-accelerated MVP surface. Preserve
         # the raw response so the evaluator can require an explicit rejection
@@ -751,6 +782,14 @@ try: payload=json.loads(body)
 except Exception: payload={"raw_body":body}
 json.dump({"query":q,"http_code":code,"response":payload},open(sys.argv[2],"w"),indent=2)' "${query_endpoint}" "${out}/unsupported-query.json"
     fi
+
+    # Preserve every service log before the arm is torn down. This makes
+    # dropped payloads, OOMs, and query failures reviewable from the run.
+    mkdir -p "${out}/logs"
+    for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
+        on "${n}" 'docker ps -a --format "{{.Names}}" | grep "^asap-" | while read -r c; do docker logs "$c" 2>&1 | sed "s/^/[${c}] /"; done' \
+            > "${out}/logs/${n}.log" || true
+    done
 
     # Freshness is part of the acceptance gate, not an optional report extra.
     # It runs after replay while the arm is still live.
@@ -802,6 +841,8 @@ case "${cmd}" in
         for arm in b1 asap-gzip; do
             run_arm "${arm}"
         done
+        capture_remote_image_provenance
+        finalize_manifest_provenance
         log "=== evaluating issue #46 acceptance contract ==="
         python3 "${SCRIPT_DIR}/mvp_evaluate.py" \
             --run-dir "${RUN_DIR}" \

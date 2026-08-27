@@ -42,7 +42,7 @@ class EvaluatorTest(unittest.TestCase):
     def write_fixture(self, *, plan=True, error=0.01) -> None:
         manifest = {"run_id": "run-1", "started_at": "2026-08-26T00:00:00Z", "collector_commit": "abc",
                     "backend_commit": "def", "load_generator": {"commit": "abc"},
-                    "exact_backend": {"name": "VictoriaMetrics"}, "images": {"collector": "sha256:1"},
+                    "exact_backend": {"name": "VictoriaMetrics"}, "images": {"collector": "sha256:1"}, "remote_image_digests": {"vm": "sha256:2"},
                     "configuration_sha256": {"acceptance": "123"}, "workload": {"cardinality": 1},
                     "time_alignment": {"mode": "result_timestamp"},
                     "arms": {"b1": {"seed": 42}, "asap-gzip": {"seed": 42}}}
@@ -71,8 +71,13 @@ class EvaluatorTest(unittest.TestCase):
             writer.writerow(["asap-gzip", "probe", "warm", 1, 100, 90, 10]); writer.writerow(["asap-gzip", "probe", "warm", 2, 200, 180, 20])
         (self.run / "asap-gzip" / "controller-agents.json").write_text(json.dumps({"agent-a": "agent", "agent-b": "agent"}))
         (self.run / "asap-gzip" / "controller-config.yaml").write_text("processors:\n  ddsketch/latency:\n    delta_transmission: true\n  kll/request_size:\n    k: 200\nservice:\n  pipelines:\n    metrics/raw_passthrough: {}\n")
+        for agent in ("agent-a", "agent-b"):
+            (self.run / "asap-gzip" / f"controller-config-{agent}.yaml").write_text((self.run / "asap-gzip" / "controller-config.yaml").read_text())
         (self.run / "asap-gzip" / "controller.log").write_text("agent reported remote-config status agent=agent-a status=Applied\nagent reported remote-config status agent=agent-b status=Applied\n")
         (self.run / "asap-gzip" / "unsupported-query.json").write_text(json.dumps({"http_code": 422, "response": {"status": "error"}}))
+        (self.run / "image-digests.json").write_text(json.dumps({"vm": "sha256:2"}))
+        (self.run / "asap-gzip" / "logs").mkdir()
+        (self.run / "asap-gzip" / "logs" / "node.log").write_text("ok\n")
 
     def test_complete_run_passes(self) -> None:
         self.write_fixture()

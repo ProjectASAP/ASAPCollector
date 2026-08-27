@@ -197,6 +197,7 @@ def resource_summary(arm_dir: str, weights: dict[str, Any]) -> dict[str, Any]:
                 row_cpu_time = float(row.get("cpu_time_s") or 0)
                 row_rss = float(row.get("rss_mib") or 0)
                 row_peak_rss = float(row.get("peak_rss_mib") or 0)
+                row_net_out = float(row.get("net_out_kibps") or 0)
                 row_disk = float(row.get("disk_mib") or 0)
                 row_cpu = row_cpu if math.isfinite(row_cpu) else 0.0
                 row_rss = row_rss if math.isfinite(row_rss) else 0.0
@@ -210,6 +211,8 @@ def resource_summary(arm_dir: str, weights: dict[str, Any]) -> dict[str, Any]:
                 if "agent" in text or "collector" in text or "otel" in text:
                     collector_cpu += row_cpu
                     collector_rss += row_rss
+                    if math.isfinite(row_net_out):
+                        collector_network_bps += row_net_out * 1024
     for path in nic_files:
         values: list[float] = []
         with open(path, encoding="utf-8") as handle:
@@ -220,8 +223,6 @@ def resource_summary(arm_dir: str, weights: dict[str, Any]) -> dict[str, Any]:
         if values:
             mean_tx = statistics.mean(values)
             network_bps += mean_tx
-            if "node0" in os.path.basename(path) or "node3" in os.path.basename(path):
-                collector_network_bps += mean_tx
     storage_components = set()
     for path in storage_files:
         with open(path, encoding="utf-8") as handle:
@@ -254,7 +255,7 @@ def check_manifest(manifest: dict[str, Any], run_dir: str, baseline: str, asap: 
         errors.append("manifest run_id does not match run directory")
     if not manifest.get("started_at") or not manifest.get("collector_commit") or not manifest.get("backend_commit"):
         errors.append("manifest lacks timestamp or component commit")
-    for field in ("load_generator", "exact_backend", "images", "configuration_sha256", "workload", "time_alignment"):
+    for field in ("load_generator", "exact_backend", "images", "remote_image_digests", "configuration_sha256", "workload", "time_alignment"):
         if not manifest.get(field):
             errors.append(f"manifest lacks {field} provenance")
     if any(value == "missing" for value in (manifest.get("images") or {}).values()):
@@ -281,6 +282,14 @@ def control_plane_evidence(arm_dir: str, expected_agents: list[str]) -> dict[str
     connected = isinstance(value, dict) and all(value.get(agent) == "agent" for agent in expected_agents)
     with open(os.path.join(arm_dir, "controller-config.yaml"), encoding="utf-8") as handle:
         config_text = handle.read().lower()
+    configs_equal = True
+    for agent in expected_agents:
+        path = os.path.join(arm_dir, f"controller-config-{agent}.yaml")
+        if not os.path.isfile(path):
+            configs_equal = False
+            continue
+        with open(path, encoding="utf-8") as handle:
+            configs_equal = configs_equal and handle.read().lower() == config_text
     with open(os.path.join(arm_dir, "controller.log"), encoding="utf-8") as handle:
         log_text = handle.read().lower()
     applied = all(any("agent reported remote-config status" in line and f"agent={agent}" in line and "status=applied" in line for line in log_text.splitlines()) for agent in expected_agents)
@@ -288,6 +297,7 @@ def control_plane_evidence(arm_dir: str, expected_agents: list[str]) -> dict[str
                     ("kllprocessor", "kll/", "sumprocessor", "sum/"))
     return {
         "connected": connected, "applied": applied,
+        "configs_equal": configs_equal,
         "delta": "delta_transmission: true" in config_text,
         "full": full_only or "delta_transmission: false" in config_text,
         "raw_passthrough": "raw_passthrough" in config_text,
@@ -309,8 +319,13 @@ def evaluate(run_dir: str, config: dict[str, Any]) -> dict[str, Any]:
     failures: list[str] = []
     required = ["run-manifest.json", f"{baseline}/replay.jsonl", f"{asap}/replay.jsonl",
                 f"{asap}/freshness-{asap}.csv", f"{asap}/controller-agents.json",
-                f"{asap}/controller-config.yaml", f"{asap}/controller.log", f"{asap}/unsupported-query.json"]
+                f"{asap}/controller-config.yaml", f"{asap}/controller-config-agent-a.yaml", f"{asap}/controller-config-agent-b.yaml",
+                f"{asap}/controller.log", f"{asap}/unsupported-query.json", "image-digests.json"]
     missing = [path for path in required if not os.path.isfile(os.path.join(run_dir, path))]
+    if missing:
+        return {"schema_version": 1, "overall_verdict": "FAIL", "failures": [f"missing artifact: {p}" for p in missing]}
+    if not glob.glob(os.path.join(run_dir, asap, "logs", "*.log")):
+        missing.append(f"{asap}/logs/*.log")
     if missing:
         return {"schema_version": 1, "overall_verdict": "FAIL", "failures": [f"missing artifact: {p}" for p in missing]}
     manifest = load_json(os.path.join(run_dir, "run-manifest.json"))
