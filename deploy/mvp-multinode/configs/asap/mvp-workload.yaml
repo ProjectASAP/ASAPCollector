@@ -51,8 +51,8 @@
   query_string: "quantile_over_time(0.99, http_requests_total_latency_ms[30s])"
   accuracy_sla: 0.01
   assign_to_role: agent
-  sketch_family_override: KLL   # KLL accuracy experiment (issue: rank-error vs DDSketch's value-error)
-  # NO grouping_labels — per-series KLL preserves PromQL semantics.
+  sketch_family_override: DDSketch
+  # NO grouping_labels — per-series DDSketch preserves PromQL semantics.
   # `quantile_over_time` is per-series in PromQL; grouping the sketch at
   # [zone] would merge all series in a zone into one sketch, returning
   # zone-merged p99 (not per-series p99). That's a different quantity than
@@ -86,11 +86,11 @@
   - zone
 
 # 3. COMBINED WINDOW + LABEL AGGREGATION
-#    Inner: rate per series over 5m. Outer: sum-by(zone).
+#    Inner: rate per series over the 30s precompute window. Outer: sum-by(zone).
 #    Stage: edge does rate (small per-series sliding window),
 #    gateway does sum-by-zone fan-in.
 - metric_name: http_requests_total
-  query_string: "sum by (zone) (rate(http_requests_total[5m]))"
+  query_string: "sum by (zone) (rate(http_requests_total[30s]))"
   accuracy_sla: 0.01
   assign_to_role: agent
   grouping_labels:
@@ -153,7 +153,7 @@
   # NO grouping_labels — same rationale as http_requests_total_latency_ms:
   # `quantile_over_time` is per-series in PromQL, and KLL's mergeability
   # doesn't change the semantic that the inner returns per-series quantiles.
-  # Per-series KLL sketches keep accuracy validation apples-to-apples vs
+  # Per-series KLL sketches keep rank-error validation apples-to-apples vs
   # raw baseline.
   sketch_family_override: KLL
   target_path: warm

@@ -63,7 +63,7 @@ def successful_replay(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def latency_summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     grouped: dict[str, list[float]] = defaultdict(list)
     for row in successful_replay(rows):
-        grouped[str(row.get("kind", "unknown"))].append(float(row["duration_ms"]))
+        grouped[str(row.get("query_id", "missing"))].append(float(row["duration_ms"]))
     return {
         kind: {"n": len(values), "p50_ms": percentile(values, .50), "p95_ms": percentile(values, .95)}
         for kind, values in grouped.items()
@@ -85,25 +85,30 @@ def vector(row: dict[str, Any]) -> dict[str, float]:
 
 
 def accuracy_summary(exact: list[dict[str, Any]], approx: list[dict[str, Any]], cfg: dict[str, Any]) -> dict[str, Any]:
-    exact_by_query: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    approx_by_query: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    exact_by_query: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    approx_by_query: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
     for row in successful_replay(exact):
-        exact_by_query[str(row.get("query"))].append(row)
+        exact_by_query[str(row.get("query_id"))][int(row.get("logical_seq", -1))] = row
     for row in successful_replay(approx):
-        approx_by_query[str(row.get("query"))].append(row)
+        approx_by_query[str(row.get("query_id"))][int(row.get("logical_seq", -1))] = row
     output: dict[str, Any] = {}
-    for query in sorted(set(exact_by_query) | set(approx_by_query)):
+    contracts = cfg["queries"]
+    for query in sorted(contracts):
         left, right = exact_by_query[query], approx_by_query[query]
         errors: list[float] = []
-        shape_errors = abs(len(left) - len(right))
-        kind = str((left or right)[0].get("kind", "unknown"))
-        for exact_row, approx_row in zip(left, right):
+        missing_sequences = sorted(set(left) ^ set(right))
+        shape_errors = len(missing_sequences)
+        elapsed_skew_ms = []
+        metric = contracts[query]["metric"]
+        for sequence in sorted(set(left) & set(right)):
+            exact_row, approx_row = left[sequence], right[sequence]
+            elapsed_skew_ms.append(abs(float(exact_row.get("logical_elapsed_ms", math.inf)) - float(approx_row.get("logical_elapsed_ms", -math.inf))))
             ev, av = vector(exact_row), vector(approx_row)
-            if kind == "topk":
+            if metric == "topk_recall":
                 # Heavy-hitter correctness is set recall, not numeric error on
                 # the returned rank score. Encode error as 1-recall so it uses
                 # the same predeclared maximum-error gate below.
-                errors.append(1.0 - len(set(ev) & set(av)) / max(len(ev), 1))
+                errors.append(len(set(ev) & set(av)) / max(len(ev), 1))
                 continue
             if set(ev) != set(av):
                 shape_errors += len(set(ev) ^ set(av)) or 1
@@ -111,12 +116,14 @@ def accuracy_summary(exact: list[dict[str, Any]], approx: list[dict[str, Any]], 
             for key, expected in ev.items():
                 observed = av[key]
                 errors.append(abs(observed - expected) / max(abs(expected), 1e-12))
-        sla = float(cfg["relative_error_by_kind"].get(kind, 0.0))
-        within = sum(error <= sla for error in errors)
+        sla = float(contracts[query]["sla"])
+        within = sum((error >= sla) if metric == "topk_recall" else (error <= sla) for error in errors)
         fraction = within / len(errors) if errors else 0.0
-        passed = bool(errors) and shape_errors == 0 and fraction >= float(cfg["minimum_within_sla_fraction"])
+        skew_limit = float(cfg["logical_time_max_skew_ms"])
+        passed = bool(errors) and shape_errors == 0 and max(elapsed_skew_ms, default=math.inf) <= skew_limit and fraction >= float(cfg["minimum_within_sla_fraction"])
         output[query] = {
-            "kind": kind, "comparisons": len(errors), "shape_errors": shape_errors,
+            "metric": metric, "comparisons": len(errors), "shape_errors": shape_errors,
+            "missing_sequences": missing_sequences, "max_logical_time_skew_ms": max(elapsed_skew_ms, default=math.inf),
             "sla": sla, "within_sla_fraction": fraction,
             "p50_relative_error": percentile(errors, .50),
             "p95_relative_error": percentile(errors, .95),
@@ -132,10 +139,13 @@ def freshness_summary(path: str, cfg: dict[str, Any]) -> dict[str, Any]:
     with open(path, encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             if row.get("delta_ms"):
-                grouped[row.get("tier") or "unknown"].append(float(row["delta_ms"]))
+                value = float(row["delta_ms"])
+                if math.isfinite(value) and value >= 0:
+                    grouped[row.get("tier") or "unknown"].append(value)
     output = {}
-    for tier, values in grouped.items():
-        p95, maximum = percentile(values, .95), max(values)
+    for tier in cfg["required_tiers"]:
+        values = grouped.get(tier, [])
+        p95, maximum = percentile(values, .95), max(values, default=math.inf)
         output[tier] = {
             "n": len(values), "p50_ms": percentile(values, .50), "p95_ms": p95,
             "p99_ms": percentile(values, .99), "max_ms": maximum,
@@ -147,9 +157,10 @@ def freshness_summary(path: str, cfg: dict[str, Any]) -> dict[str, Any]:
 
 def resource_summary(arm_dir: str, weights: dict[str, Any]) -> dict[str, Any]:
     cpu = rss_mib = network_bps = disk_mib = 0.0
-    collector_cpu = collector_rss = 0.0
+    collector_cpu = collector_rss = collector_network_bps = 0.0
     stage_files = glob.glob(os.path.join(arm_dir, "stages-*.csv"))
-    edge_files = glob.glob(os.path.join(arm_dir, "edge-*.csv"))
+    nic_files = glob.glob(os.path.join(arm_dir, "nic-*.csv"))
+    storage_files = glob.glob(os.path.join(arm_dir, "storage-*.csv"))
     for path in stage_files:
         with open(path, encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
@@ -168,24 +179,38 @@ def resource_summary(arm_dir: str, weights: dict[str, Any]) -> dict[str, Any]:
                 if "agent" in text or "collector" in text or "otel" in text:
                     collector_cpu += row_cpu
                     collector_rss += row_rss
-    for path in edge_files:
-        per_edge: dict[str, list[float]] = defaultdict(list)
+    for path in nic_files:
+        values: list[float] = []
         with open(path, encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
-                value = float(row.get("bytes_per_s") or 0)
+                value = float(row.get("tx_bytes_per_s") or 0)
                 if math.isfinite(value):
-                    per_edge[row.get("edge") or "unknown"].append(value)
-        network_bps += sum(statistics.mean(values) for values in per_edge.values() if values)
+                    values.append(value)
+        if values:
+            mean_tx = statistics.mean(values)
+            network_bps += mean_tx
+            if "node0" in os.path.basename(path) or "node3" in os.path.basename(path):
+                collector_network_bps += mean_tx
+    storage_components = set()
+    for path in storage_files:
+        with open(path, encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                value = float(row.get("bytes") or math.nan)
+                if math.isfinite(value) and value >= 0:
+                    disk_mib += value / 1024 / 1024
+                    storage_components.add(row.get("component"))
     def cost(c: float, r: float, n: float, d: float = 0.0) -> float:
         return (c * float(weights["cpu_core_weight"]) + r / 1024 * float(weights["rss_gib_weight"])
                 + n / 1024 / 1024 * float(weights["network_mib_per_s_weight"])
                 + d / 1024 * float(weights.get("storage_gib_weight", 0.0)))
     return {
-        "stage_files": len(stage_files), "edge_files": len(edge_files),
+        "stage_files": len(stage_files), "nic_files": len(nic_files), "storage_files": len(storage_files),
+        "storage_components": sorted(x for x in storage_components if x),
         "cpu_cores": cpu, "rss_mib": rss_mib, "network_bytes_per_s": network_bps, "disk_mib": disk_mib,
         "normalized_cost": cost(cpu, rss_mib, network_bps, disk_mib),
         "collector_cpu_cores": collector_cpu, "collector_rss_mib": collector_rss,
-        "collector_normalized_cost": cost(collector_cpu, collector_rss, network_bps),
+        "collector_network_bytes_per_s": collector_network_bps,
+        "collector_normalized_cost": cost(collector_cpu, collector_rss, collector_network_bps),
     }
 
 
@@ -212,14 +237,19 @@ def check_manifest(manifest: dict[str, Any], run_dir: str, baseline: str, asap: 
     return not errors, errors
 
 
-def control_plane_evidence(path: str) -> dict[str, bool]:
-    """Require applied status plus full/delta decisions in effective config."""
-    value = load_json(path)
-    text = json.dumps(value, sort_keys=True).lower()
+def control_plane_evidence(arm_dir: str, expected_agents: list[str]) -> dict[str, bool]:
+    """Require connected agents, applied acknowledgements, and desired decisions."""
+    value = load_json(os.path.join(arm_dir, "controller-agents.json"))
+    connected = isinstance(value, dict) and all(value.get(agent) == "agent" for agent in expected_agents)
+    with open(os.path.join(arm_dir, "controller-config.yaml"), encoding="utf-8") as handle:
+        config_text = handle.read().lower()
+    with open(os.path.join(arm_dir, "controller.log"), encoding="utf-8") as handle:
+        log_text = handle.read().lower()
+    applied = all(any("agent reported remote-config status" in line and f"agent={agent}" in line and "status=applied" in line for line in log_text.splitlines()) for agent in expected_agents)
     return {
-        "applied": any(marker in text for marker in ('"applied"', 'status=applied', '"live"')),
-        "delta": "delta_transmission" in text and ("true" in text or "use_delta" in text),
-        "full": "delta_transmission" in text and ("false" in text or "use_full_sketch" in text),
+        "connected": connected, "applied": applied,
+        "delta": "delta_transmission: true" in config_text,
+        "full": "delta_transmission: false" in config_text,
     }
 
 
@@ -227,7 +257,8 @@ def evaluate(run_dir: str, config: dict[str, Any]) -> dict[str, Any]:
     baseline, asap = config["baseline_arm"], config["asap_arm"]
     failures: list[str] = []
     required = ["run-manifest.json", f"{baseline}/replay.jsonl", f"{asap}/replay.jsonl",
-                f"{asap}/freshness-{asap}.csv", f"{asap}/controller-agents.json"]
+                f"{asap}/freshness-{asap}.csv", f"{asap}/controller-agents.json",
+                f"{asap}/controller-config.yaml", f"{asap}/controller.log"]
     missing = [path for path in required if not os.path.isfile(os.path.join(run_dir, path))]
     if missing:
         return {"schema_version": 1, "overall_verdict": "FAIL", "failures": [f"missing artifact: {p}" for p in missing]}
@@ -237,46 +268,48 @@ def evaluate(run_dir: str, config: dict[str, Any]) -> dict[str, Any]:
     exact = load_jsonl(os.path.join(run_dir, baseline, "replay.jsonl"))
     approximate = load_jsonl(os.path.join(run_dir, asap, "replay.jsonl"))
     exact_success, asap_success = successful_replay(exact), successful_replay(approximate)
-    control = control_plane_evidence(os.path.join(run_dir, asap, "controller-agents.json"))
+    control = control_plane_evidence(os.path.join(run_dir, asap), config["expected_agents"])
     applied = all(control.values())
     if not control["applied"]:
         failures.append("control plane has no Applied/LIVE remote-config acknowledgement")
     if not control["delta"] or not control["full"]:
         failures.append("effective config does not prove both full- and delta-sketch decisions")
-    minimum = int(config["minimum_successful_queries_per_kind"])
-    kinds = sorted({str(row.get("kind")) for row in exact + approximate})
+    minimum = int(config["minimum_successful_queries_per_query"])
+    query_ids = sorted(config["queries"])
     correctness = {}
-    for kind in kinds:
-        exact_n = sum(row.get("kind") == kind for row in exact_success)
-        asap_rows = [row for row in asap_success if row.get("kind") == kind]
+    for query_id in query_ids:
+        exact_n = sum(row.get("query_id") == query_id for row in exact_success)
+        asap_rows = [row for row in asap_success if row.get("query_id") == query_id]
         asap_n = len(asap_rows)
         planned = all(row.get("plan_id") for row in asap_rows)
         passed = exact_n >= minimum and asap_n >= minimum and planned and applied
-        correctness[kind] = {"baseline_success": exact_n, "asap_success": asap_n, "plan_observed": planned,
+        correctness[query_id] = {"baseline_success": exact_n, "asap_success": asap_n, "plan_observed": planned,
                              "control_plane_evidence": control, "passed": passed}
-        if not passed: failures.append(f"functional correctness failed for {kind}")
-    accuracy = accuracy_summary(exact, approximate, config["accuracy"])
+        if not passed: failures.append(f"functional correctness failed for {query_id}")
+    accuracy_cfg = dict(config["accuracy"], queries=config["queries"], logical_time_max_skew_ms=config["logical_time_max_skew_ms"])
+    accuracy = accuracy_summary(exact, approximate, accuracy_cfg)
     if not accuracy or not all(item["passed"] for item in accuracy.values()): failures.append("accuracy SLA failed")
     freshness = freshness_summary(os.path.join(run_dir, asap, f"freshness-{asap}.csv"), config["freshness"])
     if not freshness or not all(item["passed"] for item in freshness.values()): failures.append("freshness SLA failed")
     latency = {baseline: latency_summary(exact), asap: latency_summary(approximate)}
     latency_passed = True
-    for kind in kinds:
-        left, right = latency[baseline].get(kind), latency[asap].get(kind)
-        if not left or not right or right["p50_ms"] >= left["p50_ms"] or right["p95_ms"] >= left["p95_ms"]:
+    for query_id in query_ids:
+        left, right = latency[baseline].get(query_id), latency[asap].get(query_id)
+        if not left or not right or (config["query_latency"]["require_asap_lower_p50"] and right["p50_ms"] >= left["p50_ms"]) or (config["query_latency"]["require_asap_lower_p95"] and right["p95_ms"] >= left["p95_ms"]):
             latency_passed = False
     if not latency_passed: failures.append("query latency gate failed")
     resources = {baseline: resource_summary(os.path.join(run_dir, baseline), config["cost"]), asap: resource_summary(os.path.join(run_dir, asap), config["cost"])}
-    resource_complete = all(item["stage_files"] and item["edge_files"] for item in resources.values())
+    expected_storage = {baseline: set(config["cost"]["baseline_storage_components"]), asap: set(config["cost"]["asap_storage_components"])}
+    resource_complete = all(item["stage_files"] and item["nic_files"] and item["storage_files"] and expected_storage[arm] <= set(item["storage_components"]) for arm, item in resources.items())
     guardrail = float(config["cost"]["collector_regression_guardrail_ratio"])
     collector_ratios = {
         key: resources[asap][key] / max(resources[baseline][key], 1e-12)
-        for key in ("collector_cpu_cores", "collector_rss_mib", "network_bytes_per_s")
+        for key in ("collector_cpu_cores", "collector_rss_mib", "collector_network_bytes_per_s")
     }
     collector_cost_passed = (resource_complete
         and resources[asap]["collector_normalized_cost"] < resources[baseline]["collector_normalized_cost"]
-        and all(ratio <= guardrail for ratio in collector_ratios.values()))
-    e2e_cost_passed = resource_complete and resources[asap]["normalized_cost"] < resources[baseline]["normalized_cost"]
+        and all(ratio <= guardrail for ratio in collector_ratios.values())) if config["cost"]["require_collector_total_lower"] else resource_complete
+    e2e_cost_passed = (resource_complete and resources[asap]["normalized_cost"] < resources[baseline]["normalized_cost"]) if config["cost"]["require_end_to_end_total_lower"] else resource_complete
     if not collector_cost_passed: failures.append("collector cost gate failed")
     if not e2e_cost_passed: failures.append("end-to-end cost gate failed")
     return {

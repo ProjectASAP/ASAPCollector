@@ -11,23 +11,14 @@ Stage mapping (hard-coded; override via --stages-yaml):
     agent-* (any container whose name starts with "agent-"  )      → agent
     otel-app*                                                 → producer
     gateway                                                         → gateway
-    backend                                                         → backend-ingest +
-                                                                      backend-query  (same
-                                                                      container; counted once
-                                                                      under each stage so the
-                                                                      v4 §1 table can show
-                                                                      both ingest and query
-                                                                      cost lines without
-                                                                      double-counting RSS)
+    backend                                                         → backend
     prometheus                                                      → backend-storage  (B0/B1)
     minio                                                           → backend-storage  (ASAP)
     controller                                                      → controller
     grafana, *-setup, cold-store-init                               → ignored
 
-The "backend-ingest" / "backend-query" duplication is bookkeeping —
-it lets the report's stage-by-stage table show both rows even
-though the same container runs both surfaces. Sum-down rows in the
-report drop the duplication.
+The backend process is emitted once because it serves both ingest and query;
+duplicating it into two stage rows would double-count CPU and RSS.
 
 Disk usage is sampled with `du -sb` inside the relevant container
 or via S3-bucket size for the MinIO case (when applicable). For
@@ -104,7 +95,7 @@ def default_stage_for(container: str, baseline: str) -> list[str]:
         return ["gateway"]
     if bare in {"backend", "data-plane", "victoriametrics"}:
         # Single container, dual stage labels.
-        return ["backend-ingest", "backend-query"]
+        return ["backend"]
     if bare == "prometheus":
         # Storage stage under B0 / B1; for ASAP this would be a
         # no-op (Prometheus is up but only used for self-telemetry

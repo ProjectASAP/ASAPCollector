@@ -24,6 +24,7 @@ OUT=${OUT:?out}
 N_SAMPLES=${N_SAMPLES:-60}
 POLL_MS=${POLL_MS:-100}
 NODE2_IP=${NODE2_IP:-10.10.1.3}
+NODE1_IP=${NODE1_IP:-10.10.1.2}
 
 mkdir -p "${OUT}"
 CSV="${OUT}/freshness-${ARM}.csv"
@@ -48,7 +49,7 @@ case "${ARM}" in
         # Raw baseline lands in VictoriaMetrics, which serves PromQL on :8428
         # (NOT :9090 — there is no Prometheus in this topology; :9090 is
         # unreachable and was the cause of the prior "no successful polls").
-        PROBES=('raw|{__name__=~"http_freshness_probe_raw.*"}|http://'"${NODE2_IP}"':8428')
+        PROBES=('raw|{__name__=~"http_freshness_probe_raw.*"}|http://'"${NODE1_IP}"':8428')
         VM_QARGS=(--data-urlencode "latency_offset=1ms")
         ;;
     asap|asap-gzip)

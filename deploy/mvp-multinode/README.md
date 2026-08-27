@@ -16,13 +16,11 @@ now contains only shared measurement utilities.
       node0 ──────►│ producers + agent-a   (data source)          │
    10.10.1.1       │                                              │
                    │                                              │
-      node1         │ (unused; asap-gateway retired in #400)       │
-   10.10.1.2       │                                              │
+      node1 ◄──────│ cold backend (VictoriaMetrics or MinIO,      │
+   10.10.1.2       │ Thanos, Prometheus, gorilla-merger)          │
                    │                                              │
-      node2 ◄──────│ backend stack         (asap-query-backend,   │
-   10.10.1.3       │                        minio, thanos-*,      │
-                   │                        prometheus, embedded  │
-                   │                        controller)           │
+      node2 ◄──────│ warm backend (ASAP data/control planes)      │
+   10.10.1.3       │                                              │
                    │                                              │
       node3 ──────►│ producers + agent-b   (data source)          │
    10.10.1.4       │                                              │
@@ -111,7 +109,8 @@ Knobs (env-overridable, see `topology.env` for defaults):
 | `mvp-acceptance.json` | Checked-in, pre-run accuracy/freshness/latency/cost acceptance thresholds |
 | `scripts/mvp_evaluate.py` | Fail-closed acceptance evaluator and report generator |
 | `scripts/measure_freshness.sh` | Probe-based sample-to-query freshness measurement |
-| `scripts/measure_nic_bw.sh` | Per-NIC `cat /sys/class/net/.../statistics` snapshot — fed into per-edge CSV |
+| `scripts/measure_nic_bw.sh` | Per-host NIC TX/RX sampling (host networking makes Docker NetIO unusable) |
+| `scripts/measure_storage.sh` | Persistent host-volume bytes for VictoriaMetrics and ASAP storage |
 | `configs/{b0,b1,asap,shared}/` | Per-arm + shared YAML bundles — rsync'd to each node at Phase 0 |
 
 The per-node Python utilities live in `deploy/mvp-singlenode/scripts/`; the
@@ -150,7 +149,7 @@ Pick the single-host driver for fast iteration and PR-time smoke. Use the 4-node
 
 ## gorilla-merger integration (issues #32 / #24)
 
-The ASAP arms run an `asap-gorilla-merger` container on node2 (Thanos-Receive-style):
+The ASAP arms run an `asap-gorilla-merger` container on node1 (Thanos-Receive-style):
 HTTP fragment ingest on `:10908` (`POST /ingest/gorilla`), Thanos StoreAPI on
 `:10907` for the `<2h` pending window, and a 2h-block shipper into the same
 `asap-gorilla-tsdb` bucket the store-gateway watches.

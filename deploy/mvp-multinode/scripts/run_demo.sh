@@ -78,7 +78,9 @@ write_run_manifest() {
     ROOT="${ROOT}" BACKEND="${BACKEND}" RUN_ID="${RUN_ID}" RUN_DIR="${RUN_DIR}" \
     PER_AGENT_CARDINALITY="${PER_AGENT_CARDINALITY}" OTELAPP_FREQ_HZ="${OTELAPP_FREQ_HZ}" \
     SOAK_S="${SOAK_S}" OTELAPP_SEED="${OTELAPP_SEED:-42}" \
-    python3 -c 'import datetime,json,os,subprocess; root=os.environ["ROOT"]; backend=os.environ["BACKEND"]; rid=os.environ["RUN_ID"]; seed=int(os.environ["OTELAPP_SEED"]); commit=lambda p: subprocess.check_output(["git","-C",p,"rev-parse","HEAD"],text=True).strip(); json.dump({"schema_version":1,"run_id":rid,"started_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"collector_commit":commit(root),"backend_commit":commit(backend),"workload":{"cardinality":int(os.environ["PER_AGENT_CARDINALITY"]),"frequency_hz":float(os.environ["OTELAPP_FREQ_HZ"]),"soak_s":float(os.environ["SOAK_S"])},"arms":{"b1":{"seed":seed},"asap-gzip":{"seed":seed}}},open(os.path.join(os.environ["RUN_DIR"],"run-manifest.json"),"w"),indent=2)'
+    python3 -c 'import datetime,json,os,subprocess; root=os.environ["ROOT"]; backend=os.environ["BACKEND"]; rid=os.environ["RUN_ID"]; seed=int(os.environ["OTELAPP_SEED"]); commit=lambda p: subprocess.check_output(["git","-C",p,"rev-parse","HEAD"],text=True).strip(); json.dump({"schema_version":1,"run_id":rid,"started_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"collector_commit":commit(root),"backend_commit":commit(backend),"time_alignment":{"mode":"relative_logical_sequence","contract":"same seed, query id, per-query sequence and bounded elapsed-time skew"},"workload":{"cardinality":int(os.environ["PER_AGENT_CARDINALITY"]),"frequency_hz":float(os.environ["OTELAPP_FREQ_HZ"]),"soak_s":float(os.environ["SOAK_S"])},"arms":{"b1":{"seed":seed},"asap-gzip":{"seed":seed}}},open(os.path.join(os.environ["RUN_DIR"],"run-manifest.json"),"w"),indent=2)'
+    cp "${PKG_DIR}/mvp-acceptance.json" "${RUN_DIR}/mvp-acceptance.json"
+    cp "${ROOT}/deploy/mvp-singlenode/scripts/queries-e2e.json" "${RUN_DIR}/queries-e2e.json"
 }
 
 # ── ssh wrapper that runs commands on a remote node with our env ──
@@ -236,7 +238,7 @@ sync_to() {
 sync_all_nodes() {
     for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
         # `data/gorilla-merger` is the merger's tsdb volume mount on node2.
-        on "${n}" 'mkdir -p /mydata/mvp-multinode/{configs,scripts,logs,results,data/gorilla-merger,data/sketch-persistence}'
+        on "${n}" 'mkdir -p /mydata/mvp-multinode/{configs,scripts,logs,results,data/gorilla-merger,data/sketch-persistence,data/victoriametrics,data/minio}'
         # gorilla-merger runs distroless nonroot (UID 65532); mkdir leaves the
         # dir owned by the ssh user, so 65532 can't write /data/lock → crash-loop.
         # 0777 lets the nonroot UID write without sudo (harmless on the other nodes).
@@ -315,6 +317,7 @@ backend_up() {
     if ! is_asap_arm "${arm}"; then
         docker_run_on "${NODE1_HOST}" --cpus=4 --memory=16g --memory-swap=16g \
             --name asap-victoriametrics \
+            -v /mydata/mvp-multinode/data/victoriametrics:/victoria-metrics-data \
             victoriametrics/victoria-metrics:v1.110.0 \
             --httpListenAddr=:8428 \
             --retentionPeriod=24h
@@ -334,6 +337,7 @@ backend_up() {
         # MinIO + bucket setup
         docker_run_on "${NODE1_HOST}" --cpus=2 --memory=16g --memory-swap=16g \
             --name asap-minio \
+            -v /mydata/mvp-multinode/data/minio:/data \
             -e MINIO_ROOT_USER=asap \
             -e MINIO_ROOT_PASSWORD=asap-local-only \
             minio/minio:latest server /data --console-address :9001
@@ -545,11 +549,11 @@ clean_backend_data() {
         log "KEEP_BACKEND_DATA=1 — preserving backend state dirs"
         return
     fi
-    log "wiping persistent backend state (gorilla-merger, sketch-persistence)"
+    log "wiping persistent backend state"
     # The merger writes subdirs as uid 65532; the parent dirs are 0777 so the
     # ssh user can unlink them, but fall back to sudo if a stricter umask blocks.
     for n in "${NODE1_HOST}" "${NODE2_HOST}"; do
-        on "${n}" 'd=/mydata/mvp-multinode/data; rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* 2>/dev/null || sudo rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* 2>/dev/null || true' || true
+        on "${n}" 'd=/mydata/mvp-multinode/data; rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* "$d"/victoriametrics/* "$d"/minio/* 2>/dev/null || sudo rm -rf "$d"/gorilla-merger/* "$d"/sketch-persistence/* "$d"/victoriametrics/* "$d"/minio/* 2>/dev/null || true' || true
     done
 }
 
@@ -763,13 +767,12 @@ arm_measure() {
     local out="${RUN_DIR}/${arm}"
     mkdir -p "${out}"
 
-    log "[measure ${arm}] starting per-node docker stats sampling for ${SOAK_S}s"
+    log "[measure ${arm}] starting per-node host NIC and process sampling for ${SOAK_S}s"
     # On each node, sample container stats and capture to local file.
     for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
-        on "${n}" "python3 /mydata/mvp-multinode/scripts/measure_per_edge_bandwidth.py \
-            --duration ${SOAK_S} --period 1.0 \
-            --out /mydata/mvp-multinode/results/edge-${n}.csv \
-            > /mydata/mvp-multinode/results/edge-${n}.log 2>&1 &"
+        on "${n}" "bash /mydata/mvp-multinode/scripts/measure_nic_bw.sh \
+            ${SOAK_S} /mydata/mvp-multinode/results/nic-${n}.csv \
+            > /mydata/mvp-multinode/results/nic-${n}.log 2>&1 &"
         on "${n}" "python3 /mydata/mvp-multinode/scripts/measure_stages.py \
             --baseline ${arm} --duration ${SOAK_S} \
             --out /mydata/mvp-multinode/results/stages-${n}.csv \
@@ -787,7 +790,7 @@ arm_measure() {
     if is_asap_arm "${arm}"; then
         query_endpoint="http://${NODE2_IP}:9091"
     else
-        query_endpoint="http://${NODE2_IP}:8428"
+        query_endpoint="http://${NODE1_IP}:8428"
     fi
 
     log "[measure ${arm}] MetricsQL replay against ${query_endpoint} for ${SOAK_S}s"
@@ -809,20 +812,28 @@ arm_measure() {
         # sufficient for functional correctness.
         on "${NODE2_HOST}" "curl -fsS http://127.0.0.1:8080/api/v1/agents" \
             > "${out}/controller-agents.json"
+        on "${NODE2_HOST}" "curl -fsS -H 'X-Agent-ID: agent-a' http://127.0.0.1:8080/api/v1/collector-config/agent" \
+            > "${out}/controller-config.yaml"
+        on "${NODE2_HOST}" "docker logs asap-control-plane 2>&1" > "${out}/controller.log"
     fi
 
     # Freshness is part of the acceptance gate, not an optional report extra.
     # It runs after replay while the arm is still live.
-    ARM="${arm}" OUT="${out}" NODE2_IP="${NODE2_IP}" \
+    ARM="${arm}" OUT="${out}" NODE1_IP="${NODE1_IP}" NODE2_IP="${NODE2_IP}" \
         N_SAMPLES="${FRESHNESS_SAMPLES:-20}" POLL_MS="${FRESHNESS_POLL_MS:-100}" \
         bash "${SCRIPT_DIR}/measure_freshness.sh" > "${out}/freshness.log" 2>&1
     sleep 3   # let measurement scripts on remote nodes finish
 
+    on "${NODE1_HOST}" "bash /mydata/mvp-multinode/scripts/measure_storage.sh ${arm} node1 /mydata/mvp-multinode/results/storage-node1.csv"
+    on "${NODE2_HOST}" "bash /mydata/mvp-multinode/scripts/measure_storage.sh ${arm} node2 /mydata/mvp-multinode/results/storage-node2.csv"
+
     # Pull CSVs back from each node
     for n in "${NODE0_HOST}" "${NODE1_HOST}" "${NODE2_HOST}" "${NODE3_HOST}"; do
-        scp "${n}:/mydata/mvp-multinode/results/edge-${n}.csv"     "${out}/edge-${n}.csv"     2>/dev/null || true
+        scp "${n}:/mydata/mvp-multinode/results/nic-${n}.csv"      "${out}/nic-${n}.csv"      2>/dev/null || true
         scp "${n}:/mydata/mvp-multinode/results/stages-${n}.csv"   "${out}/stages-${n}.csv"   2>/dev/null || true
     done
+    scp "${NODE1_HOST}:/mydata/mvp-multinode/results/storage-node1.csv" "${out}/storage-node1.csv"
+    scp "${NODE2_HOST}:/mydata/mvp-multinode/results/storage-node2.csv" "${out}/storage-node2.csv"
 
     log "[measure ${arm}] done; outputs in ${out}/"
 }

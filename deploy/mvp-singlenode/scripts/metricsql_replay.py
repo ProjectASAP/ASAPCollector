@@ -92,6 +92,7 @@ def load_queries(path: str) -> list[dict[str, str]]:
     if not isinstance(loaded, list):
         sys.exit(f"queries file must be a JSON list, got {type(loaded)}")
     out = []
+    seen_ids: set[str] = set()
     for i, q in enumerate(loaded):
         # The demo now speaks MetricsQL (superset of PromQL — includes
         # `distinct_over_time` etc.) and queries Hit VictoriaMetrics or
@@ -105,7 +106,12 @@ def load_queries(path: str) -> list[dict[str, str]]:
             sys.exit(f"queries[{i}] missing required 'metricsql' (or legacy 'promql') or 'kind' field")
         if q["kind"] not in QUERY_KINDS:
             sys.exit(f"queries[{i}].kind must be one of {QUERY_KINDS}, got {q['kind']!r}")
-        out.append({"kind": q["kind"], "metricsql": query_text})
+        query_id = q.get("id") or f"query-{i}"
+        query_id = str(query_id)
+        if query_id in seen_ids:
+            sys.exit(f"queries[{i}].id duplicates {query_id!r}")
+        seen_ids.add(query_id)
+        out.append({"id": query_id, "kind": q["kind"], "metricsql": query_text})
     return out
 
 
@@ -313,6 +319,8 @@ def main() -> int:
     period_s = 1.0 / args.qps if args.qps > 0 else 0.0
     end_at = time.monotonic() + args.duration
     n = 0
+    per_query_seq: dict[str, int] = {}
+    replay_started = time.monotonic()
 
     print(
         f"replay: target={args.target} qps={args.qps} duration={args.duration}s "
@@ -324,11 +332,17 @@ def main() -> int:
             while time.monotonic() < end_at:
                 q = queries[n % len(queries)]
                 n += 1
+                query_id = q["id"]
+                logical_seq = per_query_seq.get(query_id, 0)
+                per_query_seq[query_id] = logical_seq + 1
                 t_start = time.perf_counter()
                 dur_ms, res = run_query(args.target, q["metricsql"], args.timeout)
                 rec = {
                     "ts": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
                     "query": q["metricsql"],
+                    "query_id": query_id,
+                    "logical_seq": logical_seq,
+                    "logical_elapsed_ms": (time.monotonic() - replay_started) * 1000.0,
                     "kind": q["kind"],
                     "duration_ms": dur_ms,
                     "plan_id": tracker.latest() if tracker else None,
