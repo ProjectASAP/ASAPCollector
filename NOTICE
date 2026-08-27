@@ -1,0 +1,23 @@
+ASAPCollector
+Copyright 2025-2026 ProjectASAP Authors
+
+This project is licensed under the Apache License, Version 2.0. See the
+LICENSE file for the full license text.
+
+This repository vendors and patches several third-party projects as git
+submodules (opentelemetry-collector, opentelemetry-collector-contrib,
+opentelemetry-go, opentelemetry-proto, telegraf) via the corresponding
+`*-patch` directories. Files under those directories that are genuine
+patches on top of upstream source retain their original upstream copyright
+header (e.g. "Copyright The OpenTelemetry Authors") — this is correct and
+should not be changed. New, ASAP-original files (including files that live
+inside a `*-patch` directory tree but implement functionality with no
+upstream counterpart, such as
+`opentelemetry-collector-contrib-patch/processor/asapedgeprocessor`) should
+use:
+
+    // Copyright ProjectASAP Authors
+    // SPDX-License-Identifier: Apache-2.0
+
+as their header instead of copying an existing upstream-licensed file's
+header.
