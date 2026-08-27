@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-ASAP is a sketch-based metrics pipeline. A collector turns selected metric
+ASAP is a summary-based metrics pipeline. A collector turns selected metric
 streams into bounded summaries, transmits those summaries to ASAPQuery, and
 the query service answers supported aggregate queries without scanning every
 raw sample. A control plane selects the summary, its parameters, and the
