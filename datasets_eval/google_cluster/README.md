@@ -157,7 +157,7 @@ to exercise the 1k cardinality cap with U ≈ 50–100k.
 
 ## See also
 
-- `PROGRESS.md` "Outstanding — paper blockers" #6 (the goal)
+- the paper evaluation goal
 - `docs/paper-outline.md` "Measurable benefits — five evaluation dimensions"
 - `docs/sdk-cost-evaluation.md` (the OTLP wire-shape reference)
 - `datasets_eval/debs/` (sister dataset: financial / DEBS 2022)

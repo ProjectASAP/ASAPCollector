@@ -520,9 +520,9 @@ answers to delta-OFF (full-frame).**
 The Go and Rust edge runtimes **must emit byte-identical deltas** before
 any of this is trustable in a mixed fleet — the bit-identical wire-format
 promise of [#243](https://github.com/ProjectASAP/ASAPCollector/issues/243)
-(closed; see `PROGRESS.md` "Cross-language byte-format parity, 5/5
-sketches"). That parity was guarded by the
-`integration/cross_host_parity/` golden harness (`PROGRESS.md:67-78`), which
+(closed after cross-language byte-format parity was established for all five
+sketches). That parity was guarded by the
+`integration/cross_host_parity/` golden harness, which
 asserted `asap-otel` (Go) ↔ `asap-otap` (Rust) byte-identical
 `SketchEnvelope.Payload`s plus PromQL response equality.
 

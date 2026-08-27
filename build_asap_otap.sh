@@ -107,7 +107,7 @@ REGISTRATION_SRC_DIR="${PATCH_DIR}/all"
 REGISTRATION_DEST_DIR="${OTAP_WORKSPACE_DIR}/crates/asap-sketches-registry"
 
 # Inline env vars per the convention `build_asap_otel.sh`
-# established (PROGRESS.md follow-up #7: "inline env vars into script
+# established (follow-up: "inline env vars into script
 # removes a footgun for new contributors"). Cargo respects them when
 # inherited from the parent shell.
 export CARGO_NET_GIT_FETCH_WITH_CLI=true

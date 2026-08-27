@@ -1,7 +1,7 @@
 # ASAP Edge Precompute Framework — Design
 
 _Status: **draft** — 2026-05-01. Forward-looking; gates the adapter
-work tracked in [`PROGRESS.md`](../PROGRESS.md)._
+work tracked in the repository issue tracker._
 
 ## 1. Motivation
 

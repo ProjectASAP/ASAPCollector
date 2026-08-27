@@ -47,8 +47,7 @@ workload + SLAs.
      raw-forwarding.
      - *Evidence:* P7 sweep producer-side `cpu_pct` column;
        `otel_collector_benchmark/bench_2node_sim.sh` for
-       per-node CPU; SDK label-axis profile (paper blocker
-       #2 of `PROGRESS.md`).
+       per-node CPU; SDK label-axis profile.
   3. **Low edge collector memory overhead at runtime.**
      Sketch-processor RSS stays bounded under load and over
      long soaks (no leaks).

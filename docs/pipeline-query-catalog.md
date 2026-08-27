@@ -771,8 +771,7 @@ single-pipeline multi-sketch path, with delta transmission live for
 DDSketch (the only non-trivial sketch on the agent-side delta-path
 that had remaining bugs at the time; KLL has no delta concept by
 construction, and HLL / CMS / CS deltas were structurally correct
-pre-fix). See PROGRESS.md "Single-pipeline multi-sketch + delta +
-queryable warm tier (2026-05-01)" for the runtime trace.
+pre-fix). The corresponding runtime trace was recorded on 2026-05-01.
 
 #### What this means for the legacy path
 

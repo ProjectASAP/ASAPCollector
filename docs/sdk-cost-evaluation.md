@@ -210,7 +210,7 @@ backpressure: blocking `Add` / `Record` would entangle "SDK
 can't keep up" with "application slow path" in the experiment
 numbers. The drop counter is in-memory for v1 — exposing it
 as a side-channel metric so the processor or operator can see
-drops in flight is a follow-up tracked in `PROGRESS.md`.
+drops in flight remains follow-up work.
 
 **Contract.** Given `N` events emitted on `K` distinct
 attribute sets during one `W`, `collect()` returns `N` data
@@ -319,4 +319,3 @@ workloads, check that the controller's chosen `(W, L, agg)`
 matches the hand-tuned ideal for that workload. Measures
 planner quality independent of SDK emit cost; doesn't need the
 cost sweeps above.
-
