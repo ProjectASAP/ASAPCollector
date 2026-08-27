@@ -54,7 +54,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-COPY otel-arrow/rust/otap-dataflow/target/release/asap-otap \
+COPY future-support/otap/otel-arrow/rust/otap-dataflow/target/release/asap-otap \
     /usr/local/bin/asap-otap
 
 # The OTAP runtime exposes its admin/HTTP server on the

@@ -5,7 +5,6 @@ One canonical MVP demo plus shared deployment infrastructure:
 ```text
 deploy/
 ├── docker/             image definitions
-├── helm/               Kubernetes packaging
 └── mvp-multinode/      issue-#46 demo
     ├── harness/        immutable run inputs (acceptance, queries, topology)
     ├── configs/        container and controller runtime configuration
@@ -15,7 +14,6 @@ deploy/
 | Path | What | Read |
 |---|---|---|
 | [`mvp-multinode/`](mvp-multinode/README.md) | Canonical issue-#46 paired harness on a real 10 Gbps LAN | [mvp-multinode/README.md](mvp-multinode/README.md) |
-| `helm/` | Helm charts (K8s / scale path) | — |
 | `docker/` | Collector and load-generator image definitions; ASAPQuery images build from its sibling repository | — |
 
 ## Which one should I run?
