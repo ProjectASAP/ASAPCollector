@@ -11,7 +11,8 @@ paper-planning material do not belong in this directory.
 - [System overview](system-overview.md) — end-to-end architecture, system
   boundary, goals, and MVP claims.
 - [ASAPCollector control plane](control-plane-design.md) — the collector-side
-  contract for plans produced by ASAPPlanner.
+  contract for plans issued by the ASAPQuery-backend control plane using
+  planning information from ASAPPlanner.
 - [Summary aggregation and transmission](summary-aggregation-and-transmission.md)
   — summary families, aggregation shapes, windows, accuracy, freshness, and
   raw/full/delta transmission semantics.

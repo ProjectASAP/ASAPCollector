@@ -134,7 +134,8 @@ not silently include it in the results.
 ## Related design scopes
 
 - `control-plane-design.md`: the ASAPCollector-side contract for collection
-  plans produced by ASAPPlanner.
+  plans issued by the ASAPQuery-backend control plane using planning
+  information from ASAPPlanner.
 - `summary-aggregation-and-transmission.md`: summary families, aggregation
   shapes, windows, accuracy, freshness, and transmission semantics.
 - `future-summary-and-compression.md`: deferred summary families and raw or

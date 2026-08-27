@@ -2,11 +2,12 @@
 
 ## TL;DR
 
-ASAPPlanner owns workload analysis and plan generation. ASAPCollector consumes
-the resulting collection plan, validates that it can execute the requested
-summary and transmission behavior, applies the plan atomically, and reports
-evidence of the active plan. This document defines only that
-ASAPCollector-specific contract.
+ASAPPlanner analyzes the query workload and identifies suitable summary
+semantics. The ASAPQuery-backend control plane chooses aggregation placement
+and transmission mode, then issues the resulting collection plan.
+ASAPCollector validates that it can execute the requested behavior, applies
+the plan atomically, and reports evidence of the active plan. This document
+defines only that ASAPCollector-specific contract.
 
 **Status:** active
 
@@ -20,15 +21,18 @@ The control plane spans two distinct responsibilities:
 | Responsibility | Owner |
 | --- | --- |
 | Analyze query workloads and accuracy SLAs | ASAPPlanner |
-| Choose summary families and parameters | ASAPPlanner |
-| Choose aggregation placement and transmission mode | ASAPPlanner |
-| Deliver a collection plan | control-plane transport |
+| Identify suitable summary families and parameters | ASAPPlanner |
+| Choose aggregation placement and transmission mode | ASAPQuery-backend control plane |
+| Assemble, version, and deliver the collection plan | ASAPQuery-backend control plane |
 | Validate collector capabilities | ASAPCollector |
 | Apply, expose, and acknowledge the active plan | ASAPCollector |
 
-ASAPPlanner is the source of planning policy. ASAPCollector must not reproduce
-the planner's query analysis, optimization model, or cost model. The collector
-is an execution target with an explicit capability and lifecycle contract.
+ASAPPlanner supplies query-to-summary planning information. The
+ASAPQuery-backend control plane owns deployment decisions, including where
+aggregation occurs and whether raw, full-summary, or delta-summary
+transmission is selected. ASAPCollector must not reproduce either layer's
+policy. The collector is an execution target with an explicit capability and
+lifecycle contract.
 
 ## Collection plan
 
@@ -87,7 +91,7 @@ ASAPCollector exposes evidence tied to the active plan identity:
 - the plan identity attached to emitted summary payloads.
 
 The MVP harness captures this evidence and checks it against the plan issued
-by ASAPPlanner.
+by the ASAPQuery-backend control plane.
 
 ## Failure behavior
 
@@ -104,12 +108,14 @@ by ASAPPlanner.
 The MVP exercises raw/pass-through, full-summary, and supported delta-summary
 decisions. For each decision it verifies that:
 
-1. ASAPPlanner issued an explicit plan;
+1. the ASAPQuery-backend control plane issued an explicit plan using the
+   workload planning information supplied by ASAPPlanner;
 2. ASAPCollector accepted and activated that exact plan;
 3. observed metrics were processed under it;
 4. emitted payloads match the selected mode; and
 5. failures or unsupported behavior were reported explicitly.
 
-Planning quality and optimizer optimality are outside this document. They are
-ASAPPlanner design concerns; this contract only requires an executable,
-observable plan at the collector boundary.
+Query-to-summary planning quality and deployment decision quality are outside
+this document. They belong to ASAPPlanner and the ASAPQuery-backend control
+plane respectively; this contract only requires an executable, observable
+plan at the collector boundary.
