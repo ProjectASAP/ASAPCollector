@@ -16,7 +16,7 @@ Subcommands:
             fallback prints a 'send-only-mode' summary if the
             opentelemetry-proto python package isn't available, so
             CI smoke tests work without that dep.
-  validate  Verify queries.json schema matches deploy/scripts/queries-e2e.json
+  validate  Verify queries.json schema matches the canonical MVP query suite
             and confirm the cached JSONL conforms to the OTLP shape
             this dataset claims to produce.
 """
@@ -40,7 +40,7 @@ REPO_ROOT = ROOT.parent.parent
 EXPECTED_ATTR_KEYS = {"zone", "rack", "host", "service", "task"}
 
 # Required keys in each queries.json entry. `kind` and `promql` are
-# the schema defined by deploy/scripts/queries-e2e.json; the
+# the schema defined by deploy/mvp-multinode/harness/queries/e2e.json; the
 # google-cluster log adds `expected_ground_truth_query` so the
 # accuracy reducer can compare against ground truth.
 QUERY_REQUIRED_KEYS = {"kind", "promql"}
@@ -331,7 +331,7 @@ def _validate_queries_file(path: Path, reference: Path | None) -> int:
             continue
         errs.extend(_validate_query_entry(i, q))
 
-    # Reference-schema check against deploy/scripts/queries-e2e.json
+    # Reference-schema check against the canonical MVP query suite
     if reference is not None and reference.is_file():
         try:
             ref = json.loads(reference.read_text())
@@ -466,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
     pv.add_argument("--queries", type=Path, default=ROOT / "queries.json")
     pv.add_argument(
         "--reference-queries", type=Path,
-        default=REPO_ROOT / "deploy" / "scripts" / "queries-e2e.json",
+        default=REPO_ROOT / "deploy" / "mvp-multinode" / "harness" / "queries" / "e2e.json",
         help="Reference queries.json from deploy/scripts/ to cross-check schema.",
     )
     pv.add_argument(

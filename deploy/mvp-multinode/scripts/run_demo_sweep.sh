@@ -13,7 +13,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(dirname "${SCRIPT_DIR}")"
-TOPOLOGY_ENV="${TOPOLOGY_ENV:-${PKG_DIR}/topology.env}"
+TOPOLOGY_ENV="${TOPOLOGY_ENV:-${PKG_DIR}/harness/topology/4node.env}"
 source "${TOPOLOGY_ENV}"
 
 RUN_ID="${RUN_ID:-mvp-multinode-$(date +%Y%m%d-%H%M%S)}"
@@ -29,7 +29,7 @@ echo "[sweep] sync configs to all 4 nodes" | tee -a "${RUN_DIR}/run.log"
 bash "${SCRIPT_DIR}/run_demo.sh" sync >> "${RUN_DIR}/run.log" 2>&1
 
 # ── replay queries ──
-QUERIES_JSON="${ROOT}/deploy/mvp-multinode/queries-e2e.json"
+QUERIES_JSON="${PKG_DIR}/harness/queries/e2e.json"
 
 run_arm() {
     local arm=$1

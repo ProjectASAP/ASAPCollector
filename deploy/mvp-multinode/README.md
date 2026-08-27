@@ -26,7 +26,8 @@ its duplicate measurement path have been removed.
                    └──────────────────────────────────────────────┘
 ```
 
-Edits to topology (IPs, hostnames, port mappings) live in `topology.env`.
+Edits to topology (IPs, hostnames, port mappings) live in
+`harness/topology/4node.env`.
 
 ## Image set
 
@@ -84,7 +85,7 @@ cd /mydata/ASAPCollector
 bash deploy/mvp-multinode/scripts/run_demo.sh all
 ```
 
-Knobs (env-overridable, see `topology.env` for defaults):
+Knobs (env-overridable, see `harness/topology/4node.env` for defaults):
 - `WARMUP_S` (default 30) — per-arm warm-up after stack-up.
 - `SOAK_S` (default 90) — measurement window per arm.
 - `MODE` — `baseline` / `asap` / `both`.
@@ -101,11 +102,11 @@ Knobs (env-overridable, see `topology.env` for defaults):
 
 | Path | What |
 |---|---|
-| `topology.env` | Per-node IPs, hostnames, `--add-host` injections, image set, paths, soak knobs |
+| `harness/` | Predeclared acceptance, query suites, and 4-/8-node topology inputs |
 | `scripts/run_demo.sh` | Main driver — per-arm bring-up / soak / teardown across all 4 nodes |
 | `scripts/run_demo_sweep.sh` | Wraps `run_demo.sh` with sweeps (e.g. cardinality grid, sketch-family grid) |
 | `scripts/validate_arm.sh` | Smoke-check a single arm without running the full demo |
-| `mvp-acceptance.json` | Checked-in, pre-run accuracy/freshness/latency/cost acceptance thresholds |
+| `harness/acceptance.json` | Checked-in, pre-run accuracy/freshness/latency/cost thresholds |
 | `scripts/mvp_evaluate.py` | Fail-closed acceptance evaluator and report generator |
 | `scripts/measure_freshness.sh` | Probe-based sample-to-query freshness measurement |
 | `scripts/measure_nic_bw.sh` | Per-host NIC TX/RX sampling (host networking makes Docker NetIO unusable) |

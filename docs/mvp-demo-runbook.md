@@ -9,7 +9,7 @@ ingestion into ASAP (`asap-gzip`) using the same deterministic workload.
 
 Prerequisites are four hosts (`node0`–`node3`) with `/mydata`, Docker, and
 passwordless SSH from node0. Adjust hostnames and addresses in
-`deploy/mvp-multinode/topology.env` when necessary.
+`deploy/mvp-multinode/harness/topology/4node.env` when necessary.
 
 ```bash
 cd /mydata/ASAPCollector
@@ -33,8 +33,8 @@ returns nonzero unless all of these predeclared gates pass:
 - Collector-only and end-to-end normalized costs beat the raw baseline.
 
 Acceptance thresholds live in
-`deploy/mvp-multinode/mvp-acceptance.json`. Query definitions live in
-`deploy/mvp-multinode/queries-e2e.json`. Change either before a run, never after
+`deploy/mvp-multinode/harness/acceptance.json`. Query definitions live in
+`deploy/mvp-multinode/harness/queries/e2e.json`. Change either before a run, never after
 observing its results.
 
 ## Freshness probe protocol

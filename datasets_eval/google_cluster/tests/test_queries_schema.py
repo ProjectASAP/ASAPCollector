@@ -2,7 +2,7 @@
 
 Asserts:
   - well-formed JSON
-  - matches the schema of `deploy/scripts/queries-e2e.json`
+  - matches the schema of `deploy/mvp-multinode/harness/queries/e2e.json`
     (every entry has the keys that file requires + has an additional
     `expected_ground_truth_query` per the prompt)
   - covers all 5 evaluation claims (quantile / topk / sum / count_unique)
@@ -21,7 +21,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = ROOT.parent.parent
 QUERIES_PATH = ROOT / "queries.json"
-REFERENCE_PATH = REPO_ROOT / "deploy" / "scripts" / "queries-e2e.json"
+REFERENCE_PATH = REPO_ROOT / "deploy" / "mvp-multinode" / "harness" / "queries" / "e2e.json"
 
 
 def _load_json(p: Path):
@@ -44,7 +44,7 @@ def test_queries_json_is_well_formed():
 
 
 def test_queries_match_reference_schema():
-    """Every key required by deploy/scripts/queries-e2e.json must be present here."""
+    """Every key required by the canonical MVP query suite must be present here."""
     if not REFERENCE_PATH.is_file():
         pytest.skip(f"reference file missing: {REFERENCE_PATH}")
     ref = _load_json(REFERENCE_PATH)

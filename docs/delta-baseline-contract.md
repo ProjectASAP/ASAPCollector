@@ -510,7 +510,7 @@ answers to delta-OFF (full-frame).**
    `sketch_snapshots[series_key]` equals an independently-built full sketch
    of each window, and that the negative/decrease cells are applied (not
    dropped) at `T=1`.
-3. **E2E query equality:** run `deploy/scripts/queries-e2e.json`
+3. **E2E query equality:** run `deploy/mvp-multinode/harness/queries/e2e.json`
    (`count_over_time`, `quantile_over_time(φ, …)`, distinct-count) against
    two backends — one fed delta-ON, one fed delta-OFF — and assert
    byte/numeric-equal PromQL responses.

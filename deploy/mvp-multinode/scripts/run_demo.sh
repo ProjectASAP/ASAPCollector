@@ -53,7 +53,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(dirname "${SCRIPT_DIR}")"
 # TOPOLOGY_ENV lets a caller point at an alternate topology file (e.g. the
 # 8-node scaling cluster) without editing the committed 4-node default.
-TOPOLOGY_ENV="${TOPOLOGY_ENV:-${PKG_DIR}/topology.env}"
+TOPOLOGY_ENV="${TOPOLOGY_ENV:-${PKG_DIR}/harness/topology/4node.env}"
 source "${TOPOLOGY_ENV}"
 
 # Derive ROOT/CONFIG_SRC deterministically from this script's location so the
@@ -79,8 +79,8 @@ write_run_manifest() {
     PER_AGENT_CARDINALITY="${PER_AGENT_CARDINALITY}" OTELAPP_FREQ_HZ="${OTELAPP_FREQ_HZ}" \
     SOAK_S="${SOAK_S}" OTELAPP_SEED="${OTELAPP_SEED:-42}" \
     python3 -c 'import datetime,json,os,subprocess; root=os.environ["ROOT"]; backend=os.environ["BACKEND"]; rid=os.environ["RUN_ID"]; seed=int(os.environ["OTELAPP_SEED"]); commit=lambda p: subprocess.check_output(["git","-C",p,"rev-parse","HEAD"],text=True).strip(); json.dump({"schema_version":1,"run_id":rid,"started_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"collector_commit":commit(root),"backend_commit":commit(backend),"time_alignment":{"mode":"relative_logical_sequence","contract":"same seed, query id, per-query sequence and bounded elapsed-time skew"},"workload":{"cardinality":int(os.environ["PER_AGENT_CARDINALITY"]),"frequency_hz":float(os.environ["OTELAPP_FREQ_HZ"]),"soak_s":float(os.environ["SOAK_S"])},"arms":{"b1":{"seed":seed},"asap-gzip":{"seed":seed}}},open(os.path.join(os.environ["RUN_DIR"],"run-manifest.json"),"w"),indent=2)'
-    cp "${PKG_DIR}/mvp-acceptance.json" "${RUN_DIR}/mvp-acceptance.json"
-    cp "${PKG_DIR}/queries-e2e.json" "${RUN_DIR}/queries-e2e.json"
+    cp "${PKG_DIR}/harness/acceptance.json" "${RUN_DIR}/acceptance.json"
+    cp "${PKG_DIR}/harness/queries/e2e.json" "${RUN_DIR}/queries-e2e.json"
 }
 
 # ── ssh wrapper that runs commands on a remote node with our env ──
@@ -796,7 +796,7 @@ arm_measure() {
     python3 "${SCRIPT_DIR}/metricsql_replay.py" \
         --target "${query_endpoint}" \
         --controller "http://${NODE2_IP}:8080" \
-        --queries "${PKG_DIR}/queries-e2e.json" \
+        --queries "${PKG_DIR}/harness/queries/e2e.json" \
         --duration "${SOAK_S}" \
         --out "${out}/replay.jsonl" \
         > "${out}/replay.log" 2>&1 &
@@ -876,7 +876,7 @@ case "${cmd}" in
         log "=== evaluating issue #46 acceptance contract ==="
         python3 "${SCRIPT_DIR}/mvp_evaluate.py" \
             --run-dir "${RUN_DIR}" \
-            --config "${PKG_DIR}/mvp-acceptance.json"
+            --config "${PKG_DIR}/harness/acceptance.json"
         log "=== run complete: ${RUN_DIR} ==="
         ;;
     help|*)

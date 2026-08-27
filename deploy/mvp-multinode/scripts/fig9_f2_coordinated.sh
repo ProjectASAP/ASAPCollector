@@ -16,7 +16,7 @@
 set -uo pipefail
 SD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MV="$(cd "${SD}/.." && pwd)"   # deploy/mvp-multinode
-export TOPOLOGY_ENV="${TOPOLOGY_ENV:-${MV}/topology.8node.env}"
+export TOPOLOGY_ENV="${TOPOLOGY_ENV:-${MV}/harness/topology/8node.env}"
 export RUN_DEMO_LIB=1; source "${SD}/run_demo.sh"
 CFG="${MV}/configs"
 AGG_PORT=4319

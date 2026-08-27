@@ -2,6 +2,17 @@
 
 One canonical MVP demo plus shared deployment infrastructure:
 
+```text
+deploy/
+├── docker/             image definitions
+├── helm/               Kubernetes packaging
+└── mvp-multinode/      issue-#46 demo
+    ├── harness/        immutable run inputs (acceptance, queries, topology)
+    ├── configs/        container and controller runtime configuration
+    ├── scripts/        orchestration, measurement, and evaluation
+    └── cost_model/     analytical cost experiments
+```
+
 | Path | What | Read |
 |---|---|---|
 | [`mvp-multinode/`](mvp-multinode/README.md) | Canonical issue-#46 paired harness on a real 10 Gbps LAN | [mvp-multinode/README.md](mvp-multinode/README.md) |

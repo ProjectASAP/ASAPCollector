@@ -9,7 +9,7 @@
 # extend to N=100 with cost_model/simulator.py, anchored on these points.
 #
 # Usage:
-#   TOPOLOGY_ENV=.../topology.8node.env SKIP_BUILD=1 SKIP_LOAD=1 \
+#   TOPOLOGY_ENV=.../harness/topology/8node.env SKIP_BUILD=1 SKIP_LOAD=1 \
 #     scale_fleet.sh [N_LIST] [SOAK_S]
 # Reuses run_demo.sh as a library (RUN_DEMO_LIB=1).
 set -uo pipefail

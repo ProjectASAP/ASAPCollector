@@ -192,14 +192,14 @@ reproduces the canonical bytes inline (no Docker / submodules / agent
 binaries needed); binary mode (`run_parity.sh --mode=binary`) drives
 real images via `deploy/docker-compose/cross-host-parity.yml` and
 also asserts PromQL response equality across agents over
-`deploy/scripts/queries-e2e.json`.
+`deploy/mvp-multinode/harness/queries/e2e.json`.
 
 ## Deploy-side inference mirror + queries-e2e alignment (2026-05-05)
 
 Mirrored `ASAPQuery-backend` PR #79's 33-entry warm-tier pattern set
 into the 5 deploy `backend-inference{,-cms,-cs,-hll,-kll}.yaml`
 overlays (was 1–8 entries each; now 33 / 14 / 16 / 8 / 16) and
-swapped `deploy/scripts/queries-e2e.json` off the engine-rejected
+swapped `deploy/mvp-multinode/harness/queries/e2e.json` off the engine-rejected
 `histogram_quantile(...)` shape onto `quantile_over_time(φ,
 *_quantile[1m])` (live-verified per "Single-pipeline multi-sketch +
 delta + queryable warm tier (2026-05-01)" above). Closes the YAML
@@ -487,7 +487,7 @@ AGENT_CONFIG=asap-otel-agent-b3-delta.yaml docker compose \
 # 3. Drive the workload: replay + plan-transition concurrently:
 python3 deploy/scripts/promql_replay.py \
     --target http://localhost:19091 --controller http://localhost:18080 \
-    --queries deploy/scripts/queries-e2e.json \
+    --queries deploy/mvp-multinode/harness/queries/e2e.json \
     --qps 5 --duration 60 --out /tmp/replay.jsonl &
 python3 deploy/scripts/plan_transition.py \
     --target http://localhost:19091 --controller http://localhost:18080 \

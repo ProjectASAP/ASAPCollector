@@ -5,7 +5,7 @@ metric set) — shared by every arm so the comparison is apples-to-apples. An
 `ASAPConfig` is the ASAP-only knob set (per-metric sketch family, sampling p,
 cold format, flush cadence) that only the asap / asap-gzip arms read.
 
-The `mvp_workload()` preset mirrors deploy/mvp-multinode/topology.env and
+The `mvp_workload()` preset mirrors the canonical harness topology and
 configs/asap/mvp-workload.yaml: 2 agent-nodes x 5 producers x 1000 series at
 10 Hz, the 2-metric bandwidth-sweep operating point that FINDINGS measured.
 """

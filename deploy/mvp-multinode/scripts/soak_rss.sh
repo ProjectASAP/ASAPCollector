@@ -7,7 +7,7 @@
 # Usage: TOPOLOGY_ENV=... SKIP_BUILD=1 SKIP_LOAD=1 soak_rss.sh [SOAK_MIN]
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TOPOLOGY_ENV="${TOPOLOGY_ENV:-${SCRIPT_DIR}/../topology.8node.env}"
+TOPOLOGY_ENV="${TOPOLOGY_ENV:-${SCRIPT_DIR}/../harness/topology/8node.env}"
 source "${TOPOLOGY_ENV}"
 SOAK_MIN="${1:-30}"
 RUN_ID="${RUN_ID:-soak-$(date +%H%M%S)}"

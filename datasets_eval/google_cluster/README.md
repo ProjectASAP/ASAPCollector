@@ -100,7 +100,7 @@ Ten queries grouped by ASAP evaluation claim:
 | #5 distinct cardinality | 3 | `count_unique` | distinct services / hosts / instances |
 
 Each entry has `kind`, `promql` (matching the schema of
-`deploy/scripts/queries-e2e.json`), `expected_ground_truth_query`
+`deploy/mvp-multinode/harness/queries/e2e.json`), `expected_ground_truth_query`
 (for the accuracy reducer), and a `rationale` string explaining why
 this query is "natural" for the Google trace.
 
