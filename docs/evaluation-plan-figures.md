@@ -224,8 +224,8 @@ reading does **not** reproduce. But **per-sid warm-sketch state grows unbounded*
 ~1:1. So the backend memory growth the prior note flagged is **real and reproduces**;
 the driver is **per-sid DDSketch-state growth the evictable flusher doesn't reclaim
 under steady load**, not sid-count growth. Retention is **backend-side** — edge is flat.
-**Single-node loopback. Artifacts:** `datasets_eval/soak/` (`soak_RESULTS.md`,
-`rss_over_time.png`, `summary.json`, raw samples), branch `feat/soak-fig6`.
+This historical single-node figure experiment is outside the issue-46 MVP
+acceptance harness; its committed generated artifacts have been removed.
 **Follow-up:** the backend per-sid state growth is a real defect worth a fix (the
 flusher's evictable accounting under sustained ingest).
 
