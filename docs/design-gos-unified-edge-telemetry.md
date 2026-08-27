@@ -10,8 +10,9 @@ Woodruff–Zhang lower bound `Θ̃(k/ε²)`.
 
 We call the construction **GOS** (Geometric-OctoSketch).
 
-> **Math lives elsewhere.** This doc states *what's true and why it matters*,
-> in prose. Every formula, derivation, and proof is in
+> **Detailed math lives elsewhere.** This doc states *what's true and why it
+> matters*, retaining only the formulas needed to read the design. Full
+> derivations and proofs are in
 > [`sampling-cdm-gos-derivations.md`](./sampling-cdm-gos-derivations.md)
 > ("derivations" below) — section references point there. Treat this doc as
 > the map, that one as the territory.
@@ -40,9 +41,10 @@ optimization in §6.
 
 ## 2. Positioning: what each prior line gives, and what it lacks
 
-All four lines below are instances of "keep the local drift inside a **safe
-zone**, communicate on violation." They differ in the *shape* of the safe
-zone and in *what* they bound. (Attribution: §10.)
+The four mechanisms below are instances of "keep the local drift inside a
+**safe zone**, communicate on violation"; the fifth row is the lower-bound
+yardstick. They differ in the *shape* of the safe zone and in *what* they
+bound. (Attribution: §10.)
 
 | Line | Bounds | Safe-zone shape | Continuous query? | Gap |
 |---|---|---|---|---|
@@ -69,10 +71,12 @@ Key facts that make the unification possible:
 
 ## 3. The SDK↔collector sampling split (row-admission)
 
-The sampling knob is **per-row admission decided at the SDK**, not a
-whole-sketch coin flip at the collector — and the SDK never hashes. A
-Count-Sketch/CMS update touches `d` rows; the natural sampled unit is a
-*candidate row update* `(item, row)`, not the raw item.
+The sampling knob is **per-row admission decided before sketch update**, not a
+whole-sketch coin flip after the fact. A Count-Sketch/CMS update touches `d`
+rows; the natural sampled unit is a *candidate row update* `(item, row)`, not
+the raw item. Where hashing runs depends on the deployment path: an SDK-built
+sketch hashes admitted rows in the SDK, while the collector-build path decides
+admission before decode and hashes admitted rows in the collector.
 
 **Three design points**, each doing real work:
 
@@ -81,11 +85,14 @@ Count-Sketch/CMS update touches `d` rows; the natural sampled unit is a
    expensive RNG cost scales with admits, not with the unsampled row count —
    "always line rate." (`sketchlib-go/common.GeometricSampler`; math and cost
    accounting: derivations §5.)
-2. **The SDK decides *which rows*, never *which columns*.** Hashing
-   (row → column) happens only for admitted rows, and only at the collector.
-3. **Only admitted samples cross the wire** — a sample admitting no row is
-   dropped at the source, so the collector skips deserialization and hashing
-   for it entirely.
+2. **Admission decides rows, not columns.** Hashing (row → column) happens only
+   for admitted rows: in the SDK for SDK-built sketches, or in the collector
+   for collector-built sketches.
+3. **Collector-build drops before decode.** Only admitted raw samples cross
+   that path's wire; a sample admitting no row is dropped at the source, so
+   the collector skips its deserialization and hashing. SDK-build instead
+   ships a sketch frame rather than admitted raw samples; for dense matrix
+   families, sampling saves update CPU but does not shrink that frame.
 
 **Applicability.** Update-sampling with `1/p` inverse-probability weighting
 is only unbiased for *additive* counters. So the SDK row-samples
@@ -101,7 +108,8 @@ admission is independent. Per-row admission gives that independence, so
 sampling noise lands *inside* the median's `δ` guarantee. Whole-item
 admission shares one coin across all `d` rows, so a dropped key is missing
 from every row at once — an irreducible common-mode term the median cannot
-average away. Same edge CPU, strictly better estimator; full derivation
+average away. At equal expected admitted-row work, per-row admission is the
+strictly better estimator; full derivation
 (including why the two variance terms compose in quadrature) in
 derivations §3–§5, and design consequence in §4 below.
 
@@ -125,7 +133,7 @@ than RNG state. Any pipeline stage that recomputes the decision gets the
 is left to re-draw. This is what lets the SDK-build path (decision owned by
 the SDK aggregator) and the collector-build path (decision re-derived from
 wire-visible `time_unix_nano`) agree without coordination, and it's what a
-misconfigured "sample at both stages" plan degrades to (same set twice) 
+misconfigured "sample at both stages" plan degrades to (same set twice)
 instead of squaring the drop rate. Contract tests pin filter-survivors ≡
 stateless-recomputation ≡ wrapper-touches agreement.
 
@@ -147,8 +155,8 @@ This holds **continuously**, not only at window boundaries — OctoSketch's
 to gradient-weighted monitoring of non-linear functionals (F₂, entropy,
 ratios — via a Taylor + DC/Hessian bound, same shape with an added curvature
 term). Formal statement (Theorem 1), the generic three-term error
-decomposition it's built from, and the non-linear extension: derivations §3
-and §12.
+decomposition it's built from, and the non-linear extension: derivations §3,
+§9, and §12.
 
 ### Freshness
 
@@ -192,9 +200,9 @@ Minimize the weighted sum of the four §5 cost terms over the sketch shape
 thresholds `{T_j}`, subject to: every query's accuracy bound
 (§4's `√(ε_sk²+ε_sa²) + staleness ≤ ε_q`), every monitored function's
 accuracy bound, the freshness cap `T_j ≤ V_j·Δ*`, and confidence
-`d ≥ log₂(1/δ)`. Full constraint set: derivations §7 (intro) and
-`controller-optimization-problem.md` SP-6, which this slots into as
-additional decision variables. `w_b` (coordinator cost) is the
+`d ≥ log₂(1/δ)`. The threshold subproblem is in derivations §7; the full
+system constraint set is in `controller-optimization-problem.md` SP-6, which
+this slots into as additional decision variables. `w_b` (coordinator cost) is the
 least-weighted axis by requirement — the backend is not where the fleet's
 cost pressure lives.
 
@@ -215,7 +223,9 @@ between sketch and sampling error **in quadrature**. The staleness fraction
 itself is a 1-D convex tradeoff (more staleness tolerance → looser
 thresholds → less communication, but a smaller random budget → tighter
 sampling → more edge CPU) — unique because both sides are monotone. Code:
-`epsilon_alloc.rs`'s `split_budget`.
+ASAPQuery-backend's
+[`control_plane/src/epsilon_alloc.rs`](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/control_plane/src/epsilon_alloc.rs)
+`split_budget`.
 
 **Layer C — two water-fillings, same tool, two variables:**
 
@@ -224,7 +234,9 @@ sampling → more edge CPU) — unique because both sides are monotone. Code:
   sketch's point/L2 error is bounded by the sketch's *norm*, not any single
   key's frequency, so a per-key rate doesn't buy the accuracy the formula
   assumes. What's actually implemented is a simpler whole-sketch ε-floor,
-  `p_i = 1/(1+ε²·rate_i)` — see `sampling_alloc.rs`'s `epsilon_sample_floor`.
+  `p_i = 1/(1+ε²·rate_i)` — see ASAPQuery-backend's
+  [`data_plane/src/monitor/sampling_alloc.rs`](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/data_plane/src/monitor/sampling_alloc.rs)
+  `epsilon_sample_floor`.
   The per-key formula remains valid only when a key is counted exactly
   *outside* the sketch, where sampling it would be pointless anyway.
 - **Thresholds (per-cell — this is GOS).** A closed-form water-filling over
@@ -235,7 +247,10 @@ sampling → more edge CPU) — unique because both sides are monotone. Code:
   §4. Clamped cells release budget back to the pool; a few redistribution
   passes converge it. Closed form, the Lagrangian derivation, and the
   clamped iterative solution: derivations §7 and Theorem 2 (§12). Code:
-  `sketches/gos_threshold.go` (Go) / `threshold_alloc.rs` (Rust).
+  [`asap-precompute-go/sketches/gos_threshold.go`](../asap-precompute-go/sketches/gos_threshold.go)
+  (Go) and ASAPQuery-backend's
+  [`control_plane/src/threshold_alloc.rs`](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/control_plane/src/threshold_alloc.rs)
+  (Rust).
 
 **Reading the result without the algebra:** high-activity cells get bigger
 thresholds (don't chase noise on a cell that changes constantly anyway);
@@ -263,7 +278,8 @@ mechanism with a different band. Derivations §10.
 `Σ_j V_j/T_j` (§5) is an upload *rate*; the Woodruff–Zhang bound
 `Θ̃(k/ε²)` is *total* communication to maintain one continuous `(1±ε)` `F_2`
 estimate across `k` sites. Normalized the same way (derivations, and the
-"one-round" unit `k·S` in [`gos-eval-results.md`](gos-eval-results.md) §3),
+"one-round" unit `k·S` in the
+[archived GOS evaluation record](https://github.com/ProjectASAP/ASAPCollector/blob/7638f2f/docs/gos-eval-results.md#3-woodruffzhang-ke2-reference)),
 GOS's worst case matches WZ exactly — the `1/ε²` scaling and the linear-in-`k`
 factor are fundamental, and no protocol in §2's family beats them
 adversarially. GOS's actual savings are **data-dependent**: they come from
@@ -290,7 +306,9 @@ near-zero signal is fundamentally not cheap, at any layer of this stack.
 ## 10. What is adopted vs. contributed (attribution)
 
 - **Water-filling** — classic (information theory / convex optimization).
-  Already used in ASAP for sampling (`p_i ∝ √(f_i/rate_i)`). *Adopted.*
+  Previously used in ASAP for exact per-key sampling
+  (`p_i ∝ √(f_i/rate_i)`); that rule is retired for sketch sampling (§7), but
+  the optimization technique is reused for GOS thresholds. *Adopted.*
 - **Per-cell change transmission with a threshold** — OctoSketch [Zhang+
   NSDI'24]. *Adopted.*
 - **Function safe zone via DC decomposition (ADCD), gradient/Hessian
@@ -430,7 +448,8 @@ fully wired end-to-end**:
 
 1. **Anisotropic delta broadcast, partially done.** The coordinator→edge
    sparse-cell encoding is implemented and measured (removes the `O(k)`
-   broadcast amplification — see `gos-eval-results.md` §2). Still open:
+   broadcast amplification — see the
+   [archived GOS evaluation record](https://github.com/ProjectASAP/ASAPCollector/blob/7638f2f/docs/gos-eval-results.md#2-geometric-vs-distributed-f2-monitoring)). Still open:
    giving that broadcast gate anisotropic per-cell thresholds, matching what
    the edge→coordinator upload path already does.
 2. **Relative error under small norm** — needs a heartbeat/additive floor
