@@ -18,6 +18,9 @@ paper-planning material do not belong in this directory.
 - [Summary aggregation and transmission](summary-aggregation-and-transmission.md)
   — summary families, aggregation shapes, windows, accuracy, freshness, and
   raw/full/delta transmission semantics.
+- [Collector runtime and deployment lifecycle](runtime-deployment-lifecycle.md)
+  — bootstrap, plan activation, processing, export, readiness evidence, and
+  failure behavior.
 
 ## Future design
 

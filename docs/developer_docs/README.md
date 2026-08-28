@@ -23,6 +23,9 @@ and rewrite rules are owned by
 [ASAPPlanner](https://github.com/ProjectASAP/ASAPPlanner); the local
 [query-mapping pointer](sketch-algebra-query-mapping.md) records that ownership.
 
+For repository setup, overlay ownership, module-scoped tests, and end-to-end
+verification, see the [build, test, and patch workflow](build-test-and-patch-workflow.md).
+
 ## 2. Interfaces and definitions
 
 These are the supported extension contracts. Inputs and outputs are data values; an
