@@ -1,34 +1,29 @@
 # Design documents
 
-These documents define ASAPCollector's system boundary, collector-specific
-control-plane contract, summary semantics, and explicitly deferred designs.
-They describe goals, behavior, constraints, trade-offs, and acceptance
-conditions. Code walkthroughs, implementation plans, benchmark results, and
-paper-planning material do not belong in this directory.
+This directory is the unified architecture index for ASAPCollector,
+ASAPQuery-backend, and their control-plane boundary. Each software component
+has one primary design document here; backend links point to the code-owned
+detail in ASAPQuery-backend.
 
-## Active MVP design
+## Data plane
 
-- [System overview](system-overview.md) — end-to-end architecture, system
-  boundary, goals, and MVP claims.
-- [ASAPCollector control plane](control-plane-design.md) — the collector-side
-  contract for plans issued by the ASAPQuery-backend control plane using
-  planning information from ASAPPlanner, plus the boundary with the
-  ASAPQuery-backend data plane that applies its plan portion and executes
-  summary-based queries.
-- [Summary aggregation and transmission](summary-aggregation-and-transmission.md)
-  — summary families, aggregation shapes, windows, accuracy, freshness, and
-  raw/full/delta transmission semantics.
-- [Collector runtime and deployment lifecycle](runtime-deployment-lifecycle.md)
-  — bootstrap, plan activation, processing, export, readiness evidence, and
-  failure behavior.
-- [Stored-series identity](stored-series-identity.md) — Collector/Backend SID
-  assignment, summary-versus-raw identity, ID-only steady state, and recovery.
+| Owner | Component | Primary design |
+| --- | --- | --- |
+| ASAPCollector | Collection phase | [Collection protocol and configuration](collector-collection-phase.md) |
+| ASAPCollector | Summary transmission | [Full/delta transmission protocol](collector-transmission-protocol.md) |
+| Cross-system | Materialization identity | [Summary series ID](summary-series-id.md) |
+| ASAPQuery-backend | Summary store | [Summary store engine](query-summary-store-engine.md) |
+| ASAPQuery-backend | Query execution | [Query engine](query-query-engine.md) |
+| ASAPQuery-backend | Ingest/precompute | [Ingest engine](query-ingest-engine.md) |
 
-## Future design
+## Control plane
 
-- [Future summary families and compression](future-summary-and-compression.md)
-  — deferred multivariate summaries and raw/archive compression.
+| Component | Primary design |
+| --- | --- |
+| Planner integration and physical compilation | [Physical planning](control-plane-physical-planning.md) |
+| Query/data workload collection | [Planner workload inputs](control-plane-workload-inputs.md) |
+| Runtime evidence and replanning | [Accuracy feedback](control-plane-runtime-accuracy-feedback.md) |
 
-Every document begins with a TL;DR, lifecycle status, and MVP relationship.
-The overview owns system architecture; focused documents define only their
-named scope and avoid repeating the full architecture.
+Supporting system documents are [system overview](system-overview.md),
+[runtime and deployment lifecycle](runtime-deployment-lifecycle.md), and the
+[future summary/compression design](future-summary-and-compression.md).

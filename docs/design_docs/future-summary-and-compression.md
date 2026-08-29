@@ -190,7 +190,7 @@ supported sketch families and exact aggregation operators.
 A codec or checkpoint-policy change that remains semantically compatible may
 preserve SID and declare a new representation version per frame. A lossy change
 or different accuracy contract creates a different materialization kind and
-therefore a different SID. See [stored-series identity](stored-series-identity.md).
+therefore a different SID. See [stored-series identity](summary-series-id.md).
 
 ## Placement and framing
 

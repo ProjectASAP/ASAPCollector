@@ -31,7 +31,7 @@ Collector owns:
 ASAPQuery-backend owns canonical stored identity, SID allocation, conflict
 detection, durable resolver state, storage registration, and query label
 reconstruction. The complete backend model is documented in
-[ASAPQuery-backend series identity](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/design_docs/series-identity.md).
+[ASAPQuery-backend series identity](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/design_docs/summary-series-id.md).
 
 ## What SID names
 
@@ -44,6 +44,23 @@ stored series = canonical metric
 Materialization kind separates DDSketch from KLL, summary from raw, and
 different parameters or filters. Full/delta encoding and logical window are
 records beneath the stored series and do not create new SIDs.
+
+The backend stores one `SketchInstanceMetadata` descriptor per SID:
+
+| Field | Meaning |
+| --- | --- |
+| `metric_name` | Canonical source metric used by query matching |
+| `group_by_keys` | Label names retained by edge/backend aggregation |
+| `capability` | Quantile, cardinality, frequency, top-k, or exact/raw support |
+| `agg_kind` | Sketch, exact-aggregation, or raw materialization and compatible parameters |
+| `accuracy` | Derived sketch bound; absent for exact-aggregation and raw state |
+| `policy_fp` | Content fingerprint of the policy that produced the SID |
+| lifecycle timestamps | First seen, retired, and expiry times |
+
+This descriptor is immutable for the lifetime of a SID. A policy change that
+alters grouping, capability, aggregation semantics, or accuracy creates a new
+SID; an encoding change may retain the SID only when the representation remains
+semantically compatible and is versioned on each record.
 
 | Plan result | Stored labels | Stored kind |
 | --- | --- | --- |

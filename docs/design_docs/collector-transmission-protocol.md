@@ -22,8 +22,40 @@ This document owns the design of:
 - raw, full-summary, and delta-summary transmission; and
 - the relationship between accuracy, freshness, and communication cost.
 
-It does not define query planning, collector configuration delivery, wire
-schemas, serialization layouts, or implementation phases.
+It does not define query planning, collector configuration delivery, or
+family-internal byte layouts. It does define the metadata and state-machine
+contract required to select and safely apply those byte layouts.
+
+## Self-describing wire contract
+
+Metadata is separated by its rate of change, following the Schema/Dictionary/
+Record model prototyped in ASAPCollector-public:
+
+| Tier | Required information | Lifetime |
+| --- | --- | --- |
+| Schema | aggregation kind, parameters, capability, encoding, schema version, hash/seed where applicable, policy fingerprint | plan/materialization |
+| Dictionary | SID, canonical metric, retained labels, schema reference | stored-series lifetime |
+| Record | SID/reference, window bounds, full/delta discriminator, payload, producer/epoch, sequence and base/checkpoint for deltas | one emission |
+
+The receiver can choose a decoder and validate compatibility from metadata; it
+must never guess the algorithm from opaque bytes. A schema or dictionary entry
+may be transmitted out of band only when delivery ordering and retention are
+guaranteed. Otherwise it is replayed inline or on request before dependent
+records.
+
+## Sender and receiver state
+
+Full records are independently decodable. Delta transmission adds state:
+
+- sender: last acknowledged full base per `(destination, SID, producer_epoch)`,
+  next sequence, retained checkpoints, and whether resynchronization is due;
+- receiver: installed schema/dictionary, last applied base and sequence per
+  `(SID, producer_epoch)`, completeness, and last durable acknowledgement.
+
+Duplicate `(SID, epoch, sequence)` records are idempotent. A sequence gap,
+unknown base, schema mismatch, restart without state, or replica handoff marks
+the lineage incomplete and triggers a full checkpoint. Deltas are never applied
+to a merely plausible base with the same SID.
 
 ## Aggregation model
 
