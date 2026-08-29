@@ -81,4 +81,4 @@ pointers changed only when an upstream pin change was intended. Then run the
 smallest relevant unit suite plus the integration checks affected by the change.
 
 See [OpAMP configuration push](opamp-config-push.md) for the public plan contract
-and the [MVP demo runbook](../user_guide/mvp-demo-runbook.md) for system evidence.
+and the [MVP demo runbook](../../user_guide/mvp-demo-runbook.md) for system evidence.

@@ -50,7 +50,7 @@ valid numeric ID to the wrong stored series.
 Run the focused exporter tests from the restored OpenTelemetry Go patch tree,
 then run Backend SID-resolution tests and a cross-repository OTLP round trip.
 Required behaviors are listed in the
-[stored-series identity design](../design_docs/summary-series-id.md#acceptance-tests).
+[stored-series identity design](../../design_docs/cross-cutting/summary-series-id.md#acceptance-tests).
 
 Benchmark dictionary-on and dictionary-off modes separately when measuring
 summary savings. Report label-deduplication bytes independently from sketch,

@@ -20,5 +20,5 @@ typed summary storage. Missing, stale, gapped, and incompatible reads are distin
 outcomes, not empty success.
 
 The code-owned design and persistence details live in the
-[ASAPQuery-backend summary-store design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/design_docs/summary-store-engine.md).
+[ASAPQuery-backend summary-store design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/summary-store-engine/design.md).
 

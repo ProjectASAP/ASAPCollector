@@ -8,7 +8,7 @@ The documentation is grouped by the question it answers:
 
 ## Canonical architecture hub
 
-Read the [system overview](design_docs/system-overview.md) for the end-to-end model,
+Read the [system overview](design_docs/cross-cutting/system-overview.md) for the end-to-end model,
 then use the design and developer indexes to find one primary page per component.
 This directory owns the cross-system architecture for ASAPCollector,
 ASAPQuery-backend, and their control-plane contracts. ASAPQuery-backend keeps

@@ -80,7 +80,7 @@ A deployment check passes when all of the following can be tied to one run:
 - a declared query returns the expected provenance, freshness, and accuracy.
 
 The multi-node harness records this evidence in its run directory. See the
-[MVP demo runbook](../user_guide/mvp-demo-runbook.md).
+[MVP demo runbook](../../user_guide/mvp-demo-runbook.md).
 
 ## Failure and recovery
 
@@ -92,7 +92,7 @@ is complete only after plan and query-path evidence agree again.
 
 ## Related documents
 
-- [System overview](system-overview.md)
-- [Collector control-plane design](control-plane-physical-planning.md)
+- [System overview](../cross-cutting/system-overview.md)
+- [Collector control-plane design](../control-plane/control-plane-physical-planning.md)
 - [Summary aggregation and transmission](collector-transmission-protocol.md)
-- [OpAMP configuration push](../developer_docs/opamp-config-push.md)
+- [OpAMP configuration push](../../developer_docs/asapcollector/opamp-config-push.md)

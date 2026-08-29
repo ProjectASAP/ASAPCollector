@@ -13,5 +13,5 @@ where a materialization is computed, and Collector and backend must never both c
 the same observation into one window unless the aggregation explicitly defines a
 merge topology.
 
-See the [ASAPQuery-backend ingest-engine design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/design_docs/ingest-engine.md).
+See the [ASAPQuery-backend ingest-engine design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/ingest-engine/design.md).
 

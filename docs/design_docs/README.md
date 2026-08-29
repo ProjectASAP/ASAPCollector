@@ -1,29 +1,36 @@
-# Design documents
+# Canonical system design
 
-This directory is the unified architecture index for ASAPCollector,
-ASAPQuery-backend, and their control-plane boundary. Each software component
-has one primary design document here; backend links point to the code-owned
-detail in ASAPQuery-backend.
+This is the authoritative design index for the complete lifecycle:
 
-## Data plane
+```text
+collection -> summary transmission -> backend ingest -> summary storage -> query
+                              ^ physical plans and runtime feedback |
+                              +-------------------------------------+
+```
 
-| Owner | Component | Primary design |
-| --- | --- | --- |
-| ASAPCollector | Collection phase | [Collection protocol and configuration](collector-collection-phase.md) |
-| ASAPCollector | Summary transmission | [Full/delta transmission protocol](collector-transmission-protocol.md) |
-| Cross-system | Materialization identity | [Summary series ID](summary-series-id.md) |
-| ASAPQuery-backend | Summary store | [Summary store engine](query-summary-store-engine.md) |
-| ASAPQuery-backend | Query execution | [Query engine](query-query-engine.md) |
-| ASAPQuery-backend | Ingest/precompute | [Ingest engine](query-ingest-engine.md) |
+## ASAPCollector
+
+- [Collection-phase protocol and configuration](asapcollector/collector-collection-phase.md)
+- [Full/delta summary transmission](asapcollector/collector-transmission-protocol.md)
+- [Runtime and deployment lifecycle](asapcollector/runtime-deployment-lifecycle.md)
+
+## ASAPQuery-backend
+
+- [Ingest and backend precompute engine](asapquery-backend/query-ingest-engine.md)
+- [Summary store engine](asapquery-backend/query-summary-store-engine.md)
+- [Query engine](asapquery-backend/query-query-engine.md)
 
 ## Control plane
 
-| Component | Primary design |
-| --- | --- |
-| Planner integration and physical compilation | [Physical planning](control-plane-physical-planning.md) |
-| Query/data workload collection | [Planner workload inputs](control-plane-workload-inputs.md) |
-| Runtime evidence and replanning | [Accuracy feedback](control-plane-runtime-accuracy-feedback.md) |
+- [Planner integration and physical compilation](control-plane/control-plane-physical-planning.md)
+- [Query and data workload inputs](control-plane/control-plane-workload-inputs.md)
+- [Runtime accuracy feedback and replanning](control-plane/control-plane-runtime-accuracy-feedback.md)
 
-Supporting system documents are [system overview](system-overview.md),
-[runtime and deployment lifecycle](runtime-deployment-lifecycle.md), and the
-[future summary/compression design](future-summary-and-compression.md).
+## Cross-cutting contracts
+
+- [System overview](cross-cutting/system-overview.md)
+- [Summary series ID](cross-cutting/summary-series-id.md)
+- [Future summary families and compression](cross-cutting/future-summary-and-compression.md)
+
+ASAPQuery-backend and ASAPPlanner may keep code-owned implementation notes, but
+they link here for system behavior, component boundaries, and shared contracts.

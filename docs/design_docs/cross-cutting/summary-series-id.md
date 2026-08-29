@@ -31,7 +31,7 @@ Collector owns:
 ASAPQuery-backend owns canonical stored identity, SID allocation, conflict
 detection, durable resolver state, storage registration, and query label
 reconstruction. The complete backend model is documented in
-[ASAPQuery-backend series identity](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/design_docs/summary-series-id.md).
+[ASAPQuery-backend series identity](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/summary-series-id/design.md).
 
 ## What SID names
 

@@ -5,5 +5,5 @@ metadata before accepting payloads; append records with explicit window coverage
 payload kind; publish durability before eviction; and preserve typed missing/stale/
 gapped/incompatible read outcomes. Validate lifecycle transitions and recovery with
 Collector retries and plan replacement. Code-level interfaces live in the
-[backend developer guide](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/summary-store-engine.md).
+[backend developer guide](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/summary-store-engine/README.md).
 

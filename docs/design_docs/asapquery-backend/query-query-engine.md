@@ -14,5 +14,5 @@ fallback reasons. The query engine never silently substitutes a differently
 parameterized summary.
 
 Its implementation boundary is documented in the
-[ASAPQuery-backend query-engine design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/design_docs/query-engine.md).
+[ASAPQuery-backend query-engine design](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/query-engine/design.md).
 

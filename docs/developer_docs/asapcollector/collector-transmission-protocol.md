@@ -15,5 +15,4 @@ snapshot. Retries are idempotent; applying a delta twice is forbidden.
 Test full/delta round trips, schema incompatibility, dictionary replay, gaps,
 duplicates, out-of-order records, sender and receiver restart, replica handoff,
 forced full resync, and multi-SID isolation. The normative semantics are in
-[the transmission design](../design_docs/collector-transmission-protocol.md).
-
+[the transmission design](../../design_docs/asapcollector/collector-transmission-protocol.md).
