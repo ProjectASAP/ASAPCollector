@@ -21,6 +21,8 @@ paper-planning material do not belong in this directory.
 - [Collector runtime and deployment lifecycle](runtime-deployment-lifecycle.md)
   — bootstrap, plan activation, processing, export, readiness evidence, and
   failure behavior.
+- [Stored-series identity](stored-series-identity.md) — Collector/Backend SID
+  assignment, summary-versus-raw identity, ID-only steady state, and recovery.
 
 ## Future design
 

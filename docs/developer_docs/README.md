@@ -25,6 +25,8 @@ and rewrite rules are owned by
 
 For repository setup, overlay ownership, module-scoped tests, and end-to-end
 verification, see the [build, test, and patch workflow](build-test-and-patch-workflow.md).
+For the patched OTLP assignment cache and recovery protocol, see
+[developing the stored-series ID dictionary](series-id-dictionary.md).
 
 ## 2. Interfaces and definitions
 

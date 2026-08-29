@@ -2,13 +2,13 @@
 
 ## TL;DR
 
-This document records design directions that are intentionally outside the
-current MVP: multivariate correlation summaries and compression for raw or
-archival telemetry paths. They must not be included in MVP correctness,
-performance, or cost claims until promoted through separate acceptance
-criteria.
+This document records design directions outside the current summary MVP:
+multivariate summaries and additional compression for raw, summary, and archive
+paths. The current deployment already uses transport gzip, summary full/delta
+encodings, and a Gorilla-based raw archive path; those mechanisms are the
+baseline, not proof that the future representations below are complete.
 
-**Status:** dormant
+**Status:** mixed: existing transport/archive mechanisms plus future designs
 
 **MVP relationship:** future.
 
@@ -167,6 +167,127 @@ decode that range directly or must process the preceding 55 minutes.
 Compression is excluded from the MVP unless introduced as a separately scoped
 exact-baseline or archive experiment.
 
+## Stored-series identity and representation
+
+Compression never changes what SID identifies. Raw, exact-aggregate, and
+summary series use distinct materialization kinds even when they originate from
+the same metric and labels:
+
+```text
+source metric
+  +-- raw materialization SID       -> exact archive encoding
+  +-- DDSketch materialization SID  -> full/delta sketch encoding
+  +-- exact Sum materialization SID -> accumulator encoding
+```
+
+A codec or checkpoint-policy change that remains semantically compatible may
+preserve SID and declare a new representation version per frame. A lossy change
+or different accuracy contract creates a different materialization kind and
+therefore a different SID. See [stored-series identity](stored-series-identity.md).
+
+## Placement and framing
+
+The plan must declare compression placement because each boundary has different
+trade-offs:
+
+| Boundary | Candidate representation | Required property |
+| --- | --- | --- |
+| In-memory accumulator | Family-native state | Fast updates and bounded memory |
+| Collector → Backend | Full/delta plus transport compression | Recoverable frames and observable wire bytes |
+| Collector → raw archive | Lossless raw blocks | Exact value/timestamp/label recovery |
+| Backend durable summary tier | Immutable summary parts | Random access by SID and time |
+
+Frames need materialization/SID evidence, logical window, producer, encoding
+version, uncompressed length, checksum, and—where applicable—base checkpoint
+and sequence. Transport gzip is outside this logical frame: decompressing the
+transport must still leave one independently validated ASAP payload.
+
+## Checkpoint and delta policy
+
+Delta transmission trades bandwidth for dependency length. A future policy
+must bound that dependency:
+
+- emit a full checkpoint at a configured time or delta-count interval;
+- retain the base until every dependent delta is acknowledged or expired;
+- never advance acknowledgement across a missing sequence;
+- fall back to a full frame after Backend reports unknown SID/base; and
+- measure reconstruction CPU and bytes saved for the same workload.
+
+The checkpoint interval is a physical-plan decision constrained by freshness,
+failure recovery, and bandwidth. It does not change summary mathematics.
+
+## Raw archive compression
+
+Raw compression must preserve the original Prometheus-visible series. A block
+should group one raw stored-series SID over a bounded time interval and encode:
+
+```text
+header: SID/materialization identity, labels or dictionary reference,
+        min/max timestamp, sample count, codec version, checksum
+body:   timestamp stream + value stream
+```
+
+Timestamp delta-of-delta and Gorilla-XOR values are candidates for regular
+numeric series. Sparse or irregular data may need another codec. The encoder
+must choose by measured size and CPU, not by assuming one codec is universally
+better. Every block has an independent restart point so a range query need not
+decode the entire archive prefix.
+
+## Summary payload compression
+
+Summary families expose different redundancy:
+
+| Family | Candidate optimization | Compatibility condition |
+| --- | --- | --- |
+| DDSketch | Sparse changed bins, full checkpoints | Same mapping/accuracy |
+| KLL | Family-native compact serialization | Same `k` and format version |
+| HLL | Changed registers or sparse/dense switch | Same precision/hash contract |
+| Count-Min/Count-Sketch | Sparse changed cells, optional heap frame | Same dimensions/hash contract |
+| Exact scalar | Varint/delta where lossless | Same operator/window semantics |
+
+General gzip or zstd may wrap payload blocks, but family-aware encoding must be
+evaluated separately so benchmark results explain where savings came from.
+
+## Failure and recovery
+
+| Failure | Required Collector behavior |
+| --- | --- |
+| Backend rejects SID | Evict assignment and resend identity evidence |
+| Backend lacks delta base | Send a full checkpoint; do not continue an unverifiable chain |
+| Corrupt local/archive frame | Reject the frame and preserve later independent recovery boundaries |
+| Plan changes codec/family | Drain old materialization; start the new compatible SID/version explicitly |
+| Export retry duplicates a frame | Producer identity/sequence makes application idempotent |
+| Resource pressure | Apply declared backpressure/drop policy and expose counters; do not alter accuracy silently |
+
+## Cost evidence
+
+For every representation, report at least:
+
+- source samples and logical uncompressed bytes;
+- family payload bytes before transport compression;
+- bytes on wire and bytes in archive;
+- encoding/decoding CPU and allocation;
+- checkpoint frequency and recovery bytes;
+- p50/p95/p99 export and query latency; and
+- loss/corruption recovery outcome.
+
+Dictionary savings, summary reduction, delta reduction, and transport
+compression must be reported as separate stages. This prevents the SID label
+dictionary from being credited to sketch compression.
+
+## Rollout sequence
+
+1. Freeze a cross-language frame/version contract and golden vectors.
+2. Add decoder support before enabling new writers.
+3. Shadow-encode and compare decoded semantics and measured cost.
+4. Enable one family/workload with a full-frame kill switch.
+5. Exercise missing-base, unknown-SID, corruption, and rollback paths.
+6. Expand only after end-to-end accuracy, freshness, and cost gates pass.
+
+Old readers and stored frames remain supported through the declared rollback
+window. A deployment must not require rewriting all archived raw data merely to
+roll back a Collector release.
+
 ## Promotion criteria
 
 A future design moves to active status only when it has:
@@ -176,6 +297,9 @@ A future design moves to active status only when it has:
 3. predeclared correctness and performance SLAs;
 4. a reproducible baseline comparison; and
 5. explicit inclusion in the MVP or a separately named experiment.
+
+It must additionally define wire/format versioning, SID/materialization
+compatibility, checkpoint/recovery behavior, and a rollback path.
 
 **Promotion example:** Multivariate correlation becomes active only after a
 checked-in workload defines its metric vector, exact comparison, drift-score
