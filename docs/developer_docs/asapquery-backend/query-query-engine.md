@@ -5,5 +5,5 @@ range, grouping, SID, accuracy/freshness requirements, and fallback reason throu
 classification, routing, storage reads, merge, and response construction. Add tests
 for exact coverage, overlap, gaps, retired SIDs, incompatible parameters, archive
 fallback, and plan replacement. See the
-[backend query-engine guide](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/query-engine/README.md).
+[backend query-engine guide](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/query-engine/query-engine.md).
 

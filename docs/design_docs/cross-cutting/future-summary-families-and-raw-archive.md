@@ -1,12 +1,11 @@
-# Future summary families and compression
+# Future summary families and raw-archive compression
 
 ## TL;DR
 
-This document records design directions outside the current summary MVP:
-multivariate summaries and additional compression for raw, summary, and archive
-paths. The current deployment already uses transport gzip, summary full/delta
-encodings, and a Gorilla-based raw archive path; those mechanisms are the
-baseline, not proof that the future representations below are complete.
+This document records two directions outside the current summary MVP:
+multivariate summary families and lossless compression for Collector/raw-archive
+paths. Backend summary storage, tiering, compaction, and storage codecs are owned
+by the [backend storage design](../asapquery-backend/future-storage-and-compression.md).
 
 **Status:** mixed: existing transport/archive mechanisms plus future designs
 
@@ -192,37 +191,6 @@ preserve SID and declare a new representation version per frame. A lossy change
 or different accuracy contract creates a different materialization kind and
 therefore a different SID. See [stored-series identity](summary-series-id.md).
 
-## Placement and framing
-
-The plan must declare compression placement because each boundary has different
-trade-offs:
-
-| Boundary | Candidate representation | Required property |
-| --- | --- | --- |
-| In-memory accumulator | Family-native state | Fast updates and bounded memory |
-| Collector → Backend | Full/delta plus transport compression | Recoverable frames and observable wire bytes |
-| Collector → raw archive | Lossless raw blocks | Exact value/timestamp/label recovery |
-| Backend durable summary tier | Immutable summary parts | Random access by SID and time |
-
-Frames need materialization/SID evidence, logical window, producer, encoding
-version, uncompressed length, checksum, and—where applicable—base checkpoint
-and sequence. Transport gzip is outside this logical frame: decompressing the
-transport must still leave one independently validated ASAP payload.
-
-## Checkpoint and delta policy
-
-Delta transmission trades bandwidth for dependency length. A future policy
-must bound that dependency:
-
-- emit a full checkpoint at a configured time or delta-count interval;
-- retain the base until every dependent delta is acknowledged or expired;
-- never advance acknowledgement across a missing sequence;
-- fall back to a full frame after Backend reports unknown SID/base; and
-- measure reconstruction CPU and bytes saved for the same workload.
-
-The checkpoint interval is a physical-plan decision constrained by freshness,
-failure recovery, and bandwidth. It does not change summary mathematics.
-
 ## Raw archive compression
 
 Raw compression must preserve the original Prometheus-visible series. A block
@@ -240,30 +208,12 @@ must choose by measured size and CPU, not by assuming one codec is universally
 better. Every block has an independent restart point so a range query need not
 decode the entire archive prefix.
 
-## Summary payload compression
-
-Summary families expose different redundancy:
-
-| Family | Candidate optimization | Compatibility condition |
-| --- | --- | --- |
-| DDSketch | Sparse changed bins, full checkpoints | Same mapping/accuracy |
-| KLL | Family-native compact serialization | Same `k` and format version |
-| HLL | Changed registers or sparse/dense switch | Same precision/hash contract |
-| Count-Min/Count-Sketch | Sparse changed cells, optional heap frame | Same dimensions/hash contract |
-| Exact scalar | Varint/delta where lossless | Same operator/window semantics |
-
-General gzip or zstd may wrap payload blocks, but family-aware encoding must be
-evaluated separately so benchmark results explain where savings came from.
-
 ## Failure and recovery
 
 | Failure | Required Collector behavior |
 | --- | --- |
-| Backend rejects SID | Evict assignment and resend identity evidence |
-| Backend lacks delta base | Send a full checkpoint; do not continue an unverifiable chain |
 | Corrupt local/archive frame | Reject the frame and preserve later independent recovery boundaries |
-| Plan changes codec/family | Drain old materialization; start the new compatible SID/version explicitly |
-| Export retry duplicates a frame | Producer identity/sequence makes application idempotent |
+| Plan changes archive codec | Close the old block and start a versioned independent block |
 | Resource pressure | Apply declared backpressure/drop policy and expose counters; do not alter accuracy silently |
 
 ## Cost evidence
@@ -271,16 +221,15 @@ evaluated separately so benchmark results explain where savings came from.
 For every representation, report at least:
 
 - source samples and logical uncompressed bytes;
-- family payload bytes before transport compression;
-- bytes on wire and bytes in archive;
+- raw bytes before and after archive encoding;
 - encoding/decoding CPU and allocation;
-- checkpoint frequency and recovery bytes;
+- restart-point frequency and recovery bytes;
 - p50/p95/p99 export and query latency; and
 - loss/corruption recovery outcome.
 
-Dictionary savings, summary reduction, delta reduction, and transport
-compression must be reported as separate stages. This prevents the SID label
-dictionary from being credited to sketch compression.
+Dictionary savings and raw archive compression must be reported as separate
+stages. This prevents the SID label dictionary from being credited to the raw
+codec.
 
 ## Rollout sequence
 

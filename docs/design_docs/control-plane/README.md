@@ -1,5 +1,7 @@
 # Control-plane design
 
-- [Planner integration and physical compilation](control-plane-physical-planning.md)
-- [Query and data workload inputs](control-plane-workload-inputs.md)
-- [Runtime accuracy feedback and replanning](control-plane-runtime-accuracy-feedback.md)
+- [Planner ownership and integration](planner-integration.md)
+- [Physical planning](physical-planning.md)
+- [BackendPlan contract](backend-plan.md)
+- [Query and data workload inputs](workload-inputs.md)
+- [Runtime accuracy feedback and replanning](runtime-accuracy-feedback.md)

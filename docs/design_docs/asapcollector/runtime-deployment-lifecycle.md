@@ -93,6 +93,6 @@ is complete only after plan and query-path evidence agree again.
 ## Related documents
 
 - [System overview](../cross-cutting/system-overview.md)
-- [Collector control-plane design](../control-plane/control-plane-physical-planning.md)
+- [Collector control-plane design](../control-plane/physical-planning.md)
 - [Summary aggregation and transmission](collector-transmission-protocol.md)
 - [OpAMP configuration push](../../developer_docs/asapcollector/opamp-config-push.md)
