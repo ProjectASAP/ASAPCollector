@@ -175,10 +175,14 @@ the same metric and labels:
 
 ```text
 source metric
-  +-- raw materialization SID       -> exact archive encoding
-  +-- DDSketch materialization SID  -> full/delta sketch encoding
-  +-- exact Sum materialization SID -> accumulator encoding
+  +-- raw materialization SID               -> exact archive encoding
+  +-- sketch materialization SID            -> full/delta sketch encoding
+  +-- exact-aggregation materialization SID -> accumulator encoding
 ```
+
+For example, DDSketch is one sketch materialization and Sum is one
+exact-aggregation materialization. The categories above also cover the other
+supported sketch families and exact aggregation operators.
 
 A codec or checkpoint-policy change that remains semantically compatible may
 preserve SID and declare a new representation version per frame. A lossy change
