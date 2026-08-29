@@ -175,9 +175,12 @@ the same metric and labels:
 
 ```text
 source metric
-  +-- raw materialization SID               -> exact archive encoding
-  +-- sketch materialization SID            -> full/delta sketch encoding
-  +-- exact-aggregation materialization SID -> accumulator encoding
+  +-- raw materialization SID
+  |     -> exact archive encoding -> raw samples
+  +-- sketch materialization SID
+  |     -> full/delta sketch encoding -> sketch state
+  +-- exact-aggregation materialization SID
+        -> accumulator encoding -> exact aggregate state
 ```
 
 For example, DDSketch is one sketch materialization and Sum is one
