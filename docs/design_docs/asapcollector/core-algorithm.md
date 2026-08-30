@@ -166,8 +166,9 @@ the same distinction between ideal, reported, and pending state applies.
 **Definition 3.3 (continuous guarantee).** A protocol is
 `(epsilon_q, delta, Delta_star)`-valid for query `q` if, at every evaluation
 time, its answer violates the declared error bound with probability at most
-`delta`, and every unreported change is either incorporated within
-`Delta_star` or remains within the error budget assigned to staleness.
+`delta`, every nonzero unreported change is incorporated by the backend no
+later than `Delta_star` after it first becomes pending, and its magnitude
+remains within the error budget assigned to staleness before incorporation.
 
 **Definition 3.4 (activity and sensitivity).** For cell `j`, `V_j` is the
 absolute update activity per unit time and `c_j` is the largest binding query
@@ -538,24 +539,64 @@ from Taylor's theorem with the declared Hessian spectral bound. ∎
 
 ### Freshness
 
-Cell `j` (activity `V_j = Σ_i V_{ij}`) reaches `T_j` after time `T_j / V_j`, so its
-max staleness age is `Δ_j = T_j / V_j`. To guarantee query freshness `Δ*`:
-`T_j ≤ V_j Δ*`. (Quiet cells have large `Δ_j` even at small `T_j`, so freshness
-binds them → periodic heartbeat.)
+The end-to-end backend-query target is partitioned as
+`Delta_star = Delta_edge + Delta_delivery`, where `Delta_edge` is the maximum
+time a change may wait at the producer and `Delta_delivery` budgets queueing,
+transport, validation, and atomic backend application. This is a correctness
+contract: if the transport/backend cannot provide a bounded
+`Delta_delivery`, the system can report observed freshness but cannot promise a
+hard end-to-end `Delta_star` bound.
+
+Magnitude and age are independent send conditions. Let `D_{ij}(t)` be site
+`i`'s accumulated unsynchronized change for cell `j`, and let `a_{ij}` be the
+time at which that pending change first became nonzero. The required send rule
+is
+
+```text
+SEND(i,j,t) iff |D_ij(t)| >= T_j
+                or (D_ij(t) != 0 and t - a_ij >= Delta_edge).
+```
+
+The first branch is the **magnitude trigger**: it enforces the deterministic
+staleness-error budget while avoiding insignificant transmissions. The second
+is the **freshness deadline**: it bounds how long a real change may remain
+invisible to the backend. A deadline flush sends every pending nonzero delta
+whose producer deadline has expired, even when no cell crossed `T_j`. With
+delivery and application completed within `Delta_delivery`, that change is
+query-visible by age `Delta_star`.
+
+Under a stationary activity approximation `V_j = sum_i V_ij`, a cell is
+expected to reach `T_j` after `T_j/V_j`. The predictive cap
+`T_j <= V_j Delta_edge` therefore makes magnitude crossings occur at roughly
+the requested cadence and is useful during policy optimization. It is **not a
+hard freshness proof**: a burst may stop at `0.9 T_j`, and an inaccurate or
+zero rate estimate may never produce a crossing. Only the age branch above
+provides the producer-side `Delta_edge` guarantee; the delivery SLA completes
+the end-to-end `Delta_star` guarantee. A heartbeat with no pending data may
+still be used for liveness and watermark evidence, but it is not a substitute
+for flushing an expired pending delta.
 
 ---
 
 ## 5. Cost models (per unit time)
 
+Let `R_j` denote the emitted-delta-unit rate after batching. In the
+magnitude-dominated regime, `R_j approximately V_j/T_j`. For a continuously
+active pending cell subject to the producer deadline,
+`R_j approximately 1/min(T_j/V_j, Delta_edge) = max(V_j/T_j, 1/Delta_edge)`;
+a sporadic cell instead emits at most once for each burst that remains pending.
+This distinction matters because a hard deadline can intentionally spend more
+communication than the magnitude-only optimum.
+
 ```
 Memory_edge  = m·G·n·( 1 + 1{delta}[acked snapshot] + 1{aniso}[threshold vec] )
 Comp_sdk     = c_rng·(Σ_r p_{i,r})·rate     (geometric skip-sampling: O(1)/admit RNG)
 Comp_coll    = c_h·(Σ_r p_{i,r})·rate       (hash + update — only admitted rows)
-             + c_s·Σ_j V_j/T_j              (uploads       — thresholds cut this)
-Comm         = b·Σ_j V_j/T_j  (+ broadcast for geometric)
+             + c_s·Σ_j R_j                  (emitted delta-unit handling)
+Comm         = b·Σ_j R_j  (+ broadcast for geometric)
              × (1 − ∏_r(1−p_{i,r}))         (samples with no admitted row aren't sent)
 Cost_coord   = m·n·(1 + k·1{geo})           (running merge + per-edge refs)
-             + c_a·Σ_j V_j/T_j              (incremental apply_delta)
+             + c_a·Σ_j R_j                  (incremental apply_delta)
 ```
 
 The physical placement determines where these costs land. In SDK-build, the
@@ -565,12 +606,14 @@ pays hashing/update only for admitted rows. Lowering `p_{i,r}` always reduces
 admitted update work; raw-wire/deserialization savings apply specifically to
 Collector-build rather than to a fixed-size dense SDK sketch frame.
 
-**Structural insight.** `Comm`, the upload part of `Comp_edge`, and the apply part
-of `Cost_coord` are all `∝ Σ_j V_j/T_j` → they collapse into one effective weight
-`W = w_c·b + w_e·c_s + w_b·c_a`. Hence the *cost weights do not change the optimal
-threshold shape* — the accuracy constraint pins `T_j`; the weights instead select
-the **structural knobs** (uniform-vs-aniso, delta-vs-full, sampling `p`, per-edge
-refs), which is where the memory/compute tradeoffs live.
+**Structural insight.** `Comm`, the upload part of `Comp_edge`, and the apply
+part of `Cost_coord` are all proportional to `sum_j R_j`, so they collapse into
+one effective weight `W = w_c·b + w_e·c_s + w_b·c_a`. Where magnitude triggers
+bind, `R_j approximately V_j/T_j` and the water-filling result below applies.
+Where deadlines bind, increasing `T_j` no longer reduces the active cell's
+send cadence; the optimizer must price that deadline-dominated region
+explicitly. The remaining weights primarily select structural knobs such as
+uniform-vs-anisotropic thresholds, delta-vs-full, sampling, and per-edge refs.
 
 ---
 
@@ -582,7 +625,10 @@ over       d, w, G, {p_i}, {T_j}, structural flags
 subject to
   (query,    ∀ q ∈ Q)   √(ε_sk(w)² + ε_sa({p_i})²) + k·Σ_j|r_{q,j}|T_j/‖f‖  ≤  ε_q
   (function, ∀ f_m)      k·Σ_j|g_{m,j}|T_j + ½·λ_m·k²‖T‖²                    ≤  ε_m·|f_m|
-  (freshness)            T_j ≤ V_j·Δ*
+  (freshness budget)     Δ_edge + Δ_delivery ≤ Δ*
+  (freshness hint)       T_j ≤ V_j·Δ_edge when V_j is a usable activity estimate
+  (producer deadline)    every pending nonzero delta is exported by age Δ_edge
+  (delivery contract)    accepted frames become atomically query-visible within Δ_delivery
   (confidence)           d ≥ log₂(1/δ)
                          p_i ∈ (0,1],  T_j ≥ 0,  w ≥ 1,  G ≥ 1
 ```
@@ -598,6 +644,8 @@ subject to
 ```text
 SYNTHESIZE(workload, topology, capabilities, epsilon_q, delta, Delta_star):
   d <- ceil(log2(1/delta))
+  reserve a measured/declared Delta_delivery budget
+  Delta_edge <- Delta_star - Delta_delivery; reject if nonpositive
   enumerate legal (family, w, grouping G, placement, representation)
   for each legal candidate:
     epsilon_sk <- family collision bound at (d,w)
@@ -606,7 +654,8 @@ SYNTHESIZE(workload, topology, capabilities, epsilon_q, delta, Delta_star):
     p_i <- legal family-specific sampling allocation for every site
     estimate activity V_j and sensitivity c_j
     T_floor_j <- sqrt(V_j (1-p_i)/p_i) where sampling applies
-    T_cap_j <- min(query_cap_j, V_j Delta_star)
+    T_cap_j <- min(query_cap_j, V_j Delta_edge) when V_j is usable;
+               otherwise query_cap_j
     T_j <- WATERFILL(V, c, staleness_budget, T_floor, T_cap)
     compute memory, update, communication, and coordinator cost
   return minimum-cost feasible physical policy
@@ -627,18 +676,24 @@ OBSERVE(materialization, observation):
     if sampling applies and not ADMIT(seed, occurrence, u.row, p):
       continue
     delta <- family.update_with_weight(state, u, 1/p)
+    if state.pending[u] was zero and becomes nonzero:
+      state.first_pending_at[u] <- monotonic_now()
+      SCHEDULE_DEADLINE(state.first_pending_at[u] + Delta_edge)
     state.activity[u] <- update_activity(state.activity[u], delta)
     T <- family.threshold(policy, state, u)
     if family.crossed(state.pending[u], T):
       family.mark_for_emit_and_apply_reset_rule(state, u)
       WAKE_NONBLOCKING()
 
-FLUSH(reason):
-  for each dirty materialized series:
-    frame <- family.drain_full_or_delta(series, checkpoint_policy)
+FLUSH(reason, now):
+  for each materialized series with threshold-crossed or expired-pending state:
+    eligible <- threshold-crossed units
+                union pending nonzero units with now-first_pending_at >= Delta_edge
+    frame <- family.drain_full_or_delta(series, eligible, checkpoint_policy)
     if frame is nonempty:
       export(frame with plan, materialization, SID evidence,
              window, producer epoch, base, and sequence)
+      on acknowledgement, clear/reset pending age for incorporated units
 ```
 
 ### Algorithm 3: backend reconstruction
@@ -699,16 +754,19 @@ implements exactly this linear peel (`ε_st = t·(ε_q−ε_sk)`,
 
   ```
               ┌ water-filling ┐   ┌──── clamps ────┐
-  T_j = clamp( (B/Σ_ℓ√(c_ℓ V_ℓ))·√(V_j/c_j),  T_j^floor,  min(T_q, V_j·Δ*) )
+  T_j = clamp( (B/Σ_ℓ√(c_ℓ V_ℓ))·√(V_j/c_j),
+               T_j^floor, min(T_q, V_j·Delta_edge) )
   ```
 
   with **sampling-coupling floor** `T_j^floor = √( V_j(1−p)/p )` ("don't transmit
-  finer than you sample"), **query cap** `T_q = ε_q‖Ĉ‖/(k·s_q)`, **freshness cap**
-  `V_j·Δ*`. Clamped cells release budget → box water-filling redistributes (a few
-  iterations).
+  finer than you sample"), **query cap** `T_q = ε_q‖Ĉ‖/(k·s_q)`, and predictive
+  **rate cap** `V_j·Delta_edge`. The rate cap reduces expected deadline flushes but does
+  not replace the hard age trigger in §4. Clamped cells release budget → box
+  water-filling redistributes (a few iterations).
 
-**Theorem 7.1 (optimal unconstrained thresholds).** Fix a feasible sketch,
-sampling policy, and linear staleness budget `B`, and minimize
+**Theorem 7.1 (optimal unconstrained magnitude-trigger thresholds).** Fix a
+feasible sketch, sampling policy, and linear staleness budget `B`, assume the
+deadline is nonbinding for the cells under consideration, and minimize
 `sum_j V_j/T_j` subject to `sum_j c_j T_j <= B` and `T_j > 0`. The unique
 optimum for cells with positive activity and sensitivity is
 
@@ -731,8 +789,9 @@ optimum.
 
 **Reading.** `T_j ∝ √(V_j/|g_j|)`: high-activity cells get larger thresholds (don't
 chase high-frequency noise); cells the monitored function is sensitive to
-(`|g_j|` large) get smaller thresholds (report early); everything capped by the
-universal query cap and freshness.
+(`|g_j|` large) get smaller thresholds (report early); everything is capped by
+the universal query cap and, where the activity estimate is usable, the
+predictive rate cap. The independent age deadline still enforces freshness.
 
 **Layer D — when: insert-time, no periodic scan.** Layers A–C fix *what*
 threshold each cell gets; this layer is *when* a crossing is actually
@@ -747,19 +806,22 @@ Alerting and any other query-time decision is made entirely at the backend
 against that synced state; the edge does not make alerting decisions
 itself (see Retirements in §11 for what this replaces in the current code).
 
-### Wake-on-demand flush
+### Threshold-or-deadline flush
 
 The existing OTLP export chain (SDK `PeriodicReader` → collector processor
 → exporter) is unchanged; only *when a flush cycle runs* differs from a
-purely timer-driven cadence — it is timer-**or**-woken:
+purely periodic cadence. The loop wakes either for a magnitude crossing or for
+the earliest pending freshness deadline:
 
 ```go
 for {
     select {
-    case <-ticker.C:   // slow fallback cadence, in case a wake is ever missed
-        flush()
-    case <-wakeCh:      // fired the instant something crosses threshold
-        flush()
+    case now := <-deadlineTimer.C: // earliest first_pending_at + Delta_edge
+        flush("freshness-deadline", now)
+        resetTimerToEarliestPendingDeadline()
+    case <-wakeCh:                 // a magnitude threshold was crossed
+        flush("magnitude-threshold", monotonicNow())
+        resetTimerToEarliestPendingDeadline()
     }
 }
 ```
@@ -775,11 +837,14 @@ default: // a wake is already pending; nothing to add
 
 `flush()` keeps using the existing `SnapshotCache`/`ComputeDeltaAgainst`
 machinery (full-frame fallback on cold start, the "never emit a delta
-larger than a full frame" clamp) — only the trigger changed. A per-cell
-`dirtySet`, populated as cells cross threshold, replaces the old periodic
-whole-sketch divergence pre-check: an empty `dirtySet` at flush time IS
-"nothing was worth sending," computed once per crossing instead of by a
-periodic `O(dw)` full-matrix scan.
+larger than a full frame" clamp) — only eligibility and scheduling change. A
+per-cell `crossedSet` records magnitude crossings, while a deadline queue tracks
+the earliest `first_pending_at + Delta_edge`. On a threshold wake, sparse export
+may use `crossedSet`; on a deadline wake, it must additionally include every
+expired pending nonzero unit. Consequently, an empty `crossedSet` does **not**
+mean that there is nothing to send: expired subthreshold state is eligible.
+Implementations may maintain a pending-unit index or family-level oldest-pending
+timestamp to avoid a periodic `O(dw)` full-matrix scan.
 
 ### Per-family detection unit and reset semantics
 
@@ -859,13 +924,16 @@ cells in one emitted sparse delta.
   and avoids a periodic `Theta(n)` divergence scan.
 - Encoding, transmission, and backend application of one sparse delta require
   `Theta(z)` payload work, excluding fixed framing and transport overhead.
-- Under stationary activity, the expected crossing/upload rate is
-  proportional to `sum_j V_j/T_j`.
+- Under stationary activity, the magnitude-crossing rate is proportional to
+  `sum_j V_j/T_j`. The actual emitted-unit rate is `sum_j R_j` and additionally
+  includes deadline-triggered subthreshold deltas.
 
 **Justification.** The first four bounds follow directly from the maintained
 arrays and Algorithms 2–3. A cell accumulating absolute activity at rate
 `V_j` reaches magnitude `T_j` after order `T_j/V_j` time, yielding crossing
-rate order `V_j/T_j`; summing over cells gives the last statement. These are
+rate order `V_j/T_j`. A continuously pending unit instead emits by the earlier
+of that crossing and `Delta_edge`, while sporadic bursts follow their pending
+deadlines; summing their resulting `R_j` terms gives the actual rate. These are
 algorithmic bounds, not a promise about scheduler, serialization, or network
 tail latency.
 
@@ -908,7 +976,7 @@ measured through `V_j/T_j`; it does not improve the adversarial exponent.
 | **Memory efficiency** | `(w,G)` + `w_m`: grouping `G` avoids one sketch per series; `w=Θ(1/ε²)` is the WZ-minimum; delta/aniso flags dropped under high `w_m` (no snapshot / threshold vector) |
 | **Computation efficiency** | `w_e`: sampling `p_i` (fewer updates) + threshold size (fewer uploads); both fold into one effective weight |
 | **Communication efficiency** | `w_c`: per-cell water-filling thresholds + geometric silence; `Θ̃(k/ε²)` worst case, far less on stable data |
-| **Continuous, accurate, fresh** | Theorem 4.1 bounds every query at **any** `t`, **relative**; freshness cap `T_j ≤ V_jΔ*` bounds staleness age; whole sketch queryable (OctoSketch), monitored `f_m` tighter (GM/AutoMon) |
+| **Continuous, accurate, fresh** | Theorem 4.1 bounds every query at **any** `t`, **relative**; the magnitude trigger bounds staleness error, the producer deadline bounds local waiting by `Delta_edge`, and the delivery contract completes the end-to-end `Delta_star` bound; whole sketch queryable (OctoSketch), monitored `f_m` tighter (GM/AutoMon) |
 
 ---
 
@@ -973,9 +1041,11 @@ in the current code — tracked here since it isn't deleted yet:
 - **Gate 1** (`subWindowShouldEmit` / `L2DivergenceSinceEmit` / `ackedCells`):
   the old periodic whole-sketch divergence pre-check, run once per
   `SubWindowInterval` tick regardless of whether anything had actually
-  crossed threshold. An empty per-cell `dirtySet` at flush time already
-  answers "nothing to send," computed once per crossing instead of by a
-  periodic `O(dw)` scan — dead code under Layer D, not kept as a fallback.
+  crossed threshold. The replacement uses `crossedSet` for magnitude-triggered
+  work plus a pending-deadline index for expired subthreshold changes. Only
+  when both are empty is there nothing to send; neither requires a periodic
+  `O(dw)` scan. The old divergence pre-check is dead code under Layer D, not
+  kept as a fallback.
 - **CMS's local point-query read** (`ThresholdConfig.Functional: cms_point`,
   `CMSWrapper.EstimateCount`): once a cell resets in place at insert time
   (GOS mode), CMS's `min`-across-rows estimate is corrupted by any single
