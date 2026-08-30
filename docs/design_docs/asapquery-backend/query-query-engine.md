@@ -60,6 +60,91 @@ Routing has three outcomes:
 A store miss, stale window, or incompatible payload must not be converted into
 an empty or plausible approximate result.
 
+## Inputs and ownership
+
+The query engine has four inputs; only one is supplied by the request caller.
+
+| Input | Producer | What it contributes |
+| --- | --- | --- |
+| Prometheus-compatible instant/range request | HTTP/API adapter | Query expression, evaluation time/range, step, tenant/auth context |
+| Active BackendPlan view | ASAPQuery physical compiler through plan publication | Canonical routes, materialization descriptors, readouts, guarantees, storage tier and fallback policy |
+| SID/materialization and window indexes | Summary store/ingest engine | Concrete materialized series, labels, lifecycle, coverage, frame lineage, and payload locations |
+| Exact/archive engine | Configured backend adapter | Explicit fallback execution when the plan permits it |
+
+ASAPPlanner runs when the workload is planned, not on every incoming query. It
+selects the logical summary/readout and guarantee. The physical compiler turns
+that selection into BackendPlan routes. At request time the query engine
+executes an installed route; it must not ask Planner to search again or choose
+a new sketch because stored coverage is missing.
+
+## Execution workflow
+
+```text
+PromQL HTTP request
+  -> authenticate / tenant scope
+  -> parse and canonicalize query shape
+  -> active BackendPlan route lookup
+       -> exact route ------------------------------> exact/archive engine
+       -> summary route
+            -> materialization descriptor
+            -> compatible SID instance lookup
+            -> lifecycle + guarantee + freshness checks
+            -> window/coverage index lookup
+            -> memory/durable payload read
+            -> full/delta reconstruction
+            -> shard/pane merge and planned readout
+            -> remaining backend operators
+  -> Prometheus labels/timestamps/result encoding + provenance/accuracy
+```
+
+The steps are:
+
+1. **Establish request context.** The protocol adapter validates tenant,
+   authorization, instant/range parameters, step, and timeout.
+2. **Canonicalize only for route lookup.** Parsing produces the stable query
+   shape/query ID expected by BackendPlan. This is not candidate planning.
+3. **Select the active plan view.** Evaluation time must fall within the
+   plan/schema timeline. Stale, premature, or conflicting versions fail.
+4. **Resolve the planned route.** The route names an exact path or a
+   materialization fingerprint, readout, grouping/window composition,
+   guarantee, storage preference, and permitted fallback.
+5. **Find compatible series.** Using the materialization catalog and SID
+   instance index, select only active/retained SIDs whose canonical metric and
+   concrete retained labels satisfy the request. Metric-name matching alone is
+   insufficient.
+6. **Check semantic compatibility.** Verify aggregation kind/parameters,
+   capability, requested grouping, result guarantee, producer completeness,
+   and state schema against the materialization descriptor.
+7. **Check temporal readiness.** Ask the store's coverage/watermark index for
+   the required panes. Distinguish missing, stale, gapped delta lineage,
+   backfill-in-progress, and complete coverage.
+8. **Read and reconstruct.** The store locates mutable/sealed epochs and
+   durable parts by `(SID, range)`, retrieves carry-in checkpoints where
+   necessary, and reconstructs ordered full/delta state.
+9. **Execute the planned algebra.** Merge compatible shards/panes, apply the
+   declared sketch or exact-aggregate readout, then execute remaining backend
+   operators and label roll-ups represented by the route.
+10. **Return or follow explicit fallback.** Encode Prometheus-compatible
+    results with plan/materialization provenance, freshness, and accuracy. A
+    failed summary route uses exact/archive only when BackendPlan authorizes
+    that failure class; otherwise return an explicit error.
+
+## Component interactions
+
+| Component | Interaction with query engine |
+| --- | --- |
+| ASAPPlanner | Supplies the selected logical plan/guarantee upstream; never serves as a request-time optimizer |
+| ASAPQuery control plane | Compiles and publishes immutable route/materialization views and activation timelines |
+| Collector | Produces state according to the matching CollectorPlan; has no direct query-time control |
+| Ingest/precompute engine | Validates producers and frames, resolves SIDs, registers metadata, updates coverage |
+| Summary store engine | Owns semantic instance lookup plus time/coverage/physical indexes and returns typed state/miss reasons |
+| Query engine | Owns request classification, route execution, readout/operator evaluation, fallback decision, and response |
+| Exact/archive adapter | Executes only the explicit fallback/exact route and returns its errors unchanged |
+
+The storage engine exposes facts and typed lookup outcomes; the query engine
+decides how the installed route uses them. Conversely, the query engine cannot
+register metadata, repair delta gaps, or mark incomplete windows complete.
+
 ## Supported aggregation shapes
 
 The MVP exercises these shapes without defining Planner's query-to-summary

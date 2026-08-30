@@ -11,6 +11,7 @@ collection -> summary transmission -> backend ingest -> summary storage -> query
 ## ASAPCollector
 
 - [Collection-phase protocol and configuration](asapcollector/collector-collection-phase.md)
+- [Core GOS collection/transmission algorithm](asapcollector/core-algorithm.md)
 - [Full/delta summary transmission](asapcollector/collector-transmission-protocol.md)
 - [Runtime and deployment lifecycle](asapcollector/runtime-deployment-lifecycle.md)
 

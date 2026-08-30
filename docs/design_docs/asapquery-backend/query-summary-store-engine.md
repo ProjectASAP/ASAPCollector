@@ -120,6 +120,115 @@ it with the summary. See
 Registration without data is allowed. Such a ghost SID cannot satisfy
 coverage and produces a warm-tier miss.
 
+### Index design
+
+The store needs three indexes with different authorities. Treating them as one
+map encourages the query engine to infer semantics from whatever bytes happen
+to be present.
+
+```text
+BackendPlan materialization catalog                 control-plane-defined
+  materialization fingerprint -> semantic descriptor + storage/query policy
+                                  |
+                                  v
+SID instance index                                 ingest-resolved
+  (materialization, metric, retained label values) -> SID -> instance metadata
+                                                           |
+                                                           v
+window/payload index                                storage-owned
+  (SID, time range) -> memory epochs and durable part offsets
+```
+
+The intended lookup path is:
+
+```text
+normalized query
+  -> BackendPlan route
+  -> materialization fingerprint
+  -> compatible active SID instances
+  -> time/coverage index
+  -> payload frames
+```
+
+The reverse path is also required for ingest and diagnostics:
+
+```text
+incoming SID
+  -> instance metadata
+  -> materialization fingerprint
+  -> active plan/schema validation
+```
+
+#### Materialization catalog
+
+The physical compiler creates this catalog as part of BackendPlan. It describes
+what state is allowed to exist and how it may be queried; it does not enumerate
+label values or allocate SIDs.
+
+| Metadata | Why query execution needs it | Authority |
+| --- | --- | --- |
+| tenant/isolation namespace | Prevent cross-tenant lookup and merge | Deployment policy compiled into BackendPlan |
+| plan ID/version and activation interval | Select the authoritative route/schema timeline | Physical compiler |
+| materialization fingerprint | Join routes, producers, SID instances, and storage | Physical compiler, derived deterministically from maintained semantics |
+| canonical metric/source and matchers | Match a normalized query to the maintained source | Planner binding plus physical compiler |
+| summarized value/item | Know whether readout consumes sample value or a label/set item | Planner selection |
+| retained `group_by_keys` and reduction/grouping layout | Determine whether requested output labels can be reconstructed or rolled up | Planner selection, preserved by physical compiler |
+| capability and readout | Quantile, cardinality, frequency, top-k, exact aggregate, or raw | Planner selection and BackendPlan route |
+| aggregation kind, algorithm, and typed parameters | Decode, validate, merge, and execute the correct state | Planner selection; capability-checked by physical compiler |
+| accuracy/result guarantee | Reject a route that cannot satisfy the request and annotate results | Planner guarantee, preserved by physical compiler |
+| logical/physical window and lateness | Compose panes and evaluate coverage/freshness | Physical compiler |
+| state schema/encoding and delta rules | Select decoder and validate base/sequence compatibility | Physical compiler from Collector/backend capabilities |
+| producer set and placement | Validate Collector shards or backend precompute origin | Physical compiler |
+| storage route and retention/lifecycle | Choose warm/archive/remote tier and schema timeline | Physical compiler/runtime policy |
+| exact fallback policy | Define behavior on unsupported shape or incomplete coverage | Planner decision plus physical compiler |
+
+ASAPPlanner decides logical summary semantics and guarantees. The ASAPQuery
+physical compiler binds those semantics to sources, executors, windows,
+transport, storage, and lifecycle and emits the authoritative BackendPlan.
+The query engine consumes this metadata; it does not create or mutate it.
+
+#### SID instance index
+
+The SID resolver and ingest path instantiate the catalog for concrete retained
+label values. One record per SID must retain:
+
+| Metadata | Source |
+| --- | --- |
+| SID and registry namespace | Backend SID authority |
+| materialization fingerprint and policy fingerprint | BackendPlan plus validated ingest envelope |
+| canonical metric name | Materialization descriptor/ingest normalization |
+| retained label keys and concrete label values or dictionary reference | BackendPlan plus first attribute-bearing frame |
+| aggregation kind/parameters and capability | BackendPlan; checked against the frame |
+| derived accuracy | BackendPlan/materialization descriptor, not inferred from payload size |
+| state schema/encoding | BackendPlan and validated frame |
+| first-seen, active, retired, expiry timestamps | Ingest and lifecycle reconciler |
+| producer/shard observations | Validated frame, constrained by BackendPlan producer set |
+
+`SketchInstanceMetadata` currently stores the core subset: SID, metric,
+grouping keys, capability, aggregation kind, accuracy, policy fingerprint, and
+lifecycle timestamps. The target catalog fields above must be persisted before
+BackendPlan becomes the authoritative routing contract. Missing metadata is an
+unknown/incompatible result, not permission for the query engine to guess.
+
+#### Window and physical indexes
+
+The storage engine owns metadata that describes stored facts rather than
+planned semantics:
+
+| Index/metadata | Purpose |
+| --- | --- |
+| per-SID label-value dictionary | Compact repeated concrete group labels |
+| epoch min/max time and distinct-window set | Reject non-overlapping epochs cheaply and rotate bounded hot state |
+| `(window_start, window_end, label_id, frame_order)` columns | Exact/overlap lookup and ordered full/delta reconstruction |
+| full checkpoint/base ID, producer epoch, sequence | Detect missing, duplicate, or incompatible delta lineage |
+| part SID/time bounds and offsets | Locate mmap payload records without decoding whole parts |
+| coverage/watermark/completeness | Distinguish complete, stale, gapped, and missing intervals |
+| payload type, encoding, checksum and schema version | Safe decoding and corruption detection |
+
+These values are produced by validated ingest and persistence. Query execution
+may read them for coverage and reconstruction but must not use physical offsets,
+arrival order, or observed payload shape to choose a logical materialization.
+
 ### Stored cell
 
 Each append is conceptually:
