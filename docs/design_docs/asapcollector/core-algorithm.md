@@ -1,14 +1,29 @@
 # GOS: A Unified Error / Threshold / Cost Framework for Distributed Edge Telemetry
 
-**One line.** One framework that unifies error-bounded sketching, coordinated
-sampling, Geometric Monitoring (GM/AutoMon), and OctoSketch-style change
-transmission into a single per-cell decision — reducing to **one atomic quantity**
-`e_j = k·T_j` (per-cell backend error) — with a unified relative error bound, a
-tunable memory/compute/communication objective, and a closed-form
-water-filling solution whose worst-case communication matches the
-Woodruff–Zhang lower bound `Θ̃(k/ε²)`.
+## Abstract
 
-We call the construction **GOS** (Geometric-OctoSketch).
+We study continuous approximate query processing over telemetry streams
+distributed across `k` edge sites. Each site maintains mergeable summary state,
+may sample updates before insertion, and communicates only when unsynchronized
+local state exceeds a threshold. The objective is to minimize edge memory,
+edge computation, communication, and coordinator update cost while satisfying
+query accuracy and freshness constraints at every time, rather than only at
+window boundaries.
+
+We present **GOS (Geometric-OctoSketch)**, a framework combining linear
+sketches, coordinated row sampling, geometric-monitoring safe zones, and
+per-cell change transmission. GOS reduces the deterministic error contributed
+by one unsynchronized cell to `e_j = k T_j`, where `T_j` is its transmission
+threshold. Random sketch and sampling errors compose in quadrature, while
+deterministic staleness adds linearly. For a fixed sketch and sampling policy,
+the communication-minimizing thresholds have a water-filling form
+`T_j proportional to sqrt(V_j/c_j)`, subject to sampling, query-accuracy, and
+freshness clamps. Insert-time detection and a timer-or-wake export loop maintain
+continuous backend state for Sum, Count-Min Sketch, Count Sketch, DDSketch,
+KLL, and HLL through family-specific delta semantics. In the adversarial case,
+the resulting communication dependence is consistent with the soft-Theta
+`k/epsilon^2` lower bound for distributed continuous `F_2` monitoring; on
+nonadversarial telemetry it adapts to observed per-cell activity.
 
 > **Status and source.** This is the canonical, detailed algorithm design. It
 > incorporates the complete design that existed on the current algorithm branch
@@ -23,7 +38,7 @@ We call the construction **GOS** (Geometric-OctoSketch).
 
 ---
 
-## 1. Context and requirements
+## 1. Introduction
 
 Distributed data collection and transmission with a centralized analytics
 backend. Edge telemetry must be **memory-, computation-, and
@@ -47,9 +62,45 @@ communication-efficient** under cloud economics, while the backend serves
 These four axes are exactly the decision variables and constraints of the
 optimization below.
 
+### 1.1 Problem statement
+
+Given distributed streams, a workload of continuous queries, an error target
+`epsilon_q`, failure probability `delta`, and freshness target `Delta_star`, we
+seek a protocol that maintains a backend answer at every time while minimizing
+a weighted sum of edge memory, edge update work, transmitted bytes, and backend
+delta-application work. The protocol may choose sketch dimensions, grouping,
+sampling probabilities, and transmission thresholds, but it may not change the
+query semantics selected by the planner.
+
+### 1.2 Contributions
+
+The design makes the following claims and contributions:
+
+1. It gives one error decomposition for sketch collision, row sampling, and
+   unsynchronized local drift.
+2. It shows why independent per-row admission is strictly preferable to one
+   whole-item coin at equal expected admitted-row work for median-of-rows
+   sketches.
+3. It derives communication-minimizing per-cell thresholds by constrained
+   water-filling and couples them to sampling and freshness.
+4. It realizes continuous detection at insertion time without bypassing the
+   existing telemetry export pipeline.
+5. It instantiates the protocol for six summary families while making reset,
+   merge, and idempotence rules explicit.
+6. It separates proved algorithmic properties, implementation invariants, and
+   open assumptions so partial wiring is not mistaken for an end-to-end claim.
+
+### 1.3 Organization
+
+Section 2 positions the construction. Section 3 defines the model and sampling
+estimator. Sections 4–6 state the accuracy and optimization problems. Section 7
+gives the GOS algorithm and threshold solution. Sections 8–9 analyze complexity
+and guarantees. Sections 10–12 record attribution, system realization, and open
+problems.
+
 ---
 
-## 2. Positioning: what each prior line gives, and what it lacks
+## 2. Preliminaries and relation to prior work
 
 All four lines are instances of "keep the local drift inside a **safe zone**,
 communicate on violation." They differ in the *shape* of the safe zone and in
@@ -98,6 +149,30 @@ non-linear functionals `f_m(f)` (e.g. `F₂=‖f‖₂²`, entropy, ratios) answ
 | `p_{i,r} ∈ (0,1]` | per-**row** admission rate (SDK-side) | edge **CPU** ↔ accuracy |
 | `T_j ≥ 0` | per-cell transmission threshold | **communication**/freshness ↔ accuracy |
 | flags | delta-vs-full, geometric-refs, uniform-vs-aniso | comm ↔ edge/coord memory |
+
+**Definition 3.1 (materialized stream).** A materialized stream is fixed by a
+source/filter, retained grouping keys, summary family and parameters, window
+semantics, and state schema. Each concrete retained-label assignment is a
+materialized series. The algorithm below is applied independently to each
+materialization/window and never merges incompatible series.
+
+**Definition 3.2 (backend reconstruction).** Let `C_i(t)` be the ideal local
+summary at site `i`, `R_i(t)` the state already incorporated at the backend,
+and `D_i(t) = C_i(t) - R_i(t)` the unsynchronized drift for additive state.
+The backend reconstruction is `C_hat(t) = sum_i R_i(t)`. For idempotent or
+segment-merge families, subtraction is replaced by the family operation but
+the same distinction between ideal, reported, and pending state applies.
+
+**Definition 3.3 (continuous guarantee).** A protocol is
+`(epsilon_q, delta, Delta_star)`-valid for query `q` if, at every evaluation
+time, its answer violates the declared error bound with probability at most
+`delta`, and every unreported change is either incorporated within
+`Delta_star` or remains within the error budget assigned to staleness.
+
+**Definition 3.4 (activity and sensitivity).** For cell `j`, `V_j` is the
+absolute update activity per unit time and `c_j` is the largest binding query
+or monitored-function sensitivity coefficient. Cells with `c_j = 0` do not
+affect the declared workload and are excluded from its threshold constraint.
 
 ### 3.1 The SDK↔collector sampling split (row-admission)
 
@@ -307,7 +382,7 @@ contribution to the row-`r` cell variance is `(1−p_{i,r})/p_{i,r}·Δ²`. Summ
 a cell's traffic this is the sampling perturbation `Σ_r^{sa}` of §4; the
 median-of-`d` rows turns it into the effective relative sampling error `ε_sa`.
 
-**Costs (the whole point).**
+**Resource implications of admission.**
 
 | | per raw item | scales with |
 |---|---|---|
@@ -327,6 +402,16 @@ per-row *admission* decorrelation of §3.2, not per-row rate tuning.
 
 ### 3.2 Error and threshold-allocation math under per-row SDK sampling
 
+**Lemma 3.5 (unbiased row estimator).** For an additive row update admitted
+independently with probability `p_{i,r}` and weighted by `1/p_{i,r}`, every
+updated cell and every row point estimator is unbiased.
+
+**Proof.** If `Z` is the admission indicator, then
+`E[Z Delta/p] = Delta`. Linearity of expectation gives unbiased cells and row
+estimators. No corresponding inverse-probability correction exists for KLL
+compaction or HLL register maximum, which is why the lemma does not cover those
+families. ∎
+
 **Per-row estimator.** With per-row admission, row `r`'s cell is
 `C[r][c] = Σ_{x:h_r(x)=c} s_r(x)·Δ_x·(Z_{x,r}/p_{i,r})`, `Z_{x,r} ~ Bernoulli(p_{i,r})`
 **independent across rows**. The row estimate `X_r = s_r(y)·C[r][h_r(y)]` is
@@ -338,7 +423,7 @@ Var[X_r] ≈  F₂/w                     (Count-Sketch hash collisions, F₂=‖
          +  (1−p_r)/p_r · S₂,r(y)    (sampling; S₂,r(y)=Σ Δ² routed through y's row-r cell)
 ```
 
-**The decisive point — median decorrelation (why per-row ≠ per-item).** The
+**Median decorrelation.** The
 Count-Sketch `(ε,δ)` guarantee comes from the **median over `d` rows**: if each
 row fails w.p. `≤ ⅓` *independently*, the median fails w.p. `2^{−Θ(d)} = δ`. That
 independence is exactly what the two schemes do or do not give:
@@ -357,18 +442,30 @@ independence is exactly what the two schemes do or do not give:
   term.) It must be bounded *before* the median and cannot be credited with the
   `d`-fold amplification.
 
-> **Result.** At equal admitted work (`E[rows]=d·p` per item ⇒ same edge CPU),
-> per-row sampling keeps the sampling error inside the median's high-probability
-> envelope; whole-item sampling leaves it as an irreducible common-mode penalty.
-> Per-row is the **strictly better estimator** — this, not the relocation, is the
-> reason to push the decision into the SDK.
+**Lemma 3.6 (median amplification).** Suppose each of `d` independently
+sampled/hash rows gives an acceptable estimate with probability at least
+`2/3`. Then the probability that their median is unacceptable is
+`exp(-Theta(d))`. A shared whole-item admission variable introduces a
+common-mode term and does not satisfy the independence premise.
+
+**Proof sketch.** Apply a Chernoff bound to the number of unacceptable rows.
+With independent row admission, sampling and collision randomness are included
+in each row event. With one shared admission variable, dropping the queried
+item removes its own contribution from every row simultaneously; increasing
+`d` cannot suppress that event. ∎
+
+**Corollary 3.7 (per-row versus whole-item admission).** At equal expected
+admitted-row work, per-row sampling keeps sampling error inside the median's
+high-probability envelope, whereas whole-item sampling retains an irreducible
+common-mode term. Thus per-row admission has a no-weaker and, whenever the
+queried item can be dropped, strictly stronger concentration guarantee.
 
 **Effective `ε_sa` (composition).** Under per-row independence the sampling
 *variance* folds into the **same** `median_r` step as the collision variance —
 `Var[X_r] = F₂/w + (1−p)/p·S₂,r` under one median tail — so it composes **in
 quadrature** with `ε_sk`: `|f̂(y)−f(y)| ≤ √(ε_sk²+ε_sa²)·‖f‖₂` w.p. `1−δ`, with
 `ε_sa = Θ(√((1−p)/(p·w)))` (uniform `p`). This is exactly the random part of
-Theorem 1 (§4). Whole-item admission instead leaves a **common-mode** term that
+Theorem 4.1 (§4). Whole-item admission instead leaves a **common-mode** term that
 survives the median and adds to `ε_sk` **linearly** — strictly looser at equal
 edge cost.
 
@@ -404,7 +501,7 @@ staleness term that adds on top:
    all times** — a worst-case bound, *not* a random variable, so it **adds
    linearly** (it cannot be RMS-combined with the random tail).
 
-**Theorem 1 (unified relative error).** For any query `q` and any time `t`, w.p.
+**Theorem 4.1 (unified relative error).** For any query `q` and any time `t`, w.p.
 `≥ 1 − δ`:
 
 ```
@@ -428,6 +525,17 @@ This holds **continuously**, not only at window boundaries — the OctoSketch
 "online accuracy at any query time" property, here generalized to arbitrary
 queries and to gradient-weighted function monitoring.
 
+**Proof of Theorem 4.1.** Lemmas 3.5 and 3.6 place collision and sampling
+perturbations inside the same high-probability row-median event, giving the
+root-sum-square random term. Before a cell triggers transmission, each site
+withholds magnitude strictly below `T_j`; the triangle inequality therefore
+bounds global cell drift by `k T_j`. Applying the linear query coefficients and
+another triangle inequality gives `k sum_j |r_qj| T_j`. The latter is a
+deterministic adversarial bound and hence adds to, rather than shares variance
+with, the random term. The invariant is checked after every insertion, so it
+holds at every time between transmissions. The nonlinear statement follows
+from Taylor's theorem with the declared Hessian spectral bound. ∎
+
 ### Freshness
 
 Cell `j` (activity `V_j = Σ_i V_{ij}`) reaches `T_j` after time `T_j / V_j`, so its
@@ -450,11 +558,12 @@ Cost_coord   = m·n·(1 + k·1{geo})           (running merge + per-edge refs)
              + c_a·Σ_j V_j/T_j              (incremental apply_delta)
 ```
 
-The edge CPU is split across the two runtimes: the **SDK** pays only the
-geometric-sampler RNG (`Comp_sdk`, `O(1)` per admit, no hashing), and the **agent
-collector** pays the hashing/update (`Comp_coll`) *only for admitted rows* plus
-the delta uploads. Lowering `p_{i,r}` cuts SDK RNG, collector hashing, and wire
-volume together — one lever, three savings.
+The physical placement determines where these costs land. In SDK-build, the
+SDK pays admission plus hashing/update and emits a sketch frame. In
+Collector-build, the early filter can drop whole datapoints and the Collector
+pays hashing/update only for admitted rows. Lowering `p_{i,r}` always reduces
+admitted update work; raw-wire/deserialization savings apply specifically to
+Collector-build rather than to a fixed-size dense SDK sketch frame.
 
 **Structural insight.** `Comm`, the upload part of `Comp_edge`, and the apply part
 of `Cost_coord` are all `∝ Σ_j V_j/T_j` → they collapse into one effective weight
@@ -484,12 +593,75 @@ subject to
 
 ## 7. Solution: hierarchical decomposition + two water-fillings
 
+### Algorithm 1: controller synthesis
+
+```text
+SYNTHESIZE(workload, topology, capabilities, epsilon_q, delta, Delta_star):
+  d <- ceil(log2(1/delta))
+  enumerate legal (family, w, grouping G, placement, representation)
+  for each legal candidate:
+    epsilon_sk <- family collision bound at (d,w)
+    choose epsilon_st by the one-dimensional CPU/communication trade-off
+    epsilon_sa <- sqrt((epsilon_q - epsilon_st)^2 - epsilon_sk^2)
+    p_i <- legal family-specific sampling allocation for every site
+    estimate activity V_j and sensitivity c_j
+    T_floor_j <- sqrt(V_j (1-p_i)/p_i) where sampling applies
+    T_cap_j <- min(query_cap_j, V_j Delta_star)
+    T_j <- WATERFILL(V, c, staleness_budget, T_floor, T_cap)
+    compute memory, update, communication, and coordinator cost
+  return minimum-cost feasible physical policy
+```
+
+The controller publishes semantics and scalar policy inputs. Isotropic family
+thresholds are reconstructed from live state; transmitting a dense threshold
+vector is unnecessary. Anisotropic policies require a versioned per-cell
+activity/threshold contract.
+
+### Algorithm 2: edge maintenance
+
+```text
+OBSERVE(materialization, observation):
+  key <- canonical retained-label group
+  state <- state_for(materialization, key, observation.window)
+  for each family update unit u touched by observation:
+    if sampling applies and not ADMIT(seed, occurrence, u.row, p):
+      continue
+    delta <- family.update_with_weight(state, u, 1/p)
+    state.activity[u] <- update_activity(state.activity[u], delta)
+    T <- family.threshold(policy, state, u)
+    if family.crossed(state.pending[u], T):
+      family.mark_for_emit_and_apply_reset_rule(state, u)
+      WAKE_NONBLOCKING()
+
+FLUSH(reason):
+  for each dirty materialized series:
+    frame <- family.drain_full_or_delta(series, checkpoint_policy)
+    if frame is nonempty:
+      export(frame with plan, materialization, SID evidence,
+             window, producer epoch, base, and sequence)
+```
+
+### Algorithm 3: backend reconstruction
+
+```text
+APPLY(frame):
+  validate plan, materialization, SID, producer, schema, window, base, sequence
+  if validation fails: reject or request full checkpoint
+  else family.merge(stored_state, frame.payload)
+       advance lineage and coverage atomically
+
+QUERY(route, range):
+  require complete compatible coverage
+  merge planned shards/panes
+  return planned readout with accuracy and freshness provenance
+```
+
 **Layer A — outer (small enumeration).** `d = ⌈log₂(1/δ)⌉`; choose `w`
 (`ε_sk = c/√w`) and `G` (grouping) to trade the memory term `w_m·G·n` against the
 accuracy the sketch must supply.
 
 **Layer B — budget split (staleness peeled linearly first).** Because staleness
-is deterministic it comes off the top of `ε_q` **linearly** (Theorem 1), *then*
+is deterministic it comes off the top of `ε_q` **linearly** (Theorem 4.1), *then*
 the remaining random budget is split in **quadrature**:
 
 1. choose `ε_st ∈ [0, ε_q − ε_sk]` — the edge-CPU↔communication knob (larger
@@ -534,6 +706,28 @@ implements exactly this linear peel (`ε_st = t·(ε_q−ε_sk)`,
   finer than you sample"), **query cap** `T_q = ε_q‖Ĉ‖/(k·s_q)`, **freshness cap**
   `V_j·Δ*`. Clamped cells release budget → box water-filling redistributes (a few
   iterations).
+
+**Theorem 7.1 (optimal unconstrained thresholds).** Fix a feasible sketch,
+sampling policy, and linear staleness budget `B`, and minimize
+`sum_j V_j/T_j` subject to `sum_j c_j T_j <= B` and `T_j > 0`. The unique
+optimum for cells with positive activity and sensitivity is
+
+```text
+T_j = (B / sum_l sqrt(c_l V_l)) sqrt(V_j/c_j).
+```
+
+**Proof.** The objective is strictly convex over positive thresholds and the
+budget binds at the optimum. For multiplier `lambda`, stationarity of
+`sum_j V_j/T_j + lambda(sum_j c_j T_j - B)` gives
+`T_j = sqrt(V_j/(lambda c_j))`. Substitution into the binding constraint
+determines `sqrt(lambda) = sum_l sqrt(c_l V_l)/B`, yielding the formula.
+Strict convexity gives uniqueness. ∎
+
+**Corollary 7.2 (box-constrained water-filling).** With per-cell lower and
+upper clamps, clamp every violating cell, subtract its consumed budget, and
+reapply Theorem 7.1 to the free cells. This active-set procedure terminates
+after at most the number of cells whose status changes and gives the constrained
+optimum.
 
 **Reading.** `T_j ∝ √(V_j/|g_j|)`: high-activity cells get larger thresholds (don't
 chase high-frequency noise); cells the monitored function is sensitive to
@@ -652,6 +846,29 @@ linear case (no reference-vector broadcast needed).
 
 ## 8. Optimality vs the Woodruff–Zhang lower bound
 
+**Proposition 8.1 (resource bounds).** Let `n = d w` be the number of cells,
+`a` the expected admitted update units per observation, and `z` the number of
+cells in one emitted sparse delta.
+
+- Persistent summary memory is `Theta(G n)` per site, plus another
+  `Theta(G n)` only when an acknowledged snapshot or anisotropic vector is
+  required.
+- Expected update work is `Theta(a)` family cell updates per observation; for
+  uniform row sampling of a `d`-row matrix, `a = d p`.
+- Isotropic insert-time crossing detection adds `O(1)` work per changed unit
+  and avoids a periodic `Theta(n)` divergence scan.
+- Encoding, transmission, and backend application of one sparse delta require
+  `Theta(z)` payload work, excluding fixed framing and transport overhead.
+- Under stationary activity, the expected crossing/upload rate is
+  proportional to `sum_j V_j/T_j`.
+
+**Justification.** The first four bounds follow directly from the maintained
+arrays and Algorithms 2–3. A cell accumulating absolute activity at rate
+`V_j` reaches magnitude `T_j` after order `T_j/V_j` time, yielding crossing
+rate order `V_j/T_j`; summing over cells gives the last statement. These are
+algorithmic bounds, not a promise about scheduler, serialization, or network
+tail latency.
+
 **Rate vs total.** `Σ_j V_j/T_j` is an upload *rate*; the WZ `Θ̃(k/ε²)` is the
 *total* communication to maintain one continuous `(1±ε)` `F₂` estimate. Compare
 them over a fixed horizon of bounded total change: with `w ∝ 1/ε²` (the necessary
@@ -660,6 +877,18 @@ the total is `Θ̃(k/ε²)` — **matching the WZ STOC'12 tight lower bound** (b
 words absorbed in the `Θ̃`). The measured normalization in
 the evaluation model uses the "one-round" unit `k·S`
 for exactly this comparison. Consequences:
+
+**Corollary 8.2 (adversarial scaling comparison).** For continuous `F_2`
+monitoring with sketch width `Theta(1/epsilon^2)`, if every one of `k` sites must
+contribute at least one sketch-scale representation over the comparison
+horizon, GOS uses soft-`O(k/epsilon^2)` communication. Together with the
+Woodruff–Zhang soft-`Omega(k/epsilon^2)` bound for that problem, this gives
+matching asymptotic dependence under those assumptions.
+
+This corollary is a normalization of the cited upper and lower bounds, not a
+new lower-bound proof and not a claim for every workload or summary family.
+GOS's improvement on stable telemetry is instance-sensitive and must be
+measured through `V_j/T_j`; it does not improve the adversarial exponent.
 
 - The `1/ε²` and the linear-in-`k` are **fundamental**; no protocol (GM, AutoMon,
   OctoSketch, GOS) beats `k/ε²` adversarially. GOS's savings are **data-dependent**
@@ -672,22 +901,23 @@ for exactly this comparison. Consequences:
 
 ---
 
-## 9. How it meets the four requirements
+## 9. Consequences of the analysis
 
 | Requirement | Mechanism |
 |---|---|
 | **Memory efficiency** | `(w,G)` + `w_m`: grouping `G` avoids one sketch per series; `w=Θ(1/ε²)` is the WZ-minimum; delta/aniso flags dropped under high `w_m` (no snapshot / threshold vector) |
 | **Computation efficiency** | `w_e`: sampling `p_i` (fewer updates) + threshold size (fewer uploads); both fold into one effective weight |
 | **Communication efficiency** | `w_c`: per-cell water-filling thresholds + geometric silence; `Θ̃(k/ε²)` worst case, far less on stable data |
-| **Continuous, accurate, fresh** | Theorem 1 bounds every query at **any** `t`, **relative**; freshness cap `T_j ≤ V_jΔ*` bounds staleness age; whole sketch queryable (OctoSketch), monitored `f_m` tighter (GM/AutoMon) |
+| **Continuous, accurate, fresh** | Theorem 4.1 bounds every query at **any** `t`, **relative**; freshness cap `T_j ≤ V_jΔ*` bounds staleness age; whole sketch queryable (OctoSketch), monitored `f_m` tighter (GM/AutoMon) |
 
 ---
 
-## 10. What is adopted vs contributed (attribution)
+## 10. Attribution and scope of contribution
 
-- **Water-filling** — classic (information theory / convex optimization; optimal
-  power allocation across parallel channels). Already used in ASAP for sampling
-  (`p_i ∝ √(f_i/rate_i)`). *Adopted, not contributed.*
+- **Water-filling** — classic information theory/convex optimization. ASAP had
+  previously used a per-key form `p_i proportional to sqrt(f_i/rate_i)`; that
+  allocation is retired for sketch sampling but the optimization technique is
+  reused for threshold allocation. *Adopted, not contributed.*
 - **Per-cell change transmission with a threshold** — OctoSketch [Zhang+ NSDI'24].
   *Adopted.*
 - **Function safe zone via DC decomposition of the Hessian (ADCD), gradient/
@@ -707,7 +937,7 @@ for exactly this comparison. Consequences:
 
 ---
 
-## 11. Implementation notes (controller synthesizes, edge executes)
+## 11. System realization
 
 Everything expensive is a **controller (backend) decision**; the edge only
 executes a fixed per-cell comparison.
@@ -734,7 +964,7 @@ executes a fixed per-cell comparison.
   remaining case that still needs a periodic `O(dw)` re-solve and a separate
   acked-snapshot copy (see Open problems).
 - **Backend**: `apply_delta` into a running merge (`O(#delta cells)`), keeping the
-  global sketch continuously queryable within the Theorem-1 envelope, surfaced in
+  global sketch continuously queryable within the Theorem-4.1 envelope, surfaced in
   the `accuracy: ε=…` response annotation.
 
 **Retirements.** The insert-time model (§7 Layer D) replaces the following
@@ -803,7 +1033,7 @@ all active.
 
 ---
 
-## 12. Open problems / next steps
+## 12. Limitations and open problems
 
 1. **Anisotropic CountSketch's `Activity_j`** needs redefinition. The old
    `Activity_j=|current-prev|` assumed a single, uniformly-timed `prev`
