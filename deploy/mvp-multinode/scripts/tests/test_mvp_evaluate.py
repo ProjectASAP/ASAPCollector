@@ -50,10 +50,13 @@ class EvaluatorTest(unittest.TestCase):
         for arm, duration, value in (("b1", 20.0, 100.0), ("asap-gzip", 5.0, 100.0 * (1 + error))):
             arm_dir = self.run / arm
             arm_dir.mkdir()
+            anchor_ms = 1_000 if arm == "b1" else 11_000
+            (arm_dir / "evaluation-start-ms.txt").write_text(f"{anchor_ms}\n")
             records = [{"query": "sum(x)", "query_id": "sum-one", "logical_seq": i,
                         "logical_elapsed_ms": i * 10, "kind": "sum", "duration_ms": duration + i, "status": "success",
                         "http_code": 200, "plan_id": "p1" if arm == "asap-gzip" and plan else None,
-                        "result": [{"metric": {"zone": "a"}, "value": [1, str(value)]}]} for i in range(3)]
+                        "data_source": "sketch_store" if arm == "asap-gzip" else "victoriametrics",
+                        "result": [{"metric": {"zone": "a"}, "value": [anchor_ms / 1000, str(value)]}]} for i in range(3)]
             (arm_dir / "replay.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
             with (arm_dir / "stages-node0.csv").open("w", newline="") as handle:
                 writer = csv.writer(handle); writer.writerow(["baseline", "stage", "container", "cpu_cores", "cpu_time_s", "rss_mib", "peak_rss_mib"])
@@ -96,6 +99,17 @@ class EvaluatorTest(unittest.TestCase):
         result = MODULE.evaluate(str(self.run), self.config)
         self.assertEqual("FAIL", result["overall_verdict"])
         self.assertIn("functional correctness", " ".join(result["failures"]))
+
+    def test_archive_fallback_cannot_satisfy_warm_mvp_query(self) -> None:
+        self.write_fixture()
+        path = self.run / "asap-gzip" / "replay.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        for row in rows:
+            row["data_source"] = "thanos_query"
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        result = MODULE.evaluate(str(self.run), self.config)
+        self.assertEqual("FAIL", result["overall_verdict"])
+        self.assertFalse(result["functional_correctness"]["sum-one"]["warm_tier_only"])
 
     def test_missing_applied_full_delta_evidence_fails(self) -> None:
         self.write_fixture()

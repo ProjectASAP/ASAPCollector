@@ -87,14 +87,17 @@ def vector(row: dict[str, Any]) -> dict[str, float]:
     return out
 
 
-def vector_timestamps(row: dict[str, Any]) -> dict[str, float]:
+def vector_timestamps(row: dict[str, Any], evaluation_anchor_ms: int) -> dict[str, float]:
     out: dict[str, float] = {}
     for sample in row.get("result") or []:
         if not isinstance(sample, dict) or not isinstance(sample.get("value"), list):
             continue
         key = json.dumps(sample.get("metric") or {}, sort_keys=True, separators=(",", ":"))
         try:
-            out[key] = float(sample["value"][0])
+            # Arms execute sequentially. Compare the result timestamp relative
+            # to the explicitly captured evaluation anchor, not unrelated wall
+            # clocks from the two arm runs.
+            out[key] = float(sample["value"][0]) - evaluation_anchor_ms / 1000.0
         except (IndexError, TypeError, ValueError):
             continue
     return out
@@ -121,7 +124,10 @@ def accuracy_summary(exact: list[dict[str, Any]], approx: list[dict[str, Any]], 
             exact_row, approx_row = left[sequence], right[sequence]
             elapsed_skew_ms.append(abs(float(exact_row.get("logical_elapsed_ms", math.inf)) - float(approx_row.get("logical_elapsed_ms", -math.inf))))
             ev, av = vector(exact_row), vector(approx_row)
-            et, at = vector_timestamps(exact_row), vector_timestamps(approx_row)
+            exact_anchor = int(cfg["evaluation_anchors_ms"]["exact"])
+            approx_anchor = int(cfg["evaluation_anchors_ms"]["approx"])
+            et = vector_timestamps(exact_row, exact_anchor)
+            at = vector_timestamps(approx_row, approx_anchor)
             timestamp_errors += sum(
                 key not in at or abs(at[key] - timestamp) > float(cfg.get("result_timestamp_tolerance_s", 0))
                 for key, timestamp in et.items()
@@ -318,6 +324,7 @@ def evaluate(run_dir: str, config: dict[str, Any]) -> dict[str, Any]:
     baseline, asap = config["baseline_arm"], config["asap_arm"]
     failures: list[str] = []
     required = ["run-manifest.json", f"{baseline}/replay.jsonl", f"{asap}/replay.jsonl",
+                f"{baseline}/evaluation-start-ms.txt", f"{asap}/evaluation-start-ms.txt",
                 f"{asap}/freshness-{asap}.csv", f"{asap}/controller-agents.json",
                 f"{asap}/controller-config.yaml", f"{asap}/controller-config-agent-a.yaml", f"{asap}/controller-config-agent-b.yaml",
                 f"{asap}/controller.log", f"{asap}/unsupported-query.json", "image-digests.json"]
@@ -351,11 +358,20 @@ def evaluate(run_dir: str, config: dict[str, Any]) -> dict[str, Any]:
         asap_rows = [row for row in asap_success if row.get("query_id") == query_id]
         asap_n = len(asap_rows)
         planned = all(row.get("plan_id") for row in asap_rows)
-        passed = exact_n >= minimum and asap_n >= minimum and planned and applied and unsupported_safe
+        warm_only = all(row.get("data_source") in {"asap_query", "sketch_store", "warm"} for row in asap_rows)
+        passed = exact_n >= minimum and asap_n >= minimum and planned and warm_only and applied and unsupported_safe
         correctness[query_id] = {"baseline_success": exact_n, "asap_success": asap_n, "plan_observed": planned,
-                             "control_plane_evidence": control, "passed": passed}
+                             "warm_tier_only": warm_only, "control_plane_evidence": control, "passed": passed}
         if not passed: failures.append(f"functional correctness failed for {query_id}")
-    accuracy_cfg = dict(config["accuracy"], queries=config["queries"], logical_time_max_skew_ms=config["logical_time_max_skew_ms"])
+    def read_anchor(arm: str) -> int:
+        with open(os.path.join(run_dir, arm, "evaluation-start-ms.txt"), encoding="utf-8") as handle:
+            return int(handle.read().strip())
+    accuracy_cfg = dict(
+        config["accuracy"],
+        queries=config["queries"],
+        logical_time_max_skew_ms=config["logical_time_max_skew_ms"],
+        evaluation_anchors_ms={"exact": read_anchor(baseline), "approx": read_anchor(asap)},
+    )
     accuracy = accuracy_summary(exact, approximate, accuracy_cfg)
     if not accuracy or not all(item["passed"] for item in accuracy.values()): failures.append("accuracy SLA failed")
     freshness = freshness_summary(os.path.join(run_dir, asap, f"freshness-{asap}.csv"), config["freshness"])

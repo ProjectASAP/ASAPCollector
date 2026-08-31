@@ -745,11 +745,20 @@ arm_measure() {
     fi
 
     log "[measure ${arm}] MetricsQL replay against ${query_endpoint} for ${SOAK_S}s"
+    # The paired arms run sequentially, so their wall-clock timestamps cannot
+    # be compared directly. Pin an explicit per-arm evaluation anchor and
+    # preserve it as evidence. The reducer compares timestamps relative to
+    # these anchors; logical sequence N therefore means the same point in the
+    # deterministic workload for both arms.
+    local evaluation_start_ms
+    evaluation_start_ms=$(date +%s%3N)
+    printf '%s\n' "${evaluation_start_ms}" > "${out}/evaluation-start-ms.txt"
     python3 "${SCRIPT_DIR}/metricsql_replay.py" \
         --target "${query_endpoint}" \
         --controller "http://${NODE2_IP}:8080" \
         --queries "${PKG_DIR}/harness/queries/e2e.json" \
         --duration "${SOAK_S}" \
+        --evaluation-start-ms "${evaluation_start_ms}" \
         --out "${out}/replay.jsonl" \
         > "${out}/replay.log" 2>&1 &
     local REPLAY_PID=$!
