@@ -153,13 +153,14 @@ not silently include it in the results.
 
 ## Related design scopes
 
-- `control-plane-design.md`: the ASAPCollector-side contract for collection
-  plans issued by the ASAPQuery-backend control plane using planning
-  information from ASAPPlanner.
-- `summary-aggregation-and-transmission.md`: summary families, aggregation
+- [`physical-planning.md`](../control-plane/physical-planning.md): compilation
+  of Planner output into separate Collector and Backend physical plans.
+- [`collector-transmission-protocol.md`](../asapcollector/collector-transmission-protocol.md): summary families, aggregation
   shapes, windows, accuracy, freshness, and transmission semantics.
-- `future-summary-and-compression.md`: deferred summary families and raw or
-  archival compression.
+- [`future-summary-families-and-raw-archive.md`](future-summary-families-and-raw-archive.md):
+  deferred summary families and raw archival compression.
+- [`future-storage-and-compression.md`](../asapquery-backend/future-storage-and-compression.md):
+  backend tiering, compaction, checkpoints, and storage codecs.
 
 Each related document owns its detailed design; this document only states the
 system-level relationship.

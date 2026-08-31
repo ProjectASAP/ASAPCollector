@@ -1,14 +1,13 @@
-# Future summary families and compression
+# Future summary families and raw-archive compression
 
 ## TL;DR
 
-This document records design directions that are intentionally outside the
-current MVP: multivariate correlation summaries and compression for raw or
-archival telemetry paths. They must not be included in MVP correctness,
-performance, or cost claims until promoted through separate acceptance
-criteria.
+This document records two directions outside the current summary MVP:
+multivariate summary families and lossless compression for Collector/raw-archive
+paths. Backend summary storage, tiering, compaction, and storage codecs are owned
+by the [backend storage design](../asapquery-backend/future-storage-and-compression.md).
 
-**Status:** dormant
+**Status:** mixed: existing transport/archive mechanisms plus future designs
 
 **MVP relationship:** future.
 
@@ -167,6 +166,84 @@ decode that range directly or must process the preceding 55 minutes.
 Compression is excluded from the MVP unless introduced as a separately scoped
 exact-baseline or archive experiment.
 
+## Stored-series identity and representation
+
+Compression never changes what SID identifies. Raw, exact-aggregate, and
+summary series use distinct materialization kinds even when they originate from
+the same metric and labels:
+
+```text
+source metric
+  +-- raw materialization SID
+  |     -> exact archive encoding -> raw samples
+  +-- sketch materialization SID
+  |     -> full/delta sketch encoding -> sketch state
+  +-- exact-aggregation materialization SID
+        -> accumulator encoding -> exact aggregate state
+```
+
+For example, DDSketch is one sketch materialization and Sum is one
+exact-aggregation materialization. The categories above also cover the other
+supported sketch families and exact aggregation operators.
+
+A codec or checkpoint-policy change that remains semantically compatible may
+preserve SID and declare a new representation version per frame. A lossy change
+or different accuracy contract creates a different materialization kind and
+therefore a different SID. See [stored-series identity](summary-series-id.md).
+
+## Raw archive compression
+
+Raw compression must preserve the original Prometheus-visible series. A block
+should group one raw stored-series SID over a bounded time interval and encode:
+
+```text
+header: SID/materialization identity, labels or dictionary reference,
+        min/max timestamp, sample count, codec version, checksum
+body:   timestamp stream + value stream
+```
+
+Timestamp delta-of-delta and Gorilla-XOR values are candidates for regular
+numeric series. Sparse or irregular data may need another codec. The encoder
+must choose by measured size and CPU, not by assuming one codec is universally
+better. Every block has an independent restart point so a range query need not
+decode the entire archive prefix.
+
+## Failure and recovery
+
+| Failure | Required Collector behavior |
+| --- | --- |
+| Corrupt local/archive frame | Reject the frame and preserve later independent recovery boundaries |
+| Plan changes archive codec | Close the old block and start a versioned independent block |
+| Resource pressure | Apply declared backpressure/drop policy and expose counters; do not alter accuracy silently |
+
+## Cost evidence
+
+For every representation, report at least:
+
+- source samples and logical uncompressed bytes;
+- raw bytes before and after archive encoding;
+- encoding/decoding CPU and allocation;
+- restart-point frequency and recovery bytes;
+- p50/p95/p99 export and query latency; and
+- loss/corruption recovery outcome.
+
+Dictionary savings and raw archive compression must be reported as separate
+stages. This prevents the SID label dictionary from being credited to the raw
+codec.
+
+## Rollout sequence
+
+1. Freeze a cross-language frame/version contract and golden vectors.
+2. Add decoder support before enabling new writers.
+3. Shadow-encode and compare decoded semantics and measured cost.
+4. Enable one family/workload with a full-frame kill switch.
+5. Exercise missing-base, unknown-SID, corruption, and rollback paths.
+6. Expand only after end-to-end accuracy, freshness, and cost gates pass.
+
+Old readers and stored frames remain supported through the declared rollback
+window. A deployment must not require rewriting all archived raw data merely to
+roll back a Collector release.
+
 ## Promotion criteria
 
 A future design moves to active status only when it has:
@@ -176,6 +253,9 @@ A future design moves to active status only when it has:
 3. predeclared correctness and performance SLAs;
 4. a reproducible baseline comparison; and
 5. explicit inclusion in the MVP or a separately named experiment.
+
+It must additionally define wire/format versioning, SID/materialization
+compatibility, checkpoint/recovery behavior, and a rollback path.
 
 **Promotion example:** Multivariate correlation becomes active only after a
 checked-in workload defines its metric vector, exact comparison, drift-score

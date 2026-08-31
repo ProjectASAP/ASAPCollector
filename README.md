@@ -1,4 +1,7 @@
-# DataCollector
+# ASAPCollector
+
+Design documents, developer workflows, and operator guides are indexed in the
+[ASAPCollector documentation](docs/README.md).
 
 ## Metrics Collection Pipeline Deployments
 
@@ -105,15 +108,15 @@ The script is safe to re-run: each step is skipped when already satisfied.
 Clone with the OTel submodules needed by the MVP:
 
 ```bash
-git clone git@github.com:ProjectASAP/DataCollector.git
+git clone git@github.com:ProjectASAP/ASAPCollector.git
 # or
-git clone https://github.com/ProjectASAP/DataCollector.git
+git clone https://github.com/ProjectASAP/ASAPCollector.git
 ```
 
 If you have an existing clone, initialize the OTel submodules:
 
 ```bash
-cd DataCollector
+cd ASAPCollector
 git submodule update --init opentelemetry-collector opentelemetry-collector-contrib opentelemetry-go opentelemetry-proto
 ```
 

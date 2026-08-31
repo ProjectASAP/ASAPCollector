@@ -1,29 +1,41 @@
-# Design documents
+# Canonical system design
 
-These documents define ASAPCollector's system boundary, collector-specific
-control-plane contract, summary semantics, and explicitly deferred designs.
-They describe goals, behavior, constraints, trade-offs, and acceptance
-conditions. Code walkthroughs, implementation plans, benchmark results, and
-paper-planning material do not belong in this directory.
+This is the authoritative design index for the complete lifecycle:
 
-## Active MVP design
+```text
+collection -> summary transmission -> backend ingest -> summary storage -> query
+                              ^ physical plans and runtime feedback |
+                              +-------------------------------------+
+```
 
-- [System overview](system-overview.md) — end-to-end architecture, system
-  boundary, goals, and MVP claims.
-- [ASAPCollector control plane](control-plane-design.md) — the collector-side
-  contract for plans issued by the ASAPQuery-backend control plane using
-  planning information from ASAPPlanner, plus the boundary with the
-  ASAPQuery-backend data plane that applies its plan portion and executes
-  summary-based queries.
-- [Summary aggregation and transmission](summary-aggregation-and-transmission.md)
-  — summary families, aggregation shapes, windows, accuracy, freshness, and
-  raw/full/delta transmission semantics.
+## ASAPCollector
 
-## Future design
+- [Collection-phase protocol and configuration](asapcollector/collector-collection-phase.md)
+- [Core GOS collection/transmission algorithm](asapcollector/core-algorithm.md)
+- [Full/delta summary transmission](asapcollector/collector-transmission-protocol.md)
+- [Runtime and deployment lifecycle](asapcollector/runtime-deployment-lifecycle.md)
 
-- [Future summary families and compression](future-summary-and-compression.md)
-  — deferred multivariate summaries and raw/archive compression.
+## ASAPQuery-backend
 
-Every document begins with a TL;DR, lifecycle status, and MVP relationship.
-The overview owns system architecture; focused documents define only their
-named scope and avoid repeating the full architecture.
+- [Ingest and backend precompute engine](asapquery-backend/query-ingest-engine.md)
+- [Summary store engine](asapquery-backend/query-summary-store-engine.md)
+- [Query engine](asapquery-backend/query-query-engine.md)
+- [Backend service runtime](asapquery-backend/service-runtime.md)
+- [Future backend storage and compression](asapquery-backend/future-storage-and-compression.md)
+
+## Control plane
+
+- [Planner ownership and integration](control-plane/planner-integration.md)
+- [Physical planning](control-plane/physical-planning.md)
+- [BackendPlan contract](control-plane/backend-plan.md)
+- [Query and data workload inputs](control-plane/workload-inputs.md)
+- [Runtime accuracy feedback and replanning](control-plane/runtime-accuracy-feedback.md)
+
+## Cross-cutting contracts
+
+- [System overview](cross-cutting/system-overview.md)
+- [Summary series ID](cross-cutting/summary-series-id.md)
+- [Future summary families and compression](cross-cutting/future-summary-families-and-raw-archive.md)
+
+ASAPQuery-backend and ASAPPlanner may keep code-owned implementation notes, but
+they link here for system behavior, component boundaries, and shared contracts.
