@@ -6,7 +6,6 @@
 //! is exposed to a runtime.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -244,10 +243,16 @@ fn decode_algorithm(
 }
 
 fn materialization_id(plan_id: u64, query_id: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    plan_id.hash(&mut hasher);
-    query_id.hash(&mut hasher);
-    let id = hasher.finish();
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+    let id = plan_id
+        .to_be_bytes()
+        .into_iter()
+        .chain(std::iter::once(0))
+        .chain(query_id.bytes())
+        .fold(OFFSET, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(PRIME)
+        });
     if id == 0 {
         1
     } else {

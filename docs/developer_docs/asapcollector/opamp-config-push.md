@@ -7,10 +7,14 @@ validation and execution of the resulting per-target `CollectorPlan`; it must
 not parse PromQL, rank Planner candidates, change algorithms, or invent missing
 parameters.
 
-The implemented consumer is
-`asap-precompute-rs::collector_plan::CollectorPlan`. It accepts the JSON emitted
-by `ASAPQuery-backend::control_plane::physical::compiler`, validates the entire
-plan, and projects it atomically to a `PrecomputeConfigSet`.
+The implemented consumers are
+`asap-precompute-rs::collector_plan::CollectorPlan` and
+`asap-precompute-go.DecodeCollectorPlan`. They accept the JSON emitted by
+`ASAPQuery-backend::control_plane::physical::compiler`, validate the entire
+plan, and project it atomically to a `PrecomputeConfigSet`. The Go
+`controlchannel.OpAmpChannel.ReceiveCollectorPlan` queues a validated plan for
+one-time `Poll` delivery and reports `APPLIED` only after the runtime calls
+`Ack` with that exact plan version.
 
 ```text
 latest ASAPPlanner
@@ -21,10 +25,11 @@ ASAPQuery PhysicalCompiler
         `-- BackendPlan --------> ASAPQuery ingest/query routing
 ```
 
-The legacy OpAMP extension can still receive complete OTel Collector YAML and
-restart the supervised process. Wiring the typed `CollectorPlan` decoder into
-that transport is a publication-layer follow-up; `config_hash` alone is not
-evidence that a typed physical plan was active.
+The legacy contrib OpAMP extension can still receive complete OTel Collector
+YAML and restart the supervised process. Its transport adapter does not yet
+forward a typed body into `ReceiveCollectorPlan`; that small contrib bridge is
+still a publication-layer follow-up. `config_hash` alone is not evidence that a
+typed physical plan was active.
 
 ## Wire schema
 
@@ -89,7 +94,9 @@ Implemented algorithms and parameter mapping:
 
 The projection always preserves the committed algorithm and parameters, uses a
 tumbling window, transmits full protobuf sketch state, and derives a stable
-non-zero runtime aggregation ID from `(plan_id, query_id)`.
+non-zero runtime aggregation ID using language-neutral FNV-1a over
+`big_endian(plan_id) || 0x00 || utf8(query_id)`. Rust and Go tests pin the same
+value.
 
 ## Validation and activation rules
 
@@ -124,7 +131,8 @@ matching BackendPlan.
 
 ## Deferred contract fields
 
-Activation/expiry, allowed lateness, delta/checkpoint policy, endpoint
+The contrib-extension-to-Go-channel transport bridge, activation/expiry,
+allowed lateness, delta/checkpoint policy, endpoint
 selection, matchers, retention/draining, materialization fingerprints shared
 with BackendPlan, and in-process OpAMP activation reporting remain follow-up
 extensions. Until they are added to both producer and consumer, documentation
