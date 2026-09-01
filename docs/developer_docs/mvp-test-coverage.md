@@ -7,6 +7,8 @@ the measured run.
 
 | MVP claim | Required evidence | Pre-merge coverage |
 |---|---|---|
+| Planner decision compiles into compatible runtime plans | One latest-Planner selection yields matching Collector and backend views; unsupported/missing-evidence candidates fail closed | Backend `physical::compiler` tests plus Collector `collector_plan` contract tests |
+| Collector consumes the committed decision without re-planning | Algorithm, parameters, grouping, metric, window, target, plan version, and TopK evidence lineage survive runtime projection | `asap-precompute-rs/tests/collector_plan.rs` |
 | Controller plan is active | Both agents report `Applied`; captured configs agree and contain planned full, delta, and pass-through paths | Controller and evaluator tests |
 | Queries use summaries | Every scored ASAP response has a plan id and a warm-tier `data_source`; archive fallback is rejected | Backend query E2E and evaluator tests |
 | Accuracy meets the contract | Paired arms use deterministic seeds and explicit evaluation anchors; results match by query, logical sequence, labels, and anchor-relative timestamp | Evaluator tests; four-node run supplies results |
@@ -20,6 +22,11 @@ state reconstruction, and query serving without starting the Go Collector.
 Cross-language wire tests prove serialization compatibility. None of those
 tests alone proves the full MVP because they do not measure the deployed
 Collector, network, storage, and exact baseline together.
+
+The physical-compiler and CollectorPlan tests therefore meet the code-level
+goal for selecting, compiling, and consuming an MVP plan. They do not meet the
+deployment-level goal named "Controller plan is active": that still requires
+the four-node evidence gate and matching backend acknowledgement.
 
 Any production path covered only by an ignored test is unverified. A known
 failure must either be fixed and the test enabled, or the corresponding query
