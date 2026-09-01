@@ -347,14 +347,23 @@ func (c *Config) Validate() error {
 			c.Cold.SpoolRetryInterval = 30 * time.Second
 		}
 	}
-	// Control-plane poll loop (only validated when enabled; disabled is the
+	// Control-plane transport (only validated when enabled; disabled is the
 	// default and leaves existing deployments untouched).
 	if c.ControlChannel.enabled() {
-		if c.ControlChannel.PollURL == "" {
-			return fmt.Errorf("asap_edge: control_channel.poll_url must be set when control_channel is enabled")
+		hasHTTP := c.ControlChannel.PollURL != ""
+		hasOpAMP := c.ControlChannel.OpAMPExtension != nil
+		if hasHTTP == hasOpAMP {
+			return fmt.Errorf("asap_edge: set exactly one of control_channel.poll_url or control_channel.opamp_extension")
+		}
+		if hasOpAMP && strings.TrimSpace(c.ControlChannel.CollectorID) == "" {
+			return fmt.Errorf("asap_edge: control_channel.collector_id is required with opamp_extension")
 		}
 		if c.ControlChannel.PollInterval <= 0 {
-			c.ControlChannel.PollInterval = 30 * time.Second
+			if hasOpAMP {
+				c.ControlChannel.PollInterval = 100 * time.Millisecond
+			} else {
+				c.ControlChannel.PollInterval = 30 * time.Second
+			}
 		}
 		if c.ControlChannel.Timeout <= 0 {
 			c.ControlChannel.Timeout = 10 * time.Second

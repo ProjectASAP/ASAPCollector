@@ -110,12 +110,15 @@ func TestOpAmpChannelReceivePollAckLifecycle(t *testing.T) {
 	if err := channel.ReceiveCollectorPlan(channelPlan(t, 41)); err == nil {
 		t.Fatal("plan older than the delivered version was accepted")
 	}
+	if len(statuses) != 1 || statuses[0] != PlanStatusFailed {
+		t.Fatalf("stale plan statuses: %v", statuses)
+	}
 	channel.Ack(41)
-	if len(statuses) != 0 {
+	if len(statuses) != 1 {
 		t.Fatal("wrong-version ack reported APPLIED")
 	}
 	channel.Ack(42)
-	if len(statuses) != 1 || statuses[0] != PlanStatusApplied {
+	if len(statuses) != 2 || statuses[1] != PlanStatusApplied {
 		t.Fatalf("statuses: %v", statuses)
 	}
 	if err := channel.ReceiveCollectorPlan(channelPlan(t, 42)); err == nil {
@@ -133,5 +136,25 @@ func TestOpAmpChannelRejectedPlanDoesNotReplacePendingValidPlan(t *testing.T) {
 	}
 	if got := channel.Poll(); got == nil || got.Version != 7 {
 		t.Fatalf("valid pending plan was lost: %+v", got)
+	}
+}
+
+func TestOpAmpChannelRejectedPlanReportsEnvelopeID(t *testing.T) {
+	var reported uint64
+	channel, _ := NewOpAmpChannel(OpAmpConfig{
+		ServerEndpoint: "ws://controller", InstanceUid: "edge-a",
+		ReportStatus: func(version uint64, status PlanStatus, _ error) {
+			if status == PlanStatusFailed {
+				reported = version
+			}
+		},
+	})
+	body := channelPlan(t, 73)
+	body = append(body[:len(body)-1], []byte(`,"unknown_semantics":true}`)...)
+	if err := channel.ReceiveCollectorPlan(body); err == nil {
+		t.Fatal("unknown plan semantics were accepted")
+	}
+	if reported != 73 {
+		t.Fatalf("reported plan id = %d, want 73", reported)
 	}
 }

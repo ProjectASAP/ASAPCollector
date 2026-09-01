@@ -1,6 +1,7 @@
 package controlchannel
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"sync"
@@ -76,22 +77,44 @@ func NewOpAmpChannel(cfg OpAmpConfig) (*OpAmpChannel, error) {
 func (o *OpAmpChannel) ReceiveCollectorPlan(body []byte) error {
 	set, err := precompute.DecodeCollectorPlan(body, o.cfg.InstanceUid)
 	if err != nil {
-		if o.cfg.ReportStatus != nil {
-			o.cfg.ReportStatus(0, PlanStatusFailed, err)
-		}
+		o.reportFailed(planIDForStatus(body), err)
 		return err
 	}
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.closed {
-		return errors.New("controlchannel: OpAmpChannel is closed")
+		o.mu.Unlock()
+		err = errors.New("controlchannel: OpAmpChannel is closed")
+		o.reportFailed(set.Version, err)
+		return err
 	}
 	if set.Version <= o.lastAcked || set.Version <= o.delivered ||
 		(o.pending != nil && set.Version <= o.pending.Version) {
-		return errors.New("controlchannel: stale or duplicate CollectorPlan version")
+		o.mu.Unlock()
+		err = errors.New("controlchannel: stale or duplicate CollectorPlan version")
+		o.reportFailed(set.Version, err)
+		return err
 	}
 	o.pending = set
+	o.mu.Unlock()
 	return nil
+}
+
+func (o *OpAmpChannel) reportFailed(planVersion uint64, err error) {
+	if o.cfg.ReportStatus != nil {
+		o.cfg.ReportStatus(planVersion, PlanStatusFailed, err)
+	}
+}
+
+// planIDForStatus is correlation-only. DecodeCollectorPlan remains the sole
+// authority for accepting the plan and still rejects unknown/malformed fields.
+func planIDForStatus(body []byte) uint64 {
+	var identity struct {
+		Envelope struct {
+			PlanID uint64 `json:"plan_id"`
+		} `json:"envelope"`
+	}
+	_ = json.Unmarshal(body, &identity)
+	return identity.Envelope.PlanID
 }
 
 // Poll returns each successfully validated plan once.

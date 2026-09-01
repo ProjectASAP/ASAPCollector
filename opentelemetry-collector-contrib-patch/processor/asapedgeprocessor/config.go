@@ -409,7 +409,7 @@ type Config struct {
 	// Cold configures the per-shard cold archive tier.
 	Cold ColdConfig `mapstructure:"cold"`
 
-	// ControlChannel optionally configures the control-plane config-poll loop.
+	// ControlChannel optionally configures the control-plane apply loop.
 	// DISABLED by default (zero value / unset): existing deployments are
 	// unaffected. When Enabled with a PollURL, Start() spawns a goroutine that
 	// polls the controller and applies received PrecomputeConfigSet updates to
@@ -435,14 +435,12 @@ type Config struct {
 	DropOriginal bool `mapstructure:"drop_original"`
 }
 
-// ControlChannelConfig configures the optional control-plane config-poll loop
-// (design §8). When Enabled is false (the default) the processor never imports
-// or runs the poller, so an unconfigured deployment is byte-for-byte
+// ControlChannelConfig selects one optional physical-plan transport: HTTP
+// polling or typed OpAMP custom messages. An unconfigured deployment is
 // unaffected.
 type ControlChannelConfig struct {
-	// Enabled turns the config-poll loop on. Default false (disabled). A
-	// non-empty PollURL with Enabled unset is also treated as enabled (so a
-	// minimal `control_channel: {poll_url: ...}` works).
+	// Enabled requires one configured transport. PollURL or OpAMPExtension also
+	// enables the channel without this convenience flag.
 	Enabled bool `mapstructure:"enabled"`
 	// PollURL is the controller GET endpoint returning a JSON-encoded
 	// precompute.PrecomputeConfigSet (HttpPollChannel wire format). Required
@@ -458,12 +456,16 @@ type ControlChannelConfig struct {
 	// BearerTokenFile, when set, is read on every request for an
 	// Authorization: Bearer header (rotated without restart).
 	BearerTokenFile string `mapstructure:"bearer_token_file"`
+	// OpAMPExtension selects an OpAMP extension whose custom-message registry
+	// carries typed CollectorPlan pushes. It is mutually exclusive with PollURL.
+	OpAMPExtension *component.ID `mapstructure:"opamp_extension"`
+	// CollectorID must match CollectorPlan.collector_id for OpAMP pushes.
+	CollectorID string `mapstructure:"collector_id"`
 }
 
-// enabled reports whether the control-plane poll loop should run: explicitly
-// Enabled, or a PollURL given (convenience).
+// enabled reports whether a control-plane transport was requested.
 func (c ControlChannelConfig) enabled() bool {
-	return c.Enabled || c.PollURL != ""
+	return c.Enabled || c.PollURL != "" || c.OpAMPExtension != nil
 }
 
 var _ component.Config = (*Config)(nil)

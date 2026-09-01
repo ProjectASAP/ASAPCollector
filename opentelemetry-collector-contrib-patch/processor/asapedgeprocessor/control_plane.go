@@ -27,7 +27,7 @@ type controlChannel interface {
 // newControlChannel builds the concrete HTTP-poll control channel from cfg.
 // Returns (nil, nil) when the control plane is disabled so callers can no-op.
 func newControlChannel(cfg ControlChannelConfig, logger *zap.Logger) (controlChannel, error) {
-	if !cfg.enabled() {
+	if !cfg.enabled() || cfg.OpAMPExtension != nil {
 		return nil, nil
 	}
 	ch, err := controlchannel.NewHttpPollChannel(controlchannel.HttpPollConfig{
@@ -130,8 +130,8 @@ func (p *asapEdgeProcessor) stopControlPlane() {
 	}
 	p.ctrlStarted = false
 	close(p.ctrlStopCh)
-	<-p.ctrlDoneCh
 	if c, ok := p.ctrlChan.(interface{ Close() error }); ok {
 		_ = c.Close()
 	}
+	<-p.ctrlDoneCh
 }

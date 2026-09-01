@@ -9,6 +9,7 @@ import (
 	"time"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
+	"go.uber.org/zap"
 )
 
 // fakeControlChannel is a deterministic in-memory ControlChannel for testing
@@ -17,6 +18,31 @@ type fakeControlChannel struct {
 	mu     sync.Mutex
 	queued []*precompute.PrecomputeConfigSet
 	acked  []uint64
+}
+
+type blockingAckChannel struct {
+	set        *precompute.PrecomputeConfigSet
+	ackStarted chan struct{}
+	closed     chan struct{}
+	once       sync.Once
+}
+
+func (c *blockingAckChannel) Poll() *precompute.PrecomputeConfigSet {
+	set := c.set
+	c.set = nil
+	return set
+}
+func (c *blockingAckChannel) Ack(uint64) {
+	c.once.Do(func() { close(c.ackStarted) })
+	<-c.closed
+}
+func (c *blockingAckChannel) Close() error {
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
 }
 
 func (f *fakeControlChannel) push(set *precompute.PrecomputeConfigSet) {
@@ -140,4 +166,32 @@ func TestControlPlanePollLoop(t *testing.T) {
 	p.stopControlPlane()
 	// stopControlPlane joins the goroutine; a second call must be a no-op.
 	p.stopControlPlane()
+}
+
+func TestStopControlPlaneCancelsBlockedAckBeforeJoin(t *testing.T) {
+	p := &asapEdgeProcessor{
+		cfg:    &Config{ControlChannel: ControlChannelConfig{PollInterval: time.Millisecond}},
+		logger: zap.NewNop(),
+	}
+	channel := &blockingAckChannel{
+		set:        &precompute.PrecomputeConfigSet{Version: 1},
+		ackStarted: make(chan struct{}), closed: make(chan struct{}),
+	}
+	p.ctrlChan = channel
+	p.startControlPlane()
+	select {
+	case <-channel.ackStarted:
+	case <-time.After(time.Second):
+		t.Fatal("control loop never reached Ack")
+	}
+	done := make(chan struct{})
+	go func() {
+		p.stopControlPlane()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stopControlPlane deadlocked behind blocked Ack")
+	}
 }

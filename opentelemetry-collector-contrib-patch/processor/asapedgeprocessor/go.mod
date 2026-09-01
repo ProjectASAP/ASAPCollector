@@ -5,6 +5,8 @@ go 1.24.0
 require (
 	github.com/ProjectASAP/asap-gorilla-go v0.2.0
 	github.com/ProjectASAP/asap-precompute-go v0.0.0-00010101000000-000000000000
+	github.com/open-telemetry/opamp-go v0.22.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/opampcustommessages v0.141.0
 	github.com/prometheus/prometheus v0.307.3
 	go.opentelemetry.io/collector/component v1.47.0
 	go.opentelemetry.io/collector/confmap v1.42.0
