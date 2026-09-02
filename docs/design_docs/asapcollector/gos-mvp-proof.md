@@ -1,4 +1,4 @@
-# Isotropic GOS MVP proof contract
+# Isotropic GOS MVP Proof Contract
 
 ## Scope
 
@@ -11,10 +11,10 @@ This note states the correctness contract for the first GOS MVP. It covers:
 - exact plan, producer, window, and sequence evidence; and
 - measured accuracy, freshness, bytes, CPU, and memory.
 
-Sampling is disabled in this proof (`p = 1`). Sampling can still be evaluated
+Sampling is disabled in this proof ($p = 1$). Sampling can still be evaluated
 experimentally, but it is not part of the MVP correctness claim. Anisotropic
 water-filling, arbitrary nonlinear queries, HLL, KLL, and a claim of matching
-the Woodruff--Zhang lower bound are also out of scope.
+the Woodruff–Zhang lower bound are also out of scope.
 
 ## Model and protocol assumptions
 
