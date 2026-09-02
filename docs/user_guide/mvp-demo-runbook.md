@@ -41,9 +41,19 @@ observing its results.
 
 The synthetic producer emits counters whose values encode emission time in
 Unix epoch milliseconds. `measure_freshness.sh` polls the relevant query tier
-and computes `poll_time - encoded_emission_time`. Missing tiers, negative
+with `last_over_time` and computes `poll_time - encoded_emission_time`. It does
+not use the timestamp attached to the query result, because a backend may
+assign that timestamp while reconstructing stale state. Missing tiers, negative
 deltas, insufficient samples, stale artifacts, and malformed evidence fail the
 evaluation.
+
+## Paired logical time
+
+The two arms execute sequentially. Each replay records an explicit evaluation
+anchor, and accuracy comparison uses timestamps relative to that anchor. Rows
+are paired by query id and logical sequence. Missing anchors, different
+relative timestamps, different label sets, and archive-tier answers on the
+ASAP arm fail the evaluation.
 
 ## Verify locally
 

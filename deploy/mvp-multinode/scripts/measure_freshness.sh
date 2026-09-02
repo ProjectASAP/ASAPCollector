@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # measure_freshness.sh — sample-generation-to-backend-write delay.
 #
-# Mechanism: poll `max(timestamp(metric))` for the source metric behind each
-# query class. Its numeric result is the newest source-sample timestamp that
-# the backend can query. Delta is poll-response time minus that value.
+# Mechanism: the producer emits dedicated counters whose numeric value equals
+# the Unix epoch milliseconds of the latest emission. Poll
+# `last_over_time(probe[10s])` and subtract that returned value from the poll
+# time. This measures data age; it does not trust a timestamp assigned by the
+# backend while reconstructing a result.
 #
 # ASAP is measured separately for all three query classes and both full and
 # delta modes used by the checked-in plan. Archive fallback is outside scope.
@@ -44,7 +46,7 @@ case "${ARM}" in
         # Raw baseline lands in VictoriaMetrics, which serves PromQL on :8428
         # (NOT :9090 — there is no Prometheus in this topology; :9090 is
         # unreachable and was the cause of the prior "no successful polls").
-        PROBES=('all|raw|warm|max(timestamp(http_requests_total))|http://'"${NODE1_IP}"':8428')
+        PROBES=('all|raw|warm|last_over_time({__name__=~"http_freshness_probe_raw(_milliseconds_total)?"}[10s])|http://'"${NODE1_IP}"':8428')
         VM_QARGS=(--data-urlencode "latency_offset=1ms")
         ;;
     asap|asap-gzip)
@@ -54,9 +56,9 @@ case "${ARM}" in
         # __name__ regex would defeat that name-keyed routing, so use bare names.
         # (No raw-tier probe in asap: it isn't routed/queryable at the backend.)
         PROBES=(
-            'window-per-series|delta|warm|max(timestamp(http_requests_total_latency_ms))|http://'"${NODE2_IP}"':9091'
-            'label-at-timestamp|full|warm|max(timestamp(http_requests_total))|http://'"${NODE2_IP}"':9091'
-            'window-and-label|full|warm|max(timestamp(http_requests_total))|http://'"${NODE2_IP}"':9091'
+            'window-per-series|delta|warm|last_over_time(http_freshness_probe_warm[10s])|http://'"${NODE2_IP}"':9091'
+            'label-at-timestamp|full|warm|last_over_time(http_freshness_probe_warm[10s])|http://'"${NODE2_IP}"':9091'
+            'window-and-label|full|warm|last_over_time(http_freshness_probe_warm[10s])|http://'"${NODE2_IP}"':9091'
         )
         ;;
     *) echo "unknown arm ${ARM}" >&2; exit 1 ;;
@@ -67,8 +69,8 @@ for spec in "${PROBES[@]}"; do
     echo "[freshness ${ARM}/${QUERY_CLASS}/${MODE}] polling ${Q} every ${POLL_MS}ms × ${N_SAMPLES}"
     deltas=()
     for i in $(seq 1 ${N_SAMPLES}); do
-        # Each spec is a complete instant query. Freshness uses the returned
-        # Prometheus sample timestamp, not a metric value convention.
+        # Each spec is a complete instant query. Freshness uses the probe's
+        # timestamp-encoded VALUE, never the returned sample timestamp.
         body=$(curl -s --max-time 2 \
             --data-urlencode "query=${PROBE}" \
             "${VM_QARGS[@]}" \
@@ -79,8 +81,7 @@ import sys,json
 try:
     d=json.load(sys.stdin)
     r=d['data']['result']
-    # `timestamp()` returns source time in seconds as the sample value.
-    vals=[float(s['value'][1])*1000 for s in r if s.get('value')]
+    vals=[float(s['value'][1]) for s in r if s.get('value')]
     print(int(max(vals)) if vals else '')
 except: print('')
 " 2>/dev/null)

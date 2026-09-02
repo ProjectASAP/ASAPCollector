@@ -27,3 +27,4 @@ their source code.
 
 - [SID dictionary and recovery](cross-cutting/summary-series-id.md)
 - [Sketch algebra and query-mapping ownership](cross-cutting/sketch-algebra-query-mapping.md)
+- [MVP test coverage](mvp-test-coverage.md)
