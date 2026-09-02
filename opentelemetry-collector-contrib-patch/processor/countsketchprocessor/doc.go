@@ -1,2 +1,0 @@
-// Package countsketchprocessor provides a metrics processor that builds CountSketch
-package countsketchprocessor // import "github.com/open-telemetry/opentelemetry-collector-contrib/processor/countsketchprocessor"

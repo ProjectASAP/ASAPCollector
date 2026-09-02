@@ -97,9 +97,9 @@ GET /api/v1/config/financial.last_trade_price
 
 | `aggregations` value | Processor activated | Sketch type |
 |----------------------|--------------------|-----------  |
-| `"quantile"` | `ddsketchprocessor` or `kllprocessor` | DDSketch / KLL quantile sketch |
-| `"frequency"` | `countsketchprocessor` | Count-Min / Count Sketch |
-| `"cardinality"` | `hllprocessor` | HyperLogLog |
+| `"quantile"` | `asap_edge (`family: ddsketch`)` or `asap_edge (`family: kll`)` | DDSketch / KLL quantile sketch |
+| `"frequency"` | `asap_edge (`family: countsketch`)` | Count-Min / Count Sketch |
+| `"cardinality"` | `asap_edge (`family: hll`)` | HyperLogLog |
 | *(none / exact path)* | NOP processor | No sketch — raw gauges retained |
 
 ---
