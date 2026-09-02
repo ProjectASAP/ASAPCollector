@@ -34,10 +34,9 @@ PATCH_CMD = REPO_ROOT / "opentelemetry-collector-contrib-patch" / "cmd"
 
 _ASAP_OTEL_BIN = PATCH_CMD / "asap-otel" / "asap-otel"
 DEFAULT_COLLECTOR_PATHS = {
-    # All sketch types now ship in the unified asap-otel distribution; only
-    # `kll/KLL` is still produced as a standalone binary by `cmd/kll/`.
+    # Every MVP sketch family ships in the unified asap-otel distribution.
     "ddsketch": _ASAP_OTEL_BIN,
-    "kll": PATCH_CMD / "kll" / "KLL",
+    "kll": _ASAP_OTEL_BIN,
     "hll": _ASAP_OTEL_BIN,
     "countsketch": _ASAP_OTEL_BIN,
     "countminsketch": _ASAP_OTEL_BIN,
