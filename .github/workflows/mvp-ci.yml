@@ -34,7 +34,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ProjectASAP/sketchlib-go
-          ref: 98a522055fc7b4b7f90e4283e7cede695ed5f787
+          # GOS-aware sampled-insert APIs consumed by asap-precompute-go.
+          ref: 1740c25d77152cb6f67b10cd4671db7cd2a90e9d
           path: sketchlib-go
           token: ${{ secrets.ASAP_CI_REPO_TOKEN }}
 
