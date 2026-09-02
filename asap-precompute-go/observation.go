@@ -76,13 +76,14 @@ type ObservationValue struct {
 	// (NitroSketch-style skip sampling) at Record() time — see
 	// AggregationRowSampledSketch in the SDK — and AdmittedRows/SampleP
 	// below record that decision. SketchObserver implementations that
-	// support admitted-occurrence application (CMSObserver,
-	// CountSketchObserver) must route through Sketch.ApplyAdmittedOccurrence
+	// support admitted-occurrence application (SumObserver, DDSketchObserver,
+	// CMSObserver, CountSketchObserver) must route through the corresponding
+	// ApplyAdmittedOccurrence method
 	// instead of the plain insert path, so the SDK's row-selection is
 	// applied verbatim rather than re-derived by a second, independent
-	// collector-side sampler. Observers with no *AtRows sketchlib primitive
-	// (DDSketch/KLL/HLL aren't row-replicated matrices) do not support this
-	// and must reject it rather than silently ignore it.
+	// collector-side sampler. Sum and DDSketch are one-row families: only bit
+	// zero is valid. Unsupported families must reject row-sampled input rather
+	// than silently ignore its sampling contract.
 	RowSampled bool
 	// AdmittedRows is the bitmask over the target sketch's rows (bit r set
 	// => row r admits this occurrence). Meaningful only when RowSampled.

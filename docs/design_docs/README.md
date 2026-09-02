@@ -12,6 +12,7 @@ collection -> summary transmission -> backend ingest -> summary storage -> query
 
 - [Collection-phase protocol and configuration](asapcollector/collector-collection-phase.md)
 - [Core GOS collection/transmission algorithm](asapcollector/core-algorithm.md)
+- [Isotropic GOS MVP proof contract](asapcollector/gos-mvp-proof.md)
 - [Full/delta summary transmission](asapcollector/collector-transmission-protocol.md)
 - [Runtime and deployment lifecycle](asapcollector/runtime-deployment-lifecycle.md)
 

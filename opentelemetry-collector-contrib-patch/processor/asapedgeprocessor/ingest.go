@@ -53,16 +53,19 @@ const (
 // (signaled by the presence of rowSampledAdmittedRowsKey, which the SDK
 // always stamps alongside the other two reserved keys) and, if so, decodes
 // the admission bitmask and sample probability the SDK computed.
-func extractRowSampledMeta(attrs pcommon.Map) (rowSampled bool, admittedRows uint64, sampleP float64) {
+func extractRowSampledMeta(attrs pcommon.Map) (rowSampled bool, admittedRows uint64, rows int, sampleP float64) {
 	v, ok := attrs.Get(rowSampledAdmittedRowsKey)
 	if !ok {
-		return false, 0, 0
+		return false, 0, 0, 0
 	}
 	admittedRows = uint64(v.Int())
+	if r, ok := attrs.Get(rowSampledRowsKey); ok {
+		rows = int(r.Int())
+	}
 	if p, ok := attrs.Get(rowSampledSamplePKey); ok {
 		sampleP = p.Double()
 	}
-	return true, admittedRows, sampleP
+	return true, admittedRows, rows, sampleP
 }
 
 func (p *asapEdgeProcessor) shardForKey(key string) int {
@@ -151,7 +154,7 @@ func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 
 	for i := 0; i < dps.Len(); i++ {
 		dp := dps.At(i)
-		rowSampled, admittedRows, sampleP := extractRowSampledMeta(dp.Attributes())
+		rowSampled, admittedRows, sampledRows, sampleP := extractRowSampledMeta(dp.Attributes())
 		am := getAttrMap(dp.Attributes()) // shared decode (once)
 		if rowSampled {
 			delete(am, rowSampledAdmittedRowsKey)
@@ -182,7 +185,11 @@ func (p *asapEdgeProcessor) consumeMetric(m pmetric.Metric) {
 			})
 		}
 		if sa := sh.sketchAggs[name]; sa != nil {
-			sa.observe(am, val, tsMs, rowSampled, admittedRows, sampleP)
+			if rowSampled {
+				sa.observeRowSampled(am, val, tsMs, admittedRows, sampledRows, sampleP)
+			} else {
+				sa.observe(am, val, tsMs, false, 0, 0)
+			}
 		}
 		sh.mu.Unlock()
 		putAttrMap(am)

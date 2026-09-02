@@ -35,6 +35,8 @@ nonadversarial telemetry it adapts to observed per-cell activity.
 > [`sampling-cdm-gos-derivations.md`](https://github.com/ProjectASAP/ASAPCollector/blob/e54f708f9c5c51949771cc805b7c9e46dd741908/docs/design_docs/sampling-cdm-gos-derivations.md);
 > the multi-objective integration is recorded in
 > [`controller-optimization-problem.md`](https://github.com/ProjectASAP/ASAPCollector/blob/e54f708f9c5c51949771cc805b7c9e46dd741908/docs/design_docs/controller-optimization-problem.md).
+> The deliberately narrower, implementation-facing proof used by the first
+> MVP is [`gos-mvp-proof.md`](gos-mvp-proof.md).
 
 ---
 

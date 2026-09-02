@@ -49,6 +49,10 @@ type DDSketchWrapper struct {
 	// disables sampling so the sketch is byte-identical to an unsampled one.
 	// Preserved across Reset so a sampled wrapper stays sampled for its life.
 	sampleP float64
+	// externalSampling is true after the wrapper receives an SDK-admitted
+	// occurrence in the current window. Its p must remain constant for that
+	// window or one envelope would describe a mixture of sampling rates.
+	externalSampling bool
 
 	// gosEpsilon/gosSites configure the GOS isotropic insert-time delta gate
 	// (design-gos-unified-edge-telemetry.md §11): when gosEpsilon>0, Update
@@ -213,6 +217,29 @@ func (w *DDSketchWrapper) Update(v float64) {
 	w.sk.Update(v)
 }
 
+// ApplyAdmittedOccurrence applies a d=1 admission decision already made by
+// the source SDK. It disables the wrapper's internal sampler to avoid sampling
+// the same occurrence twice, records the admitted value once, and stamps p on
+// the wire envelope. DDSketch quantiles use the admitted empirical
+// distribution directly; count-like consumers rescale the raw count by 1/p.
+func (w *DDSketchWrapper) ApplyAdmittedOccurrence(v float64, admittedRows uint64, sampleP float64) error {
+	if admittedRows != 1 {
+		return fmt.Errorf("DDSketchWrapper: admitted_rows must be 1 for a one-row sketch, got %#x", admittedRows)
+	}
+	if sampleP <= 0 || sampleP > 1 || math.IsNaN(sampleP) {
+		return fmt.Errorf("DDSketchWrapper: sample_p must be in (0,1], got %v", sampleP)
+	}
+	if w.externalSampling && w.sampleP != sampleP {
+		return fmt.Errorf("DDSketchWrapper: sample_p changed within a window: %v to %v", w.sampleP, sampleP)
+	}
+	w.sampleP = sampleP
+	w.externalSampling = true
+	w.sk.WithSampleP(1, ddSampleSeed)
+	w.sk.SetWireSampleP(sampleP)
+	w.Update(v)
+	return nil
+}
+
 // Snapshot serializes via SerializePortable + proto.Marshal — the
 // canonical wire format the backend's modified-OTLP DDSketch decoder
 // expects (`asap_sketchlib::SketchEnvelope{DDSketchState}`).
@@ -344,6 +371,7 @@ func (w *DDSketchWrapper) Reset() {
 	if w.sampleP > 0 && w.sampleP < 1.0 {
 		w.sk.WithSampleP(w.sampleP, ddSampleSeed)
 	}
+	w.externalSampling = false
 	// gosEpsilon/gosSites are per-series CONFIG (survive resets, like
 	// sampleP); gosDirty/gosWake are per-WINDOW state that must not leak into
 	// the next window (sk.Clear() above already zeroed d.gosPopulated/d.count
@@ -453,6 +481,9 @@ func (DDSketchObserver) Observe(s precompute.Sketch, v precompute.ObservationVal
 	}
 	switch v.Kind {
 	case precompute.KindFloat:
+		if v.RowSampled {
+			return w.ApplyAdmittedOccurrence(v.Float, v.AdmittedRows, v.SampleP)
+		}
 		w.Update(v.Float)
 		return nil
 	default:

@@ -65,6 +65,27 @@ func TestRowSampledSketch_ZeroSampleP_DropsEverything(t *testing.T) {
 	}
 }
 
+// Sum and DDSketch policies use Rows=0 because they are not row-replicated
+// matrices. The SDK normalizes them to the d=1 whole-item admission protocol.
+func TestRowSampledSketch_NonMatrixPolicyUsesOneAdmissionRow(t *testing.T) {
+	for _, family := range []string{"Sum", "DDSketch"} {
+		t.Run(family, func(t *testing.T) {
+			id := precompute.AggregationIdentity{AggID: 20, Filter: family}
+			agg := newRowSampledSketchAgg[float64](constRouter(id, 0), "", "edge-1", 60, 1)
+			agg.measure(context.Background(), 4, attribute.NewSet(attribute.String("k", "x")), nil)
+
+			var dest metricdata.Aggregation
+			if n := agg.delta(&dest); n != 1 {
+				t.Fatalf("admitted occurrences = %d, want 1", n)
+			}
+			dp := dest.(metricdata.RowSampledSketch[float64]).DataPoints[0]
+			if dp.Rows != 1 || dp.AdmittedRows != 1 {
+				t.Fatalf("Rows/AdmittedRows = %d/%#x, want 1/0x1", dp.Rows, dp.AdmittedRows)
+			}
+		})
+	}
+}
+
 // The core correctness property the row-sum-vector design got wrong:
 // DIFFERENT keys sharing ONE target AggregationIdentity must each survive
 // with their OWN individual key intact — never merged/summed together,

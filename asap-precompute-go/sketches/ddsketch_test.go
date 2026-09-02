@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
+	envpb "github.com/ProjectASAP/sketchlib-go/proto/sketch_envelope"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestDDSketchWrapper_ObserveSnapshotApplyDelta drives a minimal
@@ -96,6 +98,44 @@ func TestDDSketchObserver(t *testing.T) {
 	}
 	if err := (DDSketchObserver{}).Observe(w, precompute.ObservationValue{Kind: precompute.KindHash}); err == nil {
 		t.Fatal("expected error for unsupported kind")
+	}
+}
+
+func TestDDSketchObserver_RowSampledAppliesAdmissionOnce(t *testing.T) {
+	w := NewDDSketchWrapper(0.01).WithSampleP(0.01)
+	v := precompute.FloatValue(42)
+	v.RowSampled = true
+	v.AdmittedRows = 1
+	v.SampleP = 0.25
+	if err := (DDSketchObserver{}).Observe(w, v); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if got := w.Quantile(0.5); abs(got-42) > 1 {
+		t.Fatalf("externally admitted value was sampled a second time: quantile=%v", got)
+	}
+	if got := w.SampleP(); got != 0.25 {
+		t.Fatalf("SampleP = %v, want 0.25", got)
+	}
+	snapshot, err := w.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	var envelope envpb.SketchEnvelope
+	if err := proto.Unmarshal(snapshot, &envelope); err != nil {
+		t.Fatalf("proto.Unmarshal: %v", err)
+	}
+	if envelope.SampleP != 0.25 {
+		t.Fatalf("wire sample_p = %v, want 0.25", envelope.SampleP)
+	}
+	v.SampleP = 0.5
+	if err := (DDSketchObserver{}).Observe(w, v); err == nil {
+		t.Fatal("expected a mid-window sample_p change to fail")
+	}
+
+	v.AdmittedRows = 3
+	v.SampleP = 0.25
+	if err := (DDSketchObserver{}).Observe(w, v); err == nil {
+		t.Fatal("expected invalid one-row admission mask to fail")
 	}
 }
 

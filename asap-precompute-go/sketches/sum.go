@@ -114,6 +114,21 @@ func (w *SumWrapper) Update(v float64) {
 	w.gosSinceCrossCount = 0
 }
 
+// ApplyAdmittedOccurrence applies a d=1 source-SDK admission decision. The
+// SDK sends only admitted occurrences, so bit zero must be present. Scaling
+// the summand by 1/p gives the Horvitz--Thompson Sum estimator; the observation
+// count remains the raw admitted count and is not an estimated event count.
+func (w *SumWrapper) ApplyAdmittedOccurrence(v float64, admittedRows uint64, sampleP float64) error {
+	if admittedRows != 1 {
+		return fmt.Errorf("SumWrapper: admitted_rows must be 1 for a one-row aggregate, got %#x", admittedRows)
+	}
+	if sampleP <= 0 || sampleP > 1 || math.IsNaN(sampleP) {
+		return fmt.Errorf("SumWrapper: sample_p must be in (0,1], got %v", sampleP)
+	}
+	w.Update(v / sampleP)
+	return nil
+}
+
 // ConsumeWakeSignal implements the runtime's narrow wake-signal interface
 // (asap-precompute-go window.go's recordLocked): reports whether an
 // insert-time GOS threshold crossing happened since the last call, clearing
@@ -292,6 +307,9 @@ func (SumObserver) Observe(s precompute.Sketch, v precompute.ObservationValue) e
 	}
 	switch v.Kind {
 	case precompute.KindFloat:
+		if v.RowSampled {
+			return w.ApplyAdmittedOccurrence(v.Float, v.AdmittedRows, v.SampleP)
+		}
 		w.Update(v.Float)
 		return nil
 	default:

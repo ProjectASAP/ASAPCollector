@@ -70,3 +70,22 @@ func TestSumWrapper_RoundTripMergeReset(t *testing.T) {
 		t.Fatalf("after Observe: sum=%v count=%v, want 5/1", w3.Sum(), w3.Count())
 	}
 }
+
+func TestSumObserver_RowSampledUsesInverseProbabilityWeight(t *testing.T) {
+	w := NewSumWrapper()
+	v := precompute.FloatValue(4)
+	v.RowSampled = true
+	v.AdmittedRows = 1
+	v.SampleP = 0.25
+	if err := (SumObserver{}).Observe(w, v); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if w.Sum() != 16 || w.Count() != 1 {
+		t.Fatalf("sampled Sum = %v count=%v, want 16/1", w.Sum(), w.Count())
+	}
+
+	v.AdmittedRows = 2
+	if err := (SumObserver{}).Observe(w, v); err == nil {
+		t.Fatal("expected invalid one-row admission mask to fail")
+	}
+}
