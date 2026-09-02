@@ -5,6 +5,8 @@ package asapedgeprocessor
 
 import (
 	"context"
+	"encoding/binary"
+	"math"
 	"testing"
 	"time"
 
@@ -73,8 +75,8 @@ func TestSketchAggregatorObserve_RowSampled_RescalesByP(t *testing.T) {
 }
 
 // TestSketchAggregatorObserve_RowSampled_UnsupportedFamilyDrops verifies a
-// row-sampled observation against a family with no *AtRows sketchlib
-// primitive (DDSketch, obsKindFloat) is dropped rather than silently
+// row-sampled observation against an unsupported scalar family is dropped
+// rather than silently
 // misapplied — this can only happen if the SDK's AggregationRouter and this
 // collector's AggID disagreed about which family a PolicyFingerprint
 // targets, and that must fail loud (a counted drop), not corrupt state.
@@ -82,7 +84,7 @@ func TestSketchAggregatorObserve_RowSampled_UnsupportedFamilyDrops(t *testing.T)
 	cfg := &Config{
 		ShardCount:     1,
 		WindowDuration: time.Hour,
-		Metrics:        []MetricFamily{{Metric: "lat", Family: FamilyDDSketch}},
+		Metrics:        []MetricFamily{{Metric: "lat", Family: FamilyKLL}},
 		Cold:           ColdConfig{Enabled: false},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -90,13 +92,68 @@ func TestSketchAggregatorObserve_RowSampled_UnsupportedFamilyDrops(t *testing.T)
 	}
 	sa, ok := newSketchAggregator("lat", &cfg.Metrics[0], sketchOpts{window: time.Hour}, zap.NewNop())
 	if !ok {
-		t.Fatal("newSketchAggregator(DDSketch) returned ok=false")
+		t.Fatal("newSketchAggregator(KLL) returned ok=false")
 	}
 
 	before := sa.droppedSamples.Load()
 	sa.observe(map[string]string{"zone": "z0"}, 1, uint64(time.Now().UnixMilli()), true, 0b1, 0.5)
 	if got := sa.droppedSamples.Load(); got != before+1 {
 		t.Fatalf("droppedSamples = %d, want %d (row-sampled obs against obsKindFloat must drop)", got, before+1)
+	}
+}
+
+func TestSketchAggregatorObserve_RowSampledSumAndDDSketch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		family FamilyKind
+		value  float64
+	}{
+		{name: "sum", family: FamilySum, value: 4},
+		{name: "ddsketch", family: FamilyDDSketch, value: 42},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fam := MetricFamily{Metric: "m", Family: tc.family, RelativeAccuracy: 0.01}
+			cfg := &Config{ShardCount: 1, WindowDuration: time.Hour, Metrics: []MetricFamily{fam}, Cold: ColdConfig{Enabled: false}}
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			sa, ok := newSketchAggregator("m", &cfg.Metrics[0], sketchOpts{window: time.Hour}, zap.NewNop())
+			if !ok {
+				t.Fatalf("newSketchAggregator(%s) returned ok=false", tc.family)
+			}
+			sa.observe(map[string]string{"zone": "z0"}, tc.value, uint64(time.Now().UnixMilli()), true, 1, 0.25)
+			if sa.lastObserveErr != nil {
+				t.Fatalf("row-sampled observe: %v", sa.lastObserveErr)
+			}
+			envs := sa.pc.Drain()
+			if got := len(envs); got == 0 {
+				t.Fatal("row-sampled observation emitted no aggregate")
+			}
+			switch tc.family {
+			case FamilySum:
+				if len(envs[0].Payload) != 16 {
+					t.Fatalf("Sum payload length = %d, want 16", len(envs[0].Payload))
+				}
+				got := math.Float64frombits(binary.LittleEndian.Uint64(envs[0].Payload[:8]))
+				if got != tc.value/0.25 {
+					t.Fatalf("sampled Sum = %v, want %v", got, tc.value/0.25)
+				}
+			case FamilyDDSketch:
+				rebuilt := sketches.NewDDSketchWrapper(0.01)
+				if err := rebuilt.ApplyDelta(envs[0].Payload); err != nil {
+					t.Fatalf("ApplyDelta: %v", err)
+				}
+				if got := rebuilt.Quantile(0.5); math.Abs(got-tc.value) > 1 {
+					t.Fatalf("sampled DDSketch quantile = %v, want near %v", got, tc.value)
+				}
+			}
+
+			before := sa.droppedSamples.Load()
+			sa.observeRowSampled(map[string]string{"zone": "z0"}, tc.value, uint64(time.Now().UnixMilli()), 1, 2, 0.25)
+			if got := sa.droppedSamples.Load(); got != before+1 {
+				t.Fatalf("invalid row count drops = %d, want %d", got, before+1)
+			}
+		})
 	}
 }
 

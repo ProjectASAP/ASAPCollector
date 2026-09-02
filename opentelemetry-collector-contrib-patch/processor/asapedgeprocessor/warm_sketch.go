@@ -22,9 +22,11 @@ import (
 // resulting envelopes back to pmetric for forwarding. Mirrors the standalone
 // sketch processors (ddsketch etc.), generalized + keyed.
 type sketchAggregator struct {
-	pc   precompute.Precompute
-	pcfg *precompute.PrecomputeConfig
-	enc  *oteladapter.AdapterConfig
+	pc     precompute.Precompute
+	pcfg   *precompute.PrecomputeConfig
+	family FamilyKind
+	rows   int
+	enc    *oteladapter.AdapterConfig
 	// factory is the per-window sketch constructor handed to precompute.New
 	// (it bakes in the per-family params + the warm-sketch sample_p). Retained
 	// so the built sampling probability is observable (e.g. in tests) without
@@ -54,7 +56,7 @@ type sketchAggregator struct {
 	// adds +1 (occurrence frequency → heavy-hitter top-k). Ignored by every
 	// non-heap observe path. Mirrors the backend's TopkWeight (PR #372).
 	weightMode topkWeight
-	logger    *zap.Logger
+	logger     *zap.Logger
 	// lastObserveErr is the most recent ObserveKeyed result (nil when the last
 	// sample recorded cleanly). The observe error used to be discarded, which
 	// hid exactly the CMS KindBytes mismatch above; it is now retained (and
@@ -731,9 +733,18 @@ func newSketchAggregator(metric string, fam *MetricFamily, opts sketchOpts, logg
 		}
 	}
 
+	samplingRows := 0
+	switch fam.Family {
+	case FamilySum, FamilyDDSketch:
+		samplingRows = 1
+	case FamilyCountMinSketch, FamilyCountSketch:
+		samplingRows = fmRows
+	}
 	return &sketchAggregator{
 		pc:            pc,
 		pcfg:          pcfg,
+		family:        fam.Family,
+		rows:          samplingRows,
 		enc:           &oteladapter.AdapterConfig{MetricSuffix: metricSuffix, DropOriginal: true},
 		factory:       factory,
 		obsKind:       obsKind,
@@ -942,10 +953,21 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 			obs.Value.RowSampled = true
 			obs.Value.AdmittedRows = admittedRows
 			obs.Value.SampleP = sampleP
+		case obsKindFloat:
+			if s.family != FamilySum && s.family != FamilyDDSketch {
+				s.droppedSamples.Add(1)
+				if s.procDropCount != nil {
+					s.procDropCount.Add(1)
+				}
+				return
+			}
+			obs.Value.RowSampled = true
+			obs.Value.AdmittedRows = admittedRows
+			obs.Value.SampleP = sampleP
 		default:
-			// obsKindFloat/obsKindItemHLL/obsKindItemCMS have no *AtRows
-			// sketchlib primitive (DDSketch/KLL/HLL aren't row-replicated
-			// matrices) — this can only happen if the SDK's AggregationRouter
+			// Item-label HLL/CMS routes do not accept the generic numeric
+			// row-sampled occurrence shape. This can only happen if the SDK's
+			// AggregationRouter
 			// and this collector's AggID disagreed about which family a
 			// PolicyFingerprint targets. Drop rather than silently misapply
 			// an unrelated observer.
@@ -972,6 +994,26 @@ func (s *sketchAggregator) observe(am map[string]string, val float64, tsMs uint6
 		return
 	}
 	s.lastObserveErr = nil
+}
+
+// observeRowSampled validates the SDK's wire metadata before applying its
+// admission decision. Sum and DDSketch are d=1; matrix sketches must exactly
+// match the configured row count. Rejecting mismatches prevents a stale policy
+// from producing a biased sketch under a different physical plan.
+func (s *sketchAggregator) observeRowSampled(am map[string]string, val float64, tsMs uint64, admittedRows uint64, rows int, sampleP float64) {
+	wantRows := s.rows
+	validMask := rows > 0 && rows <= 64 && admittedRows != 0
+	if validMask && rows < 64 {
+		validMask = admittedRows < (uint64(1) << uint(rows))
+	}
+	if wantRows == 0 || rows != wantRows || !validMask || sampleP <= 0 || sampleP > 1 || sampleP != sampleP {
+		s.droppedSamples.Add(1)
+		if s.procDropCount != nil {
+			s.procDropCount.Add(1)
+		}
+		return
+	}
+	s.observe(am, val, tsMs, true, admittedRows, sampleP)
 }
 
 // flush force-rotates the window (Drain, regardless of wall-clock — the
