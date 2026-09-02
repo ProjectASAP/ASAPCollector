@@ -120,13 +120,6 @@ cd ASAPCollector
 git submodule update --init opentelemetry-collector opentelemetry-collector-contrib opentelemetry-go opentelemetry-proto
 ```
 
-## Future support
-
-Telegraf and OTAP integrations are intentionally out of the current
-OpenTelemetry MVP path. Their submodules, patches, builders, and benchmarks
-are grouped under `future-support/` and are not initialized or built by the
-MVP commands.
-
 ## Working with the OpenTelemetry submodule
 
 #### Code organization
