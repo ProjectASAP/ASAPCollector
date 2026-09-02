@@ -112,9 +112,10 @@ pub mod records;
 pub use decode::{decode_batch, OtapDecodeError};
 pub use encode::{encode_batch, OtapEncodeError};
 pub use plugin::StubPlugin;
-pub use schema::{ATTR_AGG_ID, ATTR_ENCODING, ATTR_ENVELOPE, ATTR_SCHEMA_VERSION,
-    ATTR_SKETCH_TYPE, ATTR_WINDOW_END_MS, ATTR_WINDOW_START_MS, COLUMN_METRIC,
-    COLUMN_TIME_UNIX_NANO, COLUMN_VALUE};
+pub use schema::{
+    ATTR_AGG_ID, ATTR_ENCODING, ATTR_ENVELOPE, ATTR_SCHEMA_VERSION, ATTR_SKETCH_TYPE,
+    ATTR_WINDOW_END_MS, ATTR_WINDOW_START_MS, COLUMN_METRIC, COLUMN_TIME_UNIX_NANO, COLUMN_VALUE,
+};
 
 pub use config::{ConfigError, PluginConfig, SketchDispatch};
 pub use lifecycle::{
