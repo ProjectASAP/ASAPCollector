@@ -10,22 +10,31 @@ import (
 
 // OpAmpChannel is the OpAMP-backed ControlChannel implementation.
 //
-// TODO(phase-5): wire real OpAMP client (github.com/open-telemetry/
-// opamp-go/client); today this is an interface-satisfying stub so the
-// controller side
-// can compile against the trait without forcing a transitive
-// opamp-go dep into Phase 2.
+// It owns typed CollectorPlan validation and activation state. A transport
+// adapter supplies received OpAMP bodies through ReceiveCollectorPlan and uses
+// ReportStatus to publish validation/application outcomes.
 type OpAmpChannel struct {
-	cfg    OpAmpConfig
-	logger *log.Logger
+	cfg OpAmpConfig
 
-	mu       sync.Mutex
-	closed   bool
-	warnedOnce bool
+	mu        sync.Mutex
+	closed    bool
+	pending   *precompute.PrecomputeConfigSet
+	delivered uint64
+	lastAcked uint64
 }
 
-// OpAmpConfig configures OpAmpChannel. Real fields will grow as the
-// Phase 5 wiring lands.
+// PlanStatus is reported to the OpAMP transport adapter after validation or
+// runtime acknowledgement.
+type PlanStatus string
+
+const (
+	// PlanStatusApplied means the runtime acknowledged the exact plan version.
+	PlanStatusApplied PlanStatus = "applied"
+	// PlanStatusFailed means decoding/validation failed; the active plan stays unchanged.
+	PlanStatusFailed PlanStatus = "failed"
+)
+
+// OpAmpConfig configures OpAmpChannel.
 type OpAmpConfig struct {
 	// ServerEndpoint is the OpAMP supervisor's URL (ws/wss/http(s)).
 	// Required.
@@ -41,6 +50,11 @@ type OpAmpConfig struct {
 
 	// Logger receives one-line log messages. Defaults to log.Default().
 	Logger *log.Logger
+
+	// ReportStatus bridges validation/runtime acknowledgement back to the
+	// concrete OpAMP client without importing opamp-go into this host-neutral
+	// package.
+	ReportStatus func(planVersion uint64, status PlanStatus, err error)
 }
 
 // NewOpAmpChannel constructs a new OpAmpChannel. Validates that
@@ -50,44 +64,66 @@ func NewOpAmpChannel(cfg OpAmpConfig) (*OpAmpChannel, error) {
 	if cfg.ServerEndpoint == "" {
 		return nil, errors.New("controlchannel: OpAmpConfig.ServerEndpoint is required")
 	}
-	logger := cfg.Logger
-	if logger == nil {
-		logger = log.Default()
+	if cfg.Logger == nil {
+		cfg.Logger = log.Default()
 	}
-	return &OpAmpChannel{cfg: cfg, logger: logger}, nil
+	return &OpAmpChannel{cfg: cfg}, nil
 }
 
-// Poll satisfies ControlChannel; the stub never reports a change. A
-// single warning is emitted per instance to avoid log spam.
-func (o *OpAmpChannel) Poll() *precompute.PrecomputeConfigSet {
-	o.mu.Lock()
-	warn := !o.warnedOnce && !o.closed
-	o.warnedOnce = true
-	o.mu.Unlock()
-	if warn {
-		o.logger.Printf("OpAMP control channel: not yet wired, returning no-op (endpoint=%s)",
-			o.cfg.ServerEndpoint)
+// ReceiveCollectorPlan validates an ASAPQuery CollectorPlan and queues it for
+// one atomic Poll delivery. A rejected plan never replaces the pending/active
+// valid plan.
+func (o *OpAmpChannel) ReceiveCollectorPlan(body []byte) error {
+	set, err := precompute.DecodeCollectorPlan(body, o.cfg.InstanceUid)
+	if err != nil {
+		if o.cfg.ReportStatus != nil {
+			o.cfg.ReportStatus(0, PlanStatusFailed, err)
+		}
+		return err
 	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return errors.New("controlchannel: OpAmpChannel is closed")
+	}
+	if set.Version <= o.lastAcked || set.Version <= o.delivered ||
+		(o.pending != nil && set.Version <= o.pending.Version) {
+		return errors.New("controlchannel: stale or duplicate CollectorPlan version")
+	}
+	o.pending = set
 	return nil
 }
 
-// Ack is a no-op for the stub. Logged at debug-level via the configured
-// logger; the standard library log.Logger has no levels, so we simply
-// write a one-line debug-style message.
-func (o *OpAmpChannel) Ack(planVersion uint64) {
+// Poll returns each successfully validated plan once.
+func (o *OpAmpChannel) Poll() *precompute.PrecomputeConfigSet {
 	o.mu.Lock()
-	closed := o.closed
-	o.mu.Unlock()
-	if closed {
-		return
+	defer o.mu.Unlock()
+	if o.closed || o.pending == nil {
+		return nil
 	}
-	// Intentionally low-volume — Ack is rare relative to Poll.
-	o.logger.Printf("debug: OpAMP control channel: stub Ack(plan_version=%d) (endpoint=%s)",
-		planVersion, o.cfg.ServerEndpoint)
+	set := o.pending
+	o.pending = nil
+	o.delivered = set.Version
+	return set
 }
 
-// Close is a no-op for the stub but flips the internal flag so Poll/Ack
-// can short-circuit after shutdown. Idempotent.
+// Ack reports APPLIED only for the exact version most recently delivered.
+func (o *OpAmpChannel) Ack(planVersion uint64) {
+	o.mu.Lock()
+	if o.closed || planVersion == 0 || planVersion != o.delivered {
+		o.mu.Unlock()
+		return
+	}
+	o.lastAcked = planVersion
+	o.delivered = 0
+	o.mu.Unlock()
+	if o.cfg.ReportStatus != nil {
+		o.cfg.ReportStatus(planVersion, PlanStatusApplied, nil)
+	}
+}
+
+// Close prevents subsequent receipt, delivery, and acknowledgement.
+// It is idempotent.
 func (o *OpAmpChannel) Close() error {
 	o.mu.Lock()
 	o.closed = true

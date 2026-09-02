@@ -18,7 +18,7 @@ fn plan(materializations: serde_json::Value) -> Vec<u8> {
 #[test]
 fn backend_quantile_plan_projects_without_replanning() {
     let bytes = plan(json!([{
-        "query_id": "q-quantile",
+        "query_id": "q",
         "metric": "request_duration_seconds",
         "algorithm": "ddsketch",
         "parameters": {"alpha": 0.01},
@@ -31,6 +31,7 @@ fn backend_quantile_plan_projects_without_replanning() {
     assert_eq!(configs.version, 42);
     assert_eq!(configs.configs.len(), 1);
     let config = &configs.configs[0];
+    assert_eq!(config.agg_id, 9_843_981_254_622_943_340);
     assert_eq!(config.sketch_type, SketchType::DDSketch);
     assert_eq!(config.metric_name, "request_duration_seconds");
     assert_eq!(config.aggregate_by, vec!["service"]);
