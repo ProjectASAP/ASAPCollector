@@ -6,15 +6,17 @@ This note states the correctness contract for the first GOS MVP. It covers:
 
 - isotropic thresholds;
 - Sum, Count-Min Sketch (CMS), Count Sketch, and DDSketch;
+- source-SDK admission sampling followed by Sum or sketch construction in the
+  OTel processor;
 - threshold-triggered sparse deltas;
 - a periodic freshness fallback;
 - exact plan, producer, window, and sequence evidence; and
 - measured accuracy, freshness, bytes, CPU, and memory.
 
-Sampling is disabled in this proof ($p = 1$). Sampling can still be evaluated
-experimentally, but it is not part of the MVP correctness claim. Anisotropic
-water-filling, arbitrary nonlinear queries, HLL, KLL, and a claim of matching
-the Woodruff–Zhang lower bound are also out of scope.
+The sampling claim covers Sum and DDSketch as one-row families and CMS and
+Count Sketch as row-replicated families. Anisotropic water-filling, arbitrary
+nonlinear queries, HLL, KLL, and a claim of matching the Woodruff–Zhang lower
+bound are out of scope.
 
 ## Model and protocol assumptions
 
@@ -51,6 +53,88 @@ Every frame is identified by at least
 must apply duplicates idempotently, reject incompatible plans or windows,
 detect sequence gaps, and request a full checkpoint after an unrecoverable
 gap. Window close sends all residual state.
+
+## Source sampling and processor sketch construction
+
+Sampling happens at `Record()` in the data-source SDK, before OTLP transport.
+Sum and DDSketch have one admission row; CMS and Count Sketch have one
+admission decision per sketch row. For occurrence $q$ and row $r$, let
+$I_{q,r}$ be an independently admitted row indicator with
+
+$$
+\Pr[I_{q,r}=1]=p,
+\qquad 0<p\le 1.
+$$
+
+The SDK sends an admitted occurrence together with its row bitmask, $p$, and
+the policy identity. For Sum, CMS, and Count Sketch, the OTel processor applies
+exactly those admitted rows and scales an admitted update $u_q$ by $1/p$:
+
+$$
+\widehat{u}_{q,r}=\frac{I_{q,r}}{p}u_q.
+$$
+
+For DDSketch, the processor inserts each admitted value exactly once without
+inverse-weighting its bucket. It stamps $p$ on the envelope: quantiles use the
+sampled empirical distribution directly, while count-like consumers apply
+$1/p$. This distinction is necessary because duplicating a value $1/p$ times
+would require integral weights and would not improve the sampled quantile.
+
+The processor must not draw a second sampling decision. It must also remove the
+reserved sampling metadata before constructing the series identity. A missing
+or incompatible policy, row count, $p$, hash seed, sketch dimensions, or
+materialization identity is a protocol error and the observation must not be
+silently inserted through the ordinary unsampled path.
+
+For Sum, CMS, and Count Sketch this is a Horvitz--Thompson estimator. For each
+update and row,
+
+$$
+\mathbb{E}[\widehat{u}_{q,r}]=u_q,
+$$
+
+so the processor-built Sum or counter is unbiased relative to the state that
+would have been built from all source occurrences. If cell $j$ receives update
+set $Q_j$, its sampling error $E_j$ has
+
+$$
+\mathbb{E}[E_j]=0,
+\qquad
+\mathrm{Var}(E_j)
+=
+\frac{1-p}{p}\sum_{q\in Q_j}u_q^2.
+$$
+
+Unbiasedness is not a deterministic accuracy bound. The MVP must obtain or
+measure a simultaneous high-probability bound
+
+$$
+\Pr\!\left[\lVert E\rVert_\infty
+\le \epsilon_{\mathrm{samp}}\right]
+\ge 1-\delta_{\mathrm{samp}}
+$$
+
+for the declared workload, sampling policy, and query window. This bound may
+come from a concentration bound under the declared independence and bounded
+update assumptions, or from an empirical confidence procedure stated in the
+evaluation. The evidence must record both source input counts and admitted
+row counts; $p$ alone is not evidence that the bound held.
+
+Let $x^{(p)}$ denote the sampled state built by the processors, including
+inverse-probability weighting where defined above. GOS operates on $x^{(p)}$,
+not on the unavailable full-input state $x$. Its deterministic invariant is
+
+$$
+\left\lVert x^{(p)}(t)-\widehat{x}^{(p)}(t)\right\rVert_\infty < kT.
+$$
+
+For Sum, CMS, and Count Sketch, on the sampling-success event the triangle
+inequality composes the two stages:
+
+$$
+\left\lVert x(t)-\widehat{x}^{(p)}(t)\right\rVert_\infty
+< \epsilon_{\mathrm{samp}}+kT.
+$$
 
 ## Isotropic drift invariant
 
@@ -94,12 +178,23 @@ arrive.
 
 ## Sum
 
-Sum has one cell. If $S(t)$ is the true sum and $\widehat{S}(t)$ is the backend
-sum, then
+Sum has one cell. Let $\widehat{S}_p(t)$ be the SDK-sampled,
+inverse-probability-weighted Sum and let $\widehat{S}_{\mathrm{backend}}(t)$ be
+the backend Sum. GOS guarantees
 
 $$
 \boxed{
-\left|S(t) - \widehat{S}(t)\right| < kT
+\left|\widehat{S}_p(t)-\widehat{S}_{\mathrm{backend}}(t)\right| < kT
+}.
+$$
+
+On an event where source sampling satisfies
+$|S(t)-\widehat{S}_p(t)|\le\epsilon_{\mathrm{sum,samp}}$, composition gives
+
+$$
+\boxed{
+\left|S(t)-\widehat{S}_{\mathrm{backend}}(t)\right|
+< \epsilon_{\mathrm{sum,samp}}+kT
 }.
 $$
 
@@ -113,9 +208,12 @@ $$
 Then, whenever $|S(t)| \ge S_{\min}$,
 
 $$
-\frac{|S(t) - \widehat{S}(t)|}{|S(t)|}
-< \epsilon_{\mathrm{st}}.
+\frac{|\widehat{S}_p(t)-\widehat{S}_{\mathrm{backend}}(t)|}
+     {|S(t)|}
+< \epsilon_{\mathrm{st}},
 $$
+
+and the sampling error remains a separate term in the end-to-end budget.
 
 Near zero, or when positive and negative updates cancel, the MVP uses a mixed
 absolute-relative contract instead:
@@ -143,8 +241,8 @@ $$
 \le \max_r |a_r-b_r|.
 $$
 
-Because the backend differs from the ideal sketch by less than $kT$ in every
-cell, GOS adds less than $kT$ point-query error:
+Because the backend differs from the processor-built sampled sketch by less
+than $kT$ in every cell, GOS adds less than $kT$ point-query error:
 
 $$
 \boxed{
@@ -155,7 +253,7 @@ $$
 }.
 $$
 
-If the underlying CMS guarantee is
+If the underlying full-input CMS guarantee is
 
 $$
 0 \le \widetilde{f}_{\mathrm{ideal}}(y)-f(y)
@@ -169,9 +267,15 @@ $$
 \left|
 \widetilde{f}_{\mathrm{backend}}(y)-f(y)
 \right|
-\le \epsilon_{\mathrm{sk}} \lVert f \rVert_1 + kT
+< \epsilon_{\mathrm{sk}} \lVert f \rVert_1
++ \epsilon_{\mathrm{samp}} + kT
 }.
 $$
+
+This bound holds with the joint success probability of the CMS and source
+sampling guarantees. Independence between their failure events is not needed
+for the union-bound probability
+$1-\delta_{\mathrm{sk}}-\delta_{\mathrm{samp}}$.
 
 Choosing
 
@@ -179,8 +283,9 @@ $$
 T \le \frac{\epsilon_{\mathrm{st}}\lVert f\rVert_1}{k}
 $$
 
-gives total error at most
-$(\epsilon_{\mathrm{sk}}+\epsilon_{\mathrm{st}})\lVert f\rVert_1$.
+gives GOS staleness below
+$\epsilon_{\mathrm{st}}\lVert f\rVert_1$; the sampling term remains separate
+and must be included in the total error budget.
 This statement concerns the backend reconstruction. A local CMS minimum is not
 valid after individual local cells have been reset for GOS transmission.
 
@@ -212,7 +317,7 @@ $$
 \Pr\!\left[
 \left|\widetilde{f}_{\mathrm{ideal}}(y)-f(y)\right|
 \le \epsilon_{\mathrm{sk}}\lVert f\rVert_2
-\right] \ge 1-\delta,
+\right] \ge 1-\delta_{\mathrm{sk}},
 $$
 
 then
@@ -221,8 +326,10 @@ $$
 \boxed{
 \Pr\!\left[
 \left|\widetilde{f}_{\mathrm{backend}}(y)-f(y)\right|
-\le \epsilon_{\mathrm{sk}}\lVert f\rVert_2+kT
-\right] \ge 1-\delta
+< \epsilon_{\mathrm{sk}}\lVert f\rVert_2
++\epsilon_{\mathrm{samp}}+kT
+\right]
+\ge 1-\delta_{\mathrm{sk}}-\delta_{\mathrm{samp}}
 }.
 $$
 
@@ -232,25 +339,44 @@ $$
 T \le \frac{\epsilon_{\mathrm{st}}\lVert f\rVert_2}{k}
 $$
 
-gives total error at most
-$(\epsilon_{\mathrm{sk}}+\epsilon_{\mathrm{st}})\lVert f\rVert_2$ with
-probability at least $1-\delta$.
+gives GOS staleness below
+$\epsilon_{\mathrm{st}}\lVert f\rVert_2$; the sampling term remains separate
+in the total error budget.
 
-## DDSketch rank staleness
+## DDSketch sampling and rank staleness
 
-DDSketch bucket counts are additive. If there are $B$ active buckets, the
-total count mass missing from the backend is bounded by
+Let $M$ be the number of source-SDK-admitted DDSketch values in the window.
+Because Bernoulli admission is independent of value, the admitted values form
+an unbiased sample of the source distribution. Under the declared independent
+and identically distributed input assumption, the Dvoretzky--Kiefer--Wolfowitz
+bound gives
+
+$$
+\Pr\!\left[
+\sup_z\left|F_M(z)-F(z)\right|
+\le
+\sqrt{\frac{\ln(2/\delta_{\mathrm{dd,samp}})}{2M}}
+\right]
+\ge 1-\delta_{\mathrm{dd,samp}}.
+$$
+
+The MVP must report $M$; a useful bound cannot be claimed for an empty sample.
+This distributional guarantee is separate from DDSketch's intrinsic relative
+value accuracy $\alpha$.
+
+DDSketch bucket counts are additive. If there are $B$ active sampled buckets,
+the admitted count mass missing from the backend is bounded by
 
 $$
 M_{\mathrm{stale}} < BkT.
 $$
 
-For total count $N>0$, the additional CDF or rank error is therefore
+For $M>0$, the additional GOS CDF or rank error is therefore
 
 $$
 \boxed{
 \epsilon_{\mathrm{rank,st}}
-< \frac{BkT}{N}
+< \frac{BkT}{M}
 }.
 $$
 
@@ -258,15 +384,25 @@ To keep this contribution below $\epsilon_{\mathrm{rank}}$, choose
 
 $$
 \boxed{
-T \le \frac{\epsilon_{\mathrm{rank}}N}{kB}
+T \le \frac{\epsilon_{\mathrm{rank}}M}{kB}
 }.
 $$
 
-This proves a rank-mass staleness bound. It does not, without a distributional
-assumption near the requested quantile, turn that rank error into an additional
-relative value-error bound. The MVP reports DDSketch's intrinsic relative
-value parameter $\alpha$ separately from
-$\epsilon_{\mathrm{rank,st}}$.
+On the DKW success event, the total additional rank error beyond the intrinsic
+DDSketch value guarantee is bounded by
+
+$$
+\boxed{
+\epsilon_{\mathrm{rank,total}}
+<
+\sqrt{\frac{\ln(2/\delta_{\mathrm{dd,samp}})}{2M}}
++\frac{BkT}{M}
+}.
+$$
+
+This does not, without an assumption on probability mass near the requested
+quantile, turn rank error into another relative value-error bound. The MVP
+reports $\alpha$, sampling rank error, and GOS rank staleness separately.
 
 ## Sparse-delta telescoping
 
@@ -313,17 +449,17 @@ timestamp, plan and sequence identity, and the observed end-to-end delay.
 Under the stated assumptions, the MVP may claim:
 
 $$
-\lVert x-\widehat{x}\rVert_\infty < kT,
+\lVert x^{(p)}-\widehat{x}^{(p)}\rVert_\infty < kT,
 $$
 
 with the following query-level consequences:
 
-| Family | Additional GOS error |
-| --- | --- |
-| Sum | $<kT$ absolute error |
-| CMS point query | $<kT$ additive point-query error |
-| Count Sketch point query | $<kT$ additive point-query error |
-| DDSketch | $<BkT/N$ additional rank error |
+| Family | SDK sampling in this MVP | Additional pipeline error |
+| --- | --- | --- |
+| Sum | One-row admission | $<\epsilon_{\mathrm{sum,samp}}+kT$ absolute error |
+| CMS point query | Row sampling | $<\epsilon_{\mathrm{samp}}+kT$ beyond intrinsic sketch error |
+| Count Sketch point query | Row sampling | $<\epsilon_{\mathrm{samp}}+kT$ beyond intrinsic sketch error |
+| DDSketch | One-row admission | $<\sqrt{\ln(2/\delta_{\mathrm{dd,samp}})/(2M)}+BkT/M$ additional rank error |
 
 The proof does not establish that GOS always reduces cost. Cost reduction is an
 experimental hypothesis and is accepted only if the measured run satisfies
@@ -336,8 +472,10 @@ $$
 $$
 
 The report must also include peak memory and must compare identical workloads,
-seeds, windows, query anchors, and deployment topology. A useful communication
-metric is
+seeds, windows, query anchors, and deployment topology. It must report source
+SDK to Collector bytes separately from Collector to backend bytes: SDK sampling
+can reduce the first link and processor insert CPU, while GOS sparse deltas can
+reduce the second link. A useful end-to-end communication metric is
 
 $$
 \mathrm{saving}_{\mathrm{bytes}}
