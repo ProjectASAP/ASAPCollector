@@ -39,11 +39,12 @@ jobs:
           path: sketchlib-go
           token: ${{ secrets.ASAP_CI_REPO_TOKEN }}
 
-      - name: Initialize Collector core dependency
+      - name: Initialize Collector and Go SDK dependencies
         working-directory: ASAPCollector
         run: |
-          git submodule update --init opentelemetry-collector
+          git submodule update --init opentelemetry-collector opentelemetry-go
           ./restore_otel_collector_patches.sh
+          ./restore_opentelemetry_go_patches.sh
 
       - name: Install Go
         uses: actions/setup-go@v5
@@ -83,6 +84,10 @@ jobs:
       - name: Test Go precompute contracts
         working-directory: ASAPCollector/asap-precompute-go
         run: go test ./...
+
+      - name: Test source SDK sampling contracts
+        working-directory: ASAPCollector/opentelemetry-go/sdk/metric
+        run: go test -mod=mod ./internal/aggregate -run 'TestRowSampledSketch_'
 
       - name: Test Go Gorilla contracts
         working-directory: ASAPCollector/asap-gorilla-go
