@@ -109,11 +109,8 @@ func (p *asapEdgeProcessor) subWindowEnabled() bool {
 // legacy subC ticker, gated at the call site by subWindowEnabled(), and the
 // wakeCh out-of-cycle signal, which is NOT gated by it — a GOS-driven family
 // must be able to wake a flush even with SubWindowInterval unset). Per-series
-// gating happens inside sa.emitSubWindow / s.subWindowEnabled(); that gate
-// still requires SubWindowInterval>0 today, so a GOS-only family with no
-// sub-window interval configured won't yet see any effect from a wake — that
-// per-series gate is next in line to be decoupled from SubWindowInterval as
-// GOS families land (tracked starting with the CountSketch conversion).
+// gating happens inside sa.emitSubWindow / s.subWindowEnabled(), which accepts
+// either a positive SubWindowInterval or active GOS insert-time detection.
 func (p *asapEdgeProcessor) flushSubWindow(ctx context.Context) {
 	nowMs := uint64(time.Now().UnixMilli())
 	out := pmetric.NewMetrics()
