@@ -32,6 +32,11 @@ jobs:
       - name: Install Rust components
         run: rustup component add rustfmt clippy
 
+      - name: Configure private Cargo dependencies
+        env:
+          ASAP_CI_REPO_TOKEN: ${{ secrets.ASAP_CI_REPO_TOKEN }}
+        run: git config --global url."https://x-access-token:${ASAP_CI_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
