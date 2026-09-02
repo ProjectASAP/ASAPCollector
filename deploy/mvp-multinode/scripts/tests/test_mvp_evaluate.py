@@ -73,7 +73,12 @@ class EvaluatorTest(unittest.TestCase):
             writer = csv.writer(handle); writer.writerow(["arm", "probe", "tier", "poll_idx", "poll_ts_ms", "observed_value_ms", "delta_ms"])
             writer.writerow(["asap-gzip", "probe", "warm", 1, 100, 90, 10]); writer.writerow(["asap-gzip", "probe", "warm", 2, 200, 180, 20])
         (self.run / "asap-gzip" / "controller-agents.json").write_text(json.dumps({"agent-a": "agent", "agent-b": "agent"}))
-        (self.run / "asap-gzip" / "controller-config.yaml").write_text("processors:\n  ddsketch/latency:\n    delta_transmission: true\n  kll/request_size:\n    k: 200\nservice:\n  pipelines:\n    metrics/raw_passthrough: {}\n")
+        (self.run / "asap-gzip" / "controller-config.yaml").write_text(
+            "processors:\n  asap_edge:\n    drop_original: true\n"
+            "    metrics:\n      - family: ddsketch\n"
+            "        delta_transmission: true\n      - family: kll\n"
+            "        delta_transmission: false\n"
+        )
         for agent in ("agent-a", "agent-b"):
             (self.run / "asap-gzip" / f"controller-config-{agent}.yaml").write_text((self.run / "asap-gzip" / "controller-config.yaml").read_text())
         (self.run / "asap-gzip" / "controller.log").write_text("agent reported remote-config status agent=agent-a status=Applied\nagent reported remote-config status agent=agent-b status=Applied\n")

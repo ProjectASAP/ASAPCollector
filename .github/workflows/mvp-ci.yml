@@ -42,8 +42,9 @@ jobs:
       - name: Initialize Collector and Go SDK dependencies
         working-directory: ASAPCollector
         run: |
-          git submodule update --init opentelemetry-collector opentelemetry-go
+          git submodule update --init opentelemetry-collector opentelemetry-collector-contrib opentelemetry-go
           ./restore_otel_collector_patches.sh
+          ./restore_otel_collector_contrib_patches.sh
           ./restore_opentelemetry_go_patches.sh
 
       - name: Install Go
@@ -51,6 +52,10 @@ jobs:
         with:
           go-version: "1.24.x"
           cache: false
+
+      - name: Build MVP Collector distribution
+        working-directory: ASAPCollector
+        run: ./build_asap_otel.sh --skip-patches
 
       - name: Install Rust components
         run: rustup component add rustfmt clippy

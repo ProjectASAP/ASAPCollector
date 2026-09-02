@@ -299,14 +299,18 @@ def control_plane_evidence(arm_dir: str, expected_agents: list[str]) -> dict[str
     with open(os.path.join(arm_dir, "controller.log"), encoding="utf-8") as handle:
         log_text = handle.read().lower()
     applied = all(any("agent reported remote-config status" in line and f"agent={agent}" in line and "status=applied" in line for line in log_text.splitlines()) for agent in expected_agents)
-    full_only = any(token in config_text for token in
-                    ("kllprocessor", "kll/", "sumprocessor", "sum/"))
+    # KLL materializations are full-only; the fused processor expresses the
+    # same commitment through the per-family delta flag.
+    full_only = "family: kll" in config_text
     return {
         "connected": connected, "applied": applied,
         "configs_equal": configs_equal,
         "delta": "delta_transmission: true" in config_text,
         "full": full_only or "delta_transmission: false" in config_text,
-        "raw_passthrough": "raw_passthrough" in config_text,
+        # The fused processor forwards metrics absent from its materialization
+        # list, so a separate raw_passthrough pipeline is no longer required.
+        "raw_passthrough": "raw_passthrough" in config_text
+        or ("asap_edge:" in config_text and "drop_original: true" in config_text),
     }
 
 

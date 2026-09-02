@@ -1,180 +1,24 @@
-# Agent config — ASAP-GZIP arm: 5-sketch routing-connector pipeline +
-# edge Sum-by-zone aggregation, exported to the backend over OTLP gRPC
-# with `compression: gzip`.
-#
-# ── Role in the compression-matched bandwidth sweep ──────────────────
-# This matches the plain `asap` arm config with exactly one change:
-# `exporters.otlp/backend.compression: none` → `gzip`. The
-# aggregation behaviour (edge Sum-by-zone via metricstransform, per-
-# series DDSketch/KLL/HLL/CountSketch/CountMinSketch, gorillas3 cold
-# tier) is identical; only the wire codec differs.
-#
-# It is the matched-GZIP aggregation arm — the partner of the `b1`
-# baseline (raw OTLP→VM, compression gzip). Comparing b1-vs-asap-gzip
-# isolates the AGGREGATION gain at codec=gzip (the sweep's PRIMARY
-# matched comparison). The backend must `.accept_compressed(Gzip)` on
-# its OTLP gRPC receiver to decode these bodies — see ASAPQuery-backend
-# branch feat/backend-accept-gzip-otlp.
-#
-# When updating the asap arm, mirror the change here (and vice versa);
-# the two files must stay identical except for the one compression line.
-#
-# ── Original placeholder rationale (retained) ────────────────────────
-# Agent static placeholder — 5-sketch routing-connector pipeline.
-#
-# ── Why this file exists ──────────────────────────────────────────────
-#
-# PR #350's report flagged a real OpAMP-push gap: the controller emits
-# the typed 5-sketch routing-connector YAML correctly, but the agent
-# never APPLIES the OpAMP RemoteConfig push at runtime. The
-# effective-config preview keeps showing the static bootstrap YAML
-# loaded from this file, and the agent stays on whatever pipeline this
-# file declares.
-#
-# Previously this file declared a single `[gorillas3, ddsketch, batch]`
-# pipeline ("issue #46 v4 single-sketch ASAP demo"), so the running
-# agent only ever ran ONE sketch (DDSketch) regardless of how many
-# sketch families the controller plan picked. KLL / HLL / CountSketch /
-# CountMinSketch processors never ran, breaking the §3 architecture
-# story (one agent → five concurrent sketch pipelines → backend serves
-# five concurrent query families).
-#
-# The fix in this PR: make the static placeholder match the EXACT shape
-# the controller's typed bootstrap emits via
-# `emit_edge_yaml_5sketch_routing` (controller/src/config/stage_config.rs).
-# That way, even without OpAMP-push, agents start with all 5 sketch
-# processors loaded + the routing connector + per-sketch pipelines, and
-# the running pipeline graph matches what the controller plan claims.
-#
-# ── Wire shape (mirrors controller emit) ─────────────────────────────
-#
-#   receivers.otlp           — gRPC :4317 + HTTP :4318, max 64 MiB
-#   processors.gorillas3     — cold-tier archive write
-#   processors.{ddsketch, KLL, HLL, countsketch, countmin}
-#   processors.batch         — coalesce per-pipeline output
-#   connectors.routing       — OTel v0.106 connector (NOT processor)
-#   exporters.otlp/backend   — data-plane:4317  (was gateway:4317 pre-#400)
-#
-#   service.pipelines:
-#     metrics:                     receivers:[otlp]    exporters:[routing]
-#     metrics/raw_passthrough:     receivers:[routing] processors:[gorillas3, batch]              exporters:[otlp/backend]
-#     metrics/ddsketch_path:       receivers:[routing] processors:[gorillas3, ddsketch, batch]    exporters:[otlp/backend]
-#     metrics/kll_path:            receivers:[routing] processors:[gorillas3, KLL, batch]         exporters:[otlp/backend]
-#     metrics/hll_path:            receivers:[routing] processors:[gorillas3, HLL, batch]         exporters:[otlp/backend]
-#     metrics/countsketch_path:    receivers:[routing] processors:[gorillas3, countsketch, batch] exporters:[otlp/backend]
-#     metrics/countminsketch_path: receivers:[routing] processors:[gorillas3, countmin, batch]    exporters:[otlp/backend]
-#
-# Processor key names match the IDs the patched contrib build's
-# `factory.go` registers — verified by `asap-otel components`:
-#   ddsketch   KLL   HLL   countsketch   countmin   gorillas3   batch
-# (NOT the Rust controller-side `*processor` aliases used in
-# `controller/src/config/stage_config.rs::sketch_kind_to_processor_name`;
-# those don't appear in the agent's component registry, so the
-# controller-emitted YAML can't be loaded either — that's the residual
-# half of #350 that has to be fixed in the controller emitter and is
-# out of scope for this PR. This static placeholder uses the registered
-# names so it actually loads and the running pipeline matches the
-# documented shape.)
-#
-# All 5 per-family pipelines are pre-declared so a controller replan
-# that retargets a metric onto a new family is zero-touch on the
-# pipeline graph (only the routing-connector table changes).
-#
-# IMPORTANT: `routing` MUST live under `connectors:`, not `processors:`.
-# OTel collector v0.106 removed the deprecated `routingprocessor`; the
-# routing component is now a `routingconnector`. Emitting it under
-# `processors:` would fail agent boot.
+# Matched-codec ASAP arm. This is the static bootstrap used before a typed
+# CollectorPlan arrives; the fused processor owns every warm materialization.
 
 extensions:
   opamp:
     server:
       ws:
         endpoint: ws://control-plane:4320/v1/opamp
-        # Header-based agent identification — see
-        # `asap-otel-agent-b3-delta-direct.yaml` for the rationale
-        # (controller's OpAMP server uses X-Agent-ID, not the
-        # InstanceUid carried in the OpAMP message body).
         headers:
-          X-Agent-ID: "agent-1"
+          X-Agent-ID: agent-1
 
 receivers:
   otlp:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
-        # 64 MiB so high-cardinality producer batches (e.g. 5K series ×
-        # 500 user_ids) don't trip the 4 MiB grpc default and get
-        # rejected by the agent. Mirrors the gateway receiver knob and
-        # the controller emit.
         max_recv_msg_size_mib: 4096
       http:
         endpoint: 0.0.0.0:4318
 
 processors:
-  # ── memory_limiter — backpressure BEFORE gorillas3 ───────────────────
-  #
-  # Follow-up to PR #355's gorillas3 archive-write fix: even with
-  # `window_interval: 5s`, the agent was OOM-killed (exit 137) after
-  # ~3 minutes under sustained load. Six per-family pipelines × 5
-  # producers × ~30 K events / s overshoots the 1.5 GiB cgroup limit
-  # at peak before the gorillas3 ticker reaps the windowState buffer.
-  #
-  # The OpenTelemetry Collector's `memory_limiter` processor refuses
-  # incoming data when RSS crosses a soft threshold, applying
-  # backpressure to upstream senders rather than crashing. It MUST be
-  # the FIRST processor in every per-sketch pipeline so it sees the
-  # batch BEFORE gorillas3 buffers it into the in-memory windowState
-  # — limiting after gorillas3 would mean the buffer has already
-  # accreted on heap by the time the limiter rejects.
-  #
-  # Threshold rationale: agent cgroup is 1536 MiB. We pick
-  #   limit_mib       = 1280  (≈ 80 % of cgroup)
-  #   spike_limit_mib = 256   (≈ 17 % of cgroup; mirrors the gateway)
-  # so the limiter starts shedding load at 1024 MiB soft / 1280 MiB
-  # hard, leaving 256 MiB of headroom under the cgroup ceiling for
-  # short bursts. The gateway placeholder uses the same shape
-  # (`asap-otel-gateway-mvp-placeholder.yaml` ships
-  # `limit_mib: 1536, spike_limit_mib: 256`) — gateway has its own
-  # 2 GiB cgroup so 1536 is safe there; agent has 1.5 GiB so we drop
-  # to 1280.
-  memory_limiter:
-    check_interval: 1s
-    limit_mib: 1280
-    spike_limit_mib: 256
-
-  # ── cumulativetodelta — Issue #298 (ASAPQuery-backend) ───────────────
-  #
-  # The OTel SDK's `Counter` instruments default to CUMULATIVE
-  # temporality: every export carries the running lifetime value, not
-  # the per-export delta. The backend's `SumAccumulator`
-  # (data_plane/src/precompute_engine/operators/sum_accumulator.rs)
-  # naïvely sums every incoming value into per-window state — fed
-  # cumulative data, it computes `Σ-of-cumulatives-in-window`, a
-  # quadratic-in-time blowup. The replay path then re-sums those
-  # inflated per-window values across the lookback range → cubic
-  # blowup for instant `sum by (zone) (counter)` queries.
-  # (Observed pre-fix: `sum by (zone) (http_requests_total)` returned
-  # ~300× the baseline value.)
-  #
-  # The fix is to convert cumulative → delta upstream of the routing
-  # connector so every per-family pipeline AND the raw_passthrough
-  # default see deltas. `match_type: strict` keeps the processor a
-  # no-op for any metric NOT in the include list (gauges like
-  # `http_requests_total_latency_ms` are unaffected — quantile
-  # workloads keep their wire shape; gauges don't carry temporality
-  # at all and the processor leaves them untouched).
-  #
-  # MUST be the FIRST processor on the entry `metrics:` pipeline so
-  # routing-connector fan-out runs on already-delta data. Per-family
-  # placement would (a) duplicate work and (b) risk double-conversion
-  # on metrics fanned to multiple pipelines.
-  #
-  # The included metrics are the workload's Counter-shaped exports
-  # (`http_requests_total`, `endpoint_request_freq`,
-  # `unique_users_per_min`, `top_endpoint_qps`); add new Counter
-  # metrics to this list when extending the workload. b0/b1 baseline
-  # pipelines push to VictoriaMetrics / Prometheus which EXPECT
-  # cumulative — do NOT inject this processor there.
   cumulativetodelta:
     include:
       metrics:
@@ -184,326 +28,65 @@ processors:
         - top_endpoint_qps
       match_type: strict
 
-  # ── Cold tier: Gorilla-S3 archive write ──────────────────────────────
-  # Runs FIRST in every per-family pipeline so the cold-tier write
-  # happens on raw samples BEFORE the sketch processor mutates / suffix-
-  # renames the stream. `drop_original: false` lets the raw metric pass
-  # through to the warm-tier sketch processor on each path.
-  #
-  # `block_format: prometheus_tsdb` + dedicated `asap-gorilla-tsdb`
-  # bucket so the Thanos store-gateway sidecar in
-  # mvp-thanos-archive.yml can read the blocks (Path A2).
-  #
-  # Endpoint / bucket / creds match the `mvp-multi-stage.yml` defaults.
-  # The controller's typed emit uses `${VAR:-default}` shell-style
-  # fallbacks; the OTel v0.106 confmap rejects that form
-  # (`invalid uri: "VAR:-..."`), so the static placeholder pins the
-  # same defaults verbatim.
-  #
-  # PR #355 / fix/thanos-archive-write-regression: window_interval
-  # is held at 5 s (was 60 s pre-fix). Each per-family pipeline owns
-  # an independent gorillas3 instance and an independent in-memory
-  # `windowState` buffer; PR #353 spawned six such instances (one
-  # per per-family pipeline) and PR #338's otel-app cardinality
-  # (5 producers × 500 user_ids × ~30 K events / s) means each window
-  # accretes ~30 MiB of buffered samples per second per pipeline.
-  # With six pipelines and a 60 s window, the in-memory working set
-  # alone overshot the agent's 1.5 GiB memory limit BEFORE the first
-  # flush ticker fired — the agent was OOM-killed and zero TSDB
-  # blocks ever reached MinIO (archive_ok = 0 in the post-PR-#354
-  # MVP rerun). At 5 s the per-pipeline window peaks around 150 MiB
-  # before the ticker reaps it, putting the steady-state aggregate
-  # comfortably inside the budget. The controller's typed emit uses
-  # 10 s, so the eventual OpAMP push will swing only 2× rather than
-  # 12× from the static placeholder; once the OpAMP path actually
-  # applies emitted YAML, the placeholder can converge to that value.
-  # `tsdb_block_duration` stays at 60 s so the produced blocks still
-  # span a full minute (each flush rolls a new sub-block; thanos-
-  # compact will merge them downstream), keeping the on-S3 layout
-  # compatible with the Thanos store-gateway sync interval and with
-  # the existing block consumer sweep cadence.
-  gorillas3:
-    window_interval: 5s
-    drop_original: false
-    endpoint: http://minio:9000
-    # `bucket:` removed in PR #388 (B1 downstream Phase 3) — the legacy
-    # Bucket field was deleted from gorillas3processor/config.go; only
-    # `tsdb_bucket` remains. Leaving the key here causes a crash-loop:
-    # `'gorillas3' ... '' has invalid keys: bucket`.
-    region: us-east-1
-    use_ssl: false
-    access_key_id: asap
-    secret_access_key: asap-local-only
-    prefix_template: "{tenant}/{metric}/{YYYY}/{MM}/{DD}/{HH}/"
-    tenant: default
-    max_retries: 3
-    retry_backoff: 1s
-    upload_timeout: 30s
-    block_format: prometheus_tsdb
-    tsdb_bucket: asap-gorilla-tsdb
-    tsdb_block_duration: 60s
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1280
+    spike_limit_mib: 256
 
-  # ── DDSketch — quantile family (relative-error). ─────────────────────
-  # Note: the controller emit decorates each processor with
-  # `aggregation_id` + `sketch_kind` keys — those aren't in the patched
-  # contrib build's `Config` struct (only the family-specific knobs are
-  # accepted), so the static placeholder omits them. This is the
-  # residual half of #350 that must be fixed in the controller emit;
-  # this PR's job is to give agents a static config that ACTUALLY
-  # LOADS with all 5 sketch processors active.
-  ddsketch:
-    mode: window
+  asap_edge:
     window_duration: 60s
-    transmit_sketch: true
-    enable_self_monitoring: true
+    drop_original: true
     delta_transmission: true
-    quantiles: [0.5, 0.9, 0.99]
-
-  # ── KLL — quantile family (rank-error). ──────────────────────────────
-  # NO `delta_transmission` for KLL: KLL uses randomised compaction so
-  # two sketches over the same input history are not bit-identical and
-  # not linearly mergeable. The KLL processor's `Config.Validate`
-  # rejects `delta_transmission: true` with an error rather than
-  # silently falling back; emitting the flag would break agent boot.
-  KLL:
-    mode: window
-    window_duration: 60s
-    k: 200
-    transmit_sketch: true
-    enable_self_monitoring: true
-    quantiles: [0.5, 0.9, 0.99]
-    # KLL processor's `Config` struct has no `encoding` key — KLL is
-    # always serialised as msgpack (DataSketches stream format), and
-    # the processor rejects unknown keys.
-
-  # ── HLL — cardinality family. ────────────────────────────────────────
-  # The patched contrib build hard-codes precision p=14, so no
-  # precision knob appears in the Config struct.
-  HLL:
-    mode: window
-    window_duration: 60s
-    transmit_sketch: true
-    enable_self_monitoring: true
-    delta_transmission: true
-    encoding: msgpack
-
-  # ── CountSketch — heavy-hitter / frequency family. ───────────────────
-  countsketch:
-    mode: window
-    window_duration: 60s
-    epsilon: 0.01
-    delta: 0.01
-    transmit_sketch: true
-    enable_self_monitoring: true
-    delta_transmission: true
-    encoding: msgpack
-
-  # ── CountMinSketch — additive frequency family. ──────────────────────
-  # `metric_name` is required by the patched countminsketch processor's
-  # Config (it does not auto-process every series). Pinned to the
-  # canonical workload metric `endpoint_request_freq` per MVP §46.
-  countmin:
-    mode: window
-    window_duration: 60s
-    metric_name: "endpoint_request_freq"
-    rows: 4
-    columns: 4096
-    transmit_sketch: true
-    enable_self_monitoring: true
-    delta_transmission: true
-    encoding: msgpack
+    metrics:
+      - metric: http_requests_total
+        family: sum
+        aggregate_by: [zone]
+      - metric: http_requests_total_latency_ms
+        family: ddsketch
+        relative_accuracy: 0.01
+      - metric: request_size_bytes
+        family: kll
+        k: 200
+        delta_transmission: false
+      - metric: unique_users_per_min
+        family: hll
+      - metric: top_endpoint_qps
+        family: countsketch
+        rows: 4
+        cols: 4096
+      - metric: endpoint_request_freq
+        family: countminsketch
+        rows: 4
+        cols: 4096
+    cold:
+      enabled: true
+      block_duration: 60s
+      endpoint: http://minio:9000
+      tsdb_bucket: asap-gorilla-tsdb
+      tenant: default
+      region: us-east-1
+      access_key_id: asap
+      secret_access_key: asap-local-only
+      use_ssl: false
 
   batch:
     send_batch_size: 1024
     timeout: 1s
 
-  # ── Edge Sum-by-zone aggregation — Issue #403 (bandwidth fix) ────────
-  #
-  # `http_requests_total` is a Sum-role counter whose marquee queries are
-  # `sum by (zone) (...)` and `sum by (zone) (rate(...[5m]))`. Pre-#403
-  # it fell through the routing connector's `default_pipelines` into
-  # `metrics/raw_passthrough` (processors: [memory_limiter, gorillas3,
-  # batch] — NO aggregation), so every single counter datapoint across
-  # ~10,000 (zone × rack × node × pod) series streamed continuously to
-  # the backend, which did the Sum-by-zone fan-in centrally via
-  # `evaluate_exact_agg`. Measured at ~12 Mbps of the asap arm's ~12.5
-  # Mbps backend-ingress — the dominant driver, inverting the demo's
-  # edge-aggregation value prop.
-  #
-  # The fix: pre-reduce the counter's cardinality AT THE EDGE so the
-  # agent ships 4 per-zone summed series per flush window instead of
-  # ~10k raw series continuously. The backend's `evaluate_exact_agg`
-  # aggregates whatever sids land, so 4 pre-summed zone series produce
-  # the IDENTICAL `sum by (zone)` answer (and per-zone `rate`) — the edge
-  # just collapses the rack/node/pod dimensions the queries never group
-  # by.
-  #
-  # `metricstransform` with an `aggregate_labels` operation keeping only
-  # `[zone]` and `aggregation_type: sum` is the OTel-native primitive for
-  # this: it aggregates away every label except `zone`, summing the
-  # datapoints that collapse onto the same `zone`. It runs on the
-  # already-delta stream (cumulativetodelta is upstream on the entry
-  # pipeline), so each export carries 4 per-zone delta sums; the backend
-  # `SumAccumulator` folds those per-window exactly as it would the raw
-  # deltas, just at 4-series cardinality instead of 10k.
-  #
-  # `match_type: strict` on `http_requests_total` keeps this a no-op for
-  # every other metric; the freshness probes (`http_freshness_probe_*`)
-  # keep their own raw_passthrough path untouched, and the latency gauge
-  # (`http_requests_total_latency_ms`, DDSketch-sketched per-series) is
-  # on the ddsketch_path and never reaches this processor.
-  metricstransform/groupbyzone:
-    transforms:
-      - include: http_requests_total
-        match_type: strict
-        action: update
-        operations:
-          - action: aggregate_labels
-            label_set: [zone]
-            aggregation_type: sum
-
-connectors:
-  # ── Routing connector (OTel v0.106 — NOT a processor). ───────────────
-  #
-  # OTTL `route()` table mirrors the controller's canonical
-  # `metric_to_family` map (see MVP §46 — five workload-spec metrics).
-  # Any metric NOT matched here falls through to the default
-  # `metrics/raw_passthrough` pipeline, where the cold-tier write still
-  # happens and the raw counter lands at the gateway verbatim.
-  #
-  # The freshness-probe metrics (warm/archive) explicitly route to
-  # `metrics/raw_passthrough` so their metric NAME is preserved end-to-
-  # end (no sketch processor suffixes them).
-  routing:
-    # `context: metric` on each table entry — required so OTTL paths
-    # resolve against the metric scope (where `name` is the metric
-    # name). The default `resource` context only exposes resource
-    # attributes; without `context: metric` the connector errors at
-    # build time with "segment 'name' from path 'name' is not a valid
-    # path nor a valid OTTL keyword for the resource context". The
-    # `condition:` form is the per-entry OTTL boolean (mutually
-    # exclusive with `statement:`); we use `condition:` so the
-    # routing decision is a pure boolean dispatch on the metric name.
-    default_pipelines: [metrics/raw_passthrough]
-    table:
-      # Issue #403: route the Sum-role counter to the dedicated
-      # edge-aggregation pipeline (metricstransform Sum-by-zone) instead
-      # of letting it fall through to raw_passthrough. Ships 4 per-zone
-      # summed series per flush window, not ~10k raw counters continuously.
-      - context: metric
-        condition: 'name == "http_requests_total"'
-        pipelines: [metrics/sum_aggregate]
-      - context: metric
-        condition: 'name == "http_requests_total_latency_ms"'
-        pipelines: [metrics/ddsketch_path]
-      - context: metric
-        condition: 'name == "request_size_bytes"'
-        pipelines: [metrics/kll_path]
-      - context: metric
-        condition: 'name == "unique_users_per_min"'
-        pipelines: [metrics/hll_path]
-      - context: metric
-        condition: 'name == "top_endpoint_qps"'
-        pipelines: [metrics/countsketch_path]
-      - context: metric
-        condition: 'name == "endpoint_request_freq"'
-        pipelines: [metrics/countminsketch_path]
-      - context: metric
-        condition: 'name == "http_freshness_probe_warm"'
-        pipelines: [metrics/raw_passthrough]
-      - context: metric
-        condition: 'name == "http_freshness_probe_archive"'
-        pipelines: [metrics/raw_passthrough]
-
 exporters:
   otlp/backend:
-    # Issue #400 (2026-05): the asap-gateway intermediary was removed
-    # because the wave-tier backend now does its own cross-agent
-    # fan-in (PRs #283/#287/#290 — backend `evaluate_exact_agg` pulls
-    # sids from every agent for sum-by aggregations). Agents push OTLP
-    # straight to data-plane:4317, eliminating the ~10 Mbps double-hop
-    # the gateway used to add per arm.
     endpoint: data-plane:4317
+    compression: gzip
     tls:
       insecure: true
-    # ASAP-GZIP arm: gzip-compress the per-window sketch/aggregate
-    # payload on the wire. This is the ONLY line that differs from the
-    # plain `asap` arm config. The backend's tonic OTLP gRPC server
-    # accepts gzip via `.accept_compressed(CompressionEncoding::Gzip)`
-    # (ASAPQuery-backend feat/backend-accept-gzip-otlp); tonic negotiates
-    # the codec per-RPC via the grpc-encoding header. Matched-codec
-    # partner of the `b1` baseline (raw OTLP→VM, compression gzip).
-    compression: gzip
 
 service:
   extensions: [opamp]
   pipelines:
-    # Entry pipeline — receivers: [otlp], processors:
-    # [cumulativetodelta], exporters: [routing] (the connector).
-    # Issue #298: cumulativetodelta runs FIRST so the routing
-    # connector's per-family fan-out sees delta-temporality data for
-    # the workload's Counter-shaped metrics. See processor block
-    # above for the rationale.
     metrics:
       receivers: [otlp]
-      processors: [cumulativetodelta]
-      exporters: [routing]
-
-    # Default raw-passthrough — memory_limiter then gorillas3 then
-    # batch. NO sketch processor; raw counters land at the gateway
-    # verbatim. Also the destination of warm/archive freshness probes
-    # (their metric name is preserved end-to-end). memory_limiter MUST
-    # come first so backpressure rejects incoming batches BEFORE
-    # gorillas3 buffers them into windowState.
-    metrics/raw_passthrough:
-      receivers: [routing]
-      processors: [memory_limiter, gorillas3, batch]
+      processors: [cumulativetodelta, memory_limiter, asap_edge, batch]
       exporters: [otlp/backend]
-
-    # ── Edge Sum-by-zone aggregation path — Issue #403 ─────────────────
-    # `http_requests_total` (the Sum-role counter) routes here instead of
-    # raw_passthrough. memory_limiter applies backpressure first;
-    # gorillas3 still writes RAW (full-cardinality) samples to the
-    # cold-tier archive BEFORE the metricstransform collapses the
-    # rack/node/pod dimensions (so `count(http_requests_total{zone="z0"})`
-    # cold-fallback drill-down still sees per-series data in MinIO).
-    # metricstransform/groupbyzone then Sum-by-zone reduces the stream to
-    # 4 per-zone delta series; batch coalesces the per-window export. The
-    # backend's evaluate_exact_agg produces the same `sum by (zone)` /
-    # per-zone `rate` answer at 4-series cardinality instead of ~10k raw.
-    metrics/sum_aggregate:
-      receivers: [routing]
-      processors: [memory_limiter, gorillas3, metricstransform/groupbyzone, batch]
-      exporters: [otlp/backend]
-
-    # Per-family pipelines. Each starts with memory_limiter (drop /
-    # refuse on heap pressure) then gorillas3 (cold-tier write on raw
-    # samples) BEFORE the sketch processor mutates the stream.
-    metrics/ddsketch_path:
-      receivers: [routing]
-      processors: [memory_limiter, gorillas3, ddsketch, batch]
-      exporters: [otlp/backend]
-
-    metrics/kll_path:
-      receivers: [routing]
-      processors: [memory_limiter, gorillas3, KLL, batch]
-      exporters: [otlp/backend]
-
-    metrics/hll_path:
-      receivers: [routing]
-      processors: [memory_limiter, gorillas3, HLL, batch]
-      exporters: [otlp/backend]
-
-    metrics/countsketch_path:
-      receivers: [routing]
-      processors: [memory_limiter, gorillas3, countsketch, batch]
-      exporters: [otlp/backend]
-
-    metrics/countminsketch_path:
-      receivers: [routing]
-      processors: [memory_limiter, gorillas3, countmin, batch]
-      exporters: [otlp/backend]
-
   telemetry:
     logs:
       level: info

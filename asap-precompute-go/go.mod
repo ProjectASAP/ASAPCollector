@@ -5,7 +5,6 @@ go 1.24.0
 require (
 	github.com/ProjectASAP/sketchlib-go v0.0.0-20260902175118-670237fb026a
 	github.com/cespare/xxhash/v2 v2.3.0
-	github.com/influxdata/telegraf v1.34.4
 	go.opentelemetry.io/collector/pdata v1.42.0
 	go.opentelemetry.io/otel v1.38.0
 	google.golang.org/protobuf v1.36.11
@@ -22,6 +21,7 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/prometheus v0.307.1 // indirect
 	github.com/rogpeppe/go-internal v1.13.1 // indirect
+	github.com/zeebo/assert v1.3.1 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/collector/featuregate v1.47.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

@@ -25,7 +25,7 @@
 # without a delta variant (`Implementation.tex`: "KLL has no delta
 # variant and matches its full cost"), so its wire payload is always
 # full state — the controller does NOT emit `delta_transmission` for
-# KLL because the kllprocessor's `Config.Validate` rejects
+# KLL because the asap_edge (`family: kll`)'s `Config.Validate` rejects
 # `delta_transmission: true` outright.
 #
 # See `docs/mvp-demo-runbook.md` §"Bandwidth criterion ① — break-even
@@ -115,7 +115,7 @@
 # 5. KLL — rank-error quantile on a heavy-tailed body-size dist.
 #    Inner: per-series quantile over a 30s sliding window.
 #    Stage: edge — KLL state flushes per window close, no delta
-#    variant (kllprocessor's Config.Validate rejects
+#    variant (asap_edge (`family: kll`)'s Config.Validate rejects
 #    delta_transmission: true). Backend stores the resulting KLL
 #    state.
 #
