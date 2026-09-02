@@ -43,12 +43,12 @@ jobs:
 
       - name: Check MVP collector
         working-directory: ASAPCollector/asap-precompute-rs
-        run: cargo check --locked --features otap-engine
+        run: cargo check --locked --all-features
 
       - name: Lint MVP collector
         working-directory: ASAPCollector/asap-precompute-rs
-        run: cargo clippy --locked --features otap-engine --all-targets
+        run: cargo clippy --locked --all-features --all-targets
 
       - name: Test MVP collector
         working-directory: ASAPCollector/asap-precompute-rs
-        run: cargo test --locked --features otap-engine
+        run: cargo test --locked --all-features
