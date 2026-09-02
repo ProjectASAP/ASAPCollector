@@ -108,7 +108,7 @@ func (m CollectorMaterialization) precomputeConfig(planID uint64) (PrecomputeCon
 		m.Lifecycle.OutputRepresentation != "summary_state" {
 		return PrecomputeConfig{}, errors.New("unsupported lifecycle; collector requires continuously_maintained/incremental/per_update/summary_state")
 	}
-	kind, params, topk, err := m.runtimeSketch()
+	kind, aggKind, params, topk, err := m.runtimeSketch()
 	if err != nil {
 		return PrecomputeConfig{}, err
 	}
@@ -119,6 +119,7 @@ func (m CollectorMaterialization) precomputeConfig(planID uint64) (PrecomputeCon
 	return PrecomputeConfig{
 		AggID:          collectorMaterializationID(planID, m.QueryID),
 		SketchType:     kind,
+		AggKind:        aggKind,
 		Mode:           Tumbling,
 		Window:         WindowSpec{Size: window, Slide: window},
 		AggregateBy:    append([]string(nil), m.GroupBy...),
@@ -129,7 +130,7 @@ func (m CollectorMaterialization) precomputeConfig(planID uint64) (PrecomputeCon
 	}, nil
 }
 
-func (m CollectorMaterialization) runtimeSketch() (SketchType, SketchParams, bool, error) {
+func (m CollectorMaterialization) runtimeSketch() (SketchType, AggregationKind, SketchParams, bool, error) {
 	params := make(SketchParams)
 	require := func(wire, runtime string) error {
 		value, ok := m.Parameters[wire]
@@ -140,62 +141,65 @@ func (m CollectorMaterialization) runtimeSketch() (SketchType, SketchParams, boo
 		return nil
 	}
 	var kind SketchType
+	var aggKind AggregationKind
 	var topk bool
 	switch m.Algorithm {
+	case "sum":
+		aggKind = AggKindSum
 	case "ddsketch":
 		kind = SketchTypeDDSketch
 		if err := require("alpha", "relative_accuracy"); err != nil {
-			return 0, nil, false, err
+			return 0, 0, nil, false, err
 		}
 		if params["relative_accuracy"] >= 1 {
-			return 0, nil, false, errors.New("alpha must be in (0, 1)")
+			return 0, 0, nil, false, errors.New("alpha must be in (0, 1)")
 		}
 	case "kll":
 		kind = SketchTypeKLLSketch
 		if err := require("k", "k"); err != nil {
-			return 0, nil, false, err
+			return 0, 0, nil, false, err
 		}
 		if params["k"] < 8 {
-			return 0, nil, false, errors.New("KLL k must be at least 8")
+			return 0, 0, nil, false, errors.New("KLL k must be at least 8")
 		}
 	case "hll":
 		kind = SketchTypeHLLSketch
 		if err := require("precision", "precision"); err != nil {
-			return 0, nil, false, err
+			return 0, 0, nil, false, err
 		}
 		if params["precision"] < 4 || params["precision"] > 18 {
-			return 0, nil, false, errors.New("HLL precision must be in [4, 18]")
+			return 0, 0, nil, false, errors.New("HLL precision must be in [4, 18]")
 		}
 	case "cms", "cmswithheap":
 		kind, topk = SketchTypeCountMinSketch, m.Algorithm == "cmswithheap"
 		if err := require("width", "columns"); err != nil {
-			return 0, nil, false, err
+			return 0, 0, nil, false, err
 		}
 		if err := require("depth", "rows"); err != nil {
-			return 0, nil, false, err
+			return 0, 0, nil, false, err
 		}
 		if topk {
 			if err := require("heap_size", "heap_size"); err != nil {
-				return 0, nil, false, err
+				return 0, 0, nil, false, err
 			}
 		}
 	case "countsketch", "countsketchwithheap":
 		kind, topk = SketchTypeCountSketch, m.Algorithm == "countsketchwithheap"
 		if err := require("width", "width"); err != nil {
-			return 0, nil, false, err
+			return 0, 0, nil, false, err
 		}
 		if err := require("depth", "depth"); err != nil {
-			return 0, nil, false, err
+			return 0, 0, nil, false, err
 		}
 		if topk {
 			if err := require("heap_size", "heap_size"); err != nil {
-				return 0, nil, false, err
+				return 0, 0, nil, false, err
 			}
 		}
 	default:
-		return 0, nil, false, fmt.Errorf("unsupported algorithm %q", m.Algorithm)
+		return 0, 0, nil, false, fmt.Errorf("unsupported algorithm %q", m.Algorithm)
 	}
-	return kind, params, topk, nil
+	return kind, aggKind, params, topk, nil
 }
 
 // collectorMaterializationID is deliberately language-neutral: FNV-1a over

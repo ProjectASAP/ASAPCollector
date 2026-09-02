@@ -42,6 +42,20 @@ func TestDecodeCollectorPlanPreservesPhysicalDecision(t *testing.T) {
 	}
 }
 
+func TestDecodeCollectorPlanAcceptsSumAccumulator(t *testing.T) {
+	set, err := DecodeCollectorPlan(collectorPlanBody(t, "sum", map[string]float64{}, nil), "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := set.Configs[0]
+	if cfg.AggKind != AggKindSum {
+		t.Fatalf("sum aggregation kind changed: %+v", cfg)
+	}
+	if cfg.SketchType != SketchTypeUnspecified {
+		t.Fatalf("sum must not masquerade as a sketch: %+v", cfg)
+	}
+}
+
 func TestDecodeCollectorPlanRejectsUnsupportedLifecycle(t *testing.T) {
 	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
 	var plan CollectorPlan
