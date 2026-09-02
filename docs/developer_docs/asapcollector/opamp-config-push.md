@@ -64,7 +64,7 @@ The MVP body is UTF-8 JSON. Field names below are exact.
   "envelope": {
     "plan_id": 42,
     "generated_at_unix_ms": 10000,
-    "planner_revision": "6a2e26f0a9c9d0cecbe8492185db7ad5ed994019",
+    "planner_revision": "5d0b6f6edcac65edc89a72051f37977ab0c83031",
     "capability_snapshot_id": "caps-7"
   },
   "materializations": [
