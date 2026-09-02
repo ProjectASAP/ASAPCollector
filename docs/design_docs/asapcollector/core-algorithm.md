@@ -1035,17 +1035,15 @@ executes a fixed per-cell comparison.
   global sketch continuously queryable within the Theorem-4.1 envelope, surfaced in
   the `accuracy: ε=…` response annotation.
 
-**Retirements.** The insert-time model (§7 Layer D) replaces the following
-in the current code — tracked here since it isn't deleted yet:
+**Compatibility boundaries.** The insert-time model (§7 Layer D) coexists with
+the following non-GOS and sampling-control paths:
 
 - **Gate 1** (`subWindowShouldEmit` / `L2DivergenceSinceEmit` / `ackedCells`):
-  the old periodic whole-sketch divergence pre-check, run once per
-  `SubWindowInterval` tick regardless of whether anything had actually
-  crossed threshold. The replacement uses `crossedSet` for magnitude-triggered
-  work plus a pending-deadline index for expired subthreshold changes. Only
-  when both are empty is there nothing to send; neither requires a periodic
-  `O(dw)` scan. The old divergence pre-check is dead code under Layer D, not
-  kept as a fallback.
+  remains the fixed, periodic divergence path when GOS is disabled. GOS-enabled
+  families bypass that scan and drain their insert-time dirty state. It must not
+  be deleted until fixed-mode plans are retired. The required freshness-deadline
+  path is separate and remains an MVP implementation requirement; the current
+  runtime does not yet maintain the pending-age index described in §7.
 - **CMS's local point-query read** (`ThresholdConfig.Functional: cms_point`,
   `CMSWrapper.EstimateCount`): once a cell resets in place at insert time
   (GOS mode), CMS's `min`-across-rows estimate is corrupted by any single
@@ -1057,17 +1055,11 @@ in the current code — tracked here since it isn't deleted yet:
   serving `cms_point` unaffected by GOS mode. A CMS series not running in
   GOS mode is also unaffected — the corruption is specifically an
   insert-time-reset problem, not an inherent property of CMS's estimator.
-- **Discipline B's alerting path** (`monitor.Engine.Observe` →
-  `sendReportLocked` over `monitor/grpcclient`): Sum becomes just another
-  family running the Layer D insert-time check, synced over the normal
-  `SketchEnvelope` pipeline like everything else. `Engine.Observe` today
-  conflates two things in one function: `obsCount++` (rate tracking,
-  feeding the coordinator's `SampleP` grant negotiation) and the
-  `value-baseline>=slack` alerting check (which calls `sendReportLocked`).
-  Only the *alerting* half retires; `obsCount`/rate-tracking must be
-  preserved (it feeds a genuinely separate concern — sampling-rate
-  negotiation, not data sync) — the two halves need to be split apart, not
-  deleted together.
+- **Monitor control path** (`monitor.Engine.Observe` → `monitor/grpcclient`):
+  remains active for observation-rate tracking and sampling-grant negotiation.
+  It is not part of GOS data synchronization and must not be removed as stale
+  code. Any future removal of its legacy alerting responsibility must preserve
+  the rate and grant state machine as a separate concern.
 
 **Ties to existing code:**
 - `ASAPQuery-backend/control_plane/src/epsilon_alloc.rs` — the ε-budget split
