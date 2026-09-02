@@ -75,9 +75,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use arrow_array::{
-    Array, BinaryArray, RecordBatch, StringArray, UInt32Array, UInt64Array,
-};
+use arrow_array::{Array, BinaryArray, RecordBatch, StringArray, UInt32Array, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use thiserror::Error;
 
@@ -193,8 +191,7 @@ pub const ATTR_BATCH_INT: &str = "int";
 /// the corresponding cell is null.
 pub fn flatten(records: &OtapMetricRecords) -> Result<RecordBatch, OtapRecordsError> {
     let n_rows = records.metrics.num_rows();
-    let parent_ids =
-        require_uint32(&records.metrics, "metrics", ATTR_BATCH_PARENT_ID)?.clone();
+    let parent_ids = require_uint32(&records.metrics, "metrics", ATTR_BATCH_PARENT_ID)?.clone();
 
     // Index attribute rows by parent_id → vec<(key, typed value)>.
     let attr_index = build_attr_index(&records.attributes)?;
@@ -330,8 +327,7 @@ pub fn flatten(records: &OtapMetricRecords) -> Result<RecordBatch, OtapRecordsEr
     }
 
     let schema = Arc::new(Schema::new(fields));
-    RecordBatch::try_new(schema, columns)
-        .map_err(|e| OtapRecordsError::ArrowError(e.to_string()))
+    RecordBatch::try_new(schema, columns).map_err(|e| OtapRecordsError::ArrowError(e.to_string()))
 }
 
 /// Lift Strategy-B `_asap_*` carrier columns from a flat
@@ -633,7 +629,10 @@ fn require_uint32<'a>(
 ) -> Result<&'a UInt32Array, OtapRecordsError> {
     let col = batch
         .column_by_name(column)
-        .ok_or(OtapRecordsError::MissingColumn { batch: label, column })?;
+        .ok_or(OtapRecordsError::MissingColumn {
+            batch: label,
+            column,
+        })?;
     col.as_any()
         .downcast_ref::<UInt32Array>()
         .ok_or_else(|| OtapRecordsError::WrongColumnType {
@@ -651,7 +650,10 @@ fn require_string<'a>(
 ) -> Result<&'a StringArray, OtapRecordsError> {
     let col = batch
         .column_by_name(column)
-        .ok_or(OtapRecordsError::MissingColumn { batch: label, column })?;
+        .ok_or(OtapRecordsError::MissingColumn {
+            batch: label,
+            column,
+        })?;
     col.as_any()
         .downcast_ref::<StringArray>()
         .ok_or_else(|| OtapRecordsError::WrongColumnType {
@@ -749,8 +751,8 @@ fn downcast_binary<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::schema::{COLUMN_METRIC, COLUMN_TIME_UNIX_NANO, COLUMN_VALUE};
+    use super::*;
     use arrow_array::Float64Array;
     use arrow_schema::{Field, Schema};
 
@@ -794,7 +796,8 @@ mod tests {
             "region", // arbitrary label attribute
         ];
         let payload: &[u8] = &[0xde, 0xad, 0xbe, 0xef];
-        let attr_bytes: Vec<Option<&[u8]>> = vec![Some(payload), None, None, None, None, None, None, None];
+        let attr_bytes: Vec<Option<&[u8]>> =
+            vec![Some(payload), None, None, None, None, None, None, None];
         let attr_str: Vec<Option<&str>> = vec![
             None,
             Some("DDSketch"),
@@ -805,7 +808,16 @@ mod tests {
             Some("PROTO_FULL"),
             Some("us-east"),
         ];
-        let attr_int: Vec<Option<u64>> = vec![None, None, Some(42), Some(1), Some(1_000), Some(2_000), None, None];
+        let attr_int: Vec<Option<u64>> = vec![
+            None,
+            None,
+            Some(42),
+            Some(1),
+            Some(1_000),
+            Some(2_000),
+            None,
+            None,
+        ];
         let attributes = RecordBatch::try_new(
             attributes_schema,
             vec![
@@ -879,10 +891,7 @@ mod tests {
             .expect("envelope routed through KindEnvelope");
         assert_eq!(env.payload, vec![0xde, 0xad, 0xbe, 0xef]);
         assert_eq!(env.agg_id, 42);
-        assert_eq!(
-            env.sketch_type,
-            crate::envelope::SketchType::DDSketch
-        );
+        assert_eq!(env.sketch_type, crate::envelope::SketchType::DDSketch);
     }
 
     #[test]
@@ -926,7 +935,10 @@ mod tests {
             );
         }
         // parent_id is on the metrics side.
-        assert!(lifted.metrics.column_by_name(ATTR_BATCH_PARENT_ID).is_some());
+        assert!(lifted
+            .metrics
+            .column_by_name(ATTR_BATCH_PARENT_ID)
+            .is_some());
 
         // Round-trip the lifted family back through flatten and
         // confirm the envelope payload survives intact.
@@ -973,7 +985,10 @@ mod tests {
             Field::new(ATTR_BATCH_INT, DataType::UInt64, true),
         ]));
         let attributes = RecordBatch::new_empty(attributes_schema);
-        let records = OtapMetricRecords { metrics, attributes };
+        let records = OtapMetricRecords {
+            metrics,
+            attributes,
+        };
 
         let flat = flatten(&records).expect("flatten");
         let obs = super::super::decode_batch(&flat).expect("decode");

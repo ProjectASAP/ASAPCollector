@@ -433,10 +433,7 @@ struct Cancellation {
 
 impl Cancellation {
     fn cancel(&self) {
-        if !self
-            .fired
-            .swap(true, std::sync::atomic::Ordering::AcqRel)
-        {
+        if !self.fired.swap(true, std::sync::atomic::Ordering::AcqRel) {
             self.inner.notify_waiters();
         }
     }
@@ -502,10 +499,7 @@ mod tests {
         let plugin = AsapSketchesPlugin::from_plugin_config(&cfg).expect("config");
         // Verify the inner Precompute carries the resolved sketch
         // type (sanity-check the resolve path).
-        assert_eq!(
-            plugin.precompute().stats(),
-            StatsSnapshot::default()
-        );
+        assert_eq!(plugin.precompute().stats(), StatsSnapshot::default());
         // And that the SketchType enum landed correctly via update_config.
         let _ = SketchType::KLLSketch;
     }

@@ -14,7 +14,9 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, BinaryArray, Float64Array, RecordBatch, StringArray, UInt32Array, UInt64Array};
+use arrow_array::{
+    Array, BinaryArray, Float64Array, RecordBatch, StringArray, UInt32Array, UInt64Array,
+};
 use arrow_schema::{DataType, Field, Schema};
 
 use asap_precompute_rs::envelope::{Encoding, SketchEnvelope, SketchType};
@@ -141,7 +143,10 @@ fn encode_then_decode_preserves_envelope_bytes() {
     let envelopes = vec![
         envelope_for(SketchType::DDSketch, &[1, 1, 1, 1]),
         envelope_for(SketchType::KLLSketch, &[2, 2, 2]),
-        envelope_for(SketchType::CountMinSketch, &(0..128_u8).collect::<Vec<u8>>()),
+        envelope_for(
+            SketchType::CountMinSketch,
+            &(0..128_u8).collect::<Vec<u8>>(),
+        ),
     ];
 
     let batch = encode_batch(&envelopes).expect("encode");

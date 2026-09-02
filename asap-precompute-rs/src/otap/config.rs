@@ -47,9 +47,7 @@ pub const SKETCH_TYPE_COUNTMINSKETCH: &str = "countminsketch";
 pub enum ConfigError {
     /// User-facing `sketch_type` string didn't match any of the five
     /// supported sketches.
-    #[error(
-        "asap_sketches: unsupported sketch_type {value:?} (want one of: {valid})"
-    )]
+    #[error("asap_sketches: unsupported sketch_type {value:?} (want one of: {valid})")]
     UnknownSketchType {
         /// Raw value from config.
         value: String,
@@ -198,10 +196,7 @@ fn build_dispatch(config: &PluginConfig) -> Result<SketchDispatch, ConfigError> 
             })
         }
         SKETCH_TYPE_KLL => {
-            let k = clamp_positive_int(
-                crate::config::sketch_param_get(params, "k", 200.0),
-                200,
-            );
+            let k = clamp_positive_int(crate::config::sketch_param_get(params, "k", 200.0), 200);
             let seed_param = crate::config::sketch_param_get(params, "seed", 0.0);
             let seed = if seed_param != 0.0 {
                 Some(seed_param.to_bits())
@@ -231,10 +226,8 @@ fn build_dispatch(config: &PluginConfig) -> Result<SketchDispatch, ConfigError> 
             })
         }
         SKETCH_TYPE_COUNTSKETCH => {
-            let depth = clamp_positive_int(
-                crate::config::sketch_param_get(params, "depth", 4.0),
-                4,
-            );
+            let depth =
+                clamp_positive_int(crate::config::sketch_param_get(params, "depth", 4.0), 4);
             let width = clamp_positive_int(
                 crate::config::sketch_param_get(params, "width", 2048.0),
                 2048,
@@ -252,10 +245,8 @@ fn build_dispatch(config: &PluginConfig) -> Result<SketchDispatch, ConfigError> 
             })
         }
         SKETCH_TYPE_COUNTMINSKETCH => {
-            let depth = clamp_positive_int(
-                crate::config::sketch_param_get(params, "depth", 4.0),
-                4,
-            );
+            let depth =
+                clamp_positive_int(crate::config::sketch_param_get(params, "depth", 4.0), 4);
             let width = clamp_positive_int(
                 crate::config::sketch_param_get(params, "width", 2048.0),
                 2048,
@@ -270,8 +261,7 @@ fn build_dispatch(config: &PluginConfig) -> Result<SketchDispatch, ConfigError> 
         }
         _ => Err(ConfigError::UnknownSketchType {
             value: config.sketch_type.clone(),
-            valid:
-                "ddsketch, kll, hll, countsketch, countminsketch",
+            valid: "ddsketch, kll, hll, countsketch, countminsketch",
         }),
     }
 }
