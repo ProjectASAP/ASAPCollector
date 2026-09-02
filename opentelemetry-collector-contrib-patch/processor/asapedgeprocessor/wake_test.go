@@ -17,8 +17,8 @@ import (
 
 // TestWakeSubWindowFlushesBeforeTicker proves wakeSubWindow triggers a
 // sub-window emit immediately, independent of the SubWindowInterval ticker's
-// own cadence — the mechanism the (not-yet-landed) per-family GOS insert-time
-// checks will call. SubWindowInterval is set far longer than the test would
+// own cadence — the mechanism used by per-family GOS insert-time checks.
+// SubWindowInterval is set far longer than the test would
 // ever run, so any output observed can only have come from the wake, not the
 // ticker firing on its own.
 func TestWakeSubWindowFlushesBeforeTicker(t *testing.T) {

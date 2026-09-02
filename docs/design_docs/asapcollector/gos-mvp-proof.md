@@ -192,7 +192,7 @@ For key $y$, Count Sketch uses
 $$
 z_r(y) = s_r(y) C[r,h_r(y)],
 \qquad
-\widetilde{f}(y) = \operatorname{median}_r z_r(y).
+\widetilde{f}(y) = \mathrm{median}_r\, z_r(y).
 $$
 
 Multiplication by $s_r(y) \in \{-1,+1\}$ preserves absolute error, and the
@@ -331,10 +331,10 @@ The proof does not establish that GOS always reduces cost. Cost reduction is an
 experimental hypothesis and is accepted only if the measured run satisfies
 
 $$
-\text{accuracy pass}
-\land \text{freshness pass}
-\land \text{bytes}_{\mathrm{GOS}} < \text{bytes}_{\mathrm{full}}
-\land \text{CPU}_{\mathrm{GOS}} \le \text{declared CPU budget}.
+\mathrm{accuracy}_{\mathrm{pass}}
+\land \mathrm{freshness}_{\mathrm{pass}}
+\land \mathrm{bytes}_{\mathrm{GOS}} < \mathrm{bytes}_{\mathrm{full}}
+\land \mathrm{CPU}_{\mathrm{GOS}} \le \mathrm{CPU}_{\mathrm{budget}}.
 $$
 
 The report must also include peak memory and must compare identical workloads,
@@ -342,11 +342,11 @@ seeds, windows, query anchors, and deployment topology. A useful communication
 metric is
 
 $$
-\operatorname{saving}_{\mathrm{bytes}}
+\mathrm{saving}_{\mathrm{bytes}}
 =
 1-
-\frac{\text{bytes}_{\mathrm{GOS}}}
-     {\text{bytes}_{\mathrm{periodic\ full}}}.
+\frac{\mathrm{bytes}_{\mathrm{GOS}}}
+     {\mathrm{bytes}_{\mathrm{periodic\ full}}}.
 $$
 
 No asymptotic lower-bound claim follows from this measured ratio.
