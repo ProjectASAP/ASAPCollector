@@ -149,8 +149,7 @@ cell, GOS adds less than $kT$ point-query error:
 $$
 \boxed{
 \left|
-\widetilde{f}_{\mathrm{ideal}}(y)
--
+\widetilde{f}_{\mathrm{ideal}}(y) -
 \widetilde{f}_{\mathrm{backend}}(y)
 \right| < kT
 }.
@@ -201,8 +200,7 @@ median is 1-Lipschitz in the infinity norm. Hence
 $$
 \boxed{
 \left|
-\widetilde{f}_{\mathrm{ideal}}(y)
--
+\widetilde{f}_{\mathrm{ideal}}(y) -
 \widetilde{f}_{\mathrm{backend}}(y)
 \right| < kT
 }.
