@@ -451,7 +451,10 @@ mod tests {
         }
         assert!((exact.estimate_count(b"k") - 10_000.0).abs() < 1.0);
         let env = ProtoEnvelope::decode(exact.snapshot().unwrap().as_slice()).unwrap();
-        assert_eq!(env.sample_p, 0.0, "exact sketch must stamp 0.0 for byte-parity");
+        assert_eq!(
+            env.sample_p, 0.0,
+            "exact sketch must stamp 0.0 for byte-parity"
+        );
 
         // sampled wrapper at p=0.1: raw count ~p×, stamped sample_p == p.
         let p = 0.1;

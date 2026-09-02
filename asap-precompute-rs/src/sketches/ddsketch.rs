@@ -340,19 +340,32 @@ mod tests {
         }
         let admitted = w.sk.total_count();
         let frac = admitted as f64 / n as f64;
-        assert!((frac - p).abs() < 0.03, "admitted fraction {frac} not ≈ p={p}");
+        assert!(
+            (frac - p).abs() < 0.03,
+            "admitted fraction {frac} not ≈ p={p}"
+        );
         // scale-invariance: median of the sampled sketch ≈ median of the stream (~500).
         let med = w.quantile(0.5);
-        assert!((med - 500.0).abs() < 60.0, "sampled median {med} drifted from ~500");
+        assert!(
+            (med - 500.0).abs() < 60.0,
+            "sampled median {med} drifted from ~500"
+        );
         // envelope stamps p; exact path would stamp 0.0.
         let env = ProtoEnvelope::decode(w.snapshot().unwrap().as_slice()).unwrap();
-        assert!((env.sample_p - p).abs() < 1e-12, "envelope must stamp p, got {}", env.sample_p);
+        assert!(
+            (env.sample_p - p).abs() < 1e-12,
+            "envelope must stamp p, got {}",
+            env.sample_p
+        );
 
         let mut ex = DDSketchWrapper::new(0.01);
         SampleSetter::set_sample_p(&mut ex, 1.0); // disabled stays exact
         ex.update(1.0);
         let eenv = ProtoEnvelope::decode(ex.snapshot().unwrap().as_slice()).unwrap();
-        assert_eq!(eenv.sample_p, 0.0, "exact DDSketch must stamp 0.0 for byte-parity");
+        assert_eq!(
+            eenv.sample_p, 0.0,
+            "exact DDSketch must stamp 0.0 for byte-parity"
+        );
     }
 
     #[test]
