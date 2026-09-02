@@ -206,7 +206,14 @@ func (p *asapEdgeProcessor) Capabilities() consumer.Capabilities {
 	return consumer.Capabilities{MutatesData: true}
 }
 
-func (p *asapEdgeProcessor) Start(_ context.Context, _ component.Host) error {
+func (p *asapEdgeProcessor) Start(_ context.Context, host component.Host) error {
+	if p.cfg.ControlChannel.OpAMPExtension != nil {
+		bridge, err := newOpAMPPlanBridge(p.cfg.ControlChannel, host, p.logger)
+		if err != nil {
+			return err
+		}
+		p.ctrlChan = bridge
+	}
 	p.windowStartMs.Store(uint64(time.Now().UnixMilli()))
 	// Start the async ship worker (drains the spool + re-ships failed batches)
 	// before the flush loop so the first flush's batch has a worker to receive
@@ -225,7 +232,7 @@ func (p *asapEdgeProcessor) Start(_ context.Context, _ component.Host) error {
 		p.flushStarted = true
 		go p.flushLoop()
 	}
-	// Control-plane config-poll loop (no-op when control_channel is unset).
+	// Control-plane apply loop (no-op when control_channel is unset).
 	p.startControlPlane()
 	return nil
 }

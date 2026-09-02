@@ -14,7 +14,9 @@ The implemented consumers are
 plan, and project it atomically to a `PrecomputeConfigSet`. The Go
 `controlchannel.OpAmpChannel.ReceiveCollectorPlan` queues a validated plan for
 one-time `Poll` delivery and reports `APPLIED` only after the runtime calls
-`Ack` with that exact plan version.
+`Ack` with that exact plan version. `asapedgeprocessor` registers the
+`io.projectasap.collector-plan.v1` custom capability on the configured OpAMP
+extension and connects that transport to the typed channel.
 
 ```text
 latest ASAPPlanner
@@ -25,11 +27,32 @@ ASAPQuery PhysicalCompiler
         `-- BackendPlan --------> ASAPQuery ingest/query routing
 ```
 
-The legacy contrib OpAMP extension can still receive complete OTel Collector
-YAML and restart the supervised process. Its transport adapter does not yet
-forward a typed body into `ReceiveCollectorPlan`; that small contrib bridge is
-still a publication-layer follow-up. `config_hash` alone is not evidence that a
-typed physical plan was active.
+The legacy complete-YAML RemoteConfig/restart path is not the typed-plan MVP
+path. `config_hash` alone is not evidence that a physical plan was active; the
+MVP requires the `plan_status` response emitted after the runtime applies and
+acknowledges the exact plan version.
+
+Configure the processor with exactly one control transport. For OpAMP:
+
+```yaml
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: wss://controller.example/v1/opamp
+
+processors:
+  asap_edge:
+    control_channel:
+      opamp_extension: opamp
+      collector_id: edge-a
+```
+
+The server sends a custom message with capability
+`io.projectasap.collector-plan.v1`, type `collector_plan`, and the JSON plan as
+its body. The Collector replies on the same capability with type `plan_status`
+and body `{"plan_id":42,"status":"applied"}`. A failed whole-plan validation
+uses status `failed` and leaves the pending/active valid plan unchanged.
 
 ## Wire schema
 
@@ -131,9 +154,8 @@ matching BackendPlan.
 
 ## Deferred contract fields
 
-The contrib-extension-to-Go-channel transport bridge, activation/expiry,
-allowed lateness, delta/checkpoint policy, endpoint
+Activation/expiry, allowed lateness, delta/checkpoint policy, endpoint
 selection, matchers, retention/draining, materialization fingerprints shared
-with BackendPlan, and in-process OpAMP activation reporting remain follow-up
+with BackendPlan, and server-side publication orchestration remain follow-up
 extensions. Until they are added to both producer and consumer, documentation
 and tests must not claim those fields are enforced by the MVP wire contract.

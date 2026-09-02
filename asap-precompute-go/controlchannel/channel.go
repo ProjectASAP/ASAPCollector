@@ -1,8 +1,6 @@
-// Package controlchannel defines the contract by which the controller
-// delivers PrecomputeConfig plans to runtime adapters. Three
-// implementations land separately (OpAmpChannel, HttpPollChannel,
-// FileWatchChannel — see ADR-0003); step 2.10 of phase-2-execution-plan.md
-// is when those land. Phase 2 (this PR) only ships the trait.
+// Package controlchannel delivers controller-compiled physical plans to
+// runtime adapters. HTTP polling and typed OpAMP custom-message transports are
+// implemented; both expose the same Poll/Ack activation boundary.
 package controlchannel
 
 import "github.com/ProjectASAP/asap-precompute-go"
