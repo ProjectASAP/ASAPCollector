@@ -14,7 +14,7 @@ where: p_t = price (last field) at tick t; EMA_{t-1} = EMA value at the previous
 - Windows: 5-minute tumbling (300 s), clock-aligned to Berlin local wall clock
 
 **Approach:**
-- Use `ddsketchprocessor` or `kllprocessor`, `mode: window`, `window_duration: 300s`, `aggregate_by: [symbol]`, `quantiles: [0.5]`
+- Use `asap_edge (`family: ddsketch`)` or `asap_edge (`family: kll`)`, `mode: window`, `window_duration: 300s`, `aggregate_by: [symbol]`, `quantiles: [0.5]`
 - Set `drop_original: false` during validation to retain raw gauges alongside sketch output
 - Set `transmit_sketch: false` if downstream requires gauge-compatible output
 - Controller: `aggregations: ["quantile"]`
@@ -169,7 +169,7 @@ where: s = symbol; w = 5-min tumbling window; p_t = price (last) at tick t withi
 - Windows: 5-minute tumbling; any row type counts for the frequency-only variant; only `Last`-populated rows count for the price-move variant
 
 **Approach:**
-- Use `countsketchprocessor`, `mode: window`, `window_size: 300s`, `aggregate_by: [symbol]`; tune `epsilon`/`delta` per README
+- Use `asap_edge (`family: countsketch`)`, `mode: window`, `window_size: 300s`, `aggregate_by: [symbol]`; tune `epsilon`/`delta` per README
 - Controller: `aggregations: ["frequency"]`
 - Downstream: sort CountSketch frequency estimates → take top-K (e.g. K=10) symbols per window
 - For price-move score variant: retain raw `last` via `drop_original: false`; compute max − min per symbol in each window downstream
@@ -237,7 +237,7 @@ where: p_t = price (last field) at tick t within the 5-min window; high / low = 
 - Windows: 5-minute tumbling per symbol for high/low/last/range aggregation
 
 **Approach:**
-- For approximate min/max: use `ddsketchprocessor` or `kllprocessor`, `mode: window`, `window_duration: 300s`, `aggregate_by: [symbol]`, `quantiles: [0.0, 1.0]` (or `[0.01, 0.99]` for robustness against extreme outliers)
+- For approximate min/max: use `asap_edge (`family: ddsketch`)` or `asap_edge (`family: kll`)`, `mode: window`, `window_duration: 300s`, `aggregate_by: [symbol]`, `quantiles: [0.0, 1.0]` (or `[0.01, 0.99]` for robustness against extreme outliers)
 - For exact min/max: use **NOP** processor and compute exact aggregates downstream from retained raw gauges
 - Compute `range = high − low` downstream after scraping high/low from Prometheus
 - Controller: `aggregations: ["quantile"]`
@@ -313,7 +313,7 @@ where: p_i = price (last) at step i; p_{i-1} = previous price; r_i = log return 
 
 **Approach:**
 - For exact σ: use **NOP** processor; compute log returns $r_i = \ln(p_i/p_{i-1})$ for consecutive prices per symbol per window; compute sample std dev downstream
-- For IQR proxy: use `ddsketchprocessor`, `mode: window`, `window_duration: 300s`, `aggregate_by: [symbol]`, `quantiles: [0.25, 0.75]`; estimate $\sigma \approx \mathrm{IQR}/1.349$ (normal approximation)
+- For IQR proxy: use `asap_edge (`family: ddsketch`)`, `mode: window`, `window_duration: 300s`, `aggregate_by: [symbol]`, `quantiles: [0.25, 0.75]`; estimate $\sigma \approx \mathrm{IQR}/1.349$ (normal approximation)
 - Controller: `aggregations: ["quantile"]` for the sketch path
 
 **Validation:**  
@@ -381,7 +381,7 @@ where: s = symbol (distinct label value); t = event timestamp; w = 5-min tumblin
 - Windows: 5-minute tumbling; aggregation counts **distinct `symbol` values per window** (global cardinality across all series, not per-symbol)
 
 **Approach:**
-- Use `hllprocessor`, `mode: window`, `window_duration: 300s`, precision = 14 (gives ~0.8% standard error)
+- Use `asap_edge (`family: hll`)`, `mode: window`, `window_duration: 300s`, precision = 14 (gives ~0.8% standard error)
 - The HLL aggregates all arriving `symbol` labels across all 5502 series into a single distinct count per window
 - Controller: `aggregations: ["cardinality"]`
 - Downstream: compare HLL estimate to exact distinct-symbol count computed from raw data
@@ -450,7 +450,7 @@ where: n = number of ticks in window w; p_i = price (last) of the i-th tick; TWA
 - Windows: 5-minute tumbling per symbol for mean/median price aggregation
 
 **Approach:**
-- Use `ddsketchprocessor`, `mode: window`, `window_duration: 300s`, `aggregate_by: [symbol]`, `quantiles: [0.5]` — p50 (median) serves as proxy to arithmetic mean for approximately symmetric price distributions
+- Use `asap_edge (`family: ddsketch`)`, `mode: window`, `window_duration: 300s`, `aggregate_by: [symbol]`, `quantiles: [0.5]` — p50 (median) serves as proxy to arithmetic mean for approximately symmetric price distributions
 - Controller: `aggregations: ["quantile"]`
 - Downstream: compare p50 from sketch to exact arithmetic mean per (symbol, window)
 - Optional: retain raw gauges via `drop_original: false` for an exact mean benchmark alongside the sketch path
@@ -523,7 +523,7 @@ where: p_i = price at tick i; μ_w = mean price in window w; σ_w = sample std d
 
 **Approach:**
 - For exact z-score: use **NOP** processor; compute μ and σ per (symbol, window) downstream; flag $|z| > 2.5$ where $z_i = (p_i - \mu_w)/\sigma_w$
-- For sketch-based IQR anomaly detection: use `ddsketchprocessor`, `mode: window`, `window_duration: 900s`, `aggregate_by: [symbol]`, `quantiles: [0.25, 0.5, 0.75]`; compute $\mathrm{IQR} = Q_3 - Q_1$; flag prices outside $[Q_1 - 1.5 \cdot \mathrm{IQR},\ Q_3 + 1.5 \cdot \mathrm{IQR}]$
+- For sketch-based IQR anomaly detection: use `asap_edge (`family: ddsketch`)`, `mode: window`, `window_duration: 900s`, `aggregate_by: [symbol]`, `quantiles: [0.25, 0.5, 0.75]`; compute $\mathrm{IQR} = Q_3 - Q_1$; flag prices outside $[Q_1 - 1.5 \cdot \mathrm{IQR},\ Q_3 + 1.5 \cdot \mathrm{IQR}]$
 - Controller: `aggregations: ["quantile"]`
 
 **Validation:**  
@@ -939,7 +939,7 @@ where: s = symbol; w = 5-min tumbling window; p_t = price (last) at tick t withi
 - Windows: 5-minute tumbling; only `Last`-populated rows (`data_filtered`)
 
 **Approach:**
-- Use `countsketchprocessor`, `mode: window`, `window_size: 300s`, `aggregate_by: [sectype]`
+- Use `asap_edge (`family: countsketch`)`, `mode: window`, `window_size: 300s`, `aggregate_by: [sectype]`
 - Controller: `aggregations: ["topk"]`, `k: 10`
 - Downstream: CountSketch top-K extraction → top-10 symbols per window sorted by estimated mean price
 

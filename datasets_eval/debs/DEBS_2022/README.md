@@ -26,9 +26,9 @@ DEBS CSV (data/ or data_filtered/)
 DataCollector OTLP receiver
         │
         │  POST /api/v1/plan  →  controller selects processor
-        │    quantile   → ddsketchprocessor / kllprocessor
-        │    frequency  → countsketchprocessor
-        │    cardinality→ hllprocessor
+        │    quantile   → asap_edge (`family: ddsketch`) / asap_edge (`family: kll`)
+        │    frequency  → asap_edge (`family: countsketch`)
+        │    cardinality→ asap_edge (`family: hll`)
         │    (exact)    → NOP processor
         ▼
 Sketch / NOP processor pipeline

@@ -3,7 +3,7 @@
 # wire format and the backend's `DDSketchAccumulator` decodes it
 # directly.
 #
-# Refactor-2026-05: agent's ddsketchprocessor no longer appends a
+# Refactor-2026-05: agent's asap_edge (`family: ddsketch`) no longer appends a
 # "_quantile" suffix at emit. The metric name on the wire is the raw
 # input metric (`http_requests_total_latency_ms`,
 # `http_requests_total`); the DDSketch encoding is identified by the
