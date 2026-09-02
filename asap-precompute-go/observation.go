@@ -12,14 +12,12 @@ package precompute
 
 // Observation is the host-neutral input to Precompute.Observe.
 //
-// Adapters decode their native event (pmetric.NumberDataPoint /
-// telegraf.Metric / vector::Event / arrow::RecordBatch) into one
-// of these. The runtime never sees host-specific types; it only
+// Adapters decode their native event (currently pmetric.NumberDataPoint) into
+// one of these. The runtime never sees host-specific types; it only
 // sees Observation and SketchEnvelope.
 //
 // Labels are []KeyValue rather than pcommon.Map because pcommon
-// is host-specific (OTel-only). Telegraf, Vector, and OTAP
-// adapters carry the same struct without pulling pcommon in.
+// is host-specific (OTel-only).
 type Observation struct {
 	// TimestampMs is the observation's wall-clock timestamp in
 	// milliseconds since the Unix epoch. Used for window assignment

@@ -4,8 +4,7 @@ import "time"
 
 // Adapter is the contract every Layer-4 platform shim implements.
 // See ADR-0003. The Event type is the host's native event/data
-// model (pmetric.Metrics for OTel, telegraf.Metric for Telegraf,
-// vector.Event for Vector, arrow.RecordBatch for OTAP).
+// model (currently pmetric.Metrics for OTel).
 //
 // Go does not have generic interface methods that erase the type
 // parameter cleanly, so adapters in Go embed Event as `any` and
