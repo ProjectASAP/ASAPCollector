@@ -91,8 +91,14 @@ func (d *rowSampledSketchValues[N]) measure(
 	ctx context.Context, value N, fltrAttr attribute.Set, droppedAttr []attribute.KeyValue,
 ) {
 	id, rows, ok := d.router(fltrAttr)
-	if !ok || rows <= 0 {
+	if !ok || rows > 64 {
 		return
+	}
+	// Non-matrix materializations (Sum and DDSketch) advertise rows=0 in
+	// AggregationPolicy. They are the d=1 whole-item case: one admission bit
+	// decides whether the raw occurrence crosses the SDK/Collector boundary.
+	if rows <= 1 {
+		rows = 1
 	}
 
 	d.mu.Lock()
