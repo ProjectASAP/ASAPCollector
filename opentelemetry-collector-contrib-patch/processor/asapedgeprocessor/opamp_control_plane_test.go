@@ -96,6 +96,7 @@ func testCollectorPlan(t *testing.T) []byte {
 		Materializations: []precompute.CollectorMaterialization{{
 			QueryID: "q", Metric: "requests", Algorithm: "hll",
 			Parameters: map[string]float64{"precision": 14}, WindowSecs: 60,
+			Lifecycle: precompute.SupportedCollectorLifecycle(),
 		}},
 	})
 	if err != nil {

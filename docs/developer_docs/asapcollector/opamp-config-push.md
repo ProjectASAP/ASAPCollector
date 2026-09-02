@@ -64,7 +64,7 @@ The MVP body is UTF-8 JSON. Field names below are exact.
   "envelope": {
     "plan_id": 42,
     "generated_at_unix_ms": 10000,
-    "planner_revision": "3afcba68f4e8397fb81e2be988f47120f63f7a39",
+    "planner_revision": "6a2e26f0a9c9d0cecbe8492185db7ad5ed994019",
     "capability_snapshot_id": "caps-7"
   },
   "materializations": [
@@ -75,7 +75,13 @@ The MVP body is UTF-8 JSON. Field names below are exact.
       "parameters": {"alpha": 0.01},
       "group_by": ["service"],
       "window_secs": 60,
-      "evidence_source": null
+      "evidence_source": null,
+      "lifecycle": {
+        "kind": "continuously_maintained",
+        "maintenance_mode": "incremental",
+        "evaluation_schedule": "per_update",
+        "output_representation": "summary_state"
+      }
     }
   ]
 }
@@ -102,6 +108,7 @@ The MVP body is UTF-8 JSON. Field names below are exact.
 | `group_by` | Labels retained as independent runtime subpopulations. |
 | `window_secs` | Positive tumbling-window duration. |
 | `evidence_source` | Required for heap-bearing TopK materializations; identifies the certified margin source. |
+| `lifecycle` | Exact ASAPPlanner summary-maintenance guarantee. The current Collector supports only continuously maintained incremental summary state evaluated per update. |
 
 Implemented algorithms and parameter mapping:
 
@@ -131,10 +138,11 @@ consumer verifies:
 - non-empty, unique query IDs;
 - non-empty metric and positive window;
 - supported algorithm and every required positive numeric parameter; and
-- `evidence_source` for heap-bearing TopK materializations.
+- `evidence_source` for heap-bearing TopK materializations; and
+- the exact supported lifecycle `continuously_maintained / incremental / per_update / summary_state`.
 
 Unknown algorithms, missing parameters, wrong targets, duplicate IDs, or a
-TopK decision without evidence reject the complete plan. The current valid plan
+TopK decision without evidence, or any other lifecycle, reject the complete plan. The current valid plan
 must remain active when a new candidate is rejected.
 
 ## MVP test evidence

@@ -15,6 +15,7 @@ func collectorPlanBody(t *testing.T, algorithm string, params map[string]float64
 		Materializations: []CollectorMaterialization{{
 			QueryID: "q", Metric: "m", Algorithm: algorithm, Parameters: params,
 			GroupBy: []string{"service"}, WindowSecs: 60, EvidenceSource: evidence,
+			Lifecycle: SupportedCollectorLifecycle(),
 		}},
 	})
 	if err != nil {
@@ -38,6 +39,22 @@ func TestDecodeCollectorPlanPreservesPhysicalDecision(t *testing.T) {
 	}
 	if cfg.MetricName != "m" || len(cfg.AggregateBy) != 1 || cfg.AggregateBy[0] != "service" {
 		t.Fatalf("source/grouping changed: %+v", cfg)
+	}
+}
+
+func TestDecodeCollectorPlanRejectsUnsupportedLifecycle(t *testing.T) {
+	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
+	var plan CollectorPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Materializations[0].Lifecycle.Kind = "ephemeral"
+	body, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
+		t.Fatal("unsupported lifecycle must fail closed")
 	}
 }
 
