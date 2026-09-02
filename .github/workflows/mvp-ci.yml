@@ -2,6 +2,7 @@ name: MVP CI
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, edited]
   push:
     branches: [main]
 
@@ -28,6 +29,23 @@ jobs:
         with:
           repository: ProjectASAP/asap_sketchlib
           path: asap_sketchlib
+
+      - name: Checkout sketchlib-go dependency
+        uses: actions/checkout@v4
+        with:
+          repository: ProjectASAP/sketchlib-go
+          path: sketchlib-go
+          token: ${{ secrets.ASAP_CI_REPO_TOKEN }}
+
+      - name: Initialize Collector core dependency
+        working-directory: ASAPCollector
+        run: git submodule update --init opentelemetry-collector
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: false
 
       - name: Install Rust components
         run: rustup component add rustfmt clippy
@@ -57,3 +75,23 @@ jobs:
       - name: Test MVP collector
         working-directory: ASAPCollector/asap-precompute-rs
         run: cargo test --all-features
+
+      - name: Test Go precompute contracts
+        working-directory: ASAPCollector/asap-precompute-go
+        run: go test ./...
+
+      - name: Test Go Gorilla contracts
+        working-directory: ASAPCollector/asap-gorilla-go
+        run: go test ./...
+
+      - name: Test Collector plan and OpAMP bridge
+        working-directory: ASAPCollector/opentelemetry-collector-contrib-patch/processor/asapedgeprocessor
+        run: go test ./...
+
+      - name: Test MVP harness contracts
+        working-directory: ASAPCollector
+        run: python3 -m unittest discover -s deploy/mvp-multinode/scripts/tests -p 'test_*.py'
+
+      - name: Check MVP demo entrypoint
+        working-directory: ASAPCollector
+        run: bash -n deploy/mvp-multinode/scripts/run_demo.sh
