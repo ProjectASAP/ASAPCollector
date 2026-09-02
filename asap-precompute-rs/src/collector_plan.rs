@@ -45,6 +45,22 @@ pub struct CollectorMaterialization {
     pub window_secs: u64,
     /// Evidence source for evidence-gated selections such as TopK.
     pub evidence_source: Option<String>,
+    /// ASAPPlanner-selected summary-maintenance commitment.
+    pub lifecycle: CollectorLifecycle,
+}
+
+/// Lifecycle shape currently executable by the Collector window runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CollectorLifecycle {
+    /// State retention/update policy.
+    pub kind: String,
+    /// State construction policy.
+    pub maintenance_mode: String,
+    /// When the runtime evaluates this summary.
+    pub evaluation_schedule: String,
+    /// Representation delivered to the backend consumer.
+    pub output_representation: String,
 }
 
 /// Complete per-target physical plan emitted by ASAPQuery.
@@ -144,6 +160,15 @@ impl CollectorMaterialization {
     fn to_config(&self, plan_id: u64) -> Result<PrecomputeConfig, CollectorPlanError> {
         if self.metric.trim().is_empty() || self.window_secs == 0 {
             return Err(self.invalid("metric must be non-empty and window_secs must be positive"));
+        }
+        if self.lifecycle.kind != "continuously_maintained"
+            || self.lifecycle.maintenance_mode != "incremental"
+            || self.lifecycle.evaluation_schedule != "per_update"
+            || self.lifecycle.output_representation != "summary_state"
+        {
+            return Err(self.invalid(
+                "unsupported lifecycle; Collector requires continuously_maintained/incremental/per_update/summary_state",
+            ));
         }
         let (sketch_type, params, evidence_required) = decode_algorithm(self)?;
         if evidence_required && self.evidence_source.as_deref().is_none_or(str::is_empty) {

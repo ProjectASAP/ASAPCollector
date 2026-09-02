@@ -29,6 +29,26 @@ type CollectorMaterialization struct {
 	GroupBy        []string           `json:"group_by"`
 	WindowSecs     uint64             `json:"window_secs"`
 	EvidenceSource *string            `json:"evidence_source"`
+	Lifecycle      CollectorLifecycle `json:"lifecycle"`
+}
+
+// CollectorLifecycle is the ASAPPlanner-selected summary-state commitment.
+type CollectorLifecycle struct {
+	Kind                 string `json:"kind"`
+	MaintenanceMode      string `json:"maintenance_mode"`
+	EvaluationSchedule   string `json:"evaluation_schedule"`
+	OutputRepresentation string `json:"output_representation"`
+}
+
+// SupportedCollectorLifecycle returns the only lifecycle implemented by the
+// current tumbling-window sketch runtime.
+func SupportedCollectorLifecycle() CollectorLifecycle {
+	return CollectorLifecycle{
+		Kind:                 "continuously_maintained",
+		MaintenanceMode:      "incremental",
+		EvaluationSchedule:   "per_update",
+		OutputRepresentation: "summary_state",
+	}
 }
 
 // CollectorPlan is the per-target physical plan emitted by ASAPQuery.
@@ -81,6 +101,12 @@ func DecodeCollectorPlan(body []byte, collectorID string) (*PrecomputeConfigSet,
 func (m CollectorMaterialization) precomputeConfig(planID uint64) (PrecomputeConfig, error) {
 	if strings.TrimSpace(m.Metric) == "" || m.WindowSecs == 0 {
 		return PrecomputeConfig{}, errors.New("metric and positive window_secs are required")
+	}
+	if m.Lifecycle.Kind != "continuously_maintained" ||
+		m.Lifecycle.MaintenanceMode != "incremental" ||
+		m.Lifecycle.EvaluationSchedule != "per_update" ||
+		m.Lifecycle.OutputRepresentation != "summary_state" {
+		return PrecomputeConfig{}, errors.New("unsupported lifecycle; collector requires continuously_maintained/incremental/per_update/summary_state")
 	}
 	kind, params, topk, err := m.runtimeSketch()
 	if err != nil {

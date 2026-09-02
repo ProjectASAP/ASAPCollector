@@ -77,6 +77,7 @@ func channelPlan(t *testing.T, version uint64) []byte {
 		Materializations: []precompute.CollectorMaterialization{{
 			QueryID: "q", Metric: "m", Algorithm: "hll",
 			Parameters: map[string]float64{"precision": 14}, WindowSecs: 60,
+			Lifecycle: precompute.SupportedCollectorLifecycle(),
 		}},
 	})
 	if err != nil {

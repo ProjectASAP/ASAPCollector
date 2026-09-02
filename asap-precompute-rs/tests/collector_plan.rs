@@ -2,6 +2,18 @@ use asap_precompute_rs::{CollectorPlan, CollectorPlanError, SketchType};
 use serde_json::json;
 
 fn plan(materializations: serde_json::Value) -> Vec<u8> {
+    let mut materializations = materializations;
+    for materialization in materializations.as_array_mut().unwrap() {
+        materialization.as_object_mut().unwrap().insert(
+            "lifecycle".into(),
+            json!({
+                "kind": "continuously_maintained",
+                "maintenance_mode": "incremental",
+                "evaluation_schedule": "per_update",
+                "output_representation": "summary_state"
+            }),
+        );
+    }
     serde_json::to_vec(&json!({
         "collector_id": "edge-a",
         "envelope": {
@@ -70,6 +82,26 @@ fn topk_without_evidence_is_rejected() {
         "window_secs": 30,
         "evidence_source": null
     }]));
+    assert!(matches!(
+        CollectorPlan::from_json(&bytes, "edge-a"),
+        Err(CollectorPlanError::Materialization { .. })
+    ));
+}
+
+#[test]
+fn unsupported_planner_lifecycle_is_rejected() {
+    let mut bytes = plan(json!([{
+        "query_id": "q",
+        "metric": "requests_total",
+        "algorithm": "hll",
+        "parameters": {"precision": 14},
+        "group_by": [],
+        "window_secs": 30,
+        "evidence_source": null
+    }]));
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    value["materializations"][0]["lifecycle"]["kind"] = json!("ephemeral");
+    bytes = serde_json::to_vec(&value).unwrap();
     assert!(matches!(
         CollectorPlan::from_json(&bytes, "edge-a"),
         Err(CollectorPlanError::Materialization { .. })
