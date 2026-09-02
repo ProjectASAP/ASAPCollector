@@ -35,6 +35,7 @@
 #![warn(missing_docs)]
 
 pub mod adapter;
+pub mod collector_plan;
 pub mod config;
 pub mod control_channel;
 pub mod envelope;
@@ -48,6 +49,7 @@ pub mod sketches;
 pub mod snapshot_cache;
 pub mod window;
 
+pub use collector_plan::{CollectorPlan, CollectorPlanError};
 pub use config::{
     AggId, AggregationMode, OnOverflow, PrecomputeConfig, PrecomputeConfigSet, SketchParams,
     WindowSpec,
