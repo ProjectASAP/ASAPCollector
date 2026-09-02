@@ -3,7 +3,7 @@ module github.com/ProjectASAP/asap-precompute-go
 go 1.24.0
 
 require (
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260527012450-98a522055fc7
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260902175118-670237fb026a
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/influxdata/telegraf v1.34.4
 	go.opentelemetry.io/collector/pdata v1.42.0
