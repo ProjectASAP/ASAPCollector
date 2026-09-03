@@ -20,7 +20,7 @@ require (
 require (
 	github.com/ProjectASAP/asap-precompute-go v0.0.0-00010101000000-000000000000 // indirect
 	github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient v0.0.0-00010101000000-000000000000 // indirect
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260527012450-98a522055fc7 // indirect
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260903011836-148643fae428 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/go-logr/logr v1.4.3 // indirect

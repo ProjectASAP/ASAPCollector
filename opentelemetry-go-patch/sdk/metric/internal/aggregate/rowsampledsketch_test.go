@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
+	"github.com/ProjectASAP/sketchlib-go/common"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -168,5 +169,46 @@ func TestRowSampledSketch_DistinctIdentitiesAreIndependent(t *testing.T) {
 	n := agg.delta(&dest)
 	if n != 3 {
 		t.Fatalf("got %d admitted occurrences, want 3", n)
+	}
+}
+
+// The SDK owns the direct geometric cursor. It must export exactly the
+// non-empty masks produced by AdmitRows and must never turn a skipped source
+// occurrence into an OTLP datapoint for the Collector processor.
+func TestRowSampledSketch_DirectJumpDropsBeforeExport(t *testing.T) {
+	const (
+		rows = 5
+		p    = 0.01
+		n    = 100_000
+	)
+	id := precompute.AggregationIdentity{AggID: 9182, Filter: ""}
+	agg := newRowSampledSketchAgg[int64](constRouter(id, rows), "", "edge-1", 60, p)
+	expectedSampler := common.NewGeometricSampler(p, int64(id.AggID))
+
+	var wantMasks []uint64
+	attrs := attribute.NewSet(attribute.String("symbol", "AAPL"))
+	for i := 0; i < n; i++ {
+		if mask := expectedSampler.AdmitRows(rows); mask != 0 {
+			wantMasks = append(wantMasks, mask)
+		}
+		agg.measure(context.Background(), 1, attrs, nil)
+	}
+
+	var dest metricdata.Aggregation
+	agg.delta(&dest)
+	got := dest.(metricdata.RowSampledSketch[int64]).DataPoints
+	if len(got) != len(wantMasks) {
+		t.Fatalf("exported datapoints=%d, want %d non-empty source masks", len(got), len(wantMasks))
+	}
+	if len(got) >= n/10 {
+		t.Fatalf("exported datapoints=%d: source sampling did not reduce the %d raw inputs", len(got), n)
+	}
+	for i, dp := range got {
+		if dp.AdmittedRows == 0 {
+			t.Fatalf("exported datapoint %d has an empty admission mask", i)
+		}
+		if dp.AdmittedRows != wantMasks[i] {
+			t.Fatalf("exported mask %d=%#x, want direct-jump mask %#x", i, dp.AdmittedRows, wantMasks[i])
+		}
 	}
 }

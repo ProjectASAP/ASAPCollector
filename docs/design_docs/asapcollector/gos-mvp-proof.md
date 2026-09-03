@@ -75,6 +75,17 @@ $$
 \widehat{u}_{q,r}=\frac{I_{q,r}}{p}u_q.
 $$
 
+The SDK implements the row decisions with the direct geometric cursor jump
+from NitroSketch Algorithm 1. It treats the ordered pairs $(q,r)$ as one
+flattened candidate stream. If the current geometric gap spans all $d$ rows of
+occurrence $q$, the SDK subtracts $d$ from the gap in constant time and emits
+no datapoint. Otherwise it constructs the admitted-row bitmask by visiting only
+the successes inside that row block. This is seed-for-seed equivalent to $d$
+Bernoulli decisions, but costs $O(1+A_q)$ per occurrence, where $A_q$ is its
+number of admitted rows, rather than scanning all $d$ rows. An occurrence with
+$A_q=0$ is discarded before OTLP buffering and therefore sends no metric
+datapoint to the OTel processor.
+
 For DDSketch, the processor inserts each admitted value exactly once without
 inverse-weighting its bucket. It stamps $p$ on the envelope: quantiles use the
 sampled empirical distribution directly, while count-like consumers apply

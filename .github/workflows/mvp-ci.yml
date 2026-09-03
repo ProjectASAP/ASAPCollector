@@ -35,7 +35,7 @@ jobs:
         with:
           repository: ProjectASAP/sketchlib-go
           # Integrated GOS APIs consumed by the Go runtime modules below.
-          ref: 670237fb026ae2f3030a4e1e84b1d8cb9f055db1
+          ref: 148643fae428f6d3d5a10a02b99dc86c9e1a64c0
           path: sketchlib-go
           token: ${{ secrets.ASAP_CI_REPO_TOKEN }}
 

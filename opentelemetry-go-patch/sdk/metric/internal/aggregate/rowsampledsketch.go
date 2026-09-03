@@ -117,13 +117,11 @@ func (d *rowSampledSketchValues[N]) measure(
 		t.sampler.Reset(p, t.seed)
 	}
 
-	t.sampler.BeginItem()
-	var admittedRows uint64
-	for r := 0; r < rows; r++ {
-		if t.sampler.Admit() {
-			admittedRows |= 1 << uint(r)
-		}
-	}
+	// Consume this occurrence's complete row block with NitroSketch's direct
+	// geometric cursor jump. A gap spanning the block costs one comparison and
+	// subtraction rather than d per-row Admit calls. The returned mask is
+	// seed-for-seed identical to scanning the flattened (occurrence,row) stream.
+	admittedRows := t.sampler.AdmitRows(rows)
 	if admittedRows == 0 {
 		return // R(x)=∅ — discarded, never buffered, never exported
 	}
