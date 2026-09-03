@@ -22,7 +22,7 @@ replace (
 )
 
 require (
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260527012450-98a522055fc7 // indirect
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260903011836-148643fae428 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
