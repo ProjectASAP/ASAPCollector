@@ -18,9 +18,11 @@ Canonical stage-ownership and phased implementation contract:
 
 ## TL;DR
 
-ASAPPlanner selects a logical plan. That plan says which summaries and exact
-operations answer a workload, but it intentionally does not choose machines,
-shards, runtime windows, transport modes, or storage routes.
+ASAPPlanner selects an abstract plan. That plan says which summaries and exact
+operations answer a workload and may select a summary-window framework such as
+tumbling, sliding, or exponential histogram. It intentionally does not choose
+the concrete runtime implementation, pane sizing, machines, shards, transport
+modes, or storage routes.
 
 ASAPQuery-backend performs one physical compile that produces both runtime
 views of the decision:
@@ -46,6 +48,8 @@ ASAPPlanner owns logical choices such as:
 
 - exact accumulator versus approximate summary;
 - summary family, algorithm, and parameters;
+- abstract summary-window framework;
+- summary-maintenance lifecycle and update semantics;
 - reduction and grouping strategy;
 - logical sharing and composition;
 - summary readout; and
@@ -55,7 +59,8 @@ The runtime still needs deployment decisions that do not belong in Planner:
 
 - which collector or backend stage runs each operation;
 - how logical state is sharded or shared;
-- which streaming panes materialize a query time range;
+- which concrete panes, state layout, and runtime configuration realize the
+  selected summary-window framework;
 - whether state is sent as raw observations, full summaries, or deltas;
 - where state is stored and queried;
 - when a new plan becomes active; and
@@ -74,12 +79,14 @@ The physical compiler closes both gaps in one operation.
 
 The compiler receives:
 
-- the selected post-ASAP DAG for the whole workload;
+- Planner's post-ASAP candidate DAGs and selected abstract DAG for the whole
+  workload;
 - stable workload/query correlation information;
 - collector and backend capability snapshots;
 - deployment topology and stage boundaries;
 - workload statistics and resource constraints;
-- runtime window, freshness, and retention policy; and
+- concrete window implementation capabilities, freshness, and retention
+  policy; and
 - transmission and storage policy.
 
 Shared logical nodes remain shared at this boundary. The compiler must not
@@ -216,10 +223,20 @@ Sharding does not create several unrelated logical summaries, and sharing
 does not allow consumers with incompatible filters, reductions, grouping,
 windows, parameters, or guarantees to reuse state.
 
-## 8. Window and transmission decisions
+## 8. Window realization and transmission decisions
 
-Planner time ranges express query semantics. The physical compiler chooses
-streaming panes capable of answering those ranges.
+Planner time ranges express query semantics, and Planner owns the abstract
+summary-window framework used to satisfy them. The physical compiler does not
+substitute tumbling, sliding, exponential histogram, or another framework. It
+enumerates concrete implementations of each Planner candidate, reports their
+resource behavior under the supplied `DataWorkload` to Planner, and realizes
+the selected framework using executor-supported panes and state layouts.
+
+For example, Planner may pair incremental summary maintenance with a sliding
+window. The physical compiler may realize it with fixed panes and a merge
+schedule, while another implementation could use a different pane width and
+state representation. `Incremental` is the state-update mode; `sliding` is the
+window framework. Neither choice determines the other.
 
 For the MVP:
 

@@ -11,9 +11,12 @@ Canonical stage-ownership and implementation contract:
 
 ## TL;DR
 
-ASAPPlanner chooses a logical plan for a query workload. ASAPQuery-backend
-turns that selected plan into deployable collector and backend plans, installs
-them, and routes queries to the resulting state.
+ASAPPlanner owns abstract primitive search and selection for a query workload,
+including sketch algorithms, summary-window frameworks, and lifecycle
+candidates. ASAPQuery-backend enumerates concrete runtime implementations for
+those candidates, feeds their performance under the workload back into
+Planner's cost model, and turns the selected abstract plan into deployable
+collector and backend plans.
 
 ASAPQuery-backend does not maintain a second design for parsing PromQL,
 building Planner IR, mapping queries to summaries, reasoning about accuracy,
@@ -25,11 +28,12 @@ PromQL workload
       |
       v
 ASAPPlanner
-selected logical workload plan
-      |
-      v
-ASAPQuery-backend control plane
-physical compilation and activation
+abstract candidates and selection
+      |                              ^
+      | candidates                   | implementation cost evidence
+      v                              |
+ASAPQuery-backend control plane -----+
+physical implementation, compilation, and activation
       |
       +-------------------------+
       |                         |
@@ -47,6 +51,9 @@ Planner is the source of truth for:
 - query parsing and semantic IR;
 - logical exact and summary-based alternatives;
 - summary family, parameters, grouping, and readout semantics;
+- abstract summary-window frameworks, including tumbling, sliding, and
+  exponential-histogram alternatives;
+- summary-maintenance lifecycle candidates and legality;
 - accuracy constraints and logical result guarantees;
 - workload-wide reuse and common subexpressions;
 - logical cost comparison and candidate selection; and
@@ -61,10 +68,14 @@ repository.
 The control plane owns:
 
 - supplying workload context, runtime statistics, and executor capabilities;
-- invoking the pinned Planner revision and consuming one selected workload
-  plan;
-- choosing collector/backend placement, physical panes, transmission mode,
-  and storage routes;
+- enumerating feasible concrete runtime implementations and configurations for
+  every Planner candidate;
+- supplying each implementation's measured or estimated resource behavior
+  under the same `DataWorkload` to Planner's cost model;
+- invoking the pinned Planner revision and consuming its selected abstract
+  workload plan;
+- choosing collector/backend placement, concrete panes and sizing,
+  transmission mode, and storage routes;
 - compiling matching CollectorPlan and BackendPlan artifacts;
 - staging, activating, retiring, and rolling back plan versions; and
 - exposing planning and activation status to operators.
@@ -103,12 +114,14 @@ distribution are planned together. ASAPQuery-backend must not reduce them to
 two independent `(metric, sketch)` requests before Planner can identify shared
 state.
 
-### Selected logical plan
+### Candidate and selected abstract plans
 
-The returned boundary is one selected post-ASAP workload plan from the pinned
-Planner API. Shared logical nodes remain shared. Exact fallback is an explicit
-part of that plan; absence of a supported summary is not permission for the
-backend to invent one.
+Planner exposes abstract candidates through the pinned API. ASAPQuery-backend
+expands each candidate into legal physical implementations and supplies their
+cost evidence under one common workload horizon. Planner then returns a
+selected post-ASAP workload plan. Shared logical nodes remain shared. Exact
+fallback is an explicit part of that plan; absence of a supported summary is
+not permission for the backend to invent one.
 
 For example, Planner may select one DDSketch producer shared by:
 
@@ -119,6 +132,12 @@ quantile_over_time(0.95, request_duration_seconds[5m])
 
 The backend consumes the shared producer and two readouts. It must not select
 DDSketch again from the query strings.
+
+Likewise, Planner may choose incremental maintenance with a sliding-window
+framework. The backend chooses a concrete pane width, state layout, placement,
+and executor implementation for that combination. Incremental maintenance and
+window framework are orthogonal: the former describes update behavior, while
+the latter describes temporal state organization.
 
 ### Physical plans
 
