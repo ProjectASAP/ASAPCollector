@@ -13,6 +13,9 @@ Developer guides:
 [Planner adapter and physical compiler](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/control-plane/physical-compiler.md)
 and [runtime plan publication](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/control-plane/plan-publication.md).
 
+Canonical stage-ownership and phased implementation contract:
+[`post-asap-physical-compilation.md`](post-asap-physical-compilation.md).
+
 ## TL;DR
 
 ASAPPlanner selects a logical plan. That plan says which summaries and exact

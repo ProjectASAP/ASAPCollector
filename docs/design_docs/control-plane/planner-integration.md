@@ -6,6 +6,9 @@
 
 Developer guide: [Planner adapter and physical compiler](https://github.com/ProjectASAP/ASAPQuery-backend/blob/main/docs/developer_docs/control-plane/physical-compiler.md).
 
+Canonical stage-ownership and implementation contract:
+[`post-asap-physical-compilation.md`](post-asap-physical-compilation.md).
+
 ## TL;DR
 
 ASAPPlanner chooses a logical plan for a query workload. ASAPQuery-backend
