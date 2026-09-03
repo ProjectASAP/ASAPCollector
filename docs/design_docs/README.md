@@ -27,6 +27,7 @@ collection -> summary transmission -> backend ingest -> summary storage -> query
 ## Control plane
 
 - [Planner ownership and integration](control-plane/planner-integration.md)
+- [Post-ASAP DAG to deployment plans](control-plane/post-asap-physical-compilation.md)
 - [Physical planning](control-plane/physical-planning.md)
 - [BackendPlan contract](control-plane/backend-plan.md)
 - [Query and data workload inputs](control-plane/workload-inputs.md)
