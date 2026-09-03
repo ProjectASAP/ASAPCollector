@@ -38,9 +38,10 @@ Let $r_i(t)$ be the state from site $i$ that the backend has acknowledged and
 applied. The backend reconstruction and the site's unacknowledged drift are
 
 $$
-\widehat{x}(t) = \sum_{i=1}^{k} r_i(t),
-\qquad
-D_i(t) = x_i(t) - r_i(t).
+\begin{aligned}
+\widehat{x}(t) &= \sum_{i=1}^{k} r_i(t), \\
+D_i(t) &= x_i(t) - r_i(t).
+\end{aligned}
 $$
 
 `D_i` includes both queued or in-flight deltas and updates accumulated after a
@@ -62,8 +63,8 @@ admission decision per sketch row. For occurrence $q$ and row $r$, let
 $I_{q,r}$ be an independently admitted row indicator with
 
 $$
-\Pr[I_{q,r}=1]=p,
-\qquad 0<p\le 1.
+\Pr\left[I_{q,r}=1\right] = p,
+\qquad 0 < p \le 1.
 $$
 
 The SDK sends an admitted occurrence together with its row bitmask, $p$, and
@@ -98,20 +99,21 @@ would have been built from all source occurrences. If cell $j$ receives update
 set $Q_j$, its sampling error $E_j$ has
 
 $$
-\mathbb{E}[E_j]=0,
-\qquad
-\mathrm{Var}(E_j)
-=
-\frac{1-p}{p}\sum_{q\in Q_j}u_q^2.
+\begin{aligned}
+\mathbb{E}\left[E_j\right] &= 0, \\
+\mathrm{Var}\left(E_j\right)
+&= \frac{1-p}{p}\sum_{q\in Q_j}u_q^2.
+\end{aligned}
 $$
 
 Unbiasedness is not a deterministic accuracy bound. The MVP must obtain or
 measure a simultaneous high-probability bound
 
 $$
-\Pr\!\left[\lVert E\rVert_\infty
-\le \epsilon_{\mathrm{samp}}\right]
-\ge 1-\delta_{\mathrm{samp}}
+\Pr\left[
+  \lVert E\rVert_\infty \le \epsilon_{\mathrm{samp}}
+\right]
+\ge 1-\delta_{\mathrm{samp}}.
 $$
 
 for the declared workload, sampling policy, and query window. This bound may
@@ -167,8 +169,8 @@ Therefore the central deterministic GOS bound is
 
 $$
 \boxed{
-\lVert x(t) - \widehat{x}(t) \rVert_\infty < kT
-}.
+  \lVert x(t) - \widehat{x}(t) \rVert_\infty < kT
+}
 $$
 
 This is an unacknowledged-drift bound, not merely a bound on the active mutable
@@ -184,8 +186,8 @@ the backend Sum. GOS guarantees
 
 $$
 \boxed{
-\left|\widehat{S}_p(t)-\widehat{S}_{\mathrm{backend}}(t)\right| < kT
-}.
+  \left|\widehat{S}_p(t)-\widehat{S}_{\mathrm{backend}}(t)\right| < kT
+}
 $$
 
 On an event where source sampling satisfies
@@ -193,9 +195,9 @@ $|S(t)-\widehat{S}_p(t)|\le\epsilon_{\mathrm{sum,samp}}$, composition gives
 
 $$
 \boxed{
-\left|S(t)-\widehat{S}_{\mathrm{backend}}(t)\right|
-< \epsilon_{\mathrm{sum,samp}}+kT
-}.
+  \left|S(t)-\widehat{S}_{\mathrm{backend}}(t)\right|
+  < \epsilon_{\mathrm{sum,samp}}+kT
+}
 $$
 
 For a relative staleness budget $\epsilon_{\mathrm{st}}$ and a declared,
@@ -220,7 +222,7 @@ absolute-relative contract instead:
 
 $$
 |S - \widehat{S}|
-\le \max\!\left(\epsilon_{\mathrm{abs}},
+\le \max\left(\epsilon_{\mathrm{abs}},
                  \epsilon_{\mathrm{rel}} |S|\right).
 $$
 
@@ -229,9 +231,10 @@ $$
 For key $y$, the ideal CMS row estimates and point estimate are
 
 $$
-z_r(y) = C[r,h_r(y)],
-\qquad
-\widetilde{f}(y) = \min_r z_r(y).
+\begin{aligned}
+z_r(y) &= C\left[r,h_r(y)\right], \\
+\widetilde{f}(y) &= \min_r z_r(y).
+\end{aligned}
 $$
 
 The minimum is 1-Lipschitz in the infinity norm:
@@ -246,11 +249,11 @@ than $kT$ in every cell, GOS adds less than $kT$ point-query error:
 
 $$
 \boxed{
-\left|
-\widetilde{f}_{\mathrm{ideal}}(y) -
-\widetilde{f}_{\mathrm{backend}}(y)
-\right| < kT
-}.
+  \left|
+    \widetilde{f}_{\mathrm{ideal}}(y)
+    {}- \widetilde{f}_{\mathrm{backend}}(y)
+  \right| < kT
+}
 $$
 
 If the underlying full-input CMS guarantee is
@@ -264,12 +267,12 @@ then the conservative composed bound is
 
 $$
 \boxed{
-\left|
-\widetilde{f}_{\mathrm{backend}}(y)-f(y)
-\right|
-< \epsilon_{\mathrm{sk}} \lVert f \rVert_1
-+ \epsilon_{\mathrm{samp}} + kT
-}.
+  \left|
+    \widetilde{f}_{\mathrm{backend}}(y)-f(y)
+  \right|
+  < \epsilon_{\mathrm{sk}} \lVert f \rVert_1
+  {}+ \epsilon_{\mathrm{samp}} + kT
+}
 $$
 
 This bound holds with the joint success probability of the CMS and source
@@ -294,27 +297,29 @@ valid after individual local cells have been reset for GOS transmission.
 For key $y$, Count Sketch uses
 
 $$
-z_r(y) = s_r(y) C[r,h_r(y)],
-\qquad
-\widetilde{f}(y) = \mathrm{median}_r\, z_r(y).
+\begin{aligned}
+z_r(y) &= s_r(y) C\left[r,h_r(y)\right], \\
+\widetilde{f}(y) &= \underset{r}{\mathrm{median}} z_r(y).
+\end{aligned}
 $$
 
-Multiplication by $s_r(y) \in \{-1,+1\}$ preserves absolute error, and the
+Multiplication by $s_r(y) \in \lbrace-1,+1\rbrace$ preserves absolute error,
+and the
 median is 1-Lipschitz in the infinity norm. Hence
 
 $$
 \boxed{
-\left|
-\widetilde{f}_{\mathrm{ideal}}(y) -
-\widetilde{f}_{\mathrm{backend}}(y)
-\right| < kT
-}.
+  \left|
+    \widetilde{f}_{\mathrm{ideal}}(y)
+    {}- \widetilde{f}_{\mathrm{backend}}(y)
+  \right| < kT
+}
 $$
 
 If the ordinary Count Sketch guarantee is
 
 $$
-\Pr\!\left[
+\Pr\left[
 \left|\widetilde{f}_{\mathrm{ideal}}(y)-f(y)\right|
 \le \epsilon_{\mathrm{sk}}\lVert f\rVert_2
 \right] \ge 1-\delta_{\mathrm{sk}},
@@ -324,13 +329,13 @@ then
 
 $$
 \boxed{
-\Pr\!\left[
-\left|\widetilde{f}_{\mathrm{backend}}(y)-f(y)\right|
-< \epsilon_{\mathrm{sk}}\lVert f\rVert_2
-+\epsilon_{\mathrm{samp}}+kT
-\right]
-\ge 1-\delta_{\mathrm{sk}}-\delta_{\mathrm{samp}}
-}.
+  \Pr\left[
+    \left|\widetilde{f}_{\mathrm{backend}}(y)-f(y)\right|
+    < \epsilon_{\mathrm{sk}}\lVert f\rVert_2
+    {}+ \epsilon_{\mathrm{samp}}+kT
+  \right]
+  \ge 1-\delta_{\mathrm{sk}}-\delta_{\mathrm{samp}}
+}
 $$
 
 Choosing
@@ -352,7 +357,7 @@ and identically distributed input assumption, the Dvoretzky--Kiefer--Wolfowitz
 bound gives
 
 $$
-\Pr\!\left[
+\Pr\left[
 \sup_z\left|F_M(z)-F(z)\right|
 \le
 \sqrt{\frac{\ln(2/\delta_{\mathrm{dd,samp}})}{2M}}
@@ -375,17 +380,16 @@ For $M>0$, the additional GOS CDF or rank error is therefore
 
 $$
 \boxed{
-\epsilon_{\mathrm{rank,st}}
-< \frac{BkT}{M}
-}.
+  \epsilon_{\mathrm{rank,st}} < \frac{BkT}{M}
+}
 $$
 
 To keep this contribution below $\epsilon_{\mathrm{rank}}$, choose
 
 $$
 \boxed{
-T \le \frac{\epsilon_{\mathrm{rank}}M}{kB}
-}.
+  T \le \frac{\epsilon_{\mathrm{rank}}M}{kB}
+}
 $$
 
 On the DKW success event, the total additional rank error beyond the intrinsic
@@ -393,11 +397,10 @@ DDSketch value guarantee is bounded by
 
 $$
 \boxed{
-\epsilon_{\mathrm{rank,total}}
-<
-\sqrt{\frac{\ln(2/\delta_{\mathrm{dd,samp}})}{2M}}
-+\frac{BkT}{M}
-}.
+  \epsilon_{\mathrm{rank,total}}
+  < \sqrt{\frac{\ln(2/\delta_{\mathrm{dd,samp}})}{2M}}
+  {}+ \frac{BkT}{M}
+}
 $$
 
 This does not, without an assumption on probability mass near the requested
@@ -411,9 +414,7 @@ $\Delta_j^{(1)},\ldots,\Delta_j^{(m)}$ and let $\rho_j$ be the final residual.
 Then
 
 $$
-x_j
-=
-\sum_{\ell=1}^{m}\Delta_j^{(\ell)} + \rho_j.
+x_j = \sum_{\ell=1}^{m}\Delta_j^{(\ell)} + \rho_j.
 $$
 
 Consequently, cells may cross thresholds and reset at different times without
@@ -436,8 +437,8 @@ within $\Delta_{\mathrm{delivery}}$, the end-to-end bound is
 
 $$
 \boxed{
-\Delta_* = \Delta_{\mathrm{edge}} + \Delta_{\mathrm{delivery}}
-}.
+  \Delta_* = \Delta_{\mathrm{edge}} + \Delta_{\mathrm{delivery}}
+}
 $$
 
 A heartbeat containing no pending residual is not sufficient evidence for
@@ -465,10 +466,13 @@ The proof does not establish that GOS always reduces cost. Cost reduction is an
 experimental hypothesis and is accepted only if the measured run satisfies
 
 $$
-\mathrm{accuracy}_{\mathrm{pass}}
-\land \mathrm{freshness}_{\mathrm{pass}}
+\begin{aligned}
+&\mathrm{accuracy}_{\mathrm{pass}}
+\land \mathrm{freshness}_{\mathrm{pass}} \\
+&\qquad {}
 \land \mathrm{bytes}_{\mathrm{GOS}} < \mathrm{bytes}_{\mathrm{full}}
 \land \mathrm{CPU}_{\mathrm{GOS}} \le \mathrm{CPU}_{\mathrm{budget}}.
+\end{aligned}
 $$
 
 The report must also include peak memory and must compare identical workloads,
@@ -478,11 +482,12 @@ can reduce the first link and processor insert CPU, while GOS sparse deltas can
 reduce the second link. A useful end-to-end communication metric is
 
 $$
+\begin{aligned}
 \mathrm{saving}_{\mathrm{bytes}}
-=
-1-
+&= 1-
 \frac{\mathrm{bytes}_{\mathrm{GOS}}}
-     {\mathrm{bytes}_{\mathrm{periodic\ full}}}.
+     {\mathrm{bytes}_{\mathrm{full}}}.
+\end{aligned}
 $$
 
 No asymptotic lower-bound claim follows from this measured ratio.
