@@ -14,7 +14,7 @@ require (
 )
 
 require (
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260903011836-148643fae428 // indirect
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260903015955-4b0919d3d653 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect

@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/ProjectASAP/asap-precompute-go v0.0.0-00010101000000-000000000000
 	github.com/ProjectASAP/asap-precompute-go/monitor/grpcclient v0.0.0-00010101000000-000000000000
-	github.com/ProjectASAP/sketchlib-go v0.0.0-20260903011836-148643fae428
+	github.com/ProjectASAP/sketchlib-go v0.0.0-20260903015955-4b0919d3d653
 	github.com/go-logr/logr v1.4.3
 	github.com/go-logr/stdr v1.2.2
 	github.com/google/go-cmp v0.7.0
