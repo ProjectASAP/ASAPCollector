@@ -30,9 +30,29 @@ Physical plan compilation + deployment optimization
       └── QueryPlan / RoutingPlan
 ```
 
-These plans are runtime views of one compiled decision. Some views may be
-embedded in CollectorPlan or BackendPlan instead of becoming separate wire
-APIs, but they must not be compiled independently.
+These names describe runtime views of one compiled decision, not six public
+protocols. `CompiledDeploymentPlan` is the control plane's internal result.
+For the MVP, `CollectorPlan` and `BackendPlan` are the two deployed plan
+documents. `TransmissionPlan` is a typed section shared by both documents;
+`PrecomputePlan` and `QueryPlan` are sections of `BackendPlan`. `SDKPlan` is an
+optional build/startup artifact. No view may be compiled independently.
+
+## Implementation status
+
+This document is a target contract, not a claim that the end-to-end protocol
+already exists. At the revision that introduced this document:
+
+| Area | Status in ASAPCollector | Remaining MVP work |
+| --- | --- | --- |
+| Typed CollectorPlan validation and staged Collector activation | Partial | Align the schema with the compiler output and require semantic apply evidence. |
+| SDK admission before OTLP serialization | Partial | Treat SDK configuration as a startup artifact and add cross-repository golden fixtures. |
+| Insert-time GOS and sparse deltas | Partial | Bind it to a compiled TransmissionPlan and the durable state machine below. |
+| Durable frame ACK, retry, recovery, and restart replay | Not implemented end to end | Implement jointly in Collector and ASAPQuery-backend. |
+| BackendPlan, ingest ledger, storage, and query routing | Outside this repository | Implement in ASAPQuery-backend from the same compiled decision. |
+| Runtime cost-based alternative selection | Not implemented end to end | Add only after the baseline, sampling, and durable-delta paths have measurable evidence. |
+
+“Partial” means useful components and focused tests exist; it does not mean the
+cross-repository MVP acceptance criterion is satisfied.
 
 ## What ASAPPlanner owns
 
@@ -44,10 +64,12 @@ Source(metric)
   → Project
   → GroupBy
   → Window
-  → Sketch(CMS)
+  → SummaryAgg(SketchQuery { algorithm: CMS, ... })
   → Merge
-  → EstimateFrequency
+  → SummaryEstimate(Frequency)
 ```
+
+The labels are illustrative Post-ASAP operators, not additional wire types.
 
 The DAG should describe:
 
@@ -158,14 +180,31 @@ C = w_{\mathrm{cpu}} C_{\mathrm{cpu}}
 $$
 
 If it selects sampling and delayed transmission, it must satisfy the accuracy
-requirement carried by the DAG. A conservative allocation is:
+requirement carried by the DAG. The compiler first maps every mechanism to a
+bound in the same query-output metric $M_q$. Let $B_m(q)$ be the resulting
+absolute error bound for mechanism $m$. A conservative deterministic
+composition is:
 
 $$
-\epsilon_{\mathrm{sketch}}
-+ \epsilon_{\mathrm{sampling}}
-+ \epsilon_{\mathrm{transmission}}
-\le \epsilon_{\mathrm{query}}.
+B_{\mathrm{sketch}}(q)
++ B_{\mathrm{sampling}}(q)
++ B_{\mathrm{transmission}}(q)
+\le B_{\mathrm{query}}(q).
 $$
+
+For probabilistic bounds, the compiler must also allocate failure probability,
+for example
+
+$$
+\delta_{\mathrm{sketch}} + \delta_{\mathrm{sampling}}
+\le \delta_{\mathrm{query}}.
+$$
+
+Sketch and sampling terms may instead compose in quadrature only when the
+selected family supplies a proof under its stated independence and tail
+assumptions. Raw `epsilon` values with different units or normalizations must
+never be added. Deterministic transmission staleness still composes linearly
+after the selected readout maps coordinate drift into $M_q$.
 
 Sampling/GOS error-budget allocation therefore belongs to the backend control
 plane, not ASAPPlanner.
@@ -198,15 +237,15 @@ CompiledDeploymentPlan {
     materializations,
     sdk_plan,
     collector_plans,
-    precompute_plan,
-    transmission_plan,
+    transmission_contracts,
     backend_plan,
-    query_plan,
 }
 ```
 
 This type has one concrete purpose: it prevents Collector and backend plans
 from drifting in family, parameters, grouping, windows, schema, or identity.
+Its `backend_plan` contains the precompute and query-routing sections; its
+transmission contracts are projected into both deployed documents.
 
 ## SDKPlan
 
@@ -221,8 +260,15 @@ configure:
 - stable producer and sampling-stream identity; and
 - admission metadata consumed by CollectorPlan.
 
-The SDK executes this plan. It does not choose its own probability or sketch
-shape.
+For the MVP, SDKPlan is a generated build/startup artifact delivered through
+the application's normal configuration mechanism. The control plane does not
+dynamically activate SDK code. While a plan is active, an already-configured
+grant channel may change $p$ only inside the compiled range and for the same
+sampling identity. Adding dynamic SDK plan delivery requires a separate
+authenticated delivery channel and semantic application acknowledgement.
+
+The SDK executes this artifact. It does not choose its own probability or
+sketch shape.
 
 ## CollectorPlan
 
@@ -249,11 +295,13 @@ PrecomputePlan describes backend-ingest execution:
 - backend-side precompute operators left by partitioning; and
 - the atomic visibility boundary for committed state.
 
-It may remain an internal control-plane view embedded in BackendPlan.
+It is an internal control-plane view embedded in BackendPlan for the MVP.
 
 ## TransmissionPlan
 
-TransmissionPlan is independent of the logical sketch choice. It describes:
+TransmissionPlan is a typed contract embedded in both CollectorPlan and
+BackendPlan. It does not change the Planner's logical sketch choice. It
+describes:
 
 - raw, full, or ordered-delta mode;
 - GOS or another transmission trigger;
@@ -263,15 +311,17 @@ TransmissionPlan is independent of the logical sketch choice. It describes:
 - maximum in-flight frames and retry policy; and
 - sequence, gap recovery, and durable acknowledgement.
 
-For adaptive GOS, the control plane first derives an accuracy-safe cap. Runtime
-feedback may choose only:
+For adaptive GOS, the control plane first derives a family-specific,
+accuracy-safe cap. Runtime feedback may choose only:
 
 $$
-1 \le T(t) \le T_{\max}.
+0 < T(t) \le T_{\max}.
 $$
 
-Even when the operational threshold changes, OctoSketch-style worst-case
-evidence is stated using $T_{\max}$.
+Integer counter families additionally quantize this to an integer threshold of
+at least one. Real-valued families define their own positive minimum. Even when
+the operational threshold changes, worst-case evidence is stated using
+$T_{\max}$ and the delivery bound below.
 
 ## BackendPlan
 
@@ -325,15 +375,27 @@ frame_kind
 payload_checksum
 ```
 
-`producer_epoch` distinguishes sequence spaces before and after a Collector
-restart.
+The MVP checksum is SHA-256 over
+`"ASAP-FRAME-V1" || header_length_be32 || canonical_header || payload`, where
+`canonical_header` excludes the checksum field. Canonical field ordering and
+integer encoding are part of the protocol version.
+The shared `plan_id` and `plan_version` semantics are defined in
+[`physical-planning.md`](physical-planning.md#shared-plan-envelope).
+
+`producer_epoch` distinguishes sequence spaces, but a process restart alone
+must not change it. The Collector resumes a persisted epoch until the backend
+has acknowledged the epoch-closing checkpoint.
 
 Activation is staged:
 
 1. Install BackendPlan and its ingest/deduplication state.
 2. Receive backend readiness for that exact plan version.
-3. Stage matching SDKPlan and CollectorPlan instances.
-4. Receive semantic application evidence from required producers.
+3. Verify the required SDK startup artifact is deployed, then stage matching
+   CollectorPlan instances. For sampling, Collector must observe the exact
+   plan, materialization, sampling-stream, and admission-policy identities on
+   source telemetry before declaring that producer ready.
+4. Receive semantic CollectorPlan application evidence from required
+   producers, including the plan version and materialization identities.
 5. Activate production and query routing at the declared boundary.
 6. Retain the previous plan until its windows and in-flight frames drain.
 
@@ -351,9 +413,55 @@ pending frame
 in-flight frame
 last acknowledged sequence
 next sequence
+producer epoch
 ```
 
-The MVP may use `max_in_flight = 1`:
+The telescoping identity and every drift bound are scoped to exactly this key;
+deltas from different producers, series, materializations, windows, or epochs
+must never be combined as one sequence.
+
+### Bounded queue policy and continuous drift
+
+The MVP uses `max_in_flight = 1` and `max_pending = 1`. Updates continue while
+one frame is in flight. If another threshold crossing occurs, Collector seals
+one pending frame and immediately applies backpressure to that series until the
+in-flight frame is acknowledged. It does not drop, overwrite, or repeatedly
+coalesce threshold crossings into an unbounded pending frame.
+
+For one scalar or sketch coordinate, let $U_{\max}$ bound the absolute effect
+of one accepted update, and let a crossing be detected immediately after that
+update. A threshold-sealed frame then has magnitude at most
+$T + U_{\max}$. With at most $s$ sealed but unacknowledged frames and an active
+residual below $T$, the unacknowledged coordinate drift satisfies
+
+$$
+|D_j(t)| < (s+1)T + sU_{\max}.
+$$
+
+Here $s \le \mathtt{max\_in\_flight}+\mathtt{max\_pending}$. For the MVP,
+$s \le 2$, so a conservative bound is
+
+$$
+|D_j(t)| < 3T + 2U_{\max}.
+$$
+
+Across $k$ producers, the uniform-policy coordinate bound is therefore
+
+$$
+\left|\sum_{i=1}^{k}D_{i,j}(t)\right|
+< k\left(3T+2U_{\max}\right),
+$$
+
+or, for nonuniform policies, the sum of each producer's individual bound.
+The physical compiler maps this coordinate bound through the selected
+family's readout to obtain $B_{\mathrm{transmission}}(q)$. It must size
+$T_{\max}$ using this delivery-aware bound, not the idealized $kT$ bound that
+assumes immediate application. If no finite $U_{\max}$ is enforceable, the
+compiler must reject thresholded delta mode or use a family-specific bound that
+handles weighted updates. Freshness deadlines bound time, but do not by
+themselves bound update-magnitude drift.
+
+The state transition is:
 
 ```text
 residual crosses threshold
@@ -374,6 +482,11 @@ APPLIED or DUPLICATE acknowledgement
 Collector retires in-flight state and advances sequence
 ```
 
+If a pending frame exists at acknowledgement, it becomes the next in-flight
+frame using its already assigned sequence and exact persisted bytes, and
+ingestion resumes. A deadline may seal a sub-threshold active residual, subject
+to the same one-pending-frame and backpressure rule.
+
 The backend handles sequence state as follows:
 
 | Received sequence | Required behavior |
@@ -387,6 +500,32 @@ The backend handles sequence state as follows:
 Forming or enqueueing a frame, or completing an ordinary OTLP request, does not
 remove it from unacknowledged drift. Only acknowledgement after durable backend
 apply advances Collector state.
+
+### ACK transport
+
+For the MVP, summary frames use the patched OTLP metrics export path. Its
+response carries one ASAP `FrameAck` per frame, and the patched exporter returns
+those acknowledgements to the ASAP processor's state machine. `FrameAck`
+contains the full frame identity, status, and `expected_sequence` for `GAP`.
+An unmodified OTLP success response is never translated into `APPLIED`.
+
+### Restart and write-ahead persistence
+
+Every accepted source update must be recoverable. Either the upstream transport
+replays it until Collector acknowledges durable intake, or Collector persists
+the resulting active residual before acknowledging intake. Before resetting an
+active residual or exposing a new sequence for send, Collector atomically
+persists a write-ahead transition containing the producer epoch, next and
+acknowledged sequences, new active residual, pending frame, and in-flight
+frame's exact bytes. On restart it restores that record and retries the same
+in-flight bytes in the same epoch. A residual-only checkpoint is not sufficient
+because it can orphan a reset-but-unacknowledged contribution.
+
+Collector may create a new producer epoch only after the old epoch has no
+unacknowledged frames and the backend has durably acknowledged an
+epoch-closing full checkpoint. The backend persists both materialized state and
+the sequence ledger atomically, so backend restart preserves duplicate and gap
+detection.
 
 ## What to implement
 
@@ -420,7 +559,10 @@ and BackendPlan emission, backend-first staged activation, and one complete
 summary ingest/store/query path.
 
 Acceptance: captured plans agree exactly on plan, materialization, family,
-parameters, grouping, window, and schema identities.
+parameters, grouping, window, and schema identities. Store the canonical
+Post-ASAP input, CompiledDeploymentPlan, CollectorPlan, BackendPlan, and
+expected validation result as versioned JSON golden fixtures consumed by both
+repositories.
 
 ### Phase C: source-sampling alternative
 
@@ -429,16 +571,31 @@ budget, selects whole-item or per-row admission and $p$, and emits matching
 SDKPlan and CollectorPlan views.
 
 The SDK performs admission at `Record()` and drops an empty mask before OTLP
-serialization. For $n$ inputs and $d$ rows, transmitted datapoints should be
-close to:
+serialization. For $n$ inputs, $d$ independently admitted rows, and sampling
+probability $p$, the probability that an input produces a nonempty mask is
+$q = 1-(1-p)^d$. Therefore
 
 $$
-n_{\mathrm{wire}}
-= n\left(1-(1-p)^d\right).
+N_{\mathrm{wire}} \sim \mathrm{Binomial}(n,q),
+\qquad
+\mathbb{E}[N_{\mathrm{wire}}] = nq.
 $$
 
-Acceptance: source-to-Collector datapoints and bytes decrease, and measured
-sampling error remains within its allocated evidence.
+Acceptance has two layers:
+
+1. With a fixed seed, the SDK's admitted row masks and next-admission cursors
+   exactly match a simple per-row reference implementation for every input.
+2. Across independent seeds, require
+
+   $$
+   |N_{\mathrm{wire}}-nq|
+   \le 6\sqrt{nq(1-q)} + 1,
+   $$
+
+   and separately report serialized bytes before and after admission. This
+   tolerance is an executable distribution sanity check, not an accuracy
+   proof. Query-error tests must independently satisfy the allocated
+   $(B_{\mathrm{sampling}},\delta_{\mathrm{sampling}})$ evidence.
 
 ### Phase D: GOS/delta alternative
 
@@ -449,8 +606,9 @@ producer/backend TransmissionPlan views.
 Collector implements insert-time crossings, sparse cell/bucket deltas,
 deadline fallback, and the final residual/checkpoint.
 
-Acceptance: without injected failures, sparse deltas plus the final residual
-reconstruct the full-state reference:
+Acceptance: without injected failures, acknowledged sparse deltas plus the
+final residual reconstruct the full-state reference for each exact
+`(producer, materialization, window, series, epoch)` key:
 
 $$
 x_j = \sum_{\ell=1}^{m}\Delta_j^{(\ell)} + \rho_j.
@@ -459,8 +617,9 @@ $$
 ### Phase E: durable delivery
 
 Collector and backend data plane jointly implement frame identity and sequence,
-pending/in-flight/ack state, atomic delta-plus-ledger apply, duplicate
-suppression, gap detection, checkpoint recovery, and restart persistence.
+the bounded queue policy, pending/in-flight/ACK state, atomic
+delta-plus-ledger apply, duplicate suppression, gap detection, checkpoint
+recovery, and restart persistence over the ACK transport specified above.
 
 Inject failures:
 
@@ -483,7 +642,7 @@ compiled policy:
 $$
 p_{\min} \le p(t) \le 1,
 \qquad
-1 \le T(t) \le T_{\max}.
+0 < T(t) \le T_{\max}.
 $$
 
 A change outside the error, compatibility, or deployment envelope requires a
