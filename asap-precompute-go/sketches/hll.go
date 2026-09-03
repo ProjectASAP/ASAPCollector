@@ -267,6 +267,9 @@ func (w *HLLWrapper) WithSampleP(p float64) *HLLWrapper {
 	return w
 }
 
+// SetSampleP applies a plan-owned probability to a newly-created window sketch.
+func (w *HLLWrapper) SetSampleP(p float64) { w.WithSampleP(p) }
+
 // SampleP returns the configured sampling probability (1.0 when disabled).
 func (w *HLLWrapper) SampleP() float64 {
 	if w.sampleP <= 0 {

@@ -3,6 +3,7 @@ package controlchannel
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
 )
@@ -72,12 +73,23 @@ func channelPlan(t *testing.T, version uint64) []byte {
 	body, err := json.Marshal(precompute.CollectorPlan{
 		CollectorID: "edge-a",
 		Envelope: precompute.CollectorPlanEnvelope{
-			PlanID: version, PlannerRevision: "3afcba6", CapabilitySnapshotID: "caps",
+			PlanID: 42, PlanVersion: version, GeneratedAtUnixMS: 1,
+			ActivationUnixMS: 1, BackendCompat: "asap-query-backend.v1",
+			PlannerRevision: "3afcba6", CapabilitySnapshotID: "caps",
 		},
 		Materializations: []precompute.CollectorMaterialization{{
-			QueryID: "q", Metric: "m", Algorithm: "hll",
+			QueryID: "q", Materialization: 9001, Metric: "m", Algorithm: "hll",
 			Parameters: map[string]float64{"precision": 14}, WindowSecs: 60,
 			Lifecycle: precompute.SupportedCollectorLifecycle(),
+		}},
+		TransmissionRules: []precompute.TransmissionRule{{
+			Materialization: 9001, ProducerID: "edge-a", SchemaID: "summary-state-v1-9001",
+			Mode:        precompute.TransmissionModeFull,
+			Encoding:    precompute.StateEncodingSketchlibProtobufV1,
+			EmitEveryMS: 60_000, DestinationRef: "asapquery-backend",
+			RuntimePolicy: precompute.RuntimeRulePolicy{
+				Sampling: precompute.SamplingPolicy{Mode: "disabled"},
+			},
 		}},
 	})
 	if err != nil {
@@ -90,7 +102,7 @@ func TestOpAmpChannelReceivePollAckLifecycle(t *testing.T) {
 	var statuses []PlanStatus
 	channel, err := NewOpAmpChannel(OpAmpConfig{
 		ServerEndpoint: "ws://controller", InstanceUid: "edge-a",
-		ReportStatus: func(_ uint64, status PlanStatus, _ error) { statuses = append(statuses, status) },
+		ReportStatus: func(_, _ uint64, status PlanStatus, _ error) { statuses = append(statuses, status) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +114,7 @@ func TestOpAmpChannelReceivePollAckLifecycle(t *testing.T) {
 	if set == nil || set.Version != 42 {
 		t.Fatalf("plan not delivered: %+v", set)
 	}
-	if got, want := set.Configs[0].AggID, precompute.AggId(9843981254622943340); got != want {
+	if got, want := set.Configs[0].AggID, precompute.AggId(9001); got != want {
 		t.Fatalf("cross-language materialization id: got %d want %d", got, want)
 	}
 	if channel.Poll() != nil {
@@ -111,15 +123,15 @@ func TestOpAmpChannelReceivePollAckLifecycle(t *testing.T) {
 	if err := channel.ReceiveCollectorPlan(channelPlan(t, 41)); err == nil {
 		t.Fatal("plan older than the delivered version was accepted")
 	}
-	if len(statuses) != 1 || statuses[0] != PlanStatusFailed {
+	if len(statuses) != 2 || statuses[0] != PlanStatusStaged || statuses[1] != PlanStatusFailed {
 		t.Fatalf("stale plan statuses: %v", statuses)
 	}
 	channel.Ack(41)
-	if len(statuses) != 1 {
+	if len(statuses) != 2 {
 		t.Fatal("wrong-version ack reported APPLIED")
 	}
 	channel.Ack(42)
-	if len(statuses) != 2 || statuses[1] != PlanStatusApplied {
+	if len(statuses) != 3 || statuses[2] != PlanStatusApplied {
 		t.Fatalf("statuses: %v", statuses)
 	}
 	if err := channel.ReceiveCollectorPlan(channelPlan(t, 42)); err == nil {
@@ -144,7 +156,7 @@ func TestOpAmpChannelRejectedPlanReportsEnvelopeID(t *testing.T) {
 	var reported uint64
 	channel, _ := NewOpAmpChannel(OpAmpConfig{
 		ServerEndpoint: "ws://controller", InstanceUid: "edge-a",
-		ReportStatus: func(version uint64, status PlanStatus, _ error) {
+		ReportStatus: func(_ uint64, version uint64, status PlanStatus, _ error) {
 			if status == PlanStatusFailed {
 				reported = version
 			}
@@ -157,5 +169,57 @@ func TestOpAmpChannelRejectedPlanReportsEnvelopeID(t *testing.T) {
 	}
 	if reported != 73 {
 		t.Fatalf("reported plan id = %d, want 73", reported)
+	}
+}
+
+func TestOpAmpChannelStagesUntilActivation(t *testing.T) {
+	now := time.UnixMilli(10_000)
+	channel, err := NewOpAmpChannel(OpAmpConfig{
+		ServerEndpoint: "ws://controller", InstanceUid: "edge-a", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := channelPlan(t, 1)
+	var plan precompute.CollectorPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Envelope.GeneratedAtUnixMS = 10_000
+	plan.Envelope.ActivationUnixMS = 11_000
+	body, _ = json.Marshal(plan)
+	if err := channel.ReceiveCollectorPlan(body); err != nil {
+		t.Fatal(err)
+	}
+	if got := channel.Poll(); got != nil {
+		t.Fatalf("future plan activated early: %+v", got)
+	}
+	now = time.UnixMilli(11_000)
+	if got := channel.Poll(); got == nil || got.Version != 1 {
+		t.Fatalf("plan did not activate: %+v", got)
+	}
+}
+
+func TestOpAmpChannelAllowsVersionOneForNewPlanIdentity(t *testing.T) {
+	channel, err := NewOpAmpChannel(OpAmpConfig{ServerEndpoint: "ws://controller", InstanceUid: "edge-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := channel.ReceiveCollectorPlan(channelPlan(t, 7)); err != nil {
+		t.Fatal(err)
+	}
+	if channel.Poll() == nil {
+		t.Fatal("first plan not delivered")
+	}
+	channel.Ack(7)
+	body := channelPlan(t, 1)
+	var plan precompute.CollectorPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Envelope.PlanID = 99
+	body, _ = json.Marshal(plan)
+	if err := channel.ReceiveCollectorPlan(body); err != nil {
+		t.Fatalf("new plan identity version 1 rejected as stale: %v", err)
 	}
 }

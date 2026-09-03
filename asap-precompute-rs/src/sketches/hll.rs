@@ -17,6 +17,7 @@ pub struct HLLWrapper {
     sk: HllSketch,
     variant: RsHllVariant,
     precision: u32,
+    sample_p: f64,
 }
 
 impl HLLWrapper {
@@ -26,12 +27,35 @@ impl HLLWrapper {
             sk: HllSketch::new(variant, precision),
             variant,
             precision,
+            sample_p: 1.0,
         }
+    }
+
+    /// Configure deterministic hash-threshold admission. The same item is
+    /// admitted consistently within a producer generation.
+    pub fn with_sample_p(mut self, p: f64) -> Self {
+        self.sample_p = if p.is_finite() && p > 0.0 && p < 1.0 {
+            p
+        } else {
+            1.0
+        };
+        self
     }
 
     /// Insert a byte slice. Mirrors the Go wrapper's `UpdateValue`
     /// (which the Go wrapper also routes to a hashed-bytes path).
     pub fn update(&mut self, value: &[u8]) {
+        if self.sample_p < 1.0 {
+            const OFFSET: u64 = 0xcbf29ce484222325;
+            const PRIME: u64 = 0x100000001b3;
+            let hash = value.iter().fold(OFFSET, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+            });
+            let unit = hash as f64 / u64::MAX as f64;
+            if unit >= self.sample_p {
+                return;
+            }
+        }
         self.sk.update(value);
     }
 
@@ -66,7 +90,7 @@ impl HLLWrapper {
             format_version: 1,
             producer: None,
             hash_spec: None,
-            sample_p: 0.0,
+            sample_p: crate::sampling::wire_sample_p(self.sample_p),
             sketch_state: Some(sketch_envelope::SketchState::Hll(self.build_state())),
         };
         let mut buf = Vec::with_capacity(env.encoded_len());
@@ -211,7 +235,7 @@ impl Sketch for HLLWrapper {
         // short-circuits to empty bytes (the runtime drops empty
         // payloads), and empty bytes would make `compute_delta_against`
         // fall back to a full snapshot instead of a delta.
-        let empty = HLLWrapper::new(self.variant, self.precision);
+        let empty = HLLWrapper::new(self.variant, self.precision).with_sample_p(self.sample_p);
         Ok(Some(empty.encode_envelope()))
     }
 
@@ -222,7 +246,7 @@ impl Sketch for HLLWrapper {
 
 impl CardinalitySketch for HLLWrapper {
     fn estimate_cardinality(&self) -> f64 {
-        self.sk.estimate()
+        self.sk.estimate() / self.sample_p
     }
 }
 
@@ -284,6 +308,25 @@ mod tests {
         let est = w.estimate_cardinality();
         // Loose bounds — HLL with precision=12 has std error ~1.6%.
         assert!(est > 800.0 && est < 1200.0, "est={est}");
+    }
+
+    #[test]
+    fn hash_threshold_sampling_is_deterministic_and_stamped() {
+        let mut first = HLLWrapper::new(RsHllVariant::Regular, 12).with_sample_p(0.25);
+        let mut second = HLLWrapper::new(RsHllVariant::Regular, 12).with_sample_p(0.25);
+        for i in 0..10_000u64 {
+            let value = i.to_le_bytes();
+            first.update(&value);
+            second.update(&value);
+        }
+        assert_eq!(first.inner().registers, second.inner().registers);
+        let estimate = first.estimate_cardinality();
+        assert!(
+            estimate > 8_000.0 && estimate < 12_000.0,
+            "estimate={estimate}"
+        );
+        let envelope = ProtoEnvelope::decode(first.snapshot().unwrap().as_slice()).unwrap();
+        assert_eq!(envelope.sample_p, 0.25);
     }
 
     #[test]

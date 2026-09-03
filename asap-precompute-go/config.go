@@ -262,6 +262,9 @@ type PrecomputeConfig struct {
 	// deserialization simple; a future ADR may switch to a
 	// sum-typed struct if the map approach grows footguns.
 	SketchParams SketchParams
+	// SampleP is the plan-owned admission probability. Zero leaves legacy
+	// runtime coordination unchanged; (0,1] pins sampling for this generation.
+	SampleP float64
 	// MaxSeries caps the per-Precompute series cardinality. Zero
 	// means unbounded (matches today's processors which had no cap).
 	MaxSeries uint64

@@ -1,0 +1,61 @@
+{
+  "collector_id": "edge-a",
+  "envelope": {
+    "plan_id": 42,
+    "plan_version": 7,
+    "generated_at_unix_ms": 10000,
+    "activation_unix_ms": 11000,
+    "expiry_unix_ms": null,
+    "backend_compat": "asap-query-backend.v1",
+    "planner_revision": "3afcba68f4e8397fb81e2be988f47120f63f7a39",
+    "capability_snapshot_id": "caps-7"
+  },
+  "materializations": [
+    {
+      "query_id": "q-cardinality",
+      "materialization": 9001,
+      "metric": "active_users",
+      "algorithm": "hll",
+      "parameters": {"precision": 14},
+      "group_by": ["service"],
+      "window_secs": 60,
+      "evidence_source": null,
+      "lifecycle": {
+        "kind": "continuously_maintained",
+        "maintenance_mode": "incremental",
+        "evaluation_schedule": "per_update",
+        "output_representation": "summary_state"
+      }
+    }
+  ],
+  "transmission_rules": [
+    {
+      "materialization": 9001,
+      "producer_id": "edge-a",
+      "schema_id": "summary-state-v1-9001",
+      "mode": "full",
+      "encoding": "sketchlib_protobuf_v1",
+      "emit_every_ms": 60000,
+      "full_checkpoint_every_ms": null,
+      "destination_ref": "asap-backend-primary",
+      "runtime_policy": {
+        "sampling": {
+          "mode": "fixed",
+          "probability": 0.5,
+          "estimator": "hash_threshold"
+        },
+        "delta": null,
+        "adaptation": {
+          "enabled": false,
+          "not_before_unix_ms": 0,
+          "max_evidence_age_ms": 0,
+          "min_evidence_samples": 0,
+          "sample_probability": null,
+          "emit_every_ms": null,
+          "delta_threshold": null,
+          "gos_epsilon_staleness": null
+        }
+      }
+    }
+  ]
+}

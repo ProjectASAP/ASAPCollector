@@ -39,6 +39,7 @@ pub mod collector_plan;
 pub mod config;
 pub mod control_channel;
 pub mod envelope;
+pub mod frame_identity;
 pub mod matchers;
 pub mod observation;
 #[cfg(feature = "otap")]

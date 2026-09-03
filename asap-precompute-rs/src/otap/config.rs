@@ -214,13 +214,14 @@ fn build_dispatch(config: &PluginConfig) -> Result<SketchDispatch, ConfigError> 
                 crate::config::sketch_param_get(params, "precision", 12.0),
                 12,
             );
+            let sample_p = crate::config::sketch_param_get(params, "sample_p", 1.0);
             Ok(SketchDispatch {
                 sketch_type: SketchType::HLLSketch,
                 factory: Box::new(move || {
-                    Box::new(HLLWrapper::new(
-                        asap_sketchlib::HllVariant::Regular,
-                        precision as u32,
-                    ))
+                    Box::new(
+                        HLLWrapper::new(asap_sketchlib::HllVariant::Regular, precision as u32)
+                            .with_sample_p(sample_p),
+                    )
                 }),
                 observer: boxed_observer(HLLObserver),
             })
@@ -251,10 +252,13 @@ fn build_dispatch(config: &PluginConfig) -> Result<SketchDispatch, ConfigError> 
                 crate::config::sketch_param_get(params, "width", 2048.0),
                 2048,
             );
+            let sample_p = crate::config::sketch_param_get(params, "sample_p", 1.0);
             Ok(SketchDispatch {
                 sketch_type: SketchType::CountMinSketch,
                 factory: Box::new(move || {
-                    Box::new(CMSWrapper::new(depth as usize, width as usize))
+                    Box::new(
+                        CMSWrapper::new(depth as usize, width as usize).with_sample_p(sample_p),
+                    )
                 }),
                 observer: boxed_observer(CMSObserver),
             })

@@ -375,6 +375,13 @@ func (w *windowState) admitSeriesLocked(
 	if w.monitorSampleHook != nil {
 		w.monitorSampleHook(sketch)
 	}
+	// A physical-plan probability is authoritative for this immutable plan
+	// generation and overrides the legacy live grant on each new window sketch.
+	if cfg.SampleP > 0 {
+		if setter, ok := sketch.(interface{ SetSampleP(float64) }); ok {
+			setter.SetSampleP(cfg.SampleP)
+		}
+	}
 	// Honor the parity-mode flags by stripping the labels we promised not
 	// to surface. WholeStream (incl. the legacy GlobalAggregation alias)
 	// collapses everything; OmitResourceAttrs zeroes only the resource
