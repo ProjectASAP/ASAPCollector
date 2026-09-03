@@ -118,6 +118,11 @@ type CMSWrapper struct {
 	// fixed-DeltaThreshold path, unchanged. Set via SetGosMode.
 	gosEpsilon float64
 	gosSites   uint32
+	// gosThreshold is the largest threshold used in this window. OctoSketch's
+	// dynamic-threshold proof is expressed in terms of tau_max. Keeping the
+	// applied threshold non-decreasing means a cell that was below an earlier
+	// threshold remains below the current one without a full matrix rescan.
+	gosThreshold uint64
 	// gosDirty accumulates cells that crossed the insert-time GOS threshold
 	// since the last drainGosDelta call. Each entry's Delta already equals
 	// that cell's full accumulation since it was last sent (sketchlib zeroes
@@ -260,10 +265,17 @@ func (w *CMSWrapper) GosDeltaThreshold(epsilon float64, k uint32) uint64 {
 		return 1
 	}
 	t := CMSIsotropicThreshold(epsilon, w.currentMass(), k)
+	candidate := uint64(1)
 	if !math.IsInf(t, 1) && !math.IsNaN(t) && t > 1.0 {
-		return uint64(math.Ceil(t))
+		candidate = uint64(math.Ceil(t))
 	}
-	return 1
+	if candidate > w.gosThreshold {
+		w.gosThreshold = candidate
+	}
+	if w.gosThreshold == 0 {
+		w.gosThreshold = 1
+	}
+	return w.gosThreshold
 }
 
 // recordDirty appends newly-crossed cells to the pending GOS drain list and
@@ -313,19 +325,22 @@ func (w *CMSWrapper) drainGosDelta() ([]byte, bool, error) {
 	for i, c := range w.gosDirty {
 		d.Cells[i] = cms.CellDelta{Row: c.Row, Col: c.Col, DValue: c.Delta}
 	}
-	w.gosDirty = w.gosDirty[:0]
 	if len(w.gosL1Baseline) != w.rows {
 		w.gosL1Baseline = make([]float64, w.rows)
 	}
 	for r := 0; r < w.rows; r++ {
 		curL1 := w.sk.L1[r]
 		d.L1[r] = curL1 - w.gosL1Baseline[r]
-		w.gosL1Baseline[r] = curL1
 	}
 	payload, err := cms.SerializeDelta(d)
 	if err != nil {
-		full, fErr := w.Snapshot()
-		return full, true, fErr
+		// A full residual snapshot cannot replace already-reset crossings. Keep
+		// them pending and surface the error so the caller retries losslessly.
+		return nil, false, err
+	}
+	w.gosDirty = w.gosDirty[:0]
+	for r := 0; r < w.rows; r++ {
+		w.gosL1Baseline[r] = w.sk.L1[r]
 	}
 	return payload, false, nil
 }
@@ -595,6 +610,7 @@ func (w *CMSWrapper) Merge(other precompute.Sketch) error {
 func (w *CMSWrapper) Reset() {
 	w.sk = w.newSketch()
 	w.gosDirty = nil
+	w.gosThreshold = 0
 	w.gosWake = false
 	w.gosL1Baseline = nil
 }

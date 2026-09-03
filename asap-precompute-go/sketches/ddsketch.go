@@ -63,6 +63,10 @@ type DDSketchWrapper struct {
 	// unchanged. Set via SetGosMode.
 	gosEpsilon float64
 	gosSites   uint32
+	// gosThreshold is the maximum threshold applied in the current window.
+	// OctoSketch bounds dynamic operation using tau_max; never decreasing it
+	// also avoids invalidating untouched residual buckets after a reset.
+	gosThreshold uint64
 	// gosDirty accumulates buckets that crossed the insert-time GOS
 	// threshold since the last drainGosDelta call. Each entry's Count
 	// already equals that bucket's full accumulation since it was last sent
@@ -148,10 +152,17 @@ func (w *DDSketchWrapper) GosDeltaThreshold(epsilon float64, k uint32) uint64 {
 		return 1
 	}
 	t := DDSketchIsotropicThreshold(epsilon, float64(w.sk.Count()), k, w.sk.PopulatedBuckets())
+	candidate := uint64(1)
 	if !math.IsInf(t, 1) && !math.IsNaN(t) && t > 1.0 {
-		return uint64(math.Ceil(t))
+		candidate = uint64(math.Ceil(t))
 	}
-	return 1
+	if candidate > w.gosThreshold {
+		w.gosThreshold = candidate
+	}
+	if w.gosThreshold == 0 {
+		w.gosThreshold = 1
+	}
+	return w.gosThreshold
 }
 
 // recordDirty appends a newly-crossed bucket to the pending GOS drain list
@@ -194,12 +205,11 @@ func (w *DDSketchWrapper) drainGosDelta() ([]byte, bool, error) {
 	for i, u := range w.gosDirty {
 		delta.Buckets[i] = &ddpb.DDSketchBucketDelta{Index: u.Index, DCount: u.Count}
 	}
-	w.gosDirty = w.gosDirty[:0]
 	payload, err := proto.Marshal(delta)
 	if err != nil {
-		full, fErr := w.Snapshot()
-		return full, true, fErr
+		return nil, false, err
 	}
+	w.gosDirty = w.gosDirty[:0]
 	return payload, false, nil
 }
 
@@ -378,6 +388,7 @@ func (w *DDSketchWrapper) Reset() {
 	// on the underlying sketch, so a threshold computed after this Reset
 	// starts fresh too).
 	w.gosDirty = nil
+	w.gosThreshold = 0
 	w.gosWake = false
 }
 

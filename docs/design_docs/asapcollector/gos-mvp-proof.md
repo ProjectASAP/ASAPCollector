@@ -149,18 +149,35 @@ $$
 < \epsilon_{\mathrm{samp}}+kT.
 $$
 
-## Isotropic drift invariant
+## Isotropic drift invariant and dynamic thresholds
 
-For a scalar threshold $T > 0$, each site maintains
+OctoSketch permits the aggregator to adjust a shared threshold periodically in
+response to queue pressure. Its worst-case analysis does not substitute the
+instantaneous residual norm into the error bound: it defines
+$T_{\max}(t)$ as the largest threshold used up to time $t$ and proves against
+that value. An accuracy controller must therefore cap the adaptive threshold;
+queue feedback may choose a smaller value but may not exceed that cap.
+
+The MVP applies the conservative implementation rule that the threshold used by
+a site is non-decreasing within a window and resets only at the next window.
+This avoids an $O(dw)$ scan when a newly computed candidate threshold is lower:
+every untouched cell that was below an earlier threshold is also below the
+current threshold. Let
 
 $$
-\lVert D_i(t) \rVert_\infty < T.
+T_{\max}(t) = \max_{0 \le u \le t} T(u).
 $$
 
-When a cell reaches $|D_{i,j}(t)| \ge T$, the Collector marks it for export and
-wakes the flush loop. If the active cell is reset when a frame is formed, its
-value moves to explicit in-flight state, so the total unacknowledged drift is
-still used by the invariant.
+Each site then maintains
+
+$$
+\lVert D_i(t) \rVert_\infty < T_{\max}(t).
+$$
+
+When a cell reaches $|D_{i,j}(t)| \ge T(t)$, the Collector marks it for export
+and wakes the flush loop. If the active cell is reset when a frame is formed,
+its value moves to explicit in-flight state, so the total unacknowledged drift
+is still used by the invariant.
 
 The difference between the true and reconstructed global state is
 
@@ -173,14 +190,14 @@ For every cell $j$, the triangle inequality gives
 $$
 \left|x_j(t) - \widehat{x}_j(t)\right|
 \le \sum_{i=1}^{k} \left|D_{i,j}(t)\right|
-< kT.
+< kT_{\max}(t).
 $$
 
 Therefore the central deterministic GOS bound is
 
 $$
 \boxed{
-  \lVert x(t) - \widehat{x}(t) \rVert_\infty < kT
+  \lVert x(t) - \widehat{x}(t) \rVert_\infty < kT_{\max}(t)
 }
 $$
 
