@@ -63,7 +63,9 @@ func TestOpAMPPlanStatusRetriesAfterPendingSend(t *testing.T) {
 		t.Fatalf("status retry calls=%d type=%q", handler.sendCalls, handler.sentType)
 	}
 	var status planStatusBody
-	if err := json.Unmarshal(handler.sentBody, &status); err != nil { t.Fatal(err) }
+	if err := json.Unmarshal(handler.sentBody, &status); err != nil {
+		t.Fatal(err)
+	}
 	if status.PlanID != 9 || status.PlanVersion != 3 || status.Status != "APPLIED" {
 		t.Fatalf("status wire contract: %+v", status)
 	}
@@ -98,18 +100,21 @@ func testCollectorPlan(t *testing.T) []byte {
 		CollectorID: "edge-a",
 		Envelope: precompute.CollectorPlanEnvelope{
 			PlanID: 42, PlanVersion: 7, GeneratedAtUnixMS: 1, ActivationUnixMS: 1,
-			BackendCompat: "asap-query-backend.v1", PlannerRevision: "3afcba6",
+			BackendCompat: "asap-query-backend.v1", PlannerRevision: "264937ec",
 			CapabilitySnapshotID: "caps-7",
 		},
 		Materializations: []precompute.CollectorMaterialization{{
 			QueryID: "q", Materialization: 9001, Metric: "requests", Algorithm: "hll",
 			Parameters: map[string]float64{"precision": 14}, WindowSecs: 60,
-			Lifecycle: precompute.SupportedCollectorLifecycle(),
+			AbstractWindowFramework: precompute.SummaryWindowFrameworkTumbling,
+			WindowImplementationID:  "collector-tumbling-v1", PaneSecs: 60,
+			StateLayout: "anchored-pane-v1",
+			Lifecycle:   precompute.SupportedCollectorLifecycle(),
 		}},
 		TransmissionRules: []precompute.TransmissionRule{{
 			Materialization: 9001, ProducerID: "edge-a", SchemaID: "summary-state-v1-9001",
-			Mode: precompute.TransmissionModeFull,
-			Encoding: precompute.StateEncodingSketchlibProtobufV1,
+			Mode:        precompute.TransmissionModeFull,
+			Encoding:    precompute.StateEncodingSketchlibProtobufV1,
 			EmitEveryMS: 60_000, DestinationRef: "asapquery-backend",
 			RuntimePolicy: precompute.RuntimeRulePolicy{Sampling: precompute.SamplingPolicy{Mode: "disabled"}},
 		}},
