@@ -498,21 +498,21 @@ $T + U_{\max}$. With at most $s$ sealed but unacknowledged frames and an active
 residual below $T$, the unacknowledged coordinate drift satisfies
 
 $$
-|D_j(t)| < (s+1)T + sU_{\max}.
+\lvert D_{j}(t) \rvert < (s+1)T + sU_{\max}.
 $$
 
-Here $s \le \mathtt{max\_in\_flight}+\mathtt{max\_pending}$. For the MVP,
-$s \le 2$, so a conservative bound is
+The MVP permits at most one in-flight frame and one pending frame, so
+$s \le 2$. A conservative bound is therefore
 
 $$
-|D_j(t)| < 3T + 2U_{\max}.
+\lvert D_{j}(t) \rvert < 3T + 2U_{\max}.
 $$
 
 Across $k$ producers, the uniform-policy coordinate bound is therefore
 
 $$
-\left|\sum_{i=1}^{k}D_{i,j}(t)\right|
-< k\left(3T+2U_{\max}\right),
+\left\lvert \sum_{i=1}^{k} D_{i,j}(t) \right\rvert
+< k\left(3T+2U_{\max}\right).
 $$
 
 or, for nonuniform policies, the sum of each producer's individual bound.
