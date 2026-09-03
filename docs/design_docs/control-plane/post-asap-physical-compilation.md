@@ -7,8 +7,12 @@
 
 ASAPPlanner does not need to know about Collector processes, backend storage,
 OTLP, delta transmission, GOS, or sampling. Its job is to optimize a query or
-intent into a deployment-independent Post-ASAP DAG. The ASAPQuery-backend
-control plane then compiles that DAG into a distributed physical execution
+intent into a deployment-independent Post-ASAP DAG. That optimization includes
+abstract summary primitives: the sketch algorithm, summary-window framework,
+and summary-maintenance lifecycle. The ASAPQuery-backend control plane expands
+those abstract candidates into concrete runtime implementations and feeds
+their performance under the supplied `DataWorkload` back into Planner's cost
+model before compiling the selected DAG into a distributed physical execution
 plan.
 
 ```text
@@ -16,11 +20,12 @@ Query / Intent
       │
       ▼
 ASAPPlanner
-Post-ASAP logical/algorithm DAG
-      │
-      ▼
-ASAPQuery-backend Control Plane
-Physical plan compilation + deployment optimization
+Post-ASAP abstract candidates and selection
+      │                                      ▲
+      │ candidates                           │ implementation cost evidence
+      ▼                                      │
+ASAPQuery-backend Control Plane ─────────────┘
+Runtime implementation enumeration + physical compilation
       │
       ├── SDKPlan
       ├── CollectorPlan
@@ -71,13 +76,16 @@ Source(metric)
 
 The labels are illustrative Post-ASAP operators, not additional wire types.
 
-The DAG should describe:
+The candidate DAGs should describe:
 
 - operators and their edges;
 - logical sources;
-- filter, grouping, and window semantics;
+- filter, grouping, and query-time semantics;
 - aggregate and query semantics;
 - the selected sketch algorithm and parameters;
+- the abstract summary-window framework, such as tumbling, sliding, or an
+  exponential-histogram framework;
+- candidate summary-maintenance lifecycles and their legality constraints;
 - merge and readout semantics;
 - required accuracy and confidence;
 - freshness and other query SLOs;
@@ -124,6 +132,21 @@ be signed, the sketch's intrinsic error guarantee, and the query's requested
 error and freshness. Exposing these properties does not make Planner aware of
 sampling or GOS.
 
+The framework decision is intentionally abstract. Selecting a sliding window,
+for example, does not select a pane width, process, machine, shard count,
+storage layout, or wire representation. New summary-window primitives belong
+in Planner so that they can participate in semantic legality checks, rewrites,
+accuracy reasoning, and candidate search without hard-coding one executor's
+implementation.
+
+Summary maintenance and window framework are orthogonal decisions. Planner may
+propose that a logical summary is maintained incrementally and independently
+propose a tumbling, sliding, or exponential-histogram window framework.
+ASAPQuery-backend must enumerate concrete runtime realizations of that pair,
+and ASAPCollector executes the compiled realization. `Incremental` describes
+how summary state changes as data arrives; the window framework describes how
+that state is organized over time.
+
 Planner-owned intent algebra, semantic rewrites, logical optimizer rules, and
 logical sketch reasoning must come from the pinned ASAPPlanner revision.
 ASAPQuery-backend must not maintain a second copy of them.
@@ -145,6 +168,15 @@ Post-ASAP DAG
 + runtime feedback
 ```
 
+For every Planner candidate, the control plane enumerates feasible concrete
+implementations. It owns their identities and reports their measured or
+estimated CPU, memory, network, storage, and scan behavior under the same
+`DataWorkload` and comparison horizon. Planner consumes that evidence when
+ranking its abstract candidates. Missing evidence makes the corresponding
+candidate unavailable; it is not replaced by an optimistic zero. This
+feedback interface lets Planner remain a general primitive-discovery framework
+without embedding executor-specific implementation models.
+
 Capabilities here are deployment capabilities, such as:
 
 ```text
@@ -157,6 +189,8 @@ They are not a copy of Planner's logical capability algebra.
 
 The control plane decides:
 
+- the concrete implementation and configuration of each Planner-selected
+  sketch and summary-window framework;
 - which DAG nodes execute in the SDK, Collector, backend precompute, storage,
   or query stages;
 - whether source sampling is enabled;
@@ -211,22 +245,29 @@ plane, not ASAPPlanner.
 
 ## Physical compilation
 
-One compilation should:
+Candidate evaluation and compilation should:
 
-1. Validate the canonical Post-ASAP DAG and preserve shared nodes.
+1. Validate the canonical Post-ASAP candidate DAGs and preserve shared nodes.
 2. Bind logical sources to deployed telemetry sources.
-3. Enumerate legal SDK, Collector, backend-precompute, storage, and query
-   partitions.
-4. Reject placements whose executors lack the required semantics.
-5. Choose physical windows, panes, grouping layout, and sharding.
-6. Allocate accuracy and freshness budgets across physical mechanisms.
-7. Enumerate sampling, GOS, full/delta, checkpoint, encoding, and storage
+3. For every Planner-owned sketch, window-framework, and lifecycle candidate,
+   enumerate legal concrete implementations and SDK, Collector,
+   backend-precompute, storage, and query partitions.
+4. Reject implementations and placements whose executors lack the required
+   semantics.
+5. Estimate or measure every concrete implementation under the supplied
+   `DataWorkload`, keeping its physical identity outside Planner.
+6. Feed complete resource evidence for the alternatives back into Planner's
+   cost model so it can select an abstract candidate.
+7. For that selection, choose a compatible concrete configuration, including
+   panes, grouping layout, placement, and sharding.
+8. Allocate accuracy and freshness budgets across physical mechanisms.
+9. Enumerate sampling, GOS, full/delta, checkpoint, encoding, and storage
    alternatives.
-8. Choose a feasible alternative using measured resource costs.
-9. Assign stable plan, materialization, producer, window, and protocol
-   identities.
-10. Emit every runtime-plan view from the same in-memory decision.
-11. Validate shared fields across those views before publication.
+10. Choose a feasible deployment using measured resource costs.
+11. Assign stable plan, materialization, producer, window, and protocol
+    identities.
+12. Emit every runtime-plan view from the same in-memory decision.
+13. Validate shared fields across those views before publication.
 
 A useful internal result is:
 
@@ -651,10 +692,13 @@ new compiled plan version.
 ## Final ownership
 
 - **ASAPPlanner:** generates and optimizes the deployment-independent Post-ASAP
-  DAG.
-- **ASAPQuery-backend control plane:** partitions stages, performs deployment
-  optimization, chooses sampling/GOS/delta/placement, and compiles every runtime
-  plan from one decision.
+  candidate DAGs, including abstract sketch, summary-window framework, and
+  lifecycle choices, using complete downstream implementation-cost evidence.
+- **ASAPQuery-backend control plane:** enumerates concrete implementations for
+  Planner candidates, reports their `DataWorkload`-specific performance to
+  Planner, partitions stages, performs deployment optimization, chooses
+  sampling/GOS/delta/placement, and compiles every runtime plan from one
+  decision.
 - **SDK:** executes SDKPlan and performs selected admission at the source.
 - **ASAPCollector:** executes CollectorPlan and TransmissionPlan, maintains
   local state, and sends identified frames.
