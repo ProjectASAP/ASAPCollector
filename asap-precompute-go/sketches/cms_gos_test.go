@@ -26,6 +26,18 @@ func TestCMSWrapper_GOS_EmptyDrainReturnsNil(t *testing.T) {
 	}
 }
 
+func TestCMSWrapperGOSThresholdNeverDecreasesWithinWindow(t *testing.T) {
+	w := NewCMSWrapper(3, 64, false)
+	w.gosThreshold = 17
+	if got := w.GosDeltaThreshold(0.1, 1); got != 17 {
+		t.Fatalf("threshold decreased to %d, want tau_max 17", got)
+	}
+	w.Reset()
+	if w.gosThreshold != 0 {
+		t.Fatalf("window reset retained tau_max %d", w.gosThreshold)
+	}
+}
+
 // TestCMSWrapper_GOS_WakeSignalFiresOnceAndDrains drives enough inserts to
 // force at least one threshold crossing (cold start: the threshold starts
 // near 0, so it fires quickly — design doc §11 "cold start is a feature"),

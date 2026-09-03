@@ -26,6 +26,18 @@ func TestDDSketchWrapper_GOS_EmptyDrainReturnsNil(t *testing.T) {
 	}
 }
 
+func TestDDSketchWrapperGOSThresholdNeverDecreasesWithinWindow(t *testing.T) {
+	w := NewDDSketchWrapper(0.01)
+	w.gosThreshold = 17
+	if got := w.GosDeltaThreshold(0.1, 1); got != 17 {
+		t.Fatalf("threshold decreased to %d, want tau_max 17", got)
+	}
+	w.Reset()
+	if w.gosThreshold != 0 {
+		t.Fatalf("window reset retained tau_max %d", w.gosThreshold)
+	}
+}
+
 // TestDDSketchWrapper_GOS_WakeSignalFiresOnceAndDrains drives enough inserts
 // of the SAME value (so one bucket's count climbs quickly) to force at least
 // one threshold crossing (cold start: T=ε·N/(k·B) starts near 0, so it fires

@@ -27,6 +27,21 @@ func TestCountSketchWrapper_GOS_EmptyDrainReturnsNil(t *testing.T) {
 	}
 }
 
+func TestCountSketchWrapperGOSThresholdNeverDecreasesWithinWindow(t *testing.T) {
+	w, err := NewCountSketchWrapper(3, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.gosThreshold = 17
+	if got := w.GosDeltaThreshold(0.1, 1); got != 17 {
+		t.Fatalf("threshold decreased to %d, want tau_max 17", got)
+	}
+	w.Reset()
+	if w.gosThreshold != 0 {
+		t.Fatalf("window reset retained tau_max %d", w.gosThreshold)
+	}
+}
+
 // TestCountSketchWrapper_GOS_WakeSignalFiresOnceAndDrains drives enough
 // inserts to force at least one threshold crossing (cold start: the
 // threshold starts near 0, so it fires quickly — design doc §11 "cold start
