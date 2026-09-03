@@ -16,7 +16,7 @@ model before compiling the selected DAG into a distributed physical execution
 plan.
 
 ```text
-Query / Intent
+Query Workloads / Intent, Data Workloads
       │
       ▼
 ASAPPlanner
