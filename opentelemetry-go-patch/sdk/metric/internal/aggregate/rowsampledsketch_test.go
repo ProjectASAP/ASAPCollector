@@ -51,7 +51,7 @@ func TestRowSampledSketch_UnsampledAdmitsAllRows(t *testing.T) {
 
 // R(x)=∅ occurrences (no row admits) must be discarded entirely — never
 // appear in the drained output.
-func TestRowSampledSketch_ZeroSampleP_DropsEverything(t *testing.T) {
+func TestRowSampledSketch_ZeroValueSamplePDefaultsToExact(t *testing.T) {
 	id := precompute.AggregationIdentity{AggID: 2, Filter: ""}
 	agg := newRowSampledSketchAgg[int64](constRouter(id, 4), "", "edge-1", 60, 0)
 
@@ -61,8 +61,8 @@ func TestRowSampledSketch_ZeroSampleP_DropsEverything(t *testing.T) {
 
 	var dest metricdata.Aggregation
 	n := agg.delta(&dest)
-	if n != 0 {
-		t.Fatalf("got %d admitted occurrences, want 0 (p<=0 must admit nothing)", n)
+	if n != 20 {
+		t.Fatalf("got %d admitted occurrences, want 20 (zero value must default to exact)", n)
 	}
 }
 
@@ -164,11 +164,21 @@ func TestRowSampledSketch_DistinctIdentitiesAreIndependent(t *testing.T) {
 	if len(agg.targets) != 2 {
 		t.Fatalf("targets = %d, want 2 (distinct AggregationIdentity values must get independent targets)", len(agg.targets))
 	}
+	if agg.targets[idA].seed == agg.targets[idB].seed {
+		t.Fatal("distinct physical target identities received the same sampler seed")
+	}
 
 	var dest metricdata.Aggregation
 	n := agg.delta(&dest)
 	if n != 3 {
 		t.Fatalf("got %d admitted occurrences, want 3", n)
+	}
+}
+
+func TestRowSampleEpochSeedChangesRandomStream(t *testing.T) {
+	base := rowSampleSeed("edge-1", precompute.AggregationIdentity{AggID: 10, Filter: "zone=us"})
+	if rowSampleEpochSeed(base, 0) == rowSampleEpochSeed(base, 1) {
+		t.Fatal("probability epoch reused the previous sampler seed")
 	}
 }
 
@@ -183,7 +193,8 @@ func TestRowSampledSketch_DirectJumpDropsBeforeExport(t *testing.T) {
 	)
 	id := precompute.AggregationIdentity{AggID: 9182, Filter: ""}
 	agg := newRowSampledSketchAgg[int64](constRouter(id, rows), "", "edge-1", 60, p)
-	expectedSampler := common.NewGeometricSampler(p, int64(id.AggID))
+	baseSeed := rowSampleSeed("edge-1", id)
+	expectedSampler := common.NewGeometricSampler(p, rowSampleEpochSeed(baseSeed, 0))
 
 	var wantMasks []uint64
 	attrs := attribute.NewSet(attribute.String("symbol", "AAPL"))

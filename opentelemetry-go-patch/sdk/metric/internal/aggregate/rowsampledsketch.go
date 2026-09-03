@@ -5,6 +5,8 @@ package aggregate // import "go.opentelemetry.io/otel/sdk/metric/internal/aggreg
 
 import (
 	"context"
+	"encoding/binary"
+	"hash/fnv"
 	"sync"
 	"time"
 
@@ -25,9 +27,11 @@ type rowSampledTarget[N int64 | float64] struct {
 	rows    int
 	sampler *common.GeometricSampler
 	grant   *liveSampleGrant
-	// seed is the sampler's base seed (derived from AggID) — reused across
-	// Reset calls so a repeated p doesn't need re-deriving a new seed.
+	// seed is derived from the complete physical target identity and producer.
 	seed int64
+	// sampleEpoch prevents a probability change from replaying the same random
+	// stream prefix. It advances only when the applied probability changes.
+	sampleEpoch uint64
 	// pending buffers admitted occurrences since the last delta() drain.
 	pending []metricdata.RowSampledSketchDataPoint[N]
 }
@@ -46,6 +50,12 @@ type rowSampledSketchValues[N int64 | float64] struct {
 func newRowSampledSketchValues[N int64 | float64](
 	router precompute.AggregationRouter, coordinatorURL, edgeID string, windowMs uint64, bootstrapSampleP float64,
 ) *rowSampledSketchValues[N] {
+	// AggregationRowSampledSketch documents its Go zero value as exact. Normalize
+	// here as well as at the public builder boundary so direct internal callers
+	// cannot accidentally turn an omitted value into near-total data loss.
+	if bootstrapSampleP == 0 {
+		bootstrapSampleP = 1
+	}
 	return &rowSampledSketchValues[N]{
 		router:           router,
 		coordinatorURL:   coordinatorURL,
@@ -56,22 +66,43 @@ func newRowSampledSketchValues[N int64 | float64](
 	}
 }
 
+func rowSampleSeed(edgeID string, id precompute.AggregationIdentity) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(edgeID))
+	var agg [8]byte
+	binary.LittleEndian.PutUint64(agg[:], id.AggID)
+	_, _ = h.Write(agg[:])
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(id.Filter))
+	return int64(h.Sum64())
+}
+
+func rowSampleEpochSeed(base int64, epoch uint64) int64 {
+	x := uint64(base) + epoch*0x9e3779b97f4a7c15
+	x ^= x >> 30
+	x *= 0xbf58476d1ce4e5b9
+	x ^= x >> 27
+	x *= 0x94d049bb133111eb
+	x ^= x >> 31
+	return int64(x)
+}
+
 // targetFor returns the shared rowSampledTarget for id, creating it (and
 // its GeometricSampler + liveSampleGrant) on first use. Caller holds d.mu.
 func (d *rowSampledSketchValues[N]) targetFor(id precompute.AggregationIdentity, rows int) *rowSampledTarget[N] {
 	if t, ok := d.targets[id]; ok {
 		return t
 	}
-	// Seed from AggID: reproducible across process restarts for the same
-	// policy, independent across distinct target sketches. Unlike
+	// Seed from the complete physical identity and producer: reproducible
+	// across process restarts and independent across target sketches. Unlike
 	// ConsistentSampler's per-window salt (needed for hash-reproducibility
 	// across independent evaluation sites), a single GeometricSampler
 	// instance run continuously needs no per-window reseed for
 	// correctness — only a genuine p CHANGE requires Reset (see measure()).
-	seed := int64(id.AggID)
+	seed := rowSampleSeed(d.edgeID, id)
 	t := &rowSampledTarget[N]{
 		rows:    rows,
-		sampler: common.NewGeometricSampler(d.bootstrapSampleP, seed),
+		sampler: common.NewGeometricSampler(d.bootstrapSampleP, rowSampleEpochSeed(seed, 0)),
 		grant:   newLiveSampleGrant(d.coordinatorURL, d.edgeID, id.AggID, d.windowMs, d.bootstrapSampleP),
 		seed:    seed,
 	}
@@ -114,7 +145,8 @@ func (d *rowSampledSketchValues[N]) measure(
 	t.grant.reportOccurrence()
 	p := t.grant.currentP()
 	if p != t.sampler.P() {
-		t.sampler.Reset(p, t.seed)
+		t.sampleEpoch++
+		t.sampler.Reset(p, rowSampleEpochSeed(t.seed, t.sampleEpoch))
 	}
 
 	// Consume this occurrence's complete row block with NitroSketch's direct
