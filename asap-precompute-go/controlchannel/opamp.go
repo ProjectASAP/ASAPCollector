@@ -28,7 +28,7 @@ type OpAmpChannel struct {
 	deliveredPlanID         uint64
 	lastAcked               uint64
 	lastAckedPlanID         uint64
-	maxVersionByPlan        map[uint64]uint64
+	maxVersion              uint64
 }
 
 // PlanStatus is reported to the OpAMP transport adapter after validation or
@@ -83,7 +83,7 @@ func NewOpAmpChannel(cfg OpAmpConfig) (*OpAmpChannel, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &OpAmpChannel{cfg: cfg, maxVersionByPlan: make(map[uint64]uint64)}, nil
+	return &OpAmpChannel{cfg: cfg}, nil
 }
 
 // ReceiveCollectorPlan validates an ASAPQuery CollectorPlan and queues it for
@@ -110,14 +110,14 @@ func (o *OpAmpChannel) ReceiveCollectorPlan(body []byte) error {
 		o.reportFailed(identity.PlanID, set.Version, err)
 		return err
 	}
-	if set.Version <= o.maxVersionByPlan[identity.PlanID] || o.pending != nil || o.delivered != 0 {
+	if set.Version <= o.maxVersion || o.pending != nil || o.delivered != 0 {
 		o.mu.Unlock()
 		err = errors.New("controlchannel: stale or duplicate CollectorPlan version")
 		o.reportFailed(identity.PlanID, set.Version, err)
 		return err
 	}
 	o.pending = set
-	o.maxVersionByPlan[identity.PlanID] = set.Version
+	o.maxVersion = set.Version
 	o.pendingPlanID = identity.PlanID
 	o.pendingActivationUnixMS = identity.ActivationUnixMS
 	o.pendingExpiryUnixMS = identity.ExpiryUnixMS

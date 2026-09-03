@@ -230,7 +230,7 @@ fn staged_activation_is_atomic_and_versioned() {
 fn frame_sequence_and_reserved_attributes_match_backend_contract() {
     let mut parsed = quantile_plan();
     parsed.transmission_rules[0].mode = TransmissionMode::Delta;
-    parsed.transmission_rules[0].full_checkpoint_every_ms = Some(60_000);
+    parsed.transmission_rules[0].full_checkpoint_every_ms = Some(600_000);
     parsed.transmission_rules[0].runtime_policy.delta =
         Some(asap_precompute_rs::collector_plan::DeltaPolicy {
             absolute_threshold: 1.0,
@@ -268,7 +268,7 @@ fn frame_sequence_and_reserved_attributes_match_backend_contract() {
             "service=checkout,zone=a",
             100,
             200,
-            61_000,
+            601_000,
         )
         .unwrap();
     assert_eq!(full.kind, SummaryFrameKind::Full);
@@ -311,7 +311,7 @@ fn frame_sequence_and_reserved_attributes_match_backend_contract() {
             "service=checkout,zone=a",
             200,
             300,
-            2_000,
+            602_000,
         )
         .unwrap();
     let next_epoch = sequencer
@@ -338,7 +338,7 @@ fn frame_sequence_and_reserved_attributes_match_backend_contract() {
         .unwrap();
     assert_eq!(
         (next_window.sequence, next_window.kind),
-        (1, SummaryFrameKind::Full)
+        (4, SummaryFrameKind::Delta)
     );
     assert_eq!(
         (next_epoch.sequence, next_epoch.kind),
@@ -348,6 +348,22 @@ fn frame_sequence_and_reserved_attributes_match_backend_contract() {
         (next_series.sequence, next_series.kind),
         (1, SummaryFrameKind::Full)
     );
+}
+
+#[test]
+fn lifecycle_versions_are_global_and_activation_cannot_downgrade() {
+    let mut first = quantile_plan();
+    first.envelope.plan_version = 3;
+    first.envelope.activation_unix_ms = 11_000;
+    let mut lifecycle = CollectorPlanLifecycle::default();
+    lifecycle.stage(first, "edge-a", 10_000).unwrap();
+    lifecycle.activate(42, 3, 11_000).unwrap();
+
+    let mut reset = quantile_plan();
+    reset.envelope.plan_id = 99;
+    reset.envelope.plan_version = 1;
+    reset.envelope.activation_unix_ms = 12_000;
+    assert!(lifecycle.stage(reset, "edge-a", 11_500).is_err());
 }
 
 #[test]

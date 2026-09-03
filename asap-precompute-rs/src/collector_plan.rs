@@ -315,12 +315,16 @@ impl CollectorPlanLifecycle {
                 "plan generation is already staged".into(),
             ));
         }
-        if self.active.as_ref().is_some_and(|active| {
-            active.envelope.plan_id == plan.envelope.plan_id
-                && active.envelope.plan_version >= plan.envelope.plan_version
-        }) {
+        let newest_known_version = self
+            .statuses
+            .keys()
+            .map(|(_, version)| *version)
+            .chain(self.active.iter().map(|active| active.envelope.plan_version))
+            .max()
+            .unwrap_or(0);
+        if plan.envelope.plan_version <= newest_known_version {
             return Err(CollectorPlanError::Identity(
-                "plan version is not newer than active".into(),
+                "plan version is not newer than the latest known generation".into(),
             ));
         }
         let key = (plan.envelope.plan_id, plan.envelope.plan_version);
@@ -362,6 +366,16 @@ impl CollectorPlanLifecycle {
             self.statuses.get_mut(&key).expect("staged status").phase = PlanPhase::Retired;
             return Err(CollectorPlanError::Identity(
                 "cannot activate an expired plan".into(),
+            ));
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.envelope.plan_version >= plan.envelope.plan_version)
+        {
+            self.staged.insert(key, plan);
+            return Err(CollectorPlanError::Identity(
+                "activation would downgrade the active generation".into(),
             ));
         }
         if let Some(previous) = self.active.replace(plan) {

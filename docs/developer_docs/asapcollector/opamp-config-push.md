@@ -71,11 +71,11 @@ processors:
 ## Fail-closed activation
 
 The channel rejects wrong targets, expired generations, duplicate or stale
-versions within a plan_id, unsupported runtime policies, and malformed or
+versions globally, unsupported runtime policies, and malformed or
 unknown fields. A future generation remains staged until activation_unix_ms;
-polling it early returns no update. Plan identity and version are tracked
-separately, so version 1 of a new plan identity is not mistaken for an old
-scalar version.
+polling it early returns no update. `plan_version` is globally monotonic across
+plan identities, matching the backend activation state machine and preventing
+a new `plan_id` from resetting version ordering.
 
 The legacy complete-YAML RemoteConfig/restart path and the untyped HTTP
 PrecomputeConfigSet poller are compatibility paths, not physical-plan

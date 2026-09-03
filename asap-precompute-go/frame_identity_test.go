@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestFrameSequencerScopesSequenceByConcreteSeriesAndWindow(t *testing.T) {
+func TestFrameSequencerScopesSequenceByConcreteSeriesAcrossWindows(t *testing.T) {
 	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
 	var plan CollectorPlan
 	if err := json.Unmarshal(body, &plan); err != nil {
@@ -38,6 +38,13 @@ func TestFrameSequencerScopesSequenceByConcreteSeriesAndWindow(t *testing.T) {
 	}
 	if other.Kind != "full" || other.Sequence != 1 {
 		t.Fatalf("series lineages collided: %+v", other)
+	}
+	nextWindow, err := sequencer.Next(plan, rule, "boot-7", "service=checkout,zone=a", 200, 300, 3_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextWindow.Kind != "delta" || nextWindow.Sequence != 3 || nextWindow.BaseCheckpointID != full.CheckpointID {
+		t.Fatalf("sequence did not continue across windows: %+v", nextWindow)
 	}
 	attrs := delta.OTLPAttributes()
 	if attrs["asap.frame.series_identity"] != "service=checkout,zone=a" || attrs["asap.frame.base_checkpoint_id"] == "" {

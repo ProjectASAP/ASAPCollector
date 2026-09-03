@@ -107,8 +107,6 @@ struct LineageKey {
     series_identity: String,
     producer_id: String,
     producer_epoch: String,
-    window_start_unix_nano: u64,
-    window_end_unix_nano: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -165,8 +163,6 @@ impl FrameSequencer {
             series_identity: series_identity.into(),
             producer_id: rule.producer_id.clone(),
             producer_epoch: producer_epoch.into(),
-            window_start_unix_nano,
-            window_end_unix_nano,
         };
         let state = self.lineages.entry(key).or_insert_with(|| LineageState {
             sequence: 0,

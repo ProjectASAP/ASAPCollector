@@ -56,14 +56,19 @@ query text or locally generate an alternate ID.
 ## Frame identity
 
 Every emitted summary belongs to one lineage scoped by materialization,
-producer, producer epoch, and window. Sequence numbers are monotonic within
-that lineage. A full frame carries a checkpoint ID; a delta carries its base
+concrete retained-label series, producer, and producer epoch. Sequence and
+checkpoint continuity cross window boundaries; each frame still carries its
+own window. A full frame carries a checkpoint ID; a delta carries its base
 checkpoint ID; delta rules periodically produce a new full checkpoint.
 
 Until modified OTLP has a dedicated message, the identity travels in the
 reserved `asap.frame.*` attributes. Window start/end remain the data point's
 timestamps. `SummaryFrameIdentity::otlp_attributes` is the sender-side mapping
 accepted by ASAPQuery-backend's ingest parser.
+
+HTTP 2xx / gRPC OK is the delivery acknowledgement. The Collector retries a
+failed request with the same identity and advances only after transport
+success; there is no second application-level ACK or sender WAL contract.
 
 ## Runtime policy boundary
 

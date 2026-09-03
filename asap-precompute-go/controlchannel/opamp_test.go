@@ -203,7 +203,7 @@ func TestOpAmpChannelStagesUntilActivation(t *testing.T) {
 	}
 }
 
-func TestOpAmpChannelAllowsVersionOneForNewPlanIdentity(t *testing.T) {
+func TestOpAmpChannelRejectsVersionResetForNewPlanIdentity(t *testing.T) {
 	channel, err := NewOpAmpChannel(OpAmpConfig{ServerEndpoint: "ws://controller", InstanceUid: "edge-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +222,7 @@ func TestOpAmpChannelAllowsVersionOneForNewPlanIdentity(t *testing.T) {
 	}
 	plan.Envelope.PlanID = 99
 	body, _ = json.Marshal(plan)
-	if err := channel.ReceiveCollectorPlan(body); err != nil {
-		t.Fatalf("new plan identity version 1 rejected as stale: %v", err)
+	if err := channel.ReceiveCollectorPlan(body); err == nil {
+		t.Fatal("new plan identity reset the globally monotonic version")
 	}
 }
