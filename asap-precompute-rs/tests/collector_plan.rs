@@ -117,6 +117,23 @@ fn unsupported_planner_window_realization_is_rejected() {
         plan.to_precompute_config_set(),
         Err(CollectorPlanError::Materialization { .. })
     ));
+
+    let mut plan = quantile_plan();
+    plan.materializations[0].window_implementation_id = "unknown-tumbling-runtime".into();
+    assert!(matches!(
+        plan.to_precompute_config_set(),
+        Err(CollectorPlanError::Materialization { .. })
+    ));
+}
+
+#[test]
+fn exact_sum_is_rejected_consistently_until_both_runtimes_support_it() {
+    let bytes = plan(json!([{
+        "query_id": "q-sum", "metric": "requests", "algorithm": "sum",
+        "parameters": {}, "group_by": [], "window_secs": 30,
+        "evidence_source": null
+    }]));
+    assert!(CollectorPlan::from_json(&bytes, "edge-a").is_err());
 }
 
 #[test]

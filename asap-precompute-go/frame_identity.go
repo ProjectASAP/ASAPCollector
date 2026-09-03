@@ -47,9 +47,54 @@ type FrameSequencer struct {
 	lineages map[frameLineageKey]frameLineageState
 }
 
+// FrameEmission describes one already-serialized envelope awaiting identity.
+type FrameEmission struct {
+	SeriesIdentity      string
+	WindowStartUnixNano uint64
+	WindowEndUnixNano   uint64
+	NowUnixMS           uint64
+	EmittedFull         bool
+}
+
+// NextBatchForEmission allocates a batch transactionally. If any envelope is
+// invalid, no lineage sequence or checkpoint state is advanced.
+func (s *FrameSequencer) NextBatchForEmission(plan CollectorPlan, rule TransmissionRule, producerEpoch string, emissions []FrameEmission) ([]SummaryFrameIdentity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cloned := make(map[frameLineageKey]frameLineageState, len(s.lineages))
+	for key, state := range s.lineages {
+		cloned[key] = state
+	}
+	candidate := FrameSequencer{lineages: cloned}
+	frames := make([]SummaryFrameIdentity, 0, len(emissions))
+	for _, emission := range emissions {
+		frame, err := candidate.NextForEmission(
+			plan, rule, producerEpoch, emission.SeriesIdentity,
+			emission.WindowStartUnixNano, emission.WindowEndUnixNano,
+			emission.NowUnixMS, emission.EmittedFull,
+		)
+		if err != nil {
+			return nil, err
+		}
+		frames = append(frames, frame)
+	}
+	s.lineages = candidate.lineages
+	return frames, nil
+}
+
 // Next returns a full checkpoint for the first frame in every lineage and
 // periodic recovery checkpoints for delta rules.
 func (s *FrameSequencer) Next(plan CollectorPlan, rule TransmissionRule, producerEpoch, seriesIdentity string, windowStart, windowEnd, nowUnixMS uint64) (SummaryFrameIdentity, error) {
+	return s.next(plan, rule, producerEpoch, seriesIdentity, windowStart, windowEnd, nowUnixMS, nil)
+}
+
+// NextForEmission binds identity to the bytes the runtime actually emitted.
+// A required full/checkpoint frame can never be mislabeled as a delta.
+func (s *FrameSequencer) NextForEmission(plan CollectorPlan, rule TransmissionRule, producerEpoch, seriesIdentity string, windowStart, windowEnd, nowUnixMS uint64, emittedFull bool) (SummaryFrameIdentity, error) {
+	return s.next(plan, rule, producerEpoch, seriesIdentity, windowStart, windowEnd, nowUnixMS, &emittedFull)
+}
+
+func (s *FrameSequencer) next(plan CollectorPlan, rule TransmissionRule, producerEpoch, seriesIdentity string, windowStart, windowEnd, nowUnixMS uint64, emittedFull *bool) (SummaryFrameIdentity, error) {
 	if producerEpoch == "" || seriesIdentity == "" || windowStart >= windowEnd || rule.ProducerID != plan.CollectorID {
 		return SummaryFrameIdentity{}, errors.New("invalid frame lineage")
 	}
@@ -74,6 +119,12 @@ func (s *FrameSequencer) Next(plan CollectorPlan, rule TransmissionRule, produce
 	checkpointDue := rule.FullCheckpointEveryMS != nil && nowUnixMS >= state.checkpointAtMS &&
 		nowUnixMS-state.checkpointAtMS >= *rule.FullCheckpointEveryMS
 	full := state.sequence == 1 || rule.Mode == TransmissionModeFull || checkpointDue
+	if emittedFull != nil {
+		if full && !*emittedFull {
+			return SummaryFrameIdentity{}, errors.New("runtime emitted delta when a full checkpoint was required")
+		}
+		full = *emittedFull
+	}
 	kind := "delta"
 	if full {
 		kind = "full"

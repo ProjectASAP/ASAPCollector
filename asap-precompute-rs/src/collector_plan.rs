@@ -319,7 +319,11 @@ impl CollectorPlanLifecycle {
             .statuses
             .keys()
             .map(|(_, version)| *version)
-            .chain(self.active.iter().map(|active| active.envelope.plan_version))
+            .chain(
+                self.active
+                    .iter()
+                    .map(|active| active.envelope.plan_version),
+            )
             .max()
             .unwrap_or(0);
         if plan.envelope.plan_version <= newest_known_version {
@@ -530,6 +534,7 @@ impl CollectorMaterialization {
             ));
         }
         if self.abstract_window_framework != SummaryWindowFramework::Tumbling
+            || self.window_implementation_id != "collector-tumbling-v1"
             || self.pane_secs != self.window_secs
             || self.state_layout != "anchored-pane-v1"
         {

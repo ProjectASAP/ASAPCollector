@@ -488,6 +488,9 @@ type PrecomputeConfigSet struct {
 	// Version is monotonically increasing across plans; ack with
 	// ControlChannel.Ack.
 	Version uint64
+	// CollectorPlan is present for the authoritative typed physical-plan path.
+	// Legacy HTTP configuration leaves it nil.
+	CollectorPlan *CollectorPlan `json:"-"`
 	// Configs lists the PrecomputeConfigs active for this host.
 	Configs []PrecomputeConfig
 }

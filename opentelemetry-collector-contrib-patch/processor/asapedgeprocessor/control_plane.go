@@ -4,11 +4,16 @@
 package asapedgeprocessor
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"log"
+	"reflect"
 	"time"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
 	"github.com/ProjectASAP/asap-precompute-go/controlchannel"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.uber.org/zap"
 )
 
@@ -63,10 +68,10 @@ func (w *zapInfoWriter) Write(p []byte) (int, error) {
 }
 
 // startControlPlane spawns the config-poll goroutine when the control channel
-// is configured. The loop polls on ControlChannel's interval and, on a received
-// PrecomputeConfigSet, applies it to every live sketch aggregator's Precompute
-// via UpdateConfig — IN PLACE: no sketch/cold state is rebuilt (design §8/R5).
-// A no-op when ctrlChan is nil (control plane disabled).
+// is configured. The loop polls on ControlChannel's interval and applies each
+// complete generation. Typed physical plans use the all-shard cutover below;
+// compatibility-only config sets retain the legacy in-place update. A no-op
+// when ctrlChan is nil (control plane disabled).
 func (p *asapEdgeProcessor) startControlPlane() {
 	if p.ctrlChan == nil {
 		return
@@ -93,31 +98,166 @@ func (p *asapEdgeProcessor) controlPollLoop(interval time.Duration) {
 			return
 		case <-t.C:
 			if set := p.ctrlChan.Poll(); set != nil {
-				p.applyConfigSet(set)
+				if err := p.applyConfigSet(set); err != nil {
+					if rejecter, ok := p.ctrlChan.(interface{ Reject(uint64, error) }); ok {
+						rejecter.Reject(set.Version, err)
+					}
+					p.logger.Error("asap_edge: rejected control-plane config update", zap.Error(err))
+				}
 			}
 		}
 	}
 }
 
-// applyConfigSet swaps the new PrecomputeConfigSet into every live sketch
-// aggregator across all shards via Precompute.UpdateConfig (in place — no state
-// rebuild) and acks the plan version. UpdateConfig is concurrency-safe with the
-// observe hot path (the runtime stores the config pointer atomically), so it
-// does NOT take the shard lock; that keeps a slow control update from stalling
-// ingestion.
-func (p *asapEdgeProcessor) applyConfigSet(set *precompute.PrecomputeConfigSet) {
+// applyConfigSet installs one complete config generation and acknowledges it
+// only after installation succeeds. Typed CollectorPlans take the generation
+// cutover barrier; compatibility-only config sets retain the historical
+// lock-free Precompute.UpdateConfig path.
+func (p *asapEdgeProcessor) applyConfigSet(set *precompute.PrecomputeConfigSet) error {
 	if set == nil {
-		return
+		return errors.New("asap_edge: nil config set")
 	}
-	for _, sh := range p.shards {
-		for _, sa := range sh.sketchAggs {
-			sa.pc.UpdateConfig(set)
+	if set.CollectorPlan != nil {
+		if err := p.applyPhysicalGeneration(set); err != nil {
+			return err
+		}
+	} else {
+		// Compatibility-only legacy updates retain their historical behavior.
+		for _, sh := range p.shards {
+			for _, sa := range sh.sketchAggs {
+				sa.pc.UpdateConfig(set)
+			}
 		}
 	}
 	p.ctrlLastApply.Store(set.Version)
 	p.ctrlChan.Ack(set.Version)
 	p.logger.Info("asap_edge: applied control-plane config update",
 		zap.Uint64("plan_version", set.Version), zap.Int("configs", len(set.Configs)))
+	return nil
+}
+
+// applyPhysicalGeneration validates the complete runtime target before taking
+// every shard lock. The locked section drains the previous generation and
+// installs all materializations as one ingestion/flush boundary; no partial
+// generation is ever acknowledged.
+func (p *asapEdgeProcessor) applyPhysicalGeneration(set *precompute.PrecomputeConfigSet) error {
+	plan := set.CollectorPlan
+	if plan == nil || len(set.Configs) == 0 {
+		return errors.New("asap_edge: typed CollectorPlan must contain materializations")
+	}
+	configs := make(map[string]*precompute.PrecomputeConfig, len(set.Configs))
+	for i := range set.Configs {
+		cfg := &set.Configs[i]
+		if cfg.MetricName == "" || configs[cfg.MetricName] != nil {
+			return fmt.Errorf("asap_edge: duplicate or empty physical metric %q", cfg.MetricName)
+		}
+		configs[cfg.MetricName] = cfg
+		if transmissionRuleFor(plan, uint64(cfg.AggID)) == nil {
+			return fmt.Errorf("asap_edge: missing transmission rule for %d", cfg.AggID)
+		}
+	}
+	if len(configs) != len(p.sketchMetrics) {
+		return fmt.Errorf("asap_edge: physical generation has %d metrics; runtime has %d", len(configs), len(p.sketchMetrics))
+	}
+	for metric, fam := range p.sketchMetrics {
+		cfg := configs[metric]
+		if cfg == nil {
+			return fmt.Errorf("asap_edge: physical generation omits runtime metric %q", metric)
+		}
+		if !runtimeShapeMatches(cfg, fam, p.cfg.WindowDuration) {
+			return fmt.Errorf("asap_edge: physical materialization for %q does not match the installed executor shape", metric)
+		}
+	}
+	for _, sh := range p.shards {
+		sh.mu.Lock()
+	}
+	retired := pmetric.NewMetrics()
+	for _, sh := range p.shards {
+		for metric, sa := range sh.sketchAggs {
+			cfg := configs[metric]
+			// Retire the old open window before changing identity or semantics.
+			// A previously plan-bound generation is emitted with its old identity;
+			// bootstrap static state is discarded rather than mislabeled.
+			if sa.framePlan != nil {
+				sa.flush(retired)
+			} else {
+				_ = sa.pc.Drain()
+			}
+			copyCfg := *cfg
+			sa.pc.UpdateConfig(&precompute.PrecomputeConfigSet{Version: set.Version, Configs: []precompute.PrecomputeConfig{copyCfg}})
+			sa.pcfg = &copyCfg
+			rule := transmissionRuleFor(plan, uint64(copyCfg.AggID))
+			ruleCopy := *rule
+			sa.framePlan = plan
+			sa.frameRule = &ruleCopy
+			sa.frameSequencer = precompute.FrameSequencer{}
+			sa.producerEpoch = p.producerEpoch
+			sa.checkpointAtMS = 0
+		}
+	}
+	for i := len(p.shards) - 1; i >= 0; i-- {
+		p.shards[i].mu.Unlock()
+	}
+	// Downstream publication may block; keep it outside the cutover barrier.
+	p.forward(context.Background(), retired)
+	return nil
+}
+
+func transmissionRuleFor(plan *precompute.CollectorPlan, materialization uint64) *precompute.TransmissionRule {
+	for i := range plan.TransmissionRules {
+		if plan.TransmissionRules[i].Materialization == materialization {
+			return &plan.TransmissionRules[i]
+		}
+	}
+	return nil
+}
+
+func runtimeShapeMatches(cfg *precompute.PrecomputeConfig, fam *MetricFamily, window time.Duration) bool {
+	if cfg == nil || fam == nil || cfg.Mode != precompute.Tumbling ||
+		cfg.Window.Size != window || cfg.Window.Slide != window ||
+		!reflect.DeepEqual(cfg.AggregateBy, fam.AggregateBy) {
+		return false
+	}
+	wantType := precompute.SketchTypeUnspecified
+	wantAgg := precompute.AggKindSketch
+	switch fam.Family {
+	case FamilyDDSketch:
+		wantType = precompute.SketchTypeDDSketch
+		if cfg.SketchParams.Get("relative_accuracy", 0) != fam.RelativeAccuracy {
+			return false
+		}
+	case FamilyKLL:
+		wantType = precompute.SketchTypeKLLSketch
+		k := fam.K
+		if k < 2 {
+			k = 200
+		}
+		if cfg.SketchParams.Get("k", 0) != float64(k) {
+			return false
+		}
+	case FamilyHLL:
+		wantType = precompute.SketchTypeHLLSketch
+		if cfg.SketchParams.Get("precision", 0) != 14 || fam.HLLSparse {
+			return false
+		}
+	case FamilyCountMinSketch:
+		wantType = precompute.SketchTypeCountMinSketch
+		rows, cols := csmDims(fam)
+		if cfg.SketchParams.Get("rows", 0) != float64(rows) || cfg.SketchParams.Get("columns", 0) != float64(cols) {
+			return false
+		}
+	case FamilyCountSketch:
+		wantType = precompute.SketchTypeCountSketch
+		rows, cols := csmDims(fam)
+		if cfg.SketchParams.Get("depth", 0) != float64(rows) || cfg.SketchParams.Get("width", 0) != float64(cols) {
+			return false
+		}
+	case FamilySum:
+		wantAgg = precompute.AggKindSum
+	default:
+		return false
+	}
+	return cfg.SketchType == wantType && cfg.AggKind == wantAgg
 }
 
 // stopControlPlane signals the poll loop to exit and waits (bounded by the

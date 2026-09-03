@@ -35,11 +35,14 @@ physical family or runtime policy is unsupported, or any identity is invalid.
 ASAPQuery-owned realization chosen from complete workload-specific evidence.
 Collector validates this pairing and never substitutes another framework.
 
-The MVP runtime supports `tumbling` realized as equal-width anchored panes
-with `state_layout: anchored-pane-v1`. Sliding, exponential-histogram, unknown
-extension frameworks, missing physical identities, and mismatched pane widths
-are rejected atomically until the executor advertises those complete
-semantics.
+The MVP runtime supports `tumbling` realized as equal-width anchored panes by
+the registered `collector-tumbling-v1` implementation with
+`state_layout: anchored-pane-v1`. Sliding, exponential-histogram, unknown
+extension frameworks, unknown concrete implementation IDs, missing physical
+identities, and mismatched pane widths are rejected atomically until the
+executor advertises those complete semantics. Exact `sum` is also rejected by
+both Go and Rust plan consumers until both runtime projections implement the
+same wire contract.
 
 ## Activation
 
@@ -52,6 +55,17 @@ previously seen generations cannot be reactivated.
 `PrecomputeConfigSet.version` is `plan_version`, while every runtime `agg_id` is
 the backend-issued materialization fingerprint. The Collector must never hash
 query text or locally generate an alternate ID.
+
+The Go processor validates that every plan materialization maps to exactly one
+installed metric executor before cutover. It then locks all shards, drains the
+previous plan-bound generation under its old identity, installs the complete
+new generation, releases the cutover barrier, and only then reports `APPLIED`.
+A missing, extra, duplicate-metric, or shape-incompatible materialization
+reports `FAILED`; partial application is never acknowledged. The current MVP
+has one executor slot per metric name and therefore rejects two distinct
+materializations of the same metric instead of silently selecting one. A
+future runtime registry must key executor slots by materialization fingerprint
+to lift that restriction.
 
 ## Frame identity
 
@@ -66,9 +80,19 @@ reserved `asap.frame.*` attributes. Window start/end remain the data point's
 timestamps. `SummaryFrameIdentity::otlp_attributes` is the sender-side mapping
 accepted by ASAPQuery-backend's ingest parser.
 
-HTTP 2xx / gRPC OK is the delivery acknowledgement. The Collector retries a
-failed request with the same identity and advances only after transport
-success; there is no second application-level ACK or sender WAL contract.
+The Go production flush and sub-window paths populate those attributes before
+modified-OTLP encoding; the identity helper is not test-only. A process restart
+creates a fresh producer epoch and a fresh sequencer, so the first frame is a
+full checkpoint. Periodic checkpoint deadlines reset the delta base before
+serialization, preventing a required full frame from being labeled as delta.
+
+HTTP 2xx / gRPC OK is the delivery acknowledgement; there is no second
+application-level ACK or sender WAL contract. The `asap_edge` processor assigns
+identity before handing the batch to the configured Collector exporter, so
+transport retry and preservation of the encoded identity are exporter
+responsibilities. An exporter without a persistent sending queue cannot offer
+retry-across-restart delivery; restart still opens a fresh producer epoch and
+therefore fails closed to a new full checkpoint.
 
 ## Runtime policy boundary
 

@@ -33,11 +33,15 @@ ASAPQuery                 Collector                   backend
     |<-- APPLIED -------------| runtime acknowledgement |
 ```
 
-STAGED means the exact (plan_id, plan_version) is validated and scheduled; it
+STAGED means the exact (plan_id, plan_version) is decoded, validated, and scheduled; it
 lets the controller stage every participant before the common activation
-timestamp. APPLIED is sent only after the runtime acknowledges the delivered
-generation. Validation failure sends FAILED and leaves the current active
-generation unchanged.
+timestamp. APPLIED is sent only after every materialization maps to an installed
+executor and the runtime completes one all-shard cutover. Validation or runtime
+mapping failure sends FAILED and leaves the current active generation unchanged;
+the Collector never acknowledges a partially installed generation. The current
+MVP exposes one executor slot per metric and therefore rejects multiple distinct
+materializations for the same metric until the runtime registry is keyed by
+materialization fingerprint.
 
 The exact response shape is:
 

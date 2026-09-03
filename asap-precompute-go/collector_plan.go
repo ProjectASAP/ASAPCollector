@@ -221,7 +221,7 @@ func DecodeCollectorPlan(body []byte, collectorID string) (*PrecomputeConfigSet,
 	if len(rules) != len(materializations) {
 		return nil, errors.New("transmission rules do not exactly match materializations")
 	}
-	return &PrecomputeConfigSet{Version: plan.Envelope.PlanVersion, Configs: configs}, nil
+	return &PrecomputeConfigSet{Version: plan.Envelope.PlanVersion, CollectorPlan: &plan, Configs: configs}, nil
 }
 
 func (m CollectorMaterialization) precomputeConfig(rule TransmissionRule) (PrecomputeConfig, error) {
@@ -231,6 +231,7 @@ func (m CollectorMaterialization) precomputeConfig(rule TransmissionRule) (Preco
 		return PrecomputeConfig{}, errors.New("metric, window implementation, pane, state layout, and positive window_secs are required")
 	}
 	if m.AbstractWindowFramework != SummaryWindowFrameworkTumbling ||
+		m.WindowImplementationID != "collector-tumbling-v1" ||
 		m.PaneSecs != m.WindowSecs || m.StateLayout != "anchored-pane-v1" {
 		return PrecomputeConfig{}, errors.New("unsupported window realization: runtime requires Planner tumbling + equal anchored panes + anchored-pane-v1")
 	}
@@ -397,11 +398,11 @@ func (m CollectorMaterialization) runtimeSketch() (SketchType, AggregationKind, 
 		return nil
 	}
 	var kind SketchType
-	var aggKind AggregationKind
+	aggKind := AggKindSketch
 	var topk bool
 	switch m.Algorithm {
 	case "sum":
-		aggKind = AggKindSum
+		return 0, 0, nil, false, errors.New("exact sum is not implemented consistently by Collector runtimes")
 	case "ddsketch":
 		kind = SketchTypeDDSketch
 		if err := require("alpha", "relative_accuracy"); err != nil {

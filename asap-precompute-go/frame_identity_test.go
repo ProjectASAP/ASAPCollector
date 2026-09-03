@@ -51,3 +51,30 @@ func TestFrameSequencerScopesSequenceByConcreteSeriesAcrossWindows(t *testing.T)
 		t.Fatalf("backend attributes incomplete: %v", attrs)
 	}
 }
+
+func TestFrameSequencerBatchFailureDoesNotAdvanceEarlierLineages(t *testing.T) {
+	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
+	var plan CollectorPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
+	}
+	rule := plan.TransmissionRules[0]
+	var sequencer FrameSequencer
+	_, err := sequencer.NextBatchForEmission(plan, rule, "boot-7", []FrameEmission{
+		{SeriesIdentity: "series-a", WindowStartUnixNano: 100, WindowEndUnixNano: 200, NowUnixMS: 1, EmittedFull: true},
+		// A full-mode rule may never label emitted bytes as delta.
+		{SeriesIdentity: "series-b", WindowStartUnixNano: 100, WindowEndUnixNano: 200, NowUnixMS: 1, EmittedFull: false},
+	})
+	if err == nil {
+		t.Fatal("invalid second envelope did not reject the batch")
+	}
+	frames, err := sequencer.NextBatchForEmission(plan, rule, "boot-7", []FrameEmission{
+		{SeriesIdentity: "series-a", WindowStartUnixNano: 100, WindowEndUnixNano: 200, NowUnixMS: 2, EmittedFull: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frames[0].Sequence != 1 {
+		t.Fatalf("failed batch advanced sequence: got %d, want 1", frames[0].Sequence)
+	}
+}

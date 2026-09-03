@@ -24,10 +24,10 @@ const (
 )
 
 type planStatusBody struct {
-	PlanID      uint64                    `json:"plan_id"`
-	PlanVersion uint64                    `json:"plan_version"`
-	Status      string                    `json:"status"`
-	Error       string                    `json:"error,omitempty"`
+	PlanID      uint64 `json:"plan_id"`
+	PlanVersion uint64 `json:"plan_version"`
+	Status      string `json:"status"`
+	Error       string `json:"error,omitempty"`
 }
 
 // opAMPPlanBridge adapts the Collector OpAMP custom-message registry to the
@@ -131,6 +131,7 @@ func (b *opAMPPlanBridge) reportStatus(planID, planVersion uint64, status contro
 
 func (b *opAMPPlanBridge) Poll() *precompute.PrecomputeConfigSet { return b.channel.Poll() }
 func (b *opAMPPlanBridge) Ack(version uint64)                    { b.channel.Ack(version) }
+func (b *opAMPPlanBridge) Reject(version uint64, err error)      { b.channel.Reject(version, err) }
 
 func (b *opAMPPlanBridge) Close() error {
 	b.close.Do(func() {

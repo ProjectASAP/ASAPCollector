@@ -2,6 +2,7 @@ package controlchannel
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -139,6 +140,27 @@ func TestOpAmpChannelReceivePollAckLifecycle(t *testing.T) {
 	}
 	if err := channel.ReceiveCollectorPlan(channelPlan(t, 42)); err == nil {
 		t.Fatal("acked plan version accepted again")
+	}
+}
+
+func TestOpAmpChannelRejectNeverReportsApplied(t *testing.T) {
+	var statuses []PlanStatus
+	channel, err := NewOpAmpChannel(OpAmpConfig{
+		ServerEndpoint: "ws://controller", InstanceUid: "edge-a",
+		ReportStatus: func(_, _ uint64, status PlanStatus, _ error) { statuses = append(statuses, status) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := channel.ReceiveCollectorPlan(channelPlan(t, 8)); err != nil {
+		t.Fatal(err)
+	}
+	if channel.Poll() == nil {
+		t.Fatal("plan was not delivered")
+	}
+	channel.Reject(8, errors.New("materialization install failed"))
+	if len(statuses) != 2 || statuses[0] != PlanStatusStaged || statuses[1] != PlanStatusFailed {
+		t.Fatalf("statuses = %v, want STAGED,FAILED", statuses)
 	}
 }
 

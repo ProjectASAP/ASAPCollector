@@ -220,6 +220,10 @@ type Precompute interface {
 	// to diff against) and for Sliding mode (no stable base). nowMs is the
 	// check-tick wall-clock for stats.
 	EmitSubWindow(nowMs uint64) []*SketchEnvelope
+	// ResetDeltaBase forces the next delta-capable serialization to be a full
+	// checkpoint. Physical-plan runtimes use it at checkpoint deadlines and
+	// after fail-closed recovery.
+	ResetDeltaBase()
 	// UpdateConfig atomically swaps the active config. The
 	// in-flight window is preserved (matchers/aggregateBy may
 	// change, but bytes already accumulated stay where they are);
@@ -255,6 +259,13 @@ type Precompute interface {
 	// Shutdown flushes any in-progress state; intended for the
 	// shim's Shutdown path to run a final Tick before returning.
 	Shutdown(ctx context.Context) error
+}
+
+// ResetDeltaBase implements Precompute.ResetDeltaBase.
+func (p *precompute) ResetDeltaBase() {
+	if p.snapshotCache != nil {
+		p.snapshotCache.Reset()
+	}
 }
 
 // precompute is the concrete implementation of Precompute.

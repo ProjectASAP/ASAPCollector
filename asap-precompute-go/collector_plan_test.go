@@ -71,11 +71,9 @@ func TestDecodeCollectorPlanPreservesPhysicalDecision(t *testing.T) {
 	}
 }
 
-func TestDecodeCollectorPlanAcceptsSumAccumulator(t *testing.T) {
-	set, _ := decodePlan(t, "sum", map[string]float64{}, nil)
-	cfg := set.Configs[0]
-	if cfg.AggKind != AggKindSum || cfg.SketchType != SketchTypeUnspecified {
-		t.Fatalf("sum physical contract changed: %+v", cfg)
+func TestDecodeCollectorPlanRejectsUnsupportedExactSumConsistently(t *testing.T) {
+	if _, err := DecodeCollectorPlan(collectorPlanBody(t, "sum", map[string]float64{}, nil), "edge-a"); err == nil {
+		t.Fatal("exact sum must fail closed until both Collector runtimes implement it")
 	}
 }
 
@@ -173,6 +171,13 @@ func TestDecodeCollectorPlanRejectsUnsupportedWindowRealization(t *testing.T) {
 	body, _ = json.Marshal(plan)
 	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
 		t.Fatal("mismatched concrete pane width must fail closed")
+	}
+
+	_ = json.Unmarshal(collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil), &plan)
+	plan.Materializations[0].WindowImplementationID = "unknown-tumbling-runtime"
+	body, _ = json.Marshal(plan)
+	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
+		t.Fatal("unknown concrete window implementation must fail closed")
 	}
 }
 

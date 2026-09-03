@@ -200,6 +200,24 @@ func (o *OpAmpChannel) Ack(planVersion uint64) {
 	}
 }
 
+// Reject reports a semantic installation failure for the exact delivered
+// generation. Unlike Ack it never reports APPLIED.
+func (o *OpAmpChannel) Reject(planVersion uint64, applyErr error) {
+	o.mu.Lock()
+	if o.closed || planVersion == 0 || planVersion != o.delivered {
+		o.mu.Unlock()
+		return
+	}
+	planID := o.deliveredPlanID
+	o.delivered = 0
+	o.deliveredPlanID = 0
+	o.mu.Unlock()
+	if applyErr == nil {
+		applyErr = errors.New("controlchannel: CollectorPlan installation rejected")
+	}
+	o.reportFailed(planID, planVersion, applyErr)
+}
+
 // Close prevents subsequent receipt, delivery, and acknowledgement.
 // It is idempotent.
 func (o *OpAmpChannel) Close() error {
