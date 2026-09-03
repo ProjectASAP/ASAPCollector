@@ -75,12 +75,15 @@ func channelPlan(t *testing.T, version uint64) []byte {
 		Envelope: precompute.CollectorPlanEnvelope{
 			PlanID: 42, PlanVersion: version, GeneratedAtUnixMS: 1,
 			ActivationUnixMS: 1, BackendCompat: "asap-query-backend.v1",
-			PlannerRevision: "3afcba6", CapabilitySnapshotID: "caps",
+			PlannerRevision: "264937ec", CapabilitySnapshotID: "caps",
 		},
 		Materializations: []precompute.CollectorMaterialization{{
 			QueryID: "q", Materialization: 9001, Metric: "m", Algorithm: "hll",
 			Parameters: map[string]float64{"precision": 14}, WindowSecs: 60,
-			Lifecycle: precompute.SupportedCollectorLifecycle(),
+			AbstractWindowFramework: precompute.SummaryWindowFrameworkTumbling,
+			WindowImplementationID:  "collector-tumbling-v1", PaneSecs: 60,
+			StateLayout: "anchored-pane-v1",
+			Lifecycle:   precompute.SupportedCollectorLifecycle(),
 		}},
 		TransmissionRules: []precompute.TransmissionRule{{
 			Materialization: 9001, ProducerID: "edge-a", SchemaID: "summary-state-v1-9001",

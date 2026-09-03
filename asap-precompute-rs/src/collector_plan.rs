@@ -55,10 +55,33 @@ pub struct CollectorMaterialization {
     pub group_by: Vec<String>,
     /// Tumbling-window duration.
     pub window_secs: u64,
+    /// Planner-selected abstract summary-window primitive.
+    pub abstract_window_framework: SummaryWindowFramework,
+    /// Backend-owned concrete runtime realization selected for this framework.
+    pub window_implementation_id: String,
+    /// Concrete pane width used by the Collector runtime.
+    pub pane_secs: u64,
+    /// Concrete state-layout compatibility identity.
+    pub state_layout: String,
     /// Evidence source for evidence-gated selections such as TopK.
     pub evidence_source: Option<String>,
     /// ASAPPlanner-selected summary-maintenance commitment.
     pub lifecycle: CollectorLifecycle,
+}
+
+/// Planner-owned abstract summary-window vocabulary. This mirrors the wire
+/// representation but does not let Collector select a different framework.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryWindowFramework {
+    /// Disjoint fixed-width logical windows.
+    Tumbling,
+    /// Overlapping logical windows.
+    Sliding,
+    /// Hierarchical buckets with exponentially increasing coverage.
+    ExponentialHistogram,
+    /// Provider-registered Planner primitive.
+    Extension(String),
 }
 
 /// Lifecycle shape currently executable by the Collector window runtime.
@@ -482,8 +505,23 @@ impl CollectorPlan {
 
 impl CollectorMaterialization {
     fn to_config(&self, rule: &TransmissionRule) -> Result<PrecomputeConfig, CollectorPlanError> {
-        if self.metric.trim().is_empty() || self.window_secs == 0 {
-            return Err(self.invalid("metric must be non-empty and window_secs must be positive"));
+        if self.metric.trim().is_empty()
+            || self.window_secs == 0
+            || self.window_implementation_id.trim().is_empty()
+            || self.pane_secs == 0
+            || self.state_layout.trim().is_empty()
+        {
+            return Err(self.invalid(
+                "metric, window implementation, pane, state layout, and window_secs are required",
+            ));
+        }
+        if self.abstract_window_framework != SummaryWindowFramework::Tumbling
+            || self.pane_secs != self.window_secs
+            || self.state_layout != "anchored-pane-v1"
+        {
+            return Err(self.invalid(
+                "unsupported window realization; this runtime requires Planner tumbling + equal anchored panes + anchored-pane-v1",
+            ));
         }
         if self.lifecycle.kind != "continuously_maintained"
             || self.lifecycle.maintenance_mode != "incremental"

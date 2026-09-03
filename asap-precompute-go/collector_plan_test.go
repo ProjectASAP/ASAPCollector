@@ -17,11 +17,14 @@ func collectorPlanBody(t *testing.T, algorithm string, params map[string]float64
 		Envelope: CollectorPlanEnvelope{
 			PlanID: 42, PlanVersion: 7, GeneratedAtUnixMS: 10_000,
 			ActivationUnixMS: 11_000, BackendCompat: "asap-query-backend.v1",
-			PlannerRevision: "3afcba6", CapabilitySnapshotID: "caps-7",
+			PlannerRevision: "264937ec", CapabilitySnapshotID: "caps-7",
 		},
 		Materializations: []CollectorMaterialization{{
 			QueryID: "q", Materialization: 9001, Metric: "m", Algorithm: algorithm,
 			Parameters: params, GroupBy: []string{"service"}, WindowSecs: 60,
+			AbstractWindowFramework: SummaryWindowFrameworkTumbling,
+			WindowImplementationID:  "collector-tumbling-v1", PaneSecs: 60,
+			StateLayout:    "anchored-pane-v1",
 			EvidenceSource: evidence, Lifecycle: SupportedCollectorLifecycle(),
 		}},
 		TransmissionRules: []TransmissionRule{{
@@ -152,6 +155,24 @@ func TestDecodeCollectorPlanRejectsUnsupportedLifecycle(t *testing.T) {
 	body, _ = json.Marshal(plan)
 	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
 		t.Fatal("unsupported lifecycle must fail closed")
+	}
+}
+
+func TestDecodeCollectorPlanRejectsUnsupportedWindowRealization(t *testing.T) {
+	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
+	var plan CollectorPlan
+	_ = json.Unmarshal(body, &plan)
+	plan.Materializations[0].AbstractWindowFramework = SummaryWindowFrameworkSliding
+	body, _ = json.Marshal(plan)
+	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
+		t.Fatal("Collector must not substitute tumbling for Planner sliding")
+	}
+
+	_ = json.Unmarshal(collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil), &plan)
+	plan.Materializations[0].PaneSecs = 30
+	body, _ = json.Marshal(plan)
+	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
+		t.Fatal("mismatched concrete pane width must fail closed")
 	}
 }
 

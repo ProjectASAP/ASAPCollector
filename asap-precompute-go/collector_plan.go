@@ -24,16 +24,30 @@ type CollectorPlanEnvelope struct {
 
 // CollectorMaterialization is one committed physical sketch decision.
 type CollectorMaterialization struct {
-	QueryID         string             `json:"query_id"`
-	Materialization uint64             `json:"materialization"`
-	Metric          string             `json:"metric"`
-	Algorithm       string             `json:"algorithm"`
-	Parameters      map[string]float64 `json:"parameters"`
-	GroupBy         []string           `json:"group_by"`
-	WindowSecs      uint64             `json:"window_secs"`
-	EvidenceSource  *string            `json:"evidence_source"`
-	Lifecycle       CollectorLifecycle `json:"lifecycle"`
+	QueryID                 string                 `json:"query_id"`
+	Materialization         uint64                 `json:"materialization"`
+	Metric                  string                 `json:"metric"`
+	Algorithm               string                 `json:"algorithm"`
+	Parameters              map[string]float64     `json:"parameters"`
+	GroupBy                 []string               `json:"group_by"`
+	WindowSecs              uint64                 `json:"window_secs"`
+	AbstractWindowFramework SummaryWindowFramework `json:"abstract_window_framework"`
+	WindowImplementationID  string                 `json:"window_implementation_id"`
+	PaneSecs                uint64                 `json:"pane_secs"`
+	StateLayout             string                 `json:"state_layout"`
+	EvidenceSource          *string                `json:"evidence_source"`
+	Lifecycle               CollectorLifecycle     `json:"lifecycle"`
 }
+
+// SummaryWindowFramework is Planner-owned abstract IR. Collector validates
+// the selected value and executes only the corresponding compiled realization.
+type SummaryWindowFramework string
+
+const (
+	SummaryWindowFrameworkTumbling             SummaryWindowFramework = "tumbling"
+	SummaryWindowFrameworkSliding              SummaryWindowFramework = "sliding"
+	SummaryWindowFrameworkExponentialHistogram SummaryWindowFramework = "exponential_histogram"
+)
 
 // CollectorLifecycle is the ASAPPlanner-selected summary-state commitment.
 type CollectorLifecycle struct {
@@ -211,8 +225,14 @@ func DecodeCollectorPlan(body []byte, collectorID string) (*PrecomputeConfigSet,
 }
 
 func (m CollectorMaterialization) precomputeConfig(rule TransmissionRule) (PrecomputeConfig, error) {
-	if strings.TrimSpace(m.Metric) == "" || m.WindowSecs == 0 {
-		return PrecomputeConfig{}, errors.New("metric and positive window_secs are required")
+	if strings.TrimSpace(m.Metric) == "" || m.WindowSecs == 0 ||
+		strings.TrimSpace(m.WindowImplementationID) == "" || m.PaneSecs == 0 ||
+		strings.TrimSpace(m.StateLayout) == "" {
+		return PrecomputeConfig{}, errors.New("metric, window implementation, pane, state layout, and positive window_secs are required")
+	}
+	if m.AbstractWindowFramework != SummaryWindowFrameworkTumbling ||
+		m.PaneSecs != m.WindowSecs || m.StateLayout != "anchored-pane-v1" {
+		return PrecomputeConfig{}, errors.New("unsupported window realization: runtime requires Planner tumbling + equal anchored panes + anchored-pane-v1")
 	}
 	if m.Lifecycle.Kind != "continuously_maintained" ||
 		m.Lifecycle.MaintenanceMode != "incremental" ||

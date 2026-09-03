@@ -1,5 +1,6 @@
 use asap_precompute_rs::collector_plan::{
-    CollectorPlanLifecycle, PlanPhase, SamplingEstimator, SamplingPolicy, TransmissionMode,
+    CollectorPlanLifecycle, PlanPhase, SamplingEstimator, SamplingPolicy, SummaryWindowFramework,
+    TransmissionMode,
 };
 use asap_precompute_rs::frame_identity::{FrameSequencer, SummaryFrameKind};
 use asap_precompute_rs::{CollectorPlan, CollectorPlanError, SketchType};
@@ -20,6 +21,19 @@ fn plan(materializations: serde_json::Value) -> Vec<u8> {
             .as_object_mut()
             .unwrap()
             .insert("materialization".into(), json!(fingerprint));
+        let object = materialization.as_object_mut().unwrap();
+        object
+            .entry("abstract_window_framework")
+            .or_insert(json!("tumbling"));
+        object
+            .entry("window_implementation_id")
+            .or_insert(json!("collector-tumbling-v1"));
+        object
+            .entry("pane_secs")
+            .or_insert(json!(emit_every_ms / 1_000));
+        object
+            .entry("state_layout")
+            .or_insert(json!("anchored-pane-v1"));
         materialization.as_object_mut().unwrap().insert(
             "lifecycle".into(),
             json!({
@@ -49,7 +63,7 @@ fn plan(materializations: serde_json::Value) -> Vec<u8> {
             "activation_unix_ms": 11_000,
             "expiry_unix_ms": null,
             "backend_compat": "asap-query-backend.v1",
-            "planner_revision": "3afcba68f4e8397fb81e2be988f47120f63f7a39",
+            "planner_revision": "264937ec4a06e260920c7e583bffed34cc07dd64",
             "capability_snapshot_id": "caps-7"
         },
         "materializations": materializations,
@@ -86,6 +100,23 @@ fn backend_quantile_plan_projects_without_replanning() {
     assert_eq!(config.aggregate_by, vec!["service"]);
     assert_eq!(config.sketch_params["relative_accuracy"], 0.01);
     assert!(config.transmit_sketch);
+}
+
+#[test]
+fn unsupported_planner_window_realization_is_rejected() {
+    let mut plan = quantile_plan();
+    plan.materializations[0].abstract_window_framework = SummaryWindowFramework::Sliding;
+    assert!(matches!(
+        plan.to_precompute_config_set(),
+        Err(CollectorPlanError::Materialization { .. })
+    ));
+
+    let mut plan = quantile_plan();
+    plan.materializations[0].pane_secs = 30;
+    assert!(matches!(
+        plan.to_precompute_config_set(),
+        Err(CollectorPlanError::Materialization { .. })
+    ));
 }
 
 #[test]

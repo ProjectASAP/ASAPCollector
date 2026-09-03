@@ -7,7 +7,11 @@ derive an independent materialization identity.
 The authoritative flow is:
 
 ```text
-ASAPPlanner post-ASAP IR
+ASAPPlanner abstract candidates and selection
+          |                                  ^
+          | candidates                       | implementation cost evidence
+          v                                  |
+ASAPQuery physical implementation -----------+
           |
           v
 ASAPQuery PhysicalPlan
@@ -23,6 +27,19 @@ the shared plan envelope, assigned materializations, and the exact subset of
 transmission rules whose `producer_id` is that collector. The Collector rejects
 the whole plan if any materialization lacks exactly one matching rule, any
 physical family or runtime policy is unsupported, or any identity is invalid.
+
+## Window ownership
+
+`abstract_window_framework` is Planner-owned IR. The accompanying
+`window_implementation_id`, `pane_secs`, and `state_layout` are the concrete
+ASAPQuery-owned realization chosen from complete workload-specific evidence.
+Collector validates this pairing and never substitutes another framework.
+
+The MVP runtime supports `tumbling` realized as equal-width anchored panes
+with `state_layout: anchored-pane-v1`. Sliding, exponential-histogram, unknown
+extension frameworks, missing physical identities, and mismatched pane widths
+are rejected atomically until the executor advertises those complete
+semantics.
 
 ## Activation
 
