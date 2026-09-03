@@ -5,6 +5,7 @@ package aggregate
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
@@ -179,6 +180,32 @@ func TestRowSampleEpochSeedChangesRandomStream(t *testing.T) {
 	base := rowSampleSeed("edge-1", precompute.AggregationIdentity{AggID: 10, Filter: "zone=us"})
 	if rowSampleEpochSeed(base, 0) == rowSampleEpochSeed(base, 1) {
 		t.Fatal("probability epoch reused the previous sampler seed")
+	}
+}
+
+func TestRowSampledSketchConcurrentTargets(t *testing.T) {
+	router := func(attrs attribute.Set) (precompute.AggregationIdentity, int, bool) {
+		v, _ := attrs.Value(attribute.Key("target"))
+		return precompute.AggregationIdentity{AggID: 99, Filter: v.Emit()}, 3, true
+	}
+	agg := newRowSampledSketchAgg[int64](router, "", "edge-1", 60, 1)
+	const targets = 8
+	const perTarget = 250
+	var wg sync.WaitGroup
+	for target := 0; target < targets; target++ {
+		wg.Add(1)
+		go func(target int) {
+			defer wg.Done()
+			attrs := attribute.NewSet(attribute.Int("target", target))
+			for i := 0; i < perTarget; i++ {
+				agg.measure(context.Background(), 1, attrs, nil)
+			}
+		}(target)
+	}
+	wg.Wait()
+	var dest metricdata.Aggregation
+	if got := agg.delta(&dest); got != targets*perTarget {
+		t.Fatalf("drained %d points, want %d", got, targets*perTarget)
 	}
 }
 

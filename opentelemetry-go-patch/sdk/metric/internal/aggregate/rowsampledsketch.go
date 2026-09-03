@@ -24,6 +24,7 @@ import (
 // (see precompute.AggregationRouter's doc). rows is this target's row
 // fan-out d.
 type rowSampledTarget[N int64 | float64] struct {
+	mu      sync.Mutex
 	rows    int
 	sampler *common.GeometricSampler
 	grant   *liveSampleGrant
@@ -43,8 +44,9 @@ type rowSampledSketchValues[N int64 | float64] struct {
 	windowMs         uint64
 	bootstrapSampleP float64
 
-	mu      sync.Mutex
-	targets map[precompute.AggregationIdentity]*rowSampledTarget[N]
+	targetsMu sync.RWMutex
+	targets   map[precompute.AggregationIdentity]*rowSampledTarget[N]
+	deltaMu   sync.Mutex
 }
 
 func newRowSampledSketchValues[N int64 | float64](
@@ -88,8 +90,18 @@ func rowSampleEpochSeed(base int64, epoch uint64) int64 {
 }
 
 // targetFor returns the shared rowSampledTarget for id, creating it (and
-// its GeometricSampler + liveSampleGrant) on first use. Caller holds d.mu.
+// its GeometricSampler + liveSampleGrant) on first use. The map lock is held
+// only for lookup/construction; unrelated targets sample concurrently.
 func (d *rowSampledSketchValues[N]) targetFor(id precompute.AggregationIdentity, rows int) *rowSampledTarget[N] {
+	d.targetsMu.RLock()
+	if t, ok := d.targets[id]; ok {
+		d.targetsMu.RUnlock()
+		return t
+	}
+	d.targetsMu.RUnlock()
+
+	d.targetsMu.Lock()
+	defer d.targetsMu.Unlock()
 	if t, ok := d.targets[id]; ok {
 		return t
 	}
@@ -132,10 +144,9 @@ func (d *rowSampledSketchValues[N]) measure(
 		rows = 1
 	}
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	t := d.targetFor(id, rows)
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	// Report this occurrence toward the target's rate signal (BEFORE the
 	// admission decision — rate tracks arriving traffic, independent of
@@ -194,21 +205,28 @@ func (d *rowSampledSketchAgg[N]) measure(
 func (d *rowSampledSketchAgg[N]) delta(
 	dest *metricdata.Aggregation, //nolint:gocritic // pointer required by interface
 ) int {
+	d.deltaMu.Lock()
+	defer d.deltaMu.Unlock()
 	t := now()
 
 	data, _ := (*dest).(metricdata.RowSampledSketch[N])
 	data.Temporality = metricdata.DeltaTemporality
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	var pts []metricdata.RowSampledSketchDataPoint[N]
+	d.targetsMu.RLock()
+	targets := make([]*rowSampledTarget[N], 0, len(d.targets))
 	for _, target := range d.targets {
+		targets = append(targets, target)
+	}
+	d.targetsMu.RUnlock()
+	var pts []metricdata.RowSampledSketchDataPoint[N]
+	for _, target := range targets {
+		target.mu.Lock()
 		for i := range target.pending {
 			target.pending[i].StartTime = d.start
 		}
 		pts = append(pts, target.pending...)
 		target.pending = nil
+		target.mu.Unlock()
 	}
 	d.start = t
 
