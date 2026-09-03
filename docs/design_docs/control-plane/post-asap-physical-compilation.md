@@ -6,23 +6,25 @@
 > ASAPCollector, source SDKs, and the ASAPQuery data plane.
 
 ASAPPlanner does not need to know about Collector processes, backend storage,
-OTLP, delta transmission, GOS, or sampling. Its job is to optimize a query or
-intent into a deployment-independent Post-ASAP DAG. That optimization includes
-abstract summary primitives: the sketch algorithm, summary-window framework,
-and summary-maintenance lifecycle. The ASAPQuery-backend control plane expands
-those abstract candidates into concrete runtime implementations and feeds
-their performance under the supplied `DataWorkload` back into Planner's cost
-model before compiling the selected DAG into a distributed physical execution
-plan.
+OTLP, delta transmission, GOS, or sampling. Its input represents a
+`QueryWorkload` and its associated `DataWorkload`, not one isolated query. It
+uses both workload dimensions to generate and rank deployment-independent
+Post-ASAP abstract candidates, then records a selection.
+Those candidates include abstract summary primitives: the sketch algorithm,
+summary-window framework, and summary-maintenance lifecycle. The
+ASAPQuery-backend control plane expands them into concrete runtime
+implementations and feeds their performance under the same `DataWorkload` back
+into Planner's cost model before compiling the selected candidate into a
+distributed physical execution plan.
 
 ```text
-Query / Intent
-      │
-      ▼
+QueryWorkload + DataWorkload
+             │
+             ▼
 ASAPPlanner
 Post-ASAP abstract candidates and selection
       │                                      ▲
-      │ candidates                           │ implementation cost evidence
+      │ candidates / selection               │ implementation cost evidence
       ▼                                      │
 ASAPQuery-backend Control Plane ─────────────┘
 Runtime implementation enumeration + physical compilation
@@ -61,7 +63,25 @@ cross-repository MVP acceptance criterion is satisfied.
 
 ## What ASAPPlanner owns
 
-ASAPPlanner emits a deployment-independent Post-ASAP DAG, for example:
+ASAPPlanner consumes:
+
+- a `QueryWorkload`: the language and batch or repeating query entries,
+  including their semantics, requirements, recurrence, predictability, time
+  selection, demand, and sharing opportunities; and
+- its `DataWorkload`: evidence about data arrival, ingestion volume and rate,
+  input cardinality, and distribution.
+
+In the current ASAPPlanner API, `DataWorkload` is carried by
+`QueryWorkload.data_workload`; the diagram separates them to make the two
+planning dimensions explicit, not to prescribe two top-level function
+arguments.
+
+These are logical and statistical inputs. Collector endpoints, deployed
+capabilities, topology, placement, and storage inventory remain physical
+control-plane inputs.
+
+ASAPPlanner emits deployment-independent Post-ASAP candidate DAGs and a
+selection, for example:
 
 ```text
 Source(metric)
@@ -153,11 +173,12 @@ ASAPQuery-backend must not maintain a second copy of them.
 
 ## What the ASAPQuery-backend control plane owns
 
-The control plane receives the Post-ASAP DAG and performs physical plan
-compilation using:
+The control plane receives the Post-ASAP candidates and current selection and
+performs implementation evaluation and physical plan compilation using:
 
 ```text
-Post-ASAP DAG
+Post-ASAP candidates and selection
++ shared DataWorkload
 + SDK capabilities
 + Collector capabilities
 + backend ingest/store/query capabilities
@@ -247,7 +268,8 @@ plane, not ASAPPlanner.
 
 Candidate evaluation and compilation should:
 
-1. Validate the canonical Post-ASAP candidate DAGs and preserve shared nodes.
+1. Validate the canonical QueryWorkload, DataWorkload, and Post-ASAP candidate
+   DAGs and preserve shared nodes.
 2. Bind logical sources to deployed telemetry sources.
 3. For every Planner-owned sketch, window-framework, and lifecycle candidate,
    enumerate legal concrete implementations and SDK, Collector,
@@ -691,9 +713,10 @@ new compiled plan version.
 
 ## Final ownership
 
-- **ASAPPlanner:** generates and optimizes the deployment-independent Post-ASAP
-  candidate DAGs, including abstract sketch, summary-window framework, and
-  lifecycle choices, using complete downstream implementation-cost evidence.
+- **ASAPPlanner:** consumes QueryWorkload and DataWorkload, then generates,
+  ranks, and selects deployment-independent Post-ASAP candidate DAGs, including
+  abstract sketch, summary-window framework, and lifecycle choices, using
+  complete downstream implementation-cost evidence.
 - **ASAPQuery-backend control plane:** enumerates concrete implementations for
   Planner candidates, reports their `DataWorkload`-specific performance to
   Planner, partitions stages, performs deployment optimization, chooses
