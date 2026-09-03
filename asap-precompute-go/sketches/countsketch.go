@@ -81,6 +81,10 @@ type CountSketchWrapper struct {
 	// path, unchanged. Set via SetGosMode.
 	gosEpsilon float64
 	gosSites   uint32
+	// gosThreshold is tau_max for this window. It never decreases between
+	// resets, preserving the residual invariant without scanning untouched
+	// cells when the residual norm falls after a crossing/reset.
+	gosThreshold uint64
 	// gosDirty accumulates cells that crossed the insert-time GOS threshold
 	// since the last drainGosDelta call. Each entry's Delta already equals
 	// that cell's full accumulation since it was last sent (sketchlib zeroes
@@ -133,10 +137,17 @@ func (w *CountSketchWrapper) GosDeltaThreshold(epsilon float64, k uint32) uint64
 		return 1
 	}
 	t := F2IsotropicThreshold(epsilon, w.currentNorm(), k, w.rows, w.cols)
+	candidate := uint64(1)
 	if !math.IsInf(t, 1) && !math.IsNaN(t) && t > 1.0 {
-		return uint64(math.Ceil(t))
+		candidate = uint64(math.Ceil(t))
 	}
-	return 1
+	if candidate > w.gosThreshold {
+		w.gosThreshold = candidate
+	}
+	if w.gosThreshold == 0 {
+		w.gosThreshold = 1
+	}
+	return w.gosThreshold
 }
 
 // recordDirty appends newly-crossed cells to the pending GOS drain list and
@@ -186,22 +197,23 @@ func (w *CountSketchWrapper) drainGosDelta() ([]byte, bool, error) {
 	for i, c := range w.gosDirty {
 		d.Cells[i] = countsketch.CellDelta{Row: c.Row, Col: c.Col, DValue: c.Delta}
 	}
-	w.gosDirty = w.gosDirty[:0]
 	if len(w.gosL2Baseline) != w.rows {
 		w.gosL2Baseline = make([]float64, w.rows)
 	}
 	for r := 0; r < w.rows; r++ {
 		cur := w.cs.L2[r]
 		d.L2[r] = cur - w.gosL2Baseline[r]
-		w.gosL2Baseline[r] = cur
 	}
 	if w.cs.SS != nil && w.cs.SS.Len() > 0 {
 		d.HHKeys = w.cs.SS.Candidates()
 	}
 	payload, err := countsketch.SerializeDelta(d)
 	if err != nil {
-		full, fErr := w.Snapshot()
-		return full, true, fErr
+		return nil, false, err
+	}
+	w.gosDirty = w.gosDirty[:0]
+	for r := 0; r < w.rows; r++ {
+		w.gosL2Baseline[r] = w.cs.L2[r]
 	}
 	return payload, false, nil
 }
@@ -629,6 +641,7 @@ func (w *CountSketchWrapper) Reset() {
 	w.cs.Reset()
 	w.ackedCells = nil
 	w.gosDirty = nil
+	w.gosThreshold = 0
 	w.gosWake = false
 	w.gosL2Baseline = nil
 }
