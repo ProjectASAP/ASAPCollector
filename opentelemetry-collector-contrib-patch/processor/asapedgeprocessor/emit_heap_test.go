@@ -225,7 +225,7 @@ func TestEmitHeap_DeltaFrameAfterFirstWindow(t *testing.T) {
 	}
 
 	// Window 2: MSGPACK_DELTA frame (sparse matrix delta + full heap).
-	feed(base + 1_000_000)
+	feed(base + uint64(time.Hour/time.Millisecond))
 	env2 := drainOneCountSketch(t, sa.pc.Drain())
 	if env2.Encoding != precompute.EncodingMsgpackDelta {
 		t.Fatalf("window 2 must be MSGPACK_DELTA, got %v", env2.Encoding)

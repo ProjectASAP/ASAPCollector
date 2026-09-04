@@ -64,7 +64,7 @@ func TestDeltaTransmissionEmitsDeltaEncoding(t *testing.T) {
 
 	// Window 2 -> PROTO_DELTA (against the cached window-1 snapshot).
 	for i := 0; i < 10; i++ {
-		sa.observe(am, float64(i), base+1000+uint64(i), false, 0, 0)
+		sa.observe(am, float64(i), base+uint64(time.Hour/time.Millisecond)+uint64(i), false, 0, 0)
 	}
 	envs2 := sa.pc.Drain()
 	if !hasEncoding(envs2, precompute.EncodingProtoDelta) {

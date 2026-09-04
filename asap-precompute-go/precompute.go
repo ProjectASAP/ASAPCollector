@@ -149,6 +149,9 @@ var (
 	// timestamp is older than the active window's lower bound
 	// minus AllowedLateness.
 	ErrLateData = errors.New("precompute: observation timestamp outside allowed lateness")
+	// ErrFutureData is returned when an observation belongs to a window that
+	// has not been activated yet. The host must rotate/catch up and retry it.
+	ErrFutureData = errors.New("precompute: observation timestamp at or beyond active window end")
 	// ErrNoConfig is returned when Precompute has no PrecomputeConfig.
 	ErrNoConfig = errors.New("precompute: no config installed")
 	// ErrAggIDMismatch is returned by ObserveEnvelope when the
@@ -291,6 +294,8 @@ type precompute struct {
 	sketchSink      atomic.Pointer[SketchSink]
 	frameReceiver   frameReceiver
 	envelopeMu      sync.Mutex
+	pendingMu       sync.Mutex
+	pendingOutput   []*SketchEnvelope
 	// monitorEngine is the continuous-monitoring (Discipline B) engine. nil
 	// until SetMonitorEngine is called by the adapter; when set AND the active
 	// config has Monitor.Enabled, the window's per-observation hook routes the
@@ -362,7 +367,12 @@ func (p *precompute) Observe(obs *Observation) error {
 		return errors.New("precompute: sketch observer not configured")
 	}
 
-	if err := p.window.observe(obs, cfg, p.sketchFactory, p.observer, p.stats); err != nil {
+	err := p.window.observe(obs, cfg, p.sketchFactory, p.observer, p.stats)
+	if errors.Is(err, ErrFutureData) {
+		p.rotateForFuture(obs.TimestampMs, cfg)
+		err = p.window.observe(obs, cfg, p.sketchFactory, p.observer, p.stats)
+	}
+	if err != nil {
 		switch {
 		case errors.Is(err, ErrSeriesCapExceeded):
 			p.stats.DroppedOverflow.Add(1)
@@ -404,7 +414,12 @@ func (p *precompute) ObserveKeyed(key string, obs *Observation) error {
 	if p.observer == nil {
 		return errors.New("precompute: sketch observer not configured")
 	}
-	if err := p.window.observeKeyed(key, obs, cfg, p.sketchFactory, p.observer, p.stats); err != nil {
+	err := p.window.observeKeyed(key, obs, cfg, p.sketchFactory, p.observer, p.stats)
+	if errors.Is(err, ErrFutureData) {
+		p.rotateForFuture(obs.TimestampMs, cfg)
+		err = p.window.observeKeyed(key, obs, cfg, p.sketchFactory, p.observer, p.stats)
+	}
+	if err != nil {
 		switch {
 		case errors.Is(err, ErrSeriesCapExceeded):
 			p.stats.DroppedOverflow.Add(1)
@@ -479,7 +494,7 @@ func (p *precompute) Tick(nowMs uint64) []*SketchEnvelope {
 		return nil
 	}
 	closed, rng := p.window.rotate(nowMs, cfg)
-	return p.finishRotate(closed, rng, nowMs)
+	return p.takePendingOutput(p.finishRotate(closed, rng, nowMs))
 }
 
 // Drain implements Precompute.Drain. Unconditionally rotates the
@@ -494,7 +509,31 @@ func (p *precompute) Drain() []*SketchEnvelope {
 		return nil
 	}
 	closed, rng := p.window.drain(cfg)
-	return p.finishRotate(closed, rng, rng[1])
+	return p.takePendingOutput(p.finishRotate(closed, rng, rng[1]))
+}
+
+func (p *precompute) rotateForFuture(timestampMs uint64, cfg *PrecomputeConfig) {
+	closed, rng := p.window.rotate(timestampMs, cfg)
+	envelopes := p.finishRotate(closed, rng, timestampMs)
+	if len(envelopes) == 0 {
+		return
+	}
+	p.pendingMu.Lock()
+	p.pendingOutput = append(p.pendingOutput, envelopes...)
+	p.pendingMu.Unlock()
+}
+
+func (p *precompute) takePendingOutput(current []*SketchEnvelope) []*SketchEnvelope {
+	p.pendingMu.Lock()
+	defer p.pendingMu.Unlock()
+	if len(p.pendingOutput) == 0 {
+		return current
+	}
+	result := make([]*SketchEnvelope, 0, len(p.pendingOutput)+len(current))
+	result = append(result, p.pendingOutput...)
+	result = append(result, current...)
+	p.pendingOutput = nil
+	return result
 }
 
 // EmitSubWindow implements Precompute.EmitSubWindow: serialize an incremental

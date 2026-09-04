@@ -261,12 +261,8 @@ func (w *windowState) observe(
 	}
 	w.initWindow(obs.TimestampMs, cfg)
 
-	// Late-data check.
-	if cfg.Window.AllowedLateness > 0 {
-		latenessMs := uint64(cfg.Window.AllowedLateness / time.Millisecond)
-		if obs.TimestampMs+latenessMs < w.activeStartMs {
-			return ErrLateData
-		}
+	if err := w.validateTimestampLocked(obs.TimestampMs, cfg); err != nil {
+		return err
 	}
 
 	// Build the lookup key into a pooled byte buffer so the common
@@ -308,11 +304,8 @@ func (w *windowState) observeKeyed(
 	}
 	w.initWindow(obs.TimestampMs, cfg)
 
-	if cfg.Window.AllowedLateness > 0 {
-		latenessMs := uint64(cfg.Window.AllowedLateness / time.Millisecond)
-		if obs.TimestampMs+latenessMs < w.activeStartMs {
-			return ErrLateData
-		}
+	if err := w.validateTimestampLocked(obs.TimestampMs, cfg); err != nil {
+		return err
 	}
 
 	entry, ok := w.series[key]
@@ -323,6 +316,22 @@ func (w *windowState) observeKeyed(
 		}
 	}
 	return w.recordLocked(entry, obs, observer)
+}
+
+// validateTimestampLocked prevents host scheduling jitter from changing
+// timestamp-defined window semantics. A future-window sample is returned to
+// the host for rotate-and-retry; it is never folded into the current sketch.
+func (w *windowState) validateTimestampLocked(timestampMs uint64, cfg *PrecomputeConfig) error {
+	if timestampMs >= w.activeEndMs {
+		return ErrFutureData
+	}
+	if timestampMs < w.activeStartMs {
+		latenessMs := uint64(cfg.Window.AllowedLateness / time.Millisecond)
+		if w.activeStartMs-timestampMs > latenessMs {
+			return ErrLateData
+		}
+	}
+	return nil
 }
 
 // admitSeriesLocked creates + registers a new series for key (caller holds

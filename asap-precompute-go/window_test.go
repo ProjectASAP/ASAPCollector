@@ -128,6 +128,71 @@ func TestWindow_LateDataReturnsErrLateData(t *testing.T) {
 	}
 }
 
+func TestWindow_ZeroLatenessRejectsOlderTimestamp(t *testing.T) {
+	t.Parallel()
+	cfg := &PrecomputeConfig{AggID: 1, SketchType: SketchTypeDDSketch, Mode: Tumbling,
+		Window: WindowSpec{Size: 10 * time.Second}}
+	w := newWindowState()
+	if err := w.observe(&Observation{TimestampMs: 10_500, Value: FloatValue(1)}, cfg, newFakeFactory(), &fakeObserver{}, NewStats()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.observe(&Observation{TimestampMs: 9_999, Value: FloatValue(1)}, cfg, newFakeFactory(), &fakeObserver{}, NewStats()); !errors.Is(err, ErrLateData) {
+		t.Fatalf("want ErrLateData, got %v", err)
+	}
+}
+
+func TestWindow_FutureTimestampNeverEntersCurrentWindow(t *testing.T) {
+	t.Parallel()
+	cfg := &PrecomputeConfig{AggID: 1, SketchType: SketchTypeDDSketch, Mode: Tumbling,
+		Window: WindowSpec{Size: 10 * time.Second}}
+	for _, keyed := range []bool{false, true} {
+		w := newWindowState()
+		first := &Observation{TimestampMs: 1_000, Labels: []KeyValue{{Key: "k", Value: "a"}}, Value: FloatValue(1)}
+		future := &Observation{TimestampMs: 10_000, Labels: first.Labels, Value: FloatValue(2)}
+		var err error
+		if keyed {
+			err = w.observeKeyed(cfg.SeriesKeyFor(first), first, cfg, newFakeFactory(), &fakeObserver{}, NewStats())
+		} else {
+			err = w.observe(first, cfg, newFakeFactory(), &fakeObserver{}, NewStats())
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if keyed {
+			err = w.observeKeyed(cfg.SeriesKeyFor(future), future, cfg, newFakeFactory(), &fakeObserver{}, NewStats())
+		} else {
+			err = w.observe(future, cfg, newFakeFactory(), &fakeObserver{}, NewStats())
+		}
+		if !errors.Is(err, ErrFutureData) {
+			t.Fatalf("keyed=%v: want ErrFutureData, got %v", keyed, err)
+		}
+		closed, _ := w.rotate(10_000, cfg)
+		if len(closed) != 1 || closed[0].Count != 1 {
+			t.Fatalf("keyed=%v: future sample entered old window: %+v", keyed, closed)
+		}
+	}
+}
+
+func TestPrecompute_FutureTimestampRotatesQueuesAndRetries(t *testing.T) {
+	cfg := &PrecomputeConfig{AggID: 1, SketchType: SketchTypeDDSketch, Mode: Tumbling,
+		Window: WindowSpec{Size: 10 * time.Second}}
+	p := New(cfg, newFakeFactory(), &fakeObserver{}).(*precompute)
+	if err := p.Observe(&Observation{TimestampMs: 1_000, Labels: []KeyValue{{Key: "k", Value: "a"}}, Value: FloatValue(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Observe(&Observation{TimestampMs: 11_000, Labels: []KeyValue{{Key: "k", Value: "a"}}, Value: FloatValue(2)}); err != nil {
+		t.Fatal(err)
+	}
+	first := p.Tick(11_000)
+	if len(first) != 1 || first[0].WindowStartMs != 0 || first[0].WindowEndMs != 10_000 {
+		t.Fatalf("queued old window: %+v", first)
+	}
+	second := p.Drain()
+	if len(second) != 1 || second[0].WindowStartMs != 10_000 || second[0].WindowEndMs != 20_000 {
+		t.Fatalf("retried new window: %+v", second)
+	}
+}
+
 func TestWindow_MaxSeriesDropsNew(t *testing.T) {
 	t.Parallel()
 	cfg := &PrecomputeConfig{
