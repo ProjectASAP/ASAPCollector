@@ -323,9 +323,11 @@ func New(initialCfg *PrecomputeConfig, sketchFactory SketchFactory, observer Ske
 	p.window.snapshotCache = p.snapshotCache
 	p.window.sketchSink = &p.sketchSink
 	if initialCfg != nil {
-		cfgCopy := clonePrecomputeConfig(initialCfg)
-		p.cfg.Store(cfgCopy)
-		p.sketchType = initialCfg.SketchType
+		if ValidateMatchers(initialCfg.Matchers) == nil {
+			cfgCopy := clonePrecomputeConfig(initialCfg)
+			p.cfg.Store(cfgCopy)
+			p.sketchType = initialCfg.SketchType
+		}
 	}
 	return p
 }
@@ -1046,6 +1048,9 @@ func (p *precompute) UpdateConfig(cs *PrecomputeConfigSet) {
 	}
 	if chosen == nil {
 		chosen = &cs.Configs[0]
+	}
+	if ValidateMatchers(chosen.Matchers) != nil {
+		return
 	}
 	cfgCopy := clonePrecomputeConfig(chosen)
 	// An in-flight window is owned by its current immutable config. Stage the
