@@ -371,6 +371,7 @@ func (p *precompute) Observe(obs *Observation) error {
 	err := p.window.observe(obs, cfg, p.sketchFactory, p.observer, p.stats)
 	if errors.Is(err, ErrFutureData) {
 		p.rotateForFuture(obs.TimestampMs, cfg)
+		cfg = p.activeConfig()
 		err = p.window.observe(obs, cfg, p.sketchFactory, p.observer, p.stats)
 	}
 	if err != nil {
@@ -418,6 +419,8 @@ func (p *precompute) ObserveKeyed(key string, obs *Observation) error {
 	err := p.window.observeKeyed(key, obs, cfg, p.sketchFactory, p.observer, p.stats)
 	if errors.Is(err, ErrFutureData) {
 		p.rotateForFuture(obs.TimestampMs, cfg)
+		cfg = p.activeConfig()
+		key = cfg.SeriesKeyFor(obs)
 		err = p.window.observeKeyed(key, obs, cfg, p.sketchFactory, p.observer, p.stats)
 	}
 	if err != nil {
