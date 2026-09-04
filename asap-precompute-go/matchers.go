@@ -1,6 +1,7 @@
 package precompute
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strconv"
@@ -54,38 +55,43 @@ type LabelMatcher struct {
 	// pattern (Regex/NotRegex).
 	Value string
 	// Op picks Equal / NotEqual / Regex / NotRegex.
-	Op MatchOp
+	Op       MatchOp
+	compiled *regexp.Regexp
+	prepared bool
 }
 
-// regexCache memoizes compiled, fully-anchored regexps keyed by the raw
-// pattern string. LabelMatcher is a value type embedded in
-// PrecomputeConfig, so the matcher can't hold a *regexp.Regexp without
-// breaking config copies / comparisons; instead Matches() looks the
-// compiled form up here. A failed compile is cached as a nil regexp so
-// repeated bad patterns don't recompile (and deterministically fail to
-// match).
-var regexCache sync.Map // map[string]*regexp.Regexp (nil ⇒ compile failed)
+// ValidateMatchers rejects malformed regex configuration before activation.
+func ValidateMatchers(matchers []LabelMatcher) error {
+	for i, matcher := range matchers {
+		if matcher.Op != MatchRegex && matcher.Op != MatchNotRegex {
+			continue
+		}
+		if _, err := regexp.Compile("^(?:" + matcher.Value + ")$"); err != nil {
+			return fmt.Errorf("matcher %d: %w", i, err)
+		}
+	}
+	return nil
+}
 
 // compileAnchored returns the compiled, Prometheus-anchored regexp for
 // pattern (matching the full string via ^(?:...)$), using a process-wide
 // cache. Returns nil if the pattern fails to compile.
 func compileAnchored(pattern string) *regexp.Regexp {
-	if v, ok := regexCache.Load(pattern); ok {
-		if v == nil {
-			return nil
-		}
-		return v.(*regexp.Regexp)
-	}
 	// Anchor like Prometheus: the pattern must match the entire value.
 	// Wrap in a non-capturing group so top-level alternation (a|b)
 	// anchors as a whole rather than ^a|b$.
 	re, err := regexp.Compile("^(?:" + pattern + ")$")
 	if err != nil {
-		regexCache.Store(pattern, (*regexp.Regexp)(nil))
 		return nil
 	}
-	regexCache.Store(pattern, re)
 	return re
+}
+
+func (m LabelMatcher) regexp() *regexp.Regexp {
+	if m.prepared {
+		return m.compiled
+	}
+	return compileAnchored(m.Value)
 }
 
 // Matches returns true iff the observation satisfies all matchers.
@@ -130,7 +136,7 @@ func (cfg *PrecomputeConfig) Matches(obs *Observation) bool {
 			if !present {
 				return false
 			}
-			re := compileAnchored(m.Value)
+			re := m.regexp()
 			if re == nil || !re.MatchString(v) {
 				return false
 			}
@@ -139,7 +145,7 @@ func (cfg *PrecomputeConfig) Matches(obs *Observation) bool {
 			// Present-and-matching fails. A bad pattern (nil re) can't
 			// match anything, so the negation passes.
 			if present {
-				if re := compileAnchored(m.Value); re != nil && re.MatchString(v) {
+				if re := m.regexp(); re != nil && re.MatchString(v) {
 					return false
 				}
 			}

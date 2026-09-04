@@ -1070,6 +1070,14 @@ func clonePrecomputeConfig(source *PrecomputeConfig) *PrecomputeConfig {
 	}
 	cloned := *source
 	cloned.Matchers = append([]LabelMatcher(nil), source.Matchers...)
+	for i := range cloned.Matchers {
+		matcher := &cloned.Matchers[i]
+		matcher.prepared = true
+		matcher.compiled = nil
+		if matcher.Op == MatchRegex || matcher.Op == MatchNotRegex {
+			matcher.compiled = compileAnchored(matcher.Value)
+		}
+	}
 	cloned.AggregateBy = append([]string(nil), source.AggregateBy...)
 	cloned.Quantiles = append([]float64(nil), source.Quantiles...)
 	if source.SketchParams != nil {
