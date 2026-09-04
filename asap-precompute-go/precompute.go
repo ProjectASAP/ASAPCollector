@@ -320,6 +320,8 @@ func New(initialCfg *PrecomputeConfig, sketchFactory SketchFactory, observer Ske
 		snapshotCache: NewSnapshotCache(),
 		stats:         NewPrecomputeStats(),
 	}
+	p.window.snapshotCache = p.snapshotCache
+	p.window.sketchSink = &p.sketchSink
 	if initialCfg != nil {
 		cfgCopy := clonePrecomputeConfig(initialCfg)
 		p.cfg.Store(cfgCopy)

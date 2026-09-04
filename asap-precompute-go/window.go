@@ -1,9 +1,11 @@
 package precompute
 
 import (
+	"container/heap"
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -11,6 +13,8 @@ import (
 // owns one Sketch instance and the labels needed to reconstruct
 // the SketchEnvelope at flush time.
 type seriesEntry struct {
+	seriesKey string
+	heapIndex int
 	// Sketch is the running sketch for this series. Owned here;
 	// the window calls Reset on rotation when the entry is
 	// recycled in place, OR drops the reference when MaxSeries
@@ -64,6 +68,35 @@ type seriesEntry struct {
 	ackVal         float64
 }
 
+type seriesEvictionHeap []*seriesEntry
+
+func (h seriesEvictionHeap) Len() int { return len(h) }
+func (h seriesEvictionHeap) Less(i, j int) bool {
+	if h[i].LastSeenMs == h[j].LastSeenMs {
+		return h[i].seriesKey < h[j].seriesKey
+	}
+	return h[i].LastSeenMs < h[j].LastSeenMs
+}
+func (h seriesEvictionHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].heapIndex = i
+	h[j].heapIndex = j
+}
+func (h *seriesEvictionHeap) Push(value any) {
+	e := value.(*seriesEntry)
+	e.heapIndex = len(*h)
+	*h = append(*h, e)
+}
+func (h *seriesEvictionHeap) Pop() any {
+	old := *h
+	n := len(old)
+	e := old[n-1]
+	old[n-1] = nil
+	e.heapIndex = -1
+	*h = old[:n-1]
+	return e
+}
+
 // windowState is the per-Precompute window manager. It supports
 // Tumbling, Batch, and Sliding modes.
 //
@@ -86,6 +119,9 @@ type seriesEntry struct {
 type windowState struct {
 	mu            sync.RWMutex
 	series        map[string]*seriesEntry
+	eviction      seriesEvictionHeap
+	snapshotCache *SnapshotCache
+	sketchSink    *atomic.Pointer[SketchSink]
 	activeStartMs uint64
 	activeEndMs   uint64
 	// initialized tracks whether activeStart/End have been
@@ -411,11 +447,14 @@ func (w *windowState) admitSeriesLocked(
 	}
 	entry := &seriesEntry{
 		Sketch:         sketch,
+		seriesKey:      key,
+		heapIndex:      -1,
 		ResourceLabels: resourceCopy,
 		Labels:         labelsCopy,
 		LastSeenMs:     obs.TimestampMs,
 	}
 	w.series[key] = entry
+	heap.Push(&w.eviction, entry)
 	if stats != nil {
 		stats.ActiveSeries.Add(1)
 	}
@@ -423,19 +462,24 @@ func (w *windowState) admitSeriesLocked(
 }
 
 func (w *windowState) evictOldestLocked() (string, *seriesEntry) {
-	var oldestKey string
-	oldestMs := ^uint64(0)
-	for key, entry := range w.series {
-		if entry.LastSeenMs < oldestMs {
-			oldestMs = entry.LastSeenMs
-			oldestKey = key
+	if len(w.eviction) == 0 {
+		return "", nil
+	}
+	entry := heap.Pop(&w.eviction).(*seriesEntry)
+	delete(w.series, entry.seriesKey)
+	if w.snapshotCache != nil {
+		w.snapshotCache.Delete(entry.seriesKey)
+	}
+	if w.sketchSink != nil {
+		if sink := w.sketchSink.Load(); sink != nil && *sink != nil {
+			(*sink)(entry.Sketch)
+			entry.Sketch = nil
 		}
 	}
-	entry := w.series[oldestKey]
-	if oldestKey != "" {
-		delete(w.series, oldestKey)
+	if entry.Sketch != nil {
+		entry.Sketch.Reset()
 	}
-	return oldestKey, entry
+	return entry.seriesKey, entry
 }
 
 // recordLocked feeds one observation into a series' sketch and advances its
@@ -443,6 +487,9 @@ func (w *windowState) evictOldestLocked() (string, *seriesEntry) {
 func (w *windowState) recordLocked(entry *seriesEntry, obs *Observation, observer SketchObserver) error {
 	if obs.TimestampMs > entry.LastSeenMs {
 		entry.LastSeenMs = obs.TimestampMs
+		if entry.heapIndex >= 0 {
+			heap.Fix(&w.eviction, entry.heapIndex)
+		}
 	}
 	if err := observer.Observe(entry.Sketch, obs.Value); err != nil {
 		return fmt.Errorf("sketch observe: %w", err)
@@ -526,10 +573,13 @@ func (w *windowState) observeEnvelope(
 		copy(labelsCopy, env.Labels)
 		entry = &seriesEntry{
 			Sketch:     sketch,
+			seriesKey:  key,
+			heapIndex:  -1,
 			Labels:     labelsCopy,
 			LastSeenMs: refMs,
 		}
 		w.series[key] = entry
+		heap.Push(&w.eviction, entry)
 		if stats != nil {
 			stats.ActiveSeries.Add(1)
 		}
@@ -593,6 +643,12 @@ func (w *windowState) observeEnvelope(
 	// Envelopes with Count==0 (older senders that don't populate
 	// the field) contribute zero, which is a no-op.
 	entry.Count += env.Count
+	if refMs > entry.LastSeenMs {
+		entry.LastSeenMs = refMs
+		if entry.heapIndex >= 0 {
+			heap.Fix(&w.eviction, entry.heapIndex)
+		}
+	}
 	return nil
 }
 
@@ -694,6 +750,7 @@ func (w *windowState) rotateLocked(nowMs uint64, cfg *PrecomputeConfig) ([]*seri
 
 	// Reset the series map for the next window.
 	w.series = make(map[string]*seriesEntry)
+	w.eviction = nil
 	w.advanceWindow(nowMs, cfg)
 	return closedSeries, rng
 }
@@ -722,6 +779,7 @@ func (w *windowState) rotateSlidingLocked(nowMs uint64, cfg *PrecomputeConfig) (
 	})
 	// Start a fresh current pane and advance the bounds by one slide.
 	w.series = make(map[string]*seriesEntry)
+	w.eviction = nil
 	w.advanceWindow(nowMs, cfg)
 
 	// Trim the ring to the most recent N panes (drop the oldest,
@@ -866,6 +924,7 @@ func (w *windowState) resetForScopeChange() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.series = make(map[string]*seriesEntry)
+	w.eviction = nil
 	w.panes = nil
 }
 
