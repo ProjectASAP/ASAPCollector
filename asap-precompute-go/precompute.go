@@ -297,6 +297,7 @@ type precompute struct {
 	envelopeMu      sync.Mutex
 	pendingMu       sync.Mutex
 	pendingOutput   []*SketchEnvelope
+	generationMu    sync.RWMutex
 	// monitorEngine is the continuous-monitoring (Discipline B) engine. nil
 	// until SetMonitorEngine is called by the adapter; when set AND the active
 	// config has Monitor.Enabled, the window's per-observation hook routes the
@@ -345,10 +346,6 @@ func (p *precompute) Observe(obs *Observation) error {
 	if p.closed.Load() {
 		return errors.New("precompute: instance is closed")
 	}
-	cfg := p.activeConfig()
-	if cfg == nil {
-		return ErrNoConfig
-	}
 	p.stats.InputObservations.Add(1)
 
 	// Envelope-valued observations route through the dedicated
@@ -357,22 +354,10 @@ func (p *precompute) Observe(obs *Observation) error {
 		return p.ObserveEnvelope(obs.Value.Envelope)
 	}
 
-	if !cfg.Matches(obs) {
-		return nil
-	}
-
-	if p.sketchFactory == nil {
-		return errors.New("precompute: sketch factory not configured")
-	}
-	if p.observer == nil {
-		return errors.New("precompute: sketch observer not configured")
-	}
-
-	err := p.window.observe(obs, cfg, p.sketchFactory, p.observer, p.stats)
+	err := p.observeOnce("", obs, false)
 	if errors.Is(err, ErrFutureData) {
-		p.rotateForFuture(obs.TimestampMs, cfg)
-		cfg = p.activeConfig()
-		err = p.window.observe(obs, cfg, p.sketchFactory, p.observer, p.stats)
+		p.rotateForFuture(obs.TimestampMs)
+		err = p.observeOnce("", obs, false)
 	}
 	if err != nil {
 		switch {
@@ -399,29 +384,14 @@ func (p *precompute) ObserveKeyed(key string, obs *Observation) error {
 	if p.closed.Load() {
 		return errors.New("precompute: instance is closed")
 	}
-	cfg := p.activeConfig()
-	if cfg == nil {
-		return ErrNoConfig
-	}
 	p.stats.InputObservations.Add(1)
 	if obs.Value.Kind == KindEnvelope && obs.Value.Envelope != nil {
 		return p.ObserveEnvelope(obs.Value.Envelope)
 	}
-	if !cfg.Matches(obs) {
-		return nil
-	}
-	if p.sketchFactory == nil {
-		return errors.New("precompute: sketch factory not configured")
-	}
-	if p.observer == nil {
-		return errors.New("precompute: sketch observer not configured")
-	}
-	err := p.window.observeKeyed(key, obs, cfg, p.sketchFactory, p.observer, p.stats)
+	err := p.observeOnce(key, obs, true)
 	if errors.Is(err, ErrFutureData) {
-		p.rotateForFuture(obs.TimestampMs, cfg)
-		cfg = p.activeConfig()
-		key = cfg.SeriesKeyFor(obs)
-		err = p.window.observeKeyed(key, obs, cfg, p.sketchFactory, p.observer, p.stats)
+		p.rotateForFuture(obs.TimestampMs)
+		err = p.observeOnce("", obs, true)
 	}
 	if err != nil {
 		switch {
@@ -435,10 +405,37 @@ func (p *precompute) ObserveKeyed(key string, obs *Observation) error {
 	return nil
 }
 
+func (p *precompute) observeOnce(key string, obs *Observation, keyed bool) error {
+	p.generationMu.RLock()
+	defer p.generationMu.RUnlock()
+	cfg := p.activeConfig()
+	if cfg == nil {
+		return ErrNoConfig
+	}
+	if !cfg.Matches(obs) {
+		return nil
+	}
+	if p.sketchFactory == nil {
+		return errors.New("precompute: sketch factory not configured")
+	}
+	if p.observer == nil {
+		return errors.New("precompute: sketch observer not configured")
+	}
+	if keyed {
+		if key == "" {
+			key = cfg.SeriesKeyFor(obs)
+		}
+		return p.window.observeKeyed(key, obs, cfg, p.sketchFactory, p.observer, p.stats)
+	}
+	return p.window.observe(obs, cfg, p.sketchFactory, p.observer, p.stats)
+}
+
 // ObserveEnvelope implements Precompute.ObserveEnvelope.
 func (p *precompute) ObserveEnvelope(env *SketchEnvelope) error {
 	p.envelopeMu.Lock()
 	defer p.envelopeMu.Unlock()
+	p.generationMu.RLock()
+	defer p.generationMu.RUnlock()
 	if p.closed.Load() {
 		return errors.New("precompute: instance is closed")
 	}
@@ -493,6 +490,8 @@ func (p *precompute) ObserveEnvelope(env *SketchEnvelope) error {
 // series covering the trailing window (panesPerWindow × slide) — see
 // windowState.rotateSlidingLocked.
 func (p *precompute) Tick(nowMs uint64) []*SketchEnvelope {
+	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
 	cfg := p.activeConfig()
 	if cfg == nil {
 		return nil
@@ -512,6 +511,8 @@ func (p *precompute) Tick(nowMs uint64) []*SketchEnvelope {
 // Implementation: delegates to windowState.drain which mirrors
 // rotate's body but skips the `nowMs < activeEndMs` gate.
 func (p *precompute) Drain() []*SketchEnvelope {
+	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
 	cfg := p.activeConfig()
 	if cfg == nil {
 		return nil
@@ -522,7 +523,13 @@ func (p *precompute) Drain() []*SketchEnvelope {
 	return p.takePendingOutput(envelopes)
 }
 
-func (p *precompute) rotateForFuture(timestampMs uint64, cfg *PrecomputeConfig) {
+func (p *precompute) rotateForFuture(timestampMs uint64) {
+	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
+	cfg := p.activeConfig()
+	if cfg == nil {
+		return
+	}
 	closed, rng := p.window.rotate(timestampMs, cfg)
 	envelopes := p.finishRotate(closed, rng, timestampMs)
 	if rng != [2]uint64{} {
@@ -553,6 +560,8 @@ func (p *precompute) takePendingOutput(current []*SketchEnvelope) []*SketchEnvel
 // delta for each active series that has DIVERGED past the per-family threshold,
 // under the window lock, without rotating — so accumulation continues.
 func (p *precompute) EmitSubWindow(nowMs uint64) []*SketchEnvelope {
+	p.generationMu.RLock()
+	defer p.generationMu.RUnlock()
 	cfg := p.activeConfig()
 	if cfg == nil || !cfg.DeltaTransmission {
 		// Without delta encoding there is no in-window base to diff against —
@@ -1021,6 +1030,8 @@ func sketchRelativeAccuracy(s Sketch) float64 {
 // the active config (or the first one if no active config). A
 // future refactor will route between multiple configs by AggID.
 func (p *precompute) UpdateConfig(cs *PrecomputeConfigSet) {
+	p.generationMu.Lock()
+	defer p.generationMu.Unlock()
 	if cs == nil || len(cs.Configs) == 0 {
 		return
 	}
