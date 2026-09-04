@@ -28,6 +28,12 @@ class EvaluatorTest(unittest.TestCase):
             "freshness": {"p95_ms": 1000, "maximum_ms": 2000, "minimum_samples_per_tier": 2,
                           "required_tiers": ["warm"]},
             "query_latency": {"require_asap_lower_p50": True, "require_asap_lower_p95": True},
+            "collector_runtime": {"minimum_offered_load_fraction": .9,
+                                  "minimum_points_per_cpu_second": 10,
+                                  "maximum_peak_rss_mib_per_agent": 1024,
+                                  "maximum_cpu_cores_per_agent": 4,
+                                  "require_zero_refused_points": True,
+                                  "require_zero_export_failed_points": True},
             "cost": {"cpu_core_weight": 1.0, "rss_gib_weight": 0.1, "network_mib_per_s_weight": 0.01,
                      "storage_gib_weight": 0.01,
                      "baseline_storage_components": ["victoriametrics"],
@@ -43,7 +49,8 @@ class EvaluatorTest(unittest.TestCase):
         manifest = {"run_id": "run-1", "started_at": "2026-08-26T00:00:00Z", "collector_commit": "abc",
                     "backend_commit": "def", "load_generator": {"commit": "abc"},
                     "exact_backend": {"name": "VictoriaMetrics"}, "images": {"collector": "sha256:1"}, "remote_image_digests": {"vm": "sha256:2"},
-                    "configuration_sha256": {"acceptance": "123"}, "workload": {"cardinality": 1},
+                    "configuration_sha256": {"acceptance": "123"},
+                    "workload": {"cardinality": 1, "frequency_hz": 10, "agents": 2, "series_cardinality": 2},
                     "time_alignment": {"mode": "result_timestamp"},
                     "arms": {"b1": {"seed": 42}, "asap-gzip": {"seed": 42}}}
         (self.run / "run-manifest.json").write_text(json.dumps(manifest))
@@ -58,6 +65,16 @@ class EvaluatorTest(unittest.TestCase):
                         "data_source": "sketch_store" if arm == "asap-gzip" else "victoriametrics",
                         "result": [{"metric": {"zone": "a"}, "value": [anchor_ms / 1000, str(value)]}]} for i in range(3)]
             (arm_dir / "replay.jsonl").write_text("".join(json.dumps(row) + "\n" for row in records))
+            telemetry = {"schema_version": 1, "duration_s": 10, "agents": {}}
+            for agent in ("agent-a", "agent-b"):
+                telemetry["agents"][agent] = {
+                    "counter_deltas": {"accepted_metric_points": 100, "refused_metric_points": 0,
+                                       "sent_metric_points": 50, "send_failed_metric_points": 0},
+                    "metric_names": {"accepted_metric_points": ["otelcol_receiver_accepted_metric_points"],
+                                     "refused_metric_points": [], "sent_metric_points": [],
+                                     "send_failed_metric_points": []},
+                }
+            (arm_dir / "collector-telemetry.json").write_text(json.dumps(telemetry))
             with (arm_dir / "stages-node0.csv").open("w", newline="") as handle:
                 writer = csv.writer(handle); writer.writerow(["baseline", "stage", "container", "cpu_cores", "cpu_time_s", "rss_mib", "peak_rss_mib"])
                 writer.writerow([arm, "agent", "asap-otel", 1 if arm == "b1" else .5, 60, 100, 110])
@@ -104,6 +121,37 @@ class EvaluatorTest(unittest.TestCase):
         result = MODULE.evaluate(str(self.run), self.config)
         self.assertEqual("FAIL", result["overall_verdict"])
         self.assertIn("functional correctness", " ".join(result["failures"]))
+
+    def test_collector_refused_points_fail(self) -> None:
+        self.write_fixture()
+        path = self.run / "asap-gzip" / "collector-telemetry.json"
+        value = json.loads(path.read_text())
+        value["agents"]["agent-a"]["counter_deltas"]["refused_metric_points"] = 1
+        path.write_text(json.dumps(value))
+        result = MODULE.evaluate(str(self.run), self.config)
+        self.assertEqual("FAIL", result["overall_verdict"])
+        self.assertFalse(result["collector_runtime"]["arms"]["asap-gzip"]["checks"]["zero_refused_points"])
+
+    def test_collector_low_throughput_fails(self) -> None:
+        self.write_fixture()
+        path = self.run / "asap-gzip" / "collector-telemetry.json"
+        value = json.loads(path.read_text())
+        for agent in value["agents"].values():
+            agent["counter_deltas"]["accepted_metric_points"] = 1
+        path.write_text(json.dumps(value))
+        result = MODULE.evaluate(str(self.run), self.config)
+        self.assertFalse(result["collector_runtime"]["arms"]["asap-gzip"]["checks"]["sustained_offered_load"])
+
+    def test_collector_peak_rss_bound_fails(self) -> None:
+        self.write_fixture()
+        path = self.run / "asap-gzip" / "stages-node0.csv"
+        with path.open() as handle:
+            rows = list(csv.reader(handle))
+        rows[1][6] = "2048"
+        with path.open("w", newline="") as handle:
+            csv.writer(handle).writerows(rows)
+        result = MODULE.evaluate(str(self.run), self.config)
+        self.assertFalse(result["collector_runtime"]["arms"]["asap-gzip"]["checks"]["peak_rss_bound"])
 
     def test_archive_fallback_cannot_satisfy_warm_mvp_query(self) -> None:
         self.write_fixture()

@@ -189,6 +189,8 @@ def freshness_summary(path: str, cfg: dict[str, Any]) -> dict[str, Any]:
 def resource_summary(arm_dir: str, weights: dict[str, Any]) -> dict[str, Any]:
     cpu = cpu_time_s = rss_mib = peak_rss_mib = network_bps = disk_mib = 0.0
     collector_cpu = collector_rss = collector_network_bps = 0.0
+    collector_peak_rss = collector_max_cpu = 0.0
+    collector_containers: set[str] = set()
     stage_files = glob.glob(os.path.join(arm_dir, "stages-*.csv"))
     nic_files = glob.glob(os.path.join(arm_dir, "nic-*.csv"))
     storage_files = glob.glob(os.path.join(arm_dir, "storage-*.csv"))
@@ -215,8 +217,11 @@ def resource_summary(arm_dir: str, weights: dict[str, Any]) -> dict[str, Any]:
                 disk_mib += row_disk
                 text = " ".join((row.get("stage") or "", row.get("container") or "")).lower()
                 if "agent" in text or "collector" in text or "otel" in text:
+                    collector_containers.add(row.get("container") or row.get("stage") or "unknown")
                     collector_cpu += row_cpu
                     collector_rss += row_rss
+                    collector_peak_rss = max(collector_peak_rss, row_peak_rss)
+                    collector_max_cpu = max(collector_max_cpu, row_cpu)
                     if math.isfinite(row_net_out):
                         collector_network_bps += row_net_out * 1024
     for path in nic_files:
@@ -249,8 +254,56 @@ def resource_summary(arm_dir: str, weights: dict[str, Any]) -> dict[str, Any]:
         "peak_rss_mib": peak_rss_mib, "network_bytes_per_s": network_bps, "disk_mib": disk_mib,
         "normalized_cost": cost(cpu, rss_mib, network_bps, disk_mib),
         "collector_cpu_cores": collector_cpu, "collector_rss_mib": collector_rss,
+        "collector_peak_rss_mib_per_agent": collector_peak_rss,
+        "collector_max_cpu_cores_per_agent": collector_max_cpu,
+        "collector_containers": sorted(collector_containers),
         "collector_network_bytes_per_s": collector_network_bps,
         "collector_normalized_cost": cost(collector_cpu, collector_rss, collector_network_bps),
+    }
+
+
+def collector_runtime_summary(path: str, resources: dict[str, Any], workload: dict[str, Any],
+                              cfg: dict[str, Any]) -> dict[str, Any]:
+    evidence = load_json(path)
+    agents = evidence.get("agents") or {}
+    duration = float(evidence.get("duration_s") or 0)
+    required_agents = int(workload.get("agents") or 0)
+    accepted = refused = send_failed = 0.0
+    accepted_evidence = True
+    counters_nonnegative = True
+    for agent in agents.values():
+        counters = agent.get("counter_deltas") or {}
+        names = agent.get("metric_names") or {}
+        accepted_evidence = accepted_evidence and bool(names.get("accepted_metric_points"))
+        values = [float(counters.get(key, math.nan)) for key in
+                  ("accepted_metric_points", "refused_metric_points", "send_failed_metric_points")]
+        counters_nonnegative = counters_nonnegative and all(math.isfinite(value) and value >= 0 for value in values)
+        accepted += values[0]
+        refused += values[1]
+        send_failed += values[2]
+    accepted_per_s = accepted / duration if duration > 0 else 0.0
+    offered_per_s = float(workload.get("series_cardinality") or 0) * float(workload.get("frequency_hz") or 0)
+    offered_fraction = accepted_per_s / offered_per_s if offered_per_s > 0 else 0.0
+    cpu_cores = float(resources.get("collector_cpu_cores") or 0)
+    points_per_cpu_second = accepted_per_s / cpu_cores if cpu_cores > 0 else 0.0
+    peak_rss = float(resources.get("collector_peak_rss_mib_per_agent") or 0)
+    max_cpu = float(resources.get("collector_max_cpu_cores_per_agent") or 0)
+    checks = {
+        "complete_evidence": len(agents) == required_agents and accepted_evidence and counters_nonnegative,
+        "sustained_offered_load": offered_fraction >= float(cfg["minimum_offered_load_fraction"]),
+        "cpu_efficiency": points_per_cpu_second >= float(cfg["minimum_points_per_cpu_second"]),
+        "peak_rss_bound": 0 < peak_rss <= float(cfg["maximum_peak_rss_mib_per_agent"]),
+        "cpu_bound": 0 < max_cpu <= float(cfg["maximum_cpu_cores_per_agent"]),
+        "zero_refused_points": not cfg.get("require_zero_refused_points", True) or refused == 0,
+        "zero_export_failed_points": not cfg.get("require_zero_export_failed_points", True) or send_failed == 0,
+    }
+    return {
+        "passed": all(checks.values()), "checks": checks, "duration_s": duration,
+        "agents": sorted(agents), "accepted_metric_points": accepted,
+        "refused_metric_points": refused, "send_failed_metric_points": send_failed,
+        "accepted_points_per_second": accepted_per_s, "declared_base_points_per_second": offered_per_s,
+        "offered_load_fraction": offered_fraction, "points_per_cpu_second": points_per_cpu_second,
+        "peak_rss_mib_per_agent": peak_rss, "max_cpu_cores_per_agent": max_cpu,
     }
 
 
@@ -328,6 +381,7 @@ def evaluate(run_dir: str, config: dict[str, Any]) -> dict[str, Any]:
     baseline, asap = config["baseline_arm"], config["asap_arm"]
     failures: list[str] = []
     required = ["run-manifest.json", f"{baseline}/replay.jsonl", f"{asap}/replay.jsonl",
+                f"{baseline}/collector-telemetry.json", f"{asap}/collector-telemetry.json",
                 f"{baseline}/evaluation-start-ms.txt", f"{asap}/evaluation-start-ms.txt",
                 f"{asap}/freshness-{asap}.csv", f"{asap}/controller-agents.json",
                 f"{asap}/controller-config.yaml", f"{asap}/controller-config-agent-a.yaml", f"{asap}/controller-config-agent-b.yaml",
@@ -418,12 +472,20 @@ def evaluate(run_dir: str, config: dict[str, Any]) -> dict[str, Any]:
     e2e_cost_passed = (resource_complete and resources[asap]["normalized_cost"] < resources[baseline]["normalized_cost"]) if config["cost"]["require_end_to_end_total_lower"] else resource_complete
     if not collector_cost_passed: failures.append("collector cost gate failed")
     if not e2e_cost_passed: failures.append("end-to-end cost gate failed")
+    collector_runtime = {
+        arm: collector_runtime_summary(os.path.join(run_dir, arm, "collector-telemetry.json"),
+                                       resources[arm], manifest["workload"], config["collector_runtime"])
+        for arm in (baseline, asap)
+    }
+    if not all(item["passed"] for item in collector_runtime.values()):
+        failures.append("collector runtime correctness/performance/resource gate failed")
     return {
         "schema_version": 1, "run_id": manifest.get("run_id"), "overall_verdict": "PASS" if not failures else "FAIL",
         "failures": failures, "manifest": {"passed": manifest_ok}, "run_manifest": manifest,
         "functional_correctness": correctness,
         "accuracy": accuracy, "freshness": freshness, "query_latency": {"passed": latency_passed, "arms": latency, "speedups": speedups},
         "collector_cost": {"passed": collector_cost_passed, "resource_ratios": collector_ratios, "guardrail": guardrail},
+        "collector_runtime": {"passed": all(item["passed"] for item in collector_runtime.values()), "arms": collector_runtime},
         "end_to_end_cost": {"passed": e2e_cost_passed}, "resources": resources,
     }
 
@@ -455,6 +517,7 @@ def markdown(result: dict[str, Any]) -> str:
         f"| Query accuracy | worst error | {worst_error:.6g} | ground truth | per-query SLA | {verdict('accuracy')} |",
         f"| Query freshness | worst p95 lag | {freshness_p95:.2f} ms | n/a | within SLA | {verdict('freshness')} |",
         f"| Query performance | per-query p50/p95 | {latency_cell('asap-gzip')} | {latency_cell('b1')} | ASAP lower | {verdict('query_latency')} |",
+        f"| Collector runtime | accepted points/s | {result.get('collector_runtime', {}).get('arms', {}).get('asap-gzip', {}).get('accepted_points_per_second', math.nan):.2f} | {result.get('collector_runtime', {}).get('arms', {}).get('b1', {}).get('accepted_points_per_second', math.nan):.2f} | no loss + throughput/CPU/RSS bounds | {verdict('collector_runtime')} |",
         f"| Collector cost | normalized cost | {asap.get('collector_normalized_cost', math.nan):.6g} | {baseline.get('collector_normalized_cost', math.nan):.6g} | ASAP lower | {verdict('collector_cost')} |",
         f"| End-to-end cost | normalized cost | {asap.get('normalized_cost', math.nan):.6g} | {baseline.get('normalized_cost', math.nan):.6g} | ASAP lower | {verdict('end_to_end_cost')} |",
         "", "Artifacts: [machine-readable results](MVP_RESULTS.json), [acceptance configuration](acceptance.json), [query workload](queries-e2e.json).", "",
