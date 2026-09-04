@@ -4,3 +4,5 @@ results/
 logs/
 *.pid
 *.bak
+__pycache__/
+*.py[cod]
