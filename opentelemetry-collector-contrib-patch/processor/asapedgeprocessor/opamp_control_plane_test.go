@@ -12,6 +12,7 @@ import (
 	"time"
 
 	precompute "github.com/ProjectASAP/asap-precompute-go"
+	"github.com/ProjectASAP/asap-precompute-go/controlchannel"
 	"github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/opampcustommessages"
@@ -55,11 +56,18 @@ func TestOpAMPPlanStatusRetriesAfterPendingSend(t *testing.T) {
 	handler := newTestOpAMPHandler()
 	handler.pendingOnce = pending
 	bridge := &opAMPPlanBridge{handler: handler, logger: zap.NewNop(), stop: make(chan struct{})}
-	bridge.reportStatus(9, "applied", nil)
+	bridge.reportStatus(9, 3, controlchannel.PlanStatusApplied, nil)
 	handler.mux.Lock()
 	defer handler.mux.Unlock()
 	if handler.sendCalls != 2 || handler.sentType != asapStatusMessage {
 		t.Fatalf("status retry calls=%d type=%q", handler.sendCalls, handler.sentType)
+	}
+	var status planStatusBody
+	if err := json.Unmarshal(handler.sentBody, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.PlanID != 9 || status.PlanVersion != 3 || status.Status != "APPLIED" {
+		t.Fatalf("status wire contract: %+v", status)
 	}
 }
 func (h *testOpAMPHandler) Unregister() {
@@ -91,12 +99,24 @@ func testCollectorPlan(t *testing.T) []byte {
 	body, err := json.Marshal(precompute.CollectorPlan{
 		CollectorID: "edge-a",
 		Envelope: precompute.CollectorPlanEnvelope{
-			PlanID: 42, PlannerRevision: "3afcba6", CapabilitySnapshotID: "caps-7",
+			PlanID: 42, PlanVersion: 7, GeneratedAtUnixMS: 1, ActivationUnixMS: 1,
+			BackendCompat: "asap-query-backend.v1", PlannerRevision: "264937ec",
+			CapabilitySnapshotID: "caps-7",
 		},
 		Materializations: []precompute.CollectorMaterialization{{
-			QueryID: "q", Metric: "requests", Algorithm: "hll",
+			QueryID: "q", Materialization: 9001, Metric: "requests", Algorithm: "hll",
 			Parameters: map[string]float64{"precision": 14}, WindowSecs: 60,
-			Lifecycle: precompute.SupportedCollectorLifecycle(),
+			AbstractWindowFramework: precompute.SummaryWindowFrameworkTumbling,
+			WindowImplementationID:  "collector-tumbling-v1", PaneSecs: 60,
+			StateLayout: "anchored-pane-v1",
+			Lifecycle:   precompute.SupportedCollectorLifecycle(),
+		}},
+		TransmissionRules: []precompute.TransmissionRule{{
+			Materialization: 9001, ProducerID: "edge-a", SchemaID: "summary-state-v1-9001",
+			Mode:        precompute.TransmissionModeFull,
+			Encoding:    precompute.StateEncodingSketchlibProtobufV1,
+			EmitEveryMS: 60_000, DestinationRef: "asapquery-backend",
+			RuntimePolicy: precompute.RuntimeRulePolicy{Sampling: precompute.SamplingPolicy{Mode: "disabled"}},
 		}},
 	})
 	if err != nil {
@@ -127,10 +147,10 @@ func TestOpAMPPlanBridgeReceivePollAck(t *testing.T) {
 		set = bridge.Poll()
 		time.Sleep(time.Millisecond)
 	}
-	if set == nil || set.Version != 42 || len(set.Configs) != 1 {
+	if set == nil || set.Version != 7 || len(set.Configs) != 1 {
 		t.Fatalf("typed plan not delivered: %+v", set)
 	}
-	bridge.Ack(42)
+	bridge.Ack(7)
 
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -142,7 +162,7 @@ func TestOpAMPPlanBridgeReceivePollAck(t *testing.T) {
 			if err := json.Unmarshal(body, &status); err != nil {
 				t.Fatal(err)
 			}
-			if status.PlanID != 42 || status.Status != "applied" || status.Error != "" {
+			if status.PlanID != 42 || status.PlanVersion != 7 || status.Status != "APPLIED" || status.Error != "" {
 				t.Fatalf("unexpected status: %+v", status)
 			}
 			return

@@ -88,6 +88,14 @@ type sketchAggregator struct {
 	// the background stream goroutine.
 	monitorClient *grpcclient.Client
 
+	// Authoritative physical-plan frame contract. These fields are nil/empty on
+	// the legacy static configuration path.
+	framePlan      *precompute.CollectorPlan
+	frameRule      *precompute.TransmissionRule
+	frameSequencer precompute.FrameSequencer
+	producerEpoch  string
+	checkpointAtMS uint64
+
 	// --- per-shard observe() scratch (P1-3) ---
 	// One sketchAggregator exists per (shard, metric) and the shard lock
 	// serializes every observe() call into it, so these scratch buffers can be
@@ -1020,8 +1028,12 @@ func (s *sketchAggregator) observeRowSampled(am map[string]string, val float64, 
 // asap_edge flush tick IS the window boundary) and appends the encoded
 // sketch envelopes to dst.
 func (s *sketchAggregator) flush(dst pmetric.Metrics) {
+	s.forceCheckpointIfDue(uint64(time.Now().UnixMilli()))
 	envs := s.pc.Drain()
 	if len(envs) == 0 {
+		return
+	}
+	if !s.attachFrameIdentities(envs) {
 		return
 	}
 	out, err := oteladapter.Encode(envs, s.enc)
@@ -1065,8 +1077,12 @@ func (s *sketchAggregator) emitSubWindow(dst pmetric.Metrics, nowMs uint64) {
 	if !s.subWindowEnabled() {
 		return
 	}
+	s.forceCheckpointIfDue(nowMs)
 	envs := s.pc.EmitSubWindow(nowMs)
 	if len(envs) == 0 {
+		return
+	}
+	if !s.attachFrameIdentities(envs) {
 		return
 	}
 	out, err := oteladapter.Encode(envs, s.enc)
@@ -1074,4 +1090,47 @@ func (s *sketchAggregator) emitSubWindow(dst pmetric.Metrics, nowMs uint64) {
 		return
 	}
 	out.ResourceMetrics().MoveAndAppendTo(dst.ResourceMetrics())
+}
+
+func (s *sketchAggregator) attachFrameIdentities(envs []*precompute.SketchEnvelope) bool {
+	if s.framePlan == nil || s.frameRule == nil {
+		return true
+	}
+	nowMS := uint64(time.Now().UnixMilli())
+	emissions := make([]precompute.FrameEmission, 0, len(envs))
+	for _, env := range envs {
+		if env == nil || env.AggID != precompute.AggId(s.frameRule.Materialization) {
+			return false
+		}
+		series := precompute.SeriesKey(env.AggID, env.ResourceLabels, env.Labels, nil)
+		emissions = append(emissions, precompute.FrameEmission{
+			SeriesIdentity: series, WindowStartUnixNano: env.WindowStartMs * 1_000_000,
+			WindowEndUnixNano: env.WindowEndMs * 1_000_000, NowUnixMS: nowMS,
+			EmittedFull: env.Encoding == precompute.EncodingProtoFull || env.Encoding == precompute.EncodingMsgpack,
+		})
+	}
+	frames, err := s.frameSequencer.NextBatchForEmission(*s.framePlan, *s.frameRule, s.producerEpoch, emissions)
+	if err != nil {
+		s.logger.Warn("asap_edge: fail-closed frame identity generation", zap.Error(err))
+		return false
+	}
+	for index, frame := range frames {
+		env := envs[index]
+		env.FrameAttributes = frame.OTLPAttributes()
+		if frame.Kind == "full" {
+			s.checkpointAtMS = nowMS
+		}
+	}
+	return true
+}
+
+func (s *sketchAggregator) forceCheckpointIfDue(nowMS uint64) {
+	if s.frameRule == nil || s.frameRule.Mode != precompute.TransmissionModeDelta ||
+		s.frameRule.FullCheckpointEveryMS == nil {
+		return
+	}
+	cadence := *s.frameRule.FullCheckpointEveryMS
+	if s.checkpointAtMS == 0 || (nowMS >= s.checkpointAtMS && nowMS-s.checkpointAtMS >= cadence) {
+		s.pc.ResetDeltaBase()
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"hash/maphash"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -100,6 +101,9 @@ type asapEdgeProcessor struct {
 	ctrlDoneCh    chan struct{}
 	ctrlStarted   bool
 	ctrlLastApply atomic.Uint64
+	// producerEpoch is process-scoped. A restart therefore starts a fresh
+	// lineage whose first emission is forced full by a fresh FrameSequencer.
+	producerEpoch string
 }
 
 func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*asapEdgeProcessor, error) {
@@ -113,6 +117,7 @@ func newProcessor(cfg *Config, set processor.Settings, next consumer.Metrics) (*
 		sketchMetrics: make(map[string]*MetricFamily),
 		configured:    make(map[string]struct{}),
 		coldSkip:      make(map[string]struct{}),
+		producerEpoch: strconv.FormatInt(time.Now().UnixNano(), 10),
 		coldEnabled:   cfg.Cold.Enabled,
 		coldExtLabels: cfg.Cold.ExternalLabels,
 		stopCh:        make(chan struct{}),

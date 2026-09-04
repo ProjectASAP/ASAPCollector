@@ -2,20 +2,36 @@ package precompute
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 )
 
 func collectorPlanBody(t *testing.T, algorithm string, params map[string]float64, evidence *string) []byte {
 	t.Helper()
+	encoding := StateEncodingSketchlibProtobufV1
+	if algorithm == "sum" {
+		encoding = StateEncodingExactAccumulatorV1
+	}
 	body, err := json.Marshal(CollectorPlan{
 		CollectorID: "edge-a",
 		Envelope: CollectorPlanEnvelope{
-			PlanID: 42, PlannerRevision: "3afcba6", CapabilitySnapshotID: "caps-7",
+			PlanID: 42, PlanVersion: 7, GeneratedAtUnixMS: 10_000,
+			ActivationUnixMS: 11_000, BackendCompat: "asap-query-backend.v1",
+			PlannerRevision: "264937ec", CapabilitySnapshotID: "caps-7",
 		},
 		Materializations: []CollectorMaterialization{{
-			QueryID: "q", Metric: "m", Algorithm: algorithm, Parameters: params,
-			GroupBy: []string{"service"}, WindowSecs: 60, EvidenceSource: evidence,
-			Lifecycle: SupportedCollectorLifecycle(),
+			QueryID: "q", Materialization: 9001, Metric: "m", Algorithm: algorithm,
+			Parameters: params, GroupBy: []string{"service"}, WindowSecs: 60,
+			AbstractWindowFramework: SummaryWindowFrameworkTumbling,
+			WindowImplementationID:  "collector-tumbling-v1", PaneSecs: 60,
+			StateLayout:    "anchored-pane-v1",
+			EvidenceSource: evidence, Lifecycle: SupportedCollectorLifecycle(),
+		}},
+		TransmissionRules: []TransmissionRule{{
+			Materialization: 9001, ProducerID: "edge-a", SchemaID: "summary-state-v1-9001",
+			Mode: TransmissionModeFull, Encoding: encoding, EmitEveryMS: 60_000,
+			DestinationRef: "asapquery-backend",
+			RuntimePolicy:  RuntimeRulePolicy{Sampling: SamplingPolicy{Mode: "disabled"}},
 		}},
 	})
 	if err != nil {
@@ -24,16 +40,29 @@ func collectorPlanBody(t *testing.T, algorithm string, params map[string]float64
 	return body
 }
 
-func TestDecodeCollectorPlanPreservesPhysicalDecision(t *testing.T) {
-	set, err := DecodeCollectorPlan(
-		collectorPlanBody(t, "ddsketch", map[string]float64{"alpha": .01}, nil), "edge-a")
+func decodePlan(t *testing.T, algorithm string, params map[string]float64, evidence *string) (*PrecomputeConfigSet, CollectorPlan) {
+	t.Helper()
+	body := collectorPlanBody(t, algorithm, params, evidence)
+	set, err := DecodeCollectorPlan(body, "edge-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if set.Version != 42 || len(set.Configs) != 1 {
+	var plan CollectorPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
+	}
+	return set, plan
+}
+
+func TestDecodeCollectorPlanPreservesPhysicalDecision(t *testing.T) {
+	set, _ := decodePlan(t, "ddsketch", map[string]float64{"alpha": .01}, nil)
+	if set.Version != 7 || len(set.Configs) != 1 {
 		t.Fatalf("unexpected set: %+v", set)
 	}
 	cfg := set.Configs[0]
+	if cfg.AggID != 9001 {
+		t.Fatalf("backend materialization fingerprint changed: %d", cfg.AggID)
+	}
 	if cfg.SketchType != SketchTypeDDSketch || cfg.SketchParams["relative_accuracy"] != .01 {
 		t.Fatalf("physical family/params changed: %+v", cfg)
 	}
@@ -42,33 +71,113 @@ func TestDecodeCollectorPlanPreservesPhysicalDecision(t *testing.T) {
 	}
 }
 
-func TestDecodeCollectorPlanAcceptsSumAccumulator(t *testing.T) {
-	set, err := DecodeCollectorPlan(collectorPlanBody(t, "sum", map[string]float64{}, nil), "edge-a")
+func TestDecodeCollectorPlanRejectsUnsupportedExactSumConsistently(t *testing.T) {
+	if _, err := DecodeCollectorPlan(collectorPlanBody(t, "sum", map[string]float64{}, nil), "edge-a"); err == nil {
+		t.Fatal("exact sum must fail closed until both Collector runtimes implement it")
+	}
+}
+
+func TestDecodeCollectorPlanProjectsSamplingDeltaAndGOS(t *testing.T) {
+	body := collectorPlanBody(t, "countsketch", map[string]float64{"width": 512, "depth": 5}, nil)
+	var plan CollectorPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := uint64(600_000)
+	plan.TransmissionRules[0].Mode = TransmissionModeDelta
+	plan.TransmissionRules[0].FullCheckpointEveryMS = &checkpoint
+	plan.TransmissionRules[0].RuntimePolicy.Delta = &DeltaPolicy{
+		AbsoluteThreshold: 4,
+		GOS:               &GOSPolicy{EpsilonStaleness: .05, Sites: 4, ThresholdMode: "isotropic"},
+	}
+	body, _ = json.Marshal(plan)
+	set, err := DecodeCollectorPlan(body, "edge-a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := set.Configs[0]
-	if cfg.AggKind != AggKindSum {
-		t.Fatalf("sum aggregation kind changed: %+v", cfg)
+	if !cfg.DeltaTransmission || cfg.DeltaThreshold != 4 || cfg.GosDeltaEpsilon != .05 || cfg.GosSites != 4 {
+		t.Fatalf("runtime policy did not project: %+v", cfg)
 	}
-	if cfg.SketchType != SketchTypeUnspecified {
-		t.Fatalf("sum must not masquerade as a sketch: %+v", cfg)
+}
+
+func TestDecodeCollectorPlanProjectsAuthoritativeSampling(t *testing.T) {
+	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
+	var plan CollectorPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.TransmissionRules[0].RuntimePolicy.Sampling = SamplingPolicy{
+		Mode: "fixed", Probability: .25, Estimator: SamplingEstimatorHashThreshold,
+	}
+	body, _ = json.Marshal(plan)
+	set, err := DecodeCollectorPlan(body, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := set.Configs[0].SampleP; got != .25 {
+		t.Fatalf("SampleP = %v, want .25", got)
+	}
+}
+
+func TestDecodeCollectorPlanAcceptsBackendContractFixture(t *testing.T) {
+	body, err := os.ReadFile("../asap-precompute-rs/tests/fixtures/collector_plan_v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := DecodeCollectorPlan(body, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Version != 7 || set.Configs[0].AggID != 9001 || set.Configs[0].SampleP != .5 {
+		t.Fatalf("fixture drift: %+v", set)
+	}
+}
+
+func TestDecodeCollectorPlanRejectsMissingTransmissionRule(t *testing.T) {
+	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
+	var plan CollectorPlan
+	_ = json.Unmarshal(body, &plan)
+	plan.TransmissionRules = nil
+	body, _ = json.Marshal(plan)
+	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
+		t.Fatal("missing transmission rule must fail closed")
 	}
 }
 
 func TestDecodeCollectorPlanRejectsUnsupportedLifecycle(t *testing.T) {
 	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
 	var plan CollectorPlan
-	if err := json.Unmarshal(body, &plan); err != nil {
-		t.Fatal(err)
-	}
+	_ = json.Unmarshal(body, &plan)
 	plan.Materializations[0].Lifecycle.Kind = "ephemeral"
-	body, err := json.Marshal(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
+	body, _ = json.Marshal(plan)
 	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
 		t.Fatal("unsupported lifecycle must fail closed")
+	}
+}
+
+func TestDecodeCollectorPlanRejectsUnsupportedWindowRealization(t *testing.T) {
+	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
+	var plan CollectorPlan
+	_ = json.Unmarshal(body, &plan)
+	plan.Materializations[0].AbstractWindowFramework = SummaryWindowFrameworkSliding
+	body, _ = json.Marshal(plan)
+	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
+		t.Fatal("Collector must not substitute tumbling for Planner sliding")
+	}
+
+	_ = json.Unmarshal(collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil), &plan)
+	plan.Materializations[0].PaneSecs = 30
+	body, _ = json.Marshal(plan)
+	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
+		t.Fatal("mismatched concrete pane width must fail closed")
+	}
+
+	_ = json.Unmarshal(collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil), &plan)
+	plan.Materializations[0].WindowImplementationID = "unknown-tumbling-runtime"
+	body, _ = json.Marshal(plan)
+	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
+		t.Fatal("unknown concrete window implementation must fail closed")
 	}
 }
 
@@ -84,19 +193,10 @@ func TestDecodeCollectorPlanTopKRequiresEvidence(t *testing.T) {
 func TestDecodeCollectorPlanRejectsUnknownFields(t *testing.T) {
 	body := collectorPlanBody(t, "kll", map[string]float64{"k": 269}, nil)
 	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		t.Fatal(err)
-	}
+	_ = json.Unmarshal(body, &raw)
 	raw["future_semantics"] = true
 	body, _ = json.Marshal(raw)
 	if _, err := DecodeCollectorPlan(body, "edge-a"); err == nil {
 		t.Fatal("unknown semantic fields must not be silently ignored")
-	}
-}
-
-func TestCollectorMaterializationIDPinnedAcrossLanguages(t *testing.T) {
-	const want AggId = 9843981254622943340
-	if got := collectorMaterializationID(42, "q"); got != want {
-		t.Fatalf("FNV contract changed: got %d want %d", got, want)
 	}
 }

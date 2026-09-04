@@ -138,6 +138,9 @@ func (e Encoding) String() string {
 // Either way Payload is byte-identical and is what
 // Precompute.ObserveEnvelope deserializes.
 type SketchEnvelope struct {
+	// FrameAttributes carries the authoritative plan-derived asap.frame.*
+	// identity populated by the Collector host immediately before encoding.
+	FrameAttributes map[string]string
 	// SchemaVersion is the design-doc SketchEnvelope.schema_version
 	// field. Adapters reject envelopes whose version exceeds the
 	// highest version they understand.

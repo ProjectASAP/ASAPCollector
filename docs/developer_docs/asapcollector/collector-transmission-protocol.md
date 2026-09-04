@@ -7,8 +7,10 @@ contains SID reference, window bounds, sequence/base identity, and full or delta
 payload. A receiver must be able to select a decoder without inspecting opaque bytes.
 
 For full mode, each record is independently decodable. For delta mode, the sender
-maintains the acknowledged base per `(destination, SID, epoch)` and a monotonically
-ordered sequence; the receiver maintains the applied base/sequence for the same key.
+maintains the last transport-acknowledged base per `(destination, SID, epoch)` and a
+monotonically ordered sequence; the receiver maintains the applied base/sequence for
+the same key. HTTP 2xx / gRPC OK is the acknowledgement boundary; there is no
+separate application ACK or sender WAL protocol.
 Lost base, gap, restart, or replica handoff requires resynchronization with a full
 snapshot. Retries are idempotent; applying a delta twice is forbidden.
 

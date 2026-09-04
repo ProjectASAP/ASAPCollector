@@ -94,6 +94,7 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 		dst := out.SetEmptySumAgg()
 		dp := dst.DataPoints().AppendEmpty()
 		KeyValuesToAttributes(env.Labels, dp.Attributes())
+		frameAttributesToOTLP(env.FrameAttributes, dp.Attributes())
 		dp.SetStartTimestamp(startTs)
 		dp.SetTimestamp(endTs)
 		dp.SetSketch(env.Payload)
@@ -114,6 +115,7 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 		}
 		dp := dst.DataPoints().AppendEmpty()
 		KeyValuesToAttributes(env.Labels, dp.Attributes())
+		frameAttributesToOTLP(env.FrameAttributes, dp.Attributes())
 		dp.SetStartTimestamp(startTs)
 		dp.SetTimestamp(endTs)
 		dp.SetSketch(env.Payload)
@@ -122,6 +124,7 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 		dst := out.SetEmptyKLLSketch()
 		dp := dst.DataPoints().AppendEmpty()
 		KeyValuesToAttributes(env.Labels, dp.Attributes())
+		frameAttributesToOTLP(env.FrameAttributes, dp.Attributes())
 		dp.SetStartTimestamp(startTs)
 		dp.SetTimestamp(endTs)
 		dp.SetSketch(env.Payload)
@@ -130,6 +133,7 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 		dst := out.SetEmptyHLLSketch()
 		dp := dst.DataPoints().AppendEmpty()
 		KeyValuesToAttributes(env.Labels, dp.Attributes())
+		frameAttributesToOTLP(env.FrameAttributes, dp.Attributes())
 		dp.SetStartTimestamp(startTs)
 		dp.SetTimestamp(endTs)
 		dp.SetSketch(env.Payload)
@@ -138,6 +142,7 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 		dst := out.SetEmptyCountSketch()
 		dp := dst.DataPoints().AppendEmpty()
 		KeyValuesToAttributes(env.Labels, dp.Attributes())
+		frameAttributesToOTLP(env.FrameAttributes, dp.Attributes())
 		dp.SetStartTimestamp(startTs)
 		dp.SetTimestamp(endTs)
 		dp.SetSketch(env.Payload)
@@ -146,6 +151,7 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 		dst := out.SetEmptyCountMinSketch()
 		dp := dst.DataPoints().AppendEmpty()
 		KeyValuesToAttributes(env.Labels, dp.Attributes())
+		frameAttributesToOTLP(env.FrameAttributes, dp.Attributes())
 		dp.SetStartTimestamp(startTs)
 		dp.SetTimestamp(endTs)
 		dp.SetSketch(env.Payload)
@@ -154,6 +160,12 @@ func writeMetric(out pmetric.Metric, env *precompute.SketchEnvelope, cfg *Adapte
 		return fmt.Errorf("otel.Encode: unsupported sketch type %s", env.SketchType)
 	}
 	return nil
+}
+
+func frameAttributesToOTLP(src map[string]string, dst pcommon.Map) {
+	for key, value := range src {
+		dst.PutStr(key, value)
+	}
 }
 
 // metricNameFor picks the output Metric.Name. cfg.MetricName overrides

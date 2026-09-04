@@ -24,9 +24,10 @@ const (
 )
 
 type planStatusBody struct {
-	PlanID uint64                    `json:"plan_id"`
-	Status controlchannel.PlanStatus `json:"status"`
-	Error  string                    `json:"error,omitempty"`
+	PlanID      uint64 `json:"plan_id"`
+	PlanVersion uint64 `json:"plan_version"`
+	Status      string `json:"status"`
+	Error       string `json:"error,omitempty"`
 }
 
 // opAMPPlanBridge adapts the Collector OpAMP custom-message registry to the
@@ -93,8 +94,15 @@ func (b *opAMPPlanBridge) receive() {
 	}
 }
 
-func (b *opAMPPlanBridge) reportStatus(planID uint64, status controlchannel.PlanStatus, statusErr error) {
-	body := planStatusBody{PlanID: planID, Status: status}
+func (b *opAMPPlanBridge) reportStatus(planID, planVersion uint64, status controlchannel.PlanStatus, statusErr error) {
+	body := planStatusBody{PlanID: planID, PlanVersion: planVersion, Status: string(status)}
+	if status == controlchannel.PlanStatusStaged {
+		body.Status = "STAGED"
+	} else if status == controlchannel.PlanStatusApplied {
+		body.Status = "APPLIED"
+	} else {
+		body.Status = "FAILED"
+	}
 	if statusErr != nil {
 		body.Error = statusErr.Error()
 	}
@@ -123,6 +131,7 @@ func (b *opAMPPlanBridge) reportStatus(planID uint64, status controlchannel.Plan
 
 func (b *opAMPPlanBridge) Poll() *precompute.PrecomputeConfigSet { return b.channel.Poll() }
 func (b *opAMPPlanBridge) Ack(version uint64)                    { b.channel.Ack(version) }
+func (b *opAMPPlanBridge) Reject(version uint64, err error)      { b.channel.Reject(version, err) }
 
 func (b *opAMPPlanBridge) Close() error {
 	b.close.Do(func() {
