@@ -130,7 +130,7 @@ func TestOpAMPPlanBridgeReceivePollAck(t *testing.T) {
 	handler := newTestOpAMPHandler()
 	registry := &testOpAMPRegistry{handler: handler}
 	bridge, err := newOpAMPPlanBridge(ControlChannelConfig{
-		OpAMPExtension: &id, CollectorID: "edge-a",
+		OpAMPExtension: &id, CollectorID: "edge-a", PlanStateFile: t.TempDir() + "/plan-state.json",
 	}, opAMPTestHost{extensions: map[component.ID]component.Component{id: registry}}, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
@@ -183,5 +183,19 @@ func TestControlChannelConfigRejectsTwoTransports(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatal("HTTP and OpAMP control sources were accepted together")
+	}
+}
+
+func TestControlChannelConfigRequiresDurablePlanStateForOpAMP(t *testing.T) {
+	id := component.MustNewID("opamp")
+	cfg := &Config{
+		ShardCount: 1, WindowDuration: time.Minute,
+		Metrics: []MetricFamily{{Metric: "requests", Family: FamilyHLL}},
+		ControlChannel: ControlChannelConfig{
+			OpAMPExtension: &id, CollectorID: "edge-a",
+		},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "plan_state_file") {
+		t.Fatal("OpAMP control channel without durable plan state was accepted")
 	}
 }

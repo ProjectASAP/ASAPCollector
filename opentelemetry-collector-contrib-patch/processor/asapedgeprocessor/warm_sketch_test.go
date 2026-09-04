@@ -58,6 +58,34 @@ func TestDDSketchFamilyFlushes(t *testing.T) {
 	}
 }
 
+func TestCheckpointClockAdvancesOnlyWithAggregatorReset(t *testing.T) {
+	family := &MetricFamily{Metric: "requests", Family: FamilyHLL}
+	sa, ok := newSketchAggregator(
+		"requests", family,
+		sketchOpts{window: time.Minute, delta: true},
+		zap.NewNop(),
+	)
+	if !ok {
+		t.Fatal("newSketchAggregator returned ok=false")
+	}
+	cadence := uint64(60_000)
+	sa.frameRule = &precompute.TransmissionRule{
+		Mode: precompute.TransmissionModeDelta, FullCheckpointEveryMS: &cadence,
+	}
+	sa.forceCheckpointIfDue(100_000)
+	if got := sa.checkpointAtMS; got != 100_000 {
+		t.Fatalf("checkpointAtMS = %d, want aggregator reset time 100000", got)
+	}
+	sa.forceCheckpointIfDue(120_000)
+	if got := sa.checkpointAtMS; got != 100_000 {
+		t.Fatalf("checkpoint clock advanced before cadence: got %d", got)
+	}
+	sa.forceCheckpointIfDue(160_000)
+	if got := sa.checkpointAtMS; got != 160_000 {
+		t.Fatalf("checkpoint clock did not advance with reset: got %d", got)
+	}
+}
+
 // TestSketchMaxSeriesBounds covers P0 #2: with MaxSeries=2 the precompute
 // series map must stop growing past the cap, with overflow counted in Stats.
 func TestSketchMaxSeriesBounds(t *testing.T) {

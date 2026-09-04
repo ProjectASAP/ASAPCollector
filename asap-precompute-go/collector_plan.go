@@ -180,7 +180,6 @@ func DecodeCollectorPlan(body []byte, collectorID string) (*PrecomputeConfigSet,
 		return nil, errors.New("collector plan identity fields are required")
 	}
 
-	seen := make(map[string]struct{}, len(plan.Materializations))
 	materializations := make(map[uint64]CollectorMaterialization, len(plan.Materializations))
 	rules := make(map[uint64]TransmissionRule, len(plan.TransmissionRules))
 	for _, rule := range plan.TransmissionRules {
@@ -197,10 +196,6 @@ func DecodeCollectorPlan(body []byte, collectorID string) (*PrecomputeConfigSet,
 		if strings.TrimSpace(materialization.QueryID) == "" || materialization.Materialization == 0 {
 			return nil, errors.New("collector plan query_id is required")
 		}
-		if _, duplicate := seen[materialization.QueryID]; duplicate {
-			return nil, fmt.Errorf("collector plan duplicate query_id %q", materialization.QueryID)
-		}
-		seen[materialization.QueryID] = struct{}{}
 		if _, duplicate := materializations[materialization.Materialization]; duplicate {
 			return nil, fmt.Errorf("duplicate materialization %d", materialization.Materialization)
 		}

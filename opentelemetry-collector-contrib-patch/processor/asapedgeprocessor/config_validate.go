@@ -358,6 +358,9 @@ func (c *Config) Validate() error {
 		if hasOpAMP && strings.TrimSpace(c.ControlChannel.CollectorID) == "" {
 			return fmt.Errorf("asap_edge: control_channel.collector_id is required with opamp_extension")
 		}
+		if hasOpAMP && strings.TrimSpace(c.ControlChannel.PlanStateFile) == "" {
+			return fmt.Errorf("asap_edge: control_channel.plan_state_file is required with opamp_extension")
+		}
 		if c.ControlChannel.PollInterval <= 0 {
 			if hasOpAMP {
 				c.ControlChannel.PollInterval = 100 * time.Millisecond

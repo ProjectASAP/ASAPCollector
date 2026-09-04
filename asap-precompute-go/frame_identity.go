@@ -29,6 +29,8 @@ type SummaryFrameIdentity struct {
 }
 
 type frameLineageKey struct {
+	planID          uint64
+	planVersion     uint64
 	materialization uint64
 	seriesIdentity  string
 	producerID      string
@@ -108,7 +110,11 @@ func (s *FrameSequencer) next(plan CollectorPlan, rule TransmissionRule, produce
 	if !matched {
 		return SummaryFrameIdentity{}, errors.New("transmission rule does not belong to plan")
 	}
-	key := frameLineageKey{rule.Materialization, seriesIdentity, rule.ProducerID, producerEpoch}
+	key := frameLineageKey{
+		planID: plan.Envelope.PlanID, planVersion: plan.Envelope.PlanVersion,
+		materialization: rule.Materialization, seriesIdentity: seriesIdentity,
+		producerID: rule.ProducerID, producerEpoch: producerEpoch,
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.lineages == nil {

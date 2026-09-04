@@ -70,6 +70,7 @@ processors:
     control_channel:
       opamp_extension: opamp
       collector_id: edge-a
+      plan_state_file: /var/lib/otelcol/asap/edge-a-plan-state.json
 ```
 
 ## Fail-closed activation
@@ -79,7 +80,9 @@ versions globally, unsupported runtime policies, and malformed or
 unknown fields. A future generation remains staged until activation_unix_ms;
 polling it early returns no update. `plan_version` is globally monotonic across
 plan identities, matching the backend activation state machine and preventing
-a new `plan_id` from resetting version ordering.
+a new `plan_id` from resetting version ordering. The last APPLIED generation is
+atomically persisted in `plan_state_file`, so this ordering survives Collector
+restart. A missing or malformed existing state file fails startup closed.
 
 The legacy complete-YAML RemoteConfig/restart path and the untyped HTTP
 PrecomputeConfigSet poller are compatibility paths, not physical-plan

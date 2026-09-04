@@ -447,16 +447,14 @@ impl CollectorPlan {
                     .into(),
             ));
         }
-        let mut ids = HashSet::new();
         let mut materializations = HashSet::new();
         for materialization in &self.materializations {
             if materialization.query_id.trim().is_empty()
-                || !ids.insert(materialization.query_id.as_str())
                 || materialization.materialization == 0
                 || !materializations.insert(materialization.materialization)
             {
                 return Err(CollectorPlanError::Identity(
-                    "query IDs and materialization fingerprints must be non-empty and unique"
+                    "query IDs must be non-empty and materialization fingerprints must be unique"
                         .into(),
                 ));
             }
@@ -790,8 +788,12 @@ fn decode_algorithm(
             (SketchType::HLLSketch, false)
         }
         "cms" => {
-            number("width", "columns")?;
-            number("depth", "rows")?;
+            // The Rust OTAP runtime consumes the canonical matrix names
+            // `width`/`depth` (unlike the Go runtime's `columns`/`rows`). Keep
+            // the plan projection aligned with the runtime so a committed
+            // non-default CMS shape cannot silently fall back to defaults.
+            number("width", "width")?;
+            number("depth", "depth")?;
             (SketchType::CountMinSketch, false)
         }
         "cmswithheap" => {

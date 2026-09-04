@@ -71,6 +71,30 @@ func TestDecodeCollectorPlanPreservesPhysicalDecision(t *testing.T) {
 	}
 }
 
+func TestDecodeCollectorPlanAllowsMultipleMaterializationsForOneQuery(t *testing.T) {
+	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
+	var plan CollectorPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
+	}
+	second := plan.Materializations[0]
+	second.Materialization = 9002
+	second.Metric = "other_metric"
+	plan.Materializations = append(plan.Materializations, second)
+	secondRule := plan.TransmissionRules[0]
+	secondRule.Materialization = 9002
+	secondRule.SchemaID = "summary-state-v1-9002"
+	plan.TransmissionRules = append(plan.TransmissionRules, secondRule)
+	body, _ = json.Marshal(plan)
+	set, err := DecodeCollectorPlan(body, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Configs) != 2 {
+		t.Fatalf("configs = %d, want 2", len(set.Configs))
+	}
+}
+
 func TestDecodeCollectorPlanRejectsUnsupportedExactSumConsistently(t *testing.T) {
 	if _, err := DecodeCollectorPlan(collectorPlanBody(t, "sum", map[string]float64{}, nil), "edge-a"); err == nil {
 		t.Fatal("exact sum must fail closed until both Collector runtimes implement it")

@@ -64,6 +64,7 @@ func newOpAMPPlanBridge(cfg ControlChannelConfig, host component.Host, logger *z
 	b.channel, err = controlchannel.NewOpAmpChannel(controlchannel.OpAmpConfig{
 		ServerEndpoint: cfg.OpAMPExtension.String(),
 		InstanceUid:    cfg.CollectorID,
+		StateFile:      cfg.PlanStateFile,
 		ReportStatus:   b.reportStatus,
 	})
 	if err != nil {
