@@ -17,16 +17,20 @@ import (
 // interchangeable (a remote sender's snapshot is not what we'd emit
 // locally).
 type SnapshotCache struct {
-	mu       sync.RWMutex
-	outbound map[string][]byte
-	inbound  map[string][]byte
+	mu         sync.RWMutex
+	outbound   map[string][]byte
+	inbound    map[string][]byte
+	generation uint64
+	seen       map[string]uint64
 }
 
 // NewSnapshotCache constructs an empty cache.
 func NewSnapshotCache() *SnapshotCache {
 	return &SnapshotCache{
-		outbound: make(map[string][]byte),
-		inbound:  make(map[string][]byte),
+		outbound:   make(map[string][]byte),
+		inbound:    make(map[string][]byte),
+		generation: 1,
+		seen:       make(map[string]uint64),
 	}
 }
 
@@ -43,6 +47,7 @@ func (c *SnapshotCache) CacheOutbound(seriesKey string, payload []byte) (firstTi
 	cp := make([]byte, len(payload))
 	copy(cp, payload)
 	c.outbound[seriesKey] = cp
+	c.seen[seriesKey] = c.generation
 	return !existed
 }
 
@@ -62,6 +67,49 @@ func (c *SnapshotCache) CacheInbound(seriesKey string, payload []byte) {
 	cp := make([]byte, len(payload))
 	copy(cp, payload)
 	c.inbound[seriesKey] = cp
+	c.seen[seriesKey] = c.generation
+}
+
+// BeginGeneration advances the reusable liveness epoch used by rotation.
+func (c *SnapshotCache) BeginGeneration() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.generation++
+	return c.generation
+}
+
+// Touch marks a retained series without allocating a per-rotation keep set.
+func (c *SnapshotCache) Touch(seriesKey string, generation uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if generation == c.generation {
+		c.seen[seriesKey] = generation
+	}
+}
+
+// EndGeneration removes snapshots not touched by the closed generation. Cache
+// writes racing with serialization mark themselves in the current generation.
+func (c *SnapshotCache) EndGeneration(generation uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if generation != c.generation {
+		return
+	}
+	for key := range c.outbound {
+		if c.seen[key] != generation {
+			delete(c.outbound, key)
+		}
+	}
+	for key := range c.inbound {
+		if c.seen[key] != generation {
+			delete(c.inbound, key)
+		}
+	}
+	for key, seen := range c.seen {
+		if seen != generation {
+			delete(c.seen, key)
+		}
+	}
 }
 
 // GetInbound returns the cached upstream snapshot or nil.
@@ -217,6 +265,7 @@ func (c *SnapshotCache) Delete(seriesKey string) {
 	defer c.mu.Unlock()
 	delete(c.outbound, seriesKey)
 	delete(c.inbound, seriesKey)
+	delete(c.seen, seriesKey)
 }
 
 // Reset clears all cached state (used in tests and on shutdown).
@@ -225,6 +274,8 @@ func (c *SnapshotCache) Reset() {
 	defer c.mu.Unlock()
 	c.outbound = make(map[string][]byte)
 	c.inbound = make(map[string][]byte)
+	c.seen = make(map[string]uint64)
+	c.generation++
 }
 
 // LenOutbound returns the number of cached outbound snapshots; for

@@ -809,6 +809,8 @@ func (w *windowState) rotateSlidingLocked(nowMs uint64, cfg *PrecomputeConfig) (
 				// labels. The merge below folds in this pane's state.
 				dst = &seriesEntry{
 					Sketch:         w.sketchFactory(),
+					seriesKey:      key,
+					heapIndex:      -1,
 					ResourceLabels: src.ResourceLabels,
 					Labels:         src.Labels,
 					LastSeenMs:     src.LastSeenMs,

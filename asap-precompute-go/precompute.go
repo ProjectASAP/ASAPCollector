@@ -861,19 +861,13 @@ func (p *precompute) finishRotate(closed []*seriesEntry, rng [2]uint64, nowMs ui
 	cfg := p.activeConfig()
 	sink := p.sketchSink.Load()
 	envelopes := make([]*SketchEnvelope, 0, len(closed))
-	// closedKeys collects every series key in the just-closed window so the
-	// snapshot cache can prune entries for keys that did NOT reappear this
-	// window (P1-2: the outbound/inbound maps would otherwise grow forever,
-	// retaining a snapshot copy for every series key ever seen). Built only
-	// when the delta path is active (the only consumer of the cache) and a
-	// cache is present.
-	var closedKeys map[string]struct{}
+	var cacheGeneration uint64
 	if cfg != nil && cfg.DeltaTransmission && p.snapshotCache != nil {
-		closedKeys = make(map[string]struct{}, len(closed))
+		cacheGeneration = p.snapshotCache.BeginGeneration()
 	}
 	for _, entry := range closed {
-		if closedKeys != nil && entry != nil {
-			closedKeys[cfg.SeriesKeyForEntry(entry.ResourceLabels, entry.Labels)] = struct{}{}
+		if cacheGeneration != 0 && entry != nil {
+			p.snapshotCache.Touch(entry.seriesKey, cacheGeneration)
 		}
 		env, err := p.serializeSeries(entry, cfg, rng)
 		if err == nil && env != nil {
@@ -897,8 +891,8 @@ func (p *precompute) finishRotate(closed []*seriesEntry, rng [2]uint64, nowMs ui
 	// window. A series that vanished (never observed again this window) no
 	// longer needs its cached outbound/inbound snapshot, and keeping it
 	// would pin agent memory for the lifetime of the process (P1-2).
-	if closedKeys != nil {
-		p.snapshotCache.RetainKeys(closedKeys)
+	if cacheGeneration != 0 {
+		p.snapshotCache.EndGeneration(cacheGeneration)
 	}
 	p.stats.OutputEnvelopes.Add(uint64(len(envelopes)))
 	// LastEmittedEnvelopes is a snapshot (not a running total) of the
@@ -918,7 +912,10 @@ func (p *precompute) serializeSeries(entry *seriesEntry, cfg *PrecomputeConfig, 
 	// through cfg.SeriesKeyForEntry guarantees the snapshot-cache
 	// lookup in the delta path agrees with the observe-time bucket
 	// regardless of the OmitResourceAttrs / GlobalAggregation flags.
-	seriesKey := cfg.SeriesKeyForEntry(entry.ResourceLabels, entry.Labels)
+	seriesKey := entry.seriesKey
+	if seriesKey == "" {
+		seriesKey = cfg.SeriesKeyForEntry(entry.ResourceLabels, entry.Labels)
+	}
 	var (
 		payload []byte
 		isFull  bool
