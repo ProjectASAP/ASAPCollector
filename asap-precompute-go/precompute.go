@@ -149,6 +149,9 @@ var (
 	// timestamp is older than the active window's lower bound
 	// minus AllowedLateness.
 	ErrLateData = errors.New("precompute: observation timestamp outside allowed lateness")
+	// ErrFutureData is returned when an observation belongs to a window that
+	// has not been activated yet. The host must rotate/catch up and retry it.
+	ErrFutureData = errors.New("precompute: observation timestamp at or beyond active window end")
 	// ErrNoConfig is returned when Precompute has no PrecomputeConfig.
 	ErrNoConfig = errors.New("precompute: no config installed")
 	// ErrAggIDMismatch is returned by ObserveEnvelope when the
