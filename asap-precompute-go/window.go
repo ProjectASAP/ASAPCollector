@@ -13,6 +13,7 @@ import (
 // owns one Sketch instance and the labels needed to reconstruct
 // the SketchEnvelope at flush time.
 type seriesEntry struct {
+	mu        sync.Mutex
 	seriesKey string
 	heapIndex int
 	// Sketch is the running sketch for this series. Owned here;
@@ -120,6 +121,7 @@ type windowState struct {
 	mu            sync.RWMutex
 	series        map[string]*seriesEntry
 	eviction      seriesEvictionHeap
+	evictionMu    sync.Mutex
 	snapshotCache *SnapshotCache
 	sketchSink    *atomic.Pointer[SketchSink]
 	activeStartMs uint64
@@ -303,18 +305,6 @@ func (w *windowState) observe(
 	observer SketchObserver,
 	stats *PrecomputeStats,
 ) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.sketchFactory == nil {
-		w.sketchFactory = sketchFactory
-	}
-	w.initWindow(obs.TimestampMs, cfg)
-
-	if err := w.validateTimestampLocked(obs.TimestampMs, cfg); err != nil {
-		return err
-	}
-
 	// Build the lookup key into a pooled byte buffer so the common
 	// case (an already-admitted series) costs no allocation: the
 	// `w.series[string(sc.buf)]` index is the compiler's zero-alloc
@@ -323,14 +313,7 @@ func (w *windowState) observe(
 	sc := getSeriesKeyScratch()
 	defer putSeriesKeyScratch(sc)
 	cfg.buildSeriesKey(sc, obs)
-	entry, ok := w.series[string(sc.buf)]
-	if !ok {
-		var err error
-		if entry, err = w.admitSeriesLocked(string(sc.buf), obs, cfg, sketchFactory, stats); err != nil {
-			return err
-		}
-	}
-	return w.recordLocked(entry, obs, observer)
+	return w.observeWithKey(string(sc.buf), obs, cfg, sketchFactory, observer, stats)
 }
 
 // observeKeyed is the shared-key entry point for the fused asap_edge
@@ -346,26 +329,48 @@ func (w *windowState) observeKeyed(
 	observer SketchObserver,
 	stats *PrecomputeStats,
 ) error {
+	return w.observeWithKey(key, obs, cfg, sketchFactory, observer, stats)
+}
+
+func (w *windowState) observeWithKey(key string, obs *Observation, cfg *PrecomputeConfig, sketchFactory SketchFactory, observer SketchObserver, stats *PrecomputeStats) error {
+	// The generation read lock prevents rotation while independent entries use
+	// their own locks. Established series therefore update concurrently.
+	w.mu.RLock()
+	if w.initialized {
+		if err := w.validateTimestampLocked(obs.TimestampMs, cfg); err != nil {
+			w.mu.RUnlock()
+			return err
+		}
+		if entry := w.series[key]; entry != nil {
+			entry.mu.Lock()
+			err := w.recordLocked(entry, obs, observer, cfg.MaxSeries > 0 && cfg.OnOverflow == OnOverflowEvictOldest)
+			entry.mu.Unlock()
+			w.mu.RUnlock()
+			return err
+		}
+	}
+	w.mu.RUnlock()
+
+	// New-series admission mutates the map/cardinality index and is rare after
+	// warm-up. Recheck after upgrading because another goroutine may admit it.
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
 	if w.sketchFactory == nil {
 		w.sketchFactory = sketchFactory
 	}
 	w.initWindow(obs.TimestampMs, cfg)
-
 	if err := w.validateTimestampLocked(obs.TimestampMs, cfg); err != nil {
 		return err
 	}
-
-	entry, ok := w.series[key]
-	if !ok {
+	entry := w.series[key]
+	if entry == nil {
 		var err error
-		if entry, err = w.admitSeriesLocked(key, obs, cfg, sketchFactory, stats); err != nil {
+		entry, err = w.admitSeriesLocked(key, obs, cfg, sketchFactory, stats)
+		if err != nil {
 			return err
 		}
 	}
-	return w.recordLocked(entry, obs, observer)
+	return w.recordLocked(entry, obs, observer, cfg.MaxSeries > 0 && cfg.OnOverflow == OnOverflowEvictOldest)
 }
 
 // validateTimestampLocked prevents host scheduling jitter from changing
@@ -484,8 +489,12 @@ func (w *windowState) evictOldestLocked() (string, *seriesEntry) {
 
 // recordLocked feeds one observation into a series' sketch and advances its
 // bookkeeping. Caller holds w.mu. Shared by observe and observeKeyed.
-func (w *windowState) recordLocked(entry *seriesEntry, obs *Observation, observer SketchObserver) error {
+func (w *windowState) recordLocked(entry *seriesEntry, obs *Observation, observer SketchObserver, trackEviction bool) error {
 	if obs.TimestampMs > entry.LastSeenMs {
+		if trackEviction {
+			w.evictionMu.Lock()
+			defer w.evictionMu.Unlock()
+		}
 		entry.LastSeenMs = obs.TimestampMs
 		if entry.heapIndex >= 0 {
 			heap.Fix(&w.eviction, entry.heapIndex)
