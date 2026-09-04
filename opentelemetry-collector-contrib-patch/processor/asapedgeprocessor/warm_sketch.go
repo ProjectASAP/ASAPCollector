@@ -1116,7 +1116,7 @@ func (s *sketchAggregator) attachFrameIdentities(envs []*precompute.SketchEnvelo
 	}
 	for index, frame := range frames {
 		env := envs[index]
-		env.FrameAttributes = frame.OTLPAttributes()
+		env.FrameAttributes = precompute.SealFrameAttributes(frame.OTLPAttributes(), env.Payload)
 	}
 	return true
 }

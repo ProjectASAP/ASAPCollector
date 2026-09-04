@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -288,6 +289,8 @@ type precompute struct {
 	closed          atomic.Bool
 	latencyObserver atomic.Pointer[LatencyObserver]
 	sketchSink      atomic.Pointer[SketchSink]
+	frameReceiver   frameReceiver
+	envelopeMu      sync.Mutex
 	// monitorEngine is the continuous-monitoring (Discipline B) engine. nil
 	// until SetMonitorEngine is called by the adapter; when set AND the active
 	// config has Monitor.Enabled, the window's per-observation hook routes the
@@ -415,6 +418,8 @@ func (p *precompute) ObserveKeyed(key string, obs *Observation) error {
 
 // ObserveEnvelope implements Precompute.ObserveEnvelope.
 func (p *precompute) ObserveEnvelope(env *SketchEnvelope) error {
+	p.envelopeMu.Lock()
+	defer p.envelopeMu.Unlock()
 	if p.closed.Load() {
 		return errors.New("precompute: instance is closed")
 	}
@@ -437,6 +442,13 @@ func (p *precompute) ObserveEnvelope(env *SketchEnvelope) error {
 	if p.sketchFactory == nil {
 		return errors.New("precompute: sketch factory not configured")
 	}
+	receipt, err := p.frameReceiver.prepare(env)
+	if err != nil {
+		return err
+	}
+	if receipt.duplicate {
+		return nil
+	}
 	// InputEnvelopes is the per-ObserveEnvelope counter (inbound merge
 	// path). We do NOT bump InputObservations here: when an envelope
 	// arrives via Observe() (KindEnvelope) that wrapper already counted
@@ -449,6 +461,7 @@ func (p *precompute) ObserveEnvelope(env *SketchEnvelope) error {
 		}
 		return err
 	}
+	p.frameReceiver.commit(receipt)
 	return nil
 }
 
