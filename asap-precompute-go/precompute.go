@@ -323,9 +323,11 @@ func New(initialCfg *PrecomputeConfig, sketchFactory SketchFactory, observer Ske
 	p.window.snapshotCache = p.snapshotCache
 	p.window.sketchSink = &p.sketchSink
 	if initialCfg != nil {
-		cfgCopy := clonePrecomputeConfig(initialCfg)
-		p.cfg.Store(cfgCopy)
-		p.sketchType = initialCfg.SketchType
+		if ValidateMatchers(initialCfg.Matchers) == nil {
+			cfgCopy := clonePrecomputeConfig(initialCfg)
+			p.cfg.Store(cfgCopy)
+			p.sketchType = initialCfg.SketchType
+		}
 	}
 	return p
 }
@@ -1047,6 +1049,9 @@ func (p *precompute) UpdateConfig(cs *PrecomputeConfigSet) {
 	if chosen == nil {
 		chosen = &cs.Configs[0]
 	}
+	if ValidateMatchers(chosen.Matchers) != nil {
+		return
+	}
 	cfgCopy := clonePrecomputeConfig(chosen)
 	// An in-flight window is owned by its current immutable config. Stage the
 	// replacement until Tick/Drain closes that generation; otherwise old sketch
@@ -1070,6 +1075,14 @@ func clonePrecomputeConfig(source *PrecomputeConfig) *PrecomputeConfig {
 	}
 	cloned := *source
 	cloned.Matchers = append([]LabelMatcher(nil), source.Matchers...)
+	for i := range cloned.Matchers {
+		matcher := &cloned.Matchers[i]
+		matcher.prepared = true
+		matcher.compiled = nil
+		if matcher.Op == MatchRegex || matcher.Op == MatchNotRegex {
+			matcher.compiled = compileAnchored(matcher.Value)
+		}
+	}
 	cloned.AggregateBy = append([]string(nil), source.AggregateBy...)
 	cloned.Quantiles = append([]float64(nil), source.Quantiles...)
 	if source.SketchParams != nil {
