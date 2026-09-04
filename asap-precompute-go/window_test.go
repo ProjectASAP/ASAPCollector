@@ -173,6 +173,26 @@ func TestWindow_FutureTimestampNeverEntersCurrentWindow(t *testing.T) {
 	}
 }
 
+func TestPrecompute_FutureTimestampRotatesQueuesAndRetries(t *testing.T) {
+	cfg := &PrecomputeConfig{AggID: 1, SketchType: SketchTypeDDSketch, Mode: Tumbling,
+		Window: WindowSpec{Size: 10 * time.Second}}
+	p := New(cfg, newFakeFactory(), &fakeObserver{}).(*precompute)
+	if err := p.Observe(&Observation{TimestampMs: 1_000, Labels: []KeyValue{{Key: "k", Value: "a"}}, Value: FloatValue(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Observe(&Observation{TimestampMs: 11_000, Labels: []KeyValue{{Key: "k", Value: "a"}}, Value: FloatValue(2)}); err != nil {
+		t.Fatal(err)
+	}
+	first := p.Tick(11_000)
+	if len(first) != 1 || first[0].WindowStartMs != 0 || first[0].WindowEndMs != 10_000 {
+		t.Fatalf("queued old window: %+v", first)
+	}
+	second := p.Drain()
+	if len(second) != 1 || second[0].WindowStartMs != 10_000 || second[0].WindowEndMs != 20_000 {
+		t.Fatalf("retried new window: %+v", second)
+	}
+}
+
 func TestWindow_MaxSeriesDropsNew(t *testing.T) {
 	t.Parallel()
 	cfg := &PrecomputeConfig{
