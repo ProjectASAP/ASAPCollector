@@ -442,7 +442,7 @@ func (p *precompute) ObserveEnvelope(env *SketchEnvelope) error {
 	if p.sketchFactory == nil {
 		return errors.New("precompute: sketch factory not configured")
 	}
-	receipt, err := p.frameReceiver.prepare(env)
+	receipt, err := p.frameReceiver.prepare(env, cfg.MaxSeries)
 	if err != nil {
 		return err
 	}

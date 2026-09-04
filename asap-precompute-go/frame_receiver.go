@@ -71,17 +71,20 @@ type receivedFrameState struct {
 	sequence    uint64
 	checkpoint  string
 	fingerprint [32]byte
+	lastUsed    uint64
 }
 
 type frameReceiver struct {
 	mu       sync.Mutex
 	lineages map[receivedFrameKey]receivedFrameState
+	clock    uint64
 }
 
 type frameReceipt struct {
 	key               receivedFrameKey
 	state             receivedFrameState
 	framed, duplicate bool
+	limit             uint64
 }
 
 func parseRequiredUint(attrs map[string]string, name string) (uint64, error) {
@@ -93,7 +96,7 @@ func parseRequiredUint(attrs map[string]string, name string) (uint64, error) {
 	return value, nil
 }
 
-func (r *frameReceiver) prepare(env *SketchEnvelope) (frameReceipt, error) {
+func (r *frameReceiver) prepare(env *SketchEnvelope, limit uint64) (frameReceipt, error) {
 	a := env.FrameAttributes
 	if len(a) == 0 {
 		return frameReceipt{}, nil
@@ -129,18 +132,21 @@ func (r *frameReceiver) prepare(env *SketchEnvelope) (frameReceipt, error) {
 	if r.lineages == nil {
 		r.lineages = make(map[receivedFrameKey]receivedFrameState)
 	}
+	r.clock++
 	previous := r.lineages[key]
 	if sequence == previous.sequence && sequence != 0 {
 		if previous.fingerprint != fingerprint {
 			return frameReceipt{}, ErrFrameConflict
 		}
+		previous.lastUsed = r.clock
+		r.lineages[key] = previous
 		return frameReceipt{framed: true, duplicate: true}, nil
 	}
 	if sequence != previous.sequence+1 {
 		return frameReceipt{}, ErrFrameGap
 	}
 	kind := a["asap.frame.kind"]
-	next := receivedFrameState{sequence: sequence, checkpoint: previous.checkpoint, fingerprint: fingerprint}
+	next := receivedFrameState{sequence: sequence, checkpoint: previous.checkpoint, fingerprint: fingerprint, lastUsed: r.clock}
 	switch kind {
 	case "full":
 		next.checkpoint = a["asap.frame.checkpoint_id"]
@@ -154,7 +160,10 @@ func (r *frameReceiver) prepare(env *SketchEnvelope) (frameReceipt, error) {
 	default:
 		return frameReceipt{}, errors.New("precompute: invalid frame kind")
 	}
-	return frameReceipt{key: key, state: next, framed: true}, nil
+	if limit == 0 {
+		limit = 100_000
+	}
+	return frameReceipt{key: key, state: next, framed: true, limit: limit}, nil
 }
 
 func (r *frameReceiver) commit(receipt frameReceipt) {
@@ -165,6 +174,16 @@ func (r *frameReceiver) commit(receipt frameReceipt) {
 	defer r.mu.Unlock()
 	if r.lineages == nil {
 		r.lineages = make(map[receivedFrameKey]receivedFrameState)
+	}
+	if _, exists := r.lineages[receipt.key]; !exists && uint64(len(r.lineages)) >= receipt.limit {
+		var oldestKey receivedFrameKey
+		oldestUse := ^uint64(0)
+		for key, state := range r.lineages {
+			if state.lastUsed < oldestUse {
+				oldestKey, oldestUse = key, state.lastUsed
+			}
+		}
+		delete(r.lineages, oldestKey)
 	}
 	r.lineages[receipt.key] = receipt.state
 }

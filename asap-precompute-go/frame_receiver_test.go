@@ -58,3 +58,20 @@ func TestObserveEnvelopeRejectsGapBadBaseAndChecksum(t *testing.T) {
 		t.Fatalf("checksum: %v", err)
 	}
 }
+
+func TestFrameReceiverLineagesAreBounded(t *testing.T) {
+	var receiver frameReceiver
+	for i := 0; i < 3; i++ {
+		env := framedTestEnvelope(1, "full", "cp", "", "A")
+		env.FrameAttributes["asap.frame.series_identity"] = string(rune('a' + i))
+		env.FrameAttributes = SealFrameAttributes(env.FrameAttributes, env.Payload)
+		receipt, err := receiver.prepare(env, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receiver.commit(receipt)
+	}
+	if got := len(receiver.lineages); got != 2 {
+		t.Fatalf("lineages=%d, want 2", got)
+	}
+}
