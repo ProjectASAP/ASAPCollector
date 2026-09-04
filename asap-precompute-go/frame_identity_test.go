@@ -78,3 +78,25 @@ func TestFrameSequencerBatchFailureDoesNotAdvanceEarlierLineages(t *testing.T) {
 		t.Fatalf("failed batch advanced sequence: got %d, want 1", frames[0].Sequence)
 	}
 }
+
+func TestFrameSequencerStartsFreshLineageForNewPlanGeneration(t *testing.T) {
+	body := collectorPlanBody(t, "hll", map[string]float64{"precision": 14}, nil)
+	var plan CollectorPlan
+	if err := json.Unmarshal(body, &plan); err != nil {
+		t.Fatal(err)
+	}
+	rule := plan.TransmissionRules[0]
+	var sequencer FrameSequencer
+	first, err := sequencer.Next(plan, rule, "boot-7", "series-a", 100, 200, 1_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Envelope.PlanVersion++
+	second, err := sequencer.Next(plan, rule, "boot-7", "series-a", 200, 300, 2_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Sequence != 1 || second.Sequence != 1 || second.Kind != "full" {
+		t.Fatalf("new plan generation reused prior lineage: first=%+v second=%+v", first, second)
+	}
+}

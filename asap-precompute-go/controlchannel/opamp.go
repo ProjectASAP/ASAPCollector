@@ -3,7 +3,10 @@ package controlchannel
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -68,6 +71,16 @@ type OpAmpConfig struct {
 
 	// Now is injectable for activation-boundary tests. Defaults to time.Now.
 	Now func() time.Time
+
+	// StateFile durably records the last APPLIED plan generation so a process
+	// restart cannot accept an older generation. Production integrations should
+	// always configure it; an empty path keeps unit/embedded use in-memory only.
+	StateFile string
+}
+
+type appliedPlanState struct {
+	PlanID      uint64 `json:"plan_id"`
+	PlanVersion uint64 `json:"plan_version"`
 }
 
 // NewOpAmpChannel constructs a new OpAmpChannel. Validates that
@@ -83,7 +96,79 @@ func NewOpAmpChannel(cfg OpAmpConfig) (*OpAmpChannel, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &OpAmpChannel{cfg: cfg}, nil
+	channel := &OpAmpChannel{cfg: cfg}
+	if cfg.StateFile != "" {
+		state, err := loadAppliedPlanState(cfg.StateFile)
+		if err != nil {
+			return nil, err
+		}
+		channel.maxVersion = state.PlanVersion
+		channel.lastAcked = state.PlanVersion
+		channel.lastAckedPlanID = state.PlanID
+	}
+	return channel, nil
+}
+
+func loadAppliedPlanState(path string) (appliedPlanState, error) {
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return appliedPlanState{}, nil
+	}
+	if err != nil {
+		return appliedPlanState{}, fmt.Errorf("controlchannel: read applied-plan state: %w", err)
+	}
+	var state appliedPlanState
+	if err := json.Unmarshal(body, &state); err != nil || state.PlanVersion == 0 {
+		return appliedPlanState{}, errors.New("controlchannel: applied-plan state is malformed")
+	}
+	return state, nil
+}
+
+func persistAppliedPlanState(path string, state appliedPlanState) error {
+	if path == "" {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("controlchannel: create applied-plan state directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".asap-plan-state-*")
+	if err != nil {
+		return fmt.Errorf("controlchannel: create applied-plan state: %w", err)
+	}
+	tmpName := tmp.Name()
+	remove := true
+	defer func() {
+		_ = tmp.Close()
+		if remove {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return fmt.Errorf("controlchannel: protect applied-plan state: %w", err)
+	}
+	if err := json.NewEncoder(tmp).Encode(state); err != nil {
+		return fmt.Errorf("controlchannel: encode applied-plan state: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("controlchannel: sync applied-plan state: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("controlchannel: close applied-plan state: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("controlchannel: install applied-plan state: %w", err)
+	}
+	remove = false
+	directory, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("controlchannel: open applied-plan state directory: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("controlchannel: sync applied-plan state directory: %w", err)
+	}
+	return nil
 }
 
 // ReceiveCollectorPlan validates an ASAPQuery CollectorPlan and queues it for
@@ -189,9 +274,14 @@ func (o *OpAmpChannel) Ack(planVersion uint64) {
 		o.mu.Unlock()
 		return
 	}
+	planID := o.deliveredPlanID
+	if err := persistAppliedPlanState(o.cfg.StateFile, appliedPlanState{PlanID: planID, PlanVersion: planVersion}); err != nil {
+		o.mu.Unlock()
+		o.reportFailed(planID, planVersion, err)
+		return
+	}
 	o.lastAcked = planVersion
-	o.lastAckedPlanID = o.deliveredPlanID
-	planID := o.lastAckedPlanID
+	o.lastAckedPlanID = planID
 	o.delivered = 0
 	o.deliveredPlanID = 0
 	o.mu.Unlock()

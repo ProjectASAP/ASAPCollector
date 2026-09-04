@@ -103,6 +103,46 @@ fn backend_quantile_plan_projects_without_replanning() {
 }
 
 #[test]
+fn one_query_can_own_multiple_materializations() {
+    let bytes = plan(json!([
+        {
+            "query_id": "q-composite", "metric": "latency", "algorithm": "ddsketch",
+            "parameters": {"alpha": 0.01}, "group_by": ["service"], "window_secs": 60,
+            "evidence_source": null
+        },
+        {
+            "query_id": "q-composite", "metric": "requests", "algorithm": "hll",
+            "parameters": {"precision": 14}, "group_by": ["service"], "window_secs": 60,
+            "evidence_source": null
+        }
+    ]));
+    let parsed = CollectorPlan::from_json(&bytes, "edge-a").unwrap();
+    assert_eq!(parsed.to_precompute_config_set().unwrap().configs.len(), 2);
+}
+
+#[test]
+fn cms_plan_preserves_committed_non_default_dimensions() {
+    let bytes = plan(json!([{
+        "query_id": "q-cms",
+        "metric": "requests_total",
+        "algorithm": "cms",
+        "parameters": {"width": 4096, "depth": 7},
+        "group_by": ["service"],
+        "window_secs": 60,
+        "evidence_source": null
+    }]));
+    let configs = CollectorPlan::from_json(&bytes, "edge-a")
+        .unwrap()
+        .to_precompute_config_set()
+        .unwrap();
+    let params = &configs.configs[0].sketch_params;
+    assert_eq!(params["width"], 4096.0);
+    assert_eq!(params["depth"], 7.0);
+    assert!(!params.contains_key("columns"));
+    assert!(!params.contains_key("rows"));
+}
+
+#[test]
 fn unsupported_planner_window_realization_is_rejected() {
     let mut plan = quantile_plan();
     plan.materializations[0].abstract_window_framework = SummaryWindowFramework::Sliding;
@@ -363,6 +403,24 @@ fn frame_sequence_and_reserved_attributes_match_backend_contract() {
     );
     assert_eq!(
         (next_series.sequence, next_series.kind),
+        (1, SummaryFrameKind::Full)
+    );
+
+    let mut next_generation = parsed.clone();
+    next_generation.envelope.plan_version += 1;
+    let first_in_generation = sequencer
+        .next(
+            &next_generation,
+            &rule,
+            "boot-7",
+            "service=checkout,zone=a",
+            300,
+            400,
+            603_000,
+        )
+        .unwrap();
+    assert_eq!(
+        (first_in_generation.sequence, first_in_generation.kind),
         (1, SummaryFrameKind::Full)
     );
 }

@@ -248,3 +248,33 @@ func TestOpAmpChannelRejectsVersionResetForNewPlanIdentity(t *testing.T) {
 		t.Fatal("new plan identity reset the globally monotonic version")
 	}
 }
+
+func TestOpAmpChannelPersistsAppliedVersionAcrossRestart(t *testing.T) {
+	stateFile := t.TempDir() + "/plan-state.json"
+	first, err := NewOpAmpChannel(OpAmpConfig{
+		ServerEndpoint: "ws://controller", InstanceUid: "edge-a", StateFile: stateFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.ReceiveCollectorPlan(channelPlan(t, 7)); err != nil {
+		t.Fatal(err)
+	}
+	if first.Poll() == nil {
+		t.Fatal("first plan not delivered")
+	}
+	first.Ack(7)
+
+	restarted, err := NewOpAmpChannel(OpAmpConfig{
+		ServerEndpoint: "ws://controller", InstanceUid: "edge-a", StateFile: stateFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ReceiveCollectorPlan(channelPlan(t, 6)); err == nil {
+		t.Fatal("restart accepted a plan older than the durably applied version")
+	}
+	if err := restarted.ReceiveCollectorPlan(channelPlan(t, 8)); err != nil {
+		t.Fatalf("restart rejected a newer plan: %v", err)
+	}
+}

@@ -461,6 +461,9 @@ type ControlChannelConfig struct {
 	OpAMPExtension *component.ID `mapstructure:"opamp_extension"`
 	// CollectorID must match CollectorPlan.collector_id for OpAMP pushes.
 	CollectorID string `mapstructure:"collector_id"`
+	// PlanStateFile durably records the last APPLIED plan generation and is
+	// required for OpAMP so restart cannot reset global version ordering.
+	PlanStateFile string `mapstructure:"plan_state_file"`
 }
 
 // enabled reports whether a control-plane transport was requested.

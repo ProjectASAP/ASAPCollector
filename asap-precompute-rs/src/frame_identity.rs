@@ -103,6 +103,8 @@ impl SummaryFrameIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LineageKey {
+    plan_id: u64,
+    plan_version: u64,
     materialization: u64,
     series_identity: String,
     producer_id: String,
@@ -159,6 +161,8 @@ impl FrameSequencer {
             return Err(FrameIdentityError::InvalidWindow);
         }
         let key = LineageKey {
+            plan_id: plan.envelope.plan_id,
+            plan_version: plan.envelope.plan_version,
             materialization: rule.materialization,
             series_identity: series_identity.into(),
             producer_id: rule.producer_id.clone(),

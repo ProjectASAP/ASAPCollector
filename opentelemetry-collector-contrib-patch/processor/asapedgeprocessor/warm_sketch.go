@@ -1117,9 +1117,6 @@ func (s *sketchAggregator) attachFrameIdentities(envs []*precompute.SketchEnvelo
 	for index, frame := range frames {
 		env := envs[index]
 		env.FrameAttributes = frame.OTLPAttributes()
-		if frame.Kind == "full" {
-			s.checkpointAtMS = nowMS
-		}
 	}
 	return true
 }
@@ -1132,5 +1129,10 @@ func (s *sketchAggregator) forceCheckpointIfDue(nowMS uint64) {
 	cadence := *s.frameRule.FullCheckpointEveryMS
 	if s.checkpointAtMS == 0 || (nowMS >= s.checkpointAtMS && nowMS-s.checkpointAtMS >= cadence) {
 		s.pc.ResetDeltaBase()
+		// ResetDeltaBase affects the complete aggregator, not one series. Track
+		// exactly that global reset here; updating this timestamp when an
+		// individual new series emits its first full frame can postpone the reset
+		// required by older lineages and make their deltas fail identity checks.
+		s.checkpointAtMS = nowMS
 	}
 }

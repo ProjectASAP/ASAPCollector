@@ -215,6 +215,48 @@ func TestPhysicalGenerationFailureIsNeverAcknowledged(t *testing.T) {
 	}
 }
 
+func TestPhysicalGenerationDrainFailureIsNeverAcknowledged(t *testing.T) {
+	cfg := &Config{
+		ShardCount: 1, WindowDuration: time.Minute,
+		Metrics: []MetricFamily{{Metric: "requests", Family: FamilyHLL}},
+		Cold:    ColdConfig{Enabled: false},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	p, err := newProcessor(cfg, testSettings(), &rejectMetrics{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := precompute.DecodeCollectorPlan(testCollectorPlan(t), "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeControlChannel{}
+	p.ctrlChan = fake
+	if err := p.applyConfigSet(first); err != nil {
+		t.Fatal(err)
+	}
+
+	// Leave state in the first physical generation so the second cutover must
+	// publish a final frame under the old identity.
+	p.shards[0].sketchAggs["requests"].observe(
+		map[string]string{"service": "checkout"}, 1, uint64(time.Now().UnixMilli()), false, 0, 0,
+	)
+	second, err := precompute.DecodeCollectorPlan(testCollectorPlan(t), "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Version++
+	second.CollectorPlan.Envelope.PlanVersion = second.Version
+	if err := p.applyConfigSet(second); err == nil {
+		t.Fatal("cutover acknowledged despite rejected retired-generation frames")
+	}
+	if len(fake.acked) != 1 || fake.acked[0] != first.Version {
+		t.Fatalf("acked = %v, want only initial version %d", fake.acked, first.Version)
+	}
+}
+
 func TestPhysicalGenerationRejectsTwoMaterializationsForOneMetric(t *testing.T) {
 	cfg := &Config{
 		ShardCount: 1, WindowDuration: time.Minute,

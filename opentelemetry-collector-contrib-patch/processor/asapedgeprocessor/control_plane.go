@@ -198,8 +198,12 @@ func (p *asapEdgeProcessor) applyPhysicalGeneration(set *precompute.PrecomputeCo
 	for i := len(p.shards) - 1; i >= 0; i-- {
 		p.shards[i].mu.Unlock()
 	}
-	// Downstream publication may block; keep it outside the cutover barrier.
-	p.forward(context.Background(), retired)
+	// Downstream publication may block; keep it outside the cutover barrier, but
+	// never report APPLIED when the final frames of the retired generation were
+	// rejected by the downstream pipeline.
+	if err := p.forward(context.Background(), retired); err != nil {
+		return fmt.Errorf("asap_edge: publish retired physical generation: %w", err)
+	}
 	return nil
 }
 

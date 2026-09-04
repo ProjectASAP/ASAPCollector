@@ -312,12 +312,16 @@ func (p *asapEdgeProcessor) Shutdown(ctx context.Context) error {
 // ship.
 const shutdownDrainGrace = 5 * time.Second
 
-// forward sends a flushed metrics batch downstream (no-op if empty).
-func (p *asapEdgeProcessor) forward(ctx context.Context, out pmetric.Metrics) {
+// forward sends a flushed metrics batch downstream (no-op if empty). Callers
+// performing a physical-plan cutover must observe the error before reporting
+// the generation APPLIED.
+func (p *asapEdgeProcessor) forward(ctx context.Context, out pmetric.Metrics) error {
 	if out.ResourceMetrics().Len() == 0 {
-		return
+		return nil
 	}
 	if err := p.next.ConsumeMetrics(ctx, out); err != nil {
 		p.logger.Warn("asap_edge: forward flushed metrics failed", zap.Error(err))
+		return err
 	}
+	return nil
 }

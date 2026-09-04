@@ -5,6 +5,7 @@ package asapedgeprocessor
 
 import (
 	"context"
+	"errors"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -24,6 +25,14 @@ func (c *capMetrics) Capabilities() consumer.Capabilities { return consumer.Capa
 func (c *capMetrics) ConsumeMetrics(_ context.Context, md pmetric.Metrics) error {
 	c.got = append(c.got, md)
 	return nil
+}
+
+type rejectMetrics struct{}
+
+func (*rejectMetrics) Capabilities() consumer.Capabilities { return consumer.Capabilities{} }
+
+func (*rejectMetrics) ConsumeMetrics(context.Context, pmetric.Metrics) error {
+	return errors.New("downstream rejected metrics")
 }
 
 // testSettings is the shared processor.Settings fixture (a no-op logger) used
