@@ -745,6 +745,13 @@ arm_measure() {
     fi
 
     log "[measure ${arm}] MetricsQL replay against ${query_endpoint} for ${SOAK_S}s"
+    python3 "${SCRIPT_DIR}/measure_collector_telemetry.py" \
+        --duration "${SOAK_S}" \
+        --agent "agent-a=http://${NODE0_IP}:8890/metrics" \
+        --agent "agent-b=http://${NODE3_IP}:8890/metrics" \
+        --out "${out}/collector-telemetry.json" \
+        > "${out}/collector-telemetry.log" 2>&1 &
+    local COLLECTOR_TELEMETRY_PID=$!
     # The paired arms run sequentially, so their wall-clock timestamps cannot
     # be compared directly. Pin an explicit per-arm evaluation anchor and
     # preserve it as evidence. The reducer compares timestamps relative to
@@ -765,6 +772,7 @@ arm_measure() {
 
     # Wait for soak to complete
     wait ${REPLAY_PID} 2>/dev/null || true
+    wait ${COLLECTOR_TELEMETRY_PID} 2>/dev/null || true
 
     if is_asap_arm "${arm}"; then
         # Controller-side acknowledgement is the proof that the supervisor

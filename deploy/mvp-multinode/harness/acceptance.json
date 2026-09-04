@@ -35,6 +35,14 @@
     "require_asap_lower_p50": true,
     "require_asap_lower_p95": true
   },
+  "collector_runtime": {
+    "minimum_offered_load_fraction": 0.90,
+    "minimum_points_per_cpu_second": 25000,
+    "maximum_peak_rss_mib_per_agent": 4096,
+    "maximum_cpu_cores_per_agent": 4.0,
+    "require_zero_refused_points": true,
+    "require_zero_export_failed_points": true
+  },
   "cost": {
     "cpu_core_weight": 1.0,
     "rss_gib_weight": 0.1,
