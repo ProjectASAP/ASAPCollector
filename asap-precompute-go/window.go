@@ -356,18 +356,8 @@ func (w *windowState) admitSeriesLocked(
 			// blocking the runtime hot path.
 			return nil, ErrSeriesCapExceeded
 		case OnOverflowEvictOldest:
-			var (
-				oldestKey string
-				oldestMs  uint64 = ^uint64(0)
-			)
-			for k, e := range w.series {
-				if e.LastSeenMs < oldestMs {
-					oldestMs = e.LastSeenMs
-					oldestKey = k
-				}
-			}
+			oldestKey, _ := w.evictOldestLocked()
 			if oldestKey != "" {
-				delete(w.series, oldestKey)
 				if stats != nil {
 					stats.ActiveSeries.Add(-1)
 				}
@@ -416,6 +406,22 @@ func (w *windowState) admitSeriesLocked(
 		stats.ActiveSeries.Add(1)
 	}
 	return entry, nil
+}
+
+func (w *windowState) evictOldestLocked() (string, *seriesEntry) {
+	var oldestKey string
+	oldestMs := ^uint64(0)
+	for key, entry := range w.series {
+		if entry.LastSeenMs < oldestMs {
+			oldestMs = entry.LastSeenMs
+			oldestKey = key
+		}
+	}
+	entry := w.series[oldestKey]
+	if oldestKey != "" {
+		delete(w.series, oldestKey)
+	}
+	return oldestKey, entry
 }
 
 // recordLocked feeds one observation into a series' sketch and advances its
@@ -483,8 +489,22 @@ func (w *windowState) observeEnvelope(
 	entry, ok := w.series[key]
 	if !ok {
 		if cfg.MaxSeries > 0 && uint64(len(w.series)) >= cfg.MaxSeries {
-			if cfg.OnOverflow == OnOverflowDrop || cfg.OnOverflow == OnOverflowBlock {
+			switch cfg.OnOverflow {
+			case OnOverflowDrop, OnOverflowBlock:
 				return ErrSeriesCapExceeded
+			case OnOverflowEvictOldest:
+				evictedKey, evicted := w.evictOldestLocked()
+				if evictedKey != "" {
+					if snapshotCache != nil {
+						snapshotCache.Delete(evictedKey)
+					}
+					if evicted != nil && evicted.Sketch != nil {
+						evicted.Sketch.Reset()
+					}
+					if stats != nil {
+						stats.ActiveSeries.Add(-1)
+					}
+				}
 			}
 		}
 		sketch := sketchFactory()

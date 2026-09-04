@@ -146,3 +146,34 @@ func TestObserveEnvelope_DeltaDoubleCountGuard(t *testing.T) {
 		t.Fatalf("same-range re-delivery: want %q, got %q", "BBBCCC", string(fs.state))
 	}
 }
+
+func TestObserveEnvelope_EvictOldestHonorsSeriesCap(t *testing.T) {
+	cfg := &PrecomputeConfig{AggID: 1, SketchType: SketchTypeDDSketch, Mode: Tumbling,
+		Window: WindowSpec{Size: 10 * time.Second}, MaxSeries: 1, OnOverflow: OnOverflowEvictOldest}
+	p := New(cfg, newFakeFactory(), &fakeObserver{}).(*precompute)
+	mk := func(label string, timestamp uint64) *SketchEnvelope {
+		return &SketchEnvelope{SchemaVersion: 1, SketchType: SketchTypeDDSketch, AggID: 1,
+			Labels: []KeyValue{{Key: "k", Value: label}}, WindowStartMs: 0,
+			WindowEndMs: timestamp, Encoding: EncodingProtoDelta, Payload: []byte(label)}
+	}
+	if err := p.ObserveEnvelope(mk("a", 1_000)); err != nil {
+		t.Fatal(err)
+	}
+	keyA := cfg.SeriesKeyForEntry(nil, []KeyValue{{Key: "k", Value: "a"}})
+	p.snapshotCache.CacheInbound(keyA, []byte("cached"))
+	if err := p.ObserveEnvelope(mk("b", 2_000)); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.window.activeSeriesCount(); got != 1 {
+		t.Fatalf("active series=%d, want 1", got)
+	}
+	if _, exists := p.window.series[keyA]; exists {
+		t.Fatal("oldest envelope series was not evicted")
+	}
+	if got := p.snapshotCache.LenInbound(); got != 1 {
+		t.Fatalf("inbound cache=%d, want only new series", got)
+	}
+	if got := p.Stats().Snapshot().ActiveSeries; got != 1 {
+		t.Fatalf("active-series stat=%d", got)
+	}
+}
