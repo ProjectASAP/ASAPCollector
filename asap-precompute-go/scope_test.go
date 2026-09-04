@@ -237,10 +237,9 @@ func TestWholeStreamIgnoresMaxSeries(t *testing.T) {
 	}
 }
 
-// TestUpdateConfigScopeChangeResetsWindow confirms a live scope flip discards
-// the incompatible in-flight window rather than mis-keying it, while a
-// same-scope change preserves accumulated state.
-func TestUpdateConfigScopeChangeResetsWindow(t *testing.T) {
+// TestUpdateConfigStagesAtWindowBoundary confirms a live plan change drains
+// the old generation before the replacement becomes active.
+func TestUpdateConfigStagesAtWindowBoundary(t *testing.T) {
 	t.Parallel()
 
 	// Start PerSeries, accumulate two series, then flip to WholeStream.
@@ -249,20 +248,25 @@ func TestUpdateConfigScopeChangeResetsWindow(t *testing.T) {
 		_ = p.Observe(&Observation{TimestampMs: 1000, Labels: []KeyValue{{Key: "host", Value: h}}, Value: FloatValue(1)})
 	}
 	p.UpdateConfig(&PrecomputeConfigSet{Version: 2, Configs: []PrecomputeConfig{*scopeCfg(ModeWholeStream)}})
-	// A drain right after the flip emits nothing (window was reset).
-	if envs := p.Drain(); len(envs) != 0 {
-		t.Errorf("after scope flip the in-flight window should be empty, got %d envelopes", len(envs))
+	if got := p.(*precompute).activeConfig().effectiveScope(); got != ModePerSeries {
+		t.Fatalf("replacement activated before boundary: %v", got)
+	}
+	// Drain emits the old per-series generation, then promotes WholeStream.
+	if envs := p.Drain(); len(envs) != 2 {
+		t.Errorf("old generation should drain 2 envelopes, got %d", len(envs))
 	}
 	// New observations now accumulate under WholeStream ⇒ one envelope.
 	for _, h := range []string{"x", "y", "z"} {
-		_ = p.Observe(&Observation{TimestampMs: 1000, Labels: []KeyValue{{Key: "host", Value: h}}, Value: FloatValue(1)})
+		if err := p.Observe(&Observation{TimestampMs: 2_500, Labels: []KeyValue{{Key: "host", Value: h}}, Value: FloatValue(1)}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if envs := p.Drain(); len(envs) != 1 {
 		t.Fatalf("post-flip WholeStream: want 1 envelope, got %d", len(envs))
 	}
 
-	// Same-scope UpdateConfig must NOT reset: accumulate, reconfigure with the
-	// same scope, then confirm the prior observation still flushes.
+	// Same-scope changes are staged too because grouping/encoding and other
+	// semantics can still change independently of scope.
 	p2 := New(scopeCfg(ModeWholeStream), newFakeFactory(), &fakeObserver{})
 	_ = p2.Observe(&Observation{TimestampMs: 1000, Labels: []KeyValue{{Key: "host", Value: "a"}}, Value: FloatValue(1)})
 	sameScope := *scopeCfg(ModeWholeStream)
@@ -270,5 +274,8 @@ func TestUpdateConfigScopeChangeResetsWindow(t *testing.T) {
 	p2.UpdateConfig(&PrecomputeConfigSet{Version: 3, Configs: []PrecomputeConfig{sameScope}})
 	if envs := p2.Drain(); len(envs) != 1 {
 		t.Errorf("same-scope change should preserve the window, want 1 envelope, got %d", len(envs))
+	}
+	if got := p2.(*precompute).activeConfig().AggregateBy; len(got) != 1 || got[0] != "zone" {
+		t.Fatalf("pending config not promoted: %v", got)
 	}
 }

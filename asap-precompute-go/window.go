@@ -139,6 +139,20 @@ type windowState struct {
 	wakeHook func()
 }
 
+func (w *windowState) hasAccumulatedState() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if len(w.series) != 0 {
+		return true
+	}
+	for _, pane := range w.panes {
+		if len(pane.series) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // wakeSignaler is implemented by a Sketch that can trigger an out-of-cycle
 // flush from insert-time GOS threshold detection
 // (design-gos-unified-edge-telemetry.md §11). ConsumeWakeSignal reports
